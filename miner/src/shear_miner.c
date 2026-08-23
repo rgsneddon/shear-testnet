@@ -224,6 +224,15 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: shear-miner --selftest | --print-config | --pool host:port --user shear1... [--threads N] [--notls]\n");
     return 2;
   }
+#if defined(_WIN32)
+  {
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+      fprintf(stderr, "WSAStartup failed\n");
+      return 3;
+    }
+  }
+#endif
   signal(SIGINT, on_sig);
   int fd = tcp_connect(g_host, g_port);
   if (fd < 0) {

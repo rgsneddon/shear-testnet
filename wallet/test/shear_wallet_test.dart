@@ -118,10 +118,14 @@ void main() {
     await tester.pump();
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
+    final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
+    expect(app.title, 'Shear 0.0.1');
+    expect(kWalletVersion, '0.0.1');
     // password gate first
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
+    expect(find.textContaining('Shear  0.0.1'), findsWidgets);
     for (final name in kTabs) {
       expect(find.text(name), findsWidgets);
     }
