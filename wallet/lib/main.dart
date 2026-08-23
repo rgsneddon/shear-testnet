@@ -43,11 +43,13 @@ class ShearWalletApp extends StatefulWidget {
     this.session,
     this.ledger,
     this.launchExecutable,
+    this.miner,
   });
 
   final ShearSession? session;
   final ShearLedger? ledger;
   final String? launchExecutable;
+  final ShearMinerHost? miner;
 
   @override
   State<ShearWalletApp> createState() => _ShearWalletAppState();
@@ -56,17 +58,24 @@ class ShearWalletApp extends StatefulWidget {
 class _ShearWalletAppState extends State<ShearWalletApp> {
   late final ShearSession session = widget.session ?? ShearSession();
   late final ShearLedger ledger = widget.ledger ?? ShearLedger(pool: ShearPoolClient());
+  late final ShearMinerHost miner =
+      widget.miner ?? ShearMinerHost(resolvedExecutable: widget.launchExecutable);
   ShearIdentity? id;
   String password = '';
   bool unlocked = false;
   int tab = 0;
-  final miner = ShearMinerHost();
   bool mining = false;
 
   @override
   void initState() {
     super.initState();
     _boot();
+  }
+
+  @override
+  void dispose() {
+    miner.stop();
+    super.dispose();
   }
 
   Future<void> _boot() async {
@@ -273,9 +282,23 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
             return;
           }
           if (miner.isDesktop) {
-            await miner.start(address: ident.address, pool: 'pool.shear.digital:1111');
+            final proc = await miner.start(
+              address: ident.address,
+              pool: 'pool.shear.digital:1111',
+            );
+            if (proc == null) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Bundled shear-miner not found next to the app.')),
+                );
+              }
+              return;
+            }
           } else {
-            ledger.creditHash(ident.address);
+            miner.startInApp(onHashes: (n) {
+              ledger.creditHash(ident.address, hashes: n);
+              if (mounted) setState(() {});
+            });
           }
           setState(() => mining = true);
         },

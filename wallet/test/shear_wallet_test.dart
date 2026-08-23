@@ -8,6 +8,8 @@ import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_lock.dart';
 import 'package:shear_wallet/shear_session.dart';
+import 'package:shear_wallet/shear_hash.dart';
+import 'package:shear_wallet/shear_miner_host.dart';
 import 'package:shear_wallet/shear_theme.dart';
 
 void main() {
@@ -76,6 +78,38 @@ void main() {
     await expectLater(ShearLock.open(env, 'wrong'), throwsA(anything));
   });
 
+  test('Dart ShearHash matches C selftest vector 6e95b903…', () {
+    final header = shearSelftestHeader();
+    expect(header.length, 120);
+    expect(header[0], 1);
+    expect(header.sublist(1).every((b) => b == 0), isTrue);
+    final got = shearHashHex(header);
+    expect(got, shearSelftestHash);
+    expect(shearSelftest(), isTrue);
+    expect(dartHashRound(header), shearHash(header));
+    final host = ShearMinerHost(desktopOverride: false);
+    expect(host.hashBurst(count: 3), 3);
+    expect(host.hashesRun, 3);
+  });
+
+  test('bundled miner path is next to the GUI on Windows and Linux', () {
+    final win = ShearMinerHost.bundledPath(
+      resolvedExecutable: r'C:\Shear\Shear.exe',
+      windows: true,
+    );
+    expect(win, r'C:\Shear\shear-miner.exe');
+    final linux = ShearMinerHost.bundledPath(
+      resolvedExecutable: '/opt/shear/shear_wallet',
+      windows: false,
+    );
+    expect(linux, '/opt/shear/shear-miner');
+    final mac = ShearMinerHost.bundledPath(
+      resolvedExecutable: '/Applications/Shear.app/Contents/MacOS/Shear',
+      windows: false,
+    );
+    expect(mac, '/Applications/Shear.app/Contents/MacOS/shear-miner');
+  });
+
   testWidgets('six Chronoflux tabs and light pool colors', (tester) async {
     final dir = Directory.systemTemp.createTempSync('shear-ui-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -93,5 +127,36 @@ void main() {
     }
     expect(kExplains.length, kTabs.length);
     expect(kExplains.every((e) => e.length > 20), isTrue);
+  });
+
+  testWidgets('non-desktop Mine runs in-app ShearHash, not a single fake credit', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-mine-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    final id = await session.loadOrCreate();
+    final ledger = ShearLedger();
+    final miner = ShearMinerHost(desktopOverride: false);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      miner: miner,
+    ));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'pw');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.tap(find.text('Resistance'));
+    await tester.pump();
+    expect(ledger.pending(id.address), 0);
+    expect(miner.hashesRun, 0);
+    await tester.tap(find.text('Mine'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(miner.hashing, isTrue);
+    expect(miner.hashesRun, greaterThan(1));
+    expect(ledger.pending(id.address), closeTo(miner.hashesRun * 1e-9, 1e-12));
+    expect(find.text('Mining…'), findsWidgets);
+    await tester.tap(find.text('Stop'));
+    await tester.pump();
+    expect(miner.hashing, isFalse);
   });
 }
