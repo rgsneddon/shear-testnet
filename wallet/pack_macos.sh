@@ -1,4 +1,5 @@
 #!/bin/sh
+# Classic Mac installer DMG: Shear.app icon + Applications icon (drag onto it).
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WALLET="$ROOT/wallet"
@@ -6,12 +7,16 @@ MINER="$ROOT/miner/shear-miner"
 DIST="$WALLET/dist"
 VER=0.0.1
 APPNAME="Shear"
-STAGE="$DIST/dmg-stage"
+VOLNAME="Shear $VER"
 DMG="$DIST/shear-wallet-$VER-macos.dmg"
+RW="$DIST/shear-wallet-$VER-rw.dmg"
+BG="$WALLET/pack/dmg-bg.png"
+APP="$WALLET/build/macos/Build/Products/Release/$APPNAME.app"
 
 cd "$WALLET"
-flutter build macos --release --build-name=$VER --build-number=1
-APP="$WALLET/build/macos/Build/Products/Release/$APPNAME.app"
+if [ "${PACK_REBUILD:-}" = "1" ] || [ ! -d "$APP" ]; then
+  flutter build macos --release --build-name=$VER --build-number=1
+fi
 test -d "$APP"
 
 if [ -f "$MINER" ]; then
@@ -19,20 +24,62 @@ if [ -f "$MINER" ]; then
   chmod +x "$APP/Contents/MacOS/shear-miner"
 fi
 
-rm -rf "$STAGE" "$DMG"
-mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-cat > "$STAGE/Move to Applications.txt" <<EOF
+hdiutil detach "/Volumes/$VOLNAME" >/dev/null 2>&1 || true
+rm -f "$DMG" "$RW"
+mkdir -p "$DIST"
+
+hdiutil create -ov -fs HFS+ -volname "$VOLNAME" -size 100m "$RW" >/dev/null
+ATTACH=$(hdiutil attach -nobrowse "$RW")
+MNT=$(echo "$ATTACH" | sed -n 's/.*\(\/Volumes\/.*\)$/\1/p')
+test -d "$MNT"
+
+cp -R "$APP" "$MNT/"
+# Finder Applications folder icon — user drags Shear.app onto this.
+ln -s /Applications "$MNT/Applications"
+cat > "$MNT/Move to Applications.txt" <<EOF
 Shear wallet $VER
 
-Move the Shear app (the extracted executable) into Applications.
+Drag the Shear icon onto the Applications icon.
 Do not run it from this disk image, a zip, or Downloads.
+EOF
+# Keep the advice file for strings/grep; hide it so the window is the two icons.
+chflags hidden "$MNT/Move to Applications.txt" || true
 
-Drag Shear.app onto the Applications folder, then eject this image and open Shear from Applications.
+if [ -f "$BG" ]; then
+  mkdir -p "$MNT/.background"
+  cp "$BG" "$MNT/.background/bg.png"
+  chflags hidden "$MNT/.background" || true
+fi
+
+# Position the two icons: app left, Applications right.
+osascript <<EOF
+tell application "Finder"
+  tell disk "$VOLNAME"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set bounds of container window to {360, 120, 960, 520}
+    set theViewOptions to the icon view options of container window
+    set arrangement of theViewOptions to not arranged
+    set icon size of theViewOptions to 128
+    try
+      set background picture of theViewOptions to file ".background:bg.png"
+    end try
+    set position of item "Shear.app" to {140, 200}
+    set position of item "Applications" to {460, 200}
+    update without registering applications
+    delay 1
+    close
+  end tell
+end tell
 EOF
 
-hdiutil create -volname "Shear $VER" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+sync
+hdiutil detach "$MNT" >/dev/null
+hdiutil convert "$RW" -format UDZO -imagekey zlib-level=9 -ov -o "$DMG" >/dev/null
+rm -f "$RW"
+chmod a+r "$DMG"
 echo "wrote $DMG"
 ls -lh "$DMG"
 hdiutil imageinfo "$DMG" | head
