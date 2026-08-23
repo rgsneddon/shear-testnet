@@ -71,20 +71,20 @@ String destForLogin(
 
 List<String> destsForViewKey(
   String viewKey,
-  Uint8List spendHash20, {
+  String restAddress, {
   required List<int> heights,
   List<Uint8List?>? roots,
+  String? ownerViewKey,
 }) {
   if (viewKey.isEmpty) return const [];
-  final c = closureCommit(viewKey);
+  if (ownerViewKey != null && viewKey != ownerViewKey) return const [];
   return [
     for (var i = 0; i < heights.length; i++)
-      encodeShearAddress(flowDestHash(
-        spendHash20: spendHash20,
-        closure: c,
+      destForLogin(
+        restAddress,
         continuityRoot: roots != null && i < roots.length ? roots[i] : ctfEmptyRoot(),
         height: heights[i],
-      )),
+      ),
   ];
 }
 

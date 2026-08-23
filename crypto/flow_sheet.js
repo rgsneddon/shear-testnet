@@ -114,13 +114,16 @@ export function flowSpendMatches({ dest, spendHash20, closureCommit: C, continui
   return String(dest) === want;
 }
 
-/** Dest list a view key can open at these heights. */
-export function destsForViewKey(viewKey, spendHash20, rounds) {
+/**
+ * Dest list a view key can open. Dests are destForLogin(rest, lag-1, height)
+ * with no viewKey (same as coinbase). ownerViewKey must match or list is empty.
+ */
+export function destsForViewKey(viewKey, restAddress, rounds, { ownerViewKey } = {}) {
   if (!String(viewKey || '')) return [];
-  const C = closureCommit(viewKey);
-  return rounds.map((r) => flowDestAddress({
-    spendHash20,
-    closureCommit: C,
+  const rest = String(restAddress || '');
+  if (!isShearAddress(rest)) return [];
+  if (ownerViewKey != null && String(viewKey) !== String(ownerViewKey)) return [];
+  return rounds.map((r) => destForLogin(rest, {
     continuityRoot: r.continuityRoot,
     height: r.height,
   }));

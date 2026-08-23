@@ -117,6 +117,23 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     return explorer.filter((r) => r.to === addr || r.from === addr);
   }
 
+  const viewByAddress = new Map();
+  const addressByView = new Map();
+  function registerViewKey(address, viewKey) {
+    const addr = String(address || '').trim();
+    const vk = String(viewKey || '').trim();
+    if (!addr || !vk) return { ok: false };
+    viewByAddress.set(addr, vk);
+    addressByView.set(vk, addr);
+    return { ok: true, address: addr };
+  }
+  function addressForViewKey(viewKey) {
+    return addressByView.get(String(viewKey || '').trim()) || '';
+  }
+  function viewKeyForAddress(address) {
+    return viewByAddress.get(String(address || '').trim()) || '';
+  }
+
   let jobSeq = 1;
   const jobs = new Map();
   const mempool = [];
@@ -183,5 +200,8 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     historyFor,
     pruneBuried,
     pruneAfter,
+    registerViewKey,
+    addressForViewKey,
+    viewKeyForAddress,
   };
 }

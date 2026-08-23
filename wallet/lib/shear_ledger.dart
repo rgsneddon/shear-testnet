@@ -1,5 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+
+import 'shear_ctf.dart';
 
 class ShearTx {
   const ShearTx({
@@ -49,6 +52,9 @@ class ShearLedger {
   final Map<String, double> _spendable = {};
   final Map<String, double> _pending = {};
   final List<ShearTx> _txs = [];
+  final Set<String> _dests = {};
+  int tipHeight = 1;
+  Uint8List? lag1Root;
 
   Iterable<ShearTx> get transactions => List.unmodifiable(_txs);
 
@@ -73,10 +79,12 @@ class ShearLedger {
     if (total > 0) {
       _spendable[address] = spendable(address) + total;
     }
+    final dest = destForLogin(address, height: height > 0 ? height : tipHeight, continuityRoot: lag1Root);
+    _dests.add(dest);
     final tx = ShearTx(
-      id: 'round-$height-$address',
+      id: 'round-$height-$dest',
       from: 'coinbase',
-      to: address,
+      to: dest,
       amount: total,
       kind: 'coinbase',
       height: height,
@@ -113,6 +121,8 @@ class ShearLedger {
       final json = await pool!.balance(address);
       final live = (json['balance'] as num?)?.toDouble() ?? 0;
       _pending[address] = (json['pending'] as num?)?.toDouble() ?? 0;
+      final h = (json['height'] as num?)?.toInt();
+      if (h != null && h > 0) tipHeight = h;
       if (live > 0) {
         _spendable[address] = live;
         return live;
@@ -142,8 +152,19 @@ class ShearLedger {
     return ownerHistory(address);
   }
 
-  List<ShearTx> ownerHistory(String address) =>
-      _txs.where((t) => t.confirmed && (t.to == address || t.from == address)).toList();
+  String currentDest(String restFrame) =>
+      destForLogin(restFrame, height: tipHeight, continuityRoot: lag1Root);
+
+  Set<String> ownedAddresses(String restFrame) => {
+        restFrame,
+        currentDest(restFrame),
+        ..._dests,
+      };
+
+  List<ShearTx> ownerHistory(String address) {
+    final keys = ownedAddresses(address);
+    return _txs.where((t) => t.confirmed && (keys.contains(t.to) || keys.contains(t.from))).toList();
+  }
 
   Future<ShearTx> send({
     required String from,
@@ -212,8 +233,14 @@ class ShearPoolClient {
   Future<Map<String, dynamic>> balance(String address) =>
       _get('/api/wallet/balance?address=$address');
 
-  Future<Map<String, dynamic>> history(String address) =>
-      _get('/api/wallet/history?address=$address');
+  Future<Map<String, dynamic>> history(String address, {String? viewKey}) =>
+      _get('/api/wallet/history?address=$address${viewKey != null ? '&viewKey=$viewKey' : ''}');
+
+  Future<Map<String, dynamic>> explorerHistory({required String viewKey, String? address}) =>
+      _get('/api/explorer/history?viewKey=$viewKey${address != null ? '&address=$address' : ''}');
+
+  Future<Map<String, dynamic>> registerView({required String address, required String viewKey}) =>
+      _post('/api/wallet/register', {'address': address, 'viewKey': viewKey});
 
   Future<Map<String, dynamic>> send({
     required String from,

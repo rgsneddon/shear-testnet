@@ -223,7 +223,7 @@ export function createPool({
       res.end(JSON.stringify(publicStats()));
       return;
     }
-    if (url.pathname.startsWith('/api/wallet/')) {
+    if (url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/')) {
       let body = {};
       if (req.method === 'POST') {
         body = JSON.parse(await new Promise((resolve, reject) => {

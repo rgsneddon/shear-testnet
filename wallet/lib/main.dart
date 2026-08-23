@@ -81,6 +81,9 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
 
   Future<void> _boot() async {
     id = await session.loadOrCreate();
+    try {
+      await ledger.pool?.registerView(address: id!.address, viewKey: id!.viewKey);
+    } catch (_) {}
     await ledger.syncSpendable(id!.address);
     await ledger.syncHistory(id!.address);
     if (mounted) setState(() {});
@@ -207,7 +210,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
 
   Widget _continuum(ShearIdentity ident) {
     final hist = ledger.ownerHistory(ident.address);
-    final dest = destForLogin(ident.address, height: 1);
+    final dest = ledger.currentDest(ident.address);
     return _card([
       const Text('Continuum  ∇·J = 0', style: TextStyle(fontWeight: FontWeight.w700)),
       const Text('Rest-frame (Reserve / Vortex lock)'),
@@ -256,6 +259,9 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     final amt = TextEditingController();
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
+      const Text('CTF dest this round'),
+      SelectableText(ledger.currentDest(ident.address)),
+      const SizedBox(height: 8),
       TextField(controller: to, decoration: const InputDecoration(labelText: 'To (shear1…)')),
       TextField(controller: amt, decoration: const InputDecoration(labelText: 'Amount SHE'), keyboardType: TextInputType.number),
       FilledButton(
@@ -356,6 +362,9 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         'The view key opens only your CTF dest amounts on the explorer.',
       ),
       SelectableText('View key  ${ident.viewKey}', style: const TextStyle(fontSize: 12, color: shearMuted)),
+      const SizedBox(height: 8),
+      const Text('CTF dests this view key opens (amounts on explorer)'),
+      SelectableText(ledger.currentDest(ident.address)),
       TextField(
         controller: pw,
         obscureText: true,

@@ -48,6 +48,12 @@ function destSetFor(store, address) {
 /** History from sealed txs only — never from pruned hash samples. Dest vouts included. */
 export function reconstructOwner(store, address, { viewKey } = {}) {
   const addr = String(address || '').trim();
+  if (viewKey != null && String(viewKey) !== '') {
+    const owned = store.viewKeyForAddress?.(addr) || '';
+    if (!owned || owned !== String(viewKey)) {
+      return { spendableNanos: 0, spendable: 0, txs: [] };
+    }
+  }
   const dests = destSetFor(store, addr);
   const rows = [];
   if (typeof store?.historyFor === 'function') {
@@ -84,16 +90,36 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
         balance: rec.spendable,
         pending: pending.amount,
         reconstructed: rec.spendable,
+        height: store.tip?.()?.height || 0,
       },
     };
   }
-  if ((path === '/api/wallet/history' || path === '/api/explorer/history') && verb === 'GET') {
-    const address = url.searchParams.get('address') || '';
-    const viewKey = url.searchParams.get('viewKey') || '';
-    if (path === '/api/explorer/history' && !viewKey) {
-      return { status: 200, json: { ok: true, coin: 'SHE', address, txs: [], amountsOnly: true } };
+  if (path === '/api/wallet/register' && verb === 'POST') {
+    const address = String(body.address || '');
+    const viewKey = String(body.viewKey || '');
+    if (!isShearAddress(address) || !viewKey) {
+      return { status: 400, json: { ok: false, reason: 'bad_register' } };
     }
-    const rec = reconstructOwner(store, address, { viewKey });
+    store.registerViewKey?.(address, viewKey);
+    return { status: 200, json: { ok: true, address } };
+  }
+  if ((path === '/api/wallet/history' || path === '/api/explorer/history') && verb === 'GET') {
+    const viewKey = url.searchParams.get('viewKey') || '';
+    let address = url.searchParams.get('address') || '';
+    if (path === '/api/explorer/history') {
+      if (!viewKey) {
+        return { status: 200, json: { ok: true, address, txs: [], amountsOnly: true } };
+      }
+      const fromKey = store.addressForViewKey?.(viewKey) || '';
+      if (address && fromKey && address !== fromKey) {
+        return { status: 200, json: { ok: true, address, txs: [], amountsOnly: true } };
+      }
+      address = fromKey || address;
+      if (!address || (store.viewKeyForAddress?.(address) || '') !== viewKey) {
+        return { status: 200, json: { ok: true, address, txs: [], amountsOnly: true } };
+      }
+    }
+    const rec = reconstructOwner(store, address, { viewKey: path === '/api/explorer/history' ? viewKey : undefined });
     return { status: 200, json: { ok: true, coin: 'SHE', address, txs: rec.txs, amountsOnly: true } };
   }
   if (path === '/api/wallet/send' && verb === 'POST') {

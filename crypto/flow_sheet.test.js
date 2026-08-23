@@ -3,11 +3,10 @@ import assert from 'node:assert/strict';
 import { newIdentity, isShearAddress } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
 import {
-  closureCommit,
   destForLogin,
   destsForViewKey,
-  flowDestAddress,
   flowSpendMatches,
+  impliedClosure,
   reserveRejectsDest,
   spendHashFromAddress,
 } from './flow_sheet.js';
@@ -18,10 +17,10 @@ describe('flow sheets', () => {
     const bob = newIdentity();
     const root1 = Buffer.alloc(32, 1);
     const root2 = Buffer.alloc(32, 2);
-    const d1 = destForLogin(alice.address, { continuityRoot: root1, height: 3, viewKey: alice.viewKey });
-    const d2 = destForLogin(alice.address, { continuityRoot: root2, height: 3, viewKey: alice.viewKey });
-    const d3 = destForLogin(alice.address, { continuityRoot: root1, height: 4, viewKey: alice.viewKey });
-    const bobD = destForLogin(bob.address, { continuityRoot: root1, height: 3, viewKey: bob.viewKey });
+    const d1 = destForLogin(alice.address, { continuityRoot: root1, height: 3 });
+    const d2 = destForLogin(alice.address, { continuityRoot: root2, height: 3 });
+    const d3 = destForLogin(alice.address, { continuityRoot: root1, height: 4 });
+    const bobD = destForLogin(bob.address, { continuityRoot: root1, height: 3 });
     assert.equal(isShearAddress(d1), true);
     assert.notEqual(d1, alice.address);
     assert.notEqual(d1, d2);
@@ -32,14 +31,14 @@ describe('flow sheets', () => {
     assert.equal(flowSpendMatches({
       dest: d1,
       spendHash20: S,
-      closureCommit: closureCommit(alice.viewKey),
+      closureCommit: impliedClosure(S),
       continuityRoot: root1,
       height: 3,
     }), true);
     assert.equal(flowSpendMatches({
       dest: d1,
       spendHash20: S,
-      closureCommit: closureCommit(alice.viewKey),
+      closureCommit: impliedClosure(S),
       continuityRoot: root2,
       height: 3,
     }), false);
@@ -52,16 +51,16 @@ describe('flow sheets', () => {
       { continuityRoot: EMPTY_ROOT, height: 1 },
       { continuityRoot: Buffer.alloc(32, 7), height: 2 },
     ];
-    const aliceS = spendHashFromAddress(alice.address);
-    const bobS = spendHashFromAddress(bob.address);
-    assert.deepEqual(destsForViewKey('', aliceS, rounds), []);
-    const aliceDests = destsForViewKey(alice.viewKey, aliceS, rounds);
-    const bobDests = destsForViewKey(bob.viewKey, bobS, rounds);
+    const paid = destForLogin(alice.address, { continuityRoot: rounds[0].continuityRoot, height: 1 });
+    assert.deepEqual(destsForViewKey('', alice.address, rounds, { ownerViewKey: alice.viewKey }), []);
+    const aliceDests = destsForViewKey(alice.viewKey, alice.address, rounds, { ownerViewKey: alice.viewKey });
+    const bobDests = destsForViewKey(bob.viewKey, bob.address, rounds, { ownerViewKey: bob.viewKey });
+    assert.equal(aliceDests[0], paid);
     assert.equal(aliceDests.length, 2);
     assert.ok(aliceDests.every(isShearAddress));
     assert.ok(aliceDests.every((d, i) => d !== bobDests[i]));
-    const cross = destsForViewKey(bob.viewKey, aliceS, rounds);
-    assert.ok(cross.every((d, i) => d !== aliceDests[i]));
+    const cross = destsForViewKey(bob.viewKey, alice.address, rounds, { ownerViewKey: alice.viewKey });
+    assert.deepEqual(cross, []);
     const rows = aliceDests.map((dest, i) => ({ dest, amount: 1 + i, height: rounds[i].height }));
     const opened = rows.filter((r) => aliceDests.includes(r.dest));
     const bobOpened = rows.filter((r) => bobDests.includes(r.dest));

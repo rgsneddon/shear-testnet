@@ -94,10 +94,11 @@ void main() {
     final a = createIdentity();
     final b = createIdentity();
     expect(destForLogin(a.address, height: 1), isNot(destForLogin(b.address, height: 1)));
-    final s = spendHashFromAddress(a.address)!;
-    expect(destsForViewKey('', s, heights: [1]), isEmpty);
-    final aliceDests = destsForViewKey(a.viewKey, s, heights: [1, 2]);
-    final bobDests = destsForViewKey(b.viewKey, spendHashFromAddress(b.address)!, heights: [1, 2]);
+    expect(destsForViewKey('', a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
+    final aliceDests = destsForViewKey(a.viewKey, a.address, heights: [1, 2], ownerViewKey: a.viewKey);
+    final bobDests = destsForViewKey(b.viewKey, b.address, heights: [1, 2], ownerViewKey: b.viewKey);
+    expect(aliceDests.first, destForLogin(a.address, height: 1));
+    expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(aliceDests.length, 2);
     expect(aliceDests[0], isNot(bobDests[0]));
     expect(reservePrincipal(a.address), a.address);
