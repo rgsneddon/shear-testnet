@@ -14,7 +14,9 @@ import {
   pruneSamples,
   leanBlock,
   sealedExplorerRows,
+  lag1Continuity,
 } from './chain.js';
+import { destForLogin } from '../../crypto/flow_sheet.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
@@ -123,16 +125,21 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     const t = tip();
     const height = t ? t.height + 1 : 1;
     const bits = bitsIn != null ? bitsIn : retarget(blocks);
-    const pendingTxs = mempool.map((m) => ({
-      id: m.id,
-      from: m.from,
-      to: m.to,
-      nanos: m.nanos,
-      vin: [{ address: m.from }],
-      vout: [{ address: m.to, nanos: m.nanos }],
-    }));
+    const lag1 = lag1Continuity(t ? t.header : null);
+    const pendingTxs = mempool.map((m) => {
+      const dest = destForLogin(m.to, { continuityRoot: lag1, height });
+      return {
+        id: m.id,
+        from: m.from,
+        to: dest,
+        nanos: m.nanos,
+        vin: [{ address: m.from }],
+        vout: [{ address: dest, nanos: m.nanos }],
+      };
+    });
     const tpl = buildTemplate({
       prev: t ? t.hash : GENESIS_PREV,
+      prevHeader: t ? t.header : null,
       height,
       miner,
       samples,

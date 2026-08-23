@@ -12,6 +12,7 @@ import {
 } from '../../crypto/asert.js';
 import { isShearAddress } from '../../crypto/address.js';
 import { collateSamples } from '../../crypto/chronoflux.js';
+import { destForLogin } from '../../crypto/flow_sheet.js';
 
 export {
   SAMPLE_PRUNE_CONFIRMATIONS,
@@ -44,21 +45,33 @@ export function hashBonusByMiner(samples = []) {
   return by;
 }
 
-export function coinbaseTx({ height, miner, samples = [], potShares = null }) {
+export function lag1Continuity(prevHeader) {
+  if (!prevHeader) return EMPTY_ROOT;
+  try {
+    return decodeHeader(Buffer.from(prevHeader)).continuityRoot;
+  } catch {
+    return EMPTY_ROOT;
+  }
+}
+
+export function coinbaseTx({ height, miner, samples = [], potShares = null, destOf = (a) => a }) {
   const bonuses = hashBonusByMiner(samples);
   const vout = [];
   const shares = potShares && potShares.length
     ? potShares
     : [{ address: miner, nanos: BLOCK_SUBSIDY_NANOS }];
   for (const s of shares) {
-    if (!isShearAddress(s.address) || !s.nanos) continue;
-    vout.push({ address: s.address, nanos: s.nanos, kind: 'pot' });
+    const pay = destOf(s.address);
+    if (!isShearAddress(pay) || !s.nanos) continue;
+    vout.push({ address: pay, nanos: s.nanos, kind: 'pot' });
   }
   for (const [address, nanos] of bonuses) {
-    vout.push({ address, nanos, kind: 'hash' });
+    const pay = destOf(address);
+    if (!isShearAddress(pay)) continue;
+    vout.push({ address: pay, nanos, kind: 'hash' });
   }
   if (!vout.length) {
-    vout.push({ address: miner, nanos: BLOCK_SUBSIDY_NANOS, kind: 'pot' });
+    vout.push({ address: destOf(miner), nanos: BLOCK_SUBSIDY_NANOS, kind: 'pot' });
   }
   return {
     coinbase: true,
@@ -68,9 +81,24 @@ export function coinbaseTx({ height, miner, samples = [], potShares = null }) {
   };
 }
 
-export function buildTemplate({ prev, height, miner, samples = [], txs = [], now = Date.now(), bits }) {
+export function buildTemplate({
+  prev,
+  prevHeader,
+  height,
+  miner,
+  samples = [],
+  txs = [],
+  now = Date.now(),
+  bits,
+  destOf,
+}) {
   const collated = collateSamples(samples);
-  const cb = coinbaseTx({ height, miner, samples: collated });
+  const continuityLag1 = lag1Continuity(prevHeader);
+  const pay = destOf || ((login) => destForLogin(login, {
+    continuityRoot: continuityLag1,
+    height,
+  }));
+  const cb = coinbaseTx({ height, miner, samples: collated, destOf: pay });
   const bodyTxs = [cb, ...txs];
   const merkle = merkleRoot(bodyTxs.map(digestTx));
   const continuity = merkleRoot(collated.map((s) => sampleLeaf(s)));

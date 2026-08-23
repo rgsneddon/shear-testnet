@@ -8,6 +8,8 @@ import { newIdentity } from '../../crypto/address.js';
 import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS } from '../../crypto/asert.js';
 import { createPool, scoreShare } from '../src/pool.js';
 import { coinbaseSplit } from '../../crypto/mint.js';
+import { destForLogin } from '../../crypto/flow_sheet.js';
+import { lag1Continuity } from '../../node/src/chain.js';
 
 function send(sock, obj) {
   sock.write(`${JSON.stringify(obj)}\n`);
@@ -127,8 +129,18 @@ describe('round hash bonuses', () => {
     const split = coinbaseSplit(paid.txs[0]);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
     assert.equal(split.potNanos, 1_000_000_000);
-    assert.equal(split.hashByMiner[alice.address], (nA + 1) * HASH_BONUS_NANOS);
-    assert.equal(split.hashByMiner[bob.address], nB * HASH_BONUS_NANOS);
+    const prev = pool.store.blocks[pool.store.blocks.length - 2];
+    const destA = destForLogin(alice.address, {
+      continuityRoot: lag1Continuity(prev?.header),
+      height: paid.height,
+    });
+    const destB = destForLogin(bob.address, {
+      continuityRoot: lag1Continuity(prev?.header),
+      height: paid.height,
+    });
+    assert.notEqual(destA, alice.address);
+    assert.equal(split.hashByMiner[destA], (nA + 1) * HASH_BONUS_NANOS);
+    assert.equal(split.hashByMiner[destB], nB * HASH_BONUS_NANOS);
     a.sock.end();
     b.sock.end();
     pool.close();

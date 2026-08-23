@@ -21,6 +21,7 @@ export function extraMint({ programId, to, nanos }) {
     return { ok: false, reason: 'mint_forbidden' };
   }
   if (!isShearAddress(to)) return { ok: false, reason: 'bad_address' };
+  // Reserve interest pays rest-frame Continuum, never a rotating dest.
   const n = Number(nanos);
   if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: 'bad_nanos' };
   return { ok: true, programId: RESERVE_PROGRAM, to, nanos: n, kind: 'reserve' };

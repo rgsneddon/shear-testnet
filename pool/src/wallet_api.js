@@ -1,23 +1,25 @@
 import { isShearAddress } from '../../crypto/address.js';
 import { HASH_BONUS_NANOS, NANOS_PER_SHE, BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { sealedExplorerRows } from '../../crypto/chronoflux.js';
+import { destForLogin } from '../../crypto/flow_sheet.js';
+import { lag1Continuity } from '../../node/src/chain.js';
 
 export function nanosToShe(n) {
   return Number(n || 0) / NANOS_PER_SHE;
 }
 
-function rowsToHistory(rows, address) {
-  const addr = String(address || '').trim();
+function rowsToHistory(rows, addresses) {
+  const set = new Set((Array.isArray(addresses) ? addresses : [addresses]).map((a) => String(a || '').trim()));
   let spendableNanos = 0;
   const txs = [];
   for (const r of rows) {
-    if (r.to !== addr && r.from !== addr) continue;
+    if (!set.has(r.to) && !set.has(r.from)) continue;
     const nanos = Number(r.nanos || 0);
-    if (r.from === addr && r.to !== addr) spendableNanos -= nanos;
-    else if (r.to === addr) spendableNanos += nanos;
+    if (set.has(r.from) && !set.has(r.to)) spendableNanos -= nanos;
+    else if (set.has(r.to)) spendableNanos += nanos;
     txs.push({
       id: r.id,
-      kind: r.from === addr && r.to !== addr ? (r.kind === 'transfer' ? 'send' : r.kind) : (r.kind === 'transfer' ? 'receive' : r.kind),
+      kind: set.has(r.from) && !set.has(r.to) ? (r.kind === 'transfer' ? 'send' : r.kind) : (r.kind === 'transfer' ? 'receive' : r.kind),
       from: r.from,
       to: r.to,
       amount: nanosToShe(nanos),
@@ -29,15 +31,31 @@ function rowsToHistory(rows, address) {
   return { spendableNanos, spendable: nanosToShe(spendableNanos), txs };
 }
 
-/** History from sealed txs only — never from pruned hash samples. */
-export function reconstructOwner(store, address) {
+function destSetFor(store, address) {
   const addr = String(address || '').trim();
-  if (typeof store?.historyFor === 'function') {
-    return rowsToHistory(store.historyFor(addr), addr);
+  const dests = new Set([addr]);
+  const blocks = store.blocks || [];
+  for (let i = 0; i < blocks.length; i += 1) {
+    const prev = i ? blocks[i - 1] : null;
+    dests.add(destForLogin(addr, {
+      continuityRoot: lag1Continuity(prev?.header),
+      height: blocks[i].height,
+    }));
   }
+  return dests;
+}
+
+/** History from sealed txs only — never from pruned hash samples. Dest vouts included. */
+export function reconstructOwner(store, address, { viewKey } = {}) {
+  const addr = String(address || '').trim();
+  const dests = destSetFor(store, addr);
   const rows = [];
-  for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
-  return rowsToHistory(rows, addr);
+  if (typeof store?.historyFor === 'function') {
+    for (const d of dests) rows.push(...store.historyFor(d));
+  } else {
+    for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
+  }
+  return rowsToHistory(rows, [...dests]);
 }
 
 export function pendingFor(miners, address) {
@@ -71,8 +89,12 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
   }
   if ((path === '/api/wallet/history' || path === '/api/explorer/history') && verb === 'GET') {
     const address = url.searchParams.get('address') || '';
-    const rec = reconstructOwner(store, address);
-    return { status: 200, json: { ok: true, coin: 'SHE', address, txs: rec.txs } };
+    const viewKey = url.searchParams.get('viewKey') || '';
+    if (path === '/api/explorer/history' && !viewKey) {
+      return { status: 200, json: { ok: true, coin: 'SHE', address, txs: [], amountsOnly: true } };
+    }
+    const rec = reconstructOwner(store, address, { viewKey });
+    return { status: 200, json: { ok: true, coin: 'SHE', address, txs: rec.txs, amountsOnly: true } };
   }
   if (path === '/api/wallet/send' && verb === 'POST') {
     const from = String(body.from || '');
