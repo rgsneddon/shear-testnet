@@ -124,6 +124,46 @@ void main() {
     );
   });
 
+  test('syncSpendable from pool /api/stats applyTipHex: currentDest is destForLogin(login, lag-1 offset 68, next height, no viewKey)', () async {
+    final header = Uint8List(120);
+    for (var i = 0; i < 32; i++) {
+      header[68 + i] = 7;
+    }
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final server = await _fakePool(headerHex: hex, height: 4);
+    addTearDown(() => server.close(force: true));
+    final id = createIdentity();
+    final pool = ShearPoolClient(
+      baseUrl: 'http://127.0.0.1:${server.port}',
+      http: _realHttp(),
+    );
+    final ledger = ShearLedger(pool: pool);
+    // Same call _boot uses: syncSpendable → syncTip → applyTipHex(stats.header).
+    await ledger.syncSpendable(id.address);
+    expect(ledger.tipHeight, 5);
+    expect(ledger.lag1Root, header.sublist(68, 100));
+    final paid = destForLogin(
+      id.address,
+      continuityRoot: header.sublist(68, 100),
+      height: 5,
+    );
+    expect(ledger.currentDest(id.address), paid);
+    expect(paid, isNot(id.address));
+    expect(
+      ledger.currentDest(id.address),
+      isNot(destForLogin(id.address, height: 5)),
+    );
+    expect(
+      ledger.currentDest(id.address),
+      isNot(destForLogin(
+        id.address,
+        continuityRoot: header.sublist(68, 100),
+        height: 5,
+        viewKey: id.viewKey,
+      )),
+    );
+  });
+
   test('Dart ShearHash matches C selftest vector 6e95b903…', () {
     final header = shearSelftestHeader();
     expect(header.length, 120);
@@ -209,4 +249,39 @@ void main() {
     await tester.pump();
     expect(miner.hashing, isFalse);
   });
+}
+
+HttpClient _realHttp() {
+  // Flutter's test binding stubs `HttpClient()` to HTTP 400. The default
+  // HttpOverrides.createHttpClient path is the real dart:io client.
+  return _PassthroughHttpOverrides().createHttpClient(null)
+    ..connectionTimeout = const Duration(seconds: 8);
+}
+
+class _PassthroughHttpOverrides extends HttpOverrides {}
+
+Future<HttpServer> _fakePool({required String headerHex, required int height}) async {
+  final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+  server.listen((req) async {
+    await req.drain();
+    req.response.headers.contentType = ContentType.json;
+    if (req.uri.path == '/api/stats') {
+      req.response.write(jsonEncode({
+        'ok': true,
+        'height': height,
+        'header': headerHex,
+      }));
+    } else if (req.uri.path == '/api/wallet/balance') {
+      req.response.write(jsonEncode({'balance': 0, 'pending': 0}));
+    } else if (req.uri.path == '/api/wallet/history' || req.uri.path == '/api/explorer/history') {
+      req.response.write(jsonEncode({'txs': []}));
+    } else if (req.uri.path == '/api/wallet/register') {
+      req.response.write(jsonEncode({'ok': true}));
+    } else {
+      req.response.statusCode = 404;
+      req.response.write('{}');
+    }
+    await req.response.close();
+  });
+  return server;
 }
