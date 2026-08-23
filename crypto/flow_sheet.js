@@ -126,4 +126,10 @@ export function destsForViewKey(viewKey, spendHash20, rounds) {
   }));
 }
 
+/** Reserve/Vortex principal must be rest-frame, never this round's dest. */
+export function reserveRejectsDest(restFrame, maybeDest, { continuityRoot, height = 1 } = {}) {
+  const dest = destForLogin(restFrame, { continuityRoot, height });
+  return String(maybeDest) === dest && String(maybeDest) !== String(restFrame);
+}
+
 export { EMPTY_ROOT };

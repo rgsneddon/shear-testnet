@@ -11,8 +11,9 @@ import 'shear_macos_install.dart';
 import 'shear_miner_host.dart';
 import 'shear_session.dart';
 import 'shear_theme.dart';
+import 'shear_ctf.dart';
 
-const kWalletVersion = '0.0.1';
+const kWalletVersion = '0.0.2';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -154,7 +155,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       _resistance(ident),
       _vortex(),
       _shearTab(),
-      _reserve(),
+      _reserve(ident),
       _closure(ident),
     ];
     return Scaffold(
@@ -206,9 +207,14 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
 
   Widget _continuum(ShearIdentity ident) {
     final hist = ledger.ownerHistory(ident.address);
+    final dest = destForLogin(ident.address, height: 1);
     return _card([
       const Text('Continuum  ∇·J = 0', style: TextStyle(fontWeight: FontWeight.w700)),
+      const Text('Rest-frame (Reserve / Vortex lock)'),
       SelectableText(ident.address),
+      const SizedBox(height: 6),
+      const Text('CTF dest this round (incoming mine / pay)'),
+      SelectableText(dest),
       Text('View key  ${ident.viewKey}', style: const TextStyle(fontSize: 12, color: shearMuted)),
       const SizedBox(height: 8),
       Text('Spendable  ${ledger.spendable(ident.address).toStringAsFixed(9)} SHE',
@@ -266,7 +272,10 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         child: const Text('Send'),
       ),
       const SizedBox(height: 8),
-      const Text('Receive: share your shear1 address. Incoming confirmed txs appear on Continuum.'),
+      const Text(
+        'Receive: share your rest-frame shear1. Incoming mine/pay land on the CTF dest for that height. '
+        'Paste a view key on the explorer to see only your dest amounts.',
+      ),
     ]);
   }
 
@@ -312,6 +321,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     return _card(const [
       Text('Vortex  Ω^{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
       Text('Contract surface. Third-party staking dapps must top up rewards; they cannot mint SHE.'),
+      Text('Calls lock to rest-frame Continuum, not a rotating CTF dest.'),
     ]);
   }
 
@@ -325,11 +335,14 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     ]);
   }
 
-  Widget _reserve() {
-    return _card(const [
-      Text('Reserve  π', style: TextStyle(fontWeight: FontWeight.w700)),
-      Text('Lock π SHE for 400 days to vote. Interest tracks the Bank of England Base Rate.'),
-      Text('Vote: raise, lower, or hold the per-hash bonus (±1e-10). The 1 SHE pot does not change.'),
+  Widget _reserve(ShearIdentity ident) {
+    return _card([
+      const Text('Reserve  π', style: TextStyle(fontWeight: FontWeight.w700)),
+      const Text('Lock π SHE for 400 days to vote. Interest tracks the Bank of England Base Rate.'),
+      const Text('Vote: raise, lower, or hold the per-hash bonus (±1e-10). The 1 SHE pot does not change.'),
+      const SizedBox(height: 8),
+      const Text('Lock principal is rest-frame Continuum, never this round’s CTF dest.'),
+      SelectableText(reservePrincipal(ident.address)),
     ]);
   }
 
@@ -339,8 +352,10 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       const Text('Closure  G_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
       const Text(
         'Geometric closure of the wallet: password seals shewall.json '
-        '(AES-256-GCM). Copy that one file to restore address and transactions.',
+        '(AES-256-GCM). Copy that one file to restore address and transactions. '
+        'The view key opens only your CTF dest amounts on the explorer.',
       ),
+      SelectableText('View key  ${ident.viewKey}', style: const TextStyle(fontSize: 12, color: shearMuted)),
       TextField(
         controller: pw,
         obscureText: true,

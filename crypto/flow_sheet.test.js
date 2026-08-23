@@ -8,6 +8,7 @@ import {
   destsForViewKey,
   flowDestAddress,
   flowSpendMatches,
+  reserveRejectsDest,
   spendHashFromAddress,
 } from './flow_sheet.js';
 
@@ -76,5 +77,12 @@ describe('flow sheets', () => {
     assert.notEqual(dest, id.address);
     const again = destForLogin(id.address, { continuityRoot: EMPTY_ROOT, height: 1 });
     assert.equal(dest, again);
+  });
+
+  it('Reserve rejects CTF dest as lock principal', () => {
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { continuityRoot: EMPTY_ROOT, height: 1 });
+    assert.equal(reserveRejectsDest(id.address, dest, { height: 1 }), true);
+    assert.equal(reserveRejectsDest(id.address, id.address, { height: 1 }), false);
   });
 });

@@ -44,6 +44,25 @@ ShearIdentity createIdentity([Uint8List? seed]) {
   return ShearIdentity(seedHex: seedHex, address: address, viewKey: _hex(view.bytes));
 }
 
+Uint8List? spendHashFromAddress(String address) {
+  if (!isShearAddress(address)) return null;
+  final raw = address.trim();
+  final one = raw.lastIndexOf('1');
+  if (one < 1) return null;
+  final body = raw.substring(one + 1).toLowerCase();
+  final vals = <int>[];
+  for (final ch in body.split('')) {
+    final i = _charset.indexOf(ch);
+    if (i < 0) return null;
+    vals.add(i);
+  }
+  if (vals.length < 7) return null;
+  final data = vals.sublist(0, vals.length - 6);
+  final bytes = _convertBits(data.sublist(1), 5, 8, false);
+  if (bytes.length < 20) return null;
+  return Uint8List.fromList(bytes.sublist(0, 20));
+}
+
 String encodeShearAddress(Uint8List pubkeyHash20) {
   if (pubkeyHash20.length != 20) {
     throw ArgumentError('spend hash must be 20 bytes');
