@@ -27,7 +27,7 @@ const kTabs = [
 const kSymbols = ['∇·J = 0', 'J^μ', 'η', 'Ω^{μν}', 'S_{μν}', 'π', 'G_{μν}'];
 const kExplains = [
   'Your money. Spendable SHE after a block is found, plus this round’s pending hashes.',
-  'Send SHE to an sdcard1 dest. Share dest, never rest-frame shear1.',
+  'Send SHE to an she1 dest. Share dest, never rest-frame shear1.',
   'Mining. Start hashing. Each hash credits a tiny amount; you can spend it only when a block is found.',
   'Apps and contracts other people deploy. They cannot print SHE; they must fund their own rewards.',
   'How SHE is created: 1 SHE per block, plus 0.000000001 SHE per hash to each miner in that round.',
@@ -92,10 +92,17 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
 
   Future<void> _boot() async {
     id = await session.loadOrCreate();
-    ledger.viewSecret = password.isNotEmpty ? password : id!.viewKey;
-    await ledger.syncSpendable(ledger.currentDest(id!.address));
-    await ledger.syncHistory(ledger.currentDest(id!.address));
     if (mounted) setState(() {});
+  }
+
+  Future<void> _unlock(String pw) async {
+    if (pw.isEmpty || id == null) return;
+    password = pw;
+    ledger.viewSecret = pw;
+    final dest = ledger.currentDest(id!.address);
+    await ledger.syncSpendable(dest);
+    await ledger.syncHistory(dest);
+    if (mounted) setState(() => unlocked = true);
   }
 
   String get _exe {
@@ -135,19 +142,11 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
                   controller: ctrl,
                   obscureText: true,
                   decoration: const InputDecoration(labelText: 'Password'),
-                  onSubmitted: (_) => setState(() {
-                    password = ctrl.text;
-                    unlocked = password.isNotEmpty;
-                    ledger.viewSecret = password;
-                  }),
+                  onSubmitted: (_) => _unlock(ctrl.text),
                 ),
                 const SizedBox(height: 12),
                 FilledButton(
-                  onPressed: () => setState(() {
-                    password = ctrl.text;
-                    unlocked = password.isNotEmpty;
-                    ledger.viewSecret = password;
-                  }),
+                  onPressed: () => _unlock(ctrl.text),
                   child: const Text('Unlock'),
                 ),
               ],
@@ -227,13 +226,12 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       const Text('Rest-frame shear1 (never share, never on chain)'),
       SelectableText(ident.address),
       const SizedBox(height: 6),
-      const Text('sdcard1 dest this round (share / mine / pay)'),
+      const Text('she1 dest this round (share / mine / pay)'),
       SelectableText(dest),
-      Text('View key  ${ident.viewKey}', style: const TextStyle(fontSize: 12, color: shearMuted)),
       const SizedBox(height: 8),
-      Text('Spendable  ${ledger.spendable(ident.address).toStringAsFixed(9)} SHE',
+      Text('Spendable  ${ledger.spendable(dest).toStringAsFixed(9)} SHE',
           style: const TextStyle(fontSize: 18, color: shearCyan, fontWeight: FontWeight.w700)),
-      Text('Pending this round  ${ledger.pending(ident.address).toStringAsFixed(9)} SHE  (not spendable until block found)'),
+      Text('Pending this round  ${ledger.pending(dest).toStringAsFixed(9)} SHE  (not spendable until block found)'),
       const SizedBox(height: 12),
       const Text('Explorer', style: TextStyle(fontWeight: FontWeight.w700)),
       if (hist.any((t) => t.memo && t.memoPlain != null && !openedMemos.contains(t.id)))
@@ -280,10 +278,10 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   Widget _flow(ShearIdentity ident) {
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('sdcard1 dest this round'),
+      const Text('she1 dest this round'),
       SelectableText(ledger.currentDest(ident.address)),
       const SizedBox(height: 8),
-      TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (sdcard1…)')),
+      TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (she1…)')),
       TextField(controller: flowAmt, decoration: const InputDecoration(labelText: 'Amount SHE'), keyboardType: TextInputType.number),
       TextField(controller: flowMemo, decoration: const InputDecoration(labelText: 'Memo (optional)')),
       FilledButton(
@@ -306,7 +304,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       ),
       const SizedBox(height: 8),
       const Text(
-        'Receive: share this round’s sdcard1 dest, never shear1. Memo text is only in your explorer tab and theirs.',
+        'Receive: share this round’s she1 dest, never shear1. Memo text is only in your explorer tab and theirs.',
       ),
     ]);
   }
@@ -419,7 +417,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       const Text('Lock π SHE for 400 days to vote. Interest tracks the Bank of England Base Rate.'),
       const Text('Vote: raise, lower, or hold the per-hash bonus (±1e-10). The 1 SHE pot does not change.'),
       const SizedBox(height: 8),
-      const Text('Lock principal is vault sdcard1, never rest-frame shear1.'),
+      const Text('Lock principal is vault she1, never rest-frame shear1.'),
       SelectableText(vaultDest(ident.address, viewKey: ledger.viewSecret ?? ident.viewKey) ?? ''),
     ]);
   }

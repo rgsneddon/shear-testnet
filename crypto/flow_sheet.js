@@ -72,7 +72,7 @@ export function spendHashFromAddress(address) {
 }
 
 /**
- * Paid dest. Login already sdcard1 → pay as-is.
+ * Paid dest. Login already she1 → pay as-is.
  * Rest-frame shear1 requires independent C (viewKey / closureCommit). No C-from-S.
  */
 export function destForLogin(login, { continuityRoot, height, viewKey, closureCommit: C } = {}) {

@@ -88,13 +88,17 @@ class ShearLedger {
 
   Iterable<ShearTx> get transactions => List.unmodifiable(_txs);
 
-  double spendable(String address) => _spendable[address] ?? 0;
-  double pending(String address) => _pending[address] ?? 0;
+  String payKey(String address) =>
+      destForLogin(address, height: tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ?? address;
+
+  double spendable(String address) => _spendable[payKey(address)] ?? _spendable[address] ?? 0;
+  double pending(String address) => _pending[payKey(address)] ?? _pending[address] ?? 0;
 
   /// Accrue 1e-9 SHE per hash this open round. Not spendable, not an explorer row.
   void creditHash(String address, {int hashes = 1}) {
     final add = hashes * 1e-9;
-    _pending[address] = pending(address) + add;
+    final key = payKey(address);
+    _pending[key] = (_pending[key] ?? 0) + add;
   }
 
   /// Block found: pending hash bonus + pot become spendable and explorer-visible.
@@ -103,13 +107,16 @@ class ShearLedger {
     double pot = 0,
     int height = 0,
   }) {
-    final bonus = pending(address);
-    final total = bonus + pot;
-    _pending[address] = 0;
-    if (total > 0) {
-      _spendable[address] = spendable(address) + total;
-    }
     final dest = destForLogin(address, height: height > 0 ? height : tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ?? address;
+    final bonus = dest == address
+        ? (_pending[address] ?? 0)
+        : (_pending[dest] ?? 0) + (_pending[address] ?? 0);
+    final total = bonus + pot;
+    _pending[dest] = 0;
+    if (dest != address) _pending[address] = 0;
+    if (total > 0) {
+      _spendable[dest] = (_spendable[dest] ?? 0) + total;
+    }
     _dests.add(dest);
     final tx = ShearTx(
       id: 'round-$height-$dest',

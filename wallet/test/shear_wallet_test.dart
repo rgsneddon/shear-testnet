@@ -81,12 +81,12 @@ void main() {
     await expectLater(ShearLock.open(env, 'wrong'), throwsA(anything));
   });
 
-  test('CTF dest is sdcard1 with password C, not C-from-S', () {
+  test('CTF dest is she1 with password C, not C-from-S', () {
     final a = createIdentity();
     final b = createIdentity();
     expect(destForLogin(a.address, height: 1), isNull);
     final paid = destForLogin(a.address, height: 1, viewKey: a.viewKey)!;
-    expect(paid.startsWith('sdcard1'), isTrue);
+    expect(paid.startsWith('she1'), isTrue);
     expect(paid, isNot(a.address));
     expect(paid, isNot(degenerateDest(a.address, height: 1)));
     expect(destForLogin(a.address, height: 2, viewKey: a.viewKey), isNot(paid));
@@ -156,7 +156,7 @@ void main() {
     );
     expect(ledger.currentDest(id.address), paid);
     expect(paid, isNot(id.address));
-    expect(paid!.startsWith('sdcard1'), isTrue);
+    expect(paid!.startsWith('she1'), isTrue);
     expect(paid, isNot(degenerateDest(id.address, continuityRoot: header.sublist(68, 100), height: 5)));
   });
 
@@ -207,6 +207,7 @@ void main() {
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
+    await tester.pump();
     expect(find.textContaining('Shear  0.0.3'), findsWidgets);
     for (final name in kTabs) {
       expect(find.text(name), findsWidgets);
@@ -230,6 +231,7 @@ void main() {
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
+    await tester.pump();
     await tester.tap(find.text('Resistance'));
     await tester.pump();
     expect(ledger.pending(id.address), 0);
@@ -246,7 +248,7 @@ void main() {
     expect(miner.hashing, isFalse);
   });
 
-  test('send posts sdcard1 from + memoCt; sender and recipient dests open plaintext, other dest does not', () async {
+  test('send posts she1 from + memoCt; sender and recipient dests open plaintext, other dest does not', () async {
     final posted = <Map<String, dynamic>>[];
     final header = Uint8List(120);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
@@ -262,9 +264,12 @@ void main() {
     aliceL.viewSecret = alice.viewKey;
     final from = aliceL.currentDest(alice.address);
     final to = destForLogin(bob.address, height: 1, viewKey: bob.viewKey)!;
-    expect(from.startsWith('sdcard1'), isTrue);
+    expect(from.startsWith('she1'), isTrue);
     expect(from, isNot(alice.address));
-    aliceL.rememberSpendable(from, 10);
+    aliceL.creditHash(alice.address, hashes: 0);
+    aliceL.confirmRound(address: alice.address, pot: 1, height: 1);
+    expect(aliceL.spendable(from), closeTo(1, 1e-12));
+    expect(aliceL.spendable(from), aliceL.spendable(alice.address));
     final tx = await aliceL.send(from: from, to: to, amount: 1, memo: 'secret-flow');
     expect(tx.from, from);
     expect(tx.to, to);
@@ -278,7 +283,7 @@ void main() {
     final other = destForLogin(bob.address, height: 2, viewKey: bob.viewKey)!;
     expect(await memoOpen(other, tx.memoCt), isNull);
     expect(
-      aliceL.ownerHistory(alice.address).single.memoPlain,
+      aliceL.ownerHistory(alice.address).where((t) => t.kind == 'send').single.memoPlain,
       'secret-flow',
     );
   });

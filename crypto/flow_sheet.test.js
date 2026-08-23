@@ -19,7 +19,7 @@ import { issueVorticeKey, parseVorticeKey, addVortice, RESERVE_VORTICE } from '.
 import { extraMintAllowed } from './asert.js';
 
 describe('flow sheets', () => {
-  it('paid dest is sdcard1, needs password C, not C-from-S', () => {
+  it('paid dest is she1, needs password C, not C-from-S', () => {
     const alice = newIdentity();
     const bob = newIdentity();
     const salt = Buffer.alloc(16, 9);
@@ -31,7 +31,9 @@ describe('flow sheets', () => {
     const deg = degenerateDest(alice.address, { continuityRoot: root1, height: 3 });
     assert.equal(destForLogin(alice.address, { continuityRoot: root1, height: 3 }), null);
     assert.equal(isDestAddress(paid), true);
+    assert.equal(paid.startsWith('she1'), true);
     assert.equal(isShearAddress(paid), false);
+    assert.equal(isDestAddress(alice.address), false);
     assert.notEqual(paid, alice.address);
     assert.notEqual(paid, deg);
     assert.notEqual(
@@ -70,7 +72,7 @@ describe('flow sheets', () => {
     assert.deepEqual(destsForViewKey(bob.viewKey, alice.address, rounds, { ownerViewKey: alice.viewKey }), []);
   });
 
-  it('Reserve vault dest is stable sdcard1, not rest-frame, not round dest', () => {
+  it('Reserve vault dest is stable she1, not rest-frame, not round dest', () => {
     const id = newIdentity();
     const opts = { viewKey: id.viewKey, height: 1 };
     const vault = vaultDest(id.address, opts);

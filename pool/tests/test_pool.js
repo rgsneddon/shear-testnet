@@ -26,7 +26,7 @@ describe('job gate', () => {
 });
 
 describe('admit', () => {
-  it('admits sdcard1 dest login, refuses rest-frame shear1 and wrong client', () => {
+  it('admits she1 dest login, refuses rest-frame shear1 and wrong client', () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     assert.equal(admitClient({ login: dest, client: 'ShearHash' }).ok, true);
@@ -64,6 +64,11 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /:1111/);
     assert.match(html, />SHE</);
     assert.equal(html.toLowerCase().includes('shearhash'), true);
+    assert.match(html, /she1/);
+    assert.match(html, /YOUR_SHE1/);
+    assert.match(html, /\/\^she1/);
+    assert.equal(html.includes('YOUR_SHEAR1'), false);
+    assert.equal(/\/\^shear1/.test(html), false);
 
     const job = pool.issueJob();
     assert.equal(gateJob(job).ok, true);
