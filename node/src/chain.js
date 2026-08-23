@@ -11,6 +11,18 @@ import {
   extraMintAllowed,
 } from '../../crypto/asert.js';
 import { isShearAddress } from '../../crypto/address.js';
+import { collateSamples } from '../../crypto/chronoflux.js';
+
+export {
+  SAMPLE_PRUNE_CONFIRMATIONS,
+  shouldPruneSamples,
+  pruneSamples,
+  collateSamples,
+  leanBlock,
+  sealedExplorerRows,
+  compactTx,
+  compactChainBlock,
+} from '../../crypto/chronoflux.js';
 
 export const GENESIS_PREV = Buffer.alloc(32);
 
@@ -24,11 +36,10 @@ function digestTx(tx) {
 
 export function hashBonusByMiner(samples = []) {
   const by = new Map();
-  for (const s of samples) {
+  for (const s of collateSamples(samples)) {
     const addr = String(s.miner || s.address || '');
     if (!isShearAddress(addr)) continue;
-    const n = Number(s.count) > 0 ? Number(s.count) : 1;
-    by.set(addr, (by.get(addr) || 0) + n * HASH_BONUS_NANOS);
+    by.set(addr, (by.get(addr) || 0) + s.count * HASH_BONUS_NANOS);
   }
   return by;
 }
@@ -54,15 +65,15 @@ export function coinbaseTx({ height, miner, samples = [], potShares = null }) {
     height,
     vin: [{ coinbase: true, height }],
     vout,
-    samples,
   };
 }
 
 export function buildTemplate({ prev, height, miner, samples = [], txs = [], now = Date.now(), bits }) {
-  const cb = coinbaseTx({ height, miner, samples });
+  const collated = collateSamples(samples);
+  const cb = coinbaseTx({ height, miner, samples: collated });
   const bodyTxs = [cb, ...txs];
   const merkle = merkleRoot(bodyTxs.map(digestTx));
-  const continuity = merkleRoot(samples.map((s) => sampleLeaf(s)));
+  const continuity = merkleRoot(collated.map((s) => sampleLeaf(s)));
   const header = encodeHeader({
     version: VERSION,
     prevBlockHash: prev || GENESIS_PREV,
@@ -79,7 +90,7 @@ export function buildTemplate({ prev, height, miner, samples = [], txs = [], now
     merkleRoot: merkle,
     continuityRoot: continuity,
     txs: bodyTxs,
-    samples,
+    samples: collated,
     miner,
   };
 }
@@ -102,7 +113,7 @@ export function headerHash(header) {
   return shearHash(header);
 }
 
-export function verifyBlock(block, prev) {
+export function verifyBlock(block, prev, { buried = false } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
   let decoded;
@@ -120,14 +131,19 @@ export function verifyBlock(block, prev) {
   if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
   const merkle = merkleRoot(txs.map(digestTx));
   if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
-  const samples = Array.isArray(block.samples) ? block.samples : (txs[0].samples || []);
-  const continuity = merkleRoot(samples.map((s) => sampleLeaf(s)));
-  if (!continuity.equals(decoded.continuityRoot)) return { ok: false, reason: 'continuity' };
+  const samples = collateSamples(
+    Array.isArray(block.samples) ? block.samples : (txs[0].samples || []),
+  );
   const potNanos = txs[0].vout.filter((o) => o.kind !== 'hash').reduce((a, o) => a + Number(o.nanos || 0), 0);
   if (potNanos !== BLOCK_SUBSIDY_NANOS) return { ok: false, reason: 'pot' };
   const bonusNanos = txs[0].vout.filter((o) => o.kind === 'hash').reduce((a, o) => a + Number(o.nanos || 0), 0);
-  const sampleCount = samples.reduce((a, s) => a + (Number(s.count) > 0 ? Number(s.count) : 1), 0);
-  if (bonusNanos !== sampleCount * HASH_BONUS_NANOS) return { ok: false, reason: 'hash_bonus' };
+  const skipFlow = buried && block.samplesPruned;
+  if (!skipFlow) {
+    const continuity = merkleRoot(samples.map((s) => sampleLeaf(s)));
+    if (!continuity.equals(decoded.continuityRoot)) return { ok: false, reason: 'continuity' };
+    const sampleCount = samples.reduce((a, s) => a + (Number(s.count) > 0 ? Number(s.count) : 1), 0);
+    if (bonusNanos !== sampleCount * HASH_BONUS_NANOS) return { ok: false, reason: 'hash_bonus' };
+  }
   for (const o of txs[0].vout) {
     if (!isShearAddress(o.address)) return { ok: false, reason: 'miner_addr' };
   }

@@ -20,7 +20,7 @@ master book.
 | `specs/` | Header, validation, pool jobs, emissions |
 | `crypto/` | ShearHash, header codec, Merkle, addresses |
 | `node/` | Validating daemon, P2P `:30303`, RPC |
-| `miner/` | Feeless C miner |
+| `miner/` | Official C miner |
 | `pool/` | Stratum `:1111` + light dashboard |
 | `site/` | shear.digital |
 
@@ -30,4 +30,5 @@ master book.
 shear-miner --pool pool.shear.digital:1111 --user shear1YOURADDRESS.worker --threads 4
 ```
 
-Wallet tabs: Continuum, Flow, Resistance, Vortex, Shear, Reserve.
+Wallet tabs: Continuum, Flow, Resistance, Vortex, Shear, Reserve, Closure.
+Backup: encrypted `shewall.json`. Node and wallet are lean: hash samples collate per miner and prune after 100 confirmations; sealed transfers stay forever for the explorer.

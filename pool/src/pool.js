@@ -216,12 +216,40 @@ export function createPool({
     };
   }
 
-  const httpServer = http.createServer((req, res) => {
+  const httpServer = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     if (url.pathname === '/api/stats') {
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(publicStats()));
       return;
+    }
+    if (url.pathname.startsWith('/api/wallet/')) {
+      let body = {};
+      if (req.method === 'POST') {
+        body = JSON.parse(await new Promise((resolve, reject) => {
+          const chunks = [];
+          req.on('data', (c) => chunks.push(c));
+          req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8') || '{}'));
+          req.on('error', reject);
+        }));
+      }
+      const { handleWalletApi } = await import('./wallet_api.js');
+      const out = handleWalletApi(url, req.method, body, {
+        store,
+        miners,
+        queueSend: (t) => {
+          const id = `send-${Date.now()}`;
+          store.mempool = store.mempool || [];
+          store.mempool.push({ id, ...t });
+          return { id, ...t };
+        },
+      });
+      if (out) {
+        res.statusCode = out.status;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(out.json));
+        return;
+      }
     }
     let file = url.pathname === '/' ? '/index.html' : url.pathname;
     const full = path.join(PUBLIC_DIR, path.normalize(file).replace(/^(\.\.[/\\])+/, ''));

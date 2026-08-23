@@ -103,10 +103,10 @@
           <pre id="mine-cmd">shear-miner --pool pool.shear.digital:1111 --user YOUR_SHEAR1.worker --threads 4</pre>
           <button type="button" id="copy-cmd">Copy</button>
         </div>
-        <p class="label" id="cmd-hint">Valid shear1 address required. ShearHash. Feeless miner. TLS by default.</p>
+        <p class="label" id="cmd-hint">Valid shear1 address required. ShearHash. TLS by default.</p>
       </section>
     </div>
-    <p id="fee-note">pool fee is 1% of the 1 SHE pot for development — hash bonuses are paid in full to each hasher. Official miner is feeless.</p>
+    <p id="fee-note">pool fee is 1% of the 1 SHE pot for development — hash bonuses are paid in full to each hasher.</p>
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
       <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash</div></article>
@@ -150,8 +150,8 @@
         'shear-miner --pool pool.shear.digital:1111 --user ' + user + ' --threads ' + t;
       const ok = /^shear1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(addr);
       document.getElementById('cmd-hint').textContent = ok
-        ? 'Ready to copy · ShearHash · feeless · :1111'
-        : 'Valid shear1 address required. ShearHash. Feeless miner.';
+        ? 'Ready to copy · ShearHash · :1111'
+        : 'Valid shear1 address required. ShearHash.';
     }
     document.getElementById('addr').addEventListener('input', renderCmd);
     document.getElementById('threads').addEventListener('input', renderCmd);

@@ -15,7 +15,7 @@ Each valid hash in the **current block round** mints **1 nano (0.000000001 SHE)*
 
 Alice 4 000 hashes + Bob 1 000 hashes in the same round → Alice 4 000 nanos, Bob 1 000 nanos, in the same coinbase as `kind: hash`. The finder does not take anyone else’s hash bonus.
 
-The continuity root commits these samples. After 100 confirmations the sample list may be pruned; the coinbase outputs stay.
+The continuity root commits these samples. After 100 confirmations the **sample list** may be pruned; **coinbase outputs and every user transfer stay sealed forever**. Explorer reports those sealed rows for eternity. It never needs the pruned per-hash JSON.
 
 ## 3. The Reserve — stake, not a block mint
 

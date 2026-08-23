@@ -4,3 +4,12 @@ miner/shear-miner
 node_modules/
 .shear/
 *.log
+wallet/build/
+wallet/.dart_tool/
+wallet/dist/dmg-stage/
+wallet/dist/*.dmg
+wallet/dist/*.apk
+wallet/dist/*.zip
+wallet/**/local.properties
+wallet/**/Flutter/ephemeral/
+wallet/**/ephemeral/

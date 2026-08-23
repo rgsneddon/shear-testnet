@@ -1,5 +1,5 @@
 /*
- * shear-miner — official SHE CPU miner. Feeless. One login.
+ * shear-miner — official SHE CPU miner. One login.
  * Hashes the 120-byte Shear header (ShearHash-v1).
  */
 #if defined(__linux__)
@@ -130,7 +130,7 @@ static int tcp_connect(const char *host, int port) {
 
 static void print_config(void) {
   printf("{\"client\":\"%s\",\"algorithm\":\"%s\",\"version\":\"%s\","
-         "\"feeless\":true,\"dualLogin\":false,\"feeLogin\":null,"
+         "\"clientLogin\":\"single\","
          "\"pool\":\"%s:%d\",\"headerBytes\":%d,\"magic\":\"shear-testnet-v1\"}\n",
          SHEAR_CLIENT, SHEAR_ALGO, SHEAR_VERSION, g_host, g_port, SHEAR_HEADER_LEN);
 }
@@ -213,7 +213,7 @@ int main(int argc, char **argv) {
     char hex[65];
     int ok = shear_selftest(hex);
     printf("selftest %s %s\n", ok ? "ok" : "fail", hex);
-    printf("client=%s algorithm=%s feeless=true dualLogin=false\n", SHEAR_CLIENT, SHEAR_ALGO);
+    printf("client=%s algorithm=%s\n", SHEAR_CLIENT, SHEAR_ALGO);
     return ok ? 0 : 1;
   }
   if (do_cfg) {

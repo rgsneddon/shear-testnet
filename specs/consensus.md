@@ -27,8 +27,8 @@ Coinbase is the only source of new SHE.
 
 - Base subsidy: `1_000_000_000` nanos (**1 SHE**) for the round. Solo: the finder. Pool: split by proven work in that round (1% of this pot may go to a published development address).
 - Per-hash bonus: **`1` nano = 0.000000001 SHE per valid hash**, paid **to each miner who produced that hash in the current block round**. If Alice hashes 4_000 times and Bob 1_000 times before the block is found, Alice’s coinbase output includes 4_000 nanos and Bob’s includes 1_000 nanos. The block finder does **not** scoop other miners’ hash bonuses.
-- Samples under `continuity_root` are the audit trail for those hashes (`nonce`, recipient tag, 1 nano).
-- Miners are feeless. No dual-login miner tax.
+- Samples under `continuity_root` are the audit trail for those hashes (`nonce`, recipient tag, 1 nano). They are collated **per hasher** (one leaf per miner per round, never one JSON object per hash). After 100 confirmations the sample **bodies** may be pruned from storage. The header `continuity_root`, `merkle_root`, coinbase `vout`, and every user tx stay sealed. Explorer reconstructs history from those sealed txs forever. On-disk `chain.jsonl` stores compact rows only (header hex, collated samples until prune, sealed txs). Nodes do not keep template objects or per-hash JSON.
+- Official miner uses a single login.
 - Extra emission: **The Reserve only** (`shear-reserve-v1`) may mint BoE interest. Any other dapp mint is invalid.
 
 ## Resistance
