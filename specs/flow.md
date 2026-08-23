@@ -1,4 +1,6 @@
-# Flow sheets (J^μ) — continuity-tethered dests
+# Continuum-Tensor-Flow (CTF)
+
+Product name: **Continuum-Tensor-Flow**. Short: **CTF**. Chronoflux: Continuum ∇·J = 0, tensor dest, Flow J^μ.
 
 Not an extra coin. Incoming Continuum payments and mining land on a **round dest**. The user still has a **view key**.
 
@@ -32,4 +34,17 @@ Lock, vote, and withdraw use rest-frame `S` only. Dest rotates every block; π l
 
 ## Do not
 
-Ephemeral EC points in the tx, notification txs, sender-input key exchange, Flow math inside ShearHash, mainnet before the spend path is proven.
+Ephemeral EC points in the tx, notification txs, sender-input key exchange, CTF math inside ShearHash, mainnet before the spend path is proven.
+
+## What to rebuild to enable CTF
+
+| Part | Rebuild / redeploy? | Why |
+|------|---------------------|-----|
+| **C miner** | **No** | Header is still 120 bytes. `--user shear1…worker` unchanged. PoW does not see dests. |
+| **Node** | **Yes** | `buildTemplate` / coinbase pay dest(lag-1), not the login. |
+| **Pool** | **Yes** | Jobs come from the node store. Same dest mapping. Redeploy JS with the node. |
+| **Wallet** | **For UI, yes** | Mining already works (pool derives dest from login). Rebuild so Continuum/Flow/Closure show dests and the view-key explorer. |
+| **Explorer HTML** | **If you want paste-view-key on the site** | API already: `/api/explorer/history?address=&viewKey=`. |
+| ShearHash / header | **No** | |
+
+Germany must get the new `node/` + `pool/` tree (`/opt/shear`) for live coinbase dests. Do not restart live book units. Wire personalization stays `chronoflux-J-v1` so dests already computed do not move.

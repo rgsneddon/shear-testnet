@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { encodeAddress, isShearAddress } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
 
+/** Continuum-Tensor-Flow (CTF). Domain separator stays chronoflux-J-v1. */
 export const FLOW_PERSONAL = 'chronoflux-J-v1';
 export const CLOSURE_PERSONAL = 'chronoflux-G-v1';
 
