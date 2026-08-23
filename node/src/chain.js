@@ -1,7 +1,15 @@
 import { shearHash, meetsTarget, hashHex } from '../../crypto/shear_hash.js';
 import { encodeHeader, decodeHeader, setNonce, VERSION } from '../../crypto/header.js';
 import { merkleRoot, EMPTY_ROOT, sampleLeaf } from '../../crypto/merkle.js';
-import { GENESIS_BITS, nextBits, blockWork, BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, MAGIC_TESTNET } from '../../crypto/asert.js';
+import {
+  GENESIS_BITS,
+  nextBits,
+  blockWork,
+  BLOCK_SUBSIDY_NANOS,
+  HASH_BONUS_NANOS,
+  MAGIC_TESTNET,
+  extraMintAllowed,
+} from '../../crypto/asert.js';
 import { isShearAddress } from '../../crypto/address.js';
 
 export const GENESIS_PREV = Buffer.alloc(32);
@@ -122,6 +130,12 @@ export function verifyBlock(block, prev) {
   if (bonusNanos !== sampleCount * HASH_BONUS_NANOS) return { ok: false, reason: 'hash_bonus' };
   for (const o of txs[0].vout) {
     if (!isShearAddress(o.address)) return { ok: false, reason: 'miner_addr' };
+  }
+  for (const tx of txs.slice(1)) {
+    const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint;
+    if (unfunded && !extraMintAllowed(tx.programId)) {
+      return { ok: false, reason: 'mint_forbidden' };
+    }
   }
   return { ok: true, hash, decoded };
 }

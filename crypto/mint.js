@@ -1,13 +1,20 @@
-import { RESERVE_PROGRAM, BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS } from './asert.js';
+import {
+  RESERVE_PROGRAM,
+  BLOCK_SUBSIDY_NANOS,
+  HASH_BONUS_NANOS,
+  extraMintAllowed,
+} from './asert.js';
 import { isShearAddress } from './address.js';
 import { hashBonusByMiner, coinbaseTx } from '../node/src/chain.js';
 
-export { RESERVE_PROGRAM, BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, hashBonusByMiner, coinbaseTx };
-
-/** Only The Reserve may mint SHE beyond the miner pot + per-hasher nanos. */
-export function extraMintAllowed(programId) {
-  return String(programId || '') === RESERVE_PROGRAM;
-}
+export {
+  RESERVE_PROGRAM,
+  BLOCK_SUBSIDY_NANOS,
+  HASH_BONUS_NANOS,
+  hashBonusByMiner,
+  coinbaseTx,
+  extraMintAllowed,
+};
 
 export function extraMint({ programId, to, nanos }) {
   if (!extraMintAllowed(programId)) {

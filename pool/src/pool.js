@@ -59,6 +59,7 @@ export function createPool({
   const store = createStore(dataDir);
   const miners = new Map();
   let lastJob = null;
+  let pendingPayout = [];
   const stats = {
     started: Date.now(),
     accepted: 0,
@@ -69,15 +70,21 @@ export function createPool({
     stratum: `0.0.0.0:${stratumPort}`,
   };
 
+  function snapshotRound() {
+    return [...miners.values()]
+      .filter((m) => (m.roundHashes || 0) > 0)
+      .map((m) => ({
+        miner: m.login,
+        nonce: String(m.hashes || 0),
+        tag: m.tag || m.login.slice(0, 12),
+        count: m.roundHashes,
+      }));
+  }
+
   function issueJob() {
     const payout = miner || [...miners.values()][0]?.login;
     if (!payout) return null;
-    const samples = [...miners.values()].map((m) => ({
-      miner: m.login,
-      nonce: String(m.hashes || 0),
-      tag: m.tag || m.login.slice(0, 12),
-      count: Math.max(1, m.roundHashes || 0),
-    })).filter((s) => s.count > 0);
+    const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     const { job } = store.template({
       miner: payout,
       samples,
@@ -149,6 +156,7 @@ export function createPool({
             session.hashes += 1;
             session.seen = Date.now();
           }
+          let nextJob = null;
           if (scored.block) {
             const got = store.submitHeader({
               jobId: params.jobId || job.jobId,
@@ -158,14 +166,17 @@ export function createPool({
             if (got.ok) {
               stats.blocks += 1;
               if (session) session.blocks += 1;
+              pendingPayout = snapshotRound();
               for (const m of miners.values()) m.roundHashes = 0;
-              const next = issueJob();
-              for (const s of sockets) {
-                try { s.write(line({ method: 'job', params: next })); } catch { /* ignore */ }
-              }
+              nextJob = issueJob();
             }
           }
           sock.write(line({ id: msg.id, result: { status: 'OK', hash: scored.hash } }));
+          if (nextJob) {
+            for (const s of sockets) {
+              try { s.write(line({ method: 'job', params: nextJob })); } catch { /* ignore */ }
+            }
+          }
         }
       }
     });
@@ -249,7 +260,19 @@ export function createPool({
     httpServer.close();
   }
 
-  return { store, issueJob, listen, close, publicStats, miners, stats, stratum, httpServer };
+  return {
+    store,
+    issueJob,
+    listen,
+    close,
+    publicStats,
+    miners,
+    stats,
+    stratum,
+    httpServer,
+    snapshotRound,
+    get pendingPayout() { return pendingPayout; },
+  };
 }
 
 export { CLIENT, ALGO };

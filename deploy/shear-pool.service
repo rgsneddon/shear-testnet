@@ -1,0 +1,18 @@
+[Unit]
+Description=Shear testnet pool (stratum 1111)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/shear
+Environment=SHEAR_DATA=/var/lib/shear/testnet
+Environment=SHEAR_STRATUM=1111
+Environment=SHEAR_HTTP=8088
+Environment=SHEAR_SHARE_BITS=8
+Environment=SHEAR_BITS=16
+ExecStart=/usr/local/bin/node pool/src/main.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -13,6 +13,10 @@ export const MAGIC_MAINNET = 'shear-v1';
 export const RESERVE_PROGRAM = 'shear-reserve-v1';
 export const PI_SHE_NANOS = 3141592654; // π SHE in nanos (floor 3.141592654 SHE)
 
+export function extraMintAllowed(programId) {
+  return String(programId || '') === RESERVE_PROGRAM;
+}
+
 export function clampBits(bits) {
   const n = Math.floor(Number(bits) || 0);
   if (!Number.isFinite(n) || n <= 0) return GENESIS_BITS;
