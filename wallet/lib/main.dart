@@ -67,6 +67,9 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   bool unlocked = false;
   int tab = 0;
   bool mining = false;
+  final flowTo = TextEditingController();
+  final flowAmt = TextEditingController();
+  final flowMemo = TextEditingController();
   int vortexTab = 0;
   List<Vortice> vortices = const [reserveVortice];
   final Set<String> openedMemos = {};
@@ -81,6 +84,9 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   @override
   void dispose() {
     miner.stop();
+    flowTo.dispose();
+    flowAmt.dispose();
+    flowMemo.dispose();
     super.dispose();
   }
 
@@ -272,20 +278,23 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   Widget _flow(ShearIdentity ident) {
-    final to = TextEditingController();
-    final amt = TextEditingController();
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
       const Text('sdcard1 dest this round'),
       SelectableText(ledger.currentDest(ident.address)),
       const SizedBox(height: 8),
-      TextField(controller: to, decoration: const InputDecoration(labelText: 'To (sdcard1…)')),
-      TextField(controller: amt, decoration: const InputDecoration(labelText: 'Amount SHE'), keyboardType: TextInputType.number),
-      TextField(controller: TextEditingController(), decoration: const InputDecoration(labelText: 'Memo (optional)')),
+      TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (sdcard1…)')),
+      TextField(controller: flowAmt, decoration: const InputDecoration(labelText: 'Amount SHE'), keyboardType: TextInputType.number),
+      TextField(controller: flowMemo, decoration: const InputDecoration(labelText: 'Memo (optional)')),
       FilledButton(
         onPressed: () async {
           try {
-            await ledger.send(from: ident.address, to: to.text.trim(), amount: double.parse(amt.text));
+            await ledger.send(
+              from: ledger.currentDest(ident.address),
+              to: flowTo.text.trim(),
+              amount: double.parse(flowAmt.text),
+              memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
+            );
             setState(() {});
           } catch (e) {
             if (mounted) {

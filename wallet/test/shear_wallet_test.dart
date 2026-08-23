@@ -245,6 +245,43 @@ void main() {
     await tester.pump();
     expect(miner.hashing, isFalse);
   });
+
+  test('send posts sdcard1 from + memoCt; sender and recipient dests open plaintext, other dest does not', () async {
+    final posted = <Map<String, dynamic>>[];
+    final header = Uint8List(120);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final server = await _fakePool(headerHex: hex, height: 1, posted: posted);
+    addTearDown(() => server.close(force: true));
+    final alice = createIdentity();
+    final bob = createIdentity();
+    final pool = ShearPoolClient(
+      baseUrl: 'http://127.0.0.1:${server.port}',
+      http: _realHttp(),
+    );
+    final aliceL = ShearLedger(pool: pool);
+    aliceL.viewSecret = alice.viewKey;
+    final from = aliceL.currentDest(alice.address);
+    final to = destForLogin(bob.address, height: 1, viewKey: bob.viewKey)!;
+    expect(from.startsWith('sdcard1'), isTrue);
+    expect(from, isNot(alice.address));
+    aliceL.rememberSpendable(from, 10);
+    final tx = await aliceL.send(from: from, to: to, amount: 1, memo: 'secret-flow');
+    expect(tx.from, from);
+    expect(tx.to, to);
+    expect(tx.memoPlain, 'secret-flow');
+    expect(posted, isNotEmpty);
+    expect(posted.last['from'], from);
+    expect(posted.last['to'], to);
+    expect(posted.last['from'].toString().startsWith('shear1'), isFalse);
+    expect(posted.last['memoCt'], isNotNull);
+    expect(await memoOpen(to, tx.memoCt), 'secret-flow');
+    final other = destForLogin(bob.address, height: 2, viewKey: bob.viewKey)!;
+    expect(await memoOpen(other, tx.memoCt), isNull);
+    expect(
+      aliceL.ownerHistory(alice.address).single.memoPlain,
+      'secret-flow',
+    );
+  });
 }
 
 HttpClient _realHttp() {
@@ -256,10 +293,21 @@ HttpClient _realHttp() {
 
 class _PassthroughHttpOverrides extends HttpOverrides {}
 
-Future<HttpServer> _fakePool({required String headerHex, required int height}) async {
+Future<HttpServer> _fakePool({
+  required String headerHex,
+  required int height,
+  List<Map<String, dynamic>>? posted,
+}) async {
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
   server.listen((req) async {
-    await req.drain();
+    final chunks = <int>[];
+    await for (final c in req) {
+      chunks.addAll(c);
+    }
+    Map<String, dynamic> body = {};
+    if (chunks.isNotEmpty) {
+      body = Map<String, dynamic>.from(jsonDecode(utf8.decode(chunks)) as Map);
+    }
     req.response.headers.contentType = ContentType.json;
     if (req.uri.path == '/api/stats') {
       req.response.write(jsonEncode({
@@ -268,11 +316,26 @@ Future<HttpServer> _fakePool({required String headerHex, required int height}) a
         'header': headerHex,
       }));
     } else if (req.uri.path == '/api/wallet/balance') {
-      req.response.write(jsonEncode({'balance': 0, 'pending': 0}));
+      req.response.write(jsonEncode({'balance': 10, 'pending': 0}));
     } else if (req.uri.path == '/api/wallet/history' || req.uri.path == '/api/explorer/history') {
       req.response.write(jsonEncode({'txs': []}));
     } else if (req.uri.path == '/api/wallet/register') {
       req.response.write(jsonEncode({'ok': true}));
+    } else if (req.uri.path == '/api/wallet/send') {
+      posted?.add(body);
+      req.response.write(jsonEncode({
+        'ok': true,
+        'fromBalance': 9,
+        'tx': {
+          'id': 'send-1',
+          'from': body['from'],
+          'to': body['to'],
+          'amount': body['amount'],
+          'kind': 'send',
+          'confirmed': false,
+          'memo': body['memoCt'] != null,
+        },
+      }));
     } else {
       req.response.statusCode = 404;
       req.response.write('{}');

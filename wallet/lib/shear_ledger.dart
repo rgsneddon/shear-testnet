@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'shear_ctf.dart';
+import 'shear_identity.dart';
 
 class ShearTx {
   const ShearTx({
@@ -15,6 +16,7 @@ class ShearTx {
     this.confirmed = true,
     this.memo = false,
     this.memoPlain,
+    this.memoCt,
   });
 
   final String id;
@@ -26,6 +28,7 @@ class ShearTx {
   final bool confirmed;
   final bool memo;
   final String? memoPlain;
+  final Map<String, dynamic>? memoCt;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -37,6 +40,7 @@ class ShearTx {
         'confirmed': confirmed,
         'memo': memo,
         if (memoPlain != null) 'memoPlain': memoPlain,
+        if (memoCt != null) 'memoCt': memoCt,
       };
 
   factory ShearTx.fromJson(Map<String, dynamic> j) => ShearTx(
@@ -49,6 +53,7 @@ class ShearTx {
         confirmed: j['confirmed'] is bool ? j['confirmed'] as bool : true,
         memo: j['memo'] == true,
         memoPlain: j['memoPlain']?.toString(),
+        memoCt: j['memoCt'] is Map ? Map<String, dynamic>.from(j['memoCt'] as Map) : null,
       );
 }
 
@@ -173,7 +178,26 @@ class ShearLedger {
       final json = await pool!.history(address);
       final rows = (json['txs'] as List?) ?? const [];
       for (final row in rows) {
-        final tx = ShearTx.fromJson(Map<String, dynamic>.from(row as Map));
+        var tx = ShearTx.fromJson(Map<String, dynamic>.from(row as Map));
+        final existing = _txs.cast<ShearTx?>().firstWhere((t) => t!.id == tx.id, orElse: () => null);
+        var plain = existing?.memoPlain ?? tx.memoPlain;
+        if (plain == null && tx.memoCt != null) {
+          plain = await memoOpen(tx.to, tx.memoCt);
+        }
+        if (plain != null) {
+          tx = ShearTx(
+            id: tx.id,
+            from: tx.from,
+            to: tx.to,
+            amount: tx.amount,
+            kind: tx.kind,
+            height: tx.height,
+            confirmed: tx.confirmed,
+            memo: true,
+            memoPlain: plain,
+            memoCt: tx.memoCt,
+          );
+        }
         final i = _txs.indexWhere((t) => t.id == tx.id);
         if (i >= 0) {
           _txs[i] = tx;
@@ -200,19 +224,39 @@ class ShearLedger {
 
   List<ShearTx> ownerHistory(String address) {
     final keys = ownedAddresses(address);
-    return _txs.where((t) => t.confirmed && (keys.contains(t.to) || keys.contains(t.from))).toList();
+    return _txs.where((t) => (t.confirmed || t.kind == 'send') && (keys.contains(t.to) || keys.contains(t.from))).toList();
   }
 
   Future<ShearTx> send({
     required String from,
     required String to,
     required double amount,
+    String? memo,
   }) async {
     if (amount <= 0) throw ArgumentError('amount');
+    if (isShearAddress(from) || isShearAddress(to)) {
+      throw ArgumentError('rest_frame');
+    }
     if (spendable(from) < amount) throw StateError('insufficient');
+    Map<String, dynamic>? memoCt;
+    if (memo != null && memo.isNotEmpty) {
+      memoCt = await memoSeal(to, memo);
+    }
     if (pool != null) {
-      final json = await pool!.send(from: from, to: to, amount: amount);
-      final tx = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
+      final json = await pool!.send(from: from, to: to, amount: amount, memoCt: memoCt);
+      final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
+      final tx = ShearTx(
+        id: raw.id,
+        from: raw.from,
+        to: raw.to,
+        amount: raw.amount,
+        kind: raw.kind,
+        height: raw.height,
+        confirmed: raw.confirmed,
+        memo: memoCt != null || raw.memo,
+        memoPlain: memo,
+        memoCt: memoCt ?? raw.memoCt,
+      );
       _spendable[from] = (json['fromBalance'] as num?)?.toDouble() ?? (spendable(from) - amount);
       _txs.add(tx);
       return tx;
@@ -225,6 +269,9 @@ class ShearLedger {
       amount: amount,
       kind: 'send',
       confirmed: false,
+      memo: memoCt != null,
+      memoPlain: memo,
+      memoCt: memoCt,
     );
     _txs.add(tx);
     return tx;
@@ -283,8 +330,14 @@ class ShearPoolClient {
     required String from,
     required String to,
     required double amount,
+    Map<String, dynamic>? memoCt,
   }) =>
-      _post('/api/wallet/send', {'from': from, 'to': to, 'amount': amount});
+      _post('/api/wallet/send', {
+        'from': from,
+        'to': to,
+        'amount': amount,
+        if (memoCt != null) 'memoCt': memoCt,
+      });
 
   Future<Map<String, dynamic>> stats() => _get('/api/stats');
 }

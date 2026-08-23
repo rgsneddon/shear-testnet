@@ -50,8 +50,7 @@ ShearIdentity createIdentity([Uint8List? seed]) {
   return ShearIdentity(seedHex: seedHex, address: address, viewKey: _hex(view.bytes));
 }
 
-Uint8List? spendHashFromAddress(String address) {
-  if (!isShearAddress(address)) return null;
+Uint8List? hash20FromAddress(String address) {
   final raw = address.trim();
   final one = raw.lastIndexOf('1');
   if (one < 1) return null;
@@ -67,6 +66,11 @@ Uint8List? spendHashFromAddress(String address) {
   final bytes = _convertBits(data.sublist(1), 5, 8, false);
   if (bytes.length < 20) return null;
   return Uint8List.fromList(bytes.sublist(0, 20));
+}
+
+Uint8List? spendHashFromAddress(String address) {
+  if (!isShearAddress(address)) return null;
+  return hash20FromAddress(address);
 }
 
 String encodeHrp(String hrp, Uint8List pubkeyHash20) {

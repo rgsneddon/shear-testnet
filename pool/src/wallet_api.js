@@ -29,6 +29,7 @@ function rowsToHistory(rows, addresses) {
       height: r.height,
       confirmed: r.confirmed !== false,
       memo: pub.memo === true,
+      memoCt: r.memoCt || undefined,
     });
   }
   if (spendableNanos < 0) spendableNanos = 0;

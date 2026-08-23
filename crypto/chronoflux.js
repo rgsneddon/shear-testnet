@@ -110,6 +110,7 @@ export function sealedExplorerRows(block) {
       height,
       confirmed: true,
       memo: !!(tx.memoCt || tx.vout?.[0]?.memoCt),
+      memoCt: tx.memoCt || tx.vout?.[0]?.memoCt,
     });
   }
   return rows;
@@ -154,6 +155,7 @@ export function compactTx(tx) {
   if (tx.mint) out.mint = true;
   if (tx.vin) out.vin = tx.vin;
   if (tx.vout) out.vout = tx.vout;
+  if (tx.memoCt) out.memoCt = tx.memoCt;
   return out;
 }
 

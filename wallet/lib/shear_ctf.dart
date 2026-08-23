@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:cryptography/cryptography.dart';
 
 import 'shear_identity.dart';
 
@@ -136,4 +138,40 @@ bool reserveRejectsDest(String restFrame, String maybeDest, {int height = 1, req
   final dest = destForLogin(restFrame, height: height, viewKey: viewKey);
   final vault = vaultDest(restFrame, viewKey: viewKey);
   return maybeDest == dest && vault != null && maybeDest != vault;
+}
+
+Uint8List memoKey(String dest) {
+  final d = hash20FromAddress(dest) ?? Uint8List(20);
+  return _sha(utf8.encode(ctfFlowPersonal), d);
+}
+
+Future<Map<String, dynamic>> memoSeal(String dest, String plaintext) async {
+  final nonce = Uint8List.fromList(List<int>.generate(12, (_) => Random.secure().nextInt(256)));
+  final box = await AesGcm.with256bits().encrypt(
+    utf8.encode(plaintext),
+    secretKey: SecretKey(memoKey(dest)),
+    nonce: nonce,
+  );
+  return {
+    'v': 1,
+    'nonce': base64Encode(nonce),
+    'mac': base64Encode(box.mac.bytes),
+    'ct': base64Encode(box.cipherText),
+  };
+}
+
+Future<String?> memoOpen(String dest, Map<String, dynamic>? env) async {
+  if (env == null || env['v'] != 1) return null;
+  try {
+    final nonce = base64Decode(env['nonce'] as String);
+    final mac = Mac(base64Decode(env['mac'] as String));
+    final ct = base64Decode(env['ct'] as String);
+    final clear = await AesGcm.with256bits().decrypt(
+      SecretBox(ct, nonce: nonce, mac: mac),
+      secretKey: SecretKey(memoKey(dest)),
+    );
+    return utf8.decode(clear);
+  } catch (_) {
+    return null;
+  }
 }
