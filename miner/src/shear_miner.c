@@ -224,6 +224,10 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: shear-miner --selftest | --print-config | --pool host:port --user sdcard1...|she1... [--threads N] [--notls]\n");
     return 2;
   }
+  if (strncmp(g_user, "sdcard1", 7) != 0 && strncmp(g_user, "she1", 4) != 0) {
+    fprintf(stderr, "user dest must be sdcard1... or she1...\n");
+    return 2;
+  }
 #if defined(_WIN32)
   {
     WSADATA wsa;

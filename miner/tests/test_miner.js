@@ -28,4 +28,23 @@ describe('C miner', () => {
     assert.equal(j.magic, 'shear-testnet-v1');
     assert.equal(j.headerBytes, 120);
   });
+
+  it('admits --user sdcard1 and she1 dests and refuses shear1', () => {
+    const usage = spawnSync(bin, [], { encoding: 'utf8' });
+    assert.match(usage.stderr + usage.stdout, /sdcard1/);
+    assert.match(usage.stderr + usage.stdout, /she1/);
+    const refuse = spawnSync(bin, ['--user', 'shear1abc.worker'], { encoding: 'utf8' });
+    assert.equal(refuse.status, 2);
+    assert.match(refuse.stderr + refuse.stdout, /sdcard1/);
+    const sd = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'sdcard1test.worker'], {
+      encoding: 'utf8',
+    });
+    assert.equal(sd.status, 3);
+    assert.match(sd.stderr + sd.stdout, /connect failed/);
+    const she = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'she1test.worker'], {
+      encoding: 'utf8',
+    });
+    assert.equal(she.status, 3);
+    assert.match(she.stderr + she.stdout, /connect failed/);
+  });
 });
