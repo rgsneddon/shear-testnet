@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, isShearAddress, isDestAddress } from './address.js';
+import { newIdentity, isShearAddress, isDestAddress, encodeHrp, encodeAddress } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
 import {
   destForLogin,
@@ -31,7 +31,8 @@ describe('flow sheets', () => {
     const deg = degenerateDest(alice.address, { continuityRoot: root1, height: 3 });
     assert.equal(destForLogin(alice.address, { continuityRoot: root1, height: 3 }), null);
     assert.equal(isDestAddress(paid), true);
-    assert.equal(paid.startsWith('sdcard1'), true);
+    assert.equal(paid.startsWith('sdcard1') || paid.startsWith('she1'), true);
+    assert.equal(paid.startsWith('shear1'), false);
     assert.equal(isShearAddress(paid), false);
     assert.equal(isDestAddress(alice.address), false);
     assert.notEqual(paid, alice.address);
@@ -52,6 +53,10 @@ describe('flow sheets', () => {
       paid,
     );
     assert.equal(destForLogin(paid), paid);
+    const she = encodeHrp('she', spendHashFromAddress(alice.address));
+    assert.equal(isDestAddress(she), true);
+    assert.equal(destForLogin(she), she);
+    assert.equal(isDestAddress(encodeAddress(spendHashFromAddress(alice.address))), false);
   });
 
   it('view key opens only that user’s dests', () => {

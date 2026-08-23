@@ -92,8 +92,8 @@
         <h2>GET YOUR MINER COMMAND LINE</h2>
         <p>Mine at <code style="display:inline">pool.shear.digital:1111</code>.</p>
         <p>
-          <label class="label" for="addr">Dest (sdcard1)</label><br/>
-          <input id="addr" type="text" placeholder="sdcard1…" autocomplete="off" spellcheck="false"/>
+          <label class="label" for="addr">Dest (sdcard1 or she1)</label><br/>
+          <input id="addr" type="text" placeholder="sdcard1… or she1…" autocomplete="off" spellcheck="false"/>
         </p>
         <p>
           <label class="label" for="threads">CPU threads</label><br/>
@@ -103,7 +103,7 @@
           <pre id="mine-cmd">shear-miner --pool pool.shear.digital:1111 --user YOUR_SDCARD1.worker --threads 4</pre>
           <button type="button" id="copy-cmd">Copy</button>
         </div>
-        <p class="label" id="cmd-hint">Valid sdcard1 dest required. Never share shear1. ShearHash. TLS by default.</p>
+        <p class="label" id="cmd-hint">Valid sdcard1 or she1 dest required. Never share shear1. ShearHash. TLS by default.</p>
       </section>
     </div>
     <p id="fee-note">pool fee is 1% of the 1 SHE pot for development — hash bonuses are paid in full to each hasher.</p>
@@ -148,10 +148,10 @@
       const user = addr ? (addr.indexOf('.') >= 0 ? addr : addr + '.worker') : 'YOUR_SDCARD1.worker';
       document.getElementById('mine-cmd').textContent =
         'shear-miner --pool pool.shear.digital:1111 --user ' + user + ' --threads ' + t;
-      const ok = /^sdcard1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(addr);
+      const ok = /^(?:sdcard1|she1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(addr);
       document.getElementById('cmd-hint').textContent = ok
         ? 'Ready to copy · ShearHash · :1111'
-        : 'Valid sdcard1 dest required. Never share shear1.';
+        : 'Valid sdcard1 or she1 dest required. Never share shear1.';
     }
     document.getElementById('addr').addEventListener('input', renderCmd);
     document.getElementById('threads').addEventListener('input', renderCmd);

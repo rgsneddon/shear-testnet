@@ -51,7 +51,7 @@ describe('explorer dests', () => {
     });
     const got = store.append(mine(tpl));
     assert.equal(got.ok, true, got.reason);
-    assert.ok(got.block.txs[0].vout.every((o) => o.address.startsWith('sdcard1')));
+    assert.ok(got.block.txs[0].vout.every((o) => o.address.startsWith('sdcard1') || o.address.startsWith('she1')));
 
     const pub = get(store, '/api/explorer/history');
     assert.equal(pub.status, 200);

@@ -87,8 +87,14 @@ void main() {
     expect(destForLogin(a.address, height: 1), isNull);
     final paid = destForLogin(a.address, height: 1, viewKey: a.viewKey)!;
     expect(destHrp, 'sdcard');
-    expect(paid.startsWith('sdcard1'), isTrue);
-    expect(paid.startsWith('she1'), isFalse);
+    expect(paid.startsWith('sdcard1') || paid.startsWith('she1'), isTrue);
+    expect(paid.startsWith('shear1'), isFalse);
+    expect(isDestAddress(paid), isTrue);
+    final she = encodeHrp('she', Uint8List.fromList(List.filled(20, 7)));
+    expect(she.startsWith('she1'), isTrue);
+    expect(she.startsWith('shear1'), isFalse);
+    expect(isDestAddress(she), isTrue);
+    expect(isDestAddress(a.address), isFalse);
     expect(paid, isNot(a.address));
     expect(paid, isNot(degenerateDest(a.address, height: 1)));
     expect(destForLogin(a.address, height: 2, viewKey: a.viewKey), isNot(paid));
@@ -158,7 +164,8 @@ void main() {
     );
     expect(ledger.currentDest(id.address), paid);
     expect(paid, isNot(id.address));
-    expect(paid!.startsWith('sdcard1'), isTrue);
+    expect(paid!.startsWith('sdcard1') || paid.startsWith('she1'), isTrue);
+    expect(isDestAddress(paid), isTrue);
     expect(paid, isNot(degenerateDest(id.address, continuityRoot: header.sublist(68, 100), height: 5)));
   });
 
@@ -266,7 +273,8 @@ void main() {
     aliceL.viewSecret = alice.viewKey;
     final from = aliceL.currentDest(alice.address);
     final to = destForLogin(bob.address, height: 1, viewKey: bob.viewKey)!;
-    expect(from.startsWith('sdcard1'), isTrue);
+    expect(from.startsWith('sdcard1') || from.startsWith('she1'), isTrue);
+    expect(isDestAddress(from), isTrue);
     expect(from, isNot(alice.address));
     aliceL.creditHash(alice.address, hashes: 0);
     aliceL.confirmRound(address: alice.address, pot: 1, height: 1);

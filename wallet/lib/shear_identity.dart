@@ -37,8 +37,11 @@ bool isShearAddress(String s) {
 }
 
 bool isDestAddress(String s) {
-  return RegExp(r'^sdcard1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$', caseSensitive: false)
-      .hasMatch(s.trim());
+  final t = s.trim();
+  if (isShearAddress(t)) return false;
+  return RegExp(r'^(?:sdcard1|she1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$',
+          caseSensitive: false)
+      .hasMatch(t);
 }
 
 ShearIdentity createIdentity([Uint8List? seed]) {

@@ -67,7 +67,9 @@ export function isShearAddress(s) {
 }
 
 export function isDestAddress(s) {
-  return /^sdcard1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(String(s || '').trim());
+  const t = String(s || '').trim();
+  if (isShearAddress(t)) return false;
+  return /^(?:sdcard1|she1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(t);
 }
 
 export function hash20FromAddress(address) {

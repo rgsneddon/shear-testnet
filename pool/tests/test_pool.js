@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { requiredJobFields } from '../../crypto/header.js';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { createPool, gateJob, scoreShare, admitClient } from '../src/pool.js';
 import { publicJob, buildTemplate } from '../../node/src/chain.js';
@@ -29,7 +29,9 @@ describe('admit', () => {
   it('admits sdcard1 dest login, refuses rest-frame shear1 and wrong client', () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const she = encodeHrp('she', Buffer.alloc(20, 3));
     assert.equal(admitClient({ login: dest, client: 'ShearHash' }).ok, true);
+    assert.equal(admitClient({ login: she, client: 'ShearHash' }).ok, true);
     assert.equal(admitClient({ login: id.address, client: 'ShearHash' }).ok, false);
     assert.equal(admitClient({ login: dest, client: 'other' }).ok, false);
   });
@@ -65,8 +67,9 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, />SHE</);
     assert.equal(html.toLowerCase().includes('shearhash'), true);
     assert.match(html, /sdcard1/);
+    assert.match(html, /she1/);
     assert.match(html, /YOUR_SDCARD1/);
-    assert.match(html, /\/\^sdcard1/);
+    assert.match(html, /sdcard1\|she1/);
     assert.equal(html.includes('YOUR_SHEAR1'), false);
     assert.equal(/\/\^shear1/.test(html), false);
 
