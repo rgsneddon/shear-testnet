@@ -45,13 +45,16 @@ EOF
 # Keep the advice file for strings/grep; hide it so the window is the two icons.
 chflags hidden "$MNT/Move to Applications.txt" || true
 
+python3 "$WALLET/pack/make_dmg_bg.py"
 if [ -f "$BG" ]; then
   mkdir -p "$MNT/.background"
   cp "$BG" "$MNT/.background/bg.png"
   chflags hidden "$MNT/.background" || true
+  sips -g pixelWidth -g pixelHeight "$MNT/.background/bg.png"
 fi
 
-# Position the two icons: app left, Applications right.
+# Background is 540x360. Window chrome ~28px title → 540x388 outer.
+# Icon centers stay inside that view (112px icons, ~20px labels).
 osascript <<EOF
 tell application "Finder"
   tell disk "$VOLNAME"
@@ -59,15 +62,16 @@ tell application "Finder"
     set current view of container window to icon view
     set toolbar visible of container window to false
     set statusbar visible of container window to false
-    set bounds of container window to {360, 120, 960, 520}
+    set bounds of container window to {400, 140, 940, 528}
     set theViewOptions to the icon view options of container window
     set arrangement of theViewOptions to not arranged
-    set icon size of theViewOptions to 128
+    set icon size of theViewOptions to 112
+    set text size of theViewOptions to 12
     try
       set background picture of theViewOptions to file ".background:bg.png"
     end try
-    set position of item "Shear.app" to {140, 200}
-    set position of item "Applications" to {460, 200}
+    set position of item "Shear.app" to {130, 188}
+    set position of item "Applications" to {410, 188}
     update without registering applications
     delay 1
     close
