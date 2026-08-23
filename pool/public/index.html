@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Shear pool · ShearHash</title>
+  <style>
+    :root {
+      --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
+      --cyan: #0088a8; --blue: #1a6fb5; --green: #1a9a4a; --radius: 0px;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; font:13px/1.35 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
+    h1 { font-size:1.05rem; font-weight:700; margin:0 0 8px; }
+    h2 { font-size:.92rem; font-weight:700; margin:0 0 8px; }
+    p { margin:0 0 8px; overflow-wrap:anywhere; }
+    .panel-card {
+      border: 1px solid transparent; border-radius: var(--radius); padding: 10px 12px; margin: 8px 0;
+      background: linear-gradient(165deg, #ffffff 0%, #f4f8fc 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin: border-box; background-clip: padding-box, border-box;
+    }
+    .grid { display:grid; gap:8px; width:100%; }
+    #stat-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); margin: 16px 0 8px; }
+    .grid .panel-card { margin:0; padding:7px 8px; }
+    .label { color:var(--muted); font-size:.62rem; letter-spacing:.05em; text-transform:uppercase; }
+    .value { font-size:.78rem; font-weight:650; margin-top:2px; color:var(--cyan); }
+    a { color:var(--cyan); }
+    .repo-btns { display:grid; grid-template-columns:repeat(2, max-content); gap:8px; justify-content:center; margin:10px auto; width:fit-content; }
+    a.repo-btn {
+      display:block; text-align:center; padding:.45rem .9rem; color:var(--cyan); text-decoration:none;
+      border:1px solid var(--cyan); font-weight:750; letter-spacing:.1em; font-size:.78rem;
+    }
+    a.repo-btn:hover { background:rgba(0,136,168,.08); }
+    code, pre { background:#f3f7fb; padding:.2em .45em; color:var(--green); white-space:pre-wrap; display:block; }
+    input, select { width:100%; max-width:36rem; margin:.3rem 0 .6rem; padding:.4rem .5rem; background:#fff; color:var(--ink); border:1px solid var(--blue); font-size:13px; }
+    .cmd-row { display:flex; gap:8px; align-items:stretch; }
+    .cmd-row pre { flex:1; margin:0; }
+    .cmd-row button { padding:.4rem .7rem; background:#fff; color:var(--cyan); border:1px solid var(--blue); cursor:pointer; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.78rem; }
+    .pulse { color:var(--green); font-size:.75rem; }
+    .top-banner {
+      display:flex; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
+      border-bottom:1px solid rgba(26,111,181,.25); background:#f7fbff;
+    }
+    .wordmark { font-weight:800; letter-spacing:.12em; color:var(--blue); font-size:.85rem; }
+    .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
+    a.nav-btn {
+      display:inline-flex; align-items:center; height:32px; padding:0 9px; color:var(--cyan); text-decoration:none;
+      font-weight:750; letter-spacing:.05em; font-size:.62rem; text-transform:uppercase;
+      border:1px solid transparent;
+      background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box, border-box;
+    }
+    .top-row { display:grid; grid-template-columns:1fr 3fr; gap:8px; margin:0 0 16px; }
+    #fee-note { color:#8a6d00; font-size:.68rem; margin:8px 0 0; }
+    @media (max-width: 1024px) {
+      .top-row { grid-template-columns: 1fr; }
+      #stat-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+    @media (max-width: 640px) {
+      #stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <header class="top-banner">
+    <span class="wordmark">SHEAR</span>
+    <nav class="nav">
+      <a class="nav-btn" href="/">OFFICIAL POOL</a>
+      <a class="nav-btn" href="https://shear.digital">SITE</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">NODE</a>
+    </nav>
+  </header>
+  <div class="wrap">
+    <div class="top-row">
+      <section class="panel-card">
+        <h1>Shear. Private by default on a continuity-settled chain.</h1>
+        <p>SHE pool. Proof of work only — ShearHash CPU. Miner identities stay hashed. No IPs, wallets, or logins leak from this pool.</p>
+        <p class="repo-btns">
+          <a class="repo-btn" href="https://github.com/rgsneddon/shear">MINER</a>
+          <a class="repo-btn" href="https://github.com/rgsneddon/shear">WALLET</a>
+        </p>
+        <p class="pulse" id="live-pulse">live · testnet</p>
+      </section>
+      <section class="panel-card">
+        <h2>GET YOUR MINER COMMAND LINE</h2>
+        <p>Mine at <code style="display:inline">pool.shear.digital:1111</code>.</p>
+        <p>
+          <label class="label" for="addr">Shear address</label><br/>
+          <input id="addr" type="text" placeholder="shear1…" autocomplete="off" spellcheck="false"/>
+        </p>
+        <p>
+          <label class="label" for="threads">CPU threads</label><br/>
+          <input id="threads" type="number" min="1" max="256" value="4" step="1"/>
+        </p>
+        <div class="cmd-row">
+          <pre id="mine-cmd">shear-miner --pool pool.shear.digital:1111 --user YOUR_SHEAR1.worker --threads 4</pre>
+          <button type="button" id="copy-cmd">Copy</button>
+        </div>
+        <p class="label" id="cmd-hint">Valid shear1 address required. ShearHash. Feeless miner. TLS by default.</p>
+      </section>
+    </div>
+    <p id="fee-note">pool fee is 1% of the 1 SHE pot for development — hash bonuses are paid in full to each hasher. Official miner is feeless.</p>
+    <div class="grid" id="stat-grid">
+      <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
+      <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash</div></article>
+      <article class="panel-card"><div class="label">Stratum</div><div class="value" id="stratum">:1111</div></article>
+      <article class="panel-card"><div class="label">Proof</div><div class="value" id="proof">PoW</div></article>
+      <article class="panel-card"><div class="label">Workers online</div><div class="value" id="miners-n">0</div></article>
+      <article class="panel-card"><div class="label">CPU threads</div><div class="value" id="threads-n">0</div></article>
+      <article class="panel-card"><div class="label">Pool hashrate</div><div class="value" id="hashrate">0 H/s</div></article>
+      <article class="panel-card"><div class="label">Blocks this uptime</div><div class="value" id="accepted">0</div></article>
+      <article class="panel-card"><div class="label">Stale shares</div><div class="value" id="rejected">0</div></article>
+      <article class="panel-card"><div class="label">Height</div><div class="value" id="height">0</div></article>
+      <article class="panel-card"><div class="label">Resistance</div><div class="value" id="difficulty">—</div></article>
+      <article class="panel-card"><div class="label">Uptime</div><div class="value" id="uptime">0s</div></article>
+      <article class="panel-card"><div class="label">Network</div><div class="value">shear-testnet-v1</div></article>
+      <article class="panel-card"><div class="label">Last block</div><div class="value" id="updated">—</div></article>
+    </div>
+    <section class="panel-card">
+      <h2>Pool miners</h2>
+      <table id="miners">
+        <thead>
+          <tr>
+            <th>Miner</th>
+            <th>Hashes</th>
+            <th>Blocks found</th>
+            <th>Accepted work</th>
+            <th>Stale shares</th>
+            <th>CPU threads</th>
+            <th>Hashes this round</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div>
+  <script>
+    function renderCmd() {
+      const addr = (document.getElementById('addr').value || '').trim();
+      const t = Math.min(256, Math.max(1, Number(document.getElementById('threads').value) || 4));
+      const user = addr ? (addr.indexOf('.') >= 0 ? addr : addr + '.worker') : 'YOUR_SHEAR1.worker';
+      document.getElementById('mine-cmd').textContent =
+        'shear-miner --pool pool.shear.digital:1111 --user ' + user + ' --threads ' + t;
+      const ok = /^shear1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(addr);
+      document.getElementById('cmd-hint').textContent = ok
+        ? 'Ready to copy · ShearHash · feeless · :1111'
+        : 'Valid shear1 address required. ShearHash. Feeless miner.';
+    }
+    document.getElementById('addr').addEventListener('input', renderCmd);
+    document.getElementById('threads').addEventListener('input', renderCmd);
+    document.getElementById('copy-cmd').addEventListener('click', function () {
+      navigator.clipboard.writeText(document.getElementById('mine-cmd').textContent);
+    });
+    function paint(s) {
+      document.getElementById('coin').textContent = s.coin || 'SHE';
+      document.getElementById('algo').textContent = s.algo || 'ShearHash';
+      document.getElementById('stratum').textContent = s.stratum || ':1111';
+      document.getElementById('miners-n').textContent = String(s.miners || 0);
+      document.getElementById('threads-n').textContent = String(s.threads || 0);
+      document.getElementById('hashrate').textContent = (s.hashrate || 0) + ' H/s';
+      document.getElementById('accepted').textContent = String(s.blocks || 0);
+      document.getElementById('rejected').textContent = String(s.stale || 0);
+      document.getElementById('height').textContent = String(s.height || 0);
+      document.getElementById('difficulty').textContent = String(s.bits || '—');
+      const tb = document.querySelector('#miners tbody');
+      tb.innerHTML = (s.workers || []).map(function (w) {
+        return '<tr><td>' + w.miner + '</td><td>' + w.hashes + '</td><td>' + w.blocks +
+          '</td><td>' + w.accepted + '</td><td>' + w.stale + '</td><td>' + w.threads +
+          '</td><td>' + w.roundHashes + '</td></tr>';
+      }).join('');
+    }
+    function tick() {
+      fetch('/api/stats?_=' + Date.now(), { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(paint)
+        .catch(function () {});
+    }
+    setInterval(tick, 1000);
+    tick();
+    renderCmd();
+  </script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+miner/shear-miner
+*.o
+.DS_Store
+node_modules/
+.shear/
+*.log
