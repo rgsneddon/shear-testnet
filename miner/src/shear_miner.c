@@ -221,7 +221,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (!do_mine) {
-    fprintf(stderr, "usage: shear-miner --selftest | --print-config | --pool host:port --user she1... [--threads N] [--notls]\n");
+    fprintf(stderr, "usage: shear-miner --selftest | --print-config | --pool host:port --user sdcard1... [--threads N] [--notls]\n");
     return 2;
   }
 #if defined(_WIN32)

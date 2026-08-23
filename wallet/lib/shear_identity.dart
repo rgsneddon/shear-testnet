@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 const shearHrp = 'shear';
-const destHrp = 'she';
+const destHrp = 'sdcard';
 const _charset = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
 class ShearIdentity {
@@ -37,7 +37,7 @@ bool isShearAddress(String s) {
 }
 
 bool isDestAddress(String s) {
-  return RegExp(r'^she1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$', caseSensitive: false)
+  return RegExp(r'^sdcard1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$', caseSensitive: false)
       .hasMatch(s.trim());
 }
 

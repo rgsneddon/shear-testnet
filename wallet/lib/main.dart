@@ -27,7 +27,7 @@ const kTabs = [
 const kSymbols = ['∇·J = 0', 'J^μ', 'η', 'Ω^{μν}', 'S_{μν}', 'π', 'G_{μν}'];
 const kExplains = [
   'Your money. Spendable SHE after a block is found, plus this round’s pending hashes.',
-  'Send SHE to an she1 dest. Share dest, never rest-frame shear1.',
+  'Send SHE to an sdcard1 dest. Share dest, never rest-frame shear1.',
   'Mining. Start hashing. Each hash credits a tiny amount; you can spend it only when a block is found.',
   'Apps and contracts other people deploy. They cannot print SHE; they must fund their own rewards.',
   'How SHE is created: 1 SHE per block, plus 0.000000001 SHE per hash to each miner in that round.',
@@ -226,7 +226,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       const Text('Rest-frame shear1 (never share, never on chain)'),
       SelectableText(ident.address),
       const SizedBox(height: 6),
-      const Text('she1 dest this round (share / mine / pay)'),
+      const Text('sdcard1 dest this round (share / mine / pay)'),
       SelectableText(dest),
       const SizedBox(height: 8),
       Text('Spendable  ${ledger.spendable(dest).toStringAsFixed(9)} SHE',
@@ -278,10 +278,10 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   Widget _flow(ShearIdentity ident) {
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('she1 dest this round'),
+      const Text('sdcard1 dest this round'),
       SelectableText(ledger.currentDest(ident.address)),
       const SizedBox(height: 8),
-      TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (she1…)')),
+      TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (sdcard1…)')),
       TextField(controller: flowAmt, decoration: const InputDecoration(labelText: 'Amount SHE'), keyboardType: TextInputType.number),
       TextField(controller: flowMemo, decoration: const InputDecoration(labelText: 'Memo (optional)')),
       FilledButton(
@@ -304,7 +304,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       ),
       const SizedBox(height: 8),
       const Text(
-        'Receive: share this round’s she1 dest, never shear1. Memo text is only in your explorer tab and theirs.',
+        'Receive: share this round’s sdcard1 dest, never shear1. Memo text is only in your explorer tab and theirs.',
       ),
     ]);
   }
@@ -417,7 +417,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       const Text('Lock π SHE for 400 days to vote. Interest tracks the Bank of England Base Rate.'),
       const Text('Vote: raise, lower, or hold the per-hash bonus (±1e-10). The 1 SHE pot does not change.'),
       const SizedBox(height: 8),
-      const Text('Lock principal is vault she1, never rest-frame shear1.'),
+      const Text('Lock principal is vault sdcard1, never rest-frame shear1.'),
       SelectableText(vaultDest(ident.address, viewKey: ledger.viewSecret ?? ident.viewKey) ?? ''),
     ]);
   }

@@ -27,7 +27,7 @@ master book.
 ## Mine (testnet)
 
 ```
-shear-miner --pool pool.shear.digital:1111 --user shear1YOURADDRESS.worker --threads 4
+shear-miner --pool pool.shear.digital:1111 --user sdcard1YOURDEST.worker --threads 4
 ```
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shear, Reserve, Closure.

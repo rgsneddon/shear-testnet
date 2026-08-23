@@ -81,12 +81,14 @@ void main() {
     await expectLater(ShearLock.open(env, 'wrong'), throwsA(anything));
   });
 
-  test('CTF dest is she1 with password C, not C-from-S', () {
+  test('CTF dest is sdcard1 with password C, not C-from-S', () {
     final a = createIdentity();
     final b = createIdentity();
     expect(destForLogin(a.address, height: 1), isNull);
     final paid = destForLogin(a.address, height: 1, viewKey: a.viewKey)!;
-    expect(paid.startsWith('she1'), isTrue);
+    expect(destHrp, 'sdcard');
+    expect(paid.startsWith('sdcard1'), isTrue);
+    expect(paid.startsWith('she1'), isFalse);
     expect(paid, isNot(a.address));
     expect(paid, isNot(degenerateDest(a.address, height: 1)));
     expect(destForLogin(a.address, height: 2, viewKey: a.viewKey), isNot(paid));
@@ -156,7 +158,7 @@ void main() {
     );
     expect(ledger.currentDest(id.address), paid);
     expect(paid, isNot(id.address));
-    expect(paid!.startsWith('she1'), isTrue);
+    expect(paid!.startsWith('sdcard1'), isTrue);
     expect(paid, isNot(degenerateDest(id.address, continuityRoot: header.sublist(68, 100), height: 5)));
   });
 
@@ -248,7 +250,7 @@ void main() {
     expect(miner.hashing, isFalse);
   });
 
-  test('send posts she1 from + memoCt; sender and recipient dests open plaintext, other dest does not', () async {
+  test('send posts sdcard1 from + memoCt; sender and recipient dests open plaintext, other dest does not', () async {
     final posted = <Map<String, dynamic>>[];
     final header = Uint8List(120);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
@@ -264,7 +266,7 @@ void main() {
     aliceL.viewSecret = alice.viewKey;
     final from = aliceL.currentDest(alice.address);
     final to = destForLogin(bob.address, height: 1, viewKey: bob.viewKey)!;
-    expect(from.startsWith('she1'), isTrue);
+    expect(from.startsWith('sdcard1'), isTrue);
     expect(from, isNot(alice.address));
     aliceL.creditHash(alice.address, hashes: 0);
     aliceL.confirmRound(address: alice.address, pot: 1, height: 1);

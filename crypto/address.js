@@ -1,7 +1,7 @@
 import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
 
 export const HRP = 'shear';
-export const HRP_DEST = 'she';
+export const HRP_DEST = 'sdcard';
 
 const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
@@ -67,7 +67,7 @@ export function isShearAddress(s) {
 }
 
 export function isDestAddress(s) {
-  return /^she1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(String(s || '').trim());
+  return /^sdcard1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(String(s || '').trim());
 }
 
 export function hash20FromAddress(address) {
