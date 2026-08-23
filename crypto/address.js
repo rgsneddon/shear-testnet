@@ -1,6 +1,7 @@
 import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
 
 export const HRP = 'shear';
+export const HRP_DEST = 'sdcard';
 
 const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
@@ -43,18 +44,47 @@ function convertBits(data, from, to, pad) {
   return out;
 }
 
-export function encodeAddress(pubkeyHash20) {
+export function encodeHrp(hrp, pubkeyHash20) {
   const data = Buffer.from(pubkeyHash20);
   if (data.length !== 20) throw new Error('spend hash must be 20 bytes');
   const values = [0, ...convertBits([...data], 8, 5, true)];
-  const checksum = polymod([...hrpExpand(HRP), ...values, 0, 0, 0, 0, 0, 0]) ^ 1;
+  const checksum = polymod([...hrpExpand(hrp), ...values, 0, 0, 0, 0, 0, 0]) ^ 1;
   const ret = [...values];
   for (let i = 0; i < 6; i += 1) ret.push((checksum >> (5 * (5 - i))) & 31);
-  return `${HRP}1${ret.map((v) => CHARSET[v]).join('')}`;
+  return `${hrp}1${ret.map((v) => CHARSET[v]).join('')}`;
+}
+
+export function encodeAddress(pubkeyHash20) {
+  return encodeHrp(HRP, pubkeyHash20);
+}
+
+export function encodeDest(pubkeyHash20) {
+  return encodeHrp(HRP_DEST, pubkeyHash20);
 }
 
 export function isShearAddress(s) {
   return /^shear1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(String(s || '').trim());
+}
+
+export function isDestAddress(s) {
+  return /^sdcard1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(String(s || '').trim());
+}
+
+export function hash20FromAddress(address) {
+  const raw = String(address || '').trim();
+  const one = raw.lastIndexOf('1');
+  if (one < 1) return null;
+  const body = raw.slice(one + 1).toLowerCase();
+  const vals = [];
+  for (const ch of body) {
+    const i = CHARSET.indexOf(ch);
+    if (i < 0) return null;
+    vals.push(i);
+  }
+  if (vals.length < 7) return null;
+  const bytes = convertBits(vals.slice(0, -6).slice(1), 5, 8, false);
+  if (!bytes || bytes.length < 20) return null;
+  return Buffer.from(bytes).subarray(0, 20);
 }
 
 export function newIdentity() {

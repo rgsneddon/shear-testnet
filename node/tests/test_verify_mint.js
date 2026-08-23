@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, isDestAddress } from '../../crypto/address.js';
+import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
 import { RESERVE_PROGRAM } from '../../crypto/asert.js';
 import {
   buildTemplate,
@@ -27,10 +28,12 @@ function mine(tpl) {
 describe('verifyBlock extra mint', () => {
   it('rejects unfunded extra txs and accepts Reserve-only extra mint via append', () => {
     const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const vault = vaultDest(id.address, { viewKey: id.viewKey });
     const base = {
       prev: GENESIS_PREV,
       height: 1,
-      miner: id.address,
+      miner: dest,
       bits: 8,
       now: Date.now(),
     };
@@ -40,7 +43,7 @@ describe('verifyBlock extra mint', () => {
 
     const thief = {
       vin: [],
-      vout: [{ address: id.address, nanos: 99 }],
+      vout: [{ address: dest, nanos: 99 }],
       programId: 'third-party-stake',
     };
     const stolen = mine(buildTemplate({ ...base, txs: [thief] }));
@@ -58,7 +61,7 @@ describe('verifyBlock extra mint', () => {
       programId: RESERVE_PROGRAM,
       mint: true,
       vin: [],
-      vout: [{ address: id.address, nanos: 7, kind: 'reserve' }],
+      vout: [{ address: vault, nanos: 7, kind: 'reserve' }],
     };
     const reserved = mine(buildTemplate({ ...base, txs: [reserveTx] }));
     const allowed = verifyBlock(reserved, null);

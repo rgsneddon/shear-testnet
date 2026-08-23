@@ -1,8 +1,7 @@
-import { isShearAddress } from '../../crypto/address.js';
+import { isDestAddress } from '../../crypto/address.js';
 import { HASH_BONUS_NANOS, NANOS_PER_SHE, BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { sealedExplorerRows } from '../../crypto/chronoflux.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
-import { lag1Continuity } from '../../node/src/chain.js';
+import { explorerRowPublic } from '../../crypto/flow_sheet.js';
 
 export function nanosToShe(n) {
   return Number(n || 0) / NANOS_PER_SHE;
@@ -17,6 +16,10 @@ function rowsToHistory(rows, addresses) {
     const nanos = Number(r.nanos || 0);
     if (set.has(r.from) && !set.has(r.to)) spendableNanos -= nanos;
     else if (set.has(r.to)) spendableNanos += nanos;
+    const pub = explorerRowPublic({
+      ...r,
+      memo: !!(r.memoCt || r.memo),
+    });
     txs.push({
       id: r.id,
       kind: set.has(r.from) && !set.has(r.to) ? (r.kind === 'transfer' ? 'send' : r.kind) : (r.kind === 'transfer' ? 'receive' : r.kind),
@@ -25,43 +28,23 @@ function rowsToHistory(rows, addresses) {
       amount: nanosToShe(nanos),
       height: r.height,
       confirmed: r.confirmed !== false,
+      memo: pub.memo === true,
     });
   }
   if (spendableNanos < 0) spendableNanos = 0;
   return { spendableNanos, spendable: nanosToShe(spendableNanos), txs };
 }
 
-function destSetFor(store, address) {
+export function reconstructOwner(store, address) {
   const addr = String(address || '').trim();
-  const dests = new Set([addr]);
-  const blocks = store.blocks || [];
-  for (let i = 0; i < blocks.length; i += 1) {
-    const prev = i ? blocks[i - 1] : null;
-    dests.add(destForLogin(addr, {
-      continuityRoot: lag1Continuity(prev?.header),
-      height: blocks[i].height,
-    }));
-  }
-  return dests;
-}
-
-/** History from sealed txs only — never from pruned hash samples. Dest vouts included. */
-export function reconstructOwner(store, address, { viewKey } = {}) {
-  const addr = String(address || '').trim();
-  if (viewKey != null && String(viewKey) !== '') {
-    const owned = store.viewKeyForAddress?.(addr) || '';
-    if (!owned || owned !== String(viewKey)) {
-      return { spendableNanos: 0, spendable: 0, txs: [] };
-    }
-  }
-  const dests = destSetFor(store, addr);
+  const dests = [addr];
   const rows = [];
   if (typeof store?.historyFor === 'function') {
-    for (const d of dests) rows.push(...store.historyFor(d));
+    rows.push(...store.historyFor(addr));
   } else {
     for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
   }
-  return rowsToHistory(rows, [...dests]);
+  return rowsToHistory(rows, dests);
 }
 
 export function pendingFor(miners, address) {
@@ -71,12 +54,32 @@ export function pendingFor(miners, address) {
   return { shares: hashes, amount: nanosToShe(hashes * HASH_BONUS_NANOS) };
 }
 
+function publicExplorerTxs(store) {
+  const rows = [];
+  if (typeof store?.historyFor === 'function') {
+    for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
+  } else {
+    for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
+  }
+  return rows.map((r) => explorerRowPublic({
+    id: r.id,
+    kind: r.kind,
+    from: r.from,
+    to: r.to,
+    amount: nanosToShe(r.nanos),
+    height: r.height,
+    confirmed: r.confirmed !== false,
+    memo: !!(r.memoCt || r.memo),
+    memoCt: r.memoCt,
+  }));
+}
+
 export function handleWalletApi(url, method, body, { store, miners, queueSend }) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
   if (path === '/api/wallet/balance' && verb === 'GET') {
     const address = url.searchParams.get('address') || '';
-    if (!isShearAddress(address)) {
+    if (!isDestAddress(address)) {
       return { status: 400, json: { ok: false, reason: 'bad_address' } };
     }
     const rec = reconstructOwner(store, address);
@@ -95,38 +98,25 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
     };
   }
   if (path === '/api/wallet/register' && verb === 'POST') {
-    const address = String(body.address || '');
-    const viewKey = String(body.viewKey || '');
-    if (!isShearAddress(address) || !viewKey) {
-      return { status: 400, json: { ok: false, reason: 'bad_register' } };
-    }
-    store.registerViewKey?.(address, viewKey);
-    return { status: 200, json: { ok: true, address } };
+    return { status: 404, json: { ok: false, reason: 'register_disabled' } };
   }
-  if ((path === '/api/wallet/history' || path === '/api/explorer/history') && verb === 'GET') {
-    const viewKey = url.searchParams.get('viewKey') || '';
-    let address = url.searchParams.get('address') || '';
-    if (path === '/api/explorer/history') {
-      if (!viewKey) {
-        return { status: 200, json: { ok: true, address, txs: [], amountsOnly: true } };
-      }
-      const fromKey = store.addressForViewKey?.(viewKey) || '';
-      if (address && fromKey && address !== fromKey) {
-        return { status: 200, json: { ok: true, address, txs: [], amountsOnly: true } };
-      }
-      address = fromKey || address;
-      if (!address || (store.viewKeyForAddress?.(address) || '') !== viewKey) {
-        return { status: 200, json: { ok: true, address, txs: [], amountsOnly: true } };
-      }
+  if (path === '/api/explorer/history' && verb === 'GET') {
+    const txs = publicExplorerTxs(store);
+    return { status: 200, json: { ok: true, txs, amountsOnly: true } };
+  }
+  if (path === '/api/wallet/history' && verb === 'GET') {
+    const address = url.searchParams.get('address') || '';
+    if (!isDestAddress(address)) {
+      return { status: 400, json: { ok: false, reason: 'bad_address' } };
     }
-    const rec = reconstructOwner(store, address, { viewKey: path === '/api/explorer/history' ? viewKey : undefined });
+    const rec = reconstructOwner(store, address);
     return { status: 200, json: { ok: true, coin: 'SHE', address, txs: rec.txs, amountsOnly: true } };
   }
   if (path === '/api/wallet/send' && verb === 'POST') {
     const from = String(body.from || '');
     const to = String(body.to || '');
     const amount = Number(body.amount);
-    if (!isShearAddress(from) || !isShearAddress(to) || !(amount > 0)) {
+    if (!isDestAddress(from) || !isDestAddress(to) || !(amount > 0)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
     const rec = reconstructOwner(store, from);
@@ -134,12 +124,13 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
     if (rec.spendableNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
-    const tx = queueSend({ from, to, nanos, amount });
+    const memoCt = body.memoCt || null;
+    const tx = queueSend({ from, to, nanos, amount, memoCt });
     return {
       status: 200,
       json: {
         ok: true,
-        tx: { id: tx.id, from, to, amount, kind: 'send', confirmed: false },
+        tx: { id: tx.id, from, to, amount, kind: 'send', confirmed: false, memo: !!memoCt },
         fromBalance: nanosToShe(rec.spendableNanos - nanos),
       },
     };

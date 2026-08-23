@@ -1,10 +1,12 @@
-import { createHash } from 'node:crypto';
-import { encodeAddress, isShearAddress } from './address.js';
+import { createHash, pbkdf2Sync, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { encodeDest, isShearAddress, isDestAddress, hash20FromAddress } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
 
-/** continuity-tethered Flow (CTF). Domain separator stays chronoflux-J-v1. */
+/** continuity-tethered Flow (CTF). Paid dests need independent Closure C, not C-from-S. */
 export const FLOW_PERSONAL = 'chronoflux-J-v1';
 export const CLOSURE_PERSONAL = 'chronoflux-G-v1';
+export const VAULT_DOMAIN = 'shear-reserve-v1';
+export const VIEW_KDF_INFO = 'chronoflux-G-v1';
 
 export function asBuf(x, n) {
   if (Buffer.isBuffer(x) && x.length === n) return x;
@@ -16,10 +18,23 @@ export function asBuf(x, n) {
   return createHash('sha256').update(b).digest().subarray(0, n);
 }
 
-export function closureCommit(viewKey) {
+/** Password → view secret V. Same KDF as shewall (PBKDF2-SHA256-100000). */
+export function viewSecretFromPassword(password, salt) {
+  const s = Buffer.isBuffer(salt) ? salt : Buffer.from(String(salt || ''), 'utf8');
+  const k = pbkdf2Sync(String(password || ''), s, 100000, 32, 'sha256');
+  return createHash('sha256').update(VIEW_KDF_INFO).update(k).digest();
+}
+
+export function closureCommit(viewSecret) {
+  const v = Buffer.isBuffer(viewSecret) ? viewSecret : Buffer.from(String(viewSecret || ''), 'utf8');
+  return createHash('sha256').update(CLOSURE_PERSONAL).update(v).digest();
+}
+
+/** Degenerate: C from S. Not the paid dest generator. */
+export function impliedClosure(spendHash20) {
   return createHash('sha256')
     .update(CLOSURE_PERSONAL)
-    .update(String(viewKey || ''))
+    .update(asBuf(spendHash20, 20))
     .digest();
 }
 
@@ -48,59 +63,24 @@ export function flowDestHash({ spendHash20, closureCommit: C, continuityRoot, he
 }
 
 export function flowDestAddress(args) {
-  return encodeAddress(flowDestHash(args));
-}
-
-const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
-
-function convertBits(data, from, to, pad) {
-  let acc = 0;
-  let bits = 0;
-  const maxv = (1 << to) - 1;
-  const out = [];
-  for (const value of data) {
-    acc = (acc << from) | value;
-    bits += from;
-    while (bits >= to) {
-      bits -= to;
-      out.push((acc >> bits) & maxv);
-    }
-  }
-  if (pad && bits) out.push((acc << (to - bits)) & maxv);
-  return out;
+  return encodeDest(flowDestHash(args));
 }
 
 export function spendHashFromAddress(address) {
   if (!isShearAddress(address)) return null;
-  const raw = String(address || '').trim();
-  const one = raw.lastIndexOf('1');
-  if (one < 1) return null;
-  const body = raw.slice(one + 1).toLowerCase();
-  const vals = [];
-  for (const ch of body) {
-    const i = CHARSET.indexOf(ch);
-    if (i < 0) return null;
-    vals.push(i);
-  }
-  if (vals.length < 7) return null;
-  const data = vals.slice(0, -6);
-  const bytes = convertBits(data.slice(1), 5, 8, false);
-  if (!bytes || bytes.length < 20) return null;
-  return Buffer.from(bytes).subarray(0, 20);
+  return hash20FromAddress(address);
 }
 
-export function impliedClosure(spendHash20) {
-  return createHash('sha256')
-    .update(CLOSURE_PERSONAL)
-    .update(asBuf(spendHash20, 20))
-    .digest();
-}
-
-/** Login may be rest-frame shear1. C from view key if provided, else implied from S. */
+/**
+ * Paid dest. Login already sdcard1 → pay as-is.
+ * Rest-frame shear1 requires independent C (viewKey / closureCommit). No C-from-S.
+ */
 export function destForLogin(login, { continuityRoot, height, viewKey, closureCommit: C } = {}) {
+  if (isDestAddress(login)) return login;
   const s = spendHashFromAddress(login);
-  if (!s) return login;
-  const commit = C || (viewKey ? closureCommit(viewKey) : impliedClosure(s));
+  if (!s) return null;
+  const commit = C ? asBuf(C, 32) : (viewKey ? closureCommit(viewKey) : null);
+  if (!commit) return null;
   return flowDestAddress({
     spendHash20: s,
     closureCommit: commit,
@@ -109,30 +89,96 @@ export function destForLogin(login, { continuityRoot, height, viewKey, closureCo
   });
 }
 
+export function degenerateDest(login, opts = {}) {
+  const s = spendHashFromAddress(login);
+  if (!s) return null;
+  return flowDestAddress({
+    spendHash20: s,
+    closureCommit: impliedClosure(s),
+    continuityRoot: opts.continuityRoot,
+    height: opts.height,
+  });
+}
+
 export function flowSpendMatches({ dest, spendHash20, closureCommit: C, continuityRoot, height }) {
   const want = flowDestAddress({ spendHash20, closureCommit: C, continuityRoot, height });
   return String(dest) === want;
 }
 
-/**
- * Dest list a view key can open. Dests are destForLogin(rest, lag-1, height)
- * with no viewKey (same as coinbase). ownerViewKey must match or list is empty.
- */
 export function destsForViewKey(viewKey, restAddress, rounds, { ownerViewKey } = {}) {
   if (!String(viewKey || '')) return [];
   const rest = String(restAddress || '');
   if (!isShearAddress(rest)) return [];
   if (ownerViewKey != null && String(viewKey) !== String(ownerViewKey)) return [];
+  const C = closureCommit(viewKey);
   return rounds.map((r) => destForLogin(rest, {
     continuityRoot: r.continuityRoot,
     height: r.height,
-  }));
+    closureCommit: C,
+  })).filter(Boolean);
 }
 
-/** Reserve/Vortex principal must be rest-frame, never this round's dest. */
-export function reserveRejectsDest(restFrame, maybeDest, { continuityRoot, height = 1 } = {}) {
-  const dest = destForLogin(restFrame, { continuityRoot, height });
-  return String(maybeDest) === dest && String(maybeDest) !== String(restFrame);
+export function vaultRoot() {
+  return createHash('sha256').update(VAULT_DOMAIN).digest();
 }
 
-export { EMPTY_ROOT };
+export function vaultDest(restFrame, { viewKey, closureCommit: C } = {}) {
+  const s = spendHashFromAddress(restFrame);
+  if (!s) return null;
+  const commit = C ? asBuf(C, 32) : (viewKey ? closureCommit(viewKey) : null);
+  if (!commit) return null;
+  return flowDestAddress({
+    spendHash20: s,
+    closureCommit: commit,
+    continuityRoot: vaultRoot(),
+    height: 0,
+  });
+}
+
+export function reservePrincipal(restFrame, opts = {}) {
+  return vaultDest(restFrame, opts);
+}
+
+export function reserveRejectsDest(restFrame, maybeDest, opts = {}) {
+  if (isShearAddress(maybeDest)) return true;
+  const vault = vaultDest(restFrame, opts);
+  const round = destForLogin(restFrame, opts);
+  return String(maybeDest) === round && vault && String(maybeDest) !== vault;
+}
+
+export function memoKey(dest) {
+  const d = hash20FromAddress(dest) || asBuf(dest, 20);
+  return createHash('sha256').update(FLOW_PERSONAL).update(d).digest();
+}
+
+export function memoSeal(dest, plaintext) {
+  const key = memoKey(dest);
+  const nonce = randomBytes(12);
+  const c = createCipheriv('aes-256-gcm', key, nonce);
+  const ct = Buffer.concat([c.update(String(plaintext || ''), 'utf8'), c.final()]);
+  return {
+    v: 1,
+    nonce: nonce.toString('base64'),
+    mac: c.getAuthTag().toString('base64'),
+    ct: ct.toString('base64'),
+  };
+}
+
+export function memoOpen(dest, env) {
+  if (!env || env.v !== 1) return null;
+  try {
+    const key = memoKey(dest);
+    const d = createDecipheriv('aes-256-gcm', key, Buffer.from(env.nonce, 'base64'));
+    d.setAuthTag(Buffer.from(env.mac, 'base64'));
+    return Buffer.concat([d.update(Buffer.from(env.ct, 'base64')), d.final()]).toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
+export function explorerRowPublic(row) {
+  const { memoCt, memoPlain, ...rest } = row || {};
+  return { ...rest, memo: !!(memoCt || row?.memo) };
+}
+
+export { EMPTY_ROOT, isDestAddress, isShearAddress };

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { requiredJobFields } from '../../crypto/header.js';
 import { headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, ALGO, CLIENT } from '../../crypto/shear_hash.js';
-import { isShearAddress } from '../../crypto/address.js';
+import { isDestAddress } from '../../crypto/address.js';
 import { createStore } from '../../node/src/store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,7 +24,7 @@ export function admitClient(params) {
     return { ok: false, reason: 'client_refused' };
   }
   const login = parseLogin(params?.login || params?.user);
-  if (!isShearAddress(login)) return { ok: false, reason: 'bad_login' };
+  if (!isDestAddress(login)) return { ok: false, reason: 'bad_login' };
   return { ok: true, login };
 }
 

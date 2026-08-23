@@ -13,6 +13,7 @@ import 'package:shear_wallet/shear_hash.dart';
 import 'package:shear_wallet/shear_miner_host.dart';
 import 'package:shear_wallet/shear_theme.dart';
 import 'package:shear_wallet/shear_ctf.dart';
+import 'package:shear_wallet/shear_vortex.dart';
 
 void main() {
   test('new identity is shear1 with a stable view key after persist/reload', () async {
@@ -80,32 +81,36 @@ void main() {
     await expectLater(ShearLock.open(env, 'wrong'), throwsA(anything));
   });
 
-  test('CTF dest ≠ login, changes with height/continuity, two logins differ, view-key isolation, Reserve rest-frame', () {
-    const addr = 'shear1qqyqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqt0p2rt';
-    expect(destForLogin(addr, height: 1), 'shear1qa9fmadth4c9y25hc8wjrm9t5kq7qrfhp3sczuf');
-    expect(destForLogin(addr, height: 2), 'shear1qjz8q7jyptellt2z8g79fjg3va9z45mqlavjcpl');
-    expect(destForLogin(addr, height: 1), isNot(addr));
-    final root2 = Uint8List(32);
-    root2.fillRange(0, 32, 2);
-    expect(
-      destForLogin(addr, continuityRoot: root2, height: 1),
-      'shear1qlqqee4eex7wguz7wardr64az4ltrz20qnf53jc',
-    );
+  test('CTF dest is sdcard1 with password C, not C-from-S', () {
     final a = createIdentity();
     final b = createIdentity();
-    expect(destForLogin(a.address, height: 1), isNot(destForLogin(b.address, height: 1)));
+    expect(destForLogin(a.address, height: 1), isNull);
+    final paid = destForLogin(a.address, height: 1, viewKey: a.viewKey)!;
+    expect(paid.startsWith('sdcard1'), isTrue);
+    expect(paid, isNot(a.address));
+    expect(paid, isNot(degenerateDest(a.address, height: 1)));
+    expect(destForLogin(a.address, height: 2, viewKey: a.viewKey), isNot(paid));
+    final root2 = Uint8List(32)..fillRange(0, 32, 2);
+    expect(
+      destForLogin(a.address, continuityRoot: root2, height: 1, viewKey: a.viewKey),
+      isNot(paid),
+    );
+    expect(
+      destForLogin(a.address, height: 1, viewKey: a.viewKey),
+      isNot(destForLogin(b.address, height: 1, viewKey: b.viewKey)),
+    );
     expect(destsForViewKey('', a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     final aliceDests = destsForViewKey(a.viewKey, a.address, heights: [1, 2], ownerViewKey: a.viewKey);
-    final bobDests = destsForViewKey(b.viewKey, b.address, heights: [1, 2], ownerViewKey: b.viewKey);
-    expect(aliceDests.first, destForLogin(a.address, height: 1));
+    expect(aliceDests.first, paid);
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
-    expect(aliceDests.length, 2);
-    expect(aliceDests[0], isNot(bobDests[0]));
-    expect(reservePrincipal(a.address), a.address);
-    expect(reserveRejectsDest(a.address, destForLogin(a.address, height: 1)), isTrue);
-    expect(reserveRejectsDest(a.address, a.address), isFalse);
-    expect(kWalletVersion, '0.0.2');
+    expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
+    expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
+    expect(kWalletVersion, '0.0.3');
     expect(kWalletVersion.contains('0.0.10'), isFalse);
+    final key = issueVorticeKey('stake-pool-a');
+    expect(key, isNotNull);
+    expect(parseVorticeKey(key!)?.id, 'stake-pool-a');
+    expect(addVortice(const [reserveVortice], key).length, 2);
   });
 
   test('currentDest equals destForLogin with lag-1 from tip header and next height', () {
@@ -115,12 +120,13 @@ void main() {
     for (var i = 0; i < 32; i++) {
       header[68 + i] = 3;
     }
+    ledger.viewSecret = id.viewKey;
     ledger.applyTipHeader(header, sealedHeight: 4);
     expect(ledger.tipHeight, 5);
     expect(ledger.lag1Root, header.sublist(68, 100));
     expect(
       ledger.currentDest(id.address),
-      destForLogin(id.address, continuityRoot: header.sublist(68, 100), height: 5),
+      destForLogin(id.address, continuityRoot: header.sublist(68, 100), height: 5, viewKey: id.viewKey),
     );
   });
 
@@ -138,30 +144,20 @@ void main() {
       http: _realHttp(),
     );
     final ledger = ShearLedger(pool: pool);
-    // Same call _boot uses: syncSpendable → syncTip → applyTipHex(stats.header).
-    await ledger.syncSpendable(id.address);
+    ledger.viewSecret = id.viewKey;
+    await ledger.syncSpendable(ledger.currentDest(id.address));
     expect(ledger.tipHeight, 5);
     expect(ledger.lag1Root, header.sublist(68, 100));
     final paid = destForLogin(
       id.address,
       continuityRoot: header.sublist(68, 100),
       height: 5,
+      viewKey: id.viewKey,
     );
     expect(ledger.currentDest(id.address), paid);
     expect(paid, isNot(id.address));
-    expect(
-      ledger.currentDest(id.address),
-      isNot(destForLogin(id.address, height: 5)),
-    );
-    expect(
-      ledger.currentDest(id.address),
-      isNot(destForLogin(
-        id.address,
-        continuityRoot: header.sublist(68, 100),
-        height: 5,
-        viewKey: id.viewKey,
-      )),
-    );
+    expect(paid!.startsWith('sdcard1'), isTrue);
+    expect(paid, isNot(degenerateDest(id.address, continuityRoot: header.sublist(68, 100), height: 5)));
   });
 
   test('Dart ShearHash matches C selftest vector 6e95b903…', () {
@@ -205,13 +201,13 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.0.2');
-    expect(kWalletVersion, '0.0.2');
+    expect(app.title, 'Shear 0.0.3');
+    expect(kWalletVersion, '0.0.3');
     // password gate first
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
-    expect(find.textContaining('Shear  0.0.2'), findsWidgets);
+    expect(find.textContaining('Shear  0.0.3'), findsWidgets);
     for (final name in kTabs) {
       expect(find.text(name), findsWidgets);
     }

@@ -1,24 +1,51 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, isDestAddress, isShearAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { EMPTY_ROOT } from '../../crypto/merkle.js';
-import { buildTemplate, GENESIS_PREV, coinbaseTx } from '../src/chain.js';
+import { buildTemplate, GENESIS_PREV, coinbaseTx, verifyBlock, mineTemplate } from '../src/chain.js';
 
 describe('flow dest coinbase', () => {
-  it('pays lag-1 dest, not the rest-frame login', () => {
+  it('pays miner login as dest; shear1 never on coinbase', () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { continuityRoot: EMPTY_ROOT, height: 1 });
-    assert.notEqual(dest, id.address);
+    const dest = destForLogin(id.address, { continuityRoot: EMPTY_ROOT, height: 1, viewKey: id.viewKey });
+    assert.equal(isDestAddress(dest), true);
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
-      miner: id.address,
+      miner: dest,
       bits: 8,
       now: Date.now(),
     });
     assert.equal(tpl.txs[0].vout[0].address, dest);
-    const plain = coinbaseTx({ height: 1, miner: id.address });
-    assert.equal(plain.vout[0].address, id.address);
+    assert.equal(isShearAddress(tpl.txs[0].vout[0].address), false);
+    const plain = coinbaseTx({ height: 1, miner: dest });
+    assert.equal(plain.vout[0].address, dest);
+    assert.throws(() => coinbaseTx({ height: 1, miner: id.address }), /coinbase_needs_dest/);
+  });
+
+  it('verifyBlock rejects rest-frame shear1 on vout', () => {
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const tpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: dest, bits: 8, now: Date.now() });
+    const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
+    assert.ok(found && found.block, 'need pow');
+    const block = {
+      header: found.header,
+      txs: tpl.txs,
+      samples: tpl.samples,
+      height: 1,
+    };
+    const ok = verifyBlock(block, null);
+    assert.equal(ok.ok, true, ok.reason);
+    const bad = {
+      ...block,
+      txs: [{
+        ...tpl.txs[0],
+        vout: tpl.txs[0].vout.map((o) => ({ ...o, address: id.address })),
+      }],
+    };
+    const rej = verifyBlock(bad, null);
+    assert.equal(rej.ok, false);
   });
 });

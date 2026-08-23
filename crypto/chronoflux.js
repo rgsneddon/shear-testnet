@@ -109,6 +109,7 @@ export function sealedExplorerRows(block) {
       nanos,
       height,
       confirmed: true,
+      memo: !!(tx.memoCt || tx.vout?.[0]?.memoCt),
     });
   }
   return rows;

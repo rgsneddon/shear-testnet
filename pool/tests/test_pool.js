@@ -6,6 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { requiredJobFields } from '../../crypto/header.js';
 import { newIdentity } from '../../crypto/address.js';
+import { destForLogin } from '../../crypto/flow_sheet.js';
 import { createPool, gateJob, scoreShare, admitClient } from '../src/pool.js';
 import { publicJob, buildTemplate } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
@@ -25,10 +26,12 @@ describe('job gate', () => {
 });
 
 describe('admit', () => {
-  it('refuses the wrong client name', () => {
+  it('admits sdcard1 dest login, refuses rest-frame shear1 and wrong client', () => {
     const id = newIdentity();
-    assert.equal(admitClient({ login: id.address, client: 'ShearHash' }).ok, true);
-    assert.equal(admitClient({ login: id.address, client: 'other' }).ok, false);
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    assert.equal(admitClient({ login: dest, client: 'ShearHash' }).ok, true);
+    assert.equal(admitClient({ login: id.address, client: 'ShearHash' }).ok, false);
+    assert.equal(admitClient({ login: dest, client: 'other' }).ok, false);
   });
 });
 
@@ -36,11 +39,12 @@ describe('pool dashboard + stratum', () => {
   it('serves light SHE page and accepts a header share on 1111', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pool-'));
     const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
       httpPort: 0,
-      miner: id.address,
+      miner: dest,
       shareBits: 4,
       bits: 8,
     });
@@ -70,7 +74,7 @@ describe('pool dashboard + stratum', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: id.address + '.rig', client: 'ShearHash', threads: 1 },
+          params: { login: dest + '.rig', client: 'ShearHash', threads: 1 },
         }) + '\n');
       });
       let buf = '';

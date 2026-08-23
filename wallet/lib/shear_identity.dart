@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 const shearHrp = 'shear';
+const destHrp = 'sdcard';
 const _charset = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
 class ShearIdentity {
@@ -32,6 +33,11 @@ class ShearIdentity {
 
 bool isShearAddress(String s) {
   return RegExp(r'^shear1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$', caseSensitive: false)
+      .hasMatch(s.trim());
+}
+
+bool isDestAddress(String s) {
+  return RegExp(r'^sdcard1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$', caseSensitive: false)
       .hasMatch(s.trim());
 }
 
@@ -63,18 +69,22 @@ Uint8List? spendHashFromAddress(String address) {
   return Uint8List.fromList(bytes.sublist(0, 20));
 }
 
-String encodeShearAddress(Uint8List pubkeyHash20) {
+String encodeHrp(String hrp, Uint8List pubkeyHash20) {
   if (pubkeyHash20.length != 20) {
     throw ArgumentError('spend hash must be 20 bytes');
   }
   final values = [0, ..._convertBits(pubkeyHash20, 8, 5, true)];
-  final checksum = _polymod([..._hrpExpand(shearHrp), ...values, 0, 0, 0, 0, 0, 0]) ^ 1;
+  final checksum = _polymod([..._hrpExpand(hrp), ...values, 0, 0, 0, 0, 0, 0]) ^ 1;
   final ret = [...values];
   for (var i = 0; i < 6; i++) {
     ret.add((checksum >> (5 * (5 - i))) & 31);
   }
-  return '${shearHrp}1${ret.map((v) => _charset[v]).join()}';
+  return '${hrp}1${ret.map((v) => _charset[v]).join()}';
 }
+
+String encodeShearAddress(Uint8List pubkeyHash20) => encodeHrp(shearHrp, pubkeyHash20);
+
+String encodeDestAddress(Uint8List pubkeyHash20) => encodeHrp(destHrp, pubkeyHash20);
 
 List<int> _hrpExpand(String hrp) {
   final out = <int>[];

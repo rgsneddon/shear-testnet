@@ -66,20 +66,30 @@ Uint8List flowDestHash({
   return Uint8List.fromList(_sha(utf8.encode(ctfFlowPersonal), spendHash20, t).sublist(0, 20));
 }
 
-String destForLogin(
+String? destForLogin(
   String login, {
   Uint8List? continuityRoot,
   int height = 0,
   String? viewKey,
 }) {
+  if (isDestAddress(login)) return login;
   final s = spendHashFromAddress(login);
-  if (s == null) return login;
-  final c = viewKey != null && viewKey.isNotEmpty
-      ? closureCommit(viewKey)
-      : impliedClosure(s);
-  return encodeShearAddress(flowDestHash(
+  if (s == null) return null;
+  if (viewKey == null || viewKey.isEmpty) return null;
+  return encodeDestAddress(flowDestHash(
     spendHash20: s,
-    closure: c,
+    closure: closureCommit(viewKey),
+    continuityRoot: continuityRoot,
+    height: height,
+  ));
+}
+
+String? degenerateDest(String login, {Uint8List? continuityRoot, int height = 0}) {
+  final s = spendHashFromAddress(login);
+  if (s == null) return null;
+  return encodeDestAddress(flowDestHash(
+    spendHash20: s,
+    closure: impliedClosure(s),
     continuityRoot: continuityRoot,
     height: height,
   ));
@@ -100,14 +110,30 @@ List<String> destsForViewKey(
         restAddress,
         continuityRoot: roots != null && i < roots.length ? roots[i] : ctfEmptyRoot(),
         height: heights[i],
-      ),
+        viewKey: viewKey,
+      )!,
   ];
 }
 
-/// Reserve / Vortex lock principal is rest-frame, never a CTF dest.
-String reservePrincipal(String restFrame) => restFrame;
+Uint8List vaultRoot() => _sha(utf8.encode('shear-reserve-v1'));
 
-bool reserveRejectsDest(String restFrame, String maybeDest, {int height = 1}) {
-  final dest = destForLogin(restFrame, height: height);
-  return maybeDest == dest && maybeDest != restFrame;
+String? vaultDest(String restFrame, {required String viewKey}) {
+  final s = spendHashFromAddress(restFrame);
+  if (s == null) return null;
+  return encodeDestAddress(flowDestHash(
+    spendHash20: s,
+    closure: closureCommit(viewKey),
+    continuityRoot: vaultRoot(),
+    height: 0,
+  ));
+}
+
+String? reservePrincipal(String restFrame, {required String viewKey}) =>
+    vaultDest(restFrame, viewKey: viewKey);
+
+bool reserveRejectsDest(String restFrame, String maybeDest, {int height = 1, required String viewKey}) {
+  if (isShearAddress(maybeDest)) return true;
+  final dest = destForLogin(restFrame, height: height, viewKey: viewKey);
+  final vault = vaultDest(restFrame, viewKey: viewKey);
+  return maybeDest == dest && vault != null && maybeDest != vault;
 }

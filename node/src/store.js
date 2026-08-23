@@ -144,14 +144,14 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     const bits = bitsIn != null ? bitsIn : retarget(blocks);
     const lag1 = lag1Continuity(t ? t.header : null);
     const pendingTxs = mempool.map((m) => {
-      const dest = destForLogin(m.to, { continuityRoot: lag1, height });
+      const dest = destForLogin(m.to, { continuityRoot: lag1, height }) || m.to;
       return {
         id: m.id,
         from: m.from,
         to: dest,
         nanos: m.nanos,
         vin: [{ address: m.from }],
-        vout: [{ address: dest, nanos: m.nanos }],
+        vout: [{ address: dest, nanos: m.nanos, memoCt: m.memoCt }],
       };
     });
     const tpl = buildTemplate({

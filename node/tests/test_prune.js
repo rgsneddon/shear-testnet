@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { newIdentity } from '../../crypto/address.js';
+import { destForLogin } from '../../crypto/flow_sheet.js';
 import { HASH_BONUS_NANOS } from '../../crypto/asert.js';
 import { buildTemplate, mineTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { createStore } from '../src/store.js';
@@ -24,10 +25,12 @@ describe('node chain is lean, light, scalable, prunable', () => {
   it('collates hashes, prunes sample bodies, keeps sealed txs for explorer', () => {
     const alice = newIdentity();
     const bob = newIdentity();
+    const destA = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const destB = destForLogin(bob.address, { viewKey: bob.viewKey, height: 1 });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-prune-'));
     const store = createStore(dir, { pruneAfter: 2 });
     const fat = Array.from({ length: 250 }, (_, i) => ({
-      miner: alice.address,
+      miner: destA,
       nonce: String(i),
       tag: 'a',
       count: 1,
@@ -36,17 +39,17 @@ describe('node chain is lean, light, scalable, prunable', () => {
     const b1 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
-      miner: alice.address,
+      miner: destA,
       bits: 8,
       now: Date.now(),
       samples: fat,
       txs: [{
         id: 'send-forever',
-        from: alice.address,
-        to: bob.address,
+        from: destA,
+        to: destB,
         nanos: 3,
-        vin: [{ address: alice.address }],
-        vout: [{ address: bob.address, nanos: 3 }],
+        vin: [{ address: destA }],
+        vout: [{ address: destB, nanos: 3 }],
       }],
     }));
     const a1 = store.append(b1);
@@ -58,20 +61,20 @@ describe('node chain is lean, light, scalable, prunable', () => {
     const b2 = mine(buildTemplate({
       prev: a1.block.hash,
       height: 2,
-      miner: alice.address,
+      miner: destA,
       bits: 8,
       now: Date.now() + 90_000,
-      samples: [{ miner: alice.address, nonce: 'x', tag: 'a', count: 2 }],
+      samples: [{ miner: destA, nonce: 'x', tag: 'a', count: 2 }],
     }));
     assert.equal(store.append(b2).ok, true);
 
     const b3 = mine(buildTemplate({
       prev: store.tip().hash,
       height: 3,
-      miner: alice.address,
+      miner: destA,
       bits: 8,
       now: Date.now() + 180_000,
-      samples: [{ miner: alice.address, nonce: 'y', tag: 'a', count: 1 }],
+      samples: [{ miner: destA, nonce: 'y', tag: 'a', count: 1 }],
     }));
     assert.equal(store.append(b3).ok, true);
 
@@ -90,8 +93,8 @@ describe('node chain is lean, light, scalable, prunable', () => {
     assert.equal(row1.tpl, undefined);
     assert.ok(!JSON.stringify(row1).includes('"count":1'));
 
-    const histAlice = reconstructOwner(store, alice.address);
-    const histBob = reconstructOwner(store, bob.address);
+    const histAlice = reconstructOwner(store, destA);
+    const histBob = reconstructOwner(store, destB);
     assert.ok(histAlice.txs.some((t) => t.id === 'send-forever'));
     assert.ok(histBob.txs.some((t) => t.id === 'send-forever'));
     assert.ok(histAlice.txs.some((t) => t.kind === 'hash' || t.kind === 'coinbase'));
@@ -100,7 +103,7 @@ describe('node chain is lean, light, scalable, prunable', () => {
     assert.equal(buriedCheck.ok, true);
 
     const reopened = createStore(dir, { pruneAfter: 2 });
-    const again = reconstructOwner(reopened, bob.address);
+    const again = reconstructOwner(reopened, destB);
     assert.ok(again.txs.some((t) => t.id === 'send-forever'));
   });
 });

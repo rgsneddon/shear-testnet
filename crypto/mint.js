@@ -4,7 +4,7 @@ import {
   HASH_BONUS_NANOS,
   extraMintAllowed,
 } from './asert.js';
-import { isShearAddress } from './address.js';
+import { isDestAddress, isShearAddress } from './address.js';
 import { hashBonusByMiner, coinbaseTx } from '../node/src/chain.js';
 
 export {
@@ -20,8 +20,7 @@ export function extraMint({ programId, to, nanos }) {
   if (!extraMintAllowed(programId)) {
     return { ok: false, reason: 'mint_forbidden' };
   }
-  if (!isShearAddress(to)) return { ok: false, reason: 'bad_address' };
-  // Reserve interest pays rest-frame Continuum, never a rotating dest.
+  if (!isDestAddress(to) && !isShearAddress(to)) return { ok: false, reason: 'bad_address' };
   const n = Number(nanos);
   if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: 'bad_nanos' };
   return { ok: true, programId: RESERVE_PROGRAM, to, nanos: n, kind: 'reserve' };

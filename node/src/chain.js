@@ -10,7 +10,7 @@ import {
   MAGIC_TESTNET,
   extraMintAllowed,
 } from '../../crypto/asert.js';
-import { isShearAddress } from '../../crypto/address.js';
+import { isDestAddress, isShearAddress } from '../../crypto/address.js';
 import { collateSamples } from '../../crypto/chronoflux.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 
@@ -39,7 +39,7 @@ export function hashBonusByMiner(samples = []) {
   const by = new Map();
   for (const s of collateSamples(samples)) {
     const addr = String(s.miner || s.address || '');
-    if (!isShearAddress(addr)) continue;
+    if (!isDestAddress(addr) && !isShearAddress(addr)) continue;
     by.set(addr, (by.get(addr) || 0) + s.count * HASH_BONUS_NANOS);
   }
   return by;
@@ -62,16 +62,16 @@ export function coinbaseTx({ height, miner, samples = [], potShares = null, dest
     : [{ address: miner, nanos: BLOCK_SUBSIDY_NANOS }];
   for (const s of shares) {
     const pay = destOf(s.address);
-    if (!isShearAddress(pay) || !s.nanos) continue;
+    if (!isDestAddress(pay) || !s.nanos) continue;
     vout.push({ address: pay, nanos: s.nanos, kind: 'pot' });
   }
   for (const [address, nanos] of bonuses) {
     const pay = destOf(address);
-    if (!isShearAddress(pay)) continue;
+    if (!isDestAddress(pay)) continue;
     vout.push({ address: pay, nanos, kind: 'hash' });
   }
   if (!vout.length) {
-    vout.push({ address: destOf(miner), nanos: BLOCK_SUBSIDY_NANOS, kind: 'pot' });
+    throw new Error('coinbase_needs_dest');
   }
   return {
     coinbase: true,
@@ -94,10 +94,9 @@ export function buildTemplate({
 }) {
   const collated = collateSamples(samples);
   const continuityLag1 = lag1Continuity(prevHeader);
-  const pay = destOf || ((login) => destForLogin(login, {
-    continuityRoot: continuityLag1,
-    height,
-  }));
+  const pay = destOf || ((login) => (isDestAddress(login)
+    ? login
+    : destForLogin(login, { continuityRoot: continuityLag1, height })));
   const cb = coinbaseTx({ height, miner, samples: collated, destOf: pay });
   const bodyTxs = [cb, ...txs];
   const merkle = merkleRoot(bodyTxs.map(digestTx));
@@ -173,9 +172,19 @@ export function verifyBlock(block, prev, { buried = false } = {}) {
     if (bonusNanos !== sampleCount * HASH_BONUS_NANOS) return { ok: false, reason: 'hash_bonus' };
   }
   for (const o of txs[0].vout) {
-    if (!isShearAddress(o.address)) return { ok: false, reason: 'miner_addr' };
+    if (isShearAddress(o.address) || !isDestAddress(o.address)) return { ok: false, reason: 'miner_addr' };
   }
   for (const tx of txs.slice(1)) {
+    const outs = Array.isArray(tx.vout) ? tx.vout : [];
+    for (const o of outs) {
+      if (o?.address && (isShearAddress(o.address) || !isDestAddress(o.address))) {
+        return { ok: false, reason: 'rest_frame_on_chain' };
+      }
+    }
+    const ins = Array.isArray(tx.vin) ? tx.vin : [];
+    for (const i of ins) {
+      if (i?.address && isShearAddress(i.address)) return { ok: false, reason: 'rest_frame_on_chain' };
+    }
     const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint;
     if (unfunded && !extraMintAllowed(tx.programId)) {
       return { ok: false, reason: 'mint_forbidden' };

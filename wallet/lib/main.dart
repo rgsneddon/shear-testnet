@@ -12,8 +12,9 @@ import 'shear_miner_host.dart';
 import 'shear_session.dart';
 import 'shear_theme.dart';
 import 'shear_ctf.dart';
+import 'shear_vortex.dart';
 
-const kWalletVersion = '0.0.2';
+const kWalletVersion = '0.0.3';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -26,7 +27,7 @@ const kTabs = [
 const kSymbols = ['∇·J = 0', 'J^μ', 'η', 'Ω^{μν}', 'S_{μν}', 'π', 'G_{μν}'];
 const kExplains = [
   'Your money. Spendable SHE after a block is found, plus this round’s pending hashes.',
-  'Send SHE to another shear1 address, or share yours so people can pay you.',
+  'Send SHE to an sdcard1 dest. Share dest, never rest-frame shear1.',
   'Mining. Start hashing. Each hash credits a tiny amount; you can spend it only when a block is found.',
   'Apps and contracts other people deploy. They cannot print SHE; they must fund their own rewards.',
   'How SHE is created: 1 SHE per block, plus 0.000000001 SHE per hash to each miner in that round.',
@@ -66,6 +67,10 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   bool unlocked = false;
   int tab = 0;
   bool mining = false;
+  int vortexTab = 0;
+  List<Vortice> vortices = const [reserveVortice];
+  final Set<String> openedMemos = {};
+  String? lastMemoPlain;
 
   @override
   void initState() {
@@ -81,11 +86,9 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
 
   Future<void> _boot() async {
     id = await session.loadOrCreate();
-    try {
-      await ledger.pool?.registerView(address: id!.address, viewKey: id!.viewKey);
-    } catch (_) {}
-    await ledger.syncSpendable(id!.address);
-    await ledger.syncHistory(id!.address);
+    ledger.viewSecret = password.isNotEmpty ? password : id!.viewKey;
+    await ledger.syncSpendable(ledger.currentDest(id!.address));
+    await ledger.syncHistory(ledger.currentDest(id!.address));
     if (mounted) setState(() {});
   }
 
@@ -129,6 +132,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
                   onSubmitted: (_) => setState(() {
                     password = ctrl.text;
                     unlocked = password.isNotEmpty;
+                    ledger.viewSecret = password;
                   }),
                 ),
                 const SizedBox(height: 12),
@@ -136,6 +140,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
                   onPressed: () => setState(() {
                     password = ctrl.text;
                     unlocked = password.isNotEmpty;
+                    ledger.viewSecret = password;
                   }),
                   child: const Text('Unlock'),
                 ),
@@ -156,7 +161,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       _continuum(ident),
       _flow(ident),
       _resistance(ident),
-      _vortex(),
+      _vortex(ident),
       _shearTab(),
       _reserve(ident),
       _closure(ident),
@@ -213,10 +218,10 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     final dest = ledger.currentDest(ident.address);
     return _card([
       const Text('Continuum  ∇·J = 0', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('Rest-frame (Reserve / Vortex lock)'),
+      const Text('Rest-frame shear1 (never share, never on chain)'),
       SelectableText(ident.address),
       const SizedBox(height: 6),
-      const Text('CTF dest this round (incoming mine / pay)'),
+      const Text('sdcard1 dest this round (share / mine / pay)'),
       SelectableText(dest),
       Text('View key  ${ident.viewKey}', style: const TextStyle(fontSize: 12, color: shearMuted)),
       const SizedBox(height: 8),
@@ -225,12 +230,24 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       Text('Pending this round  ${ledger.pending(ident.address).toStringAsFixed(9)} SHE  (not spendable until block found)'),
       const SizedBox(height: 12),
       const Text('Explorer', style: TextStyle(fontWeight: FontWeight.w700)),
+      if (hist.any((t) => t.memo && t.memoPlain != null && !openedMemos.contains(t.id)))
+        const Text('you have a new memo', style: TextStyle(fontWeight: FontWeight.w700, color: shearCyan)),
       if (hist.isEmpty) const Text('No confirmed transactions yet.', style: TextStyle(color: shearMuted)),
       for (final t in hist)
         ListTile(
           dense: true,
           title: Text('${t.kind}  ${t.amount.toStringAsFixed(9)} SHE'),
-          subtitle: Text('${t.from} → ${t.to}  h=${t.height ?? '-'}'),
+          subtitle: Text(
+            t.memo && openedMemos.contains(t.id) && t.memoPlain != null
+                ? '${t.from} → ${t.to}  h=${t.height ?? '-'}  memo: ${t.memoPlain}'
+                : '${t.from} → ${t.to}  h=${t.height ?? '-'}',
+          ),
+          onTap: t.memo
+              ? () => setState(() {
+                    openedMemos.add(t.id);
+                    lastMemoPlain = t.memoPlain;
+                  })
+              : null,
         ),
       const SizedBox(height: 8),
       Wrap(spacing: 8, children: [
@@ -247,8 +264,8 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
           child: const Text('Export shewall.json'),
         ),
         OutlinedButton(
-          onPressed: () => Clipboard.setData(ClipboardData(text: ident.address)),
-          child: const Text('Copy address'),
+          onPressed: () => Clipboard.setData(ClipboardData(text: dest)),
+          child: const Text('Copy dest'),
         ),
       ]),
     ]);
@@ -259,11 +276,12 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     final amt = TextEditingController();
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('CTF dest this round'),
+      const Text('sdcard1 dest this round'),
       SelectableText(ledger.currentDest(ident.address)),
       const SizedBox(height: 8),
-      TextField(controller: to, decoration: const InputDecoration(labelText: 'To (shear1…)')),
+      TextField(controller: to, decoration: const InputDecoration(labelText: 'To (sdcard1…)')),
       TextField(controller: amt, decoration: const InputDecoration(labelText: 'Amount SHE'), keyboardType: TextInputType.number),
+      TextField(controller: TextEditingController(), decoration: const InputDecoration(labelText: 'Memo (optional)')),
       FilledButton(
         onPressed: () async {
           try {
@@ -279,8 +297,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       ),
       const SizedBox(height: 8),
       const Text(
-        'Receive: share your rest-frame shear1. Incoming mine/pay land on the CTF dest for that height. '
-        'Paste a view key on the explorer to see only your dest amounts.',
+        'Receive: share this round’s sdcard1 dest, never shear1. Memo text is only in your explorer tab and theirs.',
       ),
     ]);
   }
@@ -298,7 +315,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
           }
           if (miner.isDesktop) {
             final proc = await miner.start(
-              address: ident.address,
+              address: ledger.currentDest(ident.address),
               pool: 'pool.shear.digital:1111',
             );
             if (proc == null) {
@@ -323,12 +340,58 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     ]);
   }
 
-  Widget _vortex() {
-    return _card(const [
-      Text('Vortex  Ω^{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
-      Text('Contract surface. Third-party staking dapps must top up rewards; they cannot mint SHE.'),
-      Text('Calls lock to rest-frame Continuum, not a rotating CTF dest.'),
-    ]);
+  Widget _vortex(ShearIdentity ident) {
+    final keyCtrl = TextEditingController();
+    final tabs = [...vortices, const Vortice(id: '_add', name: 'Add new vortice')];
+    final i = vortexTab.clamp(0, tabs.length - 1);
+    final cur = tabs[i];
+    final kids = <Widget>[
+      const Text('Vortex  Ω^{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
+      SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(children: [
+          for (var n = 0; n < tabs.length; n++)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                label: Text(tabs[n].name),
+                selected: n == i,
+                onSelected: (_) => setState(() => vortexTab = n),
+              ),
+            ),
+        ]),
+      ),
+      const SizedBox(height: 8),
+    ];
+    if (cur.id == '_add') {
+      kids.addAll([
+        const Text('Paste a vortice key from the dapp creator.'),
+        TextField(controller: keyCtrl, decoration: const InputDecoration(labelText: 'Creator vortice key')),
+        FilledButton(
+          onPressed: () {
+            final next = addVortice(vortices, keyCtrl.text);
+            if (next.length == vortices.length) return;
+            setState(() {
+              vortices = next;
+              vortexTab = next.length - 1;
+            });
+          },
+          child: const Text('Add vortice'),
+        ),
+      ]);
+    } else if (cur.id == reserveProgram) {
+      kids.addAll([
+        const Text('The Reserve. Lock π SHE for 400 days. Only this vortice may mint extra SHE.'),
+        SelectableText(vaultDest(ident.address, viewKey: ledger.viewSecret ?? ident.viewKey) ?? ''),
+      ]);
+    } else {
+      kids.addAll([
+        Text(cur.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+        Text('Program  ${cur.id}'),
+        const Text('Third-party vortice cannot mint SHE; it must fund its own rewards.'),
+      ]);
+    }
+    return _card(kids);
   }
 
   Widget _shearTab() {
@@ -347,8 +410,8 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       const Text('Lock π SHE for 400 days to vote. Interest tracks the Bank of England Base Rate.'),
       const Text('Vote: raise, lower, or hold the per-hash bonus (±1e-10). The 1 SHE pot does not change.'),
       const SizedBox(height: 8),
-      const Text('Lock principal is rest-frame Continuum, never this round’s CTF dest.'),
-      SelectableText(reservePrincipal(ident.address)),
+      const Text('Lock principal is vault sdcard1, never rest-frame shear1.'),
+      SelectableText(vaultDest(ident.address, viewKey: ledger.viewSecret ?? ident.viewKey) ?? ''),
     ]);
   }
 
@@ -359,7 +422,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       const Text(
         'Geometric closure of the wallet: password seals shewall.json '
         '(AES-256-GCM). Copy that one file to restore address and transactions. '
-        'The view key opens only your CTF dest amounts on the explorer.',
+        'The password is the view key. Dest scan stays in this wallet.',
       ),
       SelectableText('View key  ${ident.viewKey}', style: const TextStyle(fontSize: 12, color: shearMuted)),
       const SizedBox(height: 8),

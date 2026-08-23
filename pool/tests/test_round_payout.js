@@ -68,13 +68,15 @@ describe('round hash bonuses', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pay-'));
     const alice = newIdentity();
     const bob = newIdentity();
+    const destA = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const destB = destForLogin(bob.address, { viewKey: bob.viewKey, height: 1 });
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
       httpPort: 0,
-      miner: alice.address,
+      miner: destA,
       shareBits: 4,
-      bits: 12,
+      bits: 8,
     });
     await new Promise((resolve, reject) => {
       pool.stratum.listen(0, '127.0.0.1', () => {
@@ -83,8 +85,8 @@ describe('round hash bonuses', () => {
       pool.stratum.on('error', reject);
     });
     const port = pool.stratum.address().port;
-    const a = await login(port, alice.address + '.a');
-    const b = await login(port, bob.address + '.b');
+    const a = await login(port, destA + '.a');
+    const b = await login(port, destB + '.b');
     const job1 = a.job;
     const nA = 3;
     const nB = 2;
@@ -116,8 +118,8 @@ describe('round hash bonuses', () => {
     }
     if (!job2) job2 = pool.issueJob();
     const snap = pool.pendingPayout;
-    const aliceCount = snap.find((s) => s.miner === alice.address)?.count;
-    const bobCount = snap.find((s) => s.miner === bob.address)?.count;
+    const aliceCount = snap.find((s) => s.miner === destA)?.count;
+    const bobCount = snap.find((s) => s.miner === destB)?.count;
     assert.equal(aliceCount, nA + 1);
     assert.equal(bobCount, nB);
     const win2 = findNonces(job2, 1, { block: true })[0];
@@ -129,15 +131,6 @@ describe('round hash bonuses', () => {
     const split = coinbaseSplit(paid.txs[0]);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
     assert.equal(split.potNanos, 1_000_000_000);
-    const prev = pool.store.blocks[pool.store.blocks.length - 2];
-    const destA = destForLogin(alice.address, {
-      continuityRoot: lag1Continuity(prev?.header),
-      height: paid.height,
-    });
-    const destB = destForLogin(bob.address, {
-      continuityRoot: lag1Continuity(prev?.header),
-      height: paid.height,
-    });
     assert.notEqual(destA, alice.address);
     assert.equal(split.hashByMiner[destA], (nA + 1) * HASH_BONUS_NANOS);
     assert.equal(split.hashByMiner[destB], nB * HASH_BONUS_NANOS);

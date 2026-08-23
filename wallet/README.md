@@ -1,4 +1,4 @@
-# Shear wallet 0.0.2
+# Shear wallet 0.0.3
 
 Testnet wallet. Tabs: Continuum, Flow, Resistance, Vortex, Shear, Reserve, Closure (G_{μν}).
 

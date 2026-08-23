@@ -5,6 +5,7 @@ import { encodeHeader } from '../../crypto/header.js';
 import { EMPTY_ROOT } from '../../crypto/merkle.js';
 import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, RESERVE_PROGRAM } from '../../crypto/asert.js';
 import { newIdentity } from '../../crypto/address.js';
+import { destForLogin } from '../../crypto/flow_sheet.js';
 import { extraMintAllowed, extraMint, coinbaseSplit, coinbaseTx } from '../../crypto/mint.js';
 
 describe('header size', () => {
@@ -26,16 +27,18 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
   it('pays each hasher, not only the finder', () => {
     const alice = newIdentity();
     const bob = newIdentity();
+    const destA = destForLogin(alice.address, { viewKey: alice.viewKey, height: 3 });
+    const destB = destForLogin(bob.address, { viewKey: bob.viewKey, height: 3 });
     const samples = [
-      { miner: alice.address, nonce: '1', tag: 'shear-a', count: 4000 },
-      { miner: bob.address, nonce: '2', tag: 'shear-b', count: 1000 },
+      { miner: destA, nonce: '1', tag: 'shear-a', count: 4000 },
+      { miner: destB, nonce: '2', tag: 'shear-b', count: 1000 },
     ];
-    const cb = coinbaseTx({ height: 3, miner: alice.address, samples });
+    const cb = coinbaseTx({ height: 3, miner: destA, samples });
     const split = coinbaseSplit(cb);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
     assert.equal(split.potNanos, 1_000_000_000);
-    assert.equal(split.hashByMiner[alice.address], 4000 * HASH_BONUS_NANOS);
-    assert.equal(split.hashByMiner[bob.address], 1000 * HASH_BONUS_NANOS);
+    assert.equal(split.hashByMiner[destA], 4000 * HASH_BONUS_NANOS);
+    assert.equal(split.hashByMiner[destB], 1000 * HASH_BONUS_NANOS);
     assert.equal(split.hashNanos, 5000);
     assert.notEqual(alice.address, bob.address);
   });

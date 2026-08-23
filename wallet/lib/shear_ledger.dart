@@ -13,6 +13,8 @@ class ShearTx {
     required this.kind,
     this.height,
     this.confirmed = true,
+    this.memo = false,
+    this.memoPlain,
   });
 
   final String id;
@@ -22,6 +24,8 @@ class ShearTx {
   final String kind;
   final int? height;
   final bool confirmed;
+  final bool memo;
+  final String? memoPlain;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -31,6 +35,8 @@ class ShearTx {
         'kind': kind,
         'height': height,
         'confirmed': confirmed,
+        'memo': memo,
+        if (memoPlain != null) 'memoPlain': memoPlain,
       };
 
   factory ShearTx.fromJson(Map<String, dynamic> j) => ShearTx(
@@ -41,6 +47,8 @@ class ShearTx {
         kind: j['kind']?.toString() ?? '',
         height: (j['height'] as num?)?.toInt(),
         confirmed: j['confirmed'] is bool ? j['confirmed'] as bool : true,
+        memo: j['memo'] == true,
+        memoPlain: j['memoPlain']?.toString(),
       );
 }
 
@@ -96,7 +104,7 @@ class ShearLedger {
     if (total > 0) {
       _spendable[address] = spendable(address) + total;
     }
-    final dest = destForLogin(address, height: height > 0 ? height : tipHeight, continuityRoot: lag1Root);
+    final dest = destForLogin(address, height: height > 0 ? height : tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ?? address;
     _dests.add(dest);
     final tx = ShearTx(
       id: 'round-$height-$dest',
@@ -178,8 +186,11 @@ class ShearLedger {
     return ownerHistory(address);
   }
 
+  String? viewSecret;
+
   String currentDest(String restFrame) =>
-      destForLogin(restFrame, height: tipHeight, continuityRoot: lag1Root);
+      destForLogin(restFrame, height: tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ??
+      restFrame;
 
   Set<String> ownedAddresses(String restFrame) => {
         restFrame,
