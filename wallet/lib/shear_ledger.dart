@@ -53,8 +53,25 @@ class ShearLedger {
   final Map<String, double> _pending = {};
   final List<ShearTx> _txs = [];
   final Set<String> _dests = {};
+  /// Next dest height (tip sealed height + 1).
   int tipHeight = 1;
+  /// continuity_root of the sealed tip (lag-1 for the next dest).
   Uint8List? lag1Root;
+
+  /// Read lag-1 continuity from a 120-byte tip header. Next dest uses sealedHeight+1.
+  void applyTipHeader(Uint8List header, {required int sealedHeight}) {
+    lag1Root = lag1ContinuityFromHeader(header);
+    tipHeight = sealedHeight < 1 ? 1 : sealedHeight + 1;
+  }
+
+  void applyTipHex(String headerHex, {required int sealedHeight}) {
+    final raw = headerFromHex(headerHex);
+    if (raw == null) {
+      if (sealedHeight >= 1) tipHeight = sealedHeight + 1;
+      return;
+    }
+    applyTipHeader(raw, sealedHeight: sealedHeight);
+  }
 
   Iterable<ShearTx> get transactions => List.unmodifiable(_txs);
 
@@ -114,15 +131,24 @@ class ShearLedger {
     if (amount > spendable(address)) _spendable[address] = amount;
   }
 
+  Future<void> syncTip() async {
+    if (pool == null) return;
+    try {
+      final json = await pool!.stats();
+      final sealed = (json['height'] as num?)?.toInt() ?? 0;
+      final hex = json['header']?.toString() ?? '';
+      applyTipHex(hex, sealedHeight: sealed);
+    } catch (_) {}
+  }
+
   Future<double> syncSpendable(String address) async {
     final prev = spendable(address);
     if (pool == null) return prev;
     try {
+      await syncTip();
       final json = await pool!.balance(address);
       final live = (json['balance'] as num?)?.toDouble() ?? 0;
       _pending[address] = (json['pending'] as num?)?.toDouble() ?? 0;
-      final h = (json['height'] as num?)?.toInt();
-      if (h != null && h > 0) tipHeight = h;
       if (live > 0) {
         _spendable[address] = live;
         return live;

@@ -189,6 +189,7 @@ export function createPool({
 
   function publicStats() {
     const workers = [...miners.values()].filter((m) => Date.now() - m.seen < 120_000);
+    const tip = store.tip();
     return {
       ok: true,
       coin: 'SHE',
@@ -201,7 +202,8 @@ export function createPool({
       blocks: stats.blocks,
       accepted: stats.accepted,
       stale: stats.stale,
-      height: store.tip()?.height || 0,
+      height: tip?.height || 0,
+      header: tip?.header ? Buffer.from(tip.header).toString('hex') : '',
       bits: lastJob?.bits || bits,
       uptimeMs: Date.now() - stats.started,
       workers: workers.map((m) => ({

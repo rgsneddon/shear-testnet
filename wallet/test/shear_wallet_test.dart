@@ -108,6 +108,22 @@ void main() {
     expect(kWalletVersion.contains('0.0.10'), isFalse);
   });
 
+  test('currentDest equals destForLogin with lag-1 from tip header and next height', () {
+    final id = createIdentity();
+    final ledger = ShearLedger();
+    final header = Uint8List(120);
+    for (var i = 0; i < 32; i++) {
+      header[68 + i] = 3;
+    }
+    ledger.applyTipHeader(header, sealedHeight: 4);
+    expect(ledger.tipHeight, 5);
+    expect(ledger.lag1Root, header.sublist(68, 100));
+    expect(
+      ledger.currentDest(id.address),
+      destForLogin(id.address, continuityRoot: header.sublist(68, 100), height: 5),
+    );
+  });
+
   test('Dart ShearHash matches C selftest vector 6e95b903…', () {
     final header = shearSelftestHeader();
     expect(header.length, 120);
