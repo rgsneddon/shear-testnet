@@ -1,6 +1,6 @@
-# Continuum-Tensor-Flow (CTF)
+# continuity-tethered Flow (CTF)
 
-Product name: **Continuum-Tensor-Flow**. Short: **CTF**. Chronoflux: Continuum ∇·J = 0, tensor dest, Flow J^μ.
+Product name: **continuity-tethered Flow**. Short: **CTF**. Chronoflux Flow J^μ dests bound to lag-1 continuity.
 
 Not an extra coin. Incoming Continuum payments and mining land on a **round dest**. The user still has a **view key**.
 

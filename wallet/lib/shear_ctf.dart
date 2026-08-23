@@ -5,7 +5,7 @@ import 'package:crypto/crypto.dart';
 
 import 'shear_identity.dart';
 
-/// Continuum-Tensor-Flow (CTF). Same domain separators as crypto/flow_sheet.js.
+/// continuity-tethered Flow (CTF). Same domain separators as crypto/flow_sheet.js.
 const ctfFlowPersonal = 'chronoflux-J-v1';
 const ctfClosurePersonal = 'chronoflux-G-v1';
 
