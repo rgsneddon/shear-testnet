@@ -33,9 +33,11 @@ describe('C miner', () => {
     const usage = spawnSync(bin, [], { encoding: 'utf8' });
     assert.match(usage.stderr + usage.stdout, /sdcard1/);
     assert.match(usage.stderr + usage.stdout, /she1/);
-    const refuse = spawnSync(bin, ['--user', 'shear1abc.worker'], { encoding: 'utf8' });
+    const refuse = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'shear1abc.worker'], {
+      encoding: 'utf8',
+    });
     assert.equal(refuse.status, 2);
-    assert.match(refuse.stderr + refuse.stdout, /sdcard1/);
+    assert.match(refuse.stderr + refuse.stdout, /user dest must be sdcard1/);
     const sd = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'sdcard1test.worker'], {
       encoding: 'utf8',
     });

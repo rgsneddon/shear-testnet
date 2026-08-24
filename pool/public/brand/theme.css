@@ -24,7 +24,8 @@ html[data-theme="dark"] {
 .top-banner { background: var(--banner); }
 input, select, button { background: var(--input); color: var(--ink); }
 code, pre { background: var(--code); }
-html[data-theme="dark"] .panel-card {
+html[data-theme="dark"] .panel-card,
+html[data-theme="dark"] a.nav-btn {
   background: linear-gradient(165deg, #1a3a5c 0%, #132a4a 58%) padding-box,
     linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
   background-origin: border-box; background-clip: padding-box, border-box;

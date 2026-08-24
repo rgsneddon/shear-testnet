@@ -224,7 +224,9 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: shear-miner --selftest | --print-config | --pool host:port --user sdcard1...|she1... [--threads N] [--notls]\n");
     return 2;
   }
-  if (strncmp(g_user, "sdcard1", 7) != 0 && strncmp(g_user, "she1", 4) != 0) {
+  /* she1 is a string prefix of rest-frame shear1 — reject shear1 first. */
+  if (strncmp(g_user, "shear1", 6) == 0
+      || (strncmp(g_user, "sdcard1", 7) != 0 && strncmp(g_user, "she1", 4) != 0)) {
     fprintf(stderr, "user dest must be sdcard1... or she1...\n");
     return 2;
   }
