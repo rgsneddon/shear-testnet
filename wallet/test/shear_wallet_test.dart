@@ -23,11 +23,15 @@ void main() {
     final a = await s1.loadOrCreate();
     expect(a.address.startsWith('shear1'), isTrue);
     expect(isShearAddress(a.address), isTrue);
+    expect(a.paymentCode.startsWith('she1'), isTrue);
+    expect(isPaymentCode(a.paymentCode), isTrue);
+    expect(isDestAddress(a.paymentCode), isFalse);
     expect(a.viewKey.isNotEmpty, isTrue);
     final s2 = ShearSession(store: store);
     final b = await s2.loadOrCreate();
     expect(b.address, a.address);
     expect(b.viewKey, a.viewKey);
+    expect(b.paymentCode, a.paymentCode);
   });
 
   test('wallet stays lean: thousands of hashes never become thousands of txs', () {
@@ -94,6 +98,19 @@ void main() {
     final she = encodeHrp('she', Uint8List.fromList(List.filled(20, 7)));
     expect(she.startsWith('she1'), isTrue);
     expect(isDestAddress(she), isFalse);
+    expect(isPaymentCode(she), isFalse);
+    expect(a.paymentCode.startsWith('she1'), isTrue);
+    expect(isPaymentCode(a.paymentCode), isTrue);
+    expect(isDestAddress(a.paymentCode), isFalse);
+    expect(isShearAddress(a.paymentCode), isFalse);
+    const viewKey = 'abababababababababababababababababababababababababababababababab';
+    final hash20 = Uint8List.fromList(List.filled(20, 7));
+    expect(
+      paymentCodeAtIndex(viewKey, hash20, 0),
+      'she1qq886grf79j44l35sg4knsc0g5erud7nh29hefvhnyr38zw9z8pwxs5ffk98cqem9vtjklaud87sps50duxzctswmrs3tlx939gqgp6amf0wf0t',
+    );
+    expect(paymentCodeAtIndex(viewKey, hash20, 1), isNot(paymentCodeAtIndex(viewKey, hash20, 0)));
+    expect(isPaymentCode(paymentCodeAtIndex(viewKey, hash20, 2)!), isTrue);
     expect(isDestAddress(a.address), isFalse);
     expect(paid, isNot(a.address));
     expect(paid, isNot(degenerateDest(a.address, height: 1)));
@@ -113,7 +130,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.0.3');
+    expect(kWalletVersion, '0.0.4');
     expect(kWalletVersion.contains('0.0.10'), isFalse);
     final key = issueVorticeKey('stake-pool-a');
     expect(key, isNotNull);
@@ -212,14 +229,18 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.0.3');
-    expect(kWalletVersion, '0.0.3');
+    expect(app.title, 'Shear 0.0.4');
+    expect(kWalletVersion, '0.0.4');
     // password gate first
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
     await tester.pump();
-    expect(find.textContaining('0.0.3'), findsWidgets);
+    expect(find.textContaining('0.0.4'), findsWidgets);
+    expect(find.textContaining('she is quiet'), findsWidgets);
+    expect(find.text('Copy ID'), findsWidgets);
+    expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
+    expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
     expect(find.byType(Image), findsWidgets);
     for (final name in kTabs) {
       expect(find.text(name), findsWidgets);

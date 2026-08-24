@@ -14,7 +14,7 @@ import 'shear_theme.dart';
 import 'shear_ctf.dart';
 import 'shear_vortex.dart';
 
-const kWalletVersion = '0.0.3';
+const kWalletVersion = '0.0.4';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -265,10 +265,13 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     final listed = ledger.listedDests(ident.address);
     return _card([
       const Text('Continuum  ∇·J = 0', style: TextStyle(fontWeight: FontWeight.w700)),
+      const Text('she is quiet. Public ID (she1) — offer this everywhere'),
+      SelectableText(ident.paymentCode),
+      const SizedBox(height: 6),
       const Text('Rest-frame shear1 (never share, never on chain)'),
       SelectableText(ident.address),
       const SizedBox(height: 6),
-      const Text('she is quiet. Offer she1 (silent ID). shp1 dests revolve each round; New dest mints more shp1.'),
+      const Text('shp1 dests revolve each round; New dest mints more shp1.'),
       for (var i = 0; i < listed.length; i++)
         ListTile(
           dense: true,
@@ -281,6 +284,10 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         FilledButton(
           onPressed: () => setState(() => ledger.newDest(ident.address)),
           child: const Text('New dest'),
+        ),
+        OutlinedButton(
+          onPressed: () => Clipboard.setData(ClipboardData(text: ident.paymentCode)),
+          child: const Text('Copy ID'),
         ),
         OutlinedButton(
           onPressed: () => Clipboard.setData(ClipboardData(text: dest)),

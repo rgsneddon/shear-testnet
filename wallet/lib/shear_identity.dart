@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
+import 'shear_x25519.dart';
+
 const shearHrp = 'shear';
 const destHrp = 'shp';
 /// Public-facing silent ID is she1 (HRP she). Never a dest.
@@ -11,24 +13,38 @@ const payHrp = 'she';
 const _charset = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
 class ShearIdentity {
-  ShearIdentity({required this.seedHex, required this.address, required this.viewKey});
+  ShearIdentity({
+    required this.seedHex,
+    required this.address,
+    required this.viewKey,
+    required this.paymentCode,
+  });
 
   final String seedHex;
   final String address;
   final String viewKey;
+  /// Public-facing silent ID (she1). Never a dest, never rest-frame.
+  final String paymentCode;
 
   Map<String, String> toJson() => {
         'seedHex': seedHex,
         'address': address,
         'viewKey': viewKey,
+        'paymentCode': paymentCode,
         'network': 'shear-testnet-v1',
       };
 
   static ShearIdentity fromJson(Map<String, dynamic> j) {
+    final address = j['address'] as String;
+    final viewKey = j['viewKey'] as String;
+    final hash20 = spendHashFromAddress(address);
+    final code = (j['paymentCode'] as String?) ??
+        (hash20 == null ? '' : paymentCodeAtIndex(viewKey, hash20, 0) ?? '');
     return ShearIdentity(
       seedHex: j['seedHex'] as String,
-      address: j['address'] as String,
-      viewKey: j['viewKey'] as String,
+      address: address,
+      viewKey: viewKey,
+      paymentCode: code,
     );
   }
 }
@@ -54,11 +70,7 @@ bool isShearAddress(String s) {
   return bech32Hrp(t) == 'shear' && _bech32BodyOk(t);
 }
 
-bool isPaymentCode(String s) {
-  final t = s.trim();
-  if (isShearAddress(t) || isDestAddress(t)) return false;
-  return bech32Hrp(t) == 'she' && _bech32BodyOk(t) && t.length >= 80;
-}
+bool isPaymentCode(String s) => decodePaymentCode(s) != null;
 
 bool isDestAddress(String s) {
   final t = s.trim();
@@ -67,13 +79,80 @@ bool isDestAddress(String s) {
   return bech32Hrp(t) == 'shp' && _bech32BodyOk(t);
 }
 
+Uint8List? decodeBech32Payload(String address) {
+  final raw = address.trim();
+  final one = raw.indexOf('1');
+  if (one < 1) return null;
+  final body = raw.substring(one + 1).toLowerCase();
+  final vals = <int>[];
+  for (final ch in body.split('')) {
+    final i = _charset.indexOf(ch);
+    if (i < 0) return null;
+    vals.add(i);
+  }
+  if (vals.length < 7) return null;
+  final data = vals.sublist(0, vals.length - 6);
+  final bytes = _convertBits(data.sublist(1), 5, 8, false);
+  if (bytes.isEmpty) return null;
+  return Uint8List.fromList(bytes);
+}
+
+Map<String, Uint8List>? decodePaymentCode(String s) {
+  final t = s.trim();
+  if (isShearAddress(t) || bech32Hrp(t) != 'she' || !_bech32BodyOk(t)) return null;
+  final p = decodeBech32Payload(t);
+  if (p == null || p.length < 65 || p[0] != 1) return null;
+  return {'scanPub': p.sublist(1, 33), 'spendPub': p.sublist(33, 65)};
+}
+
+String encodePaymentCode({required Uint8List scanPub, required Uint8List spendPub}) {
+  if (scanPub.length != 32 || spendPub.length != 32) {
+    throw ArgumentError('silent code keys must be 32 bytes');
+  }
+  final payload = Uint8List(65);
+  payload[0] = 1;
+  payload.setAll(1, scanPub);
+  payload.setAll(33, spendPub);
+  return encodeHrp(payHrp, payload);
+}
+
+Uint8List scanSeedFromView(String viewKey, [int index = 0]) {
+  final n = Uint8List(8);
+  var x = index;
+  for (var i = 0; i < 8; i++) {
+    n[i] = x & 0xff;
+    x >>= 8;
+  }
+  return Uint8List.fromList(sha256.convert(utf8.encode('shear-scan-v1') + utf8.encode(viewKey) + n).bytes);
+}
+
+Uint8List _asSpend(Uint8List h) {
+  if (h.length == 32) return h;
+  return Uint8List.fromList(sha256.convert(h).bytes);
+}
+
+String? paymentCodeAtIndex(String viewKey, Uint8List spendHash20, int index) {
+  if (index < 0) return null;
+  final scanPub = x25519PublicFromSeed(scanSeedFromView(viewKey, index));
+  final idx = Uint8List(8);
+  var x = index;
+  for (var i = 0; i < 8; i++) {
+    idx[i] = x & 0xff;
+    x >>= 8;
+  }
+  final spend = Uint8List.fromList(sha256.convert(utf8.encode('shear-spend-v1') + _asSpend(spendHash20) + idx).bytes);
+  return encodePaymentCode(scanPub: scanPub, spendPub: spend);
+}
+
 ShearIdentity createIdentity([Uint8List? seed]) {
   final s = seed ?? _randomBytes(32);
   final seedHex = _hex(s);
-  final hash20 = sha256.convert(s).bytes.sublist(0, 20);
-  final address = encodeShearAddress(Uint8List.fromList(hash20));
+  final hash20 = Uint8List.fromList(sha256.convert(s).bytes.sublist(0, 20));
+  final address = encodeShearAddress(hash20);
   final view = sha256.convert(utf8.encode('shear-view-v1') + s);
-  return ShearIdentity(seedHex: seedHex, address: address, viewKey: _hex(view.bytes));
+  final viewKey = _hex(view.bytes);
+  final paymentCode = paymentCodeAtIndex(viewKey, hash20, 0)!;
+  return ShearIdentity(seedHex: seedHex, address: address, viewKey: viewKey, paymentCode: paymentCode);
 }
 
 Uint8List? hash20FromAddress(String address) {
