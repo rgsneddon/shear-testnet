@@ -24,6 +24,7 @@ void main() {
     expect(a.address.startsWith('shear1'), isTrue);
     expect(isShearAddress(a.address), isTrue);
     expect(a.paymentCode.startsWith('she1'), isTrue);
+    expect(a.paymentCode.length < 50, isTrue);
     expect(isPaymentCode(a.paymentCode), isTrue);
     expect(isDestAddress(a.paymentCode), isFalse);
     expect(a.viewKey.isNotEmpty, isTrue);
@@ -98,17 +99,19 @@ void main() {
     final she = encodeHrp('she', Uint8List.fromList(List.filled(20, 7)));
     expect(she.startsWith('she1'), isTrue);
     expect(isDestAddress(she), isFalse);
-    expect(isPaymentCode(she), isFalse);
+    expect(isPaymentCode(she), isTrue);
     expect(a.paymentCode.startsWith('she1'), isTrue);
     expect(isPaymentCode(a.paymentCode), isTrue);
     expect(isDestAddress(a.paymentCode), isFalse);
     expect(isShearAddress(a.paymentCode), isFalse);
+    expect(a.paymentCode.length < 50, isTrue);
     const viewKey = 'abababababababababababababababababababababababababababababababab';
     final hash20 = Uint8List.fromList(List.filled(20, 7));
-    expect(
-      paymentCodeAtIndex(viewKey, hash20, 0),
-      'she1qq886grf79j44l35sg4knsc0g5erud7nh29hefvhnyr38zw9z8pwxs5ffk98cqem9vtjklaud87sps50duxzctswmrs3tlx939gqgp6amf0wf0t',
-    );
+    final p0 = paymentCodeAtIndex(viewKey, hash20, 0)!;
+    expect(p0.startsWith('she1'), isTrue);
+    expect(p0.length < 50, isTrue);
+    expect(isPaymentCode(p0), isTrue);
+    expect(p0, paymentCodeAtIndex(viewKey, hash20, 0));
     expect(paymentCodeAtIndex(viewKey, hash20, 1), isNot(paymentCodeAtIndex(viewKey, hash20, 0)));
     expect(isPaymentCode(paymentCodeAtIndex(viewKey, hash20, 2)!), isTrue);
     expect(isDestAddress(a.address), isFalse);

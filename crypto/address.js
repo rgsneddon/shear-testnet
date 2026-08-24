@@ -89,11 +89,21 @@ export function encodeDest(pubkeyHash20) {
   return encodeHrp(HRP_DEST, data);
 }
 
-export function encodePaymentCode({ scanPub, spendPub }) {
+/** 20-byte she1 payload: SHA256(shear-she1-v2 || scanPub || spendPub)[0:20]. Not rest-frame S. */
+export function paymentIdHash(scanPub, spendPub) {
   const scan = Buffer.from(scanPub);
   const spend = Buffer.from(spendPub);
   if (scan.length !== 32 || spend.length !== 32) throw new Error('silent code keys must be 32 bytes');
-  return encodeHrp(HRP_PAY, Buffer.concat([Buffer.from([1]), scan, spend]));
+  return createHash('sha256')
+    .update(Buffer.from('shear-she1-v2'))
+    .update(scan)
+    .update(spend)
+    .digest()
+    .subarray(0, 20);
+}
+
+export function encodePaymentCode({ scanPub, spendPub }) {
+  return encodeHrp(HRP_PAY, paymentIdHash(scanPub, spendPub));
 }
 
 export function isShearAddress(s) {
@@ -139,8 +149,8 @@ export function decodePaymentCode(s) {
   const t = String(s || '').trim();
   if (isShearAddress(t) || bech32Hrp(t) !== 'she' || !bech32BodyOk(t)) return null;
   const p = decodeBech32Payload(t);
-  if (!p || p.length < 65 || p[0] !== 1) return null;
-  return { scanPub: p.subarray(1, 33), spendPub: p.subarray(33, 65) };
+  if (!p || p.length !== 20) return null;
+  return { hash20: Buffer.from(p) };
 }
 
 const X25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
@@ -178,13 +188,7 @@ export function paymentCodeAtIndex(viewKey, spendHash20, index = 0) {
   if (!Number.isInteger(n) || n < 0) return null;
   const scanPriv = x25519PrivateFromSeed(scanSeedFromView(viewKey, n));
   const scanPub = x25519PublicRaw(scanPriv);
-  const idx = Buffer.alloc(8);
-  idx.writeBigUInt64LE(BigInt(n));
-  const spend = createHash('sha256')
-    .update(Buffer.from('shear-spend-v1'))
-    .update(asSpend(spendHash20))
-    .update(idx)
-    .digest();
+  const spend = spendPubAtIndex(spendHash20, n);
   return encodePaymentCode({ scanPub, spendPub: spend });
 }
 
@@ -199,34 +203,39 @@ function asSpend(h) {
   return createHash('sha256').update(b).digest();
 }
 
-/** One-time dest from a she1 payment code. No C. Eph public is needed to scan. */
-export function silentDestFromCode(code, ephPrivate) {
-  const parsed = decodePaymentCode(code);
-  if (!parsed) return null;
-  const shared = diffieHellman({ privateKey: ephPrivate, publicKey: x25519PublicFromRaw(parsed.scanPub) });
+function spendPubAtIndex(spendHash20, index) {
+  const idx = Buffer.alloc(8);
+  idx.writeBigUInt64LE(BigInt(index));
+  return createHash('sha256')
+    .update(Buffer.from('shear-spend-v1'))
+    .update(asSpend(spendHash20))
+    .update(idx)
+    .digest();
+}
+
+/** One-time dest from view-key scan/spend (she1 string no longer carries the 64-byte keys). */
+export function silentDestFromView(viewKey, spendHash20, ephPrivate, index = 0) {
+  const n = Number(index);
+  if (!Number.isInteger(n) || n < 0) return null;
+  const scanPriv = x25519PrivateFromSeed(scanSeedFromView(viewKey, n));
+  const spend = spendPubAtIndex(spendHash20, n);
+  const shared = diffieHellman({ privateKey: ephPrivate, publicKey: createPublicKey(scanPriv) });
   const tweak = createHash('sha256')
     .update(Buffer.from('shear-silent-v1'))
     .update(shared)
-    .update(parsed.spendPub)
+    .update(spend)
     .digest()
     .subarray(0, 20);
   return encodeDest(tweak);
 }
 
-export function silentDestFromEphPub(code, ephPubRaw, scanPrivate) {
-  const parsed = decodePaymentCode(code);
-  if (!parsed) return null;
-  const shared = diffieHellman({
-    privateKey: scanPrivate,
-    publicKey: x25519PublicFromRaw(ephPubRaw),
-  });
-  const tweak = createHash('sha256')
-    .update(Buffer.from('shear-silent-v1'))
-    .update(shared)
-    .update(parsed.spendPub)
-    .digest()
-    .subarray(0, 20);
-  return encodeDest(tweak);
+/** @deprecated she1 is a 20-byte id; ECDH needs the view key. */
+export function silentDestFromCode() {
+  return null;
+}
+
+export function silentDestFromEphPub() {
+  return null;
 }
 
 export function newIdentity() {

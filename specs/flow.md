@@ -20,7 +20,7 @@ t = SHA256(chronoflux-J-v1 || C || continuity_{h-1} || height)
 round dest = shp1(SHA256(chronoflux-J-v1 || S || t)[0:20])
 t_n = SHA256(chronoflux-J-n-v1 || C || index u64le)
 dest_n = shp1(SHA256(chronoflux-J-v1 || S || t_n)[0:20])
-she1_n = payment code from (V, S, n)  // scan+spend pubs, unlimited
+she1_n = she1(SHA256(shear-she1-v2 || scanPub_n || spendPub_n)[0:20])  // short public ID, unlimited
 ```
 
 Same `(S, C, index)` always regenerates the same `shp1`. Same `(V, S, n)` regenerates `she1`. No cap on index. Miner `--user` is `shp1`. Pool pays dest as-is. Rest-frame `shear1` is never a dest login. she is private.

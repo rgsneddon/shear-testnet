@@ -101,19 +101,21 @@ Map<String, Uint8List>? decodePaymentCode(String s) {
   final t = s.trim();
   if (isShearAddress(t) || bech32Hrp(t) != 'she' || !_bech32BodyOk(t)) return null;
   final p = decodeBech32Payload(t);
-  if (p == null || p.length < 65 || p[0] != 1) return null;
-  return {'scanPub': p.sublist(1, 33), 'spendPub': p.sublist(33, 65)};
+  if (p == null || p.length != 20) return null;
+  return {'hash20': p.sublist(0, 20)};
 }
 
-String encodePaymentCode({required Uint8List scanPub, required Uint8List spendPub}) {
+Uint8List paymentIdHash(Uint8List scanPub, Uint8List spendPub) {
   if (scanPub.length != 32 || spendPub.length != 32) {
     throw ArgumentError('silent code keys must be 32 bytes');
   }
-  final payload = Uint8List(65);
-  payload[0] = 1;
-  payload.setAll(1, scanPub);
-  payload.setAll(33, spendPub);
-  return encodeHrp(payHrp, payload);
+  return Uint8List.fromList(
+    sha256.convert([...utf8.encode('shear-she1-v2'), ...scanPub, ...spendPub]).bytes.sublist(0, 20),
+  );
+}
+
+String encodePaymentCode({required Uint8List scanPub, required Uint8List spendPub}) {
+  return encodeHrp(payHrp, paymentIdHash(scanPub, spendPub));
 }
 
 Uint8List scanSeedFromView(String viewKey, [int index = 0]) {

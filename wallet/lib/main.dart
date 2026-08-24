@@ -206,6 +206,11 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
                 _brandWordmark(height: 28),
                 const SizedBox(height: 8),
                 Text(
+                  'she is private',
+                  style: TextStyle(color: theme.colorScheme.onSurface),
+                ),
+                const SizedBox(height: 8),
+                Text(
                   'Create a password for this wallet. It encrypts shewall.json.',
                   style: TextStyle(color: theme.colorScheme.onSurface),
                   textAlign: TextAlign.center,

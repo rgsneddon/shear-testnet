@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import {
   newIdentity, isShearAddress, isDestAddress, isPaymentCode, encodeHrp, encodeAddress,
-  paymentCodeAtIndex, silentDestFromCode,
+  paymentCodeAtIndex, silentDestFromView,
 } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
 import {
@@ -100,9 +100,11 @@ describe('flow sheets', () => {
     assert.notEqual(p1, p2);
     assert.equal(paymentCodeAtIndex(alice.viewKey, s, 1), p1);
     const { privateKey: eph } = generateKeyPairSync('x25519');
-    const silent = silentDestFromCode(p0, eph);
+    const silent = silentDestFromView(alice.viewKey, s, eph, 0);
     assert.equal(isDestAddress(silent), true);
     assert.equal(silent.startsWith('shp1'), true);
+    assert.ok(p0.length < 50, p0);
+    assert.notEqual(p0.slice(4), encodeAddress(s).slice(6));
   });
 
   it('view key opens only that user’s dests', () => {
