@@ -16,10 +16,22 @@ html[data-theme="dark"] {
   }
 }
 .banner-wordmark { height: 36px; width: auto; display: block; }
+body {
+  font-family: "Urema", "Segoe UI", system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+}
+h1, h2, .label {
+  font-family: "Nevia", "Segoe UI", system-ui, sans-serif;
+}
+h1 { font-size: 1.75rem; font-weight: 800; }
+h2 { font-size: 1.35rem; font-weight: 800; }
+.label { font-size: 0.8rem; font-weight: 700; }
 .theme-toggle {
   margin-left: auto; padding: .35rem .6rem; cursor: pointer;
   background: var(--input); color: var(--cyan); border: 1px solid var(--blue);
-  font-size: .7rem; font-weight: 750; letter-spacing: .06em; text-transform: uppercase;
+  font-size: .8rem; font-weight: 750; letter-spacing: .06em; text-transform: uppercase;
+  font-family: "Urema", "Segoe UI", system-ui, sans-serif;
 }
 .top-banner { background: var(--banner); }
 input, select, button { background: var(--input); color: var(--ink); }
