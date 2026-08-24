@@ -27,7 +27,7 @@ export {
 
 export const GENESIS_PREV = Buffer.alloc(32);
 
-function digestTx(tx) {
+export function digestTx(tx) {
   return merkleRoot([Buffer.from(JSON.stringify({
     vin: tx.vin,
     vout: tx.vout,

@@ -4,9 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeDest, newIdentity } from '../../crypto/address.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
+import { merkleRoot } from '../../crypto/merkle.js';
+import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
+import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
 import { createStore } from '../src/store.js';
-import { mineTemplate, shouldAdopt } from '../src/chain.js';
+import { mineTemplate, shouldAdopt, digestTx } from '../src/chain.js';
 
 function destMiner() {
   return encodeDest(Buffer.alloc(20, 9));
@@ -53,22 +55,73 @@ describe('most-work adopt', () => {
     assert.equal(got.reorg, true);
     assert.equal(local.tip().height, 2);
     assert.equal(Buffer.from(local.tip().hash).equals(Buffer.from(heavier.tip().hash)), true);
+  });
 
+  it('ingest of an invalid child of the tip fails verifyBlock and keeps the tip', () => {
+    const dest = destMiner();
+    const store = tmpStore();
+    assert.equal(mineOne(store, dest).ok, true);
+    const { tpl } = store.template({ miner: dest, bits: 8, shareBits: 8 });
+    const found = mineTemplate({ ...tpl, bits: 8 }, { maxTries: 3_000_000, shareBits: 8 });
+    assert.ok(found && found.block, 'need child pow');
     const id = newIdentity();
-    const rest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
-    const badStore = tmpStore();
-    const mined = mineOne(badStore, rest);
-    assert.equal(mined.ok, true);
-    const poisoned = [{
-      ...badStore.blocks[0],
+    const poisoned = {
+      header: found.header,
       txs: [{
-        ...badStore.blocks[0].txs[0],
-        vout: badStore.blocks[0].txs[0].vout.map((o) => ({ ...o, address: id.address })),
+        ...tpl.txs[0],
+        vout: tpl.txs[0].vout.map((o) => ({ ...o, address: id.address })),
       }],
+      samples: tpl.samples,
+      miner: dest,
+    };
+    const before = Buffer.from(store.tip().hash);
+    const height = store.tip().height;
+    const refused = store.ingest([poisoned]);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'merkle');
+    assert.equal(store.tip().height, height);
+    assert.equal(Buffer.from(store.tip().hash).equals(before), true);
+  });
+
+  it('heavier rest-frame fork is refused with miner_addr and the old tip remains', () => {
+    const dest = destMiner();
+    const local = tmpStore();
+    assert.equal(mineOne(local, dest).ok, true);
+    const fork = tmpStore();
+    assert.equal(mineOne(fork, dest).ok, true);
+    assert.equal(mineOne(fork, dest).ok, true);
+    const id = newIdentity();
+    const last = fork.blocks[1];
+    const txs = [{
+      ...last.txs[0],
+      vout: last.txs[0].vout.map((o) => ({ ...o, address: id.address })),
     }];
+    const decoded = decodeHeader(last.header);
+    const merkle = merkleRoot(txs.map(digestTx));
+    let header = encodeHeader({
+      version: decoded.version,
+      prevBlockHash: decoded.prevBlockHash,
+      merkleRoot: merkle,
+      continuityRoot: decoded.continuityRoot,
+      timestamp: decoded.timestamp,
+      bits: decoded.bits,
+      nonce: 0n,
+    });
+    let found = null;
+    for (let n = 0n; n < 3_000_000n; n += 1n) {
+      const h = setNonce(header, n);
+      if (meetsTarget(shearHash(h), decoded.bits)) {
+        found = h;
+        break;
+      }
+    }
+    assert.ok(found, 'need pow on rest-frame body');
+    const poisoned = fork.blocks.map((b, i) => (i !== 1 ? b : { ...b, header: found, txs }));
     const before = Buffer.from(local.tip().hash);
     const refused = local.ingest(poisoned);
     assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'miner_addr');
+    assert.equal(local.tip().height, 1);
     assert.equal(Buffer.from(local.tip().hash).equals(before), true);
   });
 
