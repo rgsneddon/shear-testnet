@@ -1,10 +1,11 @@
 import { createHash, pbkdf2Sync, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { encodeDest, isShearAddress, isDestAddress, hash20FromAddress } from './address.js';
+import { encodeDest, encodeHrp, isShearAddress, isDestAddress, hash20FromAddress } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
 
 /** continuity-tethered Flow (CTF). Paid dests need independent Closure C, not C-from-S. */
 export const FLOW_PERSONAL = 'chronoflux-J-v1';
 export const CLOSURE_PERSONAL = 'chronoflux-G-v1';
+export const DEST_INDEX_PERSONAL = 'chronoflux-J-n-v1';
 export const VAULT_DOMAIN = 'shear-reserve-v1';
 export const VIEW_KDF_INFO = 'chronoflux-G-v1';
 
@@ -64,6 +65,30 @@ export function flowDestHash({ spendHash20, closureCommit: C, continuityRoot, he
 
 export function flowDestAddress(args) {
   return encodeDest(flowDestHash(args));
+}
+
+export function destEncodings(hash20) {
+  const h = asBuf(hash20, 20);
+  return [encodeHrp('she', h), encodeHrp('sdcard', h)];
+}
+
+export function indexedDestHash({ spendHash20, closureCommit: C, index }) {
+  const s = asBuf(spendHash20, 20);
+  const c = asBuf(C, 32);
+  const idx = Buffer.alloc(8);
+  idx.writeBigUInt64LE(BigInt(index));
+  const t = createHash('sha256').update(DEST_INDEX_PERSONAL).update(c).update(idx).digest();
+  return createHash('sha256').update(FLOW_PERSONAL).update(s).update(t).digest().subarray(0, 20);
+}
+
+export function destAtIndex(login, { index = 0, viewKey, closureCommit: C } = {}) {
+  const s = spendHashFromAddress(login);
+  if (!s) return null;
+  const commit = C ? asBuf(C, 32) : (viewKey ? closureCommit(viewKey) : null);
+  if (!commit) return null;
+  const n = Number(index);
+  if (!Number.isInteger(n) || n < 0) return null;
+  return encodeDest(indexedDestHash({ spendHash20: s, closureCommit: commit, index: n }));
 }
 
 export function spendHashFromAddress(address) {

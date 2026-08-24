@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 const shearHrp = 'shear';
-const destHrp = 'sdcard';
+const destHrp = 'she';
 const _charset = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
 class ShearIdentity {

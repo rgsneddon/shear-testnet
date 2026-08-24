@@ -27,7 +27,7 @@ const kTabs = [
 const kSymbols = ['∇·J = 0', 'J^μ', 'η', 'Ω^{μν}', 'S_{μν}', 'π', 'G_{μν}'];
 const kExplains = [
   'Your money. Spendable SHE after a block is found, plus this round’s pending hashes.',
-  'Send SHE to an sdcard1 or she1 dest. Share dest, never rest-frame shear1.',
+  'Send SHE to a she1 dest (sdcard1 still accepted). Share dest, never rest-frame shear1.',
   'Mining. Start hashing. Each hash credits a tiny amount; you can spend it only when a block is found.',
   'Apps and contracts other people deploy. They cannot print SHE; they must fund their own rewards.',
   'How SHE is created: 1 SHE per block, plus 0.000000001 SHE per hash to each miner in that round.',
@@ -262,13 +262,31 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   Widget _continuum(ShearIdentity ident) {
     final hist = ledger.ownerHistory(ident.address);
     final dest = ledger.currentDest(ident.address);
+    final listed = ledger.listedDests(ident.address);
     return _card([
       const Text('Continuum  ∇·J = 0', style: TextStyle(fontWeight: FontWeight.w700)),
       const Text('Rest-frame shear1 (never share, never on chain)'),
       SelectableText(ident.address),
       const SizedBox(height: 6),
-      const Text('sdcard1 or she1 dest this round (share / mine / pay)'),
-      SelectableText(dest),
+      const Text('she1 dests (share / mine / pay). Tied to this shear1. sdcard1 still accepted.'),
+      for (var i = 0; i < listed.length; i++)
+        ListTile(
+          dense: true,
+          selected: i == ledger.destIndex,
+          title: SelectableText(listed[i]),
+          subtitle: Text(i == ledger.destIndex ? 'selected · dest $i' : 'dest $i'),
+          onTap: () => setState(() => ledger.selectDest(i)),
+        ),
+      Wrap(spacing: 8, children: [
+        FilledButton(
+          onPressed: () => setState(() => ledger.newDest(ident.address)),
+          child: const Text('New dest'),
+        ),
+        OutlinedButton(
+          onPressed: () => Clipboard.setData(ClipboardData(text: dest)),
+          child: const Text('Copy dest'),
+        ),
+      ]),
       const SizedBox(height: 8),
       Text('Spendable  ${ledger.spendable(dest).toStringAsFixed(9)} SHE',
           style: const TextStyle(fontSize: 18, color: shearCyan, fontWeight: FontWeight.w700)),
@@ -308,10 +326,6 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
           },
           child: const Text('Export shewall.json'),
         ),
-        OutlinedButton(
-          onPressed: () => Clipboard.setData(ClipboardData(text: dest)),
-          child: const Text('Copy dest'),
-        ),
       ]),
     ]);
   }
@@ -319,7 +333,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   Widget _flow(ShearIdentity ident) {
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('sdcard1 or she1 dest this round'),
+      const Text('she1 dest this wallet (share / mine / pay)'),
       SelectableText(ledger.currentDest(ident.address)),
       const SizedBox(height: 8),
       TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (sdcard1… or she1…)')),
@@ -345,7 +359,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       ),
       const SizedBox(height: 8),
       const Text(
-        'Receive: share this round’s sdcard1 or she1 dest, never shear1. Memo text is only in your explorer tab and theirs.',
+        'Receive: share a she1 dest (sdcard1 still accepted), never shear1. Memo text is only in your explorer tab and theirs.',
       ),
     ]);
   }

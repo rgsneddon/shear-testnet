@@ -47,7 +47,7 @@ describe('foreign names', () => {
 describe('dest HRP pin', () => {
   it('issued dest is sdcard1 or she1; dest-check accepts both; shear1 is rest-frame', () => {
     const dest = encodeDest(Buffer.alloc(20, 7));
-    assert.equal(dest.startsWith('sdcard1') || dest.startsWith('she1'), true);
+    assert.equal(dest.startsWith('she1'), true);
     assert.equal(dest.startsWith('shear1'), false);
     assert.equal(isDestAddress(dest), true);
     assert.equal(isShearAddress(dest), false);
@@ -56,13 +56,15 @@ describe('dest HRP pin', () => {
     assert.equal(she.startsWith('shear1'), false);
     assert.equal(isDestAddress(she), true);
     assert.equal(isShearAddress(she), false);
+    const sd = encodeHrp('sdcard', Buffer.alloc(20, 7));
+    assert.equal(isDestAddress(sd), true);
     const rest = encodeAddress(Buffer.alloc(20, 7));
     assert.equal(rest.startsWith('shear1'), true);
     assert.equal(isDestAddress(rest), false);
     assert.equal(isShearAddress(rest), true);
-    assert.equal(HRP_DEST, 'sdcard');
+    assert.equal(HRP_DEST, 'she');
     const dart = fs.readFileSync(path.join(root, 'wallet/lib/shear_identity.dart'), 'utf8');
-    assert.match(dart, /destHrp = 'sdcard'/);
+    assert.match(dart, /destHrp = 'she'/);
     assert.match(dart, /she1/);
     const miner = fs.readFileSync(path.join(root, 'miner/src/shear_miner.c'), 'utf8');
     assert.match(miner, /sdcard1/);
@@ -74,8 +76,8 @@ describe('dest HRP pin', () => {
     assert.match(html, /sdcard1\|she1/);
     assert.equal(/--user shear1/.test(html), false);
     const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
-    assert.match(readme, /--user sdcard1/);
     assert.match(readme, /--user she1/);
+    assert.match(readme, /sdcard1/);
     assert.equal(/--user shear1/.test(readme), false);
     const wallet = fs.readFileSync(path.join(root, 'wallet/lib/main.dart'), 'utf8');
     assert.match(wallet, /sdcard1/);

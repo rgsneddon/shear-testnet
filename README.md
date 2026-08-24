@@ -27,10 +27,9 @@ master book.
 ## Mine (testnet)
 
 ```
-shear-miner --pool pool.shear.digital:1111 --user sdcard1YOURDEST.worker --threads 4
 shear-miner --pool pool.shear.digital:1111 --user she1YOURDEST.worker --threads 4
 ```
-Dest is `sdcard1` or `she1`. Rest-frame `shear1` is never a dest login.
+Issued dest is `she1`. Legacy `sdcard1` dests still pay. Rest-frame `shear1` is never a dest login.
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shear, Reserve, Closure.
 Backup: encrypted `shewall.json`. Node and wallet are lean: hash samples collate per miner and prune after 100 confirmations; sealed transfers stay forever for the explorer.

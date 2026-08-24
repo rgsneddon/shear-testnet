@@ -70,6 +70,10 @@ class ShearLedger {
   int tipHeight = 1;
   /// continuity_root of the sealed tip (lag-1 for the next dest).
   Uint8List? lag1Root;
+  /// How many indexed she1 dests this wallet has minted (always ≥ 1).
+  int destCount = 1;
+  /// Selected dest index (0 .. destCount-1).
+  int destIndex = 0;
 
   /// Read lag-1 continuity from a 120-byte tip header. Next dest uses sealedHeight+1.
   void applyTipHeader(Uint8List header, {required int sealedHeight}) {
@@ -88,8 +92,10 @@ class ShearLedger {
 
   Iterable<ShearTx> get transactions => List.unmodifiable(_txs);
 
-  String payKey(String address) =>
-      destForLogin(address, height: tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ?? address;
+  String payKey(String address) {
+    if (isDestAddress(address)) return address;
+    return currentDest(address);
+  }
 
   double spendable(String address) => _spendable[payKey(address)] ?? _spendable[address] ?? 0;
   double pending(String address) => _pending[payKey(address)] ?? _pending[address] ?? 0;
@@ -107,7 +113,7 @@ class ShearLedger {
     double pot = 0,
     int height = 0,
   }) {
-    final dest = destForLogin(address, height: height > 0 ? height : tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ?? address;
+    final dest = payKey(address);
     final bonus = dest == address
         ? (_pending[address] ?? 0)
         : (_pending[dest] ?? 0) + (_pending[address] ?? 0);
@@ -219,15 +225,63 @@ class ShearLedger {
 
   String? viewSecret;
 
-  String currentDest(String restFrame) =>
-      destForLogin(restFrame, height: tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ??
-      restFrame;
+  String? destAt(String restFrame, int index) {
+    final v = viewSecret;
+    if (v == null || v.isEmpty) return null;
+    return destAtIndex(restFrame, index: index, viewKey: v);
+  }
 
-  Set<String> ownedAddresses(String restFrame) => {
-        restFrame,
-        currentDest(restFrame),
-        ..._dests,
-      };
+  List<String> listedDests(String restFrame) {
+    final out = <String>[];
+    for (var i = 0; i < destCount; i++) {
+      final d = destAt(restFrame, i);
+      if (d != null) out.add(d);
+    }
+    return out;
+  }
+
+  String currentDest(String restFrame) {
+    if (isDestAddress(restFrame)) return restFrame;
+    final d = destAt(restFrame, destIndex);
+    if (d != null) return d;
+    return destForLogin(restFrame, height: tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ??
+        restFrame;
+  }
+
+  /// Mint the next she1 dest. Same (shear1, password, index) always regenerates it.
+  String newDest(String restFrame) {
+    destCount += 1;
+    destIndex = destCount - 1;
+    final d = currentDest(restFrame);
+    _dests.add(d);
+    return d;
+  }
+
+  void selectDest(int index) {
+    if (index < 0 || index >= destCount) return;
+    destIndex = index;
+  }
+
+  Set<String> ownedAddresses(String restFrame) {
+    final keys = <String>{restFrame, ..._dests, currentDest(restFrame)};
+    for (final d in listedDests(restFrame)) {
+      keys.add(d);
+      final h = hash20FromAddress(d);
+      if (h != null) keys.addAll(destEncodings(h));
+    }
+    final v = viewSecret;
+    if (v != null && v.isNotEmpty) {
+      final hi = tipHeight < 1 ? 1 : tipHeight;
+      for (var h = 1; h <= hi; h++) {
+        final round = destForLogin(restFrame, height: h, continuityRoot: lag1Root, viewKey: v);
+        if (round == null) continue;
+        keys.add(round);
+        final hash = hash20FromAddress(round);
+        if (hash != null) keys.addAll(destEncodings(hash));
+      }
+    }
+    return keys;
+  }
 
   List<ShearTx> ownerHistory(String address) {
     final keys = ownedAddresses(address);
@@ -289,12 +343,18 @@ class ShearLedger {
     required double spendable,
     required double pending,
     required List<ShearTx> txs,
+    int? destCount,
+    int? destIndex,
   }) {
     _spendable[address] = spendable;
     _pending[address] = pending;
     _txs
       ..clear()
       ..addAll(txs);
+    this.destCount = (destCount ?? this.destCount);
+    if (this.destCount < 1) this.destCount = 1;
+    this.destIndex = destIndex ?? this.destIndex;
+    if (this.destIndex < 0 || this.destIndex >= this.destCount) this.destIndex = this.destCount - 1;
     prune();
   }
 }

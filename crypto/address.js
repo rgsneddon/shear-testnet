@@ -1,7 +1,7 @@
 import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
 
 export const HRP = 'shear';
-export const HRP_DEST = 'sdcard';
+export const HRP_DEST = 'she';
 
 const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 

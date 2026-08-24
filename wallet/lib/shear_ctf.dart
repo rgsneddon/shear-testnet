@@ -10,6 +10,7 @@ import 'shear_identity.dart';
 /// continuity-tethered Flow (CTF). Same domain separators as crypto/flow_sheet.js.
 const ctfFlowPersonal = 'chronoflux-J-v1';
 const ctfClosurePersonal = 'chronoflux-G-v1';
+const ctfDestIndexPersonal = 'chronoflux-J-n-v1';
 
 Uint8List ctfEmptyRoot() {
   return Uint8List.fromList(sha256.convert(utf8.encode('shear-empty-root-v1')).bytes);
@@ -66,6 +67,45 @@ Uint8List flowDestHash({
 }) {
   final t = flowTweak(closure: closure, continuityRoot: continuityRoot, height: height);
   return Uint8List.fromList(_sha(utf8.encode(ctfFlowPersonal), spendHash20, t).sublist(0, 20));
+}
+
+List<String> destEncodings(Uint8List hash20) => [
+      encodeHrp('she', hash20),
+      encodeHrp('sdcard', hash20),
+    ];
+
+Uint8List _u64le(int n) {
+  final o = Uint8List(8);
+  var x = n;
+  for (var i = 0; i < 8; i++) {
+    o[i] = x & 0xff;
+    x >>= 8;
+  }
+  return o;
+}
+
+Uint8List indexedDestHash({
+  required Uint8List spendHash20,
+  required Uint8List closure,
+  required int index,
+}) {
+  final t = _sha(utf8.encode(ctfDestIndexPersonal), closure, _u64le(index));
+  return Uint8List.fromList(_sha(utf8.encode(ctfFlowPersonal), spendHash20, t).sublist(0, 20));
+}
+
+String? destAtIndex(
+  String restFrame, {
+  required int index,
+  required String viewKey,
+}) {
+  if (viewKey.isEmpty || index < 0) return null;
+  final s = spendHashFromAddress(restFrame);
+  if (s == null) return null;
+  return encodeDestAddress(indexedDestHash(
+    spendHash20: s,
+    closure: closureCommit(viewKey),
+    index: index,
+  ));
 }
 
 String? destForLogin(

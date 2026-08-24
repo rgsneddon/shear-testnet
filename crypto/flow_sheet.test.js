@@ -4,6 +4,7 @@ import { newIdentity, isShearAddress, isDestAddress, encodeHrp, encodeAddress } 
 import { EMPTY_ROOT } from './merkle.js';
 import {
   destForLogin,
+  destAtIndex,
   destsForViewKey,
   degenerateDest,
   viewSecretFromPassword,
@@ -14,6 +15,7 @@ import {
   memoOpen,
   explorerRowPublic,
   spendHashFromAddress,
+  destEncodings,
 } from './flow_sheet.js';
 import { issueVorticeKey, parseVorticeKey, addVortice, RESERVE_VORTICE } from './vortex.js';
 import { extraMintAllowed } from './asert.js';
@@ -31,7 +33,7 @@ describe('flow sheets', () => {
     const deg = degenerateDest(alice.address, { continuityRoot: root1, height: 3 });
     assert.equal(destForLogin(alice.address, { continuityRoot: root1, height: 3 }), null);
     assert.equal(isDestAddress(paid), true);
-    assert.equal(paid.startsWith('sdcard1') || paid.startsWith('she1'), true);
+    assert.equal(paid.startsWith('she1'), true);
     assert.equal(paid.startsWith('shear1'), false);
     assert.equal(isShearAddress(paid), false);
     assert.equal(isDestAddress(alice.address), false);
@@ -57,6 +59,30 @@ describe('flow sheets', () => {
     assert.equal(isDestAddress(she), true);
     assert.equal(destForLogin(she), she);
     assert.equal(isDestAddress(encodeAddress(spendHashFromAddress(alice.address))), false);
+  });
+
+  it('indexed she1 dests are unlimited, regenerable, and tied to shear1 + C', () => {
+    const alice = newIdentity();
+    const bob = newIdentity();
+    const C = closureCommit(alice.viewKey);
+    assert.equal(destAtIndex(alice.address, { index: 0 }), null);
+    const d0 = destAtIndex(alice.address, { index: 0, closureCommit: C });
+    const d1 = destAtIndex(alice.address, { index: 1, viewKey: alice.viewKey });
+    const d2 = destAtIndex(alice.address, { index: 2, viewKey: alice.viewKey });
+    assert.equal(d0.startsWith('she1'), true);
+    assert.equal(d0.startsWith('shear1'), false);
+    assert.equal(isDestAddress(d0), true);
+    assert.notEqual(d0, alice.address);
+    assert.notEqual(d0, d1);
+    assert.notEqual(d1, d2);
+    assert.equal(destAtIndex(alice.address, { index: 0, viewKey: alice.viewKey }), d0);
+    assert.equal(destAtIndex(alice.address, { index: 1, closureCommit: C }), d1);
+    assert.notEqual(destAtIndex(bob.address, { index: 0, viewKey: bob.viewKey }), d0);
+    assert.notEqual(destAtIndex(alice.address, { index: 0, viewKey: bob.viewKey }), d0);
+    const both = destEncodings(spendHashFromAddress(alice.address));
+    assert.equal(both.some((a) => a.startsWith('she1')), true);
+    assert.equal(both.some((a) => a.startsWith('sdcard1')), true);
+    assert.equal(destAtIndex(alice.address, { index: -1, viewKey: alice.viewKey }), null);
   });
 
   it('view key opens only that user’s dests', () => {

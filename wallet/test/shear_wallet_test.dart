@@ -81,13 +81,13 @@ void main() {
     await expectLater(ShearLock.open(env, 'wrong'), throwsA(anything));
   });
 
-  test('CTF dest is sdcard1 with password C, not C-from-S', () {
+  test('CTF dest is she1 with password C, not C-from-S', () {
     final a = createIdentity();
     final b = createIdentity();
     expect(destForLogin(a.address, height: 1), isNull);
     final paid = destForLogin(a.address, height: 1, viewKey: a.viewKey)!;
-    expect(destHrp, 'sdcard');
-    expect(paid.startsWith('sdcard1') || paid.startsWith('she1'), isTrue);
+    expect(destHrp, 'she');
+    expect(paid.startsWith('she1'), isTrue);
     expect(paid.startsWith('shear1'), isFalse);
     expect(isDestAddress(paid), isTrue);
     final she = encodeHrp('she', Uint8List.fromList(List.filled(20, 7)));
@@ -121,21 +121,26 @@ void main() {
     expect(addVortice(const [reserveVortice], key).length, 2);
   });
 
-  test('currentDest equals destForLogin with lag-1 from tip header and next height', () {
+  test('currentDest is indexed she1 dest 0; New dest mints dest n+1 tied to shear1', () {
     final id = createIdentity();
     final ledger = ShearLedger();
-    final header = Uint8List(120);
-    for (var i = 0; i < 32; i++) {
-      header[68 + i] = 3;
-    }
     ledger.viewSecret = id.viewKey;
-    ledger.applyTipHeader(header, sealedHeight: 4);
-    expect(ledger.tipHeight, 5);
-    expect(ledger.lag1Root, header.sublist(68, 100));
-    expect(
-      ledger.currentDest(id.address),
-      destForLogin(id.address, continuityRoot: header.sublist(68, 100), height: 5, viewKey: id.viewKey),
-    );
+    final d0 = destAtIndex(id.address, index: 0, viewKey: id.viewKey)!;
+    expect(d0.startsWith('she1'), isTrue);
+    expect(d0.startsWith('shear1'), isFalse);
+    expect(ledger.currentDest(id.address), d0);
+    expect(ledger.listedDests(id.address), [d0]);
+    final d1 = ledger.newDest(id.address);
+    expect(d1, destAtIndex(id.address, index: 1, viewKey: id.viewKey));
+    expect(d1, isNot(d0));
+    expect(ledger.destCount, 2);
+    expect(ledger.destIndex, 1);
+    expect(ledger.currentDest(id.address), d1);
+    ledger.selectDest(0);
+    expect(ledger.currentDest(id.address), d0);
+    expect(destAtIndex(id.address, index: 0, viewKey: id.viewKey), d0);
+    expect(destAtIndex(id.address, index: 99, viewKey: id.viewKey)!.startsWith('she1'), isTrue);
+    expect(isDestAddress(encodeHrp('sdcard', Uint8List.fromList(List.filled(20, 7)))), isTrue);
   });
 
   test('syncSpendable from pool /api/stats applyTipHex: currentDest is destForLogin(login, lag-1 offset 68, next height, no viewKey)', () async {
@@ -156,17 +161,14 @@ void main() {
     await ledger.syncSpendable(ledger.currentDest(id.address));
     expect(ledger.tipHeight, 5);
     expect(ledger.lag1Root, header.sublist(68, 100));
-    final paid = destForLogin(
-      id.address,
-      continuityRoot: header.sublist(68, 100),
-      height: 5,
-      viewKey: id.viewKey,
+    expect(ledger.currentDest(id.address), destAtIndex(id.address, index: 0, viewKey: id.viewKey));
+    expect(ledger.currentDest(id.address), isNot(id.address));
+    expect(ledger.currentDest(id.address).startsWith('she1'), isTrue);
+    expect(isDestAddress(ledger.currentDest(id.address)), isTrue);
+    expect(
+      ledger.currentDest(id.address),
+      isNot(degenerateDest(id.address, continuityRoot: header.sublist(68, 100), height: 5)),
     );
-    expect(ledger.currentDest(id.address), paid);
-    expect(paid, isNot(id.address));
-    expect(paid!.startsWith('sdcard1') || paid.startsWith('she1'), isTrue);
-    expect(isDestAddress(paid), isTrue);
-    expect(paid, isNot(degenerateDest(id.address, continuityRoot: header.sublist(68, 100), height: 5)));
   });
 
   test('Dart ShearHash matches C selftest vector 6e95b903…', () {
@@ -293,7 +295,7 @@ void main() {
     aliceL.viewSecret = alice.viewKey;
     final from = aliceL.currentDest(alice.address);
     final to = destForLogin(bob.address, height: 1, viewKey: bob.viewKey)!;
-    expect(from.startsWith('sdcard1') || from.startsWith('she1'), isTrue);
+    expect(from.startsWith('she1'), isTrue);
     expect(isDestAddress(from), isTrue);
     expect(from, isNot(alice.address));
     aliceL.creditHash(alice.address, hashes: 0);

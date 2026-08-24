@@ -61,6 +61,8 @@ Map<String, dynamic> exportShewall({
     ...identity.toJson(),
     'spendable': ledger.spendable(identity.address),
     'pending': ledger.pending(identity.address),
+    'destCount': ledger.destCount,
+    'destIndex': ledger.destIndex,
     'txs': ledger.transactions.map((t) => t.toJson()).toList(),
   };
 }
@@ -71,6 +73,8 @@ ShearIdentity importShewall(Map<String, dynamic> dump, ShearLedger ledger) {
     address: id.address,
     spendable: (dump['spendable'] as num?)?.toDouble() ?? 0,
     pending: (dump['pending'] as num?)?.toDouble() ?? 0,
+    destCount: (dump['destCount'] as num?)?.toInt(),
+    destIndex: (dump['destIndex'] as num?)?.toInt(),
     txs: ((dump['txs'] as List?) ?? const [])
         .map((e) => ShearTx.fromJson(Map<String, dynamic>.from(e as Map)))
         .toList(),
