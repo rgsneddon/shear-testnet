@@ -1,0 +1,31 @@
+:root, html[data-theme="light"] {
+  --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
+  --cyan: #0088a8; --blue: #1a6fb5; --green: #1a9a4a; --banner: #f7fbff;
+  --input: #ffffff; --code: #f3f7fb;
+}
+html[data-theme="dark"] {
+  --bg: #0a1628; --card: #132a4a; --ink: #e8f1f8; --muted: #8aa4bc;
+  --cyan: #4fd8e8; --blue: #7eb6e8; --green: #5dcc7a; --banner: #06141f;
+  --input: #06141f; --code: #06141f;
+}
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) {
+    --bg: #0a1628; --card: #132a4a; --ink: #e8f1f8; --muted: #8aa4bc;
+    --cyan: #4fd8e8; --blue: #7eb6e8; --green: #5dcc7a; --banner: #06141f;
+    --input: #06141f; --code: #06141f;
+  }
+}
+.banner-wordmark { height: 36px; width: auto; display: block; }
+.theme-toggle {
+  margin-left: auto; padding: .35rem .6rem; cursor: pointer;
+  background: var(--input); color: var(--cyan); border: 1px solid var(--blue);
+  font-size: .7rem; font-weight: 750; letter-spacing: .06em; text-transform: uppercase;
+}
+.top-banner { background: var(--banner); }
+input, select, button { background: var(--input); color: var(--ink); }
+code, pre { background: var(--code); }
+html[data-theme="dark"] .panel-card {
+  background: linear-gradient(165deg, #1a3a5c 0%, #132a4a 58%) padding-box,
+    linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+  background-origin: border-box; background-clip: padding-box, border-box;
+}

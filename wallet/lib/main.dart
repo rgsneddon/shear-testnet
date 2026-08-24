@@ -74,6 +74,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   List<Vortice> vortices = const [reserveVortice];
   final Set<String> openedMemos = {};
   String? lastMemoPlain;
+  ThemeMode _themeMode = ThemeMode.light;
 
   @override
   void initState() {
@@ -118,15 +119,34 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Shear $kWalletVersion',
-      theme: shearTheme(),
+      theme: shearLightTheme(),
+      darkTheme: shearDarkTheme(),
+      themeMode: _themeMode,
       home: unlocked ? _shell() : _lockGate(),
+    );
+  }
+
+  void _toggleTheme() {
+    setState(() {
+      _themeMode = _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+    });
+  }
+
+  Widget _brandMark({double size = 40}) {
+    return Image.asset(kShearLogoAsset, width: size, height: size, filterQuality: FilterQuality.medium);
+  }
+
+  Widget _brandWordmark({double height = 22}) {
+    return Image.asset(
+      shearWordmarkAsset(_themeMode == ThemeMode.dark ? Brightness.dark : Brightness.light),
+      height: height,
+      filterQuality: FilterQuality.high,
     );
   }
 
   Widget _lockGate() {
     final ctrl = TextEditingController();
     return Scaffold(
-      backgroundColor: shearBg,
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
@@ -135,7 +155,9 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text('SHEAR', style: TextStyle(letterSpacing: 4, fontWeight: FontWeight.w800, color: shearBlue)),
+                _brandMark(size: 72),
+                const SizedBox(height: 10),
+                _brandWordmark(height: 28),
                 const SizedBox(height: 8),
                 const Text('Create a password for this wallet. It encrypts shewall.json.'),
                 TextField(
@@ -148,6 +170,11 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
                 FilledButton(
                   onPressed: () => _unlock(ctrl.text),
                   child: const Text('Unlock'),
+                ),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: _toggleTheme,
+                  child: Text(_themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode'),
                 ),
               ],
             ),
@@ -173,7 +200,21 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     ];
     return Scaffold(
       appBar: AppBar(
-        title: Text('Shear  $kWalletVersion  ${kSymbols[tab]}'),
+        leading: Padding(padding: const EdgeInsets.all(8), child: _brandMark(size: 28)),
+        title: Row(
+          children: [
+            _brandWordmark(height: 22),
+            const SizedBox(width: 8),
+            Text('$kWalletVersion  ${kSymbols[tab]}'),
+          ],
+        ),
+        actions: [
+          IconButton(
+            tooltip: _themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode',
+            onPressed: _toggleTheme,
+            icon: Icon(_themeMode == ThemeMode.dark ? Icons.light_mode : Icons.dark_mode),
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -208,7 +249,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       padding: const EdgeInsets.all(16),
       children: [
         Card(
-          color: shearCard,
+          color: Theme.of(context).cardColor,
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: kids),

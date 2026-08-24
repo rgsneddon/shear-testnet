@@ -5,13 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta http-equiv="Cache-Control" content="no-store"/>
   <title>Shear explorer · ShearHash</title>
+  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="icon" href="/brand/favicon.ico"/>
+  <link rel="stylesheet" href="/brand/nevia.css"/>
+  <link rel="stylesheet" href="/brand/theme.css"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
       --cyan: #0088a8; --blue: #1a6fb5; --green: #1a9a4a; --radius: 0px;
     }
     * { box-sizing: border-box; }
-    body { margin:0; font:13px/1.35 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    body { margin:0; font:13px/1.35 "Nevia","Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
     .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
     h1 { font-size:1.05rem; font-weight:700; margin:0 0 8px; }
     h2 { font-size:.92rem; font-weight:700; margin:0 0 8px; }
@@ -62,7 +66,10 @@
 </head>
 <body>
   <header class="top-banner">
-    <span class="wordmark">SHEAR</span>
+    <img id="shear-wordmark" class="banner-wordmark" alt="Shear"
+      src="/brand/05c-wordmark-nevia-light-transparent.png"
+      data-light="/brand/05c-wordmark-nevia-light-transparent.png"
+      data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
     <nav class="nav">
       <a class="nav-btn" href="https://pool.shear.digital">OFFICIAL POOL</a>
       <a class="nav-btn" href="/">EXPLORER</a>
@@ -71,7 +78,9 @@
       <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">NODE</a>
     </nav>
+    <button type="button" class="theme-toggle" id="theme-toggle" onclick="toggleShearTheme()">Dark</button>
   </header>
+  <script src="/brand/theme.js"></script>
   <div class="wrap">
     <section class="panel-card">
       <h1>Shear explorer</h1>

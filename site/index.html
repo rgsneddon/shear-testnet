@@ -4,18 +4,53 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Shear — testnet</title>
+  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="icon" href="/brand/favicon.ico"/>
+  <link rel="stylesheet" href="/brand/nevia.css"/>
+  <link rel="stylesheet" href="/brand/theme.css"/>
   <style>
-    body { margin:0; font:16px/1.45 "Segoe UI",system-ui,sans-serif; background:#eef3f8; color:#0d2137; }
-    main { max-width:40rem; margin:3rem auto; padding:0 1rem; }
-    a { color:#0088a8; }
-    .card { background:#fff; padding:1.2rem 1.4rem; border:1px solid #c5d6e6; }
+    :root {
+      --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
+      --cyan: #0088a8; --blue: #1a6fb5; --green: #1a9a4a;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; font:16px/1.45 "Nevia","Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    .top-banner {
+      display:flex; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 16px;
+      border-bottom:1px solid rgba(26,111,181,.25);
+    }
+    .nav { display:flex; flex-wrap:wrap; gap:6px; }
+    a.nav-btn {
+      display:inline-flex; align-items:center; height:32px; padding:0 9px; color:var(--cyan); text-decoration:none;
+      font-weight:750; letter-spacing:.05em; font-size:.62rem; text-transform:uppercase;
+      border:1px solid var(--cyan);
+    }
+    main { max-width:40rem; margin:2rem auto; padding:0 1rem 3rem; }
+    a { color:var(--cyan); }
+    .card { background:var(--card); padding:1.2rem 1.4rem; border:1px solid #c5d6e6; }
+    html[data-theme="dark"] .card { border-color:#1a3a5c; }
+    .mark { height:72px; width:auto; display:block; margin:0 0 1rem; }
   </style>
 </head>
 <body>
+  <header class="top-banner">
+    <img id="shear-wordmark" class="banner-wordmark" alt="Shear"
+      src="/brand/05c-wordmark-nevia-light-transparent.png"
+      data-light="/brand/05c-wordmark-nevia-light-transparent.png"
+      data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    <nav class="nav">
+      <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
+    </nav>
+    <button type="button" class="theme-toggle" id="theme-toggle" onclick="toggleShearTheme()">Dark</button>
+  </header>
+  <script src="/brand/theme.js"></script>
   <main class="card">
+    <img class="mark" src="/brand/logo.png" alt="Shear mark"/>
     <h1>Shear</h1>
     <p>Private by default. Proof of work only. Continuity-settled. <strong>Testnet.</strong></p>
     <p>Pool: <a href="https://pool.shear.digital">pool.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
+    <p>Explorer: <a href="https://explorer.shear.digital">explorer.shear.digital</a></p>
     <p>Algo: ShearHash · Coin: SHE · Network: shear-testnet-v1</p>
   </main>
 </body>

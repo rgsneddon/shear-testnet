@@ -1,0 +1,43 @@
+/* Nevia (Sentavio) — web-friendly WOFF2 for later site use. */
+@font-face {
+  font-family: "Nevia";
+  src: url("fonts/nevia/woff2/Nevia-Light.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Nevia";
+  src: url("fonts/nevia/woff2/Nevia-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Nevia";
+  src: url("fonts/nevia/woff2/Nevia-ExtraBold.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Nevia";
+  src: url("fonts/nevia/woff2/Nevia-Black.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Nevia Condensed";
+  src: url("fonts/nevia/woff2/Nevia-LightCondensed.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Nevia Condensed";
+  src: url("fonts/nevia/woff2/Nevia-ExtraBoldCondensed.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}

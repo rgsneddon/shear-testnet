@@ -217,12 +217,32 @@ void main() {
     await tester.tap(find.text('Unlock'));
     await tester.pump();
     await tester.pump();
-    expect(find.textContaining('Shear  0.0.3'), findsWidgets);
+    expect(find.textContaining('0.0.3'), findsWidgets);
+    expect(find.byType(Image), findsWidgets);
     for (final name in kTabs) {
       expect(find.text(name), findsWidgets);
     }
     expect(kExplains.length, kTabs.length);
     expect(kExplains.every((e) => e.length > 20), isTrue);
+  });
+
+  testWidgets('pack logo loads and dark mode swaps palette', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-theme-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger()));
+    await tester.pump();
+    expect(shearDarkBg.value, isNot(shearBg.value));
+    expect(kShearLogoAsset, 'assets/brand/logo.png');
+    expect(find.byType(Image), findsWidgets);
+    await tester.tap(find.text('Dark mode'));
+    await tester.pump();
+    final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
+    expect(app.themeMode, ThemeMode.dark);
+    expect(app.darkTheme!.scaffoldBackgroundColor, shearDarkBg);
+    expect(app.theme!.scaffoldBackgroundColor, shearBg);
+    final scaffold = tester.widget<Scaffold>(find.byType(Scaffold));
+    expect(scaffold.backgroundColor ?? app.darkTheme!.scaffoldBackgroundColor, shearDarkBg);
   });
 
   testWidgets('non-desktop Mine runs in-app ShearHash, not a single fake credit', (tester) async {
