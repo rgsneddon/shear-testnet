@@ -55,24 +55,81 @@ export function pendingFor(miners, address) {
   return { shares: hashes, amount: nanosToShe(hashes * HASH_BONUS_NANOS) };
 }
 
-function publicExplorerTxs(store) {
+function isPublicParty(a) {
+  const s = String(a || '');
+  if (s === 'coinbase') return true;
+  return isDestAddress(s);
+}
+
+export function publicExplorerTxs(store) {
   const rows = [];
-  if (typeof store?.historyFor === 'function') {
-    for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
-  } else {
-    for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
+  for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
+  return rows
+    .filter((r) => isPublicParty(r.to) && isPublicParty(r.from))
+    .map((r) => explorerRowPublic({
+      id: r.id,
+      kind: r.kind,
+      from: r.from,
+      to: r.to,
+      amount: nanosToShe(r.nanos),
+      height: r.height,
+      confirmed: r.confirmed !== false,
+      memo: !!(r.memoCt || r.memo),
+      memoCt: r.memoCt,
+    }));
+}
+
+export function searchExplorerTxs(store, q = {}) {
+  let txs = publicExplorerTxs(store);
+  const id = String(q.id || '').trim();
+  const height = q.height != null && String(q.height).trim() !== '' ? Number(q.height) : NaN;
+  const from = q.from != null && String(q.from).trim() !== '' ? Number(q.from) : NaN;
+  const to = q.to != null && String(q.to).trim() !== '' ? Number(q.to) : NaN;
+  if (id) {
+    txs = txs.filter((t) => String(t.id) === id || String(t.id).includes(id));
+  } else if (Number.isFinite(height)) {
+    txs = txs.filter((t) => Number(t.height) === height);
+  } else if (Number.isFinite(from) || Number.isFinite(to)) {
+    const lo = Number.isFinite(from) ? from : -Infinity;
+    const hi = Number.isFinite(to) ? to : Infinity;
+    txs = txs.filter((t) => Number(t.height) >= lo && Number(t.height) <= hi);
   }
-  return rows.map((r) => explorerRowPublic({
-    id: r.id,
-    kind: r.kind,
-    from: r.from,
-    to: r.to,
-    amount: nanosToShe(r.nanos),
-    height: r.height,
-    confirmed: r.confirmed !== false,
-    memo: !!(r.memoCt || r.memo),
-    memoCt: r.memoCt,
-  }));
+  return txs;
+}
+
+export function explorerCirculation(store) {
+  const txs = publicExplorerTxs(store);
+  const bal = new Map();
+  let emitted = 0;
+  for (const t of txs) {
+    const amt = Number(t.amount) || 0;
+    if (t.from === 'coinbase') {
+      emitted += amt;
+      if (isDestAddress(t.to)) bal.set(t.to, (bal.get(t.to) || 0) + amt);
+    } else {
+      if (isDestAddress(t.from)) bal.set(t.from, (bal.get(t.from) || 0) - amt);
+      if (isDestAddress(t.to)) bal.set(t.to, (bal.get(t.to) || 0) + amt);
+    }
+  }
+  for (const [k, v] of [...bal.entries()]) {
+    if (!(v > 0) || !isDestAddress(k)) bal.delete(k);
+  }
+  const circulating = [...bal.values()].reduce((a, b) => a + b, 0);
+  const holders = [...bal.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([tag, amount], i) => ({
+      rank: i + 1,
+      tag,
+      amount,
+      share: circulating ? amount / circulating : 0,
+    }));
+  return {
+    circulating,
+    emitted,
+    holderCount: bal.size,
+    holders,
+  };
 }
 
 export function handleWalletApi(url, method, body, { store, miners, queueSend }) {
@@ -104,6 +161,19 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
   if (path === '/api/explorer/history' && verb === 'GET') {
     const txs = publicExplorerTxs(store);
     return { status: 200, json: { ok: true, txs, amountsOnly: true } };
+  }
+  if (path === '/api/explorer/search' && verb === 'GET') {
+    const txs = searchExplorerTxs(store, {
+      height: url.searchParams.get('height') || url.searchParams.get('block'),
+      id: url.searchParams.get('id'),
+      from: url.searchParams.get('from'),
+      to: url.searchParams.get('to'),
+    });
+    return { status: 200, json: { ok: true, txs, amountsOnly: true } };
+  }
+  if (path === '/api/explorer/circulation' && verb === 'GET') {
+    const circ = explorerCirculation(store);
+    return { status: 200, json: { ok: true, coin: 'SHE', ...circ } };
   }
   if (path === '/api/wallet/history' && verb === 'GET') {
     const address = url.searchParams.get('address') || '';

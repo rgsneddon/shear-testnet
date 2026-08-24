@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta http-equiv="Cache-Control" content="no-store"/>
+  <title>Shear explorer · ShearHash</title>
+  <style>
+    :root {
+      --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
+      --cyan: #0088a8; --blue: #1a6fb5; --green: #1a9a4a; --radius: 0px;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; font:13px/1.35 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
+    h1 { font-size:1.05rem; font-weight:700; margin:0 0 8px; }
+    h2 { font-size:.92rem; font-weight:700; margin:0 0 8px; }
+    p { margin:0 0 8px; overflow-wrap:anywhere; }
+    .panel-card {
+      border: 1px solid transparent; border-radius: var(--radius); padding: 10px 12px; margin: 8px 0;
+      background: linear-gradient(165deg, #ffffff 0%, #f4f8fc 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin: border-box; background-clip: padding-box, border-box;
+    }
+    .grid { display:grid; gap:8px; width:100%; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 8px 0 16px; }
+    .grid .panel-card { margin:0; padding:7px 8px; }
+    .label { color:var(--muted); font-size:.62rem; letter-spacing:.05em; text-transform:uppercase; }
+    .value { font-size:.78rem; font-weight:650; margin-top:2px; color:var(--cyan); overflow-wrap:anywhere; }
+    a { color:var(--cyan); }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.78rem; overflow-wrap:anywhere; }
+    .mono { font-family: ui-monospace, Consolas, monospace; font-size:.72rem; }
+    .pulse { color:var(--green); font-size:.75rem; }
+    .stale { color:#b42318; }
+    .top-banner {
+      display:flex; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
+      border-bottom:1px solid rgba(26,111,181,.25); background:#f7fbff;
+    }
+    .wordmark { font-weight:800; letter-spacing:.12em; color:var(--blue); font-size:.85rem; }
+    .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
+    a.nav-btn {
+      display:inline-flex; align-items:center; height:32px; padding:0 9px; color:var(--cyan); text-decoration:none;
+      font-weight:750; letter-spacing:.05em; font-size:.62rem; text-transform:uppercase;
+      border:1px solid transparent;
+      background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box, border-box;
+    }
+    input { width:100%; margin:.3rem 0 .6rem; padding:.4rem .5rem; background:#fff; color:var(--ink); border:1px solid var(--blue); font-size:13px; }
+    button {
+      padding:.4rem .7rem; background:#fff; color:var(--cyan); border:1px solid var(--blue);
+      cursor:pointer; font-size:.78rem; font-weight:700;
+    }
+    .search-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:8px; }
+    .search-grid > p { margin:0; }
+    .search-actions { display:flex; gap:8px; align-items:center; margin-top:4px; flex-wrap:wrap; }
+    @media (max-width: 1024px) {
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .search-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <header class="top-banner">
+    <span class="wordmark">SHEAR</span>
+    <nav class="nav">
+      <a class="nav-btn" href="https://pool.shear.digital">OFFICIAL POOL</a>
+      <a class="nav-btn" href="/">EXPLORER</a>
+      <a class="nav-btn" href="https://shear.digital">SITE</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">NODE</a>
+    </nav>
+  </header>
+  <div class="wrap">
+    <section class="panel-card">
+      <h1>Shear explorer</h1>
+      <p>Continuity-settled PoW. Dest amounts only — share <code style="display:inline">sdcard1</code> or <code style="display:inline">she1</code>, never rest-frame shear1. Memo is yes/no only.</p>
+      <p class="pulse" id="live-pulse">live · testnet</p>
+    </section>
+    <div class="grid" id="net-grid">
+      <article class="panel-card"><div class="label">Height</div><div class="value" id="ex-height">0</div></article>
+      <article class="panel-card"><div class="label">Algo</div><div class="value" id="ex-algo">ShearHash</div></article>
+      <article class="panel-card"><div class="label">Network hashrate</div><div class="value" id="ex-hashrate">0 H/s</div></article>
+      <article class="panel-card"><div class="label">Last block</div><div class="value" id="ex-updated">—</div></article>
+    </div>
+    <section class="panel-card" id="tx-search-box">
+      <h2>Search TX's</h2>
+      <p class="label">Find by block number, tx id, or a from–to height range.</p>
+      <form id="tx-search">
+        <div class="search-grid">
+          <p><label class="label" for="q-height">Block number</label><br/>
+            <input id="q-height" name="height" inputmode="numeric" autocomplete="off"/></p>
+          <p><label class="label" for="q-id">Tx id</label><br/>
+            <input id="q-id" name="id" autocomplete="off"/></p>
+          <p><label class="label" for="q-from">From block</label><br/>
+            <input id="q-from" name="from" inputmode="numeric" autocomplete="off"/></p>
+          <p><label class="label" for="q-to">To block</label><br/>
+            <input id="q-to" name="to" inputmode="numeric" autocomplete="off"/></p>
+        </div>
+        <div class="search-actions">
+          <button type="submit" id="search-go">Search</button>
+          <button type="button" id="search-reset">Clear</button>
+          <span class="label" id="tx-status"></span>
+        </div>
+      </form>
+    </section>
+    <section class="panel-card">
+      <h2>Recent transfers</h2>
+      <table id="ex-txs">
+        <thead>
+          <tr>
+            <th>Id</th>
+            <th>Kind</th>
+            <th>From</th>
+            <th>To</th>
+            <th>Amount SHE</th>
+            <th>Memo</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+    <section class="panel-card">
+      <h2>Circulation</h2>
+      <p class="label">Spendable SHE on dests. Rest-frame shear1 is not listed.</p>
+      <div class="grid">
+        <article class="panel-card"><div class="label">Coins in circulation</div><div class="value" id="ex-circulating">—</div></article>
+        <article class="panel-card"><div class="label">Emitted</div><div class="value" id="ex-emitted">—</div></article>
+        <article class="panel-card"><div class="label">Holders</div><div class="value" id="ex-holder-count">—</div></article>
+      </div>
+      <h2>Top holders</h2>
+      <table id="ex-holders">
+        <thead>
+          <tr><th>#</th><th>Holder</th><th>Amount</th><th>Share</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div>
+  <script>
+    const API_BASE = '/api';
+    let lastBlockAt = 0;
+    let filled = false;
+    function fmtShe(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return '0';
+      if (Math.abs(v - Math.round(v)) < 1e-12) return String(Math.round(v));
+      return v.toFixed(9).replace(/0+$/, '').replace(/\.$/, '');
+    }
+    function fmtRate(n) {
+      const v = Number(n) || 0;
+      if (v >= 1e6) return (v / 1e6).toFixed(2) + ' MH/s';
+      if (v >= 1e3) return (v / 1e3).toFixed(2) + ' kH/s';
+      return v.toFixed(1) + ' H/s';
+    }
+    function fmtSinceBlock(at) {
+      if (!at) return '—';
+      const sec = Math.max(0, Math.floor((Date.now() - Number(at)) / 1000));
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    }
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const next = String(value);
+      if (el.textContent === next) return;
+      el.textContent = next;
+    }
+    function esc(v) {
+      return String(v ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    }
+    function fetchJson(path, ms) {
+      const ctrl = new AbortController();
+      const t = setTimeout(function () { ctrl.abort(); }, ms || 2500);
+      const sep = String(path || '').indexOf('?') >= 0 ? '&' : '?';
+      return fetch(API_BASE + path + sep + '_=' + Date.now(), {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-store' },
+        signal: ctrl.signal,
+      }).then(function (r) { return r.json(); }).finally(function () { clearTimeout(t); });
+    }
+    function paintTxs(txs, status) {
+      const body = document.querySelector('#ex-txs tbody');
+      const st = document.getElementById('tx-status');
+      if (st) st.textContent = status || '';
+      if (!body) return;
+      const rows = Array.isArray(txs) ? txs : [];
+      body.innerHTML = rows.length
+        ? rows.map((t) => '<tr><td class="mono">'+esc(t.id)+'</td><td>'+esc(t.kind)+'</td><td class="mono">'+esc(t.from)+'</td><td class="mono">'+esc(t.to)+'</td><td>'+esc(fmtShe(t.amount))+'</td><td>'+(t.memo ? 'yes' : 'no')+'</td></tr>').join('')
+        : '<tr><td colspan="6">No transfers yet.</td></tr>';
+    }
+    function queryFromForm() {
+      const q = new URLSearchParams();
+      const height = (document.getElementById('q-height') || {}).value || '';
+      const id = (document.getElementById('q-id') || {}).value || '';
+      const from = (document.getElementById('q-from') || {}).value || '';
+      const to = (document.getElementById('q-to') || {}).value || '';
+      if (String(height).trim()) q.set('height', String(height).trim());
+      if (String(id).trim()) q.set('id', String(id).trim());
+      if (String(from).trim()) q.set('from', String(from).trim());
+      if (String(to).trim()) q.set('to', String(to).trim());
+      return q;
+    }
+    function paintHolders(circ) {
+      setText('ex-circulating', fmtShe(circ.circulating) + ' SHE');
+      setText('ex-emitted', fmtShe(circ.emitted) + ' SHE');
+      setText('ex-holder-count', circ.holderCount ?? 0);
+      const body = document.querySelector('#ex-holders tbody');
+      if (!body) return;
+      const holders = Array.isArray(circ.holders) ? circ.holders : [];
+      body.innerHTML = holders.length
+        ? holders.map((h) => '<tr><td>'+esc(h.rank)+'</td><td class="mono">'+esc(h.tag)+'</td><td>'+esc(fmtShe(h.amount))+'</td><td>'+((Number(h.share)||0)*100).toFixed(2)+'%</td></tr>').join('')
+        : '<tr><td colspan="4">No holders yet.</td></tr>';
+    }
+    async function loadRecent() {
+      const [stats, hist, circ] = await Promise.all([
+        fetchJson('/stats'),
+        fetchJson('/explorer/history'),
+        fetchJson('/explorer/circulation'),
+      ]);
+      setText('ex-height', stats.height ?? 0);
+      setText('ex-algo', stats.algo || 'ShearHash');
+      setText('ex-hashrate', fmtRate(stats.hashrate));
+      lastBlockAt = Number(stats.lastFoundAt || 0);
+      setText('ex-updated', lastBlockAt ? fmtSinceBlock(lastBlockAt) : '—');
+      paintTxs((hist.txs || []).slice(0, 30), '');
+      paintHolders(circ);
+      const pulse = document.getElementById('live-pulse');
+      if (pulse) {
+        pulse.classList.remove('stale');
+        pulse.textContent = 'live · height ' + (stats.height ?? 0);
+      }
+      filled = true;
+    }
+    async function runSearch(ev) {
+      if (ev) ev.preventDefault();
+      const q = queryFromForm();
+      if (![...q.keys()].length) {
+        await loadRecent();
+        return;
+      }
+      const got = await fetchJson('/explorer/search?' + q.toString());
+      const n = (got.txs || []).length;
+      let status = n + ' transfer(s)';
+      if (q.get('height')) status = n + ' transfer(s) at block ' + q.get('height');
+      else if (q.get('id')) status = n + ' transfer(s) matching id ' + q.get('id');
+      else if (q.get('from') || q.get('to')) status = n + ' transfer(s) from block ' + (q.get('from') || '…') + ' to ' + (q.get('to') || '…');
+      paintTxs(got.txs || [], status);
+    }
+    document.getElementById('tx-search').addEventListener('submit', runSearch);
+    document.getElementById('search-reset').addEventListener('click', function () {
+      ['q-height','q-id','q-from','q-to'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      loadRecent();
+    });
+    loadRecent().catch(function () {
+      const pulse = document.getElementById('live-pulse');
+      if (pulse) { pulse.classList.add('stale'); pulse.textContent = 'offline · retrying'; }
+      setTimeout(loadRecent, 1200);
+    });
+    setInterval(function () {
+      if (lastBlockAt) setText('ex-updated', fmtSinceBlock(lastBlockAt));
+      if (filled) loadRecent().catch(function () {});
+    }, 2000);
+  </script>
+</body>
+</html>

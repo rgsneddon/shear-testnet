@@ -3,7 +3,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { requiredJobFields } from '../../crypto/header.js';
+import { requiredJobFields, decodeHeader } from '../../crypto/header.js';
 import { headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, ALGO, CLIENT } from '../../crypto/shear_hash.js';
 import { isDestAddress } from '../../crypto/address.js';
@@ -205,6 +205,10 @@ export function createPool({
       height: tip?.height || 0,
       header: tip?.header ? Buffer.from(tip.header).toString('hex') : '',
       bits: lastJob?.bits || bits,
+      lastFoundAt: (() => {
+        if (!tip?.header) return 0;
+        try { return Number(decodeHeader(Buffer.from(tip.header)).timestamp); } catch { return 0; }
+      })(),
       uptimeMs: Date.now() - stats.started,
       workers: workers.map((m) => ({
         miner: m.login.slice(0, 18) + '…',

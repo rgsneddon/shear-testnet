@@ -7,7 +7,7 @@ import { newIdentity } from '../../crypto/address.js';
 import { destForLogin, memoSeal } from '../../crypto/flow_sheet.js';
 import { createStore } from '../../node/src/store.js';
 import { buildTemplate, mineTemplate, GENESIS_PREV } from '../../node/src/chain.js';
-import { handleWalletApi } from '../src/wallet_api.js';
+import { handleWalletApi, searchExplorerTxs, explorerCirculation } from '../src/wallet_api.js';
 
 function mine(tpl) {
   const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
@@ -67,5 +67,75 @@ describe('explorer dests', () => {
     const hist = get(store, `/api/wallet/history?address=${dest}`);
     assert.equal(hist.status, 200);
     assert.ok(hist.json.txs.some((t) => t.to === dest));
+  });
+
+  it('search by height, tx id, and from–to range; circulation sums dest balances', () => {
+    const alice = newIdentity();
+    const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-exs-'));
+    const store = createStore(dir);
+    const env = memoSeal(dest, 'do-not-leak');
+    const b1 = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: dest,
+      bits: 8,
+      now: Date.now(),
+      samples: [{ miner: dest, nonce: '1', tag: 'a', count: 1 }],
+      txs: [{
+        id: 'tx-alpha',
+        from: dest,
+        to: dest,
+        nanos: 1,
+        vin: [{ address: dest }],
+        vout: [{ address: dest, nanos: 1, memoCt: env }],
+        memoCt: env,
+      }],
+    });
+    assert.equal(store.append(mine(b1)).ok, true);
+    const b2 = buildTemplate({
+      prev: store.tip().hash,
+      prevHeader: store.tip().header,
+      height: 2,
+      miner: dest,
+      bits: 8,
+      now: Date.now() + 1000,
+      samples: [{ miner: dest, nonce: '2', tag: 'b', count: 1 }],
+    });
+    assert.equal(store.append(mine(b2)).ok, true);
+
+    const byHeight = get(store, '/api/explorer/search?height=1');
+    assert.equal(byHeight.status, 200);
+    assert.ok(byHeight.json.txs.length >= 1);
+    assert.ok(byHeight.json.txs.every((t) => Number(t.height) === 1));
+    assert.ok(byHeight.json.txs.every((t) => typeof t.amount === 'number'));
+    assert.ok(byHeight.json.txs.every((t) => t.memo === true || t.memo === false));
+    assert.ok(byHeight.json.txs.every((t) => t.memoCt == null && t.memoPlain == null));
+    assert.ok(byHeight.json.txs.every((t) => String(t.to || '').startsWith('sdcard1') || String(t.to || '').startsWith('she1') || t.to === 'coinbase'));
+    assert.equal(JSON.stringify(byHeight.json).includes('do-not-leak'), false);
+
+    const byId = get(store, '/api/explorer/search?id=tx-alpha');
+    assert.equal(byId.status, 200);
+    assert.ok(byId.json.txs.some((t) => t.id === 'tx-alpha'));
+    assert.ok(byId.json.txs.every((t) => String(t.id).includes('tx-alpha')));
+
+    const range = get(store, '/api/explorer/search?from=2&to=2');
+    assert.equal(range.status, 200);
+    assert.ok(range.json.txs.length >= 1);
+    assert.ok(range.json.txs.every((t) => Number(t.height) === 2));
+    assert.equal(range.json.txs.some((t) => t.id === 'tx-alpha'), false);
+
+    const shipped = searchExplorerTxs(store, { height: 1 });
+    assert.deepEqual(shipped.map((t) => t.id).sort(), byHeight.json.txs.map((t) => t.id).sort());
+
+    const circ = get(store, '/api/explorer/circulation');
+    assert.equal(circ.status, 200);
+    assert.equal(circ.json.ok, true);
+    assert.ok(circ.json.circulating > 0);
+    assert.ok(circ.json.emitted > 0);
+    assert.ok(circ.json.holderCount >= 1);
+    assert.ok(circ.json.holders.every((h) => h.tag.startsWith('sdcard1') || h.tag.startsWith('she1')));
+    const viaFn = explorerCirculation(store);
+    assert.equal(viaFn.circulating, circ.json.circulating);
   });
 });
