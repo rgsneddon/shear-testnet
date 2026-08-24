@@ -8,12 +8,13 @@ export const MIN_BITS = 1;
 export const MAX_BITS = 256;
 export const LIVE_MIN_BITS = 14;
 export const GENESIS_BITS = 21;
-/** Protocol unit is 10⁻¹¹ SHE (11 decimals). Vote steps are integers of this unit. */
+/** Protocol unit is 10⁻¹¹ SHE (11 decimals). Vote steps are integers of this unit. Public amounts show eight fractional digits. */
 export const SHE_DECIMALS = 11;
+export const SHE_PUBLIC_DIGITS = 8;
 export const NANOS_PER_SHE = 100_000_000_000; // 10^11
 export const BLOCK_SUBSIDY_NANOS = NANOS_PER_SHE;
-/** 0.0000000001 SHE per valid hash = 10 units. */
-export const HASH_BONUS_NANOS = 10;
+/** 0.00000000001 SHE per valid hash = 1 protocol unit. */
+export const HASH_BONUS_NANOS = 1;
 /** Vote moves the per-hash bonus by one protocol unit (±10⁻¹¹ SHE). The 1 SHE pot does not move. */
 export const HASH_BONUS_VOTE_DELTA_NANOS = 1;
 export const POOL_FEE_BPS = 100;
@@ -25,8 +26,8 @@ export const JOIN_PROGRAM = 'shear-join-v1';
 export const JOIN_KIND_GENESIS = 'join-genesis';
 export const JOIN_WINDOW_DAYS = 99;
 export const JOIN_WINDOW_MS = JOIN_WINDOW_DAYS * 86_400_000;
-/** Prior-ledger coin uses 10 decimals; Shear uses 11. 1 coin → 1 SHE. */
-export const PRIOR_UNITS_PER_COIN = 10_000_000_000;
+/** Prior-ledger coin uses 11 decimals; Shear uses 11. 1 coin → 1 SHE. */
+export const PRIOR_UNITS_PER_COIN = 100_000_000_000;
 export const PRIOR_TO_SHEAR_UNITS = NANOS_PER_SHE / PRIOR_UNITS_PER_COIN;
 export const PI_SHE_NANOS = 314159265358; // floor(π × 10^11) SHE in protocol units
 export const RESERVE_EPOCH_DAYS = 400;
@@ -34,6 +35,17 @@ export const RESERVE_JOIN_CUTOFF_DAYS = 99;
 export const RESERVE_EPOCH_MS = RESERVE_EPOCH_DAYS * 86_400_000;
 export const RESERVE_JOIN_CUTOFF_MS = RESERVE_JOIN_CUTOFF_DAYS * 86_400_000;
 export const HASH_BONUS_VOTE_DELTA = HASH_BONUS_VOTE_DELTA_NANOS / NANOS_PER_SHE;
+
+/** Public amount frame: eight fractional digits. Sub-1e-8 dust stays on the sealed book. */
+export function formatShe(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '0.00000000';
+  const trunc = (v < 0 ? Math.ceil(v * 1e8 - 1e-9) : Math.floor(v * 1e8 + 1e-9)) / 1e8;
+  if (trunc === 0 && v !== 0) return (v < 0 ? '-' : '') + '0.00000000';
+  const s = trunc.toFixed(SHE_PUBLIC_DIGITS);
+  if (/^-?\d+\.00000000$/.test(s)) return String(Math.trunc(trunc));
+  return s;
+}
 
 export function extraMintAllowed(programId, opts = {}) {
   const id = String(programId || '');

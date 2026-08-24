@@ -164,9 +164,12 @@
     let filled = false;
     function fmtShe(n) {
       const v = Number(n);
-      if (!Number.isFinite(v)) return '0';
-      if (Math.abs(v - Math.round(v)) < 1e-12) return String(Math.round(v));
-      return v.toFixed(9).replace(/0+$/, '').replace(/\.$/, '');
+      if (!Number.isFinite(v)) return '0.00000000';
+      const trunc = (v < 0 ? Math.ceil(v * 1e8 - 1e-9) : Math.floor(v * 1e8 + 1e-9)) / 1e8;
+      if (trunc === 0 && v !== 0) return (v < 0 ? '-' : '') + '0.00000000';
+      const s = trunc.toFixed(8);
+      if (/^-?\d+\.00000000$/.test(s)) return String(Math.trunc(trunc));
+      return s;
     }
     function fmtRate(n) {
       const v = Number(n) || 0;

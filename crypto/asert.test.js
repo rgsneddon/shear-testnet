@@ -8,8 +8,10 @@ import {
   MAX_BITS,
   clampBits,
   SHE_DECIMALS,
+  SHE_PUBLIC_DIGITS,
   NANOS_PER_SHE,
   HASH_BONUS_NANOS,
+  formatShe,
   HASH_BONUS_VOTE_DELTA_NANOS,
   HASH_BONUS_VOTE_DELTA,
   BLOCK_SUBSIDY_NANOS,
@@ -48,15 +50,19 @@ describe('ASERT 90s block retarget', () => {
 });
 
 describe('SHEAR 11-decimal protocol unit', () => {
-  it('pays 1 SHE per block and 0.0000000001 SHE per hash; votes move by 1 unit', () => {
+  it('pays 1 SHE per block and 0.00000000001 SHE per hash; public frame is eight digits', () => {
     assert.equal(SHE_DECIMALS, 11);
+    assert.equal(SHE_PUBLIC_DIGITS, 8);
     assert.equal(NANOS_PER_SHE, 100_000_000_000);
     assert.equal(BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE);
-    assert.equal(HASH_BONUS_NANOS, 10);
-    assert.equal(HASH_BONUS_NANOS / NANOS_PER_SHE, 1e-10);
+    assert.equal(HASH_BONUS_NANOS, 1);
+    assert.equal(HASH_BONUS_NANOS / NANOS_PER_SHE, 1e-11);
     assert.equal(HASH_BONUS_VOTE_DELTA_NANOS, 1);
     assert.equal(HASH_BONUS_VOTE_DELTA, 1 / NANOS_PER_SHE);
     assert.equal(HASH_BONUS_VOTE_DELTA, 1e-11);
+    assert.equal(formatShe(1), '1');
+    assert.equal(formatShe(1e-11), '0.00000000');
+    assert.equal(formatShe(1e-8), '0.00000001');
   });
 });
 

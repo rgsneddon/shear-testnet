@@ -153,8 +153,12 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.0.6');
+    expect(kWalletVersion, '0.0.7');
     expect(kWalletVersion.contains('0.0.10'), isFalse);
+    expect(formatShe(1), '1');
+    expect(formatShe(kHashBonusShe), '0.00000000');
+    expect(formatShe(1e-8), '0.00000001');
+    expect(kHashBonusShe, 0.00000000001);
     const origin = 'https://dapp.example/stake-pool-a.json';
     const source = '{"id":"stake-pool-a"}';
     expect(issueVorticeKey('stake-pool-a'), isNull);
@@ -288,14 +292,14 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.0.6');
-    expect(kWalletVersion, '0.0.6');
+    expect(app.title, 'Shear 0.0.7');
+    expect(kWalletVersion, '0.0.7');
     // password gate first
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
     await tester.pump();
-    expect(find.textContaining('0.0.6'), findsWidgets);
+    expect(find.textContaining('0.0.7'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -397,18 +401,18 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(find.text('Pending'), findsOneWidget);
-    expect(find.textContaining('0.25000000000'), findsWidgets);
+    expect(find.textContaining(formatShe(0.25)), findsWidgets);
     expect(find.textContaining('block height: 2'), findsWidgets);
     await tester.tap(find.text('Shearview'));
     await tester.pump();
-    expect(find.textContaining('0.25000000000'), findsNothing);
+    expect(find.textContaining(formatShe(0.25)), findsNothing);
     ledger.confirmRound(address: ident.address, pot: 1, height: 3);
     await tester.tap(find.text('Continuum'));
     await tester.pump();
     expect(find.text('Pending'), findsNothing);
     await tester.tap(find.text('Shearview'));
     await tester.pump();
-    expect(find.textContaining('0.25000000000'), findsWidgets);
+    expect(find.textContaining(formatShe(0.25)), findsWidgets);
   });
 
   testWidgets('dark mode cards and fields are dark with light ink; light mode inverts', (tester) async {
@@ -501,7 +505,7 @@ void main() {
     expect(id.paymentCode.startsWith('she1'), isTrue);
     expect(text.contains(dest), isTrue);
     expect(dest.startsWith('shp1'), isTrue);
-    expect(text.contains(tx.amount.toStringAsFixed(kSheDecimals)), isTrue);
+    expect(text.contains(formatShe(tx.amount)), isTrue);
     expect(text.contains(ctfClosurePersonal), isTrue);
     expect(text.contains(ctfFlowPersonal), isTrue);
     expect(text.contains('spendable'), isTrue);
@@ -526,7 +530,7 @@ void main() {
     await tester.tap(find.text('${tx.kind}  ${formatShe(tx.amount)} SHE'));
     await tester.pump();
     expect(find.textContaining('CTF CLI'), findsWidgets);
-    expect(find.textContaining(tx.amount.toStringAsFixed(kSheDecimals)), findsWidgets);
+    expect(find.textContaining(formatShe(tx.amount)), findsWidgets);
     expect(find.textContaining(ident.address), findsWidgets);
     expect(find.textContaining(ident.paymentCode), findsWidgets);
     expect(find.textContaining(tx.to), findsWidgets);
@@ -547,13 +551,13 @@ void main() {
     expect(find.text('Pending'), findsNothing);
     await tester.pump(const Duration(seconds: 3));
     expect(find.text('Pending'), findsOneWidget);
-    expect(find.textContaining('0.25000000000'), findsWidgets);
+    expect(find.textContaining(formatShe(0.25)), findsWidgets);
     await tester.pump(const Duration(seconds: 6));
     expect(find.text('Pending'), findsNothing);
     await tester.tap(find.text('Resistance'));
     await tester.pump();
     expect(find.textContaining('CTF CLI'), findsWidgets);
-    expect(find.textContaining('0.25000000000'), findsWidgets);
+    expect(find.textContaining(formatShe(0.25)), findsWidgets);
     expect(find.textContaining(ident.address), findsWidgets);
     expect(find.textContaining(ident.paymentCode), findsWidgets);
     expect(find.textContaining('shp1'), findsWidgets);
@@ -669,7 +673,7 @@ void main() {
     final payout = ledger.currentDest(alice.address);
     const t0 = 1800000000000;
     const owner = 'prior1alice';
-    const amountPrior = 10000000000;
+    const amountPrior = 100000000000;
     final commit = sha256
         .convert(utf8.encode(kJoinLeafPersonal) + utf8.encode(owner) + utf8.encode('$amountPrior'))
         .toString();

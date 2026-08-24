@@ -35,8 +35,8 @@ describe('The Join vault', () => {
     assert.equal(extraMintAllowed(RESERVE_PROGRAM), true);
     assert.equal(extraMintAllowed(JOIN_PROGRAM), false);
     assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: JOIN_KIND_GENESIS }), true);
-    assert.equal(priorUnitsFromCoins(1), 10_000_000_000);
-    assert.equal(shearNanosFromPriorUnits(10_000_000_000), NANOS_PER_SHE);
+    assert.equal(priorUnitsFromCoins(1), 100_000_000_000);
+    assert.equal(shearNanosFromPriorUnits(100_000_000_000), NANOS_PER_SHE);
     const snap = buildSnapshot([
       { owner: 'prior1alice', coins: 1 },
       { owner: 'prior1bob', coins: 2.5 },

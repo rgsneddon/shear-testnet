@@ -6,12 +6,20 @@ import 'shear_ctf.dart';
 import 'shear_identity.dart';
 
 const kSheDecimals = 11;
+const kShePublicDigits = 8;
 const kUnitsPerShe = 100000000000; // 10^11
-/// 0.0000000001 SHE per valid hash.
-const kHashBonusShe = 0.0000000001;
+/// 0.00000000001 SHE per valid hash.
+const kHashBonusShe = 0.00000000001;
 const kHashBonusVoteDeltaShe = 0.00000000001;
 
-String formatShe(num she) => she.toStringAsFixed(kSheDecimals);
+String formatShe(num she) {
+  if (!she.isFinite) return '0.00000000';
+  final trunc = (she * 1e8).truncateToDouble() / 1e8;
+  if (trunc == 0 && she != 0) return she < 0 ? '-0.00000000' : '0.00000000';
+  final s = trunc.toStringAsFixed(kShePublicDigits);
+  if (RegExp(r'^-?\d+\.00000000$').hasMatch(s)) return trunc.truncate().toString();
+  return s;
+}
 
 class ShearTx {
   const ShearTx({
@@ -126,7 +134,7 @@ class ShearLedger {
   double spendable(String address) => _spendable[payKey(address)] ?? _spendable[address] ?? 0;
   double pending(String address) => _pending[payKey(address)] ?? _pending[address] ?? 0;
 
-  /// Accrue 0.0000000001 SHE per hash this open round. Not spendable, not an explorer row.
+  /// Accrue 0.00000000001 SHE per hash this open round. Not spendable, not an explorer row.
   void creditHash(String address, {int hashes = 1}) {
     final add = hashes * kHashBonusShe;
     final key = payKey(address);

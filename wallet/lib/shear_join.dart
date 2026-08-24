@@ -10,8 +10,8 @@ const kJoinProgram = 'shear-join-v1';
 const kJoinKindGenesis = 'join-genesis';
 const kJoinWindowDays = 99;
 const kJoinWindowMs = kJoinWindowDays * 86400000;
-const kPriorUnitsPerCoin = 10000000000;
-const kPriorToShearUnits = 10;
+const kPriorUnitsPerCoin = 100000000000;
+const kPriorToShearUnits = 1;
 const kJoinLeafPersonal = 'shear-join-leaf-v1';
 const kJoinWindowClosed =
     'The ninety-nine day window is closed. Unclaimed allocation has been burned.';

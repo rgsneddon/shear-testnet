@@ -11,7 +11,7 @@ Every valid block mints **exactly 1 SHE** in the coinbase (`kind: pot`).
 
 ## 2. Per-hash bonus — 0.0000000001 SHE × hashes, per miner
 
-Each valid hash in the **current block round** mints **0.0000000001 SHE** (10 protocol units of 10⁻¹¹ SHE) to the **miner who produced that hash**.
+Each valid hash in the **current block round** mints **0.00000000001 SHE** (1 protocol unit of 10⁻¹¹ SHE) to the **miner who produced that hash**. Public amounts show eight fractional digits; the extra unit is still sealed on the payout.
 
 Alice 4 000 hashes + Bob 1 000 hashes in the same round → Alice 40 000 units, Bob 10 000 units, in the same coinbase as `kind: hash`. The finder does not take anyone else’s hash bonus.
 
@@ -43,6 +43,6 @@ Interest is protocol-minted by **The Reserve only** at withdraw (oracle rate × 
 
 ```
 Block: 1 SHE pot
-Round: 0.0000000001 SHE × your hashes
+Round: 0.00000000001 SHE × your hashes
 Reserve: lock π SHE → vote + oracle interest on staked SHE over 400 days
 ```

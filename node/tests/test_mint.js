@@ -40,7 +40,7 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
     assert.equal(split.hashByMiner[destA], 4000 * HASH_BONUS_NANOS);
     assert.equal(split.hashByMiner[destB], 1000 * HASH_BONUS_NANOS);
     assert.equal(split.hashNanos, 5000 * HASH_BONUS_NANOS);
-    assert.equal(HASH_BONUS_NANOS, 10);
+    assert.equal(HASH_BONUS_NANOS, 1);
     assert.notEqual(alice.address, bob.address);
   });
 });
