@@ -15,7 +15,10 @@ describe('C miner', () => {
     assert.equal(fs.existsSync(bin), true, `missing miner binary at ${bin}`);
     const st = spawnSync(bin, ['--selftest'], { encoding: 'utf8' });
     assert.equal(st.status, 0, st.stderr + st.stdout);
-    assert.match(st.stdout, /selftest ok/);
+    assert.match(
+      st.stdout,
+      /selftest ok 6e95b9033c5d044d08bbf854fb2e5343ca3103b96ae37bde101258d43cfacc63/,
+    );
     assert.match(st.stdout, /client=ShearHash/);
     assert.match(st.stdout, /algorithm=ShearHash/);
     const cfg = spawnSync(bin, ['--print-config'], { encoding: 'utf8' });
@@ -30,6 +33,10 @@ describe('C miner', () => {
     const src = fs.readFileSync(path.join(root, 'src/shear_miner.c'), 'utf8');
     assert.equal(/MAX_THREADS/.test(src), false);
     assert.equal(/g_threads > MAX_THREADS/.test(src), false);
+    const thr = spawnSync(bin, ['--threads', '300', '--print-config'], { encoding: 'utf8' });
+    assert.equal(thr.status, 0, thr.stderr);
+    const jt = JSON.parse(thr.stdout);
+    assert.equal(jt.threads, 300);
   });
 
   it('admits --user shp1 dests and refuses she1 and shear1', () => {

@@ -130,8 +130,10 @@ static int tcp_connect(const char *host, int port) {
 static void print_config(void) {
   printf("{\"client\":\"%s\",\"algorithm\":\"%s\",\"version\":\"%s\","
          "\"clientLogin\":\"single\","
-         "\"pool\":\"%s:%d\",\"headerBytes\":%d,\"magic\":\"shear-testnet-v1\"}\n",
-         SHEAR_CLIENT, SHEAR_ALGO, SHEAR_VERSION, g_host, g_port, SHEAR_HEADER_LEN);
+         "\"pool\":\"%s:%d\",\"headerBytes\":%d,\"magic\":\"shear-testnet-v1\","
+         "\"threads\":%d}\n",
+         SHEAR_CLIENT, SHEAR_ALGO, SHEAR_VERSION, g_host, g_port, SHEAR_HEADER_LEN,
+         g_threads);
 }
 
 static int mine_once(int fd) {
