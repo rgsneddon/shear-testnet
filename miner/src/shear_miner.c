@@ -162,36 +162,50 @@ static int mine_once(int fd) {
   }
   pthread_mutex_unlock(&g_job_mu);
 
-  unsigned char header[SHEAR_HEADER_LEN];
-  unsigned char hash[32];
-  memcpy(header, g_job.header, SHEAR_HEADER_LEN);
-  for (uint64_t nonce = 0; nonce < 400000 && !g_stop; nonce++) {
-    shear_set_nonce(header, nonce);
-    shear_hash(header, hash);
-    atomic_fetch_add(&g_hashes, 1);
-    if (shear_meets_target(hash, g_job.share_bits)) {
+  unsigned char tmpl[SHEAR_HEADER_LEN];
+  memcpy(tmpl, g_job.header, SHEAR_HEADER_LEN);
+  int submitted = 0;
+  for (uint64_t nonce = 0; nonce + (uint64_t)SHEAR_X8 <= 400000 && !g_stop;
+       nonce += (uint64_t)SHEAR_X8) {
+    unsigned char headers[SHEAR_X8][SHEAR_HEADER_LEN];
+    unsigned char hashes[SHEAR_X8][32];
+    for (int k = 0; k < SHEAR_X8; k++) {
+      memcpy(headers[k], tmpl, SHEAR_HEADER_LEN);
+      shear_set_nonce(headers[k], nonce + (uint64_t)k);
+    }
+    shear_hash_x8(headers, hashes);
+    atomic_fetch_add(&g_hashes, (unsigned)SHEAR_X8);
+    /* 1 hash = 1 tx: each meeting nonce is its own share. Never fold the batch. */
+    for (int k = 0; k < SHEAR_X8; k++) {
+      if (!shear_meets_target(hashes[k], g_job.share_bits)) continue;
       snprintf(line, sizeof(line),
                "{\"id\":2,\"method\":\"submit\",\"params\":{\"jobId\":\"%s\",\"nonce\":\"%llu\"}}\n",
-               g_job.jobId, (unsigned long long)nonce);
+               g_job.jobId, (unsigned long long)(nonce + (uint64_t)k));
       send(fd, line, strlen(line), 0);
       n = (int)recv(fd, buf, sizeof(buf) - 1, 0);
       if (n > 0) {
         buf[n] = 0;
         fputs(buf, stdout);
       }
-      return 0;
+      submitted++;
     }
   }
-  return 1;
+  return submitted > 0 ? 0 : 1;
 }
 
 int main(int argc, char **argv) {
   int do_selftest = 0;
   int do_cfg = 0;
   int do_mine = 0;
+  int bench_secs = 0;
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--selftest") == 0) do_selftest = 1;
     else if (strcmp(argv[i], "--print-config") == 0) do_cfg = 1;
+    else if (strcmp(argv[i], "--bench") == 0) {
+      bench_secs = 1;
+      if (i + 1 < argc && argv[i + 1][0] >= '1' && argv[i + 1][0] <= '9')
+        bench_secs = atoi(argv[++i]);
+    }
     else if (strcmp(argv[i], "--pool") == 0 && i + 1 < argc) {
       snprintf(g_host_buf, sizeof(g_host_buf), "%s", argv[++i]);
       char *colon = strrchr(g_host_buf, ':');
@@ -215,14 +229,35 @@ int main(int argc, char **argv) {
     int ok = shear_selftest(hex);
     printf("selftest %s %s\n", ok ? "ok" : "fail", hex);
     printf("client=%s algorithm=%s\n", SHEAR_CLIENT, SHEAR_ALGO);
+    if (ok) printf("x8-independent ok\n");
     return ok ? 0 : 1;
   }
   if (do_cfg) {
     print_config();
     return 0;
   }
+  if (bench_secs > 0) {
+    unsigned char headers[SHEAR_X8][SHEAR_HEADER_LEN];
+    unsigned char hashes[SHEAR_X8][32];
+    for (int k = 0; k < SHEAR_X8; k++) {
+      memset(headers[k], 0, SHEAR_HEADER_LEN);
+      headers[k][0] = 1;
+    }
+    time_t t0 = time(NULL);
+    uint64_t n = 0, h = 0;
+    while (time(NULL) - t0 < bench_secs) {
+      for (int k = 0; k < SHEAR_X8; k++) shear_set_nonce(headers[k], n + (uint64_t)k);
+      shear_hash_x8(headers, hashes);
+      h += (uint64_t)SHEAR_X8;
+      n += (uint64_t)SHEAR_X8;
+    }
+    double secs = (double)bench_secs;
+    printf("bench hashes=%llu rate=%.0f H/s backend=scalar-x8 (%.0fs)\n",
+           (unsigned long long)h, (double)h / secs, secs);
+    return 0;
+  }
   if (!do_mine) {
-    fprintf(stderr, "usage: shear-miner --selftest | --print-config | --pool host:port --user she1...|shp1... [--threads N] [--notls]\n");
+    fprintf(stderr, "usage: shear-miner --selftest | --print-config | --bench [SECONDS] | --pool host:port --user she1...|shp1... [--threads N] [--notls]\n");
     return 2;
   }
   /* shear1 is rest-frame and is never a login. she1 silent ID and shp1 dests are. */

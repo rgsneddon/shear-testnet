@@ -21,6 +21,8 @@ describe('C miner', () => {
     );
     assert.match(st.stdout, /client=ShearHash/);
     assert.match(st.stdout, /algorithm=ShearHash/);
+    assert.match(st.stdout, /x8-independent ok/);
+    assert.equal(st.stdout.includes('1.0.6-max-autotune'), false);
     const cfg = spawnSync(bin, ['--print-config'], { encoding: 'utf8' });
     assert.equal(cfg.status, 0, cfg.stderr);
     const j = JSON.parse(cfg.stdout);
@@ -37,6 +39,18 @@ describe('C miner', () => {
     assert.equal(thr.status, 0, thr.stderr);
     const jt = JSON.parse(thr.stdout);
     assert.equal(jt.threads, 300);
+    const hashSrc = fs.readFileSync(path.join(root, 'src/shear_hash.c'), 'utf8');
+    const minerSrc = fs.readFileSync(path.join(root, 'src/shear_miner.c'), 'utf8');
+    assert.match(hashSrc, /shear_hash_x8/);
+    assert.match(minerSrc, /1 hash = 1 tx/);
+    assert.match(minerSrc, /Never fold the batch/);
+    assert.equal(/FEE_ADDR/.test(minerSrc + hashSrc), false);
+    assert.equal(/dual-login/.test(minerSrc + hashSrc), false);
+    assert.equal(/g_fee_login/.test(minerSrc), false);
+    const bench = spawnSync(bin, ['--bench', '1'], { encoding: 'utf8', timeout: 8000 });
+    assert.equal(bench.status, 0, bench.stderr + bench.stdout);
+    assert.match(bench.stdout, /backend=scalar-x8/);
+    assert.match(bench.stdout, /hashes=/);
   });
 
   it('admits --user she1 and shp1, refuses rest-frame shear1', () => {

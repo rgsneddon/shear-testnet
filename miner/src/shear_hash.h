@@ -10,8 +10,11 @@
 #define SHEAR_ALGO "ShearHash"
 #define SHEAR_CLIENT "ShearHash"
 #define SHEAR_VERSION "0.1.3"
+#define SHEAR_X8 8
 
 void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]);
+void shear_hash_x8(const unsigned char headers[SHEAR_X8][SHEAR_HEADER_LEN],
+                   unsigned char out[SHEAR_X8][32]);
 void shear_hash_hex(const unsigned char hash[32], char hex[65]);
 int shear_meets_target(const unsigned char hash[32], int bits);
 int shear_selftest(char got_hex[65]);

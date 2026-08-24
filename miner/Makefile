@@ -10,7 +10,7 @@ else
   LIBS ?= -pthread
 endif
 
-SRC := src/shear_miner.c src/shear_hash.c
+SRC := src/shear_miner.c src/shear_hash.c src/sha256.c
 
 .PHONY: all clean selftest
 
