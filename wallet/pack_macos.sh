@@ -32,7 +32,8 @@ ATTACH=$(hdiutil attach -nobrowse "$RW")
 MNT=$(echo "$ATTACH" | sed -n 's/.*\(\/Volumes\/.*\)$/\1/p')
 test -d "$MNT"
 
-cp -R "$APP" "$MNT/"
+# ditto keeps the Developer ID + notarization ticket; cp -R strips them.
+ditto "$APP" "$MNT/$APPNAME.app"
 # Finder Applications folder icon — user drags Shear.app onto this.
 ln -s /Applications "$MNT/Applications"
 cat > "$MNT/Move to Applications.txt" <<EOF
