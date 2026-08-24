@@ -185,13 +185,22 @@
     document.getElementById('copy-cmd').addEventListener('click', function () {
       navigator.clipboard.writeText(document.getElementById('mine-cmd').textContent);
     });
+    function fmtRate(n) {
+      const v = Number(n) || 0;
+      if (!Number.isFinite(v) || v <= 0) return '0.0 H/s';
+      const units = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s', 'ZH/s'];
+      let x = v;
+      let i = 0;
+      while (x >= 1000 && i < units.length - 1) { x /= 1000; i += 1; }
+      return (i === 0 ? x.toFixed(1) : x.toFixed(2)) + ' ' + units[i];
+    }
     function paint(s) {
       document.getElementById('coin').textContent = s.coin || 'SHE';
       document.getElementById('algo').textContent = s.algo || 'ShearHash';
       document.getElementById('stratum').textContent = s.stratum || ':1111';
       document.getElementById('miners-n').textContent = String(s.miners || 0);
       document.getElementById('threads-n').textContent = String(s.threads || 0);
-      document.getElementById('hashrate').textContent = (s.hashrate || 0) + ' H/s';
+      document.getElementById('hashrate').textContent = fmtRate(s.hashrate);
       document.getElementById('accepted').textContent = String(s.blocks || 0);
       document.getElementById('rejected').textContent = String(s.stale || 0);
       document.getElementById('height').textContent = String(s.height || 0);

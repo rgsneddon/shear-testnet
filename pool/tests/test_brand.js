@@ -27,6 +27,19 @@ function bannerBlock(html) {
 }
 
 describe('brand pages', () => {
+  it('pool and explorer fmtRate step 1000 MH/s to GH/s', () => {
+    for (const rel of ['pool/public/index.html', 'pool/public/explorer.html']) {
+      const page = read(rel);
+      const fn = page.match(/function fmtRate\(n\) \{[\s\S]*?\n    \}/);
+      assert.ok(fn, `${rel} must ship fmtRate`);
+      const fmtRate = new Function(`${fn[0]}; return fmtRate;`)();
+      assert.equal(fmtRate(1000e6), '1.00 GH/s');
+      assert.equal(fmtRate(1.2e9), '1.20 GH/s');
+      assert.equal(fmtRate(1e12), '1.00 TH/s');
+      assert.equal(fmtRate(1e15), '1.00 PH/s');
+    }
+  });
+
   it('site, pool, and explorer have pack wordmark, favicon, and dark/light swap', () => {
     const pages = [
       read('site/index.html'),

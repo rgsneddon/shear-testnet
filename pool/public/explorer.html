@@ -170,9 +170,12 @@
     }
     function fmtRate(n) {
       const v = Number(n) || 0;
-      if (v >= 1e6) return (v / 1e6).toFixed(2) + ' MH/s';
-      if (v >= 1e3) return (v / 1e3).toFixed(2) + ' kH/s';
-      return v.toFixed(1) + ' H/s';
+      if (!Number.isFinite(v) || v <= 0) return '0.0 H/s';
+      const units = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s', 'ZH/s'];
+      let x = v;
+      let i = 0;
+      while (x >= 1000 && i < units.length - 1) { x /= 1000; i += 1; }
+      return (i === 0 ? x.toFixed(1) : x.toFixed(2)) + ' ' + units[i];
     }
     function fmtSinceBlock(at) {
       if (!at) return '—';
