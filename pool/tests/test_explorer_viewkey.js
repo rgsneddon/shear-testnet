@@ -51,7 +51,7 @@ describe('explorer dests', () => {
     });
     const got = store.append(mine(tpl));
     assert.equal(got.ok, true, got.reason);
-    assert.ok(got.block.txs[0].vout.every((o) => o.address.startsWith('sdcard1') || o.address.startsWith('she1')));
+    assert.ok(got.block.txs[0].vout.every((o) => o.address.startsWith('shp1')));
 
     const pub = get(store, '/api/explorer/history');
     assert.equal(pub.status, 200);
@@ -59,7 +59,9 @@ describe('explorer dests', () => {
     assert.ok(pub.json.txs.every((t) => typeof t.amount === 'number'));
     assert.ok(pub.json.txs.every((t) => t.memo === true || t.memo === false));
     assert.ok(pub.json.txs.every((t) => t.memoCt == null && t.memoPlain == null));
-    assert.ok(pub.json.txs.every((t) => !String(t.to || '').startsWith('shear1')));
+    assert.ok(pub.json.txs.every((t) => t.to == null && t.from == null));
+    assert.ok(pub.json.txs.every((t) => t.id && t.amount != null && t.height != null));
+    assert.equal(JSON.stringify(pub.json).includes('shear1'), false);
     const withMemo = pub.json.txs.find((t) => t.id === 'm1' || t.memo === true);
     assert.ok(withMemo);
     assert.equal(JSON.stringify(pub.json).includes('secret-memo'), false);
@@ -111,7 +113,8 @@ describe('explorer dests', () => {
     assert.ok(byHeight.json.txs.every((t) => typeof t.amount === 'number'));
     assert.ok(byHeight.json.txs.every((t) => t.memo === true || t.memo === false));
     assert.ok(byHeight.json.txs.every((t) => t.memoCt == null && t.memoPlain == null));
-    assert.ok(byHeight.json.txs.every((t) => String(t.to || '').startsWith('sdcard1') || String(t.to || '').startsWith('she1') || t.to === 'coinbase'));
+    assert.ok(byHeight.json.txs.every((t) => t.to == null && t.from == null));
+    assert.equal(JSON.stringify(byHeight.json).includes('shear1'), false);
     assert.equal(JSON.stringify(byHeight.json).includes('do-not-leak'), false);
 
     const byId = get(store, '/api/explorer/search?id=tx-alpha');
@@ -134,7 +137,7 @@ describe('explorer dests', () => {
     assert.ok(circ.json.circulating > 0);
     assert.ok(circ.json.emitted > 0);
     assert.ok(circ.json.holderCount >= 1);
-    assert.ok(circ.json.holders.every((h) => h.tag.startsWith('sdcard1') || h.tag.startsWith('she1')));
+    assert.ok(circ.json.holders.every((h) => h.tag == null));
     const viaFn = explorerCirculation(store);
     assert.equal(viaFn.circulating, circ.json.circulating);
   });

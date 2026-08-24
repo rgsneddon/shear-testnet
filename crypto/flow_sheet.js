@@ -69,7 +69,7 @@ export function flowDestAddress(args) {
 
 export function destEncodings(hash20) {
   const h = asBuf(hash20, 20);
-  return [encodeHrp('she', h), encodeHrp('sdcard', h)];
+  return [encodeHrp('shp', h)];
 }
 
 export function indexedDestHash({ spendHash20, closureCommit: C, index }) {
@@ -97,8 +97,8 @@ export function spendHashFromAddress(address) {
 }
 
 /**
- * Paid dest. Login already sdcard1 or she1 → pay as-is.
- * Rest-frame shear1 requires independent C (viewKey / closureCommit). No C-from-S.
+ * Paid dest. Login already shp1 → pay as-is.
+ * Rest-frame shear1 requires independent C. she1 payment codes are not dests. No C-from-S.
  */
 export function destForLogin(login, { continuityRoot, height, viewKey, closureCommit: C } = {}) {
   if (isDestAddress(login)) return login;
@@ -202,8 +202,13 @@ export function memoOpen(dest, env) {
 }
 
 export function explorerRowPublic(row) {
-  const { memoCt, memoPlain, ...rest } = row || {};
-  return { ...rest, memo: !!(memoCt || row?.memo) };
+  const { memoCt, memoPlain, from, to, ...rest } = row || {};
+  return {
+    id: rest.id,
+    amount: rest.amount,
+    height: rest.height,
+    memo: !!(memoCt || row?.memo),
+  };
 }
 
 export { EMPTY_ROOT, isDestAddress, isShearAddress };

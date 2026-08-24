@@ -49,12 +49,12 @@ describe('flow dest coinbase', () => {
     assert.equal(rej.ok, false);
   });
 
-  it('verifyBlock accepts she1 dest and still rejects shear1', () => {
-    const she = encodeHrp('she', Buffer.alloc(20, 9));
-    assert.equal(isDestAddress(she), true);
-    assert.equal(isShearAddress(she), false);
-    const tpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: she, bits: 8, now: Date.now() });
-    assert.equal(tpl.txs[0].vout[0].address, she);
+  it('verifyBlock accepts shp1 dest and still rejects shear1', () => {
+    const shp = encodeHrp('shp', Buffer.alloc(20, 9));
+    assert.equal(isDestAddress(shp), true);
+    assert.equal(isShearAddress(shp), false);
+    const tpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: shp, bits: 8, now: Date.now() });
+    assert.equal(tpl.txs[0].vout[0].address, shp);
     const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
     assert.ok(found && found.block, 'need pow');
     const block = { header: found.header, txs: tpl.txs, samples: tpl.samples, height: 1 };

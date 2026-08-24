@@ -44,6 +44,9 @@ describe('brand pages', () => {
       assert.match(p, /toggleShearTheme/);
       assert.match(p, /theme-toggle/);
       assert.equal(/GNFP|gnfp|feeless/i.test(p), false);
+      assert.match(p, /she is quiet/);
+      assert.equal(/--user she1/.test(p), false);
+      assert.equal(/--user shear1/.test(p), false);
       const banner = bannerBlock(p);
       assert.match(banner, /background:\s*var\(--banner\)/);
       assert.equal(/background:\s*#f7fbff/.test(banner), false);

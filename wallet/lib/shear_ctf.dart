@@ -70,8 +70,7 @@ Uint8List flowDestHash({
 }
 
 List<String> destEncodings(Uint8List hash20) => [
-      encodeHrp('she', hash20),
-      encodeHrp('sdcard', hash20),
+      encodeHrp('shp', hash20),
     ];
 
 Uint8List _u64le(int n) {

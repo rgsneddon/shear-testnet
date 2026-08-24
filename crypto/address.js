@@ -1,7 +1,16 @@
-import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
+import {
+  createHash,
+  generateKeyPairSync,
+  sign,
+  verify,
+  createPrivateKey,
+  createPublicKey,
+  diffieHellman,
+} from 'node:crypto';
 
 export const HRP = 'shear';
-export const HRP_DEST = 'she';
+export const HRP_DEST = 'shp';
+export const HRP_PAY = 'she';
 
 const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
@@ -44,9 +53,9 @@ function convertBits(data, from, to, pad) {
   return out;
 }
 
-export function encodeHrp(hrp, pubkeyHash20) {
-  const data = Buffer.from(pubkeyHash20);
-  if (data.length !== 20) throw new Error('spend hash must be 20 bytes');
+export function encodeHrp(hrp, bytes) {
+  const data = Buffer.from(bytes);
+  if (!data.length) throw new Error('empty payload');
   const values = [0, ...convertBits([...data], 8, 5, true)];
   const checksum = polymod([...hrpExpand(hrp), ...values, 0, 0, 0, 0, 0, 0]) ^ 1;
   const ret = [...values];
@@ -54,27 +63,58 @@ export function encodeHrp(hrp, pubkeyHash20) {
   return `${hrp}1${ret.map((v) => CHARSET[v]).join('')}`;
 }
 
+export function bech32Hrp(s) {
+  const t = String(s || '').trim().toLowerCase();
+  const one = t.indexOf('1');
+  if (one < 1) return '';
+  return t.slice(0, one);
+}
+
+function bech32BodyOk(s) {
+  const t = String(s || '').trim();
+  const one = t.indexOf('1');
+  if (one < 1) return false;
+  const body = t.slice(one + 1).toLowerCase();
+  if (body.length < 6) return false;
+  return /^[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+$/.test(body);
+}
+
 export function encodeAddress(pubkeyHash20) {
   return encodeHrp(HRP, pubkeyHash20);
 }
 
 export function encodeDest(pubkeyHash20) {
-  return encodeHrp(HRP_DEST, pubkeyHash20);
+  const data = Buffer.from(pubkeyHash20);
+  if (data.length !== 20) throw new Error('spend hash must be 20 bytes');
+  return encodeHrp(HRP_DEST, data);
+}
+
+export function encodePaymentCode({ scanPub, spendPub }) {
+  const scan = Buffer.from(scanPub);
+  const spend = Buffer.from(spendPub);
+  if (scan.length !== 32 || spend.length !== 32) throw new Error('silent code keys must be 32 bytes');
+  return encodeHrp(HRP_PAY, Buffer.concat([Buffer.from([1]), scan, spend]));
 }
 
 export function isShearAddress(s) {
-  return /^shear1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(String(s || '').trim());
+  const t = String(s || '').trim();
+  return bech32Hrp(t) === 'shear' && bech32BodyOk(t);
+}
+
+export function isPaymentCode(s) {
+  return decodePaymentCode(s) != null;
 }
 
 export function isDestAddress(s) {
   const t = String(s || '').trim();
   if (isShearAddress(t)) return false;
-  return /^(?:sdcard1|she1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(t);
+  if (bech32Hrp(t) === 'she') return false;
+  return bech32Hrp(t) === 'shp' && bech32BodyOk(t);
 }
 
-export function hash20FromAddress(address) {
+export function decodeBech32Payload(address) {
   const raw = String(address || '').trim();
-  const one = raw.lastIndexOf('1');
+  const one = raw.indexOf('1');
   if (one < 1) return null;
   const body = raw.slice(one + 1).toLowerCase();
   const vals = [];
@@ -85,8 +125,108 @@ export function hash20FromAddress(address) {
   }
   if (vals.length < 7) return null;
   const bytes = convertBits(vals.slice(0, -6).slice(1), 5, 8, false);
+  if (!bytes || !bytes.length) return null;
+  return Buffer.from(bytes);
+}
+
+export function hash20FromAddress(address) {
+  const bytes = decodeBech32Payload(address);
   if (!bytes || bytes.length < 20) return null;
-  return Buffer.from(bytes).subarray(0, 20);
+  return bytes.subarray(0, 20);
+}
+
+export function decodePaymentCode(s) {
+  const t = String(s || '').trim();
+  if (isShearAddress(t) || bech32Hrp(t) !== 'she' || !bech32BodyOk(t)) return null;
+  const p = decodeBech32Payload(t);
+  if (!p || p.length < 65 || p[0] !== 1) return null;
+  return { scanPub: p.subarray(1, 33), spendPub: p.subarray(33, 65) };
+}
+
+const X25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
+const X25519_SPKI_PREFIX = Buffer.from('302a300506032b656e032100', 'hex');
+
+export function x25519PrivateFromSeed(seed32) {
+  const seed = Buffer.from(seed32);
+  if (seed.length !== 32) throw new Error('x25519 seed must be 32 bytes');
+  return createPrivateKey({ key: Buffer.concat([X25519_PKCS8_PREFIX, seed]), format: 'der', type: 'pkcs8' });
+}
+
+export function x25519PublicFromRaw(raw32) {
+  const raw = Buffer.from(raw32);
+  if (raw.length !== 32) throw new Error('x25519 pub must be 32 bytes');
+  return createPublicKey({ key: Buffer.concat([X25519_SPKI_PREFIX, raw]), format: 'der', type: 'spki' });
+}
+
+export function x25519PublicRaw(key) {
+  const pub = key.type === 'public' ? key : createPublicKey(key);
+  return pub.export({ type: 'spki', format: 'der' }).subarray(-32);
+}
+
+export function scanSeedFromView(viewKey, index = 0) {
+  const n = Buffer.alloc(8);
+  n.writeBigUInt64LE(BigInt(index));
+  return createHash('sha256')
+    .update(Buffer.from('shear-scan-v1'))
+    .update(Buffer.from(String(viewKey || ''), 'utf8'))
+    .update(n)
+    .digest();
+}
+
+export function paymentCodeAtIndex(viewKey, spendHash20, index = 0) {
+  const n = Number(index);
+  if (!Number.isInteger(n) || n < 0) return null;
+  const scanPriv = x25519PrivateFromSeed(scanSeedFromView(viewKey, n));
+  const scanPub = x25519PublicRaw(scanPriv);
+  const idx = Buffer.alloc(8);
+  idx.writeBigUInt64LE(BigInt(n));
+  const spend = createHash('sha256')
+    .update(Buffer.from('shear-spend-v1'))
+    .update(asSpend(spendHash20))
+    .update(idx)
+    .digest();
+  return encodePaymentCode({ scanPub, spendPub: spend });
+}
+
+export function paymentCodeFromViewKey(viewKey, spendHash20) {
+  return paymentCodeAtIndex(viewKey, spendHash20, 0);
+}
+
+function asSpend(h) {
+  const b = Buffer.from(h);
+  if (b.length === 32) return b;
+  if (b.length === 20) return createHash('sha256').update(b).digest();
+  return createHash('sha256').update(b).digest();
+}
+
+/** One-time dest from a she1 payment code. No C. Eph public is needed to scan. */
+export function silentDestFromCode(code, ephPrivate) {
+  const parsed = decodePaymentCode(code);
+  if (!parsed) return null;
+  const shared = diffieHellman({ privateKey: ephPrivate, publicKey: x25519PublicFromRaw(parsed.scanPub) });
+  const tweak = createHash('sha256')
+    .update(Buffer.from('shear-silent-v1'))
+    .update(shared)
+    .update(parsed.spendPub)
+    .digest()
+    .subarray(0, 20);
+  return encodeDest(tweak);
+}
+
+export function silentDestFromEphPub(code, ephPubRaw, scanPrivate) {
+  const parsed = decodePaymentCode(code);
+  if (!parsed) return null;
+  const shared = diffieHellman({
+    privateKey: scanPrivate,
+    publicKey: x25519PublicFromRaw(ephPubRaw),
+  });
+  const tweak = createHash('sha256')
+    .update(Buffer.from('shear-silent-v1'))
+    .update(shared)
+    .update(parsed.spendPub)
+    .digest()
+    .subarray(0, 20);
+  return encodeDest(tweak);
 }
 
 export function newIdentity() {
@@ -98,7 +238,8 @@ export function newIdentity() {
     Buffer.from('shear-view-v1'),
     privateKey.export({ type: 'pkcs8', format: 'der' }),
   ])).digest().toString('hex');
-  return { address, viewKey, publicKey, privateKey };
+  const paymentCode = paymentCodeFromViewKey(viewKey, hash);
+  return { address, viewKey, publicKey, privateKey, paymentCode };
 }
 
 export function signSpend(privateKey, msg) {

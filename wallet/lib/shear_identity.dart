@@ -5,7 +5,9 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 const shearHrp = 'shear';
-const destHrp = 'she';
+const destHrp = 'shp';
+/// Public-facing silent ID is she1 (HRP she). Never a dest.
+const payHrp = 'she';
 const _charset = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
 class ShearIdentity {
@@ -31,17 +33,38 @@ class ShearIdentity {
   }
 }
 
+String bech32Hrp(String s) {
+  final t = s.trim().toLowerCase();
+  final one = t.indexOf('1');
+  if (one < 1) return '';
+  return t.substring(0, one);
+}
+
+bool _bech32BodyOk(String s) {
+  final t = s.trim();
+  final one = t.indexOf('1');
+  if (one < 1) return false;
+  final body = t.substring(one + 1).toLowerCase();
+  if (body.length < 6) return false;
+  return RegExp(r'^[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+$').hasMatch(body);
+}
+
 bool isShearAddress(String s) {
-  return RegExp(r'^shear1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$', caseSensitive: false)
-      .hasMatch(s.trim());
+  final t = s.trim();
+  return bech32Hrp(t) == 'shear' && _bech32BodyOk(t);
+}
+
+bool isPaymentCode(String s) {
+  final t = s.trim();
+  if (isShearAddress(t) || isDestAddress(t)) return false;
+  return bech32Hrp(t) == 'she' && _bech32BodyOk(t) && t.length >= 80;
 }
 
 bool isDestAddress(String s) {
   final t = s.trim();
   if (isShearAddress(t)) return false;
-  return RegExp(r'^(?:sdcard1|she1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$',
-          caseSensitive: false)
-      .hasMatch(t);
+  if (bech32Hrp(t) == 'she') return false;
+  return bech32Hrp(t) == 'shp' && _bech32BodyOk(t);
 }
 
 ShearIdentity createIdentity([Uint8List? seed]) {
@@ -76,11 +99,11 @@ Uint8List? spendHashFromAddress(String address) {
   return hash20FromAddress(address);
 }
 
-String encodeHrp(String hrp, Uint8List pubkeyHash20) {
-  if (pubkeyHash20.length != 20) {
-    throw ArgumentError('spend hash must be 20 bytes');
+String encodeHrp(String hrp, Uint8List bytes) {
+  if (bytes.isEmpty) {
+    throw ArgumentError('empty payload');
   }
-  final values = [0, ..._convertBits(pubkeyHash20, 8, 5, true)];
+  final values = [0, ..._convertBits(bytes, 8, 5, true)];
   final checksum = _polymod([..._hrpExpand(hrp), ...values, 0, 0, 0, 0, 0, 0]) ^ 1;
   final ret = [...values];
   for (var i = 0; i < 6; i++) {
@@ -91,7 +114,12 @@ String encodeHrp(String hrp, Uint8List pubkeyHash20) {
 
 String encodeShearAddress(Uint8List pubkeyHash20) => encodeHrp(shearHrp, pubkeyHash20);
 
-String encodeDestAddress(Uint8List pubkeyHash20) => encodeHrp(destHrp, pubkeyHash20);
+String encodeDestAddress(Uint8List pubkeyHash20) {
+  if (pubkeyHash20.length != 20) {
+    throw ArgumentError('spend hash must be 20 bytes');
+  }
+  return encodeHrp(destHrp, pubkeyHash20);
+}
 
 List<int> _hrpExpand(String hrp) {
   final out = <int>[];

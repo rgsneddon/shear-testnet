@@ -242,8 +242,6 @@ class ShearLedger {
 
   String currentDest(String restFrame) {
     if (isDestAddress(restFrame)) return restFrame;
-    final d = destAt(restFrame, destIndex);
-    if (d != null) return d;
     return destForLogin(restFrame, height: tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ??
         restFrame;
   }
@@ -252,7 +250,7 @@ class ShearLedger {
   String newDest(String restFrame) {
     destCount += 1;
     destIndex = destCount - 1;
-    final d = currentDest(restFrame);
+    final d = destAt(restFrame, destIndex) ?? currentDest(restFrame);
     _dests.add(d);
     return d;
   }

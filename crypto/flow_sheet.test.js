@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, isShearAddress, isDestAddress, encodeHrp, encodeAddress } from './address.js';
+import { generateKeyPairSync } from 'node:crypto';
+import {
+  newIdentity, isShearAddress, isDestAddress, isPaymentCode, encodeHrp, encodeAddress,
+  paymentCodeAtIndex, silentDestFromCode,
+} from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
 import {
   destForLogin,
@@ -33,7 +37,8 @@ describe('flow sheets', () => {
     const deg = degenerateDest(alice.address, { continuityRoot: root1, height: 3 });
     assert.equal(destForLogin(alice.address, { continuityRoot: root1, height: 3 }), null);
     assert.equal(isDestAddress(paid), true);
-    assert.equal(paid.startsWith('she1'), true);
+    assert.equal(paid.startsWith('shp1'), true);
+    assert.equal(paid.startsWith('she1'), false);
     assert.equal(paid.startsWith('shear1'), false);
     assert.equal(isShearAddress(paid), false);
     assert.equal(isDestAddress(alice.address), false);
@@ -56,8 +61,10 @@ describe('flow sheets', () => {
     );
     assert.equal(destForLogin(paid), paid);
     const she = encodeHrp('she', spendHashFromAddress(alice.address));
-    assert.equal(isDestAddress(she), true);
-    assert.equal(destForLogin(she), she);
+    assert.equal(isDestAddress(she), false);
+    assert.equal(isPaymentCode(alice.paymentCode), true);
+    assert.equal(isDestAddress(alice.paymentCode), false);
+    assert.equal(destForLogin(alice.paymentCode, { closureCommit: C, height: 3 }), null);
     assert.equal(isDestAddress(encodeAddress(spendHashFromAddress(alice.address))), false);
   });
 
@@ -69,8 +76,8 @@ describe('flow sheets', () => {
     const d0 = destAtIndex(alice.address, { index: 0, closureCommit: C });
     const d1 = destAtIndex(alice.address, { index: 1, viewKey: alice.viewKey });
     const d2 = destAtIndex(alice.address, { index: 2, viewKey: alice.viewKey });
-    assert.equal(d0.startsWith('she1'), true);
-    assert.equal(d0.startsWith('shear1'), false);
+    assert.equal(d0.startsWith('shp1'), true);
+    assert.equal(d0.startsWith('she1'), false);
     assert.equal(isDestAddress(d0), true);
     assert.notEqual(d0, alice.address);
     assert.notEqual(d0, d1);
@@ -80,9 +87,22 @@ describe('flow sheets', () => {
     assert.notEqual(destAtIndex(bob.address, { index: 0, viewKey: bob.viewKey }), d0);
     assert.notEqual(destAtIndex(alice.address, { index: 0, viewKey: bob.viewKey }), d0);
     const both = destEncodings(spendHashFromAddress(alice.address));
-    assert.equal(both.some((a) => a.startsWith('she1')), true);
-    assert.equal(both.some((a) => a.startsWith('sdcard1')), true);
+    assert.equal(both.every((a) => a.startsWith('shp1')), true);
     assert.equal(destAtIndex(alice.address, { index: -1, viewKey: alice.viewKey }), null);
+    const s = spendHashFromAddress(alice.address);
+    const p0 = paymentCodeAtIndex(alice.viewKey, s, 0);
+    const p1 = paymentCodeAtIndex(alice.viewKey, s, 1);
+    const p2 = paymentCodeAtIndex(alice.viewKey, s, 2);
+    assert.equal(p0, alice.paymentCode);
+    assert.equal(isPaymentCode(p0), true);
+    assert.equal(isDestAddress(p0), false);
+    assert.notEqual(p0, p1);
+    assert.notEqual(p1, p2);
+    assert.equal(paymentCodeAtIndex(alice.viewKey, s, 1), p1);
+    const { privateKey: eph } = generateKeyPairSync('x25519');
+    const silent = silentDestFromCode(p0, eph);
+    assert.equal(isDestAddress(silent), true);
+    assert.equal(silent.startsWith('shp1'), true);
   });
 
   it('view key opens only that user’s dests', () => {
@@ -123,10 +143,14 @@ describe('flow sheets', () => {
     assert.equal(memoOpen(dest, env), 'hello flow');
     const other = destForLogin(id.address, { viewKey: id.viewKey, height: 2 });
     assert.notEqual(memoOpen(other, env), 'hello flow');
-    const pub = explorerRowPublic({ to: dest, amount: 1, memoCt: env, memoPlain: 'hello flow' });
+    const pub = explorerRowPublic({ to: dest, amount: 1, height: 1, id: 'x', memoCt: env, memoPlain: 'hello flow' });
     assert.equal(pub.memo, true);
+    assert.equal(pub.to, undefined);
+    assert.equal(pub.from, undefined);
     assert.equal(pub.memoCt, undefined);
     assert.equal(pub.memoPlain, undefined);
+    assert.equal(pub.amount, 1);
+    assert.equal(pub.id, 'x');
     assert.equal(explorerRowPublic({ to: dest, amount: 1 }).memo, false);
   });
 });

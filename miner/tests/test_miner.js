@@ -29,24 +29,23 @@ describe('C miner', () => {
     assert.equal(j.headerBytes, 120);
   });
 
-  it('admits --user sdcard1 and she1 dests and refuses shear1', () => {
+  it('admits --user shp1 dests and refuses she1 and shear1', () => {
     const usage = spawnSync(bin, [], { encoding: 'utf8' });
-    assert.match(usage.stderr + usage.stdout, /sdcard1/);
-    assert.match(usage.stderr + usage.stdout, /she1/);
+    assert.match(usage.stderr + usage.stdout, /shp1/);
+    assert.equal(/--user she1/.test(usage.stderr + usage.stdout), false);
     const refuse = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'shear1abc.worker'], {
       encoding: 'utf8',
     });
     assert.equal(refuse.status, 2);
-    assert.match(refuse.stderr + refuse.stdout, /user dest must be sdcard1/);
-    const sd = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'sdcard1test.worker'], {
-      encoding: 'utf8',
-    });
-    assert.equal(sd.status, 3);
-    assert.match(sd.stderr + sd.stdout, /connect failed/);
+    assert.match(refuse.stderr + refuse.stdout, /shp1/);
     const she = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'she1test.worker'], {
       encoding: 'utf8',
     });
-    assert.equal(she.status, 3);
-    assert.match(she.stderr + she.stdout, /connect failed/);
+    assert.equal(she.status, 2);
+    const shp = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'shp1test.worker'], {
+      encoding: 'utf8',
+    });
+    assert.equal(shp.status, 3);
+    assert.match(shp.stderr + shp.stdout, /connect failed/);
   });
 });

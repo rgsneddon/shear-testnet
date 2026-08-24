@@ -66,17 +66,23 @@ export function publicExplorerTxs(store) {
   for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
   return rows
     .filter((r) => isPublicParty(r.to) && isPublicParty(r.from))
-    .map((r) => explorerRowPublic({
-      id: r.id,
-      kind: r.kind,
-      from: r.from,
-      to: r.to,
-      amount: nanosToShe(r.nanos),
-      height: r.height,
-      confirmed: r.confirmed !== false,
-      memo: !!(r.memoCt || r.memo),
-      memoCt: r.memoCt,
-    }));
+    .map((r) => {
+      const pub = explorerRowPublic({
+        id: r.id,
+        amount: nanosToShe(r.nanos),
+        height: r.height,
+        memo: !!(r.memoCt || r.memo),
+        memoCt: r.memoCt,
+        from: r.from,
+        to: r.to,
+      });
+      return {
+        id: pub.id,
+        amount: pub.amount,
+        height: pub.height,
+        memo: pub.memo === true,
+      };
+    });
 }
 
 export function searchExplorerTxs(store, q = {}) {
@@ -98,17 +104,19 @@ export function searchExplorerTxs(store, q = {}) {
 }
 
 export function explorerCirculation(store) {
-  const txs = publicExplorerTxs(store);
+  const rows = [];
+  for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
   const bal = new Map();
   let emitted = 0;
-  for (const t of txs) {
-    const amt = Number(t.amount) || 0;
-    if (t.from === 'coinbase') {
+  for (const r of rows) {
+    if (!isPublicParty(r.to) || !isPublicParty(r.from)) continue;
+    const amt = nanosToShe(r.nanos);
+    if (r.from === 'coinbase') {
       emitted += amt;
-      if (isDestAddress(t.to)) bal.set(t.to, (bal.get(t.to) || 0) + amt);
+      if (isDestAddress(r.to)) bal.set(r.to, (bal.get(r.to) || 0) + amt);
     } else {
-      if (isDestAddress(t.from)) bal.set(t.from, (bal.get(t.from) || 0) - amt);
-      if (isDestAddress(t.to)) bal.set(t.to, (bal.get(t.to) || 0) + amt);
+      if (isDestAddress(r.from)) bal.set(r.from, (bal.get(r.from) || 0) - amt);
+      if (isDestAddress(r.to)) bal.set(r.to, (bal.get(r.to) || 0) + amt);
     }
   }
   for (const [k, v] of [...bal.entries()]) {
@@ -118,9 +126,8 @@ export function explorerCirculation(store) {
   const holders = [...bal.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
-    .map(([tag, amount], i) => ({
+    .map(([, amount], i) => ({
       rank: i + 1,
-      tag,
       amount,
       share: circulating ? amount / circulating : 0,
     }));

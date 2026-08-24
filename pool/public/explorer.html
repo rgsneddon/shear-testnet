@@ -86,7 +86,8 @@
   <div class="wrap">
     <section class="panel-card">
       <h1>Shear explorer</h1>
-      <p>Continuity-settled PoW. Dest amounts only — share <code style="display:inline">sdcard1</code> or <code style="display:inline">she1</code>, never rest-frame shear1. Memo is yes/no only.</p>
+      <p>she is quiet</p>
+      <p>Continuity-settled PoW. Public rows are tx id, amount, height, memo yes/no. Offer she1 (silent ID). Chain dests are shp1. Never share shear1.</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
     </section>
     <div class="grid" id="net-grid">
@@ -122,10 +123,8 @@
         <thead>
           <tr>
             <th>Id</th>
-            <th>Kind</th>
-            <th>From</th>
-            <th>To</th>
             <th>Amount SHE</th>
+            <th>Height</th>
             <th>Memo</th>
           </tr>
         </thead>
@@ -134,7 +133,7 @@
     </section>
     <section class="panel-card">
       <h2>Circulation</h2>
-      <p class="label">Spendable SHE on dests. Rest-frame shear1 is not listed.</p>
+      <p class="label">Spendable SHE. Dest tags are not listed as people.</p>
       <div class="grid">
         <article class="panel-card"><div class="label">Coins in circulation</div><div class="value" id="ex-circulating">—</div></article>
         <article class="panel-card"><div class="label">Emitted</div><div class="value" id="ex-emitted">—</div></article>
@@ -143,7 +142,7 @@
       <h2>Top holders</h2>
       <table id="ex-holders">
         <thead>
-          <tr><th>#</th><th>Holder</th><th>Amount</th><th>Share</th></tr>
+          <tr><th>#</th><th>Amount</th><th>Share</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -200,8 +199,8 @@
       if (!body) return;
       const rows = Array.isArray(txs) ? txs : [];
       body.innerHTML = rows.length
-        ? rows.map((t) => '<tr><td class="mono">'+esc(t.id)+'</td><td>'+esc(t.kind)+'</td><td class="mono">'+esc(t.from)+'</td><td class="mono">'+esc(t.to)+'</td><td>'+esc(fmtShe(t.amount))+'</td><td>'+(t.memo ? 'yes' : 'no')+'</td></tr>').join('')
-        : '<tr><td colspan="6">No transfers yet.</td></tr>';
+        ? rows.map((t) => '<tr><td class="mono">'+esc(t.id)+'</td><td>'+esc(fmtShe(t.amount))+'</td><td>'+esc(t.height)+'</td><td>'+(t.memo ? 'yes' : 'no')+'</td></tr>').join('')
+        : '<tr><td colspan="4">No transfers yet.</td></tr>';
     }
     function queryFromForm() {
       const q = new URLSearchParams();
@@ -227,8 +226,8 @@
       if (!body) return;
       const holders = Array.isArray(circ.holders) ? circ.holders : [];
       body.innerHTML = holders.length
-        ? holders.map((h) => '<tr><td>'+esc(h.rank)+'</td><td class="mono">'+esc(h.tag)+'</td><td>'+esc(fmtShe(h.amount))+'</td><td>'+((Number(h.share)||0)*100).toFixed(2)+'%</td></tr>').join('')
-        : '<tr><td colspan="4">No holders yet.</td></tr>';
+        ? holders.map((h) => '<tr><td>'+esc(h.rank)+'</td><td>'+esc(fmtShe(h.amount))+'</td><td>'+((Number(h.share)||0)*100).toFixed(2)+'%</td></tr>').join('')
+        : '<tr><td colspan="3">No holders yet.</td></tr>';
     }
     async function loadRecent() {
       const [stats, hist, circ] = await Promise.all([

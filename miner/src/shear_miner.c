@@ -221,13 +221,20 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (!do_mine) {
-    fprintf(stderr, "usage: shear-miner --selftest | --print-config | --pool host:port --user sdcard1...|she1... [--threads N] [--notls]\n");
+    fprintf(stderr, "usage: shear-miner --selftest | --print-config | --pool host:port --user shp1... [--threads N] [--notls]\n");
     return 2;
   }
-  /* she1 is a string prefix of rest-frame shear1 — reject shear1 first. */
-  if (strncmp(g_user, "shear1", 6) == 0
-      || (strncmp(g_user, "sdcard1", 7) != 0 && strncmp(g_user, "she1", 4) != 0)) {
-    fprintf(stderr, "user dest must be sdcard1... or she1...\n");
+  /* she1 is a string prefix of rest-frame shear1. Payment code she1 is not a dest. */
+  if (strncmp(g_user, "shear1", 6) == 0) {
+    fprintf(stderr, "user dest must be shp1... (not shear1, not she1)\n");
+    return 2;
+  }
+  if (strncmp(g_user, "she1", 4) == 0) {
+    fprintf(stderr, "user dest must be shp1... (not shear1, not she1)\n");
+    return 2;
+  }
+  if (strncmp(g_user, "shp1", 4) != 0) {
+    fprintf(stderr, "user dest must be shp1... (not shear1, not she1)\n");
     return 2;
   }
 #if defined(_WIN32)
