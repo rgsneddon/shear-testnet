@@ -21,17 +21,15 @@ const kTabs = [
   'Resistance',
   'Vortex',
   'Shearview',
-  'Reserve',
   'Closure',
 ];
-const kSymbols = ['∇·J = 0', 'J^μ', 'η', 'Ω^{μν}', 'S_{μν}', 'π', 'G_{μν}'];
+const kSymbols = ['∇·J = 0', 'J^μ', 'η', 'Ω^{μν}', 'S_{μν}', 'G_{μν}'];
 const kExplains = [
-  'Spendable SHE at the top, and the one she1 ID you copy to receive from mining, exchanges, or anyone.',
-  'Send SHE to an shp1 dest. Offer she1 (silent ID), never rest-frame shear1.',
-  'CTF conclusion of each transaction: receive-path workings that credit spendable, in a CLI printout.',
-  'Apps and contracts other people deploy. They cannot print SHE; they must fund their own rewards.',
-  'Confirmed transfers. Tap a tx to open its CTF workings on Resistance.',
-  'Lock π SHE for 400 days to vote, and earn Bank of England base-rate interest. The only app allowed to mint extra SHE.',
+  'Your spendable balance and she1 address.',
+  'Send SHEAR to anyone with a she1 address.',
+  'Transactional data in a CLI output.',
+  'Contracts which are deployed into your wallet.',
+  'Your personal transaction explorer.',
   'Password and backup. Encrypts shewall.json so you can restore this wallet on another install.',
 ];
 
@@ -268,7 +266,6 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       _resistance(context),
       _vortex(ident),
       _shearview(context, ident),
-      _reserve(ident),
       _closure(context, ident),
     ];
     return Scaffold(
@@ -277,14 +274,30 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         automaticallyImplyLeading: false,
         toolbarHeight: 64,
         titleSpacing: 12,
-        title: Row(
-          children: [
-            Flexible(child: _brandLockup(mark: 44, wordHeight: 32)),
-            const SizedBox(width: 10),
-            Text('$kWalletVersion  ${kSymbols[tab]}'),
-          ],
+        title: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Row(
+            children: [
+              _brandLockup(mark: 44, wordHeight: 32),
+              const SizedBox(width: 10),
+              Text('$kWalletVersion  ${kSymbols[tab]}'),
+            ],
+          ),
         ),
         actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Center(
+              child: Text(
+                'block height: ${ledger.sealedHeight}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+            ),
+          ),
           IconButton(
             tooltip: _themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode',
             onPressed: _toggleTheme,
@@ -352,6 +365,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   Widget _continuum(BuildContext context, ShearIdentity ident) {
     final dest = ledger.currentDest(ident.address);
     final spend = ledger.spendable(dest);
+    final pending = ledger.pendingTxs(ident.address);
     return _card([
       Text(
         '${spend.toStringAsFixed(9)} SHE',
@@ -362,6 +376,18 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         ),
       ),
       Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
+      if (pending.isNotEmpty) ...[
+        const SizedBox(height: 16),
+        Text('Pending', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+        Text('Until the next block is found.', style: TextStyle(color: shearMutedOf(context))),
+        for (final t in pending)
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: Text('${t.kind}  ${t.amount.toStringAsFixed(9)} SHE'),
+            subtitle: Text('${t.from} → ${t.to}', maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+      ],
       const SizedBox(height: 20),
       Text('Receive ID', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
       const SizedBox(height: 6),
@@ -375,7 +401,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   Widget _shearview(BuildContext context, ShearIdentity ident) {
-    final hist = ledger.ownerHistory(ident.address);
+    final hist = ledger.ownerHistory(ident.address).where((t) => t.confirmed).toList();
     return _card([
       const Text('Shearview  S_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
       if (hist.any((t) => t.memo && t.memoPlain != null && !openedMemos.contains(t.id)))
@@ -535,17 +561,6 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       ]);
     }
     return _card(kids);
-  }
-
-  Widget _reserve(ShearIdentity ident) {
-    return _card([
-      const Text('Reserve  π', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('Lock π SHE for 400 days to vote. Interest tracks the Bank of England Base Rate.'),
-      const Text('Vote: raise, lower, or hold the per-hash bonus (±1e-10). The 1 SHE pot does not change.'),
-      const SizedBox(height: 8),
-      const Text('Lock principal is vault shp1, never rest-frame shear1.'),
-      SelectableText(vaultDest(ident.address, viewKey: ledger.viewSecret ?? ident.viewKey) ?? ''),
-    ]);
   }
 
   Widget _closure(BuildContext context, ShearIdentity ident) {

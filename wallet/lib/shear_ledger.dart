@@ -43,6 +43,19 @@ class ShearTx {
         if (memoCt != null) 'memoCt': memoCt,
       };
 
+  ShearTx copyWith({bool? confirmed, int? height}) => ShearTx(
+        id: id,
+        from: from,
+        to: to,
+        amount: amount,
+        kind: kind,
+        height: height ?? this.height,
+        confirmed: confirmed ?? this.confirmed,
+        memo: memo,
+        memoPlain: memoPlain,
+        memoCt: memoCt,
+      );
+
   factory ShearTx.fromJson(Map<String, dynamic> j) => ShearTx(
         id: j['id']?.toString() ?? '',
         from: j['from']?.toString() ?? '',
@@ -74,11 +87,16 @@ class ShearLedger {
   int destCount = 1;
   /// Selected dest index (0 .. destCount-1).
   int destIndex = 0;
+  int _sealedHeight = 0;
+
+  /// Last found/sealed block height (Continuum header).
+  int get sealedHeight => _sealedHeight;
 
   /// Read lag-1 continuity from a 120-byte tip header. Next dest uses sealedHeight+1.
   void applyTipHeader(Uint8List header, {required int sealedHeight}) {
     lag1Root = lag1ContinuityFromHeader(header);
     tipHeight = sealedHeight < 1 ? 1 : sealedHeight + 1;
+    if (sealedHeight > _sealedHeight) _sealedHeight = sealedHeight;
   }
 
   void applyTipHex(String headerHex, {required int sealedHeight}) {
@@ -134,6 +152,11 @@ class ShearLedger {
       confirmed: true,
     );
     if (total > 0) _txs.add(tx);
+    if (height > _sealedHeight) _sealedHeight = height;
+    for (var i = 0; i < _txs.length; i++) {
+      if (_txs[i].confirmed) continue;
+      _txs[i] = _txs[i].copyWith(confirmed: true, height: _txs[i].height ?? height);
+    }
     prune();
     return tx;
   }
@@ -284,6 +307,14 @@ class ShearLedger {
   List<ShearTx> ownerHistory(String address) {
     final keys = ownedAddresses(address);
     return _txs.where((t) => (t.confirmed || t.kind == 'send') && (keys.contains(t.to) || keys.contains(t.from))).toList();
+  }
+
+  /// Unconfirmed transfers. Cleared when the next block is found ([confirmRound]).
+  List<ShearTx> pendingTxs(String address) {
+    final keys = ownedAddresses(address);
+    return _txs
+        .where((t) => !t.confirmed && t.kind != 'sample' && (keys.contains(t.to) || keys.contains(t.from)))
+        .toList();
   }
 
   Future<ShearTx> send({

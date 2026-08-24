@@ -66,6 +66,23 @@ void main() {
     expect(ledger.ownerHistory(id.address).single.amount, closeTo(1 + 4e-9, 1e-18));
   });
 
+  test('unconfirmed send is pending until the next block is found', () async {
+    final id = createIdentity();
+    final ledger = ShearLedger()..viewSecret = id.viewKey;
+    final dest = ledger.currentDest(id.address);
+    ledger.confirmRound(address: id.address, pot: 1, height: 2);
+    expect(ledger.sealedHeight, 2);
+    expect(ledger.pendingTxs(id.address), isEmpty);
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    final sent = await ledger.send(from: dest, to: bob, amount: 0.25);
+    expect(sent.confirmed, isFalse);
+    expect(ledger.pendingTxs(id.address).single.id, sent.id);
+    ledger.confirmRound(address: id.address, pot: 1, height: 3);
+    expect(ledger.pendingTxs(id.address), isEmpty);
+    expect(ledger.ownerHistory(id.address).where((t) => t.id == sent.id).single.confirmed, isTrue);
+    expect(ledger.sealedHeight, 3);
+  });
+
   test('shewall.json password seal restores address and txs', () async {
     final id = createIdentity();
     final ledger = ShearLedger();
@@ -247,6 +264,15 @@ void main() {
     expect(kTabs, contains('Shearview'));
     expect(kTabs.contains('Explorer'), isFalse);
     expect(kTabs.contains('Shear'), isFalse);
+    expect(kTabs.contains('Reserve'), isFalse);
+    expect(kExplains, [
+      'Your spendable balance and she1 address.',
+      'Send SHEAR to anyone with a she1 address.',
+      'Transactional data in a CLI output.',
+      'Contracts which are deployed into your wallet.',
+      'Your personal transaction explorer.',
+      'Password and backup. Encrypts shewall.json so you can restore this wallet on another install.',
+    ]);
     expect(kExplains.length, kTabs.length);
     expect(kSymbols.length, kTabs.length);
     expect(kExplains.every((e) => e.length > 20), isTrue);
@@ -293,9 +319,11 @@ void main() {
 
     expect(find.textContaining('SHE'), findsWidgets);
     expect(find.text('Spendable'), findsOneWidget);
+    expect(find.textContaining('block height:'), findsWidgets);
     expect(find.text('Copy ID'), findsOneWidget);
     expect(find.text('Receive ID'), findsOneWidget);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
+    expect(find.text('Pending'), findsNothing);
     expect(find.text('Copy dest'), findsNothing);
     expect(find.text('New dest'), findsNothing);
     expect(find.text('Shearview  S_{μν}'), findsNothing);
@@ -306,6 +334,38 @@ void main() {
     expect(find.text('Shearview  S_{μν}'), findsOneWidget);
     expect(find.text('No confirmed transactions yet.'), findsOneWidget);
     expect(find.text('Copy ID'), findsNothing);
+  });
+
+  testWidgets('Continuum lists pending sends until the next block, then Shearview has them', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-pending-ui-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    final ident = session.identity!;
+    final ledger = ShearLedger()..viewSecret = ident.viewKey;
+    final dest = ledger.currentDest(ident.address);
+    ledger.confirmRound(address: ident.address, pot: 1, height: 2);
+    final other = createIdentity();
+    final bob = destForLogin(other.address, height: 1, viewKey: other.viewKey)!;
+    await ledger.send(from: dest, to: bob, amount: 0.25);
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'pw');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Pending'), findsOneWidget);
+    expect(find.textContaining('0.250000000'), findsWidgets);
+    expect(find.textContaining('block height: 2'), findsWidgets);
+    await tester.tap(find.text('Shearview'));
+    await tester.pump();
+    expect(find.textContaining('0.250000000'), findsNothing);
+    ledger.confirmRound(address: ident.address, pot: 1, height: 3);
+    await tester.tap(find.text('Continuum'));
+    await tester.pump();
+    expect(find.text('Pending'), findsNothing);
+    await tester.tap(find.text('Shearview'));
+    await tester.pump();
+    expect(find.textContaining('0.250000000'), findsWidgets);
   });
 
   testWidgets('dark mode cards and fields are dark with light ink; light mode inverts', (tester) async {
