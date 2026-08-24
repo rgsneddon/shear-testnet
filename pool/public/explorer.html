@@ -204,6 +204,10 @@
       if (String(to).trim()) q.set('to', String(to).trim());
       return q;
     }
+    function hasSearchQuery() {
+      const q = queryFromForm();
+      return q.has('height') || q.has('id') || q.has('from') || q.has('to');
+    }
     function paintHolders(circ) {
       setText('ex-circulating', fmtShe(circ.circulating) + ' SHE');
       setText('ex-emitted', fmtShe(circ.emitted) + ' SHE');
@@ -265,7 +269,9 @@
     });
     setInterval(function () {
       if (lastBlockAt) setText('ex-updated', fmtSinceBlock(lastBlockAt));
-      if (filled) loadRecent().catch(function () {});
+      if (!filled) return;
+      if (hasSearchQuery()) runSearch().catch(function () {});
+      else loadRecent().catch(function () {});
     }, 2000);
   </script>
 </body>

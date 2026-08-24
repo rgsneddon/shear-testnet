@@ -138,4 +138,12 @@ describe('explorer dests', () => {
     const viaFn = explorerCirculation(store);
     assert.equal(viaFn.circulating, circ.json.circulating);
   });
+
+  it('explorer page keeps Search TX results instead of polling unfiltered history', () => {
+    const page = fs.readFileSync(new URL('../public/explorer.html', import.meta.url), 'utf8');
+    assert.match(page, /function hasSearchQuery/);
+    assert.match(page, /if \(hasSearchQuery\(\)\) runSearch\(\)/);
+    assert.doesNotMatch(page, /if \(filled\) loadRecent\(\)\.catch/);
+    assert.match(page, /\/explorer\/search\?/);
+  });
 });
