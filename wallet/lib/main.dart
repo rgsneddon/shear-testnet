@@ -8,13 +8,12 @@ import 'shear_identity.dart';
 import 'shear_ledger.dart';
 import 'shear_lock.dart';
 import 'shear_macos_install.dart';
-import 'shear_miner_host.dart';
 import 'shear_session.dart';
 import 'shear_theme.dart';
 import 'shear_ctf.dart';
 import 'shear_vortex.dart';
 
-const kWalletVersion = '0.0.4';
+const kWalletVersion = '0.0.5';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -28,7 +27,7 @@ const kSymbols = ['∇·J = 0', 'J^μ', 'η', 'Ω^{μν}', 'S_{μν}', 'π', 'G_
 const kExplains = [
   'Your money. Spendable SHE after a block is found, plus this round’s pending hashes.',
   'Send SHE to an shp1 dest. Offer she1 (silent ID), never rest-frame shear1.',
-  'Mining. Start hashing. Each hash credits a tiny amount; you can spend it only when a block is found.',
+  'Resistance is ShearHash proof of work. Hash with the official miner at the pool, not in this wallet.',
   'Apps and contracts other people deploy. They cannot print SHE; they must fund their own rewards.',
   'How SHE is created: 1 SHE per block, plus 0.000000001 SHE per hash to each miner in that round.',
   'Lock π SHE for 400 days to vote, and earn Bank of England base-rate interest. The only app allowed to mint extra SHE.',
@@ -45,13 +44,11 @@ class ShearWalletApp extends StatefulWidget {
     this.session,
     this.ledger,
     this.launchExecutable,
-    this.miner,
   });
 
   final ShearSession? session;
   final ShearLedger? ledger;
   final String? launchExecutable;
-  final ShearMinerHost? miner;
 
   @override
   State<ShearWalletApp> createState() => _ShearWalletAppState();
@@ -60,13 +57,10 @@ class ShearWalletApp extends StatefulWidget {
 class _ShearWalletAppState extends State<ShearWalletApp> {
   late final ShearSession session = widget.session ?? ShearSession();
   late final ShearLedger ledger = widget.ledger ?? ShearLedger(pool: ShearPoolClient());
-  late final ShearMinerHost miner =
-      widget.miner ?? ShearMinerHost(resolvedExecutable: widget.launchExecutable);
   ShearIdentity? id;
   String password = '';
   bool unlocked = false;
   int tab = 0;
-  bool mining = false;
   final flowTo = TextEditingController();
   final flowAmt = TextEditingController();
   final flowMemo = TextEditingController();
@@ -84,7 +78,6 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
 
   @override
   void dispose() {
-    miner.stop();
     flowTo.dispose();
     flowAmt.dispose();
     flowMemo.dispose();
@@ -340,7 +333,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   Widget _flow(ShearIdentity ident) {
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('shp1 dest this round (mine / pay). Offer she1, never shear1.'),
+      const Text('shp1 dest this round (pay). Offer she1, never shear1.'),
       SelectableText(ledger.currentDest(ident.address)),
       const SizedBox(height: 8),
       TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (shp1…)')),
@@ -374,38 +367,12 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   Widget _resistance(ShearIdentity ident) {
     return _card([
       const Text('Resistance  η', style: TextStyle(fontWeight: FontWeight.w700)),
-      Text(mining ? 'Mining…' : 'Idle'),
-      FilledButton(
-        onPressed: () async {
-          if (mining) {
-            miner.stop();
-            setState(() => mining = false);
-            return;
-          }
-          if (miner.isDesktop) {
-            final proc = await miner.start(
-              address: ledger.currentDest(ident.address),
-              pool: 'pool.shear.digital:1111',
-            );
-            if (proc == null) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Bundled shear-miner not found next to the app.')),
-                );
-              }
-              return;
-            }
-          } else {
-            miner.startInApp(onHashes: (n) {
-              ledger.creditHash(ident.address, hashes: n);
-              if (mounted) setState(() {});
-            });
-          }
-          setState(() => mining = true);
-        },
-        child: Text(mining ? 'Stop' : 'Mine'),
+      const Text(
+        'This wallet does not mine. Proof of work is ShearHash on the official miner, not inside the GUI.',
       ),
-      Text('Pending hashes credit 1e-9 SHE each. Spendable only when a block is found.'),
+      const Text(
+        'Mine at pool.shear.digital:1111 with a shp1 dest from Continuum. Offer she1 as your public ID.',
+      ),
     ]);
   }
 

@@ -46,3 +46,6 @@ String shearHashHex(List<int> header) {
 }
 
 bool shearSelftest() => shearHashHex(shearSelftestHeader()) == shearSelftestHash;
+
+/// Same bytes as C `shear_hash` — used by the selftest vector unit test, not wallet mining.
+List<int> dartHashRound(List<int> header) => shearHash(header);

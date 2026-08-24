@@ -10,7 +10,6 @@ import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_lock.dart';
 import 'package:shear_wallet/shear_session.dart';
 import 'package:shear_wallet/shear_hash.dart';
-import 'package:shear_wallet/shear_miner_host.dart';
 import 'package:shear_wallet/shear_theme.dart';
 import 'package:shear_wallet/shear_ctf.dart';
 import 'package:shear_wallet/shear_vortex.dart';
@@ -130,7 +129,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.0.4');
+    expect(kWalletVersion, '0.0.5');
     expect(kWalletVersion.contains('0.0.10'), isFalse);
     final key = issueVorticeKey('stake-pool-a');
     expect(key, isNotNull);
@@ -197,27 +196,6 @@ void main() {
     expect(got, shearSelftestHash);
     expect(shearSelftest(), isTrue);
     expect(dartHashRound(header), shearHash(header));
-    final host = ShearMinerHost(desktopOverride: false);
-    expect(host.hashBurst(count: 3), 3);
-    expect(host.hashesRun, 3);
-  });
-
-  test('bundled miner path is next to the GUI on Windows and Linux', () {
-    final win = ShearMinerHost.bundledPath(
-      resolvedExecutable: r'C:\Shear\Shear.exe',
-      windows: true,
-    );
-    expect(win, r'C:\Shear\shear-miner.exe');
-    final linux = ShearMinerHost.bundledPath(
-      resolvedExecutable: '/opt/shear/shear_wallet',
-      windows: false,
-    );
-    expect(linux, '/opt/shear/shear-miner');
-    final mac = ShearMinerHost.bundledPath(
-      resolvedExecutable: '/Applications/Shear.app/Contents/MacOS/Shear',
-      windows: false,
-    );
-    expect(mac, '/Applications/Shear.app/Contents/MacOS/shear-miner');
   });
 
   testWidgets('six Chronoflux tabs and light pool colors', (tester) async {
@@ -229,14 +207,14 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.0.4');
-    expect(kWalletVersion, '0.0.4');
+    expect(app.title, 'Shear 0.0.5');
+    expect(kWalletVersion, '0.0.5');
     // password gate first
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
     await tester.pump();
-    expect(find.textContaining('0.0.4'), findsWidgets);
+    expect(find.textContaining('0.0.5'), findsWidgets);
     expect(find.textContaining('she is private'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
@@ -268,17 +246,11 @@ void main() {
     expect(scaffold.backgroundColor ?? app.darkTheme!.scaffoldBackgroundColor, shearDarkBg);
   });
 
-  testWidgets('non-desktop Mine runs in-app ShearHash, not a single fake credit', (tester) async {
-    final dir = Directory.systemTemp.createTempSync('shear-mine-');
+  testWidgets('Resistance has no Mine/Stop and does not hash in the wallet', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-nomine-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
-    final id = await session.loadOrCreate();
-    final ledger = ShearLedger();
-    final miner = ShearMinerHost(desktopOverride: false);
-    await tester.pumpWidget(ShearWalletApp(
-      session: session,
-      ledger: ledger,
-      miner: miner,
-    ));
+    await session.loadOrCreate();
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger()));
     await tester.pump();
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
@@ -286,18 +258,11 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Resistance'));
     await tester.pump();
-    expect(ledger.pending(id.address), 0);
-    expect(miner.hashesRun, 0);
-    await tester.tap(find.text('Mine'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 120));
-    expect(miner.hashing, isTrue);
-    expect(miner.hashesRun, greaterThan(1));
-    expect(ledger.pending(id.address), closeTo(miner.hashesRun * 1e-9, 1e-12));
-    expect(find.text('Mining…'), findsWidgets);
-    await tester.tap(find.text('Stop'));
-    await tester.pump();
-    expect(miner.hashing, isFalse);
+    expect(find.text('Mine'), findsNothing);
+    expect(find.text('Stop'), findsNothing);
+    expect(find.text('Mining…'), findsNothing);
+    expect(find.textContaining('does not mine'), findsWidgets);
+    expect(File('lib/shear_miner_host.dart').existsSync(), isFalse);
   });
 
   test('send posts sdcard1 from + memoCt; sender and recipient dests open plaintext, other dest does not', () async {

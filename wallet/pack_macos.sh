@@ -3,9 +3,8 @@
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WALLET="$ROOT/wallet"
-MINER="$ROOT/miner/shear-miner"
 DIST="$WALLET/dist"
-VER=0.0.4
+VER=0.0.5
 APPNAME="Shear"
 VOLNAME="Shear $VER"
 DMG="$DIST/shear-wallet-$VER-macos.dmg"
@@ -18,10 +17,10 @@ if [ "${PACK_REBUILD:-}" = "1" ] || [ ! -d "$APP" ]; then
   flutter build macos --release --build-name=$VER --build-number=1
 fi
 test -d "$APP"
-
-if [ -f "$MINER" ]; then
-  cp "$MINER" "$APP/Contents/MacOS/shear-miner"
-  chmod +x "$APP/Contents/MacOS/shear-miner"
+# Wallet does not bundle shear-miner. Official miner is a separate release.
+if [ -e "$APP/Contents/MacOS/shear-miner" ]; then
+  echo "wallet app must not include shear-miner" >&2
+  exit 1
 fi
 
 hdiutil detach "/Volumes/$VOLNAME" >/dev/null 2>&1 || true
