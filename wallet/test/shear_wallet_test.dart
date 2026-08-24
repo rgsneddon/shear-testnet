@@ -12,6 +12,7 @@ import 'package:shear_wallet/shear_session.dart';
 import 'package:shear_wallet/shear_hash.dart';
 import 'package:shear_wallet/shear_theme.dart';
 import 'package:shear_wallet/shear_ctf.dart';
+import 'package:shear_wallet/shear_ctf_cli.dart';
 import 'package:shear_wallet/shear_vortex.dart';
 
 void main() {
@@ -198,6 +199,24 @@ void main() {
     expect(dartHashRound(header), shearHash(header));
   });
 
+  test('in-app logo and macOS 1024 icon are square, not a stretched 802×848', () {
+    List<int> pngSize(String path) {
+      final b = File(path).readAsBytesSync();
+      expect(b[0], 0x89);
+      expect(b[1], 0x50);
+      final w = (b[16] << 24) | (b[17] << 16) | (b[18] << 8) | b[19];
+      final h = (b[20] << 24) | (b[21] << 16) | (b[22] << 8) | b[23];
+      return [w, h];
+    }
+
+    final logo = pngSize('assets/brand/logo.png');
+    expect(logo[0], logo[1]);
+    expect(logo[0] == 802 && logo[1] == 848, isFalse);
+    final icon = pngSize('macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_1024.png');
+    expect(icon[0], 1024);
+    expect(icon[1], 1024);
+  });
+
   testWidgets('six Chronoflux tabs and light pool colors', (tester) async {
     final dir = Directory.systemTemp.createTempSync('shear-ui-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -215,7 +234,6 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(find.textContaining('0.0.5'), findsWidgets);
-    expect(find.textContaining('she is private'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -223,7 +241,11 @@ void main() {
     for (final name in kTabs) {
       expect(find.text(name), findsWidgets);
     }
+    expect(kTabs, contains('Shearview'));
+    expect(kTabs.contains('Explorer'), isFalse);
+    expect(kTabs.contains('Shear'), isFalse);
     expect(kExplains.length, kTabs.length);
+    expect(kSymbols.length, kTabs.length);
     expect(kExplains.every((e) => e.length > 20), isTrue);
   });
 
@@ -237,13 +259,88 @@ void main() {
     expect(kShearLogoAsset, 'assets/brand/logo.png');
     expect(find.byType(Image), findsWidgets);
     await tester.tap(find.text('Dark mode'));
-    await tester.pump();
+    await tester.pumpAndSettle();
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
     expect(app.themeMode, ThemeMode.dark);
     expect(app.darkTheme!.scaffoldBackgroundColor, shearDarkBg);
     expect(app.theme!.scaffoldBackgroundColor, shearBg);
+    expect(Theme.of(tester.element(find.byType(Scaffold))).brightness, Brightness.dark);
+    expect(Theme.of(tester.element(find.byType(Scaffold))).scaffoldBackgroundColor, shearDarkBg);
     final scaffold = tester.widget<Scaffold>(find.byType(Scaffold));
-    expect(scaffold.backgroundColor ?? app.darkTheme!.scaffoldBackgroundColor, shearDarkBg);
+    expect(scaffold.backgroundColor, shearDarkBg);
+    expect(app.darkTheme!.cardColor, shearDarkCard);
+    expect(app.darkTheme!.cardTheme.color, shearDarkCard);
+    expect(app.darkTheme!.inputDecorationTheme.fillColor, isNot(const Color(0xFFFFFFFF)));
+    expect(app.theme!.cardColor, shearCard);
+    expect(app.theme!.cardTheme.color, shearCard);
+  });
+
+  testWidgets('Continuum is spendable + Copy ID; explorer history is its own tab', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-continuum-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger()));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'pw');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.textContaining('SHE'), findsWidgets);
+    expect(find.text('Spendable'), findsOneWidget);
+    expect(find.text('Copy ID'), findsOneWidget);
+    expect(find.text('Receive ID'), findsOneWidget);
+    expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
+    expect(find.text('Copy dest'), findsNothing);
+    expect(find.text('New dest'), findsNothing);
+    expect(find.text('Shearview  S_{μν}'), findsNothing);
+    expect(find.text('No confirmed transactions yet.'), findsNothing);
+
+    await tester.tap(find.text('Shearview'));
+    await tester.pump();
+    expect(find.text('Shearview  S_{μν}'), findsOneWidget);
+    expect(find.text('No confirmed transactions yet.'), findsOneWidget);
+    expect(find.text('Copy ID'), findsNothing);
+  });
+
+  testWidgets('dark mode cards and fields are dark with light ink; light mode inverts', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-surfaces-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger()));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'pw');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump();
+
+    var card = tester.widget<Card>(find.byType(Card));
+    expect(card.color, shearCard);
+    expect(card.color, isNot(shearDarkCard));
+
+    await tester.tap(find.byIcon(Icons.dark_mode));
+    await tester.pumpAndSettle();
+
+    card = tester.widget<Card>(find.byType(Card));
+    expect(card.color, shearDarkCard);
+    expect(card.color!.value, isNot(0xFFFFFFFF));
+    expect(Theme.of(tester.element(find.byType(Card))).colorScheme.onSurface, shearDarkInk);
+    expect(Theme.of(tester.element(find.byType(Card))).scaffoldBackgroundColor, shearDarkBg);
+
+    await tester.tap(find.text('Flow'));
+    await tester.pump();
+    final fieldCtx = tester.element(find.byType(TextField).first);
+    final fieldTheme = Theme.of(fieldCtx);
+    expect(fieldTheme.inputDecorationTheme.fillColor, shearDarkField);
+    expect(fieldTheme.inputDecorationTheme.fillColor, isNot(const Color(0xFFFFFFFF)));
+    expect(fieldTheme.colorScheme.onSurface, shearDarkInk);
+    expect(tester.widget<Card>(find.byType(Card)).color, shearDarkCard);
+
+    await tester.tap(find.byIcon(Icons.light_mode));
+    await tester.pumpAndSettle();
+    expect(tester.widget<Card>(find.byType(Card)).color, shearCard);
+    expect(Theme.of(tester.element(find.byType(Card))).colorScheme.onSurface, shearInk);
+    expect(Theme.of(tester.element(find.byType(TextField).first)).inputDecorationTheme.fillColor, shearField);
   });
 
   testWidgets('Resistance has no Mine/Stop and does not hash in the wallet', (tester) async {
@@ -261,8 +358,93 @@ void main() {
     expect(find.text('Mine'), findsNothing);
     expect(find.text('Stop'), findsNothing);
     expect(find.text('Mining…'), findsNothing);
-    expect(find.textContaining('does not mine'), findsWidgets);
+    expect(find.textContaining('does not mine'), findsNothing);
+    expect(find.textContaining('CTF CLI'), findsWidgets);
+    expect(find.textContaining('Waiting for CTF'), findsWidgets);
     expect(File('lib/shear_miner_host.dart').existsSync(), isFalse);
+    expect(tester.widget<ColoredBox>(find.byKey(const Key('resistance-cli'))).color, kCliLightBg);
+    await tester.tap(find.byIcon(Icons.dark_mode));
+    await tester.pumpAndSettle();
+    expect(tester.widget<ColoredBox>(find.byKey(const Key('resistance-cli'))).color, kCliDarkBg);
+    expect(tester.widget<SelectableText>(find.byType(SelectableText).last).style?.color, kCliDarkFg);
+  });
+
+  test('ctfTranscript uses destForLogin and prints she1 shp1 shear1 spendable credit', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..viewSecret = id.viewKey;
+    final tx = ledger.confirmRound(address: id.address, pot: 1, height: 7);
+    expect(tx.to.startsWith('shp1'), isTrue);
+    final dest = destForLogin(
+      id.address,
+      height: ledger.tipHeight,
+      continuityRoot: ledger.lag1Root,
+      viewKey: id.viewKey,
+    )!;
+    expect(tx.to, dest);
+    final text = ctfTranscript(
+      identity: id,
+      tx: tx,
+      spendableAfter: ledger.spendable(id.address),
+      continuityRoot: ledger.lag1Root,
+    );
+    expect(text.contains(id.address), isTrue);
+    expect(id.address.startsWith('shear1'), isTrue);
+    expect(text.contains(id.paymentCode), isTrue);
+    expect(id.paymentCode.startsWith('she1'), isTrue);
+    expect(text.contains(dest), isTrue);
+    expect(dest.startsWith('shp1'), isTrue);
+    expect(text.contains(tx.amount.toStringAsFixed(9)), isTrue);
+    expect(text.contains(ctfClosurePersonal), isTrue);
+    expect(text.contains(ctfFlowPersonal), isTrue);
+    expect(text.contains('spendable'), isTrue);
+    expect(text.contains(closureCommit(id.viewKey).map((b) => b.toRadixString(16).padLeft(2, '0')).join()), isTrue);
+  });
+
+  testWidgets('Shearview tap opens Resistance CLI for that tx', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-cli-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    final ident = session.identity!;
+    final ledger = ShearLedger()..viewSecret = ident.viewKey;
+    final tx = ledger.confirmRound(address: ident.address, pot: 1, height: 3);
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'pw');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Shearview'));
+    await tester.pump();
+    await tester.tap(find.text('${tx.kind}  ${tx.amount.toStringAsFixed(9)} SHE'));
+    await tester.pump();
+    expect(find.textContaining('CTF CLI'), findsWidgets);
+    expect(find.textContaining(tx.amount.toStringAsFixed(9)), findsWidgets);
+    expect(find.textContaining(ident.address), findsWidgets);
+    expect(find.textContaining(ident.paymentCode), findsWidgets);
+    expect(find.textContaining(tx.to), findsWidgets);
+    expect(find.textContaining('chronoflux-G-v1'), findsWidgets);
+  });
+
+  testWidgets('demoTx records a confirmed round on Resistance CLI', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-demo-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    final ident = session.identity!;
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), demoTx: true));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'pw');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.textContaining('CTF CLI'), findsWidgets);
+    expect(find.textContaining('1.000000000'), findsWidgets);
+    expect(find.textContaining(ident.address), findsWidgets);
+    expect(find.textContaining(ident.paymentCode), findsWidgets);
+    expect(find.textContaining('shp1'), findsWidgets);
+    expect(find.textContaining('chronoflux-J-v1'), findsWidgets);
+    await tester.tap(find.text('Shearview'));
+    await tester.pump();
+    expect(find.textContaining('coinbase'), findsWidgets);
   });
 
   test('send posts sdcard1 from + memoCt; sender and recipient dests open plaintext, other dest does not', () async {

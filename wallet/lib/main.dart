@@ -11,6 +11,7 @@ import 'shear_macos_install.dart';
 import 'shear_session.dart';
 import 'shear_theme.dart';
 import 'shear_ctf.dart';
+import 'shear_ctf_cli.dart';
 import 'shear_vortex.dart';
 
 const kWalletVersion = '0.0.5';
@@ -19,17 +20,17 @@ const kTabs = [
   'Flow',
   'Resistance',
   'Vortex',
-  'Shear',
+  'Shearview',
   'Reserve',
   'Closure',
 ];
 const kSymbols = ['∇·J = 0', 'J^μ', 'η', 'Ω^{μν}', 'S_{μν}', 'π', 'G_{μν}'];
 const kExplains = [
-  'Your money. Spendable SHE after a block is found, plus this round’s pending hashes.',
+  'Spendable SHE at the top, and the one she1 ID you copy to receive from mining, exchanges, or anyone.',
   'Send SHE to an shp1 dest. Offer she1 (silent ID), never rest-frame shear1.',
-  'Resistance is ShearHash proof of work. Hash with the official miner at the pool, not in this wallet.',
+  'CTF conclusion of each transaction: receive-path workings that credit spendable, in a CLI printout.',
   'Apps and contracts other people deploy. They cannot print SHE; they must fund their own rewards.',
-  'How SHE is created: 1 SHE per block, plus 0.000000001 SHE per hash to each miner in that round.',
+  'Confirmed transfers. Tap a tx to open its CTF workings on Resistance.',
   'Lock π SHE for 400 days to vote, and earn Bank of England base-rate interest. The only app allowed to mint extra SHE.',
   'Password and backup. Encrypts shewall.json so you can restore this wallet on another install.',
 ];
@@ -44,11 +45,14 @@ class ShearWalletApp extends StatefulWidget {
     this.session,
     this.ledger,
     this.launchExecutable,
+    this.demoTx = false,
   });
 
   final ShearSession? session;
   final ShearLedger? ledger;
   final String? launchExecutable;
+  /// Local observation only: confirm one testnet round so Shearview/Resistance have a tx.
+  final bool demoTx;
 
   @override
   State<ShearWalletApp> createState() => _ShearWalletAppState();
@@ -69,6 +73,8 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   final Set<String> openedMemos = {};
   String? lastMemoPlain;
   ThemeMode _themeMode = ThemeMode.light;
+  final Map<String, String> _cliById = {};
+  String? _focusedTxId;
 
   @override
   void initState() {
@@ -96,7 +102,43 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     final dest = ledger.currentDest(id!.address);
     await ledger.syncSpendable(dest);
     await ledger.syncHistory(dest);
+    if (widget.demoTx && ledger.ownerHistory(id!.address).isEmpty) {
+      ledger.viewSecret = id!.viewKey;
+      final tx = ledger.confirmRound(address: id!.address, pot: 1, height: 1);
+      _ingestTx(id!, tx);
+      _focusedTxId = tx.id;
+      tab = _resistanceTab;
+    }
+    _ingestHistory();
     if (mounted) setState(() => unlocked = true);
+  }
+
+  int get _resistanceTab => kTabs.indexOf('Resistance');
+
+  void _ingestTx(ShearIdentity ident, ShearTx tx) {
+    _cliById[tx.id] = ctfTranscript(
+      identity: ident,
+      tx: tx,
+      spendableAfter: ledger.spendable(ident.address),
+      continuityRoot: ledger.lag1Root,
+    );
+  }
+
+  void _ingestHistory() {
+    final ident = id;
+    if (ident == null) return;
+    for (final t in ledger.ownerHistory(ident.address)) {
+      _ingestTx(ident, t);
+    }
+  }
+
+  String get _cliText {
+    final focus = _focusedTxId;
+    if (focus != null && _cliById.containsKey(focus)) return _cliById[focus]!;
+    if (_cliById.isEmpty) {
+      return 'READY.\nWaiting for CTF conclusions…\nSend or confirm a transfer, or open a tx from Shearview.';
+    }
+    return _cliById.values.join('\n');
   }
 
   String get _exe {
@@ -115,7 +157,10 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       theme: shearLightTheme(),
       darkTheme: shearDarkTheme(),
       themeMode: _themeMode,
-      home: unlocked ? _shell() : _lockGate(),
+      themeAnimationDuration: Duration.zero,
+      home: Builder(
+        builder: (ctx) => unlocked ? _shell(ctx) : _lockGate(ctx),
+      ),
     );
   }
 
@@ -126,7 +171,13 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   Widget _brandMark({double size = 40}) {
-    return Image.asset(kShearLogoAsset, width: size, height: size, filterQuality: FilterQuality.medium);
+    return Image.asset(
+      kShearLogoAsset,
+      width: size,
+      height: size,
+      fit: BoxFit.contain,
+      filterQuality: FilterQuality.medium,
+    );
   }
 
   Widget _brandWordmark({double height = 22}) {
@@ -137,9 +188,11 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     );
   }
 
-  Widget _lockGate() {
+  Widget _lockGate(BuildContext context) {
     final ctrl = TextEditingController();
+    final theme = Theme.of(context);
     return Scaffold(
+      backgroundColor: theme.scaffoldBackgroundColor,
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
@@ -152,7 +205,11 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
                 const SizedBox(height: 10),
                 _brandWordmark(height: 28),
                 const SizedBox(height: 8),
-                const Text('Create a password for this wallet. It encrypts shewall.json.'),
+                Text(
+                  'Create a password for this wallet. It encrypts shewall.json.',
+                  style: TextStyle(color: theme.colorScheme.onSurface),
+                  textAlign: TextAlign.center,
+                ),
                 TextField(
                   controller: ctrl,
                   obscureText: true,
@@ -177,21 +234,25 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     );
   }
 
-  Widget _shell() {
+  Widget _shell(BuildContext context) {
     final ident = id;
     if (ident == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return Scaffold(
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+        body: const Center(child: CircularProgressIndicator()),
+      );
     }
     final pages = [
-      _continuum(ident),
-      _flow(ident),
-      _resistance(ident),
+      _continuum(context, ident),
+      _flow(context, ident),
+      _resistance(context),
       _vortex(ident),
-      _shearTab(),
+      _shearview(context, ident),
       _reserve(ident),
-      _closure(ident),
+      _closure(context, ident),
     ];
     return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
         leading: Padding(padding: const EdgeInsets.all(8), child: _brandMark(size: 28)),
         title: Row(
@@ -213,7 +274,11 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         children: [
           if (!kIsWeb && Platform.isMacOS && isEphemeralMacosLaunchPath(_exe))
             MaterialBanner(
-              content: const Text(macosMoveBody),
+              backgroundColor: Theme.of(context).bannerTheme.backgroundColor,
+              content: Text(
+                macosMoveBody,
+                style: Theme.of(context).bannerTheme.contentTextStyle,
+              ),
               actions: const [SizedBox.shrink()],
             ),
           Expanded(child: pages[tab]),
@@ -228,7 +293,10 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
               icon: Tooltip(
                 message: kExplains[i],
                 waitDuration: const Duration(milliseconds: 400),
-                child: Text(kSymbols[i], style: const TextStyle(fontSize: 11)),
+                child: Text(
+                  kSymbols[i],
+                  style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurface),
+                ),
               ),
               label: kTabs[i],
             ),
@@ -238,64 +306,59 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   Widget _card(List<Widget> kids) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Card(
-          color: Theme.of(context).cardColor,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: kids),
+    return Builder(builder: (context) {
+      final theme = Theme.of(context);
+      return ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            color: theme.cardColor,
+            surfaceTintColor: Colors.transparent,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: DefaultTextStyle.merge(
+                style: TextStyle(color: theme.colorScheme.onSurface),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: kids),
+              ),
+            ),
           ),
-        ),
-      ],
-    );
+        ],
+      );
+    });
   }
 
-  Widget _continuum(ShearIdentity ident) {
-    final hist = ledger.ownerHistory(ident.address);
+  Widget _continuum(BuildContext context, ShearIdentity ident) {
     final dest = ledger.currentDest(ident.address);
-    final listed = ledger.listedDests(ident.address);
+    final spend = ledger.spendable(dest);
     return _card([
-      const Text('Continuum  ∇·J = 0', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('she is private. Public ID (she1) — offer this everywhere'),
+      Text(
+        '${spend.toStringAsFixed(9)} SHE',
+        style: TextStyle(
+          fontSize: 28,
+          fontWeight: FontWeight.w700,
+          color: shearAccentOf(context),
+        ),
+      ),
+      Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
+      const SizedBox(height: 20),
+      Text('Receive ID', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+      const SizedBox(height: 6),
       SelectableText(ident.paymentCode),
-      const SizedBox(height: 6),
-      const Text('Rest-frame shear1 (never share, never on chain)'),
-      SelectableText(ident.address),
-      const SizedBox(height: 6),
-      const Text('shp1 dests revolve each round; New dest mints more shp1.'),
-      for (var i = 0; i < listed.length; i++)
-        ListTile(
-          dense: true,
-          selected: i == ledger.destIndex,
-          title: SelectableText(listed[i]),
-          subtitle: Text(i == ledger.destIndex ? 'selected · dest $i' : 'dest $i'),
-          onTap: () => setState(() => ledger.selectDest(i)),
-        ),
-      Wrap(spacing: 8, children: [
-        FilledButton(
-          onPressed: () => setState(() => ledger.newDest(ident.address)),
-          child: const Text('New dest'),
-        ),
-        OutlinedButton(
-          onPressed: () => Clipboard.setData(ClipboardData(text: ident.paymentCode)),
-          child: const Text('Copy ID'),
-        ),
-        OutlinedButton(
-          onPressed: () => Clipboard.setData(ClipboardData(text: dest)),
-          child: const Text('Copy dest'),
-        ),
-      ]),
-      const SizedBox(height: 8),
-      Text('Spendable  ${ledger.spendable(dest).toStringAsFixed(9)} SHE',
-          style: const TextStyle(fontSize: 18, color: shearCyan, fontWeight: FontWeight.w700)),
-      Text('Pending this round  ${ledger.pending(dest).toStringAsFixed(9)} SHE  (not spendable until block found)'),
       const SizedBox(height: 12),
-      const Text('Explorer', style: TextStyle(fontWeight: FontWeight.w700)),
+      OutlinedButton(
+        onPressed: () => Clipboard.setData(ClipboardData(text: ident.paymentCode)),
+        child: const Text('Copy ID'),
+      ),
+    ]);
+  }
+
+  Widget _shearview(BuildContext context, ShearIdentity ident) {
+    final hist = ledger.ownerHistory(ident.address);
+    return _card([
+      const Text('Shearview  S_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
       if (hist.any((t) => t.memo && t.memoPlain != null && !openedMemos.contains(t.id)))
-        const Text('you have a new memo', style: TextStyle(fontWeight: FontWeight.w700, color: shearCyan)),
-      if (hist.isEmpty) const Text('No confirmed transactions yet.', style: TextStyle(color: shearMuted)),
+        Text('you have a new memo', style: TextStyle(fontWeight: FontWeight.w700, color: shearAccentOf(context))),
+      if (hist.isEmpty) Text('No confirmed transactions yet.', style: TextStyle(color: shearMutedOf(context))),
       for (final t in hist)
         ListTile(
           dense: true,
@@ -305,32 +368,20 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
                 ? '${t.from} → ${t.to}  h=${t.height ?? '-'}  memo: ${t.memoPlain}'
                 : '${t.from} → ${t.to}  h=${t.height ?? '-'}',
           ),
-          onTap: t.memo
-              ? () => setState(() {
-                    openedMemos.add(t.id);
-                    lastMemoPlain = t.memoPlain;
-                  })
-              : null,
-        ),
-      const SizedBox(height: 8),
-      Wrap(spacing: 8, children: [
-        FilledButton(
-          onPressed: () async {
-            final dump = exportShewall(identity: ident, ledger: ledger);
-            final sealed = await ShearLock.seal(dump, password);
-            final dest = File('${Directory.systemTemp.path}/$shewallName');
-            await writeShewallFile(dest, sealed);
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Wrote $shewallName')));
+          onTap: () => setState(() {
+            if (t.memo) {
+              openedMemos.add(t.id);
+              lastMemoPlain = t.memoPlain;
             }
-          },
-          child: const Text('Export shewall.json'),
+            _ingestTx(ident, t);
+            _focusedTxId = t.id;
+            tab = _resistanceTab;
+          }),
         ),
-      ]),
     ]);
   }
 
-  Widget _flow(ShearIdentity ident) {
+  Widget _flow(BuildContext context, ShearIdentity ident) {
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
       const Text('shp1 dest this round (pay). Offer she1, never shear1.'),
@@ -342,12 +393,14 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       FilledButton(
         onPressed: () async {
           try {
-            await ledger.send(
+            final tx = await ledger.send(
               from: ledger.currentDest(ident.address),
               to: flowTo.text.trim(),
               amount: double.parse(flowAmt.text),
               memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
             );
+            _ingestTx(ident, tx);
+            _focusedTxId = tx.id;
             setState(() {});
           } catch (e) {
             if (mounted) {
@@ -359,21 +412,53 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       ),
       const SizedBox(height: 8),
       const Text(
-        'Receive: offer she1 (silent ID). Chain dests are shp1. Never share shear1. Memo text is only in your explorer tab and theirs.',
+        'Receive: offer she1 (silent ID). Chain dests are shp1. Never share shear1. Memo text is only in Shearview and theirs.',
       ),
     ]);
   }
 
-  Widget _resistance(ShearIdentity ident) {
-    return _card([
-      const Text('Resistance  η', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text(
-        'This wallet does not mine. Proof of work is ShearHash on the official miner, not inside the GUI.',
+  Widget _resistance(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final bg = dark ? kCliDarkBg : kCliLightBg;
+    final fg = dark ? kCliDarkFg : kCliLightFg;
+    return ColoredBox(
+      key: const Key('resistance-cli'),
+      color: bg,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Resistance  η  —  CTF CLI',
+              style: TextStyle(
+                color: fg,
+                fontFamily: 'Courier',
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: Container(
+                color: bg,
+                alignment: Alignment.topLeft,
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    _cliText,
+                    style: TextStyle(
+                      color: fg,
+                      fontFamily: 'Courier',
+                      fontSize: 12,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
-      const Text(
-        'Mine at pool.shear.digital:1111 with a shp1 dest from Continuum. Offer she1 as your public ID.',
-      ),
-    ]);
+    );
   }
 
   Widget _vortex(ShearIdentity ident) {
@@ -430,16 +515,6 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     return _card(kids);
   }
 
-  Widget _shearTab() {
-    return _card(const [
-      Text('Shear  S_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
-      Text('Block pot: 1 SHE.'),
-      Text('Per hash this round: 0.000000001 SHE to each hasher who produced that hash.'),
-      Text('The Reserve is the only dapp that may mint extra SHE (BoE interest on locked π).'),
-      Text('Network: shear-testnet-v1. Pool: pool.shear.digital:1111. Algo: ShearHash.'),
-    ]);
-  }
-
   Widget _reserve(ShearIdentity ident) {
     return _card([
       const Text('Reserve  π', style: TextStyle(fontWeight: FontWeight.w700)),
@@ -451,7 +526,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     ]);
   }
 
-  Widget _closure(ShearIdentity ident) {
+  Widget _closure(BuildContext context, ShearIdentity ident) {
     final pw = TextEditingController();
     return _card([
       const Text('Closure  G_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
@@ -460,9 +535,9 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         '(AES-256-GCM). Copy that one file to restore address and transactions. '
         'The password is the view key. Dest scan stays in this wallet.',
       ),
-      SelectableText('View key  ${ident.viewKey}', style: const TextStyle(fontSize: 12, color: shearMuted)),
+      SelectableText('View key  ${ident.viewKey}', style: TextStyle(fontSize: 12, color: shearMutedOf(context))),
       const SizedBox(height: 8),
-      const Text('CTF dests this view key opens (amounts on explorer)'),
+      const Text('CTF dests this view key opens (amounts on Shearview)'),
       SelectableText(ledger.currentDest(ident.address)),
       TextField(
         controller: pw,

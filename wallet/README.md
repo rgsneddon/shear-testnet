@@ -1,7 +1,7 @@
 # Shear wallet 0.0.5
 
-Testnet wallet. Tabs: Continuum, Flow, Resistance, Vortex, Shear, Reserve, Closure (G_{μν}).
+Testnet wallet. Tabs: Continuum, Flow, Resistance, Vortex, Shearview, Reserve, Closure (G_{μν}).
 
-Backup file: encrypted `shewall.json`. Addresses: `shear1`. Pool: `pool.shear.digital:1111`.
+Backup file: encrypted `shewall.json`. Offer `she1`. Chain dests are `shp1`. Rest-frame `shear1` is never a dest. Pool: `pool.shear.digital:1111`.
 
-Lean: pending hashes are a running total, not one JSON row per hash. Explorer lists sealed transfers only.
+Continuum is spendable + Copy ID. Shearview is confirmed transfers; tap a tx for its CTF printout on Resistance. This wallet does not mine.
