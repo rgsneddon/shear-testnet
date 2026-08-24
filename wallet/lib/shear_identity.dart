@@ -81,6 +81,22 @@ bool isDestAddress(String s) {
   return bech32Hrp(t) == 'shp' && _bech32BodyOk(t);
 }
 
+String identityOfLogin(String login) => login.trim().split('.').first;
+
+bool isMineLogin(String s) {
+  final id = identityOfLogin(s);
+  return isDestAddress(id) || isPaymentCode(id);
+}
+
+/// On-chain dest for a miner login. she1 pays shp1 of the same 20 bytes.
+String? payoutDest(String login) {
+  final id = identityOfLogin(login);
+  if (isDestAddress(id)) return id;
+  final pay = decodePaymentCode(id);
+  if (pay == null) return null;
+  return encodeDestAddress(pay['hash20']!);
+}
+
 Uint8List? decodeBech32Payload(String address) {
   final raw = address.trim();
   final one = raw.indexOf('1');

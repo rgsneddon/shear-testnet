@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { requiredJobFields, decodeHeader } from '../../crypto/header.js';
 import { headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, ALGO, CLIENT } from '../../crypto/shear_hash.js';
-import { isDestAddress } from '../../crypto/address.js';
+import { isMineLogin, isPaymentCode, payoutDest } from '../../crypto/address.js';
 import { createStore } from '../../node/src/store.js';
 import {
   assessThreadHonesty,
@@ -24,10 +24,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
 const HASHRATE_WINDOW_MS = 72_000;
 
-/** Dest (shp1) — payout identity. */
+/** Dest (shp1) or silent ID (she1) — worker identity. Payout dest is never she1. */
 export function parseLogin(login) {
   const raw = String(login || '').trim();
   return raw.split('.')[0];
+}
+
+/** Pool page / stats: never print a she1 payload. */
+export function publicMinerLabel(login) {
+  const raw = String(login || '').trim();
+  const [id, ...rest] = raw.split('.');
+  const worker = rest.filter(Boolean).join('.');
+  if (isPaymentCode(id)) return worker ? `she1….${worker}` : 'she1…';
+  if (id.length > 18) return `${id.slice(0, 18)}…`;
+  return raw;
 }
 
 /** Full login dest.worker. Two copied worker names stay distinct rows. */
@@ -43,7 +53,7 @@ export function admitClient(params) {
   }
   const raw = String(params?.login || params?.user || '').trim();
   const dest = parseLogin(raw);
-  if (!isDestAddress(dest)) return { ok: false, reason: 'bad_login' };
+  if (!isMineLogin(dest)) return { ok: false, reason: 'bad_login' };
   return { ok: true, login: dest, workerKey: raw || dest };
 }
 
@@ -165,16 +175,19 @@ export function createPool({
   function snapshotRound() {
     return [...miners.values()]
       .filter((m) => (m.roundHashes || 0) > 0)
-      .map((m) => ({
-        miner: m.login,
-        nonce: String(m.hashes || 0),
-        tag: m.tag || m.login.slice(0, 12),
-        count: m.roundHashes,
-      }));
+      .map((m) => {
+        const dest = payoutDest(m.login);
+        return {
+          miner: dest || m.login,
+          nonce: String(m.hashes || 0),
+          tag: isPaymentCode(parseLogin(m.login)) ? 'she1' : (m.tag || m.login.slice(0, 12)),
+          count: m.roundHashes,
+        };
+      });
   }
 
   function issueJob(shareBitsNow) {
-    const payout = miner || [...miners.values()][0]?.login;
+    const payout = payoutDest(miner) || payoutDest([...miners.values()][0]?.login);
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     const sb = clampShareBits(shareBitsNow ?? shareBits, { blockBits: blockBitsNow() });
@@ -284,7 +297,7 @@ export function createPool({
             const got = store.submitHeader({
               jobId: params.jobId || job.jobId,
               nonce: params.nonce,
-              miner: session?.login,
+              miner: payoutDest(session?.login) || session?.login,
             });
             if (got.ok) {
               stats.blocks += 1;
@@ -363,7 +376,7 @@ export function createPool({
       })(),
       uptimeMs: Date.now() - stats.started,
       workers: workers.map((m) => ({
-        miner: m.login.slice(0, 18) + '…',
+        miner: publicMinerLabel(m.login),
         hashes: m.hashes,
         roundHashes: m.roundHashes,
         accepted: m.accepted,

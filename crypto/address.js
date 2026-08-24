@@ -122,6 +122,28 @@ export function isDestAddress(s) {
   return bech32Hrp(t) === 'shp' && bech32BodyOk(t);
 }
 
+/** Login identity: dest or silent ID, worker suffix stripped. */
+export function identityOfLogin(login) {
+  return String(login || '').trim().split('.')[0];
+}
+
+export function isMineLogin(s) {
+  const id = identityOfLogin(s);
+  return isDestAddress(id) || isPaymentCode(id);
+}
+
+/**
+ * On-chain payout dest. shp1 pays as-is. she1 pays shp1 of the same
+ * 20-byte payload so the silent ID never appears on chain. shear1 is not a dest.
+ */
+export function payoutDest(login) {
+  const id = identityOfLogin(login);
+  if (isDestAddress(id)) return id;
+  const pay = decodePaymentCode(id);
+  if (!pay) return null;
+  return encodeDest(pay.hash20);
+}
+
 export function decodeBech32Payload(address) {
   const raw = String(address || '').trim();
   const one = raw.indexOf('1');

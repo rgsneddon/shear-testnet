@@ -104,7 +104,7 @@
       <section class="panel-card">
         <h1>Shear. Private by default on a continuity-settled chain.</h1>
         <p>she is private</p>
-        <p>SHE pool. Proof of work only — ShearHash CPU. Offer she1 (silent ID). Mine with revolving shp1 dests. Never share shear1.</p>
+        <p>SHE pool. Proof of work only — ShearHash CPU. Offer she1 (silent ID). Login with she1 or a revolving shp1 dest. she1 never appears on chain. Never share shear1.</p>
         <p class="repo-btns">
           <a class="repo-btn" href="https://github.com/rgsneddon/shear">MINER</a>
           <a class="repo-btn" href="https://github.com/rgsneddon/shear">WALLET</a>
@@ -115,18 +115,18 @@
         <h2>GET YOUR MINER COMMAND LINE</h2>
         <p>Mine at <code style="display:inline">pool.shear.digital:1111</code>.</p>
         <p>
-          <label class="label" for="addr">Dest (shp1)</label><br/>
-          <input id="addr" type="text" placeholder="shp1…" autocomplete="off" spellcheck="false"/>
+          <label class="label" for="addr">she1 or shp1</label><br/>
+          <input id="addr" type="text" placeholder="she1…" autocomplete="off" spellcheck="false"/>
         </p>
         <p>
           <label class="label" for="threads">CPU threads</label><br/>
           <input id="threads" type="number" min="1" value="4" step="1"/>
         </p>
         <div class="cmd-row">
-          <pre id="mine-cmd">shear-miner --pool pool.shear.digital:1111 --user YOUR_SHP1.worker --threads 4</pre>
+          <pre id="mine-cmd">shear-miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --threads 4</pre>
           <button type="button" id="copy-cmd">Copy</button>
         </div>
-        <p class="label" id="cmd-hint">Valid shp1 dest required. she1 is the silent ID, not a login. Never share shear1.</p>
+        <p class="label" id="cmd-hint">Valid she1 or shp1 required. she1 stays off the chain. Never share shear1.</p>
       </section>
     </div>
     <p id="fee-note">pool fee is 1% of the 1 SHE pot for development — hash bonuses are paid in full to each hasher.</p>
@@ -170,13 +170,14 @@
     function renderCmd() {
       const addr = (document.getElementById('addr').value || '').trim();
       const t = Math.max(1, Number(document.getElementById('threads').value) || 4);
-      const user = addr ? (addr.indexOf('.') >= 0 ? addr : addr + '.worker') : 'YOUR_SHP1.worker';
+      const user = addr ? (addr.indexOf('.') >= 0 ? addr : addr + '.worker') : 'YOUR_SHE1.worker';
       document.getElementById('mine-cmd').textContent =
         'shear-miner --pool pool.shear.digital:1111 --user ' + user + ' --threads ' + t;
-      const ok = /^shp1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(addr);
+      const ok = /^(she1|shp1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(addr)
+        && !/^shear1/i.test(addr);
       document.getElementById('cmd-hint').textContent = ok
         ? 'Ready to copy · ShearHash · :1111'
-        : 'Valid shp1 dest required. she1 is the silent ID, not a login. Never share shear1.';
+        : 'Valid she1 or shp1 required. she1 stays off the chain. Never share shear1.';
     }
     document.getElementById('addr').addEventListener('input', renderCmd);
     document.getElementById('threads').addEventListener('input', renderCmd);

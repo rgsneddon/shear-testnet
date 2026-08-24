@@ -123,6 +123,11 @@ void main() {
     expect(a.paymentCode.startsWith('she1'), isTrue);
     expect(isPaymentCode(a.paymentCode), isTrue);
     expect(isDestAddress(a.paymentCode), isFalse);
+    final sheMine = destForLogin(a.paymentCode)!;
+    expect(sheMine.startsWith('shp1'), isTrue);
+    expect(sheMine.startsWith('she1'), isFalse);
+    expect(sheMine, isNot(a.paymentCode));
+    expect(payoutDest(a.paymentCode), sheMine);
     expect(isShearAddress(a.paymentCode), isFalse);
     expect(a.paymentCode.length < 50, isTrue);
     const viewKey = 'abababababababababababababababababababababababababababababababab';

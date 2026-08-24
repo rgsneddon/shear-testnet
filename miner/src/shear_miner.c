@@ -24,6 +24,7 @@
 #if defined(_WIN32)
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 #define close_fd closesocket
 #else
 #include <arpa/inet.h>
@@ -221,20 +222,13 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (!do_mine) {
-    fprintf(stderr, "usage: shear-miner --selftest | --print-config | --pool host:port --user shp1... [--threads N] [--notls]\n");
+    fprintf(stderr, "usage: shear-miner --selftest | --print-config | --pool host:port --user she1...|shp1... [--threads N] [--notls]\n");
     return 2;
   }
-  /* she1 is a string prefix of rest-frame shear1. Payment code she1 is not a dest. */
-  if (strncmp(g_user, "shear1", 6) == 0) {
-    fprintf(stderr, "user dest must be shp1... (not shear1, not she1)\n");
-    return 2;
-  }
-  if (strncmp(g_user, "she1", 4) == 0) {
-    fprintf(stderr, "user dest must be shp1... (not shear1, not she1)\n");
-    return 2;
-  }
-  if (strncmp(g_user, "shp1", 4) != 0) {
-    fprintf(stderr, "user dest must be shp1... (not shear1, not she1)\n");
+  /* shear1 is rest-frame and is never a login. she1 silent ID and shp1 dests are. */
+  if (strncmp(g_user, "shear1", 6) == 0
+      || !((strncmp(g_user, "she1", 4) == 0) || (strncmp(g_user, "shp1", 4) == 0))) {
+    fprintf(stderr, "user must be she1... or shp1... (not shear1)\n");
     return 2;
   }
 #if defined(_WIN32)
@@ -247,12 +241,36 @@ int main(int argc, char **argv) {
   }
 #endif
   signal(SIGINT, on_sig);
-  int fd = tcp_connect(g_host, g_port);
-  if (fd < 0) {
-    fprintf(stderr, "connect failed %s:%d\n", g_host, g_port);
-    return 3;
+#ifndef _WIN32
+  signal(SIGTERM, on_sig);
+#endif
+  setvbuf(stdout, NULL, _IOLBF, 0);
+  printf("shear-miner %s pool=%s:%d threads=%d\n", SHEAR_VERSION, g_host, g_port, g_threads);
+  fflush(stdout);
+  while (!g_stop) {
+    int fd = tcp_connect(g_host, g_port);
+    if (fd < 0) {
+      fprintf(stderr, "connect failed %s:%d\n", g_host, g_port);
+      fflush(stderr);
+#if defined(_WIN32)
+      Sleep(2000);
+#else
+      sleep(2);
+#endif
+      continue;
+    }
+    printf("connected %s:%d\n", g_host, g_port);
+    fflush(stdout);
+    while (!g_stop) {
+      uint64_t before = atomic_load(&g_hashes);
+      int rc = mine_once(fd);
+      uint64_t after = atomic_load(&g_hashes);
+      printf("hashes=%llu delta=%llu\n",
+             (unsigned long long)after, (unsigned long long)(after - before));
+      fflush(stdout);
+      if (rc < 0) break;
+    }
+    close_fd(fd);
   }
-  int rc = mine_once(fd);
-  close_fd(fd);
-  return rc < 0 ? 4 : 0;
+  return 0;
 }

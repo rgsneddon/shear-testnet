@@ -7,7 +7,7 @@ import net from 'node:net';
 import { requiredJobFields } from '../../crypto/header.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel } from '../src/pool.js';
 import { publicJob, buildTemplate } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
@@ -26,13 +26,61 @@ describe('job gate', () => {
 });
 
 describe('admit', () => {
-  it('admits sdcard1 dest login, refuses rest-frame shear1 and wrong client', () => {
+  it('admits shp1 dest and she1 silent ID, refuses rest-frame shear1 and wrong client', () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     assert.equal(admitClient({ login: dest, client: 'ShearHash' }).ok, true);
-    assert.equal(admitClient({ login: id.paymentCode, client: 'ShearHash' }).ok, false);
+    assert.equal(admitClient({ login: id.paymentCode, client: 'ShearHash' }).ok, true);
     assert.equal(admitClient({ login: id.address, client: 'ShearHash' }).ok, false);
     assert.equal(admitClient({ login: dest, client: 'other' }).ok, false);
+    assert.equal(publicMinerLabel(id.paymentCode), 'she1…');
+    assert.equal(publicMinerLabel(`${id.paymentCode}.cedar`), 'she1….cedar');
+    assert.equal(publicMinerLabel(id.paymentCode).includes(id.paymentCode.slice(4)), false);
+  });
+});
+
+describe('she1 login jobs', () => {
+  it('issues a header job when configured miner is rest-frame and login is she1', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-she1-'));
+    const id = newIdentity();
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: id.address,
+      shareBits: 4,
+      bits: 8,
+    });
+    await new Promise((resolve, reject) => {
+      pool.stratum.listen(0, '127.0.0.1', resolve);
+      pool.stratum.on('error', reject);
+    });
+    const port = pool.stratum.address().port;
+    const job = await new Promise((resolve, reject) => {
+      const sock = net.connect(port, '127.0.0.1', () => {
+        sock.write(JSON.stringify({
+          id: 1,
+          method: 'login',
+          params: { login: `${id.paymentCode}.de`, client: 'ShearHash', threads: 1 },
+        }) + '\n');
+      });
+      let buf = '';
+      sock.on('data', (c) => {
+        buf += c.toString();
+        if (!buf.includes('\n')) return;
+        sock.end();
+        try {
+          resolve(JSON.parse(buf.split('\n')[0]));
+        } catch (e) {
+          reject(e);
+        }
+      });
+      sock.on('error', reject);
+    });
+    pool.stratum.close();
+    assert.equal(job.error, undefined, JSON.stringify(job));
+    assert.ok(job.job?.header, JSON.stringify(job));
+    assert.equal(String(job.job.header).length, 240);
   });
 });
 
@@ -67,8 +115,8 @@ describe('pool dashboard + stratum', () => {
     assert.equal(html.toLowerCase().includes('shearhash'), true);
     assert.match(html, /she is private/);
     assert.match(html, /shp1/);
-    assert.match(html, /YOUR_SHP1/);
-    assert.equal(/--user she1/.test(html), false);
+    assert.match(html, /YOUR_SHE1/);
+    assert.equal(/--user shear1/.test(html), false);
     assert.equal(html.includes('YOUR_SHEAR1'), false);
 
     const job = pool.issueJob();

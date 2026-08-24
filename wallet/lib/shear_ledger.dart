@@ -128,6 +128,8 @@ class ShearLedger {
 
   String payKey(String address) {
     if (isDestAddress(address)) return address;
+    final silent = payoutDest(address);
+    if (silent != null) return silent;
     return currentDest(address);
   }
 

@@ -1,4 +1,4 @@
-import { isDestAddress } from '../../crypto/address.js';
+import { isDestAddress, isPaymentCode, payoutDest } from '../../crypto/address.js';
 import { HASH_BONUS_NANOS, NANOS_PER_SHE, BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { sealedExplorerRows } from '../../crypto/chronoflux.js';
 import { explorerRowPublic } from '../../crypto/flow_sheet.js';
@@ -39,6 +39,8 @@ function rowsToHistory(rows, addresses) {
 export function reconstructOwner(store, address) {
   const addr = String(address || '').trim();
   const dests = [addr];
+  const paid = payoutDest(addr);
+  if (paid && paid !== addr) dests.push(paid);
   const rows = [];
   if (typeof store?.historyFor === 'function') {
     rows.push(...store.historyFor(addr));
@@ -144,7 +146,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
   const verb = String(method || 'GET').toUpperCase();
   if (path === '/api/wallet/balance' && verb === 'GET') {
     const address = url.searchParams.get('address') || '';
-    if (!isDestAddress(address)) {
+    if (!isDestAddress(address) && !isPaymentCode(address)) {
       return { status: 400, json: { ok: false, reason: 'bad_address' } };
     }
     const rec = reconstructOwner(store, address);
@@ -184,7 +186,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
   }
   if (path === '/api/wallet/history' && verb === 'GET') {
     const address = url.searchParams.get('address') || '';
-    if (!isDestAddress(address)) {
+    if (!isDestAddress(address) && !isPaymentCode(address)) {
       return { status: 400, json: { ok: false, reason: 'bad_address' } };
     }
     const rec = reconstructOwner(store, address);

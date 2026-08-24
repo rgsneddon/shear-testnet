@@ -1,5 +1,5 @@
 import { createHash, pbkdf2Sync, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { encodeDest, encodeHrp, isShearAddress, isDestAddress, hash20FromAddress } from './address.js';
+import { encodeDest, encodeHrp, isShearAddress, isDestAddress, hash20FromAddress, payoutDest } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
 
 /** continuity-tethered Flow (CTF). Paid dests need independent Closure C, not C-from-S. */
@@ -99,11 +99,14 @@ export function spendHashFromAddress(address) {
 
 /**
  * Paid dest. Login already shp1 → pay as-is.
- * Rest-frame shear1 requires independent C. she1 payment codes are not dests. No C-from-S.
+ * she1 silent ID → shp1 of the same 20 bytes (she1 string never on chain).
+ * Rest-frame shear1 requires independent C. No C-from-S.
  */
 export function destForLogin(login, { continuityRoot, height, viewKey, closureCommit: C } = {}) {
-  if (isDestAddress(login)) return login;
-  const s = spendHashFromAddress(login);
+  const paid = payoutDest(login);
+  if (paid) return paid;
+  const id = String(login || '').trim().split('.')[0];
+  const s = spendHashFromAddress(id);
   if (!s) return null;
   const commit = C ? asBuf(C, 32) : (viewKey ? closureCommit(viewKey) : null);
   if (!commit) return null;
@@ -229,4 +232,4 @@ export function explorerRowPublic(row) {
   };
 }
 
-export { EMPTY_ROOT, isDestAddress, isShearAddress };
+export { EMPTY_ROOT, isDestAddress, isShearAddress, payoutDest };

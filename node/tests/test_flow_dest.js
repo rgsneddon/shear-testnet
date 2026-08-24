@@ -22,6 +22,16 @@ describe('flow dest coinbase', () => {
     const plain = coinbaseTx({ height: 1, miner: dest });
     assert.equal(plain.vout[0].address, dest);
     assert.throws(() => coinbaseTx({ height: 1, miner: id.address }), /coinbase_needs_dest/);
+    const sheTpl = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: id.paymentCode,
+      bits: 8,
+      now: Date.now(),
+    });
+    assert.equal(isDestAddress(sheTpl.txs[0].vout[0].address), true);
+    assert.equal(sheTpl.txs[0].vout[0].address.startsWith('she1'), false);
+    assert.equal(JSON.stringify(sheTpl.txs).includes(id.paymentCode), false);
   });
 
   it('verifyBlock rejects rest-frame shear1 on vout', () => {

@@ -64,7 +64,11 @@ describe('flow sheets', () => {
     assert.equal(isDestAddress(she), false);
     assert.equal(isPaymentCode(alice.paymentCode), true);
     assert.equal(isDestAddress(alice.paymentCode), false);
-    assert.equal(destForLogin(alice.paymentCode, { closureCommit: C, height: 3 }), null);
+    const shePay = destForLogin(alice.paymentCode, { closureCommit: C, height: 3 });
+    assert.equal(isDestAddress(shePay), true);
+    assert.equal(shePay.startsWith('shp1'), true);
+    assert.equal(shePay.startsWith('she1'), false);
+    assert.notEqual(shePay, alice.paymentCode);
     assert.equal(isDestAddress(encodeAddress(spendHashFromAddress(alice.address))), false);
   });
 

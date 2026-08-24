@@ -335,7 +335,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
       header,
       txs: rec.tpl.txs,
       samples: rec.tpl.samples,
-      miner: miner || rec.tpl.miner,
+      miner: destForLogin(miner) || miner || rec.tpl.miner,
     };
     return append(block);
   }

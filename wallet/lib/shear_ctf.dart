@@ -113,8 +113,9 @@ String? destForLogin(
   int height = 0,
   String? viewKey,
 }) {
-  if (isDestAddress(login)) return login;
-  final s = spendHashFromAddress(login);
+  final paid = payoutDest(login);
+  if (paid != null) return paid;
+  final s = spendHashFromAddress(identityOfLogin(login));
   if (s == null) return null;
   if (viewKey == null || viewKey.isEmpty) return null;
   return encodeDestAddress(flowDestHash(
