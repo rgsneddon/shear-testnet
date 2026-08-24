@@ -48,6 +48,26 @@ export function scoreShare({ job, nonce }) {
   return { ok: true, hash: hash.toString('hex'), block: blockOk, header };
 }
 
+/**
+ * GNFP 2026-08-24: two TCP sessions on one worker name last-wrote
+ * cpuThreads (32 ↔ 256 flicker). Each socket keeps its own inventory;
+ * the worker row sums utilised threads and each session's device.
+ * Inherit this when Shear takes the GNFP miner book.
+ */
+export function foldConnectionInventory(connections) {
+  const list = (Array.isArray(connections) ? connections : []).filter(Boolean);
+  const claimed = list.reduce((n, c) => n + Math.max(0, Math.floor(Number(c.threads) || 0)), 0);
+  const cpuThreads = list.reduce((n, c) => n + Math.max(0, Math.floor(Number(c.cpuThreads) || 0)), 0);
+  const cpuCores = list.reduce((n, c) => n + Math.max(0, Math.floor(Number(c.cpuCores) || 0)), 0);
+  return {
+    threads: claimed,
+    claimedThreads: claimed,
+    cpuThreads,
+    cpuCores,
+    sessions: list.length,
+  };
+}
+
 export function createPool({
   dataDir,
   stratumPort = 1111,
@@ -131,8 +151,19 @@ export function createPool({
             stale: 0,
             blocks: 0,
             threads: Number(params.threads) || 1,
+            connections: [],
             seen: Date.now(),
           };
+          const conn = {
+            sock,
+            threads: Number(params.threads) || 1,
+            cpuThreads: Number(params.cpuThreads) || 0,
+            cpuCores: Number(params.cpuCores) || 0,
+            seen: Date.now(),
+          };
+          session.connections = (session.connections || []).filter((c) => c.sock && c.sock !== sock);
+          session.connections.push(conn);
+          Object.assign(session, foldConnectionInventory(session.connections));
           session.sock = sock;
           session.seen = Date.now();
           miners.set(adm.login, session);
@@ -182,7 +213,11 @@ export function createPool({
     });
     sock.on('close', () => {
       sockets.delete(sock);
-      if (session) session.sock = null;
+      if (session) {
+        session.connections = (session.connections || []).filter((c) => c.sock !== sock);
+        Object.assign(session, foldConnectionInventory(session.connections));
+        session.sock = session.connections[0]?.sock || null;
+      }
     });
     sock.on('error', () => {});
   });

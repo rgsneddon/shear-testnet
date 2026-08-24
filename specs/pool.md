@@ -30,12 +30,30 @@ served. A found block is the **same header** with the winning nonce, plus the
 body the node already associated with that template (txs + samples). The pool
 does not invent roots.
 
+## CPU thread inventory (inherit from GNFP 2026-08-24)
+
+Do **not** last-write `threads` / `cpuCores` / `cpuThreads` onto the login name.
+
+GNFP live pool had worker EP01 flipping **32/32 ↔ 230/256** every few seconds while proven H/s stayed ~56 MH/s. Two TCP clients shared `wallet.EP01`. Each submit overwrote the banner; accepts from both still summed. Honesty saw `claimed <= device` on whichever packet arrived last, so the tile said HONEST.
+
+When Shear takes the GNFP miner book:
+
+1. One inventory record **per TCP session** (socket id, not remote IP — two processes on one box share an IP).
+2. Worker row (`wallet.worker`) **sums** utilised threads and **sums** each session’s device cores/threads.
+3. Honesty runs on that **folded** row vs merged proven H/s, not the last banner.
+4. Disconnect drops only that session’s inventory; other sockets on the same worker stay listed.
+5. Key the book by **full login** (`wallet.worker`), not wallet-only. Two machines that copied `.EP01` must not look like one CPU.
+6. The shared miner-fee dual-login must not sit in the 1-thread H/s baseline.
+
+`foldConnectionInventory` in `pool/src/pool.js` is the small Shear copy of this rule. Copy `gnfp/src/miner_stats.js` session fold when the full book is inherited.
+
 ## What this pool must not do
 
 - Credit value on a share that is not a valid header hash
 - Seal a “window” that the node cannot independently re-validate
 - Drop a still-connected hasher from the miner table when a block is found
 - Dual-login a miner fee
+- Last-write CPU inventory on a worker name (see above)
 - Mention any other project in the UI
 
 ## Ports

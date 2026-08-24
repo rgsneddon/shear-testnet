@@ -7,7 +7,7 @@ import net from 'node:net';
 import { requiredJobFields } from '../../crypto/header.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory } from '../src/pool.js';
 import { publicJob, buildTemplate } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
@@ -65,7 +65,7 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /:1111/);
     assert.match(html, />SHE</);
     assert.equal(html.toLowerCase().includes('shearhash'), true);
-    assert.match(html, /she is quiet/);
+    assert.match(html, /she is private/);
     assert.match(html, /shp1/);
     assert.match(html, /YOUR_SHP1/);
     assert.equal(/--user she1/.test(html), false);
@@ -117,5 +117,63 @@ describe('pool dashboard + stratum', () => {
     });
     assert.match(scored, /OK/);
     pool.close();
+  });
+
+  it('two sockets on one login sum thread inventory instead of last-write', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pool-sess-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 4,
+      bits: 8,
+    });
+    await new Promise((resolve, reject) => {
+      pool.stratum.listen(0, '127.0.0.1', () => {
+        pool.httpServer.listen(0, '127.0.0.1', resolve);
+      });
+      pool.stratum.on('error', reject);
+    });
+    const stratumPort = pool.stratum.address().port;
+    const login = (threads, cpuThreads) => new Promise((resolve, reject) => {
+      const sock = net.connect(stratumPort, '127.0.0.1', () => {
+        sock.write(JSON.stringify({
+          id: 1,
+          method: 'login',
+          params: { login: dest, client: 'ShearHash', threads, cpuThreads, cpuCores: cpuThreads },
+        }) + '\n');
+      });
+      sock.once('data', () => resolve(sock));
+      sock.on('error', reject);
+      setTimeout(() => reject(new Error('login_timeout')), 5000);
+    });
+    const a = await login(32, 32);
+    const b = await login(230, 256);
+    const miner = pool.miners.get(dest);
+    assert.equal(miner.threads, 262);
+    assert.equal(miner.cpuThreads, 288);
+    assert.equal(miner.sessions, 2);
+    a.destroy();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(miner.threads, 230);
+    assert.equal(miner.sessions, 1);
+    b.destroy();
+    pool.close();
+  });
+});
+
+describe('session inventory fold', () => {
+  it('sums utilised threads and each session device, never last-write', () => {
+    const folded = foldConnectionInventory([
+      { threads: 32, cpuThreads: 32, cpuCores: 32 },
+      { threads: 230, cpuThreads: 256, cpuCores: 256 },
+    ]);
+    assert.equal(folded.threads, 262);
+    assert.equal(folded.cpuThreads, 288);
+    assert.equal(folded.cpuCores, 288);
+    assert.equal(folded.sessions, 2);
   });
 });
