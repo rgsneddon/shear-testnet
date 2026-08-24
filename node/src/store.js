@@ -293,7 +293,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
   const jobs = new Map();
   const mempool = [];
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn } = {}) {
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null } = {}) {
     const t = tip();
     const height = t ? t.height + 1 : 1;
     const bits = bitsIn != null ? bitsIn : retarget(blocks);
@@ -315,6 +315,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
       height,
       miner,
       samples,
+      potShares,
       txs: pendingTxs,
       now: Date.now(),
       bits,

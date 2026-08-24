@@ -120,8 +120,8 @@ describe('round hash bonuses', () => {
     const snap = pool.pendingPayout;
     const aliceCount = snap.find((s) => s.miner === destA)?.count;
     const bobCount = snap.find((s) => s.miner === destB)?.count;
-    assert.equal(aliceCount, nA + 1);
-    assert.equal(bobCount, nB);
+    assert.equal(aliceCount, (nA + 1) * 16);
+    assert.equal(bobCount, nB * 16);
     const win2 = findNonces(job2, 1, { block: true })[0];
     assert.ok(win2 != null);
     send(a.sock, { id: 4, method: 'submit', params: { jobId: job2.jobId, nonce: String(win2) } });
@@ -132,8 +132,8 @@ describe('round hash bonuses', () => {
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
     assert.notEqual(destA, alice.address);
-    assert.equal(split.hashByMiner[destA], (nA + 1) * HASH_BONUS_NANOS);
-    assert.equal(split.hashByMiner[destB], nB * HASH_BONUS_NANOS);
+    assert.equal(split.hashByMiner[destA], (nA + 1) * 16 * HASH_BONUS_NANOS);
+    assert.equal(split.hashByMiner[destB], nB * 16 * HASH_BONUS_NANOS);
     a.sock.end();
     b.sock.end();
     pool.close();

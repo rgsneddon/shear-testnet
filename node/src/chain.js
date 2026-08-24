@@ -92,13 +92,14 @@ export function buildTemplate({
   now = Date.now(),
   bits,
   destOf,
+  potShares = null,
 }) {
   const collated = collateSamples(samples);
   const continuityLag1 = lag1Continuity(prevHeader);
   const pay = destOf || ((login) => (isDestAddress(login)
     ? login
     : destForLogin(login, { continuityRoot: continuityLag1, height })));
-  const cb = coinbaseTx({ height, miner, samples: collated, destOf: pay });
+  const cb = coinbaseTx({ height, miner, samples: collated, potShares, destOf: pay });
   const bodyTxs = [cb, ...txs];
   const merkle = merkleRoot(bodyTxs.map(digestTx));
   const continuity = merkleRoot(collated.map((s) => sampleLeaf(s)));

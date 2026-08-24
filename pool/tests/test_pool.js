@@ -4,10 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { requiredJobFields } from '../../crypto/header.js';
+import { payoutDest } from '../../crypto/address.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, splitPot } from '../src/pool.js';
 import { publicJob, buildTemplate } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
@@ -36,6 +38,10 @@ describe('admit', () => {
     assert.equal(publicMinerLabel(id.paymentCode), 'she1…');
     assert.equal(publicMinerLabel(`${id.paymentCode}.cedar`), 'she1….cedar');
     assert.equal(publicMinerLabel(id.paymentCode).includes(id.paymentCode.slice(4)), false);
+    const silent = payoutDest(id.paymentCode);
+    const shares = splitPot([{ miner: id.paymentCode, count: 99 }], 'shp1unused');
+    assert.ok(silent);
+    assert.equal(shares.some((s) => s.address === silent && s.nanos === Math.floor(BLOCK_SUBSIDY_NANOS * 0.99)), true);
   });
 });
 

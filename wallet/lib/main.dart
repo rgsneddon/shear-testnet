@@ -181,9 +181,9 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     password = pw;
     ledger.viewSecret = id!.viewKey;
     try {
-      final dest = ledger.currentDest(id!.address);
-      await ledger.syncSpendable(dest).timeout(const Duration(seconds: 4));
-      await ledger.syncHistory(dest).timeout(const Duration(seconds: 4));
+      await ledger
+          .syncCredits(id!.address, paymentCode: id!.paymentCode)
+          .timeout(const Duration(seconds: 8));
     } catch (_) {}
     try {
       if (widget.demoTx) {
@@ -198,9 +198,19 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     if (mounted) setState(() => unlocked = true);
     _accrualTick?.cancel();
     _syncJoinRoster();
+    var ticks = 0;
     _accrualTick = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || !unlocked) return;
       _syncJoinRoster();
+      ticks += 1;
+      if (ticks % 5 == 0) {
+        final ident = id;
+        if (ident != null) {
+          unawaited(ledger.syncCredits(ident.address, paymentCode: ident.paymentCode).then((_) {
+            if (mounted) setState(() {});
+          }));
+        }
+      }
       if (!mounted) return;
       setState(() {});
     });
@@ -253,7 +263,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     _cliById[tx.id] = ctfTranscript(
       identity: ident,
       tx: tx,
-      spendableAfter: ledger.spendable(ident.address),
+      spendableAfter: ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
       continuityRoot: ledger.lag1Root,
     );
   }
@@ -502,7 +512,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
 
   Widget _continuum(BuildContext context, ShearIdentity ident) {
     final dest = ledger.currentDest(ident.address);
-    final spend = ledger.spendable(dest);
+    final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
     final pending = ledger.pendingTxs(ident.address);
     return _card([
       Text(

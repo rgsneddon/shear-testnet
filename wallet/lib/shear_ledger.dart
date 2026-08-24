@@ -226,6 +226,34 @@ class ShearLedger {
     }
   }
 
+  double spendableOwned(String restFrame, {String? paymentCode}) {
+    var n = 0.0;
+    for (final d in ownedAddresses(restFrame, paymentCode: paymentCode)) {
+      n += _spendable[d] ?? 0;
+    }
+    return n;
+  }
+
+  /// Pull Continuum from every dest this identity owns, including the
+  /// she1→shp1 mining dest. Revolving dests stay for Flow; mining credits
+  /// land on the silent dest.
+  Future<double> syncCredits(String restFrame, {String? paymentCode}) async {
+    if (pool == null) return spendableOwned(restFrame, paymentCode: paymentCode);
+    try {
+      await syncTip();
+    } catch (_) {}
+    for (final d in ownedAddresses(restFrame, paymentCode: paymentCode)) {
+      try {
+        final json = await pool!.balance(d);
+        final live = (json['balance'] as num?)?.toDouble() ?? 0;
+        _pending[d] = (json['pending'] as num?)?.toDouble() ?? 0;
+        if (live > 0) _spendable[d] = live;
+        await syncHistory(d);
+      } catch (_) {}
+    }
+    return spendableOwned(restFrame, paymentCode: paymentCode);
+  }
+
   Future<List<ShearTx>> syncHistory(String address) async {
     if (pool == null) return ownerHistory(address);
     try {
@@ -301,8 +329,10 @@ class ShearLedger {
     destIndex = index;
   }
 
-  Set<String> ownedAddresses(String restFrame) {
+  Set<String> ownedAddresses(String restFrame, {String? paymentCode}) {
     final keys = <String>{restFrame, ..._dests, currentDest(restFrame)};
+    final silent = payoutDest(paymentCode ?? restFrame);
+    if (silent != null) keys.add(silent);
     for (final d in listedDests(restFrame)) {
       keys.add(d);
       final h = hash20FromAddress(d);

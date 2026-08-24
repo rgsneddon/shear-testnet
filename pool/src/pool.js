@@ -7,6 +7,7 @@ import { requiredJobFields, decodeHeader } from '../../crypto/header.js';
 import { headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, ALGO, CLIENT } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest } from '../../crypto/address.js';
+import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS } from '../../crypto/asert.js';
 import { createStore } from '../../node/src/store.js';
 import {
   assessThreadHonesty,
@@ -23,6 +24,33 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
 const HASHRATE_WINDOW_MS = 72_000;
+
+/** 1 SHE pot split by proven work this round. 1% of the pot may go to the pool dest. */
+export function splitPot(round, poolDest) {
+  const rows = [];
+  for (const s of round || []) {
+    const dest = payoutDest(s.miner || s.address);
+    const count = Number(s.count) || 0;
+    if (!dest || count <= 0) continue;
+    rows.push({ dest, count });
+  }
+  const total = rows.reduce((a, r) => a + r.count, 0);
+  if (!total) {
+    const fallback = payoutDest(poolDest);
+    return fallback ? [{ address: fallback, nanos: BLOCK_SUBSIDY_NANOS }] : [];
+  }
+  const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
+  const rest = BLOCK_SUBSIDY_NANOS - fee;
+  const shares = rows.map((r) => ({
+    address: r.dest,
+    nanos: Math.floor(rest * r.count / total),
+  }));
+  const paid = shares.reduce((a, s) => a + s.nanos, 0);
+  if (shares.length) shares[0].nanos += rest - paid;
+  const poolPay = payoutDest(poolDest);
+  if (fee > 0 && poolPay) shares.push({ address: poolPay, nanos: fee });
+  return shares.filter((s) => s.nanos > 0);
+}
 
 /** Dest (shp1) or silent ID (she1) — worker identity. Payout dest is never she1. */
 export function parseLogin(login) {
@@ -187,13 +215,21 @@ export function createPool({
   }
 
   function issueJob(shareBitsNow) {
-    const payout = payoutDest(miner) || payoutDest([...miners.values()][0]?.login);
+    const hasherPay = payoutDest([...miners.values()][0]?.login);
+    const poolPay = payoutDest(miner);
+    const live = snapshotRound();
+    const potShares = splitPot(
+      live.length ? live : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
+      poolPay,
+    );
+    const payout = potShares[0]?.address || hasherPay || poolPay;
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     const sb = clampShareBits(shareBitsNow ?? shareBits, { blockBits: blockBitsNow() });
     const { job } = store.template({
       miner: payout,
       samples,
+      potShares,
       shareBits: sb,
       bits,
     });
@@ -282,8 +318,9 @@ export function createPool({
           stats.accepted += 1;
           if (session) {
             session.accepted += 1;
-            session.roundHashes += 1;
-            session.hashes += 1;
+            const proven = hashesProvenByShare(job?.shareBits);
+            session.roundHashes += proven;
+            session.hashes += proven;
             session.seen = Date.now();
             const work = hashesProvenByShare(job?.shareBits);
             if (!Array.isArray(session.acceptAt)) session.acceptAt = [];

@@ -36,24 +36,48 @@ function rowsToHistory(rows, addresses) {
   return { spendableNanos, spendable: nanosToShe(spendableNanos), txs };
 }
 
-export function reconstructOwner(store, address) {
+export function ownerDests(address) {
   const addr = String(address || '').trim();
-  const dests = [addr];
+  const out = new Set();
+  if (addr) out.add(addr);
   const paid = payoutDest(addr);
-  if (paid && paid !== addr) dests.push(paid);
+  if (paid) out.add(paid);
+  return [...out];
+}
+
+export function reconstructOwner(store, address) {
+  const dests = ownerDests(address);
   const rows = [];
+  const seen = new Set();
+  const push = (r) => {
+    const id = `${r.id}:${r.to}:${r.from}:${r.height}`;
+    if (seen.has(id)) return;
+    seen.add(id);
+    rows.push(r);
+  };
   if (typeof store?.historyFor === 'function') {
-    rows.push(...store.historyFor(addr));
+    for (const d of dests) {
+      for (const r of store.historyFor(d) || []) push(r);
+    }
   } else {
-    for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
+    for (const b of store.blocks || []) {
+      for (const r of sealedExplorerRows(b)) push(r);
+    }
   }
   return rowsToHistory(rows, dests);
 }
 
 export function pendingFor(miners, address) {
-  const addr = String(address || '').trim();
-  const m = miners?.get?.(addr);
-  const hashes = Number(m?.roundHashes || 0);
+  const dests = new Set(ownerDests(address));
+  let hashes = 0;
+  const book = miners && typeof miners.values === 'function' ? [...miners.values()] : [];
+  for (const m of book) {
+    const login = String(m?.login || m?.workerKey || '');
+    const dest = payoutDest(login);
+    if (dests.has(login) || (dest && dests.has(dest)) || dests.has(login.split('.')[0])) {
+      hashes += Number(m.roundHashes || 0);
+    }
+  }
   return { shares: hashes, amount: nanosToShe(hashes * HASH_BONUS_NANOS) };
 }
 

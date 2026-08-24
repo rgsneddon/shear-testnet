@@ -128,6 +128,10 @@ void main() {
     expect(sheMine.startsWith('she1'), isFalse);
     expect(sheMine, isNot(a.paymentCode));
     expect(payoutDest(a.paymentCode), sheMine);
+    final mined = ShearLedger();
+    mined.viewSecret = a.viewKey;
+    expect(mined.ownedAddresses(a.address, paymentCode: a.paymentCode), contains(sheMine));
+    expect(mined.ownedAddresses(a.address, paymentCode: a.paymentCode).contains(a.paymentCode), isFalse);
     expect(isShearAddress(a.paymentCode), isFalse);
     expect(a.paymentCode.length < 50, isTrue);
     const viewKey = 'abababababababababababababababababababababababababababababababab';
