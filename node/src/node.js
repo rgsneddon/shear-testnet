@@ -44,7 +44,14 @@ export async function startNode({
     const cut = seed.lastIndexOf(':');
     const host = cut > 0 ? seed.slice(0, cut) : seed;
     const port = cut > 0 ? Number(seed.slice(cut + 1)) : P2P_PORT;
-    try { await p2p.connect(host, port); } catch { /* seed optional */ }
+    for (let i = 0; i < 20; i += 1) {
+      try {
+        await p2p.connect(host, port);
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
   }
   return { store, p2p, bound, magic: MAGIC_TESTNET, mainnet: false };
 }
