@@ -36,10 +36,11 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
     const cb = coinbaseTx({ height: 3, miner: destA, samples });
     const split = coinbaseSplit(cb);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
-    assert.equal(split.potNanos, 1_000_000_000);
+    assert.equal(split.potNanos, 100_000_000_000);
     assert.equal(split.hashByMiner[destA], 4000 * HASH_BONUS_NANOS);
     assert.equal(split.hashByMiner[destB], 1000 * HASH_BONUS_NANOS);
-    assert.equal(split.hashNanos, 5000);
+    assert.equal(split.hashNanos, 5000 * HASH_BONUS_NANOS);
+    assert.equal(HASH_BONUS_NANOS, 10);
     assert.notEqual(alice.address, bob.address);
   });
 });

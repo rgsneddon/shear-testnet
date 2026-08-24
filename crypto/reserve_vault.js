@@ -1,0 +1,331 @@
+import { createHash } from 'node:crypto';
+import {
+  RESERVE_PROGRAM,
+  PI_SHE_NANOS,
+  RESERVE_EPOCH_MS,
+  RESERVE_JOIN_CUTOFF_MS,
+  extraMintAllowed,
+  NANOS_PER_SHE,
+} from './asert.js';
+import { isDestAddress, isShearAddress } from './address.js';
+import { emptyOracle, interestNanos, accruedNanos, observeRate as observeOracleRate } from './reserve_oracle.js';
+import { extraMint } from './mint.js';
+
+export const VOTE_INCREASE = 'increase bonus';
+export const VOTE_DECREASE = 'decrease bonus';
+export const VOTE_HOLD = 'leave bonus as-is';
+export const KIND_LOCK = 'lock';
+export const KIND_WITHDRAW = 'withdraw';
+export const KIND_VOTE = 'vote';
+
+export function portalIdFromDest(dest) {
+  const d = String(dest || '');
+  return createHash('sha256').update('shear-portal-v1').update(d).digest('hex');
+}
+
+export function emptyVault() {
+  return {
+    programId: RESERVE_PROGRAM,
+    epochStartMs: 0,
+    totalLockedNanos: 0,
+    portals: Object.create(null),
+    votes: { increase: 0, decrease: 0, hold: 0 },
+    oracle: emptyOracle(),
+  };
+}
+
+export function remainingMs(state, nowMs) {
+  if (!state.epochStartMs) return RESERVE_EPOCH_MS;
+  const end = state.epochStartMs + RESERVE_EPOCH_MS;
+  return Math.max(0, end - nowMs);
+}
+
+export function canJoin(state, nowMs) {
+  if (!state.epochStartMs) return true;
+  return remainingMs(state, nowMs) >= RESERVE_JOIN_CUTOFF_MS;
+}
+
+export function canVote(stakedNanos) {
+  return Number(stakedNanos || 0) >= PI_SHE_NANOS;
+}
+
+export function publicVaultView(state, nowMs) {
+  return {
+    programId: RESERVE_PROGRAM,
+    epochStartMs: state.epochStartMs || 0,
+    remainingMs: remainingMs(state, nowMs),
+    totalLockedNanos: state.totalLockedNanos || 0,
+    votes: { ...state.votes },
+    oracleBps: state.oracle?.annualBps ?? 0,
+  };
+}
+
+function portalOf(state, dest) {
+  const id = portalIdFromDest(dest);
+  if (!state.portals[id]) {
+    state.portals[id] = { id, staked: 0, idle: 0, vote: null, joined: false };
+  }
+  return state.portals[id];
+}
+
+export function deposit({ state, dest, nanos, nowMs, payout } = {}) {
+  if (!isDestAddress(dest) || isShearAddress(dest)) {
+    return { ok: false, reason: 'bad_dest' };
+  }
+  const n = Math.floor(Number(nanos));
+  if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: 'bad_amount' };
+  const p = portalOf(state, dest);
+  if (payout && isDestAddress(payout) && !isShearAddress(payout)) {
+    p.payout = payout;
+  }
+  const staking = canJoin(state, nowMs);
+  if (staking) {
+    p.staked += n;
+    if (!p.joined && p.staked >= PI_SHE_NANOS) {
+      p.joined = true;
+      if (!state.epochStartMs) state.epochStartMs = nowMs;
+    }
+  } else {
+    p.idle += n;
+  }
+  state.totalLockedNanos += n;
+  return {
+    ok: true,
+    idle: !staking,
+    portal: {
+      id: p.id,
+      staked: p.staked,
+      idle: p.idle,
+      nanos: p.staked + p.idle,
+      joined: p.joined,
+      vote: p.vote,
+    },
+  };
+}
+
+export function vote({ state, dest, choice, nowMs }) {
+  nowMs;
+  if (!isDestAddress(dest) || isShearAddress(dest)) {
+    return { ok: false, reason: 'bad_dest' };
+  }
+  const p = portalOf(state, dest);
+  if (!p.joined || !canVote(p.staked)) return { ok: false, reason: 'not_voter' };
+  const allowed = [VOTE_INCREASE, VOTE_DECREASE, VOTE_HOLD];
+  if (!allowed.includes(choice)) return { ok: false, reason: 'bad_vote' };
+  if (p.vote === VOTE_INCREASE) state.votes.increase -= 1;
+  if (p.vote === VOTE_DECREASE) state.votes.decrease -= 1;
+  if (p.vote === VOTE_HOLD) state.votes.hold -= 1;
+  p.vote = choice;
+  if (choice === VOTE_INCREASE) state.votes.increase += 1;
+  if (choice === VOTE_DECREASE) state.votes.decrease += 1;
+  if (choice === VOTE_HOLD) state.votes.hold += 1;
+  return {
+    ok: true,
+    portal: {
+      id: p.id,
+      staked: p.staked,
+      idle: p.idle,
+      nanos: p.staked + p.idle,
+      joined: p.joined,
+      vote: p.vote,
+    },
+  };
+}
+
+export function observeRate({ state, annualBps, nowMs }) {
+  if (!state.oracle) state.oracle = emptyOracle({ nowMs });
+  return observeOracleRate(state.oracle, { annualBps, nowMs });
+}
+
+export function reserveInterestNanos(stakedNanos, oracle) {
+  return interestNanos(stakedNanos, oracle?.annualBps ?? 0, 400);
+}
+
+export function elapsedMs(state, nowMs) {
+  if (!state.epochStartMs) return 0;
+  return Math.max(0, Math.min(Number(nowMs) - state.epochStartMs, RESERVE_EPOCH_MS));
+}
+
+/** Per-portal accrued rewards for the owning wallet. Idle SHE earns nothing. */
+export function portalRewards(state, dest, nowMs) {
+  const p = portalOf(state, dest);
+  const bps = state.oracle?.annualBps ?? 0;
+  const elapsed = elapsedMs(state, nowMs);
+  return {
+    accrued: accruedNanos(p.staked, bps, elapsed),
+    projected: reserveInterestNanos(p.staked, state.oracle),
+    staked: p.staked || 0,
+    idle: p.idle || 0,
+    oracleBps: bps,
+    elapsedMs: elapsed,
+  };
+}
+
+function continuumOf(p, payout, dest) {
+  const want = payout || p.payout;
+  if (want && isDestAddress(want) && !isShearAddress(want)) return want;
+  return dest;
+}
+
+export function previewWithdraw(state, dest) {
+  const p = portalOf(state, dest);
+  const principal = (p.staked || 0) + (p.idle || 0);
+  const interest = reserveInterestNanos(p.staked, state.oracle);
+  return {
+    principal,
+    staked: p.staked || 0,
+    idle: p.idle || 0,
+    interest,
+    payout: principal + interest,
+    to: continuumOf(p, null, dest),
+  };
+}
+
+export function lockTx({ from, to, nanos, id }) {
+  const n = Math.floor(Number(nanos));
+  return {
+    id,
+    programId: RESERVE_PROGRAM,
+    kind: KIND_LOCK,
+    from,
+    to,
+    nanos: n,
+    vin: [{ address: from }],
+    vout: [{ address: to, nanos: n, kind: KIND_LOCK }],
+  };
+}
+
+export function withdrawTx({ from, to, nanos, id }) {
+  const n = Math.floor(Number(nanos));
+  return {
+    id,
+    programId: RESERVE_PROGRAM,
+    mint: true,
+    kind: KIND_WITHDRAW,
+    from,
+    to,
+    nanos: n,
+    vin: [],
+    vout: [{ address: to, nanos: n, kind: KIND_WITHDRAW }],
+  };
+}
+
+export function voteTx({ from, dest, choice, id }) {
+  return {
+    id,
+    programId: RESERVE_PROGRAM,
+    kind: KIND_VOTE,
+    from,
+    to: dest,
+    choice,
+    vin: [{ address: from }],
+    vout: [{ address: dest, nanos: 0, kind: KIND_VOTE }],
+  };
+}
+
+function txDest(tx) {
+  return tx?.to || tx?.vout?.[0]?.address || '';
+}
+
+function txFrom(tx) {
+  return tx?.from || tx?.vin?.[0]?.address || '';
+}
+
+function txNanos(tx) {
+  return Math.floor(Number(tx?.nanos || tx?.vout?.[0]?.nanos || 0));
+}
+
+function txKind(tx) {
+  return String(tx?.kind || tx?.vout?.[0]?.kind || '');
+}
+
+/** Honour Reserve lock / vote / withdraw txs already sealed in a block. */
+export function applyReserveBlock({ state, block, nowMs }) {
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  const results = [];
+  for (const tx of txs) {
+    if (!tx || tx.coinbase) continue;
+    if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
+    const kind = txKind(tx);
+    if (kind === KIND_LOCK) {
+      results.push({
+        action: KIND_LOCK,
+        ...deposit({
+          state,
+          dest: txDest(tx),
+          nanos: txNanos(tx),
+          nowMs,
+          payout: txFrom(tx),
+        }),
+      });
+      continue;
+    }
+    if (kind === KIND_VOTE) {
+      results.push({
+        action: KIND_VOTE,
+        ...vote({ state, dest: txDest(tx) || txFrom(tx), choice: tx.choice, nowMs }),
+      });
+      continue;
+    }
+    if (kind === KIND_WITHDRAW) {
+      results.push({
+        action: KIND_WITHDRAW,
+        ...withdraw({
+          state,
+          dest: txFrom(tx),
+          nowMs,
+          payout: txDest(tx),
+        }),
+      });
+    }
+  }
+  return results;
+}
+
+export function withdraw({ state, dest, nowMs, payout } = {}) {
+  if (!isDestAddress(dest) || isShearAddress(dest)) {
+    return { ok: false, reason: 'bad_dest' };
+  }
+  if (!state.epochStartMs || nowMs < state.epochStartMs + RESERVE_EPOCH_MS) {
+    return { ok: false, reason: 'epoch_open' };
+  }
+  const p = portalOf(state, dest);
+  const staked = p.staked;
+  const idle = p.idle;
+  const principal = staked + idle;
+  if (principal <= 0) return { ok: false, reason: 'empty' };
+  const to = continuumOf(p, payout, dest);
+  const interest = reserveInterestNanos(staked, state.oracle);
+  let mint = null;
+  if (interest > 0) {
+    mint = extraMint({ programId: RESERVE_PROGRAM, to, nanos: interest });
+    if (!mint.ok) return { ok: false, reason: mint.reason };
+  } else if (!extraMintAllowed(RESERVE_PROGRAM)) {
+    return { ok: false, reason: 'mint_forbidden' };
+  }
+  state.totalLockedNanos -= principal;
+  if (p.vote === VOTE_INCREASE) state.votes.increase -= 1;
+  if (p.vote === VOTE_DECREASE) state.votes.decrease -= 1;
+  if (p.vote === VOTE_HOLD) state.votes.hold -= 1;
+  p.staked = 0;
+  p.idle = 0;
+  p.joined = false;
+  p.vote = null;
+  p.payout = null;
+  return {
+    ok: true,
+    principal,
+    staked,
+    idle,
+    interest,
+    payout: principal + interest,
+    to,
+    mint,
+    programId: RESERVE_PROGRAM,
+    kind: KIND_WITHDRAW,
+  };
+}
+
+export function sheFromNanos(n) {
+  return Number(n) / NANOS_PER_SHE;
+}

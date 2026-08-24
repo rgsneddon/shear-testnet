@@ -5,10 +5,13 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MAGIC_TESTNET, GENESIS_BITS } from '../../crypto/asert.js';
 import { CLIENT, ALGO, HEADER_LEN } from '../../crypto/shear_hash.js';
-import { RESERVE_PROGRAM } from '../../crypto/asert.js';
+import { RESERVE_PROGRAM, RESERVE_EPOCH_DAYS, RESERVE_JOIN_CUTOFF_DAYS, JOIN_PROGRAM, JOIN_WINDOW_DAYS } from '../../crypto/asert.js';
 import { extraMintAllowed } from '../../crypto/mint.js';
+import { emptyVault } from '../../crypto/reserve_vault.js';
+import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS } from '../../crypto/reserve_oracle.js';
 import { createStore } from './store.js';
 import { createP2p, P2P_PORT } from './p2p.js';
+import { mintVorticeDeployKey, parseVorticeKey, VORTICE_KEY_PREFIX } from '../../crypto/vortex.js';
 
 const VERSION = '0.1.0';
 
@@ -24,11 +27,21 @@ export function printConfig() {
     p2p: P2P_PORT,
     reserveProgram: RESERVE_PROGRAM,
     extraMintOnlyReserve: extraMintAllowed(RESERVE_PROGRAM),
+    joinProgram: JOIN_PROGRAM,
+    joinWindowDays: JOIN_WINDOW_DAYS,
+    extraMintJoinGenesis: extraMintAllowed(JOIN_PROGRAM, { kind: 'join-genesis' }),
+    reserveEpochDays: RESERVE_EPOCH_DAYS,
+    reserveJoinCutoffDays: RESERVE_JOIN_CUTOFF_DAYS,
+    reserveOracle: RESERVE_ORACLE_ID,
+    reserveOracleDefaultBps: RESERVE_ORACLE_DEFAULT_BPS,
+    vorticeKeyPrefix: VORTICE_KEY_PREFIX,
+    vorticeCreatorsHostOwnDapps: true,
+    extraMintThirdParty: extraMintAllowed('third-party-vortice'),
     mainnet: false,
   };
 }
 
-export { createP2p, P2P_PORT, createStore };
+export { createP2p, P2P_PORT, createStore, mintVorticeDeployKey, parseVorticeKey };
 
 export async function startNode({
   dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet'),
@@ -38,6 +51,7 @@ export async function startNode({
 } = {}) {
   fs.mkdirSync(dataDir, { recursive: true });
   const store = createStore(dataDir);
+  store.reserveVault = store.reserveVault || emptyVault();
   const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET });
   const bound = await p2p.listen();
   for (const seed of seeds) {

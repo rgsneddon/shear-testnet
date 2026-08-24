@@ -56,26 +56,27 @@ Every valid block mints **exactly 1 SHE** in the coinbase (`kind: pot`).
 - Hash bonuses are **not** fee’d.
 - The **1 SHE pot never changes** via Vortex votes.
 
-### 2. Per-hash bonus — **0.000000001 SHE × hashes, to each hasher**
+### 2. Per-hash bonus — **0.0000000001 SHE × hashes, to each hasher**
 
-Each valid hash in the **current block round** mints **1 nano (0.000000001 SHE)** to the **miner who produced that hash**.
+Each valid hash in the **current block round** mints **0.0000000001 SHE** (10 units of 10⁻¹¹ SHE) to the **miner who produced that hash**.
 
-Alice 4 000 hashes + Bob 1 000 hashes in the same round → Alice 4 000 nanos, Bob 1 000 nanos, same coinbase (`kind: hash`). The block finder does **not** scoop other miners’ hash bonuses.
+Alice 4 000 hashes + Bob 1 000 hashes in the same round → Alice 40 000 units, Bob 10 000 units, same coinbase (`kind: hash`). The block finder does **not** scoop other miners’ hash bonuses.
 
 Continuity root commits the samples. After 100 confirmations the sample list may be pruned; coinbase outputs stay.
 
-Vortex vote (every 400 days) may move this bonus **+10⁻¹⁰**, **−10⁻¹⁰**, or leave it.
+Vortex vote (every 400 days) may move this bonus **+1 unit** (10⁻¹¹ SHE), **−1 unit**, or leave it.
 
 **Lag-1 settlement (lock):** the hashed header cannot change after hashing starts. Snapshot `roundHashes` when a block is found; pay those hash-bonus outputs on the **next** job/coinbase (`pendingPayout`). Do **not** invent 1 nano at login. Do **not** reset `roundHashes` before paying. Test: two miners N and M both get their own nanos.
 
-### 3. The Reserve — stake + BoE interest (only dapp that may mint extra SHE)
+### 3. The Reserve — stake + oracle interest (only dapp that may mint extra SHE)
 
 The Reserve is a Vortex dapp, **not** a third coinbase line for mining.
 
-- Deposit **π SHE** (3.141592653589793…) to unlock a vote for the current 400-day Vortex.
+- Deposit **π SHE** (3.141592653589793…) as **staked** SHE to unlock a vote for the current 400-day Vortex.
 - Deposited SHE is **locked for that Vortex**.
-- Locked principal accrues **Bank of England Base Rate** interest for 400 days.
-- After Vortex end: withdraw **principal + interest** to Continuum (spendable).
+- Staked principal accrues interest at the variable rate observed by **The Reserve oracle** on every node.
+- After Vortex end: withdraw **principal + interest on staked SHE** to Continuum (spendable). Idle SHE returns with no interest.
+- If fewer than 99 days remain, new deposits still lock, but they sit idle: no interest, no vote.
 - Hardcoded program id: **`shear-reserve-v1`**.
 - Consensus helper: **`extraMintAllowed(programId)`** is true **only** for `shear-reserve-v1`. `verifyBlock` / `append` reject unfunded extra txs otherwise.
 
@@ -84,11 +85,11 @@ The Reserve is a Vortex dapp, **not** a third coinbase line for mining.
 | Path | Mints SHE? |
 |------|------------|
 | Block pot (1 SHE) | yes, coinbase |
-| Per-hash bonus (10⁻⁹ × hashes, per miner) | yes, coinbase |
-| **The Reserve** (BoE interest on locked stake) | **yes — the only dapp allowed to** |
+| Per-hash bonus (10⁻¹⁰ × hashes, per miner) | yes, coinbase |
+| **The Reserve** (oracle interest on staked SHE) | **yes — the only dapp allowed to** |
 | Any other Vortex dapp (third-party staked coins, vaults, etc.) | **no.** Operators must **top up** a reward pool with **existing circulating SHE**. Consensus **rejects** a mint from any program id other than `shear-reserve-v1`. |
 
-BoE oracle must not reorg blocks or steal the 1 SHE pot.
+The Reserve oracle must not reorg blocks or steal the 1 SHE pot.
 
 ---
 
@@ -102,8 +103,8 @@ BoE oracle must not reorg blocks or steal the 1 SHE pot.
 | Flow | J^μ | Send / receive `shear1`. |
 | Resistance | η | Mining stats + current Resistance. Desktop Mine spawns the **bundled** official C miner (no second installer). Phones keep an in-app Dart ShearHash hasher. |
 | Vortex | Ω^{μν} | General contract surface (deploy / call). Third parties cannot print SHE. |
-| Shear | S_{μν} | Emission + rewards explainer (1 SHE pot + 0.000000001 SHE per hash to each hasher + Reserve). |
-| Reserve | π | The Reserve dapp: lock, BoE interest, vote. |
+| Shear | S_{μν} | Emission + rewards explainer (1 SHE pot + 0.0000000001 SHE per hash to each hasher + Reserve). |
+| Reserve | π | The Reserve dapp: lock, oracle interest, vote. Lives under Vortex; not a top-level tab. |
 | **Closure** | **G_{μν}** | **Password and backup.** Geometric closure of the wallet. Encrypts **`shewall.json`**. |
 
 Hover/long-press **explainers on every tab** (the symbol + a short sentence). Copy must be Shear-only.
@@ -184,7 +185,7 @@ PoW: `ShearHash(header) ≤ target(bits)`.
 5. Header PoW meets target.  
 6. Merkle root matches ordered txs.  
 7. Continuity root matches ordered samples.  
-8. Coinbase first: **exactly 1 SHE pot** plus **exactly 10⁻⁹ SHE × each hasher’s hashes** (per-miner `kind: hash` outputs). Hash-bonus counts come from the **lag-1 snapshot**, not a rewritten live header.  
+8. Coinbase first: **exactly 1 SHE pot** plus **exactly 10⁻¹⁰ SHE × each hasher’s hashes** (per-miner `kind: hash` outputs). Hash-bonus counts come from the **lag-1 snapshot**, not a rewritten live header.  
 9. Other txs: signatures, no double-spend, amounts balance.  
 10. Extra mint only if program id is `shear-reserve-v1` (`extraMintAllowed`).  
 11. Block weight cap starts at **4 MB**.
@@ -352,7 +353,7 @@ Done when `https://shear.digital` and `https://pool.shear.digital` serve TLS and
 ## Tests (gating)
 
 1. Header encode/decode + ShearHash C vs JS vectors.  
-2. Validate / most-work / reorg / coinbase: 1 SHE pot + per-miner 10⁻⁹ × hashes.  
+2. Validate / most-work / reorg / coinbase: 1 SHE pot + per-miner 10⁻¹⁰ × hashes.  
 3. Two-node P2P reorg.  
 4. Miner `--print-config` is ShearHash, **zero** fee login, **zero** “feeless” fields; local stratum accepts a share.  
 5. Pool: miner stays listed across a found block; incomplete header job is refused; two miners N/M both paid lag-1 hashes.  
@@ -372,7 +373,7 @@ Run consensus, pool, and wallet identity tests **twice**.
 - Consensus bugs fork funds → testnet until reorg tests are green.  
 - Low hashrate 51% at launch — fair launch still the policy.  
 - Germany is the first public seed; P2P must work without it.  
-- BoE oracle is Reserve-only; never consensus-critical.  
+- The Reserve oracle is Reserve-only; never consensus-critical.  
 - Name leakage from copy-paste → grep gate.  
 - Do not touch live book systemd on 178.105.187.178.  
 - Lag-1 vs “pay this round in the same header” — header roots cannot change after hashing; snapshot is mandatory.  
@@ -413,7 +414,7 @@ Work **stopped on request**. Do not continue the wallet ship until a new `/goal`
 ## Suggested `/goal` line
 
 ```
-/goal Execute SHEPLAN.md at /Users/russellsneddon/shear/SHEPLAN.md (and Desktop/SHEPLAN.md). Build Shear testnet first as specified: private rgsneddon/shear, 120-byte header PoW, 1 SHE pot + 0.000000001 SHE per hash to each hasher in the round (lag-1 snapshot), The Reserve (shear-reserve-v1) is the only dapp that may mint extra SHE, third-party staking must top up, new header-template pool on :1111 with light UI, C miner (no dual-login fee; never say “feeless miner”), Germany nginx+certs without touching live book units, wallet 0.0.1 Chronoflux tabs including Closure G_{μν}, encrypted shewall.json, Mac DMG/APK/iOS-unsigned plus Windows leftover zips in rgsneddon/handoff Shear section. Zero other-project names. Do not start mainnet.
+/goal Execute SHEPLAN.md at /Users/russellsneddon/shear/SHEPLAN.md (and Desktop/SHEPLAN.md). Build Shear testnet first as specified: private rgsneddon/shear, 120-byte header PoW, 1 SHE pot + 0.0000000001 SHE per hash to each hasher in the round (lag-1 snapshot), The Reserve (shear-reserve-v1) is the only dapp that may mint extra SHE, third-party staking must top up, new header-template pool on :1111 with light UI, C miner (no dual-login fee; never say “feeless miner”), Germany nginx+certs without touching live book units, wallet 0.0.1 Chronoflux tabs including Closure G_{μν}, encrypted shewall.json, Mac DMG/APK/iOS-unsigned plus Windows leftover zips in rgsneddon/handoff Shear section. Zero other-project names. Do not start mainnet.
 ```
 
 If the next goal is only to **finish the interrupted 0.0.1 wallet ship**, use:

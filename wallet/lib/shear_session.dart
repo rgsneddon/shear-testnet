@@ -5,12 +5,15 @@ import 'package:path/path.dart' as p;
 
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
+import 'shear_vortex.dart';
 
 class ShearSession {
   ShearSession({File? store}) : store = store ?? defaultStore();
 
   final File store;
   ShearIdentity? identity;
+  bool joinRetired = false;
+  List<Vortice> deployedVortices = const [];
 
   static String macPath(String home) =>
       '$home/Library/Application Support/Shear/session.json';
@@ -34,6 +37,12 @@ class ShearSession {
     if (store.existsSync()) {
       final j = jsonDecode(store.readAsStringSync()) as Map<String, dynamic>;
       identity = ShearIdentity.fromJson(j);
+      joinRetired = j['joinRetired'] == true;
+      deployedVortices = ((j['vortices'] as List?) ?? const [])
+          .whereType<Map>()
+          .map((e) => Vortice.fromJson(Map<String, dynamic>.from(e)))
+          .where((v) => v.id.isNotEmpty && !isPinnedProgram(v.id))
+          .toList();
       if (identity!.paymentCode != j['paymentCode']) await persist();
       return identity!;
     }
@@ -44,7 +53,12 @@ class ShearSession {
 
   Future<void> persist() async {
     store.parent.createSync(recursive: true);
-    store.writeAsStringSync(jsonEncode(identity!.toJson()));
+    final body = <String, dynamic>{
+      ...identity!.toJson(),
+      'joinRetired': joinRetired,
+      'vortices': deployedVortices.map((v) => v.toJson()).toList(),
+    };
+    store.writeAsStringSync(jsonEncode(body));
   }
 }
 

@@ -33,4 +33,4 @@ Optional on Flow send. Ciphertext opaque on the wire. Public explorer: **memo ye
 
 ## Vortex
 
-Default vector: **The Reserve**. Add third-party vortice by pasting a creator-issued key (`issueVorticeKey` / `parseVorticeKey`). Third-party vortice cannot mint SHE.
+Default vector: **The Reserve**. Third-party vortice are hosted by their creators, not by the Shear node. A creator mints a `vort1.` deploy key on the node (`mintVorticeDeployKey`). That key names the origin URL and pins a hash of the hosted bytes. Users must paste the deploy key in Vortex; the wallet then fetches that origin, checks the hash, and deploys the dapp. No catalog browse, no enable without the key. Third-party vortice cannot mint SHE.

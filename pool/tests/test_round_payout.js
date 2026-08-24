@@ -130,7 +130,7 @@ describe('round hash bonuses', () => {
     const paid = pool.store.blocks[pool.store.blocks.length - 1];
     const split = coinbaseSplit(paid.txs[0]);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
-    assert.equal(split.potNanos, 1_000_000_000);
+    assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
     assert.notEqual(destA, alice.address);
     assert.equal(split.hashByMiner[destA], (nA + 1) * HASH_BONUS_NANOS);
     assert.equal(split.hashByMiner[destB], nB * HASH_BONUS_NANOS);

@@ -382,7 +382,7 @@ export function createPool({
       res.end(JSON.stringify(publicStats()));
       return;
     }
-    if (url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/')) {
+    if (url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/')) {
       let body = {};
       if (req.method === 'POST') {
         body = JSON.parse(await new Promise((resolve, reject) => {

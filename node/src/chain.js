@@ -21,6 +21,7 @@ export {
   collateSamples,
   leanBlock,
   sealedExplorerRows,
+  explorerSpendable,
   compactTx,
   compactChainBlock,
 } from '../../crypto/chronoflux.js';
@@ -140,7 +141,7 @@ export function headerHash(header) {
   return shearHash(header);
 }
 
-export function verifyBlock(block, prev, { buried = false } = {}) {
+export function verifyBlock(block, prev, { buried = false, joinFunded = false } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
   let decoded;
@@ -186,7 +187,7 @@ export function verifyBlock(block, prev, { buried = false } = {}) {
       if (i?.address && isShearAddress(i.address)) return { ok: false, reason: 'rest_frame_on_chain' };
     }
     const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint;
-    if (unfunded && !extraMintAllowed(tx.programId)) {
+    if (unfunded && !extraMintAllowed(tx.programId, { kind: tx.kind, funded: joinFunded })) {
       return { ok: false, reason: 'mint_forbidden' };
     }
   }

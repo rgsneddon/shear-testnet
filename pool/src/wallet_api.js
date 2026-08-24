@@ -190,6 +190,26 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
     const rec = reconstructOwner(store, address);
     return { status: 200, json: { ok: true, coin: 'SHE', address, txs: rec.txs, amountsOnly: true } };
   }
+  if (path === '/api/vortex/mint' && verb === 'POST') {
+    if (typeof store?.mintVorticeDeployKey !== 'function') {
+      return { status: 503, json: { ok: false, reason: 'no_vortice' } };
+    }
+    const got = store.mintVorticeDeployKey({
+      programId: body.programId,
+      name: body.name,
+      origin: body.origin,
+      source: body.source,
+    });
+    const status = got.ok ? 200 : 400;
+    return { status, json: got };
+  }
+  if ((path === '/api/vortex/lookup' && verb === 'POST') || (path === '/api/vortex/lookup' && verb === 'GET')) {
+    const key = verb === 'GET' ? (url.searchParams.get('key') || '') : String(body.key || '');
+    if (typeof store?.lookupVorticeKey !== 'function') {
+      return { status: 503, json: { ok: false, reason: 'no_vortice' } };
+    }
+    return { status: 200, json: store.lookupVorticeKey(key) };
+  }
   if (path === '/api/wallet/send' && verb === 'POST') {
     const from = String(body.from || '');
     const to = String(body.to || '');

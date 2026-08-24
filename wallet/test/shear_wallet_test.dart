@@ -14,6 +14,9 @@ import 'package:shear_wallet/shear_theme.dart';
 import 'package:shear_wallet/shear_ctf.dart';
 import 'package:shear_wallet/shear_ctf_cli.dart';
 import 'package:shear_wallet/shear_vortex.dart';
+import 'package:shear_wallet/shear_reserve.dart';
+import 'package:shear_wallet/shear_join.dart';
+import 'package:crypto/crypto.dart';
 
 void main() {
   test('new identity is shear1 with a stable view key after persist/reload', () async {
@@ -39,7 +42,7 @@ void main() {
     final id = createIdentity();
     final ledger = ShearLedger();
     ledger.creditHash(id.address, hashes: 4000);
-    expect(ledger.pending(id.address), closeTo(4e-6, 1e-18));
+    expect(ledger.pending(id.address), closeTo(4000 * kHashBonusShe, 1e-18));
     expect(ledger.spendable(id.address), 0);
     expect(ledger.transactions, isEmpty);
     final fatDump = jsonEncode(exportShewall(identity: id, ledger: ledger));
@@ -56,14 +59,14 @@ void main() {
     final id = createIdentity();
     final ledger = ShearLedger();
     ledger.creditHash(id.address, hashes: 4);
-    expect(ledger.pending(id.address), closeTo(4e-9, 1e-18));
+    expect(ledger.pending(id.address), closeTo(4 * kHashBonusShe, 1e-18));
     expect(ledger.spendable(id.address), 0);
     expect(ledger.ownerHistory(id.address), isEmpty);
     ledger.confirmRound(address: id.address, pot: 1, height: 3);
     expect(ledger.pending(id.address), 0);
-    expect(ledger.spendable(id.address), closeTo(1 + 4e-9, 1e-18));
+    expect(ledger.spendable(id.address), closeTo(1 + 4 * kHashBonusShe, 1e-18));
     expect(ledger.ownerHistory(id.address).single.confirmed, isTrue);
-    expect(ledger.ownerHistory(id.address).single.amount, closeTo(1 + 4e-9, 1e-18));
+    expect(ledger.ownerHistory(id.address).single.amount, closeTo(1 + 4 * kHashBonusShe, 1e-18));
   });
 
   test('unconfirmed send is pending until the next block is found', () async {
@@ -98,7 +101,7 @@ void main() {
     final id2 = importShewall(opened, ledger2);
     expect(id2.address, id.address);
     expect(id2.viewKey, id.viewKey);
-    expect(ledger2.spendable(id.address), closeTo(1 + 2e-9, 1e-18));
+    expect(ledger2.spendable(id.address), closeTo(1 + 2 * kHashBonusShe, 1e-18));
     expect(ledger2.ownerHistory(id.address), isNotEmpty);
     await expectLater(ShearLock.open(env, 'wrong'), throwsA(anything));
   });
@@ -150,12 +153,51 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.0.5');
+    expect(kWalletVersion, '0.0.6');
     expect(kWalletVersion.contains('0.0.10'), isFalse);
-    final key = issueVorticeKey('stake-pool-a');
+    const origin = 'https://dapp.example/stake-pool-a.json';
+    const source = '{"id":"stake-pool-a"}';
+    expect(issueVorticeKey('stake-pool-a'), isNull);
+    expect(issueVorticeKey('shear-reserve-v1', origin: origin, source: source), isNull);
+    final key = issueVorticeKey('stake-pool-a', origin: origin, source: source);
     expect(key, isNotNull);
-    expect(parseVorticeKey(key!)?.id, 'stake-pool-a');
-    expect(addVortice(const [reserveVortice], key).length, 2);
+    expect(key!.startsWith('vort1.'), isTrue);
+    expect(parseVorticeKey(key)?.id, 'stake-pool-a');
+    expect(parseVorticeKey(key)?.origin, origin);
+    expect(addVortice(const [reserveVortice], key).length, 1);
+    expect(addVortice(const [reserveVortice], key, source: source).length, 2);
+    expect(verifyVorticeDownload(key, 'tamper'), isNull);
+    expect(vorticeChipVisible(joinWatchVortice), isFalse);
+    expect(
+      reapExpiredJoin(const [reserveVortice, joinVortice, joinWatchVortice], expired: true)
+          .every((v) => v.id != joinProgram),
+      isTrue,
+    );
+  });
+
+  test('downloadVorticeFromOrigin fetches the host named in the key and refuses a swap', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    const source = '{"id":"hosted-a","pane":"ok"}';
+    server.listen((req) async {
+      req.response.headers.contentType = ContentType.json;
+      req.response.write(source);
+      await req.response.close();
+    });
+    addTearDown(() => server.close(force: true));
+    final origin = 'http://127.0.0.1:${server.port}/vortice.json';
+    final key = mintVorticeDeployKey(
+      programId: 'hosted-a',
+      name: 'Hosted A',
+      origin: origin,
+      source: source,
+    )!;
+    final got = await downloadVorticeFromOrigin(key, http: _realHttp());
+    expect(got?.id, 'hosted-a');
+    expect(got?.origin, origin);
+    expect(got?.source, source);
+    expect(verifyVorticeDownload(key, 'tamper'), isNull);
+    expect(addVortice(const [reserveVortice], key), hasLength(1));
+    expect(addVortice(const [reserveVortice], key, source: source), hasLength(2));
   });
 
   test('currentDest is round shp1 dest; destAtIndex mints unlimited shp1 tied to shear1', () {
@@ -246,14 +288,14 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.0.5');
-    expect(kWalletVersion, '0.0.5');
+    expect(app.title, 'Shear 0.0.6');
+    expect(kWalletVersion, '0.0.6');
     // password gate first
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
     await tester.pump();
-    expect(find.textContaining('0.0.5'), findsWidgets);
+    expect(find.textContaining('0.0.6'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -265,6 +307,7 @@ void main() {
     expect(kTabs.contains('Explorer'), isFalse);
     expect(kTabs.contains('Shear'), isFalse);
     expect(kTabs.contains('Reserve'), isFalse);
+    expect(kTabs.contains('Join'), isFalse);
     expect(kExplains, [
       'Your spendable balance and she1 address.',
       'Send SHEAR to anyone with a she1 address.',
@@ -354,18 +397,18 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(find.text('Pending'), findsOneWidget);
-    expect(find.textContaining('0.250000000'), findsWidgets);
+    expect(find.textContaining('0.25000000000'), findsWidgets);
     expect(find.textContaining('block height: 2'), findsWidgets);
     await tester.tap(find.text('Shearview'));
     await tester.pump();
-    expect(find.textContaining('0.250000000'), findsNothing);
+    expect(find.textContaining('0.25000000000'), findsNothing);
     ledger.confirmRound(address: ident.address, pot: 1, height: 3);
     await tester.tap(find.text('Continuum'));
     await tester.pump();
     expect(find.text('Pending'), findsNothing);
     await tester.tap(find.text('Shearview'));
     await tester.pump();
-    expect(find.textContaining('0.250000000'), findsWidgets);
+    expect(find.textContaining('0.25000000000'), findsWidgets);
   });
 
   testWidgets('dark mode cards and fields are dark with light ink; light mode inverts', (tester) async {
@@ -458,7 +501,7 @@ void main() {
     expect(id.paymentCode.startsWith('she1'), isTrue);
     expect(text.contains(dest), isTrue);
     expect(dest.startsWith('shp1'), isTrue);
-    expect(text.contains(tx.amount.toStringAsFixed(9)), isTrue);
+    expect(text.contains(tx.amount.toStringAsFixed(kSheDecimals)), isTrue);
     expect(text.contains(ctfClosurePersonal), isTrue);
     expect(text.contains(ctfFlowPersonal), isTrue);
     expect(text.contains('spendable'), isTrue);
@@ -480,10 +523,10 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Shearview'));
     await tester.pump();
-    await tester.tap(find.text('${tx.kind}  ${tx.amount.toStringAsFixed(9)} SHE'));
+    await tester.tap(find.text('${tx.kind}  ${formatShe(tx.amount)} SHE'));
     await tester.pump();
     expect(find.textContaining('CTF CLI'), findsWidgets);
-    expect(find.textContaining(tx.amount.toStringAsFixed(9)), findsWidgets);
+    expect(find.textContaining(tx.amount.toStringAsFixed(kSheDecimals)), findsWidgets);
     expect(find.textContaining(ident.address), findsWidgets);
     expect(find.textContaining(ident.paymentCode), findsWidgets);
     expect(find.textContaining(tx.to), findsWidgets);
@@ -501,15 +544,268 @@ void main() {
     await tester.tap(find.text('Unlock'));
     await tester.pump();
     await tester.pump();
+    expect(find.text('Pending'), findsNothing);
+    await tester.pump(const Duration(seconds: 3));
+    expect(find.text('Pending'), findsOneWidget);
+    expect(find.textContaining('0.25000000000'), findsWidgets);
+    await tester.pump(const Duration(seconds: 6));
+    expect(find.text('Pending'), findsNothing);
+    await tester.tap(find.text('Resistance'));
+    await tester.pump();
     expect(find.textContaining('CTF CLI'), findsWidgets);
-    expect(find.textContaining('1.000000000'), findsWidgets);
+    expect(find.textContaining('0.25000000000'), findsWidgets);
     expect(find.textContaining(ident.address), findsWidgets);
     expect(find.textContaining(ident.paymentCode), findsWidgets);
     expect(find.textContaining('shp1'), findsWidgets);
     expect(find.textContaining('chronoflux-J-v1'), findsWidgets);
-    await tester.tap(find.text('Shearview'));
+  });
+
+  test('Reserve π vote gate, first-deposit epoch, 99-day cutoff, no public shear1 leak', () {
+    final alice = createIdentity();
+    final bob = createIdentity();
+    final va = vaultDest(alice.address, viewKey: alice.viewKey)!;
+    final vb = vaultDest(bob.address, viewKey: bob.viewKey)!;
+    expect(va, isNot(vb));
+    expect(extraMintAllowed(kReserveProgram), isTrue);
+    expect(extraMintAllowed('other-dapp'), isFalse);
+    final r = ShearReserve();
+    const t0 = 1700000000000;
+    expect(r.deposit(dest: va, she: 1, nowMs: t0), isNull);
+    expect(r.epochStartMs, 0);
+    expect(r.portal(va).canVote, isFalse);
+    expect(r.vote(dest: va, choice: kVoteIncrease, nowMs: t0), 'not_voter');
+    expect(r.deposit(dest: va, she: kPiShe, nowMs: t0 + 1), isNull);
+    expect(r.epochStartMs, t0 + 1);
+    expect(r.portal(va).canVote, isTrue);
+    expect(r.vote(dest: va, choice: kVoteIncrease, nowMs: t0 + 2), isNull);
+    final late = t0 + 1 + (400 - 98) * 86400000;
+    expect(r.canJoin(late), isFalse);
+    expect(r.cutoffDisclaimer(late), isTrue);
+    expect(r.cutoffDisclaimer(t0 + 1), isFalse);
+    expect(r.deposit(dest: vb, she: kPiShe, nowMs: late), isNull);
+    expect(r.portal(vb).idle, kPiSheNanos);
+    expect(r.portal(vb).staked, 0);
+    expect(r.portal(vb).canVote, isFalse);
+    expect(r.vote(dest: vb, choice: kVoteIncrease, nowMs: late), 'not_voter');
+    expect(r.deposit(dest: va, she: 0.5, nowMs: late), isNull);
+    expect(r.portal(va).idle, kUnitsPerShe ~/ 2);
+    expect(r.portal(va).canVote, isTrue);
+    final outAlice = r.withdraw(dest: va, nowMs: t0 + 1 + kReserveEpochMs);
+    expect(outAlice, isNotNull);
+    expect(outAlice!['idle'], kUnitsPerShe ~/ 2);
+    expect(outAlice['interest']! > 0, isTrue);
+    final outBob = r.withdraw(dest: vb, nowMs: t0 + 1 + kReserveEpochMs);
+    expect(outBob, isNotNull);
+    expect(outBob!['interest'], 0);
+    expect(outBob['idle'], kPiSheNanos);
+    final dump = r.publicJson(late);
+    expect(dump.contains(alice.address), isFalse);
+    expect(dump.contains(alice.viewKey), isFalse);
+    expect(dump.contains('shear1'), isFalse);
+    expect(dump.contains('viewKey'), isFalse);
+    expect(dump.contains('oracleBps'), isTrue);
+  });
+
+  test('Reserve withdraw extra-mints interest onto Continuum spendable', () async {
+    final alice = createIdentity();
+    final ledger = ShearLedger();
+    ledger.viewSecret = alice.viewKey;
+    ledger.confirmRound(address: alice.address, pot: 10, height: 1);
+    final continuum = ledger.currentDest(alice.address);
+    final vault = vaultDest(alice.address, viewKey: alice.viewKey)!;
+    expect(continuum, isNot(vault));
+    expect(ledger.spendable(continuum), closeTo(10, 1e-12));
+    const t0 = 1700000000000;
+    final r = ShearReserve();
+    expect(r.deposit(dest: vault, she: kPiShe, nowMs: t0, payout: continuum), isNull);
+    await ledger.send(
+      from: continuum,
+      to: vault,
+      amount: kPiShe,
+      local: true,
+      kind: 'lock',
+      programId: kReserveProgram,
+    );
+    final afterLock = ledger.spendable(continuum);
+    expect(afterLock, closeTo(10 - kPiShe, 1e-12));
+    expect(r.withdrawTo(ledger, dest: vault, payout: continuum, nowMs: t0 + 10 * 86400000), isNull);
+    final out = r.withdrawTo(ledger, dest: vault, payout: continuum, nowMs: t0 + kReserveEpochMs);
+    expect(out, isNotNull);
+    expect(out!['interest']! > 0, isTrue);
+    expect(out['principal'], kPiSheNanos);
+    final paid = (out['principal']! + out['interest']!) / kUnitsPerShe;
+    expect(ledger.spendable(continuum), closeTo(afterLock + paid, 1e-12));
+    expect(ledger.spendable(continuum), closeTo(10 - kPiShe + paid, 1e-12));
+    expect(ledger.ownerHistory(alice.address).where((t) => t.kind == 'reserve').single.to, continuum);
+    expect(r.portal(vault).nanos, 0);
+  });
+
+  test('Reserve accrued rewards grow on staked SHE and stay zero on idle SHE', () {
+    final alice = createIdentity();
+    final bob = createIdentity();
+    final va = vaultDest(alice.address, viewKey: alice.viewKey)!;
+    final vb = vaultDest(bob.address, viewKey: bob.viewKey)!;
+    final r = ShearReserve();
+    const t0 = 1700000000000;
+    expect(r.deposit(dest: va, she: kPiShe, nowMs: t0), isNull);
+    expect(r.epochStartMs, t0);
+    expect(r.rewards(va, t0).accrued, 0);
+    expect(r.rewards(va, t0).projected > 0, isTrue);
+    final mid = r.rewards(va, t0 + 200 * 86400000);
+    expect(mid.accrued, greaterThan(0));
+    expect(mid.accrued, lessThan(mid.projected));
+    final end = r.rewards(va, t0 + kReserveEpochMs);
+    expect(end.accrued, end.projected);
+    expect(end.accrued, reserveInterestNanos(kPiSheNanos, kReserveOracleDefaultBps));
+    final late = t0 + (400 - 50) * 86400000;
+    expect(r.deposit(dest: vb, she: kPiShe, nowMs: late), isNull);
+    expect(r.rewards(vb, late + 86400000).accrued, 0);
+    expect(r.rewards(vb, late + 86400000).projected, 0);
+  });
+
+  test('Join credits Continuum 1:1, refuses a second claim, and burns the rest after 99 days', () {
+    final alice = createIdentity();
+    final ledger = ShearLedger()..viewSecret = alice.viewKey;
+    final payout = ledger.currentDest(alice.address);
+    const t0 = 1800000000000;
+    const owner = 'prior1alice';
+    const amountPrior = 10000000000;
+    final commit = sha256
+        .convert(utf8.encode(kJoinLeafPersonal) + utf8.encode(owner) + utf8.encode('$amountPrior'))
+        .toString();
+    final vault = ShearJoin();
+    vault.fundGenesis(nanos: 4 * kUnitsPerShe, nowMs: t0, snapshotRoot: commit);
+    final key =
+        'join1.${base64Url.encode(utf8.encode(jsonEncode({
+              'v': 1,
+              'owner': owner,
+              'amountPrior': amountPrior,
+              'commit': commit,
+              'index': 0,
+              'proof': [],
+            }))).replaceAll('=', '')}';
+    expect(vault.windowOpen(t0 + 1000), isTrue);
+    expect(vault.claimTo(ledger, key: key, payout: payout, nowMs: t0 + 1000), isNotNull);
+    expect(ledger.spendable(payout), closeTo(1, 1e-12));
+    expect(vault.claimTo(ledger, key: key, payout: payout, nowMs: t0 + 2000), isNull);
+    expect(ledger.spendable(payout), closeTo(1, 1e-12));
+    vault.burnUnclaimed(t0 + kJoinWindowMs);
+    expect(vault.burned, isTrue);
+    expect(vault.remainingNanos, 0);
+    final dump = jsonEncode(vault.publicView(t0));
+    expect(dump.contains(alice.address), isFalse);
+    expect(dump.contains(alice.viewKey), isFalse);
+  });
+
+  testWidgets('Vortex Reserve has amount, Send, add more, and votes when portal holds π', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-reserve-ui-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    final ident = session.identity!;
+    final vault = ShearReserve();
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    vault.deposit(dest: dest, she: kPiShe, nowMs: DateTime.now().millisecondsSinceEpoch);
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), reserve: vault));
     await tester.pump();
-    expect(find.textContaining('coinbase'), findsWidgets);
+    await tester.enterText(find.byType(TextField), 'pw');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(kTabs.contains('Reserve'), isFalse);
+    expect(kTabs.contains('Join'), isFalse);
+    expect(find.text('The Reserve'), findsWidgets);
+    expect(find.text('Amount SHEAR'), findsOneWidget);
+    expect(find.text('Send'), findsOneWidget);
+    expect(find.text('Add more SHE to the vault'), findsOneWidget);
+    expect(find.text('increase bonus'), findsOneWidget);
+    expect(find.text('decrease bonus'), findsOneWidget);
+    expect(find.text('leave bonus as-is'), findsOneWidget);
+    expect(find.text(kReserveCutoffDisclaimer), findsNothing);
+    expect(find.textContaining('Bank of England'), findsNothing);
+    expect(find.textContaining('BoE'), findsNothing);
+    expect(find.textContaining('Reserve oracle'), findsWidgets);
+    expect(find.textContaining(kReserveAccruedLabel), findsOneWidget);
+    expect(find.textContaining('At epoch end'), findsOneWidget);
+    expect(find.textContaining('Observed rate'), findsOneWidget);
+    expect(find.text('The Join'), findsOneWidget);
+    await tester.tap(find.text('The Join'));
+    await tester.pump();
+    expect(find.text('Migration key'), findsOneWidget);
+    expect(find.text('Credit'), findsOneWidget);
+    expect(kTabs.contains('Join'), isFalse);
+    expect(find.text('Add new vortice'), findsOneWidget);
+    expect(find.text(joinWatchProgram), findsNothing);
+  });
+
+  testWidgets('Vortex deploys a third-party dapp only after a valid vort1. key download', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-vortice-ui-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    const origin = 'https://dapp.example/stake-pool-a.json';
+    const source = '{"id":"stake-pool-a","pane":"ok"}';
+    final key = mintVorticeDeployKey(
+      programId: 'stake-pool-a',
+      name: 'Stake Pool A',
+      origin: origin,
+      source: source,
+    )!;
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ShearLedger(),
+      downloadVortice: (k) async => verifyVorticeDownload(k, source),
+    ));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'pw');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(find.text('Stake Pool A'), findsNothing);
+    await tester.tap(find.text('Add new vortice'));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), key);
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Stake Pool A'), findsWidgets);
+    expect(find.textContaining(origin), findsWidgets);
+    expect(session.deployedVortices.single.id, 'stake-pool-a');
+    final reloaded = ShearSession(store: File('${dir.path}/session.json'));
+    await reloaded.loadOrCreate();
+    expect(reloaded.deployedVortices.single.id, 'stake-pool-a');
+    expect(reloaded.deployedVortices.single.origin, origin);
+  });
+
+  testWidgets('Vortex Reserve idle disclaimer only when remaining is under 99 days', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-reserve-idle-ui-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    final ident = session.identity!;
+    final vault = ShearReserve();
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final otherId = createIdentity();
+    final other = vaultDest(otherId.address, viewKey: otherId.viewKey)!;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final t0 = now - (400 - 50) * 86400000;
+    expect(vault.deposit(dest: other, she: kPiShe, nowMs: t0), isNull);
+    expect(vault.deposit(dest: dest, she: kPiShe, nowMs: now), isNull);
+    expect(vault.portal(dest).canVote, isFalse);
+    expect(vault.cutoffDisclaimer(now), isTrue);
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), reserve: vault));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'pw');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(find.text(kReserveCutoffDisclaimer), findsOneWidget);
+    expect(find.text('increase bonus'), findsNothing);
+    expect(find.text('Amount SHEAR'), findsOneWidget);
+    expect(find.text('Send'), findsOneWidget);
+    expect(find.text('Add more SHE to the vault'), findsOneWidget);
   });
 
   test('send posts sdcard1 from + memoCt; sender and recipient dests open plaintext, other dest does not', () async {

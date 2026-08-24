@@ -1,4 +1,4 @@
-# Shear wallet 0.0.5
+# Shear wallet 0.0.6
 
 Testnet wallet. Tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure (G_{μν}). The Reserve lives under Vortex.
 

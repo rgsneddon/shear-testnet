@@ -3,8 +3,8 @@
  * Header bits stay on ASERT 90 s. Share target only throttles submit rate
  * and must never exceed current block bits.
  *
- * Inherit from GNFP 2026-08-24: default max is SHA-256 width so a huge
- * CPU farm is throttled instead of flooding. GPU/ASIC still mint nothing.
+ * Default max is SHA-256 width so a huge CPU farm is throttled instead
+ * of flooding. GPU/ASIC still mint nothing.
  */
 import { MAX_BITS } from '../../crypto/asert.js';
 

@@ -21,8 +21,8 @@ import {
   spendHashFromAddress,
   destEncodings,
 } from './flow_sheet.js';
-import { issueVorticeKey, parseVorticeKey, addVortice, RESERVE_VORTICE } from './vortex.js';
-import { extraMintAllowed } from './asert.js';
+import { issueVorticeKey, parseVorticeKey, addVortice, RESERVE_VORTICE, JOIN_VORTICE } from './vortex.js';
+import { extraMintAllowed, JOIN_PROGRAM } from './asert.js';
 
 describe('flow sheets', () => {
   it('paid dest is sdcard1, needs password C, not C-from-S', () => {
@@ -158,18 +158,26 @@ describe('flow sheets', () => {
 });
 
 describe('vortex keys', () => {
-  it('Reserve is default; creator key adds a third-party vortice that cannot mint', () => {
+  it('Reserve is default; creator deploy key names a host and cannot mint', () => {
     assert.equal(RESERVE_VORTICE.id, 'shear-reserve-v1');
     assert.equal(RESERVE_VORTICE.name, 'The Reserve');
-    assert.equal(issueVorticeKey('shear-reserve-v1'), null);
-    const key = issueVorticeKey('stake-pool-a');
+    assert.equal(JOIN_VORTICE.id, JOIN_PROGRAM);
+    assert.equal(JOIN_VORTICE.name, 'The Join');
+    const origin = 'https://dapp.example/stake-pool-a.json';
+    const source = '{"id":"stake-pool-a"}';
+    assert.equal(issueVorticeKey('shear-reserve-v1', origin, source), null);
+    assert.equal(issueVorticeKey(JOIN_PROGRAM, origin, source), null);
+    assert.equal(issueVorticeKey('stake-pool-a'), null);
+    const key = issueVorticeKey('stake-pool-a', origin, source);
     assert.ok(key);
     const parsed = parseVorticeKey(key);
     assert.equal(parsed.id, 'stake-pool-a');
+    assert.equal(parsed.origin, origin);
     assert.equal(extraMintAllowed(parsed.id), false);
     assert.equal(parseVorticeKey('deadbeef.stake-pool-a'), null);
-    const list = addVortice([], key);
+    assert.equal(addVortice([], key).length, 0);
+    const list = addVortice([], key, source);
     assert.equal(list.length, 1);
-    assert.equal(addVortice(list, key).length, 1);
+    assert.equal(addVortice(list, key, source).length, 1);
   });
 });

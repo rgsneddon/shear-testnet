@@ -5,6 +5,14 @@ import 'dart:typed_data';
 import 'shear_ctf.dart';
 import 'shear_identity.dart';
 
+const kSheDecimals = 11;
+const kUnitsPerShe = 100000000000; // 10^11
+/// 0.0000000001 SHE per valid hash.
+const kHashBonusShe = 0.0000000001;
+const kHashBonusVoteDeltaShe = 0.00000000001;
+
+String formatShe(num she) => she.toStringAsFixed(kSheDecimals);
+
 class ShearTx {
   const ShearTx({
     required this.id,
@@ -118,9 +126,9 @@ class ShearLedger {
   double spendable(String address) => _spendable[payKey(address)] ?? _spendable[address] ?? 0;
   double pending(String address) => _pending[payKey(address)] ?? _pending[address] ?? 0;
 
-  /// Accrue 1e-9 SHE per hash this open round. Not spendable, not an explorer row.
+  /// Accrue 0.0000000001 SHE per hash this open round. Not spendable, not an explorer row.
   void creditHash(String address, {int hashes = 1}) {
-    final add = hashes * 1e-9;
+    final add = hashes * kHashBonusShe;
     final key = payKey(address);
     _pending[key] = (_pending[key] ?? 0) + add;
   }
@@ -317,11 +325,62 @@ class ShearLedger {
         .toList();
   }
 
+  /// Principal + interest from The Reserve, paid to a Continuum dest.
+  ShearTx creditReserve({
+    required String to,
+    required double amount,
+    int? height,
+  }) {
+    if (amount <= 0) throw ArgumentError('amount');
+    if (isShearAddress(to)) throw ArgumentError('rest_frame');
+    final key = payKey(to);
+    _spendable[key] = spendable(key) + amount;
+    _dests.add(key);
+    final tx = ShearTx(
+      id: 'reserve-${DateTime.now().millisecondsSinceEpoch}',
+      from: 'shear-reserve-v1',
+      to: key,
+      amount: amount,
+      kind: 'reserve',
+      height: height,
+      confirmed: true,
+    );
+    _txs.add(tx);
+    return tx;
+  }
+
+  /// Snapshot claim from The Join, paid to a Continuum dest.
+  ShearTx creditJoin({
+    required String to,
+    required double amount,
+    int? height,
+  }) {
+    if (amount <= 0) throw ArgumentError('amount');
+    if (isShearAddress(to)) throw ArgumentError('rest_frame');
+    final key = payKey(to);
+    _spendable[key] = spendable(key) + amount;
+    _dests.add(key);
+    final tx = ShearTx(
+      id: 'join-${DateTime.now().millisecondsSinceEpoch}',
+      from: 'shear-join-v1',
+      to: key,
+      amount: amount,
+      kind: 'join',
+      height: height,
+      confirmed: true,
+    );
+    _txs.add(tx);
+    return tx;
+  }
+
   Future<ShearTx> send({
     required String from,
     required String to,
     required double amount,
     String? memo,
+    bool local = false,
+    String? kind,
+    String? programId,
   }) async {
     if (amount <= 0) throw ArgumentError('amount');
     if (isShearAddress(from) || isShearAddress(to)) {
@@ -332,7 +391,7 @@ class ShearLedger {
     if (memo != null && memo.isNotEmpty) {
       memoCt = await memoSeal(to, memo);
     }
-    if (pool != null) {
+    if (pool != null && !local) {
       final json = await pool!.send(from: from, to: to, amount: amount, memoCt: memoCt);
       final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
       final tx = ShearTx(
@@ -357,7 +416,7 @@ class ShearLedger {
       from: from,
       to: to,
       amount: amount,
-      kind: 'send',
+      kind: kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send'),
       confirmed: false,
       memo: memoCt != null,
       memoPlain: memo,

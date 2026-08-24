@@ -16,14 +16,15 @@ export {
   extraMintAllowed,
 };
 
-export function extraMint({ programId, to, nanos }) {
-  if (!extraMintAllowed(programId)) {
+export function extraMint({ programId, to, nanos, kind }) {
+  if (!extraMintAllowed(programId, { kind })) {
     return { ok: false, reason: 'mint_forbidden' };
   }
   if (!isDestAddress(to) && !isShearAddress(to)) return { ok: false, reason: 'bad_address' };
   const n = Number(nanos);
   if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: 'bad_nanos' };
-  return { ok: true, programId: RESERVE_PROGRAM, to, nanos: n, kind: 'reserve' };
+  const k = String(kind || (programId === RESERVE_PROGRAM ? 'reserve' : 'join-genesis'));
+  return { ok: true, programId, to, nanos: n, kind: k, mint: true };
 }
 
 export function coinbaseSplit(cb) {

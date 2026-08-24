@@ -46,7 +46,7 @@ String ctfTranscript({
   final buf = StringBuffer();
   buf.writeln('======== SHEAR CTF  tx=${tx.id}  ========');
   buf.writeln('kind        ${tx.kind}');
-  buf.writeln('amount      ${tx.amount.toStringAsFixed(9)} SHE');
+  buf.writeln('amount      ${formatShe(tx.amount)} SHE');
   buf.writeln('height      $height');
   buf.writeln('from        ${tx.from}');
   buf.writeln('to          ${tx.to}');
@@ -69,11 +69,11 @@ String ctfTranscript({
   buf.writeln('match       ${matched ? 'YES' : 'NO'}  destForLogin opens tx.to');
   buf.writeln('-- spendable credit --');
   if (receive && tx.kind != 'send') {
-    buf.writeln('credited    ${tx.amount.toStringAsFixed(9)} SHE onto shp1 dest');
+    buf.writeln('credited    ${formatShe(tx.amount)} SHE onto shp1 dest');
   } else {
-    buf.writeln('debited     ${tx.amount.toStringAsFixed(9)} SHE from shp1 ${tx.from}');
+    buf.writeln('debited     ${formatShe(tx.amount)} SHE from shp1 ${tx.from}');
   }
-  buf.writeln('spendable   ${spendableAfter.toStringAsFixed(9)} SHE  (Continuum)');
+  buf.writeln('spendable   ${formatShe(spendableAfter)} SHE  (Continuum)');
   buf.writeln(
     'conclusion  CTF opened shp1 with view-key closure C; '
     'coins land spendable after confirm. shear1 stays off-chain.',

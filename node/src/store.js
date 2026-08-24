@@ -22,6 +22,11 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
+import { emptyVault, applyReserveBlock } from '../../crypto/reserve_vault.js';
+import { emptyOracle } from '../../crypto/reserve_oracle.js';
+import { emptyJoin, applyJoinBlock, validateJoinBlock } from '../../crypto/join_vault.js';
+import { explorerSpendable } from '../../crypto/chronoflux.js';
+import { createVorticeCatalog } from './vortice.js';
 
 function toRow(block) {
   const compact = compactChainBlock(block);
@@ -36,6 +41,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
   const explorerFile = path.join(dir, 'explorer.jsonl');
+  const vaultFile = path.join(dir, 'reserve.json');
   const blocks = [];
   const explorer = [];
   if (fs.existsSync(file)) {
@@ -70,6 +76,78 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
 
   rebuildExplorer();
 
+  const reserveVault = emptyVault();
+  const loadedOracle = (() => {
+    if (!fs.existsSync(vaultFile)) return emptyOracle();
+    try {
+      const raw = JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
+      return raw?.oracle || emptyOracle();
+    } catch {
+      return emptyOracle();
+    }
+  })();
+  reserveVault.oracle = loadedOracle;
+
+  function saveReserve() {
+    fs.writeFileSync(vaultFile, JSON.stringify(reserveVault));
+  }
+
+  function blockTimeMs(block) {
+    try {
+      return Number(decodeHeader(Buffer.from(block.header)).timestamp);
+    } catch {
+      return Date.now();
+    }
+  }
+
+  function applyReserve(block) {
+    applyReserveBlock({ state: reserveVault, block, nowMs: blockTimeMs(block) });
+    saveReserve();
+  }
+
+  function replayVault() {
+    const oracle = reserveVault.oracle || emptyOracle();
+    const fresh = emptyVault();
+    fresh.oracle = oracle;
+    for (const k of Object.keys(reserveVault)) delete reserveVault[k];
+    Object.assign(reserveVault, fresh);
+    reserveVault.portals = Object.create(null);
+    reserveVault.votes = { increase: 0, decrease: 0, hold: 0 };
+    for (const b of blocks) {
+      applyReserveBlock({ state: reserveVault, block: b, nowMs: blockTimeMs(b) });
+    }
+    saveReserve();
+  }
+
+  replayVault();
+
+  const joinFile = path.join(dir, 'join.json');
+  const joinVault = emptyJoin();
+  function saveJoin() {
+    fs.writeFileSync(joinFile, JSON.stringify(joinVault));
+  }
+  function applyJoin(block) {
+    applyJoinBlock({ state: joinVault, block, nowMs: blockTimeMs(block) });
+    saveJoin();
+  }
+  function replayJoin() {
+    const fresh = emptyJoin({
+      genesisMs: 0,
+      root: joinVault.root,
+      circulatingNanos: 0,
+    });
+    for (const k of Object.keys(joinVault)) delete joinVault[k];
+    Object.assign(joinVault, fresh);
+    joinVault.claimed = Object.create(null);
+    for (const b of blocks) {
+      applyJoinBlock({ state: joinVault, block: b, nowMs: blockTimeMs(b) });
+    }
+    saveJoin();
+  }
+  replayJoin();
+
+  const vortice = createVorticeCatalog(dir);
+
   function persist(block) {
     fs.appendFileSync(file, `${JSON.stringify(toRow(block))}\n`);
   }
@@ -99,8 +177,16 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
 
   function append(block) {
     const prev = tip();
-    const check = verifyBlock(block, prev ? { hash: prev.hash } : null);
+    const check = verifyBlock(block, prev ? { hash: prev.hash } : null, {
+      joinFunded: !!joinVault.genesisMs,
+    });
     if (!check.ok) return check;
+    const gated = validateJoinBlock({
+      state: joinVault,
+      block,
+      nowMs: blockTimeMs(block),
+    });
+    if (!gated.ok) return gated;
     const stored = leanBlock({
       ...block,
       magic: MAGIC_TESTNET,
@@ -110,6 +196,8 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     blocks.push(stored);
     persist(stored);
     indexSealed(stored);
+    applyReserve(stored);
+    applyJoin(stored);
     pruneBuried();
     return { ok: true, block: stored };
   }
@@ -117,10 +205,20 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
   function adopt(fork) {
     if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
     const accepted = [];
+    let joinFunded = false;
+    const trialJoin = emptyJoin();
     for (let i = 0; i < fork.length; i += 1) {
       const prev = i === 0 ? null : { hash: accepted[i - 1].hash };
-      const check = verifyBlock(fork[i], prev);
+      const check = verifyBlock(fork[i], prev, { joinFunded });
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
+      const gated = validateJoinBlock({
+        state: trialJoin,
+        block: fork[i],
+        nowMs: blockTimeMs(fork[i]),
+      });
+      if (!gated.ok) return { ok: false, reason: gated.reason, at: i };
+      applyJoinBlock({ state: trialJoin, block: fork[i], nowMs: blockTimeMs(fork[i]) });
+      if (trialJoin.genesisMs) joinFunded = true;
       accepted.push(leanBlock({
         ...fork[i],
         magic: MAGIC_TESTNET,
@@ -135,6 +233,8 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     for (const b of accepted) blocks.push(b);
     rewriteChain();
     rebuildExplorer();
+    replayVault();
+    replayJoin();
     pruneBuried();
     return { ok: true, reorg: true, tip: tip() };
   }
@@ -166,6 +266,10 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
   function historyFor(address) {
     const addr = String(address || '').trim();
     return explorer.filter((r) => r.to === addr || r.from === addr);
+  }
+
+  function spendableNanos(address) {
+    return explorerSpendable(explorer, address);
   }
 
   const viewByAddress = new Map();
@@ -251,10 +355,19 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     hashHex,
     headerHash,
     historyFor,
+    spendableNanos,
     pruneBuried,
     pruneAfter,
     registerViewKey,
     addressForViewKey,
     viewKeyForAddress,
+    reserveVault,
+    saveReserve,
+    joinVault,
+    saveJoin,
+    vortice,
+    mintVorticeDeployKey: vortice.mintVorticeDeployKey,
+    mintVorticeFromOrigin: vortice.mintFromOrigin,
+    lookupVorticeKey: vortice.lookupByKey,
   };
 }

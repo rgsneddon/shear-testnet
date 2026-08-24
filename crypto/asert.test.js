@@ -7,6 +7,16 @@ import {
   LIVE_MIN_BITS,
   MAX_BITS,
   clampBits,
+  SHE_DECIMALS,
+  NANOS_PER_SHE,
+  HASH_BONUS_NANOS,
+  HASH_BONUS_VOTE_DELTA_NANOS,
+  HASH_BONUS_VOTE_DELTA,
+  BLOCK_SUBSIDY_NANOS,
+  JOIN_PROGRAM,
+  JOIN_KIND_GENESIS,
+  extraMintAllowed,
+  RESERVE_PROGRAM,
 } from './asert.js';
 
 describe('ASERT 90s block retarget', () => {
@@ -34,5 +44,27 @@ describe('ASERT 90s block retarget', () => {
     assert.equal(clampBits(256), 256);
     assert.equal(clampBits(300), 256);
     assert.equal(nextBits(32, 250), 40);
+  });
+});
+
+describe('SHEAR 11-decimal protocol unit', () => {
+  it('pays 1 SHE per block and 0.0000000001 SHE per hash; votes move by 1 unit', () => {
+    assert.equal(SHE_DECIMALS, 11);
+    assert.equal(NANOS_PER_SHE, 100_000_000_000);
+    assert.equal(BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE);
+    assert.equal(HASH_BONUS_NANOS, 10);
+    assert.equal(HASH_BONUS_NANOS / NANOS_PER_SHE, 1e-10);
+    assert.equal(HASH_BONUS_VOTE_DELTA_NANOS, 1);
+    assert.equal(HASH_BONUS_VOTE_DELTA, 1 / NANOS_PER_SHE);
+    assert.equal(HASH_BONUS_VOTE_DELTA, 1e-11);
+  });
+});
+
+describe('Join extra mint is genesis-only', () => {
+  it('allows join-genesis and refuses a plain Join mint', () => {
+    assert.equal(extraMintAllowed(RESERVE_PROGRAM), true);
+    assert.equal(extraMintAllowed(JOIN_PROGRAM), false);
+    assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: JOIN_KIND_GENESIS }), true);
+    assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: JOIN_KIND_GENESIS, funded: true }), false);
   });
 });

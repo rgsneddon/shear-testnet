@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -13,8 +14,10 @@ import 'shear_theme.dart';
 import 'shear_ctf.dart';
 import 'shear_ctf_cli.dart';
 import 'shear_vortex.dart';
+import 'shear_reserve.dart';
+import 'shear_join.dart';
 
-const kWalletVersion = '0.0.5';
+const kWalletVersion = '0.0.6';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -34,7 +37,7 @@ const kExplains = [
 ];
 
 void main() {
-  runApp(const ShearWalletApp());
+  runApp(ShearWalletApp(demoTx: kDebugMode));
 }
 
 class ShearWalletApp extends StatefulWidget {
@@ -44,6 +47,9 @@ class ShearWalletApp extends StatefulWidget {
     this.ledger,
     this.launchExecutable,
     this.demoTx = false,
+    this.reserve,
+    this.join,
+    this.downloadVortice,
   });
 
   final ShearSession? session;
@@ -51,6 +57,10 @@ class ShearWalletApp extends StatefulWidget {
   final String? launchExecutable;
   /// Local observation only: confirm one testnet round so Shearview/Resistance have a tx.
   final bool demoTx;
+  final ShearReserve? reserve;
+  final ShearJoin? join;
+  /// Test hook. Production fetches the origin named in the vort1. key.
+  final Future<Vortice?> Function(String key)? downloadVortice;
 
   @override
   State<ShearWalletApp> createState() => _ShearWalletAppState();
@@ -66,13 +76,22 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   final flowTo = TextEditingController();
   final flowAmt = TextEditingController();
   final flowMemo = TextEditingController();
+  final unlockCtrl = TextEditingController();
+  final reserveAmt = TextEditingController();
+  final joinKeyCtrl = TextEditingController();
+  final vorticeKeyCtrl = TextEditingController();
+  bool _vorticeBusy = false;
+  late final ShearReserve reserve = widget.reserve ?? ShearReserve();
+  late final ShearJoin join = widget.join ?? ShearJoin();
+  String? joinStatus;
   int vortexTab = 0;
-  List<Vortice> vortices = const [reserveVortice];
+  List<Vortice> vortices = const [reserveVortice, joinVortice, joinWatchVortice];
   final Set<String> openedMemos = {};
   String? lastMemoPlain;
   ThemeMode _themeMode = ThemeMode.light;
   final Map<String, String> _cliById = {};
   String? _focusedTxId;
+  Timer? _accrualTick;
 
   @override
   void initState() {
@@ -85,33 +104,150 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     flowTo.dispose();
     flowAmt.dispose();
     flowMemo.dispose();
+    unlockCtrl.dispose();
+    reserveAmt.dispose();
+    joinKeyCtrl.dispose();
+    vorticeKeyCtrl.dispose();
+    _accrualTick?.cancel();
     super.dispose();
   }
 
   Future<void> _boot() async {
     id = await session.loadOrCreate();
+    _syncJoinRoster();
     if (mounted) setState(() {});
+  }
+
+  void _syncJoinRoster() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    join.burnUnclaimed(now);
+    final expired = session.joinRetired ||
+        (join.genesisMs != 0 && (join.burned || join.remainingMs(now) == 0));
+    if (expired && !session.joinRetired) {
+      session.joinRetired = true;
+      session.persist();
+    }
+    final seen = <String>{};
+    final extras = <Vortice>[];
+    for (final v in [...session.deployedVortices, ...vortices]) {
+      if (isPinnedProgram(v.id) || v.id.isEmpty || seen.contains(v.id)) continue;
+      seen.add(v.id);
+      extras.add(v);
+    }
+    vortices = reapExpiredJoin(
+      [
+        reserveVortice,
+        if (!session.joinRetired) joinVortice,
+        joinWatchVortice,
+        ...extras,
+      ],
+      expired: session.joinRetired,
+    );
+    final chips = vortices.where(vorticeChipVisible).length + 1;
+    if (vortexTab >= chips) vortexTab = 0;
+  }
+
+  Future<void> _deployFromKey(String raw) async {
+    final key = raw.trim();
+    final parsed = parseVorticeKey(key);
+    if (parsed == null) return;
+    if (vortices.any((v) => v.id == parsed.id)) return;
+    if (_vorticeBusy) return;
+    _vorticeBusy = true;
+    try {
+      final got = widget.downloadVortice != null
+          ? await widget.downloadVortice!(key)
+          : await downloadVorticeFromOrigin(key);
+      if (!mounted || got == null) return;
+      final next = deployVortice(vortices, got);
+      if (next.length == vortices.length) return;
+      session.deployedVortices = next
+          .where((v) => !isPinnedProgram(v.id) && v.id.isNotEmpty)
+          .toList();
+      await session.persist();
+      if (!mounted) return;
+      setState(() {
+        vortices = next;
+        vortexTab = next.where(vorticeChipVisible).length - 1;
+        vorticeKeyCtrl.clear();
+      });
+    } finally {
+      _vorticeBusy = false;
+    }
   }
 
   Future<void> _unlock(String pw) async {
     if (pw.isEmpty || id == null) return;
     password = pw;
-    ledger.viewSecret = pw;
-    final dest = ledger.currentDest(id!.address);
-    await ledger.syncSpendable(dest);
-    await ledger.syncHistory(dest);
-    if (widget.demoTx && ledger.ownerHistory(id!.address).isEmpty) {
-      ledger.viewSecret = id!.viewKey;
-      final tx = ledger.confirmRound(address: id!.address, pot: 1, height: 1);
-      _ingestTx(id!, tx);
-      _focusedTxId = tx.id;
-      tab = _resistanceTab;
-    }
+    ledger.viewSecret = id!.viewKey;
+    try {
+      final dest = ledger.currentDest(id!.address);
+      await ledger.syncSpendable(dest).timeout(const Duration(seconds: 4));
+      await ledger.syncHistory(dest).timeout(const Duration(seconds: 4));
+    } catch (_) {}
+    try {
+      if (widget.demoTx) {
+        var pay = ledger.currentDest(id!.address);
+        if (ledger.spendable(pay) <= 0) {
+          final minted = ledger.confirmRound(address: id!.address, pot: 1, height: 1);
+          _ingestTx(id!, minted);
+        }
+      }
+    } catch (_) {}
     _ingestHistory();
     if (mounted) setState(() => unlocked = true);
+    _accrualTick?.cancel();
+    _syncJoinRoster();
+    _accrualTick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || !unlocked) return;
+      _syncJoinRoster();
+      if (!mounted) return;
+      setState(() {});
+    });
+    if (widget.demoTx) {
+      unawaited(_playDemoLive());
+    }
+  }
+
+  Future<void> _playDemoLive() async {
+    final ident = id;
+    if (ident == null) return;
+    await Future<void>.delayed(const Duration(seconds: 2));
+    if (!mounted || !unlocked) return;
+    try {
+      ledger.viewSecret = ident.viewKey;
+      final pay = ledger.currentDest(ident.address);
+      if (ledger.pendingTxs(ident.address).isEmpty && ledger.spendable(pay) > 0.25) {
+        final peer = createIdentity();
+        final to = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
+        final tx = await ledger.send(from: pay, to: to, amount: 0.25, local: true);
+        _ingestTx(ident, tx);
+        _focusedTxId = tx.id;
+        if (mounted) setState(() {});
+      }
+    } catch (_) {}
+    await Future<void>.delayed(const Duration(seconds: 5));
+    if (!mounted || !unlocked) return;
+    if (ledger.pendingTxs(ident.address).isNotEmpty) {
+      _findBlock();
+    }
   }
 
   int get _resistanceTab => kTabs.indexOf('Resistance');
+
+  void _findBlock() {
+    final ident = id;
+    if (ident == null) return;
+    ledger.viewSecret = ident.viewKey;
+    final minted = ledger.confirmRound(
+      address: ident.address,
+      pot: 1,
+      height: ledger.sealedHeight + 1,
+    );
+    _ingestTx(ident, minted);
+    _ingestHistory();
+    if (mounted) setState(() {});
+  }
 
   void _ingestTx(ShearIdentity ident, ShearTx tx) {
     _cliById[tx.id] = ctfTranscript(
@@ -201,7 +337,6 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   Widget _lockGate(BuildContext context) {
-    final ctrl = TextEditingController();
     final theme = Theme.of(context);
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
@@ -229,14 +364,14 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
                   textAlign: TextAlign.center,
                 ),
                 TextField(
-                  controller: ctrl,
+                  controller: unlockCtrl,
                   obscureText: true,
                   decoration: const InputDecoration(labelText: 'Password'),
-                  onSubmitted: (_) => _unlock(ctrl.text),
+                  onSubmitted: (_) => _unlock(unlockCtrl.text),
                 ),
                 const SizedBox(height: 12),
                 FilledButton(
-                  onPressed: () => _unlock(ctrl.text),
+                  onPressed: () => _unlock(unlockCtrl.text),
                   child: const Text('Unlock'),
                 ),
                 const SizedBox(height: 8),
@@ -264,7 +399,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       _continuum(context, ident),
       _flow(context, ident),
       _resistance(context),
-      _vortex(ident),
+      _vortex(context, ident),
       _shearview(context, ident),
       _closure(context, ident),
     ];
@@ -289,11 +424,14 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: Center(
-              child: Text(
-                'block height: ${ledger.sealedHeight}',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).colorScheme.onSurface,
+              child: InkWell(
+                onTap: (kDebugMode || widget.demoTx) ? _findBlock : null,
+                child: Text(
+                  'block height: ${ledger.sealedHeight}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
                 ),
               ),
             ),
@@ -368,7 +506,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     final pending = ledger.pendingTxs(ident.address);
     return _card([
       Text(
-        '${spend.toStringAsFixed(9)} SHE',
+        '${formatShe(spend)} SHE',
         style: TextStyle(
           fontSize: 28,
           fontWeight: FontWeight.w700,
@@ -384,7 +522,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
           ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
-            title: Text('${t.kind}  ${t.amount.toStringAsFixed(9)} SHE'),
+            title: Text('${t.kind}  ${formatShe(t.amount)} SHE'),
             subtitle: Text('${t.from} → ${t.to}', maxLines: 1, overflow: TextOverflow.ellipsis),
           ),
       ],
@@ -410,7 +548,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       for (final t in hist)
         ListTile(
           dense: true,
-          title: Text('${t.kind}  ${t.amount.toStringAsFixed(9)} SHE'),
+          title: Text('${t.kind}  ${formatShe(t.amount)} SHE'),
           subtitle: Text(
             t.memo && openedMemos.contains(t.id) && t.memoPlain != null
                 ? '${t.from} → ${t.to}  h=${t.height ?? '-'}  memo: ${t.memoPlain}'
@@ -509,9 +647,212 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     );
   }
 
-  Widget _vortex(ShearIdentity ident) {
-    final keyCtrl = TextEditingController();
-    final tabs = [...vortices, const Vortice(id: '_add', name: 'Add new vortice')];
+  String? _reserveDestOf(ShearIdentity ident) =>
+      vaultDest(ident.address, viewKey: ledger.viewSecret ?? ident.viewKey);
+
+  Future<void> _reserveSend(BuildContext context, ShearIdentity ident, {required bool addMore}) async {
+    final dest = _reserveDestOf(ident);
+    if (dest == null) return;
+    final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
+    final from = ledger.currentDest(ident.address);
+    if (she <= 0) return;
+    if (ledger.spendable(from) < she) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Not enough spendable SHE')));
+      }
+      return;
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final err = reserve.deposit(dest: dest, she: she, nowMs: now, payout: from);
+    if (err != null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      }
+      return;
+    }
+    await ledger.send(
+      from: from,
+      to: dest,
+      amount: she,
+      local: true,
+      kind: 'lock',
+      programId: kReserveProgram,
+    );
+    if (mounted) setState(() {});
+    if (context.mounted && addMore) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Added to your Reserve key-portal')));
+    }
+  }
+
+  Future<void> _reserveWithdraw(BuildContext context, ShearIdentity ident) async {
+    final dest = _reserveDestOf(ident);
+    if (dest == null) return;
+    final to = ledger.currentDest(ident.address);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final out = reserve.withdrawTo(ledger, dest: dest, payout: to, nowMs: now);
+    if (out == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('The epoch is still open. Withdraw after 400 days.')),
+        );
+      }
+      return;
+    }
+    if (mounted) setState(() {});
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Principal and interest returned to Continuum')),
+      );
+    }
+  }
+
+  List<Widget> _reservePane(BuildContext context, ShearIdentity ident) {
+    final dest = _reserveDestOf(ident) ?? '';
+    final p = dest.isEmpty ? ReservePortal() : reserve.portal(dest);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final daysLeft = (reserve.remainingMs(now) / 86400000).floor();
+    final stakedShe = formatShe(p.staked / kUnitsPerShe);
+    final idleShe = formatShe(p.idle / kUnitsPerShe);
+    final rw = dest.isEmpty
+        ? const ReserveRewards(
+            accrued: 0, projected: 0, staked: 0, idle: 0, oracleBps: 0, elapsedMs: 0)
+        : reserve.rewards(dest, now);
+    final accruedShe = formatShe(rw.accrued / kUnitsPerShe);
+    final endShe = formatShe(rw.projected / kUnitsPerShe);
+    final rate = '${(rw.oracleBps / 100).toStringAsFixed(2)}%';
+    return [
+      const Text('The Reserve', style: TextStyle(fontWeight: FontWeight.w700)),
+      const Text(
+        'Lock SHE for 400 days in your private key-portal. The first π SHE deposit opens the epoch. '
+        'Interest is a variable rate observed by The Reserve oracle on every node. '
+        'Only this vortice may mint that interest.',
+      ),
+      if (reserve.cutoffDisclaimer(now)) ...[
+        const SizedBox(height: 8),
+        const Text(kReserveCutoffDisclaimer),
+      ],
+      const SizedBox(height: 8),
+      Text('Your portal  $stakedShe SHE staked · $idleShe SHE idle'
+          '${p.joined ? ' · joined this epoch' : ''}'),
+      Text(reserve.epochStartMs == 0
+          ? 'No epoch yet. The first π SHE deposit will start it.'
+          : '$daysLeft days remaining in this epoch.'),
+      if (p.nanos > 0) ...[
+        Text('$kReserveAccruedLabel  $accruedShe SHE'),
+        Text('At epoch end  $endShe SHE'),
+        Text('Observed rate  $rate a year on staked SHE. Idle SHE does not accrue.'),
+      ],
+      const SizedBox(height: 8),
+      TextField(
+        controller: reserveAmt,
+        keyboardType: TextInputType.number,
+        decoration: const InputDecoration(labelText: 'Amount SHEAR'),
+      ),
+      const SizedBox(height: 8),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        FilledButton(
+          onPressed: () => _reserveSend(context, ident, addMore: false),
+          child: const Text('Send'),
+        ),
+        OutlinedButton(
+          onPressed: () => _reserveSend(context, ident, addMore: true),
+          child: const Text('Add more SHE to the vault'),
+        ),
+        if (p.nanos > 0 && reserve.epochStartMs != 0 && reserve.remainingMs(now) == 0)
+          FilledButton(
+            onPressed: () => _reserveWithdraw(context, ident),
+            child: const Text('Withdraw to Continuum'),
+          ),
+      ]),
+      if (p.canVote) ...[
+        const SizedBox(height: 12),
+        const Text('Vote on the per-hash bonus (±1 unit of 10⁻¹¹ SHE; the 1 SHE pot does not change)'),
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          for (final v in [kVoteIncrease, kVoteDecrease, kVoteHold])
+            ChoiceChip(
+              label: Text(v),
+              selected: p.vote == v,
+              onSelected: (_) {
+                reserve.vote(dest: dest, choice: v, nowMs: now);
+                setState(() {});
+              },
+            ),
+        ]),
+      ],
+    ];
+  }
+
+  Future<void> _joinCredit(BuildContext context, ShearIdentity ident) async {
+    final payout = ledger.currentDest(ident.address);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final parsed = join.decodeKey(joinKeyCtrl.text);
+    if (parsed == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('That migration key cannot be read.')));
+      }
+      return;
+    }
+    final out = join.claimTo(ledger, key: joinKeyCtrl.text, payout: payout, nowMs: now);
+    if (out == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(join.windowOpen(now) ? 'This key has already been used, or the proof failed.' : kJoinWindowClosed),
+        ));
+      }
+      return;
+    }
+    if (mounted) setState(() => joinStatus = 'credited');
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${formatShe(parsed.she)} SHE credited to Continuum')),
+      );
+    }
+  }
+
+  List<Widget> _joinPane(BuildContext context, ShearIdentity ident) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final daysLeft = (join.remainingMs(now) / 86400000).floor();
+    final parsed = join.decodeKey(joinKeyCtrl.text);
+    final amount = parsed == null ? '—' : '${formatShe(parsed.she)} SHE';
+    join.burnUnclaimed(now);
+    return [
+      const Text('The Join', style: TextStyle(fontWeight: FontWeight.w700)),
+      const Text(
+        'Claim the genesis snapshot into your Continuum dest. One coin on the prior ledger becomes one SHE. '
+        'The window is ninety-nine days from mainnet genesis. After that, unclaimed allocation is burned.',
+      ),
+      if (!join.windowOpen(now) && join.genesisMs != 0) ...[
+        const SizedBox(height: 8),
+        const Text(kJoinWindowClosed),
+      ],
+      const SizedBox(height: 8),
+      Text(join.genesisMs == 0
+          ? 'No genesis snapshot on this node yet.'
+          : '$daysLeft days remaining in the claim window.'),
+      Text('Vault remaining  ${formatShe(join.remainingNanos / kUnitsPerShe)} SHE'),
+      const SizedBox(height: 8),
+      TextField(
+        controller: joinKeyCtrl,
+        decoration: const InputDecoration(labelText: 'Migration key'),
+        onChanged: (_) => setState(() {}),
+        minLines: 2,
+        maxLines: 4,
+      ),
+      const SizedBox(height: 8),
+      Text('Amount to credit  $amount'),
+      const SizedBox(height: 8),
+      FilledButton(
+        onPressed: join.windowOpen(now) ? () => _joinCredit(context, ident) : null,
+        child: const Text('Credit'),
+      ),
+    ];
+  }
+
+  Widget _vortex(BuildContext context, ShearIdentity ident) {
+    final tabs = [
+      ...vortices.where(vorticeChipVisible),
+      const Vortice(id: '_add', name: 'Add new vortice'),
+    ];
     final i = vortexTab.clamp(0, tabs.length - 1);
     final cur = tabs[i];
     final kids = <Widget>[
@@ -534,29 +875,35 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     ];
     if (cur.id == '_add') {
       kids.addAll([
-        const Text('Paste a vortice key from the dapp creator.'),
-        TextField(controller: keyCtrl, decoration: const InputDecoration(labelText: 'Creator vortice key')),
-        FilledButton(
-          onPressed: () {
-            final next = addVortice(vortices, keyCtrl.text);
-            if (next.length == vortices.length) return;
-            setState(() {
-              vortices = next;
-              vortexTab = next.length - 1;
-            });
+        const Text(
+          'Paste a vortice deploy key from the dapp creator. '
+          'A valid key names the host; this wallet downloads that dapp and deploys it here. '
+          'Third-party vortice cannot mint SHE.',
+        ),
+        TextField(
+          controller: vorticeKeyCtrl,
+          decoration: const InputDecoration(labelText: 'Vortice deploy key'),
+          minLines: 2,
+          maxLines: 4,
+          onChanged: (v) {
+            if (parseVorticeKey(v) != null) _deployFromKey(v);
           },
+          onSubmitted: _deployFromKey,
+        ),
+        FilledButton(
+          onPressed: () => _deployFromKey(vorticeKeyCtrl.text),
           child: const Text('Add vortice'),
         ),
       ]);
     } else if (cur.id == reserveProgram) {
-      kids.addAll([
-        const Text('The Reserve. Lock π SHE for 400 days. Only this vortice may mint extra SHE.'),
-        SelectableText(vaultDest(ident.address, viewKey: ledger.viewSecret ?? ident.viewKey) ?? ''),
-      ]);
+      kids.addAll(_reservePane(context, ident));
+    } else if (cur.id == joinProgram) {
+      kids.addAll(_joinPane(context, ident));
     } else {
       kids.addAll([
         Text(cur.name, style: const TextStyle(fontWeight: FontWeight.w600)),
         Text('Program  ${cur.id}'),
+        if (cur.origin != null) Text('Origin  ${cur.origin}'),
         const Text('Third-party vortice cannot mint SHE; it must fund its own rewards.'),
       ]);
     }

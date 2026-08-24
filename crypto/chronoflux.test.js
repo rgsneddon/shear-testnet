@@ -47,8 +47,8 @@ describe('chronoflux prune + collate', () => {
           height: 1,
           samples: [{ miner: 'shear1from', count: 9 }],
           vout: [
-            { address: 'shear1from', nanos: 1_000_000_000, kind: 'pot' },
-            { address: 'shear1from', nanos: 9, kind: 'hash' },
+            { address: 'shear1from', nanos: 100_000_000_000, kind: 'pot' },
+            { address: 'shear1from', nanos: 90, kind: 'hash' },
           ],
         },
         send,
@@ -62,7 +62,7 @@ describe('chronoflux prune + collate', () => {
     assert.equal(pruned.txs[1].id, 'send-1');
     const rows = sealedExplorerRows(pruned);
     assert.equal(rows.length, 3);
-    assert.ok(rows.some((r) => r.kind === 'coinbase' && r.nanos === 1_000_000_000));
+    assert.ok(rows.some((r) => r.kind === 'coinbase' && r.nanos === 100_000_000_000));
     assert.ok(rows.some((r) => r.id === 'send-1'));
     assert.throws(() => pruneSamples({ height: 1, txs: [] }), /prune_refuses_empty_txs/);
   });
@@ -83,7 +83,7 @@ describe('chronoflux prune + collate', () => {
           coinbase: true,
           height: 4,
           samples: fatSamples,
-          vout: [{ address: 'shear1a', nanos: 1_000_000_000, kind: 'pot' }],
+          vout: [{ address: 'shear1a', nanos: 100_000_000_000, kind: 'pot' }],
         }),
       ],
     });

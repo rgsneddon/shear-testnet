@@ -101,11 +101,12 @@ export function sealedExplorerRows(block) {
     const from = tx.from || tx.vin?.[0]?.address;
     const to = tx.to || tx.vout?.[0]?.address;
     const nanos = Number(tx.nanos || tx.vout?.[0]?.nanos || 0);
+    const kind = tx.kind || tx.vout?.[0]?.kind || (tx.mint ? 'reserve' : 'transfer');
     rows.push({
       id: tx.id || `${hid}-tx`,
-      kind: tx.kind || (tx.mint ? 'reserve' : 'transfer'),
+      kind,
       from,
-      to,
+      to: kind === 'burn' ? '' : to,
       nanos,
       height,
       confirmed: true,
@@ -114,6 +115,23 @@ export function sealedExplorerRows(block) {
     });
   }
   return rows;
+}
+
+/** Reconstruct dest spendable from sealed explorer rows. Burns destroy leftover. */
+export function explorerSpendable(rows, address) {
+  const addr = String(address || '');
+  let n = 0;
+  for (const r of rows || []) {
+    const kind = String(r.kind || '');
+    const amt = Number(r.nanos || 0);
+    if (kind === 'burn') {
+      if (String(r.from || '') === addr) n -= amt;
+      continue;
+    }
+    if (String(r.to || '') === addr) n += amt;
+    if (kind === 'claim' && String(r.from || '') === addr) n -= amt;
+  }
+  return n;
 }
 
 /** Persist live samples once on the block, not again inside coinbase JSON. */
@@ -153,6 +171,9 @@ export function compactTx(tx) {
   if (tx.kind) out.kind = tx.kind;
   if (tx.programId) out.programId = tx.programId;
   if (tx.mint) out.mint = true;
+  if (tx.key) out.key = tx.key;
+  if (tx.root) out.root = tx.root;
+  if (tx.commit) out.commit = tx.commit;
   if (tx.vin) out.vin = tx.vin;
   if (tx.vout) out.vout = tx.vout;
   if (tx.memoCt) out.memoCt = tx.memoCt;

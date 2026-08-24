@@ -1,0 +1,225 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
+
+import 'shear_identity.dart';
+import 'shear_ledger.dart';
+
+const kReserveProgram = 'shear-reserve-v1';
+const kReserveOracleId = 'shear-reserve-oracle-v1';
+const kPiSheNanos = 314159265358;
+const kPiShe = kPiSheNanos / kUnitsPerShe;
+const kReserveEpochDays = 400;
+const kReserveJoinCutoffDays = 99;
+const kReserveEpochMs = kReserveEpochDays * 86400000;
+const kReserveJoinCutoffMs = kReserveJoinCutoffDays * 86400000;
+const kReserveOracleDefaultBps = 425;
+const kVoteIncrease = 'increase bonus';
+const kVoteDecrease = 'decrease bonus';
+const kVoteHold = 'leave bonus as-is';
+const kReserveCutoffDisclaimer =
+    'Fewer than 99 days remain. Deposits in this window sit idle: they earn no interest and cannot vote. They still return with the rest of the vault when the epoch ends.';
+const kReserveAccruedLabel = 'Accrued rewards';
+
+bool extraMintAllowed(String programId) => programId == kReserveProgram;
+
+int reserveInterestNanos(int stakedNanos, int annualBps, [int days = kReserveEpochDays]) {
+  if (stakedNanos <= 0 || annualBps < 0 || days <= 0) return 0;
+  return (BigInt.from(stakedNanos) * BigInt.from(annualBps) * BigInt.from(days) ~/ BigInt.from(3650000))
+      .toInt();
+}
+
+int accruedNanos(int stakedNanos, int annualBps, int elapsedMs) {
+  if (stakedNanos <= 0 || annualBps < 0 || elapsedMs <= 0) return 0;
+  final ms = elapsedMs > kReserveEpochMs ? kReserveEpochMs : elapsedMs;
+  return (BigInt.from(stakedNanos) *
+          BigInt.from(annualBps) *
+          BigInt.from(ms) ~/
+          (BigInt.from(10000) * BigInt.from(365) * BigInt.from(86400000)))
+      .toInt();
+}
+
+class ReserveRewards {
+  const ReserveRewards({
+    required this.accrued,
+    required this.projected,
+    required this.staked,
+    required this.idle,
+    required this.oracleBps,
+    required this.elapsedMs,
+  });
+  final int accrued;
+  final int projected;
+  final int staked;
+  final int idle;
+  final int oracleBps;
+  final int elapsedMs;
+}
+
+String portalIdFromDest(String dest) {
+  return sha256.convert(utf8.encode('shear-portal-v1') + utf8.encode(dest)).toString();
+}
+
+class ReservePortal {
+  ReservePortal({this.staked = 0, this.idle = 0, this.vote, this.joined = false, this.payout});
+  int staked;
+  int idle;
+  String? vote;
+  bool joined;
+  String? payout;
+  int get nanos => staked + idle;
+  bool get canVote => joined && staked >= kPiSheNanos;
+}
+
+class ShearReserve {
+  int epochStartMs = 0;
+  int totalLockedNanos = 0;
+  int oracleBps = kReserveOracleDefaultBps;
+  int oracleObservedAtMs = 0;
+  final Map<String, ReservePortal> portals = {};
+  int votesIncrease = 0;
+  int votesDecrease = 0;
+  int votesHold = 0;
+
+  ReservePortal portal(String dest) {
+    final id = portalIdFromDest(dest);
+    return portals.putIfAbsent(id, ReservePortal.new);
+  }
+
+  int remainingMs(int nowMs) {
+    if (epochStartMs == 0) return kReserveEpochMs;
+    final end = epochStartMs + kReserveEpochMs;
+    final left = end - nowMs;
+    return left < 0 ? 0 : left;
+  }
+
+  bool canJoin(int nowMs) {
+    if (epochStartMs == 0) return true;
+    return remainingMs(nowMs) >= kReserveJoinCutoffMs;
+  }
+
+  bool cutoffDisclaimer(int nowMs) {
+    if (epochStartMs == 0) return false;
+    return remainingMs(nowMs) < kReserveJoinCutoffMs;
+  }
+
+  int elapsedMs(int nowMs) {
+    if (epochStartMs == 0) return 0;
+    final e = nowMs - epochStartMs;
+    if (e <= 0) return 0;
+    return e > kReserveEpochMs ? kReserveEpochMs : e;
+  }
+
+  ReserveRewards rewards(String dest, int nowMs) {
+    final p = portal(dest);
+    final elapsed = elapsedMs(nowMs);
+    return ReserveRewards(
+      accrued: accruedNanos(p.staked, oracleBps, elapsed),
+      projected: reserveInterestNanos(p.staked, oracleBps),
+      staked: p.staked,
+      idle: p.idle,
+      oracleBps: oracleBps,
+      elapsedMs: elapsed,
+    );
+  }
+
+  String? observeRate({required int annualBps, required int nowMs}) {
+    if (annualBps < 0 || annualBps > 10000) return 'bad_rate';
+    oracleBps = annualBps;
+    oracleObservedAtMs = nowMs;
+    return null;
+  }
+
+  String? deposit({required String dest, required double she, required int nowMs, String? payout}) {
+    if (!isDestAddress(dest) || isShearAddress(dest)) return 'bad_dest';
+    final n = (she * kUnitsPerShe).round();
+    if (n <= 0) return 'bad_amount';
+    final p = portal(dest);
+    if (payout != null && isDestAddress(payout) && !isShearAddress(payout)) {
+      p.payout = payout;
+    }
+    if (canJoin(nowMs)) {
+      p.staked += n;
+      if (!p.joined && p.staked >= kPiSheNanos) {
+        p.joined = true;
+        if (epochStartMs == 0) epochStartMs = nowMs;
+      }
+    } else {
+      p.idle += n;
+    }
+    totalLockedNanos += n;
+    return null;
+  }
+
+  String? vote({required String dest, required String choice, required int nowMs}) {
+    nowMs;
+    final p = portal(dest);
+    if (!p.canVote) return 'not_voter';
+    if (choice != kVoteIncrease && choice != kVoteDecrease && choice != kVoteHold) {
+      return 'bad_vote';
+    }
+    if (p.vote == kVoteIncrease) votesIncrease--;
+    if (p.vote == kVoteDecrease) votesDecrease--;
+    if (p.vote == kVoteHold) votesHold--;
+    p.vote = choice;
+    if (choice == kVoteIncrease) votesIncrease++;
+    if (choice == kVoteDecrease) votesDecrease++;
+    if (choice == kVoteHold) votesHold++;
+    return null;
+  }
+
+  Map<String, int>? withdraw({required String dest, required int nowMs, String? payout}) {
+    if (epochStartMs == 0 || nowMs < epochStartMs + kReserveEpochMs) return null;
+    final p = portal(dest);
+    final staked = p.staked;
+    final idle = p.idle;
+    final principal = staked + idle;
+    if (principal <= 0) return null;
+    if (!extraMintAllowed(kReserveProgram)) return null;
+    if (payout != null && isDestAddress(payout) && !isShearAddress(payout)) {
+      p.payout = payout;
+    }
+    final interest = reserveInterestNanos(staked, oracleBps);
+    totalLockedNanos -= principal;
+    if (p.vote == kVoteIncrease) votesIncrease--;
+    if (p.vote == kVoteDecrease) votesDecrease--;
+    if (p.vote == kVoteHold) votesHold--;
+    p.staked = 0;
+    p.idle = 0;
+    p.joined = false;
+    p.vote = null;
+    p.payout = null;
+    return {
+      'principal': principal,
+      'staked': staked,
+      'idle': idle,
+      'interest': interest,
+      'payout': principal + interest,
+    };
+  }
+
+  /// Settle a finished epoch into Continuum spendable (principal + extra-minted interest).
+  Map<String, int>? withdrawTo(
+    ShearLedger ledger, {
+    required String dest,
+    required String payout,
+    required int nowMs,
+  }) {
+    final out = withdraw(dest: dest, nowMs: nowMs, payout: payout);
+    if (out == null) return null;
+    ledger.creditReserve(to: payout, amount: (out['principal']! + out['interest']!) / kUnitsPerShe);
+    return out;
+  }
+
+  Map<String, int> publicView(int nowMs) => {
+        'epochStartMs': epochStartMs,
+        'remainingMs': remainingMs(nowMs),
+        'totalLockedNanos': totalLockedNanos,
+        'votesIncrease': votesIncrease,
+        'votesDecrease': votesDecrease,
+        'votesHold': votesHold,
+        'oracleBps': oracleBps,
+      };
+
+  String publicJson(int nowMs) => jsonEncode(publicView(nowMs));
+}

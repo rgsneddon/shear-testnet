@@ -1,25 +1,47 @@
 export const TARGET_BLOCK_INTERVAL_MS = 90_000;
 export const MIN_BITS = 1;
 /**
- * SHA-256 width. Inherit from GNFP 2026-08-24: 32 bits (~4.29e9 work)
- * froze live difficulty under large CPU farms. GPU/ASIC stay refused at
- * the share gate; this only lets ASERT use the whole hash.
+ * SHA-256 width. A 32-bit farm lid froze live difficulty under large
+ * CPU farms. GPU/ASIC stay refused at the share gate; this only lets
+ * ASERT use the whole hash.
  */
 export const MAX_BITS = 256;
 export const LIVE_MIN_BITS = 14;
 export const GENESIS_BITS = 21;
-export const NANOS_PER_SHE = 1_000_000_000;
+/** Protocol unit is 10⁻¹¹ SHE (11 decimals). Vote steps are integers of this unit. */
+export const SHE_DECIMALS = 11;
+export const NANOS_PER_SHE = 100_000_000_000; // 10^11
 export const BLOCK_SUBSIDY_NANOS = NANOS_PER_SHE;
-export const HASH_BONUS_NANOS = 1;
+/** 0.0000000001 SHE per valid hash = 10 units. */
+export const HASH_BONUS_NANOS = 10;
+/** Vote moves the per-hash bonus by one protocol unit (±10⁻¹¹ SHE). The 1 SHE pot does not move. */
+export const HASH_BONUS_VOTE_DELTA_NANOS = 1;
 export const POOL_FEE_BPS = 100;
 export const MAGIC_TESTNET = 'shear-testnet-v1';
 export const MAGIC_MAINNET = 'shear-v1';
-/** Only this Vortex program may mint beyond miner pot + hash bonus. */
+/** Reserve may mint interest. Join may mint once at genesis into its vault. */
 export const RESERVE_PROGRAM = 'shear-reserve-v1';
-export const PI_SHE_NANOS = 3141592654; // π SHE in nanos (floor 3.141592654 SHE)
+export const JOIN_PROGRAM = 'shear-join-v1';
+export const JOIN_KIND_GENESIS = 'join-genesis';
+export const JOIN_WINDOW_DAYS = 99;
+export const JOIN_WINDOW_MS = JOIN_WINDOW_DAYS * 86_400_000;
+/** Prior-ledger coin uses 10 decimals; Shear uses 11. 1 coin → 1 SHE. */
+export const PRIOR_UNITS_PER_COIN = 10_000_000_000;
+export const PRIOR_TO_SHEAR_UNITS = NANOS_PER_SHE / PRIOR_UNITS_PER_COIN;
+export const PI_SHE_NANOS = 314159265358; // floor(π × 10^11) SHE in protocol units
+export const RESERVE_EPOCH_DAYS = 400;
+export const RESERVE_JOIN_CUTOFF_DAYS = 99;
+export const RESERVE_EPOCH_MS = RESERVE_EPOCH_DAYS * 86_400_000;
+export const RESERVE_JOIN_CUTOFF_MS = RESERVE_JOIN_CUTOFF_DAYS * 86_400_000;
+export const HASH_BONUS_VOTE_DELTA = HASH_BONUS_VOTE_DELTA_NANOS / NANOS_PER_SHE;
 
-export function extraMintAllowed(programId) {
-  return String(programId || '') === RESERVE_PROGRAM;
+export function extraMintAllowed(programId, opts = {}) {
+  const id = String(programId || '');
+  if (id === RESERVE_PROGRAM) return true;
+  if (id === JOIN_PROGRAM && String(opts.kind || '') === JOIN_KIND_GENESIS && !opts.funded) {
+    return true;
+  }
+  return false;
 }
 
 export function clampBits(bits) {
