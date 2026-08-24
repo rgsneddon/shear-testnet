@@ -2,7 +2,12 @@
  * Per-TCP-session share vardiff. Not consensus.
  * Header bits stay on ASERT 90 s. Share target only throttles submit rate
  * and must never exceed current block bits.
+ *
+ * Inherit from GNFP 2026-08-24: default max is SHA-256 width so a huge
+ * CPU farm is throttled instead of flooding. GPU/ASIC still mint nothing.
  */
+import { MAX_BITS } from '../../crypto/asert.js';
+
 export const SHARE_VARDIFF_TARGET_MS = 7500;
 export const SHARE_VARDIFF_RETARGET_SHARES = 8;
 export const SHARE_VARDIFF_RETARGET_MS = 20_000;
@@ -10,7 +15,9 @@ export const SHARE_VARDIFF_RETARGET_MS = 20_000;
 export function hashesProvenByShare(shareBits) {
   const b = Math.floor(Number(shareBits) || 0);
   if (b <= 0) return 1;
-  return 2 ** Math.min(b, 40);
+  const n = Math.min(b, MAX_BITS);
+  if (n >= 53) return Number.MAX_SAFE_INTEGER;
+  return 2 ** n;
 }
 
 /** 1-thread H/s implied by share bits at the vardiff target interval. */
@@ -20,7 +27,7 @@ export function expectedOneThreadHs(shareBits, targetMs = SHARE_VARDIFF_TARGET_M
   return hashes / sec;
 }
 
-export function clampShareBits(bits, { blockBits, minBits = 1, maxBits = 32 } = {}) {
+export function clampShareBits(bits, { blockBits, minBits = 1, maxBits = MAX_BITS } = {}) {
   let n = Math.round(Number(bits));
   if (!Number.isFinite(n)) n = Math.max(1, minBits);
   n = Math.max(minBits, Math.min(maxBits, n));

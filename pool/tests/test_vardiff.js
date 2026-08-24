@@ -28,6 +28,8 @@ describe('share vardiff', () => {
     assert.equal(clampShareBits(24, { blockBits: 21 }), 21);
     assert.equal(clampShareBits(16, { blockBits: 29 }), 16);
     assert.equal(clampShareBits(1, { minBits: 4, blockBits: 8 }), 4);
+    assert.equal(clampShareBits(40, { blockBits: 48 }), 40);
+    assert.equal(clampShareBits(300), 256);
   });
 
   it('raises share bits when shares arrive faster than the session target', () => {

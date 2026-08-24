@@ -5,6 +5,8 @@ import {
   TARGET_BLOCK_INTERVAL_MS,
   GENESIS_BITS,
   LIVE_MIN_BITS,
+  MAX_BITS,
+  clampBits,
 } from './asert.js';
 
 describe('ASERT 90s block retarget', () => {
@@ -23,5 +25,14 @@ describe('ASERT 90s block retarget', () => {
     const next = nextBits(21, 180_000);
     assert.ok(next < 21, `expected ease from 21, got ${next}`);
     assert.ok(next >= LIVE_MIN_BITS);
+  });
+
+  it('is not stuck at 32 bits / 4.29e9 work', () => {
+    assert.equal(MAX_BITS, 256);
+    assert.equal(clampBits(32), 32);
+    assert.equal(clampBits(40), 40);
+    assert.equal(clampBits(256), 256);
+    assert.equal(clampBits(300), 256);
+    assert.equal(nextBits(32, 250), 40);
   });
 });

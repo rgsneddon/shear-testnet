@@ -33,7 +33,7 @@ Coinbase is the only source of new SHE.
 
 ## Resistance
 
-ASERT toward 90 s, per block. Floor 14 bits, ceiling 32 bits. Genesis 21 bits.
+ASERT toward 90 s, per block. Floor 14 bits, ceiling **256 bits** (SHA-256 width). Genesis 21 bits. Do **not** keep a 32-bit (~4.29e9) lid — that froze GNFP under large CPU farms.
 
 Work of a block: `2^256 / (target + 1)`. Heaviest valid chain wins. Equal work keeps first-seen.
 

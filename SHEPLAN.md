@@ -25,7 +25,7 @@ Clean independent Nakamoto-consensus coin. Continuity-settled (one hash = one tr
 | Repo | Private GitHub monorepo **`rgsneddon/shear`** |
 | Consensus | Nakamoto most-work, **header** PoW, P2P gossip |
 | Block time | **90 s** |
-| Resistance | Header `bits`; **ASERT** per block toward 90 s; floor 14 bits; ceiling 32 bits; genesis 21 |
+| Resistance | Header `bits`; **ASERT** per block toward 90 s; floor 14 bits; ceiling **256 bits** (SHA-256 width, not 32); genesis 21 |
 | Algo (public) | **ShearHash** · personalization **`ShearHash-v1`** · 8-round SHA256 · wire `client=ShearHash` |
 | Address | **`shear1`** (bech32, HRP `shear`) on **both** testnet and mainnet; networks isolated by magic, not HRP |
 | Testnet magic | **`shear-testnet-v1`** |

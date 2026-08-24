@@ -1,6 +1,11 @@
 export const TARGET_BLOCK_INTERVAL_MS = 90_000;
 export const MIN_BITS = 1;
-export const MAX_BITS = 32;
+/**
+ * SHA-256 width. Inherit from GNFP 2026-08-24: 32 bits (~4.29e9 work)
+ * froze live difficulty under large CPU farms. GPU/ASIC stay refused at
+ * the share gate; this only lets ASERT use the whole hash.
+ */
+export const MAX_BITS = 256;
 export const LIVE_MIN_BITS = 14;
 export const GENESIS_BITS = 21;
 export const NANOS_PER_SHE = 1_000_000_000;
@@ -19,6 +24,7 @@ export function extraMintAllowed(programId) {
 
 export function clampBits(bits) {
   const n = Math.floor(Number(bits) || 0);
+  if (Number(bits) === Infinity) return MAX_BITS;
   if (!Number.isFinite(n) || n <= 0) return GENESIS_BITS;
   return Math.max(LIVE_MIN_BITS, Math.min(MAX_BITS, n));
 }

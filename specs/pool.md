@@ -44,7 +44,7 @@ Shear pool book:
 4. Disconnect drops only that session’s inventory; other sockets on the same worker stay listed.
 5. Key the book by **full login** (`shp1.worker`), not dest-only. `dest.alpha` and `dest.beta` are distinct rows; several sockets on `dest.alpha` still sum.
 6. No miner-fee dual-login / fee route. Miners keep any dev fee themselves.
-7. Per-session share **vardiff** moves share bits with accepted-share rate and **never exceeds** current block `bits`. Block retarget stays ASERT 90 s.
+7. Per-session share **vardiff** moves share bits with accepted-share rate and **never exceeds** current block `bits`. Default share max is the SHA-256 width (256), same as header ASERT. Block retarget stays ASERT 90 s. Do **not** clamp vardiff at 24 or header bits at 32.
 
 `foldConnectionInventory` and `applyFoldedHonesty` in `pool/src/pool.js`; share bits in `pool/src/share_vardiff.js`.
 
