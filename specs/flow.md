@@ -23,7 +23,7 @@ dest_n = shp1(SHA256(chronoflux-J-v1 || S || t_n)[0:20])
 she1_n = payment code from (V, S, n)  // scan+spend pubs, unlimited
 ```
 
-Same `(S, C, index)` always regenerates the same `shp1`. Same `(V, S, n)` regenerates `she1`. No cap on index. Miner `--user` is `shp1`. Pool pays dest as-is. Rest-frame `shear1` is never a dest login. she is quiet.
+Same `(S, C, index)` always regenerates the same `shp1`. Same `(V, S, n)` regenerates `she1`. No cap on index. Miner `--user` is `shp1`. Pool pays dest as-is. Rest-frame `shear1` is never a dest login. she is private.
 
 Password = view key = `shewall.json` seal. Never POST `V`/`C`/`shear1`.
 

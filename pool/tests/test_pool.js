@@ -176,4 +176,14 @@ describe('session inventory fold', () => {
     assert.equal(folded.cpuCores, 288);
     assert.equal(folded.sessions, 2);
   });
+
+  it('does not cap folded claimed threads at 256', () => {
+    const folded = foldConnectionInventory([
+      { threads: 300, cpuThreads: 320, cpuCores: 160 },
+      { threads: 300, cpuThreads: 320, cpuCores: 160 },
+    ]);
+    assert.equal(folded.threads, 600);
+    assert.equal(folded.cpuThreads, 640);
+    assert.ok(folded.threads > 256);
+  });
 });

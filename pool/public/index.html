@@ -3,12 +3,13 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <script src="/brand/theme.js?v=4"></script>
   <title>Shear pool · ShearHash</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
   <link rel="stylesheet" href="/brand/nevia.css"/>
   <link rel="stylesheet" href="/brand/urema.css"/>
-  <link rel="stylesheet" href="/brand/theme.css"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=5"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
@@ -44,11 +45,13 @@
     .cmd-row { display:flex; gap:8px; align-items:stretch; }
     .cmd-row pre { flex:1; margin:0; }
     .cmd-row button { padding:.4rem .7rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer; font-family:"Urema","Segoe UI",system-ui,sans-serif; font-size:1rem; }
-    table { width:100%; border-collapse:collapse; }
-    th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:1rem; }
+    table { width:100%; max-width:100%; border-collapse:collapse; table-layout:fixed; }
+    th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:1rem; overflow-wrap:anywhere; word-break:break-word; }
+    .table-wrap { width:100%; max-width:100%; overflow-x:auto; }
+    .panel-card { min-width:0; }
     .pulse { color:var(--green); font-size:.9rem; }
     .top-banner {
-      display:flex; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
+      display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
       border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
     }
     .wordmark { font-weight:800; letter-spacing:.12em; color:var(--blue); font-size:.85rem; }
@@ -74,26 +77,35 @@
 </head>
 <body>
   <header class="top-banner">
-    <img id="shear-wordmark" class="banner-wordmark" alt="Shear"
-      src="/brand/05c-wordmark-nevia-light-transparent.png"
-      data-light="/brand/05c-wordmark-nevia-light-transparent.png"
-      data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
-    <nav class="nav">
-      <a class="nav-btn" href="/">OFFICIAL POOL</a>
+    <div class="banner-brand">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </div>
+    <nav class="nav" id="shear-nav">
+      <a class="nav-btn" href="https://shear.digital">MAIN</a>
+      <a class="nav-btn" href="/">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
-      <a class="nav-btn" href="https://shear.digital">SITE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">MINER</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">NODE</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">WALLET</a>
     </nav>
-    <button type="button" class="theme-toggle" id="theme-toggle" onclick="toggleShearTheme()">Dark</button>
+    <div class="banner-tools">
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
+    </div>
   </header>
-  <script src="/brand/theme.js"></script>
   <div class="wrap">
     <div class="top-row">
       <section class="panel-card">
         <h1>Shear. Private by default on a continuity-settled chain.</h1>
-        <p>she is quiet</p>
+        <p>she is private</p>
         <p>SHE pool. Proof of work only — ShearHash CPU. Offer she1 (silent ID). Mine with revolving shp1 dests. Never share shear1.</p>
         <p class="repo-btns">
           <a class="repo-btn" href="https://github.com/rgsneddon/shear">MINER</a>
@@ -110,7 +122,7 @@
         </p>
         <p>
           <label class="label" for="threads">CPU threads</label><br/>
-          <input id="threads" type="number" min="1" max="256" value="4" step="1"/>
+          <input id="threads" type="number" min="1" value="4" step="1"/>
         </p>
         <div class="cmd-row">
           <pre id="mine-cmd">shear-miner --pool pool.shear.digital:1111 --user YOUR_SHP1.worker --threads 4</pre>
@@ -138,6 +150,7 @@
     </div>
     <section class="panel-card">
       <h2>Pool miners</h2>
+      <div class="table-wrap">
       <table id="miners">
         <thead>
           <tr>
@@ -152,12 +165,13 @@
         </thead>
         <tbody></tbody>
       </table>
+      </div>
     </section>
   </div>
   <script>
     function renderCmd() {
       const addr = (document.getElementById('addr').value || '').trim();
-      const t = Math.min(256, Math.max(1, Number(document.getElementById('threads').value) || 4));
+      const t = Math.max(1, Number(document.getElementById('threads').value) || 4);
       const user = addr ? (addr.indexOf('.') >= 0 ? addr : addr + '.worker') : 'YOUR_SHP1.worker';
       document.getElementById('mine-cmd').textContent =
         'shear-miner --pool pool.shear.digital:1111 --user ' + user + ' --threads ' + t;

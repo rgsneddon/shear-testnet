@@ -14,7 +14,7 @@ import 'shear_theme.dart';
 import 'shear_ctf.dart';
 import 'shear_vortex.dart';
 
-const kWalletVersion = '0.0.3';
+const kWalletVersion = '0.0.4';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -265,7 +265,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     final listed = ledger.listedDests(ident.address);
     return _card([
       const Text('Continuum  ∇·J = 0', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('she is quiet. Public ID (she1) — offer this everywhere'),
+      const Text('she is private. Public ID (she1) — offer this everywhere'),
       SelectableText(ident.paymentCode),
       const SizedBox(height: 6),
       const Text('Rest-frame shear1 (never share, never on chain)'),

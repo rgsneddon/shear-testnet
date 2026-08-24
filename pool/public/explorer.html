@@ -4,12 +4,13 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta http-equiv="Cache-Control" content="no-store"/>
+  <script src="/brand/theme.js?v=4"></script>
   <title>Shear explorer · ShearHash</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
   <link rel="stylesheet" href="/brand/nevia.css"/>
   <link rel="stylesheet" href="/brand/urema.css"/>
-  <link rel="stylesheet" href="/brand/theme.css"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=5"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
@@ -39,7 +40,7 @@
     .pulse { color:var(--green); font-size:.9rem; }
     .stale { color:#b42318; }
     .top-banner {
-      display:flex; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
+      display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
       border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
     }
     .wordmark { font-weight:800; letter-spacing:.12em; color:var(--blue); font-size:.85rem; }
@@ -68,25 +69,34 @@
 </head>
 <body>
   <header class="top-banner">
-    <img id="shear-wordmark" class="banner-wordmark" alt="Shear"
-      src="/brand/05c-wordmark-nevia-light-transparent.png"
-      data-light="/brand/05c-wordmark-nevia-light-transparent.png"
-      data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
-    <nav class="nav">
-      <a class="nav-btn" href="https://pool.shear.digital">OFFICIAL POOL</a>
+    <div class="banner-brand">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </div>
+    <nav class="nav" id="shear-nav">
+      <a class="nav-btn" href="https://shear.digital">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
       <a class="nav-btn" href="/">EXPLORER</a>
-      <a class="nav-btn" href="https://shear.digital">SITE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">MINER</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">NODE</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">WALLET</a>
     </nav>
-    <button type="button" class="theme-toggle" id="theme-toggle" onclick="toggleShearTheme()">Dark</button>
+    <div class="banner-tools">
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
+    </div>
   </header>
-  <script src="/brand/theme.js"></script>
   <div class="wrap">
     <section class="panel-card">
       <h1>Shear explorer</h1>
-      <p>she is quiet</p>
+      <p>she is private</p>
       <p>Continuity-settled PoW. Public rows are tx id, amount, height, memo yes/no. Offer she1 (silent ID). Chain dests are shp1. Never share shear1.</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
     </section>

@@ -4,4 +4,4 @@
 
 **https://github.com/rgsneddon/handoff/blob/main/HANDOFF.md** (section **Shear**)
 
-Laptop leftover for miner **0.1.1** / wallet **0.0.3** is **done** (2026-08-23). Do **not** rebuild. Testnet only. No mainnet zip. No sibling tag.
+Do **not** rebuild miner **0.1.1** or wallet **0.0.3**. Testnet only. No mainnet zip. No sibling tag.

@@ -34,7 +34,6 @@
 
 #define DEFAULT_HOST "pool.shear.digital"
 #define DEFAULT_PORT 1111
-#define MAX_THREADS 256
 #define LINE_CAP 8192
 #define HEX_CAP 256
 
@@ -204,7 +203,6 @@ int main(int argc, char **argv) {
     } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
       g_threads = atoi(argv[++i]);
       if (g_threads < 1) g_threads = 1;
-      if (g_threads > MAX_THREADS) g_threads = MAX_THREADS;
     } else if (strcmp(argv[i], "--notls") == 0) {
       /* plaintext stratum (local / testnet default path) */
     }

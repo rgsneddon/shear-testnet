@@ -71,7 +71,7 @@ describe('dest HRP pin', () => {
     assert.equal(/--user she1/.test(miner), false);
     assert.equal(/--user shear1/.test(miner), false);
     const html = fs.readFileSync(path.join(root, 'pool/public/index.html'), 'utf8');
-    assert.match(html, /she is quiet/);
+    assert.match(html, /she is private/);
     assert.match(html, /shp1/);
     assert.equal(/--user she1/.test(html), false);
     assert.equal(/--user shear1/.test(html), false);
@@ -82,6 +82,6 @@ describe('dest HRP pin', () => {
     const wallet = fs.readFileSync(path.join(root, 'wallet/lib/main.dart'), 'utf8');
     assert.match(wallet, /shp1/);
     assert.match(wallet, /she1/);
-    assert.match(wallet, /she is quiet/);
+    assert.match(wallet, /she is private/);
   });
 });

@@ -8,5 +8,5 @@ rsync -a --delete \
   /mnt/c/Users/rgsne/shear/ "$HOME/src/shear/"
 cd "$HOME/src/shear/wallet"
 flutter pub get
-flutter build linux --release --build-name=0.0.3 --build-number=3
+flutter build linux --release --build-name=0.0.4 --build-number=4
 echo "LINUX_BUILD_OK"

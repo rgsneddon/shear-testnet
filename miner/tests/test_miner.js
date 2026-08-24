@@ -23,10 +23,13 @@ describe('C miner', () => {
     const j = JSON.parse(cfg.stdout);
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
-    assert.equal(j.version, '0.1.1');
+    assert.equal(j.version, '0.1.2');
     assert.equal(j.pool, 'pool.shear.digital:1111');
     assert.equal(j.magic, 'shear-testnet-v1');
     assert.equal(j.headerBytes, 120);
+    const src = fs.readFileSync(path.join(root, 'src/shear_miner.c'), 'utf8');
+    assert.equal(/MAX_THREADS/.test(src), false);
+    assert.equal(/g_threads > MAX_THREADS/.test(src), false);
   });
 
   it('admits --user shp1 dests and refuses she1 and shear1', () => {
