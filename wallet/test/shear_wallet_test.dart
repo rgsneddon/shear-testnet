@@ -130,7 +130,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.0.4');
+    expect(kWalletVersion, '0.0.3');
     expect(kWalletVersion.contains('0.0.10'), isFalse);
     final key = issueVorticeKey('stake-pool-a');
     expect(key, isNotNull);
@@ -229,14 +229,14 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.0.4');
-    expect(kWalletVersion, '0.0.4');
+    expect(app.title, 'Shear 0.0.3');
+    expect(kWalletVersion, '0.0.3');
     // password gate first
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
     await tester.pump();
-    expect(find.textContaining('0.0.4'), findsWidgets);
+    expect(find.textContaining('0.0.3'), findsWidgets);
     expect(find.textContaining('she is quiet'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);

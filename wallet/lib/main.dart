@@ -14,7 +14,7 @@ import 'shear_theme.dart';
 import 'shear_ctf.dart';
 import 'shear_vortex.dart';
 
-const kWalletVersion = '0.0.4';
+const kWalletVersion = '0.0.3';
 const kTabs = [
   'Continuum',
   'Flow',
