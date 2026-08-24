@@ -184,7 +184,21 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     return Image.asset(
       shearWordmarkAsset(_themeMode == ThemeMode.dark ? Brightness.dark : Brightness.light),
       height: height,
+      fit: BoxFit.contain,
       filterQuality: FilterQuality.high,
+    );
+  }
+
+  /// One circular mark + SHEAR letters (no second logo).
+  Widget _brandLockup({required double mark, required double wordHeight}) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        _brandMark(size: mark),
+        SizedBox(width: mark * 0.18),
+        _brandWordmark(height: wordHeight),
+      ],
     );
   }
 
@@ -201,10 +215,11 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                _brandMark(size: 72),
-                const SizedBox(height: 10),
-                _brandWordmark(height: 28),
-                const SizedBox(height: 8),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: _brandLockup(mark: 88, wordHeight: 52),
+                ),
+                const SizedBox(height: 12),
                 Text(
                   'she is private',
                   style: TextStyle(color: theme.colorScheme.onSurface),
@@ -259,11 +274,13 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
-        leading: Padding(padding: const EdgeInsets.all(8), child: _brandMark(size: 28)),
+        automaticallyImplyLeading: false,
+        toolbarHeight: 64,
+        titleSpacing: 12,
         title: Row(
           children: [
-            _brandWordmark(height: 22),
-            const SizedBox(width: 8),
+            Flexible(child: _brandLockup(mark: 44, wordHeight: 32)),
+            const SizedBox(width: 10),
             Text('$kWalletVersion  ${kSymbols[tab]}'),
           ],
         ),

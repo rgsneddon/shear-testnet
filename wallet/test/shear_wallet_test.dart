@@ -260,6 +260,8 @@ void main() {
     await tester.pump();
     expect(shearDarkBg.value, isNot(shearBg.value));
     expect(kShearLogoAsset, 'assets/brand/logo.png');
+    expect(kShearWordmarkLight, 'assets/brand/wordmark-text-light.png');
+    expect(kShearWordmarkDark, 'assets/brand/wordmark-text-dark.png');
     expect(find.byType(Image), findsWidgets);
     await tester.tap(find.text('Dark mode'));
     await tester.pumpAndSettle();

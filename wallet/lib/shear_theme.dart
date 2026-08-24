@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 
 /// Pack-derived in-app art. [logo.png] is a square canvas; the mark is a circle (no stretch).
 const kShearLogoAsset = 'assets/brand/logo.png';
-const kShearWordmarkLight = 'assets/brand/wordmark-light.png';
-const kShearWordmarkDark = 'assets/brand/wordmark-dark.png';
+const kShearWordmarkLight = 'assets/brand/wordmark-text-light.png';
+const kShearWordmarkDark = 'assets/brand/wordmark-text-dark.png';
 
 /// Pool light palette.
 const shearBg = Color(0xFFEEF3F8);
