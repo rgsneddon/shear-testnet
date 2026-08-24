@@ -34,6 +34,7 @@ class ShearSession {
     if (store.existsSync()) {
       final j = jsonDecode(store.readAsStringSync()) as Map<String, dynamic>;
       identity = ShearIdentity.fromJson(j);
+      if (identity!.paymentCode != j['paymentCode']) await persist();
       return identity!;
     }
     identity = createIdentity();

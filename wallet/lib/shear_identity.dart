@@ -38,8 +38,10 @@ class ShearIdentity {
     final address = j['address'] as String;
     final viewKey = j['viewKey'] as String;
     final hash20 = spendHashFromAddress(address);
-    final code = (j['paymentCode'] as String?) ??
-        (hash20 == null ? '' : paymentCodeAtIndex(viewKey, hash20, 0) ?? '');
+    var code = (j['paymentCode'] as String?) ?? '';
+    if (!isPaymentCode(code) && hash20 != null) {
+      code = paymentCodeAtIndex(viewKey, hash20, 0) ?? '';
+    }
     return ShearIdentity(
       seedHex: j['seedHex'] as String,
       address: address,
