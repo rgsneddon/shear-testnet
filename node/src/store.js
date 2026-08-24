@@ -15,7 +15,9 @@ import {
   leanBlock,
   sealedExplorerRows,
   lag1Continuity,
+  shouldAdopt,
 } from './chain.js';
+import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
 import { setNonce } from '../../crypto/header.js';
@@ -112,6 +114,55 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     return { ok: true, block: stored };
   }
 
+  function adopt(fork) {
+    if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
+    const accepted = [];
+    for (let i = 0; i < fork.length; i += 1) {
+      const prev = i === 0 ? null : { hash: accepted[i - 1].hash };
+      const check = verifyBlock(fork[i], prev);
+      if (!check.ok) return { ok: false, reason: check.reason, at: i };
+      accepted.push(leanBlock({
+        ...fork[i],
+        magic: MAGIC_TESTNET,
+        hash: check.hash,
+        height: i + 1,
+      }));
+    }
+    if (!shouldAdopt(blocks, accepted)) {
+      return { ok: false, reason: 'not_heavier', tip: tip() };
+    }
+    blocks.length = 0;
+    for (const b of accepted) blocks.push(b);
+    rewriteChain();
+    rebuildExplorer();
+    pruneBuried();
+    return { ok: true, reorg: true, tip: tip() };
+  }
+
+  function ingest(fork) {
+    if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
+    const t = tip();
+    let decoded;
+    try {
+      decoded = decodeHeader(Buffer.from(fork[0].header));
+    } catch {
+      return { ok: false, reason: 'bad_header' };
+    }
+    const extendsTip = t
+      ? decoded.prevBlockHash.equals(Buffer.from(t.hash))
+      : decoded.prevBlockHash.equals(GENESIS_PREV);
+    if (extendsTip) {
+      let last = null;
+      for (const b of fork) {
+        const got = append(b);
+        if (!got.ok) return last || got;
+        last = got;
+      }
+      return last;
+    }
+    return adopt(fork);
+  }
+
   function historyFor(address) {
     const addr = String(address || '').trim();
     return explorer.filter((r) => r.to === addr || r.from === addr);
@@ -191,6 +242,8 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     explorer,
     tip,
     append,
+    adopt,
+    ingest,
     template,
     submitHeader,
     jobs,

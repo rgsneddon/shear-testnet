@@ -1,0 +1,17 @@
+[Unit]
+Description=Shear testnet node (P2P 30303)
+After=network.target shear-pool.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/shear
+Environment=SHEAR_DATA=/var/lib/shear/node-2
+Environment=SHEAR_P2P_PORT=30304
+Environment=SHEAR_P2P_BIND=0.0.0.0
+Environment=SHEAR_SEEDS=127.0.0.1:30303
+ExecStart=/usr/local/bin/node node/src/node.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

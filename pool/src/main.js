@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createPool } from './pool.js';
 import { newIdentity } from '../../crypto/address.js';
+import { createP2p, P2P_PORT } from '../../node/src/p2p.js';
 
 const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet');
 fs.mkdirSync(dataDir, { recursive: true });
@@ -27,10 +28,22 @@ const pool = createPool({
   bits: Number(process.env.SHEAR_BITS || 16),
 });
 await pool.listen();
+const p2pPort = Number(process.env.SHEAR_P2P_PORT ?? P2P_PORT);
+let p2pBound = 0;
+if (p2pPort > 0) {
+  const p2p = createP2p({
+    store: pool.store,
+    port: p2pPort,
+    host: process.env.SHEAR_P2P_BIND || '0.0.0.0',
+  });
+  const bound = await p2p.listen();
+  p2pBound = bound.port;
+}
 console.log(JSON.stringify({
   ok: true,
   stratum: 1111,
   http: pool.httpServer.address().port,
+  p2p: p2pBound,
   miner,
   magic: 'shear-testnet-v1',
 }));
