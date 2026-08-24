@@ -8,18 +8,16 @@
   <title>Shear explorer · ShearHash</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="stylesheet" href="/brand/nevia.css"/>
-  <link rel="stylesheet" href="/brand/urema.css"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=5"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=6"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
       --cyan: #0088a8; --blue: #1a6fb5; --green: #1a9a4a; --radius: 0px;
     }
     * { box-sizing: border-box; }
-    body { margin:0; font:16px/1.45 "Urema","Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    body { margin:0; font:16px/1.45 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
     .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
-    h1, h2, .label { font-family:"Nevia","Segoe UI",system-ui,sans-serif; }
+    h1, h2, .label { font-family:"Segoe UI",system-ui,sans-serif; }
     h1 { font-size:1.75rem; font-weight:800; margin:0 0 8px; }
     h2 { font-size:1.35rem; font-weight:800; margin:0 0 8px; }
     p { margin:0 0 8px; overflow-wrap:anywhere; }
@@ -47,16 +45,16 @@
     .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
     a.nav-btn {
       display:inline-flex; align-items:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
-      font-family:"Urema","Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.8rem; text-transform:uppercase;
+      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.8rem; text-transform:uppercase;
       border:1px solid transparent;
       background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
         linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
       background-origin:border-box; background-clip:padding-box, border-box;
     }
-    input { width:100%; margin:.3rem 0 .6rem; padding:.4rem .5rem; background:var(--input); color:var(--ink); border:1px solid var(--blue); font-size:16px; font-family:"Urema","Segoe UI",system-ui,sans-serif; }
+    input { width:100%; margin:.3rem 0 .6rem; padding:.4rem .5rem; background:var(--input); color:var(--ink); border:1px solid var(--blue); font-size:16px; font-family:"Segoe UI",system-ui,sans-serif; }
     button {
       padding:.4rem .7rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue);
-      cursor:pointer; font-size:1rem; font-weight:700; font-family:"Urema","Segoe UI",system-ui,sans-serif;
+      cursor:pointer; font-size:1rem; font-weight:700; font-family:"Segoe UI",system-ui,sans-serif;
     }
     .search-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:8px; }
     .search-grid > p { margin:0; }

@@ -124,41 +124,29 @@ describe('brand pages', () => {
     assert.match(theme, /aria-label/);
     assert.equal(fs.existsSync(path.join(root, 'pool/public/brand/05c-wordmark-nevia-light-transparent.png')), true);
     assert.equal(fs.existsSync(path.join(root, 'pool/public/brand/favicon-32.png')), true);
-    assert.equal(fs.existsSync(path.join(root, 'brand/fonts/nevia/woff2/Nevia-Regular.woff2')), true);
   });
 
-  it('Urema is body text, Nevia is larger headings only, body is at least 16px', () => {
+  it('pages use Segoe UI like the GNFP sites, not Nevia or Urema', () => {
     const pages = [
       read('site/index.html'),
       read('pool/public/index.html'),
       read('pool/public/explorer.html'),
     ];
     for (const p of pages) {
-      assert.match(p, /href="\/brand\/urema\.css"/);
+      assert.equal(/href="\/brand\/urema\.css"/.test(p), false);
+      assert.equal(/href="\/brand\/nevia\.css"/.test(p), false);
       const body = p.match(/body\s*\{[^}]+\}/);
       assert.ok(body, 'missing body rule');
-      assert.match(body[0], /"Urema"/);
-      assert.equal(/"Nevia"/.test(body[0]), false, 'body must not list Nevia');
+      assert.match(body[0], /"Segoe UI"/);
+      assert.equal(/"Urema"/.test(body[0]), false);
+      assert.equal(/"Nevia"/.test(body[0]), false);
       assert.match(body[0], /16px/);
-      assert.equal(/font:\s*13px/.test(body[0]), false);
-      assert.match(p, /h1,\s*h2,\s*\.label\s*\{[^}]*font-family:\s*"Nevia"/);
-      assert.match(p, /h1\s*\{[^}]*font-size:\s*1\.75rem/);
-      assert.match(p, /h2\s*\{[^}]*font-size:\s*1\.35rem/);
-      assert.equal(/font-size:\s*\.62rem/.test(p), false);
-      assert.equal(/font:\s*13px/.test(p), false);
+      assert.match(p, /h1,\s*h2,\s*\.label\s*\{[^}]*font-family:\s*"Segoe UI"/);
     }
-    const urema = read('pool/public/brand/urema.css');
-    assert.match(urema, /font-family:\s*"Urema"/);
-    assert.match(urema, /format\("woff2"\)/);
-    assert.match(urema, /font-weight:\s*100 900/);
-    assert.match(urema, /fonts\/urema\/woff2\/Urema-Variable\.woff2/);
-    const woff = bytes('pool/public/brand/fonts/urema/woff2/Urema-Variable.woff2');
-    assert.equal(woff.subarray(0, 4).toString(), 'wOF2');
-    assert.ok(woff.length > 10000, 'Urema WOFF2 too small to be the variable face');
-    const shipped = bytes('brand/fonts/urema/woff2/Urema-Variable.woff2');
-    assert.deepEqual(woff, shipped);
     const css = read('pool/public/brand/theme.css');
-    assert.match(css, /font-family:\s*"Urema"/);
+    assert.match(css, /font-family:\s*"Segoe UI"/);
+    assert.equal(/"Urema"/.test(css), false);
+    assert.equal(/"Nevia"/.test(css), false);
     assert.match(css, /h1,\s*h2,\s*\.label/);
   });
 
