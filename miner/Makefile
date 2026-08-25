@@ -1,4 +1,4 @@
-VERSION ?= 0.1.3
+VERSION ?= 0.1.4
 CC ?= cc
 CFLAGS ?= -O2 -Wall -Wextra -std=c11
 UNAME_S := $(shell uname -s)
@@ -10,17 +10,27 @@ else
   LIBS ?= -pthread
 endif
 
-SRC := src/shear_miner.c src/shear_hash.c src/sha256.c
+SCALAR_OBJS := src/shear_miner.o src/shear_hash.o src/sha256.o src/sha256_dispatch.o
+ISA_OBJS := src/sha256_ni.o src/sha256_avx2.o
 
 .PHONY: all clean selftest
 
 all: $(BIN)
 
-$(BIN): $(SRC) src/shear_hash.h
-	$(CC) $(CFLAGS) -o $@ $(SRC) $(LIBS)
+src/%.o: src/%.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+src/sha256_ni.o: src/sha256_ni.c src/sha256.h
+	$(CC) $(CFLAGS) -msse4.1 -msha -c -o $@ src/sha256_ni.c
+
+src/sha256_avx2.o: src/sha256_avx2.c src/sha256.h
+	$(CC) $(CFLAGS) -mavx2 -DGNFP_ALLOW_AVX2 -c -o $@ src/sha256_avx2.c
+
+$(BIN): $(SCALAR_OBJS) $(ISA_OBJS)
+	$(CC) $(CFLAGS) -o $@ $(SCALAR_OBJS) $(ISA_OBJS) $(LIBS)
 
 selftest: $(BIN)
 	./$(BIN) --selftest
 
 clean:
-	rm -f $(BIN)
+	rm -f $(BIN) src/*.o

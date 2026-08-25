@@ -22,13 +22,18 @@ describe('C miner', () => {
     assert.match(st.stdout, /client=ShearHash/);
     assert.match(st.stdout, /algorithm=ShearHash/);
     assert.match(st.stdout, /x8-independent ok/);
+    assert.match(st.stdout, /backend=(scalar-x8|sha-ni|avx2-x8)/);
     assert.equal(st.stdout.includes('1.0.6-max-autotune'), false);
+    const sc = spawnSync(bin, ['--backend', 'scalar', '--selftest'], { encoding: 'utf8' });
+    assert.equal(sc.status, 0, sc.stderr + sc.stdout);
+    assert.match(sc.stdout, /selftest ok 6e95b9033c5d044d08bbf854fb2e5343ca3103b96ae37bde101258d43cfacc63/);
+    assert.match(sc.stdout, /backend=scalar-x8/);
     const cfg = spawnSync(bin, ['--print-config'], { encoding: 'utf8' });
     assert.equal(cfg.status, 0, cfg.stderr);
     const j = JSON.parse(cfg.stdout);
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
-    assert.equal(j.version, '0.1.3');
+    assert.equal(j.version, '0.1.4');
     assert.equal(j.pool, 'pool.shear.digital:1111');
     assert.equal(j.magic, 'shear-testnet-v1');
     assert.equal(j.headerBytes, 120);
@@ -49,8 +54,11 @@ describe('C miner', () => {
     assert.equal(/g_fee_login/.test(minerSrc), false);
     const bench = spawnSync(bin, ['--bench', '1'], { encoding: 'utf8', timeout: 8000 });
     assert.equal(bench.status, 0, bench.stderr + bench.stdout);
-    assert.match(bench.stdout, /backend=scalar-x8/);
+    assert.match(bench.stdout, /backend=(scalar-x8|sha-ni|avx2-x8)/);
     assert.match(bench.stdout, /hashes=/);
+    const mk = fs.readFileSync(path.join(root, 'Makefile'), 'utf8');
+    assert.equal(/CFLAGS \+= -mavx2/.test(mk), false);
+    assert.equal(/CFLAGS \+= -msha/.test(mk), false);
   });
 
   it('admits --user she1 and shp1, refuses rest-frame shear1', () => {

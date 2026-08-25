@@ -8,6 +8,7 @@
 #endif
 #endif
 #include "shear_hash.h"
+#include "sha256.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -132,9 +133,9 @@ static void print_config(void) {
   printf("{\"client\":\"%s\",\"algorithm\":\"%s\",\"version\":\"%s\","
          "\"clientLogin\":\"single\","
          "\"pool\":\"%s:%d\",\"headerBytes\":%d,\"magic\":\"shear-testnet-v1\","
-         "\"threads\":%d}\n",
+         "\"threads\":%d,\"backend\":\"%s\"}\n",
          SHEAR_CLIENT, SHEAR_ALGO, SHEAR_VERSION, g_host, g_port, SHEAR_HEADER_LEN,
-         g_threads);
+         g_threads, shear_hash_backend());
 }
 
 static int mine_once(int fd) {
@@ -198,6 +199,16 @@ int main(int argc, char **argv) {
   int do_cfg = 0;
   int do_mine = 0;
   int bench_secs = 0;
+  const char *backend_arg = "auto";
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) backend_arg = argv[++i];
+  }
+  if (sha256_select_backend(backend_arg) != 0 &&
+      strcmp(backend_arg, "auto") != 0 && strcmp(backend_arg, "scalar") != 0 &&
+      strcmp(backend_arg, "scalar-x8") != 0) {
+    fprintf(stderr, "unknown or unavailable --backend %s; using %s\n", backend_arg,
+            sha256_backend_name());
+  }
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--selftest") == 0) do_selftest = 1;
     else if (strcmp(argv[i], "--print-config") == 0) do_cfg = 1;
@@ -220,6 +231,8 @@ int main(int argc, char **argv) {
     } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
       g_threads = atoi(argv[++i]);
       if (g_threads < 1) g_threads = 1;
+    } else if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
+      i++;
     } else if (strcmp(argv[i], "--notls") == 0) {
       /* plaintext stratum (local / testnet default path) */
     }
@@ -227,7 +240,7 @@ int main(int argc, char **argv) {
   if (do_selftest) {
     char hex[65];
     int ok = shear_selftest(hex);
-    printf("selftest %s %s\n", ok ? "ok" : "fail", hex);
+    printf("selftest %s %s backend=%s\n", ok ? "ok" : "fail", hex, shear_hash_backend());
     printf("client=%s algorithm=%s\n", SHEAR_CLIENT, SHEAR_ALGO);
     if (ok) printf("x8-independent ok\n");
     return ok ? 0 : 1;
@@ -252,12 +265,12 @@ int main(int argc, char **argv) {
       n += (uint64_t)SHEAR_X8;
     }
     double secs = (double)bench_secs;
-    printf("bench hashes=%llu rate=%.0f H/s backend=scalar-x8 (%.0fs)\n",
-           (unsigned long long)h, (double)h / secs, secs);
+    printf("bench hashes=%llu rate=%.0f H/s backend=%s (%.0fs)\n",
+           (unsigned long long)h, (double)h / secs, shear_hash_backend(), secs);
     return 0;
   }
   if (!do_mine) {
-    fprintf(stderr, "usage: shear-miner --selftest | --print-config | --bench [SECONDS] | --pool host:port --user she1...|shp1... [--threads N] [--notls]\n");
+    fprintf(stderr, "usage: shear-miner --selftest | --print-config | --bench [SECONDS] | --pool host:port --user she1...|shp1... [--threads N] [--backend auto|scalar] [--notls]\n");
     return 2;
   }
   /* shear1 is rest-frame and is never a login. she1 silent ID and shp1 dests are. */

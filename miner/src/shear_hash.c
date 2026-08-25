@@ -70,20 +70,27 @@ void shear_hash_x8(const unsigned char headers[SHEAR_X8][SHEAR_HEADER_LEN],
     memcpy(st, mid, sizeof(st));
     sha256_finish(st, headers[lane] + (128 - pre), first_len - 128, first_len, out[lane]);
   }
-  unsigned char buf[32 + 32 + SHEAR_HEADER_LEN + 8];
+  unsigned char msg[SHEAR_X8][32 + 32 + SHEAR_HEADER_LEN];
+  const uint8_t *ptr[SHEAR_X8];
+  size_t pers = strlen(SHEAR_PERSONAL);
+  size_t round_len = 32u + pers + 1u + SHEAR_HEADER_LEN;
   for (int r = 0; r < SHEAR_HASH_ROUNDS; r++) {
     for (int lane = 0; lane < SHEAR_X8; lane++) {
       size_t n = 0;
-      memcpy(buf + n, out[lane], 32);
+      memcpy(msg[lane] + n, out[lane], 32);
       n += 32;
-      memcpy(buf + n, SHEAR_PERSONAL, strlen(SHEAR_PERSONAL));
-      n += strlen(SHEAR_PERSONAL);
-      buf[n++] = (unsigned char)('0' + r);
-      memcpy(buf + n, headers[lane], SHEAR_HEADER_LEN);
-      n += SHEAR_HEADER_LEN;
-      sha256_oneshot(buf, n, out[lane]);
+      memcpy(msg[lane] + n, SHEAR_PERSONAL, pers);
+      n += pers;
+      msg[lane][n++] = (unsigned char)('0' + r);
+      memcpy(msg[lane] + n, headers[lane], SHEAR_HEADER_LEN);
+      ptr[lane] = msg[lane];
     }
+    sha256_oneshot_x8(ptr, round_len, out);
   }
+}
+
+const char *shear_hash_backend(void) {
+  return sha256_backend_name();
 }
 
 int shear_meets_target(const unsigned char hash[32], int bits) {
