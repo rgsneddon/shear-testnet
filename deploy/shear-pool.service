@@ -9,7 +9,7 @@ Environment=SHEAR_DATA=/var/lib/shear/testnet
 Environment=SHEAR_STRATUM=1111
 Environment=SHEAR_HTTP=8088
 Environment=SHEAR_SHARE_BITS=8
-Environment=SHEAR_BITS=16
+Environment=SHEAR_BITS=21
 Environment=SHEAR_P2P_PORT=30303
 Environment=SHEAR_P2P_BIND=0.0.0.0
 ExecStart=/usr/local/bin/node pool/src/main.js

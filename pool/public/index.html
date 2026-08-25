@@ -7,18 +7,18 @@
   <title>Shear pool · ShearHash</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=6"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=7"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
       --cyan: #0088a8; --blue: #1a6fb5; --green: #1a9a4a; --radius: 0px;
     }
     * { box-sizing: border-box; }
-    body { margin:0; font:16px/1.45 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    body { margin:0; font:14px/1.4 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
     .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
     h1, h2, .label { font-family:"Segoe UI",system-ui,sans-serif; }
-    h1 { font-size:1.75rem; font-weight:800; margin:0 0 8px; }
-    h2 { font-size:1.35rem; font-weight:800; margin:0 0 8px; }
+    h1 { font-size:1.4rem; font-weight:800; margin:0 0 8px; }
+    h2 { font-size:1.15rem; font-weight:800; margin:0 0 8px; }
     p { margin:0 0 8px; overflow-wrap:anywhere; }
     .panel-card {
       border: 1px solid transparent; border-radius: var(--radius); padding: 10px 12px; margin: 8px 0;
@@ -29,25 +29,25 @@
     .grid { display:grid; gap:8px; width:100%; }
     #stat-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); margin: 16px 0 8px; }
     .grid .panel-card { margin:0; padding:7px 8px; }
-    .label { color:var(--muted); font-size:.8rem; letter-spacing:.05em; text-transform:uppercase; }
-    .value { font-size:1rem; font-weight:650; margin-top:2px; color:var(--cyan); }
+    .label { color:var(--muted); font-size:.72rem; letter-spacing:.05em; text-transform:uppercase; }
+    .value { font-size:.9rem; font-weight:650; margin-top:2px; color:var(--cyan); }
     a { color:var(--cyan); }
     .repo-btns { display:grid; grid-template-columns:repeat(2, max-content); gap:8px; justify-content:center; margin:10px auto; width:fit-content; }
     a.repo-btn {
       display:block; text-align:center; padding:.45rem .9rem; color:var(--cyan); text-decoration:none;
-      border:1px solid var(--cyan); font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.1em; font-size:.9rem;
+      border:1px solid var(--cyan); font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.1em; font-size:.8rem;
     }
     a.repo-btn:hover { background:rgba(0,136,168,.08); }
     code, pre { background:var(--code); padding:.2em .45em; color:var(--green); white-space:pre-wrap; display:block; }
     input, select { width:100%; max-width:36rem; margin:.3rem 0 .6rem; padding:.4rem .5rem; background:var(--input); color:var(--ink); border:1px solid var(--blue); font-size:16px; font-family:"Segoe UI",system-ui,sans-serif; }
     .cmd-row { display:flex; gap:8px; align-items:stretch; }
     .cmd-row pre { flex:1; margin:0; }
-    .cmd-row button { padding:.4rem .7rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer; font-family:"Segoe UI",system-ui,sans-serif; font-size:1rem; }
+    .cmd-row button { padding:.4rem .7rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer; font-family:"Segoe UI",system-ui,sans-serif; font-size:.875rem; }
     table { width:100%; max-width:100%; border-collapse:collapse; table-layout:fixed; }
-    th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:1rem; overflow-wrap:anywhere; word-break:break-word; }
+    th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.875rem; overflow-wrap:anywhere; word-break:break-word; }
     .table-wrap { width:100%; max-width:100%; overflow-x:auto; }
     .panel-card { min-width:0; }
-    .pulse { color:var(--green); font-size:.9rem; }
+    .pulse { color:var(--green); font-size:.8rem; }
     .top-banner {
       display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
       border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
@@ -56,14 +56,14 @@
     .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
     a.nav-btn {
       display:inline-flex; align-items:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
-      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.8rem; text-transform:uppercase;
+      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.72rem; text-transform:uppercase;
       border:1px solid transparent;
       background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
         linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
       background-origin:border-box; background-clip:padding-box, border-box;
     }
     .top-row { display:grid; grid-template-columns:1fr 3fr; gap:8px; margin:0 0 16px; }
-    #fee-note { color:#8a6d00; font-size:.85rem; margin:8px 0 0; }
+    #fee-note { color:#8a6d00; font-size:.75rem; margin:8px 0 0; }
     @media (max-width: 1024px) {
       .top-row { grid-template-columns: 1fr; }
       #stat-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -115,7 +115,7 @@
         <h2>GET YOUR MINER COMMAND LINE</h2>
         <p>Mine at <code style="display:inline">pool.shear.digital:1111</code>.</p>
         <p>
-          <label class="label" for="addr">she1 or shp1</label><br/>
+          <label class="label" for="addr">To (she1)</label><br/>
           <input id="addr" type="text" placeholder="she1…" autocomplete="off" spellcheck="false"/>
         </p>
         <p>
@@ -126,7 +126,7 @@
           <pre id="mine-cmd">shear-miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --threads 4</pre>
           <button type="button" id="copy-cmd">Copy</button>
         </div>
-        <p class="label" id="cmd-hint">Valid she1 or shp1 required. she1 stays off the chain. Never share shear1.</p>
+        <p class="label" id="cmd-hint">Valid she1 required. she1 is the silent ID and the login. Never share shear1.</p>
       </section>
     </div>
     <p id="fee-note">pool fee is 1% of the 1 SHE pot for development — hash bonuses are paid in full to each hasher.</p>
@@ -177,7 +177,7 @@
         && !/^shear1/i.test(addr);
       document.getElementById('cmd-hint').textContent = ok
         ? 'Ready to copy · ShearHash · :1111'
-        : 'Valid she1 or shp1 required. she1 stays off the chain. Never share shear1.';
+        : 'Valid she1 required. she1 is the silent ID and the login. Never share shear1.';
     }
     document.getElementById('addr').addEventListener('input', renderCmd);
     document.getElementById('threads').addEventListener('input', renderCmd);

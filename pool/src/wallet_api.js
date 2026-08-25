@@ -7,6 +7,76 @@ export function nanosToShe(n) {
   return Number(n || 0) / NANOS_PER_SHE;
 }
 
+function publicTxView(t) {
+  return {
+    id: t.id,
+    kind: t.kind,
+    amount: t.amount,
+    height: t.height,
+    confirmed: t.confirmed !== false,
+    memo: t.memo === true,
+  };
+}
+
+/**
+ * 1HASH=1TX: fold hash txs into the blockfound they settled on.
+ * Shearview lists blockfound. Resistance CLI shows hash threads.
+ * Public rows never carry dests.
+ */
+export function rollupDestTxs(txs, { revealDest = true } = {}) {
+  const rest = [];
+  const blocks = new Map();
+  const unit = HASH_BONUS_NANOS / NANOS_PER_SHE;
+  for (const t of txs || []) {
+    const kind = String(t.kind || '');
+    if (
+      kind === 'hash' ||
+      kind === 'coinbase' ||
+      kind === 'pot' ||
+      kind === 'mine' ||
+      kind === 'blockfound'
+    ) {
+      const dest = String(t.to || '');
+      const height = Number(t.height) || 0;
+      const key = `${dest}|${height}`;
+      const prev = blocks.get(key) || { dest, height, pot: 0, hash: 0, threads: 0 };
+      const amt = Number(t.amount) || 0;
+      if (kind === 'hash') {
+        prev.hash += amt;
+        const th = Number(t.threads);
+        prev.threads += Number.isFinite(th) && th > 0
+          ? th
+          : (unit > 0 ? Math.round(amt / unit) : 0);
+      } else if (kind === 'mine' || kind === 'blockfound') {
+        prev.pot += amt - (Number(t.hashAmount) || 0);
+        prev.hash += Number(t.hashAmount) || 0;
+        prev.threads += Number(t.threads) || Number(t.rounds) || 0;
+        if (kind === 'mine' && !t.hashAmount) prev.pot += 0;
+      } else {
+        prev.pot += amt;
+      }
+      blocks.set(key, prev);
+      continue;
+    }
+    rest.push(t);
+  }
+  for (const b of blocks.values()) {
+    rest.push({
+      id: revealDest && b.dest ? `blockfound:${b.height}:${b.dest}` : `blockfound:${b.height}`,
+      kind: 'blockfound',
+      from: revealDest ? 'coinbase' : undefined,
+      to: revealDest ? b.dest : undefined,
+      amount: b.pot + b.hash,
+      hashAmount: b.hash,
+      threads: b.threads,
+      height: b.height,
+      confirmed: true,
+      memo: false,
+    });
+  }
+  return rest;
+}
+
 function rowsToHistory(rows, addresses) {
   const set = new Set((Array.isArray(addresses) ? addresses : [addresses]).map((a) => String(a || '').trim()));
   let spendableNanos = 0;
@@ -214,7 +284,15 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
       return { status: 400, json: { ok: false, reason: 'bad_address' } };
     }
     const rec = reconstructOwner(store, address);
-    return { status: 200, json: { ok: true, coin: 'SHE', address, txs: rec.txs, amountsOnly: true } };
+    // she1 is offered publicly — amounts only. Full from/to stays on a dest
+    // the receiving wallet derived locally and never published.
+    const owner = isDestAddress(address);
+    const rolled = rollupDestTxs(rec.txs, { revealDest: owner });
+    const txs = owner ? rolled : rolled.map(publicTxView);
+    return {
+      status: 200,
+      json: { ok: true, coin: 'SHE', txs, amountsOnly: !owner, rolled: true },
+    };
   }
   if (path === '/api/vortex/mint' && verb === 'POST') {
     if (typeof store?.mintVorticeDeployKey !== 'function') {
@@ -237,8 +315,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
     return { status: 200, json: store.lookupVorticeKey(key) };
   }
   if (path === '/api/wallet/send' && verb === 'POST') {
-    const from = String(body.from || '');
-    const to = String(body.to || '');
+    const from = payoutDest(String(body.from || '')) || '';
+    const to = payoutDest(String(body.to || '')) || '';
     const amount = Number(body.amount);
     if (!isDestAddress(from) || !isDestAddress(to) || !(amount > 0)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };

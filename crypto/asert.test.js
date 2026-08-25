@@ -46,6 +46,8 @@ describe('ASERT 90s block retarget', () => {
     assert.equal(clampBits(256), 256);
     assert.equal(clampBits(300), 256);
     assert.equal(nextBits(32, 250), 40);
+    assert.ok(nextBits(16, 1) >= 24, '1ms flood must raise bits');
+    assert.ok(nextBits(16, 50) > 16, 'sub-250ms must not freeze bits');
   });
 });
 

@@ -34,7 +34,7 @@ const pool = createPool({
   httpPort: Number(process.env.SHEAR_HTTP || 8088),
   miner,
   shareBits: Number(process.env.SHEAR_SHARE_BITS || 12),
-  bits: Number(process.env.SHEAR_BITS || 16),
+  bits: Number(process.env.SHEAR_BITS || 21),
 });
 await pool.listen();
 const p2pPort = Number(process.env.SHEAR_P2P_PORT ?? P2P_PORT);

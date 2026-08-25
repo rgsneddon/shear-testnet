@@ -127,11 +127,12 @@ describe('brand pages', () => {
 
   it('pages use Segoe UI like the GNFP sites, not Nevia or Urema', () => {
     const pages = [
-      read('site/index.html'),
-      read('pool/public/index.html'),
-      read('pool/public/explorer.html'),
+      ['site/index.html', /16px/],
+      ['pool/public/index.html', /14px/],
+      ['pool/public/explorer.html', /14px/],
     ];
-    for (const p of pages) {
+    for (const [rel, size] of pages) {
+      const p = read(rel);
       assert.equal(/href="\/brand\/urema\.css"/.test(p), false);
       assert.equal(/href="\/brand\/nevia\.css"/.test(p), false);
       const body = p.match(/body\s*\{[^}]+\}/);
@@ -139,7 +140,7 @@ describe('brand pages', () => {
       assert.match(body[0], /"Segoe UI"/);
       assert.equal(/"Urema"/.test(body[0]), false);
       assert.equal(/"Nevia"/.test(body[0]), false);
-      assert.match(body[0], /16px/);
+      assert.match(body[0], size);
       assert.match(p, /h1,\s*h2,\s*\.label\s*\{[^}]*font-family:\s*"Segoe UI"/);
     }
     const css = read('pool/public/brand/theme.css');

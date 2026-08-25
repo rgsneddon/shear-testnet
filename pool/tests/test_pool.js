@@ -121,6 +121,12 @@ describe('pool dashboard + stratum', () => {
     assert.equal(html.toLowerCase().includes('shearhash'), true);
     assert.match(html, /she is private/);
     assert.match(html, /shp1/);
+    assert.match(html, /To \(she1\)/);
+    assert.match(html, /she1 is the silent ID and the login/);
+    assert.equal(/Dest \(shp1\)/.test(html), false);
+    assert.equal(/not a login/i.test(html), false);
+    assert.equal(/shp1 dest required/i.test(html), false);
+    assert.match(html, /font:14px/);
     assert.match(html, /YOUR_SHE1/);
     assert.equal(/--user shear1/.test(html), false);
     assert.equal(html.includes('YOUR_SHEAR1'), false);

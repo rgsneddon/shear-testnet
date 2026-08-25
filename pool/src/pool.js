@@ -226,12 +226,13 @@ export function createPool({
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     const sb = clampShareBits(shareBitsNow ?? shareBits, { blockBits: blockBitsNow() });
+    const chainLen = (store.blocks || []).length;
     const { job } = store.template({
       miner: payout,
       samples,
       potShares,
       shareBits: sb,
-      bits,
+      ...(chainLen >= 2 ? {} : { bits }),
     });
     const gate = gateJob(job);
     if (!gate.ok) return null;

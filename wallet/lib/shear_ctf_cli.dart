@@ -67,6 +67,13 @@ String ctfTranscript({
   }
   buf.writeln('shp1 dest   ${chainDest ?? tx.to}');
   buf.writeln('match       ${matched ? 'YES' : 'NO'}  destForLogin opens tx.to');
+  if (tx.kind == 'blockfound' || tx.kind == 'mine') {
+    buf.writeln('-- 1HASH=1TX threads --');
+    buf.writeln('threads     ${tx.threads ?? 0}');
+    buf.writeln('hash credit ${formatShe(tx.hashAmount ?? 0)} SHE');
+    buf.writeln('rolled      hash txs folded into this blockfound');
+    buf.writeln('            (not Shearview rows; not public explorer)');
+  }
   buf.writeln('-- spendable credit --');
   if (receive && tx.kind != 'send') {
     buf.writeln('credited    ${formatShe(tx.amount)} SHE onto shp1 dest');

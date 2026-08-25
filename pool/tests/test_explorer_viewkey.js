@@ -68,7 +68,15 @@ describe('explorer dests', () => {
 
     const hist = get(store, `/api/wallet/history?address=${dest}`);
     assert.equal(hist.status, 200);
-    assert.ok(hist.json.txs.some((t) => t.to === dest));
+    assert.equal(hist.json.amountsOnly, false);
+    assert.equal(hist.json.rolled, true);
+    assert.ok(hist.json.txs.some((t) => t.to === dest && t.kind === 'blockfound'));
+    assert.ok(hist.json.txs.every((t) => t.kind !== 'hash'));
+    const she = get(store, `/api/wallet/history?address=${alice.paymentCode}`);
+    assert.equal(she.status, 200);
+    assert.equal(she.json.amountsOnly, true);
+    assert.ok(she.json.txs.every((t) => t.to == null && t.from == null && t.memoCt == null));
+    assert.equal(JSON.stringify(she.json).includes(dest), false);
   });
 
   it('search by height, tx id, and from–to range; circulation sums dest balances', () => {

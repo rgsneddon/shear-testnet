@@ -43,7 +43,7 @@ class ShearSession {
           .map((e) => Vortice.fromJson(Map<String, dynamic>.from(e)))
           .where((v) => v.id.isNotEmpty && !isPinnedProgram(v.id))
           .toList();
-      if (identity!.paymentCode != j['paymentCode']) await persist();
+      // Do not rewrite she1. It is the perpetual public ID.
       return identity!;
     }
     identity = createIdentity();

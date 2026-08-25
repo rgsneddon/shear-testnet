@@ -38,8 +38,11 @@ class ShearIdentity {
     final address = j['address'] as String;
     final viewKey = j['viewKey'] as String;
     final hash20 = spendHashFromAddress(address);
-    var code = (j['paymentCode'] as String?) ?? '';
-    if (!isPaymentCode(code) && hash20 != null) {
+    final stored = (j['paymentCode'] as String?)?.trim() ?? '';
+    // she1 is perpetual. Never rotate a stored ID — even if derivation
+    // changed. Only mint idx0 when this wallet has never had a she1.
+    var code = stored;
+    if (!isPaymentCode(code) && stored.isEmpty && hash20 != null) {
       code = paymentCodeAtIndex(viewKey, hash20, 0) ?? '';
     }
     return ShearIdentity(

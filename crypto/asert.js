@@ -63,11 +63,11 @@ export function clampBits(bits) {
   return Math.max(LIVE_MIN_BITS, Math.min(MAX_BITS, n));
 }
 
-/** Per-block ASERT toward 90s. */
+/** Per-block ASERT toward 90s. Sub-second floods must raise bits, not freeze. */
 export function nextBits(previousBits, intervalMs) {
   const prev = clampBits(previousBits);
-  const seen = Number(intervalMs);
-  if (!Number.isFinite(seen) || seen < 250) return prev;
+  let seen = Number(intervalMs);
+  if (!Number.isFinite(seen) || seen < 1) seen = 1;
   const ratio = TARGET_BLOCK_INTERVAL_MS / seen;
   const delta = Math.round(Math.log2(Math.max(1 / 256, Math.min(256, ratio))));
   return clampBits(prev + delta);

@@ -33,6 +33,9 @@ class ShearTx {
     this.memo = false,
     this.memoPlain,
     this.memoCt,
+    this.rounds,
+    this.hashAmount,
+    this.threads,
   });
 
   final String id;
@@ -45,6 +48,9 @@ class ShearTx {
   final bool memo;
   final String? memoPlain;
   final Map<String, dynamic>? memoCt;
+  final int? rounds;
+  final double? hashAmount;
+  final int? threads;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -57,6 +63,9 @@ class ShearTx {
         'memo': memo,
         if (memoPlain != null) 'memoPlain': memoPlain,
         if (memoCt != null) 'memoCt': memoCt,
+        if (rounds != null) 'rounds': rounds,
+        if (hashAmount != null) 'hashAmount': hashAmount,
+        if (threads != null) 'threads': threads,
       };
 
   ShearTx copyWith({bool? confirmed, int? height}) => ShearTx(
@@ -70,6 +79,9 @@ class ShearTx {
         memo: memo,
         memoPlain: memoPlain,
         memoCt: memoCt,
+        rounds: rounds,
+        hashAmount: hashAmount,
+        threads: threads,
       );
 
   factory ShearTx.fromJson(Map<String, dynamic> j) => ShearTx(
@@ -83,7 +95,58 @@ class ShearTx {
         memo: j['memo'] == true,
         memoPlain: j['memoPlain']?.toString(),
         memoCt: j['memoCt'] is Map ? Map<String, dynamic>.from(j['memoCt'] as Map) : null,
+        rounds: (j['rounds'] as num?)?.toInt(),
+        hashAmount: (j['hashAmount'] as num?)?.toDouble(),
+        threads: (j['threads'] as num?)?.toInt(),
       );
+}
+
+bool _isBlockCredit(String kind) =>
+    kind == 'coinbase' ||
+    kind == 'hash' ||
+    kind == 'pot' ||
+    kind == 'mine' ||
+    kind == 'blockfound';
+
+/// 1HASH=1TX: hash txs fold into the blockfound they settled on.
+List<ShearTx> rollupDestTxs(Iterable<ShearTx> txs) {
+  final rest = <ShearTx>[];
+  final blocks = <String, ShearTx>{};
+  for (final t in txs) {
+    if (!_isBlockCredit(t.kind)) {
+      rest.add(t);
+      continue;
+    }
+    final height = t.height ?? 0;
+    final key = '${t.to}|$height';
+    final prev = blocks[key];
+    var pot = prev?.amount ?? 0;
+    var hashAmt = prev?.hashAmount ?? 0;
+    var threads = prev?.threads ?? 0;
+    if (t.kind == 'hash') {
+      hashAmt += t.amount;
+      threads += t.threads ?? (t.amount / kHashBonusShe).round();
+    } else if (t.kind == 'blockfound' || t.kind == 'mine') {
+      final ha = t.hashAmount ?? 0;
+      pot += t.amount - ha;
+      hashAmt += ha;
+      threads += t.threads ?? t.rounds ?? 0;
+    } else {
+      pot += t.amount;
+    }
+    blocks[key] = ShearTx(
+      id: t.to.isEmpty ? 'blockfound:$height' : 'blockfound:$height:${t.to}',
+      from: 'coinbase',
+      to: t.to,
+      amount: pot + hashAmt,
+      kind: 'blockfound',
+      height: height,
+      confirmed: true,
+      hashAmount: hashAmt,
+      threads: threads,
+    );
+  }
+  return [...rest, ...blocks.values];
 }
 
 /// Spendable at block-found only. Per-hash credit sits in [pending] until confirm.
@@ -191,7 +254,7 @@ class ShearLedger {
     }
     _txs
       ..clear()
-      ..addAll(next);
+      ..addAll(rollupDestTxs(next));
   }
 
   void rememberSpendable(String address, double amount) {
@@ -237,20 +300,28 @@ class ShearLedger {
   /// Pull Continuum from every dest this identity owns, including the
   /// she1→shp1 mining dest. Revolving dests stay for Flow; mining credits
   /// land on the silent dest.
+  int _histAt = -1;
+
   Future<double> syncCredits(String restFrame, {String? paymentCode}) async {
     if (pool == null) return spendableOwned(restFrame, paymentCode: paymentCode);
     try {
       await syncTip();
     } catch (_) {}
-    for (final d in ownedAddresses(restFrame, paymentCode: paymentCode)) {
+    final dests = <String>{};
+    final silent = payoutDest(paymentCode ?? restFrame);
+    if (silent != null) dests.add(silent);
+    dests.add(currentDest(restFrame));
+    final pullHistory = sealedHeight != _histAt;
+    for (final d in dests) {
       try {
         final json = await pool!.balance(d);
         final live = (json['balance'] as num?)?.toDouble() ?? 0;
         _pending[d] = (json['pending'] as num?)?.toDouble() ?? 0;
         if (live > 0) _spendable[d] = live;
-        await syncHistory(d);
+        if (pullHistory) await syncHistory(d);
       } catch (_) {}
     }
+    if (pullHistory) _histAt = sealedHeight;
     return spendableOwned(restFrame, paymentCode: paymentCode);
   }
 
@@ -259,34 +330,36 @@ class ShearLedger {
     try {
       final json = await pool!.history(address);
       final rows = (json['txs'] as List?) ?? const [];
+      final incoming = <ShearTx>[];
       for (final row in rows) {
         var tx = ShearTx.fromJson(Map<String, dynamic>.from(row as Map));
-        final existing = _txs.cast<ShearTx?>().firstWhere((t) => t!.id == tx.id, orElse: () => null);
-        var plain = existing?.memoPlain ?? tx.memoPlain;
-        if (plain == null && tx.memoCt != null) {
-          plain = await memoOpen(tx.to, tx.memoCt);
+        if (tx.memoCt != null && tx.memoPlain == null) {
+          final plain = await memoOpen(tx.to, tx.memoCt);
+          if (plain != null) {
+            tx = ShearTx(
+              id: tx.id,
+              from: tx.from,
+              to: tx.to,
+              amount: tx.amount,
+              kind: tx.kind,
+              height: tx.height,
+              confirmed: tx.confirmed,
+              memo: true,
+              memoPlain: plain,
+              memoCt: tx.memoCt,
+              rounds: tx.rounds,
+            );
+          }
         }
-        if (plain != null) {
-          tx = ShearTx(
-            id: tx.id,
-            from: tx.from,
-            to: tx.to,
-            amount: tx.amount,
-            kind: tx.kind,
-            height: tx.height,
-            confirmed: tx.confirmed,
-            memo: true,
-            memoPlain: plain,
-            memoCt: tx.memoCt,
-          );
-        }
-        final i = _txs.indexWhere((t) => t.id == tx.id);
-        if (i >= 0) {
-          _txs[i] = tx;
-        } else {
-          _txs.add(tx);
-        }
+        incoming.add(tx);
       }
+      final byId = <String, ShearTx>{for (final t in _txs) t.id: t};
+      for (final tx in incoming) {
+        byId[tx.id] = tx;
+      }
+      _txs
+        ..clear()
+        ..addAll(rollupDestTxs(byId.values));
     } catch (_) {}
     prune();
     return ownerHistory(address);
@@ -332,34 +405,31 @@ class ShearLedger {
   Set<String> ownedAddresses(String restFrame, {String? paymentCode}) {
     final keys = <String>{restFrame, ..._dests, currentDest(restFrame)};
     final silent = payoutDest(paymentCode ?? restFrame);
-    if (silent != null) keys.add(silent);
+    if (silent != null) {
+      keys.add(silent);
+      final sh = hash20FromAddress(silent);
+      if (sh != null) keys.addAll(destEncodings(sh));
+    }
     for (final d in listedDests(restFrame)) {
       keys.add(d);
       final h = hash20FromAddress(d);
       if (h != null) keys.addAll(destEncodings(h));
     }
-    final v = viewSecret;
-    if (v != null && v.isNotEmpty) {
-      final hi = tipHeight < 1 ? 1 : tipHeight;
-      for (var h = 1; h <= hi; h++) {
-        final round = destForLogin(restFrame, height: h, continuityRoot: lag1Root, viewKey: v);
-        if (round == null) continue;
-        keys.add(round);
-        final hash = hash20FromAddress(round);
-        if (hash != null) keys.addAll(destEncodings(hash));
-      }
-    }
     return keys;
   }
 
-  List<ShearTx> ownerHistory(String address) {
-    final keys = ownedAddresses(address);
-    return _txs.where((t) => (t.confirmed || t.kind == 'send') && (keys.contains(t.to) || keys.contains(t.from))).toList();
+  List<ShearTx> ownerHistory(String address, {String? paymentCode}) {
+    final keys = ownedAddresses(address, paymentCode: paymentCode);
+    final rows = _txs
+        .where((t) => (t.confirmed || t.kind == 'send') && (keys.contains(t.to) || keys.contains(t.from)))
+        .toList();
+    rows.sort((a, b) => (b.height ?? 0).compareTo(a.height ?? 0));
+    return rows;
   }
 
   /// Unconfirmed transfers. Cleared when the next block is found ([confirmRound]).
-  List<ShearTx> pendingTxs(String address) {
-    final keys = ownedAddresses(address);
+  List<ShearTx> pendingTxs(String address, {String? paymentCode}) {
+    final keys = ownedAddresses(address, paymentCode: paymentCode);
     return _txs
         .where((t) => !t.confirmed && t.kind != 'sample' && (keys.contains(t.to) || keys.contains(t.from)))
         .toList();
@@ -423,16 +493,23 @@ class ShearLedger {
     String? programId,
   }) async {
     if (amount <= 0) throw ArgumentError('amount');
-    if (isShearAddress(from) || isShearAddress(to)) {
+    final payFrom = payoutDest(from) ?? from;
+    final payTo = payoutDest(to) ?? to;
+    if (isShearAddress(payFrom) || isShearAddress(payTo)) {
       throw ArgumentError('rest_frame');
     }
-    if (spendable(from) < amount) throw StateError('insufficient');
+    if (!isDestAddress(payFrom) || !isDestAddress(payTo)) {
+      throw ArgumentError('bad_dest');
+    }
+    if (spendable(payFrom) < amount && spendable(from) < amount) {
+      throw StateError('insufficient');
+    }
     Map<String, dynamic>? memoCt;
     if (memo != null && memo.isNotEmpty) {
-      memoCt = await memoSeal(to, memo);
+      memoCt = await memoSeal(payTo, memo);
     }
     if (pool != null && !local) {
-      final json = await pool!.send(from: from, to: to, amount: amount, memoCt: memoCt);
+      final json = await pool!.send(from: payFrom, to: payTo, amount: amount, memoCt: memoCt);
       final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
       final tx = ShearTx(
         id: raw.id,
@@ -446,15 +523,15 @@ class ShearLedger {
         memoPlain: memo,
         memoCt: memoCt ?? raw.memoCt,
       );
-      _spendable[from] = (json['fromBalance'] as num?)?.toDouble() ?? (spendable(from) - amount);
+      _spendable[payFrom] = (json['fromBalance'] as num?)?.toDouble() ?? (spendable(payFrom) - amount);
       _txs.add(tx);
       return tx;
     }
-    _spendable[from] = spendable(from) - amount;
+    _spendable[payFrom] = spendable(payFrom) - amount;
     final tx = ShearTx(
       id: 'send-${DateTime.now().millisecondsSinceEpoch}',
-      from: from,
-      to: to,
+      from: payFrom,
+      to: payTo,
       amount: amount,
       kind: kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send'),
       confirmed: false,
