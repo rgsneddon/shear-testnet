@@ -337,6 +337,83 @@ describe('folded-row honesty', () => {
     pool.close();
   });
 
+  it('C miner submit that repeats login in params is a share, not a new login', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-csubmit-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 4,
+      bits: 8,
+    });
+    await new Promise((resolve, reject) => {
+      pool.stratum.listen(0, '127.0.0.1', () => {
+        pool.httpServer.listen(0, '127.0.0.1', resolve);
+      });
+      pool.stratum.on('error', reject);
+    });
+    const port = pool.stratum.address().port;
+    const login = `${dest}.monsoon`;
+    const { sock, msg } = await new Promise((resolve, reject) => {
+      const s = net.connect(port, '127.0.0.1', () => {
+        s.write(JSON.stringify({
+          id: 1,
+          method: 'login',
+          params: { login, client: 'ShearHash', threads: 1, cpuThreads: 1, cpuCores: 1, version: '0.1.6' },
+        }) + '\n');
+      });
+      s.once('data', (c) => {
+        try { resolve({ sock: s, msg: JSON.parse(c.toString().split('\n')[0]) }); } catch (e) { reject(e); }
+      });
+      s.on('error', reject);
+      setTimeout(() => reject(new Error('login_timeout')), 5000);
+    });
+    const job = msg.job;
+    assert.ok(job?.jobId && job?.header, JSON.stringify(msg));
+    let nonce = 0n;
+    let hit = null;
+    while (nonce < 200000n) {
+      const scored = scoreShare({ job, nonce });
+      if (scored.ok) { hit = scored; break; }
+      nonce += 1n;
+    }
+    assert.ok(hit, 'no_share');
+    const ident = {
+      login,
+      threads: 1,
+      cpuCores: 1,
+      cpuThreads: 1,
+      client: 'ShearHash',
+      version: '0.1.6',
+    };
+    const ack = await new Promise((resolve, reject) => {
+      sock.once('data', (c) => resolve(c.toString()));
+      sock.write(`${JSON.stringify({
+        id: 2,
+        method: 'submit',
+        params: { ...ident, jobId: job.jobId, nonce: String(nonce) },
+        ...ident,
+        jobId: job.jobId,
+        nonce: String(nonce),
+      })}\n`);
+      setTimeout(() => reject(new Error('submit_timeout')), 8000);
+    });
+    assert.match(ack, /OK/);
+    assert.equal(ack.includes('"method":"job"'), false);
+    const row = pool.miners.get(login);
+    assert.ok(row);
+    assert.ok(row.accepted >= 1, JSON.stringify(row));
+    const listed = pool.publicStats();
+    assert.equal(listed.workers.length, 1);
+    assert.equal(listed.workers[0].worker, 'monsoon');
+    assert.equal(listed.accepted, 1);
+    sock.destroy();
+    pool.close();
+  });
+
   it('proven H/s is work over the full 72s window, not now-first', () => {
     const now = Date.now();
     const miner = {

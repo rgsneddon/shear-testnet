@@ -380,7 +380,12 @@ export function createPool({
         try { msg = JSON.parse(raw); } catch { continue; }
         const method = msg.method || msg.id;
         const params = msg.params || msg;
-        if (method === 'login' || params.login) {
+        // C miner submit repeats identity (login/threads) inside params.
+        // `params.login` must not be treated as a login — that issued a new
+        // job per share, accepted stayed 0, and the hasher never listed.
+        const isLogin = method === 'login'
+          || (params.login && method !== 'submit' && method !== 'job' && method !== 2 && method !== '2');
+        if (isLogin) {
           const adm = admitClient(params);
           if (!adm.ok) {
             sock.write(line({ id: msg.id, error: adm.reason }));
