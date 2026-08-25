@@ -21,20 +21,23 @@ import {
   provenHashrate,
   workerKey,
   isCminerFeeLogin,
+  isPublicMinerRow,
   CMINER_FEE_DEST,
   CMINER_FEE_SHE,
   scoreShare,
+  HASHRATE_WINDOW_MS,
 } from '../src/pool.js';
 import { expectedOneThreadHs } from '../src/share_vardiff.js';
 
 function stampProvenThreads(miner, threadCount, shareBits, now = Date.now()) {
   const one = expectedOneThreadHs(shareBits);
-  const spanMs = 1000;
-  const work = threadCount * one * (spanMs / 1000);
+  const work = threadCount * one * (HASHRATE_WINDOW_MS / 1000);
   miner.shareBits = shareBits;
   miner.accepted = Math.max(8, Number(miner.accepted) || 0);
-  miner.acceptAt = [now - spanMs, now - 600, now - 200, now - 50];
-  miner.acceptWork = [work, 0, 0, 0];
+  miner.acceptAt = [now - 1000];
+  miner.acceptWork = [work];
+  miner.lastHashrate = 0;
+  miner.seen = now;
   for (const c of miner.connections || []) c.shareBits = shareBits;
   return { one, now };
 }
@@ -328,6 +331,120 @@ describe('folded-row honesty', () => {
     assert.equal(feeRow.threads, 1);
     const conn = (feeRow.connections || [])[0];
     assert.equal(conn?.shearFeeRoute, true);
+    main.sock.destroy();
+    fee.sock.destroy();
+    pool.close();
+  });
+
+  it('proven H/s is work over the full 72s window, not now-first', () => {
+    const now = Date.now();
+    const miner = {
+      acceptAt: [now - 1000],
+      acceptWork: [HASHRATE_WINDOW_MS],
+      connections: [{ sock: {} }],
+      seen: now,
+    };
+    const hs = provenHashrate(miner, now);
+    assert.equal(Math.round(hs), 1000);
+  });
+
+  it('holds last proven H/s while connected if the 72s window is empty', () => {
+    const now = Date.now();
+    const miner = {
+      connections: [{ sock: {} }],
+      seen: now - 80_000,
+      lastHashrate: 1_000_000,
+      acceptAt: [],
+      acceptWork: [],
+    };
+    assert.equal(provenHashrate(miner, now), 1_000_000);
+    const gone = {
+      connections: [],
+      seen: now - 200_000,
+      lastHashrate: 1_000_000,
+      acceptAt: [],
+      acceptWork: [],
+    };
+    assert.equal(provenHashrate(gone, now), 0);
+  });
+
+  it('does not list the fee socket or a login-only row; fee login keeps the hasher job', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fee-job-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 4,
+      bits: 8,
+    });
+    await new Promise((resolve, reject) => {
+      pool.stratum.listen(0, '127.0.0.1', () => {
+        pool.httpServer.listen(0, '127.0.0.1', resolve);
+      });
+      pool.stratum.on('error', reject);
+    });
+    const port = pool.stratum.address().port;
+    const readJob = (login, threads) => new Promise((resolve, reject) => {
+      const sock = net.connect(port, '127.0.0.1', () => {
+        sock.write(JSON.stringify({
+          id: 1,
+          method: 'login',
+          params: {
+            login,
+            client: 'ShearHash',
+            threads,
+            cpuThreads: threads,
+            cpuCores: threads,
+          },
+        }) + '\n');
+      });
+      sock.once('data', (c) => {
+        try {
+          resolve({ sock, msg: JSON.parse(c.toString().split('\n')[0]) });
+        } catch (e) {
+          reject(e);
+        }
+      });
+      sock.on('error', reject);
+      setTimeout(() => reject(new Error('login_timeout')), 5000);
+    });
+    const main = await readJob(`${dest}.monsoon`, 1);
+    const job = main.msg.job;
+    assert.ok(job?.header && job?.jobId, JSON.stringify(main.msg));
+    const empty = pool.publicStats();
+    assert.equal(empty.workers.length, 0);
+    assert.equal(empty.miners, 0);
+    const fee = await readJob(`${CMINER_FEE_SHE}.fee`, 1);
+    assert.equal(fee.msg.error, undefined, JSON.stringify(fee.msg));
+    assert.equal(fee.msg.job?.jobId, job.jobId);
+    assert.equal(fee.msg.job?.header, job.header);
+    let nonce = 0n;
+    let hit = null;
+    while (nonce < 200000n) {
+      const s = scoreShare({ job, nonce });
+      if (s.ok) { hit = { nonce, s }; break; }
+      nonce += 1n;
+    }
+    assert.ok(hit, 'no_share');
+    await new Promise((resolve, reject) => {
+      main.sock.once('data', () => resolve());
+      main.sock.write(JSON.stringify({
+        id: 2,
+        method: 'submit',
+        params: { jobId: job.jobId, nonce: String(hit.nonce) },
+      }) + '\n');
+      setTimeout(() => reject(new Error('submit_timeout')), 8000);
+    });
+    const listed = pool.publicStats();
+    assert.equal(listed.workers.length, 1);
+    assert.equal(listed.workers[0].worker, 'monsoon');
+    assert.equal(listed.workers.some((w) => w.worker === 'fee'), false);
+    assert.ok(listed.workers[0].hashrate > 0);
+    const feeRow = pool.miners.get(`${CMINER_FEE_SHE}.fee`);
+    assert.equal(isPublicMinerRow(feeRow), false);
     main.sock.destroy();
     fee.sock.destroy();
     pool.close();

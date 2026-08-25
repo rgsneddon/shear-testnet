@@ -24,7 +24,10 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
-const HASHRATE_WINDOW_MS = 72_000;
+/** Public H/s is proven hashes in this window, not lifetime hashes / first-seen. */
+export const HASHRATE_WINDOW_MS = 72_000;
+/** After disconnect, stay visible this long past the last submitted hash. */
+export const HASH_PRESENCE_MS = 72_000;
 /** Mean interval of the last 1000 chain blocks (or all we have if fewer). */
 export const AVG_BLOCK_WINDOW = 1000;
 
@@ -191,23 +194,50 @@ export function foldConnectionInventory(connections) {
   };
 }
 
+export function minerConnected(miner) {
+  return (miner?.connections || []).some((c) => c && c.sock);
+}
+
+/**
+ * Dual-login `.fee` is a second TCP session on the hasher's job, not a
+ * public worker. Login alone does not list a row. A still-connected
+ * hasher stays listed even if the next share is slower than 72s.
+ */
+export function isPublicMinerRow(m, now = Date.now()) {
+  if (!m) return false;
+  if (isCminerFeeLogin(m.workerKey || m.login)) return false;
+  if (!(Number(m.accepted) > 0)) return false;
+  if (minerConnected(m)) return true;
+  const seen = Number(m.seen) || 0;
+  return seen > 0 && (Number(now) - seen) < HASH_PRESENCE_MS * 2;
+}
+
 export function provenHashrate(miner, now = Date.now()) {
   const at = Number(now) || Date.now();
   const cut = at - HASHRATE_WINDOW_MS;
   const times = Array.isArray(miner?.acceptAt) ? miner.acceptAt : [];
   const works = Array.isArray(miner?.acceptWork) ? miner.acceptWork : [];
   let work = 0;
-  let first = 0;
   for (let i = 0; i < times.length; i += 1) {
     if (Number(times[i]) > cut) {
-      if (!first) first = Number(times[i]);
       const w = Number(works[i]);
       work += Number.isFinite(w) && w > 0 ? w : 1;
     }
   }
-  if (work <= 0) return 0;
-  const spanMs = Math.max(1000, Math.min(HASHRATE_WINDOW_MS, at - first));
-  return work / (spanMs / 1000);
+  const connected = minerConnected(miner);
+  const lastHash = Number(miner?.seen) || 0;
+  const recent = lastHash > 0 && at - lastHash <= HASH_PRESENCE_MS;
+  if (work <= 0) {
+    const held = Number(miner?.lastHashrate) || 0;
+    if (held > 0 && (connected || recent)) return held;
+    return 0;
+  }
+  // Always the full 72s window. now-first floored at 1s painted GH/s on a
+  // high-bit share, then dropped to 0 when the next share was slower than
+  // the window (1-thread at block bits 26+ is ~90s between shares).
+  const hs = work / (HASHRATE_WINDOW_MS / 1000);
+  if (miner && typeof miner === 'object') miner.lastHashrate = hs;
+  return hs;
 }
 
 /** Honesty on the folded row vs merged proven H/s. Never last-write. */
@@ -296,7 +326,10 @@ export function createPool({
   }
 
   function issueJob(shareBitsNow) {
-    const hasherPay = payoutDest([...miners.values()][0]?.login);
+    const hasherPay = payoutDest(
+      [...miners.values()].find((m) => !isCminerFeeLogin(m.workerKey || m.login))?.login
+      || [...miners.values()][0]?.login,
+    );
     const poolPay = payoutDest(miner);
     const live = snapshotRound();
     const potShares = splitPot(
@@ -391,7 +424,12 @@ export function createPool({
           miners.set(key, session);
           if (isCminerFeeLogin(key)) conn.shearFeeRoute = true;
           applyFoldedHonesty(session, { peers: honestyPeers() });
-          const job = issueJob(conn.shareBits);
+          // Fee socket submits the hasher's current jobId. A new template here
+          // superseded lastJob and the main worker painted 0 H/s until the
+          // next share on a stale header.
+          const job = conn.shearFeeRoute && lastJob
+            ? lastJob
+            : issueJob(conn.shareBits);
           sock.write(line({ id: msg.id, result: { status: 'OK' }, job }));
           continue;
         }
@@ -424,6 +462,19 @@ export function createPool({
             if (!Array.isArray(session.acceptWork)) session.acceptWork = [];
             session.acceptAt.push(Date.now());
             session.acceptWork.push(work);
+            if (session.acceptAt.length > 64) {
+              const drop = Date.now() - HASHRATE_WINDOW_MS;
+              const nextT = [];
+              const nextW = [];
+              for (let i = 0; i < session.acceptAt.length; i += 1) {
+                if (Number(session.acceptAt[i]) > drop) {
+                  nextT.push(session.acceptAt[i]);
+                  nextW.push(session.acceptWork[i]);
+                }
+              }
+              session.acceptAt = nextT.length ? nextT : session.acceptAt.slice(-16);
+              session.acceptWork = nextT.length ? nextW : session.acceptWork.slice(-16);
+            }
             applyFoldedHonesty(session, { peers: honestyPeers() });
           }
           let nextJob = null;
@@ -464,11 +515,12 @@ export function createPool({
             }
           }
           if (nextJob) {
+            const live = [...miners.values()].flatMap((m) => m.connections || []).filter((c) => c?.sock);
+            const mainConn = live.find((c) => !c.shearFeeRoute) || live[0];
+            const base = issueJob(mainConn?.shareBits ?? shareBits);
             for (const s of sockets) {
               try {
-                const c = [...miners.values()].flatMap((m) => m.connections || []).find((x) => x.sock === s);
-                const j = issueJob(c?.shareBits ?? shareBits);
-                if (j) s.write(line({ method: 'job', params: j }));
+                if (base) s.write(line({ method: 'job', params: base }));
               } catch { /* ignore */ }
             }
           }
@@ -511,7 +563,7 @@ export function createPool({
 
   function publicStats() {
     const now = Date.now();
-    const workers = [...miners.values()].filter((m) => now - m.seen < 120_000);
+    const workers = [...miners.values()].filter((m) => isPublicMinerRow(m, now));
     const tip = store.tip();
     return {
       ok: true,
@@ -542,7 +594,10 @@ export function createPool({
   function minerByTag(tag) {
     const want = String(tag || '').trim().toLowerCase();
     if (!/^she1[0-9a-f]{8}$/.test(want)) return [];
-    return [...miners.values()].filter((m) => publicMinerTag(m.login || m.workerKey) === want);
+    return [...miners.values()].filter((m) => (
+      publicMinerTag(m.login || m.workerKey) === want
+      && !isCminerFeeLogin(m.workerKey || m.login)
+    ));
   }
 
   const httpServer = http.createServer(async (req, res) => {
