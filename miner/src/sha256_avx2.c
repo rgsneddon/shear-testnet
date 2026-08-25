@@ -1,5 +1,5 @@
 /*
- * AVX2 8-way SHA-256. Compile this file only with -mavx2 -DGNFP_ALLOW_AVX2.
+ * AVX2 8-way SHA-256. Compile this file only with -mavx2 -DSHEAR_ALLOW_AVX2.
  * Dispatch calls this only after CPUID AVX2 + OSXSAVE + XMM/YMM. No scalar
  * fallback in this object (that would reintroduce 1.1.2 ymm in a mixed TU).
  */

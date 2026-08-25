@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <script src="/brand/theme.js?v=4"></script>
+  <title>Shear miner · ShearHash</title>
+  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="icon" href="/brand/favicon.ico"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=8"/>
+  <style>
+    :root {
+      --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
+      --cyan: #0088a8; --blue: #1a6fb5; --green: #1a9a4a; --radius: 0px;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; font:13px/1.35 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
+    h1, h2, .label { font-family:"Segoe UI",system-ui,sans-serif; }
+    h1 { font-size:1.15rem; font-weight:800; margin:0 0 8px; }
+    h2 { font-size:1rem; font-weight:800; margin:0 0 8px; }
+    p { margin:0 0 8px; overflow-wrap:anywhere; }
+    .panel-card {
+      border: 1px solid transparent; border-radius: var(--radius); padding: 10px 12px; margin: 8px 0;
+      background: linear-gradient(165deg, #ffffff 0%, #f4f8fc 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin: border-box; background-clip: padding-box, border-box;
+    }
+    .grid { display:grid; gap:8px; width:100%; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 8px 0 16px; }
+    .grid .panel-card { margin:0; padding:7px 8px; }
+    .label { color:var(--muted); font-size:.65rem; letter-spacing:.05em; text-transform:uppercase; }
+    .value { font-size:.78rem; font-weight:650; margin-top:2px; color:var(--cyan); overflow-wrap:anywhere; }
+    a { color:var(--cyan); }
+    .mono { font-family: ui-monospace, Consolas, monospace; font-size:.75rem; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.75rem; overflow-wrap:anywhere; }
+    .pulse { color:var(--green); font-size:.7rem; }
+    .top-banner {
+      display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
+      border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
+    }
+    .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
+    a.nav-btn {
+      display:inline-flex; align-items:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
+      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.65rem; text-transform:uppercase;
+      border:1px solid transparent;
+      background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box, border-box;
+    }
+    .back-pool {
+      display: block; text-align: right; margin: 10px 2px 0;
+      color: var(--muted); font-size: .7rem; text-decoration: none;
+    }
+    .back-pool:hover { color: var(--cyan); }
+    @media (max-width: 1024px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  </style>
+</head>
+<body>
+  <header class="top-banner">
+    <div class="banner-brand">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </div>
+    <nav class="nav" id="shear-nav">
+      <a class="nav-btn" href="https://shear.digital">MAIN</a>
+      <a class="nav-btn" href="/">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">NODE</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">WALLET</a>
+    </nav>
+    <div class="banner-tools">
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
+    </div>
+  </header>
+  <div class="wrap">
+    <section class="panel-card">
+      <p><a href="/">Back to pool</a></p>
+      <h1>Miner stats · <span class="mono" id="miner-tag">—</span></h1>
+      <p>Public pool view only. No wallet, silent ID, dest, IP, or worker name.</p>
+      <p class="pulse" id="live-pulse">live · testnet</p>
+    </section>
+    <div class="grid" id="stat-grid">
+      <article class="panel-card"><div class="label">Tag</div><div class="value mono" id="m-tag">—</div></article>
+      <article class="panel-card"><div class="label">Version</div><div class="value" id="m-version">—</div></article>
+      <article class="panel-card"><div class="label">Client</div><div class="value" id="m-client">—</div></article>
+      <article class="panel-card"><div class="label">Algo</div><div class="value" id="m-algo">ShearHash</div></article>
+      <article class="panel-card"><div class="label">Connected</div><div class="value" id="m-connected">—</div></article>
+      <article class="panel-card"><div class="label">Hashrate</div><div class="value" id="m-hashrate">0 H/s</div></article>
+      <article class="panel-card"><div class="label">Blocks found</div><div class="value" id="m-blocks">0</div></article>
+      <article class="panel-card"><div class="label">Accepted work</div><div class="value" id="m-accepted">0</div></article>
+      <article class="panel-card"><div class="label">Stale shares</div><div class="value" id="m-stale">0</div></article>
+      <article class="panel-card"><div class="label">CPU threads</div><div class="value" id="m-threads">0</div></article>
+      <article class="panel-card"><div class="label">Hashes this round</div><div class="value" id="m-round">0</div></article>
+      <article class="panel-card"><div class="label">Honesty</div><div class="value" id="m-honesty">—</div></article>
+      <article class="panel-card"><div class="label">First seen</div><div class="value" id="m-first">—</div></article>
+      <article class="panel-card"><div class="label">Last seen</div><div class="value" id="m-last">—</div></article>
+    </div>
+    <section class="panel-card">
+      <h2>Workers</h2>
+      <p>Worker is the login name after the dest (for example monsoon). Miner tag stays a hashed she1 id.</p>
+      <table id="workers">
+        <thead>
+          <tr>
+            <th>Worker</th>
+            <th>Version</th>
+            <th>Hashrate</th>
+            <th>Blocks found</th>
+            <th>Accepted</th>
+            <th>Stale</th>
+            <th>Threads</th>
+            <th>Hashes this round</th>
+            <th>Connected</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+    <a class="back-pool" href="/">back to pool</a>
+  </div>
+  <script>
+    const tag = decodeURIComponent((location.pathname.split('/miner/')[1] || '').split('/')[0] || '');
+    function fmtRate(n) {
+      const v = Number(n) || 0;
+      if (!Number.isFinite(v) || v <= 0) return '0.0 H/s';
+      const units = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s', 'ZH/s'];
+      let x = v;
+      let i = 0;
+      while (x >= 1000 && i < units.length - 1) { x /= 1000; i += 1; }
+      return (i === 0 ? x.toFixed(1) : x.toFixed(2)) + ' ' + units[i];
+    }
+    function ago(ms) {
+      const t = Number(ms) || 0;
+      if (!t) return '—';
+      const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + ' ago';
+    }
+    function set(id, v) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = v;
+    }
+    function paint(d) {
+      if (!d || !d.ok) {
+        set('live-pulse', 'unknown miner');
+        return;
+      }
+      set('miner-tag', d.tag);
+      set('m-tag', d.tag);
+      set('m-version', d.version || '—');
+      set('m-client', d.client || 'ShearHash');
+      set('m-algo', d.algo || 'ShearHash');
+      set('m-connected', d.connected ? 'yes' : 'no');
+      set('m-hashrate', fmtRate(d.hashrate));
+      set('m-blocks', String(d.blocks || 0));
+      set('m-accepted', String(d.accepted || 0));
+      set('m-stale', String(d.stale || 0));
+      set('m-threads', String(d.threads || 0));
+      set('m-round', String(d.roundHashes || 0));
+      set('m-honesty', d.honesty || '—');
+      set('m-first', ago(d.firstSeen));
+      set('m-last', ago(d.lastSeen));
+      document.title = d.tag + ' · Shear miner';
+      const tb = document.querySelector('#workers tbody');
+      tb.innerHTML = (d.workers || []).map(function (w) {
+        const name = String(w.worker || 'worker').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || 'worker';
+        return '<tr><td class="mono">' + name + '</td><td>' + (w.version || '—') +
+          '</td><td>' + fmtRate(w.hashrate) + '</td><td>' + (w.blocks || 0) +
+          '</td><td>' + (w.accepted || 0) + '</td><td>' + (w.stale || 0) +
+          '</td><td>' + (w.threads || 0) + '</td><td>' + (w.roundHashes || 0) +
+          '</td><td>' + (w.connected ? 'yes' : 'no') + '</td></tr>';
+      }).join('');
+    }
+    function tick() {
+      if (!/^she1[0-9a-f]{8}$/i.test(tag)) {
+        set('live-pulse', 'bad miner tag');
+        return;
+      }
+      fetch('/api/miners/' + encodeURIComponent(tag) + '?_=' + Date.now(), { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(paint)
+        .catch(function () {});
+    }
+    setInterval(tick, 1000);
+    tick();
+  </script>
+</body>
+</html>

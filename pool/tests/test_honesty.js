@@ -20,6 +20,10 @@ import {
   foldConnectionInventory,
   provenHashrate,
   workerKey,
+  isCminerFeeLogin,
+  CMINER_FEE_DEST,
+  CMINER_FEE_SHE,
+  scoreShare,
 } from '../src/pool.js';
 import { expectedOneThreadHs } from '../src/share_vardiff.js';
 
@@ -36,13 +40,25 @@ function stampProvenThreads(miner, threadCount, shareBits, now = Date.now()) {
 }
 
 describe('folded-row honesty', () => {
-  it('does not credit a miner-fee dual-login route', () => {
-    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
-    const hon = fs.readFileSync(new URL('../src/thread_honesty.js', import.meta.url), 'utf8');
-    const vd = fs.readFileSync(new URL('../src/share_vardiff.js', import.meta.url), 'utf8');
-    for (const t of [src, hon, vd]) {
-      assert.equal(/isCminerFeeLogin|CMINER_FEE|gnfpFeeRoute|HASHRATES_BASELINE/.test(t), false);
-    }
+  it('recognises gnfp-cminer 0.5 friend dest.fee as the dual-login fee route', () => {
+    assert.equal(isCminerFeeLogin(`${CMINER_FEE_DEST}.fee`), true);
+    assert.equal(isCminerFeeLogin(`${CMINER_FEE_SHE}.fee`), true);
+    assert.equal(isCminerFeeLogin(`${CMINER_FEE_DEST}.FEE`), true);
+    assert.equal(isCminerFeeLogin(`${CMINER_FEE_DEST}.worker`), false);
+    assert.equal(isCminerFeeLogin(`${CMINER_FEE_SHE}.cedar`), false);
+    const miner = {
+      login: `${CMINER_FEE_DEST}.fee`,
+      workerKey: `${CMINER_FEE_DEST}.fee`,
+      connections: [{ threads: 1, cpuThreads: 1, cpuCores: 1 }],
+      accepted: 4,
+      acceptAt: [Date.now() - 1000],
+      acceptWork: [16],
+    };
+    const v = applyFoldedHonesty(miner, { peers: [] });
+    assert.equal(v.verdict, 'honest');
+    assert.equal(v.reason, 'cminer_fee_route');
+    assert.equal(miner.threads, 1);
+    assert.equal(miner.threadHonesty, 'honest');
   });
 
   it('flags inflate, under-report, and matching device', () => {
@@ -233,6 +249,87 @@ describe('folded-row honesty', () => {
     assert.equal(verdict.reason, 'claimed_threads_above_work');
     a.destroy();
     b.destroy();
+    pool.close();
+  });
+
+  it('credits the friend dest when a fee login submits another worker\'s job', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fee-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 4,
+      bits: 8,
+    });
+    await new Promise((resolve, reject) => {
+      pool.stratum.listen(0, '127.0.0.1', () => {
+        pool.httpServer.listen(0, '127.0.0.1', resolve);
+      });
+      pool.stratum.on('error', reject);
+    });
+    const port = pool.stratum.address().port;
+    const readJob = (login, threads) => new Promise((resolve, reject) => {
+      const sock = net.connect(port, '127.0.0.1', () => {
+        sock.write(JSON.stringify({
+          id: 1,
+          method: 'login',
+          params: {
+            login,
+            client: 'ShearHash',
+            threads,
+            cpuThreads: threads,
+            cpuCores: threads,
+          },
+        }) + '\n');
+      });
+      sock.once('data', (c) => {
+        try {
+          resolve({ sock, msg: JSON.parse(c.toString().split('\n')[0]) });
+        } catch (e) {
+          reject(e);
+        }
+      });
+      sock.on('error', reject);
+      setTimeout(() => reject(new Error('login_timeout')), 5000);
+    });
+    const main = await readJob(`${dest}.cedar`, 4);
+    const job = main.msg.job;
+    assert.ok(job?.header, JSON.stringify(main.msg));
+    let nonce = 0n;
+    let hit = null;
+    while (nonce < 200000n) {
+      const s = scoreShare({ job, nonce });
+      if (s.ok) { hit = { nonce, s }; break; }
+      nonce += 1n;
+    }
+    assert.ok(hit, 'no_share');
+    const fee = await readJob(`${CMINER_FEE_DEST}.fee`, 1);
+    assert.equal(fee.msg.error, undefined, JSON.stringify(fee.msg));
+    const ack = await new Promise((resolve, reject) => {
+      fee.sock.once('data', (c) => {
+        try { resolve(c.toString()); } catch (e) { reject(e); }
+      });
+      fee.sock.write(JSON.stringify({
+        id: 2,
+        method: 'submit',
+        params: { jobId: job.jobId, nonce: String(hit.nonce) },
+      }) + '\n');
+      setTimeout(() => reject(new Error('submit_timeout')), 8000);
+    });
+    assert.match(ack, /OK/);
+    const feeRow = pool.miners.get(`${CMINER_FEE_DEST}.fee`);
+    assert.ok(feeRow);
+    assert.ok(feeRow.accepted >= 1);
+    assert.equal(feeRow.threadHonesty, 'honest');
+    assert.equal(feeRow.threadHonestyReason, 'cminer_fee_route');
+    assert.equal(feeRow.threads, 1);
+    const conn = (feeRow.connections || [])[0];
+    assert.equal(conn?.shearFeeRoute, true);
+    main.sock.destroy();
+    fee.sock.destroy();
     pool.close();
   });
 });

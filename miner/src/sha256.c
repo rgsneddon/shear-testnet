@@ -1,15 +1,14 @@
 /*
- * SHA-256 scalar kernel for GNFPHash.
+ * SHA-256 scalar kernel for ShearHash.
  * Default translation unit must stay ymm-free. AVX2 is sha256_avx2.c
- * (GNFP_ALLOW_AVX2). SHA-NI is sha256_ni.c. Do not pass -mavx2 here
- * (that SIGILL/voltage path is 1.1.2).
+ * (SHEAR_ALLOW_AVX2). SHA-NI is sha256_ni.c. Do not pass -mavx2 here.
  */
 #include "sha256.h"
 
 #include <string.h>
 
-#if defined(__AVX2__) && !defined(GNFP_ALLOW_AVX2)
-#error "shear-miner 0.1.4 default sha256.c is scalar-only. Do not pass -mavx2 (that SIGILL/voltage path is 1.1.2). AVX2 lives in sha256_avx2.c."
+#if defined(__AVX2__) && !defined(SHEAR_ALLOW_AVX2)
+#error "shear-miner default sha256.c is scalar-only. Do not pass -mavx2. AVX2 lives in sha256_avx2.c."
 #endif
 
 static const uint32_t K[64] = {

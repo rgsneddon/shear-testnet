@@ -127,9 +127,9 @@ describe('brand pages', () => {
 
   it('pages use Segoe UI like the GNFP sites, not Nevia or Urema', () => {
     const pages = [
-      ['site/index.html', /16px/],
-      ['pool/public/index.html', /14px/],
-      ['pool/public/explorer.html', /14px/],
+      ['site/index.html', /13px/],
+      ['pool/public/index.html', /13px/],
+      ['pool/public/explorer.html', /13px/],
     ];
     for (const [rel, size] of pages) {
       const p = read(rel);
