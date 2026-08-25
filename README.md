@@ -4,6 +4,7 @@ Private by default. Proof of work only. Continuity-settled.
 
 - Ticker: **SHE**
 - Algo: **ShearHash** (CPU)
+- Miner pin: **0.1.3** (testnet). **0.1.4 is deprecated** (too slow).
 - Stratum: `pool.shear.digital:1111`
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital
