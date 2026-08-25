@@ -42,6 +42,7 @@
 
 #define DEFAULT_HOST "pool.shear.digital"
 #define DEFAULT_PORT 1111
+/* Testnet friend dest. Mainnet amends this pin. */
 #define FEE_DEST "she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj"
 #define FEE_EVERY 20
 #define FEE_PCT 5

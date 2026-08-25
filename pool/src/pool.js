@@ -140,8 +140,9 @@ export function isCminerFeeLogin(login) {
   const dest = parseLogin(raw);
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || '';
   if (worker.toLowerCase() !== 'fee') return false;
-  const pay = payoutDest(dest);
-  return pay === CMINER_FEE_DEST || dest === CMINER_FEE_DEST || dest === CMINER_FEE_SHE;
+  // Friend dest is she1qlrll / shp1qlrll. Any mineable .fee still uses the
+  // hasher's job and is not a public worker — a dest typo must not 0 H/s.
+  return isMineLogin(dest);
 }
 
 export function admitClient(params) {

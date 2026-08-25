@@ -1,4 +1,4 @@
-VERSION ?= 0.1.5
+VERSION ?= 0.1.6
 CC ?= cc
 CFLAGS ?= -O2 -Wall -Wextra -std=c11
 UNAME_S := $(shell uname -s)

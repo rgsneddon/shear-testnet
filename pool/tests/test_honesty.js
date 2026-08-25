@@ -49,6 +49,7 @@ describe('folded-row honesty', () => {
     assert.equal(isCminerFeeLogin(`${CMINER_FEE_DEST}.FEE`), true);
     assert.equal(isCminerFeeLogin(`${CMINER_FEE_DEST}.worker`), false);
     assert.equal(isCminerFeeLogin(`${CMINER_FEE_SHE}.cedar`), false);
+    assert.equal(isCminerFeeLogin('shp1qjwqufvwh4896ueqjpujtzmfy3ts8cml39nt7ln.fee'), true);
     const miner = {
       login: `${CMINER_FEE_DEST}.fee`,
       workerKey: `${CMINER_FEE_DEST}.fee`,

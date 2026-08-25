@@ -4,7 +4,7 @@ Private by default. Proof of work only. Continuity-settled.
 
 - Ticker: **SHE**
 - Algo: **ShearHash** (CPU)
-- Miner pin: **0.1.5** (testnet). Declared **5%** dual-login miner fee. **0.1.4 is deprecated** (too slow). Do **not** recut **0.1.3**.
+- Miner pin: **0.1.6** (testnet). Declared **5%** dual-login miner fee at `she1qlrll…fee`. **0.1.5** had the dest; DE had a wrong-dest binary. **0.1.4 is deprecated** (too slow). Do **not** recut **0.1.5** / **0.1.3**.
 - Stratum: `pool.shear.digital:1111`
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital
