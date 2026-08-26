@@ -181,6 +181,9 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     password = pw;
     ledger.viewSecret = id!.viewKey;
     try {
+      await ledger.syncTip().timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    try {
       await ledger
           .syncCredits(id!.address, paymentCode: id!.paymentCode)
           .timeout(const Duration(seconds: 8));
@@ -199,17 +202,26 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     _accrualTick?.cancel();
     _syncJoinRoster();
     var ticks = 0;
+    var tipBusy = false;
+    var creditBusy = false;
     _accrualTick = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || !unlocked) return;
       _syncJoinRoster();
+      final ident = id;
+      if (ident != null && !tipBusy) {
+        tipBusy = true;
+        unawaited(ledger.syncTip().whenComplete(() {
+          tipBusy = false;
+          if (mounted) setState(() {});
+        }));
+      }
       ticks += 1;
-      if (ticks % 5 == 0) {
-        final ident = id;
-        if (ident != null) {
-          unawaited(ledger.syncCredits(ident.address, paymentCode: ident.paymentCode).then((_) {
-            if (mounted) setState(() {});
-          }));
-        }
+      if (ticks % 5 == 0 && ident != null && !creditBusy) {
+        creditBusy = true;
+        unawaited(ledger.syncCredits(ident.address, paymentCode: ident.paymentCode).whenComplete(() {
+          creditBusy = false;
+          if (mounted) setState(() {});
+        }));
       }
       if (!mounted) return;
       setState(() {});

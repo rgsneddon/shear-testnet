@@ -200,6 +200,24 @@ void main() {
     );
   });
 
+  test('syncTip paints pool height without waiting for credit sync', () async {
+    final id = createIdentity();
+    final header = Uint8List(120);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 3908, balance: 1.5);
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = id.viewKey;
+    expect(ledger.sealedHeight, 0);
+    await ledger.syncTip();
+    expect(ledger.sealedHeight, 3908);
+    live.height = 3910;
+    await ledger.syncTip();
+    expect(ledger.sealedHeight, 3910);
+    expect(ledger.syncDests(id.address, paymentCode: id.paymentCode).length < 8, isTrue);
+  });
+
   test('applyPoolSnapshot first boot does not wait for a local sealed height', () {
     final id = createIdentity();
     final ledger = ShearLedger()..viewSecret = id.viewKey;

@@ -483,17 +483,6 @@ class ShearLedger {
       final h = hash20FromAddress(d);
       if (h != null) keys.addAll(destEncodings(h));
     }
-    final v = viewSecret;
-    if (v != null && v.isNotEmpty) {
-      final hi = tipHeight < 1 ? 1 : tipHeight;
-      for (var h = 1; h <= hi; h++) {
-        final round = destForLogin(restFrame, height: h, continuityRoot: lag1Root, viewKey: v);
-        if (round == null) continue;
-        keys.add(round);
-        final hash = hash20FromAddress(round);
-        if (hash != null) keys.addAll(destEncodings(hash));
-      }
-    }
     return keys;
   }
 
