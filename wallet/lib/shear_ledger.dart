@@ -119,9 +119,16 @@ class ShearLedger {
   /// Selected dest index (0 .. destCount-1).
   int destIndex = 0;
   int _sealedHeight = 0;
+  /// Last height whose open-round pending was settled. Display [sealedHeight]
+  /// can run ahead (1s tip poll); settlement uses this so confirmRound still
+  /// fires after syncTip.
+  int _settledHeight = 0;
 
   /// Last found/sealed block height (Continuum header).
   int get sealedHeight => _sealedHeight;
+
+  /// Last height Continuum already settled into spendable.
+  int get settledHeight => _settledHeight;
 
   /// Read lag-1 continuity from a 120-byte tip header. Next dest uses sealedHeight+1.
   void applyTipHeader(Uint8List header, {required int sealedHeight}) {
@@ -266,6 +273,7 @@ class ShearLedger {
     );
     if ((coinbaseAmt > 0 ? coinbaseAmt : total) > 0) _txs.add(tx);
     if (height > _sealedHeight) _sealedHeight = height;
+    if (height > _settledHeight) _settledHeight = height;
     for (var i = 0; i < _txs.length; i++) {
       if (_txs[i].confirmed) continue;
       _txs[i] = _txs[i].copyWith(confirmed: true, height: _txs[i].height ?? height);
@@ -309,10 +317,11 @@ class ShearLedger {
     final prev = spendable(address);
     if (pool == null) return prev;
     try {
-      final before = _sealedHeight;
+      final before = _settledHeight;
       await syncTip();
       final json = await pool!.balance(address);
       applyPoolSnapshot(address, json, beforeHeight: before, tipSealed: _sealedHeight);
+      _markSettled(_sealedHeight, before);
       await syncHistory(address);
       return spendable(address);
     } catch (_) {
@@ -380,7 +389,7 @@ class ShearLedger {
   /// Mining credits land on the silent dest. Do not query every historical dest.
   Future<double> syncCredits(String restFrame, {String? paymentCode}) async {
     if (pool == null) return spendableOwned(restFrame, paymentCode: paymentCode);
-    final before = _sealedHeight;
+    final before = _settledHeight;
     try {
       await syncTip();
     } catch (_) {}
@@ -391,12 +400,22 @@ class ShearLedger {
         applyPoolSnapshot(d, json, beforeHeight: before, tipSealed: _sealedHeight);
       } catch (_) {}
     }
+    _markSettled(_sealedHeight, before);
     for (final d in dests) {
       try {
         await syncHistory(d);
       } catch (_) {}
     }
     return spendableOwned(restFrame, paymentCode: paymentCode);
+  }
+
+  /// First boot: catch settlement up to the painted tip without treating that
+  /// as a confirm of the still-open round. Later polls settle when tip > this.
+  void _markSettled(int tipSealed, int beforeHeight) {
+    if (tipSealed <= 0) return;
+    if (beforeHeight == 0 || tipSealed > beforeHeight) {
+      if (tipSealed > _settledHeight) _settledHeight = tipSealed;
+    }
   }
 
   Future<List<ShearTx>> syncHistory(String address) async {

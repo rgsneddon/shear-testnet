@@ -200,6 +200,57 @@ void main() {
     );
   });
 
+  test('syncCredits still settles after syncTip painted a newer height', () async {
+    final id = createIdentity();
+    final header = Uint8List(120);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    const reconstructed = 1.5;
+    final live = _PoolLive(
+      headerHex: hex,
+      height: 12,
+      balance: reconstructed,
+      pending: 7 * kHashBonusShe,
+    );
+    final peer = createIdentity();
+    final from = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
+    final silent = payoutDest(id.paymentCode)!;
+    live.owner = silent;
+    live.incoming = [
+      {'id': 'in-tip', 'from': from, 'to': silent, 'amount': 0.4, 'kind': 'receive', 'confirmed': false},
+    ];
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = id.viewKey;
+    await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+    expect(ledger.sealedHeight, 12);
+    expect(ledger.settledHeight, 12);
+    expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'hash'), isTrue);
+    expect(ledger.pendingTxs(id.address).any((t) => t.id == 'in-tip'), isTrue);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(reconstructed, 1e-18),
+    );
+
+    live.height = 13;
+    live.pending = 0;
+    live.incoming = [];
+    live.balance = reconstructed + 0.4 + 7 * kHashBonusShe;
+    await ledger.syncTip();
+    expect(ledger.sealedHeight, 13);
+    expect(ledger.settledHeight, 12);
+
+    await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+    expect(ledger.pendingTxs(id.address), isEmpty);
+    expect(ledger.pending(id.paymentCode), 0);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(reconstructed + 0.4 + 7 * kHashBonusShe, 1e-18),
+    );
+    expect(ledger.settledHeight, 13);
+    expect(ledger.ownerHistory(id.address).where((t) => t.id == 'in-tip').single.confirmed, isTrue);
+  });
+
   test('syncTip paints pool height without waiting for credit sync', () async {
     final id = createIdentity();
     final header = Uint8List(120);
