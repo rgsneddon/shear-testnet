@@ -249,53 +249,50 @@ export function provenHashrate(miner, now = Date.now()) {
   return hs;
 }
 
-/** This miner's own counter (login/submit hashrate or hashes delta). Never another miner. */
+/**
+ * Display H/s from this miner's own hash counter over ≥5s.
+ * Ignore the submit `hashrate` field on connect — that is hashes/elapsed
+ * (spikes in the first second, then crawls toward the true rate).
+ * Vardiff 10ms shares stay as-is; this only changes the painted H/s.
+ */
+export const SELF_RATE_MIN_DT_S = 5;
+
 export function applyMinerSelfRate(session, params, now = Date.now()) {
   if (!session || !params) return session;
-  const hs = Number(params.hashrate ?? params.hs ?? params.hashRate);
-  if (Number.isFinite(hs) && hs > 0) session.clientHs = hs;
   const hashes = Number(params.hashes ?? params.hashCount);
   if (Number.isFinite(hashes) && hashes >= 0) {
-    const prev = Number(session.clientHashes);
-    const t0 = Number(session.clientHashesAt);
-    if (Number.isFinite(prev) && t0 > 0 && hashes >= prev && !(Number.isFinite(hs) && hs > 0)) {
-      const dt = Math.max(0.001, (now - t0) / 1000);
-      const delta = hashes - prev;
-      if (delta > 0 && dt >= 5) session.clientHs = delta / dt;
-    }
     session.clientHashes = hashes;
     session.clientHashesAt = now;
+    const prev = Number(session.rateHashes0);
+    const t0 = Number(session.rateAt0);
+    if (!Number.isFinite(prev) || !(t0 > 0) || hashes < prev) {
+      session.rateHashes0 = hashes;
+      session.rateAt0 = now;
+    } else {
+      const dt = (now - t0) / 1000;
+      if (dt >= SELF_RATE_MIN_DT_S) {
+        const delta = hashes - prev;
+        if (delta > 0) session.clientHs = delta / dt;
+        session.rateHashes0 = hashes;
+        session.rateAt0 = now;
+      }
+    }
+    return session;
+  }
+  const hs = Number(params.hashrate ?? params.hs ?? params.hashRate);
+  if (Number.isFinite(hs) && hs > 0) {
+    const t0 = Number(session.rateAt0);
+    if (!(t0 > 0)) session.rateAt0 = now;
+    else if ((now - t0) / 1000 >= SELF_RATE_MIN_DT_S) session.clientHs = hs;
   }
   return session;
 }
 
-/** ~20s EMA so a lucky share or reconnect does not paint GH/s then 0. */
-export const HASHRATE_EMA_TAU_S = 20;
-
-export function smoothHashrate(miner, instant, now = Date.now()) {
-  if (!miner || typeof miner !== 'object') return Math.max(0, Number(instant) || 0);
-  const t = Number(now) || Date.now();
-  const prev = Number(miner.smoothHs);
-  if (Number(miner.smoothHsAt) === t && Number.isFinite(prev) && prev >= 0) return prev;
-  const lastAt = Number(miner.smoothHsAt) || t;
-  const dt = Math.max(0, (t - lastAt) / 1000);
-  const x = Math.max(0, Number(instant) || 0);
-  miner.smoothHsAt = t;
-  if (!Number.isFinite(prev) || prev <= 0) {
-    miner.smoothHs = x;
-    return x;
-  }
-  if (dt <= 0) return prev;
-  const a = 1 - Math.exp(-dt / HASHRATE_EMA_TAU_S);
-  miner.smoothHs = prev * (1 - a) + x * a;
-  return miner.smoothHs;
-}
-
-/** This miner's H/s only: own counter if sent, else accepted-share proof. Never peers. Then EMA. */
+/** This miner's H/s only: own 5s hash-counter, else accepted-share proof. Never peers. No EMA. */
 export function reportedHashrate(miner, now = Date.now()) {
   const self = Number(miner?.clientHs);
-  const instant = Number.isFinite(self) && self > 0 ? self : provenHashrate(miner, now);
-  return smoothHashrate(miner, instant, now);
+  if (Number.isFinite(self) && self > 0) return self;
+  return provenHashrate(miner, now);
 }
 
 export function sortMinersByHashrate(miners, now = Date.now()) {
@@ -534,7 +531,9 @@ export function createPool({
             session.roundHashes += proven;
             session.hashes += proven;
             session.seen = Date.now();
-            const work = proven;
+            // Rate window uses share target only. A lucky high bitsMet share
+            // must not paint GH/s; 10ms vardiff still accepted the share.
+            const work = hashesProvenByShare(Number(job?.shareBits) || bits);
             if (!Array.isArray(session.acceptAt)) session.acceptAt = [];
             if (!Array.isArray(session.acceptWork)) session.acceptWork = [];
             session.acceptAt.push(Date.now());
