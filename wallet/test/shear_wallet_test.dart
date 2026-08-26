@@ -149,6 +149,84 @@ void main() {
     expect(ledger.ownerHistory(id.address).where((t) => t.id == 'in-1').single.confirmed, isTrue);
   });
 
+  test('first-boot syncCredits loads reconstructed spendable; open round stays pending', () async {
+    final id = createIdentity();
+    final header = Uint8List(120);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    const reconstructed = 1.5;
+    final live = _PoolLive(
+      headerHex: hex,
+      height: 40,
+      balance: reconstructed,
+      pending: 7 * kHashBonusShe,
+    );
+    final peer = createIdentity();
+    final from = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
+    final silent = payoutDest(id.paymentCode)!;
+    live.owner = silent;
+    live.incoming = [
+      {'id': 'in-boot', 'from': from, 'to': silent, 'amount': 0.4, 'kind': 'receive', 'confirmed': false},
+    ];
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = id.viewKey;
+    expect(ledger.sealedHeight, 0);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+
+    await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+
+    expect(ledger.sealedHeight, 40);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(reconstructed, 1e-18),
+    );
+    expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'hash'), isTrue);
+    expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'receive' && t.id == 'in-boot'), isTrue);
+    expect(ledger.pending(id.paymentCode), closeTo(0.4 + 7 * kHashBonusShe, 1e-18));
+    expect(live.balanceHits < 8, isTrue);
+    expect(live.balanceHits > 0, isTrue);
+
+    live.height = 41;
+    live.pending = 0;
+    live.incoming = [];
+    live.balance = reconstructed + 0.4 + 7 * kHashBonusShe;
+    await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+    expect(ledger.pendingTxs(id.address), isEmpty);
+    expect(ledger.pending(id.address), 0);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(reconstructed + 0.4 + 7 * kHashBonusShe, 1e-18),
+    );
+  });
+
+  test('applyPoolSnapshot first boot does not wait for a local sealed height', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..viewSecret = id.viewKey;
+    final dest = ledger.currentDest(id.address);
+    expect(ledger.sealedHeight, 0);
+    ledger.applyTipHex(List.filled(240, '0').join(), sealedHeight: 8);
+    expect(ledger.sealedHeight, 8);
+    final fresh = ShearLedger()..viewSecret = id.viewKey;
+    expect(fresh.sealedHeight, 0);
+    fresh.applyPoolSnapshot(
+      dest,
+      {
+        'balance': 2.25,
+        'pending': 5 * kHashBonusShe,
+        'incoming': [
+          {'id': 'in-snap', 'from': dest, 'to': dest, 'amount': 0.2, 'kind': 'receive', 'confirmed': false},
+        ],
+      },
+      beforeHeight: 0,
+      tipSealed: 8,
+    );
+    expect(fresh.spendable(dest), closeTo(2.25, 1e-18));
+    expect(fresh.pendingTxs(dest).any((t) => t.kind == 'hash'), isTrue);
+    expect(fresh.pendingTxs(dest).any((t) => t.id == 'in-snap'), isTrue);
+    expect(fresh.pending(dest), closeTo(0.2 + 5 * kHashBonusShe, 1e-18));
+  });
+
   test('shewall.json password seal restores address and txs', () async {
     final id = createIdentity();
     final ledger = ShearLedger();
@@ -225,8 +303,8 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.0.9');
-    expect(kWalletVersion.contains('0.0.10'), isFalse);
+    expect(kWalletVersion, '0.1.0');
+    expect(kWalletVersion.contains('0.1.1'), isFalse);
     expect(formatShe(1), '1');
     expect(formatShe(kHashBonusShe), '0.00000000');
     expect(formatShe(1e-8), '0.00000001');
@@ -364,14 +442,14 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.0.9');
-    expect(kWalletVersion, '0.0.9');
+    expect(app.title, 'Shear 0.1.0');
+    expect(kWalletVersion, '0.1.0');
     // password gate first
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
     await tester.pump();
-    expect(find.textContaining('0.0.9'), findsWidgets);
+    expect(find.textContaining('0.1.0'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -980,6 +1058,7 @@ class _PoolLive {
   double pending;
   String? owner;
   List<Map<String, dynamic>> incoming;
+  int balanceHits = 0;
 }
 
 Future<HttpServer> _fakePool({
@@ -1011,9 +1090,11 @@ Future<HttpServer> _fakePool({
         'header': state.headerHex,
       }));
     } else if (req.uri.path == '/api/wallet/balance') {
+      state.balanceHits += 1;
       final addr = req.uri.queryParameters['address'] ?? '';
       final hit = state.owner == null ||
           addr == state.owner ||
+          payoutDest(addr) == state.owner ||
           state.incoming.any((r) => r['to'] == addr);
       req.response.write(jsonEncode({
         'balance': hit ? state.balance : 0,

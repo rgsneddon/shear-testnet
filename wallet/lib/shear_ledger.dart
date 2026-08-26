@@ -311,8 +311,9 @@ class ShearLedger {
     try {
       final before = _sealedHeight;
       await syncTip();
-      final advancedTo = before > 0 && _sealedHeight > before ? _sealedHeight : 0;
-      await _pullPoolDest(address, advancedTo: advancedTo);
+      final json = await pool!.balance(address);
+      applyPoolSnapshot(address, json, beforeHeight: before, tipSealed: _sealedHeight);
+      await syncHistory(address);
       return spendable(address);
     } catch (_) {
       return prev;
@@ -327,53 +328,75 @@ class ShearLedger {
     return n;
   }
 
-  /// Pull Continuum from every dest this identity owns, including the
-  /// she1→shp1 mining dest. Revolving dests stay for Flow; mining credits
-  /// land on the silent dest.
+  /// Light dests for a pool pull. Silent mining dest + current Flow dest +
+  /// minted dests. Does not walk 1..tipHeight (that hung first unlock).
+  Set<String> syncDests(String restFrame, {String? paymentCode}) {
+    final keys = <String>{};
+    void add(String? a) {
+      if (a == null || a.isEmpty) return;
+      if (isDestAddress(a) || isPaymentCode(a)) keys.add(a);
+    }
+
+    add(currentDest(restFrame));
+    add(payoutDest(paymentCode ?? ''));
+    add(payoutDest(restFrame));
+    for (final d in listedDests(restFrame)) {
+      add(d);
+    }
+    for (final d in _dests) {
+      add(d);
+    }
+    return keys;
+  }
+
+  /// Pool snapshot → ledger (unlock / Continuum path).
+  ///
+  /// Reconstructed [balance] is already-confirmed spendable at the tip, including
+  /// first boot when local sealed height was 0. Open-round [pending] + [incoming]
+  /// stay pending until sealed height advances by one from a known height.
+  void applyPoolSnapshot(
+    String address,
+    Map<String, dynamic> json, {
+    required int beforeHeight,
+    required int tipSealed,
+  }) {
+    _ingestIncoming(json);
+    _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
+    final advancedTo = beforeHeight > 0 && tipSealed > beforeHeight ? tipSealed : 0;
+    if (advancedTo > 0) {
+      confirmRound(address: address, pot: 0, height: advancedTo);
+    }
+    final live = (json['balance'] as num?)?.toDouble();
+    if (live != null && live >= 0) {
+      final key = payKey(address);
+      final prev = _spendable[key] ?? 0;
+      if (live > 0 || prev == 0) {
+        _spendable[key] = live;
+      }
+    }
+  }
+
+  /// Pull Continuum from the silent mining dest and current Flow dest.
+  /// Mining credits land on the silent dest. Do not query every historical dest.
   Future<double> syncCredits(String restFrame, {String? paymentCode}) async {
     if (pool == null) return spendableOwned(restFrame, paymentCode: paymentCode);
     final before = _sealedHeight;
     try {
       await syncTip();
     } catch (_) {}
-    final advancedTo = before > 0 && _sealedHeight > before ? _sealedHeight : 0;
-    final dests = ownedAddresses(restFrame, paymentCode: paymentCode);
+    final dests = syncDests(restFrame, paymentCode: paymentCode);
     for (final d in dests) {
       try {
         final json = await pool!.balance(d);
-        _ingestIncoming(json);
-        _applyPoolHashPending(d, (json['pending'] as num?)?.toDouble() ?? 0);
+        applyPoolSnapshot(d, json, beforeHeight: before, tipSealed: _sealedHeight);
       } catch (_) {}
-    }
-    if (advancedTo > 0) {
-      for (final d in dests) {
-        confirmRound(address: d, pot: 0, height: advancedTo);
-      }
     }
     for (final d in dests) {
       try {
-        await _pullPoolDest(d, advancedTo: 0, ingest: false, settle: false);
+        await syncHistory(d);
       } catch (_) {}
     }
     return spendableOwned(restFrame, paymentCode: paymentCode);
-  }
-
-  Future<void> _pullPoolDest(
-    String address, {
-    int advancedTo = 0,
-    bool ingest = true,
-    bool settle = true,
-  }) async {
-    if (pool == null) return;
-    final json = await pool!.balance(address);
-    if (ingest) _ingestIncoming(json);
-    _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
-    if (settle && advancedTo > 0) {
-      confirmRound(address: address, pot: 0, height: advancedTo);
-    }
-    final live = (json['balance'] as num?)?.toDouble();
-    if (live != null && live >= 0) _spendable[address] = live;
-    await syncHistory(address);
   }
 
   Future<List<ShearTx>> syncHistory(String address) async {

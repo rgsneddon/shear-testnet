@@ -4,7 +4,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WALLET="$ROOT/wallet"
 DIST="$WALLET/dist"
-VER=0.0.9
+VER=0.1.0
 APPNAME="Shear"
 VOLNAME="Shear $VER"
 DMG="$DIST/shear-wallet-$VER-macos.dmg"
@@ -14,7 +14,7 @@ APP="$WALLET/build/macos/Build/Products/Release/$APPNAME.app"
 
 cd "$WALLET"
 if [ "${PACK_REBUILD:-}" = "1" ] || [ ! -d "$APP" ]; then
-  flutter build macos --release --build-name=$VER --build-number=1
+  flutter build macos --release --build-name=$VER --build-number=10
 fi
 test -d "$APP"
 # Wallet does not bundle shear-miner. Official miner is a separate release.

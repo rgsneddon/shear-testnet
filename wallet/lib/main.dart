@@ -17,7 +17,7 @@ import 'shear_vortex.dart';
 import 'shear_reserve.dart';
 import 'shear_join.dart';
 
-const kWalletVersion = '0.0.9';
+const kWalletVersion = '0.1.0';
 const kTabs = [
   'Continuum',
   'Flow',
