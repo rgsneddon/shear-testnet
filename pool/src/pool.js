@@ -561,6 +561,9 @@ export function createPool({
               miner: payoutDest(session?.login) || session?.login,
             });
             if (got.ok) {
+              if (Array.isArray(store.mempool) && store.mempool.length) {
+                store.mempool.length = 0;
+              }
               stats.blocks += 1;
               stats.lastFoundAt = Date.now();
               if (session) session.blocks = (Number(session.blocks) || 0) + 1;
