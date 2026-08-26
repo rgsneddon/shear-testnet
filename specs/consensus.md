@@ -3,6 +3,8 @@
 Network magic (testnet): `shear-testnet-v1`  
 Mainnet magic (`shear-v1`) is a later genesis. Testnet first.
 
+Hash-tx law is consensus, not env: `HASH_TX_LIVE=1`, `HASH_TX_COLLATE=1`, confirm on block-found. 1 hash = 1 bonus unit. Collate is O(miners), never one JSON object per hash. Mainnet genesis seals `consensusFingerprint()` (includes `HASH_TX_LIVE=1`); flipping it is a different book.
+
 ## Header (120 bytes, little-endian)
 
 The field list is authoritative. Packed size is **120 bytes** (4+32+32+32+8+4+8).

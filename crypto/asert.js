@@ -20,9 +20,64 @@ export const HASH_BONUS_NANOS = 1;
 export const HASH_BONUS_VOTE_DELTA_NANOS = 1;
 export const POOL_FEE_BPS = 100;
 export const MAGIC_TESTNET_V1 = 'shear-testnet-v1';
-/** Live testnet book. */
+/** Live testnet book. Magic is the chain id; hash-tx law is the fingerprint. */
 export const MAGIC_TESTNET = 'shear-testnet-v1';
 export const MAGIC_MAINNET = 'shear-v1';
+/** Frozen consensus identity. A different fingerprint is a different law. */
+export const BOOK_LAW_ID = 'shear-book-law-1';
+/** Hash bonus commits on accept. Not env. */
+export const HASH_COMMIT_ON_ACCEPT = 1;
+/** One open-window hash row per miner (collate). Not env. */
+export const HASH_TX_COLLATE = 1;
+/** Hash txs confirm only when a block forms. Not env. */
+export const HASH_TX_CONFIRM_ON_BLOCK = 1;
+/** User sends confirm on the same miner-work block. Not env. */
+export const USER_TX_CONFIRM_ON_BLOCK = 1;
+/** Only proven miner work mints. HTTP never mints. Not env. */
+export const MINER_MINT_ONLY = 1;
+/**
+ * Hash-tx architecture is live consensus law: 1 hash = 1 bonus unit,
+ * collate O(miners), confirm on block-found. Not env. Not a switch.
+ * Mainnet genesis (`shear-v1`) includes this pin in [consensusFingerprint];
+ * flipping it is a different book, not a config change.
+ */
+export const HASH_TX_LIVE = 1;
+
+/** Consensus fingerprint. Mainnet genesis seals this; it is not revertible. */
+export function consensusFingerprint() {
+  return [
+    BOOK_LAW_ID,
+    MAGIC_MAINNET,
+    TARGET_BLOCK_INTERVAL_MS,
+    LIVE_MIN_BITS,
+    GENESIS_BITS,
+    HASH_BONUS_NANOS,
+    NANOS_PER_SHE,
+    BLOCK_SUBSIDY_NANOS,
+    HASH_COMMIT_ON_ACCEPT,
+    HASH_TX_COLLATE,
+    HASH_TX_CONFIRM_ON_BLOCK,
+    USER_TX_CONFIRM_ON_BLOCK,
+    MINER_MINT_ONLY,
+    HASH_TX_LIVE,
+  ].join(':');
+}
+
+export function consensusLaw() {
+  return {
+    bookLawId: BOOK_LAW_ID,
+    bookLawFingerprint: consensusFingerprint(),
+    hashCommitOnAccept: HASH_COMMIT_ON_ACCEPT,
+    hashTxCollate: HASH_TX_COLLATE,
+    hashTxConfirmOnBlock: HASH_TX_CONFIRM_ON_BLOCK,
+    userTxConfirmOnBlock: USER_TX_CONFIRM_ON_BLOCK,
+    minerMintOnly: MINER_MINT_ONLY,
+    hashTxLive: HASH_TX_LIVE,
+    hashBonusNanos: HASH_BONUS_NANOS,
+    blockSubsidyNanos: BLOCK_SUBSIDY_NANOS,
+    magicMainnet: MAGIC_MAINNET,
+  };
+}
 /** Reserve may mint interest. Join may mint once at genesis into its vault. */
 export const RESERVE_PROGRAM = 'shear-reserve-v1';
 export const JOIN_PROGRAM = 'shear-join-v1';

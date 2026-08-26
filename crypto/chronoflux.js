@@ -1,5 +1,5 @@
 /**
- * Chronoflux on the chain (lean 1-hash=1-tx):
+ * Chronoflux on the chain (HASH_TX_LIVE=1, collate O(miners)):
  *   Continuum  ∇·J = 0  spendable is conserved; the hash list is not the money
  *   Flow       J^μ      this round's hashes, collated per hasher (never one JSON row per hash)
  *   Resistance η        confirmations; at 100, Flow *samples* may be dropped

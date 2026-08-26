@@ -14,6 +14,9 @@ import {
   MAGIC_TESTNET,
   TARGET_BLOCK_INTERVAL_MS,
   HASH_BONUS_NANOS,
+  HASH_TX_LIVE,
+  consensusFingerprint,
+  consensusLaw,
 } from '../../crypto/asert.js';
 import { createStore } from '../../node/src/store.js';
 import { poolRecentBlockTxs } from './wallet_api.js';
@@ -665,6 +668,9 @@ export function createPool({
       targetBlockIntervalMs: TARGET_BLOCK_INTERVAL_MS,
       blockSubsidyNanos: BLOCK_SUBSIDY_NANOS,
       hashBonusNanos: HASH_BONUS_NANOS,
+      hashTxLive: HASH_TX_LIVE,
+      bookLawFingerprint: consensusFingerprint(),
+      ...consensusLaw(),
       stratum: `:${stratumPort}`,
       proof: 'PoW',
       miners: workers.length,

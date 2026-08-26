@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   nextBits,
   bitsForBlock,
@@ -22,6 +23,9 @@ import {
   RESERVE_PROGRAM,
   MAGIC_TESTNET,
   MAGIC_TESTNET_V1,
+  HASH_TX_LIVE,
+  consensusFingerprint,
+  consensusLaw,
 } from './asert.js';
 
 describe('ASERT 9s block retarget', () => {
@@ -76,6 +80,26 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(formatShe(1e-8), '0.00000001');
     assert.equal(MAGIC_TESTNET, 'shear-testnet-v1');
     assert.equal(MAGIC_TESTNET_V1, 'shear-testnet-v1');
+  });
+});
+
+describe('hash-tx consensus law', () => {
+  it('bakes HASH_TX_LIVE=1 into the fingerprint; env cannot revert it', () => {
+    process.env.HASH_TX_LIVE = '0';
+    assert.equal(HASH_TX_LIVE, 1);
+    const fp = consensusFingerprint();
+    assert.match(fp, /^shear-book-law-1:shear-v1:/);
+    assert.equal(fp.endsWith(':1'), true);
+    const law = consensusLaw();
+    assert.equal(law.hashTxLive, 1);
+    assert.equal(law.hashTxCollate, 1);
+    assert.equal(law.hashTxConfirmOnBlock, 1);
+    assert.equal(law.minerMintOnly, 1);
+    assert.equal(law.bookLawFingerprint, fp);
+    assert.equal(Number(process.env.HASH_TX_LIVE), 0);
+    assert.notEqual(law.hashTxLive, Number(process.env.HASH_TX_LIVE));
+    const src = fs.readFileSync(new URL('./asert.js', import.meta.url), 'utf8');
+    assert.equal(/process\.env\.HASH_TX_LIVE/.test(src), false);
   });
 });
 

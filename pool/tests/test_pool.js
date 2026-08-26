@@ -9,6 +9,7 @@ import {
   HASH_BONUS_NANOS,
   TARGET_BLOCK_INTERVAL_MS,
   MAGIC_TESTNET,
+  HASH_TX_LIVE,
 } from '../../crypto/asert.js';
 import { requiredJobFields } from '../../crypto/header.js';
 import { payoutDest } from '../../crypto/address.js';
@@ -154,6 +155,9 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.blockSubsidyNanos, 10_000_000_000);
     assert.equal(stats.hashBonusNanos, HASH_BONUS_NANOS);
     assert.equal(stats.hashBonusNanos, 1);
+    assert.equal(stats.hashTxLive, HASH_TX_LIVE);
+    assert.equal(stats.hashTxLive, 1);
+    assert.match(stats.bookLawFingerprint, /:1$/);
     assert.equal(stats.targetBlockIntervalMs, TARGET_BLOCK_INTERVAL_MS);
     assert.equal(stats.targetBlockIntervalMs, 9_000);
 
