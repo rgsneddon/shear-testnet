@@ -142,6 +142,7 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /getDate\(\)/);
     assert.match(html, /getHours\(\)/);
     assert.match(html, /getSeconds\(\)/);
+    assert.match(html, /b\.hashrate/);
     assert.match(html, /function shortDest/);
     assert.match(html, /slice\(0, 9\)/);
     assert.equal(/Honesty|honesty|inflate/.test(html), false);

@@ -13,6 +13,7 @@ import {
   provenHashrate,
   reportedHashrate,
   applyMinerSelfRate,
+  sortMinersByHashrate,
   refreshMinerRow,
   workerKey,
 } from '../src/pool.js';
@@ -51,7 +52,11 @@ describe('folded-row inventory', () => {
     assert.equal(Math.round(reportedHashrate(ten, now)), 256);
     applyMinerSelfRate(ten, { hashrate: 225_000_000, hashes: 1_000_000 }, now);
     assert.equal(ten.clientHs, 225_000_000);
+    delete ten.smoothHs;
+    delete ten.smoothHsAt;
     assert.equal(reportedHashrate(ten, now), 225_000_000);
+    delete one.smoothHs;
+    delete one.smoothHsAt;
     assert.equal(reportedHashrate(one, now), 900_000);
     const other = {
       threads: 10,
@@ -61,8 +66,26 @@ describe('folded-row inventory', () => {
     };
     applyMinerSelfRate(other, { hashes: 1000 }, now);
     applyMinerSelfRate(other, { hashes: 1000 + 225_000_000 }, now + 1000);
+    assert.equal(other.clientHs, undefined);
+    applyMinerSelfRate(other, { hashes: 1000 + 225_000_000 * 10 }, now + 10_000);
     assert.equal(other.clientHs, 225_000_000);
+    delete one.smoothHs;
+    delete one.smoothHsAt;
     assert.equal(reportedHashrate(one, now), 900_000);
+  });
+
+  it('EMA damps a hashrate spike and sorts biggest first', () => {
+    const t0 = Date.now();
+    const low = { clientHs: 1_000_000 };
+    const high = { clientHs: 10_000_000 };
+    reportedHashrate(low, t0);
+    reportedHashrate(high, t0);
+    low.clientHs = 50_000_000;
+    const damped = reportedHashrate(low, t0 + 1000);
+    assert.ok(damped > 1_000_000, `got ${damped}`);
+    assert.ok(damped < 20_000_000, `got ${damped}`);
+    const ranked = sortMinersByHashrate([low, high], t0 + 1000);
+    assert.equal(ranked[0], high);
   });
 
   it('does not ship thread honesty checks', () => {

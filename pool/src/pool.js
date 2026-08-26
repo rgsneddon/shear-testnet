@@ -261,7 +261,7 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
     if (Number.isFinite(prev) && t0 > 0 && hashes >= prev && !(Number.isFinite(hs) && hs > 0)) {
       const dt = Math.max(0.001, (now - t0) / 1000);
       const delta = hashes - prev;
-      if (delta > 0) session.clientHs = delta / dt;
+      if (delta > 0 && dt >= 5) session.clientHs = delta / dt;
     }
     session.clientHashes = hashes;
     session.clientHashesAt = now;
@@ -269,11 +269,37 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
   return session;
 }
 
-/** This miner's H/s only: client counter if sent, else accepted-share proof. Never peers. */
+/** ~20s EMA so a lucky share or reconnect does not paint GH/s then 0. */
+export const HASHRATE_EMA_TAU_S = 20;
+
+export function smoothHashrate(miner, instant, now = Date.now()) {
+  if (!miner || typeof miner !== 'object') return Math.max(0, Number(instant) || 0);
+  const t = Number(now) || Date.now();
+  const prev = Number(miner.smoothHs);
+  if (Number(miner.smoothHsAt) === t && Number.isFinite(prev) && prev >= 0) return prev;
+  const lastAt = Number(miner.smoothHsAt) || t;
+  const dt = Math.max(0, (t - lastAt) / 1000);
+  const x = Math.max(0, Number(instant) || 0);
+  miner.smoothHsAt = t;
+  if (!Number.isFinite(prev) || prev <= 0) {
+    miner.smoothHs = x;
+    return x;
+  }
+  if (dt <= 0) return prev;
+  const a = 1 - Math.exp(-dt / HASHRATE_EMA_TAU_S);
+  miner.smoothHs = prev * (1 - a) + x * a;
+  return miner.smoothHs;
+}
+
+/** This miner's H/s only: own counter if sent, else accepted-share proof. Never peers. Then EMA. */
 export function reportedHashrate(miner, now = Date.now()) {
   const self = Number(miner?.clientHs);
-  if (Number.isFinite(self) && self > 0) return self;
-  return provenHashrate(miner, now);
+  const instant = Number.isFinite(self) && self > 0 ? self : provenHashrate(miner, now);
+  return smoothHashrate(miner, instant, now);
+}
+
+export function sortMinersByHashrate(miners, now = Date.now()) {
+  return [...(miners || [])].sort((a, b) => reportedHashrate(b, now) - reportedHashrate(a, now));
 }
 
 /** Fold per-socket inventory and proven H/s. No thread-honesty / inflate flags. */
@@ -623,7 +649,10 @@ export function createPool({
 
   function publicStats() {
     const now = Date.now();
-    const workers = [...miners.values()].filter((m) => isPublicMinerRow(m, now));
+    const workers = sortMinersByHashrate(
+      [...miners.values()].filter((m) => isPublicMinerRow(m, now)),
+      now,
+    );
     const tip = store.tip();
     return {
       ok: true,
@@ -683,8 +712,7 @@ export function createPool({
         return;
       }
       const now = Date.now();
-      const peers = [...miners.values()].filter((m) => isPublicMinerRow(m, now));
-      const views = rows.map((m) => publicMinerView(m, now, peers));
+      const views = rows.map((m) => publicMinerView(m, now)).sort((a, b) => (b.hashrate || 0) - (a.hashrate || 0));
       const roll = views.reduce((a, v) => ({
         hashrate: a.hashrate + v.hashrate,
         roundHashes: a.roundHashes + v.roundHashes,

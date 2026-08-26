@@ -101,7 +101,6 @@
       <article class="panel-card"><div class="label">Stale shares</div><div class="value" id="m-stale">0</div></article>
       <article class="panel-card"><div class="label">CPU threads</div><div class="value" id="m-threads">0</div></article>
       <article class="panel-card"><div class="label">Hashes this round</div><div class="value" id="m-round">0</div></article>
-      <article class="panel-card"><div class="label">Honesty</div><div class="value" id="m-honesty">—</div></article>
       <article class="panel-card"><div class="label">First seen</div><div class="value" id="m-first">—</div></article>
       <article class="panel-card"><div class="label">Last seen</div><div class="value" id="m-last">—</div></article>
     </div>
@@ -168,12 +167,13 @@
       set('m-stale', String(d.stale || 0));
       set('m-threads', String(d.threads || 0));
       set('m-round', String(d.roundHashes || 0));
-      set('m-honesty', d.honesty || '—');
       set('m-first', ago(d.firstSeen));
       set('m-last', ago(d.lastSeen));
       document.title = d.tag + ' · Shear miner';
       const tb = document.querySelector('#workers tbody');
-      tb.innerHTML = (d.workers || []).map(function (w) {
+      tb.innerHTML = (d.workers || []).slice().sort(function (a, b) {
+        return (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0);
+      }).map(function (w) {
         const name = String(w.worker || 'worker').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || 'worker';
         return '<tr><td class="mono">' + name + '</td><td>' + (w.version || '—') +
           '</td><td>' + fmtRate(w.hashrate) + '</td><td>' + (w.blocks || 0) +

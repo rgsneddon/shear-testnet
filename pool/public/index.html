@@ -273,7 +273,9 @@
       document.getElementById('uptime').textContent = fmtUptime(s.uptimeMs);
       document.getElementById('updated').textContent = fmtSinceBlock(s.lastFoundAt);
       const tb = document.querySelector('#miners tbody');
-      tb.innerHTML = (s.workers || []).map(function (w) {
+      tb.innerHTML = (s.workers || []).slice().sort(function (a, b) {
+        return (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0);
+      }).map(function (w) {
         const tag = String(w.miner || '');
         const href = '/miner/' + encodeURIComponent(tag);
         return '<tr><td><a href="' + href + '">' + tag + '</a></td><td>' +
