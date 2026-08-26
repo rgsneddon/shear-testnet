@@ -57,7 +57,7 @@ describe('node Reserve vault', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: continuum,
-      bits: 8,
+      bits: 14,
       now: t0,
       txs: [lock],
     }));
@@ -90,7 +90,7 @@ describe('node Reserve vault', () => {
       prevHeader: tip.header,
       height: 2,
       miner: continuum,
-      bits: 8,
+      bits: 14,
       now: t1,
       txs: [wd],
     }));

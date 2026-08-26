@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   nextBits,
+  bitsForBlock,
   TARGET_BLOCK_INTERVAL_MS,
   GENESIS_BITS,
   LIVE_MIN_BITS,
@@ -19,22 +20,24 @@ import {
   JOIN_KIND_GENESIS,
   extraMintAllowed,
   RESERVE_PROGRAM,
+  MAGIC_TESTNET,
+  MAGIC_TESTNET_V1,
 } from './asert.js';
 
-describe('ASERT 90s block retarget', () => {
-  it('holds bits when the interval is 90 seconds', () => {
-    assert.equal(TARGET_BLOCK_INTERVAL_MS, 90_000);
+describe('ASERT 9s block retarget', () => {
+  it('holds bits when the interval is 9 seconds', () => {
+    assert.equal(TARGET_BLOCK_INTERVAL_MS, 9_000);
     assert.equal(nextBits(GENESIS_BITS, TARGET_BLOCK_INTERVAL_MS), GENESIS_BITS);
-    assert.equal(nextBits(21, 90_000), 21);
+    assert.equal(nextBits(21, 9_000), 21);
   });
 
-  it('raises bits when blocks arrive faster than 90s', () => {
-    const next = nextBits(21, 45_000);
+  it('raises bits when blocks arrive faster than 9s', () => {
+    const next = nextBits(21, 4_500);
     assert.ok(next > 21, `expected harden from 21, got ${next}`);
   });
 
-  it('lowers bits when blocks arrive slower than 90s', () => {
-    const next = nextBits(21, 180_000);
+  it('lowers bits when blocks arrive slower than 9s', () => {
+    const next = nextBits(21, 18_000);
     assert.ok(next < 21, `expected ease from 21, got ${next}`);
     assert.ok(next >= LIVE_MIN_BITS);
   });
@@ -45,18 +48,24 @@ describe('ASERT 90s block retarget', () => {
     assert.equal(clampBits(40), 40);
     assert.equal(clampBits(256), 256);
     assert.equal(clampBits(300), 256);
-    assert.equal(nextBits(32, 250), 40);
-    assert.ok(nextBits(16, 1) >= 24, '1ms flood must raise bits');
-    assert.ok(nextBits(16, 50) > 16, 'sub-250ms must not freeze bits');
+    assert.equal(nextBits(32, 250), 34);
+    assert.ok(nextBits(36, 250) - 36 <= 2);
+    assert.equal(nextBits(36, 1), 38);
+    assert.equal(nextBits(36, 9_000), 36);
+    const parentTs = 1_700_000_000_000;
+    const eased = bitsForBlock(36, parentTs, parentTs + 12 * 3600_000);
+    assert.ok(eased < 36, `12h header delta must ease 36-bit freeze, got ${eased}`);
+    assert.equal(eased, bitsForBlock(36, parentTs, parentTs + 12 * 3600_000));
   });
 });
 
 describe('SHEAR 11-decimal protocol unit', () => {
-  it('pays 1 SHE per block and 0.00000000001 SHE per hash; public frame is eight digits', () => {
+  it('pays 0.1 SHE per block and 0.00000000001 SHE per hash; public frame is eight digits', () => {
     assert.equal(SHE_DECIMALS, 11);
     assert.equal(SHE_PUBLIC_DIGITS, 8);
     assert.equal(NANOS_PER_SHE, 100_000_000_000);
-    assert.equal(BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE);
+    assert.equal(BLOCK_SUBSIDY_NANOS, 10_000_000_000);
+    assert.equal(BLOCK_SUBSIDY_NANOS / NANOS_PER_SHE, 0.1);
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.equal(HASH_BONUS_NANOS / NANOS_PER_SHE, 1e-11);
     assert.equal(HASH_BONUS_VOTE_DELTA_NANOS, 1);
@@ -65,6 +74,8 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(formatShe(1), '1');
     assert.equal(formatShe(1e-11), '0.00000000');
     assert.equal(formatShe(1e-8), '0.00000001');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v1');
+    assert.equal(MAGIC_TESTNET_V1, 'shear-testnet-v1');
   });
 });
 

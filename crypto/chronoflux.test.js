@@ -4,6 +4,8 @@ import {
   SAMPLE_PRUNE_CONFIRMATIONS,
   shouldPruneSamples,
   collateSamples,
+  rollHashBundle,
+  leanBlock,
   pruneSamples,
   sealedExplorerRows,
   compactChainBlock,
@@ -25,10 +27,11 @@ describe('chronoflux prune + collate', () => {
     assert.ok(JSON.stringify(slim).length < JSON.stringify(fat).length / 100);
   });
 
-  it('prunes sample bodies after 100 confirmations and never drops sealed txs', () => {
-    assert.equal(SAMPLE_PRUNE_CONFIRMATIONS, 100);
-    assert.equal(shouldPruneSamples(1, 101), true);
-    assert.equal(shouldPruneSamples(2, 101), false);
+  it('prunes sample bodies after 1000 confirmations and never drops sealed txs', () => {
+    assert.equal(SAMPLE_PRUNE_CONFIRMATIONS, 1000);
+    assert.equal(shouldPruneSamples(1, 1001), true);
+    assert.equal(shouldPruneSamples(2, 1001), false);
+    assert.equal(shouldPruneSamples(1, 1000), false);
     const send = {
       id: 'send-1',
       from: 'shear1from',
@@ -94,5 +97,28 @@ describe('chronoflux prune + collate', () => {
     const prunedRow = compactChainBlock({ ...row, samplesPruned: true, samples: fatSamples });
     assert.deepEqual(prunedRow.samples, []);
     assert.equal(prunedRow.txs.length, 1);
+  });
+
+  it('rolls a 9s hash bundle: N hashes become one row per miner, bonus still N units', () => {
+    const a = 'shp1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const b = 'shp1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const fat = [
+      ...Array.from({ length: 3000 }, (_, i) => ({ miner: a, nonce: String(i), tag: 'a', count: 1 })),
+      ...Array.from({ length: 2000 }, (_, i) => ({ miner: b, nonce: String(i), tag: 'b', count: 1 })),
+    ];
+    const bundle = rollHashBundle(fat);
+    assert.equal(bundle.length, 2);
+    assert.equal(bundle.find((s) => s.miner === a).count, 3000);
+    assert.equal(bundle.find((s) => s.miner === b).count, 2000);
+    const bonusUnits = bundle.reduce((n, s) => n + s.count, 0);
+    assert.equal(bonusUnits, 5000);
+    const lean = leanBlock({
+      height: 1,
+      samples: fat,
+      txs: [{ coinbase: true, height: 1, samples: fat, vout: [{ kind: 'pot', nanos: 1 }] }],
+    });
+    assert.equal(lean.samples.length, 2);
+    assert.equal(lean.txs[0].samples, undefined);
+    assert.ok(JSON.stringify(lean.samples).length < JSON.stringify(fat).length / 50);
   });
 });

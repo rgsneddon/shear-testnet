@@ -7,6 +7,7 @@ import { encodeDest, newIdentity } from '../../crypto/address.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
+import { LIVE_MIN_BITS } from '../../crypto/asert.js';
 import { createStore } from '../src/store.js';
 import { mineTemplate, shouldAdopt, digestTx } from '../src/chain.js';
 
@@ -14,8 +15,12 @@ function destMiner() {
   return encodeDest(Buffer.alloc(20, 9));
 }
 
-function mineOne(store, dest, bits = 8) {
-  const { tpl, job } = store.template({ miner: dest, bits, shareBits: bits });
+function mineOne(store, dest, bits = LIVE_MIN_BITS) {
+  const parent = store.tip();
+  const now = parent
+    ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
+    : Date.now();
+  const { tpl } = store.template({ miner: dest, bits, shareBits: bits, now });
   const found = mineTemplate({ ...tpl, bits }, { maxTries: 3_000_000, shareBits: bits });
   assert.ok(found && found.block, 'need pow');
   return store.append({
@@ -61,8 +66,10 @@ describe('most-work adopt', () => {
     const dest = destMiner();
     const store = tmpStore();
     assert.equal(mineOne(store, dest).ok, true);
-    const { tpl } = store.template({ miner: dest, bits: 8, shareBits: 8 });
-    const found = mineTemplate({ ...tpl, bits: 8 }, { maxTries: 3_000_000, shareBits: 8 });
+    const parent = store.tip();
+    const now = Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000;
+    const { tpl } = store.template({ miner: dest, bits: LIVE_MIN_BITS, shareBits: LIVE_MIN_BITS, now });
+    const found = mineTemplate({ ...tpl, bits: LIVE_MIN_BITS }, { maxTries: 3_000_000, shareBits: LIVE_MIN_BITS });
     assert.ok(found && found.block, 'need child pow');
     const id = newIdentity();
     const poisoned = {

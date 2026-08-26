@@ -1,4 +1,4 @@
-export const TARGET_BLOCK_INTERVAL_MS = 90_000;
+export const TARGET_BLOCK_INTERVAL_MS = 9_000;
 export const MIN_BITS = 1;
 /**
  * SHA-256 width. A 32-bit farm lid froze live difficulty under large
@@ -12,12 +12,15 @@ export const GENESIS_BITS = 21;
 export const SHE_DECIMALS = 11;
 export const SHE_PUBLIC_DIGITS = 8;
 export const NANOS_PER_SHE = 100_000_000_000; // 10^11
-export const BLOCK_SUBSIDY_NANOS = NANOS_PER_SHE;
+/** 0.1 SHE pot (10_000_000_000 units). Hash bonus stays 1 unit. */
+export const BLOCK_SUBSIDY_NANOS = 10_000_000_000;
 /** 0.00000000001 SHE per valid hash = 1 protocol unit. */
 export const HASH_BONUS_NANOS = 1;
-/** Vote moves the per-hash bonus by one protocol unit (±10⁻¹¹ SHE). The 1 SHE pot does not move. */
+/** Vote moves the per-hash bonus by one protocol unit (±10⁻¹¹ SHE). The pot does not move. */
 export const HASH_BONUS_VOTE_DELTA_NANOS = 1;
 export const POOL_FEE_BPS = 100;
+export const MAGIC_TESTNET_V1 = 'shear-testnet-v1';
+/** Live testnet book. */
 export const MAGIC_TESTNET = 'shear-testnet-v1';
 export const MAGIC_MAINNET = 'shear-v1';
 /** Reserve may mint interest. Join may mint once at genesis into its vault. */
@@ -63,14 +66,23 @@ export function clampBits(bits) {
   return Math.max(LIVE_MIN_BITS, Math.min(MAX_BITS, n));
 }
 
-/** Per-block ASERT toward 90s. Sub-second floods must raise bits, not freeze. */
+/**
+ * Per-block ASERT toward 9s. Pure function of the header timestamp
+ * delta — verifiers must not use wall clock. Same-tick (≤0) is treated
+ * as 1ms so it still climbs, but the step is capped at ±2 (not ±8).
+ */
 export function nextBits(previousBits, intervalMs) {
   const prev = clampBits(previousBits);
   let seen = Number(intervalMs);
   if (!Number.isFinite(seen) || seen < 1) seen = 1;
   const ratio = TARGET_BLOCK_INTERVAL_MS / seen;
-  const delta = Math.round(Math.log2(Math.max(1 / 256, Math.min(256, ratio))));
+  const delta = Math.round(Math.log2(Math.max(1 / 4, Math.min(4, ratio))));
   return clampBits(prev + delta);
+}
+
+/** Bits for this block from parent bits and the two header timestamps. */
+export function bitsForBlock(parentBits, parentTimestamp, blockTimestamp) {
+  return nextBits(parentBits, Number(blockTimestamp) - Number(parentTimestamp));
 }
 
 export function blockWork(bits) {

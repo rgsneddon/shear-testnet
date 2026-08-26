@@ -46,6 +46,8 @@
     table { width:100%; max-width:100%; border-collapse:collapse; table-layout:fixed; }
     th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.75rem; overflow-wrap:anywhere; word-break:break-word; }
     .table-wrap { width:100%; max-width:100%; overflow-x:auto; }
+    #recent-wrap { overflow: visible; }
+    #recent-txs td:nth-child(2) { white-space: nowrap; }
     .panel-card { min-width:0; }
     .pulse { color:var(--green); font-size:.7rem; }
     .top-banner {
@@ -142,7 +144,7 @@
         <p class="label" id="cmd-hint">Valid she1 required. she1 is the silent ID and the login. Never share shear1.</p>
       </section>
     </div>
-    <p id="fee-note">pool fee is 1% of the 1 SHE pot for development — hash bonuses are paid in full to each hasher.</p>
+    <p id="fee-note">pool fee is 1% of the 0.1 SHE pot for development — hash bonuses (0.00000000001 SHE per hash) are paid in full to each hasher.</p>
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
       <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash</div></article>
@@ -155,7 +157,7 @@
       <article class="panel-card"><div class="label">Blocks this uptime</div><div class="value" id="accepted">0</div></article>
       <article class="panel-card"><div class="label">Resistance</div><div class="value" id="difficulty">—</div></article>
       <article class="panel-card"><div class="label">Uptime</div><div class="value" id="uptime">0s</div></article>
-      <article class="panel-card"><div class="label">Network</div><div class="value">shear-testnet-v1</div></article>
+      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v1</div></article>
       <article class="panel-card"><div class="label">AVG BLOCK TIME</div><div class="value" id="avg-block">—</div></article>
       <article class="panel-card"><div class="label">Last block</div><div class="value" id="updated">—</div></article>
     </div>
@@ -173,6 +175,25 @@
             <th>Stale shares</th>
             <th>CPU threads</th>
             <th>Hashes this round</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      </div>
+    </section>
+    <section class="panel-card" id="pool-explorer">
+      <h2>Pool explorer · last 30 transactions</h2>
+      <p class="label">Sealed blocks only. Hash bonuses in the open round stay off this list.</p>
+      <div class="table-wrap" id="recent-wrap">
+      <table id="recent-txs">
+        <thead>
+          <tr>
+            <th>Id</th>
+            <th>Time</th>
+            <th>Kind</th>
+            <th>From</th>
+            <th>To</th>
+            <th>Amount</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -247,6 +268,8 @@
       document.getElementById('height').textContent = String(s.height || 0);
       document.getElementById('difficulty').textContent = String(s.bits || '—');
       document.getElementById('avg-block').textContent = fmtAvgBlock(s.avgBlockTimeMs);
+      const net = document.getElementById('network');
+      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v1';
       document.getElementById('uptime').textContent = fmtUptime(s.uptimeMs);
       document.getElementById('updated').textContent = fmtSinceBlock(s.lastFoundAt);
       const tb = document.querySelector('#miners tbody');
@@ -259,6 +282,50 @@
           (w.stale || 0) + '</td><td>' + (w.threads || 0) + '</td><td>' +
           (w.roundHashes || 0) + '</td></tr>';
       }).join('');
+      paintRecent(s.recentTxs || []);
+    }
+    function esc(v) {
+      return String(v ?? '').replace(/[&<>"]/g, function (c) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c];
+      });
+    }
+    function shortId(id) {
+      const s = String(id || '');
+      if (s.length <= 18) return s;
+      return s.slice(0, 10) + '…' + s.slice(-6);
+    }
+    function shortDest(s) {
+      const t = String(s || '');
+      if (!t || /^shear1/i.test(t) || /^she1/i.test(t)) return '';
+      return t.slice(0, 9);
+    }
+    function fmtLocalTs(ms) {
+      const n = Number(ms);
+      if (!Number.isFinite(n) || n <= 0) return '—';
+      const d = new Date(n);
+      if (Number.isNaN(d.getTime())) return '—';
+      function pad(v) { return String(v).padStart(2, '0'); }
+      return pad(d.getDate()) + '-' + pad(d.getMonth() + 1) + '-' + d.getFullYear()
+        + ' : ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+    let recentSig = '';
+    function paintRecent(txs) {
+      const body = document.querySelector('#recent-txs tbody');
+      if (!body) return;
+      const rows = Array.isArray(txs) ? txs.slice(0, 30) : [];
+      const sig = rows.map(function (t) { return t.id; }).join('|');
+      const html = rows.length
+        ? rows.map(function (t) {
+            const href = 'https://explorer.shear.digital/tx/' + encodeURIComponent(t.id);
+            return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
+              esc(fmtLocalTs(t.at)) + '</td><td>' +
+              esc(t.kind || 'coinbase') + '</td><td class="mono">' + esc(t.from || 'coinbase') +
+              '</td><td class="mono">' + esc(shortDest(t.to)) + '</td><td>' +
+              esc(t.amount) + '</td></tr>';
+          }).join('')
+        : '<tr><td colspan="6">No sealed blocks yet.</td></tr>';
+      body.innerHTML = html;
+      recentSig = sig;
     }
     function tick() {
       fetch('/api/stats?_=' + Date.now(), { cache: 'no-store' })

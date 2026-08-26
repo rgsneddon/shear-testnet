@@ -23,7 +23,7 @@ describe('header size', () => {
   });
 });
 
-describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
+describe('coinbase: 0.1 SHE pot + per-hasher nanos', () => {
   it('pays each hasher, not only the finder', () => {
     const alice = newIdentity();
     const bob = newIdentity();
@@ -36,12 +36,37 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
     const cb = coinbaseTx({ height: 3, miner: destA, samples });
     const split = coinbaseSplit(cb);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
-    assert.equal(split.potNanos, 100_000_000_000);
+    assert.equal(split.potNanos, 10_000_000_000);
     assert.equal(split.hashByMiner[destA], 4000 * HASH_BONUS_NANOS);
     assert.equal(split.hashByMiner[destB], 1000 * HASH_BONUS_NANOS);
     assert.equal(split.hashNanos, 5000 * HASH_BONUS_NANOS);
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.notEqual(alice.address, bob.address);
+  });
+
+  it('counts each meeting hash as its own bonus unit (1 hash = 1 tx)', () => {
+    const alice = newIdentity();
+    const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 3 });
+    const n = 7;
+    const hashes = [];
+    for (let i = 0; i < n; i += 1) {
+      hashes.push({ miner: dest, nonce: String(i + 1), tag: `h${i}`, count: 1 });
+    }
+    const cb = coinbaseTx({ height: 3, miner: dest, samples: hashes });
+    const split = coinbaseSplit(cb);
+    assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
+    assert.equal(split.potNanos, 10_000_000_000);
+    assert.equal(HASH_BONUS_NANOS, 1);
+    assert.equal(split.hashByMiner[dest], n * HASH_BONUS_NANOS);
+    assert.equal(split.hashNanos, n * HASH_BONUS_NANOS);
+    const folded = coinbaseTx({
+      height: 3,
+      miner: dest,
+      samples: [{ miner: dest, nonce: 'batch', tag: 'fold', count: n }],
+    });
+    const foldedSplit = coinbaseSplit(folded);
+    assert.equal(foldedSplit.hashNanos, n * HASH_BONUS_NANOS);
+    assert.notEqual(hashes.length, 1);
   });
 });
 

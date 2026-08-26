@@ -40,7 +40,7 @@ describe('node chain is lean, light, scalable, prunable', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: destA,
-      bits: 8,
+      bits: 14,
       now: Date.now(),
       samples: fat,
       txs: [{
@@ -62,7 +62,7 @@ describe('node chain is lean, light, scalable, prunable', () => {
       prev: a1.block.hash,
       height: 2,
       miner: destA,
-      bits: 8,
+      bits: 14,
       now: Date.now() + 90_000,
       samples: [{ miner: destA, nonce: 'x', tag: 'a', count: 2 }],
     }));
@@ -72,7 +72,7 @@ describe('node chain is lean, light, scalable, prunable', () => {
       prev: store.tip().hash,
       height: 3,
       miner: destA,
-      bits: 8,
+      bits: 14,
       now: Date.now() + 180_000,
       samples: [{ miner: destA, nonce: 'y', tag: 'a', count: 1 }],
     }));

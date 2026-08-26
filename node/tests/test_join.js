@@ -56,7 +56,7 @@ describe('node Join vault', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: payout,
-      bits: 8,
+      bits: 14,
       now: t0,
       txs: [gen],
     }));
@@ -75,8 +75,8 @@ describe('node Join vault', () => {
       prevHeader: tip.header,
       height: 2,
       miner: payout,
-      bits: 8,
-      now: t0 + 1000,
+      bits: 14,
+      now: t0 + 90_000,
       txs: [cl],
     }));
     assert.equal(store.append(b2).ok, true);
@@ -89,8 +89,8 @@ describe('node Join vault', () => {
       prevHeader: store.tip().header,
       height: 3,
       miner: payout,
-      bits: 8,
-      now: t0 + 2000,
+      bits: 14,
+      now: t0 + 180_000,
       txs: [cl],
     }));
     const duped = store.append(dup);
@@ -105,8 +105,8 @@ describe('node Join vault', () => {
       prevHeader: store.tip().header,
       height: 3,
       miner: payout,
-      bits: 8,
-      now: t0 + 3000,
+      bits: 14,
+      now: t0 + 270_000,
       txs: [secondGen],
     }));
     const againMint = store.append(g2);
@@ -123,7 +123,7 @@ describe('node Join vault', () => {
       prevHeader: store.tip().header,
       height: 4,
       miner: payout,
-      bits: 8,
+      bits: 14,
       now: t0 + JOIN_WINDOW_MS,
       txs: [burn],
     }));
@@ -146,8 +146,8 @@ describe('node Join vault', () => {
       prevHeader: store.tip().header,
       height: 5,
       miner: payout,
-      bits: 8,
-      now: t0 + JOIN_WINDOW_MS + 1000,
+      bits: 14,
+      now: t0 + JOIN_WINDOW_MS + 90_000,
       txs: [late],
     }));
     const lateGot = store.append(b4);

@@ -1,7 +1,8 @@
-import { isDestAddress, isPaymentCode, payoutDest } from '../../crypto/address.js';
+import { isDestAddress, isPaymentCode, isShearAddress, payoutDest } from '../../crypto/address.js';
 import { HASH_BONUS_NANOS, NANOS_PER_SHE, BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
-import { sealedExplorerRows } from '../../crypto/chronoflux.js';
-import { explorerRowPublic } from '../../crypto/flow_sheet.js';
+import { sealedExplorerRows, collateSamples } from '../../crypto/chronoflux.js';
+import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
+import { decodeHeader } from '../../crypto/header.js';
 
 export function nanosToShe(n) {
   return Number(n || 0) / NANOS_PER_SHE;
@@ -157,36 +158,174 @@ function isPublicParty(a) {
   return isDestAddress(s);
 }
 
+function blockAtMs(block) {
+  try {
+    return Number(decodeHeader(Buffer.from(block.header)).timestamp) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** One row per confirmed block. Sum of sealed coinbase (pot + hash bonus). No in-round hashes. */
+function confirmedBlockRow(b) {
+  const rows = sealedExplorerRows(b);
+  const nanos = rows.reduce((a, r) => a + Number(r.nanos || 0), 0);
+  const hid = Buffer.isBuffer(b?.hash)
+    ? b.hash.toString('hex')
+    : String(b?.hash || b?.height || '');
+  const rawTo = String(b?.miner || rows.find((r) => r.to)?.to || '');
+  const dest = isShearAddress(rawTo) ? '' : (payoutDest(rawTo) || (isDestAddress(rawTo) ? rawTo : ''));
+  return {
+    id: hid,
+    kind: 'block',
+    from: 'coinbase',
+    to: dest,
+    amount: nanosToShe(nanos),
+    asset: 'SHE',
+    height: Number(b?.height || 0),
+    at: blockAtMs(b),
+  };
+}
+
+export function confirmedBlockTxs(store, limit = 30) {
+  const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  const unlimited = limit === Infinity;
+  const n = unlimited ? list.length : Math.max(1, Math.min(10000, Math.floor(Number(limit) || 30)));
+  const out = [];
+  for (let i = list.length - 1; i >= 0 && out.length < n; i -= 1) {
+    out.push(confirmedBlockRow(list[i]));
+  }
+  return out;
+}
+
 export function publicExplorerTxs(store) {
-  const rows = [];
-  for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
-  return rows
-    .filter((r) => isPublicParty(r.to) && isPublicParty(r.from))
-    .map((r) => {
-      const pub = explorerRowPublic({
-        id: r.id,
-        amount: nanosToShe(r.nanos),
-        height: r.height,
-        memo: !!(r.memoCt || r.memo),
-        memoCt: r.memoCt,
-        from: r.from,
-        to: r.to,
-      });
-      return {
-        id: pub.id,
-        amount: pub.amount,
-        height: pub.height,
-        memo: pub.memo === true,
-      };
-    });
+  return confirmedBlockTxs(store, 30);
+}
+
+/** Last N confirmed blocks only. No hash-bonus rows and no pot-split lines. */
+export function poolRecentBlockTxs(store, limit = 30) {
+  return confirmedBlockTxs(store, limit);
+}
+
+function publicDest(a) {
+  const s = String(a || '');
+  if (s === 'coinbase') return 'coinbase';
+  if (isShearAddress(s)) return '';
+  return payoutDest(s) || (isDestAddress(s) ? s : '');
+}
+
+function hex32(buf) {
+  try {
+    return Buffer.from(buf).toString('hex');
+  } catch {
+    return '';
+  }
+}
+
+export function findSealedBlock(store, q) {
+  const id = String(q || '').trim();
+  const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  if (!id) return null;
+  if (/^\d+$/.test(id)) {
+    const h = Number(id);
+    return list.find((b) => Number(b.height) === h) || null;
+  }
+  const want = id.toLowerCase();
+  for (const b of list) {
+    const hid = Buffer.isBuffer(b.hash) ? b.hash.toString('hex') : String(b.hash || '');
+    if (hid.toLowerCase() === want || hid.toLowerCase().startsWith(want)) return b;
+  }
+  return null;
+}
+
+/** Public CTF CLI for one confirmed block. No rest-frame, silent ID, view-key, or memo body. */
+export function publicBlockDetail(store, id) {
+  const b = findSealedBlock(store, id);
+  if (!b) return null;
+  const row = confirmedBlockRow(b);
+  let hdr = null;
+  try { hdr = decodeHeader(Buffer.from(b.header)); } catch { hdr = null; }
+  const header = hdr ? {
+    version: hdr.version,
+    prevBlockHash: hex32(hdr.prevBlockHash),
+    merkleRoot: hex32(hdr.merkleRoot),
+    continuityRoot: hex32(hdr.continuityRoot),
+    timestamp: Number(hdr.timestamp),
+    bits: hdr.bits,
+    nonce: String(hdr.nonce),
+  } : null;
+  const outputs = sealedExplorerRows(b).map((r) => ({
+    kind: r.kind || 'block',
+    from: r.from === 'coinbase' ? 'coinbase' : publicDest(r.from),
+    to: publicDest(r.to),
+    amount: nanosToShe(r.nanos),
+    memo: r.memo === true,
+  }));
+  const pruned = !!b.samplesPruned;
+  const samples = pruned ? [] : collateSamples(b.samples || []).map((s) => ({
+    dest: publicDest(s.miner),
+    count: Number(s.count) || 0,
+  })).filter((s) => s.dest && s.count > 0);
+  const lines = [];
+  lines.push(`======== SHEAR CTF  tx=${row.id}  ========`);
+  lines.push(`kind        ${row.kind}`);
+  lines.push(`amount      ${row.amount} SHE`);
+  lines.push(`asset       ${row.asset}`);
+  lines.push(`height      ${row.height}`);
+  lines.push(`from        ${row.from}`);
+  lines.push(`to          ${row.to || '(none)'}`);
+  lines.push(`time        ${row.at}`);
+  lines.push('-- header --');
+  if (header) {
+    lines.push(`version     ${header.version}`);
+    lines.push(`prev        ${header.prevBlockHash}`);
+    lines.push(`merkle      ${header.merkleRoot}`);
+    lines.push(`continuity  ${header.continuityRoot}`);
+    lines.push(`bits        ${header.bits}`);
+    lines.push(`nonce       ${header.nonce}`);
+  } else {
+    lines.push('header      (undecodable)');
+  }
+  lines.push('-- sealed outputs --');
+  if (!outputs.length) lines.push('(none)');
+  for (const o of outputs) {
+    lines.push(`  ${o.kind.padEnd(10)} ${o.from} -> ${o.to || '(none)'}  ${o.amount} SHE  memo=${o.memo ? 'yes' : 'no'}`);
+  }
+  lines.push('-- flow samples --');
+  if (pruned) lines.push('samples     pruned (counts sealed in continuity root)');
+  else if (!samples.length) lines.push('samples     (none)');
+  else for (const s of samples) lines.push(`  dest ${s.dest}  count ${s.count}`);
+  lines.push('-- CTF domains (public constants) --');
+  lines.push(`flow        ${FLOW_PERSONAL}`);
+  lines.push(`closure     ${CLOSURE_PERSONAL}`);
+  lines.push('-- privacy audit --');
+  lines.push('rest-frame  ABSENT');
+  lines.push('silent-id   ABSENT');
+  lines.push('view-key    ABSENT');
+  lines.push('memo-plain  ABSENT');
+  lines.push('memo-ct     ABSENT');
+  lines.push('closure-G   ABSENT');
+  lines.push('conclusion  public explorer shows dest/amount/header only; identity stays in the wallet.');
+  lines.push('========');
+  return {
+    tx: row,
+    header,
+    outputs,
+    samples,
+    samplesPruned: pruned,
+    cli: lines.join('\n'),
+  };
 }
 
 export function searchExplorerTxs(store, q = {}) {
-  let txs = publicExplorerTxs(store);
   const id = String(q.id || '').trim();
   const height = q.height != null && String(q.height).trim() !== '' ? Number(q.height) : NaN;
   const from = q.from != null && String(q.from).trim() !== '' ? Number(q.from) : NaN;
   const to = q.to != null && String(q.to).trim() !== '' ? Number(q.to) : NaN;
+  if (!id && !Number.isFinite(height) && !Number.isFinite(from) && !Number.isFinite(to)) {
+    return confirmedBlockTxs(store, 30);
+  }
+  let txs = confirmedBlockTxs(store, Infinity);
   if (id) {
     txs = txs.filter((t) => String(t.id) === id || String(t.id).includes(id));
   } else if (Number.isFinite(height)) {
@@ -261,9 +400,16 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
   if (path === '/api/wallet/register' && verb === 'POST') {
     return { status: 404, json: { ok: false, reason: 'register_disabled' } };
   }
+  if ((path === '/api/explorer/tx' || path.startsWith('/api/explorer/tx/')) && verb === 'GET') {
+    const id = url.searchParams.get('id')
+      || decodeURIComponent(path.slice('/api/explorer/tx/'.length).split('/')[0] || '');
+    const got = publicBlockDetail(store, id);
+    if (!got) return { status: 404, json: { ok: false, reason: 'unknown_tx' } };
+    return { status: 200, json: { ok: true, asset: 'SHE', ...got } };
+  }
   if (path === '/api/explorer/history' && verb === 'GET') {
-    const txs = publicExplorerTxs(store);
-    return { status: 200, json: { ok: true, txs, amountsOnly: true } };
+    const txs = confirmedBlockTxs(store, 30);
+    return { status: 200, json: { ok: true, txs, asset: 'SHE' } };
   }
   if (path === '/api/explorer/search' && verb === 'GET') {
     const txs = searchExplorerTxs(store, {
@@ -277,6 +423,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
   if (path === '/api/explorer/circulation' && verb === 'GET') {
     const circ = explorerCirculation(store);
     return { status: 200, json: { ok: true, coin: 'SHE', ...circ } };
+  }
+  if ((path === '/api/pool/recent-txs' || path === '/api/explorer/recent') && verb === 'GET') {
+    const txs = poolRecentBlockTxs(store, 30);
+    return { status: 200, json: { ok: true, txs, asset: 'SHE' } };
   }
   if (path === '/api/wallet/history' && verb === 'GET') {
     const address = url.searchParams.get('address') || '';

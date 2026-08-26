@@ -177,7 +177,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
 
   function append(block) {
     const prev = tip();
-    const check = verifyBlock(block, prev ? { hash: prev.hash } : null, {
+    const check = verifyBlock(block, prev ? { hash: prev.hash, header: prev.header } : null, {
       joinFunded: !!joinVault.genesisMs,
     });
     if (!check.ok) return check;
@@ -208,7 +208,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     let joinFunded = false;
     const trialJoin = emptyJoin();
     for (let i = 0; i < fork.length; i += 1) {
-      const prev = i === 0 ? null : { hash: accepted[i - 1].hash };
+      const prev = i === 0 ? null : { hash: accepted[i - 1].hash, header: accepted[i - 1].header };
       const check = verifyBlock(fork[i], prev, { joinFunded });
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
       const gated = validateJoinBlock({
@@ -293,10 +293,11 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
   const jobs = new Map();
   const mempool = [];
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null } = {}) {
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn } = {}) {
     const t = tip();
     const height = t ? t.height + 1 : 1;
-    const bits = bitsIn != null ? bitsIn : retarget(blocks);
+    const now = nowIn != null ? Number(nowIn) : Date.now();
+    const bits = bitsIn != null ? bitsIn : retarget(blocks, now);
     const lag1 = lag1Continuity(t ? t.header : null);
     const pendingTxs = mempool.map((m) => {
       const dest = destForLogin(m.to, { continuityRoot: lag1, height }) || m.to;
@@ -317,7 +318,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
       samples,
       potShares,
       txs: pendingTxs,
-      now: Date.now(),
+      now,
       bits,
     });
     const jobId = `shear-${height}-${jobSeq++}`;

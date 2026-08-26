@@ -4,6 +4,7 @@ import { merkleRoot, EMPTY_ROOT, sampleLeaf } from '../../crypto/merkle.js';
 import {
   GENESIS_BITS,
   nextBits,
+  bitsForBlock,
   blockWork,
   BLOCK_SUBSIDY_NANOS,
   HASH_BONUS_NANOS,
@@ -160,6 +161,16 @@ export function verifyBlock(block, prev, { buried = false, joinFunded = false } 
   if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
   const merkle = merkleRoot(txs.map(digestTx));
   if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
+  if (prev?.header) {
+    let parent;
+    try {
+      parent = decodeHeader(Buffer.from(prev.header));
+    } catch {
+      return { ok: false, reason: 'parent_header' };
+    }
+    const want = bitsForBlock(parent.bits, parent.timestamp, decoded.timestamp);
+    if (decoded.bits !== want) return { ok: false, reason: 'bits' };
+  }
   const samples = collateSamples(
     Array.isArray(block.samples) ? block.samples : (txs[0].samples || []),
   );
@@ -212,13 +223,15 @@ export function shouldAdopt(local, remote) {
   return chainWorkOf(R) > chainWorkOf(L);
 }
 
-export function retarget(chain) {
+export function retarget(chain, candidateTimestamp) {
   if (!chain.length) return GENESIS_BITS;
   const last = decodeHeader(Buffer.from(chain[chain.length - 1].header));
+  if (candidateTimestamp != null) {
+    return bitsForBlock(last.bits, last.timestamp, candidateTimestamp);
+  }
   if (chain.length < 2) return last.bits;
   const prev = decodeHeader(Buffer.from(chain[chain.length - 2].header));
-  const interval = Number(last.timestamp - prev.timestamp);
-  return nextBits(last.bits, interval);
+  return nextBits(last.bits, Number(last.timestamp) - Number(prev.timestamp));
 }
 
 export function genesisBlock({ miner, now = Date.now() }) {

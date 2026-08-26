@@ -7,7 +7,9 @@ import { newIdentity } from '../../crypto/address.js';
 import { destForLogin, memoSeal } from '../../crypto/flow_sheet.js';
 import { createStore } from '../../node/src/store.js';
 import { buildTemplate, mineTemplate, GENESIS_PREV } from '../../node/src/chain.js';
-import { handleWalletApi, searchExplorerTxs, explorerCirculation } from '../src/wallet_api.js';
+import { handleWalletApi, searchExplorerTxs, explorerCirculation, poolRecentBlockTxs, publicBlockDetail } from '../src/wallet_api.js';
+import { bitsForBlock, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
+import { decodeHeader } from '../../crypto/header.js';
 
 function mine(tpl) {
   const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
@@ -56,15 +58,16 @@ describe('explorer dests', () => {
     const pub = get(store, '/api/explorer/history');
     assert.equal(pub.status, 200);
     assert.ok(pub.json.txs.length >= 1);
+    assert.ok(pub.json.txs.every((t) => t.kind === 'block'));
+    assert.ok(pub.json.txs.every((t) => t.from === 'coinbase'));
+    assert.ok(pub.json.txs.every((t) => t.asset === 'SHE'));
+    assert.ok(pub.json.txs.every((t) => !t.to || String(t.to).startsWith('shp1')));
     assert.ok(pub.json.txs.every((t) => typeof t.amount === 'number'));
-    assert.ok(pub.json.txs.every((t) => t.memo === true || t.memo === false));
     assert.ok(pub.json.txs.every((t) => t.memoCt == null && t.memoPlain == null));
-    assert.ok(pub.json.txs.every((t) => t.to == null && t.from == null));
     assert.ok(pub.json.txs.every((t) => t.id && t.amount != null && t.height != null));
     assert.equal(JSON.stringify(pub.json).includes('shear1'), false);
-    const withMemo = pub.json.txs.find((t) => t.id === 'm1' || t.memo === true);
-    assert.ok(withMemo);
     assert.equal(JSON.stringify(pub.json).includes('secret-memo'), false);
+    assert.equal(pub.json.txs.some((t) => t.id === 'm1'), false);
 
     const hist = get(store, `/api/wallet/history?address=${dest}`);
     assert.equal(hist.status, 200);
@@ -103,32 +106,47 @@ describe('explorer dests', () => {
       }],
     });
     assert.equal(store.append(mine(b1)).ok, true);
+    const parent = store.tip();
+    const parentH = decodeHeader(Buffer.from(parent.header));
+    const t2 = Number(parentH.timestamp) + TARGET_BLOCK_INTERVAL_MS;
+    const bits2 = bitsForBlock(parentH.bits, parentH.timestamp, t2);
     const b2 = buildTemplate({
-      prev: store.tip().hash,
-      prevHeader: store.tip().header,
+      prev: parent.hash,
+      prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: 8,
-      now: Date.now() + 1000,
+      bits: bits2,
+      now: t2,
       samples: [{ miner: dest, nonce: '2', tag: 'b', count: 1 }],
     });
     assert.equal(store.append(mine(b2)).ok, true);
+
+    const hist = get(store, '/api/explorer/history');
+    assert.equal(hist.status, 200);
+    const heights = hist.json.txs.map((t) => Number(t.height));
+    assert.ok(heights.length >= 2);
+    assert.deepEqual(heights, [...heights].sort((a, b) => b - a));
+    assert.ok(heights[0] >= heights[heights.length - 1]);
 
     const byHeight = get(store, '/api/explorer/search?height=1');
     assert.equal(byHeight.status, 200);
     assert.ok(byHeight.json.txs.length >= 1);
     assert.ok(byHeight.json.txs.every((t) => Number(t.height) === 1));
+    assert.ok(byHeight.json.txs.every((t) => t.kind === 'block'));
+    assert.ok(byHeight.json.txs.every((t) => t.from === 'coinbase'));
     assert.ok(byHeight.json.txs.every((t) => typeof t.amount === 'number'));
-    assert.ok(byHeight.json.txs.every((t) => t.memo === true || t.memo === false));
     assert.ok(byHeight.json.txs.every((t) => t.memoCt == null && t.memoPlain == null));
-    assert.ok(byHeight.json.txs.every((t) => t.to == null && t.from == null));
     assert.equal(JSON.stringify(byHeight.json).includes('shear1'), false);
     assert.equal(JSON.stringify(byHeight.json).includes('do-not-leak'), false);
 
-    const byId = get(store, '/api/explorer/search?id=tx-alpha');
+    const h1 = store.blocks[0];
+    const hid = Buffer.isBuffer(h1.hash) ? h1.hash.toString('hex') : String(h1.hash);
+    const byId = get(store, `/api/explorer/search?id=${hid}`);
     assert.equal(byId.status, 200);
-    assert.ok(byId.json.txs.some((t) => t.id === 'tx-alpha'));
-    assert.ok(byId.json.txs.every((t) => String(t.id).includes('tx-alpha')));
+    assert.ok(byId.json.txs.some((t) => t.id === hid));
+    assert.ok(byId.json.txs.every((t) => t.kind === 'block'));
+    const miss = get(store, '/api/explorer/search?id=tx-alpha');
+    assert.equal(miss.json.txs.some((t) => t.id === 'tx-alpha'), false);
 
     const range = get(store, '/api/explorer/search?from=2&to=2');
     assert.equal(range.status, 200);
@@ -148,13 +166,66 @@ describe('explorer dests', () => {
     assert.ok(circ.json.holders.every((h) => h.tag == null));
     const viaFn = explorerCirculation(store);
     assert.equal(viaFn.circulating, circ.json.circulating);
+
+    const recent = poolRecentBlockTxs(store, 30);
+    assert.ok(recent.length >= 1);
+    assert.ok(recent.every((t) => t.kind === 'block'));
+    assert.ok(recent.every((t) => t.asset === 'SHE'));
+    assert.ok(recent.every((t) => t.from === 'coinbase'));
+    assert.ok(recent.every((t) => Number(t.amount) > 0));
+    assert.ok(recent[0].height >= recent[recent.length - 1].height);
+    const ids = recent.map((t) => t.id);
+    assert.equal(new Set(ids).size, ids.length);
+    const blob = JSON.stringify(recent);
+    assert.equal(blob.includes('shear1'), false);
+    assert.equal(/she1[^1]/.test(blob.replace(/shp1/g, '')), false);
+    assert.ok(recent.every((t) => Number.isFinite(Number(t.at)) && Number(t.at) > 0));
+    assert.ok(recent.every((t) => !t.to || t.to.startsWith('shp1')));
+    const apiRecent = get(store, '/api/pool/recent-txs');
+    assert.equal(apiRecent.status, 200);
+    assert.deepEqual(apiRecent.json.txs.map((t) => t.id), recent.map((t) => t.id));
+
+    const detail = publicBlockDetail(store, hid);
+    assert.ok(detail && detail.cli);
+    assert.match(detail.cli, /SHEAR CTF/);
+    assert.match(detail.cli, /privacy audit/);
+    assert.equal(detail.cli.includes('shear1'), false);
+    assert.equal(/she1[^p]/i.test(detail.cli.replace(/shp1/g, '')), false);
+    assert.equal(detail.cli.includes('do-not-leak'), false);
+    const apiTx = get(store, `/api/explorer/tx?id=${hid}`);
+    assert.equal(apiTx.status, 200);
+    assert.equal(apiTx.json.ok, true);
+    assert.equal(apiTx.json.cli, detail.cli);
   });
 
-  it('explorer page keeps Search TX results instead of polling unfiltered history', () => {
+  it('explorer page lists confirmed blocks like the pool last-30 table', () => {
     const page = fs.readFileSync(new URL('../public/explorer.html', import.meta.url), 'utf8');
     assert.match(page, /function hasSearchQuery/);
     assert.match(page, /if \(hasSearchQuery\(\)\) runSearch\(\)/);
     assert.doesNotMatch(page, /if \(filled\) loadRecent\(\)\.catch/);
     assert.match(page, /\/explorer\/search\?/);
+    assert.match(page, /\/explorer\/recent/);
+    assert.match(page, /Last 30 transactions/);
+    assert.match(page, />Time</);
+    assert.match(page, />Kind</);
+    assert.match(page, />From</);
+    assert.match(page, />To</);
+    assert.match(page, />Amount</);
+    assert.doesNotMatch(page, />Asset</);
+    assert.match(page, /function fmtLocalTs/);
+    assert.match(page, /getSeconds\(\)/);
+    assert.match(page, /font:13px\/1\.35/);
+    assert.match(page, /function shortDest/);
+    assert.match(page, /slice\(0, 9\)/);
+    assert.doesNotMatch(page, />Memo</);
+    assert.doesNotMatch(page, /Recent transfers/);
+    assert.match(page, /id="net-grid"/);
+    assert.doesNotMatch(page, /id="ex-algo"/);
+    assert.doesNotMatch(page, /id="ex-network"/);
+    assert.match(page, /id="tx-cli"/);
+    assert.match(page, /#00FF41/);
+    assert.match(page, /back to explorer/);
+    assert.match(page, /\/tx\//);
+    assert.match(page, /\/explorer\/tx\?id=/);
   });
 });

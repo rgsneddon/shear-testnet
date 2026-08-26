@@ -17,7 +17,7 @@ import 'shear_vortex.dart';
 import 'shear_reserve.dart';
 import 'shear_join.dart';
 
-const kWalletVersion = '0.0.8';
+const kWalletVersion = '0.0.9';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -180,7 +180,6 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     if (pw.isEmpty || id == null) return;
     password = pw;
     ledger.viewSecret = id!.viewKey;
-    if (mounted) setState(() => unlocked = true);
     try {
       await ledger
           .syncCredits(id!.address, paymentCode: id!.paymentCode)
@@ -196,17 +195,24 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       }
     } catch (_) {}
     _ingestHistory();
-    if (mounted) setState(() {});
+    if (mounted) setState(() => unlocked = true);
     _accrualTick?.cancel();
     _syncJoinRoster();
-    _accrualTick = Timer.periodic(const Duration(seconds: 8), (_) {
+    var ticks = 0;
+    _accrualTick = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || !unlocked) return;
       _syncJoinRoster();
-      final ident = id;
-      if (ident == null) return;
-      unawaited(ledger.syncCredits(ident.address, paymentCode: ident.paymentCode).then((_) {
-        if (mounted) setState(() {});
-      }));
+      ticks += 1;
+      if (ticks % 5 == 0) {
+        final ident = id;
+        if (ident != null) {
+          unawaited(ledger.syncCredits(ident.address, paymentCode: ident.paymentCode).then((_) {
+            if (mounted) setState(() {});
+          }));
+        }
+      }
+      if (!mounted) return;
+      setState(() {});
     });
     if (widget.demoTx) {
       unawaited(_playDemoLive());
@@ -265,12 +271,8 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   void _ingestHistory() {
     final ident = id;
     if (ident == null) return;
-    var n = 0;
-    for (final t in ledger.ownerHistory(ident.address, paymentCode: ident.paymentCode)) {
-      if (t.kind == 'hash') continue;
+    for (final t in ledger.ownerHistory(ident.address)) {
       _ingestTx(ident, t);
-      n += 1;
-      if (n >= 24) break;
     }
   }
 
@@ -511,7 +513,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   Widget _continuum(BuildContext context, ShearIdentity ident) {
     final dest = ledger.currentDest(ident.address);
     final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
-    final pending = ledger.pendingTxs(ident.address, paymentCode: ident.paymentCode);
+    final pending = ledger.pendingTxs(ident.address);
     return _card([
       Text(
         '${formatShe(spend)} SHE',
@@ -535,7 +537,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
           ),
       ],
       const SizedBox(height: 20),
-      Text('Receive ID (she1 — perpetual)', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+      Text('Receive ID', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
       const SizedBox(height: 6),
       SelectableText(ident.paymentCode),
       const SizedBox(height: 12),
@@ -547,65 +549,32 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   Widget _shearview(BuildContext context, ShearIdentity ident) {
-    final hist = ledger
-        .ownerHistory(ident.address, paymentCode: ident.paymentCode)
-        .where((t) => t.confirmed)
-        .toList();
-    final theme = Theme.of(context);
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: hist.isEmpty ? 2 : hist.length + 1,
-      itemBuilder: (context, i) {
-        if (i == 0) {
-          return Card(
-            color: theme.cardColor,
-            surfaceTintColor: Colors.transparent,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Shearview  S_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
-                  if (hist.any((t) => t.memo && t.memoPlain != null && !openedMemos.contains(t.id)))
-                    Text('you have a new memo', style: TextStyle(fontWeight: FontWeight.w700, color: shearAccentOf(context))),
-                  if (hist.isEmpty) Text('No confirmed transactions yet.', style: TextStyle(color: shearMutedOf(context))),
-                ],
-              ),
-            ),
-          );
-        }
-        if (hist.isEmpty) return const SizedBox.shrink();
-        final t = hist[i - 1];
-        return Card(
-          color: theme.cardColor,
-          surfaceTintColor: Colors.transparent,
-          child: ListTile(
-            dense: true,
-            title: Text(
-              t.kind == 'blockfound' || t.kind == 'mine'
-                  ? 'block found  ${formatShe(t.amount)} SHE'
-                  : '${t.kind}  ${formatShe(t.amount)} SHE',
-            ),
-            subtitle: Text(
-              t.kind == 'blockfound' || t.kind == 'mine'
-                  ? '${t.threads ?? 0} threads · h=${t.height ?? '-'}'
-                  : t.memo && openedMemos.contains(t.id) && t.memoPlain != null
-                      ? '${t.from} → ${t.to}  h=${t.height ?? '-'}  memo: ${t.memoPlain}'
-                      : '${t.from} → ${t.to}  h=${t.height ?? '-'}',
-            ),
-            onTap: () => setState(() {
-              if (t.memo) {
-                openedMemos.add(t.id);
-                lastMemoPlain = t.memoPlain;
-              }
-              _ingestTx(ident, t);
-              _focusedTxId = t.id;
-              tab = _resistanceTab;
-            }),
+    final hist = ledger.ownerHistory(ident.address).where((t) => t.confirmed).toList();
+    return _card([
+      const Text('Shearview  S_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
+      if (hist.any((t) => t.memo && t.memoPlain != null && !openedMemos.contains(t.id)))
+        Text('you have a new memo', style: TextStyle(fontWeight: FontWeight.w700, color: shearAccentOf(context))),
+      if (hist.isEmpty) Text('No confirmed transactions yet.', style: TextStyle(color: shearMutedOf(context))),
+      for (final t in hist)
+        ListTile(
+          dense: true,
+          title: Text('${t.kind}  ${formatShe(t.amount)} SHE'),
+          subtitle: Text(
+            t.memo && openedMemos.contains(t.id) && t.memoPlain != null
+                ? '${t.from} → ${t.to}  h=${t.height ?? '-'}  memo: ${t.memoPlain}'
+                : '${t.from} → ${t.to}  h=${t.height ?? '-'}',
           ),
-        );
-      },
-    );
+          onTap: () => setState(() {
+            if (t.memo) {
+              openedMemos.add(t.id);
+              lastMemoPlain = t.memoPlain;
+            }
+            _ingestTx(ident, t);
+            _focusedTxId = t.id;
+            tab = _resistanceTab;
+          }),
+        ),
+    ]);
   }
 
   Widget _flow(BuildContext context, ShearIdentity ident) {
@@ -614,17 +583,15 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       const Text('shp1 dest this round (pay). Offer she1, never shear1.'),
       SelectableText(ledger.currentDest(ident.address)),
       const SizedBox(height: 8),
-      TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (she1…)')),
+      TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (shp1…)')),
       TextField(controller: flowAmt, decoration: const InputDecoration(labelText: 'Amount SHE'), keyboardType: TextInputType.number),
       TextField(controller: flowMemo, decoration: const InputDecoration(labelText: 'Memo (optional)')),
       FilledButton(
         onPressed: () async {
           try {
-            final rawTo = flowTo.text.trim();
-            final to = payoutDest(rawTo) ?? rawTo;
             final tx = await ledger.send(
               from: ledger.currentDest(ident.address),
-              to: to,
+              to: flowTo.text.trim(),
               amount: double.parse(flowAmt.text),
               memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
             );
@@ -965,8 +932,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       SelectableText('View key  ${ident.viewKey}', style: TextStyle(fontSize: 12, color: shearMutedOf(context))),
       const SizedBox(height: 8),
       const Text('CTF dests this view key opens (amounts on Shearview)'),
-      SelectableText('shp1  ${ledger.currentDest(ident.address)}'),
-      SelectableText('shear1  ${ident.address}'),
+      SelectableText(ledger.currentDest(ident.address)),
       TextField(
         controller: pw,
         obscureText: true,

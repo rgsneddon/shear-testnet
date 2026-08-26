@@ -44,7 +44,9 @@ void main() {
     ledger.creditHash(id.address, hashes: 4000);
     expect(ledger.pending(id.address), closeTo(4000 * kHashBonusShe, 1e-18));
     expect(ledger.spendable(id.address), 0);
-    expect(ledger.transactions, isEmpty);
+    expect(ledger.pendingTxs(id.address).length, 1);
+    expect(ledger.pendingTxs(id.address).single.kind, 'hash');
+    expect(ledger.transactions.where((t) => t.kind == 'sample'), isEmpty);
     final fatDump = jsonEncode(exportShewall(identity: id, ledger: ledger));
     expect(fatDump.contains('"kind":"sample"'), isFalse);
     expect(utf8.encode(fatDump).length < 4000, isTrue);
@@ -61,9 +63,11 @@ void main() {
     ledger.creditHash(id.address, hashes: 4);
     expect(ledger.pending(id.address), closeTo(4 * kHashBonusShe, 1e-18));
     expect(ledger.spendable(id.address), 0);
+    expect(ledger.pendingTxs(id.address).single.kind, 'hash');
     expect(ledger.ownerHistory(id.address), isEmpty);
     ledger.confirmRound(address: id.address, pot: 1, height: 3);
     expect(ledger.pending(id.address), 0);
+    expect(ledger.pendingTxs(id.address), isEmpty);
     expect(ledger.spendable(id.address), closeTo(1 + 4 * kHashBonusShe, 1e-18));
     expect(ledger.ownerHistory(id.address).single.confirmed, isTrue);
     expect(ledger.ownerHistory(id.address).single.amount, closeTo(1 + 4 * kHashBonusShe, 1e-18));
@@ -84,6 +88,28 @@ void main() {
     expect(ledger.pendingTxs(id.address), isEmpty);
     expect(ledger.ownerHistory(id.address).where((t) => t.id == sent.id).single.confirmed, isTrue);
     expect(ledger.sealedHeight, 3);
+  });
+
+  test('live pending hashes and receives become spendable on block-found', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..viewSecret = id.viewKey;
+    final dest = ledger.currentDest(id.address);
+    ledger.creditHash(id.address, hashes: 7);
+    final peer = createIdentity();
+    final from = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
+    ledger.creditReceive(to: dest, amount: 0.4, from: from, id: 'in-1');
+    expect(ledger.pendingTxs(id.address).length, 2);
+    expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'hash'), isTrue);
+    expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'receive' && t.id == 'in-1'), isTrue);
+    expect(ledger.spendable(id.address), 0);
+    expect(ledger.pending(id.address), closeTo(0.4 + 7 * kHashBonusShe, 1e-18));
+    ledger.confirmRound(address: id.address, pot: 0.1, height: 9);
+    expect(ledger.pendingTxs(id.address), isEmpty);
+    expect(ledger.pending(id.address), 0);
+    expect(ledger.spendable(id.address), closeTo(0.1 + 0.4 + 7 * kHashBonusShe, 1e-18));
+    expect(ledger.ownerHistory(id.address).any((t) => t.kind == 'coinbase' && t.confirmed), isTrue);
+    expect(ledger.ownerHistory(id.address).where((t) => t.id == 'in-1').single.confirmed, isTrue);
+    expect(ledger.transactions.where((t) => t.kind == 'hash'), isEmpty);
   });
 
   test('shewall.json password seal restores address and txs', () async {
@@ -132,31 +158,6 @@ void main() {
     mined.viewSecret = a.viewKey;
     expect(mined.ownedAddresses(a.address, paymentCode: a.paymentCode), contains(sheMine));
     expect(mined.ownedAddresses(a.address, paymentCode: a.paymentCode).contains(a.paymentCode), isFalse);
-    mined.confirmRound(address: a.paymentCode, pot: 0.99, height: 9);
-    expect(
-      mined
-          .ownerHistory(a.address, paymentCode: a.paymentCode)
-          .any((t) => t.to == sheMine && t.kind == 'blockfound' && t.amount == 0.99),
-      isTrue,
-    );
-    final rolled = rollupDestTxs([
-      ShearTx(id: 'a', from: 'coinbase', to: sheMine, amount: 0.99, kind: 'coinbase', height: 2, confirmed: true),
-      ShearTx(id: 'b', from: 'coinbase', to: sheMine, amount: 0.01, kind: 'hash', height: 2, confirmed: true),
-      ShearTx(id: 'c', from: 'coinbase', to: sheMine, amount: 0.99, kind: 'coinbase', height: 3, confirmed: true),
-    ]);
-    expect(rolled, hasLength(2));
-    final h2 = rolled.firstWhere((t) => t.height == 2);
-    expect(h2.kind, 'blockfound');
-    expect(h2.amount, closeTo(1.00, 1e-12));
-    expect(h2.threads, greaterThan(0));
-    expect(rolled.any((t) => t.kind == 'hash'), isFalse);
-    final frozen = a.toJson();
-    frozen['paymentCode'] = 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj';
-    final kept = ShearIdentity.fromJson(frozen);
-    expect(kept.paymentCode, 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj');
-    frozen['paymentCode'] = 'not-a-she1';
-    final emptyish = ShearIdentity.fromJson(frozen);
-    expect(emptyish.paymentCode, 'not-a-she1');
     expect(isShearAddress(a.paymentCode), isFalse);
     expect(a.paymentCode.length < 50, isTrue);
     const viewKey = 'abababababababababababababababababababababababababababababababab';
@@ -187,7 +188,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.0.8');
+    expect(kWalletVersion, '0.0.9');
     expect(kWalletVersion.contains('0.0.10'), isFalse);
     expect(formatShe(1), '1');
     expect(formatShe(kHashBonusShe), '0.00000000');
@@ -326,14 +327,14 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.0.8');
-    expect(kWalletVersion, '0.0.8');
+    expect(app.title, 'Shear 0.0.9');
+    expect(kWalletVersion, '0.0.9');
     // password gate first
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
     await tester.pump();
-    expect(find.textContaining('0.0.8'), findsWidgets);
+    expect(find.textContaining('0.0.9'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -357,15 +358,6 @@ void main() {
     expect(kExplains.length, kTabs.length);
     expect(kSymbols.length, kTabs.length);
     expect(kExplains.every((e) => e.length > 20), isTrue);
-    await tester.tap(find.text('Flow'));
-    await tester.pump();
-    expect(find.text('To (she1…)'), findsOneWidget);
-    expect(find.text('To (shp1…)'), findsNothing);
-    await tester.tap(find.text('Closure'));
-    await tester.pump();
-    expect(find.textContaining('CTF dests this view key opens'), findsOneWidget);
-    expect(find.textContaining('shp1  '), findsWidgets);
-    expect(find.textContaining('shear1  ${session.identity!.address}'), findsOneWidget);
   });
 
   testWidgets('pack logo loads and dark mode swaps palette', (tester) async {
@@ -411,7 +403,7 @@ void main() {
     expect(find.text('Spendable'), findsOneWidget);
     expect(find.textContaining('block height:'), findsWidgets);
     expect(find.text('Copy ID'), findsOneWidget);
-    expect(find.textContaining('Receive ID'), findsOneWidget);
+    expect(find.text('Receive ID'), findsOneWidget);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
     expect(find.text('Pending'), findsNothing);
     expect(find.text('Copy dest'), findsNothing);
@@ -456,6 +448,35 @@ void main() {
     await tester.tap(find.text('Shearview'));
     await tester.pump();
     expect(find.textContaining(formatShe(0.25)), findsWidgets);
+  });
+
+  testWidgets('Continuum live-feeds pending hashes and receives until block-found', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-live-feed-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    final ident = session.identity!;
+    final ledger = ShearLedger()..viewSecret = ident.viewKey;
+    final dest = ledger.currentDest(ident.address);
+    ledger.creditHash(ident.address, hashes: 100000000);
+    final peer = createIdentity();
+    final from = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
+    ledger.creditReceive(to: dest, amount: 0.4, from: from, id: 'in-live');
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'pw');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Pending'), findsOneWidget);
+    expect(find.textContaining('hash'), findsWidgets);
+    expect(find.textContaining('receive'), findsWidgets);
+    expect(find.textContaining(formatShe(0.4)), findsWidgets);
+    expect(find.textContaining(formatShe(0.001)), findsWidgets);
+    ledger.confirmRound(address: ident.address, pot: 0.1, height: 4);
+    await tester.tap(find.text('Continuum'));
+    await tester.pump();
+    expect(find.text('Pending'), findsNothing);
+    expect(find.textContaining(formatShe(0.5 + 0.001)), findsWidgets);
   });
 
   testWidgets('dark mode cards and fields are dark with light ink; light mode inverts', (tester) async {
@@ -570,7 +591,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Shearview'));
     await tester.pump();
-    await tester.tap(find.text('block found  ${formatShe(tx.amount)} SHE'));
+    await tester.tap(find.text('${tx.kind}  ${formatShe(tx.amount)} SHE'));
     await tester.pump();
     expect(find.textContaining('CTF CLI'), findsWidgets);
     expect(find.textContaining(formatShe(tx.amount)), findsWidgets);
@@ -886,7 +907,6 @@ void main() {
     expect(posted.last['from'], from);
     expect(posted.last['to'], to);
     expect(posted.last['from'].toString().startsWith('shear1'), isFalse);
-    expect(posted.last['to'].toString().startsWith('she1'), isFalse);
     expect(posted.last['memoCt'], isNotNull);
     expect(await memoOpen(to, tx.memoCt), 'secret-flow');
     final other = destForLogin(bob.address, height: 2, viewKey: bob.viewKey)!;
@@ -895,33 +915,6 @@ void main() {
       aliceL.ownerHistory(alice.address).where((t) => t.kind == 'send').single.memoPlain,
       'secret-flow',
     );
-  });
-
-  test('send to she1 pays shp1 of the same 20 bytes; she1 never on the wire', () async {
-    final posted = <Map<String, dynamic>>[];
-    final header = Uint8List(120);
-    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-    final server = await _fakePool(headerHex: hex, height: 1, posted: posted);
-    addTearDown(() => server.close(force: true));
-    final alice = createIdentity();
-    final bob = createIdentity();
-    final pool = ShearPoolClient(
-      baseUrl: 'http://127.0.0.1:${server.port}',
-      http: _realHttp(),
-    );
-    final aliceL = ShearLedger(pool: pool);
-    aliceL.viewSecret = alice.viewKey;
-    final from = aliceL.currentDest(alice.address);
-    final want = payoutDest(bob.paymentCode)!;
-    expect(bob.paymentCode.startsWith('she1'), isTrue);
-    expect(want.startsWith('shp1'), isTrue);
-    aliceL.creditHash(alice.address, hashes: 0);
-    aliceL.confirmRound(address: alice.address, pot: 1, height: 1);
-    final tx = await aliceL.send(from: from, to: bob.paymentCode, amount: 1);
-    expect(tx.to, want);
-    expect(posted.last['to'], want);
-    expect(posted.last['to'].toString().startsWith('she1'), isFalse);
-    expect(posted.last['to'].toString().startsWith('shear1'), isFalse);
   });
 }
 

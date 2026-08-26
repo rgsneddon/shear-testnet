@@ -1,16 +1,22 @@
 /**
  * Per-TCP-session share vardiff. Not consensus.
- * Header bits stay on ASERT 90 s. Share target only throttles submit rate
+ * Header bits stay on ASERT 9 s. Share target only throttles submit rate
  * and must never exceed current block bits.
+ *
+ * 9s blocks need a ~10ms share cadence so miners register hashes at the
+ * start of each round. A 7.5s share target left the UI at 0 hashes for
+ * most of the round once header bits climbed.
  *
  * Default max is SHA-256 width so a huge CPU farm is throttled instead
  * of flooding. GPU/ASIC still mint nothing.
  */
 import { MAX_BITS } from '../../crypto/asert.js';
 
-export const SHARE_VARDIFF_TARGET_MS = 7500;
+export const SHARE_VARDIFF_TARGET_MS = 10;
 export const SHARE_VARDIFF_RETARGET_SHARES = 8;
 export const SHARE_VARDIFF_RETARGET_MS = 20_000;
+/** Keep share target easier than the header so a 9s (or slow) round still records hashes. */
+export const SHARE_BELOW_BLOCK = 8;
 
 export function hashesProvenByShare(shareBits) {
   const b = Math.floor(Number(shareBits) || 0);
@@ -23,7 +29,7 @@ export function hashesProvenByShare(shareBits) {
 /** 1-thread H/s implied by share bits at the vardiff target interval. */
 export function expectedOneThreadHs(shareBits, targetMs = SHARE_VARDIFF_TARGET_MS) {
   const hashes = hashesProvenByShare(shareBits);
-  const sec = Math.max(0.25, (Number(targetMs) || SHARE_VARDIFF_TARGET_MS) / 1000);
+  const sec = Math.max(0.001, (Number(targetMs) || SHARE_VARDIFF_TARGET_MS) / 1000);
   return hashes / sec;
 }
 
@@ -32,7 +38,10 @@ export function clampShareBits(bits, { blockBits, minBits = 1, maxBits = MAX_BIT
   if (!Number.isFinite(n)) n = Math.max(1, minBits);
   n = Math.max(minBits, Math.min(maxBits, n));
   const cap = Math.floor(Number(blockBits));
-  if (Number.isFinite(cap) && cap >= 1) n = Math.min(n, cap);
+  if (Number.isFinite(cap) && cap >= 1) {
+    const easy = Math.max(minBits, cap - SHARE_BELOW_BLOCK);
+    n = Math.min(n, easy);
+  }
   return n;
 }
 
@@ -46,7 +55,7 @@ export function nextShareBits({
 } = {}) {
   const cur = clampShareBits(current, { blockBits, minBits });
   const target = Math.max(1, Number(targetMs) || SHARE_VARDIFF_TARGET_MS);
-  const actual = Math.max(250, Number(actualIntervalMs) || target);
+  const actual = Math.max(1, Number(actualIntervalMs) || target);
   const ratio = target / actual;
   const delta = Math.round(Math.log2(Math.max(1 / 16, Math.min(16, ratio))));
   return clampShareBits(cur + delta, { blockBits, minBits });

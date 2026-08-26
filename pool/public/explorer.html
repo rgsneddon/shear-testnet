@@ -8,7 +8,7 @@
   <title>Shear explorer · ShearHash</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=8"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=6"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
@@ -27,13 +27,27 @@
         linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
       background-origin: border-box; background-clip: padding-box, border-box;
     }
-    .grid { display:grid; gap:8px; width:100%; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 8px 0 16px; }
+    .grid { display:grid; gap:8px; width:100%; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 8px 0 16px; }
+    #net-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .cli-box {
+      background: #000; color: #00FF41; font-family: ui-monospace, Courier, monospace;
+      font-size: 12px; line-height: 1.35; padding: 12px; margin: 0;
+      white-space: pre-wrap; overflow-wrap: anywhere; min-height: 12rem; max-height: 28rem; overflow: auto;
+    }
+    .back-ex {
+      display: none; text-align: right; margin: 10px 2px 0;
+      color: var(--muted); font-size: .7rem; text-decoration: none;
+    }
+    .back-ex.is-on { display: block; }
+    .back-ex:hover { color: var(--cyan); }
     .grid .panel-card { margin:0; padding:7px 8px; }
     .label { color:var(--muted); font-size:.65rem; letter-spacing:.05em; text-transform:uppercase; }
     .value { font-size:.78rem; font-weight:650; margin-top:2px; color:var(--cyan); overflow-wrap:anywhere; }
     a { color:var(--cyan); }
-    table { width:100%; border-collapse:collapse; }
-    th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.75rem; overflow-wrap:anywhere; }
+    table { width:100%; max-width:100%; border-collapse:collapse; table-layout:fixed; }
+    th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.75rem; overflow-wrap:anywhere; word-break:break-word; }
+    .table-wrap { width:100%; max-width:100%; overflow:visible; }
+    #ex-txs td:nth-child(2) { white-space: nowrap; }
     .mono { font-family: ui-monospace, Consolas, monospace; font-size:.75rem; }
     .pulse { color:var(--green); font-size:.7rem; }
     .stale { color:#b42318; }
@@ -95,23 +109,28 @@
     <section class="panel-card">
       <h1>Shear explorer</h1>
       <p>she is private</p>
-      <p>Continuity-settled PoW. Public rows are tx id, amount, height, memo yes/no. Offer she1 (silent ID). Chain dests are shp1. Never share shear1.</p>
+      <p>Continuity-settled PoW. Confirmed blocks only. Offer she1 (silent ID). Chain dests are shp1. Never share shear1.</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
     </section>
     <div class="grid" id="net-grid">
       <article class="panel-card"><div class="label">Height</div><div class="value" id="ex-height">0</div></article>
-      <article class="panel-card"><div class="label">Algo</div><div class="value" id="ex-algo">ShearHash</div></article>
       <article class="panel-card"><div class="label">Network hashrate</div><div class="value" id="ex-hashrate">0 H/s</div></article>
       <article class="panel-card"><div class="label">Last block</div><div class="value" id="ex-updated">—</div></article>
     </div>
+    <section class="panel-card" id="tx-cli-card">
+      <h2>Resistance  η  —  public CTF CLI</h2>
+      <p class="label">Public fields only. Open a confirmed block from the list.</p>
+      <pre id="tx-cli" class="cli-box">select a confirmed block</pre>
+      <a class="back-ex" id="back-ex" href="https://explorer.shear.digital/">back to explorer</a>
+    </section>
     <section class="panel-card" id="tx-search-box">
-      <h2>Search TX's</h2>
-      <p class="label">Find by block number, tx id, or a from–to height range.</p>
+      <h2>Search blocks</h2>
+      <p class="label">Find by block number, block id, or a from–to height range.</p>
       <form id="tx-search">
         <div class="search-grid">
           <p><label class="label" for="q-height">Block number</label><br/>
             <input id="q-height" name="height" inputmode="numeric" autocomplete="off"/></p>
-          <p><label class="label" for="q-id">Tx id</label><br/>
+          <p><label class="label" for="q-id">Block id</label><br/>
             <input id="q-id" name="id" autocomplete="off"/></p>
           <p><label class="label" for="q-from">From block</label><br/>
             <input id="q-from" name="from" inputmode="numeric" autocomplete="off"/></p>
@@ -126,18 +145,23 @@
       </form>
     </section>
     <section class="panel-card">
-      <h2>Recent transfers</h2>
+      <h2>Last 30 transactions</h2>
+      <p class="label">Sealed blocks only. Hash bonuses in the open round stay off this list.</p>
+      <div class="table-wrap" id="ex-tx-wrap">
       <table id="ex-txs">
         <thead>
           <tr>
             <th>Id</th>
-            <th>Amount SHE</th>
-            <th>Height</th>
-            <th>Memo</th>
+            <th>Time</th>
+            <th>Kind</th>
+            <th>From</th>
+            <th>To</th>
+            <th>Amount</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
+      </div>
     </section>
     <section class="panel-card">
       <h2>Circulation</h2>
@@ -206,15 +230,64 @@
         signal: ctrl.signal,
       }).then(function (r) { return r.json(); }).finally(function () { clearTimeout(t); });
     }
+    function shortId(id) {
+      const s = String(id || '');
+      if (s.length <= 18) return s;
+      return s.slice(0, 10) + '…' + s.slice(-6);
+    }
+    function shortDest(s) {
+      const t = String(s || '');
+      if (!t || /^shear1/i.test(t) || /^she1/i.test(t)) return '';
+      return t.slice(0, 9);
+    }
+    function fmtLocalTs(ms) {
+      const n = Number(ms);
+      if (!Number.isFinite(n) || n <= 0) return '—';
+      const d = new Date(n);
+      if (Number.isNaN(d.getTime())) return '—';
+      function pad(v) { return String(v).padStart(2, '0'); }
+      return pad(d.getDate()) + '-' + pad(d.getMonth() + 1) + '-' + d.getFullYear()
+        + ' : ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+    function txIdFromPath() {
+      const m = String(location.pathname || '').match(/\/tx\/([^/]+)/);
+      return m ? decodeURIComponent(m[1]) : '';
+    }
+    function paintCli(text) {
+      const el = document.getElementById('tx-cli');
+      if (el) el.textContent = text || 'select a confirmed block';
+    }
+    async function openTx(id) {
+      const want = String(id || '').trim();
+      const back = document.getElementById('back-ex');
+      if (back) {
+        if (want) back.classList.add('is-on');
+        else back.classList.remove('is-on');
+      }
+      if (!want) return;
+      try {
+        const got = await fetchJson('/explorer/tx?id=' + encodeURIComponent(want));
+        paintCli(got && got.ok ? got.cli : 'unknown block');
+      } catch {
+        paintCli('unknown block');
+      }
+    }
     function paintTxs(txs, status) {
       const body = document.querySelector('#ex-txs tbody');
       const st = document.getElementById('tx-status');
       if (st) st.textContent = status || '';
       if (!body) return;
-      const rows = Array.isArray(txs) ? txs : [];
+      const rows = Array.isArray(txs) ? txs.slice(0, 30) : [];
       body.innerHTML = rows.length
-        ? rows.map((t) => '<tr><td class="mono">'+esc(t.id)+'</td><td>'+esc(fmtShe(t.amount))+'</td><td>'+esc(t.height)+'</td><td>'+(t.memo ? 'yes' : 'no')+'</td></tr>').join('')
-        : '<tr><td colspan="4">No transfers yet.</td></tr>';
+        ? rows.map(function (t) {
+            const href = '/tx/' + encodeURIComponent(t.id);
+            return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
+              esc(fmtLocalTs(t.at)) + '</td><td>' +
+              esc(t.kind || 'block') + '</td><td class="mono">' + esc(t.from || 'coinbase') +
+              '</td><td class="mono">' + esc(shortDest(t.to)) + '</td><td>' +
+              esc(fmtShe(t.amount)) + '</td></tr>';
+          }).join('')
+        : '<tr><td colspan="6">No sealed blocks yet.</td></tr>';
     }
     function queryFromForm() {
       const q = new URLSearchParams();
@@ -246,20 +319,22 @@
     async function loadRecent() {
       const [stats, hist, circ] = await Promise.all([
         fetchJson('/stats'),
-        fetchJson('/explorer/history'),
+        fetchJson('/explorer/recent'),
         fetchJson('/explorer/circulation'),
       ]);
       setText('ex-height', stats.height ?? 0);
-      setText('ex-algo', stats.algo || 'ShearHash');
       setText('ex-hashrate', fmtRate(stats.hashrate));
       lastBlockAt = Number(stats.lastFoundAt || 0);
       setText('ex-updated', lastBlockAt ? fmtSinceBlock(lastBlockAt) : '—');
-      paintTxs((hist.txs || []).slice(0, 30), '');
+      const recent = (hist.txs || []).slice().sort(function (a, b) {
+        return Number(b.height) - Number(a.height);
+      }).slice(0, 30);
+      paintTxs(recent, '');
       paintHolders(circ);
       const pulse = document.getElementById('live-pulse');
       if (pulse) {
         pulse.classList.remove('stale');
-        pulse.textContent = 'live · height ' + (stats.height ?? 0);
+        pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v1') + ' · height ' + (stats.height ?? 0);
       }
       filled = true;
     }
@@ -272,10 +347,10 @@
       }
       const got = await fetchJson('/explorer/search?' + q.toString());
       const n = (got.txs || []).length;
-      let status = n + ' transfer(s)';
-      if (q.get('height')) status = n + ' transfer(s) at block ' + q.get('height');
-      else if (q.get('id')) status = n + ' transfer(s) matching id ' + q.get('id');
-      else if (q.get('from') || q.get('to')) status = n + ' transfer(s) from block ' + (q.get('from') || '…') + ' to ' + (q.get('to') || '…');
+      let status = n + ' block(s)';
+      if (q.get('height')) status = n + ' block(s) at height ' + q.get('height');
+      else if (q.get('id')) status = n + ' block(s) matching id ' + q.get('id');
+      else if (q.get('from') || q.get('to')) status = n + ' block(s) from ' + (q.get('from') || '…') + ' to ' + (q.get('to') || '…');
       paintTxs(got.txs || [], status);
     }
     document.getElementById('tx-search').addEventListener('submit', runSearch);
@@ -291,6 +366,8 @@
       if (pulse) { pulse.classList.add('stale'); pulse.textContent = 'offline · retrying'; }
       setTimeout(loadRecent, 1200);
     });
+    const initialTx = txIdFromPath();
+    if (initialTx) openTx(initialTx);
     setInterval(function () {
       if (lastBlockAt) setText('ex-updated', fmtSinceBlock(lastBlockAt));
       if (!filled) return;

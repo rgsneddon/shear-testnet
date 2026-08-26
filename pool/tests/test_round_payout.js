@@ -64,7 +64,7 @@ function findNonces(job, n, { block = false } = {}) {
 }
 
 describe('round hash bonuses', () => {
-  it('pays N and M nanos to two miners plus 1 SHE pot on the next sealed job', async () => {
+  it('pays N and M nanos to two miners plus 0.1 SHE pot on the next sealed job', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pay-'));
     const alice = newIdentity();
     const bob = newIdentity();

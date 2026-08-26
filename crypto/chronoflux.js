@@ -6,15 +6,18 @@
  *
  * Sealed forever (explorer reports every transfer for eternity):
  *   - 120-byte header (merkle_root + continuity_root)
- *   - coinbase vout (1 SHE pot + per-miner hash bonus totals)
+ *   - coinbase vout (0.1 SHE pot + per-miner hash bonus totals)
  *   - every user transfer in txs[]
+ *
+ * Each 9s block rolls one Flow bundle: one sample row per hasher with
+ * count = hashes (1 hash = 1 tx for bonus). Never one JSON object per hash.
  * Explorer reports those sealed rows, never the pruned sample JSON.
  *
- * Pruned after 100 confirmations: per-round hash-sample bodies only.
+ * Pruned after 1000 confirmations: per-round hash-sample bodies only.
  * continuity_root in the header remains the 32-byte seal of that Flow.
  */
 
-export const SAMPLE_PRUNE_CONFIRMATIONS = 100;
+export const SAMPLE_PRUNE_CONFIRMATIONS = 1000;
 
 export function flowConfirmations(blockHeight, tipHeight) {
   return Math.max(0, Number(tipHeight) - Number(blockHeight));
@@ -48,6 +51,11 @@ export function collateSamples(samples = []) {
     }
   }
   return [...by.values()];
+}
+
+/** 9s block Flow bundle: one row per hasher, count = meeting hashes. */
+export function rollHashBundle(samples = []) {
+  return collateSamples(samples);
 }
 
 /** Drop Flow samples only. Never drop txs or coinbase vout — they stay sealed. */
@@ -144,7 +152,7 @@ export function leanBlock(block) {
   return {
     ...block,
     txs,
-    samples: Array.isArray(block.samples) ? block.samples : [],
+    samples: collateSamples(Array.isArray(block.samples) ? block.samples : []),
   };
 }
 
