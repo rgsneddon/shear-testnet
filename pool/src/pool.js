@@ -6,17 +6,19 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { requiredJobFields, decodeHeader } from '../../crypto/header.js';
 import { headerFromHex, setNonce } from '../../crypto/header.js';
-import { shearHash, meetsTarget, ALGO, CLIENT } from '../../crypto/shear_hash.js';
+import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest } from '../../crypto/address.js';
-import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS } from '../../crypto/asert.js';
-import { createStore } from '../../node/src/store.js';
 import {
-  assessThreadHonesty,
-  oneThreadHsFromRows,
-} from './thread_honesty.js';
+  BLOCK_SUBSIDY_NANOS,
+  POOL_FEE_BPS,
+  MAGIC_TESTNET,
+  TARGET_BLOCK_INTERVAL_MS,
+  HASH_BONUS_NANOS,
+} from '../../crypto/asert.js';
+import { createStore } from '../../node/src/store.js';
+import { poolRecentBlockTxs } from './wallet_api.js';
 import {
   clampShareBits,
-  expectedOneThreadHs,
   hashesProvenByShare,
   nextShareBits,
   shouldRetargetShare,
@@ -28,8 +30,8 @@ export const PUBLIC_DIR = path.join(__dirname, '../public');
 export const HASHRATE_WINDOW_MS = 72_000;
 /** After disconnect, stay visible this long past the last submitted hash. */
 export const HASH_PRESENCE_MS = 72_000;
-/** Mean interval of the last 1000 chain blocks (or all we have if fewer). */
-export const AVG_BLOCK_WINDOW = 1000;
+/** Mean interval of recent headers so the live 9s cadence is not buried under old 90s history. */
+export const AVG_BLOCK_WINDOW = 20;
 
 /**
  * Average time between consecutive blocks over the last `windowBlocks`
@@ -173,7 +175,13 @@ export function scoreShare({ job, nonce }) {
   const shareOk = meetsTarget(hash, Number(job.shareBits));
   const blockOk = meetsTarget(hash, Number(job.blockBits || job.bits));
   if (!shareOk) return { ok: false, reason: 'low_diff', hash: hash.toString('hex') };
-  return { ok: true, hash: hash.toString('hex'), block: blockOk, header };
+  return {
+    ok: true,
+    hash: hash.toString('hex'),
+    block: blockOk,
+    header,
+    bitsMet: leadingZeroBits(hash),
+  };
 }
 
 /**
@@ -241,9 +249,36 @@ export function provenHashrate(miner, now = Date.now()) {
   return hs;
 }
 
-/** Honesty on the folded row vs merged proven H/s. Never last-write. */
-export function applyFoldedHonesty(miner, { peers = [], now = Date.now() } = {}) {
-  if (!miner) return { honest: true, verdict: 'unknown' };
+/** This miner's own counter (login/submit hashrate or hashes delta). Never another miner. */
+export function applyMinerSelfRate(session, params, now = Date.now()) {
+  if (!session || !params) return session;
+  const hs = Number(params.hashrate ?? params.hs ?? params.hashRate);
+  if (Number.isFinite(hs) && hs > 0) session.clientHs = hs;
+  const hashes = Number(params.hashes ?? params.hashCount);
+  if (Number.isFinite(hashes) && hashes >= 0) {
+    const prev = Number(session.clientHashes);
+    const t0 = Number(session.clientHashesAt);
+    if (Number.isFinite(prev) && t0 > 0 && hashes >= prev && !(Number.isFinite(hs) && hs > 0)) {
+      const dt = Math.max(0.001, (now - t0) / 1000);
+      const delta = hashes - prev;
+      if (delta > 0) session.clientHs = delta / dt;
+    }
+    session.clientHashes = hashes;
+    session.clientHashesAt = now;
+  }
+  return session;
+}
+
+/** This miner's H/s only: client counter if sent, else accepted-share proof. Never peers. */
+export function reportedHashrate(miner, now = Date.now()) {
+  const self = Number(miner?.clientHs);
+  if (Number.isFinite(self) && self > 0) return self;
+  return provenHashrate(miner, now);
+}
+
+/** Fold per-socket inventory and proven H/s. No thread-honesty / inflate flags. */
+export function refreshMinerRow(miner, now = Date.now()) {
+  if (!miner) return miner;
   Object.assign(miner, foldConnectionInventory(miner.connections));
   if (isCminerFeeLogin(miner.workerKey || miner.login)) {
     const n = Math.max(1, Number(miner.sessions || miner.connections?.length || 1));
@@ -251,38 +286,9 @@ export function applyFoldedHonesty(miner, { peers = [], now = Date.now() } = {})
     miner.threads = n;
     miner.cpuThreads = n;
     miner.cpuCores = n;
-    miner.inferredThreads = n;
-    miner.threadHonesty = 'honest';
-    miner.threadHonestyReason = 'cminer_fee_route';
-    miner.threadsHonest = true;
-    miner.hashrate = provenHashrate(miner, now);
-    return { honest: true, verdict: 'honest', reason: 'cminer_fee_route', inferred: n };
   }
-  const others = (peers || []).filter((p) => p && p !== miner && !isCminerFeeLogin(p.workerKey || p.login));
-  const band = oneThreadHsFromRows(others.map((p) => ({
-    threads: p.threads,
-    hashrate: provenHashrate(p, now),
-  })));
-  const sb = Number(
-    miner.connections?.find((c) => Number(c.shareBits) > 0)?.shareBits
-    || miner.shareBits
-    || 12,
-  );
-  const oneThreadHs = band > 0 ? band : expectedOneThreadHs(sb);
-  const verdict = assessThreadHonesty({
-    claimed: miner.claimedThreads ?? miner.threads,
-    cpuCores: miner.cpuCores,
-    cpuThreads: miner.cpuThreads,
-    hashrate: provenHashrate(miner, now),
-    accepts: Number(miner.accepted || 0),
-    oneThreadHs,
-  });
-  miner.inferredThreads = verdict.inferred;
-  miner.threadHonesty = verdict.verdict;
-  miner.threadHonestyReason = verdict.reason;
-  miner.threadsHonest = verdict.honest;
   miner.hashrate = provenHashrate(miner, now);
-  return verdict;
+  return miner;
 }
 
 export function createPool({
@@ -347,7 +353,7 @@ export function createPool({
       samples,
       potShares,
       shareBits: sb,
-      ...(chainLen >= 2 ? {} : { bits }),
+      ...(chainLen >= 1 ? {} : { bits }),
     });
     const gate = gateJob(job);
     if (!gate.ok) return null;
@@ -359,12 +365,41 @@ export function createPool({
     return `${JSON.stringify(obj)}\n`;
   }
 
-  function honestyPeers() {
-    return [...miners.values()].filter((m) => !isCminerFeeLogin(m.workerKey || m.login));
+  /** Push one round job to every TCP session now. Do this before the finder ACK. */
+  function bindJob(sock, job) {
+    if (!job) return;
+    for (const m of miners.values()) {
+      for (const c of m.connections || []) {
+        if (c && c.sock === sock) {
+          c.job = job;
+          if (job.shareBits != null) {
+            c.shareBits = clampShareBits(job.shareBits, { blockBits: job.blockBits || job.bits });
+          }
+        }
+      }
+    }
+  }
+
+  function broadcastJob(job) {
+    if (!job) return 0;
+    const payload = line({ method: 'job', params: job });
+    let n = 0;
+    for (const s of sockets) {
+      try {
+        if (typeof s.setNoDelay === 'function') s.setNoDelay(true);
+        if (typeof s.cork === 'function') s.cork();
+        s.write(payload);
+        if (typeof s.uncork === 'function') s.uncork();
+        bindJob(s, job);
+        n += 1;
+      } catch { /* ignore */ }
+    }
+    return n;
   }
 
   const sockets = new Set();
   const stratum = net.createServer((sock) => {
+    try { sock.setNoDelay(true); } catch { /* ignore */ }
     sockets.add(sock);
     let buf = '';
     let session = null;
@@ -429,13 +464,15 @@ export function createPool({
           session.seen = Date.now();
           miners.set(key, session);
           if (isCminerFeeLogin(key)) conn.shearFeeRoute = true;
-          applyFoldedHonesty(session, { peers: honestyPeers() });
+          applyMinerSelfRate(session, params);
+          refreshMinerRow(session);
           // Fee socket submits the hasher's current jobId. A new template here
           // superseded lastJob and the main worker painted 0 H/s until the
           // next share on a stale header.
           const job = conn.shearFeeRoute && lastJob
             ? lastJob
             : issueJob(conn.shareBits);
+          conn.job = job;
           sock.write(line({ id: msg.id, result: { status: 'OK' }, job }));
           continue;
         }
@@ -448,7 +485,11 @@ export function createPool({
               }
             }
           }
-          const job = store.jobs.get(String(params.jobId))?.job || lastJob;
+          if (session) {
+            conn = (session.connections || []).find((c) => c && c.sock === sock) || conn;
+            applyMinerSelfRate(session, params);
+          }
+          const job = store.jobs.get(String(params.jobId))?.job || conn?.job || lastJob;
           const scored = scoreShare({ job, nonce: params.nonce });
           if (!scored.ok) {
             stats.stale += 1;
@@ -459,16 +500,20 @@ export function createPool({
           stats.accepted += 1;
           if (session) {
             session.accepted += 1;
-            const proven = hashesProvenByShare(job?.shareBits);
+            const bits = Math.max(
+              Number(job?.shareBits) || 0,
+              Number(scored.bitsMet) || 0,
+            );
+            const proven = hashesProvenByShare(bits);
             session.roundHashes += proven;
             session.hashes += proven;
             session.seen = Date.now();
-            const work = hashesProvenByShare(job?.shareBits);
+            const work = proven;
             if (!Array.isArray(session.acceptAt)) session.acceptAt = [];
             if (!Array.isArray(session.acceptWork)) session.acceptWork = [];
             session.acceptAt.push(Date.now());
             session.acceptWork.push(work);
-            if (session.acceptAt.length > 64) {
+            {
               const drop = Date.now() - HASHRATE_WINDOW_MS;
               const nextT = [];
               const nextW = [];
@@ -478,10 +523,10 @@ export function createPool({
                   nextW.push(session.acceptWork[i]);
                 }
               }
-              session.acceptAt = nextT.length ? nextT : session.acceptAt.slice(-16);
-              session.acceptWork = nextT.length ? nextW : session.acceptWork.slice(-16);
+              session.acceptAt = nextT;
+              session.acceptWork = nextW;
             }
-            applyFoldedHonesty(session, { peers: honestyPeers() });
+            refreshMinerRow(session);
           }
           let nextJob = null;
           if (scored.block) {
@@ -495,12 +540,23 @@ export function createPool({
               stats.lastFoundAt = Date.now();
               if (session) session.blocks = (Number(session.blocks) || 0) + 1;
               pendingPayout = snapshotRound();
-              for (const m of miners.values()) m.roundHashes = 0;
+              for (const m of miners.values()) {
+                m.roundHashes = 0;
+                m.clientHashesRound0 = Number(m.clientHashes) || 0;
+                for (const c of m.connections || []) {
+                  if (!c) continue;
+                  c.shareBits = shareBits;
+                  c.varShares = 0;
+                  c.varWindowAt = Date.now();
+                }
+              }
+              const base = issueJob(shareBits);
+              broadcastJob(base);
               nextJob = true;
             }
           }
           sock.write(line({ id: msg.id, result: { status: 'OK', hash: scored.hash } }));
-          if (conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login)) {
+          if (!nextJob && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login)) {
             conn.varShares = (Number(conn.varShares) || 0) + 1;
             const now = Date.now();
             const elapsed = now - (Number(conn.varWindowAt) || now);
@@ -516,18 +572,11 @@ export function createPool({
               if (next !== conn.shareBits) {
                 conn.shareBits = next;
                 const retargeted = issueJob(next);
-                if (retargeted) sock.write(line({ method: 'job', params: retargeted }));
+                if (retargeted) {
+                  conn.job = retargeted;
+                  sock.write(line({ method: 'job', params: retargeted }));
+                }
               }
-            }
-          }
-          if (nextJob) {
-            const live = [...miners.values()].flatMap((m) => m.connections || []).filter((c) => c?.sock);
-            const mainConn = live.find((c) => !c.shearFeeRoute) || live[0];
-            const base = issueJob(mainConn?.shareBits ?? shareBits);
-            for (const s of sockets) {
-              try {
-                if (base) s.write(line({ method: 'job', params: base }));
-              } catch { /* ignore */ }
             }
           }
         }
@@ -539,13 +588,13 @@ export function createPool({
         session.connections = (session.connections || []).filter((c) => c.sock !== sock);
         Object.assign(session, foldConnectionInventory(session.connections));
         session.sock = session.connections[0]?.sock || null;
-        applyFoldedHonesty(session, { peers: honestyPeers() });
+        refreshMinerRow(session);
       }
     });
     sock.on('error', () => {});
   });
 
-  function publicMinerView(m, now = Date.now()) {
+  function publicMinerView(m, now = Date.now(), peers = []) {
     const connected = (m.connections || []).some((c) => c.sock);
     return {
       miner: publicMinerTag(m.login || m.workerKey),
@@ -553,14 +602,19 @@ export function createPool({
       version: String(m.version || ''),
       client: String(m.client || CLIENT),
       algo: ALGO,
-      hashrate: provenHashrate(m, now),
-      roundHashes: m.roundHashes || 0,
+      hashrate: reportedHashrate(m, now),
+      roundHashes: (() => {
+        const total = Number(m.clientHashes);
+        if (Number.isFinite(total) && total > 0) {
+          return Math.max(0, Math.round(total - (Number(m.clientHashesRound0) || 0)));
+        }
+        return Number(m.roundHashes) || 0;
+      })(),
       accepted: m.accepted || 0,
       stale: m.stale || 0,
       blocks: Number(m.blocks) || 0,
       threads: m.threads || 0,
       sessions: m.sessions || (m.connections || []).length,
-      honesty: m.threadHonesty || 'unknown',
       connected,
       lastSeen: Number(m.seen) || 0,
       firstSeen: Number(m.firstSeen) || Number(m.seen) || 0,
@@ -575,11 +629,16 @@ export function createPool({
       ok: true,
       coin: 'SHE',
       algo: ALGO,
+      magic: MAGIC_TESTNET,
+      network: MAGIC_TESTNET,
+      targetBlockIntervalMs: TARGET_BLOCK_INTERVAL_MS,
+      blockSubsidyNanos: BLOCK_SUBSIDY_NANOS,
+      hashBonusNanos: HASH_BONUS_NANOS,
       stratum: `:${stratumPort}`,
       proof: 'PoW',
       miners: workers.length,
       threads: workers.reduce((a, m) => a + (m.threads || 0), 0),
-      hashrate: workers.reduce((a, m) => a + (provenHashrate(m) || 0), 0),
+      hashrate: workers.reduce((a, m) => a + (reportedHashrate(m, now) || 0), 0),
       blocks: stats.blocks,
       accepted: stats.accepted,
       stale: stats.stale,
@@ -593,7 +652,8 @@ export function createPool({
       avgBlockTimeMs: avgBlockIntervalMs(store.blocks),
       avgBlockWindow: AVG_BLOCK_WINDOW,
       uptimeMs: Date.now() - stats.started,
-      workers: workers.map((m) => publicMinerView(m, now)),
+      workers: workers.map((m) => publicMinerView(m, now, workers)),
+      recentTxs: poolRecentBlockTxs(store, 30),
     };
   }
 
@@ -623,7 +683,8 @@ export function createPool({
         return;
       }
       const now = Date.now();
-      const views = rows.map((m) => publicMinerView(m, now));
+      const peers = [...miners.values()].filter((m) => isPublicMinerRow(m, now));
+      const views = rows.map((m) => publicMinerView(m, now, peers));
       const roll = views.reduce((a, v) => ({
         hashrate: a.hashrate + v.hashrate,
         roundHashes: a.roundHashes + v.roundHashes,
@@ -641,13 +702,12 @@ export function createPool({
         connected: views.some((v) => v.connected),
         lastSeen: Math.max(...views.map((v) => v.lastSeen)),
         firstSeen: Math.min(...views.map((v) => v.firstSeen || now)),
-        honesty: views[0].honesty,
         ...roll,
         workers: views,
       }));
       return;
     }
-    if (url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/')) {
+    if (url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/') || url.pathname.startsWith('/api/pool/')) {
       let body = {};
       if (req.method === 'POST') {
         body = JSON.parse(await new Promise((resolve, reject) => {
@@ -677,6 +737,7 @@ export function createPool({
     }
     let file = url.pathname === '/' ? '/index.html' : url.pathname;
     if (/^\/miner(\/|$)/.test(url.pathname)) file = '/miner.html';
+    if (/^\/tx(\/|$)/.test(url.pathname)) file = '/explorer.html';
     const full = path.join(PUBLIC_DIR, path.normalize(file).replace(/^(\.\.[/\\])+/, ''));
     if (!full.startsWith(PUBLIC_DIR)) {
       res.statusCode = 403;
@@ -716,6 +777,7 @@ export function createPool({
   return {
     store,
     issueJob,
+    broadcastJob,
     listen,
     close,
     publicStats,

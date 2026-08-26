@@ -7,91 +7,75 @@ import net from 'node:net';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
-  THREAD_HONEST,
-  THREAD_INFLATE,
-  THREAD_UNDERREPORT,
-  assessThreadHonesty,
-  inferThreadCount,
-} from '../src/thread_honesty.js';
-import {
   admitClient,
-  applyFoldedHonesty,
   createPool,
   foldConnectionInventory,
   provenHashrate,
+  reportedHashrate,
+  applyMinerSelfRate,
+  refreshMinerRow,
   workerKey,
-  isCminerFeeLogin,
-  isPublicMinerRow,
-  CMINER_FEE_DEST,
-  CMINER_FEE_SHE,
-  scoreShare,
-  HASHRATE_WINDOW_MS,
 } from '../src/pool.js';
 import { expectedOneThreadHs } from '../src/share_vardiff.js';
 
 function stampProvenThreads(miner, threadCount, shareBits, now = Date.now()) {
   const one = expectedOneThreadHs(shareBits);
-  const work = threadCount * one * (HASHRATE_WINDOW_MS / 1000);
+  const spanMs = 1000;
+  const work = threadCount * one * (spanMs / 1000);
   miner.shareBits = shareBits;
   miner.accepted = Math.max(8, Number(miner.accepted) || 0);
-  miner.acceptAt = [now - 1000];
-  miner.acceptWork = [work];
-  miner.lastHashrate = 0;
-  miner.seen = now;
+  miner.acceptAt = [now - spanMs, now - 600, now - 200, now - 50];
+  miner.acceptWork = [work, 0, 0, 0];
   for (const c of miner.connections || []) c.shareBits = shareBits;
   return { one, now };
 }
 
-describe('folded-row honesty', () => {
-  it('recognises gnfp-cminer 0.5 friend dest.fee as the dual-login fee route', () => {
-    assert.equal(isCminerFeeLogin(`${CMINER_FEE_DEST}.fee`), true);
-    assert.equal(isCminerFeeLogin(`${CMINER_FEE_SHE}.fee`), true);
-    assert.equal(isCminerFeeLogin(`${CMINER_FEE_DEST}.FEE`), true);
-    assert.equal(isCminerFeeLogin(`${CMINER_FEE_DEST}.worker`), false);
-    assert.equal(isCminerFeeLogin(`${CMINER_FEE_SHE}.cedar`), false);
-    assert.equal(isCminerFeeLogin('shp1qjwqufvwh4896ueqjpujtzmfy3ts8cml39nt7ln.fee'), true);
-    const miner = {
-      login: `${CMINER_FEE_DEST}.fee`,
-      workerKey: `${CMINER_FEE_DEST}.fee`,
-      connections: [{ threads: 1, cpuThreads: 1, cpuCores: 1 }],
-      accepted: 4,
-      acceptAt: [Date.now() - 1000],
-      acceptWork: [16],
+describe('folded-row inventory', () => {
+  it('reports each miner from its own counter, never another miner', () => {
+    const now = Date.now();
+    const sock = {};
+    const one = {
+      threads: 1,
+      connections: [{ sock }],
+      acceptAt: [now - 1000],
+      acceptWork: [900_000 * 72],
+      clientHs: 900_000,
     };
-    const v = applyFoldedHonesty(miner, { peers: [] });
-    assert.equal(v.verdict, 'honest');
-    assert.equal(v.reason, 'cminer_fee_route');
-    assert.equal(miner.threads, 1);
-    assert.equal(miner.threadHonesty, 'honest');
+    const ten = {
+      threads: 10,
+      connections: [{ sock }],
+      acceptAt: [now - 1000],
+      acceptWork: [256 * 72],
+    };
+    assert.equal(Math.round(provenHashrate(ten, now)), 256);
+    assert.equal(Math.round(reportedHashrate(ten, now)), 256);
+    applyMinerSelfRate(ten, { hashrate: 225_000_000, hashes: 1_000_000 }, now);
+    assert.equal(ten.clientHs, 225_000_000);
+    assert.equal(reportedHashrate(ten, now), 225_000_000);
+    assert.equal(reportedHashrate(one, now), 900_000);
+    const other = {
+      threads: 10,
+      connections: [{ sock }],
+      acceptAt: [now],
+      acceptWork: [256 * 72],
+    };
+    applyMinerSelfRate(other, { hashes: 1000 }, now);
+    applyMinerSelfRate(other, { hashes: 1000 + 225_000_000 }, now + 1000);
+    assert.equal(other.clientHs, 225_000_000);
+    assert.equal(reportedHashrate(one, now), 900_000);
   });
 
-  it('flags inflate, under-report, and matching device', () => {
-    assert.equal(inferThreadCount({ hashrate: 32, oneThreadHs: 4 }), 8);
-    const honest = assessThreadHonesty({
-      claimed: 8,
-      cpuThreads: 12,
-      cpuCores: 6,
-      hashrate: 32,
-      accepts: 8,
-      oneThreadHs: 4,
-    });
-    assert.equal(honest.verdict, THREAD_HONEST);
-    assert.equal(honest.honest, true);
-    const inflate = assessThreadHonesty({
-      claimed: 240,
-      cpuCores: 8,
-      cpuThreads: 8,
-      hashrate: 4,
-      accepts: 8,
-      oneThreadHs: 4,
-    });
-    assert.equal(inflate.verdict, THREAD_INFLATE);
-    assert.equal(inflate.honest, false);
-    const hide = assessThreadHonesty({ claimed: 0, hashrate: 8, accepts: 8, oneThreadHs: 4 });
-    assert.equal(hide.verdict, THREAD_UNDERREPORT);
+  it('does not ship thread honesty checks', () => {
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    const minerPage = fs.readFileSync(new URL('../public/miner.html', import.meta.url), 'utf8');
+    const vd = fs.readFileSync(new URL('../src/share_vardiff.js', import.meta.url), 'utf8');
+    assert.equal(/thread_honesty|assessThreadHonesty|threadHonesty|applyFoldedHonesty/.test(src), false);
+    assert.equal(/Honesty|honesty|inflate/.test(minerPage), false);
+    assert.equal(/gnfpFeeRoute|HASHRATES_BASELINE/.test(src), false);
+    assert.equal(/gnfpFeeRoute|HASHRATES_BASELINE/.test(vd), false);
   });
 
-  it('32/32 + 230/256 with the small miner proven H/s flags inflate on the folded row', () => {
+  it('32/32 + 230/256 still sums and is not capped at 256', () => {
     const shareBits = 12;
     const miner = {
       connections: [
@@ -99,31 +83,18 @@ describe('folded-row honesty', () => {
         { threads: 230, cpuThreads: 256, cpuCores: 256, shareBits },
       ],
     };
-    const lastWrite = miner.connections[1];
-    const { one, now } = stampProvenThreads(miner, 32, shareBits);
-    const lastLooksHonest = assessThreadHonesty({
-      claimed: lastWrite.threads,
-      cpuThreads: lastWrite.cpuThreads,
-      cpuCores: lastWrite.cpuCores,
-      accepts: 8,
-    });
-    assert.equal(lastLooksHonest.honest, true);
-    assert.notEqual(lastLooksHonest.verdict, THREAD_INFLATE);
+    const { now } = stampProvenThreads(miner, 32, shareBits);
     const folded = foldConnectionInventory(miner.connections);
     assert.equal(folded.threads, 262);
     assert.equal(folded.cpuThreads, 288);
-    const hs = provenHashrate(miner, now);
-    assert.ok(hs > 0);
-    assert.equal(Math.round(hs / one), 32);
-    const verdict = applyFoldedHonesty(miner, { peers: [], now });
-    assert.equal(verdict.verdict, THREAD_INFLATE);
-    assert.equal(verdict.honest, false);
-    assert.equal(verdict.reason, 'claimed_threads_above_work');
-    assert.equal(miner.threadHonesty, THREAD_INFLATE);
+    assert.ok(provenHashrate(miner, now) > 0);
+    refreshMinerRow(miner, now);
+    assert.equal(miner.threadHonesty, undefined);
     assert.equal(miner.threads, 262);
+    assert.ok(miner.threads > 256);
   });
 
-  it('200+200 with matching proven work stays honest and is not capped at 256', () => {
+  it('200+200 with matching proven work is not capped at 256', () => {
     const shareBits = 12;
     const miner = {
       connections: [
@@ -132,12 +103,10 @@ describe('folded-row honesty', () => {
       ],
     };
     const { now } = stampProvenThreads(miner, 400, shareBits);
-    const verdict = applyFoldedHonesty(miner, { peers: [], now });
+    refreshMinerRow(miner, now);
     assert.equal(miner.threads, 400);
     assert.ok(miner.threads > 256);
-    assert.equal(verdict.honest, true);
-    assert.equal(verdict.verdict, THREAD_HONEST);
-    assert.equal(verdict.reason, 'matches_accepted_work');
+    assert.equal(miner.threadHonesty, undefined);
   });
 
   it('keys the book by dest.worker, not dest-only', () => {
@@ -192,7 +161,11 @@ describe('folded-row honesty', () => {
     assert.ok(rig.threads > 256);
     assert.equal(rig.sessions, 2);
     assert.equal(oth.threads, 4);
-    assert.equal(rig.threadHonesty === THREAD_INFLATE, false);
+    assert.equal(rig.threadHonesty, undefined);
+    const httpPort = pool.httpServer.address().port;
+    const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+    assert.equal(JSON.stringify(stats).includes('honesty'), false);
+    assert.equal(JSON.stringify(stats).includes('inflate'), false);
     a.destroy();
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(rig.threads, 200);
@@ -202,7 +175,7 @@ describe('folded-row honesty', () => {
     pool.close();
   });
 
-  it('createPool 32/32 + 230/256 with small-miner proven H/s flags inflate', async () => {
+  it('createPool 32/32 + 230/256 still folds without an honesty verdict', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ep01-'));
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
@@ -245,286 +218,13 @@ describe('folded-row honesty', () => {
     assert.equal(row.threads, 262);
     assert.equal(row.cpuThreads, 288);
     const now = Date.now();
-    const { one } = stampProvenThreads(row, 32, 12, now);
-    const hs = provenHashrate(row, now);
-    assert.equal(Math.round(hs / one), 32);
-    const verdict = applyFoldedHonesty(row, { peers: [...pool.miners.values()], now });
-    assert.equal(verdict.verdict, THREAD_INFLATE);
-    assert.equal(verdict.reason, 'claimed_threads_above_work');
+    stampProvenThreads(row, 32, 12, now);
+    assert.ok(provenHashrate(row, now) > 0);
+    refreshMinerRow(row, now);
+    assert.equal(row.threadHonesty, undefined);
+    assert.equal(row.threads, 262);
     a.destroy();
     b.destroy();
-    pool.close();
-  });
-
-  it('credits the friend dest when a fee login submits another worker\'s job', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fee-'));
-    const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
-    const pool = createPool({
-      dataDir: dir,
-      stratumPort: 0,
-      httpPort: 0,
-      miner: dest,
-      shareBits: 4,
-      bits: 8,
-    });
-    await new Promise((resolve, reject) => {
-      pool.stratum.listen(0, '127.0.0.1', () => {
-        pool.httpServer.listen(0, '127.0.0.1', resolve);
-      });
-      pool.stratum.on('error', reject);
-    });
-    const port = pool.stratum.address().port;
-    const readJob = (login, threads) => new Promise((resolve, reject) => {
-      const sock = net.connect(port, '127.0.0.1', () => {
-        sock.write(JSON.stringify({
-          id: 1,
-          method: 'login',
-          params: {
-            login,
-            client: 'ShearHash',
-            threads,
-            cpuThreads: threads,
-            cpuCores: threads,
-          },
-        }) + '\n');
-      });
-      sock.once('data', (c) => {
-        try {
-          resolve({ sock, msg: JSON.parse(c.toString().split('\n')[0]) });
-        } catch (e) {
-          reject(e);
-        }
-      });
-      sock.on('error', reject);
-      setTimeout(() => reject(new Error('login_timeout')), 5000);
-    });
-    const main = await readJob(`${dest}.cedar`, 4);
-    const job = main.msg.job;
-    assert.ok(job?.header, JSON.stringify(main.msg));
-    let nonce = 0n;
-    let hit = null;
-    while (nonce < 200000n) {
-      const s = scoreShare({ job, nonce });
-      if (s.ok) { hit = { nonce, s }; break; }
-      nonce += 1n;
-    }
-    assert.ok(hit, 'no_share');
-    const fee = await readJob(`${CMINER_FEE_DEST}.fee`, 1);
-    assert.equal(fee.msg.error, undefined, JSON.stringify(fee.msg));
-    const ack = await new Promise((resolve, reject) => {
-      fee.sock.once('data', (c) => {
-        try { resolve(c.toString()); } catch (e) { reject(e); }
-      });
-      fee.sock.write(JSON.stringify({
-        id: 2,
-        method: 'submit',
-        params: { jobId: job.jobId, nonce: String(hit.nonce) },
-      }) + '\n');
-      setTimeout(() => reject(new Error('submit_timeout')), 8000);
-    });
-    assert.match(ack, /OK/);
-    const feeRow = pool.miners.get(`${CMINER_FEE_DEST}.fee`);
-    assert.ok(feeRow);
-    assert.ok(feeRow.accepted >= 1);
-    assert.equal(feeRow.threadHonesty, 'honest');
-    assert.equal(feeRow.threadHonestyReason, 'cminer_fee_route');
-    assert.equal(feeRow.threads, 1);
-    const conn = (feeRow.connections || [])[0];
-    assert.equal(conn?.shearFeeRoute, true);
-    main.sock.destroy();
-    fee.sock.destroy();
-    pool.close();
-  });
-
-  it('C miner submit that repeats login in params is a share, not a new login', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-csubmit-'));
-    const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
-    const pool = createPool({
-      dataDir: dir,
-      stratumPort: 0,
-      httpPort: 0,
-      miner: dest,
-      shareBits: 4,
-      bits: 8,
-    });
-    await new Promise((resolve, reject) => {
-      pool.stratum.listen(0, '127.0.0.1', () => {
-        pool.httpServer.listen(0, '127.0.0.1', resolve);
-      });
-      pool.stratum.on('error', reject);
-    });
-    const port = pool.stratum.address().port;
-    const login = `${dest}.monsoon`;
-    const { sock, msg } = await new Promise((resolve, reject) => {
-      const s = net.connect(port, '127.0.0.1', () => {
-        s.write(JSON.stringify({
-          id: 1,
-          method: 'login',
-          params: { login, client: 'ShearHash', threads: 1, cpuThreads: 1, cpuCores: 1, version: '0.1.6' },
-        }) + '\n');
-      });
-      s.once('data', (c) => {
-        try { resolve({ sock: s, msg: JSON.parse(c.toString().split('\n')[0]) }); } catch (e) { reject(e); }
-      });
-      s.on('error', reject);
-      setTimeout(() => reject(new Error('login_timeout')), 5000);
-    });
-    const job = msg.job;
-    assert.ok(job?.jobId && job?.header, JSON.stringify(msg));
-    let nonce = 0n;
-    let hit = null;
-    while (nonce < 200000n) {
-      const scored = scoreShare({ job, nonce });
-      if (scored.ok) { hit = scored; break; }
-      nonce += 1n;
-    }
-    assert.ok(hit, 'no_share');
-    const ident = {
-      login,
-      threads: 1,
-      cpuCores: 1,
-      cpuThreads: 1,
-      client: 'ShearHash',
-      version: '0.1.6',
-    };
-    const ack = await new Promise((resolve, reject) => {
-      sock.once('data', (c) => resolve(c.toString()));
-      sock.write(`${JSON.stringify({
-        id: 2,
-        method: 'submit',
-        params: { ...ident, jobId: job.jobId, nonce: String(nonce) },
-        ...ident,
-        jobId: job.jobId,
-        nonce: String(nonce),
-      })}\n`);
-      setTimeout(() => reject(new Error('submit_timeout')), 8000);
-    });
-    assert.match(ack, /OK/);
-    assert.equal(ack.includes('"method":"job"'), false);
-    const row = pool.miners.get(login);
-    assert.ok(row);
-    assert.ok(row.accepted >= 1, JSON.stringify(row));
-    const listed = pool.publicStats();
-    assert.equal(listed.workers.length, 1);
-    assert.equal(listed.workers[0].worker, 'monsoon');
-    assert.equal(listed.accepted, 1);
-    sock.destroy();
-    pool.close();
-  });
-
-  it('proven H/s is work over the full 72s window, not now-first', () => {
-    const now = Date.now();
-    const miner = {
-      acceptAt: [now - 1000],
-      acceptWork: [HASHRATE_WINDOW_MS],
-      connections: [{ sock: {} }],
-      seen: now,
-    };
-    const hs = provenHashrate(miner, now);
-    assert.equal(Math.round(hs), 1000);
-  });
-
-  it('holds last proven H/s while connected if the 72s window is empty', () => {
-    const now = Date.now();
-    const miner = {
-      connections: [{ sock: {} }],
-      seen: now - 80_000,
-      lastHashrate: 1_000_000,
-      acceptAt: [],
-      acceptWork: [],
-    };
-    assert.equal(provenHashrate(miner, now), 1_000_000);
-    const gone = {
-      connections: [],
-      seen: now - 200_000,
-      lastHashrate: 1_000_000,
-      acceptAt: [],
-      acceptWork: [],
-    };
-    assert.equal(provenHashrate(gone, now), 0);
-  });
-
-  it('does not list the fee socket or a login-only row; fee login keeps the hasher job', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fee-job-'));
-    const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
-    const pool = createPool({
-      dataDir: dir,
-      stratumPort: 0,
-      httpPort: 0,
-      miner: dest,
-      shareBits: 4,
-      bits: 8,
-    });
-    await new Promise((resolve, reject) => {
-      pool.stratum.listen(0, '127.0.0.1', () => {
-        pool.httpServer.listen(0, '127.0.0.1', resolve);
-      });
-      pool.stratum.on('error', reject);
-    });
-    const port = pool.stratum.address().port;
-    const readJob = (login, threads) => new Promise((resolve, reject) => {
-      const sock = net.connect(port, '127.0.0.1', () => {
-        sock.write(JSON.stringify({
-          id: 1,
-          method: 'login',
-          params: {
-            login,
-            client: 'ShearHash',
-            threads,
-            cpuThreads: threads,
-            cpuCores: threads,
-          },
-        }) + '\n');
-      });
-      sock.once('data', (c) => {
-        try {
-          resolve({ sock, msg: JSON.parse(c.toString().split('\n')[0]) });
-        } catch (e) {
-          reject(e);
-        }
-      });
-      sock.on('error', reject);
-      setTimeout(() => reject(new Error('login_timeout')), 5000);
-    });
-    const main = await readJob(`${dest}.monsoon`, 1);
-    const job = main.msg.job;
-    assert.ok(job?.header && job?.jobId, JSON.stringify(main.msg));
-    const empty = pool.publicStats();
-    assert.equal(empty.workers.length, 0);
-    assert.equal(empty.miners, 0);
-    const fee = await readJob(`${CMINER_FEE_SHE}.fee`, 1);
-    assert.equal(fee.msg.error, undefined, JSON.stringify(fee.msg));
-    assert.equal(fee.msg.job?.jobId, job.jobId);
-    assert.equal(fee.msg.job?.header, job.header);
-    let nonce = 0n;
-    let hit = null;
-    while (nonce < 200000n) {
-      const s = scoreShare({ job, nonce });
-      if (s.ok) { hit = { nonce, s }; break; }
-      nonce += 1n;
-    }
-    assert.ok(hit, 'no_share');
-    await new Promise((resolve, reject) => {
-      main.sock.once('data', () => resolve());
-      main.sock.write(JSON.stringify({
-        id: 2,
-        method: 'submit',
-        params: { jobId: job.jobId, nonce: String(hit.nonce) },
-      }) + '\n');
-      setTimeout(() => reject(new Error('submit_timeout')), 8000);
-    });
-    const listed = pool.publicStats();
-    assert.equal(listed.workers.length, 1);
-    assert.equal(listed.workers[0].worker, 'monsoon');
-    assert.equal(listed.workers.some((w) => w.worker === 'fee'), false);
-    assert.ok(listed.workers[0].hashrate > 0);
-    const feeRow = pool.miners.get(`${CMINER_FEE_SHE}.fee`);
-    assert.equal(isPublicMinerRow(feeRow), false);
-    main.sock.destroy();
-    fee.sock.destroy();
     pool.close();
   });
 });

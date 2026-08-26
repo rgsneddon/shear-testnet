@@ -48,8 +48,8 @@
 #define FEE_PCT 5
 #define LINE_CAP 8192
 #define HEX_CAP 256
-#define QCAP 512
-#define IN_FLIGHT_MAX 24
+#define QCAP 8192
+#define IN_FLIGHT_MAX 4096
 #define DEFAULT_WORKER "worker"
 
 static const char *g_user = NULL;
@@ -97,6 +97,7 @@ static unsigned g_fee_offset = 0;
 static atomic_int g_inflight = 0;
 static uint64_t g_dropped = 0;
 static uint64_t g_submitted = 0;
+static time_t g_t0;
 
 typedef struct {
   int fd;
@@ -349,13 +350,17 @@ static int send_login(Conn *c, const char *login, int threads) {
 }
 
 static int send_submit(Conn *c, const char *login, int threads, const char *jobId, uint64_t nonce) {
-  char ident[512], line[900];
+  char ident[512], line[1100];
   identity_json(ident, sizeof(ident), login, threads);
+  unsigned long long hashes = (unsigned long long)atomic_load_explicit(&g_hashes, memory_order_relaxed);
+  double elapsed = (double)(time(NULL) - (g_t0 ? g_t0 : time(NULL)));
+  if (elapsed < 1) elapsed = 1;
+  double hs = (double)hashes / elapsed;
   int n = snprintf(line, sizeof(line),
-                   "{\"id\":2,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\"},"
-                   "%s,\"jobId\":\"%s\",\"nonce\":\"%llu\"}\n",
-                   ident, jobId, (unsigned long long)nonce,
-                   ident, jobId, (unsigned long long)nonce);
+                   "{\"id\":2,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hashes\":%llu,\"hashrate\":%.0f},"
+                   "%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hashes\":%llu,\"hashrate\":%.0f}\n",
+                   ident, jobId, (unsigned long long)nonce, hashes, hs,
+                   ident, jobId, (unsigned long long)nonce, hashes, hs);
   return conn_write(c, line, n);
 }
 
@@ -568,7 +573,7 @@ static int ensure_fee_conn(Conn *feec) {
 
 static void flush_shares(Conn *mainc, Conn *feec) {
   Share s;
-  while (atomic_load_explicit(&g_inflight, memory_order_relaxed) < IN_FLIGHT_MAX && dequeue_share(&s)) {
+  while (dequeue_share(&s)) {
     int use_fee = 0;
     if (s.fee) use_fee = ensure_fee_conn(feec);
     int wr;
@@ -628,6 +633,7 @@ static int mine_once(void) {
     return -1;
   }
   time_t started = time(NULL);
+  g_t0 = started;
   time_t last_stats = started;
   for (;;) {
     fd_set rfds;

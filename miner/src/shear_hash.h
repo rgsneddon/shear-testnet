@@ -9,7 +9,7 @@
 #define SHEAR_PERSONAL "ShearHash-v1"
 #define SHEAR_ALGO "ShearHash"
 #define SHEAR_CLIENT "ShearHash"
-#define SHEAR_VERSION "0.1.6"
+#define SHEAR_VERSION "0.1.7"
 #define SHEAR_X8 8
 
 void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]);

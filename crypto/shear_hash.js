@@ -29,6 +29,26 @@ export function hashHex(buf) {
   return Buffer.from(buf).toString('hex');
 }
 
+export function leadingZeroBits(hash) {
+  const h = Buffer.isBuffer(hash) ? hash : Buffer.from(hash);
+  let n = 0;
+  for (let i = 0; i < h.length; i += 1) {
+    const v = h[i];
+    if (v === 0) {
+      n += 8;
+      continue;
+    }
+    let b = v;
+    let k = 0;
+    while ((b & 0x80) === 0 && k < 8) {
+      b <<= 1;
+      k += 1;
+    }
+    return n + k;
+  }
+  return n;
+}
+
 export function meetsTarget(hash, bits) {
   const n = Math.max(0, Math.min(256, Number(bits) || 0));
   if (n <= 0) return true;
