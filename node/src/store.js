@@ -196,6 +196,12 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     blocks.push(stored);
     persist(stored);
     indexSealed(stored);
+    {
+      const sealedIds = new Set((stored.txs || []).map((t) => String(t.id || '')));
+      for (let i = mempool.length - 1; i >= 0; i -= 1) {
+        if (sealedIds.has(String(mempool[i].id))) mempool.splice(i, 1);
+      }
+    }
     applyReserve(stored);
     applyJoin(stored);
     pruneBuried();

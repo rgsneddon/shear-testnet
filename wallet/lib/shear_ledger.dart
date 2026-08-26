@@ -134,6 +134,7 @@ class ShearLedger {
     final raw = headerFromHex(headerHex);
     if (raw == null) {
       if (sealedHeight >= 1) tipHeight = sealedHeight + 1;
+      if (sealedHeight > _sealedHeight) _sealedHeight = sealedHeight;
       return;
     }
     applyTipHeader(raw, sealedHeight: sealedHeight);
@@ -220,6 +221,21 @@ class ShearLedger {
     _upsertHashPending(key, hashAmount);
   }
 
+  /// Live mempool pays. Same row as [creditReceive]; skip ids we already have.
+  void _ingestIncoming(Map<String, dynamic> json) {
+    final rows = json['incoming'];
+    if (rows is! List) return;
+    for (final row in rows) {
+      if (row is! Map) continue;
+      final id = row['id']?.toString() ?? '';
+      final to = row['to']?.toString() ?? '';
+      final amount = (row['amount'] as num?)?.toDouble() ?? 0;
+      if (id.isEmpty || to.isEmpty || amount <= 0) continue;
+      if (_txs.any((t) => t.id == id)) continue;
+      creditReceive(to: to, amount: amount, from: row['from']?.toString(), id: id);
+    }
+  }
+
   /// Block found: pending hash bonus + pending receives + pot become spendable.
   ShearTx confirmRound({
     required String address,
@@ -293,15 +309,11 @@ class ShearLedger {
     final prev = spendable(address);
     if (pool == null) return prev;
     try {
+      final before = _sealedHeight;
       await syncTip();
-      final json = await pool!.balance(address);
-      final live = (json['balance'] as num?)?.toDouble() ?? 0;
-      _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
-      if (live > 0) {
-        _spendable[address] = live;
-        return live;
-      }
-      return prev;
+      final advancedTo = before > 0 && _sealedHeight > before ? _sealedHeight : 0;
+      await _pullPoolDest(address, advancedTo: advancedTo);
+      return spendable(address);
     } catch (_) {
       return prev;
     }
@@ -320,19 +332,48 @@ class ShearLedger {
   /// land on the silent dest.
   Future<double> syncCredits(String restFrame, {String? paymentCode}) async {
     if (pool == null) return spendableOwned(restFrame, paymentCode: paymentCode);
+    final before = _sealedHeight;
     try {
       await syncTip();
     } catch (_) {}
-    for (final d in ownedAddresses(restFrame, paymentCode: paymentCode)) {
+    final advancedTo = before > 0 && _sealedHeight > before ? _sealedHeight : 0;
+    final dests = ownedAddresses(restFrame, paymentCode: paymentCode);
+    for (final d in dests) {
       try {
         final json = await pool!.balance(d);
-        final live = (json['balance'] as num?)?.toDouble() ?? 0;
+        _ingestIncoming(json);
         _applyPoolHashPending(d, (json['pending'] as num?)?.toDouble() ?? 0);
-        if (live > 0) _spendable[d] = live;
-        await syncHistory(d);
+      } catch (_) {}
+    }
+    if (advancedTo > 0) {
+      for (final d in dests) {
+        confirmRound(address: d, pot: 0, height: advancedTo);
+      }
+    }
+    for (final d in dests) {
+      try {
+        await _pullPoolDest(d, advancedTo: 0, ingest: false, settle: false);
       } catch (_) {}
     }
     return spendableOwned(restFrame, paymentCode: paymentCode);
+  }
+
+  Future<void> _pullPoolDest(
+    String address, {
+    int advancedTo = 0,
+    bool ingest = true,
+    bool settle = true,
+  }) async {
+    if (pool == null) return;
+    final json = await pool!.balance(address);
+    if (ingest) _ingestIncoming(json);
+    _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
+    if (settle && advancedTo > 0) {
+      confirmRound(address: address, pot: 0, height: advancedTo);
+    }
+    final live = (json['balance'] as num?)?.toDouble();
+    if (live != null && live >= 0) _spendable[address] = live;
+    await syncHistory(address);
   }
 
   Future<List<ShearTx>> syncHistory(String address) async {

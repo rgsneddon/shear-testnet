@@ -7,7 +7,8 @@ import { newIdentity } from '../../crypto/address.js';
 import { destForLogin, memoSeal } from '../../crypto/flow_sheet.js';
 import { createStore } from '../../node/src/store.js';
 import { buildTemplate, mineTemplate, GENESIS_PREV } from '../../node/src/chain.js';
-import { handleWalletApi, searchExplorerTxs, explorerCirculation, poolRecentBlockTxs, publicBlockDetail } from '../src/wallet_api.js';
+import { handleWalletApi, searchExplorerTxs, explorerCirculation, poolRecentBlockTxs, publicBlockDetail, mempoolIncoming } from '../src/wallet_api.js';
+import { HASH_BONUS_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
 import { bitsForBlock, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 
@@ -227,5 +228,34 @@ describe('explorer dests', () => {
     assert.match(page, /back to explorer/);
     assert.match(page, /\/tx\//);
     assert.match(page, /\/explorer\/tx\?id=/);
+  });
+});
+
+describe('wallet pending incoming', () => {
+  it('balance lists mempool receives as incoming; hash pending stays separate', () => {
+    const alice = newIdentity();
+    const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const peer = newIdentity();
+    const bob = destForLogin(peer.address, { viewKey: peer.viewKey, height: 1 });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-in-'));
+    const store = createStore(dir);
+    store.mempool.push({
+      id: 'in-1',
+      from: bob,
+      to: dest,
+      amount: 0.4,
+      nanos: Math.round(0.4 * NANOS_PER_SHE),
+    });
+    const miners = new Map([['m', { login: dest, roundHashes: 7 }]]);
+    const url = new URL(`http://127.0.0.1/api/wallet/balance?address=${dest}`);
+    const out = handleWalletApi(url, 'GET', {}, { store, miners, queueSend: () => ({}) });
+    assert.equal(out.status, 200);
+    assert.equal(out.json.incoming.length, 1);
+    assert.equal(out.json.incoming[0].kind, 'receive');
+    assert.equal(out.json.incoming[0].id, 'in-1');
+    assert.equal(out.json.incoming[0].confirmed, false);
+    assert.equal(out.json.incoming[0].amount, 0.4);
+    assert.equal(out.json.pending, 7 * HASH_BONUS_NANOS / NANOS_PER_SHE);
+    assert.equal(mempoolIncoming(store, dest).length, 1);
   });
 });

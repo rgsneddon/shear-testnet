@@ -112,6 +112,43 @@ void main() {
     expect(ledger.transactions.where((t) => t.kind == 'hash'), isEmpty);
   });
 
+  test('syncCredits ingests pool incoming+hash pending and confirmRound on tip advance', () async {
+    final id = createIdentity();
+    final header = Uint8List(120);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 3, balance: 0, pending: 7 * kHashBonusShe);
+    final peer = createIdentity();
+    final from = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = id.viewKey;
+    ledger.applyTipHex(hex, sealedHeight: 3);
+    final dest = ledger.currentDest(id.address);
+    live.owner = dest;
+    live.incoming = [
+      {'id': 'in-1', 'from': from, 'to': dest, 'amount': 0.4, 'kind': 'receive', 'confirmed': false},
+    ];
+    await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+    expect(ledger.sealedHeight, 3);
+    expect(ledger.pendingTxs(id.address).length, 2);
+    expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'hash'), isTrue);
+    expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'receive' && t.id == 'in-1'), isTrue);
+    expect(ledger.spendable(id.address), 0);
+    live.height = 9;
+    live.pending = 0;
+    live.incoming = [];
+    live.balance = 0.1 + 0.4 + 7 * kHashBonusShe;
+    await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+    expect(ledger.pendingTxs(id.address), isEmpty);
+    expect(ledger.pending(id.address), 0);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(0.1 + 0.4 + 7 * kHashBonusShe, 1e-18),
+    );
+    expect(ledger.ownerHistory(id.address).where((t) => t.id == 'in-1').single.confirmed, isTrue);
+  });
+
   test('shewall.json password seal restores address and txs', () async {
     final id = createIdentity();
     final ledger = ShearLedger();
@@ -927,11 +964,35 @@ HttpClient _realHttp() {
 
 class _PassthroughHttpOverrides extends HttpOverrides {}
 
+class _PoolLive {
+  _PoolLive({
+    required this.headerHex,
+    required this.height,
+    this.balance = 10,
+    this.pending = 0,
+    this.owner,
+    List<Map<String, dynamic>>? incoming,
+  }) : incoming = incoming ?? [];
+
+  String headerHex;
+  int height;
+  double balance;
+  double pending;
+  String? owner;
+  List<Map<String, dynamic>> incoming;
+}
+
 Future<HttpServer> _fakePool({
-  required String headerHex,
-  required int height,
+  String? headerHex,
+  int? height,
   List<Map<String, dynamic>>? posted,
+  _PoolLive? live,
 }) async {
+  final state = live ??
+      _PoolLive(
+        headerHex: headerHex ?? '',
+        height: height ?? 1,
+      );
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
   server.listen((req) async {
     final chunks = <int>[];
@@ -946,11 +1007,20 @@ Future<HttpServer> _fakePool({
     if (req.uri.path == '/api/stats') {
       req.response.write(jsonEncode({
         'ok': true,
-        'height': height,
-        'header': headerHex,
+        'height': state.height,
+        'header': state.headerHex,
       }));
     } else if (req.uri.path == '/api/wallet/balance') {
-      req.response.write(jsonEncode({'balance': 10, 'pending': 0}));
+      final addr = req.uri.queryParameters['address'] ?? '';
+      final hit = state.owner == null ||
+          addr == state.owner ||
+          state.incoming.any((r) => r['to'] == addr);
+      req.response.write(jsonEncode({
+        'balance': hit ? state.balance : 0,
+        'pending': hit ? state.pending : 0,
+        'incoming': hit ? state.incoming : <Map<String, dynamic>>[],
+        'height': state.height,
+      }));
     } else if (req.uri.path == '/api/wallet/history' || req.uri.path == '/api/explorer/history') {
       req.response.write(jsonEncode({'txs': []}));
     } else if (req.uri.path == '/api/wallet/register') {

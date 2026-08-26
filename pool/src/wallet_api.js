@@ -152,6 +152,29 @@ export function pendingFor(miners, address) {
   return { shares: hashes, amount: nanosToShe(hashes * HASH_BONUS_NANOS) };
 }
 
+/** Unconfirmed mempool pays to this dest. Hash bonus stays in [pendingFor]. */
+export function mempoolIncoming(store, address) {
+  const dests = new Set(ownerDests(address));
+  const rows = [];
+  for (const m of store?.mempool || []) {
+    const to = String(m?.to || '');
+    const paid = payoutDest(to) || to;
+    if (!dests.has(to) && !dests.has(paid)) continue;
+    const amount = Number(m.amount) > 0 ? Number(m.amount) : nanosToShe(m.nanos);
+    if (!(amount > 0)) continue;
+    const from = String(m.from || '');
+    rows.push({
+      id: String(m.id || ''),
+      from: payoutDest(from) || from,
+      to: paid,
+      amount,
+      kind: 'receive',
+      confirmed: false,
+    });
+  }
+  return rows.filter((r) => r.id);
+}
+
 function isPublicParty(a) {
   const s = String(a || '');
   if (s === 'coinbase') return true;
@@ -384,6 +407,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
     }
     const rec = reconstructOwner(store, address);
     const pending = pendingFor(miners, address);
+    const incoming = mempoolIncoming(store, address);
     return {
       status: 200,
       json: {
@@ -392,6 +416,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
         address,
         balance: rec.spendable,
         pending: pending.amount,
+        incoming,
         reconstructed: rec.spendable,
         height: store.tip?.()?.height || 0,
       },
