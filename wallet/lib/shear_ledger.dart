@@ -129,12 +129,18 @@ class ShearLedger {
 
   /// Last height Continuum already settled into spendable.
   int get settledHeight => _settledHeight;
+  /// Consensus: spendable when the committing block is accepted (1 conf).
+  static const spendableConfirmations = 1;
+  /// Wallet/merchant policy only. Not consensus.
+  static const minConfirms = 12;
+  final List<({String dest, double amount, int height})> _immature = [];
 
-  /// Read lag-1 continuity from a 120-byte tip header. Next dest uses sealedHeight+1.
+  /// Read lag-1 continuity from a 128-byte tip header. Next dest uses sealedHeight+1.
   void applyTipHeader(Uint8List header, {required int sealedHeight}) {
     lag1Root = lag1ContinuityFromHeader(header);
     tipHeight = sealedHeight < 1 ? 1 : sealedHeight + 1;
     if (sealedHeight > _sealedHeight) _sealedHeight = sealedHeight;
+    settleTo(sealedHeight);
   }
 
   void applyTipHex(String headerHex, {required int sealedHeight}) {
@@ -257,7 +263,7 @@ class ShearLedger {
     _pending[dest] = 0;
     if (dest != address) _pending[address] = 0;
     if (total > 0) {
-      _spendable[dest] = (_spendable[dest] ?? 0) + total;
+      _immature.add((dest: dest, amount: total, height: height));
     }
     _dests.add(dest);
     final hashBonus = hashPendingOf(dest) + (dest == address ? 0 : hashPendingOf(address));
@@ -269,17 +275,60 @@ class ShearLedger {
       amount: coinbaseAmt > 0 ? coinbaseAmt : total,
       kind: 'coinbase',
       height: height,
-      confirmed: true,
+      confirmed: false,
     );
     if ((coinbaseAmt > 0 ? coinbaseAmt : total) > 0) _txs.add(tx);
     if (height > _sealedHeight) _sealedHeight = height;
-    if (height > _settledHeight) _settledHeight = height;
     for (var i = 0; i < _txs.length; i++) {
       if (_txs[i].confirmed) continue;
-      _txs[i] = _txs[i].copyWith(confirmed: true, height: _txs[i].height ?? height);
+      _txs[i] = _txs[i].copyWith(height: _txs[i].height ?? height);
     }
+    settleTo(_sealedHeight);
     prune();
     return tx;
+  }
+
+  /// Confirmations of a sealed height, counting the including block as 1.
+  int confirmationsOf(int height, [int? tip]) {
+    final t = tip ?? _sealedHeight;
+    if (height < 1 || t < height) return 0;
+    return t - height + 1;
+  }
+
+  /// Policy available (default 12 confs). Consensus spendable is 1 conf.
+  double policyAvailable(String address, {int? confirms}) {
+    final need = confirms ?? minConfirms;
+    var n = 0.0;
+    for (final t in _txs) {
+      if (!t.confirmed) continue;
+      if (t.to != payKey(address) && t.to != address) continue;
+      final h = t.height ?? 0;
+      if (confirmationsOf(h) >= need) n += t.amount;
+    }
+    return n;
+  }
+
+  /// Move immature credits into spendable once the committing block is accepted.
+  void settleTo(int tip) {
+    if (tip > _sealedHeight) _sealedHeight = tip;
+    final keep = <({String dest, double amount, int height})>[];
+    for (final row in _immature) {
+      if (confirmationsOf(row.height, tip) >= spendableConfirmations) {
+        _spendable[row.dest] = (_spendable[row.dest] ?? 0) + row.amount;
+        if (row.height > _settledHeight) _settledHeight = row.height;
+      } else {
+        keep.add(row);
+      }
+    }
+    _immature
+      ..clear()
+      ..addAll(keep);
+    for (var i = 0; i < _txs.length; i++) {
+      final h = _txs[i].height ?? 0;
+      if (confirmationsOf(h, tip) >= spendableConfirmations) {
+        _txs[i] = _txs[i].copyWith(confirmed: true);
+      }
+    }
   }
 
   /// Drop per-hash sample noise. Keep sealed txs + in-flight send/hash/receive.

@@ -34,7 +34,7 @@ describe('job gate', () => {
 });
 
 describe('admit', () => {
-  it('admits shp1 dest and she1 silent ID, refuses rest-frame shear1 and wrong client', () => {
+  it('admits ssa1 dest and she1 silent ID, refuses rest-frame shear1 and wrong client', () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     assert.equal(admitClient({ login: dest, client: 'ShearHash' }).ok, true);
@@ -45,7 +45,7 @@ describe('admit', () => {
     assert.match(publicMinerLabel(id.paymentCode), /^she1[0-9a-f]{8}$/);
     assert.equal(publicMinerLabel(id.paymentCode).includes(id.paymentCode.slice(4)), false);
     const silent = payoutDest(id.paymentCode);
-    const shares = splitPot([{ miner: id.paymentCode, count: 99 }], 'shp1unused');
+    const shares = splitPot([{ miner: id.paymentCode, count: 99 }], 'ssa1unused');
     assert.ok(silent);
     assert.equal(shares.some((s) => s.address === silent && s.nanos === Math.floor(BLOCK_SUBSIDY_NANOS * 0.99)), true);
   });
@@ -92,7 +92,7 @@ describe('she1 login jobs', () => {
     pool.stratum.close();
     assert.equal(job.error, undefined, JSON.stringify(job));
     assert.ok(job.job?.header, JSON.stringify(job));
-    assert.equal(String(job.job.header).length, 240);
+    assert.equal(String(job.job.header).length, 256);
   });
 });
 
@@ -126,7 +126,7 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, />SHE</);
     assert.equal(html.toLowerCase().includes('shearhash'), true);
     assert.match(html, /she is private/);
-    assert.match(html, /shp1/);
+    assert.match(html, /ssa1/);
     assert.match(html, /YOUR_SHE1/);
     assert.equal(/--user shear1/.test(html), false);
     assert.equal(html.includes('YOUR_SHEAR1'), false);
@@ -152,18 +152,24 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.magic, 'shear-testnet-v1');
     assert.equal(stats.network, MAGIC_TESTNET);
     assert.equal(stats.blockSubsidyNanos, BLOCK_SUBSIDY_NANOS);
-    assert.equal(stats.blockSubsidyNanos, 10_000_000_000);
+    assert.equal(stats.blockSubsidyNanos, 100_000_000_000);
     assert.equal(stats.hashBonusNanos, HASH_BONUS_NANOS);
     assert.equal(stats.hashBonusNanos, 1);
     assert.equal(stats.hashTxLive, HASH_TX_LIVE);
     assert.equal(stats.hashTxLive, 1);
     assert.match(stats.bookLawFingerprint, /:1$/);
     assert.equal(stats.targetBlockIntervalMs, TARGET_BLOCK_INTERVAL_MS);
-    assert.equal(stats.targetBlockIntervalMs, 9_000);
+    assert.equal(stats.targetBlockIntervalMs, 90_000);
+    assert.equal(stats.destHrp, 'ssa');
+    assert.equal(stats.spendableConfirmations, 1);
+    assert.equal(stats.minConfirmsPolicy, 12);
+    assert.equal(stats.productVersion, '0.1');
+    assert.equal(stats.minerVersion, '0.5');
+    if (stats.header) assert.equal(stats.header.length, 256);
 
     const job = pool.issueJob();
     assert.equal(gateJob(job).ok, true);
-    assert.equal(job.header.length, 240);
+    assert.equal(job.header.length, 256);
 
     const scored = await new Promise((resolve, reject) => {
       const sock = net.connect(stratumPort, '127.0.0.1', () => {

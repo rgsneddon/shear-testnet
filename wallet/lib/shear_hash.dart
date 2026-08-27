@@ -6,12 +6,12 @@ import 'package:crypto/crypto.dart';
 /// Port of miner/src/shear_hash.c (ShearHash-v1, 8 rounds).
 const shearPersonal = 'ShearHash-v1';
 const shearAlgo = 'ShearHash';
-const shearHeaderLen = 120;
+const shearHeaderLen = 128;
 const shearHashRounds = 8;
 
 /// C `SHEAR_SELFTEST_HASH` for header version=1, remaining zeros.
 const shearSelftestHash =
-    '6e95b9033c5d044d08bbf854fb2e5343ca3103b96ae37bde101258d43cfacc63';
+    '5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066';
 
 Uint8List shearSelftestHeader() {
   final h = Uint8List(shearHeaderLen);

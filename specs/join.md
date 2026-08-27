@@ -11,7 +11,7 @@ Second Vortex dapp. Not a top-level wallet tab. Not The Reserve.
 | Window | 99 days from mainnet genesis timestamp |
 | After window | Remaining vault SHE is burned. Later keys are refused. |
 | Key | `join1.` migration key. Bearer cheque. One claim per snapshot leaf. |
-| Payout | Holder’s Continuum dest (`shp1`). Never rest-frame `shear1`. |
+| Payout | Holder’s Continuum dest (`ssa1`). Never rest-frame `shear1`. |
 | Public view | Root, remaining, days left, burned. No prior-ledger addresses, no view keys. |
 
 The live pool (`https://pool.shear.digital`) and explorer (`https://explorer.shear.digital`) are unchanged by this vortice. The Join does not print SHE after genesis. The Reserve remains the only programme that may mint interest.

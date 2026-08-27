@@ -7,7 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'shear_x25519.dart';
 
 const shearHrp = 'shear';
-const destHrp = 'shp';
+const destHrp = 'ssa';
 /// Public-facing silent ID is she1 (HRP she). Never a dest.
 const payHrp = 'she';
 const _charset = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
@@ -81,7 +81,7 @@ bool isDestAddress(String s) {
   final t = s.trim();
   if (isShearAddress(t)) return false;
   if (bech32Hrp(t) == 'she') return false;
-  return bech32Hrp(t) == 'shp' && _bech32BodyOk(t);
+  return bech32Hrp(t) == 'ssa' && _bech32BodyOk(t);
 }
 
 String identityOfLogin(String login) => login.trim().split('.').first;
@@ -91,7 +91,7 @@ bool isMineLogin(String s) {
   return isDestAddress(id) || isPaymentCode(id);
 }
 
-/// On-chain dest for a miner login. she1 pays shp1 of the same 20 bytes.
+/// On-chain dest for a miner login. she1 pays ssa1 of the same 20 bytes.
 String? payoutDest(String login) {
   final id = identityOfLogin(login);
   if (isDestAddress(id)) return id;

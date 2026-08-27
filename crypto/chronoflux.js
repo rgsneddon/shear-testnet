@@ -5,22 +5,34 @@
  *   Resistance η        confirmations; at 100, Flow *samples* may be dropped
  *
  * Sealed forever (explorer reports every transfer for eternity):
- *   - 120-byte header (merkle_root + continuity_root)
- *   - coinbase vout (0.1 SHE pot + per-miner hash bonus totals)
+ *   - 128-byte header (merkle_root + continuity_root = H(rootA||rootB) + base_fee)
+ *   - coinbase vout (1 SHE pot + per-miner hash bonus totals + levy split)
  *   - every user transfer in txs[]
  *
- * Each 9s block rolls one Flow bundle: one sample row per hasher with
+ * Each 90s block rolls one Flow bundle: one A-leaf per hasher with
  * count = hashes (1 hash = 1 tx for bonus). Never one JSON object per hash.
  * Explorer reports those sealed rows, never the pruned sample JSON.
  *
- * Pruned after 1000 confirmations: per-round hash-sample bodies only.
- * continuity_root in the header remains the 32-byte seal of that Flow.
+ * Pruned after 1000 confirmations: per-round hash-sample bodies and B leaves.
+ * Never prune vouts. continuity_root in the header remains the 32-byte seal.
  */
+import { SPENDABLE_CONFIRMATIONS } from './asert.js';
 
 export const SAMPLE_PRUNE_CONFIRMATIONS = 1000;
+export { SPENDABLE_CONFIRMATIONS };
 
+/** Confirmations of a sealed height, counting the including block as 1. */
 export function flowConfirmations(blockHeight, tipHeight) {
-  return Math.max(0, Number(tipHeight) - Number(blockHeight));
+  const h = Number(blockHeight) || 0;
+  const tip = Number(tipHeight) || 0;
+  if (h < 1 || tip < h) return 0;
+  return tip - h + 1;
+}
+
+/** Consensus spendable at 1 confirmation (the committing block is accepted). */
+export function isSpendableHeight(blockHeight, tipHeight, need = SPENDABLE_CONFIRMATIONS) {
+  const n = Math.max(1, Math.floor(Number(need) || SPENDABLE_CONFIRMATIONS));
+  return flowConfirmations(blockHeight, tipHeight) >= n;
 }
 
 export function shouldPruneSamples(
@@ -28,7 +40,7 @@ export function shouldPruneSamples(
   tipHeight,
   depth = SAMPLE_PRUNE_CONFIRMATIONS,
 ) {
-  return flowConfirmations(blockHeight, tipHeight) >= depth;
+  return Math.max(0, Number(tipHeight) - Number(blockHeight)) >= depth;
 }
 
 /** Collapse per-hash rows into one sample per miner. Idempotent. */
@@ -53,12 +65,12 @@ export function collateSamples(samples = []) {
   return [...by.values()];
 }
 
-/** 9s block Flow bundle: one row per hasher, count = meeting hashes. */
+/** 90s block Flow bundle: one row per hasher, count = meeting hashes. */
 export function rollHashBundle(samples = []) {
   return collateSamples(samples);
 }
 
-/** Drop Flow samples only. Never drop txs or coinbase vout — they stay sealed. */
+/** Drop Flow samples and B leaves. Never drop txs or coinbase vout — they stay sealed. */
 export function pruneSamples(block) {
   const txs = Array.isArray(block.txs) ? block.txs : [];
   if (!txs.length) {
@@ -75,7 +87,9 @@ export function pruneSamples(block) {
   return {
     ...block,
     samples: [],
+    bLeaves: [],
     samplesPruned: true,
+    bLeavesPruned: true,
     txs: nextTxs,
   };
 }
@@ -153,6 +167,10 @@ export function leanBlock(block) {
     ...block,
     txs,
     samples: collateSamples(Array.isArray(block.samples) ? block.samples : []),
+    aLeaves: Array.isArray(block.aLeaves) ? block.aLeaves : [],
+    bLeaves: Array.isArray(block.bLeaves) ? block.bLeaves : [],
+    rootA: block.rootA,
+    rootB: block.rootB,
   };
 }
 
@@ -194,12 +212,19 @@ export function compactTx(tx) {
  */
 export function compactChainBlock(block) {
   const samplesPruned = !!block.samplesPruned;
+  const bLeavesPruned = !!block.bLeavesPruned || samplesPruned;
   return {
     magic: block.magic,
     height: block.height,
     miner: block.miner,
     samplesPruned,
+    bLeavesPruned,
     samples: samplesPruned ? [] : collateSamples(block.samples || []),
+    aLeaves: Array.isArray(block.aLeaves) ? block.aLeaves : [],
+    bLeaves: bLeavesPruned ? [] : (Array.isArray(block.bLeaves) ? block.bLeaves : []),
+    rootA: block.rootA,
+    rootB: block.rootB,
+    weight: Number(block.weight || 0),
     txs: (block.txs || []).map(compactTx),
   };
 }

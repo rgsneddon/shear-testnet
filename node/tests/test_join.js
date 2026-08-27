@@ -52,6 +52,7 @@ describe('node Join vault', () => {
     const store = createStore(dir);
     const t0 = 1_800_000_000_000;
     const gen = genesisTx({ to: vault, nanos: snap.circulatingNanos, root: snap.root });
+    gen.fee = 8;
     const b1 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -69,6 +70,7 @@ describe('node Join vault', () => {
     const cl = claimTx({ from: vault, to: payout, nanos: NANOS_PER_SHE, commit: row.commit });
     cl.key = encodeJoinKey(row);
     cl.root = snap.root;
+    cl.fee = 8;
     const tip = store.tip();
     const b2 = mine(buildTemplate({
       prev: tip.hash,
@@ -100,6 +102,7 @@ describe('node Join vault', () => {
     assert.equal(store.joinVault.remainingNanos, 2 * NANOS_PER_SHE);
 
     const secondGen = genesisTx({ to: vault, nanos: snap.circulatingNanos, root: snap.root });
+    secondGen.fee = 8;
     const g2 = mine(buildTemplate({
       prev: store.tip().hash,
       prevHeader: store.tip().header,
@@ -118,6 +121,7 @@ describe('node Join vault', () => {
     assert.equal(store.joinVault.circulatingNanos, 3 * NANOS_PER_SHE);
 
     const burn = burnTx({ from: vault, nanos: store.joinVault.remainingNanos });
+    burn.fee = 8;
     const b3 = mine(buildTemplate({
       prev: store.tip().hash,
       prevHeader: store.tip().header,
@@ -141,6 +145,7 @@ describe('node Join vault', () => {
     });
     late.key = encodeJoinKey(bob);
     late.root = snap.root;
+    late.fee = 8;
     const b4 = mine(buildTemplate({
       prev: store.tip().hash,
       prevHeader: store.tip().header,

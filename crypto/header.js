@@ -29,6 +29,7 @@ export function encodeHeader({
   timestamp,
   bits,
   nonce = 0n,
+  baseFee = 1n,
 } = {}) {
   const parts = [
     u32le(version),
@@ -38,6 +39,7 @@ export function encodeHeader({
     u64le(timestamp),
     u32le(bits),
     u64le(nonce),
+    u64le(baseFee ?? 1),
   ];
   const out = Buffer.concat(parts);
   if (out.length !== HEADER_LEN) throw new Error(`packed header ${out.length}`);
@@ -55,6 +57,7 @@ export function decodeHeader(buf) {
     timestamp: h.readBigUInt64LE(100),
     bits: h.readUInt32LE(108),
     nonce: h.readBigUInt64LE(112),
+    baseFee: h.readBigUInt64LE(120),
   };
 }
 
@@ -88,6 +91,7 @@ export function requiredJobFields(job) {
     'blockBits',
     'header',
     'nonce',
+    'baseFee',
   ];
   const missing = need.filter((k) => job?.[k] == null || job[k] === '');
   return { ok: missing.length === 0, missing };

@@ -7,14 +7,14 @@
   <title>Shear miner · ShearHash</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=8"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=10"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
       --cyan: #0088a8; --blue: #1a6fb5; --green: #1a9a4a; --radius: 0px;
     }
     * { box-sizing: border-box; }
-    body { margin:0; font:13px/1.35 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    html, body { margin:0; font:13px/1.35 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
     .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
     h1, h2, .label { font-family:"Segoe UI",system-ui,sans-serif; }
     h1 { font-size:1.15rem; font-weight:800; margin:0 0 8px; }
@@ -36,7 +36,7 @@
     th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.75rem; overflow-wrap:anywhere; }
     .pulse { color:var(--green); font-size:.7rem; }
     .top-banner {
-      display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
+      display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
       border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
     }
     .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
@@ -70,6 +70,7 @@
       <a class="nav-btn" href="https://shear.digital">MAIN</a>
       <a class="nav-btn" href="/">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">WALLET</a>

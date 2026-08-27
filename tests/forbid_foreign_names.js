@@ -45,9 +45,9 @@ describe('foreign names', () => {
 });
 
 describe('dest HRP pin', () => {
-  it('issued dest is shp1; she1 is payment code not dest; shear1 is rest-frame', () => {
+  it('issued dest is ssa1; she1 is payment code not dest; shear1 is rest-frame', () => {
     const dest = encodeDest(Buffer.alloc(20, 7));
-    assert.equal(dest.startsWith('shp1'), true);
+    assert.equal(dest.startsWith('ssa1'), true);
     assert.equal(dest.startsWith('she1'), false);
     assert.equal(dest.startsWith('shear1'), false);
     assert.equal(isDestAddress(dest), true);
@@ -62,24 +62,24 @@ describe('dest HRP pin', () => {
     assert.equal(rest.startsWith('shear1'), true);
     assert.equal(isDestAddress(rest), false);
     assert.equal(isShearAddress(rest), true);
-    assert.equal(HRP_DEST, 'shp');
+    assert.equal(HRP_DEST, 'ssa');
     const dart = fs.readFileSync(path.join(root, 'wallet/lib/shear_identity.dart'), 'utf8');
-    assert.match(dart, /destHrp = 'shp'/);
+    assert.match(dart, /destHrp = 'ssa'/);
     assert.match(dart, /payHrp = 'she'/);
     const miner = fs.readFileSync(path.join(root, 'miner/src/shear_miner.c'), 'utf8');
-    assert.match(miner, /shp1/);
+    assert.match(miner, /ssa1/);
     assert.match(miner, /she1/);
     assert.equal(/--user shear1/.test(miner), false);
     const html = fs.readFileSync(path.join(root, 'pool/public/index.html'), 'utf8');
     assert.match(html, /she is private/);
-    assert.match(html, /shp1/);
+    assert.match(html, /ssa1|she1/);
     assert.match(html, /she1/);
     assert.equal(/--user shear1/.test(html), false);
     const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
     assert.match(readme, /--user she1/);
     assert.equal(/--user shear1/.test(readme), false);
     const wallet = fs.readFileSync(path.join(root, 'wallet/lib/main.dart'), 'utf8');
-    assert.match(wallet, /shp1/);
+    assert.match(wallet, /ssa1/);
     assert.match(wallet, /she1/);
     assert.match(wallet, /she is private/);
   });

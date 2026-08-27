@@ -9,7 +9,7 @@ import { nextBits, GENESIS_BITS, LIVE_MIN_BITS } from './asert.js';
 const z32 = Buffer.alloc(32);
 
 describe('header codec', () => {
-  it('round-trips 120 bytes', () => {
+  it('round-trips 128 bytes including baseFee', () => {
     const raw = encodeHeader({
       prevBlockHash: z32,
       merkleRoot: EMPTY_ROOT,
@@ -17,12 +17,15 @@ describe('header codec', () => {
       timestamp: 1_700_000_000_000n,
       bits: GENESIS_BITS,
       nonce: 99n,
+      baseFee: 7n,
     });
     assert.equal(raw.length, HEADER_LEN);
+    assert.equal(HEADER_LEN, 128);
     const d = decodeHeader(raw);
     assert.equal(d.version, 1);
     assert.equal(d.bits, GENESIS_BITS);
     assert.equal(d.nonce, 99n);
+    assert.equal(d.baseFee, 7n);
     assert.ok(d.prevBlockHash.equals(z32));
   });
 

@@ -23,7 +23,7 @@ submit a complete block:
 | `height` | yes | coinbase height |
 | `shareBits` | yes | vardiff share target |
 | `blockBits` | yes | equals header `bits` |
-| `header` | 240 hex of the 120-byte template | single object the miner hashes |
+| `header` | 256 hex of the 128-byte template | single object the miner hashes |
 
 If any of those header fields is missing, the job is invalid and must not be
 served. A found block is the **same header** with the winning nonce, plus the
@@ -39,10 +39,10 @@ GNFP live pool had worker EP01 flipping **32/32 ↔ 230/256** every few seconds 
 Shear pool book:
 
 1. One inventory record **per TCP session** (socket id, not remote IP — two processes on one box share an IP).
-2. Worker row (`shp1.worker`) **sums** utilised threads and **sums** each session’s device cores/threads. Folded totals are **not** capped at 256.
+2. Worker row (`ssa1.worker`) **sums** utilised threads and **sums** each session’s device cores/threads. Folded totals are **not** capped at 256.
 3. No thread-honesty / inflate flags. Folded inventory is claimed threads and proven H/s only.
 4. Disconnect drops only that session’s inventory; other sockets on the same worker stay listed.
-5. Key the book by **full login** (`shp1.worker`), not dest-only. `dest.alpha` and `dest.beta` are distinct rows; several sockets on `dest.alpha` still sum.
+5. Key the book by **full login** (`ssa1.worker`), not dest-only. `dest.alpha` and `dest.beta` are distinct rows; several sockets on `dest.alpha` still sum.
 6. No miner-fee dual-login / fee route. Miners keep any dev fee themselves.
 7. Per-session share **vardiff** moves share bits with accepted-share rate and **never exceeds** current block `bits`. Default share max is the SHA-256 width (256), same as header ASERT. Block retarget stays ASERT 90 s. Do **not** clamp vardiff at 24 or header bits at 32.
 

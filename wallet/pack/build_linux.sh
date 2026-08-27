@@ -5,8 +5,8 @@ export PATH="$HOME/flutter-sdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr
 mkdir -p "$HOME/src"
 rsync -a --delete \
   --exclude build --exclude dist --exclude .dart_tool --exclude .git \
-  /mnt/c/Users/rgsne/shear/ "$HOME/src/shear/"
-cd "$HOME/src/shear/wallet"
+  /mnt/c/Users/rgsne/shear-testnet/ "$HOME/src/shear-testnet/"
+cd "$HOME/src/shear-testnet/wallet"
 flutter pub get
-flutter build linux --release --build-name=0.1.0 --build-number=10
+flutter build linux --release --build-name=0.1 --build-number=11
 echo "LINUX_BUILD_OK"

@@ -5,19 +5,20 @@ Mainnet magic (`shear-v1`) is a later genesis. Testnet first.
 
 Hash-tx law is consensus, not env: `HASH_TX_LIVE=1`, `HASH_TX_COLLATE=1`, confirm on block-found. 1 hash = 1 bonus unit. Collate is O(miners), never one JSON object per hash. Mainnet genesis seals `consensusFingerprint()` (includes `HASH_TX_LIVE=1`); flipping it is a different book.
 
-## Header (120 bytes, little-endian)
+## Header (128 bytes, little-endian)
 
-The field list is authoritative. Packed size is **120 bytes** (4+32+32+32+8+4+8).
+The field list is authoritative. Packed size is **128 bytes** (4+32+32+32+8+4+8+8).
 
 | Offset | Size | Field |
 |--------|------|--------|
 | 0 | 4 | `version` u32, starts at 1 |
 | 4 | 32 | `prev_block_hash` |
-| 36 | 32 | `merkle_root` of transactions (coinbase first) |
-| 68 | 32 | `continuity_root` Merkle root of collated hash samples |
+| 36 | 32 | `merkle_root` of packed txs (coinbase first) |
+| 68 | 32 | `continuity_root` = `H(rootA ∥ rootB)` |
 | 100 | 8 | `timestamp` u64 Unix milliseconds |
 | 108 | 4 | `bits` u32 Resistance compact target |
 | 112 | 8 | `nonce` u64 |
+| 120 | 8 | `base_fee` u64 Flow levy base |
 
 PoW: `ShearHash(header) ≤ target(bits)`.
 
@@ -39,6 +40,10 @@ ASERT toward 90 s, per block. Floor 14 bits, ceiling **256 bits** (SHA-256 width
 
 Work of a block: `2^256 / (target + 1)`. Heaviest valid chain wins. Equal work keeps first-seen.
 
+Scale (90 s, opt-in B + prune): see [scale.md](scale.md). Tree A is O(miners) per block, not O(hashes). After 1000 confirmations, sample/B bodies drop; sealed vouts and pot remain. At ~10 MH/s that is still GB-class disk for headers + collated A-leaves + sealed txs, not one JSON object per hash.
+
+Consensus spendable is **1 confirmation** (the committing block is accepted). `min_confirms` default **12** is wallet/merchant policy only (~18 min at 90 s), not a consensus floor. B-spends wait for the committing block, then the same policy. 0-conf is merchant policy.
+
 ## Addresses
 
-HRP `shear`. Bech32 payload is the 20-byte spend-key hash. Display form starts `shear1`.
+Rest-frame HRP `shear` (`shear1`). Silent ID `she1`. On-chain dest **`ssa1`**. Never put `shear1` in vouts.

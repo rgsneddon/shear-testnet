@@ -10,6 +10,7 @@ import 'shear_ledger.dart';
 import 'shear_lock.dart';
 import 'shear_macos_install.dart';
 import 'shear_session.dart';
+import 'shear_shewall.dart';
 import 'shear_theme.dart';
 import 'shear_ctf.dart';
 import 'shear_ctf_cli.dart';
@@ -17,7 +18,7 @@ import 'shear_vortex.dart';
 import 'shear_reserve.dart';
 import 'shear_join.dart';
 
-const kWalletVersion = '0.1.0';
+const kWalletVersion = '0.1';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -33,7 +34,7 @@ const kExplains = [
   'Transactional data in a CLI output.',
   'Contracts which are deployed into your wallet.',
   'Your personal transaction explorer.',
-  'Password and backup. Encrypts shewall.json so you can restore this wallet on another install.',
+  'Password and backup. Encrypts shewall.bin so you can restore this wallet on another install.',
 ];
 
 void main() {
@@ -381,7 +382,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Create a password for this wallet. It encrypts shewall.json.',
+                  'Create a password for this wallet. It encrypts shewall.bin.',
                   style: TextStyle(color: theme.colorScheme.onSurface),
                   textAlign: TextAlign.center,
                 ),
@@ -592,10 +593,10 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   Widget _flow(BuildContext context, ShearIdentity ident) {
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('shp1 dest this round (pay). Offer she1, never shear1.'),
+      const Text('ssa1 dest this round (pay). Offer she1, never shear1.'),
       SelectableText(ledger.currentDest(ident.address)),
       const SizedBox(height: 8),
-      TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (shp1…)')),
+      TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (ssa1…)')),
       TextField(controller: flowAmt, decoration: const InputDecoration(labelText: 'Amount SHE'), keyboardType: TextInputType.number),
       TextField(controller: flowMemo, decoration: const InputDecoration(labelText: 'Memo (optional)')),
       FilledButton(
@@ -620,7 +621,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       ),
       const SizedBox(height: 8),
       const Text(
-        'Receive: offer she1 (silent ID). Chain dests are shp1. Never share shear1. Memo text is only in Shearview and theirs.',
+        'Receive: offer she1 (silent ID). Chain dests are ssa1. Never share shear1. Memo text is only in Shearview and theirs.',
       ),
     ]);
   }
@@ -937,8 +938,8 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     return _card([
       const Text('Closure  G_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
       const Text(
-        'Geometric closure of the wallet: password seals shewall.json '
-        '(AES-256-GCM). Copy that one file to restore address and transactions. '
+        'Geometric closure of the wallet: password seals shewall.bin '
+        '(AES-256-GCM packed). Copy that one file to restore address and balances. '
         'The password is the view key. Dest scan stays in this wallet.',
       ),
       SelectableText('View key  ${ident.viewKey}', style: TextStyle(fontSize: 12, color: shearMutedOf(context))),
@@ -955,8 +956,8 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       FilledButton(
         onPressed: () async {
           if (password.isEmpty) return;
-          final dump = exportShewall(identity: ident, ledger: ledger);
-          final sealed = await ShearLock.seal(dump, password);
+          final packed = exportShewall(identity: ident, ledger: ledger);
+          final sealed = await sealShewallBin(packed, password);
           final dest = File('${Directory.systemTemp.path}/$shewallName');
           await writeShewallFile(dest, sealed);
           if (mounted) {
@@ -965,7 +966,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
             );
           }
         },
-        child: const Text('Export shewall.json'),
+        child: const Text('Export shewall.bin'),
       ),
     ]);
   }

@@ -29,7 +29,7 @@ export function extraMint({ programId, to, nanos, kind }) {
 
 export function coinbaseSplit(cb) {
   const vout = Array.isArray(cb?.vout) ? cb.vout : [];
-  const pot = vout.filter((o) => o.kind !== 'hash');
+  const pot = vout.filter((o) => o.kind !== 'hash' && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
   const hash = vout.filter((o) => o.kind === 'hash');
   return {
     potNanos: pot.reduce((a, o) => a + Number(o.nanos || 0), 0),

@@ -54,7 +54,7 @@ describe('The Join vault', () => {
     const alice = newIdentity();
     const payout = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
     const vault = joinDest(alice.address, { viewKey: alice.viewKey });
-    assert.ok(payout.startsWith('shp1'));
+    assert.ok(payout.startsWith('ssa1'));
     assert.notEqual(payout, vault);
     const snap = buildSnapshot([
       { owner: 'prior1alice', coins: 1 },

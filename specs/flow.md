@@ -10,20 +10,20 @@ Paid dests need an **independent Closure `C`** from the wallet password (view se
 |--|------|--------|-----------|
 | Rest-frame `S` | `shear1` | Never | Never (`verifyBlock` rejects) |
 | Silent ID | `she1` payment code (index 0, 1, 2, …) | Yes | Never (`she1` string never in vout/samples) |
-| Issued dest | `shp1` (round dest + index 0, 1, 2, …) | No | Yes |
-| Reserve vault | `shp1` stable (`shear-reserve-v1` root, height 0) | Collator sees dest | Yes |
+| Issued dest | `ssa1` (round dest + index 0, 1, 2, …) | No | Yes |
+| Reserve vault | `ssa1` stable (`shear-reserve-v1` root, height 0) | Collator sees dest | Yes |
 
 ```
 V = password / view secret
 C = SHA256(chronoflux-G-v1 || V)
 t = SHA256(chronoflux-J-v1 || C || continuity_{h-1} || height)
-round dest = shp1(SHA256(chronoflux-J-v1 || S || t)[0:20])
+round dest = ssa1(SHA256(chronoflux-J-v1 || S || t)[0:20])
 t_n = SHA256(chronoflux-J-n-v1 || C || index u64le)
-dest_n = shp1(SHA256(chronoflux-J-v1 || S || t_n)[0:20])
+dest_n = ssa1(SHA256(chronoflux-J-v1 || S || t_n)[0:20])
 she1_n = she1(SHA256(shear-she1-v2 || scanPub_n || spendPub_n)[0:20])  // short public ID, unlimited
 ```
 
-Same `(S, C, index)` always regenerates the same `shp1`. Same `(V, S, n)` regenerates `she1`. No cap on index. Miner `--user` is `she1` or `shp1`. A `she1` login pays `shp1` of the same 20-byte payload; the `she1` string never goes on chain. Pool pays dest as-is. Public explorer stays amounts-only. Rest-frame `shear1` is never a dest login. she is private.
+Same `(S, C, index)` always regenerates the same `ssa1`. Same `(V, S, n)` regenerates `she1`. No cap on index. Miner `--user` is `she1` or `ssa1`. A `she1` login pays `ssa1` of the same 20-byte payload; the `she1` string never goes on chain. Pool pays dest as-is. Public explorer stays amounts-only. Rest-frame `shear1` is never a dest login. she is private.
 
 Password = view key = `shewall.json` seal. Never POST `V`/`C`/`shear1`.
 

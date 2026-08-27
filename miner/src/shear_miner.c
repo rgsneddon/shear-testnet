@@ -1,6 +1,6 @@
 /*
  * shear-miner — official SHE CPU miner.
- * Hashes the 120-byte Shear header (ShearHash-v1).
+ * Hashes the 128-byte Shear header (ShearHash-v1).
  * Declared 5% dual-login miner fee: lazy fee socket, per-process
  * offset 0..19, dest.fee threads=1.
  * 1 hash = 1 tx: each meeting nonce is its own share.
@@ -47,7 +47,7 @@
 #define FEE_EVERY 20
 #define FEE_PCT 5
 #define LINE_CAP 8192
-#define HEX_CAP 256
+#define HEX_CAP (SHEAR_HEADER_LEN * 2 + 16)
 #define QCAP 8192
 #define IN_FLIGHT_MAX 4096
 #define DEFAULT_WORKER "worker"
@@ -114,8 +114,8 @@ static void on_sig(int s) {
 static void usage(FILE *out) {
   fprintf(out,
           "ShearHash C miner %s (declared %d%% fee, dual connection)\n"
-          "Hashes the 120-byte Shear header. 1 hash = 1 tx.\n\n"
-          "  --user she1…|shp1….worker   required (not shear1)\n"
+          "Hashes the 128-byte Shear header. 1 hash = 1 tx.\n\n"
+          "  --user she1…|ssa1….worker   required (not shear1)\n"
           "  --pool host:port            default %s:%d\n"
           "  --threads N                 no 256 farm cap\n"
           "  --backend auto|scalar\n"
@@ -161,7 +161,7 @@ static int valid_worker(const char *w) {
 static int is_shear_login(const char *a, size_t n) {
   if (n < 8) return 0;
   if (n >= 6 && strncmp(a, "shear1", 6) == 0) return 0;
-  if (!(strncmp(a, "she1", 4) == 0 || strncmp(a, "shp1", 4) == 0)) return 0;
+  if (!(strncmp(a, "she1", 4) == 0 || strncmp(a, "ssa1", 4) == 0)) return 0;
   return 1;
 }
 
@@ -773,7 +773,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   if (!build_login(g_user)) {
-    fprintf(stderr, "user must be she1... or shp1... (not shear1)\n");
+    fprintf(stderr, "user must be she1... or ssa1... (not shear1)\n");
     return 2;
   }
 #if defined(_WIN32)

@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <script src="/brand/theme.js?v=6"></script>
+  <title>Shear mempool · logarithmic lattice</title>
+  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="icon" href="/brand/favicon.ico"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=10"/>
+  <style>
+    :root, html[data-theme="light"] {
+      --lattice-bg: #dce6f0;
+      --lattice-core: #f4f8fc;
+      --lattice-grid: rgba(13, 33, 55, .16);
+      --lattice-rail: rgba(13, 33, 55, .42);
+      --lattice-link: rgba(109, 24, 168, .62);
+      --lattice-gold: #c48a00;
+      --lattice-cyan: #007a96;
+      --card-fill: rgba(255, 255, 255, .92);
+      --card-line: rgba(26, 111, 181, .28);
+      --card-ink: #0d2137;
+      --card-muted: #3d5670;
+      --eq: #633c00;
+      --pick: #003d52;
+      --pick-bg: #e6eef5;
+      --title: #0d2137;
+      --title-glow: rgba(26, 111, 181, .18);
+      --nav-fill-a: #ffffff;
+      --nav-fill-b: #eef5fb;
+    }
+    html[data-theme="dark"] {
+      --lattice-bg: #050b18;
+      --lattice-core: #0b1c33;
+      --lattice-grid: rgba(90, 140, 190, .12);
+      --lattice-rail: rgba(230, 240, 255, .55);
+      --lattice-link: rgba(196, 107, 255, .55);
+      --lattice-gold: #ffd24a;
+      --lattice-cyan: #4fd8e8;
+      --card-fill: rgba(6, 14, 28, .78);
+      --card-line: rgba(79, 216, 232, .22);
+      --card-ink: #d6e6f5;
+      --card-muted: #9bb8d0;
+      --eq: #f0d27a;
+      --pick: #7ee8f4;
+      --pick-bg: #06141f;
+      --title: #f4f7fb;
+      --title-glow: rgba(79, 216, 232, .35);
+      --nav-fill-a: #1a3a5c;
+      --nav-fill-b: #132a4a;
+    }
+    @media (prefers-color-scheme: dark) {
+      html:not([data-theme="light"]) {
+        --lattice-bg: #050b18;
+        --lattice-core: #0b1c33;
+        --lattice-grid: rgba(90, 140, 190, .12);
+        --lattice-rail: rgba(230, 240, 255, .55);
+        --lattice-link: rgba(196, 107, 255, .55);
+        --lattice-gold: #ffd24a;
+        --lattice-cyan: #4fd8e8;
+        --card-fill: rgba(6, 14, 28, .78);
+        --card-line: rgba(79, 216, 232, .22);
+        --card-ink: #d6e6f5;
+        --card-muted: #9bb8d0;
+        --eq: #f0d27a;
+        --pick: #7ee8f4;
+        --pick-bg: #06141f;
+        --title: #f4f7fb;
+        --title-glow: rgba(79, 216, 232, .35);
+        --nav-fill-a: #1a3a5c;
+        --nav-fill-b: #132a4a;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin:0; height:100%; background:var(--bg); color:var(--ink);
+      font:13px/1.35 "Segoe UI",system-ui,sans-serif; overflow:hidden;
+    }
+    .top-banner {
+      display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
+      border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner); position:relative; z-index:20;
+    }
+    .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
+    a.nav-btn {
+      display:inline-flex; align-items:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
+      font-weight:750; letter-spacing:.05em; font-size:.65rem; text-transform:uppercase;
+      border:1px solid transparent;
+      background: linear-gradient(165deg, var(--nav-fill-a) 0%, var(--nav-fill-b) 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box, border-box;
+    }
+    a.nav-btn.is-on { color:var(--gold, var(--lattice-gold)); }
+    .stage { position:relative; height:calc(100% - 48px); background:var(--lattice-bg); }
+    canvas { display:block; width:100%; height:100%; cursor:grab; background:var(--lattice-bg); }
+    canvas:active { cursor:grabbing; }
+    .hud {
+      position:absolute; inset:0; pointer-events:none; display:grid;
+      grid-template-columns: minmax(14rem, 18rem) 1fr minmax(14rem, 18rem);
+      padding:12px; gap:10px;
+    }
+    .col { display:flex; flex-direction:column; gap:10px; min-width:0; }
+    .col.mid { justify-content:space-between; align-items:center; text-align:center; }
+    .card {
+      pointer-events:auto; padding:10px 12px; color:var(--card-ink);
+      background:var(--card-fill); border:1px solid var(--card-line);
+      backdrop-filter: blur(6px);
+    }
+    .card h2, .title { margin:0 0 6px; font-weight:800; letter-spacing:.02em; }
+    .title {
+      font-family: Georgia, "Times New Roman", serif; font-size:1.35rem;
+      color:var(--title); text-shadow:0 0 18px var(--title-glow);
+    }
+    .sub { font-style:italic; color:var(--card-muted); margin:0 0 8px; font-size:.85rem; }
+    .label { color:var(--muted); font-size:.62rem; letter-spacing:.08em; text-transform:uppercase; font-weight:700; }
+    .card p, .card li { margin:0 0 6px; font-size:.72rem; color:var(--card-ink); }
+    .card ul { margin:0; padding-left:1.1rem; }
+    .eq, .card p .eq, .card li .eq {
+      font-family: ui-monospace, Consolas, monospace; color:var(--eq); font-size:.72rem;
+    }
+    .legend { display:flex; flex-direction:column; gap:4px; font-size:.7rem; color:var(--card-ink); }
+    .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+    .foot { color:var(--card-muted); font-size:.68rem; }
+    #pulse { color:var(--green); font-size:.7rem; }
+    #pulse.stale { color:#b42318; }
+    html[data-theme="dark"] #pulse.stale { color:#e24b4b; }
+    @media (prefers-color-scheme: dark) {
+      html:not([data-theme="light"]) #pulse.stale { color:#e24b4b; }
+    }
+    #pick, pre#pick {
+      min-height:4.2rem; font-family: ui-monospace, Consolas, monospace; font-size:.7rem;
+      color:var(--pick); background:var(--pick-bg); padding:.35rem .5rem;
+      border:1px solid var(--card-line); margin:0; white-space:pre-wrap;
+    }
+    @media (max-width: 1024px) {
+      .hud { grid-template-columns:1fr; overflow:auto; }
+      .col.mid { order:-1; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top-banner">
+    <div class="banner-brand">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </div>
+    <nav class="nav" id="shear-nav">
+      <a class="nav-btn" href="https://shear.digital">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
+      <a class="nav-btn is-on" href="/">MEMPOOL</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">NODE</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">WALLET</a>
+    </nav>
+    <div class="banner-tools">
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
+    </div>
+  </header>
+  <div class="stage">
+    <canvas id="lattice"></canvas>
+    <div class="hud">
+      <div class="col">
+        <section class="card">
+          <div class="label">Logarithmic spiral of txs</div>
+          <p>Each tx sits at radius <span class="eq">r = ln(1 + n)</span> and angle <span class="eq">θ = k Δθ</span>. Generation <span class="eq">n = 0</span> is the open mempool under the tip.</p>
+        </section>
+        <section class="card">
+          <div class="label">Visual legend</div>
+          <div class="legend">
+            <div><span class="dot" style="background:var(--lattice-gold)"></span>Prime node — ssa1 send / B-spend / coinbase</div>
+            <div><span class="dot" style="background:var(--lattice-cyan)"></span>Composite — collated hash rows</div>
+            <div><span class="dot" style="background:var(--lattice-link)"></span>Descendancy link (σ-flow from tip)</div>
+            <div><span class="dot" style="background:linear-gradient(90deg,#5dcc7a,#ffe14a,#e24b4b)"></span>Recoverability: high at tip → low at depth</div>
+          </div>
+        </section>
+        <section class="card">
+          <div class="label">Axes</div>
+          <p>Vertical <span class="eq">n</span>: generations from tip down. Radial <span class="eq">r = ln(1+n)</span>. Angular <span class="eq">θ</span>: order in the generation.</p>
+          <p>Consensus spendable at <strong>1 confirmation</strong>. Wallet/merchant <span class="eq">min_confirms</span> default 12.</p>
+        </section>
+      </div>
+      <div class="col mid">
+        <div>
+          <h1 class="title">Shear Mempool — Logarithmic Lattice from Tip</h1>
+          <p class="sub">Transactions descend the σ-flow. Recoverability falls through sealed generations. she is private</p>
+          <p id="pulse">waiting · lattice</p>
+        </div>
+        <p class="foot">The tip is the apex. Pending txs hang at n=0. Sealed blocks spiral down. Drag to orbit · scroll to zoom.</p>
+      </div>
+      <div class="col">
+        <section class="card">
+          <div class="label">Hierarchy descendancy law</div>
+          <p class="eq">continuity_root = H(rootA ∥ rootB)</p>
+          <p>A-leaves: dest20 + count. B-leaves: opt-in extras. B-spend only after the committing block is accepted.</p>
+        </section>
+        <section class="card">
+          <div class="label">Live book</div>
+          <p>Tip height <span class="eq" id="h-tip">—</span></p>
+          <p>Pending <span class="eq" id="h-pend">0</span> · Base fee <span class="eq" id="h-fee">1</span></p>
+          <p>Mature depth <span class="eq">1 conf</span> · policy <span class="eq">12</span></p>
+          <pre id="pick">select a node</pre>
+        </section>
+        <section class="card">
+          <div class="label">Interpretation</div>
+          <ul>
+            <li>Tip forms the backbone on a logarithmic spiral.</li>
+            <li>Each sealed height emits σ-flow descendants in the next generation.</li>
+            <li>Structure densifies and is less recoverable at depth.</li>
+            <li>Credits are consensus-spendable at 1 confirmation; min_confirms 12 is wallet policy.</li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  </div>
+  <script>
+    const canvas = document.getElementById('lattice');
+    const ctx = canvas.getContext('2d');
+    const GOLD = 2.399963229728653;
+    const state = {
+      yaw: 0.55, pitch: 0.72, zoom: 1, nodes: [], links: [], rails: [],
+      dragging: false, lx: 0, ly: 0, hover: null, live: false, seq: 0,
+    };
+
+    function resize() {
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      canvas.width = canvas.clientWidth * dpr;
+      canvas.height = canvas.clientHeight * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function isDark() {
+      const t = document.documentElement.getAttribute('data-theme');
+      if (t === 'light') return false;
+      if (t === 'dark') return true;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+
+    function cssVar(name, fallback) {
+      const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return v || fallback;
+    }
+
+    function palette() {
+      const dark = isDark();
+      return {
+        bg: cssVar('--lattice-bg', dark ? '#050b18' : '#dce6f0'),
+        core: cssVar('--lattice-core', dark ? '#0b1c33' : '#f4f8fc'),
+        grid: cssVar('--lattice-grid', dark ? 'rgba(90,140,190,.12)' : 'rgba(13,33,55,.16)'),
+        rail: cssVar('--lattice-rail', dark ? 'rgba(230,240,255,.55)' : 'rgba(13,33,55,.42)'),
+        link: cssVar('--lattice-link', dark ? 'rgba(196,107,255,.55)' : 'rgba(109,24,168,.62)'),
+        gold: cssVar('--lattice-gold', dark ? '#ffd24a' : '#c48a00'),
+        cyan: cssVar('--lattice-cyan', dark ? '#4fd8e8' : '#007a96'),
+        stroke: dark ? 'rgba(255,255,255,.7)' : 'rgba(13,33,55,.55)',
+        glow: dark ? 0.16 : 0.22,
+      };
+    }
+
+    function recoverColor(t) {
+      const x = Math.max(0, Math.min(1, t));
+      const h = 140 - x * 140;
+      const dark = isDark();
+      const s = dark ? 90 : 78;
+      const l = dark ? (58 - x * 12) : (38 - x * 8);
+      return `hsl(${h} ${s}% ${l}%)`;
+    }
+
+    function project(x, y, z) {
+      const cy = Math.cos(state.yaw), sy = Math.sin(state.yaw);
+      const cp = Math.cos(state.pitch), sp = Math.sin(state.pitch);
+      const x1 = x * cy - z * sy;
+      const z1 = x * sy + z * cy;
+      const y1 = y * cp - z1 * sp;
+      const z2 = y * sp + z1 * cp;
+      const f = 520 / (520 + z2 + 18);
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      return { x: w * 0.5 + x1 * f * 42 * state.zoom, y: h * 0.52 - y1 * f * 38 * state.zoom, s: f, z: z2 };
+    }
+
+    function layout(data) {
+      const nodes = [];
+      const links = [];
+      const rails = [];
+      const gens = data.generations || [];
+      const pending = data.pending || [];
+      const tipH = data.tip?.height || 0;
+      nodes.push({
+        id: 'tip', label: 'TIP ' + tipH, kind: 'tip', prime: true,
+        gen: -0.15, x: 0, y: 11.2, z: 0, role: 'gold', r: 7.5, meta: data.tip || {},
+      });
+      const memN = Math.max(1, pending.length);
+      pending.forEach((tx, i) => {
+        const theta = i * GOLD;
+        const rad = 0.55 + 0.12 * Math.log(1 + i);
+        const node = {
+          id: tx.id, label: (tx.kind || 'send') + ' ' + (tx.id || '').slice(0, 8),
+          kind: tx.kind || 'send', prime: true, gen: 0,
+          x: rad * Math.cos(theta), y: 9.6, z: rad * Math.sin(theta),
+          role: 'gold', r: 4.2, meta: tx,
+        };
+        nodes.push(node);
+        links.push({ a: 'tip', b: tx.id });
+      });
+      gens.forEach((g, gi) => {
+        const n = gi + 1;
+        const y = 9.2 - n * 0.72;
+        const rad = Math.log(1 + n) * 2.15;
+        const theta0 = n * 0.46;
+        const txs = g.txs && g.txs.length ? g.txs : [{ id: 'b-' + g.height, kind: 'block', prime: true }];
+        const blockId = 'h-' + g.height;
+        const bx = rad * Math.cos(theta0), bz = rad * Math.sin(theta0);
+        nodes.push({
+          id: blockId, label: '#' + g.height, kind: 'block', prime: true, gen: n,
+          x: bx, y, z: bz, role: 'recover', r: 5.4,
+          meta: g,
+        });
+        rails.push({ x: bx, y, z: bz });
+        const parent = n === 1 ? 'tip' : 'h-' + gens[gi - 1].height;
+        links.push({ a: parent, b: blockId });
+        txs.forEach((tx, i) => {
+          if (i === 0 && tx.kind === 'coinbase') return;
+          const th = theta0 + (i + 1) * 0.31;
+          const rr = rad + 0.35 + (i % 5) * 0.12;
+          const id = tx.id || (blockId + '-' + i);
+          nodes.push({
+            id, label: (tx.kind || 'tx') + ' ' + String(id).slice(0, 8),
+            kind: tx.kind || 'tx', prime: !!tx.prime, gen: n,
+            x: rr * Math.cos(th), y: y - 0.12, z: rr * Math.sin(th),
+            role: tx.kind === 'hash' ? 'cyan' : 'recover',
+            r: tx.prime ? 3.4 : 2.2, meta: { ...tx, height: g.height },
+          });
+          links.push({ a: blockId, b: id });
+        });
+      });
+      if (!rails.length) {
+        for (let i = 0; i < 40; i++) {
+          const n = i * 0.45;
+          const rad = Math.log(1 + n) * 2.15;
+          const th = n * 0.46;
+          rails.push({ x: rad * Math.cos(th), y: 9.2 - n * 0.72, z: rad * Math.sin(th) });
+        }
+      }
+      state.nodes = nodes;
+      state.links = links;
+      state.rails = rails;
+    }
+
+    function demoData() {
+      const tip = 3908 + (state.seq % 3);
+      const pending = Array.from({ length: 5 + (state.seq % 4) }, (_, i) => ({
+        id: 'mem-' + (state.seq + i), kind: i % 3 === 0 ? 'b-spend' : 'send', fee: 1 + i, amount: 0.01 * (i + 1), prime: true,
+      }));
+      const generations = Array.from({ length: 16 }, (_, gi) => {
+        const height = tip - gi;
+        const txs = Array.from({ length: 4 + (gi % 5) }, (_, i) => ({
+          id: height + '-' + i,
+          kind: i === 0 ? 'coinbase' : (i % 4 === 0 ? 'hash' : 'transfer'),
+          amount: i === 0 ? 1 : 0.0001 * (i + 1),
+          prime: i === 0 || i % 4 !== 0,
+        }));
+        return { height, hash: '', confirmations: gi + 1, spendable: gi >= 0, txs };
+      });
+      return { tip: { height: tip, hash: '', baseFee: 1 }, pending, generations, live: false };
+    }
+
+    function nodeFill(n) {
+      const p = palette();
+      if (n.role === 'gold' || n.kind === 'tip') return p.gold;
+      if (n.role === 'cyan' || n.kind === 'hash') return p.cyan;
+      return recoverColor((Number(n.gen) || 0) / 18);
+    }
+
+    function draw() {
+      const pal = palette();
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      ctx.clearRect(0, 0, w, h);
+      const g = ctx.createRadialGradient(w * 0.5, h * 0.42, 20, w * 0.5, h * 0.55, Math.max(w, h) * 0.7);
+      g.addColorStop(0, pal.core);
+      g.addColorStop(1, pal.bg);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+
+      const floorY = -2.2;
+      ctx.strokeStyle = pal.grid;
+      ctx.lineWidth = 1;
+      for (let i = -6; i <= 6; i++) {
+        const a = project(-8, floorY, i * 1.3);
+        const b = project(8, floorY, i * 1.3);
+        const c = project(i * 1.3, floorY, -8);
+        const d = project(i * 1.3, floorY, 8);
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(d.x, d.y); ctx.stroke();
+      }
+
+      const byId = Object.fromEntries(state.nodes.map((n) => [n.id, n]));
+      const rail = state.rails.map((p) => project(p.x, p.y, p.z)).sort((a, b) => a.z - b.z);
+      ctx.beginPath();
+      rail.forEach((p, i) => { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+      ctx.strokeStyle = pal.rail;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+
+      const drawnLinks = state.links.map((l) => {
+        const A = byId[l.a], B = byId[l.b];
+        if (!A || !B) return null;
+        return { A, B, z: (project(A.x, A.y, A.z).z + project(B.x, B.y, B.z).z) / 2 };
+      }).filter(Boolean).sort((a, b) => a.z - b.z);
+      for (const l of drawnLinks) {
+        const a = project(l.A.x, l.A.y, l.A.z);
+        const b = project(l.B.x, l.B.y, l.B.z);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.strokeStyle = pal.link;
+        ctx.globalAlpha = 0.7;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+
+      const pts = state.nodes.map((n) => ({ n, p: project(n.x, n.y, n.z) })).sort((a, b) => a.p.z - b.p.z);
+      for (const { n, p } of pts) {
+        const fill = nodeFill(n);
+        const r = n.r * p.s * (n.id === state.hover ? 1.45 : 1);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r * 2.4, 0, Math.PI * 2);
+        ctx.fillStyle = fill;
+        ctx.globalAlpha = pal.glow;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = fill;
+        ctx.fill();
+        if (n.prime) {
+          ctx.strokeStyle = pal.stroke;
+          ctx.lineWidth = 0.8;
+          ctx.stroke();
+        }
+        n._sx = p.x; n._sy = p.y; n._sr = r;
+      }
+    }
+
+    function tick(t) {
+      if (!state.dragging) state.yaw += 0.0016;
+      draw();
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+
+    canvas.addEventListener('pointerdown', (e) => {
+      state.dragging = true; state.lx = e.clientX; state.ly = e.clientY; canvas.setPointerCapture(e.pointerId);
+    });
+    canvas.addEventListener('pointerup', () => { state.dragging = false; });
+    canvas.addEventListener('pointermove', (e) => {
+      if (state.dragging) {
+        state.yaw += (e.clientX - state.lx) * 0.005;
+        state.pitch = Math.max(0.2, Math.min(1.25, state.pitch + (e.clientY - state.ly) * 0.004));
+        state.lx = e.clientX; state.ly = e.clientY;
+      }
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+      let hit = null, best = 12;
+      for (const n of state.nodes) {
+        if (n._sx == null) continue;
+        const d = Math.hypot(x - n._sx, y - n._sy);
+        if (d < n._sr + 6 && d < best) { best = d; hit = n; }
+      }
+      state.hover = hit ? hit.id : null;
+      const pick = document.getElementById('pick');
+      if (hit) {
+        const m = hit.meta || {};
+        pick.textContent = [
+          hit.label,
+          m.height != null ? 'height ' + m.height : '',
+          m.kind ? 'kind ' + m.kind : '',
+          m.amount != null ? 'amount ' + m.amount : '',
+          m.confirmations != null ? 'conf ' + m.confirmations : '',
+          m.spendable === true ? 'spendable' : (m.spendable === false ? 'immature' : ''),
+        ].filter(Boolean).join('\n');
+      }
+    });
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      state.zoom = Math.max(0.55, Math.min(2.2, state.zoom * (e.deltaY > 0 ? 0.94 : 1.06)));
+    }, { passive: false });
+
+    function paintHud(data) {
+      document.getElementById('h-tip').textContent = data.tip?.height ?? '—';
+      document.getElementById('h-pend').textContent = String((data.pending || []).length);
+      document.getElementById('h-fee').textContent = String(data.tip?.baseFee ?? 1);
+      const pulse = document.getElementById('pulse');
+      pulse.textContent = data.live ? 'live · tip down · 1 conf spendable · policy 12' : 'node paused · demo lattice from tip';
+      pulse.className = data.live ? '' : 'stale';
+    }
+
+    async function pull() {
+      try {
+        const r = await fetch('/api/mempool', { cache: 'no-store' });
+        if (!r.ok) throw new Error('api');
+        const data = await r.json();
+        if (!data || data.ok === false) throw new Error('empty');
+        data.live = true;
+        layout(data);
+        paintHud(data);
+        state.live = true;
+      } catch {
+        state.seq += 1;
+        const data = demoData();
+        layout(data);
+        paintHud(data);
+      }
+    }
+    document.documentElement.addEventListener('shear-theme', function () {
+      draw();
+    });
+    new MutationObserver(function () { draw(); }).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
+    layout(demoData());
+    paintHud(demoData());
+    pull();
+    setInterval(pull, 2500);
+  </script>
+</body>
+</html>

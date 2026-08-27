@@ -10,6 +10,8 @@ import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_lock.dart';
 import 'package:shear_wallet/shear_session.dart';
 import 'package:shear_wallet/shear_hash.dart';
+import 'package:shear_wallet/shear_pack.dart';
+import 'package:shear_wallet/shear_shewall.dart';
 import 'package:shear_wallet/shear_theme.dart';
 import 'package:shear_wallet/shear_ctf.dart';
 import 'package:shear_wallet/shear_ctf_cli.dart';
@@ -51,6 +53,7 @@ void main() {
     expect(fatDump.contains('"kind":"sample"'), isFalse);
     expect(utf8.encode(fatDump).length < 4000, isTrue);
     ledger.confirmRound(address: id.address, pot: 1, height: 7);
+    ledger.settleTo(7 + ShearLedger.spendableConfirmations);
     expect(ledger.transactions.length, 1);
     expect(ledger.pending(id.address), 0);
     ledger.prune();
@@ -66,6 +69,7 @@ void main() {
     expect(ledger.pendingTxs(id.address).single.kind, 'hash');
     expect(ledger.ownerHistory(id.address), isEmpty);
     ledger.confirmRound(address: id.address, pot: 1, height: 3);
+    ledger.settleTo(3 + ShearLedger.spendableConfirmations);
     expect(ledger.pending(id.address), 0);
     expect(ledger.pendingTxs(id.address), isEmpty);
     expect(ledger.spendable(id.address), closeTo(1 + 4 * kHashBonusShe, 1e-18));
@@ -78,6 +82,7 @@ void main() {
     final ledger = ShearLedger()..viewSecret = id.viewKey;
     final dest = ledger.currentDest(id.address);
     ledger.confirmRound(address: id.address, pot: 1, height: 2);
+    ledger.settleTo(2);
     expect(ledger.sealedHeight, 2);
     expect(ledger.pendingTxs(id.address), isEmpty);
     final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
@@ -85,6 +90,7 @@ void main() {
     expect(sent.confirmed, isFalse);
     expect(ledger.pendingTxs(id.address).single.id, sent.id);
     ledger.confirmRound(address: id.address, pot: 1, height: 3);
+    ledger.settleTo(3);
     expect(ledger.pendingTxs(id.address), isEmpty);
     expect(ledger.ownerHistory(id.address).where((t) => t.id == sent.id).single.confirmed, isTrue);
     expect(ledger.sealedHeight, 3);
@@ -104,6 +110,7 @@ void main() {
     expect(ledger.spendable(id.address), 0);
     expect(ledger.pending(id.address), closeTo(0.4 + 7 * kHashBonusShe, 1e-18));
     ledger.confirmRound(address: id.address, pot: 0.1, height: 9);
+    ledger.settleTo(9 + ShearLedger.spendableConfirmations);
     expect(ledger.pendingTxs(id.address), isEmpty);
     expect(ledger.pending(id.address), 0);
     expect(ledger.spendable(id.address), closeTo(0.1 + 0.4 + 7 * kHashBonusShe, 1e-18));
@@ -114,7 +121,7 @@ void main() {
 
   test('syncCredits ingests pool incoming+hash pending and confirmRound on tip advance', () async {
     final id = createIdentity();
-    final header = Uint8List(120);
+    final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     final live = _PoolLive(headerHex: hex, height: 3, balance: 0, pending: 7 * kHashBonusShe);
     final peer = createIdentity();
@@ -151,7 +158,7 @@ void main() {
 
   test('first-boot syncCredits loads reconstructed spendable; open round stays pending', () async {
     final id = createIdentity();
-    final header = Uint8List(120);
+    final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     const reconstructed = 1.5;
     final live = _PoolLive(
@@ -202,7 +209,7 @@ void main() {
 
   test('syncCredits still settles after syncTip painted a newer height', () async {
     final id = createIdentity();
-    final header = Uint8List(120);
+    final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     const reconstructed = 1.5;
     final live = _PoolLive(
@@ -253,7 +260,7 @@ void main() {
 
   test('syncTip paints pool height without waiting for credit sync', () async {
     final id = createIdentity();
-    final header = Uint8List(120);
+    final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     final live = _PoolLive(headerHex: hex, height: 3908, balance: 1.5);
     final server = await _fakePool(live: live);
@@ -296,24 +303,38 @@ void main() {
     expect(fresh.pending(dest), closeTo(0.2 + 5 * kHashBonusShe, 1e-18));
   });
 
-  test('shewall.json password seal restores address and txs', () async {
+  test('consensus spendable at 1 confirmation; min_confirms 12 is wallet policy', () {
+    expect(ShearLedger.spendableConfirmations, 1);
+    expect(ShearLedger.minConfirms, 12);
+    final id = createIdentity();
+    final ledger = ShearLedger();
+    ledger.confirmRound(address: id.address, pot: 1, height: 1);
+    expect(ledger.spendable(id.address), 1);
+    expect(ledger.policyAvailable(id.address), 0);
+    ledger.settleTo(12);
+    expect(ledger.policyAvailable(id.address), 1);
+  });
+
+  test('shewall.bin password seal restores address and balances; JSON refused', () async {
     final id = createIdentity();
     final ledger = ShearLedger();
     ledger.creditHash(id.address, hashes: 2);
     ledger.confirmRound(address: id.address, pot: 1, height: 1);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
     const pw = 'correct-horse';
-    final dump = exportShewall(identity: id, ledger: ledger);
-    final env = await ShearLock.seal(dump, pw);
-    expect(env['kind'], ShearLock.kind);
-    expect(env.containsKey('ct'), isTrue);
-    final opened = await ShearLock.open(env, pw);
+    final packed = exportShewall(identity: id, ledger: ledger);
+    expect(packed[0], isNot(0x7b));
+    final env = await sealShewallBin(packed, pw);
+    expect(utf8.decode(env.sublist(0, shewallEncKind.length)), shewallEncKind);
+    final opened = await openShewallBin(env, pw);
     final ledger2 = ShearLedger();
     final id2 = importShewall(opened, ledger2);
     expect(id2.address, id.address);
     expect(id2.viewKey, id.viewKey);
-    expect(ledger2.spendable(id.address), closeTo(1 + 2 * kHashBonusShe, 1e-18));
+    expect(ledger2.spendable(id.address), closeTo(1 + 2 * kHashBonusShe, 1e-12));
     expect(ledger2.ownerHistory(id.address), isNotEmpty);
-    await expectLater(ShearLock.open(env, 'wrong'), throwsA(anything));
+    expect(() => unpackShewall(Uint8List.fromList(utf8.encode('{"kind":"json"}'))), throwsA(anything));
+    await expectLater(openShewallBin(env, 'wrong'), throwsA(anything));
   });
 
   test('CTF dest is she1 with password C, not C-from-S', () {
@@ -321,8 +342,8 @@ void main() {
     final b = createIdentity();
     expect(destForLogin(a.address, height: 1), isNull);
     final paid = destForLogin(a.address, height: 1, viewKey: a.viewKey)!;
-    expect(destHrp, 'shp');
-    expect(paid.startsWith('shp1'), isTrue);
+    expect(destHrp, 'ssa');
+    expect(paid.startsWith('ssa1'), isTrue);
     expect(paid.startsWith('she1'), isFalse);
     expect(paid.startsWith('shear1'), isFalse);
     expect(isDestAddress(paid), isTrue);
@@ -334,7 +355,7 @@ void main() {
     expect(isPaymentCode(a.paymentCode), isTrue);
     expect(isDestAddress(a.paymentCode), isFalse);
     final sheMine = destForLogin(a.paymentCode)!;
-    expect(sheMine.startsWith('shp1'), isTrue);
+    expect(sheMine.startsWith('ssa1'), isTrue);
     expect(sheMine.startsWith('she1'), isFalse);
     expect(sheMine, isNot(a.paymentCode));
     expect(payoutDest(a.paymentCode), sheMine);
@@ -372,8 +393,9 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.1.0');
-    expect(kWalletVersion.contains('0.1.1'), isFalse);
+    expect(kWalletVersion, '0.1');
+    expect(kWalletVersion.split('.').length, 2);
+    expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
     expect(formatShe(1), '1');
     expect(formatShe(kHashBonusShe), '0.00000000');
     expect(formatShe(1e-8), '0.00000001');
@@ -423,27 +445,27 @@ void main() {
     expect(addVortice(const [reserveVortice], key, source: source), hasLength(2));
   });
 
-  test('currentDest is round shp1 dest; destAtIndex mints unlimited shp1 tied to shear1', () {
+  test('currentDest is round ssa1 dest; destAtIndex mints unlimited ssa1 tied to shear1', () {
     final id = createIdentity();
     final ledger = ShearLedger();
     ledger.viewSecret = id.viewKey;
     final round = destForLogin(id.address, height: 1, viewKey: id.viewKey)!;
-    expect(round.startsWith('shp1'), isTrue);
+    expect(round.startsWith('ssa1'), isTrue);
     expect(ledger.currentDest(id.address), round);
     final d0 = destAtIndex(id.address, index: 0, viewKey: id.viewKey)!;
-    expect(d0.startsWith('shp1'), isTrue);
+    expect(d0.startsWith('ssa1'), isTrue);
     expect(d0.startsWith('she1'), isFalse);
     final d1 = destAtIndex(id.address, index: 1, viewKey: id.viewKey)!;
     expect(d1, isNot(d0));
     expect(ledger.newDest(id.address), destAtIndex(id.address, index: 1, viewKey: id.viewKey));
     expect(ledger.destCount, 2);
     expect(destAtIndex(id.address, index: 0, viewKey: id.viewKey), d0);
-    expect(destAtIndex(id.address, index: 99, viewKey: id.viewKey)!.startsWith('shp1'), isTrue);
-    expect(isDestAddress(encodeHrp('shp', Uint8List.fromList(List.filled(20, 7)))), isTrue);
+    expect(destAtIndex(id.address, index: 99, viewKey: id.viewKey)!.startsWith('ssa1'), isTrue);
+    expect(isDestAddress(encodeHrp('ssa', Uint8List.fromList(List.filled(20, 7)))), isTrue);
   });
 
   test('syncSpendable from pool /api/stats applyTipHex: currentDest is destForLogin(login, lag-1 offset 68, next height, no viewKey)', () async {
-    final header = Uint8List(120);
+    final header = Uint8List(128);
     for (var i = 0; i < 32; i++) {
       header[68 + i] = 7;
     }
@@ -465,7 +487,7 @@ void main() {
       destForLogin(id.address, continuityRoot: header.sublist(68, 100), height: 5, viewKey: id.viewKey),
     );
     expect(ledger.currentDest(id.address), isNot(id.address));
-    expect(ledger.currentDest(id.address).startsWith('shp1'), isTrue);
+    expect(ledger.currentDest(id.address).startsWith('ssa1'), isTrue);
     expect(isDestAddress(ledger.currentDest(id.address)), isTrue);
     expect(
       ledger.currentDest(id.address),
@@ -473,15 +495,46 @@ void main() {
     );
   });
 
-  test('Dart ShearHash matches C selftest vector 6e95b903…', () {
+  test('Dart ShearHash matches C selftest vector 5d00a242…', () {
     final header = shearSelftestHeader();
-    expect(header.length, 120);
+    expect(header.length, 128);
     expect(header[0], 1);
     expect(header.sublist(1).every((b) => b == 0), isTrue);
     final got = shearHashHex(header);
     expect(got, shearSelftestHash);
     expect(shearSelftest(), isTrue);
     expect(dartHashRound(header), shearHash(header));
+  });
+
+  test('Dart packALeaf digest equals JS packALeaf digest', () {
+    final dest20 = Uint8List.fromList(List.filled(20, 7));
+    final packed = packALeaf(dest20: dest20, count: 3);
+    expect(packDigestHex(packed), 'f1e4aa9bf56bfdd19c0a60b2e6dd0b8c4f0d58e7df87ed631673a646a55a8774');
+  });
+
+  test('Dart packBLeaf digest equals JS packBLeaf digest', () {
+    final dest20 = Uint8List.fromList(List.filled(20, 7));
+    final packed = packBLeaf(
+      dest20: dest20,
+      unit: 1,
+      nonce: 2,
+      memoH: Uint8List.fromList(List.filled(32, 9)),
+      tag: 'b-spend',
+    );
+    expect(packDigestHex(packed), '693ca5f2fc44619b8b20fe2df4de76477c7c3120aa1f86a788eb0fe89e979e12');
+  });
+
+  test('Dart packTx digest equals JS packTx digest', () {
+    final dest20 = Uint8List.fromList(List.filled(20, 7));
+    final packed = packTx(
+      vins: [
+        {'prev': Uint8List.fromList(List.filled(32, 1)), 'index': 0, 'dest20': dest20},
+      ],
+      vouts: [
+        {'dest20': dest20, 'nanos': 5, 'kind': 0},
+      ],
+    );
+    expect(packDigestHex(packed), '016143271e11c70f09a73dd9a245738ba81a59ad08a020cc6f260a5bff6e16cd');
   });
 
   test('in-app logo and macOS 1024 icon are square, not a stretched 802×848', () {
@@ -511,14 +564,14 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.1.0');
-    expect(kWalletVersion, '0.1.0');
+    expect(app.title, 'Shear 0.1');
+    expect(kWalletVersion, '0.1');
     // password gate first
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
     await tester.pump();
-    expect(find.textContaining('0.1.0'), findsWidgets);
+    expect(find.textContaining('0.1'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -537,7 +590,7 @@ void main() {
       'Transactional data in a CLI output.',
       'Contracts which are deployed into your wallet.',
       'Your personal transaction explorer.',
-      'Password and backup. Encrypts shewall.json so you can restore this wallet on another install.',
+      'Password and backup. Encrypts shewall.bin so you can restore this wallet on another install.',
     ]);
     expect(kExplains.length, kTabs.length);
     expect(kSymbols.length, kTabs.length);
@@ -610,6 +663,7 @@ void main() {
     final ledger = ShearLedger()..viewSecret = ident.viewKey;
     final dest = ledger.currentDest(ident.address);
     ledger.confirmRound(address: ident.address, pot: 1, height: 2);
+    ledger.settleTo(2);
     final other = createIdentity();
     final bob = destForLogin(other.address, height: 1, viewKey: other.viewKey)!;
     await ledger.send(from: dest, to: bob, amount: 0.25);
@@ -626,6 +680,7 @@ void main() {
     await tester.pump();
     expect(find.textContaining(formatShe(0.25)), findsNothing);
     ledger.confirmRound(address: ident.address, pot: 1, height: 3);
+    ledger.settleTo(3);
     await tester.tap(find.text('Continuum'));
     await tester.pump();
     expect(find.text('Pending'), findsNothing);
@@ -657,6 +712,7 @@ void main() {
     expect(find.textContaining(formatShe(0.4)), findsWidgets);
     expect(find.textContaining(formatShe(0.001)), findsWidgets);
     ledger.confirmRound(address: ident.address, pot: 0.1, height: 4);
+    ledger.settleTo(4 + ShearLedger.spendableConfirmations);
     await tester.tap(find.text('Continuum'));
     await tester.pump();
     expect(find.text('Pending'), findsNothing);
@@ -729,11 +785,12 @@ void main() {
     expect(tester.widget<SelectableText>(find.byType(SelectableText).last).style?.color, kCliDarkFg);
   });
 
-  test('ctfTranscript uses destForLogin and prints she1 shp1 shear1 spendable credit', () {
+  test('ctfTranscript uses destForLogin and prints she1 ssa1 shear1 spendable credit', () {
     final id = createIdentity();
     final ledger = ShearLedger()..viewSecret = id.viewKey;
     final tx = ledger.confirmRound(address: id.address, pot: 1, height: 7);
-    expect(tx.to.startsWith('shp1'), isTrue);
+    ledger.settleTo(7 + ShearLedger.spendableConfirmations);
+    expect(tx.to.startsWith('ssa1'), isTrue);
     final dest = destForLogin(
       id.address,
       height: ledger.tipHeight,
@@ -752,7 +809,7 @@ void main() {
     expect(text.contains(id.paymentCode), isTrue);
     expect(id.paymentCode.startsWith('she1'), isTrue);
     expect(text.contains(dest), isTrue);
-    expect(dest.startsWith('shp1'), isTrue);
+    expect(dest.startsWith('ssa1'), isTrue);
     expect(text.contains(formatShe(tx.amount)), isTrue);
     expect(text.contains(ctfClosurePersonal), isTrue);
     expect(text.contains(ctfFlowPersonal), isTrue);
@@ -767,6 +824,7 @@ void main() {
     final ident = session.identity!;
     final ledger = ShearLedger()..viewSecret = ident.viewKey;
     final tx = ledger.confirmRound(address: ident.address, pot: 1, height: 3);
+    ledger.settleTo(3 + ShearLedger.spendableConfirmations);
     await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger));
     await tester.pump();
     await tester.enterText(find.byType(TextField), 'pw');
@@ -808,7 +866,7 @@ void main() {
     expect(find.textContaining(formatShe(0.25)), findsWidgets);
     expect(find.textContaining(ident.address), findsWidgets);
     expect(find.textContaining(ident.paymentCode), findsWidgets);
-    expect(find.textContaining('shp1'), findsWidgets);
+    expect(find.textContaining('ssa1'), findsWidgets);
     expect(find.textContaining('chronoflux-J-v1'), findsWidgets);
   });
 
@@ -863,6 +921,7 @@ void main() {
     final ledger = ShearLedger();
     ledger.viewSecret = alice.viewKey;
     ledger.confirmRound(address: alice.address, pot: 10, height: 1);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
     final continuum = ledger.currentDest(alice.address);
     final vault = vaultDest(alice.address, viewKey: alice.viewKey)!;
     expect(continuum, isNot(vault));
@@ -1060,9 +1119,9 @@ void main() {
     expect(find.text('Add more SHE to the vault'), findsOneWidget);
   });
 
-  test('send posts sdcard1 from + memoCt; sender and recipient dests open plaintext, other dest does not', () async {
+  test('send posts ssa1 from + memoCt; sender and recipient dests open plaintext, other dest does not', () async {
     final posted = <Map<String, dynamic>>[];
-    final header = Uint8List(120);
+    final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     final server = await _fakePool(headerHex: hex, height: 1, posted: posted);
     addTearDown(() => server.close(force: true));
@@ -1076,11 +1135,12 @@ void main() {
     aliceL.viewSecret = alice.viewKey;
     final from = aliceL.currentDest(alice.address);
     final to = destForLogin(bob.address, height: 1, viewKey: bob.viewKey)!;
-    expect(from.startsWith('shp1'), isTrue);
+    expect(from.startsWith('ssa1'), isTrue);
     expect(isDestAddress(from), isTrue);
     expect(from, isNot(alice.address));
     aliceL.creditHash(alice.address, hashes: 0);
     aliceL.confirmRound(address: alice.address, pot: 1, height: 1);
+    aliceL.settleTo(1 + ShearLedger.spendableConfirmations);
     expect(aliceL.spendable(from), closeTo(1, 1e-12));
     expect(aliceL.spendable(from), aliceL.spendable(alice.address));
     final tx = await aliceL.send(from: from, to: to, amount: 1, memo: 'secret-flow');

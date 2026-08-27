@@ -27,6 +27,9 @@ import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { emptyJoin, applyJoinBlock, validateJoinBlock } from '../../crypto/join_vault.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { createVorticeCatalog } from './vortice.js';
+import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
+import { blockWeight } from '../../crypto/levy.js';
+import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
 
 function toRow(block) {
   const compact = compactChainBlock(block);
@@ -40,11 +43,17 @@ function toRow(block) {
 export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
+  const binFile = path.join(dir, 'chain.bin');
   const explorerFile = path.join(dir, 'explorer.jsonl');
   const vaultFile = path.join(dir, 'reserve.json');
   const blocks = [];
   const explorer = [];
-  if (fs.existsSync(file)) {
+  const spentB = new Set();
+  if (fs.existsSync(binFile)) {
+    for (const b of readChainBin(binFile)) {
+      blocks.push(b);
+    }
+  } else if (fs.existsSync(file)) {
     for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
       if (!line.trim()) continue;
       const b = JSON.parse(line);
@@ -148,11 +157,12 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
 
   const vortice = createVorticeCatalog(dir);
 
-  function persist(block) {
-    fs.appendFileSync(file, `${JSON.stringify(toRow(block))}\n`);
+  function persist(_block) {
+    rewriteChain();
   }
 
   function rewriteChain() {
+    writeChainBin(binFile, blocks);
     const body = blocks.map((b) => JSON.stringify(toRow(b))).join('\n');
     fs.writeFileSync(file, body ? `${body}\n` : '');
   }
@@ -177,8 +187,19 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
 
   function append(block) {
     const prev = tip();
-    const check = verifyBlock(block, prev ? { hash: prev.hash, header: prev.header } : null, {
+    const check = verifyBlock(block, prev ? {
+      hash: prev.hash,
+      header: prev.header,
+      height: prev.height,
+      rootA: prev.rootA,
+      rootB: prev.rootB,
+      txs: prev.txs,
+      bLeaves: prev.bLeaves,
+      weight: prev.weight,
+    } : null, {
       joinFunded: !!joinVault.genesisMs,
+      spentB,
+      tipHeight: prev ? prev.height + 1 : 1,
     });
     if (!check.ok) return check;
     const gated = validateJoinBlock({
@@ -192,6 +213,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
       magic: MAGIC_TESTNET,
       hash: check.hash,
       height: prev ? prev.height + 1 : 1,
+      weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
     });
     blocks.push(stored);
     persist(stored);
@@ -205,7 +227,27 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     applyReserve(stored);
     applyJoin(stored);
     pruneBuried();
+    try {
+      const bf = Number(decodeHeader(Buffer.from(stored.header)).baseFee || 1n);
+      const book = emptyMempool();
+      book.txs = mempool.slice();
+      const { dropped } = retargetMempool(book, bf);
+      mempool.length = 0;
+      mempool.push(...book.txs);
+      void dropped;
+    } catch { /* keep */ }
     return { ok: true, block: stored };
+  }
+
+  function queueTx(tx) {
+    let base = 1;
+    const t = tip();
+    try {
+      if (t?.header) base = Number(decodeHeader(Buffer.from(t.header)).baseFee || 1n);
+    } catch { base = 1; }
+    const book = emptyMempool();
+    book.txs = mempool;
+    return admitMempool(book, tx, { baseFee: base });
   }
 
   function adopt(fork) {
@@ -305,6 +347,10 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     const now = nowIn != null ? Number(nowIn) : Date.now();
     const bits = bitsIn != null ? bitsIn : retarget(blocks, now);
     const lag1 = lag1Continuity(t ? t.header : null);
+    let baseFeeNow = 1;
+    try {
+      if (t?.header) baseFeeNow = Number(decodeHeader(Buffer.from(t.header)).baseFee || 1n);
+    } catch { baseFeeNow = 1; }
     const pendingTxs = mempool.map((m) => {
       const dest = destForLogin(m.to, { continuityRoot: lag1, height }) || m.to;
       return {
@@ -312,13 +358,18 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
         from: m.from,
         to: dest,
         nanos: m.nanos,
+        fee: m.fee,
+        kind: m.kind,
+        bFlag: m.kind === 'b-spend' || m.bFlag,
         vin: [{ address: m.from }],
         vout: [{ address: dest, nanos: m.nanos, memoCt: m.memoCt }],
       };
-    });
+    }).filter((tx) => admitMempool({ txs: [], baseFee: baseFeeNow }, tx, { baseFee: baseFeeNow }).ok);
     const tpl = buildTemplate({
       prev: t ? t.hash : GENESIS_PREV,
       prevHeader: t ? t.header : null,
+      prevBlock: t,
+      parentWeight: t ? (t.weight ?? undefined) : 1,
       height,
       miner,
       samples,
@@ -344,6 +395,10 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
       txs: rec.tpl.txs,
       samples: rec.tpl.samples,
       miner: destForLogin(miner) || miner || rec.tpl.miner,
+      aLeaves: rec.tpl.aLeaves,
+      bLeaves: rec.tpl.bLeaves,
+      rootA: rec.tpl.rootA,
+      rootB: rec.tpl.rootB,
     };
     return append(block);
   }
@@ -360,6 +415,8 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     submitHeader,
     jobs,
     mempool,
+    spentB,
+    queueTx,
     hashHex,
     headerHash,
     historyFor,

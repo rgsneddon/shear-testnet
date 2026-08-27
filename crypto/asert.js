@@ -1,4 +1,4 @@
-export const TARGET_BLOCK_INTERVAL_MS = 9_000;
+export const TARGET_BLOCK_INTERVAL_MS = 90_000;
 export const MIN_BITS = 1;
 /**
  * SHA-256 width. A 32-bit farm lid froze live difficulty under large
@@ -12,8 +12,8 @@ export const GENESIS_BITS = 21;
 export const SHE_DECIMALS = 11;
 export const SHE_PUBLIC_DIGITS = 8;
 export const NANOS_PER_SHE = 100_000_000_000; // 10^11
-/** 0.1 SHE pot (10_000_000_000 units). Hash bonus stays 1 unit. */
-export const BLOCK_SUBSIDY_NANOS = 10_000_000_000;
+/** 1 SHE pot (100_000_000_000 units). Hash bonus stays 1 unit. */
+export const BLOCK_SUBSIDY_NANOS = 100_000_000_000;
 /** 0.00000000001 SHE per valid hash = 1 protocol unit. */
 export const HASH_BONUS_NANOS = 1;
 /** Vote moves the per-hash bonus by one protocol unit (±10⁻¹¹ SHE). The pot does not move. */
@@ -25,6 +25,10 @@ export const MAGIC_TESTNET = 'shear-testnet-v1';
 export const MAGIC_MAINNET = 'shear-v1';
 /** Frozen consensus identity. A different fingerprint is a different law. */
 export const BOOK_LAW_ID = 'shear-book-law-1';
+/** Display/tag version for wallet, node, and pool. Two-part only (`0.1`, not `0.1.0`). */
+export const PRODUCT_VERSION = '0.1';
+/** Official C miner display/tag version. Two-part only. */
+export const MINER_VERSION = '0.5';
 /** Hash bonus commits on accept. Not env. */
 export const HASH_COMMIT_ON_ACCEPT = 1;
 /** One open-window hash row per miner (collate). Not env. */
@@ -42,6 +46,18 @@ export const MINER_MINT_ONLY = 1;
  * flipping it is a different book, not a config change.
  */
 export const HASH_TX_LIVE = 1;
+export const DEST_HRP = 'ssa';
+export const FEE_TAU_MS = 90_000;
+export const FEE_TARGET_WEIGHT = 8;
+export const FEE_SPLIT_FINDER_BPS = 5000;
+export const FEE_SPLIT_RESERVE_BPS = 5000;
+export const LEAF_A_LAYOUT = 'dest20+u64count';
+export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
+/** Consensus: a sealed output is spendable when its block is accepted (1 conf). */
+export const SPENDABLE_CONFIRMATIONS = 1;
+/** Wallet/merchant policy only. Not consensus. Not fingerprint. */
+export const MIN_CONFIRMS_POLICY = 12;
+export const RESERVE_FEE_FIRST = 1;
 
 /** Consensus fingerprint. Mainnet genesis seals this; it is not revertible. */
 export function consensusFingerprint() {
@@ -60,12 +76,22 @@ export function consensusFingerprint() {
     USER_TX_CONFIRM_ON_BLOCK,
     MINER_MINT_ONLY,
     HASH_TX_LIVE,
+    DEST_HRP,
+    FEE_TAU_MS,
+    FEE_TARGET_WEIGHT,
+    FEE_SPLIT_FINDER_BPS,
+    LEAF_A_LAYOUT,
+    LEAF_B_LAYOUT,
+    SPENDABLE_CONFIRMATIONS,
+    RESERVE_FEE_FIRST,
   ].join(':');
 }
 
 export function consensusLaw() {
   return {
     bookLawId: BOOK_LAW_ID,
+    productVersion: PRODUCT_VERSION,
+    minerVersion: MINER_VERSION,
     bookLawFingerprint: consensusFingerprint(),
     hashCommitOnAccept: HASH_COMMIT_ON_ACCEPT,
     hashTxCollate: HASH_TX_COLLATE,
@@ -76,6 +102,15 @@ export function consensusLaw() {
     hashBonusNanos: HASH_BONUS_NANOS,
     blockSubsidyNanos: BLOCK_SUBSIDY_NANOS,
     magicMainnet: MAGIC_MAINNET,
+    destHrp: DEST_HRP,
+    feeTauMs: FEE_TAU_MS,
+    feeTargetWeight: FEE_TARGET_WEIGHT,
+    feeSplitFinderBps: FEE_SPLIT_FINDER_BPS,
+    leafALayout: LEAF_A_LAYOUT,
+    leafBLayout: LEAF_B_LAYOUT,
+    spendableConfirmations: SPENDABLE_CONFIRMATIONS,
+    minConfirmsPolicy: MIN_CONFIRMS_POLICY,
+    reserveFeeFirst: RESERVE_FEE_FIRST,
   };
 }
 /** Reserve may mint interest. Join may mint once at genesis into its vault. */
@@ -107,7 +142,17 @@ export function formatShe(n) {
 
 export function extraMintAllowed(programId, opts = {}) {
   const id = String(programId || '');
-  if (id === RESERVE_PROGRAM) return true;
+  if (id === RESERVE_PROGRAM) {
+    if (opts.alreadyMinted || opts.preMint) return false;
+    if (opts.feeFirst) {
+      if (opts.gateOk === false) return false;
+      const gap = Math.max(0, Number(opts.reward || 0) - Number(opts.feeBank || 0));
+      if (gap <= 0) return false;
+      if (opts.amount != null && Number(opts.amount) > gap) return false;
+      return true;
+    }
+    return true;
+  }
   if (id === JOIN_PROGRAM && String(opts.kind || '') === JOIN_KIND_GENESIS && !opts.funded) {
     return true;
   }
@@ -122,7 +167,7 @@ export function clampBits(bits) {
 }
 
 /**
- * Per-block ASERT toward 9s. Pure function of the header timestamp
+ * Per-block ASERT toward 90s. Pure function of the header timestamp
  * delta — verifiers must not use wall clock. Same-tick (≤0) is treated
  * as 1ms so it still climbs, but the step is capped at ±2 (not ±8).
  */

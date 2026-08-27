@@ -40,11 +40,12 @@ describe('brand pages', () => {
     }
   });
 
-  it('site, pool, and explorer have pack wordmark, favicon, and dark/light swap', () => {
+  it('site, pool, explorer, and mempool have pack wordmark, favicon, and dark/light swap', () => {
     const pages = [
       read('site/index.html'),
       read('pool/public/index.html'),
       read('pool/public/explorer.html'),
+      read('mempool/index.html'),
     ];
     for (const p of pages) {
       assert.match(p, /<head>[\s\S]*theme\.js[\s\S]*<\/head>/);
@@ -62,15 +63,15 @@ describe('brand pages', () => {
       assert.match(p, /toggleShearNav/);
       assert.match(p, /nav-toggle/);
       assert.match(p, /id="shear-nav"/);
-      assert.match(p, /grid-template-columns:\s*auto 1fr auto/);
+      assert.match(p, /grid-template-columns:\s*1fr auto 1fr/);
       assert.match(p, /icon-moon/);
       assert.match(p, /icon-sun/);
       assert.equal(/OFFICIAL POOL/.test(p), false);
       assert.equal(/>SITE</.test(p), false);
       const nav = p.match(/id="shear-nav"[\s\S]*?<\/nav>/);
       assert.ok(nav, 'missing shear-nav');
-      const labels = [...nav[0].matchAll(/class="nav-btn"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
-      assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MINER', 'NODE', 'WALLET']);
+      const labels = [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
+      assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'MINER', 'NODE', 'WALLET']);
       assert.equal(/GNFP|gnfp|feeless/i.test(p), false);
       assert.match(p, /she is private/);
       assert.equal(/she is quiet/.test(p), false);
@@ -90,6 +91,7 @@ describe('brand pages', () => {
     assert.match(theme, /addEventListener\('change'/);
     assert.match(theme, /toggleShearNav/);
     assert.match(theme, /nav-open/);
+    assert.match(theme, /CustomEvent\('shear-theme'/);
     const pool = read('pool/public/index.html');
     assert.match(pool, /table-wrap/);
     assert.match(pool, /overflow-wrap:\s*anywhere/);
@@ -109,7 +111,22 @@ describe('brand pages', () => {
     const css = read('pool/public/brand/theme.css');
     assert.match(css, /html\[data-theme="dark"\]/);
     assert.match(css, /--banner:\s*#06141f/);
-    assert.match(css, /\.top-banner\s*\{\s*background:\s*var\(--banner\)/);
+    assert.match(css, /--gold:\s*#c48a00/);
+    assert.match(css, /--gold:\s*#ffd24a/);
+    assert.match(css, /html,\s*body\s*\{/);
+    assert.match(css, /font-size:\s*13px/);
+    assert.match(css, /a\.nav-btn\.is-on\s*\{\s*color:\s*var\(--gold\)/);
+    const siteHtml = read('site/index.html');
+    const poolHtml = read('pool/public/index.html');
+    const explorerHtml = read('pool/public/explorer.html');
+    const mempoolHtml = read('mempool/index.html');
+    assert.match(siteHtml, /class="nav-btn is-on"[^>]*>MAIN</);
+    assert.match(poolHtml, /class="nav-btn is-on"[^>]*>POOL</);
+    assert.match(explorerHtml, /class="nav-btn is-on"[^>]*>EXPLORER</);
+    assert.match(mempoolHtml, /class="nav-btn is-on"[^>]*>MEMPOOL</);
+    assert.match(css, /\.top-banner\s*\{[\s\S]*?background:\s*var\(--banner\)/);
+    assert.match(css, /grid-template-columns:\s*1fr auto 1fr/);
+    assert.match(css, /header\.top-banner\s*\{\s*grid-template-columns:\s*1fr auto/);
     assert.match(css, /input,\s*select,\s*button\s*\{\s*background:\s*var\(--input\)/);
     assert.match(css, /img\.theme-img-dark/);
     assert.match(css, /html:not\(\[data-theme="light"\]\) img\.theme-img-dark/);
@@ -123,6 +140,19 @@ describe('brand pages', () => {
     assert.match(theme, /aria-label/);
     assert.equal(fs.existsSync(path.join(root, 'pool/public/brand/05c-wordmark-nevia-light-transparent.png')), true);
     assert.equal(fs.existsSync(path.join(root, 'pool/public/brand/favicon-32.png')), true);
+    const mempool = read('mempool/index.html');
+    assert.match(mempool, /--lattice-bg:\s*#dce6f0/);
+    assert.match(mempool, /html\[data-theme="dark"\]\s*\{[\s\S]*--lattice-bg:\s*#050b18/);
+    assert.match(mempool, /function isDark\(/);
+    assert.match(mempool, /function palette\(/);
+    assert.match(mempool, /cssVar\('--lattice-bg'/);
+    assert.match(mempool, /--pick-bg/);
+    assert.match(mempool, /color:var\(--pick\)/);
+    assert.match(mempool, /background:var\(--pick-bg\)/);
+    assert.match(mempool, /addEventListener\('shear-theme'/);
+    assert.equal(/canvas\s*\{[^}]*background:#050b18/.test(mempool), false);
+    assert.equal(/\.eq\s*\{[^}]*color:#f0d27a/.test(mempool), false);
+    assert.equal(/#pick\s*\{[^}]*color:#4fd8e8/.test(mempool), false);
   });
 
   it('pages use Segoe UI like the GNFP sites, not Nevia or Urema', () => {

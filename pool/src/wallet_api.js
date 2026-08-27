@@ -1,6 +1,6 @@
 import { isDestAddress, isPaymentCode, isShearAddress, payoutDest } from '../../crypto/address.js';
-import { HASH_BONUS_NANOS, NANOS_PER_SHE, BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
-import { sealedExplorerRows, collateSamples } from '../../crypto/chronoflux.js';
+import { HASH_BONUS_NANOS, NANOS_PER_SHE, BLOCK_SUBSIDY_NANOS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { decodeHeader } from '../../crypto/header.js';
 
@@ -78,15 +78,19 @@ export function rollupDestTxs(txs, { revealDest = true } = {}) {
   return rest;
 }
 
-function rowsToHistory(rows, addresses) {
+function rowsToHistory(rows, addresses, tipHeight = 0) {
   const set = new Set((Array.isArray(addresses) ? addresses : [addresses]).map((a) => String(a || '').trim()));
   let spendableNanos = 0;
   const txs = [];
+  const tip = Number(tipHeight) || 0;
   for (const r of rows) {
     if (!set.has(r.to) && !set.has(r.from)) continue;
     const nanos = Number(r.nanos || 0);
-    if (set.has(r.from) && !set.has(r.to)) spendableNanos -= nanos;
-    else if (set.has(r.to)) spendableNanos += nanos;
+    const mature = isSpendableHeight(r.height, tip);
+    if (mature) {
+      if (set.has(r.from) && !set.has(r.to)) spendableNanos -= nanos;
+      else if (set.has(r.to)) spendableNanos += nanos;
+    }
     const pub = explorerRowPublic({
       ...r,
       memo: !!(r.memoCt || r.memo),
@@ -98,7 +102,9 @@ function rowsToHistory(rows, addresses) {
       to: r.to,
       amount: nanosToShe(nanos),
       height: r.height,
-      confirmed: r.confirmed !== false,
+      confirmed: mature,
+      confirmations: flowConfirmations(r.height, tip),
+      spendableAfter: SPENDABLE_CONFIRMATIONS,
       memo: pub.memo === true,
       memoCt: r.memoCt || undefined,
     });
@@ -135,7 +141,8 @@ export function reconstructOwner(store, address) {
       for (const r of sealedExplorerRows(b)) push(r);
     }
   }
-  return rowsToHistory(rows, dests);
+  const tipH = Number(store?.tip?.()?.height || (store.blocks || []).at(-1)?.height || 0);
+  return rowsToHistory(rows, dests, tipH);
 }
 
 export function pendingFor(miners, address) {
@@ -397,9 +404,62 @@ export function explorerCirculation(store) {
   };
 }
 
+export function mempoolLattice(store, limit = 24) {
+  const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  const tipB = (typeof store?.tip === 'function' ? store.tip() : null) || list[list.length - 1] || null;
+  let decoded = {};
+  try {
+    if (tipB?.header) decoded = decodeHeader(Buffer.from(tipB.header));
+  } catch { decoded = {}; }
+  const tip = {
+    height: Number(tipB?.height || 0),
+    hash: hex32(tipB?.hash),
+    timestamp: Number(decoded.timestamp || 0),
+    baseFee: Number(decoded.baseFee || 1),
+  };
+  const pending = (store?.mempool || []).map((m) => ({
+    id: String(m.id || ''),
+    kind: m.kind || 'send',
+    fee: Number(m.fee || 0),
+    amount: Number(m.amount) > 0 ? Number(m.amount) : nanosToShe(m.nanos),
+    to: publicDest(m.to),
+    prime: m.kind === 'b-spend' || m.kind === 'send',
+  })).filter((t) => t.id);
+  const n = Math.max(1, Math.min(48, Math.floor(Number(limit) || 24)));
+  const generations = [];
+  for (let i = list.length - 1; i >= 0 && generations.length < n; i -= 1) {
+    const b = list[i];
+    const rows = sealedExplorerRows(b) || [];
+    generations.push({
+      height: Number(b.height || 0),
+      hash: hex32(b.hash),
+      confirmations: flowConfirmations(b.height, tip.height),
+      spendable: isSpendableHeight(b.height, tip.height),
+      txs: rows.map((r) => ({
+        id: String(r.id || ''),
+        kind: r.kind || 'vout',
+        amount: nanosToShe(r.nanos),
+        to: publicDest(r.to),
+        prime: r.kind === 'transfer' || r.kind === 'b-spend' || r.kind === 'coinbase',
+      })),
+    });
+  }
+  return {
+    ok: true,
+    live: true,
+    spendableConfirmations: SPENDABLE_CONFIRMATIONS,
+    tip,
+    pending,
+    generations,
+  };
+}
+
 export function handleWalletApi(url, method, body, { store, miners, queueSend }) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
+  if ((path === '/api/mempool' || path === '/api/explorer/mempool') && verb === 'GET') {
+    return { status: 200, json: mempoolLattice(store) };
+  }
   if (path === '/api/wallet/balance' && verb === 'GET') {
     const address = url.searchParams.get('address') || '';
     if (!isDestAddress(address) && !isPaymentCode(address)) {

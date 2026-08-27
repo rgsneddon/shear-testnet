@@ -20,6 +20,8 @@ import {
   deposit,
   vote,
   withdraw,
+  creditFeeBank,
+  payoutStakeReward,
   canJoin,
   canVote,
   publicVaultView,
@@ -40,6 +42,28 @@ function destOf(id) {
 }
 
 describe('Reserve vault protocol', () => {
+  it('stake rewards pay fee bank first and mint only the gap', () => {
+    const state = emptyVault();
+    creditFeeBank(state, 10);
+    const paid = payoutStakeReward({ state, reward: 15, id: 'r1' });
+    assert.equal(paid.ok, true);
+    assert.equal(paid.fromFee, 10);
+    assert.equal(paid.minted, 5);
+    assert.equal(paid.feeBank, 0);
+    const twice = payoutStakeReward({ state, reward: 1, id: 'r1' });
+    assert.equal(twice.ok, false);
+    assert.equal(twice.reason, 'double_mint');
+    const wait = payoutStakeReward({ state, reward: 3, id: 'r2', gateOk: false });
+    assert.equal(wait.ok, false);
+    assert.equal(wait.reason, 'gate_wait');
+    const bank = emptyVault();
+    creditFeeBank(bank, 20);
+    const covered = payoutStakeReward({ state: bank, reward: 7, id: 'r3' });
+    assert.equal(covered.ok, true);
+    assert.equal(covered.fromFee, 7);
+    assert.equal(covered.minted, 0);
+  });
+
   it('extra mint is only shear-reserve-v1', () => {
     assert.equal(extraMintAllowed(RESERVE_PROGRAM), true);
     assert.equal(extraMintAllowed('other-dapp'), false);
@@ -141,7 +165,7 @@ describe('Reserve vault protocol', () => {
     assert.equal(pub.includes(bob.viewKey), false);
     assert.equal(pub.includes('shear1'), false);
     assert.equal(pub.includes('viewKey'), false);
-    assert.ok(a.startsWith('shp1'));
+    assert.ok(a.startsWith('ssa1'));
     const round = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
     assert.notEqual(a, round);
   });

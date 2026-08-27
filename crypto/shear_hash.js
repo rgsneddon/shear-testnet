@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export const PERSONAL = 'ShearHash-v1';
 export const ALGO = 'ShearHash';
-export const HEADER_LEN = 120;
+export const HEADER_LEN = 128;
 export const HASH_ROUNDS = 8;
 export const CLIENT = 'ShearHash';
 
@@ -10,7 +10,7 @@ export function sha256(buf) {
   return createHash('sha256').update(buf).digest();
 }
 
-/** 8-round ShearHash over the 120-byte header. */
+/** 8-round ShearHash over the packed header (128 bytes: + u64 base_fee). */
 export function shearHash(header) {
   const h = Buffer.isBuffer(header) ? header : Buffer.from(header);
   if (h.length !== HEADER_LEN) {

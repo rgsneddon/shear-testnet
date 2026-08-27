@@ -17,7 +17,7 @@ describe('C miner', () => {
     assert.equal(st.status, 0, st.stderr + st.stdout);
     assert.match(
       st.stdout,
-      /selftest ok 6e95b9033c5d044d08bbf854fb2e5343ca3103b96ae37bde101258d43cfacc63/,
+      /selftest ok 5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066/,
     );
     assert.match(st.stdout, /client=ShearHash/);
     assert.match(st.stdout, /algorithm=ShearHash/);
@@ -26,17 +26,25 @@ describe('C miner', () => {
     assert.equal(st.stdout.includes('1.0.6-max-autotune'), false);
     const sc = spawnSync(bin, ['--backend', 'scalar', '--selftest'], { encoding: 'utf8' });
     assert.equal(sc.status, 0, sc.stderr + sc.stdout);
-    assert.match(sc.stdout, /selftest ok 6e95b9033c5d044d08bbf854fb2e5343ca3103b96ae37bde101258d43cfacc63/);
+    assert.match(sc.stdout, /selftest ok 5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066/);
     assert.match(sc.stdout, /backend=scalar-x8/);
     const cfg = spawnSync(bin, ['--print-config'], { encoding: 'utf8' });
     assert.equal(cfg.status, 0, cfg.stderr);
     const j = JSON.parse(cfg.stdout);
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
-    assert.equal(j.version, '0.1.7');
+    assert.equal(j.version, '0.5');
+    assert.equal(j.version.split('.').length, 2);
+    assert.equal(j.version.includes('0.1.0'), false);
+    assert.equal(j.headerBytes * 2, 256);
+    assert.ok(j.headerBytes * 2 + 16 <= 128 * 2 + 16);
     assert.equal(j.pool, 'pool.shear.digital:1111');
     assert.equal(j.magic, 'shear-testnet-v1');
-    assert.equal(j.headerBytes, 120);
+    assert.equal(j.headerBytes, 128);
+    assert.match(
+      fs.readFileSync(path.join(root, 'src/shear_miner.c'), 'utf8'),
+      /HEX_CAP \(SHEAR_HEADER_LEN \* 2 \+ 16\)/,
+    );
     assert.equal(j.clientLogin, 'dual-fee');
     assert.equal(j.feePct, 5);
     assert.equal(j.feeDest, 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj');
@@ -70,9 +78,9 @@ describe('C miner', () => {
     assert.equal(/CFLAGS \+= -msha/.test(mk), false);
   });
 
-  it('admits --user she1 and shp1, refuses rest-frame shear1', () => {
+  it('admits --user she1 and ssa1, refuses rest-frame shear1', () => {
     const usage = spawnSync(bin, [], { encoding: 'utf8' });
-    assert.match(usage.stderr + usage.stdout, /shp1/);
+    assert.match(usage.stderr + usage.stdout, /ssa1/);
     assert.match(usage.stderr + usage.stdout, /she1/);
     const refuse = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'shear1abc.worker'], {
       encoding: 'utf8',
@@ -84,7 +92,7 @@ describe('C miner', () => {
       timeout: 2500,
     });
     assert.match(she.stderr + she.stdout, /connect failed/);
-    const shp = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'shp1test.worker'], {
+    const shp = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'ssa1test.worker'], {
       encoding: 'utf8',
       timeout: 2500,
     });

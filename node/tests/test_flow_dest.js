@@ -59,8 +59,8 @@ describe('flow dest coinbase', () => {
     assert.equal(rej.ok, false);
   });
 
-  it('verifyBlock accepts shp1 dest and still rejects shear1', () => {
-    const shp = encodeHrp('shp', Buffer.alloc(20, 9));
+  it('verifyBlock accepts ssa1 dest and still rejects shear1', () => {
+    const shp = encodeHrp('ssa', Buffer.alloc(20, 9));
     assert.equal(isDestAddress(shp), true);
     assert.equal(isShearAddress(shp), false);
     const tpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: shp, bits: 8, now: Date.now() });

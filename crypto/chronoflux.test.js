@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SAMPLE_PRUNE_CONFIRMATIONS,
+  SPENDABLE_CONFIRMATIONS,
+  isSpendableHeight,
   shouldPruneSamples,
   collateSamples,
   rollHashBundle,
@@ -29,6 +31,9 @@ describe('chronoflux prune + collate', () => {
 
   it('prunes sample bodies after 1000 confirmations and never drops sealed txs', () => {
     assert.equal(SAMPLE_PRUNE_CONFIRMATIONS, 1000);
+    assert.equal(SPENDABLE_CONFIRMATIONS, 1);
+    assert.equal(isSpendableHeight(100, 99), false);
+    assert.equal(isSpendableHeight(100, 100), true);
     assert.equal(shouldPruneSamples(1, 1001), true);
     assert.equal(shouldPruneSamples(2, 1001), false);
     assert.equal(shouldPruneSamples(1, 1000), false);
@@ -100,8 +105,8 @@ describe('chronoflux prune + collate', () => {
   });
 
   it('rolls a 9s hash bundle: N hashes become one row per miner, bonus still N units', () => {
-    const a = 'shp1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const b = 'shp1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const a = 'ssa1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const b = 'ssa1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const fat = [
       ...Array.from({ length: 3000 }, (_, i) => ({ miner: a, nonce: String(i), tag: 'a', count: 1 })),
       ...Array.from({ length: 2000 }, (_, i) => ({ miner: b, nonce: String(i), tag: 'b', count: 1 })),

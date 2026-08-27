@@ -70,7 +70,7 @@ export function flowDestAddress(args) {
 
 export function destEncodings(hash20) {
   const h = asBuf(hash20, 20);
-  return [encodeHrp('shp', h)];
+  return [encodeHrp('ssa', h)];
 }
 
 export function indexedDestHash({ spendHash20, closureCommit: C, index }) {
@@ -98,8 +98,8 @@ export function spendHashFromAddress(address) {
 }
 
 /**
- * Paid dest. Login already shp1 → pay as-is.
- * she1 silent ID → shp1 of the same 20 bytes (she1 string never on chain).
+ * Paid dest. Login already ssa1 → pay as-is.
+ * she1 silent ID → ssa1 of the same 20 bytes (she1 string never on chain).
  * Rest-frame shear1 requires independent C. No C-from-S.
  */
 export function destForLogin(login, { continuityRoot, height, viewKey, closureCommit: C } = {}) {

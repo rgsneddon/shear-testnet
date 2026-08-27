@@ -8,7 +8,7 @@ describe('ShearHash vector', () => {
     header[0] = 1;
     assert.equal(
       hashHex(shearHash(header)),
-      '6e95b9033c5d044d08bbf854fb2e5343ca3103b96ae37bde101258d43cfacc63',
+      '5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066',
     );
   });
 });

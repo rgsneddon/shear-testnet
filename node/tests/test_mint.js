@@ -9,7 +9,7 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { extraMintAllowed, extraMint, coinbaseSplit, coinbaseTx } from '../../crypto/mint.js';
 
 describe('header size', () => {
-  it('packs 120 bytes', () => {
+  it('packs 128 bytes', () => {
     const raw = encodeHeader({
       prevBlockHash: Buffer.alloc(32),
       merkleRoot: EMPTY_ROOT,
@@ -19,11 +19,11 @@ describe('header size', () => {
       nonce: 0n,
     });
     assert.equal(raw.length, HEADER_LEN);
-    assert.equal(HEADER_LEN, 120);
+    assert.equal(HEADER_LEN, 128);
   });
 });
 
-describe('coinbase: 0.1 SHE pot + per-hasher nanos', () => {
+describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
   it('pays each hasher, not only the finder', () => {
     const alice = newIdentity();
     const bob = newIdentity();
@@ -36,7 +36,7 @@ describe('coinbase: 0.1 SHE pot + per-hasher nanos', () => {
     const cb = coinbaseTx({ height: 3, miner: destA, samples });
     const split = coinbaseSplit(cb);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
-    assert.equal(split.potNanos, 10_000_000_000);
+    assert.equal(split.potNanos, 100_000_000_000);
     assert.equal(split.hashByMiner[destA], 4000 * HASH_BONUS_NANOS);
     assert.equal(split.hashByMiner[destB], 1000 * HASH_BONUS_NANOS);
     assert.equal(split.hashNanos, 5000 * HASH_BONUS_NANOS);
@@ -55,7 +55,7 @@ describe('coinbase: 0.1 SHE pot + per-hasher nanos', () => {
     const cb = coinbaseTx({ height: 3, miner: dest, samples: hashes });
     const split = coinbaseSplit(cb);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
-    assert.equal(split.potNanos, 10_000_000_000);
+    assert.equal(split.potNanos, 100_000_000_000);
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.equal(split.hashByMiner[dest], n * HASH_BONUS_NANOS);
     assert.equal(split.hashNanos, n * HASH_BONUS_NANOS);

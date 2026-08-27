@@ -60,6 +60,7 @@ describe('verifyBlock extra mint', () => {
     const reserveTx = {
       programId: RESERVE_PROGRAM,
       mint: true,
+      fee: 1,
       vin: [],
       vout: [{ address: vault, nanos: 7, kind: 'reserve' }],
     };

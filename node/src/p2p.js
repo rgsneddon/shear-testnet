@@ -1,8 +1,8 @@
 import net from 'node:net';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 
 export const P2P_PORT = 30303;
-export const P2P_UA = 'shear-node/0.1.0';
+export const P2P_UA = `shear-node/${PRODUCT_VERSION}`;
 
 export function encodeWireBlock(b) {
   return {

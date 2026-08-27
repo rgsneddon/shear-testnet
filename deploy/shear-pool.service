@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/shear
-Environment=SHEAR_DATA=/var/lib/shear/testnet
+Environment=SHEAR_DATA=/var/lib/shear/testnet-0.1
 Environment=SHEAR_STRATUM=1111
 Environment=SHEAR_HTTP=8088
 Environment=SHEAR_SHARE_BITS=8

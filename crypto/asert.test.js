@@ -24,24 +24,28 @@ import {
   MAGIC_TESTNET,
   MAGIC_TESTNET_V1,
   HASH_TX_LIVE,
+  SPENDABLE_CONFIRMATIONS,
+  MIN_CONFIRMS_POLICY,
+  PRODUCT_VERSION,
+  MINER_VERSION,
   consensusFingerprint,
   consensusLaw,
 } from './asert.js';
 
-describe('ASERT 9s block retarget', () => {
-  it('holds bits when the interval is 9 seconds', () => {
-    assert.equal(TARGET_BLOCK_INTERVAL_MS, 9_000);
+describe('ASERT 90s block retarget', () => {
+  it('holds bits when the interval is 90 seconds', () => {
+    assert.equal(TARGET_BLOCK_INTERVAL_MS, 90_000);
     assert.equal(nextBits(GENESIS_BITS, TARGET_BLOCK_INTERVAL_MS), GENESIS_BITS);
-    assert.equal(nextBits(21, 9_000), 21);
+    assert.equal(nextBits(21, 90_000), 21);
   });
 
-  it('raises bits when blocks arrive faster than 9s', () => {
-    const next = nextBits(21, 4_500);
+  it('raises bits when blocks arrive faster than 90s', () => {
+    const next = nextBits(21, 45_000);
     assert.ok(next > 21, `expected harden from 21, got ${next}`);
   });
 
-  it('lowers bits when blocks arrive slower than 9s', () => {
-    const next = nextBits(21, 18_000);
+  it('lowers bits when blocks arrive slower than 90s', () => {
+    const next = nextBits(21, 180_000);
     assert.ok(next < 21, `expected ease from 21, got ${next}`);
     assert.ok(next >= LIVE_MIN_BITS);
   });
@@ -55,7 +59,7 @@ describe('ASERT 9s block retarget', () => {
     assert.equal(nextBits(32, 250), 34);
     assert.ok(nextBits(36, 250) - 36 <= 2);
     assert.equal(nextBits(36, 1), 38);
-    assert.equal(nextBits(36, 9_000), 36);
+    assert.equal(nextBits(36, 90_000), 36);
     const parentTs = 1_700_000_000_000;
     const eased = bitsForBlock(36, parentTs, parentTs + 12 * 3600_000);
     assert.ok(eased < 36, `12h header delta must ease 36-bit freeze, got ${eased}`);
@@ -64,12 +68,12 @@ describe('ASERT 9s block retarget', () => {
 });
 
 describe('SHEAR 11-decimal protocol unit', () => {
-  it('pays 0.1 SHE per block and 0.00000000001 SHE per hash; public frame is eight digits', () => {
+  it('pays 1 SHE per block and 0.00000000001 SHE per hash; public frame is eight digits', () => {
     assert.equal(SHE_DECIMALS, 11);
     assert.equal(SHE_PUBLIC_DIGITS, 8);
     assert.equal(NANOS_PER_SHE, 100_000_000_000);
-    assert.equal(BLOCK_SUBSIDY_NANOS, 10_000_000_000);
-    assert.equal(BLOCK_SUBSIDY_NANOS / NANOS_PER_SHE, 0.1);
+    assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
+    assert.equal(BLOCK_SUBSIDY_NANOS / NANOS_PER_SHE, 1);
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.equal(HASH_BONUS_NANOS / NANOS_PER_SHE, 1e-11);
     assert.equal(HASH_BONUS_VOTE_DELTA_NANOS, 1);
@@ -87,10 +91,25 @@ describe('hash-tx consensus law', () => {
   it('bakes HASH_TX_LIVE=1 into the fingerprint; env cannot revert it', () => {
     process.env.HASH_TX_LIVE = '0';
     assert.equal(HASH_TX_LIVE, 1);
+    assert.equal(SPENDABLE_CONFIRMATIONS, 1);
+    assert.equal(MIN_CONFIRMS_POLICY, 12);
     const fp = consensusFingerprint();
+    assert.equal(fp.includes(':12:'), false);
     assert.match(fp, /^shear-book-law-1:shear-v1:/);
+    assert.match(fp, /:90000:/);
+    assert.match(fp, /:ssa:/);
+    assert.match(fp, /:100000000000:/);
+    assert.match(fp, /:1:1$/);
     assert.equal(fp.endsWith(':1'), true);
     const law = consensusLaw();
+    assert.equal(PRODUCT_VERSION, '0.1');
+    assert.equal(MINER_VERSION, '0.5');
+    assert.equal(PRODUCT_VERSION.split('.').length, 2);
+    assert.equal(MINER_VERSION.split('.').length, 2);
+    assert.equal(/^\d+\.\d+\.\d+$/.test(PRODUCT_VERSION), false);
+    assert.equal(/^\d+\.\d+\.\d+$/.test(MINER_VERSION), false);
+    assert.equal(law.productVersion, '0.1');
+    assert.equal(law.minerVersion, '0.5');
     assert.equal(law.hashTxLive, 1);
     assert.equal(law.hashTxCollate, 1);
     assert.equal(law.hashTxConfirmOnBlock, 1);

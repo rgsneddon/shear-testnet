@@ -9,7 +9,7 @@ import {
 } from 'node:crypto';
 
 export const HRP = 'shear';
-export const HRP_DEST = 'shp';
+export const HRP_DEST = 'ssa';
 export const HRP_PAY = 'she';
 
 const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
@@ -119,7 +119,7 @@ export function isDestAddress(s) {
   const t = String(s || '').trim();
   if (isShearAddress(t)) return false;
   if (bech32Hrp(t) === 'she') return false;
-  return bech32Hrp(t) === 'shp' && bech32BodyOk(t);
+  return bech32Hrp(t) === 'ssa' && bech32BodyOk(t);
 }
 
 /** Login identity: dest or silent ID, worker suffix stripped. */
@@ -133,7 +133,7 @@ export function isMineLogin(s) {
 }
 
 /**
- * On-chain payout dest. shp1 pays as-is. she1 pays shp1 of the same
+ * On-chain payout dest. ssa1 pays as-is. she1 pays ssa1 of the same
  * 20-byte payload so the silent ID never appears on chain. shear1 is not a dest.
  */
 export function payoutDest(login) {

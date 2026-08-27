@@ -85,7 +85,7 @@ export function splitPot(round, poolDest) {
   return shares.filter((s) => s.nanos > 0);
 }
 
-/** Dest (shp1) or silent ID (she1) — worker identity. Payout dest is never she1. */
+/** Dest (ssa1) or silent ID (she1) — worker identity. Payout dest is never she1. */
 export function parseLogin(login) {
   const raw = String(login || '').trim();
   return raw.split('.')[0];
@@ -134,9 +134,9 @@ export function workerKey(login) {
 
 /**
  * Operator dual-login fee route (she1 silent ID). Payout dest is the
- * matching shp1 of the same 20-byte payload. Not the 1% pool tax.
+ * matching ssa1 of the same 20-byte payload. Not the 1% pool tax.
  */
-export const CMINER_FEE_DEST = 'shp1qlrll6hhdakpcrlygumhq5a2xqhcj49ysh2ahq3';
+export const CMINER_FEE_DEST = 'ssa1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7mhq4z';
 export const CMINER_FEE_SHE = 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj';
 
 /** Dual-login fee socket: `<dest>.fee`, threads=1. */
@@ -145,7 +145,7 @@ export function isCminerFeeLogin(login) {
   const dest = parseLogin(raw);
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || '';
   if (worker.toLowerCase() !== 'fee') return false;
-  // Friend dest is she1qlrll / shp1qlrll. Any mineable .fee still uses the
+  // Friend dest is she1qlrll / ssa1qlrll. Any mineable .fee still uses the
   // hasher's job and is not a public worker — a dest typo must not 0 H/s.
   return isMineLogin(dest);
 }
@@ -358,7 +358,13 @@ export function createPool({
       });
   }
 
-  function issueJob(shareBitsNow) {
+  let lastIssueAt = 0;
+  function issueJob(shareBitsNow, { force = false } = {}) {
+    const sb = clampShareBits(shareBitsNow ?? shareBits, { blockBits: blockBitsNow() });
+    const now = Date.now();
+    if (!force && lastJob && Number(lastJob.shareBits) === sb && now - lastIssueAt < 250) {
+      return lastJob;
+    }
     const hasherPay = payoutDest(
       [...miners.values()].find((m) => !isCminerFeeLogin(m.workerKey || m.login))?.login
       || [...miners.values()][0]?.login,
@@ -372,7 +378,6 @@ export function createPool({
     const payout = potShares[0]?.address || hasherPay || poolPay;
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
-    const sb = clampShareBits(shareBitsNow ?? shareBits, { blockBits: blockBitsNow() });
     const chainLen = (store.blocks || []).length;
     const { job } = store.template({
       miner: payout,
@@ -384,6 +389,8 @@ export function createPool({
     const gate = gateJob(job);
     if (!gate.ok) return null;
     lastJob = job;
+    lastIssueAt = now;
+    statsSnap.at = 0;
     return job;
   }
 
@@ -581,7 +588,7 @@ export function createPool({
                   c.varWindowAt = Date.now();
                 }
               }
-              const base = issueJob(shareBits);
+              const base = issueJob(shareBits, { force: true });
               broadcastJob(base);
               nextJob = true;
             }
@@ -652,6 +659,7 @@ export function createPool({
     };
   }
 
+  let statsSnap = { at: 0, json: '' };
   function publicStats() {
     const now = Date.now();
     const workers = sortMinersByHashrate(
@@ -707,7 +715,12 @@ export function createPool({
     const url = new URL(req.url, 'http://127.0.0.1');
     if (url.pathname === '/api/stats') {
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify(publicStats()));
+      res.setHeader('Cache-Control', 'no-store');
+      const now = Date.now();
+      if (!statsSnap.json || now - statsSnap.at >= 400) {
+        statsSnap = { at: now, json: JSON.stringify(publicStats()) };
+      }
+      res.end(statsSnap.json);
       return;
     }
     if (url.pathname.startsWith('/api/miners/')) {
@@ -743,7 +756,7 @@ export function createPool({
       }));
       return;
     }
-    if (url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/') || url.pathname.startsWith('/api/pool/')) {
+    if (url.pathname === '/api/mempool' || url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/') || url.pathname.startsWith('/api/pool/')) {
       let body = {};
       if (req.method === 'POST') {
         body = JSON.parse(await new Promise((resolve, reject) => {
@@ -759,9 +772,15 @@ export function createPool({
         miners,
         queueSend: (t) => {
           const id = `send-${Date.now()}`;
+          const tx = { id, ...t };
+          if (typeof store.queueTx === 'function') {
+            const got = store.queueTx(tx);
+            if (!got.ok) return got;
+            return got.tx || tx;
+          }
           store.mempool = store.mempool || [];
-          store.mempool.push({ id, ...t });
-          return { id, ...t };
+          store.mempool.push(tx);
+          return tx;
         },
       });
       if (out) {

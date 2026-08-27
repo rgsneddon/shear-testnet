@@ -25,7 +25,7 @@ import { issueVorticeKey, parseVorticeKey, addVortice, RESERVE_VORTICE, JOIN_VOR
 import { extraMintAllowed, JOIN_PROGRAM } from './asert.js';
 
 describe('flow sheets', () => {
-  it('paid dest is sdcard1, needs password C, not C-from-S', () => {
+  it('paid dest is ssa1, needs password C, not C-from-S', () => {
     const alice = newIdentity();
     const bob = newIdentity();
     const salt = Buffer.alloc(16, 9);
@@ -37,7 +37,7 @@ describe('flow sheets', () => {
     const deg = degenerateDest(alice.address, { continuityRoot: root1, height: 3 });
     assert.equal(destForLogin(alice.address, { continuityRoot: root1, height: 3 }), null);
     assert.equal(isDestAddress(paid), true);
-    assert.equal(paid.startsWith('shp1'), true);
+    assert.equal(paid.startsWith('ssa1'), true);
     assert.equal(paid.startsWith('she1'), false);
     assert.equal(paid.startsWith('shear1'), false);
     assert.equal(isShearAddress(paid), false);
@@ -66,7 +66,7 @@ describe('flow sheets', () => {
     assert.equal(isDestAddress(alice.paymentCode), false);
     const shePay = destForLogin(alice.paymentCode, { closureCommit: C, height: 3 });
     assert.equal(isDestAddress(shePay), true);
-    assert.equal(shePay.startsWith('shp1'), true);
+    assert.equal(shePay.startsWith('ssa1'), true);
     assert.equal(shePay.startsWith('she1'), false);
     assert.notEqual(shePay, alice.paymentCode);
     assert.equal(isDestAddress(encodeAddress(spendHashFromAddress(alice.address))), false);
@@ -80,7 +80,7 @@ describe('flow sheets', () => {
     const d0 = destAtIndex(alice.address, { index: 0, closureCommit: C });
     const d1 = destAtIndex(alice.address, { index: 1, viewKey: alice.viewKey });
     const d2 = destAtIndex(alice.address, { index: 2, viewKey: alice.viewKey });
-    assert.equal(d0.startsWith('shp1'), true);
+    assert.equal(d0.startsWith('ssa1'), true);
     assert.equal(d0.startsWith('she1'), false);
     assert.equal(isDestAddress(d0), true);
     assert.notEqual(d0, alice.address);
@@ -91,7 +91,7 @@ describe('flow sheets', () => {
     assert.notEqual(destAtIndex(bob.address, { index: 0, viewKey: bob.viewKey }), d0);
     assert.notEqual(destAtIndex(alice.address, { index: 0, viewKey: bob.viewKey }), d0);
     const both = destEncodings(spendHashFromAddress(alice.address));
-    assert.equal(both.every((a) => a.startsWith('shp1')), true);
+    assert.equal(both.every((a) => a.startsWith('ssa1')), true);
     assert.equal(destAtIndex(alice.address, { index: -1, viewKey: alice.viewKey }), null);
     const s = spendHashFromAddress(alice.address);
     const p0 = paymentCodeAtIndex(alice.viewKey, s, 0);
@@ -106,7 +106,7 @@ describe('flow sheets', () => {
     const { privateKey: eph } = generateKeyPairSync('x25519');
     const silent = silentDestFromView(alice.viewKey, s, eph, 0);
     assert.equal(isDestAddress(silent), true);
-    assert.equal(silent.startsWith('shp1'), true);
+    assert.equal(silent.startsWith('ssa1'), true);
     assert.ok(p0.length < 50, p0);
     assert.notEqual(p0.slice(4), encodeAddress(s).slice(6));
   });
@@ -129,7 +129,7 @@ describe('flow sheets', () => {
     assert.deepEqual(destsForViewKey(bob.viewKey, alice.address, rounds, { ownerViewKey: alice.viewKey }), []);
   });
 
-  it('Reserve vault dest is stable sdcard1, not rest-frame, not round dest', () => {
+  it('Reserve vault dest is stable ssa1, not rest-frame, not round dest', () => {
     const id = newIdentity();
     const opts = { viewKey: id.viewKey, height: 1 };
     const vault = vaultDest(id.address, opts);

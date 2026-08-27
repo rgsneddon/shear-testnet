@@ -7,7 +7,7 @@
 const unsigned char SHEAR_SELFTEST_HEADER[SHEAR_HEADER_LEN] = {1, 0, 0, 0};
 
 const char SHEAR_SELFTEST_HASH[] =
-    "6e95b9033c5d044d08bbf854fb2e5343ca3103b96ae37bde101258d43cfacc63";
+    "5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066";
 
 void shear_hash_hex(const unsigned char hash[32], char hex[65]) {
   static const char *digits = "0123456789abcdef";

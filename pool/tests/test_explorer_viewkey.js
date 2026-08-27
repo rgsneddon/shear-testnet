@@ -47,6 +47,7 @@ describe('explorer dests', () => {
         from: dest,
         to: dest,
         nanos: 1,
+        fee: 8,
         vin: [{ address: dest }],
         vout: [{ address: dest, nanos: 1, memoCt: env }],
         memoCt: env,
@@ -54,7 +55,7 @@ describe('explorer dests', () => {
     });
     const got = store.append(mine(tpl));
     assert.equal(got.ok, true, got.reason);
-    assert.ok(got.block.txs[0].vout.every((o) => o.address.startsWith('shp1')));
+    assert.ok(got.block.txs[0].vout.every((o) => o.address.startsWith('ssa1')));
 
     const pub = get(store, '/api/explorer/history');
     assert.equal(pub.status, 200);
@@ -62,7 +63,7 @@ describe('explorer dests', () => {
     assert.ok(pub.json.txs.every((t) => t.kind === 'block'));
     assert.ok(pub.json.txs.every((t) => t.from === 'coinbase'));
     assert.ok(pub.json.txs.every((t) => t.asset === 'SHE'));
-    assert.ok(pub.json.txs.every((t) => !t.to || String(t.to).startsWith('shp1')));
+    assert.ok(pub.json.txs.every((t) => !t.to || String(t.to).startsWith('ssa1')));
     assert.ok(pub.json.txs.every((t) => typeof t.amount === 'number'));
     assert.ok(pub.json.txs.every((t) => t.memoCt == null && t.memoPlain == null));
     assert.ok(pub.json.txs.every((t) => t.id && t.amount != null && t.height != null));
@@ -101,6 +102,7 @@ describe('explorer dests', () => {
         from: dest,
         to: dest,
         nanos: 1,
+        fee: 8,
         vin: [{ address: dest }],
         vout: [{ address: dest, nanos: 1, memoCt: env }],
         memoCt: env,
@@ -179,9 +181,9 @@ describe('explorer dests', () => {
     assert.equal(new Set(ids).size, ids.length);
     const blob = JSON.stringify(recent);
     assert.equal(blob.includes('shear1'), false);
-    assert.equal(/she1[^1]/.test(blob.replace(/shp1/g, '')), false);
+    assert.equal(/she1[^1]/.test(blob.replace(/ssa1/g, '')), false);
     assert.ok(recent.every((t) => Number.isFinite(Number(t.at)) && Number(t.at) > 0));
-    assert.ok(recent.every((t) => !t.to || t.to.startsWith('shp1')));
+    assert.ok(recent.every((t) => !t.to || t.to.startsWith('ssa1')));
     const apiRecent = get(store, '/api/pool/recent-txs');
     assert.equal(apiRecent.status, 200);
     assert.deepEqual(apiRecent.json.txs.map((t) => t.id), recent.map((t) => t.id));
@@ -191,7 +193,7 @@ describe('explorer dests', () => {
     assert.match(detail.cli, /SHEAR CTF/);
     assert.match(detail.cli, /privacy audit/);
     assert.equal(detail.cli.includes('shear1'), false);
-    assert.equal(/she1[^p]/i.test(detail.cli.replace(/shp1/g, '')), false);
+    assert.equal(/she1[^p]/i.test(detail.cli.replace(/ssa1/g, '')), false);
     assert.equal(detail.cli.includes('do-not-leak'), false);
     const apiTx = get(store, `/api/explorer/tx?id=${hid}`);
     assert.equal(apiTx.status, 200);

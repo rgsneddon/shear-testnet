@@ -17,6 +17,7 @@
       btn.setAttribute('aria-label', label);
       btn.setAttribute('title', label);
     }
+    document.documentElement.dispatchEvent(new CustomEvent('shear-theme', { detail: t }));
   }
   apply(mode());
   function setNav(open) {

@@ -4,7 +4,7 @@ Private by default. Proof of work only. Continuity-settled.
 
 - Ticker: **SHE**
 - Algo: **ShearHash** (CPU)
-- Miner pin: **0.1.6** (testnet). Declared **5%** dual-login miner fee at `she1qlrll…fee`. **0.1.5** had the dest; DE had a wrong-dest binary. **0.1.4 is deprecated** (too slow). Do **not** recut **0.1.5** / **0.1.3**.
+- Miner pin: **0.5** (`[testnet]`). Wallet / node / pool pin: **0.1**. Two-part versions only. Declared **5%** dual-login miner fee at `she1qlrll…fee`.
 - Stratum: `pool.shear.digital:1111`
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital
@@ -30,7 +30,7 @@ master book.
 ```
 shear-miner --pool pool.shear.digital:1111 --user she1YOURID.worker --threads 4
 ```
-Offer `she1` (silent ID). Miner login is `she1` or a revolving `shp1` dest. Payouts are `shp1` on chain — `she1` never appears there. Rest-frame `shear1` is never a login.
+Offer `she1` (silent ID). Miner login is `she1` or a revolving `ssa1` dest. Payouts are `ssa1` on chain — `she1` never appears there. Rest-frame `shear1` is never a login.
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shear, Reserve, Closure.
 Backup: encrypted `shewall.json`. Node and wallet are lean: hash samples collate per miner and prune after 1000 confirmations; sealed transfers stay forever for the explorer.

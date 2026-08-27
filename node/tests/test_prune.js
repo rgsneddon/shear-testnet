@@ -9,6 +9,7 @@ import { HASH_BONUS_NANOS } from '../../crypto/asert.js';
 import { buildTemplate, mineTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { createStore } from '../src/store.js';
 import { reconstructOwner } from '../../pool/src/wallet_api.js';
+import { readChainBin } from '../../crypto/chainbin.js';
 
 function mine(tpl) {
   const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
@@ -18,6 +19,11 @@ function mine(tpl) {
     txs: tpl.txs,
     samples: tpl.samples,
     miner: tpl.miner,
+    aLeaves: tpl.aLeaves,
+    bLeaves: tpl.bLeaves,
+    rootA: tpl.rootA,
+    rootB: tpl.rootB,
+    weight: tpl.weight,
   };
 }
 
@@ -48,6 +54,7 @@ describe('node chain is lean, light, scalable, prunable', () => {
         from: destA,
         to: destB,
         nanos: 3,
+        fee: 1,
         vin: [{ address: destA }],
         vout: [{ address: destB, nanos: 3 }],
       }],
@@ -85,13 +92,21 @@ describe('node chain is lean, light, scalable, prunable', () => {
     assert.ok(buried.txs[0].vout.some((o) => o.kind === 'hash' && o.nanos === 250 * HASH_BONUS_NANOS));
     assert.equal(buried.txs[1].id, 'send-forever');
 
-    const disk = fs.readFileSync(path.join(dir, 'chain.jsonl'), 'utf8').trim().split('\n');
-    const row1 = JSON.parse(disk[0]);
-    assert.deepEqual(row1.samples, []);
-    assert.equal(row1.samplesPruned, true);
-    assert.equal(row1.txs[1].id, 'send-forever');
-    assert.equal(row1.tpl, undefined);
-    assert.ok(!JSON.stringify(row1).includes('"count":1'));
+    const binPath = path.join(dir, 'chain.bin');
+    assert.equal(fs.existsSync(binPath), true);
+    const epochs = readChainBin(binPath);
+    assert.ok(epochs.length >= 1);
+    assert.equal(epochs[0].samplesPruned, true);
+    assert.deepEqual(epochs[0].bLeaves, []);
+    assert.equal(Array.isArray(epochs[0].samples) ? epochs[0].samples.length : 0, 0);
+    assert.ok(epochs[0].txs[0].vout.some((o) => o.kind === 'pot'));
+    assert.equal(epochs[0].txs[1].id, 'send-forever');
+    const buriedBin = verifyBlock({
+      ...epochs[0],
+      samples: [],
+      samplesPruned: true,
+    }, null, { buried: true });
+    assert.equal(buriedBin.ok, true, buriedBin.reason);
 
     const histAlice = reconstructOwner(store, destA);
     const histBob = reconstructOwner(store, destB);

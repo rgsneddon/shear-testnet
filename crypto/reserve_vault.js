@@ -28,9 +28,57 @@ export function emptyVault() {
     programId: RESERVE_PROGRAM,
     epochStartMs: 0,
     totalLockedNanos: 0,
+    feeBankNanos: 0,
+    mintBankNanos: 0,
+    mintedIds: Object.create(null),
     portals: Object.create(null),
     votes: { increase: 0, decrease: 0, hold: 0 },
     oracle: emptyOracle(),
+  };
+}
+
+export function creditFeeBank(state, nanos) {
+  const n = Math.max(0, Math.floor(Number(nanos) || 0));
+  state.feeBankNanos = (state.feeBankNanos || 0) + n;
+  return state.feeBankNanos;
+}
+
+/** Stake rewards pay from the fee bank first; mint only the shortfall. */
+export function payoutStakeReward({
+  state,
+  reward = 0,
+  gateOk = true,
+  id = 'reward',
+} = {}) {
+  const vault = state || emptyVault();
+  vault.mintedIds = vault.mintedIds || Object.create(null);
+  if (!gateOk) return { ok: false, reason: 'gate_wait', paid: 0, minted: 0, feeBank: vault.feeBankNanos || 0 };
+  if (vault.mintedIds[id]) return { ok: false, reason: 'double_mint', paid: 0, minted: 0, feeBank: vault.feeBankNanos || 0 };
+  const need = Math.max(0, Math.floor(Number(reward) || 0));
+  const bank = Math.max(0, Math.floor(Number(vault.feeBankNanos) || 0));
+  const fromFee = Math.min(bank, need);
+  const gap = need - fromFee;
+  if (gap > 0) {
+    if (!extraMintAllowed(RESERVE_PROGRAM, {
+      feeFirst: true,
+      gateOk: true,
+      reward: need,
+      feeBank: bank,
+      amount: gap,
+    })) {
+      return { ok: false, reason: 'mint_forbidden', paid: 0, minted: 0, feeBank: bank };
+    }
+  }
+  vault.feeBankNanos = bank - fromFee;
+  vault.mintedIds[id] = true;
+  if (gap > 0) vault.mintBankNanos = (vault.mintBankNanos || 0) + gap;
+  return {
+    ok: true,
+    paid: need,
+    fromFee,
+    minted: gap,
+    feeBank: vault.feeBankNanos,
+    id,
   };
 }
 
@@ -243,6 +291,10 @@ function txKind(tx) {
 export function applyReserveBlock({ state, block, nowMs }) {
   const txs = Array.isArray(block?.txs) ? block.txs : [];
   const results = [];
+  const cb = txs.find((t) => t?.coinbase) || txs[0];
+  for (const o of cb?.vout || []) {
+    if (o?.kind === 'reserve-fee') creditFeeBank(state, o.nanos);
+  }
   for (const tx of txs) {
     if (!tx || tx.coinbase) continue;
     if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;

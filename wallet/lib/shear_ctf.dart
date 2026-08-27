@@ -16,7 +16,7 @@ Uint8List ctfEmptyRoot() {
   return Uint8List.fromList(sha256.convert(utf8.encode('shear-empty-root-v1')).bytes);
 }
 
-/// continuity_root at header offset 68 (120-byte Shear header).
+/// continuity_root at header offset 68 (128-byte Shear header + base_fee).
 Uint8List lag1ContinuityFromHeader(Uint8List header) {
   if (header.length < 100) return ctfEmptyRoot();
   return Uint8List.fromList(header.sublist(68, 100));
@@ -24,12 +24,12 @@ Uint8List lag1ContinuityFromHeader(Uint8List header) {
 
 Uint8List? headerFromHex(String hex) {
   final s = hex.trim();
-  if (s.length < 240) return null;
+  if (s.length < 256) return null;
   final out = Uint8List(s.length ~/ 2);
   for (var i = 0; i < out.length; i++) {
     out[i] = int.parse(s.substring(i * 2, i * 2 + 2), radix: 16);
   }
-  return out.length >= 120 ? out.sublist(0, 120) : out;
+  return out.length >= 128 ? out.sublist(0, 128) : out;
 }
 
 Uint8List _sha(List<int> a, [List<int>? b, List<int>? c, List<int>? d]) {
@@ -70,7 +70,7 @@ Uint8List flowDestHash({
 }
 
 List<String> destEncodings(Uint8List hash20) => [
-      encodeHrp('shp', hash20),
+      encodeHrp('ssa', hash20),
     ];
 
 Uint8List _u64le(int n) {

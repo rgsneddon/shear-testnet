@@ -65,7 +65,7 @@ String ctfTranscript({
   if (destAtOne != null && destAtOne != destAtHeight) {
     buf.writeln('destForLogin(h=1)       $destAtOne');
   }
-  buf.writeln('shp1 dest   ${chainDest ?? tx.to}');
+  buf.writeln('ssa1 dest   ${chainDest ?? tx.to}');
   buf.writeln('match       ${matched ? 'YES' : 'NO'}  destForLogin opens tx.to');
   if (tx.kind == 'blockfound' || tx.kind == 'mine') {
     buf.writeln('-- 1HASH=1TX threads --');
@@ -76,13 +76,13 @@ String ctfTranscript({
   }
   buf.writeln('-- spendable credit --');
   if (receive && tx.kind != 'send') {
-    buf.writeln('credited    ${formatShe(tx.amount)} SHE onto shp1 dest');
+    buf.writeln('credited    ${formatShe(tx.amount)} SHE onto ssa1 dest');
   } else {
-    buf.writeln('debited     ${formatShe(tx.amount)} SHE from shp1 ${tx.from}');
+    buf.writeln('debited     ${formatShe(tx.amount)} SHE from ssa1 ${tx.from}');
   }
   buf.writeln('spendable   ${formatShe(spendableAfter)} SHE  (Continuum)');
   buf.writeln(
-    'conclusion  CTF opened shp1 with view-key closure C; '
+    'conclusion  CTF opened ssa1 with view-key closure C; '
     'coins land spendable after confirm. shear1 stays off-chain.',
   );
   buf.writeln('========');

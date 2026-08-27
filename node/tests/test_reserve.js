@@ -53,6 +53,7 @@ describe('node Reserve vault', () => {
     const store = createStore(dir);
     const t0 = 1_700_000_000_000;
     const lock = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-1' });
+    lock.fee = 8;
     const b1 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -84,6 +85,7 @@ describe('node Reserve vault', () => {
       nanos: preview.payout,
       id: 'wd-1',
     });
+    wd.fee = 8;
     const tip = store.tip();
     const b2 = mine(buildTemplate({
       prev: tip.hash,

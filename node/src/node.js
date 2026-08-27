@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { MAGIC_TESTNET, GENESIS_BITS } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, GENESIS_BITS, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { CLIENT, ALGO, HEADER_LEN } from '../../crypto/shear_hash.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_DAYS, RESERVE_JOIN_CUTOFF_DAYS, JOIN_PROGRAM, JOIN_WINDOW_DAYS } from '../../crypto/asert.js';
 import { extraMintAllowed } from '../../crypto/mint.js';
@@ -13,7 +13,7 @@ import { createStore } from './store.js';
 import { createP2p, P2P_PORT } from './p2p.js';
 import { mintVorticeDeployKey, parseVorticeKey, VORTICE_KEY_PREFIX } from '../../crypto/vortex.js';
 
-const VERSION = '0.1.0';
+const VERSION = PRODUCT_VERSION;
 
 export function printConfig() {
   return {

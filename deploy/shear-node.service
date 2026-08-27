@@ -5,7 +5,7 @@ After=network.target shear-pool.service
 [Service]
 Type=simple
 WorkingDirectory=/opt/shear
-Environment=SHEAR_DATA=/var/lib/shear/node-2
+Environment=SHEAR_DATA=/var/lib/shear/node-0.1
 Environment=SHEAR_P2P_PORT=30304
 Environment=SHEAR_P2P_BIND=0.0.0.0
 Environment=SHEAR_SEEDS=127.0.0.1:30303

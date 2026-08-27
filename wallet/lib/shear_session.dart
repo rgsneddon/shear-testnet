@@ -1,11 +1,14 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
 import 'shear_vortex.dart';
+import 'shear_shewall.dart';
+export 'shear_shewall.dart' show shewallName;
 
 class ShearSession {
   ShearSession({File? store}) : store = store ?? defaultStore();
@@ -62,47 +65,68 @@ class ShearSession {
   }
 }
 
-const shewallName = 'shewall.json';
+Uint8List _hexBytes(String hex) {
+  final s = hex.trim();
+  final out = Uint8List(s.length ~/ 2);
+  for (var i = 0; i < out.length; i++) {
+    out[i] = int.parse(s.substring(i * 2, i * 2 + 2), radix: 16);
+  }
+  return out;
+}
 
-Map<String, dynamic> exportShewall({
+Uint8List exportShewall({
   required ShearIdentity identity,
   required ShearLedger ledger,
 }) {
   ledger.prune();
-  return {
-    'kind': 'shear-shewall-v1',
-    'network': 'shear-testnet-v1',
-    'file': shewallName,
-    ...identity.toJson(),
-    'spendable': ledger.spendable(identity.address),
-    'pending': ledger.pending(identity.address),
-    'destCount': ledger.destCount,
-    'destIndex': ledger.destIndex,
-    'txs': ledger.transactions.map((t) => t.toJson()).toList(),
-  };
+  final dest20 = hash20FromAddress(identity.address) ?? Uint8List(20);
+  return packShewall(
+    seed32: _hexBytes(identity.seedHex),
+    dest20: dest20,
+    spendableNanos: (ledger.spendable(identity.address) * kUnitsPerShe).round(),
+    pendingNanos: (ledger.pending(identity.address) * kUnitsPerShe).round(),
+  );
 }
 
-ShearIdentity importShewall(Map<String, dynamic> dump, ShearLedger ledger) {
-  final id = ShearIdentity.fromJson(dump);
+ShearIdentity importShewall(Uint8List packed, ShearLedger ledger) {
+  final u = unpackShewall(packed);
+  final id = createIdentity(u['seed32']!);
+  final spend = shewallU64(u['spendableNanos']!) / kUnitsPerShe;
+  final pend = shewallU64(u['pendingNanos']!) / kUnitsPerShe;
   ledger.replaceFromBackup(
     address: id.address,
-    spendable: (dump['spendable'] as num?)?.toDouble() ?? 0,
-    pending: (dump['pending'] as num?)?.toDouble() ?? 0,
-    destCount: (dump['destCount'] as num?)?.toInt(),
-    destIndex: (dump['destIndex'] as num?)?.toInt(),
-    txs: ((dump['txs'] as List?) ?? const [])
-        .map((e) => ShearTx.fromJson(Map<String, dynamic>.from(e as Map)))
-        .toList(),
+    spendable: spend,
+    pending: pend,
+    txs: spend > 0
+        ? [
+            ShearTx(
+              id: 'shewall-restore',
+              from: 'backup',
+              to: id.address,
+              amount: spend,
+              kind: 'coinbase',
+              height: 1,
+              confirmed: true,
+            ),
+          ]
+        : const [],
   );
   return id;
 }
 
-Future<File> writeShewallFile(File dest, Map<String, dynamic> dump) async {
+Future<File> writeShewallFile(File dest, Uint8List sealed) async {
   dest.parent.createSync(recursive: true);
-  dest.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(dump));
+  if (sealed.isNotEmpty && sealed[0] == 0x7b) {
+    throw const FormatException('json_refused');
+  }
+  dest.writeAsBytesSync(sealed);
   return dest;
 }
 
-Map<String, dynamic> readShewallFile(File src) {
-  return jsonDecode(src.readAsStringSync()) as Map<String, dynamic>;
+Uint8List readShewallFile(File src) {
+  final raw = src.readAsBytesSync();
+  if (raw.isNotEmpty && raw[0] == 0x7b) {
+    throw const FormatException('json_refused');
+  }
+  return raw;
 }
