@@ -545,7 +545,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         Text('Pending', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
         Text(
           pending.any((t) => t.kind == 'receive' || t.kind == 'coinbase')
-              ? 'Incoming fills a 6-slice pie as blocks confirm (spendable at 6).'
+              ? 'Incoming fills a 6-slice pie as blocks confirm (spendable at ${ShearLedger.spendableConfirmations}).'
               : 'Until the next block is found.',
           style: TextStyle(color: shearMutedOf(context)),
         ),

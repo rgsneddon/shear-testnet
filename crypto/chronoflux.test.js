@@ -31,10 +31,10 @@ describe('chronoflux prune + collate', () => {
 
   it('prunes sample bodies after 1000 confirmations and never drops sealed txs', () => {
     assert.equal(SAMPLE_PRUNE_CONFIRMATIONS, 1000);
-    assert.equal(SPENDABLE_CONFIRMATIONS, 6);
+    assert.equal(SPENDABLE_CONFIRMATIONS, 1);
     assert.equal(isSpendableHeight(100, 99), false);
-    assert.equal(isSpendableHeight(100, 100), false);
-    assert.equal(isSpendableHeight(100, 104), false);
+    assert.equal(isSpendableHeight(100, 100), true);
+    assert.equal(isSpendableHeight(100, 104), true);
     assert.equal(isSpendableHeight(100, 105), true);
     assert.equal(shouldPruneSamples(1, 1001), true);
     assert.equal(shouldPruneSamples(2, 1001), false);

@@ -304,16 +304,12 @@ void main() {
     expect(fresh.pending(dest), closeTo(0.2 + 5 * kHashBonusShe, 1e-18));
   });
 
-  test('consensus spendable at 6 confirmations; min_confirms 12 is third-party policy', () {
-    expect(ShearLedger.spendableConfirmations, 6);
+  test('consensus spendable at 1 confirmation; min_confirms 12 is third-party policy', () {
+    expect(ShearLedger.spendableConfirmations, 1);
     expect(ShearLedger.minConfirms, 12);
     final id = createIdentity();
     final ledger = ShearLedger();
     ledger.confirmRound(address: id.address, pot: 1, height: 1);
-    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
-    ledger.settleTo(5);
-    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
-    ledger.settleTo(6);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 1);
     expect(ledger.policyAvailable(id.address, paymentCode: id.paymentCode), 0);
     ledger.settleTo(12);
@@ -742,7 +738,7 @@ void main() {
     expect(confirmSlicesFilled(9), 6);
   });
 
-  testWidgets('incoming pie fills then that row evaporates at 6 confs; leftover pendings continue', (tester) async {
+  testWidgets('incoming pie evaporates at spendable confs; leftover pendings continue', (tester) async {
     final dir = Directory.systemTemp.createTempSync('shear-pie-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await session.loadOrCreate();
@@ -752,9 +748,6 @@ void main() {
     final peer = createIdentity();
     final from = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
     ledger.creditReceive(to: dest, amount: 0.4, from: from, id: 'in-early');
-    ledger.confirmRound(address: ident.address, pot: 0, height: 1);
-    ledger.creditReceive(to: dest, amount: 0.2, from: from, id: 'in-late');
-    ledger.confirmRound(address: ident.address, pot: 0, height: 3);
     await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger));
     await tester.pump();
     await tester.enterText(find.byType(TextField), 'pw');
@@ -763,17 +756,16 @@ void main() {
     await tester.pump();
     expect(find.text('Pending'), findsOneWidget);
     expect(find.byKey(const Key('confirm-pie-in-early')), findsOneWidget);
-    expect(find.byKey(const Key('confirm-pie-in-late')), findsOneWidget);
-    expect(tester.widget<ConfirmPie>(find.byKey(const Key('confirm-pie-in-early'))).slices, 3);
-    expect(tester.widget<ConfirmPie>(find.byKey(const Key('confirm-pie-in-late'))).slices, 1);
-    ledger.settleTo(6);
+    ledger.confirmRound(address: ident.address, pot: 0, height: 1);
     await tester.tap(find.text('Continuum'));
     await tester.pump();
     expect(find.byKey(const Key('confirm-pie-in-early')), findsNothing);
+    ledger.creditReceive(to: dest, amount: 0.2, from: from, id: 'in-late');
+    await tester.tap(find.text('Continuum'));
+    await tester.pump();
     expect(find.text('Pending'), findsOneWidget);
     expect(find.byKey(const Key('confirm-pie-in-late')), findsOneWidget);
-    expect(tester.widget<ConfirmPie>(find.byKey(const Key('confirm-pie-in-late'))).slices, 4);
-    ledger.settleTo(8);
+    ledger.confirmRound(address: ident.address, pot: 0, height: 2);
     await tester.tap(find.text('Continuum'));
     await tester.pump();
     expect(find.byKey(const Key('confirm-pie-in-late')), findsNothing);

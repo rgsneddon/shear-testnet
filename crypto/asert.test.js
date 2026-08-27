@@ -91,7 +91,7 @@ describe('hash-tx consensus law', () => {
   it('bakes HASH_TX_LIVE=1 into the fingerprint; env cannot revert it', () => {
     process.env.HASH_TX_LIVE = '0';
     assert.equal(HASH_TX_LIVE, 1);
-    assert.equal(SPENDABLE_CONFIRMATIONS, 6);
+    assert.equal(SPENDABLE_CONFIRMATIONS, 1);
     assert.equal(MIN_CONFIRMS_POLICY, 12);
     const fp = consensusFingerprint();
     assert.equal(fp.includes(':12:'), false);
@@ -99,7 +99,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /:90000:/);
     assert.match(fp, /:ssa:/);
     assert.match(fp, /:100000000000:/);
-    assert.match(fp, /:6:1$/);
+    assert.match(fp, /:1:1$/);
     assert.equal(fp.endsWith(':1'), true);
     const law = consensusLaw();
     assert.equal(PRODUCT_VERSION, '0.1');

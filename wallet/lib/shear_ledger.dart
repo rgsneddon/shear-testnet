@@ -129,8 +129,8 @@ class ShearLedger {
 
   /// Last height Continuum already settled into spendable.
   int get settledHeight => _settledHeight;
-  /// Consensus floor: 6 confirmations (~9 min at 90 s).
-  static const spendableConfirmations = 6;
+  /// Consensus floor: 1 confirmation.
+  static const spendableConfirmations = 1;
   /// Third-party/merchant policy (~18 min). Not consensus.
   static const minConfirms = 12;
   final List<({String dest, double amount, int height})> _immature = [];
@@ -295,7 +295,7 @@ class ShearLedger {
     return t - height + 1;
   }
 
-  /// Policy available (default 12 confs). Consensus spendable is 6 confs.
+  /// Policy available (default 12 confs). Consensus spendable is 1 conf.
   double policyAvailable(String address, {int? confirms, String? paymentCode}) {
     final need = confirms ?? minConfirms;
     final keys = ownedAddresses(address, paymentCode: paymentCode);
