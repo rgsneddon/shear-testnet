@@ -29,7 +29,7 @@ export function flowConfirmations(blockHeight, tipHeight) {
   return tip - h + 1;
 }
 
-/** Consensus spendable at 1 confirmation (the committing block is accepted). */
+/** Consensus spendable after 6 confirmations (the minimum). */
 export function isSpendableHeight(blockHeight, tipHeight, need = SPENDABLE_CONFIRMATIONS) {
   const n = Math.max(1, Math.floor(Number(need) || SPENDABLE_CONFIRMATIONS));
   return flowConfirmations(blockHeight, tipHeight) >= n;

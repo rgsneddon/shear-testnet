@@ -42,7 +42,7 @@ Work of a block: `2^256 / (target + 1)`. Heaviest valid chain wins. Equal work k
 
 Scale (90 s, opt-in B + prune): see [scale.md](scale.md). Tree A is O(miners) per block, not O(hashes). After 1000 confirmations, sample/B bodies drop; sealed vouts and pot remain. At ~10 MH/s that is still GB-class disk for headers + collated A-leaves + sealed txs, not one JSON object per hash.
 
-Consensus spendable is **1 confirmation** (the committing block is accepted). `min_confirms` default **12** is wallet/merchant policy only (~18 min at 90 s), not a consensus floor. B-spends wait for the committing block, then the same policy. 0-conf is merchant policy.
+Consensus spendable is **6 confirmations** (the minimum; ~9 min at 90 s). That depth is in `consensusFingerprint()`. `min_confirms` default **12** is third-party/merchant policy only (~18 min), not a consensus floor. B-spends wait for the same 6-conf consensus depth. 0-conf is merchant policy.
 
 ## Addresses
 

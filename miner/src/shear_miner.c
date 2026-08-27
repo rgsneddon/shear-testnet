@@ -337,8 +337,9 @@ static int json_int(const char *json, const char *key, int *out) {
 static void identity_json(char *out, size_t cap, const char *login, int threads) {
   snprintf(out, cap,
            "\"login\":\"%s\",\"threads\":%d,\"cpuCores\":%d,\"cpuThreads\":%d,"
-           "\"client\":\"%s\",\"version\":\"%s\",\"algorithm\":\"%s\"",
-           login, threads, g_cpu_cores, g_cpu_threads, SHEAR_CLIENT, SHEAR_VERSION, SHEAR_ALGO);
+           "\"name\":\"%s\",\"client\":\"%s\",\"version\":\"%s\",\"algorithm\":\"%s\"",
+           login, threads, g_cpu_cores, g_cpu_threads,
+           SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_VERSION, SHEAR_ALGO);
 }
 
 static int send_login(Conn *c, const char *login, int threads) {
@@ -608,11 +609,11 @@ static void fmt_hashrate(double hs, char *buf, size_t n) {
 }
 
 static void print_config(void) {
-  printf("{\"client\":\"%s\",\"algorithm\":\"%s\",\"version\":\"%s\","
+  printf("{\"name\":\"%s\",\"client\":\"%s\",\"algorithm\":\"%s\",\"version\":\"%s\","
          "\"clientLogin\":\"dual-fee\",\"feePct\":%d,\"feeDest\":\"%s\","
          "\"pool\":\"%s:%d\",\"headerBytes\":%d,\"magic\":\"shear-testnet-v1\","
          "\"threads\":%d,\"backend\":\"%s\"}\n",
-         SHEAR_CLIENT, SHEAR_ALGO, SHEAR_VERSION, FEE_PCT, FEE_DEST,
+         SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_ALGO, SHEAR_VERSION, FEE_PCT, FEE_DEST,
          g_host, g_port, SHEAR_HEADER_LEN, g_threads, shear_hash_backend());
 }
 

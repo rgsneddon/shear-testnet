@@ -114,7 +114,10 @@ describe('verifyBlock B-spend uses the committing header', () => {
       txs: [spendTx],
     }));
     const spent = new Set();
-    const ok = verifyBlock(sealed, commitBlock, { tipHeight: 2, spentB: spent });
+    const tooSoon = verifyBlock(sealed, commitBlock, { tipHeight: 2, spentB: new Set() });
+    assert.equal(tooSoon.ok, false);
+    assert.equal(tooSoon.reason, 'immature');
+    const ok = verifyBlock(sealed, commitBlock, { tipHeight: 6, spentB: spent });
     assert.equal(ok.ok, true, ok.reason);
 
     const laterBits = bitsForBlock(
@@ -122,7 +125,7 @@ describe('verifyBlock B-spend uses the committing header', () => {
       decodeHeader(sealed.header).timestamp,
       t1 + 90_000,
     );
-    const sealedOk = verifyBlock(sealed, commitBlock, { tipHeight: 2 });
+    const sealedOk = verifyBlock(sealed, commitBlock, { tipHeight: 6 });
     const sealedBlock = { ...sealed, hash: sealedOk.hash, height: 2, weight: sealed.weight };
     const twice = mine(buildTemplate({
       prev: sealedBlock.hash,
@@ -136,7 +139,7 @@ describe('verifyBlock B-spend uses the committing header', () => {
       samples: [{ miner: dest, nonce: '3', tag: 'a', count: 1 }],
       txs: [spendTx],
     }));
-    const dup = verifyBlock(twice, sealedBlock, { tipHeight: 3, spentB: spent });
+    const dup = verifyBlock(twice, sealedBlock, { tipHeight: 6, spentB: spent });
     assert.equal(dup.ok, false);
     assert.equal(dup.reason, 'double_open');
   });

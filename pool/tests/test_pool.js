@@ -161,7 +161,7 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.targetBlockIntervalMs, TARGET_BLOCK_INTERVAL_MS);
     assert.equal(stats.targetBlockIntervalMs, 90_000);
     assert.equal(stats.destHrp, 'ssa');
-    assert.equal(stats.spendableConfirmations, 1);
+    assert.equal(stats.spendableConfirmations, 6);
     assert.equal(stats.minConfirmsPolicy, 12);
     assert.equal(stats.productVersion, '0.1');
     assert.equal(stats.minerVersion, '0.5');
@@ -176,7 +176,7 @@ describe('pool dashboard + stratum', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: dest + '.rig', client: 'ShearHash', threads: 1 },
+          params: { login: dest + '.rig', client: 'ShearHash', name: 'shear-miner', version: '0.5', threads: 1 },
         }) + '\n');
       });
       let buf = '';
@@ -212,6 +212,9 @@ describe('pool dashboard + stratum', () => {
       setTimeout(() => reject(new Error('timeout')), 20000);
     });
     assert.match(scored, /OK/);
+    const named = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+    assert.ok((named.workers || []).some((w) => w.name === 'shear-miner' && w.version === '0.5'));
+    assert.match(html, /w\.name/);
     pool.close();
   });
 

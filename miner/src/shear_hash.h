@@ -9,6 +9,7 @@
 #define SHEAR_PERSONAL "ShearHash-v1"
 #define SHEAR_ALGO "ShearHash"
 #define SHEAR_CLIENT "ShearHash"
+#define SHEAR_MINER_NAME "shear-miner"
 #define SHEAR_VERSION "0.5"
 #define SHEAR_X8 8
 

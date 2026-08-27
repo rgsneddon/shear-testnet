@@ -184,7 +184,7 @@
         <section class="card">
           <div class="label">Axes</div>
           <p>Vertical <span class="eq">n</span>: generations from tip down. Radial <span class="eq">r = ln(1+n)</span>. Angular <span class="eq">θ</span>: order in the generation.</p>
-          <p>Consensus spendable at <strong>1 confirmation</strong>. Wallet/merchant <span class="eq">min_confirms</span> default 12.</p>
+          <p>Consensus spendable at <strong>6 confirmations</strong> (minimum). Third-party <span class="eq">min_confirms</span> default 12.</p>
         </section>
       </div>
       <div class="col mid">
@@ -205,7 +205,7 @@
           <div class="label">Live book</div>
           <p>Tip height <span class="eq" id="h-tip">—</span></p>
           <p>Pending <span class="eq" id="h-pend">0</span> · Base fee <span class="eq" id="h-fee">1</span></p>
-          <p>Mature depth <span class="eq">1 conf</span> · policy <span class="eq">12</span></p>
+          <p>Mature depth <span class="eq">6 conf</span> · policy <span class="eq">12</span></p>
           <pre id="pick">select a node</pre>
         </section>
         <section class="card">
@@ -214,7 +214,7 @@
             <li>Tip forms the backbone on a logarithmic spiral.</li>
             <li>Each sealed height emits σ-flow descendants in the next generation.</li>
             <li>Structure densifies and is less recoverable at depth.</li>
-            <li>Credits are consensus-spendable at 1 confirmation; min_confirms 12 is wallet policy.</li>
+            <li>Credits are consensus-spendable at 6 confirmations; min_confirms 12 is third-party policy.</li>
           </ul>
         </section>
       </div>
@@ -499,7 +499,7 @@
       document.getElementById('h-pend').textContent = String((data.pending || []).length);
       document.getElementById('h-fee').textContent = String(data.tip?.baseFee ?? 1);
       const pulse = document.getElementById('pulse');
-      pulse.textContent = data.live ? 'live · tip down · 1 conf spendable · policy 12' : 'node paused · demo lattice from tip';
+      pulse.textContent = data.live ? 'live · tip down · 6 conf spendable · policy 12' : 'node paused · demo lattice from tip';
       pulse.className = data.live ? '' : 'stale';
     }
 

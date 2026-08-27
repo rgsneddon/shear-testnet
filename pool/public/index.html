@@ -169,7 +169,7 @@
         <thead>
           <tr>
             <th>Miner</th>
-            <th>Version</th>
+            <th>Client</th>
             <th>Hashrate</th>
             <th>Blocks found</th>
             <th>Accepted work</th>
@@ -280,7 +280,7 @@
         const tag = String(w.miner || '');
         const href = '/miner/' + encodeURIComponent(tag);
         return '<tr><td><a href="' + href + '">' + tag + '</a></td><td>' +
-          (w.version || '—') + '</td><td>' + fmtRate(w.hashrate) + '</td><td>' +
+          ([w.name, w.version].filter(Boolean).join(' ') || '—') + '</td><td>' + fmtRate(w.hashrate) + '</td><td>' +
           (Number(w.blocks) || 0) + '</td><td>' + (w.accepted || 0) + '</td><td>' +
           (w.stale || 0) + '</td><td>' + (w.threads || 0) + '</td><td>' +
           (w.roundHashes || 0) + '</td></tr>';

@@ -17,6 +17,7 @@ import 'shear_ctf_cli.dart';
 import 'shear_vortex.dart';
 import 'shear_reserve.dart';
 import 'shear_join.dart';
+import 'shear_confirm_pie.dart';
 
 const kWalletVersion = '0.1';
 const kTabs = [
@@ -194,6 +195,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         var pay = ledger.currentDest(id!.address);
         if (ledger.spendable(pay) <= 0) {
           final minted = ledger.confirmRound(address: id!.address, pot: 1, height: 1);
+          ledger.settleTo(ShearLedger.spendableConfirmations);
           _ingestTx(id!, minted);
         }
       }
@@ -267,6 +269,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       pot: 1,
       height: ledger.sealedHeight + 1,
     );
+    ledger.settleTo(ledger.sealedHeight + ShearLedger.spendableConfirmations - 1);
     _ingestTx(ident, minted);
     _ingestHistory();
     if (mounted) setState(() {});
@@ -540,13 +543,30 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       if (pending.isNotEmpty) ...[
         const SizedBox(height: 16),
         Text('Pending', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
-        Text('Until the next block is found.', style: TextStyle(color: shearMutedOf(context))),
+        Text(
+          pending.any((t) => t.kind == 'receive' || t.kind == 'coinbase')
+              ? 'Incoming fills a 6-slice pie as blocks confirm (spendable at 6).'
+              : 'Until the next block is found.',
+          style: TextStyle(color: shearMutedOf(context)),
+        ),
         for (final t in pending)
           ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
+            leading: t.kind == 'receive' || t.kind == 'coinbase'
+                ? ConfirmPie(
+                    key: Key('confirm-pie-${t.id}'),
+                    filled: ledger.confirmationsOf(t.height ?? 0),
+                  )
+                : null,
             title: Text('${t.kind}  ${formatShe(t.amount)} SHE'),
-            subtitle: Text('${t.from} → ${t.to}', maxLines: 1, overflow: TextOverflow.ellipsis),
+            subtitle: Text(
+              t.kind == 'receive' || t.kind == 'coinbase'
+                  ? '${ledger.confirmationsOf(t.height ?? 0).clamp(0, 6)}/6 conf  ${t.from} → ${t.to}'
+                  : '${t.from} → ${t.to}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
       ],
       const SizedBox(height: 20),

@@ -390,7 +390,6 @@ export function createPool({
     if (!gate.ok) return null;
     lastJob = job;
     lastIssueAt = now;
-    statsSnap.at = 0;
     return job;
   }
 
@@ -478,6 +477,8 @@ export function createPool({
           if (params.version) session.version = String(params.version);
           else session.version = String(session.version || '');
           session.client = String(params.client || session.client || CLIENT);
+          if (params.name) session.name = String(params.name);
+          else session.name = String(session.name || '');
           session.firstSeen = session.firstSeen || Date.now();
           conn = {
             sock,
@@ -638,6 +639,7 @@ export function createPool({
       miner: publicMinerTag(m.login || m.workerKey),
       worker: publicWorkerName(m.workerKey || m.login),
       version: String(m.version || ''),
+      name: String(m.name || ''),
       client: String(m.client || CLIENT),
       algo: ALGO,
       hashrate: reportedHashrate(m, now),
@@ -745,6 +747,7 @@ export function createPool({
       res.end(JSON.stringify({
         ok: true,
         tag: publicMinerTag(rows[0].login || rows[0].workerKey),
+        name: views.map((v) => v.name).filter(Boolean).sort().join(', ') || '',
         version: views.map((v) => v.version).filter(Boolean).sort().join(', ') || '',
         client: views[0].client,
         algo: ALGO,

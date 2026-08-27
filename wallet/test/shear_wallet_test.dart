@@ -18,6 +18,7 @@ import 'package:shear_wallet/shear_ctf_cli.dart';
 import 'package:shear_wallet/shear_vortex.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_join.dart';
+import 'package:shear_wallet/shear_confirm_pie.dart';
 import 'package:crypto/crypto.dart';
 
 void main() {
@@ -72,7 +73,7 @@ void main() {
     ledger.settleTo(3 + ShearLedger.spendableConfirmations);
     expect(ledger.pending(id.address), 0);
     expect(ledger.pendingTxs(id.address), isEmpty);
-    expect(ledger.spendable(id.address), closeTo(1 + 4 * kHashBonusShe, 1e-18));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(1 + 4 * kHashBonusShe, 1e-18));
     expect(ledger.ownerHistory(id.address).single.confirmed, isTrue);
     expect(ledger.ownerHistory(id.address).single.amount, closeTo(1 + 4 * kHashBonusShe, 1e-18));
   });
@@ -82,18 +83,18 @@ void main() {
     final ledger = ShearLedger()..viewSecret = id.viewKey;
     final dest = ledger.currentDest(id.address);
     ledger.confirmRound(address: id.address, pot: 1, height: 2);
-    ledger.settleTo(2);
-    expect(ledger.sealedHeight, 2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    expect(ledger.sealedHeight, 2 + ShearLedger.spendableConfirmations - 1);
     expect(ledger.pendingTxs(id.address), isEmpty);
     final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
     final sent = await ledger.send(from: dest, to: bob, amount: 0.25);
     expect(sent.confirmed, isFalse);
     expect(ledger.pendingTxs(id.address).single.id, sent.id);
     ledger.confirmRound(address: id.address, pot: 1, height: 3);
-    ledger.settleTo(3);
+    ledger.settleTo(3 + ShearLedger.spendableConfirmations - 1);
     expect(ledger.pendingTxs(id.address), isEmpty);
     expect(ledger.ownerHistory(id.address).where((t) => t.id == sent.id).single.confirmed, isTrue);
-    expect(ledger.sealedHeight, 3);
+    expect(ledger.sealedHeight, 3 + ShearLedger.spendableConfirmations - 1);
   });
 
   test('live pending hashes and receives become spendable on block-found', () {
@@ -113,7 +114,7 @@ void main() {
     ledger.settleTo(9 + ShearLedger.spendableConfirmations);
     expect(ledger.pendingTxs(id.address), isEmpty);
     expect(ledger.pending(id.address), 0);
-    expect(ledger.spendable(id.address), closeTo(0.1 + 0.4 + 7 * kHashBonusShe, 1e-18));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(0.1 + 0.4 + 7 * kHashBonusShe, 1e-18));
     expect(ledger.ownerHistory(id.address).any((t) => t.kind == 'coinbase' && t.confirmed), isTrue);
     expect(ledger.ownerHistory(id.address).where((t) => t.id == 'in-1').single.confirmed, isTrue);
     expect(ledger.transactions.where((t) => t.kind == 'hash'), isEmpty);
@@ -194,7 +195,7 @@ void main() {
     expect(live.balanceHits < 8, isTrue);
     expect(live.balanceHits > 0, isTrue);
 
-    live.height = 41;
+    live.height = 40 + ShearLedger.spendableConfirmations;
     live.pending = 0;
     live.incoming = [];
     live.balance = reconstructed + 0.4 + 7 * kHashBonusShe;
@@ -239,12 +240,12 @@ void main() {
       closeTo(reconstructed, 1e-18),
     );
 
-    live.height = 13;
+    live.height = 12 + ShearLedger.spendableConfirmations;
     live.pending = 0;
     live.incoming = [];
     live.balance = reconstructed + 0.4 + 7 * kHashBonusShe;
     await ledger.syncTip();
-    expect(ledger.sealedHeight, 13);
+    expect(ledger.sealedHeight, 12 + ShearLedger.spendableConfirmations);
     expect(ledger.settledHeight, 12);
 
     await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
@@ -254,7 +255,7 @@ void main() {
       ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
       closeTo(reconstructed + 0.4 + 7 * kHashBonusShe, 1e-18),
     );
-    expect(ledger.settledHeight, 13);
+    expect(ledger.settledHeight, 12 + ShearLedger.spendableConfirmations);
     expect(ledger.ownerHistory(id.address).where((t) => t.id == 'in-tip').single.confirmed, isTrue);
   });
 
@@ -303,16 +304,20 @@ void main() {
     expect(fresh.pending(dest), closeTo(0.2 + 5 * kHashBonusShe, 1e-18));
   });
 
-  test('consensus spendable at 1 confirmation; min_confirms 12 is wallet policy', () {
-    expect(ShearLedger.spendableConfirmations, 1);
+  test('consensus spendable at 6 confirmations; min_confirms 12 is third-party policy', () {
+    expect(ShearLedger.spendableConfirmations, 6);
     expect(ShearLedger.minConfirms, 12);
     final id = createIdentity();
     final ledger = ShearLedger();
     ledger.confirmRound(address: id.address, pot: 1, height: 1);
-    expect(ledger.spendable(id.address), 1);
-    expect(ledger.policyAvailable(id.address), 0);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+    ledger.settleTo(5);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+    ledger.settleTo(6);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 1);
+    expect(ledger.policyAvailable(id.address, paymentCode: id.paymentCode), 0);
     ledger.settleTo(12);
-    expect(ledger.policyAvailable(id.address), 1);
+    expect(ledger.policyAvailable(id.address, paymentCode: id.paymentCode), 1);
   });
 
   test('shewall.bin password seal restores address and balances; JSON refused', () async {
@@ -663,7 +668,7 @@ void main() {
     final ledger = ShearLedger()..viewSecret = ident.viewKey;
     final dest = ledger.currentDest(ident.address);
     ledger.confirmRound(address: ident.address, pot: 1, height: 2);
-    ledger.settleTo(2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
     final other = createIdentity();
     final bob = destForLogin(other.address, height: 1, viewKey: other.viewKey)!;
     await ledger.send(from: dest, to: bob, amount: 0.25);
@@ -675,12 +680,12 @@ void main() {
     await tester.pump();
     expect(find.text('Pending'), findsOneWidget);
     expect(find.textContaining(formatShe(0.25)), findsWidgets);
-    expect(find.textContaining('block height: 2'), findsWidgets);
+    expect(find.textContaining('block height:'), findsWidgets);
     await tester.tap(find.text('Shearview'));
     await tester.pump();
     expect(find.textContaining(formatShe(0.25)), findsNothing);
     ledger.confirmRound(address: ident.address, pot: 1, height: 3);
-    ledger.settleTo(3);
+    ledger.settleTo(3 + ShearLedger.spendableConfirmations - 1);
     await tester.tap(find.text('Continuum'));
     await tester.pump();
     expect(find.text('Pending'), findsNothing);
@@ -717,6 +722,59 @@ void main() {
     await tester.pump();
     expect(find.text('Pending'), findsNothing);
     expect(find.textContaining(formatShe(0.5 + 0.001)), findsWidgets);
+  });
+
+  test('confirm pie fills one slice per confirmation up to 6', () {
+    expect(kConfirmSliceColors, hasLength(6));
+    expect(kConfirmSliceColors[0], const Color(0xFFE53935));
+    expect(kConfirmSliceColors[1], const Color(0xFFFFFFFF));
+    expect(kConfirmSliceColors[2], const Color(0xFF1E88E5));
+    expect(kConfirmSliceColors[3], const Color(0xFFFB8C00));
+    expect(kConfirmSliceColors[4], const Color(0xFF8E24AA));
+    expect(kConfirmSliceColors[5], const Color(0xFF43A047));
+    expect(confirmSlicesFilled(0), 0);
+    expect(confirmSlicesFilled(1), 1);
+    expect(confirmSlicesFilled(3), 3);
+    expect(confirmSlicesFilled(6), 6);
+    expect(confirmSlicesFilled(9), 6);
+  });
+
+  testWidgets('incoming pie fills then that row evaporates at 6 confs; leftover pendings continue', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-pie-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    final ident = session.identity!;
+    final ledger = ShearLedger()..viewSecret = ident.viewKey;
+    final dest = ledger.currentDest(ident.address);
+    final peer = createIdentity();
+    final from = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
+    ledger.creditReceive(to: dest, amount: 0.4, from: from, id: 'in-early');
+    ledger.confirmRound(address: ident.address, pot: 0, height: 1);
+    ledger.creditReceive(to: dest, amount: 0.2, from: from, id: 'in-late');
+    ledger.confirmRound(address: ident.address, pot: 0, height: 3);
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'pw');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Pending'), findsOneWidget);
+    expect(find.byKey(const Key('confirm-pie-in-early')), findsOneWidget);
+    expect(find.byKey(const Key('confirm-pie-in-late')), findsOneWidget);
+    expect(tester.widget<ConfirmPie>(find.byKey(const Key('confirm-pie-in-early'))).slices, 3);
+    expect(tester.widget<ConfirmPie>(find.byKey(const Key('confirm-pie-in-late'))).slices, 1);
+    ledger.settleTo(6);
+    await tester.tap(find.text('Continuum'));
+    await tester.pump();
+    expect(find.byKey(const Key('confirm-pie-in-early')), findsNothing);
+    expect(find.text('Pending'), findsOneWidget);
+    expect(find.byKey(const Key('confirm-pie-in-late')), findsOneWidget);
+    expect(tester.widget<ConfirmPie>(find.byKey(const Key('confirm-pie-in-late'))).slices, 4);
+    ledger.settleTo(8);
+    await tester.tap(find.text('Continuum'));
+    await tester.pump();
+    expect(find.byKey(const Key('confirm-pie-in-late')), findsNothing);
+    expect(find.text('Pending'), findsNothing);
   });
 
   testWidgets('dark mode cards and fields are dark with light ink; light mode inverts', (tester) async {

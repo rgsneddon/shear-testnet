@@ -52,7 +52,7 @@ describe('B-spend against shipped spendB', () => {
       rootB: tree.rootB,
       height: 4,
       index: 0,
-      tipHeight: 4,
+      tipHeight: 9,
       spent: new Set(),
     });
     assert.equal(got.ok, true, got.reason);
@@ -72,7 +72,7 @@ describe('B-spend against shipped spendB', () => {
       rootB: tree.rootB,
       height: 4,
       index: 0,
-      tipHeight: 5,
+      tipHeight: 9,
       spent,
     });
     assert.equal(first.ok, true, first.reason);
@@ -84,7 +84,7 @@ describe('B-spend against shipped spendB', () => {
       rootB: tree.rootB,
       height: 4,
       index: 0,
-      tipHeight: 6,
+      tipHeight: 9,
       spent,
     });
     assert.equal(twice.ok, false);

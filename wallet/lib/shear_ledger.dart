@@ -129,9 +129,9 @@ class ShearLedger {
 
   /// Last height Continuum already settled into spendable.
   int get settledHeight => _settledHeight;
-  /// Consensus: spendable when the committing block is accepted (1 conf).
-  static const spendableConfirmations = 1;
-  /// Wallet/merchant policy only. Not consensus.
+  /// Consensus floor: 6 confirmations (~9 min at 90 s).
+  static const spendableConfirmations = 6;
+  /// Third-party/merchant policy (~18 min). Not consensus.
   static const minConfirms = 12;
   final List<({String dest, double amount, int height})> _immature = [];
 
@@ -295,13 +295,14 @@ class ShearLedger {
     return t - height + 1;
   }
 
-  /// Policy available (default 12 confs). Consensus spendable is 1 conf.
-  double policyAvailable(String address, {int? confirms}) {
+  /// Policy available (default 12 confs). Consensus spendable is 6 confs.
+  double policyAvailable(String address, {int? confirms, String? paymentCode}) {
     final need = confirms ?? minConfirms;
+    final keys = ownedAddresses(address, paymentCode: paymentCode);
     var n = 0.0;
     for (final t in _txs) {
       if (!t.confirmed) continue;
-      if (t.to != payKey(address) && t.to != address) continue;
+      if (!keys.contains(t.to) && t.to != address) continue;
       final h = t.height ?? 0;
       if (confirmationsOf(h) >= need) n += t.amount;
     }
@@ -329,6 +330,7 @@ class ShearLedger {
         _txs[i] = _txs[i].copyWith(confirmed: true);
       }
     }
+    prune();
   }
 
   /// Drop per-hash sample noise. Keep sealed txs + in-flight send/hash/receive.
@@ -339,7 +341,7 @@ class ShearLedger {
     for (final t in _txs) {
       if (t.kind == 'sample') continue;
       if (t.kind == 'hash' && t.confirmed) continue;
-      if (!t.confirmed && t.kind != 'send' && t.kind != 'hash' && t.kind != 'receive') continue;
+      if (!t.confirmed && t.kind != 'send' && t.kind != 'hash' && t.kind != 'receive' && t.kind != 'coinbase') continue;
       if (!seen.add(t.id)) continue;
       next.add(t);
     }
@@ -420,9 +422,9 @@ class ShearLedger {
   }) {
     _ingestIncoming(json);
     _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
-    final advancedTo = beforeHeight > 0 && tipSealed > beforeHeight ? tipSealed : 0;
-    if (advancedTo > 0) {
-      confirmRound(address: address, pot: 0, height: advancedTo);
+    if (beforeHeight > 0 && tipSealed > beforeHeight) {
+      confirmRound(address: address, pot: 0, height: beforeHeight + 1);
+      settleTo(tipSealed);
     }
     final live = (json['balance'] as num?)?.toDouble();
     if (live != null && live >= 0) {
@@ -559,14 +561,16 @@ class ShearLedger {
     return _txs.where((t) => (t.confirmed || t.kind == 'send') && (keys.contains(t.to) || keys.contains(t.from))).toList();
   }
 
-  /// Unconfirmed hash/receive/send rows. Cleared when the next block is found ([confirmRound]).
+  /// Unconfirmed hash/receive/send/coinbase rows. An incoming row evaporates
+  /// from this list once it has [spendableConfirmations] (pie and all);
+  /// leftover pendings stay.
   List<ShearTx> pendingTxs(String address) {
     final keys = ownedAddresses(address);
     return _txs
         .where((t) =>
             !t.confirmed &&
-            (t.kind == 'send' || t.kind == 'hash' || t.kind == 'receive') &&
-            (keys.contains(t.to) || keys.contains(t.from) || t.from == 'hash' || t.from == 'pending'))
+            (t.kind == 'send' || t.kind == 'hash' || t.kind == 'receive' || t.kind == 'coinbase') &&
+            (keys.contains(t.to) || keys.contains(t.from) || t.from == 'hash' || t.from == 'pending' || t.from == 'coinbase'))
         .toList();
   }
 

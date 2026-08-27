@@ -10,7 +10,7 @@ New repo: **https://github.com/rgsneddon/shear-testnet** (GitHub name `shear-tes
 
 **Versioning:** two integers only. Wallet / node / pool **0.1**. Miner **0.5**. Never `0.1.0`. Never bump to `1.*` unless the operator says so. Every GitHub release title is **`[testnet] …`**.
 
-**Book-law (incompatible with the old 7995-block DE chain):** 128-byte header, `ssa1` dests, 90s ASERT, 1 SHE pot, `HASH_TX_LIVE=1` baked, spendable at 1 conf, `min_confirms` 12 is wallet policy. Magic still `shear-testnet-v1`. Old `rgsneddon/shear` tags (`v0.0.9` wallet / `v0.1.7` miner) are frozen pre-recut.
+**Book-law (incompatible with the old 7995-block DE chain):** 128-byte header, `ssa1` dests, 90s ASERT, 1 SHE pot, `HASH_TX_LIVE=1` baked, consensus spendable **6 confs** (~9 min, in the fingerprint). Third-party `min_confirms` **12** (~18 min) is wallet/merchant policy only. Magic still `shear-testnet-v1`. Old `rgsneddon/shear` tags (`v0.0.9` wallet / `v0.1.7` miner) are frozen pre-recut.
 
 ### Wallet 0.1 leftover (Windows / Linux / Arch)
 

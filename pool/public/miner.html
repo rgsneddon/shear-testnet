@@ -92,6 +92,7 @@
     </section>
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Tag</div><div class="value mono" id="m-tag">—</div></article>
+      <article class="panel-card"><div class="label">Miner</div><div class="value" id="m-name">—</div></article>
       <article class="panel-card"><div class="label">Version</div><div class="value" id="m-version">—</div></article>
       <article class="panel-card"><div class="label">Client</div><div class="value" id="m-client">—</div></article>
       <article class="panel-card"><div class="label">Algo</div><div class="value" id="m-algo">ShearHash</div></article>
@@ -158,6 +159,7 @@
       }
       set('miner-tag', d.tag);
       set('m-tag', d.tag);
+      set('m-name', d.name || '—');
       set('m-version', d.version || '—');
       set('m-client', d.client || 'ShearHash');
       set('m-algo', d.algo || 'ShearHash');
@@ -176,7 +178,7 @@
         return (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0);
       }).map(function (w) {
         const name = String(w.worker || 'worker').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || 'worker';
-        return '<tr><td class="mono">' + name + '</td><td>' + (w.version || '—') +
+        return '<tr><td class="mono">' + name + '</td><td>' + ([w.name, w.version].filter(Boolean).join(' ') || '—') +
           '</td><td>' + fmtRate(w.hashrate) + '</td><td>' + (w.blocks || 0) +
           '</td><td>' + (w.accepted || 0) + '</td><td>' + (w.stale || 0) +
           '</td><td>' + (w.threads || 0) + '</td><td>' + (w.roundHashes || 0) +

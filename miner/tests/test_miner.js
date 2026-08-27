@@ -31,9 +31,11 @@ describe('C miner', () => {
     const cfg = spawnSync(bin, ['--print-config'], { encoding: 'utf8' });
     assert.equal(cfg.status, 0, cfg.stderr);
     const j = JSON.parse(cfg.stdout);
+    assert.equal(j.name, 'shear-miner');
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
     assert.equal(j.version, '0.5');
+    assert.match(fs.readFileSync(path.join(root, 'src/shear_miner.c'), 'utf8'), /SHEAR_MINER_NAME/);
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.version.includes('0.1.0'), false);
     assert.equal(j.headerBytes * 2, 256);

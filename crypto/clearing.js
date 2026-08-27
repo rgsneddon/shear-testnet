@@ -7,6 +7,7 @@ import { sha256 } from './shear_hash.js';
 import { merkleRoot, merkleProof, merkleVerify } from './merkle.js';
 import { packALeaf, packBLeaf, packDigest } from './pack.js';
 import { decodeHeader } from './header.js';
+import { SPENDABLE_CONFIRMATIONS } from './asert.js';
 
 export function aLeafBytes({ dest20, count }) {
   return packDigest(packALeaf({ dest20, count }));
@@ -40,8 +41,8 @@ export function bLeafId(leaf, height, index) {
 }
 
 /**
- * Spend a B unit after the committing block is accepted.
- * proof is merkle proof of the B digest in tree B.
+ * Spend a B unit after the committing block has consensus depth
+ * (SPENDABLE_CONFIRMATIONS). Proof is merkle of the B digest in tree B.
  */
 export function spendB({
   leaf,
@@ -69,6 +70,7 @@ export function spendB({
   const h = Number(height) || 0;
   const tip = Number(tipHeight) || 0;
   if (!(h >= 1) || tip < h) return { ok: false, reason: 'pre_seal' };
+  if (tip - h + 1 < SPENDABLE_CONFIRMATIONS) return { ok: false, reason: 'immature' };
   const digest = bLeafBytes(leaf);
   if (!merkleVerify(digest, proof, b)) return { ok: false, reason: 'proof' };
   const id = bLeafId(leaf, h, index);
