@@ -5,7 +5,7 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, txWeight } from '../../crypto/levy.js';
 import { bProof } from '../../crypto/clearing.js';
 import { decodeHeader } from '../../crypto/header.js';
-import { bitsForBlock } from '../../crypto/asert.js';
+import { bitsForBlock, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -114,10 +114,14 @@ describe('verifyBlock B-spend uses the committing header', () => {
       txs: [spendTx],
     }));
     const spent = new Set();
-    const tooSoon = verifyBlock(sealed, commitBlock, { tipHeight: 2, spentB: new Set() });
-    assert.equal(tooSoon.ok, false);
-    assert.equal(tooSoon.reason, 'immature');
-    const ok = verifyBlock(sealed, commitBlock, { tipHeight: 6, spentB: spent });
+    assert.equal(SPENDABLE_CONFIRMATIONS, 1);
+    // 1-conf: the committing block is spendable as soon as tip >= commitHeight.
+    const justSealed = verifyBlock(sealed, commitBlock, { tipHeight: 2, spentB: new Set() });
+    assert.equal(justSealed.ok, true, justSealed.reason);
+    const ok = verifyBlock(sealed, commitBlock, {
+      tipHeight: Math.max(1, SPENDABLE_CONFIRMATIONS),
+      spentB: spent,
+    });
     assert.equal(ok.ok, true, ok.reason);
 
     const laterBits = bitsForBlock(
@@ -125,7 +129,9 @@ describe('verifyBlock B-spend uses the committing header', () => {
       decodeHeader(sealed.header).timestamp,
       t1 + 90_000,
     );
-    const sealedOk = verifyBlock(sealed, commitBlock, { tipHeight: 6 });
+    const sealedOk = verifyBlock(sealed, commitBlock, {
+      tipHeight: Math.max(1, SPENDABLE_CONFIRMATIONS),
+    });
     const sealedBlock = { ...sealed, hash: sealedOk.hash, height: 2, weight: sealed.weight };
     const twice = mine(buildTemplate({
       prev: sealedBlock.hash,
@@ -139,7 +145,10 @@ describe('verifyBlock B-spend uses the committing header', () => {
       samples: [{ miner: dest, nonce: '3', tag: 'a', count: 1 }],
       txs: [spendTx],
     }));
-    const dup = verifyBlock(twice, sealedBlock, { tipHeight: 6, spentB: spent });
+    const dup = verifyBlock(twice, sealedBlock, {
+      tipHeight: Math.max(1, SPENDABLE_CONFIRMATIONS),
+      spentB: spent,
+    });
     assert.equal(dup.ok, false);
     assert.equal(dup.reason, 'double_open');
   });
