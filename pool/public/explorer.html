@@ -229,7 +229,10 @@
         cache: 'no-store',
         headers: { 'Cache-Control': 'no-store' },
         signal: ctrl.signal,
-      }).then(function (r) { return r.json(); }).finally(function () { clearTimeout(t); });
+      }).then(function (r) {
+        if (!r.ok) throw new Error('http ' + r.status);
+        return r.json();
+      }).finally(function () { clearTimeout(t); });
     }
     function shortId(id) {
       const s = String(id || '');
@@ -318,26 +321,24 @@
         : '<tr><td colspan="3">No holders yet.</td></tr>';
     }
     async function loadRecent() {
-      const [stats, hist, circ] = await Promise.all([
-        fetchJson('/stats'),
-        fetchJson('/explorer/recent'),
-        fetchJson('/explorer/circulation'),
-      ]);
-      setText('ex-height', stats.height ?? 0);
-      setText('ex-hashrate', fmtRate(stats.hashrate));
-      lastBlockAt = Number(stats.lastFoundAt || 0);
-      setText('ex-updated', lastBlockAt ? fmtSinceBlock(lastBlockAt) : '—');
-      const recent = (hist.txs || []).slice().sort(function (a, b) {
-        return Number(b.height) - Number(a.height);
-      }).slice(0, 30);
-      paintTxs(recent, '');
-      paintHolders(circ);
+      const stats = await fetchJson('/stats');
       const pulse = document.getElementById('live-pulse');
       if (pulse) {
         pulse.classList.remove('stale');
         pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v1') + ' · height ' + (stats.height ?? 0);
       }
+      setText('ex-height', stats.height ?? 0);
+      setText('ex-hashrate', fmtRate(stats.hashrate));
+      lastBlockAt = Number(stats.lastFoundAt || 0);
+      setText('ex-updated', lastBlockAt ? fmtSinceBlock(lastBlockAt) : '—');
       filled = true;
+      const hist = await fetchJson('/explorer/recent').catch(function () { return { txs: [] }; });
+      const circ = await fetchJson('/explorer/circulation').catch(function () { return { holders: [] }; });
+      const recent = (hist.txs || []).slice().sort(function (a, b) {
+        return Number(b.height) - Number(a.height);
+      }).slice(0, 30);
+      paintTxs(recent, '');
+      paintHolders(circ);
     }
     async function runSearch(ev) {
       if (ev) ev.preventDefault();

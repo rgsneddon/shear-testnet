@@ -220,3 +220,27 @@ describe('brand pages', () => {
     assert.equal(/A new Flutter project/.test(manifest), false);
   });
 });
+
+describe('explorer pulse', () => {
+  it('paints live pulse from /api/stats first; offline retrying is catch-only', () => {
+    const page = read('pool/public/explorer.html');
+    assert.match(page, /id="live-pulse"/);
+    assert.match(page, /const stats = await fetchJson\('\/stats'\);/);
+    assert.match(page, /pulse\.textContent = 'live · ' \+ \(stats\.magic/);
+    assert.equal(/Promise\.all\(\[\s*fetchJson\('\/stats'\)/.test(page), false);
+    const catchOffline = page.match(/loadRecent\(\)\.catch\(function \(\) \{[\s\S]*?offline · retrying[\s\S]*?\}\);/);
+    assert.ok(catchOffline, 'offline · retrying must live only in loadRecent catch');
+    assert.match(page, /if \(!r\.ok\) throw new Error\('http ' \+ r\.status\)/);
+  });
+});
+
+describe('mempool pulse', () => {
+  it('uses API spendableConfirmations, not a hard-coded 6', () => {
+    const page = read('mempool/index.html');
+    assert.match(page, /data\.spendableConfirmations/);
+    assert.equal(/6 conf spendable/.test(page), false);
+    assert.match(page, /isDark/);
+    assert.match(page, /palette/);
+    assert.match(page, /--pick-bg/);
+  });
+});

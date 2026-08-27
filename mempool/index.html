@@ -499,7 +499,9 @@
       document.getElementById('h-pend').textContent = String((data.pending || []).length);
       document.getElementById('h-fee').textContent = String(data.tip?.baseFee ?? 1);
       const pulse = document.getElementById('pulse');
-      pulse.textContent = data.live ? 'live · tip down · 6 conf spendable · policy 12' : 'node paused · demo lattice from tip';
+      pulse.textContent = data.live
+        ? ('live · tip down · ' + (data.spendableConfirmations ?? 1) + ' conf spendable · policy 12')
+        : 'node paused · demo lattice from tip';
       pulse.className = data.live ? '' : 'stale';
     }
 
