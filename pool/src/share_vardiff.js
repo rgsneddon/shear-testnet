@@ -1,22 +1,20 @@
 /**
  * Per-TCP-session share vardiff. Not consensus.
- * Header bits stay on ASERT 9 s. Share target only throttles submit rate
+ * Header bits stay on ASERT 90 s. Share target only throttles submit rate
  * and must never exceed current block bits.
  *
- * 9s blocks need a ~10ms share cadence so miners register hashes at the
- * start of each round. A 7.5s share target left the UI at 0 hashes for
- * most of the round once header bits climbed.
- *
- * Default max is SHA-256 width so a huge CPU farm is throttled instead
- * of flooding. GPU/ASIC still mint nothing.
+ * Target ~250ms/share so a 10 MH/s farm cannot flood the Node event loop
+ * (a 10ms target at bits-8 was thousands of submits/s and 504'd /api/stats).
+ * Share bits may equal the header so a farm is throttled; they still never
+ * exceed it. GPU/ASIC still mint nothing.
  */
 import { MAX_BITS } from '../../crypto/asert.js';
 
-export const SHARE_VARDIFF_TARGET_MS = 10;
+export const SHARE_VARDIFF_TARGET_MS = 250;
 export const SHARE_VARDIFF_RETARGET_SHARES = 8;
 export const SHARE_VARDIFF_RETARGET_MS = 20_000;
-/** Keep share target easier than the header so a 9s (or slow) round still records hashes. */
-export const SHARE_BELOW_BLOCK = 8;
+/** 0: share bits may equal header bits so a farm can be throttled. */
+export const SHARE_BELOW_BLOCK = 0;
 
 export function hashesProvenByShare(shareBits) {
   const b = Math.floor(Number(shareBits) || 0);

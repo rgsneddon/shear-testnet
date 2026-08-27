@@ -9,6 +9,13 @@ Do not start mainnet. **Testnet first.** Operator asked to **stop work** after t
 
 This document is the approved `/plan` plus every later lock from the same session (including the wallet 0.0.1 goal). Later locks override earlier rows when they conflict.
 
+## Versioning lock (2026-08-27)
+
+Public pins are two integers only: `major.minor` (`*.*`). Never `*.*.*` (`0.1.0`, `v0.1.0`, three-part git tags).
+This testnet line starts at **0.1**. Minor may be more than one digit: after `0.9` comes `0.10`, then `0.11`, `0.12`, … — do not roll to `1.0`.
+Never bump to **1.*** unless the operator explicitly says so.
+Flutter/Android file version may still be `0.1.0+N`; that is not the public pin.
+
 ---
 
 ## Product
@@ -413,12 +420,12 @@ Work **stopped on request**. Do not continue the wallet ship until a new `/goal`
 
 ## Suggested `/goal` line
 
-```
-/goal Execute SHEPLAN.md at /Users/russellsneddon/shear/SHEPLAN.md (and Desktop/SHEPLAN.md). Build Shear testnet first as specified: private rgsneddon/shear, 120-byte header PoW, 1 SHE pot + 0.0000000001 SHE per hash to each hasher in the round (lag-1 snapshot), The Reserve (shear-reserve-v1) is the only dapp that may mint extra SHE, third-party staking must top up, new header-template pool on :1111 with light UI, C miner (no dual-login fee; never say “feeless miner”), Germany nginx+certs without touching live book units, wallet 0.0.1 Chronoflux tabs including Closure G_{μν}, encrypted shewall.json, Mac DMG/APK/iOS-unsigned plus Windows leftover zips in rgsneddon/handoff Shear section. Zero other-project names. Do not start mainnet.
-```
-
-If the next goal is only to **finish the interrupted 0.0.1 wallet ship**, use:
+Versioning for every later `/goal`: two-part `*.*` only, start **0.1**, `0.10` / `0.11` / `0.12` legal, never `1.*` until the operator says so. Never `0.1.0`.
 
 ```
-/goal Resume SHEPLAN wallet 0.0.1 ship from Status at operator stop: commit+push shear (including untracked wallet/), tag/release v0.0.1 with wallet/dist Mac-cut artifacts, finish handoff leftover (Windows/Linux/Arch 0.0.1 zips with miner inside; no feeless language), rewrite WINDOWS_HANDOFF.md, scp stripped pool HTML to de:/var/www/pool.shear.digital/, grep feeless=0. Do not start mainnet. Do not stop live book units.
+/goal shear-clearing-lean live reset: put the recut book-law on public testnet from genesis and ship matching clients.
+
+Versioning (redo the rules; do not use x.y.z): product versions are two integers `major.minor` only (`0.1`, `0.2`, … `0.9`, `0.10`, `0.11`, `0.12` are all legal). Start this reset at **0.1**. Never emit `0.1.0` / `v0.1.0` / three-part tags. Do not bump to `1.*` unless the operator explicitly says so.
 ```
+
+Historical (do not use — three-part `0.0.1` pins): Execute SHEPLAN.md wallet 0.0.1 ship / `v0.0.1` leftover. Superseded by the two-part `0.1` line.

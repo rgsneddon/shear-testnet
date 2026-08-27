@@ -25,11 +25,11 @@ describe('share vardiff', () => {
   });
 
   it('never exceeds block bits and never goes below min', () => {
-    assert.equal(clampShareBits(24, { blockBits: 21 }), 13);
+    assert.equal(clampShareBits(24, { blockBits: 21 }), 21);
     assert.equal(clampShareBits(16, { blockBits: 29 }), 16);
     assert.equal(clampShareBits(1, { minBits: 4, blockBits: 8 }), 4);
     assert.equal(clampShareBits(40, { blockBits: 48 }), 40);
-    assert.ok(clampShareBits(25, { blockBits: 25 }) <= 17);
+    assert.equal(clampShareBits(25, { blockBits: 25 }), 25);
     assert.equal(clampShareBits(300), 256);
   });
 
@@ -50,8 +50,7 @@ describe('share vardiff', () => {
       actualIntervalMs: 1,
       blockBits: 16,
     });
-    assert.ok(next < 16);
-    assert.equal(next, 8);
+    assert.equal(next, 16);
   });
 
   it('retargets after N shares or T milliseconds', () => {

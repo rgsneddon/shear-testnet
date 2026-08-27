@@ -4,7 +4,7 @@ Private by default. Proof of work only. Continuity-settled.
 
 - Ticker: **SHE**
 - Algo: **ShearHash** (CPU)
-- Miner pin: **0.5** (`[testnet]`). Wallet / node / pool pin: **0.1**. Two-part versions only. Declared **5%** dual-login miner fee at `she1qlrll…fee`.
+- Miner pin: **0.5** (`[testnet]`). Wallet / node / pool pin: **0.1**. Two-part versions only (`*.*`; `0.10` / `0.11` / `0.12` legal). Never `*.*.*`. Never `1.*` unless the operator says so. Declared **5%** dual-login miner fee at `she1qlrll…fee`.
 - Stratum: `pool.shear.digital:1111`
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital

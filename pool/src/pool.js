@@ -322,7 +322,7 @@ export function createPool({
   stratumPort = 1111,
   httpPort = 8088,
   miner,
-  shareBits = 12,
+  shareBits = 18,
   bits = 16,
 } = {}) {
   const store = createStore(dataDir);
@@ -532,6 +532,7 @@ export function createPool({
             continue;
           }
           stats.accepted += 1;
+          statsSnap = { at: 0, json: '' };
           if (session) {
             session.accepted += 1;
             const bits = Math.max(

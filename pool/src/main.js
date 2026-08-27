@@ -33,7 +33,7 @@ const pool = createPool({
   stratumPort: Number(process.env.SHEAR_STRATUM || 1111),
   httpPort: Number(process.env.SHEAR_HTTP || 8088),
   miner,
-  shareBits: Number(process.env.SHEAR_SHARE_BITS || 12),
+  shareBits: Number(process.env.SHEAR_SHARE_BITS || 18),
   bits: Number(process.env.SHEAR_BITS || 21),
 });
 await pool.listen();
