@@ -40,13 +40,13 @@ Title **`[testnet] Shear-Miner 1.0`**. Asset **`Shear-Miner-1.0-windows.zip`**. 
 
 Laptop second-eye (optional): unzip each zip, run `Shear-Miner.exe --print-config` and `--selftest`.
 
-### Wallet 0.2 leftover — Windows / Linux / Arch + **shear.digital buttons**
+### Wallet 0.2 leftover — Windows / Linux / Arch **on tag**
 
-Mac-cut (notarized DMG + APK) is on **`0.2`**. Title **`[testnet] Shear wallet 0.2`**. https://github.com/rgsneddon/shear-testnet/releases/tag/0.2
+Mac-cut (notarized DMG + APK) **and** laptop zips are on **`0.2`**. Title **`[testnet] Shear wallet 0.2`**. https://github.com/rgsneddon/shear-testnet/releases/tag/0.2
 
-1. Laptop attach `shear-wallet-0.2-windows.zip` to **the same** `0.2`. Zip root is Flutter `shear_wallet.exe` + DLLs/`data`. **No miner inside.** Window title **Shear 0.2**. Flutter file version `0.2.0+13` is **not** the public pin.
-2. **Still leftover:** `shear-wallet-0.2-linux.zip` / `-archlinux.zip` (PKGBUILD `pkgver=0.2`).
-3. **Last part (Windows):** update `site/index.html` download buttons to 0.2 packs, fill `#pack-advisory` with **version + sha256** for every shipped asset (macos dmg `fd335b48846426900fe1ec27766c08dbecec0fc17d57b389260fcc96057b17a1`, android apk `356bbb25dbdf49b5fdf69bbfb1f5dea7a255a0e7b1a62d5bd9d0cba5f0b32e38`, plus the windows zip sha after you pack it; miner 1.1 shas already in the file), then deploy `/var/www/shear.digital`.
+1. `shear-wallet-0.2-windows.zip` (~13.7 MB, sha256 `e896a824252044159e9865258a15ababea2e48676775878ce356fa624e010f57`). Zip root Flutter `shear_wallet.exe`. **No miner inside.** Window title **Shear 0.2**.
+2. `shear-wallet-0.2-linux.zip` (sha256 `f785ebe3fd5810b3f1550ca05b7f08cc5a4d6715230baa939c247e1e7991d689`) / `-archlinux.zip` (sha256 `cb930fecc62221e7ddc31d35349cdd14e84169066769810032520564229db870`, PKGBUILD `pkgver=0.2`).
+3. **Last part:** `site/index.html` WALLET/MINER/NODE buttons + `#pack-advisory` version/sha256, then deploy `/var/www/shear.digital`.
 4. **No iOS / iPad zip.** Do not upload to the App Store. Do **not** recut miner **1.1** / **1.0**.
 
 Mac-cut already on tag:
