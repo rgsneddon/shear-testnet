@@ -146,15 +146,15 @@
       </form>
     </section>
     <section class="panel-card">
-      <h2>Last 30 transactions</h2>
-      <p class="label">Sealed blocks only. Hash bonuses in the open round stay off this list.</p>
+      <h2>Last 30 blocks</h2>
+      <p class="label">Sealed blocks only. Hash bonuses in the open round stay off this list. Pending until 6 confirmations.</p>
       <div class="table-wrap" id="ex-tx-wrap">
       <table id="ex-txs">
         <thead>
           <tr>
             <th>Id</th>
             <th>Time</th>
-            <th>Kind</th>
+            <th>Status</th>
             <th>From</th>
             <th>To</th>
             <th>Amount</th>
@@ -276,6 +276,15 @@
         paintCli('unknown block');
       }
     }
+    let tipHeight = 0;
+    let spendableNeed = 6;
+    function blockStatus(t) {
+      const h = Number(t && t.height) || 0;
+      const tip = Number(tipHeight) || 0;
+      const need = Math.max(1, Number(spendableNeed) || 6);
+      const confs = (h >= 1 && tip >= h) ? (tip - h + 1) : 0;
+      return confs >= need ? 'confirmed' : 'pending';
+    }
     function paintTxs(txs, status) {
       const body = document.querySelector('#ex-txs tbody');
       const st = document.getElementById('tx-status');
@@ -287,7 +296,7 @@
             const href = '/tx/' + encodeURIComponent(t.id);
             return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
               esc(fmtLocalTs(t.at)) + '</td><td>' +
-              esc(t.kind || 'block') + '</td><td class="mono">' + esc(t.from || 'coinbase') +
+              esc(blockStatus(t)) + '</td><td class="mono">' + esc(t.from || 'coinbase') +
               '</td><td class="mono">' + esc(shortDest(t.to)) + '</td><td>' +
               esc(fmtShe(t.amount)) + '</td></tr>';
           }).join('')
@@ -327,6 +336,8 @@
         pulse.classList.remove('stale');
         pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v1') + ' · height ' + (stats.height ?? 0);
       }
+      tipHeight = Number(stats.height) || 0;
+      spendableNeed = Number(stats.spendableConfirmations) || 6;
       setText('ex-height', stats.height ?? 0);
       setText('ex-hashrate', fmtRate(stats.hashrate));
       lastBlockAt = Number(stats.lastFoundAt || 0);
@@ -347,6 +358,9 @@
         await loadRecent();
         return;
       }
+      const stats = await fetchJson('/stats').catch(function () { return {}; });
+      tipHeight = Number(stats.height) || tipHeight;
+      spendableNeed = Number(stats.spendableConfirmations) || spendableNeed;
       const got = await fetchJson('/explorer/search?' + q.toString());
       const n = (got.txs || []).length;
       let status = n + ' block(s)';

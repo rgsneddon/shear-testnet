@@ -334,8 +334,14 @@ class ShearLedger {
 
   void _applyPoolHashPending(String address, double hashAmount) {
     final key = payKey(address);
+    // Only the still-open round. Height-stamped receives are Continuum pie
+    // rows, not live pending — recounting them refilled pending() after tip.
     final recv = _txs
-        .where((t) => !t.confirmed && t.kind == 'receive' && (t.to == key || t.from == key || t.to == address))
+        .where((t) =>
+            !t.confirmed &&
+            t.kind == 'receive' &&
+            (t.height ?? 0) < 1 &&
+            (t.to == key || t.from == key || t.to == address))
         .fold<double>(0, (n, t) => n + t.amount);
     _pending[key] = recv + hashAmount;
     if (key != address) _pending[address] = 0;

@@ -208,9 +208,12 @@ describe('explorer dests', () => {
     assert.doesNotMatch(page, /if \(filled\) loadRecent\(\)\.catch/);
     assert.match(page, /\/explorer\/search\?/);
     assert.match(page, /\/explorer\/recent/);
-    assert.match(page, /Last 30 transactions/);
+    assert.match(page, /Last 30 blocks/);
     assert.match(page, />Time</);
-    assert.match(page, />Kind</);
+    assert.match(page, />Status</);
+    assert.doesNotMatch(page, />Kind</);
+    assert.match(page, /confirmed/);
+    assert.match(page, /pending/);
     assert.match(page, />From</);
     assert.match(page, />To</);
     assert.match(page, />Amount</);

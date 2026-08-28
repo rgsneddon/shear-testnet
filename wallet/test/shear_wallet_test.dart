@@ -273,6 +273,7 @@ void main() {
     expect(ledger.pendingTxs(id.address).any((t) => t.id == 'in-tip'), isTrue);
 
     await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+    expect(ledger.pending(id.paymentCode), 0);
     expect(ledger.pendingTxs(id.address).any((t) => t.id == 'in-tip'), isTrue);
     expect(
       ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
