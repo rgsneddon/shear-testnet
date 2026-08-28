@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bin = process.platform === 'win32'
-  ? path.join(root, 'shear-miner.exe')
-  : path.join(root, 'shear-miner');
+  ? path.join(root, 'Shear-Miner.exe')
+  : path.join(root, 'Shear-Miner');
 
 describe('C miner', () => {
   it('selftest and print-config are ShearHash', () => {
@@ -31,10 +31,10 @@ describe('C miner', () => {
     const cfg = spawnSync(bin, ['--print-config'], { encoding: 'utf8' });
     assert.equal(cfg.status, 0, cfg.stderr);
     const j = JSON.parse(cfg.stdout);
-    assert.equal(j.name, 'shear-miner');
+    assert.equal(j.name, 'Shear-Miner');
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
-    assert.equal(j.version, '0.5');
+    assert.equal(j.version, '1.0');
     assert.match(fs.readFileSync(path.join(root, 'src/shear_miner.c'), 'utf8'), /SHEAR_MINER_NAME/);
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.version.includes('0.1.0'), false);
@@ -48,7 +48,7 @@ describe('C miner', () => {
       /HEX_CAP \(SHEAR_HEADER_LEN \* 2 \+ 16\)/,
     );
     assert.equal(j.clientLogin, 'dual-fee');
-    assert.equal(j.feePct, 5);
+    assert.equal(j.feePct, 4);
     assert.equal(j.feeDest, 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj');
     const src = fs.readFileSync(path.join(root, 'src/shear_miner.c'), 'utf8');
     assert.equal(/MAX_THREADS/.test(src), false);
@@ -68,7 +68,7 @@ describe('C miner', () => {
     assert.match(minerSrc, /ensure_fee_conn/);
     assert.match(minerSrc, /g_fee_offset/);
     const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
-    assert.match(help.stdout, /declared 5% fee/);
+    assert.match(help.stdout, /declared 4% fee/);
     assert.match(help.stdout, /she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj\.fee/);
     assert.match(help.stdout, /first fee share/);
     const bench = spawnSync(bin, ['--bench', '1'], { encoding: 'utf8', timeout: 8000 });

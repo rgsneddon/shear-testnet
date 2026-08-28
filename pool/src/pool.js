@@ -31,7 +31,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
 /** Public H/s is proven hashes in this window, not lifetime hashes / first-seen. */
 export const HASHRATE_WINDOW_MS = 72_000;
-/** Public miner table: drop if no valid share for this long. Connected-idle does not keep the row. */
+/** After the last socket closes, keep the row this long. Still-connected hashers with proven shares stay listed (header bits can put shares >12s apart). */
 export const HASH_PRESENCE_MS = 12_000;
 /** Mean interval of recent headers so the live 9s cadence is not buried under old 90s history. */
 export const AVG_BLOCK_WINDOW = 20;
@@ -187,7 +187,7 @@ export function isCminerFeeLogin(login) {
   const raw = String(login || '').trim();
   const dest = parseLogin(raw);
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || '';
-  // Operator 5% dest is never a public hasher row, with or without .fee.
+  // Operator 4% dest is never a public hasher row, with or without .fee.
   if (dest === CMINER_FEE_SHE || dest === CMINER_FEE_DEST) return true;
   if (worker.toLowerCase() !== 'fee') return false;
   // Any mineable .fee still uses the hasher's job and is not a public worker.
@@ -267,8 +267,10 @@ export function lastValidWorkAt(m) {
 
 /**
  * Dual-login `.fee` is a second TCP session on the hasher's job, not a
- * public worker. Login alone does not list a row. Connected-but-idle
- * sockets do not keep a row; only a valid share in the last 12s does.
+ * public worker. Login alone does not list a row. A live TCP session
+ * that has accepted at least one share stays listed (header bits can
+ * put the next valid share well past 12s). After full disconnect the
+ * row stays for HASH_PRESENCE_MS, then drops.
  */
 export function isPublicMinerRow(m, now = Date.now()) {
   if (!m) return false;
@@ -276,7 +278,9 @@ export function isPublicMinerRow(m, now = Date.now()) {
   if (!(Number(m.accepted) > 0)) return false;
   const last = lastValidWorkAt(m);
   if (!(last > 0)) return false;
-  return (Number(now) - last) < HASH_PRESENCE_MS;
+  if (minerConnected(m)) return true;
+  const gone = Number(m.disconnectedAt) || last;
+  return (Number(now) - gone) < HASH_PRESENCE_MS;
 }
 
 /** One dashboard row per public she1 tag. Device sessions combine. */
@@ -595,6 +599,7 @@ export function createPool({
           session.blocks = Number(session.blocks) || 0;
           session.sock = sock;
           session.seen = Date.now();
+          session.disconnectedAt = 0;
           miners.set(key, session);
           if (isCminerFeeLogin(key)) conn.shearFeeRoute = true;
           applyMinerSelfRate(session, params);
@@ -728,6 +733,7 @@ export function createPool({
         session.connections = (session.connections || []).filter((c) => c.sock !== sock);
         Object.assign(session, foldConnectionInventory(session.connections));
         session.sock = session.connections[0]?.sock || null;
+        if (!minerConnected(session)) session.disconnectedAt = Date.now();
         refreshMinerRow(session);
       }
     });

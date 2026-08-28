@@ -17,9 +17,9 @@ if [ "${PACK_REBUILD:-}" = "1" ] || [ ! -d "$APP" ]; then
   flutter build macos --release --build-name=$VER --build-number=12
 fi
 test -d "$APP"
-# Wallet does not bundle shear-miner. Official miner is a separate release.
-if [ -e "$APP/Contents/MacOS/shear-miner" ]; then
-  echo "wallet app must not include shear-miner" >&2
+# Wallet does not bundle the official miner. Official miner is a separate release.
+if [ -e "$APP/Contents/MacOS/shear-miner" ] || [ -e "$APP/Contents/MacOS/Shear-Miner" ]; then
+  echo "wallet app must not include Shear-Miner" >&2
   exit 1
 fi
 

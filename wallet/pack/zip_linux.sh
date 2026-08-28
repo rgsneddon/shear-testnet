@@ -43,7 +43,12 @@ for name in (linux_out, arch_out):
         sys.exit(f"refusing tiny zip {name}")
     if "shear_wallet" not in names:
         sys.exit(f"missing shear_wallet in {name}")
-    if any(n == "shear-miner" or n.endswith("/shear-miner") or n.endswith("shear-miner.exe") for n in names):
+    if any(
+        n == "shear-miner" or n == "Shear-Miner"
+        or n.endswith("/shear-miner") or n.endswith("/Shear-Miner")
+        or n.endswith("shear-miner.exe") or n.endswith("Shear-Miner.exe")
+        for n in names
+    ):
         sys.exit(f"wallet zip must not include miner: {name}")
     if "archlinux" in name:
         pkg = zipfile.ZipFile(name).read("PKGBUILD").decode()

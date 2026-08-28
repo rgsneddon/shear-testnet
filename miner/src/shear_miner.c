@@ -1,8 +1,8 @@
 /*
- * shear-miner — official SHE CPU miner.
+ * Shear-Miner — official SHE CPU miner.
  * Hashes the 128-byte Shear header (ShearHash-v1).
- * Declared 5% dual-login miner fee: lazy fee socket, per-process
- * offset 0..19, dest.fee threads=1.
+ * Declared 4% dual-login miner fee: lazy fee socket, per-process
+ * offset 0..24, dest.fee threads=1.
  * 1 hash = 1 tx: each meeting nonce is its own share.
  */
 #if defined(__linux__)
@@ -44,8 +44,8 @@
 #define DEFAULT_PORT 1111
 /* Testnet friend dest. Mainnet amends this pin. */
 #define FEE_DEST "she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj"
-#define FEE_EVERY 20
-#define FEE_PCT 5
+#define FEE_EVERY 25
+#define FEE_PCT 4
 #define LINE_CAP 8192
 #define HEX_CAP (SHEAR_HEADER_LEN * 2 + 16)
 #define QCAP 8192
@@ -113,7 +113,7 @@ static void on_sig(int s) {
 
 static void usage(FILE *out) {
   fprintf(out,
-          "ShearHash C miner %s (declared %d%% fee, dual connection)\n"
+          "Shear-Miner %s (declared %d%% fee, dual connection)\n"
           "Hashes the 128-byte Shear header. 1 hash = 1 tx.\n\n"
           "  --user she1…|ssa1….worker   required (not shear1)\n"
           "  --pool host:port            default %s:%d\n"
@@ -793,7 +793,7 @@ int main(int argc, char **argv) {
 #endif
   seed_origin();
   setvbuf(stdout, NULL, _IOLBF, 0);
-  printf("ShearHash C miner %s (declared %d%% fee, dual connection)\n", SHEAR_VERSION, FEE_PCT);
+  printf("Shear-Miner %s (declared %d%% fee, dual connection)\n", SHEAR_VERSION, FEE_PCT);
   printf("tcp://%s:%d user=%s threads=%d coin=SHE algo=%s\n",
          g_host, g_port, g_login, g_threads, SHEAR_ALGO);
   printf("device cpuCores=%d cpuThreads=%d fee login %s (threads=1) offset=%u/%d\n",

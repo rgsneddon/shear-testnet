@@ -27,8 +27,8 @@ export const MAGIC_MAINNET = 'shear-v1';
 export const BOOK_LAW_ID = 'shear-book-law-1';
 /** Display/tag version for wallet, node, and pool. Two-part only (`*.*`, never `0.1.0`). Start 0.1; later 0.10+ legal. Never 1.* unless the operator says so. */
 export const PRODUCT_VERSION = '0.1';
-/** Official C miner display/tag version. Two-part only (`*.*`). Never 1.* unless the operator says so. */
-export const MINER_VERSION = '0.5';
+/** Official C miner display/tag version. Two-part only (`*.*`). Operator set Shear-Miner to 1.0. */
+export const MINER_VERSION = '1.0';
 /** Hash bonus commits on accept. Not env. */
 export const HASH_COMMIT_ON_ACCEPT = 1;
 /** One open-window hash row per miner (collate). Not env. */

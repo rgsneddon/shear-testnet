@@ -51,8 +51,8 @@ def sign_path(path: Path, identity: str, entitlements: Path | None) -> None:
 def sign_app(app: Path, identity: str) -> None:
     if not app.is_dir():
         raise FileNotFoundError(f"app not found: {app}")
-    if (app / "Contents/MacOS/shear-miner").exists():
-        raise RuntimeError("wallet app must not include shear-miner")
+    if (app / "Contents/MacOS/shear-miner").exists() or (app / "Contents/MacOS/Shear-Miner").exists():
+        raise RuntimeError("wallet app must not include Shear-Miner")
     nested: list[Path] = []
     contents = app / "Contents"
     for root, dirs, files in os.walk(contents):

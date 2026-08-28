@@ -1,12 +1,12 @@
-VERSION ?= 0.5
+VERSION ?= 1.0
 CC ?= cc
 CFLAGS ?= -O2 -Wall -Wextra -std=c11
 UNAME_S := $(shell uname -s)
 ifeq ($(OS),Windows_NT)
-  BIN := shear-miner.exe
+  BIN := Shear-Miner.exe
   LIBS ?= -lws2_32 -pthread
 else
-  BIN := shear-miner
+  BIN := Shear-Miner
   LIBS ?= -pthread
 endif
 

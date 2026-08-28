@@ -164,7 +164,7 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.spendableConfirmations, 1);
     assert.equal(stats.minConfirmsPolicy, 12);
     assert.equal(stats.productVersion, '0.1');
-    assert.equal(stats.minerVersion, '0.5');
+    assert.equal(stats.minerVersion, '1.0');
     if (stats.header) assert.equal(stats.header.length, 256);
 
     const job = pool.issueJob();
@@ -176,7 +176,7 @@ describe('pool dashboard + stratum', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: dest + '.rig', client: 'ShearHash', name: 'shear-miner', version: '0.5', threads: 1 },
+          params: { login: dest + '.rig', client: 'ShearHash', name: 'Shear-Miner', version: '1.0', threads: 1 },
         }) + '\n');
       });
       let buf = '';
@@ -213,7 +213,7 @@ describe('pool dashboard + stratum', () => {
     });
     assert.match(scored, /OK/);
     const named = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
-    assert.ok((named.workers || []).some((w) => w.name === 'shear-miner' && w.version === '0.5'));
+    assert.ok((named.workers || []).some((w) => w.name === 'Shear-Miner' && w.version === '1.0'));
     assert.match(html, /w\.name/);
     pool.close();
   });
@@ -339,15 +339,15 @@ describe('public miner listing', () => {
   });
 
   it('miner and version boxes list each distinct label once', () => {
-    assert.equal(uniquePublicLabels(['shear-miner', 'shear-miner', 'shear-miner']), 'shear-miner');
+    assert.equal(uniquePublicLabels(['Shear-Miner', 'Shear-Miner', 'Shear-Miner']), 'Shear-Miner');
     assert.equal(uniquePublicLabels(['0.1.7', '0.1.7']), '0.1.7');
     assert.equal(uniquePublicLabels(['a', 'b', 'a']), 'a, b');
     const folded = foldPublicMinerViews([
-      { miner: 'she1aaaaaaaa', name: 'shear-miner', version: '0.1.7', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
-      { miner: 'she1aaaaaaaa', name: 'shear-miner', version: '0.1.7', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
+      { miner: 'she1aaaaaaaa', name: 'Shear-Miner', version: '1.0', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
+      { miner: 'she1aaaaaaaa', name: 'Shear-Miner', version: '1.0', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
     ]);
-    assert.equal(folded[0].name, 'shear-miner');
-    assert.equal(folded[0].version, '0.1.7');
+    assert.equal(folded[0].name, 'Shear-Miner');
+    assert.equal(folded[0].version, '1.0');
   });
 
   it('replaces rude miner/worker/name tokens with flower names', () => {
@@ -357,19 +357,32 @@ describe('public miner listing', () => {
     assert.equal(bloomExpletive('ok-rig'), 'ok-rig');
   });
 
-  it('isPublicMinerRow needs a valid share in the last 12s; connected-idle does not keep the row', () => {
+  it('isPublicMinerRow keeps a connected hasher with proven shares; drops 12s after disconnect', () => {
     assert.equal(HASH_PRESENCE_MS, 12_000);
     const now = 1_700_000_000_000;
-    const base = { accepted: 9, connections: [{ sock: {} }], workerKey: 'ssa1qtest.rig' };
-    assert.equal(isPublicMinerRow({ ...base, lastShareAt: now - 5_000 }, now), true);
-    assert.equal(isPublicMinerRow({ ...base, lastShareAt: now - 13_000 }, now), false);
-    assert.equal(isPublicMinerRow({ ...base, accepted: 0, lastShareAt: now - 1_000 }, now), false);
+    const live = { accepted: 9, connections: [{ sock: {} }], workerKey: 'ssa1qtest.rig' };
+    assert.equal(isPublicMinerRow({ ...live, lastShareAt: now - 5_000 }, now), true);
+    assert.equal(isPublicMinerRow({ ...live, lastShareAt: now - 13_000 }, now), true);
+    assert.equal(isPublicMinerRow({ ...live, accepted: 0, lastShareAt: now - 1_000 }, now), false);
     assert.equal(isPublicMinerRow({
       accepted: 4,
       lastShareAt: now - 20_000,
       acceptAt: [now - 20_000],
       connections: [],
+      disconnectedAt: now - 5_000,
+    }, now), true);
+    assert.equal(isPublicMinerRow({
+      accepted: 4,
+      lastShareAt: now - 20_000,
+      acceptAt: [now - 20_000],
+      connections: [],
+      disconnectedAt: now - 13_000,
     }, now), false);
+    assert.equal(isPublicMinerRow({
+      accepted: 4,
+      lastShareAt: now - 5_000,
+      connections: [],
+    }, now), true);
     assert.equal(lastValidWorkAt({ lastShareAt: 10, acceptAt: [5, 12] }), 12);
     const fee = { accepted: 9, lastShareAt: now, workerKey: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.fee' };
     assert.equal(isPublicMinerRow(fee, now), false);
@@ -377,8 +390,8 @@ describe('public miner listing', () => {
 
   it('foldPublicMinerViews keeps one row per she1 tag and sums device stats', () => {
     const folded = foldPublicMinerViews([
-      { miner: 'she1aaaaaaaa', worker: 'rig', name: 'a', version: '0.5', hashrate: 10, accepted: 2, stale: 1, blocks: 0, threads: 4, sessions: 1, roundHashes: 8, connected: true, lastSeen: 20, firstSeen: 1 },
-      { miner: 'she1aaaaaaaa', worker: 'box', name: 'b', version: '0.5', hashrate: 5, accepted: 3, stale: 0, blocks: 1, threads: 2, sessions: 1, roundHashes: 4, connected: false, lastSeen: 30, firstSeen: 2 },
+      { miner: 'she1aaaaaaaa', worker: 'rig', name: 'a', version: '1.0', hashrate: 10, accepted: 2, stale: 1, blocks: 0, threads: 4, sessions: 1, roundHashes: 8, connected: true, lastSeen: 20, firstSeen: 1 },
+      { miner: 'she1aaaaaaaa', worker: 'box', name: 'b', version: '1.0', hashrate: 5, accepted: 3, stale: 0, blocks: 1, threads: 2, sessions: 1, roundHashes: 4, connected: false, lastSeen: 30, firstSeen: 2 },
       { miner: 'she1bbbbbbbb', worker: 'solo', hashrate: 1, accepted: 1, stale: 0, blocks: 0, threads: 1, sessions: 1, roundHashes: 1, connected: true, lastSeen: 9, firstSeen: 9 },
     ]);
     assert.equal(folded.length, 2);
@@ -394,7 +407,7 @@ describe('public miner listing', () => {
     assert.equal(a.firstSeen, 1);
   });
 
-  it('dashboard lists one she1 row for two device logins; 12s idle and disconnected ghosts drop', async () => {
+  it('dashboard lists one she1 row for two device logins; 12s after full disconnect ghosts drop', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-miner-ui-'));
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
@@ -437,10 +450,19 @@ describe('public miner listing', () => {
       m.lastShareAt = aged;
       m.acceptAt = [aged];
     }
-    const gone = pool.publicStats();
-    assert.equal((gone.workers || []).some((w) => w.miner === tag), false);
+    const stillLive = pool.publicStats();
+    assert.equal((stillLive.workers || []).some((w) => w.miner === tag), true);
     a.destroy();
     b.destroy();
+    await new Promise((r) => setTimeout(r, 50));
+    const grace = pool.publicStats();
+    assert.equal((grace.workers || []).some((w) => w.miner === tag), true, '12s grace after full disconnect');
+    for (const m of pool.miners.values()) {
+      m.lastShareAt = aged;
+      m.acceptAt = [aged];
+      m.connections = [];
+      m.disconnectedAt = aged;
+    }
     const ghost = pool.publicStats();
     assert.equal((ghost.workers || []).some((w) => w.miner === tag), false);
     const detail = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${tag}`);
@@ -494,7 +516,7 @@ describe('public miner listing', () => {
     pool.close();
   });
 
-  it('5% fee login with hasher lifetime hashes never appears as a public GH/s row', async () => {
+  it('4% fee login with hasher lifetime hashes never appears as a public GH/s row', async () => {
     assert.equal(isCminerFeeLogin(`${CMINER_FEE_SHE}.fee`), true);
     assert.equal(isCminerFeeLogin(CMINER_FEE_SHE), true);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fee-hs-'));

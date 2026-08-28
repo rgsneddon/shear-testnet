@@ -1,5 +1,7 @@
 miner/shear-miner
 miner/shear-miner.exe
+miner/Shear-Miner
+miner/Shear-Miner.exe
 *.o
 .DS_Store
 node_modules/

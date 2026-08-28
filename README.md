@@ -4,7 +4,7 @@ Private by default. Proof of work only. Continuity-settled.
 
 - Ticker: **SHE**
 - Algo: **ShearHash** (CPU)
-- Miner pin: **0.5** (`[testnet]`). Wallet / node / pool pin: **0.1**. Declared **5%** dual-login miner fee at `she1qlrll…fee`.
+- Miner pin: **Shear-Miner 1.0** (`[testnet]`). Wallet / node / pool pin: **0.1**. Declared **4%** dual-login miner fee at `she1qlrll…fee`.
 - Stratum: `pool.shear.digital:1111`
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital
@@ -28,7 +28,7 @@ master book.
 ## Mine (testnet)
 
 ```
-shear-miner --pool pool.shear.digital:1111 --user she1YOURID.worker --threads 4
+Shear-Miner --pool pool.shear.digital:1111 --user she1YOURID.worker --threads 4
 ```
 Offer `she1` (silent ID). Miner login is `she1` or a revolving `ssa1` dest. Payouts are `ssa1` on chain — `she1` never appears there. Rest-frame `shear1` is never a login.
 
