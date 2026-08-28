@@ -82,6 +82,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   final reserveAmt = TextEditingController();
   final joinKeyCtrl = TextEditingController();
   final vorticeKeyCtrl = TextEditingController();
+  final shearviewQuery = TextEditingController();
   bool _vorticeBusy = false;
   late final ShearReserve reserve = widget.reserve ?? ShearReserve();
   late final ShearJoin join = widget.join ?? ShearJoin();
@@ -110,6 +111,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     reserveAmt.dispose();
     joinKeyCtrl.dispose();
     vorticeKeyCtrl.dispose();
+    shearviewQuery.dispose();
     _accrualTick?.cancel();
     super.dispose();
   }
@@ -195,7 +197,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         var pay = ledger.currentDest(id!.address);
         if (ledger.spendable(pay) <= 0) {
           final minted = ledger.confirmRound(address: id!.address, pot: 1, height: 1);
-          ledger.settleTo(ShearLedger.spendableConfirmations);
+          ledger.settleTo(ShearLedger.continuumConfirmations);
           _ingestTx(id!, minted);
         }
       }
@@ -544,26 +546,20 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         const SizedBox(height: 16),
         Text('Pending', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
         Text(
-          pending.any((t) => t.kind == 'receive' || t.kind == 'coinbase')
-              ? 'Incoming fills a 6-slice pie as blocks confirm (spendable at ${ShearLedger.spendableConfirmations}).'
-              : 'Until the next block is found.',
+          'Each pending fills a 6-slice pie as blocks confirm (spendable at ${ShearLedger.spendableConfirmations}; leaves Continuum at ${ShearLedger.continuumConfirmations}). Hash rewards bundle into the block when height advances.',
           style: TextStyle(color: shearMutedOf(context)),
         ),
         for (final t in pending)
           ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
-            leading: t.kind == 'receive' || t.kind == 'coinbase'
-                ? ConfirmPie(
-                    key: Key('confirm-pie-${t.id}'),
-                    filled: ledger.confirmationsOf(t.height ?? 0),
-                  )
-                : null,
+            leading: ConfirmPie(
+              key: Key('confirm-pie-${t.id}'),
+              filled: ledger.confirmationsOf(t.height ?? 0),
+            ),
             title: Text('${t.kind}  ${formatShe(t.amount)} SHE'),
             subtitle: Text(
-              t.kind == 'receive' || t.kind == 'coinbase'
-                  ? '${ledger.confirmationsOf(t.height ?? 0).clamp(0, 6)}/6 conf  ${t.from} → ${t.to}'
-                  : '${t.from} → ${t.to}',
+              '${ledger.confirmationsOf(t.height ?? 0).clamp(0, ShearLedger.continuumConfirmations)}/${ShearLedger.continuumConfirmations} conf  ${t.from} → ${t.to}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -582,9 +578,16 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   Widget _shearview(BuildContext context, ShearIdentity ident) {
-    final hist = ledger.ownerHistory(ident.address).where((t) => t.confirmed).toList();
+    final hist = ledger.shearviewSearch(ident.address, shearviewQuery.text);
     return _card([
       const Text('Shearview  S_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
+      Text('Your dedicated explorer. Bundled confirmed blocks — not per-hash pieces.', style: TextStyle(color: shearMutedOf(context))),
+      TextField(
+        key: const Key('shearview-search'),
+        controller: shearviewQuery,
+        decoration: const InputDecoration(labelText: 'Search id, dest, kind, amount, height, memo'),
+        onChanged: (_) => setState(() {}),
+      ),
       if (hist.any((t) => t.memo && t.memoPlain != null && !openedMemos.contains(t.id)))
         Text('you have a new memo', style: TextStyle(fontWeight: FontWeight.w700, color: shearAccentOf(context))),
       if (hist.isEmpty) Text('No confirmed transactions yet.', style: TextStyle(color: shearMutedOf(context))),

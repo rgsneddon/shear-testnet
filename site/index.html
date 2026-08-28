@@ -35,7 +35,7 @@
     }
     .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
     a.nav-btn {
-      display:inline-flex; align-items:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
+      display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
       font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.65rem; text-transform:uppercase;
       border:1px solid transparent;
       background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
@@ -49,6 +49,16 @@
       width:100%; height:100%; object-fit:cover; object-position:center;
     }
     .pulse { color:var(--green); font-size:.7rem; }
+    .client-row {
+      display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin:4px 0 20px;
+    }
+    .client-row a.nav-btn {
+      display:inline-flex; align-items:center; justify-content:center;
+      text-align:center; height:72px; min-width:10.5rem; padding:0 28px;
+      font-size:1.15rem; letter-spacing:.12em; text-indent:.12em; font-weight:800;
+    }
+    @media (max-width: 640px) {
+      .client-row a.nav-btn { min-width:100%; height:64px; font-size:1.05rem; }
   </style>
 </head>
 <body>
@@ -66,9 +76,9 @@
       <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">MINER</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/shear-testnet/releases/tag/1.1" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.1" target="_blank" rel="noopener">WALLET</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -86,6 +96,11 @@
         data-dark="/brand/SHEAR_dark.png"/>
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
+    <nav class="client-row" id="client-downloads" aria-label="Latest clients">
+      <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.1">WALLET</a>
+      <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/shear-testnet/releases/tag/1.1">MINER</a>
+      <a class="nav-btn" id="dl-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node">NODE</a>
+    </nav>
     <section class="panel-card">
       <h1>Shear</h1>
       <p>she is private</p>
@@ -97,5 +112,45 @@
       <p class="pulse">live · testnet</p>
     </section>
   </div>
+  <script>
+    (function () {
+      var BASE = 'https://github.com/rgsneddon/shear-testnet/releases/download';
+      var ua = navigator.userAgent || '';
+      var plat = 'macos';
+      if (/Android/i.test(ua)) plat = 'android';
+      else if (/iPhone|iPad|iPod/i.test(ua)) plat = 'ios';
+      else if (/Windows/i.test(ua)) plat = 'windows';
+      else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
+      else if (/Mac/i.test(ua)) plat = 'macos';
+      var wallet = {
+        macos: BASE + '/0.1/shear-wallet-0.1-macos.dmg',
+        windows: BASE + '/0.1/shear-wallet-0.1-windows.zip',
+        android: BASE + '/0.1/shear-wallet-0.1-android.apk',
+        linux: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.1',
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.1'
+      };
+      var miner = {
+        macos: BASE + '/1.1/Shear-Miner-1.1-macos.zip',
+        windows: BASE + '/1.1/Shear-Miner-1.1-windows.zip',
+        linux: BASE + '/1.1/Shear-Miner-1.1-linux.zip',
+        android: BASE + '/1.1/Shear-Miner-1.1-linux.zip',
+        ios: BASE + '/1.1/Shear-Miner-1.1-macos.zip'
+      };
+      var node = 'https://github.com/rgsneddon/shear-testnet/tree/main/node';
+      function bind(id, href) {
+        var a = document.getElementById(id);
+        if (!a) return;
+        a.href = href;
+        if (href.indexOf('http') === 0) { a.target = '_blank'; a.rel = 'noopener'; }
+      }
+      bind('dl-wallet', wallet[plat] || wallet.macos);
+      bind('dl-miner', miner[plat] || miner.macos);
+      bind('dl-node', node);
+      bind('nav-wallet', wallet[plat] || wallet.macos);
+      bind('nav-miner', miner[plat] || miner.macos);
+      bind('nav-node', node);
+      window.shearLatestClients = { platform: plat, wallet: wallet[plat], miner: miner[plat], node: node };
+    })();
+  </script>
 </body>
 </html>

@@ -84,6 +84,11 @@ class ShearTx {
         threads: threads,
       );
 
+  bool get isHashReward => kind == 'hash';
+
+  bool get isBlockBundle =>
+      kind == 'coinbase' || kind == 'blockfound' || kind == 'block' || kind == 'pot' || kind == 'mine';
+
   factory ShearTx.fromJson(Map<String, dynamic> j) => ShearTx(
         id: j['id']?.toString() ?? '',
         from: j['from']?.toString() ?? '',
@@ -99,6 +104,75 @@ class ShearTx {
         hashAmount: (j['hashAmount'] as num?)?.toDouble(),
         threads: (j['threads'] as num?)?.toInt(),
       );
+}
+
+/// Fold per-hash / pot / mine rows into one confirmed block row per dest+height.
+/// Shearview lists the bundle. Continuum keeps a single open-round hash row.
+List<ShearTx> rollupExplorerTxs(Iterable<ShearTx> txs) {
+  final rest = <ShearTx>[];
+  final blocks = <String, ({String dest, int height, double pot, double hash, int threads})>{};
+  for (final t in txs) {
+    final kind = t.kind;
+    if (kind == 'hash' ||
+        kind == 'coinbase' ||
+        kind == 'pot' ||
+        kind == 'mine' ||
+        kind == 'blockfound' ||
+        kind == 'block') {
+      final dest = t.to;
+      final height = t.height ?? 0;
+      final key = '$dest|$height';
+      final prev = blocks[key] ?? (dest: dest, height: height, pot: 0.0, hash: 0.0, threads: 0);
+      var pot = prev.pot;
+      var hash = prev.hash;
+      var threads = prev.threads;
+      final amt = t.amount;
+      if (kind == 'hash') {
+        hash += amt;
+        threads += t.threads ?? 0;
+      } else if (kind == 'mine' || kind == 'blockfound' || kind == 'block') {
+        pot += amt - (t.hashAmount ?? 0);
+        hash += t.hashAmount ?? 0;
+        threads += t.threads ?? t.rounds ?? 0;
+      } else {
+        pot += amt;
+      }
+      blocks[key] = (dest: dest, height: height, pot: pot, hash: hash, threads: threads);
+      continue;
+    }
+    rest.add(t);
+  }
+  for (final b in blocks.values) {
+    rest.add(ShearTx(
+      id: b.dest.isEmpty ? 'blockfound:${b.height}' : 'blockfound:${b.height}:${b.dest}',
+      from: 'coinbase',
+      to: b.dest,
+      amount: b.pot + b.hash,
+      kind: 'blockfound',
+      height: b.height,
+      confirmed: true,
+      hashAmount: b.hash,
+      threads: b.threads > 0 ? b.threads : null,
+    ));
+  }
+  return rest;
+}
+
+/// Shearview query over id, dest, kind, amount, height, and memo.
+bool shearviewMatches(ShearTx t, String query) {
+  final q = query.trim().toLowerCase();
+  if (q.isEmpty) return true;
+  final hay = <String>[
+    t.id,
+    t.from,
+    t.to,
+    t.kind,
+    formatShe(t.amount),
+    '${t.amount}',
+    '${t.height ?? ''}',
+    t.memoPlain ?? '',
+  ].join(' ').toLowerCase();
+  return hay.contains(q);
 }
 
 /// Spendable at block-found only. Per-hash credit sits in [pending] until confirm.
@@ -131,6 +205,8 @@ class ShearLedger {
   int get settledHeight => _settledHeight;
   /// Consensus floor: 1 confirmation.
   static const spendableConfirmations = 1;
+  /// Continuum pie lifetime. Not consensus. Not fingerprint.
+  static const continuumConfirmations = 6;
   /// Third-party/merchant policy (~18 min). Not consensus.
   static const minConfirms = 12;
   final List<({String dest, double amount, int height})> _immature = [];
@@ -138,19 +214,51 @@ class ShearLedger {
   /// Read lag-1 continuity from a 128-byte tip header. Next dest uses sealedHeight+1.
   void applyTipHeader(Uint8List header, {required int sealedHeight}) {
     lag1Root = lag1ContinuityFromHeader(header);
-    tipHeight = sealedHeight < 1 ? 1 : sealedHeight + 1;
-    if (sealedHeight > _sealedHeight) _sealedHeight = sealedHeight;
-    settleTo(sealedHeight);
+    _advanceSealed(sealedHeight);
   }
 
   void applyTipHex(String headerHex, {required int sealedHeight}) {
     final raw = headerFromHex(headerHex);
     if (raw == null) {
       if (sealedHeight >= 1) tipHeight = sealedHeight + 1;
-      if (sealedHeight > _sealedHeight) _sealedHeight = sealedHeight;
+      _advanceSealed(sealedHeight);
       return;
     }
     applyTipHeader(raw, sealedHeight: sealedHeight);
+  }
+
+  /// Painted tip can run ahead of credit sync. Bundle the closed open-round
+  /// when height actually moves so pending does not freeze.
+  void _advanceSealed(int sealedHeight) {
+    final prev = _sealedHeight;
+    if (sealedHeight < 1) {
+      settleTo(_sealedHeight);
+      return;
+    }
+    tipHeight = sealedHeight + 1;
+    if (sealedHeight > _sealedHeight) _sealedHeight = sealedHeight;
+    if (prev > 0 && sealedHeight > prev) {
+      _bundleOpenRounds(height: prev + 1);
+    }
+    settleTo(sealedHeight);
+  }
+
+  void _bundleOpenRounds({required int height}) {
+    final dests = <String>{..._pending.keys, ..._dests};
+    for (final t in _txs) {
+      if (t.confirmed) continue;
+      if (t.to.isNotEmpty) dests.add(payKey(t.to));
+    }
+    for (final d in dests) {
+      if (d.isEmpty) continue;
+      final openAmt = _pending[d] ?? 0;
+      final openTx = _txs.any((t) =>
+          !t.confirmed &&
+          (t.kind == 'hash' || t.kind == 'receive' || t.kind == 'send' || t.kind == 'coinbase') &&
+          (t.to == d || t.from == d || t.id == _hashPendingId(d)));
+      if (openAmt <= 0 && !openTx) continue;
+      confirmRound(address: d, pot: 0, height: height);
+    }
   }
 
   Iterable<ShearTx> get transactions => List.unmodifiable(_txs);
@@ -250,12 +358,21 @@ class ShearLedger {
   }
 
   /// Block found: pending hash bonus + pending receives + pot become spendable.
+  /// Individual hash rows are bundled into one coinbase and pruned.
   ShearTx confirmRound({
     required String address,
     double pot = 0,
     int height = 0,
   }) {
     final dest = payKey(address);
+    final roundId = 'round-$height-$dest';
+    final existing = _txs.cast<ShearTx?>().firstWhere((t) => t!.id == roundId, orElse: () => null);
+    if (existing != null) {
+      if (height > _sealedHeight) _sealedHeight = height;
+      settleTo(_sealedHeight);
+      prune();
+      return existing;
+    }
     final bonus = dest == address
         ? (_pending[address] ?? 0)
         : (_pending[dest] ?? 0) + (_pending[address] ?? 0);
@@ -269,7 +386,7 @@ class ShearLedger {
     final hashBonus = hashPendingOf(dest) + (dest == address ? 0 : hashPendingOf(address));
     final coinbaseAmt = pot + hashBonus;
     final tx = ShearTx(
-      id: 'round-$height-$dest',
+      id: roundId,
       from: 'coinbase',
       to: dest,
       amount: coinbaseAmt > 0 ? coinbaseAmt : total,
@@ -334,14 +451,19 @@ class ShearLedger {
   }
 
   /// Drop per-hash sample noise. Keep sealed txs + in-flight send/hash/receive.
-  /// Confirmed hash rows are rolled into the coinbase and dropped.
+  /// Hash rows with a height are already bundled into the block and dropped.
   void prune() {
     final seen = <String>{};
     final next = <ShearTx>[];
     for (final t in _txs) {
       if (t.kind == 'sample') continue;
-      if (t.kind == 'hash' && t.confirmed) continue;
-      if (!t.confirmed && t.kind != 'send' && t.kind != 'hash' && t.kind != 'receive' && t.kind != 'coinbase') continue;
+      if (t.kind == 'hash' && (t.confirmed || (t.height ?? 0) > 0)) continue;
+      if (!t.confirmed &&
+          t.kind != 'send' &&
+          t.kind != 'hash' &&
+          t.kind != 'receive' &&
+          t.kind != 'coinbase' &&
+          t.kind != 'blockfound') continue;
       if (!seen.add(t.id)) continue;
       next.add(t);
     }
@@ -474,8 +596,13 @@ class ShearLedger {
     try {
       final json = await pool!.history(address);
       final rows = (json['txs'] as List?) ?? const [];
+      final parsed = <ShearTx>[];
       for (final row in rows) {
-        var tx = ShearTx.fromJson(Map<String, dynamic>.from(row as Map));
+        parsed.add(ShearTx.fromJson(Map<String, dynamic>.from(row as Map)));
+      }
+      for (final raw in rollupExplorerTxs(parsed)) {
+        var tx = raw;
+        if (tx.kind == 'hash') continue;
         final existing = _txs.cast<ShearTx?>().firstWhere((t) => t!.id == tx.id, orElse: () => null);
         var plain = existing?.memoPlain ?? tx.memoPlain;
         if (plain == null && tx.memoCt != null) {
@@ -493,8 +620,12 @@ class ShearLedger {
             memo: true,
             memoPlain: plain,
             memoCt: tx.memoCt,
+            hashAmount: tx.hashAmount,
+            threads: tx.threads,
           );
         }
+        if (tx.to.isNotEmpty) _dests.add(tx.to);
+        if (tx.from.isNotEmpty && tx.from != 'coinbase' && tx.from != 'hash') _dests.add(tx.from);
         final i = _txs.indexWhere((t) => t.id == tx.id);
         if (i >= 0) {
           _txs[i] = tx;
@@ -558,20 +689,53 @@ class ShearLedger {
 
   List<ShearTx> ownerHistory(String address) {
     final keys = ownedAddresses(address);
-    return _txs.where((t) => (t.confirmed || t.kind == 'send') && (keys.contains(t.to) || keys.contains(t.from))).toList();
-  }
-
-  /// Unconfirmed hash/receive/send/coinbase rows. An incoming row evaporates
-  /// from this list once it has [spendableConfirmations] (pie and all);
-  /// leftover pendings stay.
-  List<ShearTx> pendingTxs(String address) {
-    final keys = ownedAddresses(address);
     return _txs
         .where((t) =>
-            !t.confirmed &&
-            (t.kind == 'send' || t.kind == 'hash' || t.kind == 'receive' || t.kind == 'coinbase') &&
-            (keys.contains(t.to) || keys.contains(t.from) || t.from == 'hash' || t.from == 'pending' || t.from == 'coinbase'))
+            t.kind != 'hash' &&
+            (t.confirmed || t.kind == 'send') &&
+            (keys.contains(t.to) || keys.contains(t.from)))
         .toList();
+  }
+
+  /// Dedicated explorer list: bundled confirmed rows at Continuum pie depth.
+  /// Never per-hash pieces.
+  List<ShearTx> shearviewTxs(String address) {
+    final keys = ownedAddresses(address);
+    return _txs.where((t) {
+      if (t.kind == 'hash' || t.kind == 'sample') return false;
+      if (!t.confirmed && t.kind != 'send') return false;
+      if (!(keys.contains(t.to) || keys.contains(t.from))) return false;
+      final h = t.height ?? 0;
+      if (h < 1) return false;
+      return confirmationsOf(h) >= continuumConfirmations;
+    }).toList();
+  }
+
+  List<ShearTx> shearviewSearch(String address, String query) {
+    return shearviewTxs(address).where((t) => shearviewMatches(t, query)).toList();
+  }
+
+  /// Continuum rows while the 6-slice pie is filling. Hash rewards stay
+  /// only for the open round (no height); a new height bundles and prunes them.
+  /// Spendable still lands at [spendableConfirmations].
+  List<ShearTx> pendingTxs(String address) {
+    final keys = ownedAddresses(address);
+    return _txs.where((t) {
+      if (t.kind == 'sample') return false;
+      final mine = keys.contains(t.to) ||
+          keys.contains(t.from) ||
+          t.from == 'hash' ||
+          t.from == 'pending' ||
+          t.from == 'coinbase';
+      if (!mine) return false;
+      if (t.kind == 'hash') return !t.confirmed && (t.height ?? 0) < 1;
+      if (t.kind != 'send' && t.kind != 'receive' && t.kind != 'coinbase' && t.kind != 'blockfound') {
+        return false;
+      }
+      final h = t.height ?? 0;
+      if (h < 1) return !t.confirmed;
+      return confirmationsOf(h) < continuumConfirmations;
+    }).toList();
   }
 
   /// Principal + interest from The Reserve, paid to a Continuum dest.
