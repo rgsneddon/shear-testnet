@@ -119,7 +119,35 @@ export function publicWorkerName(login) {
   const raw = String(login || '').trim();
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
   const clean = worker.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
-  return clean || 'worker';
+  return bloomExpletive(clean || 'worker');
+}
+
+/** Public labels: swap rude tokens for flower names. Longest match first. */
+const BLOOM_WORDS = [
+  [/cunt/gi, 'rose'],
+  [/fuck/gi, 'iris'],
+  [/shit/gi, 'lily'],
+  [/bitch/gi, 'daisy'],
+  [/whore/gi, 'poppy'],
+  [/slut/gi, 'aster'],
+  [/dick/gi, 'tulip'],
+  [/cock/gi, 'peony'],
+  [/piss/gi, 'violet'],
+  [/wank/gi, 'heather'],
+  [/bastard/gi, 'clover'],
+  [/asshole/gi, 'primrose'],
+];
+
+export function bloomExpletive(s) {
+  let t = String(s ?? '');
+  for (const [re, flower] of BLOOM_WORDS) {
+    t = t.replace(re, (m) => {
+      if (m.length > 1 && m === m.toUpperCase()) return flower.toUpperCase();
+      if (m[0] === m[0].toUpperCase()) return flower.charAt(0).toUpperCase() + flower.slice(1);
+      return flower;
+    });
+  }
+  return t;
 }
 
 export function publicMinerLabel(login) {
@@ -702,8 +730,8 @@ export function createPool({
     return {
       miner: publicMinerTag(m.login || m.workerKey),
       worker: publicWorkerName(m.workerKey || m.login),
-      version: String(m.version || ''),
-      name: String(m.name || ''),
+      version: bloomExpletive(String(m.version || '')),
+      name: bloomExpletive(String(m.name || '')),
       client: String(m.client || CLIENT),
       algo: ALGO,
       hashrate: reportedHashrate(m, now),

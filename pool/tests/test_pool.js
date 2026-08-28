@@ -15,7 +15,7 @@ import { requiredJobFields } from '../../crypto/header.js';
 import { payoutDest } from '../../crypto/address.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName } from '../src/pool.js';
 import { publicJob, buildTemplate } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
@@ -336,6 +336,13 @@ describe('public miner listing', () => {
     assert.match(dash, /s\.workers/);
     assert.match(miner, /d\.workers/);
     assert.equal(/localStorage/.test(dash + miner), false);
+  });
+
+  it('replaces rude miner/worker/name tokens with flower names', () => {
+    assert.equal(bloomExpletive('workiecunt'), 'workierose');
+    assert.equal(bloomExpletive('ShitCunt'), 'LilyRose');
+    assert.equal(publicWorkerName('ssa1qexample.workiecunt'), 'workierose');
+    assert.equal(bloomExpletive('ok-rig'), 'ok-rig');
   });
 
   it('isPublicMinerRow needs a valid share in the last 12s; connected-idle does not keep the row', () => {
