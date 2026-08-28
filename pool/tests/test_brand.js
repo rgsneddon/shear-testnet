@@ -114,7 +114,7 @@ describe('brand pages', () => {
     assert.match(css, /--gold:\s*#c48a00/);
     assert.match(css, /--gold:\s*#ffd24a/);
     assert.match(css, /html,\s*body\s*\{/);
-    assert.match(css, /font-size:\s*13px/);
+    assert.match(css, /font-size:\s*15px/);
     assert.match(css, /a\.nav-btn\.is-on\s*\{\s*color:\s*var\(--gold\)/);
     const siteHtml = read('site/index.html');
     const poolHtml = read('pool/public/index.html');
@@ -169,7 +169,7 @@ describe('brand pages', () => {
       assert.match(body[0], /"Segoe UI"/);
       assert.equal(/"Urema"/.test(body[0]), false);
       assert.equal(/"Nevia"/.test(body[0]), false);
-      assert.match(body[0], /1[36]px/);
+      assert.match(body[0], /15px/);
       assert.match(p, /h1,\s*h2,\s*\.label\s*\{[^}]*font-family:\s*"Segoe UI"/);
     }
     const css = read('pool/public/brand/theme.css');

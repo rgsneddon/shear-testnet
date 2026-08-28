@@ -18,15 +18,15 @@ html[data-theme="dark"] {
 .banner-wordmark { height: 36px; width: auto; display: block; }
 html, body {
   font-family: "Segoe UI", system-ui, sans-serif;
-  font-size: 13px;
-  line-height: 1.35;
+  font-size: 15px;
+  line-height: 1.4;
 }
 h1, h2, .label {
   font-family: "Segoe UI", system-ui, sans-serif;
 }
-h1 { font-size: 1.15rem; font-weight: 800; }
-h2 { font-size: 1rem; font-weight: 800; }
-.label { font-size: 0.65rem; font-weight: 700; }
+h1 { font-size: 1.28rem; font-weight: 800; }
+h2 { font-size: 1.12rem; font-weight: 800; }
+.label { font-size: 0.75rem; font-weight: 700; }
 a.nav-btn.is-on { color: var(--gold); }
 button.theme-toggle {
   display: inline-flex; align-items: center; justify-content: center;

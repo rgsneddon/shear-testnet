@@ -7,18 +7,18 @@
   <title>Shear — testnet</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=11"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=12"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
       --cyan: #0088a8; --blue: #1a6fb5; --green: #1a9a4a; --radius: 0px;
     }
     * { box-sizing: border-box; }
-    html, body { margin:0; font:13px/1.35 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    html, body { margin:0; font:15px/1.4 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
     .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
     h1, h2, .label { font-family:"Segoe UI",system-ui,sans-serif; }
-    h1 { font-size:1.15rem; font-weight:800; margin:0 0 8px; }
-    h2 { font-size:1rem; font-weight:800; margin:0 0 8px; }
+    h1 { font-size:1.28rem; font-weight:800; margin:0 0 8px; }
+    h2 { font-size:1.12rem; font-weight:800; margin:0 0 8px; }
     p { margin:0 0 8px; overflow-wrap:anywhere; }
     .panel-card {
       border: 1px solid transparent; border-radius: var(--radius); padding: 10px 12px; margin: 8px 0;
@@ -26,7 +26,7 @@
         linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
       background-origin: border-box; background-clip: padding-box, border-box;
     }
-    .label { color:var(--muted); font-size:.65rem; letter-spacing:.05em; text-transform:uppercase; }
+    .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; }
     a { color:var(--cyan); }
     code { background:var(--code); padding:.2em .45em; color:var(--green); }
     .top-banner {
@@ -36,7 +36,7 @@
     .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
     a.nav-btn {
       display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
-      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.65rem; text-transform:uppercase;
+      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
       border:1px solid transparent;
       background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
         linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
@@ -48,12 +48,11 @@
     .hero img {
       width:100%; height:100%; object-fit:cover; object-position:center;
     }
-    .pulse { color:var(--green); font-size:.7rem; }
+    .pulse { color:var(--green); font-size:.8rem; }
     .pack-advisory {
-      text-align:center; color:var(--muted); font-size:.68rem; line-height:1.45;
-      margin:8px 12px 10px; overflow-wrap:anywhere; letter-spacing:.02em;
+      text-align:center; color:var(--muted); font-size:.85rem; line-height:1.45;
+      margin:8px 12px 10px; letter-spacing:.02em;
     }
-    .pack-advisory code { font-size:.62rem; color:var(--cyan); }
     .client-row {
       display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin:4px 0 20px;
       position:relative; z-index:8; overflow:visible;
@@ -75,7 +74,7 @@
     }
     .client-menu a {
       display:block; padding:10px 14px; color:var(--ink); text-decoration:none;
-      font-weight:700; font-size:.8rem; letter-spacing:.04em; text-align:left;
+      font-weight:700; font-size:.9rem; letter-spacing:.04em; text-align:left;
     }
     .client-menu a:hover { color:var(--cyan); background:rgba(26,111,181,.08); }
     .client-dd:hover .client-menu, .client-dd:focus-within .client-menu { display:flex; }
@@ -121,16 +120,7 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.2</strong>
-      macos dmg sha256 <code title="fd335b48846426900fe1ec27766c08dbecec0fc17d57b389260fcc96057b17a1">fd335b48846426900fe1ec27766c08dbecec0fc17d57b389260fcc96057b17a1</code>
-      · windows zip sha256 <code title="e896a824252044159e9865258a15ababea2e48676775878ce356fa624e010f57">e896a824252044159e9865258a15ababea2e48676775878ce356fa624e010f57</code>
-      · linux zip sha256 <code title="f785ebe3fd5810b3f1550ca05b7f08cc5a4d6715230baa939c247e1e7991d689">f785ebe3fd5810b3f1550ca05b7f08cc5a4d6715230baa939c247e1e7991d689</code>
-      · archlinux zip sha256 <code title="cb930fecc62221e7ddc31d35349cdd14e84169066769810032520564229db870">cb930fecc62221e7ddc31d35349cdd14e84169066769810032520564229db870</code>
-      · android apk sha256 <code title="356bbb25dbdf49b5fdf69bbfb1f5dea7a255a0e7b1a62d5bd9d0cba5f0b32e38">356bbb25dbdf49b5fdf69bbfb1f5dea7a255a0e7b1a62d5bd9d0cba5f0b32e38</code>
-      · miner <strong>1.1</strong>
-      macos sha256 <code title="eef5775766db1b4ae6b1e0cc77211a61744b440b0a5838ce1bfabca133b154fe">eef5775766db1b4ae6b1e0cc77211a61744b440b0a5838ce1bfabca133b154fe</code>
-      windows sha256 <code title="86fa415cbd770e9135ce3f1e8ae09de1c011b11ae5106cc91290eb11d7102540">86fa415cbd770e9135ce3f1e8ae09de1c011b11ae5106cc91290eb11d7102540</code>
-      linux sha256 <code title="39b0f2ce2b660ee684f9a1c5017257b1789960af0226ba76f57a7f84d615aab1">39b0f2ce2b660ee684f9a1c5017257b1789960af0226ba76f57a7f84d615aab1</code>
+      wallet <strong>0.2</strong> · miner <strong>1.1</strong>
     </p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">

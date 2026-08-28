@@ -7,7 +7,7 @@
   <title>Shear mempool · logarithmic lattice</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=10"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=12"/>
   <style>
     :root, html[data-theme="light"] {
       --lattice-bg: #dce6f0;
@@ -74,7 +74,7 @@
     * { box-sizing: border-box; }
     html, body {
       margin:0; height:100%; background:var(--bg); color:var(--ink);
-      font:13px/1.35 "Segoe UI",system-ui,sans-serif; overflow:hidden;
+      font:15px/1.4 "Segoe UI",system-ui,sans-serif; overflow:hidden;
     }
     .top-banner {
       display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
@@ -83,7 +83,7 @@
     .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
     a.nav-btn {
       display:inline-flex; align-items:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
-      font-weight:750; letter-spacing:.05em; font-size:.65rem; text-transform:uppercase;
+      font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
       border:1px solid transparent;
       background: linear-gradient(165deg, var(--nav-fill-a) 0%, var(--nav-fill-b) 58%) padding-box,
         linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
@@ -110,24 +110,24 @@
       font-family: Georgia, "Times New Roman", serif; font-size:1.35rem;
       color:var(--title); text-shadow:0 0 18px var(--title-glow);
     }
-    .sub { font-style:italic; color:var(--card-muted); margin:0 0 8px; font-size:.85rem; }
-    .label { color:var(--muted); font-size:.62rem; letter-spacing:.08em; text-transform:uppercase; font-weight:700; }
-    .card p, .card li { margin:0 0 6px; font-size:.72rem; color:var(--card-ink); }
+    .sub { font-style:italic; color:var(--card-muted); margin:0 0 8px; font-size:.95rem; }
+    .label { color:var(--muted); font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; font-weight:700; }
+    .card p, .card li { margin:0 0 6px; font-size:.85rem; color:var(--card-ink); }
     .card ul { margin:0; padding-left:1.1rem; }
     .eq, .card p .eq, .card li .eq {
-      font-family: ui-monospace, Consolas, monospace; color:var(--eq); font-size:.72rem;
+      font-family: ui-monospace, Consolas, monospace; color:var(--eq); font-size:.85rem;
     }
-    .legend { display:flex; flex-direction:column; gap:4px; font-size:.7rem; color:var(--card-ink); }
+    .legend { display:flex; flex-direction:column; gap:4px; font-size:.82rem; color:var(--card-ink); }
     .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
-    .foot { color:var(--card-muted); font-size:.68rem; }
-    #pulse { color:var(--green); font-size:.7rem; }
+    .foot { color:var(--card-muted); font-size:.8rem; }
+    #pulse { color:var(--green); font-size:.8rem; }
     #pulse.stale { color:#b42318; }
     html[data-theme="dark"] #pulse.stale { color:#e24b4b; }
     @media (prefers-color-scheme: dark) {
       html:not([data-theme="light"]) #pulse.stale { color:#e24b4b; }
     }
     #pick, pre#pick {
-      min-height:4.2rem; font-family: ui-monospace, Consolas, monospace; font-size:.7rem;
+      min-height:4.2rem; font-family: ui-monospace, Consolas, monospace; font-size:.82rem;
       color:var(--pick); background:var(--pick-bg); padding:.35rem .5rem;
       border:1px solid var(--card-line); margin:0; white-space:pre-wrap;
     }
