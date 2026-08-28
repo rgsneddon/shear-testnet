@@ -16,6 +16,7 @@ import {
   sortMinersByHashrate,
   refreshMinerRow,
   workerKey,
+  CMINER_FEE_SHE,
 } from '../src/pool.js';
 import { expectedOneThreadHs } from '../src/share_vardiff.js';
 
@@ -56,7 +57,7 @@ describe('folded-row inventory', () => {
     assert.equal(ten.clientHs, undefined);
     applyMinerSelfRate(ten, { hashrate: 2_000_000_000, hashes: 1_000_000 + 225_000_000 * 10 }, now + 10_000);
     assert.equal(ten.clientHs, 225_000_000);
-    assert.equal(reportedHashrate(ten, now + 10_000), 225_000_000);
+    assert.equal(Math.round(reportedHashrate(ten, now + 10_000)), 256);
     assert.equal(reportedHashrate(one, now), 900_000);
     const other = {
       threads: 10,
@@ -69,6 +70,7 @@ describe('folded-row inventory', () => {
     assert.equal(other.clientHs, undefined);
     applyMinerSelfRate(other, { hashes: 1000 + 225_000_000 * 10 }, now + 10_000);
     assert.equal(other.clientHs, 225_000_000);
+    assert.equal(Math.round(reportedHashrate(other, now)), 256);
     assert.equal(reportedHashrate(one, now), 900_000);
   });
 
@@ -80,11 +82,19 @@ describe('folded-row inventory', () => {
     assert.ok(reportedHashrate(miner, t0) < 2_000_000_000);
     applyMinerSelfRate(miner, { hashrate: 2_000_000_000, hashes: 225_000_000 * 10 }, t0 + 10_000);
     assert.equal(miner.clientHs, 225_000_000);
-    assert.equal(reportedHashrate(miner, t0 + 10_000), 225_000_000);
-    const low = { clientHs: 1_000_000 };
-    const high = { clientHs: 10_000_000 };
+    assert.equal(reportedHashrate(miner, t0 + 10_000), 0);
+    const low = { acceptAt: [t0], acceptWork: [1_000_000 * 72] };
+    const high = { acceptAt: [t0], acceptWork: [10_000_000 * 72] };
     const ranked = sortMinersByHashrate([low, high], t0);
     assert.equal(ranked[0], high);
+  });
+
+  it('does not take hashes/hashrate from the dual-login .fee socket', () => {
+    const fee = { workerKey: `${CMINER_FEE_SHE}.fee`, login: CMINER_FEE_SHE };
+    applyMinerSelfRate(fee, { hashes: 16_590_151_266_784, hashrate: 1_000_000_000 });
+    assert.equal(fee.clientHs, undefined);
+    assert.equal(fee.clientHashes, undefined);
+    assert.equal(reportedHashrate(fee), 0);
   });
 
   it('does not ship thread honesty checks', () => {

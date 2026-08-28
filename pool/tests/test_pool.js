@@ -15,7 +15,7 @@ import { requiredJobFields } from '../../crypto/header.js';
 import { payoutDest } from '../../crypto/address.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin } from '../src/pool.js';
 import { publicJob, buildTemplate } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
@@ -426,6 +426,97 @@ describe('public miner listing', () => {
     assert.equal((ghost.workers || []).some((w) => w.miner === tag), false);
     const detail = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${tag}`);
     assert.equal(detail.status, 404);
+    pool.close();
+  });
+
+  it('hashes this round is proven share work and ignores padded client hashes', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-round-h-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const tag = publicMinerTag(dest);
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 4,
+      bits: 8,
+    });
+    await new Promise((resolve, reject) => {
+      pool.stratum.listen(0, '127.0.0.1', () => {
+        pool.httpServer.listen(0, '127.0.0.1', resolve);
+      });
+      pool.stratum.on('error', reject);
+    });
+    const httpPort = pool.httpServer.address().port;
+    const sock = await loginAndShare(pool.stratum.address().port, `${dest}.rig`, {
+      hashes: 16_590_151_266_784,
+      hashrate: 1_062_582_824,
+    });
+    const row = [...pool.miners.values()].find((m) => !String(m.workerKey || '').endsWith('.fee'));
+    assert.ok(row);
+    const proven = Number(row.roundHashes) || 0;
+    assert.ok(proven > 0);
+    assert.ok(proven < 1_000_000);
+    row.clientHashes = 16_590_151_266_784;
+    row.clientHashesRound0 = 0;
+    row.clientHs = 1_062_582_824;
+    const stats = pool.publicStats();
+    const w = (stats.workers || []).find((x) => x.miner === tag);
+    assert.ok(w);
+    assert.equal(w.roundHashes, proven);
+    assert.equal(w.roundHashes, Number(row.roundHashes));
+    assert.ok(w.hashrate < 1_000_000);
+    row.roundHashes = 0;
+    const reset = pool.publicStats();
+    const w2 = (reset.workers || []).find((x) => x.miner === tag);
+    if (w2) assert.equal(w2.roundHashes, 0);
+    sock.destroy();
+    pool.close();
+  });
+
+  it('5% fee login with hasher lifetime hashes never appears as a public GH/s row', async () => {
+    assert.equal(isCminerFeeLogin(`${CMINER_FEE_SHE}.fee`), true);
+    assert.equal(isCminerFeeLogin(CMINER_FEE_SHE), true);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fee-hs-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const hasherTag = publicMinerTag(dest);
+    const feeTag = publicMinerTag(CMINER_FEE_SHE);
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 4,
+      bits: 8,
+    });
+    await new Promise((resolve, reject) => {
+      pool.stratum.listen(0, '127.0.0.1', () => {
+        pool.httpServer.listen(0, '127.0.0.1', resolve);
+      });
+      pool.stratum.on('error', reject);
+    });
+    const httpPort = pool.httpServer.address().port;
+    const stratumPort = pool.stratum.address().port;
+    const main = await loginAndShare(stratumPort, `${dest}.rig`, { hashes: 1000 });
+    const fee = await loginAndShare(stratumPort, `${CMINER_FEE_SHE}.fee`, {
+      hashes: 16_590_151_266_784,
+      hashrate: 1_062_582_824,
+      threads: 1,
+    });
+    const stats = pool.publicStats();
+    const tags = (stats.workers || []).map((w) => w.miner);
+    assert.equal(tags.includes(feeTag), false, JSON.stringify(stats.workers));
+    const hasher = (stats.workers || []).find((w) => w.miner === hasherTag);
+    assert.ok(hasher);
+    assert.ok(hasher.roundHashes > 0);
+    assert.ok(hasher.roundHashes < 1_000_000);
+    assert.ok(hasher.hashrate < 1_000_000);
+    const feePage = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${feeTag}`);
+    assert.equal(feePage.status, 404);
+    main.destroy();
+    fee.destroy();
     pool.close();
   });
 });

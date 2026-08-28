@@ -144,9 +144,10 @@ export function isCminerFeeLogin(login) {
   const raw = String(login || '').trim();
   const dest = parseLogin(raw);
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || '';
+  // Operator 5% dest is never a public hasher row, with or without .fee.
+  if (dest === CMINER_FEE_SHE || dest === CMINER_FEE_DEST) return true;
   if (worker.toLowerCase() !== 'fee') return false;
-  // Friend dest is she1qlrll / ssa1qlrll. Any mineable .fee still uses the
-  // hasher's job and is not a public worker — a dest typo must not 0 H/s.
+  // Any mineable .fee still uses the hasher's job and is not a public worker.
   return isMineLogin(dest);
 }
 
@@ -320,6 +321,7 @@ export const SELF_RATE_MIN_DT_S = 5;
 
 export function applyMinerSelfRate(session, params, now = Date.now()) {
   if (!session || !params) return session;
+  if (isCminerFeeLogin(session.workerKey || session.login || params.login)) return session;
   const hashes = Number(params.hashes ?? params.hashCount);
   if (Number.isFinite(hashes) && hashes >= 0) {
     session.clientHashes = hashes;
@@ -349,10 +351,12 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
   return session;
 }
 
-/** This miner's H/s only: own 5s hash-counter, else accepted-share proof. Never peers. No EMA. */
+/**
+ * Public H/s is proven accepted-share work only. Client `hashes`/`hashrate`
+ * (lifetime counters, fee-socket copies of the hasher total, padded zeros)
+ * must not paint the dashboard.
+ */
 export function reportedHashrate(miner, now = Date.now()) {
-  const self = Number(miner?.clientHs);
-  if (Number.isFinite(self) && self > 0) return self;
   return provenHashrate(miner, now);
 }
 
@@ -703,13 +707,7 @@ export function createPool({
       client: String(m.client || CLIENT),
       algo: ALGO,
       hashrate: reportedHashrate(m, now),
-      roundHashes: (() => {
-        const total = Number(m.clientHashes);
-        if (Number.isFinite(total) && total > 0) {
-          return Math.max(0, Math.round(total - (Number(m.clientHashesRound0) || 0)));
-        }
-        return Number(m.roundHashes) || 0;
-      })(),
+      roundHashes: Number(m.roundHashes) || 0,
       accepted: m.accepted || 0,
       stale: m.stale || 0,
       blocks: Number(m.blocks) || 0,
