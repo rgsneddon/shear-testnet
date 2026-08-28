@@ -15,7 +15,7 @@ import { requiredJobFields } from '../../crypto/header.js';
 import { payoutDest } from '../../crypto/address.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels } from '../src/pool.js';
 import { publicJob, buildTemplate } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
@@ -336,6 +336,18 @@ describe('public miner listing', () => {
     assert.match(dash, /s\.workers/);
     assert.match(miner, /d\.workers/);
     assert.equal(/localStorage/.test(dash + miner), false);
+  });
+
+  it('miner and version boxes list each distinct label once', () => {
+    assert.equal(uniquePublicLabels(['shear-miner', 'shear-miner', 'shear-miner']), 'shear-miner');
+    assert.equal(uniquePublicLabels(['0.1.7', '0.1.7']), '0.1.7');
+    assert.equal(uniquePublicLabels(['a', 'b', 'a']), 'a, b');
+    const folded = foldPublicMinerViews([
+      { miner: 'she1aaaaaaaa', name: 'shear-miner', version: '0.1.7', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
+      { miner: 'she1aaaaaaaa', name: 'shear-miner', version: '0.1.7', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
+    ]);
+    assert.equal(folded[0].name, 'shear-miner');
+    assert.equal(folded[0].version, '0.1.7');
   });
 
   it('replaces rude miner/worker/name tokens with flower names', () => {

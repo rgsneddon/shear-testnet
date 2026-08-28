@@ -138,6 +138,21 @@ const BLOOM_WORDS = [
   [/asshole/gi, 'primrose'],
 ];
 
+/** Unique public labels for miner/version boxes (no per-device repeats). */
+export function uniquePublicLabels(values) {
+  const seen = new Set();
+  const out = [];
+  for (const v of values || []) {
+    const s = String(v || '').trim();
+    if (!s) continue;
+    const key = s.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out.sort((a, b) => a.localeCompare(b)).join(', ');
+}
+
 export function bloomExpletive(s) {
   let t = String(s ?? '');
   for (const [re, flower] of BLOOM_WORDS) {
@@ -299,14 +314,8 @@ export function foldPublicMinerViews(views) {
     const fa = Number(prev.firstSeen) || 0;
     const fb = Number(v.firstSeen) || 0;
     prev.firstSeen = fa && fb ? Math.min(fa, fb) : (fa || fb);
-    const names = new Set(
-      `${prev.name || ''},${v.name || ''}`.split(',').map((s) => s.trim()).filter(Boolean),
-    );
-    const vers = new Set(
-      `${prev.version || ''},${v.version || ''}`.split(',').map((s) => s.trim()).filter(Boolean),
-    );
-    prev.name = [...names].sort().join(', ');
-    prev.version = [...vers].sort().join(', ');
+    prev.name = uniquePublicLabels([prev.name, v.name]);
+    prev.version = uniquePublicLabels([prev.version, v.version]);
   }
   return [...byTag.values()];
 }
@@ -833,8 +842,8 @@ export function createPool({
       res.end(JSON.stringify({
         ok: true,
         tag: publicMinerTag(rows[0].login || rows[0].workerKey),
-        name: views.map((v) => v.name).filter(Boolean).sort().join(', ') || '',
-        version: views.map((v) => v.version).filter(Boolean).sort().join(', ') || '',
+        name: uniquePublicLabels(views.map((v) => v.name)),
+        version: uniquePublicLabels(views.map((v) => v.version)),
         client: views[0].client,
         algo: ALGO,
         connected: views.some((v) => v.connected),
