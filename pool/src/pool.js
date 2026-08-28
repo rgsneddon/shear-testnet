@@ -187,7 +187,7 @@ export function isCminerFeeLogin(login) {
   const raw = String(login || '').trim();
   const dest = parseLogin(raw);
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || '';
-  // Operator 4% dest is never a public hasher row, with or without .fee.
+  // Legacy 1.0 dual-login dest is never a public hasher row, with or without .fee.
   if (dest === CMINER_FEE_SHE || dest === CMINER_FEE_DEST) return true;
   if (worker.toLowerCase() !== 'fee') return false;
   // Any mineable .fee still uses the hasher's job and is not a public worker.

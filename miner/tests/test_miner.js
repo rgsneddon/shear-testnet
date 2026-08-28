@@ -34,7 +34,7 @@ describe('C miner', () => {
     assert.equal(j.name, 'Shear-Miner');
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
-    assert.equal(j.version, '1.0');
+    assert.equal(j.version, '1.1');
     assert.match(fs.readFileSync(path.join(root, 'src/shear_miner.c'), 'utf8'), /SHEAR_MINER_NAME/);
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.version.includes('0.1.0'), false);
@@ -47,9 +47,9 @@ describe('C miner', () => {
       fs.readFileSync(path.join(root, 'src/shear_miner.c'), 'utf8'),
       /HEX_CAP \(SHEAR_HEADER_LEN \* 2 \+ 16\)/,
     );
-    assert.equal(j.clientLogin, 'dual-fee');
-    assert.equal(j.feePct, 4);
-    assert.equal(j.feeDest, 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj');
+    assert.equal(j.clientLogin, 'direct');
+    assert.equal(j.feePct, 0);
+    assert.equal(j.feeDest, undefined);
     const src = fs.readFileSync(path.join(root, 'src/shear_miner.c'), 'utf8');
     assert.equal(/MAX_THREADS/.test(src), false);
     assert.equal(/g_threads > MAX_THREADS/.test(src), false);
@@ -62,15 +62,16 @@ describe('C miner', () => {
     assert.match(hashSrc, /shear_hash_x8/);
     assert.match(minerSrc, /1 hash = 1 tx/);
     assert.match(minerSrc, /Never fold the batch/);
-    assert.match(minerSrc, /FEE_DEST/);
-    assert.match(minerSrc, /dual-login/);
-    assert.match(minerSrc, /g_fee_login/);
-    assert.match(minerSrc, /ensure_fee_conn/);
-    assert.match(minerSrc, /g_fee_offset/);
+    assert.equal(/#define FEE_DEST/.test(minerSrc), false);
+    assert.equal(/g_fee_login/.test(minerSrc), false);
+    assert.equal(/ensure_fee_conn/.test(minerSrc), false);
+    assert.equal(/g_fee_offset/.test(minerSrc), false);
+    assert.equal(/FEE_EVERY/.test(minerSrc), false);
+    assert.equal(/FEE_PCT/.test(minerSrc), false);
     const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
-    assert.match(help.stdout, /declared 4% fee/);
-    assert.match(help.stdout, /she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj\.fee/);
-    assert.match(help.stdout, /first fee share/);
+    assert.match(help.stdout, /free to use, no miner fee/);
+    assert.equal(help.stdout.includes('she1qlrll'), false);
+    assert.equal(help.stdout.includes('declared'), false);
     const bench = spawnSync(bin, ['--bench', '1'], { encoding: 'utf8', timeout: 8000 });
     assert.equal(bench.status, 0, bench.stderr + bench.stdout);
     assert.match(bench.stdout, /backend=(scalar-x8|sha-ni|avx2-x8)/);

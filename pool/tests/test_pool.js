@@ -164,7 +164,7 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.spendableConfirmations, 1);
     assert.equal(stats.minConfirmsPolicy, 12);
     assert.equal(stats.productVersion, '0.1');
-    assert.equal(stats.minerVersion, '1.0');
+    assert.equal(stats.minerVersion, '1.1');
     if (stats.header) assert.equal(stats.header.length, 256);
 
     const job = pool.issueJob();
@@ -176,7 +176,7 @@ describe('pool dashboard + stratum', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: dest + '.rig', client: 'ShearHash', name: 'Shear-Miner', version: '1.0', threads: 1 },
+          params: { login: dest + '.rig', client: 'ShearHash', name: 'Shear-Miner', version: '1.1', threads: 1 },
         }) + '\n');
       });
       let buf = '';
@@ -213,7 +213,7 @@ describe('pool dashboard + stratum', () => {
     });
     assert.match(scored, /OK/);
     const named = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
-    assert.ok((named.workers || []).some((w) => w.name === 'Shear-Miner' && w.version === '1.0'));
+    assert.ok((named.workers || []).some((w) => w.name === 'Shear-Miner' && w.version === '1.1'));
     assert.match(html, /w\.name/);
     pool.close();
   });
@@ -343,11 +343,11 @@ describe('public miner listing', () => {
     assert.equal(uniquePublicLabels(['0.1.7', '0.1.7']), '0.1.7');
     assert.equal(uniquePublicLabels(['a', 'b', 'a']), 'a, b');
     const folded = foldPublicMinerViews([
-      { miner: 'she1aaaaaaaa', name: 'Shear-Miner', version: '1.0', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
-      { miner: 'she1aaaaaaaa', name: 'Shear-Miner', version: '1.0', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
+      { miner: 'she1aaaaaaaa', name: 'Shear-Miner', version: '1.1', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
+      { miner: 'she1aaaaaaaa', name: 'Shear-Miner', version: '1.1', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
     ]);
     assert.equal(folded[0].name, 'Shear-Miner');
-    assert.equal(folded[0].version, '1.0');
+    assert.equal(folded[0].version, '1.1');
   });
 
   it('replaces rude miner/worker/name tokens with flower names', () => {
@@ -516,7 +516,7 @@ describe('public miner listing', () => {
     pool.close();
   });
 
-  it('4% fee login with hasher lifetime hashes never appears as a public GH/s row', async () => {
+  it('legacy dual-login fee login with hasher lifetime hashes never appears as a public GH/s row', async () => {
     assert.equal(isCminerFeeLogin(`${CMINER_FEE_SHE}.fee`), true);
     assert.equal(isCminerFeeLogin(CMINER_FEE_SHE), true);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fee-hs-'));

@@ -4,7 +4,7 @@ Private by default. Proof of work only. Continuity-settled.
 
 - Ticker: **SHE**
 - Algo: **ShearHash** (CPU)
-- Miner pin: **Shear-Miner 1.0** (`[testnet]`). Wallet / node / pool pin: **0.1**. Declared **4%** dual-login miner fee at `she1qlrll…fee`.
+- Miner pin: **Shear-Miner 1.1** (`[testnet]`, free to use). Wallet / node / pool pin: **0.1**. **1.0** was the last build with a dual-login miner fee.
 - Stratum: `pool.shear.digital:1111`
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital

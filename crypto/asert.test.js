@@ -103,7 +103,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(fp.endsWith(':1'), true);
     const law = consensusLaw();
     assert.equal(PRODUCT_VERSION, '0.1');
-    assert.equal(MINER_VERSION, '1.0');
+    assert.equal(MINER_VERSION, '1.1');
     assert.equal(PRODUCT_VERSION.split('.').length, 2);
     assert.equal(MINER_VERSION.split('.').length, 2);
     assert.equal(/^\d+\.\d+$/.test(PRODUCT_VERSION), true);
@@ -113,7 +113,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(/^\d+\.\d+$/.test('0.10'), true);
     assert.equal(/^\d+\.\d+$/.test('0.1.0'), false);
     assert.equal(law.productVersion, '0.1');
-    assert.equal(law.minerVersion, '1.0');
+    assert.equal(law.minerVersion, '1.1');
     assert.equal(law.hashTxLive, 1);
     assert.equal(law.hashTxCollate, 1);
     assert.equal(law.hashTxConfirmOnBlock, 1);

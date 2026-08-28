@@ -1,8 +1,7 @@
 /*
  * Shear-Miner — official SHE CPU miner.
  * Hashes the 128-byte Shear header (ShearHash-v1).
- * Declared 4% dual-login miner fee: lazy fee socket, per-process
- * offset 0..24, dest.fee threads=1.
+ * Free to use: no miner fee (1.0 was the last build that took a cut).
  * 1 hash = 1 tx: each meeting nonce is its own share.
  */
 #if defined(__linux__)
@@ -42,10 +41,6 @@
 
 #define DEFAULT_HOST "pool.shear.digital"
 #define DEFAULT_PORT 1111
-/* Testnet friend dest. Mainnet amends this pin. */
-#define FEE_DEST "she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj"
-#define FEE_EVERY 25
-#define FEE_PCT 4
 #define LINE_CAP 8192
 #define HEX_CAP (SHEAR_HEADER_LEN * 2 + 16)
 #define QCAP 8192
@@ -54,7 +49,6 @@
 
 static const char *g_user = NULL;
 static char g_login[200];
-static char g_fee_login[200];
 static char g_host_buf[256];
 static const char *g_host = DEFAULT_HOST;
 static int g_port = DEFAULT_PORT;
@@ -80,7 +74,6 @@ static int g_have_main = 0;
 static int g_job_gen = 0;
 
 typedef struct {
-  int fee;
   char jobId[80];
   uint64_t nonce;
 } Share;
@@ -92,8 +85,6 @@ static int g_qtail = 0;
 static uint64_t g_meets = 0;
 static int g_accepted = 0;
 static int g_rejected = 0;
-static int g_fee_ok = 0;
-static unsigned g_fee_offset = 0;
 static atomic_int g_inflight = 0;
 static uint64_t g_dropped = 0;
 static uint64_t g_submitted = 0;
@@ -101,7 +92,6 @@ static time_t g_t0;
 
 typedef struct {
   int fd;
-  int is_fee;
   char buf[LINE_CAP];
   int buflen;
 } Conn;
@@ -113,7 +103,7 @@ static void on_sig(int s) {
 
 static void usage(FILE *out) {
   fprintf(out,
-          "Shear-Miner %s (declared %d%% fee, dual connection)\n"
+          "Shear-Miner %s (free to use, no miner fee)\n"
           "Hashes the 128-byte Shear header. 1 hash = 1 tx.\n\n"
           "  --user she1…|ssa1….worker   required (not shear1)\n"
           "  --pool host:port            default %s:%d\n"
@@ -123,11 +113,8 @@ static void usage(FILE *out) {
           "  --bench [SECONDS]\n"
           "  --selftest\n"
           "  --print-config\n"
-          "  --help\n\n"
-          "Fee: 1/%d of meeting nonces submit on a second login %s.fee\n"
-          "Fee socket opens on the first fee share. Per-process random offset 0..%d.\n"
-          "Fee socket reports threads=1. Main keeps mining if the fee socket is down.\n",
-          SHEAR_VERSION, FEE_PCT, DEFAULT_HOST, DEFAULT_PORT, FEE_EVERY, FEE_DEST, FEE_EVERY - 1);
+          "  --help\n",
+          SHEAR_VERSION, DEFAULT_HOST, DEFAULT_PORT);
 }
 
 static int hex_nibble(char c) {
@@ -178,7 +165,6 @@ static int build_login(const char *user) {
     worker = wbuf;
   }
   snprintf(g_login, sizeof(g_login), "%.*s.%s", (int)alen, user, worker);
-  snprintf(g_fee_login, sizeof(g_fee_login), "%s.fee", FEE_DEST);
   g_user = g_login;
   return 1;
 }
@@ -247,10 +233,9 @@ static int set_nonblock(int fd) {
 #endif
 }
 
-static int conn_open(Conn *c, const char *host, int port, int is_fee) {
+static int conn_open(Conn *c, const char *host, int port) {
   memset(c, 0, sizeof(*c));
   c->fd = -1;
-  c->is_fee = is_fee;
   c->fd = tcp_connect(host, port);
   if (c->fd < 0) return -1;
   if (set_nonblock(c->fd) != 0) {
@@ -365,13 +350,13 @@ static int send_submit(Conn *c, const char *login, int threads, const char *jobI
   return conn_write(c, line, n);
 }
 
-static void apply_job(const char *line, int is_fee) {
+static void apply_job(const char *line) {
   char method[32] = "";
   json_token(line, "method", method, sizeof(method));
   char header_hex[HEX_CAP];
   int has_header = json_token(line, "header", header_hex, sizeof(header_hex));
   int is_job = strcmp(method, "job") == 0 || has_header;
-  if (!is_job || is_fee) return;
+  if (!is_job) return;
   JobSnap job;
   memset(&job, 0, sizeof(job));
   if (!json_token(line, "jobId", job.jobId, sizeof(job.jobId))) {
@@ -420,8 +405,9 @@ static void apply_ack(const char *line) {
 }
 
 static void handle_line(Conn *c, const char *line) {
+  (void)c;
   if (!line || !line[0]) return;
-  apply_job(line, c->is_fee);
+  apply_job(line);
   char method[32] = "";
   json_token(line, "method", method, sizeof(method));
   if (strcmp(method, "job") != 0) apply_ack(line);
@@ -461,7 +447,6 @@ static int enqueue_share(const char *jobId, uint64_t nonce) {
   }
   g_meets++;
   Share *s = &g_q[g_qtail];
-  s->fee = (g_meets % FEE_EVERY) == (uint64_t)g_fee_offset;
   snprintf(s->jobId, sizeof(s->jobId), "%s", jobId);
   s->nonce = nonce;
   g_qtail = next;
@@ -540,7 +525,6 @@ static void seed_origin(void) {
   }
   if (ur) fclose(ur);
 #endif
-  g_fee_offset = (unsigned)(g_origin % (uint64_t)FEE_EVERY);
 }
 
 static void clear_jobs(void) {
@@ -550,36 +534,12 @@ static void clear_jobs(void) {
   pthread_mutex_lock(&g_q_mu);
   g_qhead = g_qtail = 0;
   pthread_mutex_unlock(&g_q_mu);
-  g_fee_ok = 0;
 }
 
-static int ensure_fee_conn(Conn *feec) {
-  if (!feec) return 0;
-  if (g_fee_ok && feec->fd >= 0) return 1;
-  if (feec->fd >= 0) conn_close(feec);
-  if (conn_open(feec, g_host, g_port, 1) != 0) {
-    fprintf(stderr, "fee socket dropped — main keeps mining\n");
-    return 0;
-  }
-  if (send_login(feec, g_fee_login, 1) != 0) {
-    fprintf(stderr, "fee socket dropped — main keeps mining\n");
-    conn_close(feec);
-    return 0;
-  }
-  g_fee_ok = 1;
-  printf("fee login %s threads=1 offset=%u/%d\n", g_fee_login, g_fee_offset, FEE_EVERY);
-  fflush(stdout);
-  return 1;
-}
-
-static void flush_shares(Conn *mainc, Conn *feec) {
+static void flush_shares(Conn *mainc) {
   Share s;
   while (dequeue_share(&s)) {
-    int use_fee = 0;
-    if (s.fee) use_fee = ensure_fee_conn(feec);
-    int wr;
-    if (use_fee) wr = send_submit(feec, g_fee_login, 1, s.jobId, s.nonce);
-    else wr = send_submit(mainc, g_login, g_threads, s.jobId, s.nonce);
+    int wr = send_submit(mainc, g_login, g_threads, s.jobId, s.nonce);
     if (wr == 1) {
       enqueue_front(&s);
       return;
@@ -610,21 +570,19 @@ static void fmt_hashrate(double hs, char *buf, size_t n) {
 
 static void print_config(void) {
   printf("{\"name\":\"%s\",\"client\":\"%s\",\"algorithm\":\"%s\",\"version\":\"%s\","
-         "\"clientLogin\":\"dual-fee\",\"feePct\":%d,\"feeDest\":\"%s\","
+         "\"clientLogin\":\"direct\",\"feePct\":0,"
          "\"pool\":\"%s:%d\",\"headerBytes\":%d,\"magic\":\"shear-testnet-v1\","
          "\"threads\":%d,\"backend\":\"%s\"}\n",
-         SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_ALGO, SHEAR_VERSION, FEE_PCT, FEE_DEST,
+         SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_ALGO, SHEAR_VERSION,
          g_host, g_port, SHEAR_HEADER_LEN, g_threads, shear_hash_backend());
 }
 
 static int mine_once(void) {
-  Conn mainc, feec;
+  Conn mainc;
   memset(&mainc, 0, sizeof(mainc));
-  memset(&feec, 0, sizeof(feec));
   mainc.fd = -1;
-  feec.fd = -1;
   clear_jobs();
-  if (conn_open(&mainc, g_host, g_port, 0) != 0) {
+  if (conn_open(&mainc, g_host, g_port) != 0) {
     fprintf(stderr, "connect failed %s:%d\n", g_host, g_port);
     return -1;
   }
@@ -644,10 +602,6 @@ static int mine_once(void) {
       FD_SET(mainc.fd, &rfds);
       if (mainc.fd > maxfd) maxfd = mainc.fd;
     }
-    if (feec.fd >= 0) {
-      FD_SET(feec.fd, &rfds);
-      if (feec.fd > maxfd) maxfd = feec.fd;
-    }
     struct timeval tv;
     tv.tv_sec = 0;
     tv.tv_usec = 50000;
@@ -662,17 +616,7 @@ static int mine_once(void) {
       }
       if (r > 0) drain_lines(&mainc);
     }
-    if (feec.fd >= 0) {
-      int r = conn_read(&feec);
-      if (r < 0) {
-        fprintf(stderr, "fee socket dropped — main keeps mining\n");
-        conn_close(&feec);
-        g_fee_ok = 0;
-      } else if (r > 0) {
-        drain_lines(&feec);
-      }
-    }
-    flush_shares(&mainc, &feec);
+    flush_shares(&mainc);
     time_t now = time(NULL);
     if (now != last_stats) {
       last_stats = now;
@@ -681,14 +625,13 @@ static int mine_once(void) {
       uint64_t h = atomic_load_explicit(&g_hashes, memory_order_relaxed);
       char rate[32];
       fmt_hashrate((double)h / elapsed, rate, sizeof(rate));
-      printf("hashrate=%s accepted=%d rejected=%d fee_ok=%d threads=%d offset=%u/%d\n",
-             rate, g_accepted, g_rejected, g_fee_ok, g_threads, g_fee_offset, FEE_EVERY);
+      printf("hashrate=%s accepted=%d rejected=%d threads=%d\n",
+             rate, g_accepted, g_rejected, g_threads);
       fflush(stdout);
     }
     if (g_stop) break;
   }
   conn_close(&mainc);
-  conn_close(&feec);
   return 0;
 }
 
@@ -793,11 +736,10 @@ int main(int argc, char **argv) {
 #endif
   seed_origin();
   setvbuf(stdout, NULL, _IOLBF, 0);
-  printf("Shear-Miner %s (declared %d%% fee, dual connection)\n", SHEAR_VERSION, FEE_PCT);
+  printf("Shear-Miner %s (free to use, no miner fee)\n", SHEAR_VERSION);
   printf("tcp://%s:%d user=%s threads=%d coin=SHE algo=%s\n",
          g_host, g_port, g_login, g_threads, SHEAR_ALGO);
-  printf("device cpuCores=%d cpuThreads=%d fee login %s (threads=1) offset=%u/%d\n",
-         g_cpu_cores, g_cpu_threads, g_fee_login, g_fee_offset, FEE_EVERY);
+  printf("device cpuCores=%d cpuThreads=%d\n", g_cpu_cores, g_cpu_threads);
   fflush(stdout);
   int n = g_threads;
   pthread_t *th = calloc((size_t)n, sizeof(pthread_t));
