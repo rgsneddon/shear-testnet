@@ -24,5 +24,11 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /shear-wallet-0\.1-macos\.dmg/);
     assert.match(html, /Shear-Miner-1\.1-macos\.zip/);
     assert.match(html, /navigator\.userAgent/);
+    assert.match(html, /client-dd:hover \.client-menu/);
+    assert.match(html, /id="menu-wallet"/);
+    assert.match(html, /id="menu-miner"/);
+    assert.match(html, /id="menu-node"/);
+    assert.match(html, /data-pack="wallet-macos"/);
+    assert.match(html, /data-pack="miner-windows"/);
   });
 });

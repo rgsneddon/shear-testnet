@@ -202,7 +202,8 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         }
       }
     } catch (_) {}
-    _ingestHistory();
+    // Do not build a CTF transcript for every sealed row on unlock — that
+    // froze Shearview when history was hundreds of bundled blocks.
     if (mounted) setState(() => unlocked = true);
     _accrualTick?.cancel();
     _syncJoinRoster();
@@ -552,9 +553,11 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
           ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
+            minLeadingWidth: 44,
             leading: ConfirmPie(
               key: Key('confirm-pie-${t.id}'),
               filled: ledger.confirmationsOf(t.height ?? 0),
+              size: 40,
             ),
             title: Text('${t.kind}  ${formatShe(t.amount)} SHE'),
             subtitle: Text(

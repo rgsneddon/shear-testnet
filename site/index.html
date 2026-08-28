@@ -7,7 +7,7 @@
   <title>Shear — testnet</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=10"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=11"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
@@ -51,14 +51,33 @@
     .pulse { color:var(--green); font-size:.7rem; }
     .client-row {
       display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin:4px 0 20px;
+      position:relative; z-index:8; overflow:visible;
     }
-    .client-row a.nav-btn {
+    .client-dd { position:relative; display:flex; flex-direction:column; align-items:stretch; }
+    .client-row .client-dd > a.nav-btn {
       display:inline-flex; align-items:center; justify-content:center;
-      text-align:center; height:72px; min-width:10.5rem; padding:0 28px;
+      text-align:center; height:72px; min-width:12rem; padding:0 28px;
       font-size:1.15rem; letter-spacing:.12em; text-indent:.12em; font-weight:800;
     }
+    .client-menu {
+      display:none; position:absolute; top:100%; left:0; right:0; z-index:40;
+      flex-direction:column; gap:0; padding:6px 0;
+      border:1px solid transparent;
+      background: linear-gradient(165deg, #ffffff 0%, #f4f8fc 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box, border-box;
+      box-shadow: 0 10px 24px rgba(6,20,31,.18);
+    }
+    .client-menu a {
+      display:block; padding:10px 14px; color:var(--ink); text-decoration:none;
+      font-weight:700; font-size:.8rem; letter-spacing:.04em; text-align:left;
+    }
+    .client-menu a:hover { color:var(--cyan); background:rgba(26,111,181,.08); }
+    .client-dd:hover .client-menu, .client-dd:focus-within .client-menu { display:flex; }
     @media (max-width: 640px) {
-      .client-row a.nav-btn { min-width:100%; height:64px; font-size:1.05rem; }
+      .client-dd { width:100%; }
+      .client-row .client-dd > a.nav-btn { min-width:100%; height:64px; font-size:1.05rem; }
+    }
   </style>
 </head>
 <body>
@@ -97,9 +116,33 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
-      <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.1">WALLET</a>
-      <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/shear-testnet/releases/tag/1.1">MINER</a>
-      <a class="nav-btn" id="dl-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node">NODE</a>
+      <div class="client-dd">
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.1">WALLET</a>
+        <div class="client-menu" id="menu-wallet">
+          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.1/shear-wallet-0.1-macos.dmg">macOS</a>
+          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.1/shear-wallet-0.1-windows.zip">Windows</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.1/shear-wallet-0.1-android.apk">Android</a>
+          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.1">Linux / Arch</a>
+        </div>
+      </div>
+      <div class="client-dd">
+        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/shear-testnet/releases/tag/1.1">MINER</a>
+        <div class="client-menu" id="menu-miner">
+          <a data-pack="miner-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/1.1/Shear-Miner-1.1-macos.zip">macOS 1.1 (free)</a>
+          <a data-pack="miner-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/1.1/Shear-Miner-1.1-windows.zip">Windows 1.1 (free)</a>
+          <a data-pack="miner-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/1.1/Shear-Miner-1.1-linux.zip">Linux 1.1 (free)</a>
+          <a href="https://github.com/rgsneddon/shear-testnet/releases/download/1.0/Shear-Miner-1.0-macos.zip">macOS 1.0 (4% fee)</a>
+          <a href="https://github.com/rgsneddon/shear-testnet/releases/download/1.0/Shear-Miner-1.0-windows.zip">Windows 1.0 (4% fee)</a>
+          <a href="https://github.com/rgsneddon/shear-testnet/releases/download/1.0/Shear-Miner-1.0-linux.zip">Linux 1.0 (4% fee)</a>
+        </div>
+      </div>
+      <div class="client-dd">
+        <a class="nav-btn" id="dl-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node">NODE</a>
+        <div class="client-menu" id="menu-node">
+          <a href="https://github.com/rgsneddon/shear-testnet/tree/main/node">node source</a>
+          <a href="https://github.com/rgsneddon/shear-testnet/archive/refs/heads/main.zip">full tree zip</a>
+        </div>
+      </div>
     </nav>
     <section class="panel-card">
       <h1>Shear</h1>

@@ -197,6 +197,7 @@ class ShearLedger {
   /// can run ahead (1s tip poll); settlement uses this so confirmRound still
   /// fires after syncTip.
   int _settledHeight = 0;
+  final Map<String, int> _historyAt = {};
 
   /// Last found/sealed block height (Continuum header).
   int get sealedHeight => _sealedHeight;
@@ -580,9 +581,12 @@ class ShearLedger {
       } catch (_) {}
     }
     _markSettled(_sealedHeight, before);
+    final histSeen = <String>{};
     for (final d in dests) {
+      final key = payKey(d);
+      if (!histSeen.add(key)) continue;
       try {
-        await syncHistory(d);
+        await syncHistory(key);
       } catch (_) {}
     }
     return spendableOwned(restFrame, paymentCode: paymentCode);
@@ -599,6 +603,8 @@ class ShearLedger {
 
   Future<List<ShearTx>> syncHistory(String address) async {
     if (pool == null) return ownerHistory(address);
+    final key = payKey(address);
+    if (_historyAt[key] == _sealedHeight) return ownerHistory(address);
     try {
       final json = await pool!.history(address);
       final rows = (json['txs'] as List?) ?? const [];
@@ -639,6 +645,7 @@ class ShearLedger {
           _txs.add(tx);
         }
       }
+      _historyAt[key] = _sealedHeight;
     } catch (_) {}
     prune();
     return ownerHistory(address);

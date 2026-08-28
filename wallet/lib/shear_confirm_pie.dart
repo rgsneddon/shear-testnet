@@ -36,17 +36,20 @@ class ConfirmPie extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final n = slices;
+    final dark = Theme.of(context).brightness == Brightness.dark;
     return Semantics(
       label: '$n of $need confirmations',
-      child: CustomPaint(
-        size: Size.square(size),
-        painter: ConfirmPiePainter(
-          filled: n,
-          need: need,
-          empty: Theme.of(context).brightness == Brightness.dark
-              ? const Color(0x33FFFFFF)
-              : const Color(0x33000000),
-          stroke: Theme.of(context).colorScheme.onSurface.withOpacity(0.55),
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: CustomPaint(
+          size: Size.square(size),
+          painter: ConfirmPiePainter(
+            filled: n,
+            need: need,
+            empty: dark ? const Color(0x66FFFFFF) : const Color(0x66000000),
+            stroke: Theme.of(context).colorScheme.onSurface.withOpacity(0.85),
+          ),
         ),
       ),
     );
