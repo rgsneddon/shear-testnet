@@ -31,8 +31,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
 /** Public H/s is proven hashes in this window, not lifetime hashes / first-seen. */
 export const HASHRATE_WINDOW_MS = 72_000;
-/** After disconnect, stay visible this long past the last submitted hash. */
-export const HASH_PRESENCE_MS = 72_000;
+/** Public miner table: drop if no valid share for this long. Connected-idle does not keep the row. */
+export const HASH_PRESENCE_MS = 12_000;
 /** Mean interval of recent headers so the live 9s cadence is not buried under old 90s history. */
 export const AVG_BLOCK_WINDOW = 20;
 
@@ -210,18 +210,76 @@ export function minerConnected(miner) {
   return (miner?.connections || []).some((c) => c && c.sock);
 }
 
+/** Latest accepted-share time. Login/connect does not count as valid work. */
+export function lastValidWorkAt(m) {
+  let last = Number(m?.lastShareAt) || 0;
+  const times = Array.isArray(m?.acceptAt) ? m.acceptAt : [];
+  for (const t of times) {
+    const n = Number(t);
+    if (n > last) last = n;
+  }
+  return last;
+}
+
 /**
  * Dual-login `.fee` is a second TCP session on the hasher's job, not a
- * public worker. Login alone does not list a row. A still-connected
- * hasher stays listed even if the next share is slower than 72s.
+ * public worker. Login alone does not list a row. Connected-but-idle
+ * sockets do not keep a row; only a valid share in the last 12s does.
  */
 export function isPublicMinerRow(m, now = Date.now()) {
   if (!m) return false;
   if (isCminerFeeLogin(m.workerKey || m.login)) return false;
   if (!(Number(m.accepted) > 0)) return false;
-  if (minerConnected(m)) return true;
-  const seen = Number(m.seen) || 0;
-  return seen > 0 && (Number(now) - seen) < HASH_PRESENCE_MS * 2;
+  const last = lastValidWorkAt(m);
+  if (!(last > 0)) return false;
+  return (Number(now) - last) < HASH_PRESENCE_MS;
+}
+
+/** One dashboard row per public she1 tag. Device sessions combine. */
+export function foldPublicMinerViews(views) {
+  const byTag = new Map();
+  for (const v of views || []) {
+    const tag = String(v?.miner || '').trim();
+    if (!tag) continue;
+    const prev = byTag.get(tag);
+    if (!prev) {
+      byTag.set(tag, {
+        ...v,
+        hashrate: Number(v.hashrate) || 0,
+        roundHashes: Number(v.roundHashes) || 0,
+        accepted: Number(v.accepted) || 0,
+        stale: Number(v.stale) || 0,
+        blocks: Number(v.blocks) || 0,
+        threads: Number(v.threads) || 0,
+        sessions: Number(v.sessions) || 1,
+        connected: !!v.connected,
+        lastSeen: Number(v.lastSeen) || 0,
+        firstSeen: Number(v.firstSeen) || 0,
+      });
+      continue;
+    }
+    prev.hashrate += Number(v.hashrate) || 0;
+    prev.roundHashes += Number(v.roundHashes) || 0;
+    prev.accepted += Number(v.accepted) || 0;
+    prev.stale += Number(v.stale) || 0;
+    prev.blocks += Number(v.blocks) || 0;
+    prev.threads += Number(v.threads) || 0;
+    prev.sessions += Number(v.sessions) || 1;
+    prev.connected = prev.connected || !!v.connected;
+    prev.lastSeen = Math.max(Number(prev.lastSeen) || 0, Number(v.lastSeen) || 0);
+    const fa = Number(prev.firstSeen) || 0;
+    const fb = Number(v.firstSeen) || 0;
+    prev.firstSeen = fa && fb ? Math.min(fa, fb) : (fa || fb);
+    const names = new Set(
+      `${prev.name || ''},${v.name || ''}`.split(',').map((s) => s.trim()).filter(Boolean),
+    );
+    const vers = new Set(
+      `${prev.version || ''},${v.version || ''}`.split(',').map((s) => s.trim()).filter(Boolean),
+    );
+    prev.name = [...names].sort().join(', ');
+    prev.version = [...vers].sort().join(', ');
+  }
+  return [...byTag.values()];
 }
 
 export function provenHashrate(miner, now = Date.now()) {
@@ -543,12 +601,13 @@ export function createPool({
             session.roundHashes += proven;
             session.hashes += proven;
             session.seen = Date.now();
+            session.lastShareAt = session.seen;
             // Rate window uses share target only. A lucky high bitsMet share
             // must not paint GH/s; 10ms vardiff still accepted the share.
             const work = hashesProvenByShare(Number(job?.shareBits) || bits);
             if (!Array.isArray(session.acceptAt)) session.acceptAt = [];
             if (!Array.isArray(session.acceptWork)) session.acceptWork = [];
-            session.acceptAt.push(Date.now());
+            session.acceptAt.push(session.lastShareAt);
             session.acceptWork.push(work);
             {
               const drop = Date.now() - HASHRATE_WINDOW_MS;
@@ -665,10 +724,10 @@ export function createPool({
   let statsSnap = { at: 0, json: '' };
   function publicStats() {
     const now = Date.now();
-    const workers = sortMinersByHashrate(
-      [...miners.values()].filter((m) => isPublicMinerRow(m, now)),
-      now,
-    );
+    const active = [...miners.values()].filter((m) => isPublicMinerRow(m, now));
+    const workers = foldPublicMinerViews(
+      active.map((m) => publicMinerView(m, now, active)),
+    ).sort((a, b) => (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0));
     const tip = store.tip();
     return {
       ok: true,
@@ -686,7 +745,7 @@ export function createPool({
       proof: 'PoW',
       miners: workers.length,
       threads: workers.reduce((a, m) => a + (m.threads || 0), 0),
-      hashrate: workers.reduce((a, m) => a + (reportedHashrate(m, now) || 0), 0),
+      hashrate: workers.reduce((a, m) => a + (Number(m.hashrate) || 0), 0),
       blocks: stats.blocks,
       accepted: stats.accepted,
       stale: stats.stale,
@@ -700,17 +759,17 @@ export function createPool({
       avgBlockTimeMs: avgBlockIntervalMs(store.blocks),
       avgBlockWindow: AVG_BLOCK_WINDOW,
       uptimeMs: Date.now() - stats.started,
-      workers: workers.map((m) => publicMinerView(m, now, workers)),
+      workers,
       recentTxs: poolRecentBlockTxs(store, 30),
     };
   }
 
-  function minerByTag(tag) {
+  function minerByTag(tag, now = Date.now()) {
     const want = String(tag || '').trim().toLowerCase();
     if (!/^she1[0-9a-f]{8}$/.test(want)) return [];
     return [...miners.values()].filter((m) => (
       publicMinerTag(m.login || m.workerKey) === want
-      && !isCminerFeeLogin(m.workerKey || m.login)
+      && isPublicMinerRow(m, now)
     ));
   }
 

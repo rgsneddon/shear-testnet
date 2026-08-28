@@ -15,7 +15,7 @@ import { requiredJobFields } from '../../crypto/header.js';
 import { payoutDest } from '../../crypto/address.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS } from '../src/pool.js';
 import { publicJob, buildTemplate } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
@@ -284,5 +284,148 @@ describe('session inventory fold', () => {
     assert.equal(folded.threads, 600);
     assert.equal(folded.cpuThreads, 640);
     assert.ok(folded.threads > 256);
+  });
+});
+
+function loginAndShare(port, login, extra = {}) {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(port, '127.0.0.1', () => {
+      sock.write(JSON.stringify({
+        id: 1,
+        method: 'login',
+        params: { login, client: 'ShearHash', threads: 1, ...extra },
+      }) + '\n');
+    });
+    let buf = '';
+    sock.on('data', (c) => {
+      buf += c.toString();
+      if (buf.includes('\n') && buf.includes('job') && !buf.includes('"hash"')) {
+        const first = JSON.parse(buf.split('\n')[0]);
+        const j = first.job || first.params;
+        let nonce = 0n;
+        let hit = null;
+        while (nonce < 200000n) {
+          const s = scoreShare({ job: j, nonce });
+          if (s.ok) { hit = nonce; break; }
+          nonce += 1n;
+        }
+        if (hit == null) {
+          sock.destroy();
+          reject(new Error('no_share'));
+          return;
+        }
+        sock.write(JSON.stringify({
+          id: 2,
+          method: 'submit',
+          params: { jobId: j.jobId, nonce: String(hit) },
+        }) + '\n');
+      }
+      if (buf.includes('"status":"OK"') && buf.includes('"hash"')) {
+        resolve(sock);
+      }
+    });
+    sock.on('error', reject);
+    setTimeout(() => reject(new Error('share_timeout')), 20000);
+  });
+}
+
+describe('public miner listing', () => {
+  it('pool and miner HTML paint from live API workers, not a local stash', () => {
+    const dash = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+    const miner = fs.readFileSync(new URL('../public/miner.html', import.meta.url), 'utf8');
+    assert.match(dash, /s\.workers/);
+    assert.match(miner, /d\.workers/);
+    assert.equal(/localStorage/.test(dash + miner), false);
+  });
+
+  it('isPublicMinerRow needs a valid share in the last 12s; connected-idle does not keep the row', () => {
+    assert.equal(HASH_PRESENCE_MS, 12_000);
+    const now = 1_700_000_000_000;
+    const base = { accepted: 9, connections: [{ sock: {} }], workerKey: 'ssa1qtest.rig' };
+    assert.equal(isPublicMinerRow({ ...base, lastShareAt: now - 5_000 }, now), true);
+    assert.equal(isPublicMinerRow({ ...base, lastShareAt: now - 13_000 }, now), false);
+    assert.equal(isPublicMinerRow({ ...base, accepted: 0, lastShareAt: now - 1_000 }, now), false);
+    assert.equal(isPublicMinerRow({
+      accepted: 4,
+      lastShareAt: now - 20_000,
+      acceptAt: [now - 20_000],
+      connections: [],
+    }, now), false);
+    assert.equal(lastValidWorkAt({ lastShareAt: 10, acceptAt: [5, 12] }), 12);
+    const fee = { accepted: 9, lastShareAt: now, workerKey: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.fee' };
+    assert.equal(isPublicMinerRow(fee, now), false);
+  });
+
+  it('foldPublicMinerViews keeps one row per she1 tag and sums device stats', () => {
+    const folded = foldPublicMinerViews([
+      { miner: 'she1aaaaaaaa', worker: 'rig', name: 'a', version: '0.5', hashrate: 10, accepted: 2, stale: 1, blocks: 0, threads: 4, sessions: 1, roundHashes: 8, connected: true, lastSeen: 20, firstSeen: 1 },
+      { miner: 'she1aaaaaaaa', worker: 'box', name: 'b', version: '0.5', hashrate: 5, accepted: 3, stale: 0, blocks: 1, threads: 2, sessions: 1, roundHashes: 4, connected: false, lastSeen: 30, firstSeen: 2 },
+      { miner: 'she1bbbbbbbb', worker: 'solo', hashrate: 1, accepted: 1, stale: 0, blocks: 0, threads: 1, sessions: 1, roundHashes: 1, connected: true, lastSeen: 9, firstSeen: 9 },
+    ]);
+    assert.equal(folded.length, 2);
+    const a = folded.find((w) => w.miner === 'she1aaaaaaaa');
+    assert.equal(a.hashrate, 15);
+    assert.equal(a.accepted, 5);
+    assert.equal(a.threads, 6);
+    assert.equal(a.sessions, 2);
+    assert.equal(a.blocks, 1);
+    assert.equal(a.roundHashes, 12);
+    assert.equal(a.connected, true);
+    assert.equal(a.lastSeen, 30);
+    assert.equal(a.firstSeen, 1);
+  });
+
+  it('dashboard lists one she1 row for two device logins; 12s idle and disconnected ghosts drop', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-miner-ui-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const tag = publicMinerTag(dest);
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 4,
+      bits: 8,
+    });
+    await new Promise((resolve, reject) => {
+      pool.stratum.listen(0, '127.0.0.1', () => {
+        pool.httpServer.listen(0, '127.0.0.1', resolve);
+      });
+      pool.stratum.on('error', reject);
+    });
+    const httpPort = pool.httpServer.address().port;
+    const stratumPort = pool.stratum.address().port;
+    const a = await loginAndShare(stratumPort, `${dest}.alpha`, { name: 'box-a' });
+    const b = await loginAndShare(stratumPort, `${dest}.beta`, { name: 'box-b' });
+    const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+    const rows = (stats.workers || []).filter((w) => w.miner === tag);
+    assert.equal(rows.length, 1, JSON.stringify(stats.workers));
+    assert.equal(new Set((stats.workers || []).map((w) => w.miner)).size, (stats.workers || []).length);
+    assert.equal(rows[0].accepted, 2);
+    assert.ok(rows[0].threads >= 2);
+    const page = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${tag}`).then((r) => r.json());
+    assert.equal(page.ok, true);
+    assert.ok((page.workers || []).length >= 1);
+    assert.ok((page.workers || []).every((w) => Number(w.accepted) > 0));
+    assert.equal(
+      (page.workers || []).some((w) => String(w.worker || '').toLowerCase() === 'fee'),
+      false,
+    );
+
+    const aged = Date.now() - HASH_PRESENCE_MS - 1_000;
+    for (const m of pool.miners.values()) {
+      m.lastShareAt = aged;
+      m.acceptAt = [aged];
+    }
+    const gone = pool.publicStats();
+    assert.equal((gone.workers || []).some((w) => w.miner === tag), false);
+    a.destroy();
+    b.destroy();
+    const ghost = pool.publicStats();
+    assert.equal((ghost.workers || []).some((w) => w.miner === tag), false);
+    const detail = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${tag}`);
+    assert.equal(detail.status, 404);
+    pool.close();
   });
 });
