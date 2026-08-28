@@ -38,11 +38,11 @@ Title **`[testnet] Shear-Miner 1.0`**. Asset **`Shear-Miner-1.0-windows.zip`**. 
 
 Laptop second-eye (optional): unzip each zip, run `Shear-Miner.exe --print-config` and `--selftest`.
 
-### Wallet 0.1 leftover (Windows / Linux / Arch) — **still leftover**
+### Wallet 0.1 leftover — Windows **on tag**; Linux / Arch still leftover
 
-Mac-cut is notarized DMG + signed APK on **`0.1`**. Laptop attach to **the same** `0.1` tag (no sibling):
+Mac-cut (notarized DMG + signed APK) and **Windows zip** are on **`0.1`**. Title **`[testnet] Shear wallet 0.1`**. https://github.com/rgsneddon/shear-testnet/releases/tag/0.1
 
-1. Clone `rgsneddon/shear-testnet` (not `rgsneddon/shear`).
-2. `kWalletVersion` / window title **0.1**. Flutter file version may be `0.1.0+N` — that is **not** the public pin.
-3. Build `shear-wallet-0.1-windows.zip` / `-linux.zip` / `-archlinux.zip`. **No miner inside.** PKGBUILD `pkgver=0.1` (not `0.1.0`).
-4. Title **`[testnet] Shear wallet 0.1`**. **No iOS / iPad zip.** Do not upload to the App Store.
+1. Asset **`shear-wallet-0.1-windows.zip`** (~13.7 MB, sha256 `e605be153627ebb63dfa970e4fdb1047b48059f265c6c07f4fa14d858ff740f5`). Zip root is Flutter `shear_wallet.exe` + DLLs/`data`. **No miner inside.**
+2. `kWalletVersion` / window title **0.1**. Flutter file version `0.1.0+12` is **not** the public pin.
+3. **Still leftover:** `shear-wallet-0.1-linux.zip` / `-archlinux.zip` (PKGBUILD `pkgver=0.1`, not `0.1.0`).
+4. **No iOS / iPad zip.** Do not upload to the App Store. Do **not** recut miner **1.1** / **1.0**.
