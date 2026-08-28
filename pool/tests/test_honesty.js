@@ -17,8 +17,12 @@ import {
   refreshMinerRow,
   workerKey,
   CMINER_FEE_SHE,
+  HASHRATE_WINDOW_MS,
+  HASHRATE_EMA_TAU_S,
 } from '../src/pool.js';
 import { expectedOneThreadHs } from '../src/share_vardiff.js';
+
+const RATE_WIN_S = HASHRATE_WINDOW_MS / 1000;
 
 function stampProvenThreads(miner, threadCount, shareBits, now = Date.now()) {
   const one = expectedOneThreadHs(shareBits);
@@ -40,14 +44,14 @@ describe('folded-row inventory', () => {
       threads: 1,
       connections: [{ sock }],
       acceptAt: [now - 1000],
-      acceptWork: [900_000 * 72],
+      acceptWork: [900_000 * RATE_WIN_S],
       clientHs: 900_000,
     };
     const ten = {
       threads: 10,
       connections: [{ sock }],
       acceptAt: [now - 1000],
-      acceptWork: [256 * 72],
+      acceptWork: [256 * RATE_WIN_S],
     };
     assert.equal(Math.round(provenHashrate(ten, now)), 256);
     assert.equal(Math.round(reportedHashrate(ten, now)), 256);
@@ -63,7 +67,7 @@ describe('folded-row inventory', () => {
       threads: 10,
       connections: [{ sock }],
       acceptAt: [now],
-      acceptWork: [256 * 72],
+      acceptWork: [256 * RATE_WIN_S],
     };
     applyMinerSelfRate(other, { hashes: 1000 }, now);
     applyMinerSelfRate(other, { hashes: 1000 + 225_000_000 }, now + 1000);
@@ -72,6 +76,26 @@ describe('folded-row inventory', () => {
     assert.equal(other.clientHs, 225_000_000);
     assert.equal(Math.round(reportedHashrate(other, now)), 256);
     assert.equal(reportedHashrate(one, now), 900_000);
+  });
+
+  it('reported hashrate eases over HASHRATE_EMA_TAU_S instead of jumping each 1s poll', () => {
+    assert.equal(HASHRATE_EMA_TAU_S, 30);
+    const now = 1_700_000_000_000;
+    const m = {
+      connections: [{ sock: {} }],
+      acceptAt: [now],
+      acceptWork: [3_000_000 * RATE_WIN_S],
+    };
+    const a = reportedHashrate(m, now);
+    assert.equal(Math.round(a), 3_000_000);
+    m.acceptAt = [now + 1000];
+    m.acceptWork = [1_000_000 * RATE_WIN_S];
+    const b = reportedHashrate(m, now + 1000);
+    assert.ok(b < 2_980_000, `eased down from 3MH/s, got ${b}`);
+    assert.ok(b > 2_800_000, `1s poll must not drop to the new instant, got ${b}`);
+    const c = reportedHashrate(m, now + 30_000);
+    assert.ok(c < 2_200_000, `after ~tau should be near 1MH/s, got ${c}`);
+    assert.ok(c > 1_000_000);
   });
 
   it('connect hashrate ramps up from own hashes, never down from a session-average spike', () => {
@@ -83,8 +107,8 @@ describe('folded-row inventory', () => {
     applyMinerSelfRate(miner, { hashrate: 2_000_000_000, hashes: 225_000_000 * 10 }, t0 + 10_000);
     assert.equal(miner.clientHs, 225_000_000);
     assert.equal(reportedHashrate(miner, t0 + 10_000), 0);
-    const low = { acceptAt: [t0], acceptWork: [1_000_000 * 72] };
-    const high = { acceptAt: [t0], acceptWork: [10_000_000 * 72] };
+    const low = { acceptAt: [t0], acceptWork: [1_000_000 * RATE_WIN_S] };
+    const high = { acceptAt: [t0], acceptWork: [10_000_000 * RATE_WIN_S] };
     const ranked = sortMinersByHashrate([low, high], t0);
     assert.equal(ranked[0], high);
   });

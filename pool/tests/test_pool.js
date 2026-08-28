@@ -377,11 +377,12 @@ describe('public miner listing', () => {
     assert.equal(folded[0].version, '1.1');
   });
 
-  it('replaces rude miner/worker/name tokens with flower names', () => {
-    assert.equal(bloomExpletive('workiecunt'), 'workierose');
-    assert.equal(bloomExpletive('ShitCunt'), 'LilyRose');
-    assert.equal(publicWorkerName('ssa1qexample.workiecunt'), 'workierose');
-    assert.equal(bloomExpletive('ok-rig'), 'ok-rig');
+  it('replaces rude miner software names with flower names; worker names stay raw', () => {
+    assert.equal(bloomExpletive('ShitCuntMiner'), 'LilyRoseMiner');
+    assert.equal(bloomExpletive('Shear-Miner'), 'Shear-Miner');
+    assert.equal(publicWorkerName('ssa1qexample.workiecunt'), 'workiecunt');
+    assert.equal(publicWorkerName('ssa1qexample.ShitRig'), 'ShitRig');
+    assert.equal(publicWorkerName('ssa1qexample.ok-rig'), 'ok-rig');
   });
 
   it('isPublicMinerRow keeps a connected hasher with proven shares; drops 12s after disconnect', () => {
@@ -545,7 +546,8 @@ describe('public miner listing', () => {
 
   it('legacy dual-login fee login with hasher lifetime hashes never appears as a public GH/s row', async () => {
     assert.equal(isCminerFeeLogin(`${CMINER_FEE_SHE}.fee`), true);
-    assert.equal(isCminerFeeLogin(CMINER_FEE_SHE), true);
+    assert.equal(isCminerFeeLogin(CMINER_FEE_SHE), false);
+    assert.equal(isCminerFeeLogin(`${CMINER_FEE_SHE}.raskul`), false);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fee-hs-'));
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });

@@ -7,7 +7,7 @@ ifeq ($(OS),Windows_NT)
   LIBS ?= -lws2_32 -pthread
 else
   BIN := Shear-Miner
-  LIBS ?= -pthread
+  LIBS ?= -pthread -lm
 endif
 
 SCALAR_OBJS := src/shear_miner.o src/shear_hash.o src/sha256.o src/sha256_dispatch.o

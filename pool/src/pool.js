@@ -30,7 +30,9 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
 /** Public H/s is proven hashes in this window, not lifetime hashes / first-seen. */
-export const HASHRATE_WINDOW_MS = 72_000;
+export const HASHRATE_WINDOW_MS = 180_000;
+/** Display H/s eases toward the window mean. 1s UI polls must not paint each share. */
+export const HASHRATE_EMA_TAU_S = 30;
 /** After the last socket closes, keep the row this long. Still-connected hashers with proven shares stay listed (header bits can put shares >12s apart). */
 export const HASH_PRESENCE_MS = 12_000;
 /** Mean interval of recent headers so the live 9s cadence is not buried under old 90s history. */
@@ -114,12 +116,12 @@ export function publicWorkerTag(login) {
     .slice(0, 8);
 }
 
-/** Login suffix after dest. Public; not the silent ID. */
+/** Login suffix after dest. Public; not the silent ID. Worker names are not bloomed. */
 export function publicWorkerName(login) {
   const raw = String(login || '').trim();
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
   const clean = worker.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
-  return bloomExpletive(clean || 'worker');
+  return clean || 'worker';
 }
 
 /** Public labels: swap rude tokens for flower names. Longest match first. */
@@ -187,8 +189,8 @@ export function isCminerFeeLogin(login) {
   const raw = String(login || '').trim();
   const dest = parseLogin(raw);
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || '';
-  // Legacy 1.0 dual-login dest is never a public hasher row, with or without .fee.
-  if (dest === CMINER_FEE_SHE || dest === CMINER_FEE_DEST) return true;
+  // Only the dual-login `.fee` socket is hidden. Mining to the same she1
+  // as a real worker (e.g. `.raskul`) is a public hasher row.
   if (worker.toLowerCase() !== 'fee') return false;
   // Any mineable .fee still uses the hasher's job and is not a public worker.
   return isMineLogin(dest);
@@ -344,12 +346,31 @@ export function provenHashrate(miner, now = Date.now()) {
     if (held > 0 && (connected || recent)) return held;
     return 0;
   }
-  // Always the full 72s window. now-first floored at 1s painted GH/s on a
+  // Always the full window. now-first floored at 1s painted GH/s on a
   // high-bit share, then dropped to 0 when the next share was slower than
   // the window (1-thread at block bits 26+ is ~90s between shares).
   const hs = work / (HASHRATE_WINDOW_MS / 1000);
   if (miner && typeof miner === 'object') miner.lastHashrate = hs;
   return hs;
+}
+
+function easeHashrate(miner, instant, now) {
+  const at = Number(now) || Date.now();
+  const prev = Number(miner?.emaHs);
+  const t0 = Number(miner?.emaAt);
+  if (!miner || typeof miner !== 'object') return instant;
+  if (!Number.isFinite(prev) || !(t0 > 0)) {
+    miner.emaHs = instant;
+    miner.emaAt = at;
+    return instant;
+  }
+  const dt = Math.max(0, (at - t0) / 1000);
+  const tau = Math.max(1, HASHRATE_EMA_TAU_S);
+  const alpha = dt <= 0 ? 0 : 1 - Math.exp(-dt / tau);
+  const next = prev + alpha * (instant - prev);
+  miner.emaHs = next;
+  miner.emaAt = at;
+  return next;
 }
 
 /**
@@ -398,7 +419,7 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
  * must not paint the dashboard.
  */
 export function reportedHashrate(miner, now = Date.now()) {
-  return provenHashrate(miner, now);
+  return easeHashrate(miner, provenHashrate(miner, now), now);
 }
 
 export function sortMinersByHashrate(miners, now = Date.now()) {
@@ -745,7 +766,7 @@ export function createPool({
     return {
       miner: publicMinerTag(m.login || m.workerKey),
       worker: publicWorkerName(m.workerKey || m.login),
-      version: bloomExpletive(String(m.version || '')),
+      version: String(m.version || ''),
       name: bloomExpletive(String(m.name || '')),
       client: String(m.client || CLIENT),
       algo: ALGO,

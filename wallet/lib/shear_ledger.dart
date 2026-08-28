@@ -106,13 +106,20 @@ class ShearTx {
       );
 }
 
-/// Fold per-hash / pot / mine rows into one confirmed block row per dest+height.
-/// Shearview lists the bundle. Continuum keeps a single open-round hash row.
+bool isWalletBlockKind(String kind) =>
+    kind == 'blockfound' || kind == 'coinbase' || kind == 'block' || kind == 'pot' || kind == 'mine';
+
+/// Wallet lists: full blocks only. Hash rewards live inside the block row.
+String walletTxLabel(ShearTx t) => isWalletBlockKind(t.kind) ? 'block' : t.kind;
+
+/// Fold per-hash / pot / mine rows into one block row per dest+height.
+/// Open-round hashes (no height) are not a block yet and are omitted.
 List<ShearTx> rollupExplorerTxs(Iterable<ShearTx> txs) {
   final rest = <ShearTx>[];
   final blocks = <String, ({String dest, int height, double pot, double hash, int threads})>{};
   for (final t in txs) {
     final kind = t.kind;
+    if (kind == 'hash' && (t.height ?? 0) < 1) continue;
     if (kind == 'hash' ||
         kind == 'coinbase' ||
         kind == 'pot' ||
@@ -527,6 +534,7 @@ class ShearLedger {
     }
 
     add(currentDest(restFrame));
+    add(paymentCode);
     add(payoutDest(paymentCode ?? ''));
     add(payoutDest(restFrame));
     for (final d in listedDests(restFrame)) {
@@ -701,54 +709,52 @@ class ShearLedger {
   }
 
   List<ShearTx> ownerHistory(String address) {
-    final keys = ownedAddresses(address);
-    return _txs
-        .where((t) =>
-            t.kind != 'hash' &&
-            (t.confirmed || t.kind == 'send') &&
-            (keys.contains(t.to) || keys.contains(t.from)))
+    return _ownedRolled(address)
+        .where((t) => t.kind != 'hash' && (t.confirmed || t.kind == 'send'))
         .toList();
   }
 
-  /// Dedicated explorer list: bundled confirmed rows at Continuum pie depth.
-  /// Never per-hash pieces.
-  List<ShearTx> shearviewTxs(String address) {
+  List<ShearTx> _ownedRolled(String address) {
     final keys = ownedAddresses(address);
-    return _txs.where((t) {
+    final mine = _txs.where((t) {
+      if (t.kind == 'sample') return false;
+      return keys.contains(t.to) ||
+          keys.contains(t.from) ||
+          t.from == 'hash' ||
+          t.from == 'coinbase' ||
+          t.from == 'pending';
+    });
+    return rollupExplorerTxs(mine).where((t) => t.kind != 'hash').toList();
+  }
+
+  /// Dedicated explorer list: one row per full block. Never per-hash pieces.
+  List<ShearTx> shearviewTxs(String address) {
+    final rows = _ownedRolled(address).where((t) {
       if (t.kind == 'hash' || t.kind == 'sample') return false;
-      if (!t.confirmed && t.kind != 'send') return false;
-      if (!(keys.contains(t.to) || keys.contains(t.from))) return false;
       final h = t.height ?? 0;
       if (h < 1) return false;
       return confirmationsOf(h) >= continuumConfirmations;
     }).toList();
+    rows.sort((a, b) => (b.height ?? 0).compareTo(a.height ?? 0));
+    return rows;
   }
 
   List<ShearTx> shearviewSearch(String address, String query) {
     return shearviewTxs(address).where((t) => shearviewMatches(t, query)).toList();
   }
 
-  /// Continuum rows while the 6-slice pie is filling. Hash rewards stay
-  /// only for the open round (no height); a new height bundles and prunes them.
-  /// Spendable still lands at [spendableConfirmations].
+  /// Continuum: full blocks still filling the 6-slice pie, plus in-flight
+  /// send/receive. Hash rewards never list on their own — they sit in the block.
   List<ShearTx> pendingTxs(String address) {
-    final keys = ownedAddresses(address);
-    return _txs.where((t) {
-      if (t.kind == 'sample') return false;
-      final mine = keys.contains(t.to) ||
-          keys.contains(t.from) ||
-          t.from == 'hash' ||
-          t.from == 'pending' ||
-          t.from == 'coinbase';
-      if (!mine) return false;
-      if (t.kind == 'hash') return !t.confirmed && (t.height ?? 0) < 1;
-      if (t.kind != 'send' && t.kind != 'receive' && t.kind != 'coinbase' && t.kind != 'blockfound') {
-        return false;
-      }
+    final rows = _ownedRolled(address).where((t) {
+      if (t.kind == 'hash' || t.kind == 'sample') return false;
+      if (t.kind == 'send' && !t.confirmed) return true;
       final h = t.height ?? 0;
-      if (h < 1) return !t.confirmed;
+      if (h < 1) return t.kind == 'receive' && !t.confirmed;
       return confirmationsOf(h) < continuumConfirmations;
     }).toList();
+    rows.sort((a, b) => (b.height ?? 0).compareTo(a.height ?? 0));
+    return rows;
   }
 
   /// Principal + interest from The Reserve, paid to a Continuum dest.

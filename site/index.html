@@ -49,6 +49,11 @@
       width:100%; height:100%; object-fit:cover; object-position:center;
     }
     .pulse { color:var(--green); font-size:.7rem; }
+    .pack-advisory {
+      text-align:center; color:var(--muted); font-size:.68rem; line-height:1.45;
+      margin:8px 12px 10px; overflow-wrap:anywhere; letter-spacing:.02em;
+    }
+    .pack-advisory code { font-size:.62rem; color:var(--cyan); }
     .client-row {
       display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin:4px 0 20px;
       position:relative; z-index:8; overflow:visible;
@@ -115,14 +120,24 @@
         data-dark="/brand/SHEAR_dark.png"/>
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
+    <p class="pack-advisory" id="pack-advisory">
+      wallet <strong>0.2</strong>
+      macos dmg sha256 <code title="fd335b48846426900fe1ec27766c08dbecec0fc17d57b389260fcc96057b17a1">fd335b48846426900fe1ec27766c08dbecec0fc17d57b389260fcc96057b17a1</code>
+      · android apk sha256 <code title="356bbb25dbdf49b5fdf69bbfb1f5dea7a255a0e7b1a62d5bd9d0cba5f0b32e38">356bbb25dbdf49b5fdf69bbfb1f5dea7a255a0e7b1a62d5bd9d0cba5f0b32e38</code>
+      · miner <strong>1.1</strong>
+      macos sha256 <code title="eef5775766db1b4ae6b1e0cc77211a61744b440b0a5838ce1bfabca133b154fe">eef5775766db1b4ae6b1e0cc77211a61744b440b0a5838ce1bfabca133b154fe</code>
+      windows sha256 <code title="86fa415cbd770e9135ce3f1e8ae09de1c011b11ae5106cc91290eb11d7102540">86fa415cbd770e9135ce3f1e8ae09de1c011b11ae5106cc91290eb11d7102540</code>
+      linux sha256 <code title="39b0f2ce2b660ee684f9a1c5017257b1789960af0226ba76f57a7f84d615aab1">39b0f2ce2b660ee684f9a1c5017257b1789960af0226ba76f57a7f84d615aab1</code>
+      · wallet windows/linux leftover on tag 0.2
+    </p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.1">WALLET</a>
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.2">WALLET</a>
         <div class="client-menu" id="menu-wallet">
-          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.1/shear-wallet-0.1-macos.dmg">macOS</a>
-          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.1/shear-wallet-0.1-windows.zip">Windows</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.1/shear-wallet-0.1-android.apk">Android</a>
-          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.1">Linux / Arch</a>
+          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.2/shear-wallet-0.2-macos.dmg">macOS</a>
+          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.2">Windows</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.2/shear-wallet-0.2-android.apk">Android</a>
+          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.2">Linux / Arch</a>
         </div>
       </div>
       <div class="client-dd">
@@ -166,11 +181,11 @@
       else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
-        macos: BASE + '/0.1/shear-wallet-0.1-macos.dmg',
-        windows: BASE + '/0.1/shear-wallet-0.1-windows.zip',
-        android: BASE + '/0.1/shear-wallet-0.1-android.apk',
-        linux: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.1',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.1'
+        macos: BASE + '/0.2/shear-wallet-0.2-macos.dmg',
+        windows: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.2',
+        android: BASE + '/0.2/shear-wallet-0.2-android.apk',
+        linux: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.2',
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.2'
       };
       var miner = {
         macos: BASE + '/1.1/Shear-Miner-1.1-macos.zip',

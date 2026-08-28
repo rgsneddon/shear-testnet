@@ -19,7 +19,7 @@ import 'shear_reserve.dart';
 import 'shear_join.dart';
 import 'shear_confirm_pie.dart';
 
-const kWalletVersion = '0.1';
+const kWalletVersion = '0.2';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -546,24 +546,36 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         const SizedBox(height: 16),
         Text('Pending', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
         Text(
-          'Each pending fills a 6-slice pie as blocks confirm (spendable at ${ShearLedger.spendableConfirmations}; leaves Continuum at ${ShearLedger.continuumConfirmations}). Hash rewards bundle into the block when height advances.',
+          'Each pending block fills a 6-slice pie (spendable at ${ShearLedger.spendableConfirmations}). Hash rewards are inside the block, not listed as their own txs.',
           style: TextStyle(color: shearMutedOf(context)),
         ),
         for (final t in pending)
-          ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            minLeadingWidth: 44,
-            leading: ConfirmPie(
-              key: Key('confirm-pie-${t.id}'),
-              filled: ledger.confirmationsOf(t.height ?? 0),
-              size: 40,
-            ),
-            title: Text('${t.kind}  ${formatShe(t.amount)} SHE'),
-            subtitle: Text(
-              '${ledger.confirmationsOf(t.height ?? 0).clamp(0, ShearLedger.continuumConfirmations)}/${ShearLedger.continuumConfirmations} conf  ${t.from} → ${t.to}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                ConfirmPie(
+                  key: Key('confirm-pie-${t.id}'),
+                  filled: ledger.confirmationsOf(t.height ?? 0),
+                  size: 40,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('${walletTxLabel(t)}  ${formatShe(t.amount)} SHE'),
+                      Text(
+                        '${ledger.confirmationsOf(t.height ?? 0).clamp(0, ShearLedger.continuumConfirmations)}/${ShearLedger.continuumConfirmations} conf  ${t.from} → ${t.to}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: shearMutedOf(context), fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
       ],
@@ -583,7 +595,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     final hist = ledger.shearviewSearch(ident.address, shearviewQuery.text);
     return _card([
       const Text('Shearview  S_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
-      Text('Your dedicated explorer. Bundled confirmed blocks — not per-hash pieces.', style: TextStyle(color: shearMutedOf(context))),
+      Text('Your dedicated explorer. Full blocks only — hash rewards are inside each block.', style: TextStyle(color: shearMutedOf(context))),
       TextField(
         key: const Key('shearview-search'),
         controller: shearviewQuery,
@@ -596,7 +608,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       for (final t in hist)
         ListTile(
           dense: true,
-          title: Text('${t.kind}  ${formatShe(t.amount)} SHE'),
+          title: Text('${walletTxLabel(t)}  ${formatShe(t.amount)} SHE'),
           subtitle: Text(
             t.memo && openedMemos.contains(t.id) && t.memoPlain != null
                 ? '${t.from} → ${t.to}  h=${t.height ?? '-'}  memo: ${t.memoPlain}'

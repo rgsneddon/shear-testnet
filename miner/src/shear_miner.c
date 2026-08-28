@@ -14,6 +14,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -620,11 +621,28 @@ static int mine_once(void) {
     time_t now = time(NULL);
     if (now != last_stats) {
       last_stats = now;
-      double elapsed = (double)(now - started);
-      if (elapsed < 1) elapsed = 1;
       uint64_t h = atomic_load_explicit(&g_hashes, memory_order_relaxed);
+      static uint64_t rate_h0;
+      static time_t rate_t0;
+      static double smooth_hs;
+      if (rate_t0 == 0) {
+        rate_h0 = h;
+        rate_t0 = now;
+      }
+      double dt = (double)(now - rate_t0);
+      if (dt < 1) dt = 1;
+      double inst = (double)(h - rate_h0) / dt;
+      if (smooth_hs <= 0) smooth_hs = inst;
+      else {
+        double alpha = 1.0 - exp(-dt / 30.0);
+        smooth_hs += alpha * (inst - smooth_hs);
+      }
+      if (dt >= 15) {
+        rate_h0 = h;
+        rate_t0 = now;
+      }
       char rate[32];
-      fmt_hashrate((double)h / elapsed, rate, sizeof(rate));
+      fmt_hashrate(smooth_hs, rate, sizeof(rate));
       printf("hashrate=%s accepted=%d rejected=%d threads=%d\n",
              rate, g_accepted, g_rejected, g_threads);
       fflush(stdout);

@@ -76,9 +76,10 @@ class ConfirmPiePainter extends CustomPainter {
     final sweep = 2 * math.pi / need;
     const start0 = -math.pi / 2;
     final rect = Rect.fromCircle(center: c, radius: r);
+    canvas.drawCircle(c, r, Paint()..color = empty);
     final outline = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1
+      ..strokeWidth = 1.4
       ..color = stroke;
     for (var i = 0; i < need; i++) {
       final path = Path()

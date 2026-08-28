@@ -3,13 +3,13 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
 
-/// Inspects the **built** `shear-wallet-0.1-windows.zip` (not a mocked listing).
+/// Inspects the **built** `shear-wallet-0.2-windows.zip` (not a mocked listing).
 /// Pack with `python wallet/pack/zip_windows.py` after `flutter build windows --release`.
 File _shippedWindowsZip() {
   final candidates = <File>[
-    File('../dist/shear-wallet-0.1-windows.zip'),
-    File('dist/shear-wallet-0.1-windows.zip'),
-    File('${Directory.current.path}/../dist/shear-wallet-0.1-windows.zip'),
+    File('../dist/shear-wallet-0.2-windows.zip'),
+    File('dist/shear-wallet-0.2-windows.zip'),
+    File('${Directory.current.path}/../dist/shear-wallet-0.2-windows.zip'),
   ];
   for (final f in candidates) {
     if (f.existsSync()) return f;
@@ -29,14 +29,14 @@ List<String> _zipNames(File zip) {
 }
 
 void main() {
-  test('kWalletVersion public pin is two-part 0.1 (not 0.1.0)', () {
-    expect(kWalletVersion, '0.1');
+  test('kWalletVersion public pin is two-part 0.2 (not 0.2.0)', () {
+    expect(kWalletVersion, '0.2');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
   });
 
-  test('built shear-wallet-0.1-windows.zip is a Flutter runner with no miner', () {
+  test('built shear-wallet-0.2-windows.zip is a Flutter runner with no miner', () {
     final zip = _shippedWindowsZip();
     expect(
       zip.existsSync(),

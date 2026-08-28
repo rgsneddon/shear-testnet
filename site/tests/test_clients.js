@@ -21,7 +21,11 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /height:72px/);
     assert.match(html, /justify-content:center/);
     assert.match(html, /text-indent:\.12em/);
-    assert.match(html, /shear-wallet-0\.1-macos\.dmg/);
+    assert.match(html, /shear-wallet-0\.2-macos\.dmg/);
+    assert.match(html, /id="pack-advisory"/);
+    assert.match(html, /wallet <strong>0\.2<\/strong>/);
+    assert.match(html, /miner <strong>1\.1<\/strong>/);
+    assert.match(html, /sha256/);
     assert.match(html, /Shear-Miner-1\.1-macos\.zip/);
     assert.match(html, /navigator\.userAgent/);
     assert.match(html, /client-dd:hover \.client-menu/);

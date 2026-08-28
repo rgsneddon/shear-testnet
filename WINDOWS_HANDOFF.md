@@ -4,11 +4,13 @@
 
 **https://github.com/rgsneddon/handoff/blob/main/HANDOFF.md** (section **Shear**)
 
-## [testnet] Shear 0.1 / Shear-Miner 1.1 + 1.0
+## [testnet] Shear wallet 0.2 / Shear-Miner 1.1 + 1.0
 
 New repo: **https://github.com/rgsneddon/shear-testnet** (GitHub name `shear-testnet`, display **[testnet] Shear**). Do **not** attach leftover zips to `rgsneddon/shear` or to any `v0.1.0` / three-part tag.
 
-**Versioning:** two integers only (`*.*`, never `*.*.*`). Wallet / node / pool stay **0.1**. Official miner pin is **Shear-Miner 1.1** (free). **1.0** stays on tag `1.0` as the last fee build — do **not** recut it. Never `1.1.0`. Every GitHub release title is **`[testnet] …`**.
+**Versioning:** two integers only (`*.*`, never `*.*.*`). Wallet pin is **0.2**. Node / pool stay **0.1**. Official miner pin is **Shear-Miner 1.1** (free). **1.0** stays on tag `1.0` as the last fee build — do **not** recut it. Never `1.1.0`. Every GitHub release title is **`[testnet] …`**.
+
+**Site (last leftover step):** every new GitHub pack, the **last** leftover (Windows) updates **https://shear.digital** WALLET / MINER / NODE download buttons **and** the discrete version+sha256 advisory above them (`#pack-advisory` in `site/index.html`), then deploys `/var/www/shear.digital`. Click = device pack; hover = all versions. Do not skip the advisory.
 
 **Book-law:** 128-byte header, `ssa1` dests, 90s ASERT, 1 SHE pot, `HASH_TX_LIVE=1`, consensus spendable **6 confs** (in the fingerprint — do **not** change; flag the operator). Merchant `min_confirms` **12**. Magic `shear-testnet-v1`. Datadir `/var/lib/shear/testnet-0.1` (do **not** load `/var/lib/shear/testnet` ~7995 snapshot).
 
@@ -38,7 +40,21 @@ Title **`[testnet] Shear-Miner 1.0`**. Asset **`Shear-Miner-1.0-windows.zip`**. 
 
 Laptop second-eye (optional): unzip each zip, run `Shear-Miner.exe --print-config` and `--selftest`.
 
-### Wallet 0.1 leftover — Windows **on tag**; Linux / Arch still leftover
+### Wallet 0.2 leftover — Windows / Linux / Arch + **shear.digital buttons**
+
+Mac-cut (notarized DMG + APK) is on **`0.2`**. Title **`[testnet] Shear wallet 0.2`**. https://github.com/rgsneddon/shear-testnet/releases/tag/0.2
+
+1. Laptop attach `shear-wallet-0.2-windows.zip` to **the same** `0.2`. Zip root is Flutter `shear_wallet.exe` + DLLs/`data`. **No miner inside.** Window title **Shear 0.2**. Flutter file version `0.2.0+13` is **not** the public pin.
+2. **Still leftover:** `shear-wallet-0.2-linux.zip` / `-archlinux.zip` (PKGBUILD `pkgver=0.2`).
+3. **Last part (Windows):** update `site/index.html` download buttons to 0.2 packs, fill `#pack-advisory` with **version + sha256** for every shipped asset (macos dmg `fd335b48846426900fe1ec27766c08dbecec0fc17d57b389260fcc96057b17a1`, android apk `356bbb25dbdf49b5fdf69bbfb1f5dea7a255a0e7b1a62d5bd9d0cba5f0b32e38`, plus the windows zip sha after you pack it; miner 1.1 shas already in the file), then deploy `/var/www/shear.digital`.
+4. **No iOS / iPad zip.** Do not upload to the App Store. Do **not** recut miner **1.1** / **1.0**.
+
+Mac-cut already on tag:
+
+- `shear-wallet-0.2-macos.dmg` (~19 MB, sha256 `fd335b48846426900fe1ec27766c08dbecec0fc17d57b389260fcc96057b17a1`) Developer ID + notarized + stapled
+- `shear-wallet-0.2-android.apk` (~49 MB, sha256 `356bbb25dbdf49b5fdf69bbfb1f5dea7a255a0e7b1a62d5bd9d0cba5f0b32e38`)
+
+### Wallet 0.1 leftover — Windows **on tag**; Linux / Arch still leftover (historical)
 
 Mac-cut (notarized DMG + signed APK) and **Windows zip** are on **`0.1`**. Title **`[testnet] Shear wallet 0.1`**. https://github.com/rgsneddon/shear-testnet/releases/tag/0.1
 
