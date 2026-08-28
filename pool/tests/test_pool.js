@@ -131,10 +131,16 @@ describe('pool dashboard + stratum', () => {
     assert.equal(/--user shear1/.test(html), false);
     assert.equal(html.includes('YOUR_SHEAR1'), false);
     assert.match(html, /shear-testnet-v1/);
-    assert.match(html, /Pool explorer · last 30 transactions/);
+    assert.match(html, /Pool explorer · last 10 transactions/);
     assert.match(html, />Id</);
     assert.match(html, />Time</);
-    assert.match(html, />Kind</);
+    assert.match(html, />Status</);
+    assert.doesNotMatch(html, />Kind</);
+    assert.match(html, /confirmed/);
+    assert.match(html, /pending/);
+    assert.match(html, /function blockStatus/);
+    assert.match(html, /slice\(0, 10\)/);
+    assert.match(html, /s\.spendableConfirmations/);
     assert.match(html, />From</);
     assert.match(html, />To</);
     assert.match(html, />Amount</);
@@ -336,6 +342,27 @@ describe('public miner listing', () => {
     assert.match(dash, /s\.workers/);
     assert.match(miner, /d\.workers/);
     assert.equal(/localStorage/.test(dash + miner), false);
+  });
+
+  it('dashboard last-10 table uses Status not Kind; TESTNET sits above the fee note', () => {
+    const dash = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+    assert.match(dash, /Pool explorer · last 10 transactions/);
+    assert.match(dash, />Status</);
+    assert.doesNotMatch(dash, />Kind</);
+    assert.match(dash, /function blockStatus/);
+    assert.match(dash, /slice\(0, 10\)/);
+    assert.match(dash, /s\.spendableConfirmations/);
+    const fn = dash.match(/function blockStatus\(t, tip, need\) \{[\s\S]*?\n    \}/);
+    assert.ok(fn, 'blockStatus must ship');
+    const blockStatus = new Function(`${fn[0]}; return blockStatus;`)();
+    assert.equal(blockStatus({ height: 10 }, 10, 6), 'pending');
+    assert.equal(blockStatus({ height: 5 }, 9, 6), 'pending');
+    assert.equal(blockStatus({ height: 5 }, 10, 6), 'confirmed');
+    const bannerIdx = dash.indexOf('id="testnet-banner"');
+    const feeIdx = dash.indexOf('id="fee-note"');
+    assert.ok(bannerIdx >= 0 && feeIdx > bannerIdx, 'TESTNET banner must sit above the fee disclaimer');
+    assert.match(dash.slice(bannerIdx, feeIdx), />TESTNET</);
+    assert.match(dash, /#testnet-banner/);
   });
 
   it('miner and version boxes list each distinct label once', () => {

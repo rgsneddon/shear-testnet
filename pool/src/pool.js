@@ -801,7 +801,7 @@ export function createPool({
       avgBlockWindow: AVG_BLOCK_WINDOW,
       uptimeMs: Date.now() - stats.started,
       workers,
-      recentTxs: poolRecentBlockTxs(store, 30),
+      recentTxs: poolRecentBlockTxs(store, 10),
     };
   }
 

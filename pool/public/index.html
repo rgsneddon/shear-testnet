@@ -65,6 +65,22 @@
       background-origin:border-box; background-clip:padding-box, border-box;
     }
     .top-row { display:grid; grid-template-columns:1fr 3fr; gap:8px; margin:0 0 16px; }
+    #testnet-banner {
+      display:block; text-align:center; margin:4px 0 8px; padding:18px 12px;
+      font-size:2.6rem; font-weight:900; letter-spacing:.42em; text-indent:.42em;
+      text-transform:uppercase; line-height:1; color:var(--cyan);
+      border:1px solid transparent;
+      background: linear-gradient(165deg, #ffffff 0%, #f4f8fc 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box, border-box;
+    }
+    html[data-theme="dark"] #testnet-banner {
+      color:#ffe14a;
+      text-shadow: 0 0 10px rgba(255,225,74,.95), 0 0 22px rgba(255,225,74,.5);
+      background: linear-gradient(165deg, #1a3a5c 0%, #132a4a 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box, border-box;
+    }
     #fee-note {
       color: #3a6fb5; font-size: .68rem; margin: 8px 0 0; line-height: 1.35; font-weight: 650;
       text-shadow: 0 0 6px rgba(74,159,224,.45), 0 0 12px rgba(26,111,181,.22);
@@ -74,6 +90,13 @@
       text-shadow: 0 0 8px rgba(255,225,74,.95), 0 0 18px rgba(255,225,74,.55), 0 0 28px rgba(255,200,0,.35);
     }
     @media (prefers-color-scheme: dark) {
+      html:not([data-theme="light"]) #testnet-banner {
+        color:#ffe14a;
+        text-shadow: 0 0 10px rgba(255,225,74,.95), 0 0 22px rgba(255,225,74,.5);
+        background: linear-gradient(165deg, #1a3a5c 0%, #132a4a 58%) padding-box,
+          linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+        background-origin:border-box; background-clip:padding-box, border-box;
+      }
       html:not([data-theme="light"]) #fee-note {
         color: #ffe14a;
         text-shadow: 0 0 8px rgba(255,225,74,.95), 0 0 18px rgba(255,225,74,.55), 0 0 28px rgba(255,200,0,.35);
@@ -85,6 +108,7 @@
     }
     @media (max-width: 640px) {
       #stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      #testnet-banner { font-size:1.6rem; letter-spacing:.28em; text-indent:.28em; padding:14px 8px; }
     }
   </style>
 </head>
@@ -145,6 +169,7 @@
         <p class="label" id="cmd-hint">Valid she1 required. she1 is the silent ID and the login. Never share shear1.</p>
       </section>
     </div>
+    <div id="testnet-banner" role="status">TESTNET</div>
     <p id="fee-note">pool fee is 1% of the 0.1 SHE pot for development — hash bonuses (0.00000000001 SHE per hash) are paid in full to each hasher.</p>
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
@@ -183,15 +208,15 @@
       </div>
     </section>
     <section class="panel-card" id="pool-explorer">
-      <h2>Pool explorer · last 30 transactions</h2>
-      <p class="label">Sealed blocks only. Hash bonuses in the open round stay off this list.</p>
+      <h2>Pool explorer · last 10 transactions</h2>
+      <p class="label">Sealed blocks only. Hash bonuses in the open round stay off this list. Status is pending until spendable confirmations, then confirmed.</p>
       <div class="table-wrap" id="recent-wrap">
       <table id="recent-txs">
         <thead>
           <tr>
             <th>Id</th>
             <th>Time</th>
-            <th>Kind</th>
+            <th>Status</th>
             <th>From</th>
             <th>To</th>
             <th>Amount</th>
@@ -285,7 +310,7 @@
           (w.stale || 0) + '</td><td>' + (w.threads || 0) + '</td><td>' +
           (w.roundHashes || 0) + '</td></tr>';
       }).join('');
-      paintRecent(s.recentTxs || []);
+      paintRecent(s.recentTxs || [], s);
     }
     function esc(v) {
       return String(v ?? '').replace(/[&<>"]/g, function (c) {
@@ -312,17 +337,26 @@
         + ' : ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
     }
     let recentSig = '';
-    function paintRecent(txs) {
+    function blockStatus(t, tip, need) {
+      const h = Number(t && t.height) || 0;
+      const tipH = Number(tip) || 0;
+      const n = Math.max(1, Number(need) || 6);
+      const confs = (h >= 1 && tipH >= h) ? (tipH - h + 1) : 0;
+      return confs >= n ? 'confirmed' : 'pending';
+    }
+    function paintRecent(txs, s) {
       const body = document.querySelector('#recent-txs tbody');
       if (!body) return;
-      const rows = Array.isArray(txs) ? txs.slice(0, 30) : [];
+      const rows = Array.isArray(txs) ? txs.slice(0, 10) : [];
+      const tip = Number(s && s.height) || 0;
+      const need = Math.max(1, Number(s && s.spendableConfirmations) || 6);
       const sig = rows.map(function (t) { return t.id; }).join('|');
       const html = rows.length
         ? rows.map(function (t) {
             const href = 'https://explorer.shear.digital/tx/' + encodeURIComponent(t.id);
             return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
               esc(fmtLocalTs(t.at)) + '</td><td>' +
-              esc(t.kind || 'coinbase') + '</td><td class="mono">' + esc(t.from || 'coinbase') +
+              esc(blockStatus(t, tip, need)) + '</td><td class="mono">' + esc(t.from || 'coinbase') +
               '</td><td class="mono">' + esc(shortDest(t.to)) + '</td><td>' +
               esc(t.amount) + '</td></tr>';
           }).join('')
