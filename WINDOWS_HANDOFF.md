@@ -10,7 +10,7 @@ New repo: **https://github.com/rgsneddon/shear-testnet** (GitHub name `shear-tes
 
 **Versioning:** two integers only (`*.*`, never `*.*.*`). Wallet / node / pool stay **0.1**. Official miner pin is **Shear-Miner 1.1** (free). **1.0** stays on tag `1.0` as the last fee build — do **not** recut it. Never `1.1.0`. Every GitHub release title is **`[testnet] …`**.
 
-**Book-law:** 128-byte header, `ssa1` dests, 90s ASERT, 1 SHE pot, `HASH_TX_LIVE=1`, consensus spendable **1 conf**. Merchant `min_confirms` **12**. Magic `shear-testnet-v1`. Datadir `/var/lib/shear/testnet-0.1` (do **not** load `/var/lib/shear/testnet` ~7995 snapshot).
+**Book-law:** 128-byte header, `ssa1` dests, 90s ASERT, 1 SHE pot, `HASH_TX_LIVE=1`, consensus spendable **6 confs** (in the fingerprint — do **not** change; flag the operator). Merchant `min_confirms` **12**. Magic `shear-testnet-v1`. Datadir `/var/lib/shear/testnet-0.1` (do **not** load `/var/lib/shear/testnet` ~7995 snapshot).
 
 Each miner Windows zip is **only** two files at zip root: `Shear-Miner.exe` + `example.bat`. No extra MinGW DLLs in the zip (UCRT/Win10+). **No miner inside the wallet zip.**
 

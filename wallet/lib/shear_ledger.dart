@@ -203,9 +203,9 @@ class ShearLedger {
 
   /// Last height Continuum already settled into spendable.
   int get settledHeight => _settledHeight;
-  /// Consensus floor: 1 confirmation.
-  static const spendableConfirmations = 1;
-  /// Continuum pie lifetime. Not consensus. Not fingerprint.
+  /// Consensus floor: 6 confirmations. Operator lock — do not change; flag them.
+  static const spendableConfirmations = 6;
+  /// Continuum pie lifetime matches consensus spendable.
   static const continuumConfirmations = 6;
   /// Third-party/merchant policy (~18 min). Not consensus.
   static const minConfirms = 12;

@@ -271,7 +271,6 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       pot: 1,
       height: ledger.sealedHeight + 1,
     );
-    ledger.settleTo(ledger.sealedHeight + ShearLedger.spendableConfirmations - 1);
     _ingestTx(ident, minted);
     _ingestHistory();
     if (mounted) setState(() {});

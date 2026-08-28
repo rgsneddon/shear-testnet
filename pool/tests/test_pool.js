@@ -161,7 +161,7 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.targetBlockIntervalMs, TARGET_BLOCK_INTERVAL_MS);
     assert.equal(stats.targetBlockIntervalMs, 90_000);
     assert.equal(stats.destHrp, 'ssa');
-    assert.equal(stats.spendableConfirmations, 1);
+    assert.equal(stats.spendableConfirmations, 6);
     assert.equal(stats.minConfirmsPolicy, 12);
     assert.equal(stats.productVersion, '0.1');
     assert.equal(stats.minerVersion, '1.1');

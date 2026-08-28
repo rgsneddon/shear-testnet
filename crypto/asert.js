@@ -53,8 +53,11 @@ export const FEE_SPLIT_FINDER_BPS = 5000;
 export const FEE_SPLIT_RESERVE_BPS = 5000;
 export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
-/** Consensus floor: spendable after 1 confirmation. In the fingerprint. */
-export const SPENDABLE_CONFIRMATIONS = 1;
+/**
+ * Consensus floor: spendable after 6 confirmations (~9 min). In the fingerprint.
+ * Operator lock 2026-08-28: SIX is the law. Do not change this; flag the operator.
+ */
+export const SPENDABLE_CONFIRMATIONS = 6;
 /** Third-party/merchant wait (~18 min). Not consensus. Not fingerprint. */
 export const MIN_CONFIRMS_POLICY = 12;
 export const RESERVE_FEE_FIRST = 1;

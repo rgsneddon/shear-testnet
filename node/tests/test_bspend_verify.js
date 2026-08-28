@@ -114,12 +114,14 @@ describe('verifyBlock B-spend uses the committing header', () => {
       txs: [spendTx],
     }));
     const spent = new Set();
-    assert.equal(SPENDABLE_CONFIRMATIONS, 1);
-    // 1-conf: the committing block is spendable as soon as tip >= commitHeight.
+    assert.equal(SPENDABLE_CONFIRMATIONS, 6);
+    // 6-conf law: commit at height 1 is not spendable at tip 2.
     const justSealed = verifyBlock(sealed, commitBlock, { tipHeight: 2, spentB: new Set() });
-    assert.equal(justSealed.ok, true, justSealed.reason);
+    assert.equal(justSealed.ok, false, justSealed.reason);
+    assert.equal(justSealed.reason, 'immature');
+    const matureTip = 1 + SPENDABLE_CONFIRMATIONS - 1;
     const ok = verifyBlock(sealed, commitBlock, {
-      tipHeight: Math.max(1, SPENDABLE_CONFIRMATIONS),
+      tipHeight: matureTip,
       spentB: spent,
     });
     assert.equal(ok.ok, true, ok.reason);
@@ -130,7 +132,7 @@ describe('verifyBlock B-spend uses the committing header', () => {
       t1 + 90_000,
     );
     const sealedOk = verifyBlock(sealed, commitBlock, {
-      tipHeight: Math.max(1, SPENDABLE_CONFIRMATIONS),
+      tipHeight: matureTip,
     });
     const sealedBlock = { ...sealed, hash: sealedOk.hash, height: 2, weight: sealed.weight };
     const twice = mine(buildTemplate({
@@ -146,7 +148,7 @@ describe('verifyBlock B-spend uses the committing header', () => {
       txs: [spendTx],
     }));
     const dup = verifyBlock(twice, sealedBlock, {
-      tipHeight: Math.max(1, SPENDABLE_CONFIRMATIONS),
+      tipHeight: matureTip,
       spentB: spent,
     });
     assert.equal(dup.ok, false);
