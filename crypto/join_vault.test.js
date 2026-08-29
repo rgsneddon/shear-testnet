@@ -46,7 +46,10 @@ describe('The Join vault', () => {
     const state = emptyJoin();
     const funded = fundGenesis({ state, nanos: snap.circulatingNanos, nowMs: t0, root: snap.root });
     assert.equal(funded.ok, true);
+    assert.equal(funded.mint, true);
+    assert.equal(state.circulatingNanos, snap.circulatingNanos);
     assert.equal(state.remainingNanos, snap.circulatingNanos);
+    assert.equal(JOIN_WINDOW_MS, 99 * 86_400_000);
     assert.equal(fundGenesis({ state, nanos: 1, nowMs: t0, root: snap.root }).ok, false);
   });
 

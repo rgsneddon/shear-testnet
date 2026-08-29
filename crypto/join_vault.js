@@ -77,6 +77,22 @@ export function encodeJoinKey({ owner, amountPrior, proof, index, commit }) {
   return `join1.${Buffer.from(JSON.stringify(body)).toString('base64url')}`;
 }
 
+/** Single-leaf join1. key from a prior-ledger wallet’s owner + spendable coins. */
+export function mintJoinKey({ owner, coins } = {}) {
+  const snap = buildSnapshot([{ owner, coins }]);
+  const row = snap.rows[0];
+  if (!row) return { ok: false, reason: 'bad_owner' };
+  return {
+    ok: true,
+    key: encodeJoinKey(row),
+    root: snap.root,
+    owner: row.owner,
+    amountPrior: row.amountPrior,
+    nanos: row.shearNanos,
+    she: row.shearNanos / NANOS_PER_SHE,
+  };
+}
+
 export function decodeJoinKey(raw) {
   const s = String(raw || '').trim();
   const prefix = 'join1.';
@@ -132,11 +148,12 @@ export function publicJoinView(state, nowMs) {
   };
 }
 
+/** One extra-mint: `nanos` must be the full snapshot circulation. Claims later drain remainingNanos. */
 export function fundGenesis({ state, nanos, nowMs, root }) {
   if (state.genesisMs) return { ok: false, reason: 'already_funded' };
   const n = Math.floor(Number(nanos) || 0);
   if (n <= 0) return { ok: false, reason: 'bad_amount' };
-  if (!extraMintAllowed(JOIN_PROGRAM, { kind: JOIN_KIND_GENESIS })) {
+  if (!extraMintAllowed(JOIN_PROGRAM, { kind: JOIN_KIND_GENESIS, funded: !!state.genesisMs })) {
     return { ok: false, reason: 'mint_forbidden' };
   }
   state.genesisMs = nowMs;
@@ -144,7 +161,7 @@ export function fundGenesis({ state, nanos, nowMs, root }) {
   state.circulatingNanos = n;
   state.remainingNanos = n;
   state.burned = false;
-  return { ok: true, nanos: n, kind: JOIN_KIND_GENESIS, programId: JOIN_PROGRAM };
+  return { ok: true, nanos: n, kind: JOIN_KIND_GENESIS, programId: JOIN_PROGRAM, mint: true };
 }
 
 export function genesisTx({ to, nanos, root }) {

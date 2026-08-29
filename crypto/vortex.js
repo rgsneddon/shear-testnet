@@ -14,6 +14,11 @@ export function isPinnedProgram(id) {
   return PINNED.has(String(id || ''));
 }
 
+/** Issued creator dapps only. Reserve and Join VAULTs are never a public vortice. */
+export function listPublicVortices(issued) {
+  return Object.values(issued || {}).filter((r) => r && r.id && !isPinnedProgram(r.id));
+}
+
 export function validProgramId(programId) {
   const id = String(programId || '').trim().toLowerCase();
   if (!/^[a-z0-9._-]{3,64}$/.test(id)) return null;

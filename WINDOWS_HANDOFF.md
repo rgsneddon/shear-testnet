@@ -4,6 +4,17 @@
 
 **https://github.com/rgsneddon/handoff/blob/main/HANDOFF.md** (section **Shear**)
 
+## [testnet] Shear wallet 0.3 leftover — Windows / Linux / Arch
+
+Mac-cut (this Darwin host): APK + notarized DMG on tag **`0.3`**. Title **`[testnet] Shear wallet 0.3`**. Window / launcher **Shear 0.3**. https://github.com/rgsneddon/shear-testnet/releases/tag/0.3
+
+1. Laptop pack `shear-wallet-0.3-windows.zip` onto **the same** `0.3`. Zip root Flutter `shear_wallet.exe` + DLLs/`data`. **No miner inside.** Window title **Shear 0.3**. Flutter file version `0.3.0+15` is **not** the public pin.
+2. **Still leftover:** `shear-wallet-0.3-linux.zip` / `-archlinux.zip` (PKGBUILD `pkgver=0.3`).
+3. **Last leftover (Windows):** after those zips, `#pack-advisory` on shear.digital already points at **0.3** in-repo; deploy `/var/www/shear.digital` if not done from Mac. Fill sha256 when Windows zip exists.
+4. **No iOS / iPad zip.** Do not recut miner **1.1** / **1.0**. Node/pool stay **0.1**.
+
+Flow send / Reserve lock use owned Continuum spendable (silent dest when that is where credits sit). The Join: one genesis mint of full prior-ledger circulation; users claim `join1.` keys for 99 days (1:1, no APR). Extra-mint: Reserve oracle APR only; any other vortice forbidden. Pool credits **shareBits** work only (padded `hashes` / extra leading zeros / duplicate submits do not inflate).
+
 ## [testnet] Shear wallet 0.2 / Shear-Miner 1.1 + 1.0
 
 New repo: **https://github.com/rgsneddon/shear-testnet** (GitHub name `shear-testnet`, display **[testnet] Shear**). Do **not** attach leftover zips to `rgsneddon/shear` or to any `v0.1.0` / three-part tag.

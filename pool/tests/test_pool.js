@@ -303,28 +303,37 @@ function loginAndShare(port, login, extra = {}) {
       }) + '\n');
     });
     let buf = '';
-    sock.on('data', (c) => {
-      buf += c.toString();
-      if (buf.includes('\n') && buf.includes('job') && !buf.includes('"hash"')) {
-        const first = JSON.parse(buf.split('\n')[0]);
-        const j = first.job || first.params;
-        let nonce = 0n;
-        let hit = null;
-        while (nonce < 200000n) {
-          const s = scoreShare({ job: j, nonce });
-          if (s.ok) { hit = nonce; break; }
-          nonce += 1n;
-        }
-        if (hit == null) {
-          sock.destroy();
-          reject(new Error('no_share'));
+    let nonce = 0n;
+    let job = null;
+    const submitNext = () => {
+      if (!job) return;
+      while (nonce < 400000n) {
+        const s = scoreShare({ job, nonce });
+        const n = nonce;
+        nonce += 1n;
+        if (s.ok) {
+          sock.write(JSON.stringify({
+            id: 2,
+            method: 'submit',
+            params: { jobId: job.jobId, nonce: String(n) },
+          }) + '\n');
           return;
         }
-        sock.write(JSON.stringify({
-          id: 2,
-          method: 'submit',
-          params: { jobId: j.jobId, nonce: String(hit) },
-        }) + '\n');
+      }
+      sock.destroy();
+      reject(new Error('no_share'));
+    };
+    sock.on('data', (c) => {
+      buf += c.toString();
+      if (!job && buf.includes('\n') && buf.includes('job')) {
+        const first = JSON.parse(buf.split('\n')[0]);
+        job = first.job || first.result?.job || first.params;
+        if (job && job.header) submitNext();
+      }
+      if (buf.includes('duplicate_share')) {
+        buf = '';
+        submitNext();
+        return;
       }
       if (buf.includes('"status":"OK"') && buf.includes('"hash"')) {
         resolve(sock);

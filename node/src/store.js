@@ -434,5 +434,6 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     mintVorticeDeployKey: vortice.mintVorticeDeployKey,
     mintVorticeFromOrigin: vortice.mintFromOrigin,
     lookupVorticeKey: vortice.lookupByKey,
+    listPublicVortices: vortice.listPublic,
   };
 }

@@ -16,6 +16,25 @@ const kJoinLeafPersonal = 'shear-join-leaf-v1';
 const kJoinWindowClosed =
     'The ninety-nine day window is closed. Unclaimed allocation has been burned.';
 
+/// Mint a single-leaf `join1.` key from a prior-ledger wallet owner + coins.
+/// Same leaf as the node snapshot (`shear-join-leaf-v1`). Empty proof: root is the leaf.
+String mintJoinKey({required String owner, required double coins}) {
+  final amountPrior = (coins * kPriorUnitsPerCoin).round();
+  if (owner.isEmpty || amountPrior <= 0) return '';
+  final commit = sha256
+      .convert(utf8.encode(kJoinLeafPersonal) + utf8.encode(owner) + utf8.encode('$amountPrior'))
+      .toString();
+  final body = jsonEncode({
+    'v': 1,
+    'owner': owner,
+    'amountPrior': amountPrior,
+    'commit': commit,
+    'index': 0,
+    'proof': [],
+  });
+  return 'join1.${base64Url.encode(utf8.encode(body)).replaceAll('=', '')}';
+}
+
 class JoinClaim {
   const JoinClaim({
     required this.owner,
@@ -122,6 +141,39 @@ class ShearJoin {
     if (err != null || parsed == null) return null;
     ledger.creditJoin(to: payout, amount: parsed.she);
     return {'nanos': parsed.shearNanos};
+  }
+
+  void applyRemote(Map<String, dynamic> json) {
+    genesisMs = (json['genesisMs'] as num?)?.toInt() ?? genesisMs;
+    remainingNanos = (json['remainingNanos'] as num?)?.toInt() ?? remainingNanos;
+    circulatingNanos = (json['circulatingNanos'] as num?)?.toInt() ?? circulatingNanos;
+    burned = json['burned'] == true;
+    final r = json['root']?.toString();
+    if (r != null && r.isNotEmpty) root = r;
+  }
+
+  /// Pool/node Join VAULT claim. Verifies `join1.` against the snapshot.
+  Future<Map<String, int>?> claimViaPool(
+    ShearLedger ledger, {
+    required ShearPoolClient pool,
+    required String key,
+    required String payout,
+  }) async {
+    final parsed = decodeKey(key);
+    if (parsed == null) return null;
+    try {
+      final json = await pool.joinClaim(key: key, payout: payout);
+      if (json['ok'] != true) return null;
+      final she = (json['she'] as num?)?.toDouble() ?? parsed.she;
+      if (she <= 0) return null;
+      ledger.creditJoin(to: payout, amount: she);
+      applyRemote(json);
+      claimed[parsed.commit] = parsed.shearNanos;
+      remainingNanos = (json['remainingNanos'] as num?)?.toInt() ?? remainingNanos;
+      return {'nanos': ((she * kUnitsPerShe).round())};
+    } catch (_) {
+      return null;
+    }
   }
 
   void burnUnclaimed(int nowMs) {

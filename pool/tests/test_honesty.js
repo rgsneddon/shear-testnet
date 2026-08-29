@@ -16,11 +16,14 @@ import {
   sortMinersByHashrate,
   refreshMinerRow,
   workerKey,
+  rememberShare,
+  shareFingerprint,
   CMINER_FEE_SHE,
   HASHRATE_WINDOW_MS,
   HASHRATE_EMA_TAU_S,
 } from '../src/pool.js';
-import { expectedOneThreadHs } from '../src/share_vardiff.js';
+import { extraMintAllowed, RESERVE_PROGRAM, JOIN_PROGRAM } from '../../crypto/asert.js';
+import { expectedOneThreadHs, hashesProvenByShare } from '../src/share_vardiff.js';
 
 const RATE_WIN_S = HASHRATE_WINDOW_MS / 1000;
 
@@ -35,6 +38,68 @@ function stampProvenThreads(miner, threadCount, shareBits, now = Date.now()) {
   for (const c of miner.connections || []) c.shareBits = shareBits;
   return { one, now };
 }
+
+describe('duplicate shares cannot inflate round work', () => {
+  it('remembers a job+nonce+hash once; a copy is duplicate_share', () => {
+    const seen = new Set();
+    const job = { jobId: 'j1' };
+    const fp = shareFingerprint(job, '42', 'abc');
+    assert.equal(rememberShare(seen, fp).ok, true);
+    assert.equal(rememberShare(seen, fp).ok, false);
+    assert.equal(rememberShare(seen, fp).reason, 'duplicate_share');
+    assert.equal(rememberShare(seen, shareFingerprint(job, '43', 'def')).ok, true);
+    assert.equal(reportedHashrate({
+      acceptAt: [Date.now()],
+      acceptWork: [100],
+      clientHs: 9e12,
+      clientHashes: 9e12,
+    }), provenHashrate({
+      acceptAt: [Date.now()],
+      acceptWork: [100],
+      clientHs: 9e12,
+    }));
+  });
+
+  it('extra leading zeros / padded client hashes do not inflate credited work', () => {
+    const shareBits = 8;
+    const job = { shareBits, jobId: 'j-pad' };
+    const credited = hashesProvenByShare(shareBits);
+    const luckyZeros = hashesProvenByShare(40);
+    assert.equal(credited, 256);
+    assert.ok(luckyZeros > credited);
+    const miner = {
+      roundHashes: 0,
+      hashes: 0,
+      clientHashes: 16_590_151_266_784,
+      clientHs: 1_062_582_824,
+    };
+    miner.roundHashes += hashesProvenByShare(Number(job.shareBits) || 0);
+    miner.hashes += hashesProvenByShare(Number(job.shareBits) || 0);
+    assert.equal(miner.roundHashes, 256);
+    assert.equal(miner.hashes, 256);
+    assert.ok(miner.roundHashes < miner.clientHashes);
+    assert.equal(
+      reportedHashrate({
+        acceptAt: [Date.now()],
+        acceptWork: [credited],
+        clientHashes: miner.clientHashes,
+        clientHs: miner.clientHs,
+      }).toFixed(0),
+      provenHashrate({
+        acceptAt: [Date.now()],
+        acceptWork: [credited],
+      }).toFixed(0),
+    );
+  });
+
+  it('third-party vortices cannot extra-mint; Reserve APR and Join genesis only', () => {
+    assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }), true);
+    assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: 'join-genesis' }), true);
+    assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: 'claim' }), false);
+    assert.equal(extraMintAllowed('third-party-vortice'), false);
+    assert.equal(extraMintAllowed('stake-pool-a', { kind: 'withdraw' }), false);
+  });
+});
 
 describe('folded-row inventory', () => {
   it('reports each miner from its own counter, never another miner', () => {

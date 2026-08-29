@@ -19,7 +19,7 @@ import 'shear_reserve.dart';
 import 'shear_join.dart';
 import 'shear_confirm_pie.dart';
 
-const kWalletVersion = '0.2';
+const kWalletVersion = '0.3';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -207,6 +207,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     if (mounted) setState(() => unlocked = true);
     _accrualTick?.cancel();
     _syncJoinRoster();
+    if (id != null) unawaited(_syncVaults(id!));
     var ticks = 0;
     var tipBusy = false;
     var creditBusy = false;
@@ -225,6 +226,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       if (ticks % 5 == 0 && ident != null && !creditBusy) {
         creditBusy = true;
         unawaited(ledger.syncCredits(ident.address, paymentCode: ident.paymentCode).whenComplete(() {
+          unawaited(_syncVaults(ident));
           creditBusy = false;
           if (mounted) setState(() {});
         }));
@@ -644,6 +646,8 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
               to: flowTo.text.trim(),
               amount: double.parse(flowAmt.text),
               memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
+              restFrame: ident.address,
+              paymentCode: ident.paymentCode,
             );
             _ingestTx(ident, tx);
             _focusedTxId = tx.id;
@@ -714,14 +718,14 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     final dest = _reserveDestOf(ident);
     if (dest == null) return;
     final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
-    final from = ledger.currentDest(ident.address);
     if (she <= 0) return;
-    if (ledger.spendable(from) < she) {
+    if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < she) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Not enough spendable SHE')));
       }
       return;
     }
+    final from = ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: she);
     final now = DateTime.now().millisecondsSinceEpoch;
     final err = reserve.deposit(dest: dest, she: she, nowMs: now, payout: from);
     if (err != null) {
@@ -737,6 +741,8 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       local: true,
       kind: 'lock',
       programId: kReserveProgram,
+      restFrame: ident.address,
+      paymentCode: ident.paymentCode,
     );
     if (mounted) setState(() {});
     if (context.mounted && addMore) {
@@ -842,6 +848,21 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     ];
   }
 
+  Future<void> _syncVaults(ShearIdentity ident) async {
+    final pool = ledger.pool;
+    if (pool == null) return;
+    try {
+      join.applyRemote(await pool.joinVault());
+    } catch (_) {}
+    try {
+      final dest = _reserveDestOf(ident);
+      if (dest != null) {
+        reserve.applyRemotePortal(dest, await pool.reservePortal(dest));
+      }
+    } catch (_) {}
+    if (mounted) setState(() {});
+  }
+
   Future<void> _joinCredit(BuildContext context, ShearIdentity ident) async {
     final payout = ledger.currentDest(ident.address);
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -852,7 +873,13 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       }
       return;
     }
-    final out = join.claimTo(ledger, key: joinKeyCtrl.text, payout: payout, nowMs: now);
+    Map<String, int>? out;
+    final pool = ledger.pool;
+    if (pool != null) {
+      out = await join.claimViaPool(ledger, pool: pool, key: joinKeyCtrl.text, payout: payout);
+    } else {
+      out = join.claimTo(ledger, key: joinKeyCtrl.text, payout: payout, nowMs: now);
+    }
     if (out == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -878,8 +905,9 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     return [
       const Text('The Join', style: TextStyle(fontWeight: FontWeight.w700)),
       const Text(
-        'Claim the genesis snapshot into your Continuum dest. One coin on the prior ledger becomes one SHE. '
-        'The window is ninety-nine days from mainnet genesis. After that, unclaimed allocation is burned.',
+        'The Join vault is minted once at snapshot — the full prior-ledger circulation. '
+        'Paste a join1. key from the prior-ledger wallet to claim your share onto this Continuum dest (1:1, no interest). '
+        'The window is ninety-nine days from genesis. After that, unclaimed allocation is burned.',
       ),
       if (!join.windowOpen(now) && join.genesisMs != 0) ...[
         const SizedBox(height: 8),
@@ -902,7 +930,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       Text('Amount to credit  $amount'),
       const SizedBox(height: 8),
       FilledButton(
-        onPressed: join.windowOpen(now) ? () => _joinCredit(context, ident) : null,
+        onPressed: (join.windowOpen(now) || ledger.pool != null) ? () => _joinCredit(context, ident) : null,
         child: const Text('Credit'),
       ),
     ];

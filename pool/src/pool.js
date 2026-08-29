@@ -233,6 +233,21 @@ export function scoreShare({ job, nonce }) {
   };
 }
 
+/** One accept per job+nonce+hash. A copied submit must not double roundHashes or H/s. */
+export function shareFingerprint(job, nonce, hashHex) {
+  return `${job?.jobId || ''}:${String(nonce)}:${hashHex || ''}`;
+}
+
+export function rememberShare(book, fingerprint) {
+  const fp = String(fingerprint || '');
+  if (!fp) return { ok: false, reason: 'bad_share' };
+  const seen = book instanceof Set ? book : null;
+  if (!seen) return { ok: true };
+  if (seen.has(fp)) return { ok: false, reason: 'duplicate_share' };
+  seen.add(fp);
+  return { ok: true };
+}
+
 /**
  * Two TCP sessions on one worker last-wrote cpuThreads (32 ↔ 256 flicker).
  * Each socket keeps its own inventory; the worker row sums utilised threads
@@ -656,22 +671,28 @@ export function createPool({
             sock.write(line({ id: msg.id, error: scored.reason }));
             continue;
           }
+          if (job && typeof job === 'object') {
+            if (!(job.seenHashes instanceof Set)) job.seenHashes = new Set();
+            const dup = rememberShare(job.seenHashes, shareFingerprint(job, params.nonce, scored.hash));
+            if (!dup.ok) {
+              stats.stale += 1;
+              if (session) session.stale += 1;
+              sock.write(line({ id: msg.id, error: dup.reason }));
+              continue;
+            }
+          }
           stats.accepted += 1;
           statsSnap = { at: 0, json: '' };
           if (session) {
             session.accepted += 1;
-            const bits = Math.max(
-              Number(job?.shareBits) || 0,
-              Number(scored.bitsMet) || 0,
-            );
-            const proven = hashesProvenByShare(bits);
+            // Credit the share target only. Extra leading zeros (lucky bitsMet)
+            // or a padded client `hashes` counter must not inflate round work.
+            const proven = hashesProvenByShare(Number(job?.shareBits) || 0);
             session.roundHashes += proven;
             session.hashes += proven;
             session.seen = Date.now();
             session.lastShareAt = session.seen;
-            // Rate window uses share target only. A lucky high bitsMet share
-            // must not paint GH/s; 10ms vardiff still accepted the share.
-            const work = hashesProvenByShare(Number(job?.shareBits) || bits);
+            const work = proven;
             if (!Array.isArray(session.acceptAt)) session.acceptAt = [];
             if (!Array.isArray(session.acceptWork)) session.acceptWork = [];
             session.acceptAt.push(session.lastShareAt);
@@ -881,7 +902,7 @@ export function createPool({
       }));
       return;
     }
-    if (url.pathname === '/api/mempool' || url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/') || url.pathname.startsWith('/api/pool/')) {
+    if (url.pathname === '/api/mempool' || url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/') || url.pathname.startsWith('/api/pool/') || url.pathname.startsWith('/api/vault/') || url.pathname.startsWith('/api/join/')) {
       let body = {};
       if (req.method === 'POST') {
         body = JSON.parse(await new Promise((resolve, reject) => {

@@ -24,6 +24,11 @@ export function hashesProvenByShare(shareBits) {
   return 2 ** n;
 }
 
+/** Work credited for one accepted share. Never bitsMet / client padded hashes. */
+export function hashesCreditedForShare(job) {
+  return hashesProvenByShare(Number(job?.shareBits) || 0);
+}
+
 /** 1-thread H/s implied by share bits at the vardiff target interval. */
 export function expectedOneThreadHs(shareBits, targetMs = SHARE_VARDIFF_TARGET_MS) {
   const hashes = hashesProvenByShare(shareBits);

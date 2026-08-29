@@ -5,6 +5,8 @@ import {
   parseVorticeKey,
   verifyVorticeDownload,
   mintVorticeDeployKeyFromOrigin,
+  isPinnedProgram,
+  listPublicVortices,
 } from '../../crypto/vortex.js';
 
 export {
@@ -68,6 +70,7 @@ export function createVorticeCatalog(dir) {
   function lookupByKey(key) {
     const parsed = parseVorticeKey(key);
     if (!parsed) return { ok: false, reason: 'bad_key' };
+    if (isPinnedProgram(parsed.id)) return { ok: false, reason: 'not_public_vortice' };
     const rec = issued[parsed.id];
     if (!rec) {
       return {
@@ -85,10 +88,15 @@ export function createVorticeCatalog(dir) {
     return { ok: true, mintedHere: true, ...rec };
   }
 
+  function listPublic() {
+    return listPublicVortices(issued);
+  }
+
   return {
     mintVorticeDeployKey,
     mintFromOrigin,
     lookupByKey,
+    listPublic,
     parseVorticeKey,
     verifyVorticeDownload,
     issued,

@@ -32,6 +32,7 @@ void main() {
     final grant = RegExp(r'<uses-permission\s+android:name="android\.permission\.INTERNET"\s*/>');
     expect(grant.hasMatch(main.readAsStringSync()), isTrue,
         reason: 'packaged APKs merge the main manifest; INTERNET only in debug/profile does not ship');
+    expect(main.readAsStringSync().contains('android:label="Shear 0.3"'), isTrue);
     expect(main.path.contains('${Platform.pathSeparator}debug${Platform.pathSeparator}'), isFalse);
     expect(main.path.contains('${Platform.pathSeparator}profile${Platform.pathSeparator}'), isFalse);
   });
@@ -469,7 +470,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.2');
+    expect(kWalletVersion, '0.3');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -643,14 +644,14 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.2');
-    expect(kWalletVersion, '0.2');
+    expect(app.title, 'Shear 0.3');
+    expect(kWalletVersion, '0.3');
     // password gate first
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
     await tester.pump();
-    expect(find.textContaining('0.2'), findsWidgets);
+    expect(find.textContaining('0.3'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -1450,6 +1451,182 @@ void main() {
       'secret-flow',
     );
   });
+
+  test('Flow send uses silent dest when Continuum spendable sits there, not currentDest', () async {
+    final alice = createIdentity();
+    final bob = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 20, balance: 0);
+    final silent = payoutDest(alice.paymentCode)!;
+    live.destBalances[silent] = 1.5;
+    final posted = <Map<String, dynamic>>[];
+    final server = await _fakePool(live: live, posted: posted);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final aliceL = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
+    await aliceL.syncCredits(alice.address, paymentCode: alice.paymentCode);
+    final flow = aliceL.currentDest(alice.address);
+    expect(flow, isNot(silent));
+    expect(aliceL.spendable(flow), 0);
+    expect(aliceL.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(1.5, 1e-18));
+    expect(aliceL.spendFrom(alice.address, paymentCode: alice.paymentCode, amount: 0.4), silent);
+
+    final to = destForLogin(bob.address, height: 1, viewKey: bob.viewKey)!;
+    final tx = await aliceL.send(
+      from: flow,
+      to: to,
+      amount: 0.4,
+      restFrame: alice.address,
+      paymentCode: alice.paymentCode,
+    );
+    expect(tx.from, silent);
+    expect(posted.single['from'], silent);
+    expect(posted.single['to'], to);
+    expect(aliceL.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(1.1, 1e-18));
+  });
+
+  test('Reserve lock spends owned Continuum, not currentDest-only', () async {
+    final alice = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 20, balance: 0);
+    final silent = payoutDest(alice.paymentCode)!;
+    live.destBalances[silent] = kPiShe;
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
+    await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
+    final flow = ledger.currentDest(alice.address);
+    expect(ledger.spendable(flow) < kPiShe, isTrue);
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(kPiShe, 1e-12));
+    final from = ledger.spendFrom(alice.address, paymentCode: alice.paymentCode, amount: kPiShe);
+    expect(from, silent);
+    final vault = vaultDest(alice.address, viewKey: alice.viewKey)!;
+    final r = ShearReserve();
+    expect(r.deposit(dest: vault, she: kPiShe, nowMs: 1700000000000, payout: from), isNull);
+    final tx = await ledger.send(
+      from: flow,
+      to: vault,
+      amount: kPiShe,
+      local: true,
+      kind: 'lock',
+      programId: kReserveProgram,
+      restFrame: alice.address,
+      paymentCode: alice.paymentCode,
+    );
+    expect(tx.kind, 'lock');
+    expect(tx.from, silent);
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(0, 1e-12));
+    expect(r.portal(vault).staked, kPiSheNanos);
+  });
+
+  test('recipient reconstructs a Flow send as pending then spendable after confirms', () async {
+    final alice = createIdentity();
+    final bob = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 20, balance: 0);
+    final silent = payoutDest(alice.paymentCode)!;
+    live.destBalances[silent] = 2;
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final aliceL = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
+    final bobL = ShearLedger(pool: pool)..viewSecret = bob.viewKey;
+    await aliceL.syncCredits(alice.address, paymentCode: alice.paymentCode);
+    final to = payoutDest(bob.paymentCode)!;
+    await aliceL.send(
+      from: aliceL.currentDest(alice.address),
+      to: to,
+      amount: 0.5,
+      restFrame: alice.address,
+      paymentCode: alice.paymentCode,
+    );
+    await bobL.syncCredits(bob.address, paymentCode: bob.paymentCode);
+    expect(bobL.pendingTxs(bob.address).any((t) => t.kind == 'receive' && t.to == to), isTrue);
+    expect(bobL.spendableOwned(bob.address, paymentCode: bob.paymentCode), 0);
+
+    live.height = 21;
+    live.incoming = [];
+    live.destBalances[to] = 0.5;
+    await bobL.syncCredits(bob.address, paymentCode: bob.paymentCode);
+    expect(
+      bobL.spendableOwned(bob.address, paymentCode: bob.paymentCode),
+      closeTo(0.5, 1e-18),
+    );
+  });
+
+  test('wallet reads Reserve portal and Join remaining from node vaults, not public vortices', () async {
+    final alice = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 8, balance: 0);
+    final vault = vaultDest(alice.address, viewKey: alice.viewKey)!;
+    live.reservePortal = {
+      'ok': true,
+      'public': false,
+      'programId': kReserveProgram,
+      'staked': kPiSheNanos,
+      'idle': 0,
+      'accrued': 1000,
+      'projected': 2000,
+    };
+    live.joinVault = {
+      'ok': true,
+      'public': false,
+      'programId': 'shear-join-v1',
+      'remainingNanos': 3 * kUnitsPerShe,
+      'burned': false,
+    };
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final portal = await pool.reservePortal(vault);
+    expect(portal['public'], isFalse);
+    expect(portal['staked'], kPiSheNanos);
+    expect(portal['accrued'], 1000);
+    final join = await pool.joinVault(dest: vault);
+    expect(join['public'], isFalse);
+    expect(join['remainingNanos'], 3 * kUnitsPerShe);
+    final r = ShearReserve();
+    r.applyRemotePortal(vault, portal);
+    expect(r.portal(vault).staked, kPiSheNanos);
+    expect(r.rewards(vault, DateTime.now().millisecondsSinceEpoch).accrued, 1000);
+  });
+
+  test('Join claimViaPool credits Continuum 1:1 from a prior-ledger join1. key and refuses a second claim', () async {
+    final alice = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    const owner = 'prior1alice';
+    const coins = 2.0;
+    final key = mintJoinKey(owner: owner, coins: coins);
+    final parsed = ShearJoin().decodeKey(key)!;
+    final live = _PoolLive(headerHex: hex, height: 8, balance: 0);
+    live.joinVault = {
+      'genesisMs': 1800000000000,
+      'remainingNanos': parsed.shearNanos,
+      'circulatingNanos': parsed.shearNanos,
+      'burned': false,
+      'root': parsed.commit,
+    };
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
+    final payout = ledger.currentDest(alice.address);
+    final join = ShearJoin();
+    join.applyRemote(Map<String, dynamic>.from(live.joinVault!));
+    expect(join.windowOpen(1800000001000), isTrue);
+    final out = await join.claimViaPool(ledger, pool: pool, key: key, payout: payout);
+    expect(out, isNotNull);
+    expect(ledger.spendable(payout), closeTo(coins, 1e-12));
+    final again = await join.claimViaPool(ledger, pool: pool, key: key, payout: payout);
+    expect(again, isNull);
+    expect(ledger.spendable(payout), closeTo(coins, 1e-12));
+  });
 }
 
 HttpClient _realHttp() {
@@ -1481,6 +1658,24 @@ class _PoolLive {
   List<Map<String, dynamic>> incoming;
   List<Map<String, dynamic>> history;
   int balanceHits = 0;
+  /// Per-dest reconstructed spendable. When set, /api/wallet/balance and
+  /// /api/wallet/send use it instead of the single [balance]/[owner] pair.
+  final Map<String, double> destBalances = {};
+  Map<String, dynamic>? reservePortal;
+  Map<String, dynamic>? joinVault;
+  final Set<String> joinClaimed = {};
+
+  double reconstructed(String addr) {
+    if (destBalances.isEmpty) {
+      final hit = owner == null ||
+          addr == owner ||
+          payoutDest(addr) == owner ||
+          incoming.any((r) => r['to'] == addr);
+      return hit ? balance : 0;
+    }
+    final paid = payoutDest(addr) ?? addr;
+    return destBalances[addr] ?? destBalances[paid] ?? 0;
+  }
 }
 
 Future<HttpServer> _fakePool({
@@ -1514,35 +1709,102 @@ Future<HttpServer> _fakePool({
     } else if (req.uri.path == '/api/wallet/balance') {
       state.balanceHits += 1;
       final addr = req.uri.queryParameters['address'] ?? '';
-      final hit = state.owner == null ||
-          addr == state.owner ||
-          payoutDest(addr) == state.owner ||
-          state.incoming.any((r) => r['to'] == addr);
+      final incoming = state.incoming.where((r) => r['to'] == addr || payoutDest(r['to']?.toString() ?? '') == addr).toList();
       req.response.write(jsonEncode({
-        'balance': hit ? state.balance : 0,
-        'pending': hit ? state.pending : 0,
-        'incoming': hit ? state.incoming : <Map<String, dynamic>>[],
+        'balance': state.reconstructed(addr),
+        'pending': (state.destBalances.isEmpty &&
+                (state.owner == null || addr == state.owner || payoutDest(addr) == state.owner))
+            ? state.pending
+            : 0,
+        'incoming': incoming,
         'height': state.height,
       }));
     } else if (req.uri.path == '/api/wallet/history' || req.uri.path == '/api/explorer/history') {
       req.response.write(jsonEncode({'txs': state.history}));
     } else if (req.uri.path == '/api/wallet/register') {
       req.response.write(jsonEncode({'ok': true}));
+    } else if (req.uri.path == '/api/vault/reserve') {
+      req.response.write(jsonEncode(state.reservePortal ?? {'ok': true, 'public': false, 'staked': 0, 'idle': 0, 'accrued': 0}));
+    } else if (req.uri.path == '/api/vault/join') {
+      req.response.write(jsonEncode(state.joinVault ?? {'ok': true, 'public': false, 'remainingNanos': 0, 'burned': false}));
+    } else if (req.uri.path == '/api/join/claim') {
+      final key = body['key']?.toString() ?? '';
+      final payout = body['payout']?.toString() ?? '';
+      final j = ShearJoin();
+      if (state.joinVault != null) j.applyRemote(Map<String, dynamic>.from(state.joinVault!));
+      final parsed = j.decodeKey(key);
+      if (parsed == null) {
+        req.response.statusCode = 400;
+        req.response.write(jsonEncode({'ok': false, 'reason': 'bad_key'}));
+      } else if (j.genesisMs == 0) {
+        req.response.statusCode = 400;
+        req.response.write(jsonEncode({'ok': false, 'reason': 'no_snapshot'}));
+      } else if (parsed != null && state.joinClaimed.contains(parsed.commit)) {
+        req.response.statusCode = 400;
+        req.response.write(jsonEncode({'ok': false, 'reason': 'already_claimed'}));
+      } else {
+        final err = j.claim(key: key, payout: payout, nowMs: DateTime.now().millisecondsSinceEpoch);
+        if (err != null) {
+          req.response.statusCode = 400;
+          req.response.write(jsonEncode({'ok': false, 'reason': err}));
+        } else {
+          state.joinVault = Map<String, dynamic>.from(j.publicView(DateTime.now().millisecondsSinceEpoch));
+          state.joinClaimed.add(parsed.commit);
+          req.response.write(jsonEncode({
+            'ok': true,
+            'public': false,
+            'she': parsed.she,
+            'nanos': parsed.shearNanos,
+            'to': payout,
+            'remainingNanos': j.remainingNanos,
+            'genesisMs': j.genesisMs,
+            'burned': j.burned,
+            'root': j.root,
+          }));
+        }
+      }
     } else if (req.uri.path == '/api/wallet/send') {
       posted?.add(body);
-      req.response.write(jsonEncode({
-        'ok': true,
-        'fromBalance': 9,
-        'tx': {
-          'id': 'send-1',
-          'from': body['from'],
-          'to': body['to'],
-          'amount': body['amount'],
-          'kind': 'send',
-          'confirmed': false,
-          'memo': body['memoCt'] != null,
-        },
-      }));
+      final from = body['from']?.toString() ?? '';
+      final to = body['to']?.toString() ?? '';
+      final amount = (body['amount'] as num?)?.toDouble() ?? 0;
+      final fromKey = payoutDest(from) ?? from;
+      final fromBal = state.reconstructed(from);
+      if (fromBal < amount) {
+        req.response.statusCode = 400;
+        req.response.write(jsonEncode({'ok': false, 'reason': 'insufficient'}));
+      } else {
+        final next = fromBal - amount;
+        if (state.destBalances.isNotEmpty) {
+          state.destBalances[fromKey] = next;
+        } else {
+          state.balance = next;
+        }
+        state.incoming = [
+          ...state.incoming,
+          {
+            'id': 'send-${state.incoming.length + 1}',
+            'from': fromKey,
+            'to': to,
+            'amount': amount,
+            'kind': 'receive',
+            'confirmed': false,
+          },
+        ];
+        req.response.write(jsonEncode({
+          'ok': true,
+          'fromBalance': next,
+          'tx': {
+            'id': 'send-${state.incoming.length}',
+            'from': fromKey,
+            'to': to,
+            'amount': amount,
+            'kind': 'send',
+            'confirmed': false,
+            'memo': body['memoCt'] != null,
+          },
+        }));
+      }
     } else {
       req.response.statusCode = 404;
       req.response.write('{}');

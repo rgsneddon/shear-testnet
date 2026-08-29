@@ -67,6 +67,7 @@ class ReservePortal {
   String? vote;
   bool joined;
   String? payout;
+  int? remoteAccrued;
   int get nanos => staked + idle;
   bool get canVote => joined && staked >= kPiSheNanos;
 }
@@ -114,13 +115,26 @@ class ShearReserve {
     final p = portal(dest);
     final elapsed = elapsedMs(nowMs);
     return ReserveRewards(
-      accrued: accruedNanos(p.staked, oracleBps, elapsed),
+      accrued: p.remoteAccrued ?? accruedNanos(p.staked, oracleBps, elapsed),
       projected: reserveInterestNanos(p.staked, oracleBps),
       staked: p.staked,
       idle: p.idle,
       oracleBps: oracleBps,
       elapsedMs: elapsed,
     );
+  }
+
+  /// Node Join/Reserve VAULT read. Not a public vortice.
+  void applyRemotePortal(String dest, Map<String, dynamic> json) {
+    final p = portal(dest);
+    p.staked = (json['staked'] as num?)?.toInt() ?? p.staked;
+    p.idle = (json['idle'] as num?)?.toInt() ?? p.idle;
+    p.remoteAccrued = (json['accrued'] as num?)?.toInt();
+    if (p.staked >= kPiSheNanos) p.joined = true;
+    final epoch = (json['epochStartMs'] as num?)?.toInt();
+    if (epoch != null && epoch > 0) epochStartMs = epoch;
+    final bps = (json['oracleBps'] as num?)?.toInt();
+    if (bps != null && bps >= 0) oracleBps = bps;
   }
 
   String? observeRate({required int annualBps, required int nowMs}) {

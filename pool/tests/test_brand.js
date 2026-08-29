@@ -124,6 +124,11 @@ describe('brand pages', () => {
     assert.match(poolHtml, /class="nav-btn is-on"[^>]*>POOL</);
     assert.match(explorerHtml, /class="nav-btn is-on"[^>]*>EXPLORER</);
     assert.match(mempoolHtml, /class="nav-btn is-on"[^>]*>MEMPOOL</);
+    for (const page of [siteHtml, poolHtml, explorerHtml, mempoolHtml]) {
+      assert.match(page, /rgsneddon\/shear-testnet/);
+      assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
+      assert.match(page, /releases\/tag\/0\.3|shear-wallet-0\.3/);
+    }
     assert.match(css, /\.top-banner\s*\{[\s\S]*?background:\s*var\(--banner\)/);
     assert.match(css, /grid-template-columns:\s*1fr auto 1fr/);
     assert.match(css, /header\.top-banner\s*\{\s*grid-template-columns:\s*1fr auto/);

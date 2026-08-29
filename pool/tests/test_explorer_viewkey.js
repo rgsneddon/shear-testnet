@@ -220,7 +220,7 @@ describe('explorer dests', () => {
     assert.doesNotMatch(page, />Asset</);
     assert.match(page, /function fmtLocalTs/);
     assert.match(page, /getSeconds\(\)/);
-    assert.match(page, /font:13px\/1\.35/);
+    assert.match(page, /font:15px\/1\.4/);
     assert.match(page, /function shortDest/);
     assert.match(page, /slice\(0, 9\)/);
     assert.doesNotMatch(page, />Memo</);

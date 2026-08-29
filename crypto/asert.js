@@ -145,8 +145,11 @@ export function formatShe(n) {
 
 export function extraMintAllowed(programId, opts = {}) {
   const id = String(programId || '');
+  const kind = String(opts.kind || '');
+  // The Reserve is the only vortice that extra-mints ongoing SHE (oracle APR, per portal).
   if (id === RESERVE_PROGRAM) {
     if (opts.alreadyMinted || opts.preMint) return false;
+    if (kind === 'lock' || kind === 'vote' || kind === 'claim') return false;
     if (opts.feeFirst) {
       if (opts.gateOk === false) return false;
       const gap = Math.max(0, Number(opts.reward || 0) - Number(opts.feeBank || 0));
@@ -154,9 +157,11 @@ export function extraMintAllowed(programId, opts = {}) {
       if (opts.amount != null && Number(opts.amount) > gap) return false;
       return true;
     }
+    if (kind && kind !== 'withdraw' && kind !== 'reserve') return false;
     return true;
   }
-  if (id === JOIN_PROGRAM && String(opts.kind || '') === JOIN_KIND_GENESIS && !opts.funded) {
+  // The Join extra-mints once: snapshot genesis into the vault. Claims are not mint.
+  if (id === JOIN_PROGRAM && kind === JOIN_KIND_GENESIS && !opts.funded) {
     return true;
   }
   return false;
