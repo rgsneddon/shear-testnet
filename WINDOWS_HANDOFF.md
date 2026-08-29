@@ -8,6 +8,9 @@
 
 Mac-cut (this Darwin host): APK + notarized DMG on tag **`0.3`**. Title **`[testnet] Shear wallet 0.3`**. Window / launcher **Shear 0.3**. https://github.com/rgsneddon/shear-testnet/releases/tag/0.3
 
+- `shear-wallet-0.3-macos.dmg` sha256 `6488eb08f3f295cf103c6f85c42e2a48c6d649e7c834d1568570321b7af62b1b` Developer ID + notarized + stapled
+- `shear-wallet-0.3-android.apk` sha256 `3be79dc6e4663207bae8907acd05261bc61a9d40b5e348c7a681129c9bf0932d` (INTERNET; launcher **Shear 0.3**)
+
 1. Laptop pack `shear-wallet-0.3-windows.zip` onto **the same** `0.3`. Zip root Flutter `shear_wallet.exe` + DLLs/`data`. **No miner inside.** Window title **Shear 0.3**. Flutter file version `0.3.0+15` is **not** the public pin.
 2. **Still leftover:** `shear-wallet-0.3-linux.zip` / `-archlinux.zip` (PKGBUILD `pkgver=0.3`).
 3. **Last leftover (Windows):** after those zips, `#pack-advisory` on shear.digital already points at **0.3** in-repo; deploy `/var/www/shear.digital` if not done from Mac. Fill sha256 when Windows zip exists.
