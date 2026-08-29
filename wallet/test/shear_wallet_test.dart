@@ -1600,17 +1600,19 @@ void main() {
     final alice = createIdentity();
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-    const owner = 'prior1alice';
-    const coins = 2.0;
-    final key = mintJoinKey(owner: owner, coins: coins);
-    final parsed = ShearJoin().decodeKey(key)!;
+    const holders = [
+      {'owner': 'prior1alice', 'coins': 2.0},
+      {'owner': 'prior1bob', 'coins': 5.0},
+    ];
+    final issued = issueJoinKey(owner: 'prior1alice', holders: holders)!;
+    final parsed = ShearJoin().decodeKey(issued.key)!;
     final live = _PoolLive(headerHex: hex, height: 8, balance: 0);
     live.joinVault = {
       'genesisMs': 1800000000000,
-      'remainingNanos': parsed.shearNanos,
-      'circulatingNanos': parsed.shearNanos,
+      'remainingNanos': issued.circulatingNanos,
+      'circulatingNanos': issued.circulatingNanos,
       'burned': false,
-      'root': parsed.commit,
+      'root': issued.root,
     };
     final server = await _fakePool(live: live);
     addTearDown(() => server.close(force: true));
@@ -1620,12 +1622,12 @@ void main() {
     final join = ShearJoin();
     join.applyRemote(Map<String, dynamic>.from(live.joinVault!));
     expect(join.windowOpen(1800000001000), isTrue);
-    final out = await join.claimViaPool(ledger, pool: pool, key: key, payout: payout);
+    final out = await join.claimViaPool(ledger, pool: pool, key: issued.key, payout: payout);
     expect(out, isNotNull);
-    expect(ledger.spendable(payout), closeTo(coins, 1e-12));
-    final again = await join.claimViaPool(ledger, pool: pool, key: key, payout: payout);
+    expect(ledger.spendable(payout), closeTo(issued.she, 1e-12));
+    final again = await join.claimViaPool(ledger, pool: pool, key: issued.key, payout: payout);
     expect(again, isNull);
-    expect(ledger.spendable(payout), closeTo(coins, 1e-12));
+    expect(ledger.spendable(payout), closeTo(issued.she, 1e-12));
   });
 }
 

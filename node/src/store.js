@@ -360,9 +360,13 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
         nanos: m.nanos,
         fee: m.fee,
         kind: m.kind,
+        programId: m.programId,
+        commit: m.commit,
+        key: m.key,
+        root: m.root,
         bFlag: m.kind === 'b-spend' || m.bFlag,
         vin: [{ address: m.from }],
-        vout: [{ address: dest, nanos: m.nanos, memoCt: m.memoCt }],
+        vout: [{ address: dest, nanos: m.nanos, kind: m.kind, memoCt: m.memoCt }],
       };
     }).filter((tx) => admitMempool({ txs: [], baseFee: baseFeeNow }, tx, { baseFee: baseFeeNow }).ok);
     const tpl = buildTemplate({

@@ -77,20 +77,29 @@ export function encodeJoinKey({ owner, amountPrior, proof, index, commit }) {
   return `join1.${Buffer.from(JSON.stringify(body)).toString('base64url')}`;
 }
 
-/** Single-leaf join1. key from a prior-ledger wallet’s owner + spendable coins. */
-export function mintJoinKey({ owner, coins } = {}) {
-  const snap = buildSnapshot([{ owner, coins }]);
-  const row = snap.rows[0];
-  if (!row) return { ok: false, reason: 'bad_owner' };
+/** join1. cheque for one holder against a full-circulation snapshot (proof + root). */
+export function issueJoinKey(snapshot, owner) {
+  const want = String(owner || '');
+  const row = (snapshot?.rows || []).find((r) => r.owner === want);
+  if (!snapshot?.root || !row) return { ok: false, reason: 'not_in_snapshot' };
   return {
     ok: true,
     key: encodeJoinKey(row),
-    root: snap.root,
+    root: snapshot.root,
+    circulatingNanos: snapshot.circulatingNanos,
     owner: row.owner,
     amountPrior: row.amountPrior,
     nanos: row.shearNanos,
     she: row.shearNanos / NANOS_PER_SHE,
   };
+}
+
+/** Issue a join1. key from the full holder list. `holders` is the genesis circulation. */
+export function mintJoinKey({ owner, holders } = {}) {
+  if (!Array.isArray(holders) || holders.length < 1) {
+    return { ok: false, reason: 'need_snapshot' };
+  }
+  return issueJoinKey(buildSnapshot(holders), owner);
 }
 
 export function decodeJoinKey(raw) {
@@ -113,11 +122,12 @@ export function decodeJoinKey(raw) {
   }
 }
 
-export function emptyJoin({ genesisMs = 0, root = '', circulatingNanos = 0 } = {}) {
+export function emptyJoin({ genesisMs = 0, root = '', circulatingNanos = 0, vaultDest = '' } = {}) {
   return {
     programId: JOIN_PROGRAM,
     genesisMs: genesisMs || 0,
     root: String(root || ''),
+    vaultDest: String(vaultDest || ''),
     circulatingNanos: Math.floor(Number(circulatingNanos) || 0),
     remainingNanos: Math.floor(Number(circulatingNanos) || 0),
     claimed: Object.create(null),
@@ -149,7 +159,7 @@ export function publicJoinView(state, nowMs) {
 }
 
 /** One extra-mint: `nanos` must be the full snapshot circulation. Claims later drain remainingNanos. */
-export function fundGenesis({ state, nanos, nowMs, root }) {
+export function fundGenesis({ state, nanos, nowMs, root, to } = {}) {
   if (state.genesisMs) return { ok: false, reason: 'already_funded' };
   const n = Math.floor(Number(nanos) || 0);
   if (n <= 0) return { ok: false, reason: 'bad_amount' };
@@ -161,6 +171,7 @@ export function fundGenesis({ state, nanos, nowMs, root }) {
   state.circulatingNanos = n;
   state.remainingNanos = n;
   state.burned = false;
+  if (to && isDestAddress(to) && !isShearAddress(to)) state.vaultDest = to;
   return { ok: true, nanos: n, kind: JOIN_KIND_GENESIS, programId: JOIN_PROGRAM, mint: true };
 }
 
@@ -258,6 +269,7 @@ export function applyJoinBlock({ state, block, nowMs }) {
           nanos: tx.nanos || tx.vout?.[0]?.nanos,
           nowMs,
           root: tx.root,
+          to: tx.to || tx.vout?.[0]?.address,
         }),
       });
       continue;

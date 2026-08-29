@@ -18,6 +18,15 @@ describe('policy mempool', () => {
     assert.equal(rest.reason, 'shear1');
     const bsp = admitMempool(book, { kind: 'b-spend', to: dest, fee: 2, bFlag: 1 }, { baseFee: 1 });
     assert.equal(bsp.ok, true);
+    const claim = admitMempool(book, {
+      kind: 'claim',
+      from: dest,
+      to: dest,
+      nanos: 1,
+      fee: 2,
+      vout: [{ address: dest, nanos: 1 }],
+    }, { baseFee: 1 });
+    assert.equal(claim.ok, true);
     const drop = retargetMempool(book, 8);
     assert.ok(drop.dropped.length >= 1);
   });

@@ -19,7 +19,8 @@ export function admitMempool(pool, tx, { baseFee } = {}) {
   const base = Math.max(1, Math.floor(Number(baseFee != null ? baseFee : book.baseFee) || 1));
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
   const kind = String(tx.kind || MEMPOOL_KIND_SEND);
-  if (kind !== MEMPOOL_KIND_SEND && kind !== MEMPOOL_KIND_B_SPEND) {
+  // claim: vault dest → Continuum dest (Join share). Not extra-mint.
+  if (kind !== MEMPOOL_KIND_SEND && kind !== MEMPOOL_KIND_B_SPEND && kind !== 'claim') {
     return { ok: false, reason: 'kind' };
   }
   const dests = [];

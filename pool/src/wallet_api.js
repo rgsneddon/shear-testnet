@@ -9,7 +9,8 @@ import {
   extraMintAllowed,
 } from '../../crypto/asert.js';
 import { portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
-import { claim as joinClaim, publicJoinView } from '../../crypto/join_vault.js';
+import { claim as joinClaim, publicJoinView, claimTx } from '../../crypto/join_vault.js';
+import { levyNanos, txWeight } from '../../crypto/levy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
@@ -612,6 +613,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
   if (path === '/api/join/claim' && verb === 'POST') {
     const vault = store?.joinVault;
     if (!vault) return { status: 503, json: { ok: false, reason: 'no_vault' } };
+    const vaultDest = String(vault.vaultDest || '');
+    if (!isDestAddress(vaultDest)) {
+      return { status: 503, json: { ok: false, reason: 'no_vault_dest', public: false } };
+    }
     const payout = payoutDest(String(body.payout || '')) || String(body.payout || '');
     const key = String(body.key || '');
     const trial = { ...vault, claimed: { ...(vault.claimed || {}) } };
@@ -622,23 +627,21 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
       nowMs: Date.now(),
     });
     if (!got.ok) return { status: 400, json: { ...got, public: false } };
-    const pending = store.joinPendingCommits || (store.joinPendingCommits = new Set());
-    if (pending.has(got.commit)) {
-      return { status: 400, json: { ok: false, reason: 'already_claimed', public: false } };
-    }
-    pending.add(got.commit);
+    const tx = claimTx({ from: vaultDest, to: payout, nanos: got.nanos, commit: got.commit });
+    tx.key = key;
+    tx.root = vault.root;
+    tx.fee = levyNanos(1, txWeight({ vouts: 1 }));
+    tx.amount = got.she;
+    let queued = { ok: true, tx };
     if (typeof queueSend === 'function') {
-      queueSend({
-        from: payout,
-        to: payout,
-        nanos: got.nanos,
-        amount: got.she,
-        kind: 'claim',
-        programId: JOIN_PROGRAM,
-        commit: got.commit,
-        key,
-      });
+      queued = queueSend(tx);
     }
+    if (queued && typeof queued === 'object' && queued.ok === false) {
+      return { status: 400, json: { ok: false, reason: queued.reason || 'queue_failed', public: false } };
+    }
+    vault.claimed = trial.claimed;
+    vault.remainingNanos = trial.remainingNanos;
+    if (typeof store?.saveJoin === 'function') store.saveJoin();
     return {
       status: 200,
       json: {
@@ -647,7 +650,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
         she: got.she,
         nanos: got.nanos,
         to: payout,
-        remainingNanos: trial.remainingNanos,
+        from: vaultDest,
+        remainingNanos: vault.remainingNanos,
         genesisMs: vault.genesisMs,
         burned: !!vault.burned,
         root: vault.root || '',

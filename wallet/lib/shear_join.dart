@@ -16,23 +16,88 @@ const kJoinLeafPersonal = 'shear-join-leaf-v1';
 const kJoinWindowClosed =
     'The ninety-nine day window is closed. Unclaimed allocation has been burned.';
 
-/// Mint a single-leaf `join1.` key from a prior-ledger wallet owner + coins.
-/// Same leaf as the node snapshot (`shear-join-leaf-v1`). Empty proof: root is the leaf.
-String mintJoinKey({required String owner, required double coins}) {
-  final amountPrior = (coins * kPriorUnitsPerCoin).round();
-  if (owner.isEmpty || amountPrior <= 0) return '';
-  final commit = sha256
-      .convert(utf8.encode(kJoinLeafPersonal) + utf8.encode(owner) + utf8.encode('$amountPrior'))
-      .toString();
+class JoinIssued {
+  const JoinIssued({
+    required this.key,
+    required this.root,
+    required this.circulatingNanos,
+    required this.she,
+  });
+  final String key;
+  final String root;
+  final int circulatingNanos;
+  final double she;
+}
+
+String _leafCommit(String owner, int amountPrior) => sha256
+    .convert(utf8.encode(kJoinLeafPersonal) + utf8.encode(owner) + utf8.encode('$amountPrior'))
+    .toString();
+
+Uint8List? _joinHex(String s) {
+  final h = s.trim().toLowerCase();
+  if (h.length != 64 || h.contains(RegExp(r'[^0-9a-f]'))) return null;
+  final out = Uint8List(32);
+  for (var i = 0; i < 32; i++) {
+    out[i] = int.parse(h.substring(i * 2, i * 2 + 2), radix: 16);
+  }
+  return out;
+}
+
+String _joinHexEnc(Uint8List b) => b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+
+/// Issue a join1. key for [owner] against the full holder list (genesis circulation).
+JoinIssued? issueJoinKey({required String owner, required List<Map<String, dynamic>> holders}) {
+  if (holders.length < 2) return null;
+  final rows = <({String owner, int amountPrior, String commit})>[];
+  for (final h in holders) {
+    final o = h['owner']?.toString() ?? '';
+    final coins = (h['coins'] as num?)?.toDouble() ?? 0;
+    final amountPrior = (coins * kPriorUnitsPerCoin).round();
+    if (o.isEmpty || amountPrior <= 0) continue;
+    rows.add((owner: o, amountPrior: amountPrior, commit: _leafCommit(o, amountPrior)));
+  }
+  rows.sort((a, b) => a.commit.compareTo(b.commit));
+  if (rows.length < 2) return null;
+  final leaves = <Uint8List>[];
+  for (final r in rows) {
+    final b = _joinHex(r.commit);
+    if (b == null) return null;
+    leaves.add(b);
+  }
+  final want = rows.indexWhere((r) => r.owner == owner);
+  if (want < 0) return null;
+  var proofLayer = List<Uint8List>.from(leaves);
+  var pidx = want;
+  final proof = <Map<String, String>>[];
+  while (proofLayer.length > 1) {
+    final pair = pidx ^ 1;
+    final sib = pair < proofLayer.length ? proofLayer[pair] : proofLayer[pidx];
+    proof.add({'side': pidx % 2 == 0 ? 'R' : 'L', 'hash': _joinHexEnc(sib)});
+    final nxt = <Uint8List>[];
+    for (var i = 0; i < proofLayer.length; i += 2) {
+      final a = proofLayer[i];
+      final b = i + 1 < proofLayer.length ? proofLayer[i + 1] : a;
+      nxt.add(Uint8List.fromList(sha256.convert([...a, ...b]).bytes));
+    }
+    proofLayer = nxt;
+    pidx = pidx ~/ 2;
+  }
+  final root = _joinHexEnc(proofLayer.single);
+  final row = rows[want];
   final body = jsonEncode({
     'v': 1,
-    'owner': owner,
-    'amountPrior': amountPrior,
-    'commit': commit,
-    'index': 0,
-    'proof': [],
+    'owner': row.owner,
+    'amountPrior': row.amountPrior,
+    'commit': row.commit,
+    'index': want,
+    'proof': proof,
   });
-  return 'join1.${base64Url.encode(utf8.encode(body)).replaceAll('=', '')}';
+  return JoinIssued(
+    key: 'join1.${base64Url.encode(utf8.encode(body)).replaceAll('=', '')}',
+    root: root,
+    circulatingNanos: rows.fold<int>(0, (n, r) => n + r.amountPrior * kPriorToShearUnits),
+    she: row.amountPrior * kPriorToShearUnits / kUnitsPerShe,
+  );
 }
 
 class JoinClaim {

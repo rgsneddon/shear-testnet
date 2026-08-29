@@ -11,7 +11,8 @@ import {
   NANOS_PER_SHE,
   SPENDABLE_CONFIRMATIONS,
 } from '../../crypto/asert.js';
-import { emptyJoin, fundGenesis, mintJoinKey } from '../../crypto/join_vault.js';
+import { emptyJoin, fundGenesis, mintJoinKey, buildSnapshot, issueJoinKey } from '../../crypto/join_vault.js';
+import { joinDest } from '../../crypto/flow_sheet.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { isPinnedProgram, listPublicVortices, mintVorticeDeployKey } from '../../crypto/vortex.js';
 import { handleWalletApi } from '../src/wallet_api.js';
@@ -81,39 +82,57 @@ describe('pool send reconstruct and Join vault', () => {
 
     const alice = newIdentity();
     const payout = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
-    const minted = mintJoinKey({ owner: 'prior1alice', coins: 3 });
+    const vaultDest = joinDest(alice.address, { viewKey: alice.viewKey });
+    const holders = [
+      { owner: 'prior1alice', coins: 3 },
+      { owner: 'prior1bob', coins: 7 },
+    ];
+    const snap = buildSnapshot(holders);
+    assert.equal(snap.circulatingNanos, 10 * NANOS_PER_SHE);
+    const minted = issueJoinKey(snap, 'prior1alice');
     assert.equal(minted.ok, true);
     assert.equal(minted.she, 3);
+    assert.equal(minted.root, snap.root);
+    assert.equal(mintJoinKey({ owner: 'prior1alice', coins: 3 }).ok, false);
     const joinVault = emptyJoin();
     const t0 = Date.now();
     const funded = fundGenesis({
       state: joinVault,
-      nanos: minted.nanos,
+      nanos: snap.circulatingNanos,
       nowMs: t0,
-      root: minted.root,
+      root: snap.root,
+      to: vaultDest,
     });
     assert.equal(funded.ok, true);
-    assert.equal(joinVault.circulatingNanos, minted.nanos);
-    assert.equal(joinVault.remainingNanos, minted.nanos);
-    assert.equal(fundGenesis({ state: joinVault, nanos: minted.nanos, nowMs: t0, root: minted.root }).ok, false);
+    assert.equal(joinVault.vaultDest, vaultDest);
+    assert.equal(joinVault.remainingNanos, snap.circulatingNanos);
+    assert.equal(fundGenesis({ state: joinVault, nanos: snap.circulatingNanos, nowMs: t0, root: snap.root }).ok, false);
 
     const store = storeWith({ joinVault });
     const posted = [];
     const claim = handleWalletApi(url('/api/join/claim'), 'POST', {
       key: minted.key,
       payout,
-    }, { store, miners: new Map(), queueSend: (t) => posted.push(t) && ({ id: 'claim-1', ...t }) });
+    }, { store, miners: new Map(), queueSend: (t) => {
+      posted.push(t);
+      return { ok: true, id: 'claim-1', ...t };
+    } });
     assert.equal(claim.status, 200);
     assert.equal(claim.json.she, 3);
     assert.equal(claim.json.public, false);
-    assert.equal(claim.json.remainingNanos, 0);
-    assert.equal(joinVault.remainingNanos, minted.nanos);
+    assert.equal(claim.json.from, vaultDest);
+    assert.equal(claim.json.to, payout);
+    assert.equal(joinVault.remainingNanos, 7 * NANOS_PER_SHE);
+    assert.equal(posted[0].kind, 'claim');
+    assert.equal(posted[0].from, vaultDest);
+    assert.equal(posted[0].to, payout);
+    assert.equal(posted[0].nanos, 3 * NANOS_PER_SHE);
     assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: 'claim' }), false);
 
     const again = handleWalletApi(url('/api/join/claim'), 'POST', {
       key: minted.key,
       payout,
-    }, { store, miners: new Map(), queueSend: (t) => t });
+    }, { store, miners: new Map(), queueSend: (t) => ({ ok: true, ...t }) });
     assert.equal(again.status, 400);
     assert.equal(again.json.reason, 'already_claimed');
   });
