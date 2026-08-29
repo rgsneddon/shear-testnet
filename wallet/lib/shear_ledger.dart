@@ -967,7 +967,7 @@ class ShearPoolClient {
   Future<Map<String, dynamic>> reservePortal(String dest) =>
       _get('/api/vault/reserve?dest=$dest');
 
-  /// Join remaining (GNFP migration, no APR). Not a public vortice.
+  /// Join remaining (prior-ledger migration, no APR). Not a public vortice.
   Future<Map<String, dynamic>> joinVault({String? dest}) =>
       _get('/api/vault/join${dest != null ? '?dest=$dest' : ''}');
 
