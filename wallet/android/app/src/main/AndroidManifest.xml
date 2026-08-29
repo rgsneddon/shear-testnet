@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Release APKs must grant INTERNET. Debug/profile overlays do not ship;
+         without this, pool HTTPS (syncTip / syncCredits) fails silently. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="shear_wallet"
         android:name="${applicationName}"

@@ -22,6 +22,20 @@ import 'package:shear_wallet/shear_confirm_pie.dart';
 import 'package:crypto/crypto.dart';
 
 void main() {
+  test('release AndroidManifest grants INTERNET; debug/profile overlays are not the shipped grant', () {
+    final main = File('android/app/src/main/AndroidManifest.xml');
+    final debug = File('android/app/src/debug/AndroidManifest.xml');
+    final profile = File('android/app/src/profile/AndroidManifest.xml');
+    expect(main.existsSync(), isTrue);
+    expect(debug.existsSync(), isTrue);
+    expect(profile.existsSync(), isTrue);
+    final grant = RegExp(r'<uses-permission\s+android:name="android\.permission\.INTERNET"\s*/>');
+    expect(grant.hasMatch(main.readAsStringSync()), isTrue,
+        reason: 'packaged APKs merge the main manifest; INTERNET only in debug/profile does not ship');
+    expect(main.path.contains('${Platform.pathSeparator}debug${Platform.pathSeparator}'), isFalse);
+    expect(main.path.contains('${Platform.pathSeparator}profile${Platform.pathSeparator}'), isFalse);
+  });
+
   test('new identity is shear1 with a stable view key after persist/reload', () async {
     final dir = Directory.systemTemp.createTempSync('shear-sess-');
     final store = File('${dir.path}/session.json');
@@ -210,6 +224,7 @@ void main() {
     expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'hash'), isFalse);
     expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'receive' && t.id == 'in-boot'), isTrue);
     expect(ledger.pending(id.paymentCode), closeTo(0.4 + 7 * kHashBonusShe, 1e-18));
+    expect(ledger.syncDests(id.address, paymentCode: id.paymentCode).length < 8, isTrue);
     expect(live.balanceHits < 8, isTrue);
     expect(live.balanceHits > 0, isTrue);
 
@@ -297,6 +312,39 @@ void main() {
     await ledger.syncTip();
     expect(ledger.sealedHeight, 3910);
     expect(ledger.syncDests(id.address, paymentCode: id.paymentCode).length < 8, isTrue);
+  });
+
+  test('syncCredits dests stay a small constant at a high pool tip, not O(height)', () async {
+    final id = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    const reconstructed = 1.5;
+    const tip = 3908;
+    final live = _PoolLive(
+      headerHex: hex,
+      height: tip,
+      balance: reconstructed,
+      pending: 7 * kHashBonusShe,
+    );
+    final silent = payoutDest(id.paymentCode)!;
+    live.owner = silent;
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = id.viewKey;
+    await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+    expect(ledger.sealedHeight, tip);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(reconstructed, 1e-18),
+    );
+    expect(ledger.pending(id.paymentCode), closeTo(7 * kHashBonusShe, 1e-18));
+    final dests = ledger.syncDests(id.address, paymentCode: id.paymentCode);
+    expect(dests.length < 8, isTrue);
+    expect(dests.isNotEmpty, isTrue);
+    expect(live.balanceHits < 8, isTrue);
+    expect(live.balanceHits > 0, isTrue);
+    expect(live.balanceHits, lessThan(tip));
   });
 
   test('applyPoolSnapshot first boot does not wait for a local sealed height', () {
