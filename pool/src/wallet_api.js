@@ -466,6 +466,29 @@ export function mempoolLattice(store, limit = 24) {
   };
 }
 
+function joinCommitPending(store, commit) {
+  const c = String(commit || '');
+  if (!c) return false;
+  const held = store?.joinPendingCommits;
+  if (held && typeof held.has === 'function' && held.has(c)) return true;
+  if (held && held[c]) return true;
+  for (const tx of store?.mempool || []) {
+    if (tx && String(tx.kind || '') === 'claim' && String(tx.commit || '') === c) return true;
+  }
+  return false;
+}
+
+function rememberJoinPending(store, commit) {
+  const c = String(commit || '');
+  if (!c || !store) return;
+  if (!store.joinPendingCommits) store.joinPendingCommits = new Set();
+  if (typeof store.joinPendingCommits.add === 'function') {
+    store.joinPendingCommits.add(c);
+  } else {
+    store.joinPendingCommits[c] = true;
+  }
+}
+
 export function handleWalletApi(url, method, body, { store, miners, queueSend }) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
@@ -632,6 +655,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
     tx.root = vault.root;
     tx.fee = levyNanos(1, txWeight({ vouts: 1 }));
     tx.amount = got.she;
+    if (!tx.id) tx.id = `claim-${String(got.commit).slice(0, 16)}`;
+    if (joinCommitPending(store, got.commit)) {
+      return { status: 400, json: { ok: false, reason: 'already_claimed', public: false } };
+    }
     let queued = { ok: true, tx };
     if (typeof queueSend === 'function') {
       queued = queueSend(tx);
@@ -639,9 +666,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
     if (queued && typeof queued === 'object' && queued.ok === false) {
       return { status: 400, json: { ok: false, reason: queued.reason || 'queue_failed', public: false } };
     }
-    vault.claimed = trial.claimed;
-    vault.remainingNanos = trial.remainingNanos;
-    if (typeof store?.saveJoin === 'function') store.saveJoin();
+    rememberJoinPending(store, got.commit);
     return {
       status: 200,
       json: {
@@ -651,7 +676,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
         nanos: got.nanos,
         to: payout,
         from: vaultDest,
-        remainingNanos: vault.remainingNanos,
+        remainingNanos: trial.remainingNanos,
         genesisMs: vault.genesisMs,
         burned: !!vault.burned,
         root: vault.root || '',
