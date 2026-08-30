@@ -273,6 +273,9 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.rxMode, 'light');
     assert.equal(stats.blockSubsidyNanos, BLOCK_SUBSIDY_NANOS);
     assert.equal(stats.blockSubsidyNanos, 100_000_000_000);
+    assert.equal(typeof stats.circulatingNanos, 'number');
+    assert.ok(stats.circulatingNanos >= 0);
+    assert.equal(typeof stats.hashBonusEmittedNanos, 'number');
     assert.equal(stats.hashBonusNanos, HASH_BONUS_NANOS);
     assert.equal(stats.hashBonusNanos, 1);
     assert.equal(stats.hashTxLive, HASH_TX_LIVE);

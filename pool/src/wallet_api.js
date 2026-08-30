@@ -381,6 +381,45 @@ export function searchExplorerTxs(store, q = {}) {
   return txs;
 }
 
+/** All SHE in existence: block pots + hash bonuses + extra mints − burns. Staked coin stays in. */
+export function networkSupply(store) {
+  let potNanos = 0;
+  let hashNanos = 0;
+  let extraMintNanos = 0;
+  let burnedNanos = 0;
+  for (const b of store?.blocks || []) {
+    const txs = Array.isArray(b?.txs) ? b.txs : [];
+    const cb = txs[0];
+    if (cb?.coinbase && Array.isArray(cb.vout)) {
+      for (const o of cb.vout) {
+        const n = Math.max(0, Math.floor(Number(o.nanos || 0)));
+        if (!n) continue;
+        const kind = String(o.kind || '');
+        if (kind === 'hash') hashNanos += n;
+        else if (kind === 'finder-fee' || kind === 'reserve-fee') continue;
+        else potNanos += n;
+      }
+    }
+    for (const tx of txs) {
+      if (tx?.coinbase) continue;
+      const n = Math.max(0, Math.floor(Number(tx.nanos || tx.vout?.[0]?.nanos || 0)));
+      if (!n) continue;
+      if (tx.mint === true) extraMintNanos += n;
+      const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+      if (kind === 'burn') burnedNanos += n;
+    }
+  }
+  const circulatingNanos = potNanos + hashNanos + extraMintNanos - burnedNanos;
+  return {
+    circulatingNanos: circulatingNanos > 0 ? circulatingNanos : 0,
+    potNanos,
+    hashNanos,
+    extraMintNanos,
+    burnedNanos,
+    lockedNanos: Math.max(0, Math.floor(Number(store?.reserveVault?.totalLockedNanos || 0))),
+  };
+}
+
 export function explorerCirculation(store) {
   const rows = [];
   for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));

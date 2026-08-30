@@ -285,7 +285,7 @@
       </section>
       <section class="panel-card" id="network-continuity">
         <h2>Network continuity</h2>
-        <p class="lede">Live figures for the whole chain. Nothing here belongs to a single wallet.</p>
+        <p class="lede">Emissions and circulation stats of the Shear network</p>
         <div class="cont-row">
           <div class="label">Closure quantum</div>
           <div class="value" id="nc-quantum">1 SHE</div>
@@ -304,7 +304,7 @@
         <div class="cont-row">
           <div class="label">Integral Q</div>
           <div class="value" id="nc-integral">—</div>
-          <p>All of those one-coin pots added together so far. Hash bonuses sit on top of this.</p>
+          <p>Total circulation of Shear coins</p>
         </div>
       </section>
     </div>
@@ -431,6 +431,16 @@
           if (Math.abs(v - Math.round(v)) < 1e-9) return Math.round(v).toLocaleString('en-GB') + ' SHE';
           return v.toFixed(8).replace(/0+$/, '').replace(/\.$/, '') + ' SHE';
         }
+        function fmtCirc(nanos) {
+          var n = Math.round(Number(nanos) || 0);
+          if (!Number.isFinite(n) || n <= 0) return '0 SHE';
+          var whole = Math.floor(n / 100000000000);
+          var frac = n % 100000000000;
+          var head = whole.toLocaleString('en-GB');
+          if (!frac) return head + ' SHE';
+          var tail = String(frac).padStart(11, '0').replace(/0+$/, '');
+          return head + '.' + tail + ' SHE';
+        }
         function fmtSecs(ms) {
           var s = Number(ms) / 1000;
           if (!Number.isFinite(s) || s <= 0) return '—';
@@ -446,7 +456,12 @@
           setText('nc-quantum', fmtShe(pot));
           setText('nc-flux', fmtShe(pot) + ' / ' + Math.round(targetMs / 1000) + ' s');
           setText('nc-observed', fmtSecs(observed));
-          setText('nc-integral', fmtShe(height * pot));
+          var circNanos = Number(j.circulatingNanos);
+          if (Number.isFinite(circNanos) && circNanos >= 0) {
+            setText('nc-integral', fmtCirc(circNanos));
+          } else {
+            setText('nc-integral', fmtShe(height * pot));
+          }
         }
         function tick() {
           fetch('/api/stats?_=' + Date.now(), { cache: 'no-store' })

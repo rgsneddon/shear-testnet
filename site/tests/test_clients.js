@@ -22,7 +22,12 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /Network continuity/);
     assert.match(html, /Closure quantum/);
     assert.match(html, /Integral Q/);
-    assert.match(html, /whole chain/);
+    assert.match(html, /Emissions and circulation stats of the Shear network/);
+    assert.match(html, /Total circulation of Shear coins/);
+    assert.match(html, /circulatingNanos/);
+    assert.match(html, /function fmtCirc/);
+    assert.doesNotMatch(html, /whole chain/);
+    assert.doesNotMatch(html, /Hash bonuses sit on top/);
     assert.doesNotMatch(html, /id="nc-height"/);
     assert.doesNotMatch(html, /id="nc-nodes"/);
     assert.doesNotMatch(html, /intro-live/);

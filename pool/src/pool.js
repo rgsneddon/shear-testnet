@@ -20,7 +20,7 @@ import {
   consensusLaw,
 } from '../../crypto/asert.js';
 import { createStore } from '../../node/src/store.js';
-import { poolRecentBlockTxs } from './wallet_api.js';
+import { poolRecentBlockTxs, networkSupply } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import {
   clampShareBits,
@@ -1068,6 +1068,7 @@ export function createPool({
     ).sort((a, b) => (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0));
     const tip = store.tip();
     const avgMs = avgBlockIntervalMs(store.blocks);
+    const supply = networkSupply(store);
     return {
       ok: true,
       coin: 'SHE',
@@ -1090,6 +1091,11 @@ export function createPool({
       blocks: stats.blocks,
       accepted: stats.accepted,
       stale: stats.stale,
+      circulatingNanos: supply.circulatingNanos,
+      potEmittedNanos: supply.potNanos,
+      hashBonusEmittedNanos: supply.hashNanos,
+      extraMintedNanos: supply.extraMintNanos,
+      burnedNanos: supply.burnedNanos,
       height: tip?.height || 0,
       header: tip?.header ? Buffer.from(tip.header).toString('hex') : '',
       bits: lastJob?.bits || bits,

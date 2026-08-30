@@ -7,7 +7,7 @@ import { newIdentity } from '../../crypto/address.js';
 import { destForLogin, memoSeal } from '../../crypto/flow_sheet.js';
 import { createStore } from '../../node/src/store.js';
 import { buildTemplate, mineTemplate, GENESIS_PREV } from '../../node/src/chain.js';
-import { handleWalletApi, searchExplorerTxs, explorerCirculation, poolRecentBlockTxs, publicBlockDetail, mempoolIncoming } from '../src/wallet_api.js';
+import { handleWalletApi, searchExplorerTxs, explorerCirculation, networkSupply, poolRecentBlockTxs, publicBlockDetail, mempoolIncoming } from '../src/wallet_api.js';
 import { HASH_BONUS_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
 import { bitsForBlock, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -169,6 +169,12 @@ describe('explorer dests', () => {
     assert.ok(circ.json.holders.every((h) => h.tag == null));
     const viaFn = explorerCirculation(store);
     assert.equal(viaFn.circulating, circ.json.circulating);
+    const supply = networkSupply(store);
+    assert.equal(supply.potNanos, 2 * NANOS_PER_SHE);
+    assert.equal(supply.hashNanos, 2 * HASH_BONUS_NANOS);
+    assert.equal(supply.extraMintNanos, 0);
+    assert.equal(supply.burnedNanos, 0);
+    assert.equal(supply.circulatingNanos, 2 * NANOS_PER_SHE + 2 * HASH_BONUS_NANOS);
 
     const recent = poolRecentBlockTxs(store, 30);
     assert.ok(recent.length >= 1);
