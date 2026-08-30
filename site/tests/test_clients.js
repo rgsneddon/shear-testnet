@@ -116,7 +116,7 @@ describe('shear.digital client buttons', () => {
     assert.equal(typeof latest.averagePercent, 'number');
     assert.match(html, /Vortex, and the vortices inside it/);
     assert.match(html, /vort1\./);
-    assert.match(html, /Add new vortice/);
+    assert.match(html, /add new vortice/);
     assert.match(html, /Start a wallet from scratch/);
     assert.match(html, /Set password/);
     assert.match(html, /Export shewall\.bin/);
