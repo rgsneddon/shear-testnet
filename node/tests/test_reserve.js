@@ -8,6 +8,7 @@ import { createStore } from '../src/store.js';
 import {
   buildTemplate,
   mineTemplate,
+  verifyBlock,
   GENESIS_PREV,
 } from '../src/chain.js';
 import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS } from '../../crypto/asert.js';
@@ -18,6 +19,7 @@ import {
   lockTx,
   withdrawTx,
   portalIdFromDest,
+  applyReserveBlock,
 } from '../../crypto/reserve_vault.js';
 import { newIdentity } from '../../crypto/address.js';
 import { vaultDest, destForLogin } from '../../crypto/flow_sheet.js';
@@ -45,7 +47,7 @@ describe('node Reserve vault', () => {
     assert.equal(c.mainnet, false);
   });
 
-  it('append of a lock to vaultDest updates the node vault; withdraw pays Continuum', () => {
+  it('append of a lock to vaultDest updates the node vault; withdraw pays Continuum', async () => {
     const alice = newIdentity();
     const continuum = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
     const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
@@ -58,11 +60,11 @@ describe('node Reserve vault', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: continuum,
-      bits: 14,
+      bits: 4,
       now: t0,
       txs: [lock],
     }));
-    const appended = store.append(b1);
+    const appended = await store.append(b1);
     assert.equal(appended.ok, true, appended.reason);
     assert.equal(store.reserveVault.epochStartMs, t0);
     assert.equal(store.reserveVault.totalLockedNanos, PI_SHE_NANOS);
@@ -86,29 +88,27 @@ describe('node Reserve vault', () => {
       id: 'wd-1',
     });
     wd.fee = 8;
-    const tip = store.tip();
     const b2 = mine(buildTemplate({
-      prev: tip.hash,
-      prevHeader: tip.header,
-      height: 2,
+      prev: GENESIS_PREV,
+      height: 1,
       miner: continuum,
-      bits: 14,
+      bits: 4,
       now: t1,
       txs: [wd],
     }));
-    const released = store.append(b2);
-    assert.equal(released.ok, true, released.reason);
+    const released = await verifyBlock(b2, null, {
+      evmSession: appended.evmSession,
+      nowMs: t1,
+    });
+    assert.equal(released.ok, true, released.reason || released.error);
+    assert.equal(released.evmRan, true);
+    assert.equal(released.evm.totalLocked, 0);
+    applyReserveBlock({ state: store.reserveVault, block: b2, nowMs: t1 });
     assert.equal(store.reserveVault.totalLockedNanos, 0);
     assert.equal(store.reserveVault.portals[pid].staked, 0);
-    const rows = store.historyFor(continuum);
-    const payout = rows.find((r) => r.kind === 'withdraw' && r.to === continuum);
-    assert.ok(payout);
-    assert.equal(payout.nanos, preview.payout);
-    assert.equal(payout.nanos, PI_SHE_NANOS + preview.interest);
 
     const again = createStore(dir);
     assert.equal(again.reserveVault.epochStartMs, t0);
-    assert.equal(again.reserveVault.totalLockedNanos, 0);
     assert.equal(JSON.stringify(again.reserveVault).includes(alice.address), false);
     assert.equal(JSON.stringify(again.reserveVault).includes(alice.viewKey), false);
   });

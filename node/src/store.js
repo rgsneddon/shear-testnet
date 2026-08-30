@@ -108,6 +108,7 @@ export function createStore(dir, {
   let policyState = emptyPolicyState();
   const pause = { join: false, reserveInterest: false, poolWithdraw: false };
   const haltDepth = Math.max(0, Math.floor(Number(reorgHaltDepth) || 0));
+  let evmSession = null;
 
   if (fs.existsSync(binFile)) {
     for (const b of readChainBin(binFile)) {
@@ -505,6 +506,8 @@ export function createStore(dir, {
       tipHeight: prev ? prev.height + 1 : 1,
       hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
       buried: !!block.samplesPruned,
+      evmSession,
+      evmHistory: blocks,
     });
     return settleCheck(check, (okCheck) => completeAppend(okCheck, block));
   }
@@ -549,7 +552,8 @@ export function createStore(dir, {
     } catch { /* keep */ }
     refreshPolicy({ newBlock: true, nowMs: blockTimeMs(stored) });
     emit('tip', { hash: hex32(stored.hash), height: stored.height });
-    return { ok: true, block: stored };
+    if (check.evmSession) evmSession = check.evmSession;
+    return { ok: true, block: stored, evmSession: check.evmSession || evmSession };
   }
 
   function queueTx(tx) {
@@ -572,7 +576,7 @@ export function createStore(dir, {
     return admitMempool(book, tx, { baseFee: base });
   }
 
-  function verifyOneForkBlock(fork, i, accepted, joinFunded, trialSpent) {
+  function verifyOneForkBlock(fork, i, accepted, joinFunded, trialSpent, trialSession = null) {
     const prev = i === 0 ? null : {
       hash: accepted[i - 1].hash,
       header: accepted[i - 1].header,
@@ -589,6 +593,8 @@ export function createStore(dir, {
       spentB: trialSpent,
       tipHeight: i + 1,
       hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
+      evmSession: trialSession,
+      evmHistory: trialSession ? [] : accepted,
     });
   }
 
@@ -626,8 +632,12 @@ export function createStore(dir, {
     let joinFunded = false;
     const trialJoin = emptyJoin();
     const trialSpent = new Set();
+    let trialSession = null;
     for (let i = 0; i < fork.length; i += 1) {
-      const check = await Promise.resolve(verifyOneForkBlock(fork, i, accepted, joinFunded, trialSpent));
+      const check = await Promise.resolve(
+        verifyOneForkBlock(fork, i, accepted, joinFunded, trialSpent, trialSession),
+      );
+      if (check.evmSession) trialSession = check.evmSession;
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
       const gated = validateJoinBlock({
         state: trialJoin,
@@ -690,6 +700,7 @@ export function createStore(dir, {
     refreshPolicy({ reorgDepth: event.depth, nowMs: Date.now() });
     emit('reorg', event);
     emit('tip', { hash: hex32(tip().hash), height: tip().height, reorg: true });
+    evmSession = null;
     return { ok: true, reorg: true, tip: tip(), event };
   }
 

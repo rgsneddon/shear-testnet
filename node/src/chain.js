@@ -408,21 +408,35 @@ function verifyBlockConsensus(block, prev, {
   return { ok: true, hash, decoded, aLeaves, bLeaves };
 }
 
+function headerTimeMs(block) {
+  try {
+    return Number(decodeHeader(Buffer.from(block.header)).timestamp);
+  } catch {
+    return Date.now();
+  }
+}
+
 async function verifyBlockEvm(consensus, block, opts = {}) {
   let session = opts.evmSession;
+  let fresh = false;
   try {
-    if (!session) session = await bootReserveEvm();
+    if (!session) {
+      session = await bootReserveEvm();
+      fresh = true;
+    }
   } catch (e) {
     return { ok: false, reason: 'evm', error: String(e?.message || e) };
   }
-  let nowMs = opts.nowMs;
-  if (nowMs == null) {
-    try {
-      nowMs = Number(decodeHeader(Buffer.from(block.header)).timestamp);
-    } catch {
-      nowMs = Date.now();
+  if (fresh && Array.isArray(opts.evmHistory)) {
+    for (const b of opts.evmHistory) {
+      if (!blockNeedsEvm(b?.txs || [])) continue;
+      const replayed = await executeBlockEvm(session, b.txs, headerTimeMs(b));
+      if (!replayed.ok) {
+        return { ok: false, reason: 'evm', error: `replay:${replayed.reason}` };
+      }
     }
   }
+  const nowMs = opts.nowMs != null ? opts.nowMs : headerTimeMs(block);
   const ran = await executeBlockEvm(session, block.txs || [], nowMs);
   if (!ran.ok) return { ok: false, reason: 'evm', error: ran.reason };
   return {

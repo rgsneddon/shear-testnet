@@ -6,7 +6,7 @@ import { createCustomCommon, Mainnet, Hardfork } from '@ethereumjs/common';
 import { hexToBytes, bytesToHex, createAddressFromString, createAccount } from '@ethereumjs/util';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress } from './address.js';
-import { RESERVE_PROGRAM } from './asert.js';
+import { RESERVE_PROGRAM, RESERVE_EPOCH_MS } from './asert.js';
 
 function keccak256(data) {
   const u8 = data instanceof Uint8Array ? data : Buffer.from(data);
@@ -320,6 +320,15 @@ export async function executeReserveTx(session, tx, nowMs) {
     return callReserve(session, encodeVote(dest, choice, nowMs));
   }
   if (kind === 'withdraw') {
+    const viewGot = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
+    if (viewGot.ok) {
+      const view = decodePublicView(viewGot.returnValue);
+      const ended = view.epochStartMs && nowMs >= view.epochStartMs + RESERVE_EPOCH_MS;
+      if (ended && !view.bonusEnacted) {
+        const en = await callReserve(session, encodeEnact(nowMs));
+        if (!en.ok) return en;
+      }
+    }
     return callReserve(session, encodeWithdraw(txFromOf(tx) || dest, nowMs));
   }
   return { ok: false, reason: 'evm_kind' };

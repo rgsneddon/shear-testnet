@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, txWeight } from '../../crypto/levy.js';
-import { RESERVE_PROGRAM } from '../../crypto/asert.js';
+import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS } from '../../crypto/asert.js';
+import { lockTx, withdrawTx } from '../../crypto/reserve_vault.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -111,6 +112,44 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const denied = verifyBlock(stolen, null);
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'mint_forbidden');
+  });
+
+  it('persists EVM session: lock then withdraw against shipped verifyBlock', async () => {
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const need = levyNanos(1, txWeight({ vouts: 1, memoChunks: 0, bFlag: 0 }));
+    const t0 = 1_700_000_000_000;
+    const lock = lockTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'lock-p' });
+    lock.fee = need;
+    const b1 = mine(buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: dest,
+      bits: 4,
+      now: t0,
+      txs: [lock],
+    }));
+    const v1 = await verifyBlock(b1, null);
+    assert.equal(v1.ok, true, v1.reason || v1.error);
+    assert.equal(v1.evmRan, true);
+    assert.equal(v1.evm.totalLocked, PI_SHE_NANOS);
+    const t1 = t0 + RESERVE_EPOCH_MS;
+    const wd = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'wd-p' });
+    wd.fee = need;
+    const b2 = mine(buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: dest,
+      bits: 4,
+      now: t1,
+      txs: [wd],
+    }));
+    const empty = await verifyBlock(b2, null);
+    assert.equal(empty.ok, false);
+    assert.equal(empty.reason, 'evm');
+    const v2 = await verifyBlock(b2, null, { evmSession: v1.evmSession, nowMs: t1 });
+    assert.equal(v2.ok, true, v2.reason || v2.error);
+    assert.equal(v2.evm.totalLocked, 0);
   });
 
   it('records GATE true', () => {
