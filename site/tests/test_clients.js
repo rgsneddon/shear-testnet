@@ -59,6 +59,16 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /ShearK algorithm \(a variant of RandomX\)/);
     assert.match(html, /Exactly 1 SHE, every found block/);
     assert.match(html, /0\.00000000001 SHE for each accepted hash/);
+    assert.match(html, /The Reserve Oracle/);
+    assert.match(html, /id="oracle-rate"/);
+    assert.match(html, /\/reserve\/latest\.json/);
+    assert.doesNotMatch(html, /starts at 4\.25%/);
+    const latest = JSON.parse(fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../reserve/latest.json'),
+      'utf8',
+    ));
+    assert.equal(latest.version, 'shear-reserve-oracle-v1');
+    assert.equal(typeof latest.averagePercent, 'number');
     assert.match(html, /Vortex, and the vortices inside it/);
     assert.match(html, /vort1\./);
     assert.match(html, /Add new vortice/);

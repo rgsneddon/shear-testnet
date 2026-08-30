@@ -192,7 +192,7 @@
         <table class="sched">
           <tr><th>Block pot</th><td>Exactly 1 SHE, every found block</td></tr>
           <tr><th>Hash bonus</th><td>0.00000000001 SHE for each accepted hash, paid to the hasher who produced it</td></tr>
-          <tr><th>Reserve interest</th><td>The published yearly rate on a qualifying stake, over 400 days (starts at 4.25%)</td></tr>
+          <tr><th>Reserve interest</th><td>The staking rate on every user's qualifying stake, over 400 days is variable and collated by The Reserve Oracle. Staked rewards are paid daily at the current rate of: <strong id="oracle-rate">…</strong></td></tr>
           <tr><th>What a vote may move</th><td>The hash bonus, by one unit either way, or leave it. The pot never moves.</td></tr>
         </table>
         <h3>The pot</h3>
@@ -270,6 +270,17 @@
       bind('nav-miner', miner[plat] || miner.macos);
       bind('nav-node', node);
       window.shearLatestClients = { platform: plat, wallet: wallet[plat], miner: miner[plat], node: node };
+      var rateEl = document.getElementById('oracle-rate');
+      if (rateEl) {
+        fetch('/reserve/latest.json', { cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+          .then(function (j) {
+            var p = Number(j && j.averagePercent);
+            if (!Number.isFinite(p)) return;
+            rateEl.textContent = p.toFixed(3) + '%';
+          })
+          .catch(function () { rateEl.textContent = '—'; });
+      }
     })();
   </script>
 </body>
