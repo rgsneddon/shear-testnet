@@ -58,7 +58,10 @@ void main() {
     final relEnt = File('macos/Runner/Release.entitlements').readAsStringSync();
     expect(debugEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.5"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.6"'), isTrue);
+    final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
+    expect(activity.contains('FlutterFragmentActivity'), isTrue);
+    expect(activity.contains('FlutterActivity()'), isFalse);
     expect(main.path.contains('${Platform.pathSeparator}debug${Platform.pathSeparator}'), isFalse);
     expect(main.path.contains('${Platform.pathSeparator}profile${Platform.pathSeparator}'), isFalse);
   });
@@ -489,16 +492,59 @@ void main() {
     final dest = defaultShewallExportFile(
       home: '/Users/tester',
       existsDir: (path) => path.endsWith('Downloads'),
+      android: false,
+      windows: false,
+      ios: false,
     );
-    expect(dest.path, '/Users/tester/Downloads/shewall.bin');
+    expect(dest, isNotNull);
+    expect(dest!.path, '/Users/tester/Downloads/shewall.bin');
     expect(isTempOnlyShewallPath(dest.path), isFalse);
-    expect(dest.path.contains('Downloads') || dest.path.contains('Documents') || dest.path.contains('Download'), isTrue);
+    expect(dest.path.contains('Downloads') || dest.path.contains('Documents'), isTrue);
     final docs = defaultShewallExportFile(
       home: '/Users/tester',
       existsDir: (_) => false,
+      android: false,
+      windows: false,
+      ios: false,
     );
-    expect(docs.path, '/Users/tester/Documents/shewall.bin');
+    expect(docs!.path, '/Users/tester/Documents/shewall.bin');
     expect(isTempOnlyShewallPath(File('${Directory.systemTemp.path}/$shewallName').path), isTrue);
+    expect(defaultShewallExportFile(android: true), isNull);
+    expect(isPrivateAndroidFilesPath('/data/user/0/com.shear.shear_wallet/files/shewall.bin'), isTrue);
+  });
+
+  test('saveShewallBytes writes injected dest; picker cancel is export_cancelled', () async {
+    final dest = File('${Directory.systemTemp.createTempSync('shear-save-').path}/Documents/$shewallName');
+    final path = await saveShewallBytes(Uint8List.fromList([1, 2, 3, 4]), dest: dest);
+    expect(path, dest.path);
+    expect(dest.existsSync(), isTrue);
+    expect(isTempOnlyShewallPath(path), isFalse);
+    await expectLater(
+      saveShewallBytes(Uint8List.fromList([1]), picker: (_) async => null),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('fresh device importEncryptedShewall restores identity then setPassword seals session', () async {
+    final id = createIdentity();
+    final ledger = ShearLedger();
+    ledger.confirmRound(address: id.address, pot: 1, height: 1);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    final backup = File('${Directory.systemTemp.createTempSync('shear-imp-').path}/$shewallName');
+    await exportEncryptedShewall(identity: id, ledger: ledger, password: kGatePassword, dest: backup);
+    final freshDir = Directory.systemTemp.createTempSync('shear-fresh-');
+    final fresh = ShearSession(store: File('${freshDir.path}/session.json'));
+    expect(await fresh.loadOrCreate(), isNotNull);
+    expect(fresh.identity!.address, isNot(id.address));
+    final restoredLedger = ShearLedger();
+    final restored = await importEncryptedShewall(src: backup, password: kGatePassword, ledger: restoredLedger);
+    expect(restored.address, id.address);
+    fresh.identity = restored;
+    await fresh.setPassword(kGatePassword);
+    final again = ShearSession(store: File('${freshDir.path}/session.json'));
+    await again.loadOrCreate();
+    final unlocked = await again.unlock(kGatePassword);
+    expect(unlocked.address, id.address);
   });
 
   test('CTF dest is she1 with password C, not C-from-S', () {
@@ -557,7 +603,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.5');
+    expect(kWalletVersion, '0.6');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -728,9 +774,10 @@ void main() {
     final session = ShearSession(store: store);
     await session.loadOrCreate();
     expect(session.needsPasswordSet, isTrue);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger()));
+    await tester.pumpWidget(ShearWalletApp(key: UniqueKey(), session: session, ledger: ShearLedger()));
     await tester.pump();
     expect(find.text('Set password'), findsOneWidget);
+    expect(find.text('Import shewall.bin'), findsOneWidget);
     expect(find.text('Unlock'), findsNothing);
     await tester.enterText(find.byType(TextField).at(0), 'correct-horse');
     await tester.enterText(find.byType(TextField).at(1), 'other-horse');
@@ -738,6 +785,105 @@ void main() {
     await tester.pump();
     expect(find.text('Passwords do not match.'), findsOneWidget);
     expect(find.text('Spendable'), findsNothing);
+    await tester.enterText(find.byType(TextField).at(0), kGatePassword);
+    await tester.enterText(find.byType(TextField).at(1), kGatePassword);
+    await tester.tap(find.text('Set password'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+    expect(find.text('Spendable'), findsOneWidget);
+    expect(session.sealed, isTrue);
+
+    final locked = ShearSession(store: store);
+    await locked.loadOrCreate();
+    expect(locked.needsUnlock, isTrue);
+    await tester.pumpWidget(ShearWalletApp(key: UniqueKey(), session: locked, ledger: ShearLedger()));
+    await tester.pump();
+    expect(find.text('Unlock'), findsOneWidget);
+    await tester.enterText(find.byType(TextField).first, 'not-the-password');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+    expect(find.text('Wrong password.'), findsOneWidget);
+    expect(find.text('Spendable'), findsNothing);
+    await tester.enterText(find.byType(TextField).first, kGatePassword);
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+    expect(find.text('Spendable'), findsOneWidget);
+  });
+
+  testWidgets('Import shewall.bin on a fresh store restores the backup identity', (tester) async {
+    final id = createIdentity();
+    final srcLedger = ShearLedger();
+    srcLedger.confirmRound(address: id.address, pot: 1, height: 1);
+    srcLedger.settleTo(1 + ShearLedger.spendableConfirmations);
+    final backup = File('${Directory.systemTemp.createTempSync('shear-imp-ui-').path}/$shewallName');
+    await tester.runAsync(() async {
+      await exportEncryptedShewall(identity: id, ledger: srcLedger, password: kGatePassword, dest: backup);
+    });
+    final dir = Directory.systemTemp.createTempSync('shear-imp-sess-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    expect(session.identity!.address, isNot(id.address));
+    await tester.pumpWidget(ShearWalletApp(
+      key: UniqueKey(),
+      session: session,
+      ledger: ShearLedger(),
+      importSrc: () => backup,
+    ));
+    await tester.pump();
+    expect(find.text('Import shewall.bin'), findsOneWidget);
+    await tester.enterText(find.byType(TextField).first, kGatePassword);
+    await tester.tap(find.text('Import shewall.bin'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+    expect(find.text('Spendable'), findsOneWidget);
+    expect(session.identity!.address, id.address);
+  });
+
+  testWidgets('Closure Export shewall.bin writes a user dest and Import restores it', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-closure-io-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final dest = File('${dir.path}/Documents/$shewallName');
+    await tester.pumpWidget(ShearWalletApp(
+      key: UniqueKey(),
+      session: session,
+      ledger: ShearLedger(),
+      startUnlocked: true,
+      exportDest: () => dest,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Closure'));
+    await tester.pump();
+    expect(find.text('Export shewall.bin'), findsOneWidget);
+    expect(find.text('Import shewall.bin'), findsWidgets);
+    await tester.tap(find.text('Export shewall.bin'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+    expect(dest.existsSync(), isTrue);
+    expect(isTempOnlyShewallPath(dest.path), isFalse);
+    expect(find.textContaining('Wrote encrypted'), findsOneWidget);
+
+    final freshDir = Directory.systemTemp.createTempSync('shear-closure-imp-');
+    final fresh = ShearSession(store: File('${freshDir.path}/session.json'));
+    await fresh.loadOrCreate();
+    expect(fresh.identity!.address, isNot(ident.address));
+    await tester.pumpWidget(ShearWalletApp(
+      key: UniqueKey(),
+      session: fresh,
+      ledger: ShearLedger(),
+      importSrc: () => dest,
+    ));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField).first, kGatePassword);
+    await tester.tap(find.text('Import shewall.bin'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+    expect(find.text('Spendable'), findsOneWidget);
+    expect(fresh.identity!.address, ident.address);
   });
 
   testWidgets('six Chronoflux tabs and light pool colors', (tester) async {
@@ -749,10 +895,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.5');
-    expect(kWalletVersion, '0.5');
+    expect(app.title, 'Shear 0.6');
+    expect(kWalletVersion, '0.6');
     await tester.pump();
-    expect(find.textContaining('0.5'), findsWidgets);
+    expect(find.textContaining('0.6'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -832,6 +978,11 @@ void main() {
     final explainerX = tester.getTopLeft(find.text('1 SHE per block continuity')).dx;
     expect(spendY < receiveY, isTrue);
     expect(explainerX > spendX, isTrue);
+    final spendBox = tester.getRect(find.byKey(const Key('continuum-spend')));
+    final statsBox = tester.getRect(find.byKey(const Key('continuum-stats')));
+    expect(spendBox.width / statsBox.width, closeTo(2.0, 0.2));
+    expect(spendBox.height, closeTo(statsBox.height, 1));
+    expect(statsBox.left > spendBox.right, isTrue);
     expect(find.text('Pending'), findsNothing);
     expect(find.text('Copy dest'), findsNothing);
     expect(find.text('New dest'), findsNothing);
@@ -972,6 +1123,10 @@ void main() {
     expect(spend.dy < receive.dy, isTrue);
     expect(receive.dy < explainer.dy, isTrue);
     expect((spend.dx - explainer.dx).abs() < 8, isTrue);
+    final spendBox = tester.getRect(find.byKey(const Key('continuum-spend')));
+    final statsBox = tester.getRect(find.byKey(const Key('continuum-stats')));
+    expect(spendBox.width, closeTo(statsBox.width, 1));
+    expect(statsBox.top > spendBox.bottom, isTrue);
   });
 
   testWidgets('Continuum shows 1 SHE per block continuity and sealed pot figures', (tester) async {
@@ -991,7 +1146,8 @@ void main() {
     expect(find.textContaining('Target flux'), findsOneWidget);
     expect(find.textContaining('Integral Q'), findsOneWidget);
     expect(find.textContaining('Observed interval'), findsOneWidget);
-    expect(find.text('Integral Q  2 SHE'), findsOneWidget);
+    expect(find.text('Integral Q'), findsOneWidget);
+    expect(find.text('2 SHE'), findsOneWidget);
     expect(find.textContaining('infinite schedule'), findsNothing);
     expect(find.textContaining('Oracle rate'), findsNothing);
     expect(find.text('Vote'), findsNothing);

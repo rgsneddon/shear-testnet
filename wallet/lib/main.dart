@@ -23,7 +23,7 @@ import 'shear_biometrics.dart';
 import 'shear_export.dart';
 import 'shear_social.dart';
 
-const kWalletVersion = '0.5';
+const kWalletVersion = '0.6';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -60,6 +60,7 @@ class ShearWalletApp extends StatefulWidget {
     this.downloadVortice,
     this.biometrics,
     this.exportDest,
+    this.importSrc,
     this.openUrl,
     this.startUnlocked = false,
   });
@@ -74,8 +75,10 @@ class ShearWalletApp extends StatefulWidget {
   /// Test hook. Production fetches the origin named in the vort1. key.
   final Future<Vortice?> Function(String key)? downloadVortice;
   final ShearBiometrics? biometrics;
-  /// Test hook. Production writes to Downloads/Documents.
+  /// Test hook. Production opens a user save dialog (SAF on Android).
   final File Function()? exportDest;
+  /// Test hook. Production opens a user open dialog for shewall.bin.
+  final File Function()? importSrc;
   final Future<bool> Function(Uri url)? openUrl;
   /// Tests: session already sealed and identity in memory.
   final bool startUnlocked;
@@ -257,6 +260,27 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       } catch (_) {}
     }
     await _enterWallet(pw);
+  }
+
+  Future<void> _importShewall() async {
+    final pw = unlockCtrl.text;
+    if (pw.isEmpty) {
+      setState(() => _lockError = 'Enter the password that encrypts this shewall.bin.');
+      return;
+    }
+    try {
+      final src = widget.importSrc?.call() ?? await pickShewallImportFile();
+      if (src == null) {
+        setState(() => _lockError = 'No shewall.bin selected.');
+        return;
+      }
+      final imported = await importEncryptedShewall(src: src, password: pw, ledger: ledger);
+      session.identity = imported;
+      await session.setPassword(pw);
+      await _enterWallet(pw);
+    } catch (_) {
+      setState(() => _lockError = 'Import failed. Check the file and password.');
+    }
   }
 
   Future<void> _unlockBiometric() async {
@@ -469,79 +493,86 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     final first = session.needsPasswordSet;
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: _brandLockup(mark: 88, wordHeight: 52),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'she is private',
-                  style: TextStyle(color: theme.colorScheme.onSurface),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  first
-                      ? 'Set a password. It encrypts shewall.bin so you can restore this wallet on any device. You will enter it on every run.'
-                      : 'Enter the password that encrypts shewall.bin.',
-                  style: TextStyle(color: theme.colorScheme.onSurface),
-                  textAlign: TextAlign.center,
-                ),
-                TextField(
-                  controller: unlockCtrl,
-                  obscureText: true,
-                  decoration: InputDecoration(labelText: first ? 'New password' : 'Password'),
-                  onSubmitted: (_) {
-                    if (first) {
-                      _setPassword(unlockCtrl.text, confirmCtrl.text);
-                    } else {
-                      _unlock(unlockCtrl.text);
-                    }
-                  },
-                ),
-                if (first) ...[
-                  TextField(
-                    controller: confirmCtrl,
-                    obscureText: true,
-                    decoration: const InputDecoration(labelText: 'Confirm password'),
-                    onSubmitted: (_) => _setPassword(unlockCtrl.text, confirmCtrl.text),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: _brandLockup(mark: 88, wordHeight: 52),
                   ),
-                ],
-                if (_lockError != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    'she is private',
+                    style: TextStyle(color: theme.colorScheme.onSurface),
+                  ),
                   const SizedBox(height: 8),
-                  Text(_lockError!, style: TextStyle(color: theme.colorScheme.error)),
-                ],
-                const SizedBox(height: 12),
-                FilledButton(
-                  onPressed: () {
-                    if (first) {
-                      _setPassword(unlockCtrl.text, confirmCtrl.text);
-                    } else {
-                      _unlock(unlockCtrl.text);
-                    }
-                  },
-                  child: Text(first ? 'Set password' : 'Unlock'),
-                ),
-                if (!first && _bioReady) ...[
+                  Text(
+                    first
+                        ? 'Set a password. It encrypts shewall.bin so you can restore this wallet on any device. You will enter it on every run.'
+                        : 'Enter the password that encrypts shewall.bin.',
+                    style: TextStyle(color: theme.colorScheme.onSurface),
+                    textAlign: TextAlign.center,
+                  ),
+                  TextField(
+                    controller: unlockCtrl,
+                    obscureText: true,
+                    decoration: InputDecoration(labelText: first ? 'New password' : 'Password'),
+                    onSubmitted: (_) {
+                      if (first) {
+                        _setPassword(unlockCtrl.text, confirmCtrl.text);
+                      } else {
+                        _unlock(unlockCtrl.text);
+                      }
+                    },
+                  ),
+                  if (first) ...[
+                    TextField(
+                      controller: confirmCtrl,
+                      obscureText: true,
+                      decoration: const InputDecoration(labelText: 'Confirm password'),
+                      onSubmitted: (_) => _setPassword(unlockCtrl.text, confirmCtrl.text),
+                    ),
+                  ],
+                  if (_lockError != null) ...[
+                    const SizedBox(height: 8),
+                    Text(_lockError!, style: TextStyle(color: theme.colorScheme.error)),
+                  ],
+                  const SizedBox(height: 12),
+                  FilledButton(
+                    onPressed: () {
+                      if (first) {
+                        _setPassword(unlockCtrl.text, confirmCtrl.text);
+                      } else {
+                        _unlock(unlockCtrl.text);
+                      }
+                    },
+                    child: Text(first ? 'Set password' : 'Unlock'),
+                  ),
                   const SizedBox(height: 8),
                   OutlinedButton(
-                    onPressed: _unlockBiometric,
-                    child: const Text('Unlock with biometrics'),
+                    onPressed: _importShewall,
+                    child: const Text('Import shewall.bin'),
+                  ),
+                  if (!first && _bioReady) ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton(
+                      onPressed: _unlockBiometric,
+                      child: const Text('Unlock with biometrics'),
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: _toggleTheme,
+                    child: Text(_themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode'),
                   ),
                 ],
-                const SizedBox(height: 8),
-                TextButton(
-                  onPressed: _toggleTheme,
-                  child: Text(_themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode'),
-                ),
-              ],
+              ),
             ),
           ),
         ),
@@ -680,18 +711,38 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     );
   }
 
-  Widget _panel(BuildContext context, List<Widget> kids) {
+  Widget _panel(BuildContext context, List<Widget> kids, {Key? key}) {
     final theme = Theme.of(context);
     return Card(
+      key: key,
       color: theme.cardColor,
       surfaceTintColor: Colors.transparent,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: DefaultTextStyle.merge(
-          style: TextStyle(color: theme.colorScheme.onSurface),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: kids),
+      child: SizedBox(
+        width: double.infinity,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: DefaultTextStyle.merge(
+            style: TextStyle(color: theme.colorScheme.onSurface),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: kids),
+          ),
         ),
       ),
+    );
+  }
+
+  TableRow _continuumStatRow(BuildContext context, String label, String value) {
+    final style = TextStyle(color: shearMutedOf(context), fontSize: 13);
+    return TableRow(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 0),
+          child: Text(label, style: style),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 0),
+          child: Text(value, style: style, textAlign: TextAlign.right),
+        ),
+      ],
     );
   }
 
@@ -726,13 +777,24 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         '1 SHE per block continuity',
         style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface),
       ),
-      Text('Closure quantum  ${formatShe(path1.quantumShe)} SHE', style: TextStyle(color: shearMutedOf(context))),
-      Text('Target flux  ${formatShe(path1.quantumShe)} SHE / $fluxSec s', style: TextStyle(color: shearMutedOf(context))),
-      Text(
-        dt == null ? 'Observed interval  —' : 'Observed interval  ${(dt / 1000).toStringAsFixed(1)} s',
-        style: TextStyle(color: shearMutedOf(context)),
+      const SizedBox(height: 8),
+      Table(
+        columnWidths: const {
+          0: FlexColumnWidth(1.3),
+          1: FlexColumnWidth(1),
+        },
+        defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+        children: [
+          _continuumStatRow(context, 'Closure quantum', '${formatShe(path1.quantumShe)} SHE'),
+          _continuumStatRow(context, 'Target flux', '${formatShe(path1.quantumShe)} SHE / $fluxSec s'),
+          _continuumStatRow(
+            context,
+            'Observed interval',
+            dt == null ? '—' : '${(dt / 1000).toStringAsFixed(1)} s',
+          ),
+          _continuumStatRow(context, 'Integral Q', '${formatShe(path1.integralQShe)} SHE'),
+        ],
       ),
-      Text('Integral Q  ${formatShe(path1.integralQShe)} SHE', style: TextStyle(color: shearMutedOf(context))),
       const SizedBox(height: 12),
       Row(
         children: [
@@ -787,18 +849,26 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         padding: const EdgeInsets.all(16),
         children: [
           if (wide)
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(flex: 2, child: _panel(context, spendPane)),
-                const SizedBox(width: 12),
-                Expanded(flex: 1, child: _panel(context, statsPane)),
-              ],
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: _panel(context, spendPane, key: const Key('continuum-spend')),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 1,
+                    child: _panel(context, statsPane, key: const Key('continuum-stats')),
+                  ),
+                ],
+              ),
             )
           else ...[
-            _panel(context, spendPane),
+            _panel(context, spendPane, key: const Key('continuum-spend')),
             const SizedBox(height: 12),
-            _panel(context, statsPane),
+            _panel(context, statsPane, key: const Key('continuum-stats')),
           ],
           if (pending.isNotEmpty) ...[
             const SizedBox(height: 12),
@@ -1240,20 +1310,67 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
             }
             return;
           }
-          final dest = widget.exportDest?.call() ?? defaultShewallExportFile();
-          await exportEncryptedShewall(
-            identity: ident,
-            ledger: ledger,
-            password: pw,
-            dest: dest,
-          );
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Wrote encrypted $shewallName to ${dest.path}')),
-            );
+          try {
+            final packed = exportShewall(identity: ident, ledger: ledger);
+            final sealed = await sealShewallBin(packed, pw);
+            final path = await saveShewallBytes(sealed, dest: widget.exportDest?.call());
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Wrote encrypted $shewallName to $path')),
+              );
+            }
+          } catch (e) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Export failed: $e')),
+              );
+            }
           }
         },
         child: const Text('Export shewall.bin'),
+      ),
+      const SizedBox(height: 8),
+      OutlinedButton(
+        onPressed: () async {
+          final pw = session.password ?? password;
+          if (pw.isEmpty) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Unlock with your password first.')),
+              );
+            }
+            return;
+          }
+          try {
+            final src = widget.importSrc?.call() ?? await pickShewallImportFile();
+            if (src == null) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('No shewall.bin selected.')),
+                );
+              }
+              return;
+            }
+            final imported = await importEncryptedShewall(src: src, password: pw, ledger: ledger);
+            session.identity = imported;
+            await session.setPassword(pw);
+            id = imported;
+            ledger.viewSecret = imported.viewKey;
+            if (mounted) {
+              setState(() {});
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Imported shewall.bin')),
+              );
+            }
+          } catch (e) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Import failed: $e')),
+              );
+            }
+          }
+        },
+        child: const Text('Import shewall.bin'),
       ),
     ]);
   }
