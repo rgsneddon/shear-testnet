@@ -55,6 +55,8 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /How SHE is created/);
     assert.match(html, /No premine, no ICO/);
     assert.match(html, /1:1 claim of coins GNFP to SHEAR/);
+    assert.match(html, /CPU-only proof-of-work/);
+    assert.match(html, /ShearK algorithm \(a variant of RandomX\)/);
     assert.match(html, /Exactly 1 SHE, every found block/);
     assert.match(html, /0\.00000000001 SHE for each accepted hash/);
     assert.match(html, /Vortex, and the vortices inside it/);
