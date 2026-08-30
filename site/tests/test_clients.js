@@ -28,6 +28,10 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /intro-live/);
     assert.doesNotMatch(html, /Pool hashrate|Workers online|Last block/);
     const left = html.slice(html.indexOf('<h1>Shear</h1>'), html.indexOf('id="network-continuity"'));
+    assert.match(left, /class="she-private"/);
+    assert.match(left, /She is/);
+    assert.match(left, /Private/);
+    assert.match(html, /Great Vibes/);
     assert.doesNotMatch(left, />Height</);
     assert.doesNotMatch(left, /Nodes online/);
     assert.match(html, /\/api\/stats/);

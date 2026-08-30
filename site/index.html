@@ -7,6 +7,9 @@
   <title>Shear — testnet</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="/brand/theme.css?v=12"/>
   <style>
     :root {
@@ -158,6 +161,81 @@
     .intro-split > .panel-card {
       margin:0; display:flex; flex-direction:column; height:100%;
     }
+    .she-private {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      margin: 4px 0 8px;
+      padding: 10px 4px 14px;
+      min-height: 7.2rem;
+    }
+    .she-private-lockup {
+      display: block;
+      width: 100%;
+      font-family: "Great Vibes", "Snell Roundhand", "Apple Chancery", "Segoe Script", cursive;
+      font-size: clamp(3.8rem, 8.4vw, 6.6rem);
+      font-weight: 400;
+      font-style: normal;
+      line-height: 1.05;
+      letter-spacing: .02em;
+      text-align: center;
+      background-image: linear-gradient(
+        118deg,
+        #6e5310 0%,
+        #c9a227 9%,
+        #fff8d6 18%,
+        #e4c56a 28%,
+        #ffffff 40%,
+        #d4af37 50%,
+        #fffef4 60%,
+        #b8860b 72%,
+        #f6e7a2 84%,
+        #fff 92%,
+        #c5a028 100%
+      );
+      background-size: 280% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+      animation: she-glitter 5.8s linear infinite;
+      filter:
+        drop-shadow(0 0 1px rgba(255,248,220,.95))
+        drop-shadow(0 0 10px rgba(212,175,55,.58))
+        drop-shadow(0 8px 16px rgba(139,105,20,.3));
+    }
+    .she-private::before {
+      content: "";
+      position: absolute;
+      inset: 12% 4%;
+      pointer-events: none;
+      background-image:
+        radial-gradient(1.5px 1.5px at 10% 38%, #fff 98%, transparent),
+        radial-gradient(1px 1px at 24% 16%, #fff8dc 98%, transparent),
+        radial-gradient(1.7px 1.7px at 47% 74%, #fff 98%, transparent),
+        radial-gradient(1.1px 1.1px at 68% 22%, #ffe9a3 98%, transparent),
+        radial-gradient(1.4px 1.4px at 86% 58%, #fff 98%, transparent),
+        radial-gradient(1px 1px at 34% 88%, #fff 98%, transparent),
+        radial-gradient(1.2px 1.2px at 78% 84%, #fff8dc 98%, transparent);
+      animation: she-sparkle 2.1s ease-in-out infinite alternate;
+    }
+    @keyframes she-glitter {
+      0% { background-position: 0% 50%; }
+      100% { background-position: 200% 50%; }
+    }
+    @keyframes she-sparkle {
+      from { opacity: .35; }
+      to { opacity: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .she-private::before, .she-private-lockup { animation: none; }
+    }
+    @media (max-width: 640px) {
+      .she-private { min-height: 6.2rem; padding: 8px 2px 12px; }
+      .she-private-lockup { font-size: clamp(3.1rem, 16vw, 4.2rem); }
+    }
     .cont-row {
       display:grid; grid-template-columns: 9.2rem minmax(0, 1fr); gap:2px 12px;
       padding:9px 0; border-bottom:1px solid rgba(26,111,181,.16); align-items:baseline;
@@ -246,7 +324,7 @@
     <div class="intro-split" id="intro-split">
       <section class="panel-card">
         <h1>Shear</h1>
-        <p>she is private</p>
+        <p class="she-private"><span class="she-private-lockup">She is<br>Private</span></p>
         <p>Private by default. Proof of work only. Continuity-settled. <strong>Testnet.</strong></p>
         <p>Offer <code>she1</code> (silent ID). Chain dests are revolving <code>ssa1</code>. Never share rest-frame shear1.</p>
         <p>Pool: <a href="https://pool.shear.digital">pool.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
