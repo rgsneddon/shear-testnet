@@ -114,7 +114,7 @@ describe('shear.digital client buttons', () => {
     ));
     assert.equal(latest.version, 'shear-reserve-oracle-v1');
     assert.equal(typeof latest.averagePercent, 'number');
-    assert.match(html, /Vortex, and the vortices inside it/);
+    assert.match(html, /Vortex and Vortices/);
     assert.match(html, /vort1\./);
     assert.match(html, /add new vortice/);
     assert.match(html, /Start a wallet from scratch/);
