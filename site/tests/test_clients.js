@@ -33,6 +33,10 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(left, /She is<br/);
     assert.match(html, /Great Vibes/);
     assert.match(html, /white-space: nowrap/);
+    assert.match(html, /text-align: left/);
+    assert.match(html, /color: #0d2b55/);
+    assert.match(html, /color: #c9d3de/);
+    assert.doesNotMatch(html, /she-glitter|she-sparkle|d4af37|#c9a227/);
     assert.doesNotMatch(left, />Height</);
     assert.doesNotMatch(left, /Nodes online/);
     assert.match(html, /\/api\/stats/);
