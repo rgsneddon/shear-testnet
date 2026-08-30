@@ -49,29 +49,43 @@ bool isPrivateAndroidFilesPath(String path) {
   return path.contains('/data/user/0/') || path.contains('/data/data/');
 }
 
+/// file_picker 8.x: Android/iOS [saveFile] requires [bytes]. Desktop (macOS)
+/// throws [UnsupportedError] if [bytes] is set; the dialog only returns a path.
+bool shewallSavePassesBytes({bool? android, bool? ios}) {
+  return (android ?? Platform.isAndroid) || (ios ?? Platform.isIOS);
+}
+
+/// Production save dialog. Do not pass [bytes] on desktop.
+Future<String?> defaultShewallSavePicker({Uint8List? bytes}) {
+  return FilePicker.platform.saveFile(
+    dialogTitle: 'Export shewall.bin',
+    fileName: shewallName,
+    bytes: bytes,
+  );
+}
+
 /// Writes sealed bytes to [dest], or opens a user save dialog (SAF on Android).
+/// Desktop: dialog returns a path; always write (overwrite). Never pass bytes
+/// to [saveFile] on macOS/Windows/Linux. Mobile: pass bytes (SAF writes them).
 Future<String> saveShewallBytes(
   Uint8List sealed, {
   File? dest,
-  Future<String?> Function(Uint8List bytes)? picker,
+  Future<String?> Function({Uint8List? bytes})? picker,
+  bool? passBytes,
 }) async {
   if (dest != null) {
     dest.parent.createSync(recursive: true);
     dest.writeAsBytesSync(sealed);
     return dest.path;
   }
-  final pick = picker ??
-      ((bytes) => FilePicker.platform.saveFile(
-            dialogTitle: 'Export shewall.bin',
-            fileName: shewallName,
-            bytes: bytes,
-          ));
-  final path = await pick(sealed);
+  final sendBytes = passBytes ?? shewallSavePassesBytes();
+  final pick = picker ?? defaultShewallSavePicker;
+  final path = await pick(bytes: sendBytes ? sealed : null);
   if (path == null || path.isEmpty) {
     throw const FormatException('export_cancelled');
   }
-  final f = File(path);
-  if (!f.existsSync() || f.lengthSync() == 0) {
+  if (!sendBytes) {
+    final f = File(path);
     f.parent.createSync(recursive: true);
     f.writeAsBytesSync(sealed);
   }

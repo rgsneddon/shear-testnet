@@ -60,6 +60,7 @@ class ShearWalletApp extends StatefulWidget {
     this.downloadVortice,
     this.biometrics,
     this.exportDest,
+    this.savePicker,
     this.importSrc,
     this.openUrl,
     this.startUnlocked = false,
@@ -77,6 +78,8 @@ class ShearWalletApp extends StatefulWidget {
   final ShearBiometrics? biometrics;
   /// Test hook. Production opens a user save dialog (SAF on Android).
   final File Function()? exportDest;
+  /// Test hook. Production uses [defaultShewallSavePicker] (no bytes on desktop).
+  final Future<String?> Function({Uint8List? bytes})? savePicker;
   /// Test hook. Production opens a user open dialog for shewall.bin.
   final File Function()? importSrc;
   final Future<bool> Function(Uri url)? openUrl;
@@ -1313,7 +1316,11 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
           try {
             final packed = exportShewall(identity: ident, ledger: ledger);
             final sealed = await sealShewallBin(packed, pw);
-            final path = await saveShewallBytes(sealed, dest: widget.exportDest?.call());
+            final path = await saveShewallBytes(
+              sealed,
+              dest: widget.exportDest?.call(),
+              picker: widget.savePicker,
+            );
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text('Wrote encrypted $shewallName to $path')),

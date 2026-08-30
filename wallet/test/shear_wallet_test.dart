@@ -520,9 +520,54 @@ void main() {
     expect(dest.existsSync(), isTrue);
     expect(isTempOnlyShewallPath(path), isFalse);
     await expectLater(
-      saveShewallBytes(Uint8List.fromList([1]), picker: (_) async => null),
+      saveShewallBytes(Uint8List.fromList([1]), picker: ({bytes}) async => null),
       throwsA(isA<FormatException>()),
     );
+  });
+
+  test('desktop save picker must not pass bytes; always overwrite the returned path', () async {
+    expect(shewallSavePassesBytes(android: false, ios: false), isFalse);
+    expect(shewallSavePassesBytes(android: true, ios: false), isTrue);
+    expect(shewallSavePassesBytes(android: false, ios: true), isTrue);
+    final dir = Directory.systemTemp.createTempSync('shear-save-desk-');
+    final dest = File('${dir.path}/Documents/$shewallName');
+    dest.parent.createSync(recursive: true);
+    dest.writeAsBytesSync(Uint8List.fromList([9, 9, 9, 9, 9]));
+    Uint8List? seen;
+    Future<String?> macosLike({Uint8List? bytes}) async {
+      seen = bytes;
+      if (bytes != null) throw UnsupportedError('Bytes are not supported on macOS');
+      return dest.path;
+    }
+
+    final sealed = Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8]);
+    final path = await saveShewallBytes(sealed, picker: macosLike, passBytes: false);
+    expect(path, dest.path);
+    expect(seen, isNull);
+    expect(dest.readAsBytesSync(), sealed);
+
+    await expectLater(
+      saveShewallBytes(sealed, picker: macosLike, passBytes: true),
+      throwsA(isA<UnsupportedError>()),
+    );
+  });
+
+  test('mobile save picker passes bytes and does not File-overwrite the SAF dest', () async {
+    final dest = File('${Directory.systemTemp.createTempSync('shear-save-mob-').path}/$shewallName');
+    dest.writeAsBytesSync(Uint8List.fromList([9, 9, 9]));
+    Uint8List? seen;
+    final sealed = Uint8List.fromList([1, 2, 3, 4]);
+    final path = await saveShewallBytes(
+      sealed,
+      picker: ({bytes}) async {
+        seen = bytes;
+        return dest.path;
+      },
+      passBytes: true,
+    );
+    expect(path, dest.path);
+    expect(seen, sealed);
+    expect(dest.readAsBytesSync(), Uint8List.fromList([9, 9, 9]));
   });
 
   test('fresh device importEncryptedShewall restores identity then setPassword seals session', () async {
@@ -884,6 +929,45 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
     expect(find.text('Spendable'), findsOneWidget);
     expect(fresh.identity!.address, ident.address);
+  });
+
+  testWidgets('Closure Export on desktop picker does not pass bytes and overwrites', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-closure-pick-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final dest = File('${dir.path}/Documents/$shewallName');
+    dest.parent.createSync(recursive: true);
+    dest.writeAsBytesSync(Uint8List.fromList([9, 9, 9, 9, 9, 9, 9, 9]));
+    Uint8List? seen;
+    await tester.pumpWidget(ShearWalletApp(
+      key: UniqueKey(),
+      session: session,
+      ledger: ShearLedger(),
+      startUnlocked: true,
+      savePicker: ({bytes}) async {
+        seen = bytes;
+        if (bytes != null) throw UnsupportedError('Bytes are not supported on macOS');
+        return dest.path;
+      },
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Closure'));
+    await tester.pump();
+    await tester.tap(find.text('Export shewall.bin'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+    expect(seen, isNull);
+    expect(dest.existsSync(), isTrue);
+    expect(dest.lengthSync() > 8, isTrue);
+    expect(dest.readAsBytesSync().sublist(0, 8), isNot(Uint8List.fromList([9, 9, 9, 9, 9, 9, 9, 9])));
+    expect(find.textContaining('Wrote encrypted'), findsOneWidget);
+    expect(find.textContaining('Export failed'), findsNothing);
+    await tester.runAsync(() async {
+      final restored = ShearLedger();
+      final opened = await importEncryptedShewall(src: dest, password: kGatePassword, ledger: restored);
+      expect(opened.address, session.identity!.address);
+    });
   });
 
   testWidgets('six Chronoflux tabs and light pool colors', (tester) async {
