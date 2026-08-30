@@ -88,8 +88,8 @@ void main() {
     return candidates.first;
   }
 
-  test('built shear-wallet-0.4-linux.zip has shear_wallet and no miner', () {
-    final zip = _zipAt('shear-wallet-0.4-linux.zip');
+  test('built shear-wallet-0.6-linux.zip has shear_wallet and no miner', () {
+    final zip = _zipAt('shear-wallet-0.6-linux.zip');
     if (!zip.existsSync()) return;
     expect(zip.lengthSync(), greaterThan(1 * 1024 * 1024));
     final names = _zipNames(zip);
@@ -102,8 +102,8 @@ void main() {
     }
   });
 
-  test('built shear-wallet-0.4-archlinux.zip has PKGBUILD pkgver=0.4 and no miner', () {
-    final zip = _zipAt('shear-wallet-0.4-archlinux.zip');
+  test('built shear-wallet-0.6-archlinux.zip has PKGBUILD pkgver=0.6 and no miner', () {
+    final zip = _zipAt('shear-wallet-0.6-archlinux.zip');
     if (!zip.existsSync()) return;
     expect(zip.lengthSync(), greaterThan(1 * 1024 * 1024));
     final names = _zipNames(zip);
