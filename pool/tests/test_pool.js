@@ -12,7 +12,7 @@ import {
   MAGIC_TESTNET,
   HASH_TX_LIVE,
 } from '../../crypto/asert.js';
-import { requiredJobFields, encodeHeader } from '../../crypto/header.js';
+import { requiredJobFields, encodeHeader, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { payoutDest } from '../../crypto/address.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
@@ -47,6 +47,33 @@ describe('observed interval', () => {
     assert.match(src, /setInterval\(maybeRestampJob/);
     assert.equal(/if \(!\(want < have\)\) return/.test(src), false);
     assert.equal(JOB_RESTAMP_MS, 10_000);
+  });
+
+  it('restamp patches timestamp only; merkle/bits/jobId stay so RandomX K does not rebuild', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-restamp-k-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 8,
+      bits: 16,
+    });
+    const job = pool.issueJob();
+    assert.ok(job?.header);
+    const before = decodeHeader(headerFromHex(job.header));
+    job.timestamp = String(Date.now() - JOB_RESTAMP_MS - 50);
+    const next = pool.restampJob();
+    assert.equal(next.jobId, job.jobId);
+    const after = decodeHeader(headerFromHex(next.header));
+    assert.ok(after.merkleRoot.equals(before.merkleRoot));
+    assert.ok(after.continuityRoot.equals(before.continuityRoot));
+    assert.ok(after.prevBlockHash.equals(before.prevBlockHash));
+    assert.equal(after.bits, before.bits);
+    assert.ok(after.timestamp > before.timestamp);
+    pool.close();
   });
 });
 

@@ -5,8 +5,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { requiredJobFields, decodeHeader } from '../../crypto/header.js';
-import { headerFromHex, setNonce } from '../../crypto/header.js';
+import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest } from '../../crypto/address.js';
 import {
@@ -16,6 +15,7 @@ import {
   TARGET_BLOCK_INTERVAL_MS,
   HASH_BONUS_NANOS,
   HASH_TX_LIVE,
+  bitsForBlock,
   consensusFingerprint,
   consensusLaw,
 } from '../../crypto/asert.js';
@@ -715,9 +715,54 @@ export function createPool({
     return n;
   }
 
-  /** Re-stamp header time from wall clock so sealed times (and wallet interval) match find time. ASERT bits follow. */
+  /**
+   * Re-stamp header time from wall clock so sealed times match find time.
+   * Do not rebuild merkle/continuity/bits — those are in RandomX K, and a new
+   * K on every restamp rebinds the dataset and paints a hashrate dip.
+   * If ASERT would move bits, keep the live template (miners stay on the same K).
+   */
   let lastEaseAt = Date.now();
   let restampTimer = null;
+  function restampLiveHeader(now = Date.now()) {
+    if (!lastJob?.header) return lastJob;
+    let decoded;
+    try {
+      decoded = decodeHeader(headerFromHex(lastJob.header));
+    } catch {
+      return lastJob;
+    }
+    const tip = store.tip();
+    let wantBits = Number(decoded.bits);
+    if (tip?.header) {
+      try {
+        const parent = decodeHeader(Buffer.from(tip.header));
+        wantBits = bitsForBlock(parent.bits, parent.timestamp, BigInt(now));
+      } catch { /* keep live bits */ }
+    }
+    if (wantBits !== Number(decoded.bits)) return lastJob;
+    const header = encodeHeader({
+      version: decoded.version,
+      prevBlockHash: decoded.prevBlockHash,
+      merkleRoot: decoded.merkleRoot,
+      continuityRoot: decoded.continuityRoot,
+      timestamp: BigInt(now),
+      bits: decoded.bits,
+      nonce: 0n,
+      baseFee: decoded.baseFee,
+    });
+    const hex = header.toString('hex');
+    lastJob = {
+      ...lastJob,
+      header: hex,
+      timestamp: String(now),
+    };
+    const rec = store.jobs.get(String(lastJob.jobId));
+    if (rec) {
+      rec.tpl = { ...rec.tpl, header };
+      rec.job = lastJob;
+    }
+    return lastJob;
+  }
   function maybeRestampJob() {
     if (hashWait.size > 0) return lastJob;
     if (!lastJob) return lastJob;
@@ -727,8 +772,9 @@ export function createPool({
       return lastJob;
     }
     lastEaseAt = now;
-    const job = issueJob(shareBits, { force: true });
-    if (job) broadcastJob(job);
+    const before = lastJob.header;
+    const job = restampLiveHeader(now);
+    if (job && job.header !== before) broadcastJob(job);
     return job;
   }
 
