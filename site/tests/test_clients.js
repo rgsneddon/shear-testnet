@@ -53,6 +53,8 @@ describe('shear.digital client buttons', () => {
     const wallet = html.indexOf('id="wallet-start"');
     assert.ok(shear >= 0 && emission > shear && vortex > emission && wallet > vortex);
     assert.match(html, /How SHE is created/);
+    assert.match(html, /No premine, no ICO/);
+    assert.match(html, /1:1 claim of coins GNFP to SHEAR/);
     assert.match(html, /Exactly 1 SHE, every found block/);
     assert.match(html, /0\.00000000001 SHE for each accepted hash/);
     assert.match(html, /Vortex, and the vortices inside it/);
@@ -62,6 +64,6 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /Set password/);
     assert.match(html, /Export shewall\.bin/);
     assert.match(html, /guide-grid/);
-    assert.doesNotMatch(html, /GNFP|gnfp|Bitcoin|Ethereum|feeless/);
+    assert.doesNotMatch(html, /Bitcoin|Ethereum|feeless/);
   });
 });
