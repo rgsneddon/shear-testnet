@@ -67,6 +67,49 @@ class UpdateRuleTests(unittest.TestCase):
             self.assertEqual(latest['averageScale'], 'tenths_of_basis_point')
             self.assertEqual(len(latest['components']), 14)
 
+    def test_snapshot_a_then_b_then_same_policy_refetch(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            first = collect(
+                ROOT / 'fixtures' / 'snapshot_a.json',
+                out,
+                observed_at='2026-08-01T12:00:00Z',
+                decision_date='2026-08-01',
+            )
+            hist0 = (out / 'history.jsonl').read_text().strip().splitlines()
+            self.assertEqual(len(hist0), 1)
+
+            second = collect(
+                ROOT / 'fixtures' / 'snapshot_b.json',
+                out,
+                observed_at='2026-08-15T09:00:00Z',
+                decision_date='2026-08-15',
+            )
+            self.assertTrue(second['changed'])
+            self.assertEqual(second['changedBanks'], ['BOE'])
+            self.assertEqual(second['asOf'], '2026-08-15')
+            self.assertNotEqual(second['averagePercent'], first['averagePercent'])
+            self.assertNotEqual(second['components'], first['components'])
+            hist1 = (out / 'history.jsonl').read_text().strip().splitlines()
+            self.assertEqual(len(hist1), 2)
+            self.assertEqual(json.loads(hist1[-1])['changedBanks'], ['BOE'])
+
+            third = collect(
+                ROOT / 'fixtures' / 'snapshot_b.json',
+                out,
+                observed_at='2026-08-16T09:00:00Z',
+                decision_date='2026-08-16',
+            )
+            self.assertFalse(third['changed'])
+            self.assertEqual(third['changedBanks'], [])
+            self.assertEqual(third['averagePercent'], second['averagePercent'])
+            self.assertEqual(third['averageInteger'], second['averageInteger'])
+            self.assertEqual(third['components'], second['components'])
+            self.assertEqual(third['asOf'], '2026-08-15')
+            self.assertEqual(third['observedAt'], '2026-08-16T09:00:00Z')
+            hist2 = (out / 'history.jsonl').read_text().strip().splitlines()
+            self.assertEqual(len(hist2), 2)
+
     def test_overnight_fixture_refused(self):
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaises(ForbiddenSeriesError):
