@@ -21,6 +21,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /id="intro-split"/);
     assert.match(html, /Network continuity/);
     assert.match(html, /Closure quantum/);
+    assert.match(html, /Each found block closes exactly one coin, forever\./);
     assert.match(html, /Integral Q/);
     assert.match(html, /Emissions and circulation stats of the Shear network/);
     assert.match(html, /Total circulation of Shear coins/);
