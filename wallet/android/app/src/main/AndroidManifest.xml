@@ -3,7 +3,7 @@
          without this, pool HTTPS (syncTip / syncCredits) fails silently. -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="Shear 0.3"
+        android:label="Shear 0.4"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

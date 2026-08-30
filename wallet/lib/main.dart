@@ -19,7 +19,7 @@ import 'shear_reserve.dart';
 import 'shear_join.dart';
 import 'shear_confirm_pie.dart';
 
-const kWalletVersion = '0.3';
+const kWalletVersion = '0.4';
 const kTabs = [
   'Continuum',
   'Flow',

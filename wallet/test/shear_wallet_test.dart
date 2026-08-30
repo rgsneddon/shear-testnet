@@ -32,7 +32,7 @@ void main() {
     final grant = RegExp(r'<uses-permission\s+android:name="android\.permission\.INTERNET"\s*/>');
     expect(grant.hasMatch(main.readAsStringSync()), isTrue,
         reason: 'packaged APKs merge the main manifest; INTERNET only in debug/profile does not ship');
-    expect(main.readAsStringSync().contains('android:label="Shear 0.3"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.4"'), isTrue);
     expect(main.path.contains('${Platform.pathSeparator}debug${Platform.pathSeparator}'), isFalse);
     expect(main.path.contains('${Platform.pathSeparator}profile${Platform.pathSeparator}'), isFalse);
   });
@@ -470,7 +470,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.3');
+    expect(kWalletVersion, '0.4');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -644,14 +644,14 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.3');
-    expect(kWalletVersion, '0.3');
+    expect(app.title, 'Shear 0.4');
+    expect(kWalletVersion, '0.4');
     // password gate first
     await tester.enterText(find.byType(TextField), 'pw');
     await tester.tap(find.text('Unlock'));
     await tester.pump();
     await tester.pump();
-    expect(find.textContaining('0.3'), findsWidgets);
+    expect(find.textContaining('0.4'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);

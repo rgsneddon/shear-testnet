@@ -21,12 +21,12 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /height:72px/);
     assert.match(html, /justify-content:center/);
     assert.match(html, /text-indent:\.12em/);
-    assert.match(html, /shear-wallet-0\.3-macos\.dmg/);
-    assert.match(html, /shear-wallet-0\.3-windows\.zip/);
-    assert.match(html, /shear-wallet-0\.3-linux\.zip/);
-    assert.match(html, /shear-wallet-0\.3-archlinux\.zip/);
+    assert.match(html, /shear-wallet-0\.4-macos\.dmg/);
+    assert.match(html, /shear-wallet-0\.4-windows\.zip/);
+    assert.match(html, /shear-wallet-0\.4-linux\.zip/);
+    assert.match(html, /shear-wallet-0\.4-archlinux\.zip/);
     assert.match(html, /id="pack-advisory"/);
-    assert.match(html, /wallet <strong>0\.3<\/strong>/);
+    assert.match(html, /wallet <strong>0\.4<\/strong>/);
     assert.match(html, /rgsneddon\/shear-testnet/);
     assert.doesNotMatch(html, /github\.com\/rgsneddon\/shear"/);
     assert.match(html, /miner <strong>1\.1<\/strong>/);

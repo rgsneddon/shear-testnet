@@ -19,6 +19,20 @@ Mac-cut + Windows PE are on tag **`1.0`**. Title **`[Testnet] ShearK-Miner 1.0`*
 
 ShearHash-v2 book is `shear-testnet-v2`. Pool/node verify the same RandomX-lite digest. v1 shares mint 0. Operator cutover of live Germany v1 datadir is a separate explicit approval.
 
+## [testnet] Shear wallet 0.4 leftover — Windows / Linux / Arch
+
+Mac-cut (this Darwin host): APK + notarized DMG on tag **`0.4`**. Title **`[testnet] Shear wallet 0.4`**. Window / launcher **Shear 0.4**. https://github.com/rgsneddon/shear-testnet/releases/tag/0.4
+
+- `shear-wallet-0.4-macos.dmg` sha256 `6cdc576c4e92aaede2695e0879043f8073bb0ac2e8539582772de0c606ff770c` Developer ID + notarized + stapled
+- `shear-wallet-0.4-android.apk` sha256 `6aa28da196f671e61d04843f9437e3a98adcaa606799ba7169aeb05e892d7312` (INTERNET; launcher **Shear 0.4**)
+
+1. Laptop pack `shear-wallet-0.4-windows.zip` onto **the same** `0.4`. Zip root Flutter `shear_wallet.exe` + DLLs/`data`. **No miner inside.** Window title **Shear 0.4**. Flutter file version `0.4.0+16` is **not** the public pin.
+2. **Still leftover:** `shear-wallet-0.4-linux.zip` / `-archlinux.zip` (PKGBUILD `pkgver=0.4`).
+3. **Last leftover (Windows):** after those zips, `#pack-advisory` on shear.digital already points at **0.4** in-repo; deploy `/var/www/shear.digital` if not done from Mac. Fill sha256 when Windows zip exists.
+4. **No iOS / iPad zip.** Do not recut miner **1.1** / **1.0** or ShearK-Miner **1.0**. Node/pool stay **0.1**.
+
+Germany: one ShearK-Miner thread (`--threads 1`) on `pool.shear.digital:1111` as `she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul` (`sheark-miner.service`). Live stratum is **shear-testnet-v2** (`/opt/shear-v2`, `SHEAR_DATA=/var/lib/shear/testnet-v2`). Frozen v1 book remains at `/var/lib/shear/testnet-0.1` — do not overwrite it.
+
 ## [testnet] Shear wallet 0.3 leftover — Windows / Linux / Arch
 
 Mac-cut (this Darwin host): APK + notarized DMG on tag **`0.3`**. Title **`[testnet] Shear wallet 0.3`**. Window / launcher **Shear 0.3**. https://github.com/rgsneddon/shear-testnet/releases/tag/0.3
