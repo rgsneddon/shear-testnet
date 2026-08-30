@@ -15,6 +15,7 @@ import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { decodeHeader } from '../../crypto/header.js';
+import { roundActualHashes } from './hash_credit.js';
 
 export function nanosToShe(n) {
   return Number(n || 0) / NANOS_PER_SHE;
@@ -165,10 +166,7 @@ export function pendingFor(miners, address) {
     const login = String(m?.login || m?.workerKey || '');
     const dest = payoutDest(login);
     if (dests.has(login) || (dest && dests.has(dest)) || dests.has(login.split('.')[0])) {
-      const h = Number(m.clientHashes) || 0;
-      const z = Number(m.clientHashesRound0);
-      const base = Number.isFinite(z) ? z : 0;
-      hashes += h < base ? h : h - base;
+      hashes += roundActualHashes(m);
     }
   }
   return { shares: hashes, amount: nanosToShe(hashes * HASH_BONUS_NANOS) };

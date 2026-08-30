@@ -1,12 +1,12 @@
-# ShearK-Miner 1.1
+# ShearK-Miner 1.2
 
 Official CPU miner for **ShearHash-v2** (RandomX light, 128 MiB cache).
 
 - Display repo: **[Testnet] ShearK** (`rgsneddon/ShearK`)
 - Wire algo: `ShearHash` · personalisation `ShearHash-v2` · magic `shear-testnet-v2`
-- Banner: `ShearK-Miner 1.1 (ShearHash-v2 light)`
+- Banner: `ShearK-Miner 1.2 (ShearHash-v2 light)`
 - Pool: `pool.shear.digital:1111`
-- Header: 128 bytes. Light mode only. Do not recut Shear-Miner **1.1** / **1.0**.
+- Header: 128 bytes. Light mode only. Do not recut Shear-Miner **1.1** / **1.0**. Submit includes the ShearHash-v2 digest.
 
 ```
 ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --threads 8

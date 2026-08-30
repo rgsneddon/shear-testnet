@@ -95,19 +95,21 @@ describe('round hash bonuses', () => {
     assert.equal(aliceShares.length, nA);
     assert.equal(bobShares.length, nB);
     for (const nonce of aliceShares) {
-      send(a.sock, { id: 2, method: 'submit', params: { jobId: job1.jobId, nonce: String(nonce) } });
+      const s = scoreShare({ job: job1, nonce });
+      send(a.sock, { id: 2, method: 'submit', params: { jobId: job1.jobId, nonce: String(nonce), hash: s.hash } });
       const r = await readLine(a.sock);
       assert.equal(r.result?.status, 'OK');
     }
     for (const nonce of bobShares) {
-      send(b.sock, { id: 2, method: 'submit', params: { jobId: job1.jobId, nonce: String(nonce) } });
+      const s = scoreShare({ job: job1, nonce });
+      send(b.sock, { id: 2, method: 'submit', params: { jobId: job1.jobId, nonce: String(nonce), hash: s.hash } });
       const r = await readLine(b.sock);
       assert.equal(r.result?.status, 'OK');
     }
     assert.equal(pool.stats.blocks, 0);
     const win = findNonces(job1, 1, { block: true })[0];
     assert.ok(win != null);
-    send(a.sock, { id: 3, method: 'submit', params: { jobId: job1.jobId, nonce: String(win) } });
+    send(a.sock, { id: 3, method: 'submit', params: { jobId: job1.jobId, nonce: String(win), hash: scoreShare({ job: job1, nonce: win }).hash } });
     const sealed = await readLine(a.sock);
     assert.equal(sealed.result?.status, 'OK');
     let job2 = null;
@@ -124,7 +126,7 @@ describe('round hash bonuses', () => {
     assert.equal(bobCount, nB * 16);
     const win2 = findNonces(job2, 1, { block: true })[0];
     assert.ok(win2 != null);
-    send(a.sock, { id: 4, method: 'submit', params: { jobId: job2.jobId, nonce: String(win2) } });
+    send(a.sock, { id: 4, method: 'submit', params: { jobId: job2.jobId, nonce: String(win2), hash: scoreShare({ job: job2, nonce: win2 }).hash } });
     const sealed2 = await readLine(a.sock);
     assert.equal(sealed2.result?.status, 'OK');
     const paid = pool.store.blocks[pool.store.blocks.length - 1];

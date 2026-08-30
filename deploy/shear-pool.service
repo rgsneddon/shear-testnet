@@ -13,8 +13,12 @@ Environment=SHEAR_BITS=21
 Environment=SHEAR_P2P_PORT=30303
 Environment=SHEAR_P2P_BIND=0.0.0.0
 ExecStart=/usr/local/bin/node pool/src/main.js
-Restart=on-failure
-RestartSec=3
+Restart=always
+RestartSec=2
+MemoryAccounting=yes
+MemoryHigh=1024M
+MemoryMax=1536M
+OOMPolicy=kill
 
 [Install]
 WantedBy=multi-user.target

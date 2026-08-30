@@ -32,6 +32,7 @@ import {
   MIN_CONFIRMS_POLICY,
   PRODUCT_VERSION,
   MINER_VERSION,
+  SHEARK_MINER_VERSION,
   consensusFingerprint,
   consensusLaw,
 } from './asert.js';
@@ -112,8 +113,10 @@ describe('hash-tx consensus law', () => {
     const law = consensusLaw();
     assert.equal(PRODUCT_VERSION, '0.2');
     assert.equal(MINER_VERSION, '1.1');
+    assert.equal(SHEARK_MINER_VERSION, '1.2');
     assert.equal(PRODUCT_VERSION.split('.').length, 2);
     assert.equal(MINER_VERSION.split('.').length, 2);
+    assert.equal(SHEARK_MINER_VERSION.split('.').length, 2);
     assert.equal(/^\d+\.\d+$/.test(PRODUCT_VERSION), true);
     assert.equal(/^\d+\.\d+$/.test(MINER_VERSION), true);
     assert.equal(/^\d+\.\d+\.\d+$/.test(PRODUCT_VERSION), false);
@@ -122,6 +125,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(/^\d+\.\d+$/.test('0.1.0'), false);
     assert.equal(law.productVersion, '0.2');
     assert.equal(law.minerVersion, '1.1');
+    assert.equal(law.shearkMinerVersion, '1.2');
     assert.equal(law.hashTxLive, 1);
     assert.equal(law.hashTxCollate, 1);
     assert.equal(law.hashTxConfirmOnBlock, 1);

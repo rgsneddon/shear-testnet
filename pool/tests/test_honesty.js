@@ -19,11 +19,14 @@ import {
   workerKey,
   rememberShare,
   shareFingerprint,
+  submittedShareDigest,
   CMINER_FEE_SHE,
   HASHRATE_WINDOW_MS,
   HASHRATE_EMA_TAU_S,
 } from '../src/pool.js';
-import { extraMintAllowed, RESERVE_PROGRAM, JOIN_PROGRAM } from '../../crypto/asert.js';
+import { extraMintAllowed, RESERVE_PROGRAM, JOIN_PROGRAM, HASH_BONUS_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
+import { pendingFor } from '../src/wallet_api.js';
+import { hasherHasValidRoundShare } from '../src/hash_credit.js';
 import { expectedOneThreadHs, hashesProvenByShare } from '../src/share_vardiff.js';
 
 const RATE_WIN_S = HASHRATE_WINDOW_MS / 1000;
@@ -94,9 +97,10 @@ describe('duplicate shares cannot inflate round work', () => {
     assert.equal(miner.hashes, 256);
     assert.ok(miner.roundHashes < miner.clientHashes);
     miner.clientHashesRound0 = miner.clientHashes;
-    assert.equal(roundActualHashes(miner), 0);
+    assert.equal(roundActualHashes(miner), 256);
     miner.clientHashes += 900;
     assert.equal(roundActualHashes(miner), 900);
+    assert.notEqual(roundActualHashes(miner), miner.clientHashes);
     assert.equal(
       reportedHashrate({
         acceptAt: [Date.now()],
@@ -109,6 +113,110 @@ describe('duplicate shares cannot inflate round work', () => {
         acceptWork: [credited],
       }).toFixed(0),
     );
+  });
+
+  it('old-miner hash counter without a valid share mints nothing; a scored share still pays', () => {
+    const dest = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey, height: 1 });
+    const idle = {
+      login: dest,
+      accepted: 0,
+      roundHashes: 0,
+      clientHashes: 16_590_151_266_784,
+      clientHashesRound0: 0,
+    };
+    assert.equal(admitClient({ login: dest, client: 'ShearHash', name: 'Shear-Miner' }).ok, true);
+    assert.equal(hasherHasValidRoundShare(idle), false);
+    assert.equal(roundActualHashes(idle), 0);
+    const none = pendingFor(new Map([['idle', idle]]), dest);
+    assert.equal(none.shares, 0);
+    assert.equal(none.amount, 0);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hash-gate-'));
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 8,
+      bits: 16,
+    });
+    pool.miners.set('old', { ...idle, workerKey: `${dest}.old` });
+    const emptySnap = pool.snapshotRound();
+    assert.equal(emptySnap.some((s) => (Number(s.count) || 0) > 0), false);
+
+    const live = {
+      login: dest,
+      workerKey: `${dest}.rig`,
+      accepted: 1,
+      roundHashes: 256,
+      clientHashes: 16_590_151_266_784 + 900,
+      clientHashesRound0: 16_590_151_266_784,
+    };
+    assert.equal(hasherHasValidRoundShare(live), true);
+    assert.equal(roundActualHashes(live), 900);
+    assert.notEqual(roundActualHashes(live), live.clientHashes);
+    const paid = pendingFor(new Map([['live', live]]), dest);
+    assert.equal(paid.shares, 900);
+    assert.equal(paid.amount, 900 * HASH_BONUS_NANOS / NANOS_PER_SHE);
+    pool.miners.set('live', live);
+    const snap = pool.snapshotRound();
+    const row = snap.find((s) => s.miner === dest || String(s.miner).startsWith(dest.slice(0, 8)));
+    assert.ok(row, JSON.stringify(snap));
+    assert.equal(row.count, 900);
+    assert.equal(row.proven, 256);
+    assert.notEqual(row.count, live.clientHashes);
+    assert.equal(submittedShareDigest({}), '');
+    assert.equal(submittedShareDigest({ hash: 'zz' }), '');
+    assert.equal(submittedShareDigest({ hashes: 99, hashrate: 1 }), '');
+    assert.equal(submittedShareDigest({ hash: 'A'.repeat(64) }), 'a'.repeat(64));
+    pool.close();
+  });
+
+  it('nonce-only submits (old miner) are refused without hashing and cannot stall stats', async () => {
+    const dest = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey, height: 1 });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-need-hash-'));
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 8,
+      bits: 16,
+    });
+    await new Promise((resolve, reject) => {
+      pool.stratum.listen(0, '127.0.0.1', () => {
+        pool.httpServer.listen(0, '127.0.0.1', resolve);
+      });
+      pool.stratum.on('error', reject);
+    });
+    const port = pool.stratum.address().port;
+    const httpPort = pool.httpServer.address().port;
+    const sock = net.connect(port, '127.0.0.1');
+    await new Promise((res, rej) => { sock.on('connect', res); sock.on('error', rej); });
+    sock.write(JSON.stringify({
+      id: 1,
+      method: 'login',
+      params: { login: `${dest}.old`, client: 'ShearHash', name: 'Shear-Miner', version: '1.1', threads: 8, hashes: 9e12, hashrate: 1e9 },
+    }) + '\n');
+    await new Promise((res) => sock.once('data', res));
+    const t0 = Date.now();
+    for (let i = 0; i < 80; i += 1) {
+      sock.write(JSON.stringify({
+        id: 2,
+        method: 'submit',
+        params: { jobId: 'x', nonce: String(i), hashes: 9e12, hashrate: 1e9 },
+      }) + '\n');
+    }
+    const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+    assert.ok(Date.now() - t0 < 500, 'old-miner nonce flood must not stall /api/stats');
+    assert.equal(stats.ok, true);
+    const row = [...pool.miners.values()].find((m) => String(m.workerKey || '').endsWith('.old'));
+    assert.ok(row);
+    assert.equal(Number(row.accepted) || 0, 0);
+    assert.equal(Number(row.roundHashes) || 0, 0);
+    assert.equal(roundActualHashes(row), 0);
+    sock.end();
+    pool.close();
   });
 
   it('third-party vortices cannot extra-mint; Reserve APR and Join genesis only', () => {
@@ -288,7 +396,7 @@ describe('folded-row inventory', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: user, client: 'ShearHash', threads, cpuThreads, cpuCores: cpuThreads },
+          params: { login: user, client: 'ShearHash', name: 'ShearK-Miner', threads, cpuThreads, cpuCores: cpuThreads },
         }) + '\n');
       });
       sock.once('data', () => resolve(sock));
@@ -348,6 +456,7 @@ describe('folded-row inventory', () => {
           params: {
             login: `${dest}.EP01`,
             client: 'ShearHash',
+            name: 'ShearK-Miner',
             threads,
             cpuThreads,
             cpuCores: cpuThreads,

@@ -85,6 +85,7 @@ typedef struct {
   char jobId[80];
   uint64_t nonce;
   int share_bits;
+  char hash[65];
 } Share;
 
 static pthread_mutex_t g_q_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -423,14 +424,14 @@ static int send_stats(Conn *c, const char *login, int threads) {
   return conn_write(c, line, n);
 }
 
-static int send_submit(Conn *c, const char *login, int threads, const char *jobId, uint64_t nonce) {
-  char ident[640], line[1400];
+static int send_submit(Conn *c, const char *login, int threads, const char *jobId, uint64_t nonce, const char *hash) {
+  char ident[640], line[1600];
   identity_json(ident, sizeof(ident), login, threads);
   int n = snprintf(line, sizeof(line),
-                   "{\"id\":2,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\"},"
-                   "%s,\"jobId\":\"%s\",\"nonce\":\"%llu\"}\n",
-                   ident, jobId, (unsigned long long)nonce,
-                   ident, jobId, (unsigned long long)nonce);
+                   "{\"id\":2,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"},"
+                   "%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"}\n",
+                   ident, jobId, (unsigned long long)nonce, hash,
+                   ident, jobId, (unsigned long long)nonce, hash);
   return conn_write(c, line, n);
 }
 
@@ -593,7 +594,7 @@ static int copy_main_job(JobSnap *out) {
   return ok;
 }
 
-static int enqueue_share(const char *jobId, uint64_t nonce) {
+static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char hash[32]) {
   pthread_mutex_lock(&g_q_mu);
   int next = (g_qtail + 1) % QCAP;
   if (next == g_qhead) {
@@ -606,8 +607,10 @@ static int enqueue_share(const char *jobId, uint64_t nonce) {
   snprintf(s->jobId, sizeof(s->jobId), "%s", jobId);
   s->nonce = nonce;
   s->share_bits = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
+  shear_hash_hex(hash, s->hash);
   snprintf(g_last_job, sizeof(g_last_job), "%s", jobId);
   g_last_nonce = nonce;
+  snprintf(g_last_hash, sizeof(g_last_hash), "%s", s->hash);
   g_qtail = next;
   pthread_mutex_unlock(&g_q_mu);
   return 1;
@@ -683,7 +686,7 @@ static void *hash_worker(void *arg) {
         atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
         if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
             && shear_meets_target(hash, atomic_load_explicit(&g_share_bits_live, memory_order_relaxed))) {
-          enqueue_share(job.jobId, n);
+          enqueue_share(job.jobId, n, hash);
         }
         n += (uint64_t)g_threads;
         continue;
@@ -701,7 +704,7 @@ static void *hash_worker(void *arg) {
     atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
     if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
         && shear_meets_target(hash, atomic_load_explicit(&g_share_bits_live, memory_order_relaxed))) {
-      enqueue_share(job.jobId, primed_n);
+      enqueue_share(job.jobId, primed_n, hash);
     }
     primed_n = n;
     n += (uint64_t)g_threads;
@@ -739,7 +742,7 @@ static void flush_shares(Conn *mainc) {
       g_dropped++;
       continue;
     }
-    int wr = send_submit(mainc, g_login, g_threads, s.jobId, s.nonce);
+    int wr = send_submit(mainc, g_login, g_threads, s.jobId, s.nonce, s.hash);
     if (wr == 1) {
       enqueue_front(&s);
       return;

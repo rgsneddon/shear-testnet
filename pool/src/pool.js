@@ -21,6 +21,7 @@ import {
 } from '../../crypto/asert.js';
 import { createStore } from '../../node/src/store.js';
 import { poolRecentBlockTxs } from './wallet_api.js';
+import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import {
   clampShareBits,
   hashesProvenByShare,
@@ -28,6 +29,8 @@ import {
   shouldRetargetShare,
   SHARE_BITS_V2_START,
 } from './share_vardiff.js';
+
+export { hasherHasValidRoundShare, roundActualHashes };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
@@ -40,11 +43,13 @@ export const HASH_PRESENCE_MS = 12_000;
 /** Default is every sealed header. Pass a finite window to clip a test. */
 export const AVG_BLOCK_WINDOW = Infinity;
 /** Re-stamp the live job this often so sealed header time tracks wall clock. */
-export const JOB_RESTAMP_MS = 1000;
+export const JOB_RESTAMP_MS = 10_000;
 /** Rebuild /api/stats JSON on this cadence. The HTTP handler never computes it. */
 export const STATS_REFRESH_MS = 400;
 const HASH_WORKER = fileURLToPath(new URL('./hash_worker.js', import.meta.url));
 const HASH_WORKER_TIMEOUT_MS = 15_000;
+/** Cap in-flight RandomX verifies so a junk submit flood cannot stall HTTP. */
+export const HASH_QUEUE_MAX = 4;
 
 /**
  * Mean interval of consecutive sealed headers. Default is every block on
@@ -215,6 +220,8 @@ export function isCminerFeeLogin(login) {
   return isMineLogin(dest);
 }
 
+export const SHEARK_MINER_NAME = 'ShearK-Miner';
+
 export function admitClient(params) {
   const client = String(params?.client || params?.algo || '');
   if (client !== CLIENT && client !== ALGO) {
@@ -224,6 +231,12 @@ export function admitClient(params) {
   const dest = parseLogin(raw);
   if (!isMineLogin(dest)) return { ok: false, reason: 'bad_login' };
   return { ok: true, login: dest, workerKey: raw || dest };
+}
+
+/** ShearHash-v2 digest the miner claims. Empty if they did not compute the algo. */
+export function submittedShareDigest(params) {
+  const h = String(params?.hash || '').trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(h) ? h : '';
 }
 
 export function gateJob(job) {
@@ -434,15 +447,6 @@ function easeHashrate(miner, instant, now, tauS = HASHRATE_EMA_TAU_S) {
  */
 export const SELF_RATE_MIN_DT_S = 2;
 
-/** Actual hashes this open round from the miner's own counter. Bonus uses this. */
-export function roundActualHashes(miner) {
-  const h = Number(miner?.clientHashes) || 0;
-  const z = Number(miner?.clientHashesRound0);
-  const base = Number.isFinite(z) ? z : 0;
-  if (h < base) return h;
-  return h - base;
-}
-
 export function applyMinerSelfRate(session, params, now = Date.now()) {
   if (!session || !params) return session;
   if (isCminerFeeLogin(session.workerKey || session.login || params.login)) return session;
@@ -554,6 +558,9 @@ export function createPool({
     return w;
   }
   function hashOffThread(header) {
+    if (hashWait.size >= HASH_QUEUE_MAX) {
+      return Promise.reject(new Error('hash_busy'));
+    }
     const id = (hashSeq += 1);
     const copy = Buffer.from(header);
     return new Promise((resolve, reject) => {
@@ -712,6 +719,7 @@ export function createPool({
   let lastEaseAt = Date.now();
   let restampTimer = null;
   function maybeRestampJob() {
+    if (hashWait.size > 0) return lastJob;
     if (!lastJob) return lastJob;
     const now = Date.now();
     const jobTs = Number(lastJob.timestamp) || 0;
@@ -725,17 +733,29 @@ export function createPool({
   }
 
   async function acceptSubmit({ sock, session, conn, params, msg, job }) {
+    const claimed = submittedShareDigest(params);
+    if (!claimed) {
+      try { sock.write(line({ id: msg.id, error: 'need_hash' })); } catch { /* ignore */ }
+      return;
+    }
     let scored;
     try {
       scored = await scoreShareLive({ job, nonce: params.nonce });
-    } catch {
-      try { sock.write(line({ id: msg.id, error: 'hash_failed' })); } catch { /* ignore */ }
+    } catch (e) {
+      const reason = String(e?.message || e) === 'hash_busy' ? 'busy' : 'hash_failed';
+      try { sock.write(line({ id: msg.id, error: reason })); } catch { /* ignore */ }
       return;
     }
     if (!scored.ok) {
       stats.stale += 1;
       if (session) session.stale += 1;
       try { sock.write(line({ id: msg.id, error: scored.reason })); } catch { /* ignore */ }
+      return;
+    }
+    if (scored.hash !== claimed) {
+      stats.stale += 1;
+      if (session) session.stale += 1;
+      try { sock.write(line({ id: msg.id, error: 'bad_hash' })); } catch { /* ignore */ }
       return;
     }
     if (job && typeof job === 'object') {
@@ -814,6 +834,7 @@ export function createPool({
       }
     }
     try { sock.write(line({ id: msg.id, result: { status: 'OK', hash: scored.hash, block: !!scored.block } })); } catch { /* ignore */ }
+    paintStatsSnap();
     if (!nextJob && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login)) {
       conn.varShares = (Number(conn.varShares) || 0) + 1;
       const now = Date.now();

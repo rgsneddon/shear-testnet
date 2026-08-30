@@ -46,7 +46,7 @@ describe('observed interval', () => {
     assert.match(src, /maybeRestampJob/);
     assert.match(src, /setInterval\(maybeRestampJob/);
     assert.equal(/if \(!\(want < have\)\) return/.test(src), false);
-    assert.equal(JOB_RESTAMP_MS, 1000);
+    assert.equal(JOB_RESTAMP_MS, 10_000);
   });
 });
 
@@ -113,7 +113,8 @@ describe('admit', () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     assert.equal(admitClient({ login: dest, client: 'ShearHash' }).ok, true);
-    assert.equal(admitClient({ login: id.paymentCode, client: 'ShearHash' }).ok, true);
+    assert.equal(admitClient({ login: id.paymentCode, client: 'ShearHash', name: 'Shear-Miner' }).ok, true);
+    assert.equal(admitClient({ login: dest, client: 'ShearHash', name: 'ShearK-Miner' }).ok, true);
     assert.equal(admitClient({ login: id.address, client: 'ShearHash' }).ok, false);
     assert.equal(admitClient({ login: dest, client: 'other' }).ok, false);
     assert.equal(publicMinerLabel(id.paymentCode), publicMinerTag(id.paymentCode));
@@ -154,7 +155,7 @@ describe('she1 login jobs', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: `${id.paymentCode}.de`, client: 'ShearHash', threads: 1 },
+          params: { login: `${id.paymentCode}.de`, client: 'ShearHash', name: 'ShearK-Miner', threads: 1 },
         }) + '\n');
       });
       let buf = '';
@@ -269,7 +270,7 @@ describe('pool dashboard + stratum', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: dest + '.rig', client: 'ShearHash', name: 'Shear-Miner', version: '1.1', threads: 1 },
+          params: { login: dest + '.rig', client: 'ShearHash', name: 'ShearK-Miner', version: '1.2', threads: 1 },
         }) + '\n');
       });
       let buf = '';
@@ -293,7 +294,7 @@ describe('pool dashboard + stratum', () => {
           sock.write(JSON.stringify({
             id: 2,
             method: 'submit',
-            params: { jobId: (j || job).jobId, nonce: String(hit.nonce) },
+            params: { jobId: (j || job).jobId, nonce: String(hit.nonce), hash: hit.s.hash },
           }) + '\n');
         }
         if (buf.includes('"status":"OK"') && buf.includes('"hash"')) {
@@ -306,7 +307,7 @@ describe('pool dashboard + stratum', () => {
     });
     assert.match(scored, /OK/);
     const named = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
-    assert.ok((named.workers || []).some((w) => w.name === 'Shear-Miner' && w.version === '1.1'));
+    assert.ok((named.workers || []).some((w) => w.name === 'ShearK-Miner' && w.version === '1.2'));
     assert.match(html, /w\.name/);
     pool.close();
   });
@@ -335,7 +336,7 @@ describe('pool dashboard + stratum', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: dest, client: 'ShearHash', threads, cpuThreads, cpuCores: cpuThreads },
+          params: { login: dest, client: 'ShearHash', name: 'ShearK-Miner', threads, cpuThreads, cpuCores: cpuThreads },
         }) + '\n');
       });
       sock.once('data', () => resolve(sock));
@@ -386,7 +387,7 @@ function loginAndShare(port, login, extra = {}) {
       sock.write(JSON.stringify({
         id: 1,
         method: 'login',
-        params: { login, client: 'ShearHash', threads: 1, ...extra },
+        params: { login, client: 'ShearHash', threads: 1, name: 'ShearK-Miner', ...extra },
       }) + '\n');
     });
     let buf = '';
@@ -402,7 +403,7 @@ function loginAndShare(port, login, extra = {}) {
           sock.write(JSON.stringify({
             id: 2,
             method: 'submit',
-            params: { jobId: job.jobId, nonce: String(n) },
+            params: { jobId: job.jobId, nonce: String(n), hash: s.hash },
           }) + '\n');
           return;
         }
@@ -417,7 +418,7 @@ function loginAndShare(port, login, extra = {}) {
         job = first.job || first.result?.job || first.params;
         if (job && job.header) submitNext();
       }
-      if (buf.includes('duplicate_share')) {
+      if (buf.includes('duplicate_share') || buf.includes('"busy"') || buf.includes('low_diff') || buf.includes('hash_failed')) {
         buf = '';
         submitNext();
         return;
@@ -565,6 +566,7 @@ describe('public miner listing', () => {
           params: {
             login: `${dest}.rig`,
             client: 'ShearHash',
+            name: 'ShearK-Miner',
             threads: 2,
             hashes: 4200,
             hashrate: 55,
@@ -634,8 +636,8 @@ describe('public miner listing', () => {
     });
     const httpPort = pool.httpServer.address().port;
     const stratumPort = pool.stratum.address().port;
-    const a = await loginAndShare(stratumPort, `${dest}.alpha`, { name: 'box-a' });
-    const b = await loginAndShare(stratumPort, `${dest}.beta`, { name: 'box-b' });
+    const a = await loginAndShare(stratumPort, `${dest}.alpha`);
+    const b = await loginAndShare(stratumPort, `${dest}.beta`);
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     const rows = (stats.workers || []).filter((w) => w.miner === tag);
     assert.equal(rows.length, 1, JSON.stringify(stats.workers));
@@ -676,7 +678,7 @@ describe('public miner listing', () => {
     pool.close();
   });
 
-  it('hashes this round is the miner counter this round, not padded lifetime or proven share work', async () => {
+  it('hashes this round is own count after a valid share; zero with no share', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-round-h-'));
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
@@ -711,8 +713,8 @@ describe('public miner listing', () => {
     let stats = pool.publicStats();
     let w = (stats.workers || []).find((x) => x.miner === tag);
     assert.ok(w);
-    assert.equal(w.hashes, 0);
-    assert.equal(w.roundHashes, 0);
+    assert.equal(w.hashes, proven);
+    assert.equal(w.roundHashes, proven);
     assert.equal(w.provenHashes, proven);
     assert.notEqual(w.roundHashes, row.clientHashes);
     row.clientHashes = 16_590_151_266_784 + 900;
@@ -726,7 +728,8 @@ describe('public miner listing', () => {
     const w2 = (reset.workers || []).find((x) => x.miner === tag);
     if (w2) {
       assert.equal(w2.provenHashes, 0);
-      assert.equal(w2.roundHashes, 900);
+      assert.equal(w2.roundHashes, 0);
+      assert.equal(w2.hashes, 0);
     }
     sock.destroy();
     pool.close();
@@ -768,7 +771,7 @@ describe('public miner listing', () => {
     assert.equal(tags.includes(feeTag), false, JSON.stringify(stats.workers));
     const hasher = (stats.workers || []).find((w) => w.miner === hasherTag);
     assert.ok(hasher);
-    assert.equal(hasher.roundHashes, 0);
+    assert.equal(hasher.roundHashes, hasher.provenHashes);
     assert.ok(hasher.provenHashes > 0);
     assert.ok(hasher.provenHashes < 1_000_000);
     assert.ok(hasher.hashrate < 1_000_000);

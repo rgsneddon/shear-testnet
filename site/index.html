@@ -158,7 +158,6 @@
     .intro-split > .panel-card {
       margin:0; display:flex; flex-direction:column; height:100%;
     }
-    .intro-split .intro-live { margin-top:auto; }
     .cont-row {
       display:grid; grid-template-columns: 9.2rem minmax(0, 1fr); gap:2px 12px;
       padding:9px 0; border-bottom:1px solid rgba(26,111,181,.16); align-items:baseline;
@@ -210,7 +209,7 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.6</strong> · miner <strong>1.1</strong>
+      wallet <strong>0.6</strong> · miner <strong>1.2</strong>
     </p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
@@ -224,11 +223,11 @@
         </div>
       </div>
       <div class="client-dd">
-        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.1">MINER</a>
+        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.2">MINER</a>
         <div class="client-menu" id="menu-miner">
-          <a data-pack="miner-macos" href="https://github.com/rgsneddon/ShearK/releases/download/1.1/ShearK-Miner-1.1-macos.zip">macOS</a>
-          <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/download/1.1/ShearK-Miner-1.1-windows.zip">Windows</a>
-          <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/download/1.1/ShearK-Miner-1.1-linux.zip">Linux</a>
+          <a data-pack="miner-macos" href="https://github.com/rgsneddon/ShearK/releases/download/1.2/ShearK-Miner-1.2-macos.zip">macOS</a>
+          <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/download/1.2/ShearK-Miner-1.2-windows.zip">Windows</a>
+          <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/download/1.2/ShearK-Miner-1.2-linux.zip">Linux</a>
         </div>
       </div>
       <div class="client-dd">
@@ -254,18 +253,6 @@
         <p>Explorer: <a href="https://explorer.shear.digital">explorer.shear.digital</a></p>
         <p>Algo: ShearHash-v2 · Coin: SHE · Network: shear-testnet-v2</p>
         <p class="pulse">live · testnet</p>
-        <div class="intro-live">
-          <div class="cont-row">
-            <div class="label">Height</div>
-            <div class="value" id="nc-height">—</div>
-            <p>How many blocks have been sealed on the live chain.</p>
-          </div>
-          <div class="cont-row">
-            <div class="label">Nodes online</div>
-            <div class="value" id="nc-nodes">—</div>
-            <p>Full nodes currently reachable from the public seed.</p>
-          </div>
-        </div>
       </section>
       <section class="panel-card" id="network-continuity">
         <h2>Network continuity</h2>
@@ -364,11 +351,11 @@
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
-        macos: SHEARK + '/download/1.1/ShearK-Miner-1.1-macos.zip',
-        windows: SHEARK + '/download/1.1/ShearK-Miner-1.1-windows.zip',
-        linux: SHEARK + '/download/1.1/ShearK-Miner-1.1-linux.zip',
-        android: SHEARK + '/download/1.1/ShearK-Miner-1.1-macos.zip',
-        ios: SHEARK + '/download/1.1/ShearK-Miner-1.1-macos.zip'
+        macos: SHEARK + '/download/1.2/ShearK-Miner-1.2-macos.zip',
+        windows: SHEARK + '/download/1.2/ShearK-Miner-1.2-windows.zip',
+        linux: SHEARK + '/download/1.2/ShearK-Miner-1.2-linux.zip',
+        android: SHEARK + '/download/1.2/ShearK-Miner-1.2-macos.zip',
+        ios: SHEARK + '/download/1.2/ShearK-Miner-1.2-macos.zip'
       };
       var node = 'https://github.com/rgsneddon/shear-testnet/tree/main/node';
       function bind(id, href) {
@@ -431,8 +418,6 @@
           setText('nc-flux', fmtShe(pot) + ' / ' + Math.round(targetMs / 1000) + ' s');
           setText('nc-observed', fmtSecs(observed));
           setText('nc-integral', fmtShe(height * pot));
-          setText('nc-height', height.toLocaleString('en-GB'));
-          setText('nc-nodes', String(Number(j.nodesOnline) || 0));
         }
         function tick() {
           fetch('/api/stats?_=' + Date.now(), { cache: 'no-store' })
