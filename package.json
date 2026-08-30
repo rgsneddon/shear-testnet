@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Shear — continuity-settled proof of work",
   "scripts": {
-    "test": "node --test crypto/*.test.js node/tests/*.js pool/tests/*.js miner/tests/*.js tests/*.js",
+    "test": "node --test --test-concurrency=1 --test-timeout=180000 crypto/*.test.js node/tests/*.js pool/tests/*.js miner/tests/*.js sheark-miner/tests/*.js tests/*.js",
     "node": "node node/src/node.js",
     "pool": "node pool/src/main.js",
     "forbid": "node tests/forbid_foreign_names.js"

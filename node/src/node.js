@@ -44,7 +44,7 @@ export function printConfig() {
 export { createP2p, P2P_PORT, createStore, mintVorticeDeployKey, parseVorticeKey };
 
 export async function startNode({
-  dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet'),
+  dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v2'),
   p2pPort = Number(process.env.SHEAR_P2P_PORT || P2P_PORT),
   p2pBind = process.env.SHEAR_P2P_BIND || '0.0.0.0',
   seeds = (process.env.SHEAR_SEEDS || '').split(',').map((s) => s.trim()).filter(Boolean),

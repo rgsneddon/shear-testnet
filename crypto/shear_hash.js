@@ -1,28 +1,90 @@
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-export const PERSONAL = 'ShearHash-v1';
+export const PERSONAL = 'ShearHash-v2';
 export const ALGO = 'ShearHash';
 export const HEADER_LEN = 128;
-export const HASH_ROUNDS = 8;
 export const CLIENT = 'ShearHash';
+export const RX_MODE = 'light';
+export const V1_SELFTEST =
+  '5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066';
+export const V2_SELFTEST =
+  '64d41fa97f5ebea8a7e2a2625b1824467ce9d081bf29b0b2ae0a7fe617599895';
+export const V2_SELFTEST_K =
+  'e46e00191cde74015961b7a68274933c680b69f05bdbbad1ef51e75fbc19f389';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+let native = null;
+try {
+  native = createRequire(import.meta.url)('./native/shearhash.node');
+  if (native?.backend) native.backend('interpreter');
+} catch {
+  native = null;
+}
+
+function minerBin() {
+  const p = path.join(here, '..', 'sheark-miner', process.platform === 'win32' ? 'ShearK-Miner.exe' : 'ShearK-Miner');
+  return fs.existsSync(p) ? p : '';
+}
 
 export function sha256(buf) {
   return createHash('sha256').update(buf).digest();
 }
 
-/** 8-round ShearHash over the packed header (128 bytes: + u64 base_fee). */
+/** v1 8-round SHA-256. Invalid under v2; used only to prove old shares miss. */
+export function shearHashV1(header) {
+  const h = Buffer.isBuffer(header) ? header : Buffer.from(header);
+  if (h.length !== HEADER_LEN) throw new Error(`header must be ${HEADER_LEN} bytes`);
+  const personal = Buffer.from('ShearHash-v1');
+  const algo = Buffer.from(ALGO);
+  let out = sha256(Buffer.concat([personal, algo, h]));
+  for (let r = 0; r < 8; r += 1) {
+    out = sha256(Buffer.concat([out, personal, Buffer.from([0x30 + r]), h]));
+  }
+  return out;
+}
+
+function hashViaMiner(header) {
+  const bin = minerBin();
+  if (!bin) throw new Error('ShearHash-v2 native addon missing and ShearK-Miner not built');
+  const hex = Buffer.from(header).toString('hex');
+  const got = spawnSync(bin, ['--backend', 'interpreter', '--verify', hex], { encoding: 'utf8' });
+  if (got.status !== 0) throw new Error(got.stderr || got.stdout || 'verify failed');
+  const m = /digest ([0-9a-f]{64})/.exec(got.stdout);
+  if (!m) throw new Error('verify parse');
+  return Buffer.from(m[1], 'hex');
+}
+
+/** ShearHash-v2: RandomX light interpreter. Not a JS VM. */
 export function shearHash(header) {
   const h = Buffer.isBuffer(header) ? header : Buffer.from(header);
   if (h.length !== HEADER_LEN) {
     throw new Error(`header must be ${HEADER_LEN} bytes`);
   }
-  const personal = Buffer.from(PERSONAL);
-  const algo = Buffer.from(ALGO);
-  let out = sha256(Buffer.concat([personal, algo, h]));
-  for (let r = 0; r < HASH_ROUNDS; r += 1) {
-    out = sha256(Buffer.concat([out, personal, Buffer.from([0x30 + r]), h]));
-  }
-  return out;
+  if (native?.hash) return Buffer.from(native.hash(h));
+  return hashViaMiner(h);
+}
+
+export function shearKey(header) {
+  const h = Buffer.isBuffer(header) ? header : Buffer.from(header);
+  if (h.length !== HEADER_LEN) throw new Error(`header must be ${HEADER_LEN} bytes`);
+  if (native?.key) return Buffer.from(native.key(h));
+  const bin = minerBin();
+  if (!bin) throw new Error('shearKey: native missing');
+  const hex = h.toString('hex');
+  const got = spawnSync(bin, ['--backend', 'interpreter', '--verify', hex], { encoding: 'utf8' });
+  const m = /k ([0-9a-f]{64})/.exec(got.stdout || '');
+  if (!m) throw new Error('k parse');
+  return Buffer.from(m[1], 'hex');
+}
+
+export function setHashBackend(name) {
+  if (native?.backend) return native.backend(String(name || 'interpreter'));
+  return 'interpreter';
 }
 
 export function hashHex(buf) {

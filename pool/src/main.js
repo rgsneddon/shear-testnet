@@ -6,8 +6,9 @@ import { createPool } from './pool.js';
 import { newIdentity, isShearAddress } from '../../crypto/address.js';
 import { destForLogin, payoutDest } from '../../crypto/flow_sheet.js';
 import { createP2p, P2P_PORT } from '../../node/src/p2p.js';
+import { MAGIC_TESTNET } from '../../crypto/asert.js';
 
-const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet');
+const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v2');
 fs.mkdirSync(dataDir, { recursive: true });
 const identPath = path.join(dataDir, 'pool-miner.json');
 let miner = process.env.SHEAR_POOL_MINER;
@@ -54,5 +55,5 @@ console.log(JSON.stringify({
   http: pool.httpServer.address().port,
   p2p: p2pBound,
   miner,
-  magic: 'shear-testnet-v1',
+  magic: MAGIC_TESTNET,
 }));

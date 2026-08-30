@@ -37,7 +37,8 @@ describe('foreign names', () => {
         .filter((l) => !l.includes('forbid_foreign_names.js'))
         .filter((l) => !l.includes('SHEPLAN.md'))
         .filter((l) => !l.includes('/tests/'))
-        .filter((l) => !l.includes('specs/'));
+        .filter((l) => !l.includes('specs/'))
+        .filter((l) => !l.includes('crypto/randomx/'));
       for (const l of lines) hits.push(l);
     }
     assert.deepEqual(hits, []);

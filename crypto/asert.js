@@ -20,13 +20,27 @@ export const HASH_BONUS_NANOS = 1;
 export const HASH_BONUS_VOTE_DELTA_NANOS = 1;
 export const POOL_FEE_BPS = 100;
 export const MAGIC_TESTNET_V1 = 'shear-testnet-v1';
-/** Live testnet book. Magic is the chain id; hash-tx law is the fingerprint. */
-export const MAGIC_TESTNET = 'shear-testnet-v1';
+export const MAGIC_TESTNET_V2 = 'shear-testnet-v2';
+/** Live testnet book for ShearHash-v2. v1 remains readable but is not mined. */
+export const MAGIC_TESTNET = MAGIC_TESTNET_V2;
 export const MAGIC_MAINNET = 'shear-v1';
+export const HASH_FN = 'ShearHash-v2';
+export const RX_SALT = 'ShearHash-v2/rx';
+export const RX_ARGON_MEMORY = 131072;
+export const RX_ARGON_ITERS = 3;
+export const RX_CACHE_ACCESSES = 8;
+export const RX_PROGRAM_SIZE = 256;
+export const RX_PROGRAM_ITERATIONS = 2048;
+export const RX_PROGRAM_COUNT = 8;
+export const RX_SCRATCHPAD_L3 = 2097152;
+export const RX_MODE = 'light';
+export const RX_KEY = 'ShearHash-v2/key';
+export const SHEARK_MINER_NAME = 'ShearK-Miner';
+export const SHEARK_MINER_VERSION = '1.0';
 /** Frozen consensus identity. A different fingerprint is a different law. */
 export const BOOK_LAW_ID = 'shear-book-law-1';
 /** Display/tag version for wallet, node, and pool. Two-part only (`*.*`, never `0.1.0`). Start 0.1; later 0.10+ legal. Never 1.* unless the operator says so. */
-export const PRODUCT_VERSION = '0.1';
+export const PRODUCT_VERSION = '0.2';
 /** Official C miner display/tag version. Two-part only (`*.*`). Operator set Shear-Miner to 1.1 (fee-free). 1.0 keeps the built-in fee. */
 export const MINER_VERSION = '1.1';
 /** Hash bonus commits on accept. Not env. */
@@ -87,6 +101,17 @@ export function consensusFingerprint() {
     LEAF_B_LAYOUT,
     SPENDABLE_CONFIRMATIONS,
     RESERVE_FEE_FIRST,
+    `HASH_FN=${HASH_FN}`,
+    `RX_SALT=${RX_SALT}`,
+    `RX_ARGON_MEMORY=${RX_ARGON_MEMORY}`,
+    `RX_ARGON_ITERS=${RX_ARGON_ITERS}`,
+    `RX_CACHE_ACCESSES=${RX_CACHE_ACCESSES}`,
+    `RX_PROGRAM_SIZE=${RX_PROGRAM_SIZE}`,
+    `RX_PROGRAM_ITERATIONS=${RX_PROGRAM_ITERATIONS}`,
+    `RX_PROGRAM_COUNT=${RX_PROGRAM_COUNT}`,
+    `RX_SCRATCHPAD_L3=${RX_SCRATCHPAD_L3}`,
+    `RX_MODE=${RX_MODE}`,
+    `RX_KEY=${RX_KEY}`,
   ].join(':');
 }
 
@@ -114,6 +139,13 @@ export function consensusLaw() {
     spendableConfirmations: SPENDABLE_CONFIRMATIONS,
     minConfirmsPolicy: MIN_CONFIRMS_POLICY,
     reserveFeeFirst: RESERVE_FEE_FIRST,
+    hashFn: HASH_FN,
+    rxMode: RX_MODE,
+    rxSalt: RX_SALT,
+    shearkMinerName: SHEARK_MINER_NAME,
+    shearkMinerVersion: SHEARK_MINER_VERSION,
+    magicTestnet: MAGIC_TESTNET,
+    magicTestnetV1: MAGIC_TESTNET_V1,
   };
 }
 /** Reserve may mint interest. Join may mint once at genesis into its vault. */

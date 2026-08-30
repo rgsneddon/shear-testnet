@@ -25,6 +25,8 @@ import {
   RESERVE_PROGRAM,
   MAGIC_TESTNET,
   MAGIC_TESTNET_V1,
+  MAGIC_TESTNET_V2,
+  HASH_FN,
   HASH_TX_LIVE,
   SPENDABLE_CONFIRMATIONS,
   MIN_CONFIRMS_POLICY,
@@ -84,8 +86,9 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(formatShe(1), '1');
     assert.equal(formatShe(1e-11), '0.00000000');
     assert.equal(formatShe(1e-8), '0.00000001');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v1');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v2');
     assert.equal(MAGIC_TESTNET_V1, 'shear-testnet-v1');
+    assert.equal(MAGIC_TESTNET_V2, 'shear-testnet-v2');
   });
 });
 
@@ -101,10 +104,13 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /:90000:/);
     assert.match(fp, /:ssa:/);
     assert.match(fp, /:100000000000:/);
-    assert.match(fp, /:6:1$/);
-    assert.equal(fp.endsWith(':1'), true);
+    assert.match(fp, /:6:1:HASH_FN=ShearHash-v2/);
+    assert.match(fp, /RX_MODE=light/);
+    assert.match(fp, /RX_SALT=ShearHash-v2\/rx/);
+    assert.equal(HASH_FN, 'ShearHash-v2');
+    assert.equal(fp.includes('HASH_FN=ShearHash-v2'), true);
     const law = consensusLaw();
-    assert.equal(PRODUCT_VERSION, '0.1');
+    assert.equal(PRODUCT_VERSION, '0.2');
     assert.equal(MINER_VERSION, '1.1');
     assert.equal(PRODUCT_VERSION.split('.').length, 2);
     assert.equal(MINER_VERSION.split('.').length, 2);
@@ -114,7 +120,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(/^\d+\.\d+\.\d+$/.test(MINER_VERSION), false);
     assert.equal(/^\d+\.\d+$/.test('0.10'), true);
     assert.equal(/^\d+\.\d+$/.test('0.1.0'), false);
-    assert.equal(law.productVersion, '0.1');
+    assert.equal(law.productVersion, '0.2');
     assert.equal(law.minerVersion, '1.1');
     assert.equal(law.hashTxLive, 1);
     assert.equal(law.hashTxCollate, 1);

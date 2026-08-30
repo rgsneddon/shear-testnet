@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { requiredJobFields, decodeHeader } from '../../crypto/header.js';
 import { headerFromHex, setNonce } from '../../crypto/header.js';
-import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT } from '../../crypto/shear_hash.js';
+import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest } from '../../crypto/address.js';
 import {
   BLOCK_SUBSIDY_NANOS,
@@ -816,6 +816,8 @@ export function createPool({
       ok: true,
       coin: 'SHE',
       algo: ALGO,
+      personalisation: PERSONAL,
+      rxMode: 'light',
       magic: MAGIC_TESTNET,
       network: MAGIC_TESTNET,
       targetBlockIntervalMs: TARGET_BLOCK_INTERVAL_MS,

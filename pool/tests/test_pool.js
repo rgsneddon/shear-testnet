@@ -155,21 +155,24 @@ describe('pool dashboard + stratum', () => {
     assert.equal(/Honesty|honesty|inflate/.test(html), false);
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     assert.equal(stats.magic, MAGIC_TESTNET);
-    assert.equal(stats.magic, 'shear-testnet-v1');
+    assert.equal(stats.magic, 'shear-testnet-v2');
     assert.equal(stats.network, MAGIC_TESTNET);
+    assert.equal(stats.personalisation, 'ShearHash-v2');
+    assert.equal(stats.rxMode, 'light');
     assert.equal(stats.blockSubsidyNanos, BLOCK_SUBSIDY_NANOS);
     assert.equal(stats.blockSubsidyNanos, 100_000_000_000);
     assert.equal(stats.hashBonusNanos, HASH_BONUS_NANOS);
     assert.equal(stats.hashBonusNanos, 1);
     assert.equal(stats.hashTxLive, HASH_TX_LIVE);
     assert.equal(stats.hashTxLive, 1);
-    assert.match(stats.bookLawFingerprint, /:1$/);
+    assert.match(stats.bookLawFingerprint, /HASH_FN=ShearHash-v2/);
+    assert.match(stats.bookLawFingerprint, /RX_MODE=light/);
     assert.equal(stats.targetBlockIntervalMs, TARGET_BLOCK_INTERVAL_MS);
     assert.equal(stats.targetBlockIntervalMs, 90_000);
     assert.equal(stats.destHrp, 'ssa');
     assert.equal(stats.spendableConfirmations, 6);
     assert.equal(stats.minConfirmsPolicy, 12);
-    assert.equal(stats.productVersion, '0.1');
+    assert.equal(stats.productVersion, '0.2');
     assert.equal(stats.minerVersion, '1.1');
     if (stats.header) assert.equal(stats.header.length, 256);
 
@@ -215,7 +218,7 @@ describe('pool dashboard + stratum', () => {
         }
       });
       sock.on('error', reject);
-      setTimeout(() => reject(new Error('timeout')), 20000);
+      setTimeout(() => reject(new Error('timeout')), 120000);
     });
     assert.match(scored, /OK/);
     const named = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());

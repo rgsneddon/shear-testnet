@@ -4,6 +4,21 @@
 
 **https://github.com/rgsneddon/handoff/blob/main/HANDOFF.md** (section **Shear**)
 
+## [Testnet] ShearK-Miner 1.0 — Windows **on tag**; Linux leftover
+
+New miner repo: **https://github.com/rgsneddon/ShearK** (display **[Testnet] ShearK**). Do **not** attach ShearK-Miner zips to `rgsneddon/shear` or recut Shear-Miner tags `1.1` / `1.0` on `shear-testnet`.
+
+Mac-cut + Windows PE are on tag **`1.0`**. Title **`[Testnet] ShearK-Miner 1.0`**. https://github.com/rgsneddon/ShearK/releases/tag/1.0
+
+- `ShearK-Miner-1.0-macos.zip` sha256 `0a55f3cd2dd5b9ef55e83cb138ef9e6d3a838cb4470147f11a296a6686d6d74b` zip root `ShearK-Miner` + `example.sh`
+- `ShearK-Miner-1.0-windows.zip` sha256 `541333c65592b10ff8119b371bf6226a8225045bd2ba59b36af3eecbaa43c1cf` zip root `ShearK-Miner.exe` + `example.bat` (PE32+ x86-64, static)
+
+1. **Still leftover:** `ShearK-Miner-1.0-linux.zip` (this Darwin host has no Linux toolchain for RandomX).
+2. `--print-config`: `name=ShearK-Miner`, `algorithm=ShearHash`, `personalisation=ShearHash-v2`, `version=1.0`, `headerBytes=128`, `magic=shear-testnet-v2`, `rxMode=light`, `rxCacheMiB=128`, `feePct=0`
+3. Do **not** write “feeless”. Do **not** recut Shear-Miner 1.1 / 1.0.
+
+ShearHash-v2 book is `shear-testnet-v2`. Pool/node verify the same RandomX-lite digest. v1 shares mint 0. Operator cutover of live Germany v1 datadir is a separate explicit approval.
+
 ## [testnet] Shear wallet 0.3 leftover — Windows / Linux / Arch
 
 Mac-cut (this Darwin host): APK + notarized DMG on tag **`0.3`**. Title **`[testnet] Shear wallet 0.3`**. Window / launcher **Shear 0.3**. https://github.com/rgsneddon/shear-testnet/releases/tag/0.3

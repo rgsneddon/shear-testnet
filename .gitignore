@@ -2,6 +2,12 @@ miner/shear-miner
 miner/shear-miner.exe
 miner/Shear-Miner
 miner/Shear-Miner.exe
+sheark-miner/ShearK-Miner
+sheark-miner/ShearK-Miner.exe
+sheark-miner/dist/
+crypto/native/shearhash.node
+crypto/randomx/build/
+crypto/randomx/build-win/
 *.o
 .DS_Store
 node_modules/

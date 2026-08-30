@@ -67,7 +67,7 @@ describe('p2p gossip', () => {
     assert.equal(cfg.p2p, P2P_PORT);
     assert.equal(cfg.p2p, 30303);
     assert.equal(cfg.magic, MAGIC_TESTNET);
-    assert.equal(cfg.magic, 'shear-testnet-v1');
+    assert.equal(cfg.magic, 'shear-testnet-v2');
     assert.equal(cfg.mainnet, false);
   });
 });
