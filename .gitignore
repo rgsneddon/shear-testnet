@@ -8,6 +8,9 @@ sheark-miner/dist/
 crypto/native/shearhash.node
 crypto/randomx/build/
 crypto/randomx/build-win/
+reserve/history.jsonl
+__pycache__/
+*.pyc
 *.o
 .DS_Store
 node_modules/

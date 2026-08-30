@@ -1,0 +1,19 @@
+{
+  "asOf": "2026-08-15",
+  "components": [
+    { "id": "FED", "kind": "range", "raw": "3.50-3.75" },
+    { "id": "BOE", "kind": "single", "raw": "4.00" },
+    { "id": "ECB", "kind": "corridor", "raw": "2.00-2.15", "deposit": "2.00", "mro": "2.15" },
+    { "id": "BOJ", "kind": "single", "raw": "0.50" },
+    { "id": "BOC", "kind": "single", "raw": "2.75" },
+    { "id": "RBA", "kind": "single", "raw": "3.60" },
+    { "id": "RBNZ", "kind": "single", "raw": "3.00" },
+    { "id": "SNB", "kind": "single", "raw": "0.00" },
+    { "id": "RIKSBANK", "kind": "single", "raw": "2.00" },
+    { "id": "NORGES", "kind": "single", "raw": "4.00" },
+    { "id": "DNBANK", "kind": "single", "raw": "1.60" },
+    { "id": "BOK", "kind": "single", "raw": "2.50" },
+    { "id": "BOI", "kind": "single", "raw": "4.00" },
+    { "id": "CNB", "kind": "single", "raw": "3.50" }
+  ]
+}

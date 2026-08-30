@@ -1,0 +1,6 @@
+{
+  "asOf": "2026-08-01",
+  "components": [
+    { "id": "SOFR", "kind": "single", "raw": "4.28" }
+  ]
+}

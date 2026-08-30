@@ -1,0 +1,135 @@
+{
+  "version": "shear-reserve-oracle-v1",
+  "scale": "tenths_of_basis_point",
+  "banks": [
+    {
+      "id": "FED",
+      "name": "United States — Federal Reserve",
+      "rateField": "federal_funds_target_range",
+      "kind": "range",
+      "officialUrl": "https://www.federalreserve.gov/monetarypolicy/openmarket.htm",
+      "apiPattern": "https://api.stlouisfed.org/fred/series/observations?series_id=DFEDTARL|DFEDTARU&api_key=YOUR_KEY",
+      "lastKnown": { "raw": "3.50-3.75", "placeholder": true }
+    },
+    {
+      "id": "BOE",
+      "name": "United Kingdom — Bank of England",
+      "rateField": "bank_rate",
+      "kind": "single",
+      "officialUrl": "https://www.bankofengland.co.uk/monetary-policy",
+      "apiPattern": "https://www.bankofengland.co.uk/boeapps/database/",
+      "lastKnown": { "raw": "3.75", "placeholder": true }
+    },
+    {
+      "id": "ECB",
+      "name": "Euro area — European Central Bank",
+      "rateField": "deposit_facility_and_mro",
+      "kind": "corridor",
+      "lowerField": "deposit_facility",
+      "upperField": "main_refinancing_operations",
+      "forbidField": "marginal_lending_facility",
+      "officialUrl": "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/key_ecb_interest_rates/html/index.en.html",
+      "apiPattern": null,
+      "lastKnown": { "raw": "2.00-2.15", "placeholder": true }
+    },
+    {
+      "id": "BOJ",
+      "name": "Japan — Bank of Japan",
+      "rateField": "policy_rate",
+      "kind": "single",
+      "officialUrl": "https://www.boj.or.jp/en/mopo/outline/index.htm",
+      "apiPattern": null,
+      "lastKnown": { "raw": "0.50", "placeholder": true }
+    },
+    {
+      "id": "BOC",
+      "name": "Canada — Bank of Canada",
+      "rateField": "overnight_target",
+      "kind": "single",
+      "officialUrl": "https://www.bankofcanada.ca/core-functions/monetary-policy/key-interest-rate/",
+      "apiPattern": "https://www.bankofcanada.ca/valet/observations/V39079/json",
+      "lastKnown": { "raw": "2.75", "placeholder": true }
+    },
+    {
+      "id": "RBA",
+      "name": "Australia — Reserve Bank of Australia",
+      "rateField": "cash_rate_target",
+      "kind": "single",
+      "officialUrl": "https://www.rba.gov.au/statistics/cash-rate/",
+      "apiPattern": null,
+      "lastKnown": { "raw": "3.60", "placeholder": true }
+    },
+    {
+      "id": "RBNZ",
+      "name": "New Zealand — Reserve Bank of New Zealand",
+      "rateField": "ocr",
+      "kind": "single",
+      "officialUrl": "https://www.rbnz.govt.nz/monetary-policy/official-cash-rate-decisions",
+      "apiPattern": null,
+      "lastKnown": { "raw": "3.00", "placeholder": true }
+    },
+    {
+      "id": "SNB",
+      "name": "Switzerland — Swiss National Bank",
+      "rateField": "snb_policy_rate",
+      "kind": "single",
+      "officialUrl": "https://www.snb.ch/en/the-snb/mandates-goals/monetary-policy/strategy",
+      "apiPattern": null,
+      "lastKnown": { "raw": "0.00", "placeholder": true }
+    },
+    {
+      "id": "RIKSBANK",
+      "name": "Sweden — Sveriges Riksbank",
+      "rateField": "policy_rate",
+      "kind": "single",
+      "officialUrl": "https://www.riksbank.se/en-gb/monetary-policy/the-interest-rate/",
+      "apiPattern": null,
+      "lastKnown": { "raw": "2.00", "placeholder": true }
+    },
+    {
+      "id": "NORGES",
+      "name": "Norway — Norges Bank",
+      "rateField": "policy_rate",
+      "kind": "single",
+      "officialUrl": "https://www.norges-bank.no/en/topics/Monetary-policy/Policy-rate/",
+      "apiPattern": null,
+      "lastKnown": { "raw": "4.00", "placeholder": true }
+    },
+    {
+      "id": "DNBANK",
+      "name": "Denmark — Danmarks Nationalbank",
+      "rateField": "policy_rate",
+      "kind": "single",
+      "officialUrl": "https://www.nationalbanken.dk/en/what-we-do/stable-prices-in-denmark",
+      "apiPattern": null,
+      "lastKnown": { "raw": "1.60", "placeholder": true }
+    },
+    {
+      "id": "BOK",
+      "name": "South Korea — Bank of Korea",
+      "rateField": "base_rate",
+      "kind": "single",
+      "officialUrl": "https://www.bok.or.kr/eng/main/contents.do?menuNo=400016",
+      "apiPattern": null,
+      "lastKnown": { "raw": "2.50", "placeholder": true }
+    },
+    {
+      "id": "BOI",
+      "name": "Israel — Bank of Israel",
+      "rateField": "policy_rate",
+      "kind": "single",
+      "officialUrl": "https://www.boi.org.il/en/economic-roles/monetary-policy/",
+      "apiPattern": null,
+      "lastKnown": { "raw": "4.00", "placeholder": true }
+    },
+    {
+      "id": "CNB",
+      "name": "Czech Republic — Czech National Bank",
+      "rateField": "two_week_repo_rate",
+      "kind": "single",
+      "officialUrl": "https://www.cnb.cz/en/monetary-policy/instruments/",
+      "apiPattern": null,
+      "lastKnown": { "raw": "3.50", "placeholder": true }
+    }
+  ]
+}
