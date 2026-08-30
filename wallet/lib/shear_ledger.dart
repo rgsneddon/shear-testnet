@@ -40,6 +40,7 @@ class ShearTx {
     this.rounds,
     this.hashAmount,
     this.threads,
+    this.pot,
   });
 
   final String id;
@@ -55,6 +56,8 @@ class ShearTx {
   final int? rounds;
   final double? hashAmount;
   final int? threads;
+  /// Sealed Path 1 pot SHE when this row is a coinbase bundle. Null if none.
+  final double? pot;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -70,6 +73,7 @@ class ShearTx {
         if (rounds != null) 'rounds': rounds,
         if (hashAmount != null) 'hashAmount': hashAmount,
         if (threads != null) 'threads': threads,
+        if (pot != null) 'pot': pot,
       };
 
   ShearTx copyWith({bool? confirmed, int? height}) => ShearTx(
@@ -86,6 +90,7 @@ class ShearTx {
         rounds: rounds,
         hashAmount: hashAmount,
         threads: threads,
+        pot: pot,
       );
 
   bool get isHashReward => kind == 'hash';
@@ -107,6 +112,7 @@ class ShearTx {
         rounds: (j['rounds'] as num?)?.toInt(),
         hashAmount: (j['hashAmount'] as num?)?.toDouble(),
         threads: (j['threads'] as num?)?.toInt(),
+        pot: (j['pot'] as num?)?.toDouble(),
       );
 }
 
@@ -142,7 +148,7 @@ int? headerTimestampMs(Uint8List header) {
 }
 
 /// Sealed coinbase pot SHE from one already-listed explorer/history row.
-/// Hash bonus is not the pot. Rows without a sealed height are templates.
+/// Hash bonus and bundled receive-settlement coinbase are not the pot.
 double? sealedPotShe(ShearTx t) {
   final h = t.height ?? 0;
   if (h < 1) return null;
@@ -150,9 +156,15 @@ double? sealedPotShe(ShearTx t) {
   if (kind == 'hash' || kind == 'send' || kind == 'receive' || kind == 'claim') {
     return null;
   }
+  if (t.pot != null) return t.pot! > 0 ? t.pot : null;
   if (kind == 'pot') return t.amount;
-  if (isWalletBlockKind(kind) && t.from == 'coinbase') {
+  if (kind == 'blockfound' || kind == 'mine' || kind == 'block') {
     final pot = t.amount - (t.hashAmount ?? 0);
+    if (pot <= 0) return null;
+    return pot;
+  }
+  if (kind == 'coinbase' && t.hashAmount != null) {
+    final pot = t.amount - t.hashAmount!;
     if (pot <= 0) return null;
     return pot;
   }
@@ -232,6 +244,7 @@ List<ShearTx> rollupExplorerTxs(Iterable<ShearTx> txs) {
       confirmed: true,
       hashAmount: b.hash,
       threads: b.threads > 0 ? b.threads : null,
+      pot: b.pot > 0 ? b.pot : null,
     ));
   }
   return rest;
@@ -503,6 +516,7 @@ class ShearLedger {
       height: height,
       confirmed: false,
       hashAmount: hashBonus > 0 ? hashBonus : null,
+      pot: pot > 0 ? pot : null,
     );
     if ((coinbaseAmt > 0 ? coinbaseAmt : total) > 0) _txs.add(tx);
     if (height > _sealedHeight) _sealedHeight = height;
@@ -765,6 +779,7 @@ class ShearLedger {
             memoCt: tx.memoCt,
             hashAmount: tx.hashAmount,
             threads: tx.threads,
+            pot: tx.pot,
           );
         }
         if (tx.to.isNotEmpty) _dests.add(tx.to);

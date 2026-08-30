@@ -771,6 +771,14 @@ void main() {
     ledger.confirmRound(address: id.address, pot: 1, height: 12);
     expect(ledger.path1Observation().integralQShe, 3);
     expect(ledger.path1Observation().quantumShe, kBlockPotShe);
+
+    final recv = ShearLedger()..viewSecret = id.viewKey;
+    final payout = recv.currentDest(id.address);
+    recv.creditReceive(to: payout, amount: 0.4, from: 'ssa1peer', id: 'in-q');
+    recv.confirmRound(address: id.address, pot: 0, height: 20);
+    expect(recv.path1Observation().integralQShe, 0);
+    recv.confirmRound(address: id.address, pot: 1, height: 21);
+    expect(recv.path1Observation().integralQShe, 1);
   });
 
   test('Path 1 observed interval is last sealed header dt and is not a mint input', () {
