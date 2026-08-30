@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,5 +47,110 @@ describe('ShearK-Miner', () => {
     assert.match(help.stdout, /ShearK-Miner/);
     assert.match(help.stdout, /ShearHash-v2 light/);
     assert.equal(help.stdout.toLowerCase().includes('feeless'), false);
+    assert.match(src, /hashes=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu threads=%d job=%s shareBits=%d blockBits=%d/);
+    assert.match(src, /msgid == 1 && inflight <= 0/);
+    assert.match(src, /\\033\[32m/);
+    assert.match(src, /\\033\[33m/);
+    assert.match(src, /\\033\[31m/);
+    assert.match(src, /blockfound/);
+    assert.match(src, /rainbow_puts/);
+    assert.match(src, /hashes\\":%llu/);
+    assert.match(src, /hashrate\\":%.0f/);
+    const hashc = fs.readFileSync(path.join(root, 'src/shear_hash.c'), 'utf8');
+    assert.match(hashc, /pthread_getspecific/);
+    assert.match(hashc, /pthread_rwlock_rdlock/);
+    assert.equal(/randomx_calculate_hash\(g_vm,/.test(hashc), false);
+  });
+
+  it('login status=OK does not bump accepted; status line prints hashes and job bits', async () => {
+    const header = Buffer.alloc(128);
+    header[0] = 1;
+    const job = {
+      jobId: 'login-job',
+      header: header.toString('hex'),
+      shareBits: 32,
+      blockBits: 32,
+      bits: 32,
+    };
+    const server = net.createServer((sock) => {
+      sock.on('data', (chunk) => {
+        const text = chunk.toString();
+        if (text.includes('"method":"login"')) {
+          sock.write(`${JSON.stringify({ id: 1, result: { status: 'OK' }, job })}\n`);
+        }
+      });
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    const child = spawn(bin, [
+      '--backend', 'interpreter',
+      '--pool', `127.0.0.1:${port}`,
+      '--notls',
+      '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul',
+      '--threads', '1',
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { out += d.toString(); });
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && !/hashes=\d+/.test(out)) {
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    child.kill('SIGTERM');
+    await new Promise((r) => child.once('close', r));
+    server.close();
+    assert.match(out, /hashes=(?:\x1b\[32m)?\d+/);
+    assert.match(out, /accepted=(?:\x1b\[33m)?0/);
+    assert.match(out, /rejected=(?:\x1b\[31m)?0/);
+    assert.match(out, /threads=1/);
+    assert.match(out, /job=login-job/);
+    assert.match(out, /shareBits=32/);
+    assert.match(out, /blockBits=32/);
+    assert.equal(/accepted=1/.test(out), false, out);
+  });
+
+  it('two hash threads complete more hashes than one against the same job', async () => {
+    const header = Buffer.alloc(128);
+    header[0] = 1;
+    const job = {
+      jobId: 'scale-job',
+      header: header.toString('hex'),
+      shareBits: 32,
+      blockBits: 32,
+      bits: 32,
+    };
+    async function runThreads(n) {
+      const server = net.createServer((sock) => {
+        sock.on('data', (chunk) => {
+          if (chunk.toString().includes('"method":"login"')) {
+            sock.write(`${JSON.stringify({ id: 1, result: { status: 'OK' }, job })}\n`);
+          }
+        });
+      });
+      await new Promise((r) => server.listen(0, '127.0.0.1', r));
+      const port = server.address().port;
+      const child = spawn(bin, [
+        '--backend', 'interpreter',
+        '--pool', `127.0.0.1:${port}`,
+        '--notls',
+        '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul',
+        '--threads', String(n),
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      child.stdout.on('data', (d) => { out += d.toString(); });
+      await new Promise((r) => setTimeout(r, 4500));
+      child.kill('SIGTERM');
+      await new Promise((r) => child.once('close', r));
+      server.close();
+      const lines = out.split('\n').filter((l) => l.includes('hashes='));
+      assert.ok(lines.length >= 1, out);
+      const last = lines[lines.length - 1];
+      const m = /hashes=(?:\x1b\[32m)?(\d+)/.exec(last);
+      assert.ok(m, last);
+      return Number(m[1]);
+    }
+    const one = await runThreads(1);
+    const two = await runThreads(2);
+    assert.ok(two > one, `1-thread hashes=${one} 2-thread hashes=${two}`);
   });
 });

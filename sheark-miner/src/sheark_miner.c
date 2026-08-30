@@ -84,6 +84,18 @@ static int g_qtail = 0;
 static uint64_t g_meets = 0;
 static int g_accepted = 0;
 static int g_rejected = 0;
+static int g_blocks = 0;
+static time_t g_rainbow_until = 0;
+static int g_color = 1;
+
+#define C_RST "\033[0m"
+#define C_GRN "\033[32m"
+#define C_YEL "\033[33m"
+#define C_RED "\033[31m"
+
+static const char *C_RAIN[] = {
+  "\033[31m", "\033[33m", "\033[32m", "\033[36m", "\033[34m", "\033[35m",
+};
 static atomic_int g_inflight = 0;
 static uint64_t g_dropped = 0;
 static uint64_t g_submitted = 0;
@@ -320,15 +332,21 @@ static int json_int(const char *json, const char *key, int *out) {
 }
 
 static void identity_json(char *out, size_t cap, const char *login, int threads) {
+  unsigned long long hashes = (unsigned long long)atomic_load_explicit(&g_hashes, memory_order_relaxed);
+  double elapsed = (double)(time(NULL) - (g_t0 ? g_t0 : time(NULL)));
+  if (elapsed < 1) elapsed = 1;
+  double hs = (double)hashes / elapsed;
   snprintf(out, cap,
            "\"login\":\"%s\",\"threads\":%d,\"cpuCores\":%d,\"cpuThreads\":%d,"
-           "\"name\":\"%s\",\"client\":\"%s\",\"version\":\"%s\",\"algorithm\":\"%s\"",
+           "\"name\":\"%s\",\"client\":\"%s\",\"version\":\"%s\",\"algorithm\":\"%s\","
+           "\"hashes\":%llu,\"hashrate\":%.0f",
            login, threads, g_cpu_cores, g_cpu_threads,
-           SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_VERSION, SHEAR_ALGO);
+           SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_VERSION, SHEAR_ALGO,
+           hashes, hs);
 }
 
 static int send_login(Conn *c, const char *login, int threads) {
-  char ident[512], line[800];
+  char ident[640], line[1200];
   identity_json(ident, sizeof(ident), login, threads);
   int n = snprintf(line, sizeof(line),
                    "{\"id\":1,\"method\":\"login\",\"params\":{%s},%s}\n", ident, ident);
@@ -336,17 +354,13 @@ static int send_login(Conn *c, const char *login, int threads) {
 }
 
 static int send_submit(Conn *c, const char *login, int threads, const char *jobId, uint64_t nonce) {
-  char ident[512], line[1100];
+  char ident[640], line[1400];
   identity_json(ident, sizeof(ident), login, threads);
-  unsigned long long hashes = (unsigned long long)atomic_load_explicit(&g_hashes, memory_order_relaxed);
-  double elapsed = (double)(time(NULL) - (g_t0 ? g_t0 : time(NULL)));
-  if (elapsed < 1) elapsed = 1;
-  double hs = (double)hashes / elapsed;
   int n = snprintf(line, sizeof(line),
-                   "{\"id\":2,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hashes\":%llu,\"hashrate\":%.0f},"
-                   "%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hashes\":%llu,\"hashrate\":%.0f}\n",
-                   ident, jobId, (unsigned long long)nonce, hashes, hs,
-                   ident, jobId, (unsigned long long)nonce, hashes, hs);
+                   "{\"id\":2,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\"},"
+                   "%s,\"jobId\":\"%s\",\"nonce\":\"%llu\"}\n",
+                   ident, jobId, (unsigned long long)nonce,
+                   ident, jobId, (unsigned long long)nonce);
   return conn_write(c, line, n);
 }
 
@@ -382,7 +396,22 @@ static void apply_job(const char *line) {
   fflush(stdout);
 }
 
+static void rainbow_puts(const char *s) {
+  int i = 0;
+  for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+    if (*p > 32) {
+      fputs(C_RAIN[i % 6], stdout);
+      i++;
+    }
+    fputc((int)*p, stdout);
+  }
+  fputs(C_RST, stdout);
+  fflush(stdout);
+}
+
 static void apply_ack(const char *line) {
+  int msgid = 0;
+  json_int(line, "id", &msgid);
   char status[80] = "";
   json_token(line, "status", status, sizeof(status));
   char err[160] = "";
@@ -390,14 +419,32 @@ static void apply_ack(const char *line) {
   char low[160];
   snprintf(low, sizeof(low), "%s", err[0] ? err : status);
   for (char *p = low; *p; p++) *p = (char)tolower((unsigned char)*p);
+  int inflight = atomic_load(&g_inflight);
+  /* Login replies with status=OK. Only a submit ACK (in-flight share) counts. */
+  if (msgid == 1 && inflight <= 0) return;
   if (strstr(low, "ok") && !err[0]) {
-    g_accepted++;
-    if (atomic_load(&g_inflight) > 0) atomic_fetch_sub(&g_inflight, 1);
+    if (inflight > 0) {
+      g_accepted++;
+      atomic_fetch_sub(&g_inflight, 1);
+      char blk[16] = "";
+      json_token(line, "block", blk, sizeof(blk));
+      if (strcmp(blk, "true") == 0 || strcmp(blk, "1") == 0) {
+        g_blocks++;
+        g_rainbow_until = time(NULL) + 8;
+        if (g_color) rainbow_puts("blockfound\n");
+        else {
+          printf("blockfound\n");
+          fflush(stdout);
+        }
+      }
+    }
     return;
   }
   if (err[0] || strstr(low, "error") || strstr(low, "refus")) {
-    g_rejected++;
-    if (atomic_load(&g_inflight) > 0) atomic_fetch_sub(&g_inflight, 1);
+    if (inflight > 0) {
+      g_rejected++;
+      atomic_fetch_sub(&g_inflight, 1);
+    }
     if (strstr(low, "old_miner") || strstr(low, "client")) {
       fprintf(stderr, "pool refused this client — use ShearHash\n");
     }
@@ -631,18 +678,44 @@ static int mine_once(void) {
       double inst = (double)(h - rate_h0) / dt;
       if (smooth_hs <= 0) smooth_hs = inst;
       else {
-        double alpha = 1.0 - exp(-dt / 30.0);
+        double alpha = 1.0 - exp(-dt / 3.0);
         smooth_hs += alpha * (inst - smooth_hs);
       }
-      if (dt >= 15) {
+      if (dt >= 2) {
         rate_h0 = h;
         rate_t0 = now;
       }
       char rate[32];
       fmt_hashrate(smooth_hs, rate, sizeof(rate));
-      printf("hashrate=%s accepted=%d rejected=%d threads=%d\n",
-             rate, g_accepted, g_rejected, g_threads);
-      fflush(stdout);
+      char jobId[80] = "-";
+      int sb = 0, bb = 0;
+      pthread_mutex_lock(&g_job_mu);
+      if (g_have_main && g_main_job.have) {
+        snprintf(jobId, sizeof(jobId), "%s", g_main_job.jobId);
+        sb = g_main_job.share_bits;
+        bb = g_main_job.block_bits;
+      }
+      pthread_mutex_unlock(&g_job_mu);
+      if (g_color && time(NULL) < g_rainbow_until) {
+        char linebuf[512];
+        snprintf(linebuf, sizeof(linebuf),
+                 "hashes=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu threads=%d job=%s shareBits=%d blockBits=%d\n",
+                 (unsigned long long)h, rate, g_accepted, g_rejected,
+                 (unsigned long long)g_submitted, g_threads, jobId, sb, bb);
+        rainbow_puts(linebuf);
+      } else if (g_color) {
+        printf("hashes=" C_GRN "%llu" C_RST " hashrate=" C_GRN "%s" C_RST
+               " accepted=" C_YEL "%d" C_RST " rejected=" C_RED "%d" C_RST
+               " submitted=%llu threads=%d job=%s shareBits=%d blockBits=%d\n",
+               (unsigned long long)h, rate, g_accepted, g_rejected,
+               (unsigned long long)g_submitted, g_threads, jobId, sb, bb);
+        fflush(stdout);
+      } else {
+        printf("hashes=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu threads=%d job=%s shareBits=%d blockBits=%d\n",
+               (unsigned long long)h, rate, g_accepted, g_rejected,
+               (unsigned long long)g_submitted, g_threads, jobId, sb, bb);
+        fflush(stdout);
+      }
     }
     if (g_stop) break;
   }
@@ -769,7 +842,19 @@ int main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
 #endif
   seed_origin();
+  {
+    const char *term = getenv("TERM");
+    if (getenv("NO_COLOR") || (term && strcmp(term, "dumb") == 0)) g_color = 0;
+  }
   setvbuf(stdout, NULL, _IOLBF, 0);
+#if defined(_WIN32)
+  {
+    HANDLE hout = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    if (hout && GetConsoleMode(hout, &mode))
+      SetConsoleMode(hout, mode | 0x0004);
+  }
+#endif
   printf("ShearK-Miner %s (ShearHash-v2 light)\n", SHEAR_VERSION);
   printf("tcp://%s:%d user=%s threads=%d coin=SHE algo=%s\n",
          g_host, g_port, g_login, g_threads, SHEAR_ALGO);

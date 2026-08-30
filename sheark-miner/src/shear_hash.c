@@ -1,3 +1,8 @@
+#if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#endif
 #include "shear_hash.h"
 #include "sha512.h"
 #include "randomx.h"
@@ -14,13 +19,21 @@ static const char V1_SELFTEST[] =
 const char SHEAR_SELFTEST_HASH[] =
     "64d41fa97f5ebea8a7e2a2625b1824467ce9d081bf29b0b2ae0a7fe617599895";
 
-static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_rwlock_t g_rx = PTHREAD_RWLOCK_INITIALIZER;
+static pthread_mutex_t g_key_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_key_t g_vm_key;
+static int g_key_ok = 0;
 static randomx_cache *g_cache = NULL;
-static randomx_vm *g_vm = NULL;
 static unsigned char g_k[32];
 static int g_have = 0;
+static unsigned g_gen = 0;
 static randomx_flags g_flags = RANDOMX_FLAG_DEFAULT;
 static const char *g_backend = "interpreter";
+
+typedef struct {
+  randomx_vm *vm;
+  unsigned gen;
+} RxTls;
 
 void shear_hash_hex(const unsigned char hash[32], char hex[65]) {
   static const char *digits = "0123456789abcdef";
@@ -50,20 +63,28 @@ void shear_key(const unsigned char header[SHEAR_HEADER_LEN], unsigned char k[32]
   memcpy(k, out, 32);
 }
 
-static void drop_vm(void) {
-  if (g_vm) {
-    randomx_destroy_vm(g_vm);
-    g_vm = NULL;
-  }
+static void tls_free(void *p) {
+  RxTls *t = (RxTls *)p;
+  if (!t) return;
+  if (t->vm) randomx_destroy_vm(t->vm);
+  free(t);
 }
 
-static void drop_cache(void) {
-  drop_vm();
+static void ensure_tls_key(void) {
+  pthread_mutex_lock(&g_key_mu);
+  if (!g_key_ok) {
+    if (pthread_key_create(&g_vm_key, tls_free) == 0) g_key_ok = 1;
+  }
+  pthread_mutex_unlock(&g_key_mu);
+}
+
+static void drop_cache_locked(void) {
   if (g_cache) {
     randomx_release_cache(g_cache);
     g_cache = NULL;
   }
   g_have = 0;
+  g_gen++;
 }
 
 static randomx_flags flags_interpreter(void) {
@@ -88,9 +109,9 @@ int shear_hash_set_backend(const char *name) {
     next = flags_interpreter();
     label = "interpreter";
   }
-  pthread_mutex_lock(&g_mu);
+  pthread_rwlock_wrlock(&g_rx);
   if (next != g_flags) {
-    drop_cache();
+    drop_cache_locked();
     g_flags = next;
   }
   if (!g_cache) {
@@ -103,7 +124,7 @@ int shear_hash_set_backend(const char *name) {
   }
   g_backend = label;
   int ok = g_cache ? 0 : -1;
-  pthread_mutex_unlock(&g_mu);
+  pthread_rwlock_unlock(&g_rx);
   return ok;
 }
 
@@ -111,32 +132,67 @@ const char *shear_hash_backend(void) {
   return g_backend;
 }
 
-static int ensure_vm(const unsigned char k[32]) {
-  if (g_have && g_vm && memcmp(g_k, k, 32) == 0) return 0;
+static int init_cache_locked(const unsigned char k[32]) {
   if (!g_cache) {
     g_cache = randomx_alloc_cache(g_flags);
+    if (!g_cache && (g_flags & RANDOMX_FLAG_JIT)) {
+      g_flags = flags_interpreter();
+      g_backend = "interpreter";
+      g_cache = randomx_alloc_cache(g_flags);
+    }
     if (!g_cache) return -1;
   }
   randomx_init_cache(g_cache, k, 32);
-  drop_vm();
-  g_vm = randomx_create_vm(g_flags, g_cache, NULL);
-  if (!g_vm) return -1;
   memcpy(g_k, k, 32);
   g_have = 1;
+  g_gen++;
   return 0;
+}
+
+static RxTls *thread_vm(unsigned gen) {
+  ensure_tls_key();
+  if (!g_key_ok) return NULL;
+  RxTls *tls = (RxTls *)pthread_getspecific(g_vm_key);
+  if (!tls) {
+    tls = (RxTls *)calloc(1, sizeof(*tls));
+    if (!tls) return NULL;
+    pthread_setspecific(g_vm_key, tls);
+  }
+  if (tls->vm && tls->gen == gen) return tls;
+  if (tls->vm) {
+    randomx_destroy_vm(tls->vm);
+    tls->vm = NULL;
+  }
+  tls->vm = randomx_create_vm(g_flags, g_cache, NULL);
+  tls->gen = gen;
+  return tls->vm ? tls : NULL;
 }
 
 void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]) {
   unsigned char k[32];
   shear_key(header, k);
-  pthread_mutex_lock(&g_mu);
-  if (ensure_vm(k) != 0) {
-    pthread_mutex_unlock(&g_mu);
+  pthread_rwlock_rdlock(&g_rx);
+  if (!g_have || memcmp(g_k, k, 32) != 0) {
+    pthread_rwlock_unlock(&g_rx);
+    pthread_rwlock_wrlock(&g_rx);
+    if (!g_have || memcmp(g_k, k, 32) != 0) {
+      if (init_cache_locked(k) != 0) {
+        pthread_rwlock_unlock(&g_rx);
+        memset(out, 0, 32);
+        return;
+      }
+    }
+    pthread_rwlock_unlock(&g_rx);
+    pthread_rwlock_rdlock(&g_rx);
+  }
+  RxTls *tls = thread_vm(g_gen);
+  if (!tls || !tls->vm) {
+    pthread_rwlock_unlock(&g_rx);
     memset(out, 0, 32);
     return;
   }
-  randomx_calculate_hash(g_vm, header, SHEAR_HEADER_LEN, out);
-  pthread_mutex_unlock(&g_mu);
+  randomx_calculate_hash(tls->vm, header, SHEAR_HEADER_LEN, out);
+  pthread_rwlock_unlock(&g_rx);
 }
 
 int shear_meets_target(const unsigned char hash[32], int bits) {

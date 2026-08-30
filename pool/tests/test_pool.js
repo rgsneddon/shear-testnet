@@ -348,6 +348,11 @@ function loginAndShare(port, login, extra = {}) {
 }
 
 describe('public miner listing', () => {
+  it('share ACK includes block so the miner can paint blockfound', () => {
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.match(src, /block: !!scored\.block/);
+  });
+
   it('pool and miner HTML paint from live API workers, not a local stash', () => {
     const dash = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
     const miner = fs.readFileSync(new URL('../public/miner.html', import.meta.url), 'utf8');
@@ -397,13 +402,18 @@ describe('public miner listing', () => {
     assert.equal(publicWorkerName('ssa1qexample.ok-rig'), 'ok-rig');
   });
 
-  it('isPublicMinerRow keeps a connected hasher with proven shares; drops 12s after disconnect', () => {
+  it('isPublicMinerRow lists a connected hasher immediately; .fee stays hidden; linger only after proven work', () => {
     assert.equal(HASH_PRESENCE_MS, 12_000);
     const now = 1_700_000_000_000;
-    const live = { accepted: 9, connections: [{ sock: {} }], workerKey: 'ssa1qtest.rig' };
-    assert.equal(isPublicMinerRow({ ...live, lastShareAt: now - 5_000 }, now), true);
+    const live = { accepted: 0, connections: [{ sock: {} }], workerKey: 'ssa1qtest.rig' };
+    assert.equal(isPublicMinerRow(live, now), true);
+    assert.equal(isPublicMinerRow({ ...live, accepted: 9, lastShareAt: now - 5_000 }, now), true);
     assert.equal(isPublicMinerRow({ ...live, lastShareAt: now - 13_000 }, now), true);
-    assert.equal(isPublicMinerRow({ ...live, accepted: 0, lastShareAt: now - 1_000 }, now), false);
+    assert.equal(isPublicMinerRow({
+      accepted: 0,
+      connections: [],
+      workerKey: 'ssa1qtest.rig',
+    }, now), false);
     assert.equal(isPublicMinerRow({
       accepted: 4,
       lastShareAt: now - 20_000,
@@ -426,6 +436,67 @@ describe('public miner listing', () => {
     assert.equal(lastValidWorkAt({ lastShareAt: 10, acceptAt: [5, 12] }), 12);
     const fee = { accepted: 9, lastShareAt: now, workerKey: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.fee' };
     assert.equal(isPublicMinerRow(fee, now), false);
+    assert.equal(isPublicMinerRow({
+      accepted: 0,
+      connections: [{ sock: {} }],
+      workerKey: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.fee',
+    }, now), false);
+  });
+
+  it('publicStats lists a connected hasher with accepted=0 and records miner hashes without minting them', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-list-on-login-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const tag = publicMinerTag(dest);
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 4,
+      bits: 8,
+    });
+    await new Promise((resolve, reject) => {
+      pool.stratum.listen(0, '127.0.0.1', () => {
+        pool.httpServer.listen(0, '127.0.0.1', resolve);
+      });
+      pool.stratum.on('error', reject);
+    });
+    const sock = await new Promise((resolve, reject) => {
+      const s = net.connect(pool.stratum.address().port, '127.0.0.1', () => {
+        s.write(JSON.stringify({
+          id: 1,
+          method: 'login',
+          params: {
+            login: `${dest}.rig`,
+            client: 'ShearHash',
+            threads: 2,
+            hashes: 4200,
+            hashrate: 55,
+          },
+        }) + '\n');
+      });
+      s.once('data', () => resolve(s));
+      s.on('error', reject);
+      setTimeout(() => reject(new Error('login_timeout')), 5000);
+    });
+    const stats = pool.publicStats();
+    const w = (stats.workers || []).find((x) => x.miner === tag);
+    assert.ok(w, JSON.stringify(stats.workers));
+    assert.equal(stats.miners, 1);
+    assert.equal(w.accepted, 0);
+    assert.equal(w.connected, true);
+    assert.equal(w.roundHashes, 0);
+    assert.equal(w.hashes, 4200);
+    assert.equal(w.threads, 2);
+    const row = [...pool.miners.values()].find((m) => String(m.workerKey || '').endsWith('.rig'));
+    assert.equal(Number(row.roundHashes) || 0, 0);
+    assert.equal(Number(row.clientHashes), 4200);
+    sock.destroy();
+    await new Promise((r) => setTimeout(r, 50));
+    const gone = pool.publicStats();
+    assert.equal((gone.workers || []).some((x) => x.miner === tag), false);
+    pool.close();
   });
 
   it('foldPublicMinerViews keeps one row per she1 tag and sums device stats', () => {

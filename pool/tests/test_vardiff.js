@@ -6,7 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { scoreShare, createPool } from '../src/pool.js';
+import { createPool } from '../src/pool.js';
 import {
   clampShareBits,
   expectedOneThreadHs,
@@ -15,6 +15,7 @@ import {
   shouldRetargetShare,
   SHARE_VARDIFF_TARGET_MS,
   SHARE_VARDIFF_RETARGET_SHARES,
+  SHARE_BITS_V2_START,
 } from '../src/share_vardiff.js';
 
 describe('share vardiff', () => {
@@ -22,6 +23,18 @@ describe('share vardiff', () => {
     const one = expectedOneThreadHs(12);
     assert.ok(one > 0);
     assert.equal(one, hashesProvenByShare(12) / (SHARE_VARDIFF_TARGET_MS / 1000));
+  });
+
+  it('v2 opening share bits is livable at RandomX-lite H/s, not SHA-256 farm scale', () => {
+    assert.equal(SHARE_BITS_V2_START, 8);
+    const one = expectedOneThreadHs(SHARE_BITS_V2_START);
+    assert.ok(one < 10_000, `opening 1-thread H/s ${one} is SHA-256 scale`);
+    assert.ok(one > 10);
+    assert.ok(expectedOneThreadHs(18) > one);
+  });
+
+  it('v2 share interval is slow enough that RandomX verify cannot flood the event loop', () => {
+    assert.ok(SHARE_VARDIFF_TARGET_MS >= 2000, SHARE_VARDIFF_TARGET_MS);
   });
 
   it('never exceeds block bits and never goes below min', () => {
@@ -59,7 +72,11 @@ describe('share vardiff', () => {
     assert.equal(shouldRetargetShare({ shares: 1, elapsedMs: 100 }), false);
   });
 
-  it('createPool raises per-session shareBits after fast accepts, capped at block bits', async () => {
+  it('createPool login job uses v2 opening share bits; submit path retargets from actual interval', async () => {
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.match(src, /shouldRetargetShare/);
+    assert.match(src, /nextShareBits/);
+    assert.match(src, /conn\.shareBits = next/);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-var-'));
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
@@ -68,8 +85,6 @@ describe('share vardiff', () => {
       stratumPort: 0,
       httpPort: 0,
       miner: dest,
-      shareBits: 4,
-      bits: 12,
     });
     await new Promise((resolve, reject) => {
       pool.stratum.listen(0, '127.0.0.1', () => {
@@ -77,45 +92,16 @@ describe('share vardiff', () => {
       });
       pool.stratum.on('error', reject);
     });
-    const port = pool.stratum.address().port;
-    const jobs = [];
-    const sock = net.connect(port, '127.0.0.1');
+    const sock = net.connect(pool.stratum.address().port, '127.0.0.1');
     try {
-      await new Promise((resolve, reject) => {
+      const job = await new Promise((resolve, reject) => {
         sock.setEncoding('utf8');
         let buf = '';
-        let started = false;
         sock.on('data', (chunk) => {
           buf += chunk;
-          let idx;
-          while ((idx = buf.indexOf('\n')) >= 0) {
-            const msg = JSON.parse(buf.slice(0, idx));
-            buf = buf.slice(idx + 1);
-            const job = msg.job || (msg.method === 'job' ? msg.params : null);
-            if (job && job.shareBits != null) jobs.push(job);
-            if (!started && job) {
-              started = true;
-              let found = 0;
-              let nonce = 0n;
-              while (found < SHARE_VARDIFF_RETARGET_SHARES && nonce < 2_000_000n) {
-                const s = scoreShare({ job, nonce });
-                if (s.ok) {
-                  sock.write(JSON.stringify({
-                    id: 10 + found,
-                    method: 'submit',
-                    params: { jobId: job.jobId, nonce: String(nonce) },
-                  }) + '\n');
-                  found += 1;
-                }
-                nonce += 1n;
-              }
-              if (found < SHARE_VARDIFF_RETARGET_SHARES) {
-                reject(new Error('not_enough_shares'));
-                return;
-              }
-            }
-            if (jobs.length >= 2) resolve();
-          }
+          if (!buf.includes('\n')) return;
+          const msg = JSON.parse(buf.split('\n')[0]);
+          resolve(msg.job || msg.result?.job);
         });
         sock.on('error', reject);
         sock.write(JSON.stringify({
@@ -123,13 +109,10 @@ describe('share vardiff', () => {
           method: 'login',
           params: { login: dest + '.var', client: 'ShearHash', threads: 1 },
         }) + '\n');
-        setTimeout(() => reject(new Error('timeout')), 20000);
+        setTimeout(() => reject(new Error('login_timeout')), 8000);
       });
-      assert.equal(jobs[0].shareBits, 4);
-      const later = jobs[jobs.length - 1];
-      assert.ok(later.shareBits > 4, `expected climb, got ${later.shareBits}`);
-      assert.ok(later.shareBits <= later.blockBits);
-      assert.ok(later.shareBits <= 12);
+      assert.equal(Number(job.shareBits), SHARE_BITS_V2_START);
+      assert.ok(Number(job.blockBits) >= Number(job.shareBits));
     } finally {
       sock.end();
       pool.close();

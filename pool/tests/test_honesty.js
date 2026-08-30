@@ -60,6 +60,20 @@ describe('duplicate shares cannot inflate round work', () => {
     }));
   });
 
+  it('connected hasher paints miner hashrate before a share; that rate does not mint', () => {
+    const miner = {
+      accepted: 0,
+      roundHashes: 0,
+      connections: [{ sock: {} }],
+      clientHashes: 4200,
+      clientHs: 55,
+    };
+    const hs = reportedHashrate(miner);
+    assert.ok(hs > 0 && hs < 1000, `display hs ${hs}`);
+    assert.equal(miner.roundHashes, 0);
+    assert.equal(provenHashrate(miner), 0);
+  });
+
   it('extra leading zeros / padded client hashes do not inflate credited work', () => {
     const shareBits = 8;
     const job = { shareBits, jobId: 'j-pad' };

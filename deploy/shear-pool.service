@@ -8,7 +8,7 @@ WorkingDirectory=/opt/shear-v2
 Environment=SHEAR_DATA=/var/lib/shear/testnet-v2
 Environment=SHEAR_STRATUM=1111
 Environment=SHEAR_HTTP=8088
-Environment=SHEAR_SHARE_BITS=18
+Environment=SHEAR_SHARE_BITS=8
 Environment=SHEAR_BITS=21
 Environment=SHEAR_P2P_PORT=30303
 Environment=SHEAR_P2P_BIND=0.0.0.0

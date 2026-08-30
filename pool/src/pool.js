@@ -25,6 +25,7 @@ import {
   hashesProvenByShare,
   nextShareBits,
   shouldRetargetShare,
+  SHARE_BITS_V2_START,
 } from './share_vardiff.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -284,18 +285,17 @@ export function lastValidWorkAt(m) {
 
 /**
  * Dual-login `.fee` is a second TCP session on the hasher's job, not a
- * public worker. Login alone does not list a row. A live TCP session
- * that has accepted at least one share stays listed (header bits can
- * put the next valid share well past 12s). After full disconnect the
- * row stays for HASH_PRESENCE_MS, then drops.
+ * public worker. A live TCP session lists immediately (login, before any
+ * share). After full disconnect, a never-shared row drops; a hasher that
+ * had proven work lingers HASH_PRESENCE_MS, then drops.
  */
 export function isPublicMinerRow(m, now = Date.now()) {
   if (!m) return false;
   if (isCminerFeeLogin(m.workerKey || m.login)) return false;
+  if (minerConnected(m)) return true;
   if (!(Number(m.accepted) > 0)) return false;
   const last = lastValidWorkAt(m);
   if (!(last > 0)) return false;
-  if (minerConnected(m)) return true;
   const gone = Number(m.disconnectedAt) || last;
   return (Number(now) - gone) < HASH_PRESENCE_MS;
 }
@@ -311,6 +311,7 @@ export function foldPublicMinerViews(views) {
       byTag.set(tag, {
         ...v,
         hashrate: Number(v.hashrate) || 0,
+        hashes: Number(v.hashes) || 0,
         roundHashes: Number(v.roundHashes) || 0,
         accepted: Number(v.accepted) || 0,
         stale: Number(v.stale) || 0,
@@ -324,6 +325,7 @@ export function foldPublicMinerViews(views) {
       continue;
     }
     prev.hashrate += Number(v.hashrate) || 0;
+    prev.hashes += Number(v.hashes) || 0;
     prev.roundHashes += Number(v.roundHashes) || 0;
     prev.accepted += Number(v.accepted) || 0;
     prev.stale += Number(v.stale) || 0;
@@ -429,12 +431,16 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
 }
 
 /**
- * Public H/s is proven accepted-share work only. Client `hashes`/`hashrate`
- * (lifetime counters, fee-socket copies of the hasher total, padded zeros)
- * must not paint the dashboard.
+ * Public H/s: proven shareBits work when any share has landed. Before that,
+ * a connected hasher's own `hashes` counter paints the device rate so the
+ * row is not 0 H/s on login. Padded client hashes never mint / roundHashes.
  */
 export function reportedHashrate(miner, now = Date.now()) {
-  return easeHashrate(miner, provenHashrate(miner, now), now);
+  const proven = provenHashrate(miner, now);
+  if (proven > 0) return easeHashrate(miner, proven, now);
+  const client = Number(miner?.clientHs) || 0;
+  if (client > 0 && minerConnected(miner)) return easeHashrate(miner, client, now);
+  return easeHashrate(miner, 0, now);
 }
 
 export function sortMinersByHashrate(miners, now = Date.now()) {
@@ -461,11 +467,14 @@ export function createPool({
   stratumPort = 1111,
   httpPort = 8088,
   miner,
-  shareBits = 18,
+  shareBits = SHARE_BITS_V2_START,
   bits = 16,
 } = {}) {
   const store = createStore(dataDir);
   const miners = new Map();
+  function liveShareMin() {
+    return Number(shareBits) >= SHARE_BITS_V2_START ? SHARE_BITS_V2_START : 1;
+  }
   let lastJob = null;
   let pendingPayout = [];
   const stats = {
@@ -499,7 +508,7 @@ export function createPool({
 
   let lastIssueAt = 0;
   function issueJob(shareBitsNow, { force = false } = {}) {
-    const sb = clampShareBits(shareBitsNow ?? shareBits, { blockBits: blockBitsNow() });
+    const sb = clampShareBits(shareBitsNow ?? shareBits, { blockBits: blockBitsNow(), minBits: liveShareMin() });
     const now = Date.now();
     if (!force && lastJob && Number(lastJob.shareBits) === sb && now - lastIssueAt < 250) {
       return lastJob;
@@ -544,7 +553,7 @@ export function createPool({
         if (c && c.sock === sock) {
           c.job = job;
           if (job.shareBits != null) {
-            c.shareBits = clampShareBits(job.shareBits, { blockBits: job.blockBits || job.bits });
+            c.shareBits = clampShareBits(job.shareBits, { blockBits: job.blockBits || job.bits, minBits: liveShareMin() });
           }
         }
       }
@@ -624,7 +633,7 @@ export function createPool({
             threads: Number(params.threads) || 1,
             cpuThreads: Number(params.cpuThreads) || 0,
             cpuCores: Number(params.cpuCores) || 0,
-            shareBits: clampShareBits(shareBits, { blockBits: blockBitsNow() }),
+            shareBits: clampShareBits(shareBits, { blockBits: blockBitsNow(), minBits: liveShareMin() }),
             varShares: 0,
             varWindowAt: Date.now(),
             seen: Date.now(),
@@ -742,7 +751,7 @@ export function createPool({
               nextJob = true;
             }
           }
-          sock.write(line({ id: msg.id, result: { status: 'OK', hash: scored.hash } }));
+          sock.write(line({ id: msg.id, result: { status: 'OK', hash: scored.hash, block: !!scored.block } }));
           if (!nextJob && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login)) {
             conn.varShares = (Number(conn.varShares) || 0) + 1;
             const now = Date.now();
@@ -753,6 +762,7 @@ export function createPool({
                 current: conn.shareBits,
                 actualIntervalMs: elapsed / n,
                 blockBits: blockBitsNow(),
+                minBits: liveShareMin(),
               });
               conn.varShares = 0;
               conn.varWindowAt = now;
@@ -792,6 +802,7 @@ export function createPool({
       client: String(m.client || CLIENT),
       algo: ALGO,
       hashrate: reportedHashrate(m, now),
+      hashes: Number(m.clientHashes) || 0,
       roundHashes: Number(m.roundHashes) || 0,
       accepted: m.accepted || 0,
       stale: m.stale || 0,
