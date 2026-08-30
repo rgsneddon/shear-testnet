@@ -98,7 +98,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /ShearK algorithm \(a variant of RandomX\)/);
     assert.match(html, /Exactly 1 SHE, every found block/);
     assert.match(html, /0\.00000000001 SHE for each accepted hash/);
-    assert.match(html, /Community governance in The Reserve/);
+    assert.match(html, /Community Governance/);
     assert.match(html, /Who may take part/);
     assert.match(html, /What a vote may move/);
     assert.match(html, /The Reserve Oracle/);
