@@ -22,10 +22,36 @@
     p { margin:0 0 8px; overflow-wrap:anywhere; }
     .panel-card {
       border: 1px solid transparent; border-radius: var(--radius); padding: 10px 12px; margin: 8px 0;
-      background: linear-gradient(165deg, #ffffff 0%, #f4f8fc 58%) padding-box,
+      background: linear-gradient(165deg, var(--card) 0%, var(--bg) 58%) padding-box,
         linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
       background-origin: border-box; background-clip: padding-box, border-box;
     }
+    .guide-grid {
+      display: grid; grid-template-columns: 1fr; gap: 12px; margin: 16px 0 0; align-items: stretch;
+    }
+    @media (min-width: 980px) {
+      .guide-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    .guide-grid .panel-card { margin: 0; padding: 16px 18px; }
+    .guide-grid h2 { margin: 0 0 10px; font-size: 1.05rem; }
+    .guide-grid h3 {
+      font-size: .78rem; letter-spacing: .05em; text-transform: uppercase;
+      color: var(--cyan); margin: 14px 0 6px; font-weight: 800;
+    }
+    .guide-grid h3:first-of-type { margin-top: 2px; }
+    .guide-grid p { margin: 0 0 10px; line-height: 1.55; }
+    .guide-grid ol { margin: 0 0 4px; padding-left: 1.15rem; }
+    .guide-grid li { margin: 0 0 9px; line-height: 1.55; }
+    .sched { width: 100%; border-collapse: collapse; margin: 4px 0 12px; font-size: .88rem; }
+    .sched th, .sched td {
+      text-align: left; padding: .45rem .2rem; vertical-align: top;
+      border-bottom: 1px solid rgba(26,111,181,.18);
+    }
+    .sched th {
+      color: var(--muted); font-size: .7rem; letter-spacing: .05em;
+      text-transform: uppercase; font-weight: 700; width: 38%;
+    }
+    .sched td { font-weight: 600; }
     .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; }
     a { color:var(--cyan); }
     code { background:var(--code); padding:.2em .45em; color:var(--green); }
@@ -159,6 +185,51 @@
       <p>Algo: ShearHash-v2 · Coin: SHE · Network: shear-testnet-v2</p>
       <p class="pulse">live · testnet</p>
     </section>
+    <div class="guide-grid">
+      <section class="panel-card" id="emission">
+        <h2>How SHE is created</h2>
+        <p>Nothing was set aside at the start. Coin enters circulation in three independent ways. One does not stand in for another.</p>
+        <table class="sched">
+          <tr><th>Block pot</th><td>Exactly 1 SHE, every found block</td></tr>
+          <tr><th>Hash bonus</th><td>0.00000000001 SHE for each accepted hash, paid to the hasher who produced it</td></tr>
+          <tr><th>Reserve interest</th><td>The published yearly rate on a qualifying stake, over 400 days (starts at 4.25%)</td></tr>
+          <tr><th>What a vote may move</th><td>The hash bonus, by one unit either way, or leave it. The pot never moves.</td></tr>
+        </table>
+        <h3>The pot</h3>
+        <p>A found block creates that 1 SHE. Mine alone and the finder keeps it. On the public pool it is split by who actually hashed during the round; one percent of this pot may go to development. Hash bonuses are paid in full.</p>
+        <h3>Each hash</h3>
+        <p>Your accepted hashes are yours. Finding the block does not let anyone take another person’s bonus. Public pages show eight decimal places, so a single hash looks like dust; the extra unit is still written into the payout.</p>
+        <h3>The Reserve</h3>
+        <p>This is the only program allowed to create extra SHE after hashing. Lock just over 3.14 SHE (π) for a 400-day period. Staked coin can vote and may earn interest. Coin left idle in the same vault comes back without interest and without a vote. Inside the last 99 days, new deposits still lock, but they sit idle until the period ends.</p>
+        <p>Shear does not sell SHE. You hash, you are paid by someone who already holds coin, or you earn Reserve interest on a qualifying stake. Testnet balances can vanish; treat them as practice.</p>
+      </section>
+      <section class="panel-card" id="vortex">
+        <h2>Vortex, and the vortices inside it</h2>
+        <p>Vortex is a tab in the wallet. It is a drawer of small programs that run on Shear. Each of those programs is a vortice.</p>
+        <h3>Already installed</h3>
+        <p><strong>The Reserve</strong> is the staking room. Lock π SHE here to vote and, if the stake is active, to accrue interest.</p>
+        <p><strong>The Join</strong> waits for mainnet. At genesis a vault is filled once, then pays claims for ninety-nine days. Whatever is still sitting there afterwards is burned. It does not keep creating coin, and there is nothing to claim on today’s testnet.</p>
+        <h3>Adding another</h3>
+        <p>Anyone can publish a vortice. They host it; Shear does not keep a shop window. The author hands you a <code>vort1.</code> key. Under Add new vortice, paste that key. The wallet fetches the program, checks the pin, and installs it on your device. You never type a web address, and you never pick from a list. No key, no program.</p>
+        <h3>What they can do</h3>
+        <p>A third-party vortice can move SHE you already have, keep a vault, or pay rewards it has funded itself. If the hosted file changes, the old key stops working; a new body needs a new key.</p>
+        <h3>What they must not</h3>
+        <p>They cannot create new SHE. They cannot ask for your wallet password, your backup file, or a <code>join1.</code> key. They cannot raise or lower the 1 SHE pot. Keep serving the pinned bytes for as long as you want the key to work.</p>
+      </section>
+      <section class="panel-card" id="wallet-start">
+        <h2>Start a wallet from scratch</h2>
+        <p>Current pin is <strong>0.4</strong>. Use the WALLET button above and pick your system.</p>
+        <ol>
+          <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
+          <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
+          <li>You will enter that password each time you open the app. If it is lost, the wallet cannot be opened. Where the phone or computer offers a fingerprint or face unlock, that only works on this device.</li>
+          <li>Continuum shows your spendable balance and your <code>she1</code>. Copy that <code>she1</code> when someone needs to pay you. Incoming coin lands on a revolving <code>ssa1</code> that you do not hand out. Never share a <code>shear1</code> string.</li>
+          <li>Open Closure and tap <strong>Export shewall.bin</strong>. Keep that file with the password. Together they restore the same wallet on another machine.</li>
+          <li>This app does not mine. To hash, run the miner against <code>pool.shear.digital:1111</code> and log in with your <code>she1</code>.</li>
+        </ol>
+        <p>This is testnet. Install only from the buttons on this page or the official release tag.</p>
+      </section>
+    </div>
   </div>
   <script>
     (function () {

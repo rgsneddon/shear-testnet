@@ -45,4 +45,23 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-pack="wallet-macos"/);
     assert.match(html, /data-pack="miner-windows"/);
   });
+
+  it('puts emissions, vortex, and wallet-start boxes on the main page', () => {
+    const shear = html.indexOf('<h1>Shear</h1>');
+    const emission = html.indexOf('id="emission"');
+    const vortex = html.indexOf('id="vortex"');
+    const wallet = html.indexOf('id="wallet-start"');
+    assert.ok(shear >= 0 && emission > shear && vortex > emission && wallet > vortex);
+    assert.match(html, /How SHE is created/);
+    assert.match(html, /Exactly 1 SHE, every found block/);
+    assert.match(html, /0\.00000000001 SHE for each accepted hash/);
+    assert.match(html, /Vortex, and the vortices inside it/);
+    assert.match(html, /vort1\./);
+    assert.match(html, /Add new vortice/);
+    assert.match(html, /Start a wallet from scratch/);
+    assert.match(html, /Set password/);
+    assert.match(html, /Export shewall\.bin/);
+    assert.match(html, /guide-grid/);
+    assert.doesNotMatch(html, /GNFP|gnfp|Bitcoin|Ethereum|feeless/);
+  });
 });
