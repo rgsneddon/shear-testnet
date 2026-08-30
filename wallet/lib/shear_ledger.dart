@@ -8,6 +8,10 @@ import 'shear_identity.dart';
 const kSheDecimals = 11;
 const kShePublicDigits = 8;
 const kUnitsPerShe = 100000000000; // 10^11
+/// Fingerprint pot (BLOCK_SUBSIDY_NANOS / NANOS_PER_SHE). Continuum display only; do not mint from this.
+const kBlockPotShe = 1.0;
+/// Fingerprint target interval (TARGET_BLOCK_INTERVAL_MS). Continuum display only.
+const kTargetBlockIntervalMs = 90000;
 /// 0.00000000001 SHE per valid hash.
 const kHashBonusShe = 0.00000000001;
 const kHashBonusVoteDeltaShe = 0.00000000001;
@@ -109,6 +113,74 @@ class ShearTx {
 bool isWalletBlockKind(String kind) =>
     kind == 'blockfound' || kind == 'coinbase' || kind == 'block' || kind == 'pot' || kind == 'mine';
 
+/// Read-only Path 1 observation: sealed pots only. Does not mint.
+class Path1Observation {
+  const Path1Observation({
+    required this.quantumShe,
+    required this.targetIntervalMs,
+    required this.integralQShe,
+    this.observedIntervalMs,
+  });
+
+  final double quantumShe;
+  final int targetIntervalMs;
+  final double integralQShe;
+  final int? observedIntervalMs;
+
+  double get targetFluxShePerMs =>
+      targetIntervalMs <= 0 ? 0 : quantumShe / targetIntervalMs;
+}
+
+int? headerTimestampMs(Uint8List header) {
+  if (header.length < 108) return null;
+  var v = 0;
+  for (var i = 7; i >= 0; i--) {
+    v = (v << 8) | header[100 + i];
+  }
+  if (v <= 0) return null;
+  return v;
+}
+
+/// Sealed coinbase pot SHE from one already-listed explorer/history row.
+/// Hash bonus is not the pot. Rows without a sealed height are templates.
+double? sealedPotShe(ShearTx t) {
+  final h = t.height ?? 0;
+  if (h < 1) return null;
+  final kind = t.kind;
+  if (kind == 'hash' || kind == 'send' || kind == 'receive' || kind == 'claim') {
+    return null;
+  }
+  if (kind == 'pot') return t.amount;
+  if (isWalletBlockKind(kind) && t.from == 'coinbase') {
+    final pot = t.amount - (t.hashAmount ?? 0);
+    if (pot <= 0) return null;
+    return pot;
+  }
+  return null;
+}
+
+/// Fold sealed pot vouts the wallet already lists. Pending/unconfirmed templates
+/// (no sealed height) are excluded. Q is the sum of those pots, not a mint.
+Path1Observation foldSealedPots(
+  Iterable<ShearTx> txs, {
+  double quantumShe = kBlockPotShe,
+  int targetIntervalMs = kTargetBlockIntervalMs,
+  int? observedIntervalMs,
+}) {
+  var q = 0.0;
+  for (final t in txs) {
+    final p = sealedPotShe(t);
+    if (p == null) continue;
+    q += p;
+  }
+  return Path1Observation(
+    quantumShe: quantumShe,
+    targetIntervalMs: targetIntervalMs,
+    integralQShe: q,
+    observedIntervalMs: observedIntervalMs,
+  );
+}
+
 /// Wallet lists: full blocks only. Hash rewards live inside the block row.
 String walletTxLabel(ShearTx t) => isWalletBlockKind(t.kind) ? 'block' : t.kind;
 
@@ -206,8 +278,24 @@ class ShearLedger {
   int _settledHeight = 0;
   final Map<String, int> _historyAt = {};
 
+  int? _headerTimestampMs;
+  int? _prevHeaderTimestampMs;
+
   /// Last found/sealed block height (Continuum header).
   int get sealedHeight => _sealedHeight;
+
+  /// Display-only last sealed header dt (ms). Not a mint input.
+  int? get lastSealedHeaderDtMs {
+    final a = _prevHeaderTimestampMs;
+    final b = _headerTimestampMs;
+    if (a == null || b == null || b <= a) return null;
+    return b - a;
+  }
+
+  Path1Observation path1Observation() => foldSealedPots(
+        _txs,
+        observedIntervalMs: lastSealedHeaderDtMs,
+      );
 
   /// Last height Continuum already settled into spendable.
   int get settledHeight => _settledHeight;
@@ -222,6 +310,13 @@ class ShearLedger {
   /// Read lag-1 continuity from a 128-byte tip header. Next dest uses sealedHeight+1.
   void applyTipHeader(Uint8List header, {required int sealedHeight}) {
     lag1Root = lag1ContinuityFromHeader(header);
+    final ts = headerTimestampMs(header);
+    if (ts != null) {
+      if (_headerTimestampMs != null && ts != _headerTimestampMs) {
+        _prevHeaderTimestampMs = _headerTimestampMs;
+      }
+      _headerTimestampMs = ts;
+    }
     _advanceSealed(sealedHeight);
   }
 
@@ -407,6 +502,7 @@ class ShearLedger {
       kind: 'coinbase',
       height: height,
       confirmed: false,
+      hashAmount: hashBonus > 0 ? hashBonus : null,
     );
     if ((coinbaseAmt > 0 ? coinbaseAmt : total) > 0) _txs.add(tx);
     if (height > _sealedHeight) _sealedHeight = height;

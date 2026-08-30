@@ -2,12 +2,17 @@
 
 Three separate paths. They do not substitute for each other.
 
-## 1. Block pot — 1 SHE
+## 1. Block pot — 1 SHE per block continuity
 
-Every valid block mints **exactly 1 SHE** in the coinbase (`kind: pot`).
-
-- Solo: the finder.
-- Pool: split among that round’s proven work. The public pool may take **1% of this pot only** for development. Hash bonuses are not fee’d.
+Every valid block mints exactly the fingerprint pot in the coinbase (`kind: pot`).
+Solo: the finder. Pool: split by proven work in that round. Public pool may take 1% of this pot only.
+This is **1 SHE per block continuity**, not an infinite tick schedule.
+The pot is the closure quantum of a target flux S_pot/T.
+The series of pots is the recoverable integral of that flux, snapped to the fingerprint quantum at block-found.
+Validation remains `vout_pot == BLOCK_SUBSIDY_NANOS`.
+dt is not a mint input.
+The Continuum tab observes Q(t) and E from sealed pots. It does not mint.
+Votes do not move the pot. The Reserve Oracle does not move the pot.
 
 ## 2. Per-hash bonus — 0.0000000001 SHE × hashes, per miner
 

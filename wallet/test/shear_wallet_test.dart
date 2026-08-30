@@ -735,6 +735,95 @@ void main() {
     expect(find.text('Copy ID'), findsNothing);
   });
 
+  test('Path 1 fold sums sealed pot vouts and excludes pending templates and hash bonus', () {
+    const dest = 'ssa1fold';
+    final sealed = <ShearTx>[
+      ShearTx(id: 'p1', from: 'coinbase', to: dest, amount: 1, kind: 'pot', height: 1, confirmed: true),
+      ShearTx(id: 'p2', from: 'coinbase', to: dest, amount: 1, kind: 'pot', height: 2, confirmed: true),
+      ShearTx(
+        id: 'cb3',
+        from: 'coinbase',
+        to: dest,
+        amount: 1 + kHashBonusShe,
+        kind: 'coinbase',
+        height: 3,
+        confirmed: true,
+        hashAmount: kHashBonusShe,
+      ),
+      ShearTx(id: 'hash3', from: 'coinbase', to: dest, amount: kHashBonusShe, kind: 'hash', height: 3, confirmed: true),
+      ShearTx(id: 'pend', from: 'coinbase', to: dest, amount: 1, kind: 'pot', height: 0, confirmed: false),
+      ShearTx(id: 'tmpl', from: 'coinbase', to: dest, amount: 1, kind: 'pot', confirmed: false),
+    ];
+    final obs = foldSealedPots(sealed);
+    expect(obs.quantumShe, kBlockPotShe);
+    expect(obs.quantumShe, 1);
+    expect(obs.targetIntervalMs, kTargetBlockIntervalMs);
+    expect(obs.targetIntervalMs, 90000);
+    expect(obs.integralQShe, 3);
+    expect(obs.targetFluxShePerMs, kBlockPotShe / kTargetBlockIntervalMs);
+
+    final ledger = ShearLedger();
+    final id = createIdentity();
+    ledger.viewSecret = id.viewKey;
+    ledger.confirmRound(address: id.address, pot: 1, height: 10);
+    ledger.confirmRound(address: id.address, pot: 1, height: 11);
+    ledger.creditHash(id.address, hashes: 1);
+    ledger.confirmRound(address: id.address, pot: 1, height: 12);
+    expect(ledger.path1Observation().integralQShe, 3);
+    expect(ledger.path1Observation().quantumShe, kBlockPotShe);
+  });
+
+  test('Path 1 observed interval is last sealed header dt and is not a mint input', () {
+    final ledger = ShearLedger();
+    final a = Uint8List(128);
+    a[0] = 1;
+    var t0 = 1_700_000_000_000;
+    for (var i = 0; i < 8; i++) {
+      a[100 + i] = t0 & 0xff;
+      t0 >>= 8;
+    }
+    final b = Uint8List.fromList(a);
+    var t1 = 1_700_000_090_000;
+    for (var i = 0; i < 8; i++) {
+      b[100 + i] = t1 & 0xff;
+      t1 >>= 8;
+    }
+    ledger.applyTipHeader(a, sealedHeight: 1);
+    expect(ledger.lastSealedHeaderDtMs, isNull);
+    ledger.applyTipHeader(b, sealedHeight: 2);
+    expect(ledger.lastSealedHeaderDtMs, 90000);
+    expect(ledger.path1Observation().observedIntervalMs, 90000);
+  });
+
+  testWidgets('Continuum shows 1 SHE per block continuity and sealed pot figures', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-path1-ui-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    final ident = session.identity!;
+    final ledger = ShearLedger()..viewSecret = ident.viewKey;
+    ledger.confirmRound(address: ident.address, pot: 1, height: 1);
+    ledger.confirmRound(address: ident.address, pot: 1, height: 2);
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'pw');
+    await tester.tap(find.text('Unlock'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('1 SHE per block continuity'), findsOneWidget);
+    expect(find.textContaining('Closure quantum'), findsOneWidget);
+    expect(find.textContaining('Target flux'), findsOneWidget);
+    expect(find.textContaining('Integral Q'), findsOneWidget);
+    expect(find.textContaining('Observed interval'), findsOneWidget);
+    expect(find.text('Integral Q  2 SHE'), findsOneWidget);
+    expect(find.textContaining('infinite schedule'), findsNothing);
+    expect(find.textContaining('Oracle rate'), findsNothing);
+    expect(find.text('Vote'), findsNothing);
+    expect(find.textContaining('Reserve interest'), findsNothing);
+    expect(find.text('Spendable'), findsOneWidget);
+    expect(find.text('Copy ID'), findsOneWidget);
+  });
+
   testWidgets('Continuum lists pending sends until the next block, then Shearview has them', (tester) async {
     final dir = Directory.systemTemp.createTempSync('shear-pending-ui-');
     final session = ShearSession(store: File('${dir.path}/session.json'));

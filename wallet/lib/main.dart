@@ -534,6 +534,9 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     final dest = ledger.currentDest(ident.address);
     final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
     final pending = ledger.pendingTxs(ident.address);
+    final path1 = ledger.path1Observation();
+    final fluxSec = (path1.targetIntervalMs / 1000).round();
+    final dt = path1.observedIntervalMs;
     return _card([
       Text(
         '${formatShe(spend)} SHE',
@@ -544,6 +547,18 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         ),
       ),
       Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
+      const SizedBox(height: 16),
+      Text(
+        '1 SHE per block continuity',
+        style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface),
+      ),
+      Text('Closure quantum  ${formatShe(path1.quantumShe)} SHE', style: TextStyle(color: shearMutedOf(context))),
+      Text('Target flux  ${formatShe(path1.quantumShe)} SHE / $fluxSec s', style: TextStyle(color: shearMutedOf(context))),
+      Text(
+        dt == null ? 'Observed interval  —' : 'Observed interval  $dt ms',
+        style: TextStyle(color: shearMutedOf(context)),
+      ),
+      Text('Integral Q  ${formatShe(path1.integralQShe)} SHE', style: TextStyle(color: shearMutedOf(context))),
       if (pending.isNotEmpty) ...[
         const SizedBox(height: 16),
         Text('Pending', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
