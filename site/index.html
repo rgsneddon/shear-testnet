@@ -149,6 +149,29 @@
       #testnet-banner .tn-word { font-size:1.6rem; letter-spacing:.28em; text-indent:.28em; }
       #testnet-banner .tn-count { font-size:1.1rem; letter-spacing:.08em; }
     }
+    .intro-split {
+      display:grid; grid-template-columns:1fr; gap:12px; margin:8px 0 0; align-items:stretch;
+    }
+    @media (min-width: 860px) {
+      .intro-split { grid-template-columns: 1fr 1fr; }
+    }
+    .intro-split > .panel-card {
+      margin:0; display:flex; flex-direction:column; height:100%;
+    }
+    .intro-split .intro-live { margin-top:auto; }
+    .cont-row {
+      display:grid; grid-template-columns: 9.2rem minmax(0, 1fr); gap:2px 12px;
+      padding:9px 0; border-bottom:1px solid rgba(26,111,181,.16); align-items:baseline;
+    }
+    .cont-row:last-child { border-bottom:0; }
+    .cont-row .label { margin:0; }
+    .cont-row .value { color:var(--cyan); font-weight:700; font-size:.95rem; }
+    .cont-row p {
+      grid-column:1 / -1; margin:2px 0 0; color:var(--muted); font-size:.82rem;
+      line-height:1.4; font-weight:500;
+    }
+    #network-continuity h2 { margin-bottom:6px; }
+    #network-continuity > .lede { color:var(--muted); margin-bottom:10px; }
   </style>
 </head>
 <body>
@@ -168,7 +191,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.1" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.5" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.6" target="_blank" rel="noopener">WALLET</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -187,17 +210,17 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.5</strong> · miner <strong>1.1</strong>
+      wallet <strong>0.6</strong> · miner <strong>1.1</strong>
     </p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.5">WALLET</a>
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.6">WALLET</a>
         <div class="client-menu" id="menu-wallet">
-          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.5/shear-wallet-0.5-macos.dmg">macOS</a>
-          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.5/shear-wallet-0.5-windows.zip">Windows</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.5/shear-wallet-0.5-android.apk">Android</a>
-          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.5/shear-wallet-0.5-linux.zip">Linux</a>
-          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.5/shear-wallet-0.5-archlinux.zip">Arch</a>
+          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.6/shear-wallet-0.6-macos.dmg">macOS</a>
+          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.6/shear-wallet-0.6-windows.zip">Windows</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.6/shear-wallet-0.6-android.apk">Android</a>
+          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.6/shear-wallet-0.6-linux.zip">Linux</a>
+          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.6/shear-wallet-0.6-archlinux.zip">Arch</a>
         </div>
       </div>
       <div class="client-dd">
@@ -221,16 +244,54 @@
       <div class="tn-launch">MAINNET LAUNCH at 11pm UK time on 1st September 2026</div>
       <div class="tn-count" id="mainnet-countdown">—</div>
     </div>
-    <section class="panel-card">
-      <h1>Shear</h1>
-      <p>she is private</p>
-      <p>Private by default. Proof of work only. Continuity-settled. <strong>Testnet.</strong></p>
-      <p>Offer <code>she1</code> (silent ID). Chain dests are revolving <code>ssa1</code>. Never share rest-frame shear1.</p>
-      <p>Pool: <a href="https://pool.shear.digital">pool.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
-      <p>Explorer: <a href="https://explorer.shear.digital">explorer.shear.digital</a></p>
-      <p>Algo: ShearHash-v2 · Coin: SHE · Network: shear-testnet-v2</p>
-      <p class="pulse">live · testnet</p>
-    </section>
+    <div class="intro-split" id="intro-split">
+      <section class="panel-card">
+        <h1>Shear</h1>
+        <p>she is private</p>
+        <p>Private by default. Proof of work only. Continuity-settled. <strong>Testnet.</strong></p>
+        <p>Offer <code>she1</code> (silent ID). Chain dests are revolving <code>ssa1</code>. Never share rest-frame shear1.</p>
+        <p>Pool: <a href="https://pool.shear.digital">pool.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
+        <p>Explorer: <a href="https://explorer.shear.digital">explorer.shear.digital</a></p>
+        <p>Algo: ShearHash-v2 · Coin: SHE · Network: shear-testnet-v2</p>
+        <p class="pulse">live · testnet</p>
+        <div class="intro-live">
+          <div class="cont-row">
+            <div class="label">Height</div>
+            <div class="value" id="nc-height">—</div>
+            <p>How many blocks have been sealed on the live chain.</p>
+          </div>
+          <div class="cont-row">
+            <div class="label">Nodes online</div>
+            <div class="value" id="nc-nodes">—</div>
+            <p>Full nodes currently reachable from the public seed.</p>
+          </div>
+        </div>
+      </section>
+      <section class="panel-card" id="network-continuity">
+        <h2>Network continuity</h2>
+        <p class="lede">Live figures for the whole chain. Nothing here belongs to a single wallet.</p>
+        <div class="cont-row">
+          <div class="label">Closure quantum</div>
+          <div class="value" id="nc-quantum">1 SHE</div>
+          <p>Each found block closes exactly one coin.</p>
+        </div>
+        <div class="cont-row">
+          <div class="label">Target flux</div>
+          <div class="value" id="nc-flux">1 SHE / 90 s</div>
+          <p>The network aims to find a block about every ninety seconds.</p>
+        </div>
+        <div class="cont-row">
+          <div class="label">Observed interval</div>
+          <div class="value" id="nc-observed">—</div>
+          <p>Average time between sealed blocks, as they have actually arrived.</p>
+        </div>
+        <div class="cont-row">
+          <div class="label">Integral Q</div>
+          <div class="value" id="nc-integral">—</div>
+          <p>All of those one-coin pots added together so far. Hash bonuses sit on top of this.</p>
+        </div>
+      </section>
+    </div>
     <div class="guide-grid">
       <section class="panel-card" id="emission">
         <h2>How SHE is created</h2>
@@ -272,7 +333,7 @@
     </div>
     <section class="panel-card guide-wide" id="wallet-start">
       <h2>Start a wallet from scratch</h2>
-      <p>Current pin is <strong>0.5</strong>. Use the WALLET button above and pick your system.</p>
+      <p>Current pin is <strong>0.6</strong>. Use the WALLET button above and pick your system.</p>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
         <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
@@ -295,11 +356,11 @@
       else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
-        macos: BASE + '/0.5/shear-wallet-0.5-macos.dmg',
-        windows: BASE + '/0.5/shear-wallet-0.5-windows.zip',
-        android: BASE + '/0.5/shear-wallet-0.5-android.apk',
-        linux: BASE + '/0.5/shear-wallet-0.5-linux.zip',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.5'
+        macos: BASE + '/0.6/shear-wallet-0.6-macos.dmg',
+        windows: BASE + '/0.6/shear-wallet-0.6-windows.zip',
+        android: BASE + '/0.6/shear-wallet-0.6-android.apk',
+        linux: BASE + '/0.6/shear-wallet-0.6-linux.zip',
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.6'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
@@ -339,6 +400,45 @@
           var h = Math.floor(s / 3600); s %= 3600;
           var m = Math.floor(s / 60); s %= 60;
           el.textContent = d + 'd ' + pad(h) + 'h ' + pad(m) + 'm ' + pad(s) + 's';
+        }
+        tick();
+        setInterval(tick, 1000);
+      })();
+      (function networkContinuity() {
+        function setText(id, text) {
+          var el = document.getElementById(id);
+          if (el) el.textContent = text;
+        }
+        function fmtShe(n) {
+          var v = Number(n) || 0;
+          if (!Number.isFinite(v)) return '0 SHE';
+          if (Math.abs(v - Math.round(v)) < 1e-9) return Math.round(v).toLocaleString('en-GB') + ' SHE';
+          return v.toFixed(8).replace(/0+$/, '').replace(/\.$/, '') + ' SHE';
+        }
+        function fmtSecs(ms) {
+          var s = Number(ms) / 1000;
+          if (!Number.isFinite(s) || s <= 0) return '—';
+          return s.toFixed(1) + ' s';
+        }
+        function paint(j) {
+          if (!j || j.ok === false) return;
+          var pot = Number(j.blockSubsidyNanos) / 100000000000;
+          if (!Number.isFinite(pot) || pot <= 0) pot = 1;
+          var targetMs = Number(j.targetBlockIntervalMs) || 90000;
+          var height = Number(j.height) || 0;
+          var observed = j.avgBlockTimeMs || j.networkAvgBlockTimeMs;
+          setText('nc-quantum', fmtShe(pot));
+          setText('nc-flux', fmtShe(pot) + ' / ' + Math.round(targetMs / 1000) + ' s');
+          setText('nc-observed', fmtSecs(observed));
+          setText('nc-integral', fmtShe(height * pot));
+          setText('nc-height', height.toLocaleString('en-GB'));
+          setText('nc-nodes', String(Number(j.nodesOnline) || 0));
+        }
+        function tick() {
+          fetch('/api/stats?_=' + Date.now(), { cache: 'no-store' })
+            .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+            .then(paint)
+            .catch(function () {});
         }
         tick();
         setInterval(tick, 1000);

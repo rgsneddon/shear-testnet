@@ -16,7 +16,7 @@ import { requiredJobFields, encodeHeader } from '../../crypto/header.js';
 import { payoutDest } from '../../crypto/address.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, JOB_RESTAMP_MS } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, JOB_RESTAMP_MS, STATS_REFRESH_MS } from '../src/pool.js';
 import { publicJob, buildTemplate, hashBonusByMiner } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
@@ -47,6 +47,50 @@ describe('observed interval', () => {
     assert.match(src, /setInterval\(maybeRestampJob/);
     assert.equal(/if \(!\(want < have\)\) return/.test(src), false);
     assert.equal(JOB_RESTAMP_MS, 1000);
+  });
+});
+
+describe('HTTP stats cannot stall', () => {
+  it('serves /api/stats from a snapshot; RandomX runs in a worker', async () => {
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.match(src, /worker_threads/);
+    assert.match(src, /hash_worker\.js/);
+    assert.match(src, /STATS_REFRESH_MS/);
+    assert.match(src, /scoreShareLive/);
+    assert.match(src, /hashOffThread/);
+    const start = src.indexOf("url.pathname === '/api/stats'");
+    assert.ok(start >= 0);
+    const slice = src.slice(start, start + 420);
+    assert.match(slice, /statsSnap\.json/);
+    assert.equal(slice.includes('publicStats()'), false);
+    assert.equal(STATS_REFRESH_MS, 400);
+    const worker = fs.readFileSync(new URL('../src/hash_worker.js', import.meta.url), 'utf8');
+    assert.match(worker, /shearHash/);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pool-stats-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 8,
+      bits: 16,
+    });
+    await new Promise((resolve, reject) => {
+      pool.stratum.listen(0, '127.0.0.1', () => {
+        pool.httpServer.listen(0, '127.0.0.1', resolve);
+      });
+      pool.stratum.on('error', reject);
+    });
+    const httpPort = pool.httpServer.address().port;
+    const t0 = Date.now();
+    const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+    assert.ok(Date.now() - t0 < 500, 'stats handler must not wait on RandomX');
+    assert.equal(stats.ok, true);
+    assert.equal(stats.coin, 'SHE');
+    pool.close();
   });
 });
 
