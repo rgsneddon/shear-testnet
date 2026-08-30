@@ -21,12 +21,12 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /height:72px/);
     assert.match(html, /justify-content:center/);
     assert.match(html, /text-indent:\.12em/);
-    assert.match(html, /shear-wallet-0\.4-macos\.dmg/);
-    assert.match(html, /shear-wallet-0\.4-windows\.zip/);
-    assert.match(html, /shear-wallet-0\.4-linux\.zip/);
-    assert.match(html, /shear-wallet-0\.4-archlinux\.zip/);
+    assert.match(html, /shear-wallet-0\.5-macos\.dmg/);
+    assert.match(html, /shear-wallet-0\.5-windows\.zip/);
+    assert.match(html, /shear-wallet-0\.5-linux\.zip/);
+    assert.match(html, /shear-wallet-0\.5-archlinux\.zip/);
     assert.match(html, /id="pack-advisory"/);
-    assert.match(html, /wallet <strong>0\.4<\/strong>/);
+    assert.match(html, /wallet <strong>0\.5<\/strong>/);
     assert.match(html, /rgsneddon\/shear-testnet/);
     assert.doesNotMatch(html, /github\.com\/rgsneddon\/shear"/);
     assert.match(html, /miner <strong>1\.1<\/strong>/);
@@ -46,12 +46,15 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-pack="miner-windows"/);
   });
 
-  it('puts emissions, vortex, and wallet-start boxes on the main page', () => {
+  it('puts emissions, governance, vortex columns and a full-width wallet box', () => {
     const shear = html.indexOf('<h1>Shear</h1>');
     const emission = html.indexOf('id="emission"');
+    const governance = html.indexOf('id="governance"');
     const vortex = html.indexOf('id="vortex"');
+    const gridEnd = html.indexOf('</div>', html.indexOf('class="guide-grid"'));
     const wallet = html.indexOf('id="wallet-start"');
-    assert.ok(shear >= 0 && emission > shear && vortex > emission && wallet > vortex);
+    assert.ok(shear >= 0 && emission > shear && governance > emission && vortex > governance && wallet > vortex);
+    assert.ok(wallet > gridEnd);
     assert.match(html, /How SHE is created/);
     assert.match(html, /No premine, no ICO/);
     assert.match(html, /1:1 claim of coins GNFP to SHEAR/);
@@ -59,10 +62,16 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /ShearK algorithm \(a variant of RandomX\)/);
     assert.match(html, /Exactly 1 SHE, every found block/);
     assert.match(html, /0\.00000000001 SHE for each accepted hash/);
+    assert.match(html, /Community governance in The Reserve/);
+    assert.match(html, /Who may take part/);
+    assert.match(html, /What a vote may move/);
     assert.match(html, /The Reserve Oracle/);
     assert.match(html, /id="oracle-rate"/);
     assert.match(html, /\/reserve\/latest\.json/);
     assert.doesNotMatch(html, /starts at 4\.25%/);
+    const emissionChunk = html.slice(emission, governance);
+    assert.equal(/Reserve interest/.test(emissionChunk), false);
+    assert.equal(/The Reserve Oracle/.test(emissionChunk), false);
     const latest = JSON.parse(fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), '../reserve/latest.json'),
       'utf8',
@@ -76,6 +85,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /Set password/);
     assert.match(html, /Export shewall\.bin/);
     assert.match(html, /guide-grid/);
+    assert.match(html, /guide-wide/);
     assert.doesNotMatch(html, /Bitcoin|Ethereum|feeless/);
   });
 });
