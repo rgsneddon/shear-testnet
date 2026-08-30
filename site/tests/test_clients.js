@@ -13,8 +13,13 @@ describe('shear.digital client buttons', () => {
   it('places BIG WALLET / MINER / NODE buttons between the hero banner and the Shear box', () => {
     const hero = html.indexOf('class="hero"');
     const clients = html.indexOf('id="client-downloads"');
+    const testnet = html.indexOf('id="testnet-banner"');
     const shear = html.indexOf('<h1>Shear</h1>');
-    assert.ok(hero >= 0 && clients > hero && shear > clients);
+    assert.ok(hero >= 0 && clients > hero && testnet > clients && shear > testnet);
+    assert.match(html, /TESTNET/);
+    assert.match(html, /MAINNET LAUNCH at 11pm UK time on 1st September 2026/);
+    assert.match(html, /id="mainnet-countdown"/);
+    assert.match(html, /2026-09-01T23:00:00\+01:00/);
     assert.match(html, />WALLET</);
     assert.match(html, />MINER</);
     assert.match(html, />NODE</);

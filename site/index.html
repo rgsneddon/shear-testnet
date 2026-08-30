@@ -81,7 +81,7 @@
       margin:8px 12px 10px; letter-spacing:.02em;
     }
     .client-row {
-      display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin:4px 0 20px;
+      display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin:4px 0 12px;
       position:relative; z-index:8; overflow:visible;
     }
     .client-dd { position:relative; display:flex; flex-direction:column; align-items:stretch; }
@@ -108,6 +108,46 @@
     @media (max-width: 640px) {
       .client-dd { width:100%; }
       .client-row .client-dd > a.nav-btn { min-width:100%; height:64px; font-size:1.05rem; }
+    }
+    #testnet-banner {
+      display:block; text-align:center; margin:4px 0 16px; padding:18px 12px;
+      color:var(--cyan);
+      border:1px solid transparent;
+      background: linear-gradient(165deg, #ffffff 0%, #f4f8fc 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box, border-box;
+    }
+    #testnet-banner .tn-word {
+      font-size:2.6rem; font-weight:900; letter-spacing:.42em; text-indent:.42em;
+      text-transform:uppercase; line-height:1;
+    }
+    #testnet-banner .tn-launch {
+      margin:10px 0 0; font-size:.95rem; font-weight:750; letter-spacing:.04em; line-height:1.4;
+    }
+    #testnet-banner .tn-count {
+      margin:8px 0 0; font-size:1.35rem; font-weight:800; letter-spacing:.14em;
+      font-variant-numeric: tabular-nums;
+    }
+    html[data-theme="dark"] #testnet-banner {
+      color:#ffe14a;
+      text-shadow: 0 0 10px rgba(255,225,74,.95), 0 0 22px rgba(255,225,74,.5);
+      background: linear-gradient(165deg, #1a3a5c 0%, #132a4a 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box, border-box;
+    }
+    @media (prefers-color-scheme: dark) {
+      html:not([data-theme="light"]) #testnet-banner {
+        color:#ffe14a;
+        text-shadow: 0 0 10px rgba(255,225,74,.95), 0 0 22px rgba(255,225,74,.5);
+        background: linear-gradient(165deg, #1a3a5c 0%, #132a4a 58%) padding-box,
+          linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+        background-origin:border-box; background-clip:padding-box, border-box;
+      }
+    }
+    @media (max-width: 640px) {
+      #testnet-banner { padding:14px 8px; }
+      #testnet-banner .tn-word { font-size:1.6rem; letter-spacing:.28em; text-indent:.28em; }
+      #testnet-banner .tn-count { font-size:1.1rem; letter-spacing:.08em; }
     }
   </style>
 </head>
@@ -176,6 +216,11 @@
         </div>
       </div>
     </nav>
+    <div id="testnet-banner" role="status">
+      <div class="tn-word">TESTNET</div>
+      <div class="tn-launch">MAINNET LAUNCH at 11pm UK time on 1st September 2026</div>
+      <div class="tn-count" id="mainnet-countdown">—</div>
+    </div>
     <section class="panel-card">
       <h1>Shear</h1>
       <p>she is private</p>
@@ -278,6 +323,26 @@
       bind('nav-miner', miner[plat] || miner.macos);
       bind('nav-node', node);
       window.shearLatestClients = { platform: plat, wallet: wallet[plat], miner: miner[plat], node: node };
+      (function countdown() {
+        var el = document.getElementById('mainnet-countdown');
+        if (!el) return;
+        var target = Date.parse('2026-09-01T23:00:00+01:00');
+        function pad(n) { return n < 10 ? '0' + n : String(n); }
+        function tick() {
+          var left = target - Date.now();
+          if (left <= 0) {
+            el.textContent = 'Mainnet launch time.';
+            return;
+          }
+          var s = Math.floor(left / 1000);
+          var d = Math.floor(s / 86400); s %= 86400;
+          var h = Math.floor(s / 3600); s %= 3600;
+          var m = Math.floor(s / 60); s %= 60;
+          el.textContent = d + 'd ' + pad(h) + 'h ' + pad(m) + 'm ' + pad(s) + 's';
+        }
+        tick();
+        setInterval(tick, 1000);
+      })();
       var rateEl = document.getElementById('oracle-rate');
       if (rateEl) {
         fetch('/reserve/latest.json', { cache: 'no-store' })
