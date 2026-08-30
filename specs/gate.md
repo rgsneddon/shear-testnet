@@ -8,16 +8,12 @@ Phase B (Flow levy product, Reserve Book B, pool pull-withdraw, Closure, vort1) 
 
 Start Phase B when `verifyBlock` accepts EVM **and** a native Flow send plus an EVM SHE value transfer can land in the same block model.
 
-| Condition | Status (this Build) |
-|-----------|---------------------|
-| `verifyBlock` accepts / executes EVM | **FALSE.** `node/src/chain.js` does not import `crypto/reserve_evm.js`. Extra mint is `extraMintAllowed` only. |
-| Native Flow send can land in a block | **TRUE.** `store.queueTx` → mempool → `buildTemplate` → `verifyBlock`. |
-| EVM SHE value transfer in the same block | **FALSE.** `callReserve` never passes `value`. Live `applyReserveBlock` is the JS vault. |
+| Condition | Status |
+|-----------|--------|
+| `verifyBlock` accepts / executes EVM | **TRUE.** Reserve lock/vote/withdraw run pinned `Reserve.json` bytecode via `executeBlockEvm`. Fail closed (`reason: evm`). |
+| Native Flow send can land in a block | **TRUE.** Funded vin/vout + levy. |
+| EVM SHE value transfer in the same block | **TRUE.** `kind: evm-value` moves protocol nanos as EVM `value` between `ssa1` 20-byte accounts. |
 
-**GATE = FALSE.** Do not wire EVM into `verifyBlock` in Phase A. Do not start Phase B in the same Build.
+**GATE = TRUE** (`PHASE_B_GATE` / `printConfig().phaseBGate`). Extra mint remains `extraMintAllowed` only (`shear-reserve-v1` + Join genesis). A random vortice still cannot print SHE.
 
-Live Reserve path: `crypto/reserve_vault.js`. `crypto/reserve_evm.js` is a sidecar test harness (chainId 2701). Header `base_fee` and levy checks already live in `verifyBlock` are not Phase B.
-
-## What Phase A still does
-
-A5 tightens the native mint allow-list in `verifyBlock` (Reserve + Join genesis only; no wrap printer). That does **not** green this GATE.
+Phase B product (Book B, pool pull-withdraw, Closure, vort1 CREATE) is **not** started by this GATE.

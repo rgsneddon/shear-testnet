@@ -884,11 +884,11 @@ export function createPool({
     let nextJob = null;
     if (scored.block) {
       sealing = true;
-      const got = store.submitHeader({
+      const got = await Promise.resolve(store.submitHeader({
         jobId: params.jobId || job.jobId,
         nonce: params.nonce,
         miner: payoutDest(session?.login) || session?.login,
-      });
+      }));
       sealing = false;
       if (got.ok) {
         if (Array.isArray(store.mempool) && store.mempool.length) {
@@ -1255,6 +1255,7 @@ export function createPool({
       const out = handleWalletApi(url, req.method, body, {
         store,
         miners,
+        lastJob,
         queueSend: (t) => {
           const id = `send-${Date.now()}`;
           const tx = { id, ...t };

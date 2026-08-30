@@ -113,7 +113,7 @@ describe('p2p gossip', () => {
     assert.equal(cfg.magic, MAGIC_TESTNET);
     assert.equal(cfg.magic, 'shear-testnet-v2');
     assert.equal(cfg.mainnet, false);
-    assert.equal(cfg.phaseBGate, false);
+    assert.equal(cfg.phaseBGate, true);
     assert.equal(cfg.rpc, 18332);
   });
 });

@@ -11,6 +11,7 @@ import { emptyVault } from '../../crypto/reserve_vault.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS } from '../../crypto/reserve_oracle.js';
 import { createStore } from './store.js';
 import { createP2p, P2P_PORT } from './p2p.js';
+import { PHASE_B_GATE } from './chain.js';
 import { createRpc, RPC_PORT } from './rpc.js';
 import { mintVorticeDeployKey, parseVorticeKey, VORTICE_KEY_PREFIX } from '../../crypto/vortex.js';
 
@@ -27,7 +28,7 @@ export function printConfig() {
     genesisBits: GENESIS_BITS,
     p2p: P2P_PORT,
     rpc: RPC_PORT,
-    phaseBGate: false,
+    phaseBGate: PHASE_B_GATE,
     extraMintThirdPartyCannotPrint: !extraMintAllowed('third-party-vortice'),
     reserveProgram: RESERVE_PROGRAM,
     extraMintOnlyReserve: extraMintAllowed(RESERVE_PROGRAM),
@@ -75,7 +76,7 @@ export async function startNode({
       }
     }
   }
-  return { store, p2p, rpc, bound, rpcBound, magic: MAGIC_TESTNET, mainnet: false, phaseBGate: false };
+  return { store, p2p, rpc, bound, rpcBound, magic: MAGIC_TESTNET, mainnet: false, phaseBGate: PHASE_B_GATE };
 }
 
 async function main() {
@@ -91,7 +92,7 @@ async function main() {
     rpc: started.rpcBound?.port,
     bind: started.bound.host,
     magic: MAGIC_TESTNET,
-    phaseBGate: false,
+    phaseBGate: PHASE_B_GATE,
     height: tip?.height || 0,
     hash: tip ? Buffer.from(tip.hash).toString('hex') : '',
     mainnet: false,

@@ -13,6 +13,11 @@ import {
   wrapMintForbidden,
   DEST_HRP,
 } from '../../crypto/asert.js';
+import {
+  bootReserveEvm,
+  blockNeedsEvm,
+  executeBlockEvm,
+} from '../../crypto/reserve_evm.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp } from '../../crypto/address.js';
 import { collateSamples } from '../../crypto/chronoflux.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
@@ -250,7 +255,20 @@ export function headerHash(header) {
   return shearHash(header);
 }
 
-export function verifyBlock(block, prev, {
+export const PHASE_B_GATE = true;
+
+export function phaseBGate() {
+  return {
+    verifyBlockExecutesEvm: true,
+    nativeFlowSend: true,
+    evmSheValueTransfer: true,
+    ok: true,
+  };
+}
+
+export { blockNeedsEvm };
+
+function verifyBlockConsensus(block, prev, {
   buried = false,
   joinFunded = false,
   spentB = null,
@@ -388,6 +406,43 @@ export function verifyBlock(block, prev, {
   const reservePaid = txs[0].vout.filter((o) => o.kind === 'reserve-fee').reduce((a, o) => a + Number(o.nanos || 0), 0);
   if (finderPaid !== split.finder || reservePaid !== split.reserve) return { ok: false, reason: 'levy_split' };
   return { ok: true, hash, decoded, aLeaves, bLeaves };
+}
+
+async function verifyBlockEvm(consensus, block, opts = {}) {
+  let session = opts.evmSession;
+  try {
+    if (!session) session = await bootReserveEvm();
+  } catch (e) {
+    return { ok: false, reason: 'evm', error: String(e?.message || e) };
+  }
+  let nowMs = opts.nowMs;
+  if (nowMs == null) {
+    try {
+      nowMs = Number(decodeHeader(Buffer.from(block.header)).timestamp);
+    } catch {
+      nowMs = Date.now();
+    }
+  }
+  const ran = await executeBlockEvm(session, block.txs || [], nowMs);
+  if (!ran.ok) return { ok: false, reason: 'evm', error: ran.reason };
+  return {
+    ...consensus,
+    evmRan: ran.calls > 0,
+    evm: ran,
+    evmSession: session,
+  };
+}
+
+/**
+ * Consensus verify. When the body has a Reserve vortice call or an EVM SHE
+ * value transfer, runs pinned Reserve bytecode (fail closed) and returns a Promise.
+ */
+export function verifyBlock(block, prev, opts = {}) {
+  const consensus = verifyBlockConsensus(block, prev, opts);
+  if (!consensus.ok) return consensus;
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  if (!blockNeedsEvm(txs)) return { ...consensus, evmRan: false };
+  return verifyBlockEvm(consensus, block, opts);
 }
 
 export function chainWorkOf(blocks) {

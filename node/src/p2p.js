@@ -180,12 +180,13 @@ export function createP2p({
       if (last) notePeerTip(sock, { hash: last.hash, height: last.height });
       const fork = list.map(decodeWireBlock);
       const before = store.tip();
-      const got = store.ingest(fork);
-      const after = store.tip();
-      const changed = (before && after)
-        ? !Buffer.from(before.hash).equals(Buffer.from(after.hash))
-        : Boolean(after && !before);
-      if (got?.ok && changed) broadcast(tipMsg(), sock);
+      Promise.resolve(store.ingest(fork)).then((got) => {
+        const after = store.tip();
+        const changed = (before && after)
+          ? !Buffer.from(before.hash).equals(Buffer.from(after.hash))
+          : Boolean(after && !before);
+        if (got?.ok && changed) broadcast(tipMsg(), sock);
+      }).catch(() => {});
     }
   }
 
@@ -265,6 +266,12 @@ export function createP2p({
     const orig = store[name].bind(store);
     store[name] = (...args) => {
       const got = orig(...args);
+      if (got && typeof got.then === 'function') {
+        return got.then((g) => {
+          if (g?.ok) announce();
+          return g;
+        });
+      }
       if (got?.ok) announce();
       return got;
     };

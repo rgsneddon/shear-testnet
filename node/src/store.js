@@ -5,6 +5,7 @@ import { hashHex } from '../../crypto/shear_hash.js';
 import {
   buildTemplate,
   verifyBlock,
+  blockNeedsEvm,
   retarget,
   GENESIS_PREV,
   publicJob,
@@ -344,13 +345,16 @@ export function createStore(dir, {
         bLeaves: blocks[i - 1].bLeaves,
         weight: blocks[i - 1].weight,
       };
-      verifyBlock(b, prev, {
+      const spentCheck = verifyBlock(b, prev, {
         buried: !!b.samplesPruned,
         joinFunded: !!joinVault.genesisMs,
         spentB,
         tipHeight: b.height,
         hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
       });
+      if (spentCheck && typeof spentCheck.then === 'function') {
+        spentCheck.catch(() => {});
+      }
     }
   }
 
@@ -476,6 +480,14 @@ export function createStore(dir, {
     return out.sort((a, b) => b.height - a.height || a.status.localeCompare(b.status));
   }
 
+  function settleCheck(check, onOk) {
+    if (check && typeof check.then === 'function') {
+      return check.then((c) => (c?.ok ? onOk(c) : c));
+    }
+    if (!check?.ok) return check;
+    return onOk(check);
+  }
+
   function append(block) {
     const prev = tip();
     const check = verifyBlock(block, prev ? {
@@ -494,7 +506,12 @@ export function createStore(dir, {
       hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
       buried: !!block.samplesPruned,
     });
+    return settleCheck(check, (okCheck) => completeAppend(okCheck, block));
+  }
+
+  function completeAppend(check, block) {
     if (!check.ok) return check;
+    const prev = tip();
     const gated = validateJoinBlock({
       state: joinVault,
       block,
@@ -555,29 +572,62 @@ export function createStore(dir, {
     return admitMempool(book, tx, { baseFee: base });
   }
 
+  function verifyOneForkBlock(fork, i, accepted, joinFunded, trialSpent) {
+    const prev = i === 0 ? null : {
+      hash: accepted[i - 1].hash,
+      header: accepted[i - 1].header,
+      height: accepted[i - 1].height,
+      rootA: accepted[i - 1].rootA,
+      rootB: accepted[i - 1].rootB,
+      txs: accepted[i - 1].txs,
+      bLeaves: accepted[i - 1].bLeaves,
+      weight: accepted[i - 1].weight,
+    };
+    return verifyBlock(fork[i], prev, {
+      joinFunded,
+      buried: !!fork[i].samplesPruned,
+      spentB: trialSpent,
+      tipHeight: i + 1,
+      hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
+    });
+  }
+
   function verifyFork(fork) {
+    const needs = (fork || []).some((b) => blockNeedsEvm(b?.txs || []));
+    if (needs) return verifyForkAsync(fork);
     const accepted = [];
     let joinFunded = false;
     const trialJoin = emptyJoin();
     const trialSpent = new Set();
     for (let i = 0; i < fork.length; i += 1) {
-      const prev = i === 0 ? null : {
-        hash: accepted[i - 1].hash,
-        header: accepted[i - 1].header,
-        height: accepted[i - 1].height,
-        rootA: accepted[i - 1].rootA,
-        rootB: accepted[i - 1].rootB,
-        txs: accepted[i - 1].txs,
-        bLeaves: accepted[i - 1].bLeaves,
-        weight: accepted[i - 1].weight,
-      };
-      const check = verifyBlock(fork[i], prev, {
-        joinFunded,
-        buried: !!fork[i].samplesPruned,
-        spentB: trialSpent,
-        tipHeight: i + 1,
-        hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
+      const check = verifyOneForkBlock(fork, i, accepted, joinFunded, trialSpent);
+      if (!check.ok) return { ok: false, reason: check.reason, at: i };
+      const gated = validateJoinBlock({
+        state: trialJoin,
+        block: fork[i],
+        nowMs: blockTimeMs(fork[i]),
       });
+      if (!gated.ok) return { ok: false, reason: gated.reason, at: i };
+      applyJoinBlock({ state: trialJoin, block: fork[i], nowMs: blockTimeMs(fork[i]) });
+      if (trialJoin.genesisMs) joinFunded = true;
+      accepted.push(leanBlock({
+        ...fork[i],
+        magic: MAGIC_TESTNET,
+        hash: check.hash,
+        height: i + 1,
+        weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
+      }));
+    }
+    return { ok: true, accepted };
+  }
+
+  async function verifyForkAsync(fork) {
+    const accepted = [];
+    let joinFunded = false;
+    const trialJoin = emptyJoin();
+    const trialSpent = new Set();
+    for (let i = 0; i < fork.length; i += 1) {
+      const check = await Promise.resolve(verifyOneForkBlock(fork, i, accepted, joinFunded, trialSpent));
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
       const gated = validateJoinBlock({
         state: trialJoin,
@@ -601,6 +651,13 @@ export function createStore(dir, {
   function adopt(fork) {
     if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
     const verified = verifyFork(fork);
+    if (verified && typeof verified.then === 'function') {
+      return verified.then((v) => finishAdopt(v));
+    }
+    return finishAdopt(verified);
+  }
+
+  function finishAdopt(verified) {
     if (!verified.ok) return verified;
     const accepted = verified.accepted;
     rememberFork(accepted, 'valid-fork');
@@ -649,6 +706,17 @@ export function createStore(dir, {
       ? decoded.prevBlockHash.equals(Buffer.from(t.hash))
       : decoded.prevBlockHash.equals(GENESIS_PREV);
     if (extendsTip) {
+      if (fork.some((b) => blockNeedsEvm(b?.txs || []))) {
+        return (async () => {
+          let last = null;
+          for (const b of fork) {
+            const got = await Promise.resolve(append(b));
+            if (!got.ok) return last || got;
+            last = got;
+          }
+          return last;
+        })();
+      }
       let last = null;
       for (const b of fork) {
         const got = append(b);
