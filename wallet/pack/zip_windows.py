@@ -18,6 +18,8 @@ MINER_BASENAMES = {
     "shear-miner.exe",
     "shear-miner",
     "shear-miner.bat",
+    "sheark-miner.exe",
+    "sheark-miner",
 }
 
 # Keep the public pin two-part 0.4. Flutter file version 0.4.0+N is not the pin.

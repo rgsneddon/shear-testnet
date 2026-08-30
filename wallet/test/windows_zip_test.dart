@@ -65,11 +65,54 @@ void main() {
       'shear-miner.exe',
       'shear-miner',
       'shear-miner.bat',
+      'sheark-miner.exe',
+      'sheark-miner',
     };
     for (final n in names) {
       final base = n.split('/').last.toLowerCase();
       expect(banned.contains(base), isFalse, reason: 'miner inside wallet zip: $n');
       expect(base, isNot(equals('Shear-Miner.exe'.toLowerCase())));
+      expect(base, isNot(equals('ShearK-Miner.exe'.toLowerCase())));
+    }
+  });
+
+  File _zipAt(String name) {
+    final candidates = <File>[
+      File('../dist/$name'),
+      File('dist/$name'),
+      File('${Directory.current.path}/../dist/$name'),
+    ];
+    for (final f in candidates) {
+      if (f.existsSync()) return f;
+    }
+    return candidates.first;
+  }
+
+  test('built shear-wallet-0.4-linux.zip has shear_wallet and no miner', () {
+    final zip = _zipAt('shear-wallet-0.4-linux.zip');
+    if (!zip.existsSync()) return;
+    expect(zip.lengthSync(), greaterThan(1 * 1024 * 1024));
+    final names = _zipNames(zip);
+    expect(names.any((n) => n == 'shear_wallet' || n.endsWith('/shear_wallet')), isTrue);
+    for (final n in names) {
+      final base = n.split('/').last;
+      expect(base.toLowerCase(), isNot(equals('shear-miner')));
+      expect(base, isNot(equals('Shear-Miner')));
+      expect(base, isNot(equals('ShearK-Miner')));
+    }
+  });
+
+  test('built shear-wallet-0.4-archlinux.zip has PKGBUILD pkgver=0.4 and no miner', () {
+    final zip = _zipAt('shear-wallet-0.4-archlinux.zip');
+    if (!zip.existsSync()) return;
+    expect(zip.lengthSync(), greaterThan(1 * 1024 * 1024));
+    final names = _zipNames(zip);
+    expect(names.contains('PKGBUILD') || names.any((n) => n.endsWith('/PKGBUILD')), isTrue);
+    expect(names.any((n) => n == 'shear_wallet' || n.endsWith('/shear_wallet')), isTrue);
+    for (final n in names) {
+      final base = n.split('/').last;
+      expect(base.toLowerCase(), isNot(equals('shear-miner')));
+      expect(base, isNot(equals('ShearK-Miner')));
     }
   });
 }

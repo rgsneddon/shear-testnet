@@ -71,6 +71,38 @@ describe('ShearK-Miner', () => {
     assert.match(src, /g_cpu_map/);
   });
 
+  it('leftover windows zip is only ShearK-Miner.exe + example.bat', () => {
+    const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.1-windows.zip');
+    if (!fs.existsSync(zip)) return;
+    const listed = spawnSync('tar', ['-tf', zip], { encoding: 'utf8' });
+    const names = (listed.status === 0 ? listed.stdout : '')
+      .split(/\r?\n/).map((s) => s.replace(/\\/g, '/').trim()).filter(Boolean);
+    let zipNames = names;
+    if (zipNames.length === 0) {
+      const py = spawnSync('python', ['-c',
+        'import zipfile,sys; print("\\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))', zip],
+        { encoding: 'utf8' });
+      assert.equal(py.status, 0, py.stderr);
+      zipNames = py.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    }
+    assert.deepEqual(zipNames.sort(), ['ShearK-Miner.exe', 'example.bat'].sort());
+  });
+
+  it('leftover linux zip is ShearK-Miner + example.sh', () => {
+    const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.1-linux.zip');
+    if (!fs.existsSync(zip)) return;
+    const py = spawnSync('python', ['-c',
+      'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]);\n'
+      + 'print("\\n".join(i.filename for i in z.infolist()));\n'
+      + 'print("MODE", oct((z.getinfo("ShearK-Miner").external_attr >> 16) & 0o777))',
+      zip], { encoding: 'utf8' });
+    assert.equal(py.status, 0, py.stderr);
+    const lines = py.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    assert.ok(lines.includes('ShearK-Miner'));
+    assert.ok(lines.includes('example.sh'));
+    assert.ok(lines.includes('MODE 0o755') || lines.includes('MODE 0755'));
+  });
+
   it('login status=OK does not bump accepted; status line prints hashes and job bits', async () => {
     const header = Buffer.alloc(128);
     header[0] = 1;
@@ -82,6 +114,7 @@ describe('ShearK-Miner', () => {
       bits: 32,
     };
     const server = net.createServer((sock) => {
+      sock.on('error', () => {});
       sock.on('data', (chunk) => {
         const text = chunk.toString();
         if (text.includes('"method":"login"')) {
@@ -89,6 +122,7 @@ describe('ShearK-Miner', () => {
         }
       });
     });
+    server.on('error', () => {});
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
     const port = server.address().port;
     const child = spawn(bin, [
@@ -130,12 +164,14 @@ describe('ShearK-Miner', () => {
     };
     async function runThreads(n) {
       const server = net.createServer((sock) => {
+        sock.on('error', () => {});
         sock.on('data', (chunk) => {
           if (chunk.toString().includes('"method":"login"')) {
             sock.write(`${JSON.stringify({ id: 1, result: { status: 'OK' }, job })}\n`);
           }
         });
       });
+      server.on('error', () => {});
       await new Promise((r) => server.listen(0, '127.0.0.1', r));
       const port = server.address().port;
       const child = spawn(bin, [

@@ -44,9 +44,9 @@ for name in (linux_out, arch_out):
     if "shear_wallet" not in names:
         sys.exit(f"missing shear_wallet in {name}")
     if any(
-        n == "shear-miner" or n == "Shear-Miner"
-        or n.endswith("/shear-miner") or n.endswith("/Shear-Miner")
-        or n.endswith("shear-miner.exe") or n.endswith("Shear-Miner.exe")
+        n == "shear-miner" or n == "Shear-Miner" or n == "ShearK-Miner"
+        or n.endswith("/shear-miner") or n.endswith("/Shear-Miner") or n.endswith("/ShearK-Miner")
+        or n.endswith("shear-miner.exe") or n.endswith("Shear-Miner.exe") or n.endswith("ShearK-Miner.exe")
         for n in names
     ):
         sys.exit(f"wallet zip must not include miner: {name}")
