@@ -18,7 +18,7 @@ const kVoteIncrease = 'increase bonus';
 const kVoteDecrease = 'decrease bonus';
 const kVoteHold = 'leave bonus as-is';
 const kReserveCutoffDisclaimer =
-    'Fewer than 99 days remain. Deposits in this window sit idle: they earn no interest and cannot vote. They still return with the rest of the vault when the epoch ends.';
+    'Fewer than 99 days remain. New deposits still lock and can unlock a vote, even on a first Reserve deposit. They do not earn stake.';
 const kReserveAccruedLabel = 'Accrued rewards';
 
 bool extraMintAllowed(String programId) => programId == kReserveProgram;
@@ -61,19 +61,23 @@ String portalIdFromDest(String dest) {
 }
 
 class ReservePortal {
-  ReservePortal({this.staked = 0, this.idle = 0, this.vote, this.joined = false, this.payout});
+  ReservePortal({this.staked = 0, this.idle = 0, this.vote, this.joined = false, this.payout, this.voteEpoch = 0});
   int staked;
   int idle;
   String? vote;
   bool joined;
+  int voteEpoch;
   String? payout;
   int? remoteAccrued;
   int get nanos => staked + idle;
-  bool get canVote => joined && staked >= kPiSheNanos;
+  bool get canVote => joined && nanos >= kPiSheNanos;
 }
 
 class ShearReserve {
   int epochStartMs = 0;
+  int currentEpoch = 0;
+  bool bonusEnacted = false;
+  int liveHashBonusNanos = 1;
   int totalLockedNanos = 0;
   int oracleBps = kReserveOracleDefaultBps;
   int oracleObservedAtMs = 0;
@@ -88,7 +92,7 @@ class ShearReserve {
   }
 
   int remainingMs(int nowMs) {
-    if (epochStartMs == 0) return kReserveEpochMs;
+    if (epochStartMs == 0 || bonusEnacted) return kReserveEpochMs;
     final end = epochStartMs + kReserveEpochMs;
     final left = end - nowMs;
     return left < 0 ? 0 : left;
@@ -152,16 +156,30 @@ class ShearReserve {
     if (payout != null && isDestAddress(payout) && !isShearAddress(payout)) {
       p.payout = payout;
     }
+    if (epochStartMs != 0 && !bonusEnacted && remainingMs(nowMs) == 0) {
+      return 'need_enact';
+    }
     if (canJoin(nowMs)) {
       p.staked += n;
-      if (!p.joined && p.staked >= kPiSheNanos) {
-        p.joined = true;
-        if (epochStartMs == 0) epochStartMs = nowMs;
-      }
     } else {
       p.idle += n;
     }
     totalLockedNanos += n;
+    if (!p.joined && p.nanos >= kPiSheNanos) {
+      p.joined = true;
+      if (epochStartMs == 0) {
+        currentEpoch = 1;
+        epochStartMs = nowMs;
+        bonusEnacted = false;
+      } else if (bonusEnacted) {
+        currentEpoch += 1;
+        epochStartMs = nowMs;
+        bonusEnacted = false;
+        votesIncrease = 0;
+        votesDecrease = 0;
+        votesHold = 0;
+      }
+    }
     return null;
   }
 
@@ -169,13 +187,19 @@ class ShearReserve {
     nowMs;
     final p = portal(dest);
     if (!p.canVote) return 'not_voter';
+    if (epochStartMs == 0 || bonusEnacted) return 'not_voter';
     if (choice != kVoteIncrease && choice != kVoteDecrease && choice != kVoteHold) {
       return 'bad_vote';
     }
-    if (p.vote == kVoteIncrease) votesIncrease--;
-    if (p.vote == kVoteDecrease) votesDecrease--;
-    if (p.vote == kVoteHold) votesHold--;
+    final first = p.vote == null || p.voteEpoch != currentEpoch;
+    if (!first && remainingMs(nowMs) < kReserveJoinCutoffMs) return 'vote_locked';
+    if (!first) {
+      if (p.vote == kVoteIncrease) votesIncrease--;
+      if (p.vote == kVoteDecrease) votesDecrease--;
+      if (p.vote == kVoteHold) votesHold--;
+    }
     p.vote = choice;
+    p.voteEpoch = currentEpoch;
     if (choice == kVoteIncrease) votesIncrease++;
     if (choice == kVoteDecrease) votesDecrease++;
     if (choice == kVoteHold) votesHold++;
@@ -184,6 +208,18 @@ class ShearReserve {
 
   Map<String, int>? withdraw({required String dest, required int nowMs, String? payout}) {
     if (epochStartMs == 0 || nowMs < epochStartMs + kReserveEpochMs) return null;
+    if (!bonusEnacted) {
+      final up = votesIncrease, down = votesDecrease, hold = votesHold;
+      final m = [up, down, hold].reduce((a, b) => a > b ? a : b);
+      var winners = 0;
+      var delta = 0;
+      if (m > 0 && up == m) { winners++; delta = 1; }
+      if (m > 0 && down == m) { winners++; delta = -1; }
+      if (m > 0 && hold == m) { winners++; delta = 0; }
+      if (winners == 1 && delta > 0) liveHashBonusNanos += 1;
+      if (winners == 1 && delta < 0 && liveHashBonusNanos > 0) liveHashBonusNanos -= 1;
+      bonusEnacted = true;
+    }
     final p = portal(dest);
     final staked = p.staked;
     final idle = p.idle;
@@ -225,7 +261,7 @@ class ShearReserve {
     return out;
   }
 
-  Map<String, int> publicView(int nowMs) => {
+  Map<String, dynamic> publicView(int nowMs) => {
         'epochStartMs': epochStartMs,
         'remainingMs': remainingMs(nowMs),
         'totalLockedNanos': totalLockedNanos,
@@ -233,6 +269,9 @@ class ShearReserve {
         'votesDecrease': votesDecrease,
         'votesHold': votesHold,
         'oracleBps': oracleBps,
+        'liveHashBonusNanos': liveHashBonusNanos,
+        'bonusEnacted': bonusEnacted,
+        'currentEpoch': currentEpoch,
       };
 
   String publicJson(int nowMs) => jsonEncode(publicView(nowMs));

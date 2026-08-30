@@ -27,6 +27,9 @@ export function emptyVault() {
   return {
     programId: RESERVE_PROGRAM,
     epochStartMs: 0,
+    currentEpoch: 0,
+    bonusEnacted: false,
+    liveHashBonusNanos: 1,
     totalLockedNanos: 0,
     feeBankNanos: 0,
     mintBankNanos: 0,
@@ -83,7 +86,7 @@ export function payoutStakeReward({
 }
 
 export function remainingMs(state, nowMs) {
-  if (!state.epochStartMs) return RESERVE_EPOCH_MS;
+  if (!state.epochStartMs || state.bonusEnacted) return RESERVE_EPOCH_MS;
   const end = state.epochStartMs + RESERVE_EPOCH_MS;
   return Math.max(0, end - nowMs);
 }
@@ -93,8 +96,8 @@ export function canJoin(state, nowMs) {
   return remainingMs(state, nowMs) >= RESERVE_JOIN_CUTOFF_MS;
 }
 
-export function canVote(stakedNanos) {
-  return Number(stakedNanos || 0) >= PI_SHE_NANOS;
+export function canVote(stakedNanos, idleNanos = 0) {
+  return Number(stakedNanos || 0) + Number(idleNanos || 0) >= PI_SHE_NANOS;
 }
 
 export function publicVaultView(state, nowMs) {
@@ -105,13 +108,16 @@ export function publicVaultView(state, nowMs) {
     totalLockedNanos: state.totalLockedNanos || 0,
     votes: { ...state.votes },
     oracleBps: state.oracle?.annualBps ?? 0,
+    liveHashBonusNanos: Number(state.liveHashBonusNanos || 1),
+    bonusEnacted: !!state.bonusEnacted,
+    currentEpoch: Number(state.currentEpoch || 0),
   };
 }
 
 function portalOf(state, dest) {
   const id = portalIdFromDest(dest);
   if (!state.portals[id]) {
-    state.portals[id] = { id, staked: 0, idle: 0, vote: null, joined: false };
+    state.portals[id] = { id, staked: 0, idle: 0, vote: null, joined: false, voteEpoch: 0 };
   }
   return state.portals[id];
 }
@@ -126,17 +132,26 @@ export function deposit({ state, dest, nanos, nowMs, payout } = {}) {
   if (payout && isDestAddress(payout) && !isShearAddress(payout)) {
     p.payout = payout;
   }
-  const staking = canJoin(state, nowMs);
-  if (staking) {
-    p.staked += n;
-    if (!p.joined && p.staked >= PI_SHE_NANOS) {
-      p.joined = true;
-      if (!state.epochStartMs) state.epochStartMs = nowMs;
-    }
-  } else {
-    p.idle += n;
+  if (state.epochStartMs && !state.bonusEnacted && remainingMs(state, nowMs) === 0) {
+    return { ok: false, reason: 'need_enact' };
   }
+  const staking = canJoin(state, nowMs);
+  if (staking) p.staked += n;
+  else p.idle += n;
   state.totalLockedNanos += n;
+  if (!p.joined && (p.staked + p.idle) >= PI_SHE_NANOS) {
+    p.joined = true;
+    if (!state.epochStartMs) {
+      state.currentEpoch = 1;
+      state.epochStartMs = nowMs;
+      state.bonusEnacted = false;
+    } else if (state.bonusEnacted) {
+      state.currentEpoch = (state.currentEpoch || 1) + 1;
+      state.epochStartMs = nowMs;
+      state.bonusEnacted = false;
+      state.votes = { increase: 0, decrease: 0, hold: 0 };
+    }
+  }
   return {
     ok: true,
     idle: !staking,
@@ -157,13 +172,22 @@ export function vote({ state, dest, choice, nowMs }) {
     return { ok: false, reason: 'bad_dest' };
   }
   const p = portalOf(state, dest);
-  if (!p.joined || !canVote(p.staked)) return { ok: false, reason: 'not_voter' };
+  if (!p.joined || !canVote(p.staked, p.idle)) return { ok: false, reason: 'not_voter' };
+  if (!state.epochStartMs) return { ok: false, reason: 'not_voter' };
+  if (state.bonusEnacted) return { ok: false, reason: 'epoch_closed' };
   const allowed = [VOTE_INCREASE, VOTE_DECREASE, VOTE_HOLD];
   if (!allowed.includes(choice)) return { ok: false, reason: 'bad_vote' };
-  if (p.vote === VOTE_INCREASE) state.votes.increase -= 1;
-  if (p.vote === VOTE_DECREASE) state.votes.decrease -= 1;
-  if (p.vote === VOTE_HOLD) state.votes.hold -= 1;
+  const first = !p.vote || p.voteEpoch !== state.currentEpoch;
+  if (!first && remainingMs(state, nowMs) < RESERVE_JOIN_CUTOFF_MS) {
+    return { ok: false, reason: 'vote_locked' };
+  }
+  if (!first) {
+    if (p.vote === VOTE_INCREASE) state.votes.increase -= 1;
+    if (p.vote === VOTE_DECREASE) state.votes.decrease -= 1;
+    if (p.vote === VOTE_HOLD) state.votes.hold -= 1;
+  }
   p.vote = choice;
+  p.voteEpoch = state.currentEpoch;
   if (choice === VOTE_INCREASE) state.votes.increase += 1;
   if (choice === VOTE_DECREASE) state.votes.decrease += 1;
   if (choice === VOTE_HOLD) state.votes.hold += 1;
@@ -331,7 +355,32 @@ export function applyReserveBlock({ state, block, nowMs }) {
       });
     }
   }
+  if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + RESERVE_EPOCH_MS) {
+    results.push({ action: 'enact', ...enact({ state, nowMs }) });
+  }
   return results;
+}
+
+export function enact({ state, nowMs } = {}) {
+  if (!state.epochStartMs || nowMs < state.epochStartMs + RESERVE_EPOCH_MS) {
+    return { ok: false, reason: 'epoch_open' };
+  }
+  if (state.bonusEnacted) return { ok: false, reason: 'already_enacted' };
+  const up = Number(state.votes.increase || 0);
+  const down = Number(state.votes.decrease || 0);
+  const hold = Number(state.votes.hold || 0);
+  const m = Math.max(up, down, hold);
+  let winners = 0;
+  let delta = 0;
+  if (m > 0 && up === m) { winners += 1; delta = 1; }
+  if (m > 0 && down === m) { winners += 1; delta = -1; }
+  if (m > 0 && hold === m) { winners += 1; delta = 0; }
+  let live = Number(state.liveHashBonusNanos || 1);
+  if (winners === 1 && delta > 0) live += 1;
+  else if (winners === 1 && delta < 0) live = Math.max(0, live - 1);
+  state.liveHashBonusNanos = live;
+  state.bonusEnacted = true;
+  return { ok: true, liveHashBonusNanos: live, delta: winners === 1 ? delta : 0 };
 }
 
 export function withdraw({ state, dest, nowMs, payout } = {}) {
@@ -340,6 +389,10 @@ export function withdraw({ state, dest, nowMs, payout } = {}) {
   }
   if (!state.epochStartMs || nowMs < state.epochStartMs + RESERVE_EPOCH_MS) {
     return { ok: false, reason: 'epoch_open' };
+  }
+  if (!state.bonusEnacted) {
+    const did = enact({ state, nowMs });
+    if (!did.ok) return did;
   }
   const p = portalOf(state, dest);
   const staked = p.staked;

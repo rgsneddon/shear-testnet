@@ -8,8 +8,8 @@ mkdir -p "$DIST"
 test -x "$BUNDLE/shear_wallet"
 # Wallet zip is GUI only. Official miner is a separate GitHub release.
 
-linux_out="$DIST/shear-wallet-0.6-linux.zip"
-arch_out="$DIST/shear-wallet-0.6-archlinux.zip"
+linux_out="$DIST/shear-wallet-0.7-linux.zip"
+arch_out="$DIST/shear-wallet-0.7-archlinux.zip"
 rm -f "$linux_out" "$arch_out"
 
 python3 - <<PY
@@ -24,12 +24,12 @@ def add_tree(z, root):
             p = os.path.join(dp, fn)
             z.write(p, os.path.relpath(p, root))
 
-linux_out = os.path.join(dist, "shear-wallet-0.6-linux.zip")
+linux_out = os.path.join(dist, "shear-wallet-0.7-linux.zip")
 with zipfile.ZipFile(linux_out, "w", zipfile.ZIP_DEFLATED) as z:
     add_tree(z, bundle)
 print("wrote", linux_out, os.path.getsize(linux_out))
 
-arch_out = os.path.join(dist, "shear-wallet-0.6-archlinux.zip")
+arch_out = os.path.join(dist, "shear-wallet-0.7-archlinux.zip")
 with zipfile.ZipFile(arch_out, "w", zipfile.ZIP_DEFLATED) as z:
     z.write(pkgbuild, "PKGBUILD")
     add_tree(z, bundle)
@@ -52,7 +52,7 @@ for name in (linux_out, arch_out):
         sys.exit(f"wallet zip must not include miner: {name}")
     if "archlinux" in name:
         pkg = zipfile.ZipFile(name).read("PKGBUILD").decode()
-        if "pkgver=0.6" not in pkg or "pkgver=0.6.0" in pkg:
-            sys.exit("arch PKGBUILD not two-part 0.6")
+        if "pkgver=0.7" not in pkg or "pkgver=0.7.0" in pkg:
+            sys.exit("arch PKGBUILD not two-part 0.7")
 print("ok")
 PY

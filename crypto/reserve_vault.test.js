@@ -20,6 +20,7 @@ import {
   deposit,
   vote,
   withdraw,
+  enact,
   creditFeeBank,
   payoutStakeReward,
   canJoin,
@@ -88,7 +89,7 @@ describe('Reserve vault protocol', () => {
     assert.notEqual(state.epochStartMs, 0);
   });
 
-  it('after the 99-day cutoff, deposits are idle: no interest, no vote', () => {
+  it('after the 99-day cutoff, deposits are idle: no interest, but a first vote is allowed', () => {
     const alice = newIdentity();
     const bob = newIdentity();
     const a = destOf(alice);
@@ -103,10 +104,11 @@ describe('Reserve vault protocol', () => {
     const idleBob = deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: late });
     assert.equal(idleBob.ok, true);
     assert.equal(idleBob.idle, true);
-    assert.equal(idleBob.portal.joined, false);
+    assert.equal(idleBob.portal.joined, true);
     assert.equal(idleBob.portal.staked, 0);
     assert.equal(idleBob.portal.idle, PI_SHE_NANOS);
-    assert.equal(vote({ state, dest: b, choice: VOTE_INCREASE, nowMs: late }).ok, false);
+    assert.equal(vote({ state, dest: b, choice: VOTE_INCREASE, nowMs: late }).ok, true);
+    assert.equal(vote({ state, dest: b, choice: VOTE_HOLD, nowMs: late }).ok, false);
     const more = deposit({ state, dest: a, nanos: 100, nowMs: late });
     assert.equal(more.ok, true);
     assert.equal(more.idle, true);
@@ -118,6 +120,24 @@ describe('Reserve vault protocol', () => {
     assert.equal(bobOut.ok, true);
     assert.equal(bobOut.interest, 0);
     assert.equal(bobOut.idle, PI_SHE_NANOS);
+  });
+
+  it('epoch end enacts a unique plurality onto the live hash bonus', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
+    assert.equal(state.liveHashBonusNanos, 1);
+    const tooSoon = enact({ state, nowMs: t0 + 10 * DAY });
+    assert.equal(tooSoon.ok, false);
+    const done = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(done.ok, true);
+    assert.equal(state.liveHashBonusNanos, 2);
+    assert.equal(state.bonusEnacted, true);
+    const again = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
+    assert.equal(again.ok, false);
   });
 
   it('accrued rewards grow on staked SHE and stay zero on idle SHE', () => {
@@ -200,6 +220,7 @@ function remainingUnder99(state, nowMs) {
 describe('Reserve Solidity is Shear-only copy', () => {
   it('names Shear magics, π, 400 days, 99-day join, and refuses foreign chain ids', () => {
     const src = readFileSync(join(root, 'contracts/Reserve.sol'), 'utf8');
+    assert.match(src, /shear-testnet-v2/);
     assert.match(src, /shear-testnet-v1/);
     assert.match(src, /shear-v1/);
     assert.match(src, /shear-reserve-v1/);
@@ -207,7 +228,7 @@ describe('Reserve Solidity is Shear-only copy', () => {
     assert.match(src, /99/);
     assert.match(src, /NotShear/);
     assert.match(src, /chainid/);
-    assert.match(src, /increase the per-hash/);
+    assert.match(src, /live hash bonus/);
     assert.match(src, /Reserve oracle/);
     assert.match(src, /idle/);
     assert.equal(src.includes('Bank of England'), false);

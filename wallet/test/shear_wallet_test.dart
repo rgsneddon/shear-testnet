@@ -58,7 +58,7 @@ void main() {
     final relEnt = File('macos/Runner/Release.entitlements').readAsStringSync();
     expect(debugEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.6"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.7"'), isTrue);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
     expect(activity.contains('FlutterActivity()'), isFalse);
@@ -648,7 +648,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.6');
+    expect(kWalletVersion, '0.7');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -979,10 +979,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.6');
-    expect(kWalletVersion, '0.6');
+    expect(app.title, 'Shear 0.7');
+    expect(kWalletVersion, '0.7');
     await tester.pump();
-    expect(find.textContaining('0.6'), findsWidgets);
+    expect(find.textContaining('0.7'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -1668,8 +1668,9 @@ void main() {
     expect(r.deposit(dest: vb, she: kPiShe, nowMs: late), isNull);
     expect(r.portal(vb).idle, kPiSheNanos);
     expect(r.portal(vb).staked, 0);
-    expect(r.portal(vb).canVote, isFalse);
-    expect(r.vote(dest: vb, choice: kVoteIncrease, nowMs: late), 'not_voter');
+    expect(r.portal(vb).canVote, isTrue);
+    expect(r.vote(dest: vb, choice: kVoteIncrease, nowMs: late), isNull);
+    expect(r.vote(dest: vb, choice: kVoteHold, nowMs: late), 'vote_locked');
     expect(r.deposit(dest: va, she: 0.5, nowMs: late), isNull);
     expect(r.portal(va).idle, kUnitsPerShe ~/ 2);
     expect(r.portal(va).canVote, isTrue);
@@ -1873,7 +1874,7 @@ void main() {
     final t0 = now - (400 - 50) * 86400000;
     expect(vault.deposit(dest: other, she: kPiShe, nowMs: t0), isNull);
     expect(vault.deposit(dest: dest, she: kPiShe, nowMs: now), isNull);
-    expect(vault.portal(dest).canVote, isFalse);
+    expect(vault.portal(dest).canVote, isTrue);
     expect(vault.cutoffDisclaimer(now), isTrue);
     await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), reserve: vault, startUnlocked: true));
     await tester.pump();
@@ -1881,7 +1882,7 @@ void main() {
     await tester.tap(find.text('Vortex'));
     await tester.pump();
     expect(find.text(kReserveCutoffDisclaimer), findsOneWidget);
-    expect(find.text('increase bonus'), findsNothing);
+    expect(find.text('increase bonus'), findsOneWidget);
     expect(find.text('Amount SHEAR'), findsOneWidget);
     expect(find.text('Send'), findsOneWidget);
     expect(find.text('Add more SHE to the vault'), findsOneWidget);

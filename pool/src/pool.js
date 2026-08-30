@@ -1079,7 +1079,7 @@ export function createPool({
       network: MAGIC_TESTNET,
       targetBlockIntervalMs: TARGET_BLOCK_INTERVAL_MS,
       blockSubsidyNanos: BLOCK_SUBSIDY_NANOS,
-      hashBonusNanos: HASH_BONUS_NANOS,
+      hashBonusNanos: store.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS,
       hashTxLive: HASH_TX_LIVE,
       bookLawFingerprint: consensusFingerprint(),
       ...consensusLaw(),

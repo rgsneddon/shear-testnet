@@ -287,7 +287,7 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.destHrp, 'ssa');
     assert.equal(stats.spendableConfirmations, 6);
     assert.equal(stats.minConfirmsPolicy, 12);
-    assert.equal(stats.productVersion, '0.2');
+    assert.equal(stats.productVersion, '0.3');
     assert.equal(stats.minerVersion, '1.1');
     if (stats.header) assert.equal(stats.header.length, 256);
 

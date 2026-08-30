@@ -106,12 +106,14 @@ function ssaOk(addr) {
   return isDestAddress(addr) && bech32Hrp(addr) === DEST_HRP && !isShearAddress(addr);
 }
 
-export function hashBonusByMiner(samples = []) {
+export function hashBonusByMiner(samples = [], unit = HASH_BONUS_NANOS) {
+  const u = Number(unit);
+  const bonus = Number.isFinite(u) && u >= 0 ? u : HASH_BONUS_NANOS;
   const by = new Map();
   for (const s of collateSamples(samples)) {
     const addr = String(s.miner || s.address || '');
     if (!isDestAddress(addr) && !isShearAddress(addr)) continue;
-    by.set(addr, (by.get(addr) || 0) + s.count * HASH_BONUS_NANOS);
+    by.set(addr, (by.get(addr) || 0) + s.count * bonus);
   }
   return by;
 }
@@ -125,8 +127,10 @@ export function lag1Continuity(prevHeader) {
   }
 }
 
-export function coinbaseTx({ height, miner, samples = [], potShares = null, destOf = (a) => a }) {
-  const bonuses = hashBonusByMiner(samples);
+export function coinbaseTx({
+  height, miner, samples = [], potShares = null, destOf = (a) => a, hashBonusNanos = HASH_BONUS_NANOS,
+}) {
+  const bonuses = hashBonusByMiner(samples, hashBonusNanos);
   const vout = [];
   const shares = potShares && potShares.length
     ? potShares
@@ -166,13 +170,16 @@ export function buildTemplate({
   bits,
   destOf,
   potShares = null,
+  hashBonusNanos = HASH_BONUS_NANOS,
 }) {
   const collated = collateSamples(samples);
   const continuityLag1 = lag1Continuity(prevHeader);
   const pay = destOf || ((login) => (isDestAddress(login)
     ? login
     : destForLogin(login, { continuityRoot: continuityLag1, height })));
-  const cb = coinbaseTx({ height, miner, samples: collated, potShares, destOf: pay });
+  const cb = coinbaseTx({
+    height, miner, samples: collated, potShares, destOf: pay, hashBonusNanos,
+  });
   const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
   const split = splitLevy(fees);
   if (split.finder) cb.vout.push({ address: pay(miner), nanos: split.finder, kind: 'finder-fee' });
@@ -247,6 +254,7 @@ export function verifyBlock(block, prev, {
   joinFunded = false,
   spentB = null,
   tipHeight = 0,
+  hashBonusNanos = HASH_BONUS_NANOS,
 } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
@@ -308,7 +316,9 @@ export function verifyBlock(block, prev, {
     const dual = buildDualTree({ aLeaves, bLeaves });
     if (!dual.continuityRoot.equals(decoded.continuityRoot)) return { ok: false, reason: 'continuity' };
     const sampleCount = samples.reduce((a, s) => a + (Number(s.count) > 0 ? Number(s.count) : 1), 0);
-    if (bonusNanos !== sampleCount * HASH_BONUS_NANOS) return { ok: false, reason: 'hash_bonus' };
+    const unit = Number(hashBonusNanos);
+    const liveUnit = Number.isFinite(unit) && unit >= 0 ? unit : HASH_BONUS_NANOS;
+    if (bonusNanos !== sampleCount * liveUnit) return { ok: false, reason: 'hash_bonus' };
   }
   for (const o of txs[0].vout) {
     if (!ssaOk(o.address)) return { ok: false, reason: 'miner_addr' };

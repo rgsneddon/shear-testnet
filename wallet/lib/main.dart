@@ -23,7 +23,7 @@ import 'shear_biometrics.dart';
 import 'shear_export.dart';
 import 'shear_social.dart';
 
-const kWalletVersion = '0.6';
+const kWalletVersion = '0.7';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -1078,9 +1078,11 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     return [
       const Text('The Reserve', style: TextStyle(fontWeight: FontWeight.w700)),
       const Text(
-        'Lock SHE for 400 days in your private key-portal. The first π SHE deposit opens the epoch. '
-        'Interest is a variable rate observed by The Reserve oracle on every node. '
-        'Only this vortice may mint that interest.',
+        'The Reserve is Shear governance. Lock over π SHE into your portal. '
+        'The first qualifying stake opens a 400-day epoch. '
+        'Last-99-day deposits still unlock a vote but earn no stake. '
+        'Interest is a variable rate observed by The Reserve oracle. '
+        'The winning vote then moves the hash bonus by one unit.',
       ),
       if (reserve.cutoffDisclaimer(now)) ...[
         const SizedBox(height: 8),
@@ -1092,6 +1094,8 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       Text(reserve.epochStartMs == 0
           ? 'No epoch yet. The first π SHE deposit will start it.'
           : '$daysLeft days remaining in this epoch.'),
+      Text('Live hash bonus  ${reserve.liveHashBonusNanos} unit(s)  ·  '
+          'votes +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}'),
       if (p.nanos > 0) ...[
         Text('$kReserveAccruedLabel  $accruedShe SHE'),
         Text('At epoch end  $endShe SHE'),
@@ -1121,13 +1125,18 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       ]),
       if (p.canVote) ...[
         const SizedBox(height: 12),
-        const Text('Vote on the per-hash bonus (±1 unit of 10⁻¹¹ SHE; the 1 SHE pot does not change)'),
+        const Text('Vote to raise, lower, or leave the hash bonus (±1 unit). The 1 SHE pot does not change.'),
         Wrap(spacing: 8, runSpacing: 8, children: [
           for (final v in [kVoteIncrease, kVoteDecrease, kVoteHold])
             ChoiceChip(
               label: Text(v),
               selected: p.vote == v,
               onSelected: (_) {
+                if (p.vote != null &&
+                    p.voteEpoch == reserve.currentEpoch &&
+                    reserve.remainingMs(now) < kReserveJoinCutoffMs) {
+                  return;
+                }
                 reserve.vote(dest: dest, choice: v, nowMs: now);
                 setState(() {});
               },

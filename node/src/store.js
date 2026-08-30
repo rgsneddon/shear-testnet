@@ -200,6 +200,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
       joinFunded: !!joinVault.genesisMs,
       spentB,
       tipHeight: prev ? prev.height + 1 : 1,
+      hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
     });
     if (!check.ok) return check;
     const gated = validateJoinBlock({
@@ -381,6 +382,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
       txs: pendingTxs,
       now,
       bits,
+      hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
     });
     const jobId = `shear-${height}-${jobSeq++}`;
     const job = publicJob(tpl, { jobId, shareBits });
