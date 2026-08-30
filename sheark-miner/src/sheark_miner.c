@@ -4,6 +4,9 @@
  * Do not recut Shear-Miner 1.1 / 1.0.
  */
 #if defined(__linux__)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
 #endif
@@ -22,6 +25,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sched.h>
+#endif
 
 #if defined(_WIN32)
 #include <winsock2.h>
@@ -62,6 +68,7 @@ typedef struct {
   int gen;
   int share_bits;
   int block_bits;
+  int height;
   char jobId[80];
   unsigned char header[SHEAR_HEADER_LEN];
   int have;
@@ -71,10 +78,13 @@ static pthread_mutex_t g_job_mu = PTHREAD_MUTEX_INITIALIZER;
 static JobSnap g_main_job;
 static int g_have_main = 0;
 static int g_job_gen = 0;
+static atomic_int g_job_seq;
+static atomic_int g_share_bits_live;
 
 typedef struct {
   char jobId[80];
   uint64_t nonce;
+  int share_bits;
 } Share;
 
 static pthread_mutex_t g_q_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -85,21 +95,28 @@ static uint64_t g_meets = 0;
 static int g_accepted = 0;
 static int g_rejected = 0;
 static int g_blocks = 0;
-static time_t g_rainbow_until = 0;
 static int g_color = 1;
 
 #define C_RST "\033[0m"
-#define C_GRN "\033[32m"
-#define C_YEL "\033[33m"
-#define C_RED "\033[31m"
+#define C_GRN "\033[1;92m"
+#define C_YEL "\033[1;93m"
+#define C_RED "\033[1;91m"
 
-static const char *C_RAIN[] = {
-  "\033[31m", "\033[33m", "\033[32m", "\033[36m", "\033[34m", "\033[35m",
-};
+
 static atomic_int g_inflight = 0;
 static uint64_t g_dropped = 0;
 static uint64_t g_submitted = 0;
+static uint64_t g_round0 = 0;
+static int g_height = 0;
+static char g_last_job[80];
+static uint64_t g_last_nonce = 0;
+static char g_last_hash[65];
+static char g_last_ack_hash[65];
 static time_t g_t0;
+static int g_cpu_map[256];
+static int g_cpu_map_n = 0;
+
+static void fmt_hashrate(double hs, char *buf, size_t n);
 
 typedef struct {
   int fd;
@@ -201,6 +218,51 @@ static void device_inventory(void) {
   long n = sysconf(_SC_NPROCESSORS_ONLN);
   if (n > 0) g_cpu_threads = (int)n;
   g_cpu_cores = g_cpu_threads;
+#if defined(__linux__)
+  {
+    int cpus[256], cores[256], seen[256], nn = 0, m = 0;
+    memset(seen, 0, sizeof(seen));
+    for (int cpu = 0; cpu < 256; cpu++) {
+      char path[96];
+      snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/core_id", cpu);
+      FILE *f = fopen(path, "r");
+      if (!f) break;
+      int core = 0;
+      if (fscanf(f, "%d", &core) != 1) {
+        fclose(f);
+        break;
+      }
+      fclose(f);
+      cpus[nn] = cpu;
+      cores[nn] = core;
+      nn++;
+    }
+    for (int i = 0; i < nn; i++) {
+      int c = cores[i] & 255;
+      if (seen[c]) continue;
+      seen[c] = 1;
+      g_cpu_map[m++] = cpus[i];
+    }
+    for (int i = 0; i < nn; i++) {
+      int already = 0;
+      for (int j = 0; j < m; j++) if (g_cpu_map[j] == cpus[i]) already = 1;
+      if (!already) g_cpu_map[m++] = cpus[i];
+    }
+    g_cpu_map_n = m;
+    if (m > 0) {
+      int uniq = 0;
+      memset(seen, 0, sizeof(seen));
+      for (int i = 0; i < nn; i++) {
+        int c = cores[i] & 255;
+        if (!seen[c]) {
+          seen[c] = 1;
+          uniq++;
+        }
+      }
+      if (uniq > 0) g_cpu_cores = uniq;
+    }
+  }
+#endif
 #endif
   if (g_cpu_threads < 1) g_cpu_threads = 1;
   if (g_cpu_cores < 1) g_cpu_cores = 1;
@@ -353,6 +415,14 @@ static int send_login(Conn *c, const char *login, int threads) {
   return conn_write(c, line, n) == 0 ? 0 : -1;
 }
 
+static int send_stats(Conn *c, const char *login, int threads) {
+  char ident[640], line[1200];
+  identity_json(ident, sizeof(ident), login, threads);
+  int n = snprintf(line, sizeof(line),
+                   "{\"id\":3,\"method\":\"stats\",\"params\":{%s},%s}\n", ident, ident);
+  return conn_write(c, line, n);
+}
+
 static int send_submit(Conn *c, const char *login, int threads, const char *jobId, uint64_t nonce) {
   char ident[640], line[1400];
   identity_json(ident, sizeof(ident), login, threads);
@@ -381,31 +451,36 @@ static void apply_job(const char *line) {
   json_int(line, "shareBits", &sb);
   json_int(line, "blockBits", &bb);
   json_int(line, "bits", &bits);
+  json_int(line, "height", &job.height);
   job.share_bits = sb > 0 ? sb : 8;
   job.block_bits = bb > 0 ? bb : (bits > 0 ? bits : 16);
   if (!job.jobId[0]) snprintf(job.jobId, sizeof(job.jobId), "job");
+  if (job.height > g_height) {
+    g_height = job.height;
+    g_round0 = (uint64_t)atomic_load_explicit(&g_hashes, memory_order_relaxed);
+  }
   pthread_mutex_lock(&g_job_mu);
+  if (g_have_main && g_main_job.have
+      && memcmp(g_main_job.header, job.header, SHEAR_HEADER_LEN) == 0) {
+    g_main_job.share_bits = job.share_bits;
+    g_main_job.block_bits = job.block_bits;
+    if (job.height > 0) g_main_job.height = job.height;
+    if (job.jobId[0]) snprintf(g_main_job.jobId, sizeof(g_main_job.jobId), "%s", job.jobId);
+    atomic_store_explicit(&g_share_bits_live, job.share_bits, memory_order_release);
+    pthread_mutex_unlock(&g_job_mu);
+    return;
+  }
   g_job_gen++;
   job.gen = g_job_gen;
   job.have = 1;
   g_main_job = job;
   g_have_main = 1;
+  atomic_store_explicit(&g_share_bits_live, job.share_bits, memory_order_release);
+  atomic_store_explicit(&g_job_seq, g_job_gen, memory_order_release);
   pthread_mutex_unlock(&g_job_mu);
-  printf("job %s shareBits=%d blockBits=%d algo=%s workers=%d\n",
-         job.jobId, job.share_bits, job.block_bits, SHEAR_ALGO, g_threads);
-  fflush(stdout);
-}
-
-static void rainbow_puts(const char *s) {
-  int i = 0;
-  for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-    if (*p > 32) {
-      fputs(C_RAIN[i % 6], stdout);
-      i++;
-    }
-    fputc((int)*p, stdout);
-  }
-  fputs(C_RST, stdout);
+  printf("job %s height=%d shareBits=%d blockBits=%d algo=%s workers=%d backend=%s cpuCores=%d cpuThreads=%d\n",
+         job.jobId, job.height, job.share_bits, job.block_bits, SHEAR_ALGO, g_threads,
+         shear_hash_backend(), g_cpu_cores, g_cpu_threads);
   fflush(stdout);
 }
 
@@ -428,12 +503,46 @@ static void apply_ack(const char *line) {
       atomic_fetch_sub(&g_inflight, 1);
       char blk[16] = "";
       json_token(line, "block", blk, sizeof(blk));
+      json_token(line, "hash", g_last_ack_hash, sizeof(g_last_ack_hash));
       if (strcmp(blk, "true") == 0 || strcmp(blk, "1") == 0) {
         g_blocks++;
-        g_rainbow_until = time(NULL) + 8;
-        if (g_color) rainbow_puts("blockfound\n");
-        else {
-          printf("blockfound\n");
+        uint64_t h = (uint64_t)atomic_load_explicit(&g_hashes, memory_order_relaxed);
+        uint64_t round = h >= g_round0 ? h - g_round0 : h;
+        g_round0 = h;
+        double elapsed = (double)(time(NULL) - (g_t0 ? g_t0 : time(NULL)));
+        if (elapsed < 1) elapsed = 1;
+        char rate[32];
+        fmt_hashrate((double)h / elapsed, rate, sizeof(rate));
+        int height = g_height, sb = 0, bb = 0;
+        char jobId[80];
+        snprintf(jobId, sizeof(jobId), "%s", g_last_job[0] ? g_last_job : "-");
+        pthread_mutex_lock(&g_job_mu);
+        if (g_have_main && g_main_job.have) {
+          if (g_main_job.height > 0) height = g_main_job.height;
+          sb = g_main_job.share_bits;
+          bb = g_main_job.block_bits;
+          if (!g_last_job[0]) snprintf(jobId, sizeof(jobId), "%s", g_main_job.jobId);
+        }
+        pthread_mutex_unlock(&g_job_mu);
+        char linebuf[768];
+        snprintf(linebuf, sizeof(linebuf),
+                 "BLOCKFOUND!!!  *** SHEAR BLOCK SEALED ***  height=%d job=%s nonce=%llu hash=%s "
+                 "shareBits=%d blockBits=%d hashes=%llu round=%llu hashrate=%s accepted=%d rejected=%d "
+                 "submitted=%llu blocks=%d dropped=%llu threads=%d cpuCores=%d cpuThreads=%d "
+                 "backend=%s user=%s pool=%s:%d elapsed=%.0fs\n",
+                 height, jobId, (unsigned long long)g_last_nonce,
+                 g_last_ack_hash[0] ? g_last_ack_hash : (g_last_hash[0] ? g_last_hash : "-"),
+                 sb, bb, (unsigned long long)h, (unsigned long long)round,
+                 rate, g_accepted, g_rejected, (unsigned long long)g_submitted, g_blocks,
+                 (unsigned long long)g_dropped, g_threads, g_cpu_cores, g_cpu_threads,
+                 shear_hash_backend(), g_login, g_host, g_port, elapsed);
+        if (g_color) {
+          fputs("\033[1;91m\033[1;93m\033[1;92m", stdout);
+          fputs(linebuf, stdout);
+          fputs(C_RST, stdout);
+          fflush(stdout);
+        } else {
+          fputs(linebuf, stdout);
           fflush(stdout);
         }
       }
@@ -496,6 +605,9 @@ static int enqueue_share(const char *jobId, uint64_t nonce) {
   Share *s = &g_q[g_qtail];
   snprintf(s->jobId, sizeof(s->jobId), "%s", jobId);
   s->nonce = nonce;
+  s->share_bits = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
+  snprintf(g_last_job, sizeof(g_last_job), "%s", jobId);
+  g_last_nonce = nonce;
   g_qtail = next;
   pthread_mutex_unlock(&g_q_mu);
   return 1;
@@ -528,31 +640,70 @@ static int enqueue_front(const Share *s) {
 
 static void *hash_worker(void *arg) {
   int tid = (int)(intptr_t)arg;
+#if defined(__linux__)
+  {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    int cpu = tid;
+    if (g_cpu_map_n > 0) cpu = g_cpu_map[tid % g_cpu_map_n];
+    else {
+      long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+      if (ncpu < 1) ncpu = 1;
+      cpu = tid % (int)ncpu;
+    }
+    CPU_SET((unsigned)cpu, &set);
+    pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+  }
+#endif
   uint64_t n = g_origin + (uint64_t)tid;
   JobSnap job;
   memset(&job, 0, sizeof(job));
   int last_gen = -1;
+  unsigned char header[SHEAR_HEADER_LEN];
+  int primed = 0;
+  uint64_t primed_n = 0;
   while (!g_stop) {
-    if (!copy_main_job(&job)) {
-      usleep(10000);
-      continue;
-    }
-    if (job.gen != last_gen) {
+    int seq = atomic_load_explicit(&g_job_seq, memory_order_acquire);
+    if (seq != last_gen || !job.have) {
+      primed = 0;
+      if (!copy_main_job(&job)) {
+        usleep(10000);
+        continue;
+      }
       last_gen = job.gen;
+      memcpy(header, job.header, SHEAR_HEADER_LEN);
+      shear_bind(header);
       n = g_origin + (uint64_t)tid;
     }
-    unsigned char header[SHEAR_HEADER_LEN];
-    unsigned char hash[32];
-    memcpy(header, job.header, SHEAR_HEADER_LEN);
     shear_set_nonce(header, n);
-    shear_hash(header, hash);
-    atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
-    JobSnap live;
-    if (copy_main_job(&live) && live.gen == job.gen) {
-      if (shear_meets_target(hash, job.share_bits)) {
-        enqueue_share(job.jobId, n);
+    if (!primed) {
+      if (shear_hash_first(header) != 0) {
+        unsigned char hash[32];
+        shear_hash(header, hash);
+        atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
+        if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
+            && shear_meets_target(hash, atomic_load_explicit(&g_share_bits_live, memory_order_relaxed))) {
+          enqueue_share(job.jobId, n);
+        }
+        n += (uint64_t)g_threads;
+        continue;
       }
+      primed = 1;
+      primed_n = n;
+      n += (uint64_t)g_threads;
+      continue;
     }
+    unsigned char hash[32];
+    if (shear_hash_next(header, hash) != 0) {
+      primed = 0;
+      continue;
+    }
+    atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
+    if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
+        && shear_meets_target(hash, atomic_load_explicit(&g_share_bits_live, memory_order_relaxed))) {
+      enqueue_share(job.jobId, primed_n);
+    }
+    primed_n = n;
     n += (uint64_t)g_threads;
   }
   return NULL;
@@ -573,6 +724,7 @@ static void seed_origin(void) {
 static void clear_jobs(void) {
   pthread_mutex_lock(&g_job_mu);
   g_have_main = 0;
+  atomic_store_explicit(&g_job_seq, 0, memory_order_release);
   pthread_mutex_unlock(&g_job_mu);
   pthread_mutex_lock(&g_q_mu);
   g_qhead = g_qtail = 0;
@@ -582,6 +734,11 @@ static void clear_jobs(void) {
 static void flush_shares(Conn *mainc) {
   Share s;
   while (dequeue_share(&s)) {
+    int live = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
+    if (live > s.share_bits && s.share_bits > 0) {
+      g_dropped++;
+      continue;
+    }
     int wr = send_submit(mainc, g_login, g_threads, s.jobId, s.nonce);
     if (wr == 1) {
       enqueue_front(&s);
@@ -664,6 +821,7 @@ static int mine_once(void) {
     flush_shares(&mainc);
     time_t now = time(NULL);
     if (now != last_stats) {
+      (void)send_stats(&mainc, g_login, g_threads);
       last_stats = now;
       uint64_t h = atomic_load_explicit(&g_hashes, memory_order_relaxed);
       static uint64_t rate_h0;
@@ -675,45 +833,55 @@ static int mine_once(void) {
       }
       double dt = (double)(now - rate_t0);
       if (dt < 1) dt = 1;
-      double inst = (double)(h - rate_h0) / dt;
-      if (smooth_hs <= 0) smooth_hs = inst;
-      else {
-        double alpha = 1.0 - exp(-dt / 3.0);
-        smooth_hs += alpha * (inst - smooth_hs);
-      }
-      if (dt >= 2) {
-        rate_h0 = h;
+      if (h > rate_h0) {
+        double inst = (double)(h - rate_h0) / dt;
+        if (smooth_hs <= 0) smooth_hs = inst;
+        else {
+          double alpha = 1.0 - exp(-dt / 8.0);
+          smooth_hs += alpha * (inst - smooth_hs);
+        }
+        if (dt >= 8) {
+          rate_h0 = h;
+          rate_t0 = now;
+        }
+      } else if (dt >= 8) {
         rate_t0 = now;
       }
       char rate[32];
       fmt_hashrate(smooth_hs, rate, sizeof(rate));
       char jobId[80] = "-";
-      int sb = 0, bb = 0;
+      int sb = 0, bb = 0, height = g_height;
       pthread_mutex_lock(&g_job_mu);
       if (g_have_main && g_main_job.have) {
         snprintf(jobId, sizeof(jobId), "%s", g_main_job.jobId);
         sb = g_main_job.share_bits;
         bb = g_main_job.block_bits;
+        if (g_main_job.height > 0) height = g_main_job.height;
       }
       pthread_mutex_unlock(&g_job_mu);
-      if (g_color && time(NULL) < g_rainbow_until) {
-        char linebuf[512];
-        snprintf(linebuf, sizeof(linebuf),
-                 "hashes=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu threads=%d job=%s shareBits=%d blockBits=%d\n",
-                 (unsigned long long)h, rate, g_accepted, g_rejected,
-                 (unsigned long long)g_submitted, g_threads, jobId, sb, bb);
-        rainbow_puts(linebuf);
-      } else if (g_color) {
-        printf("hashes=" C_GRN "%llu" C_RST " hashrate=" C_GRN "%s" C_RST
+      uint64_t round = h >= g_round0 ? h - g_round0 : h;
+      double elapsed = (double)(now - (g_t0 ? g_t0 : now));
+      if (elapsed < 1) elapsed = 1;
+      if (g_color) {
+        printf("hashes=" C_GRN "%llu" C_RST " round=" C_GRN "%llu" C_RST " hashrate=" C_GRN "%s" C_RST
                " accepted=" C_YEL "%d" C_RST " rejected=" C_RED "%d" C_RST
-               " submitted=%llu threads=%d job=%s shareBits=%d blockBits=%d\n",
-               (unsigned long long)h, rate, g_accepted, g_rejected,
-               (unsigned long long)g_submitted, g_threads, jobId, sb, bb);
+               " submitted=%llu blocks=%d dropped=%llu threads=%d cpuCores=%d cpuThreads=%d "
+               "job=%s height=%d shareBits=%d blockBits=%d backend=%s user=%s pool=%s:%d elapsed=%.0fs inflight=%d\n",
+               (unsigned long long)h, (unsigned long long)round, rate, g_accepted, g_rejected,
+               (unsigned long long)g_submitted, g_blocks, (unsigned long long)g_dropped,
+               g_threads, g_cpu_cores, g_cpu_threads, jobId, height, sb, bb,
+               shear_hash_backend(), g_login, g_host, g_port, elapsed,
+               atomic_load(&g_inflight));
         fflush(stdout);
       } else {
-        printf("hashes=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu threads=%d job=%s shareBits=%d blockBits=%d\n",
-               (unsigned long long)h, rate, g_accepted, g_rejected,
-               (unsigned long long)g_submitted, g_threads, jobId, sb, bb);
+        printf("hashes=%llu round=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu blocks=%d dropped=%llu "
+               "threads=%d cpuCores=%d cpuThreads=%d job=%s height=%d shareBits=%d blockBits=%d "
+               "backend=%s user=%s pool=%s:%d elapsed=%.0fs inflight=%d\n",
+               (unsigned long long)h, (unsigned long long)round, rate, g_accepted, g_rejected,
+               (unsigned long long)g_submitted, g_blocks, (unsigned long long)g_dropped,
+               g_threads, g_cpu_cores, g_cpu_threads, jobId, height, sb, bb,
+               shear_hash_backend(), g_login, g_host, g_port, elapsed,
+               atomic_load(&g_inflight));
         fflush(stdout);
       }
     }
@@ -732,6 +900,8 @@ int main(int argc, char **argv) {
   device_inventory();
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) backend_arg = argv[++i];
+    if (strcmp(argv[i], "--selftest") == 0 || strcmp(argv[i], "--verify") == 0)
+      if (strcmp(backend_arg, "auto") == 0) backend_arg = "interpreter";
   }
   if (shear_hash_set_backend(backend_arg) != 0) {
     fprintf(stderr, "unknown or unavailable --backend %s; using %s\n", backend_arg,
@@ -856,9 +1026,16 @@ int main(int argc, char **argv) {
   }
 #endif
   printf("ShearK-Miner %s (ShearHash-v2 light)\n", SHEAR_VERSION);
-  printf("tcp://%s:%d user=%s threads=%d coin=SHE algo=%s\n",
-         g_host, g_port, g_login, g_threads, SHEAR_ALGO);
-  printf("device cpuCores=%d cpuThreads=%d\n", g_cpu_cores, g_cpu_threads);
+  printf("tcp://%s:%d user=%s threads=%d coin=SHE algo=%s backend=%s\n",
+         g_host, g_port, g_login, g_threads, SHEAR_ALGO, shear_hash_backend());
+  printf("device cpuCores=%d cpuThreads=%d", g_cpu_cores, g_cpu_threads);
+  if (g_cpu_map_n > 0) {
+    printf(" pin=");
+    int show = g_threads < g_cpu_map_n ? g_threads : g_cpu_map_n;
+    if (show > 16) show = 16;
+    for (int i = 0; i < show; i++) printf("%s%d", i ? "," : "", g_cpu_map[i]);
+  }
+  printf("\n");
   fflush(stdout);
   int n = g_threads;
   pthread_t *th = calloc((size_t)n, sizeof(pthread_t));

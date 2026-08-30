@@ -1,7 +1,13 @@
-VERSION ?= 1.0
+VERSION ?= 1.1
 CC ?= cc
 CXX ?= c++
-CFLAGS ?= -O2 -Wall -Wextra -std=c11
+CFLAGS ?= -O3 -Wall -Wextra -std=c11 -fomit-frame-pointer
+ifneq ($(OS),Windows_NT)
+  UNAME := $(shell uname -s)
+  ifeq ($(UNAME),Linux)
+    CFLAGS += -march=native -pthread
+  endif
+endif
 RX := $(abspath ../crypto/randomx)
 RXBUILD := $(RX)/build
 RXLIB := $(RXBUILD)/librandomx.a

@@ -30,7 +30,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
     assert.equal(j.personalisation, 'ShearHash-v2');
-    assert.equal(j.version, '1.0');
+    assert.equal(j.version, '1.1');
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.headerBytes, 128);
     assert.equal(j.magic, 'shear-testnet-v2');
@@ -47,19 +47,28 @@ describe('ShearK-Miner', () => {
     assert.match(help.stdout, /ShearK-Miner/);
     assert.match(help.stdout, /ShearHash-v2 light/);
     assert.equal(help.stdout.toLowerCase().includes('feeless'), false);
-    assert.match(src, /hashes=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu threads=%d job=%s shareBits=%d blockBits=%d/);
+    assert.match(src, /hashes=%llu round=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu blocks=%d dropped=%llu/);
+    assert.match(src, /cpuCores=%d cpuThreads=%d/);
+    assert.match(src, /BLOCKFOUND!!!/);
+    assert.match(src, /\\033\[1;91m\\033\[1;93m\\033\[1;92m/);
     assert.match(src, /msgid == 1 && inflight <= 0/);
-    assert.match(src, /\\033\[32m/);
-    assert.match(src, /\\033\[33m/);
-    assert.match(src, /\\033\[31m/);
-    assert.match(src, /blockfound/);
-    assert.match(src, /rainbow_puts/);
+    assert.match(src, /\\033\[1;92m/);
+    assert.match(src, /\\033\[1;93m/);
+    assert.match(src, /\\033\[1;91m/);
+    assert.match(src, /blockfound|BLOCKFOUND/i);
+    assert.equal(src.includes('rainbow_puts'), false);
     assert.match(src, /hashes\\":%llu/);
     assert.match(src, /hashrate\\":%.0f/);
     const hashc = fs.readFileSync(path.join(root, 'src/shear_hash.c'), 'utf8');
     assert.match(hashc, /pthread_getspecific/);
-    assert.match(hashc, /pthread_rwlock_rdlock/);
+    assert.match(hashc, /g_in_hash/);
+    assert.match(hashc, /shear_bind/);
+    assert.match(hashc, /randomx_calculate_hash_next/);
+    assert.match(hashc, /RANDOMX_FLAG_FULL_MEM/);
+    assert.match(hashc, /backend_matches_selftest_locked/);
     assert.equal(/randomx_calculate_hash\(g_vm,/.test(hashc), false);
+    assert.match(src, /pthread_setaffinity_np/);
+    assert.match(src, /g_cpu_map/);
   });
 
   it('login status=OK does not bump accepted; status line prints hashes and job bits', async () => {
@@ -99,9 +108,9 @@ describe('ShearK-Miner', () => {
     child.kill('SIGTERM');
     await new Promise((r) => child.once('close', r));
     server.close();
-    assert.match(out, /hashes=(?:\x1b\[32m)?\d+/);
-    assert.match(out, /accepted=(?:\x1b\[33m)?0/);
-    assert.match(out, /rejected=(?:\x1b\[31m)?0/);
+    assert.match(out, /hashes=(?:\x1b\[(?:32m|1;92m))?\d+/);
+    assert.match(out, /accepted=(?:\x1b\[(?:33m|1;93m))?0/);
+    assert.match(out, /rejected=(?:\x1b\[(?:31m|1;91m))?0/);
     assert.match(out, /threads=1/);
     assert.match(out, /job=login-job/);
     assert.match(out, /shareBits=32/);
@@ -145,7 +154,7 @@ describe('ShearK-Miner', () => {
       const lines = out.split('\n').filter((l) => l.includes('hashes='));
       assert.ok(lines.length >= 1, out);
       const last = lines[lines.length - 1];
-      const m = /hashes=(?:\x1b\[32m)?(\d+)/.exec(last);
+      const m = /hashes=(?:\x1b\[(?:32m|1;92m))?(\d+)/.exec(last);
       assert.ok(m, last);
       return Number(m[1]);
     }

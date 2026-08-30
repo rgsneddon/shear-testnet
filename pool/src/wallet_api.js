@@ -165,7 +165,10 @@ export function pendingFor(miners, address) {
     const login = String(m?.login || m?.workerKey || '');
     const dest = payoutDest(login);
     if (dests.has(login) || (dest && dests.has(dest)) || dests.has(login.split('.')[0])) {
-      hashes += Number(m.roundHashes || 0);
+      const h = Number(m.clientHashes) || 0;
+      const z = Number(m.clientHashesRound0);
+      const base = Number.isFinite(z) ? z : 0;
+      hashes += h < base ? h : h - base;
     }
   }
   return { shares: hashes, amount: nanosToShe(hashes * HASH_BONUS_NANOS) };

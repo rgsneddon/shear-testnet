@@ -7,6 +7,7 @@ import net from 'node:net';
 import {
   BLOCK_SUBSIDY_NANOS,
   HASH_BONUS_NANOS,
+  POOL_FEE_BPS,
   TARGET_BLOCK_INTERVAL_MS,
   MAGIC_TESTNET,
   HASH_TX_LIVE,
@@ -16,7 +17,7 @@ import { payoutDest } from '../../crypto/address.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels } from '../src/pool.js';
-import { publicJob, buildTemplate } from '../../node/src/chain.js';
+import { publicJob, buildTemplate, hashBonusByMiner } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
 describe('job gate', () => {
@@ -48,6 +49,12 @@ describe('admit', () => {
     const shares = splitPot([{ miner: id.paymentCode, count: 99 }], 'ssa1unused');
     assert.ok(silent);
     assert.equal(shares.some((s) => s.address === silent && s.nanos === Math.floor(BLOCK_SUBSIDY_NANOS * 0.99)), true);
+    assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
+    assert.equal(POOL_FEE_BPS, 100);
+    const hashes = 1_000_000;
+    const bonuses = hashBonusByMiner([{ miner: dest, count: hashes }]);
+    assert.equal(bonuses.get(dest), hashes * HASH_BONUS_NANOS);
+    assert.notEqual(bonuses.get(dest), Math.floor(hashes * HASH_BONUS_NANOS * (10000 - POOL_FEE_BPS) / 10000));
   });
 });
 
@@ -380,6 +387,10 @@ describe('public miner listing', () => {
     assert.ok(bannerIdx >= 0 && feeIdx > bannerIdx, 'TESTNET banner must sit above the fee disclaimer');
     assert.match(dash.slice(bannerIdx, feeIdx), />TESTNET</);
     assert.match(dash, /#testnet-banner/);
+    assert.match(dash, /pool fee is 1% of the 1 SHE pot for development/);
+    assert.match(dash, /your hashes pay in full and are not subject to pool fees/);
+    assert.doesNotMatch(dash, /0\.1 SHE pot/);
+    assert.equal(/feeless/i.test(dash), false);
   });
 
   it('miner and version boxes list each distinct label once', () => {
@@ -487,7 +498,7 @@ describe('public miner listing', () => {
     assert.equal(w.accepted, 0);
     assert.equal(w.connected, true);
     assert.equal(w.roundHashes, 0);
-    assert.equal(w.hashes, 4200);
+    assert.equal(w.hashes, 0);
     assert.equal(w.threads, 2);
     const row = [...pool.miners.values()].find((m) => String(m.workerKey || '').endsWith('.rig'));
     assert.equal(Number(row.roundHashes) || 0, 0);
@@ -581,7 +592,7 @@ describe('public miner listing', () => {
     pool.close();
   });
 
-  it('hashes this round is proven share work and ignores padded client hashes', async () => {
+  it('hashes this round is the miner counter this round, not padded lifetime or proven share work', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-round-h-'));
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
@@ -611,18 +622,28 @@ describe('public miner listing', () => {
     assert.ok(proven > 0);
     assert.ok(proven < 1_000_000);
     row.clientHashes = 16_590_151_266_784;
-    row.clientHashesRound0 = 0;
+    row.clientHashesRound0 = 16_590_151_266_784;
     row.clientHs = 1_062_582_824;
-    const stats = pool.publicStats();
-    const w = (stats.workers || []).find((x) => x.miner === tag);
+    let stats = pool.publicStats();
+    let w = (stats.workers || []).find((x) => x.miner === tag);
     assert.ok(w);
-    assert.equal(w.roundHashes, proven);
-    assert.equal(w.roundHashes, Number(row.roundHashes));
-    assert.ok(w.hashrate < 1_000_000);
+    assert.equal(w.hashes, 0);
+    assert.equal(w.roundHashes, 0);
+    assert.equal(w.provenHashes, proven);
+    assert.notEqual(w.roundHashes, row.clientHashes);
+    row.clientHashes = 16_590_151_266_784 + 900;
+    stats = pool.publicStats();
+    w = (stats.workers || []).find((x) => x.miner === tag);
+    assert.equal(w.hashes, 900);
+    assert.equal(w.roundHashes, 900);
+    assert.equal(w.provenHashes, proven);
     row.roundHashes = 0;
     const reset = pool.publicStats();
     const w2 = (reset.workers || []).find((x) => x.miner === tag);
-    if (w2) assert.equal(w2.roundHashes, 0);
+    if (w2) {
+      assert.equal(w2.provenHashes, 0);
+      assert.equal(w2.roundHashes, 900);
+    }
     sock.destroy();
     pool.close();
   });
@@ -663,8 +684,9 @@ describe('public miner listing', () => {
     assert.equal(tags.includes(feeTag), false, JSON.stringify(stats.workers));
     const hasher = (stats.workers || []).find((w) => w.miner === hasherTag);
     assert.ok(hasher);
-    assert.ok(hasher.roundHashes > 0);
-    assert.ok(hasher.roundHashes < 1_000_000);
+    assert.equal(hasher.roundHashes, 0);
+    assert.ok(hasher.provenHashes > 0);
+    assert.ok(hasher.provenHashes < 1_000_000);
     assert.ok(hasher.hashrate < 1_000_000);
     const feePage = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${feeTag}`);
     assert.equal(feePage.status, 404);

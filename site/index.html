@@ -99,7 +99,7 @@
       <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/shear-testnet/releases/tag/1.1" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.1" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.4" target="_blank" rel="noopener">WALLET</a>
     </nav>
@@ -134,14 +134,11 @@
         </div>
       </div>
       <div class="client-dd">
-        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/shear-testnet/releases/tag/1.1">MINER</a>
+        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.1">MINER</a>
         <div class="client-menu" id="menu-miner">
-          <a data-pack="miner-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/1.1/Shear-Miner-1.1-macos.zip">macOS 1.1 (free)</a>
-          <a data-pack="miner-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/1.1/Shear-Miner-1.1-windows.zip">Windows 1.1 (free)</a>
-          <a data-pack="miner-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/1.1/Shear-Miner-1.1-linux.zip">Linux 1.1 (free)</a>
-          <a href="https://github.com/rgsneddon/shear-testnet/releases/download/1.0/Shear-Miner-1.0-macos.zip">macOS 1.0 (4% fee)</a>
-          <a href="https://github.com/rgsneddon/shear-testnet/releases/download/1.0/Shear-Miner-1.0-windows.zip">Windows 1.0 (4% fee)</a>
-          <a href="https://github.com/rgsneddon/shear-testnet/releases/download/1.0/Shear-Miner-1.0-linux.zip">Linux 1.0 (4% fee)</a>
+          <a data-pack="miner-macos" href="https://github.com/rgsneddon/ShearK/releases/download/1.1/ShearK-Miner-1.1-macos.zip">macOS</a>
+          <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/tag/1.1">Windows leftover</a>
+          <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/tag/1.1">Linux leftover</a>
         </div>
       </div>
       <div class="client-dd">
@@ -159,7 +156,7 @@
       <p>Offer <code>she1</code> (silent ID). Chain dests are revolving <code>ssa1</code>. Never share rest-frame shear1.</p>
       <p>Pool: <a href="https://pool.shear.digital">pool.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
       <p>Explorer: <a href="https://explorer.shear.digital">explorer.shear.digital</a></p>
-      <p>Algo: ShearHash · Coin: SHE · Network: shear-testnet-v1</p>
+      <p>Algo: ShearHash-v2 · Coin: SHE · Network: shear-testnet-v2</p>
       <p class="pulse">live · testnet</p>
     </section>
   </div>
@@ -180,12 +177,13 @@
         linux: BASE + '/0.4/shear-wallet-0.4-linux.zip',
         ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.4'
       };
+      var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
-        macos: BASE + '/1.1/Shear-Miner-1.1-macos.zip',
-        windows: BASE + '/1.1/Shear-Miner-1.1-windows.zip',
-        linux: BASE + '/1.1/Shear-Miner-1.1-linux.zip',
-        android: BASE + '/1.1/Shear-Miner-1.1-linux.zip',
-        ios: BASE + '/1.1/Shear-Miner-1.1-macos.zip'
+        macos: SHEARK + '/download/1.1/ShearK-Miner-1.1-macos.zip',
+        windows: SHEARK + '/tag/1.1',
+        linux: SHEARK + '/tag/1.1',
+        android: SHEARK + '/download/1.1/ShearK-Miner-1.1-macos.zip',
+        ios: SHEARK + '/download/1.1/ShearK-Miner-1.1-macos.zip'
       };
       var node = 'https://github.com/rgsneddon/shear-testnet/tree/main/node';
       function bind(id, href) {

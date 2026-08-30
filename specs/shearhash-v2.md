@@ -116,11 +116,11 @@ v2 nodes must not load the v1 book.
 
 ## Official miner
 
-**ShearK-Miner** `1.0` (two-part). Banner: `ShearK-Miner 1.0 (ShearHash-v2 light)`.
+**ShearK-Miner** `1.1` (two-part). Banner: `ShearK-Miner 1.1 (ShearHash-v2 light)`.
 
 `--print-config` includes `algorithm=ShearHash`, `personalisation=ShearHash-v2`, `headerBytes=128`, `rxMode=light`, `rxCacheMiB=128`, `feePct=0`, `magic=shear-testnet-v2`. Do not write “feeless”.
 
-Shipped from GitHub **[Testnet] ShearK** (`rgsneddon/ShearK`). Do not attach these zips to `rgsneddon/shear` or recut miner tags `1.1` / `1.0` on `shear-testnet`.
+Shipped from GitHub **[Testnet] ShearK** (`rgsneddon/ShearK`). Do not attach these zips to `rgsneddon/shear` or recut Shear-Miner tags `1.1` / `1.0` on `shear-testnet`.
 
 ## Bench (filled after C)
 

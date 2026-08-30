@@ -15,6 +15,7 @@ import {
   TARGET_BLOCK_INTERVAL_MS,
   HASH_BONUS_NANOS,
   HASH_TX_LIVE,
+  bitsForBlock,
   consensusFingerprint,
   consensusLaw,
 } from '../../crypto/asert.js';
@@ -222,15 +223,25 @@ export function scoreShare({ job, nonce }) {
     return { ok: false, reason: 'bad_nonce' };
   }
   const hash = shearHash(header);
-  const shareOk = meetsTarget(hash, Number(job.shareBits));
+  const current = Number(job.shareBits);
+  const prev = Number(job.shareBitsPrev);
+  const prevAt = Number(job.shareBitsAt) || 0;
+  const now = Date.now();
   const blockOk = meetsTarget(hash, Number(job.blockBits || job.bits));
-  if (!shareOk) return { ok: false, reason: 'low_diff', hash: hash.toString('hex') };
+  let creditedShareBits = 0;
+  if (meetsTarget(hash, current)) creditedShareBits = current;
+  else if (Number.isFinite(prev) && prev > 0 && now - prevAt < 8000 && meetsTarget(hash, prev)) {
+    creditedShareBits = prev;
+  } else {
+    return { ok: false, reason: 'low_diff', hash: hash.toString('hex') };
+  }
   return {
     ok: true,
     hash: hash.toString('hex'),
     block: blockOk,
     header,
     bitsMet: leadingZeroBits(hash),
+    creditedShareBits,
   };
 }
 
@@ -371,7 +382,7 @@ export function provenHashrate(miner, now = Date.now()) {
   return hs;
 }
 
-function easeHashrate(miner, instant, now) {
+function easeHashrate(miner, instant, now, tauS = HASHRATE_EMA_TAU_S) {
   const at = Number(now) || Date.now();
   const prev = Number(miner?.emaHs);
   const t0 = Number(miner?.emaAt);
@@ -382,7 +393,7 @@ function easeHashrate(miner, instant, now) {
     return instant;
   }
   const dt = Math.max(0, (at - t0) / 1000);
-  const tau = Math.max(1, HASHRATE_EMA_TAU_S);
+  const tau = Math.max(1, Number(tauS) || HASHRATE_EMA_TAU_S);
   const alpha = dt <= 0 ? 0 : 1 - Math.exp(-dt / tau);
   const next = prev + alpha * (instant - prev);
   miner.emaHs = next;
@@ -396,7 +407,16 @@ function easeHashrate(miner, instant, now) {
  * (spikes in the first second, then crawls toward the true rate).
  * Vardiff 10ms shares stay as-is; this only changes the painted H/s.
  */
-export const SELF_RATE_MIN_DT_S = 5;
+export const SELF_RATE_MIN_DT_S = 2;
+
+/** Actual hashes this open round from the miner's own counter. Bonus uses this. */
+export function roundActualHashes(miner) {
+  const h = Number(miner?.clientHashes) || 0;
+  const z = Number(miner?.clientHashesRound0);
+  const base = Number.isFinite(z) ? z : 0;
+  if (h < base) return h;
+  return h - base;
+}
 
 export function applyMinerSelfRate(session, params, now = Date.now()) {
   if (!session || !params) return session;
@@ -405,6 +425,8 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
   if (Number.isFinite(hashes) && hashes >= 0) {
     session.clientHashes = hashes;
     session.clientHashesAt = now;
+    if (!Number.isFinite(Number(session.clientHashesRound0))) session.clientHashesRound0 = hashes;
+    if (hashes < Number(session.clientHashesRound0)) session.clientHashesRound0 = hashes;
     const prev = Number(session.rateHashes0);
     const t0 = Number(session.rateAt0);
     if (!Number.isFinite(prev) || !(t0 > 0) || hashes < prev) {
@@ -414,9 +436,14 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
       const dt = (now - t0) / 1000;
       if (dt >= SELF_RATE_MIN_DT_S) {
         const delta = hashes - prev;
-        if (delta > 0) session.clientHs = delta / dt;
-        session.rateHashes0 = hashes;
-        session.rateAt0 = now;
+        if (delta > 0) {
+          session.clientHs = delta / dt;
+          session.rateHashes0 = hashes;
+          session.rateAt0 = now;
+        } else if (dt >= 8) {
+          session.rateHashes0 = hashes;
+          session.rateAt0 = now;
+        }
       }
     }
     return session;
@@ -431,16 +458,16 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
 }
 
 /**
- * Public H/s: proven shareBits work when any share has landed. Before that,
- * a connected hasher's own `hashes` counter paints the device rate so the
- * row is not 0 H/s on login. Padded client hashes never mint / roundHashes.
+ * Public H/s for a connected hasher is that miner's own hash counter
+ * (hashes delta / time). Proven shareBits work still mints / roundHashes.
+ * Disconnected rows fall back to proven so the 12s linger is not a fake H/s.
  */
 export function reportedHashrate(miner, now = Date.now()) {
-  const proven = provenHashrate(miner, now);
-  if (proven > 0) return easeHashrate(miner, proven, now);
-  const client = Number(miner?.clientHs) || 0;
-  if (client > 0 && minerConnected(miner)) return easeHashrate(miner, client, now);
-  return easeHashrate(miner, 0, now);
+  if (minerConnected(miner)) {
+    const client = Number(miner?.clientHs) || 0;
+    if (client > 0) return easeHashrate(miner, client, now, 3);
+  }
+  return easeHashrate(miner, provenHashrate(miner, now), now);
 }
 
 export function sortMinersByHashrate(miners, now = Date.now()) {
@@ -501,7 +528,8 @@ export function createPool({
           miner: dest || m.login,
           nonce: String(m.hashes || 0),
           tag: isPaymentCode(parseLogin(m.login)) ? 'she1' : (m.tag || m.login.slice(0, 12)),
-          count: m.roundHashes,
+          count: roundActualHashes(m),
+          proven: Number(m.roundHashes) || 0,
         };
       });
   }
@@ -510,7 +538,21 @@ export function createPool({
   function issueJob(shareBitsNow, { force = false } = {}) {
     const sb = clampShareBits(shareBitsNow ?? shareBits, { blockBits: blockBitsNow(), minBits: liveShareMin() });
     const now = Date.now();
-    if (!force && lastJob && Number(lastJob.shareBits) === sb && now - lastIssueAt < 250) {
+    const liveBits = blockBitsNow();
+    if (!force && lastJob && Number(lastJob.blockBits || lastJob.bits) === liveBits) {
+      if (Number(lastJob.shareBits) === sb) return lastJob;
+      lastJob = {
+        ...lastJob,
+        shareBitsPrev: Number(lastJob.shareBits),
+        shareBitsAt: now,
+        shareBits: sb,
+      };
+      const rec = store.jobs.get(String(lastJob.jobId));
+      if (rec) {
+        rec.job = lastJob;
+        rec.shareBits = sb;
+      }
+      lastIssueAt = now;
       return lastJob;
     }
     const hasherPay = payoutDest(
@@ -519,8 +561,9 @@ export function createPool({
     );
     const poolPay = payoutDest(miner);
     const live = snapshotRound();
+    const potRows = live.map((s) => ({ miner: s.miner, count: Number(s.proven) || 0 })).filter((s) => s.count > 0);
     const potShares = splitPot(
-      live.length ? live : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
+      potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
       poolPay,
     );
     const payout = potShares[0]?.address || hasherPay || poolPay;
@@ -577,6 +620,23 @@ export function createPool({
     return n;
   }
 
+  /** ASERT ±2 per parent. Re-stamp the live job as wall time eases bits toward 90s. */
+  let lastEaseAt = Date.now();
+  function maybeEaseJob() {
+    const t = store.tip();
+    if (!t?.header || !lastJob) return;
+    const now = Date.now();
+    if (now - lastEaseAt < 60_000) return;
+    let parent;
+    try { parent = decodeHeader(Buffer.from(t.header)); } catch { return; }
+    const want = bitsForBlock(parent.bits, parent.timestamp, now);
+    const have = Number(lastJob.blockBits || lastJob.bits || 0);
+    if (!(want < have)) return;
+    lastEaseAt = now;
+    const job = issueJob(shareBits, { force: true });
+    if (job) broadcastJob(job);
+  }
+
   const sockets = new Set();
   const stratum = net.createServer((sock) => {
     try { sock.setNoDelay(true); } catch { /* ignore */ }
@@ -599,7 +659,8 @@ export function createPool({
         // `params.login` must not be treated as a login — that issued a new
         // job per share, accepted stayed 0, and the hasher never listed.
         const isLogin = method === 'login'
-          || (params.login && method !== 'submit' && method !== 'job' && method !== 2 && method !== '2');
+          || (params.login && method !== 'submit' && method !== 'job' && method !== 'stats'
+            && method !== 2 && method !== '2');
         if (isLogin) {
           const adm = admitClient(params);
           if (!adm.ok) {
@@ -659,6 +720,10 @@ export function createPool({
           sock.write(line({ id: msg.id, result: { status: 'OK' }, job }));
           continue;
         }
+        if (method === 'stats') {
+          if (session) applyMinerSelfRate(session, params);
+          continue;
+        }
         if (method === 'submit') {
           if (!session) {
             for (const m of miners.values()) {
@@ -696,7 +761,7 @@ export function createPool({
             session.accepted += 1;
             // Credit the share target only. Extra leading zeros (lucky bitsMet)
             // or a padded client `hashes` counter must not inflate round work.
-            const proven = hashesProvenByShare(Number(job?.shareBits) || 0);
+            const proven = hashesProvenByShare(Number(scored.creditedShareBits || job?.shareBits) || 0);
             session.roundHashes += proven;
             session.hashes += proven;
             session.seen = Date.now();
@@ -802,8 +867,9 @@ export function createPool({
       client: String(m.client || CLIENT),
       algo: ALGO,
       hashrate: reportedHashrate(m, now),
-      hashes: Number(m.clientHashes) || 0,
-      roundHashes: Number(m.roundHashes) || 0,
+      hashes: roundActualHashes(m),
+      roundHashes: roundActualHashes(m),
+      provenHashes: Number(m.roundHashes) || 0,
       accepted: m.accepted || 0,
       stale: m.stale || 0,
       blocks: Number(m.blocks) || 0,

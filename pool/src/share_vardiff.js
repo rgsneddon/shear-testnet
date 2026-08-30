@@ -65,7 +65,9 @@ export function nextShareBits({
   const target = Math.max(1, Number(targetMs) || SHARE_VARDIFF_TARGET_MS);
   const actual = Math.max(1, Number(actualIntervalMs) || target);
   const ratio = target / actual;
-  const delta = Math.round(Math.log2(Math.max(1 / 16, Math.min(16, ratio))));
+  let delta = Math.round(Math.log2(Math.max(1 / 16, Math.min(16, ratio))));
+  if (delta > 1) delta = 1;
+  if (delta < -1) delta = -1;
   return clampShareBits(cur + delta, { blockBits, minBits });
 }
 

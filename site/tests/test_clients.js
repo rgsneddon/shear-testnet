@@ -31,7 +31,10 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /github\.com\/rgsneddon\/shear"/);
     assert.match(html, /miner <strong>1\.1<\/strong>/);
     assert.doesNotMatch(html, /sha256/);
-    assert.match(html, /Shear-Miner-1\.1-macos\.zip/);
+    assert.match(html, /rgsneddon\/ShearK/);
+    assert.match(html, /ShearK-Miner-1\.1-macos\.zip/);
+    assert.match(html, /Windows leftover/);
+    assert.match(html, /Linux leftover/);
     assert.match(html, /navigator\.userAgent/);
     assert.match(html, /client-dd:hover \.client-menu/);
     assert.match(html, /id="menu-wallet"/);

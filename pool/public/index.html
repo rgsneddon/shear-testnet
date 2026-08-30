@@ -127,7 +127,7 @@
       <a class="nav-btn is-on" href="/">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/1.1" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.1" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.4" target="_blank" rel="noopener">WALLET</a>
     </nav>
@@ -146,7 +146,7 @@
         <p><em>she is private</em></p>
         <p>SHE pool. Proof of work only — ShearHash CPU. Use your she1 address from the wallet (a silent ID). Chain dests are ssa1.</p>
         <p class="repo-btns">
-          <a class="repo-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/1.1">MINER</a>
+          <a class="repo-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.1">MINER</a>
           <a class="repo-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.4">WALLET</a>
         </p>
         <p class="pulse" id="live-pulse">live · testnet</p>
@@ -163,14 +163,14 @@
           <input id="threads" type="number" min="1" value="4" step="1"/>
         </p>
         <div class="cmd-row">
-          <pre id="mine-cmd">Shear-Miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --threads 4</pre>
+          <pre id="mine-cmd">ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --threads 4</pre>
           <button type="button" id="copy-cmd">Copy</button>
         </div>
         <p class="label" id="cmd-hint">Valid she1 required. she1 is the silent ID and the login. Never share shear1.</p>
       </section>
     </div>
     <div id="testnet-banner" role="status">TESTNET</div>
-    <p id="fee-note">pool fee is 1% of the 0.1 SHE pot for development — hash bonuses (0.00000000001 SHE per hash) are paid in full to each hasher.</p>
+    <p id="fee-note">pool fee is 1% of the 1 SHE pot for development — your hashes pay in full and are not subject to pool fees.</p>
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
       <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash</div></article>
@@ -233,7 +233,7 @@
       const t = Math.max(1, Number(document.getElementById('threads').value) || 4);
       const user = addr ? (addr.indexOf('.') >= 0 ? addr : addr + '.worker') : 'YOUR_SHE1.worker';
       document.getElementById('mine-cmd').textContent =
-        'Shear-Miner --pool pool.shear.digital:1111 --user ' + user + ' --threads ' + t;
+        'ShearK-Miner --pool pool.shear.digital:1111 --user ' + user + ' --threads ' + t;
       const ok = /^(she1|ssa1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(addr)
         && !/^shear1/i.test(addr);
       document.getElementById('cmd-hint').textContent = ok

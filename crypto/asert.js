@@ -36,7 +36,7 @@ export const RX_SCRATCHPAD_L3 = 2097152;
 export const RX_MODE = 'light';
 export const RX_KEY = 'ShearHash-v2/key';
 export const SHEARK_MINER_NAME = 'ShearK-Miner';
-export const SHEARK_MINER_VERSION = '1.0';
+export const SHEARK_MINER_VERSION = '1.1';
 /** Frozen consensus identity. A different fingerprint is a different law. */
 export const BOOK_LAW_ID = 'shear-book-law-1';
 /** Display/tag version for wallet, node, and pool. Two-part only (`*.*`, never `0.1.0`). Start 0.1; later 0.10+ legal. Never 1.* unless the operator says so. */

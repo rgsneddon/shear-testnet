@@ -13,6 +13,7 @@ import {
   provenHashrate,
   reportedHashrate,
   applyMinerSelfRate,
+  roundActualHashes,
   sortMinersByHashrate,
   refreshMinerRow,
   workerKey,
@@ -92,6 +93,10 @@ describe('duplicate shares cannot inflate round work', () => {
     assert.equal(miner.roundHashes, 256);
     assert.equal(miner.hashes, 256);
     assert.ok(miner.roundHashes < miner.clientHashes);
+    miner.clientHashesRound0 = miner.clientHashes;
+    assert.equal(roundActualHashes(miner), 0);
+    miner.clientHashes += 900;
+    assert.equal(roundActualHashes(miner), 900);
     assert.equal(
       reportedHashrate({
         acceptAt: [Date.now()],
@@ -140,7 +145,10 @@ describe('folded-row inventory', () => {
     assert.equal(ten.clientHs, undefined);
     applyMinerSelfRate(ten, { hashrate: 2_000_000_000, hashes: 1_000_000 + 225_000_000 * 10 }, now + 10_000);
     assert.equal(ten.clientHs, 225_000_000);
-    assert.equal(Math.round(reportedHashrate(ten, now + 10_000)), 256);
+    assert.equal(Math.round(provenHashrate(ten, now + 10_000)), 256);
+    delete ten.emaHs;
+    delete ten.emaAt;
+    assert.equal(Math.round(reportedHashrate(ten, now + 10_000)), 225_000_000);
     assert.equal(reportedHashrate(one, now), 900_000);
     const other = {
       threads: 10,
@@ -153,7 +161,10 @@ describe('folded-row inventory', () => {
     assert.equal(other.clientHs, undefined);
     applyMinerSelfRate(other, { hashes: 1000 + 225_000_000 * 10 }, now + 10_000);
     assert.equal(other.clientHs, 225_000_000);
-    assert.equal(Math.round(reportedHashrate(other, now)), 256);
+    assert.equal(Math.round(provenHashrate(other, now)), 256);
+    delete other.emaHs;
+    delete other.emaAt;
+    assert.equal(Math.round(reportedHashrate(other, now + 10_000)), 225_000_000);
     assert.equal(reportedHashrate(one, now), 900_000);
   });
 
