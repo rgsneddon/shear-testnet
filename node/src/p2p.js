@@ -30,6 +30,30 @@ function line(obj) {
   return `${JSON.stringify(obj)}\n`;
 }
 
+/** Unique remote of a live socket. IPv4-mapped IPv6 collapses to IPv4. */
+export function peerRemoteKey(sock) {
+  let a = String(sock?.remoteAddress || '');
+  if (a.startsWith('::ffff:')) a = a.slice(7);
+  return a;
+}
+
+/**
+ * Currently-online fully-synced nodes the network can see: this process
+ * (includeSelf) plus every unique live remote that has announced the local
+ * tip hash. Disconnected peers are not in `peers`, so historical uniques
+ * do not accumulate.
+ */
+export function countSyncedOnline({ localHash = '', peers = [], includeSelf = true } = {}) {
+  const want = String(localHash || '');
+  const seen = new Set();
+  for (const rec of peers) {
+    if (rec == null || rec.hash == null) continue;
+    if (String(rec.hash) !== want) continue;
+    seen.add(String(rec.remote || '') || `id:${rec.id || 0}`);
+  }
+  return (includeSelf ? 1 : 0) + seen.size;
+}
+
 export function createP2p({
   store,
   port = P2P_PORT,
@@ -37,7 +61,44 @@ export function createP2p({
   magic = MAGIC_TESTNET,
 } = {}) {
   const sockets = new Set();
+  const peers = new Map();
+  const linking = new Set();
   let server = null;
+  let peerSeq = 0;
+
+  function listenPortOf() {
+    return server?.address()?.port ?? port;
+  }
+
+  function advertisedPeers(exceptSock) {
+    const out = [];
+    const seen = new Set();
+    for (const [s, rec] of peers) {
+      if (s === exceptSock) continue;
+      const host = rec.remote;
+      const p = Number(rec.listenPort) || 0;
+      if (!host || !p) continue;
+      if (host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') continue;
+      const key = `${host}:${p}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ host, port: p });
+    }
+    return out;
+  }
+
+  function alreadyLinked(host, p) {
+    if (p === listenPortOf() && (host === '127.0.0.1' || host === '::1' || host === '0.0.0.0')) return true;
+    for (const rec of peers.values()) {
+      if (rec.remote === host && Number(rec.listenPort) === p) return true;
+    }
+    return false;
+  }
+
+  function localTipHash() {
+    const t = store.tip();
+    return t ? Buffer.from(t.hash).toString('hex') : '';
+  }
 
   function tipMsg() {
     const t = store.tip();
@@ -47,6 +108,14 @@ export function createP2p({
       height: t?.height || 0,
       hash: t ? Buffer.from(t.hash).toString('hex') : '',
     };
+  }
+
+  function notePeerTip(sock, msg) {
+    const rec = peers.get(sock) || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
+    rec.remote = peerRemoteKey(sock) || rec.remote;
+    if (msg && msg.hash != null) rec.hash = String(msg.hash);
+    if (msg && Number.isFinite(Number(msg.height))) rec.height = Number(msg.height);
+    peers.set(sock, rec);
   }
 
   function send(sock, msg) {
@@ -66,12 +135,32 @@ export function createP2p({
       return;
     }
     if (msg.type === 'hello') {
+      const rec = peers.get(sock) || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
+      rec.remote = peerRemoteKey(sock) || rec.remote;
+      const advertised = Number(msg.port);
+      if (Number.isFinite(advertised) && advertised > 0) rec.listenPort = advertised;
+      rec.ua = String(msg.ua || rec.ua || '');
+      peers.set(sock, rec);
       send(sock, tipMsg());
+      send(sock, { type: 'addr', magic, peers: advertisedPeers(sock) });
+      return;
+    }
+    if (msg.type === 'addr') {
+      for (const p of msg.peers || []) {
+        const host = String(p.host || '').trim();
+        const portN = Number(p.port);
+        if (!host || !Number.isFinite(portN) || portN <= 0) continue;
+        if (host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') continue;
+        const key = `${host}:${portN}`;
+        if (linking.has(key) || alreadyLinked(host, portN)) continue;
+        linking.add(key);
+        connect(host, portN).catch(() => {}).finally(() => linking.delete(key));
+      }
       return;
     }
     if (msg.type === 'tip' || msg.type === 'inv') {
-      const local = store.tip();
-      const localHash = local ? Buffer.from(local.hash).toString('hex') : '';
+      notePeerTip(sock, msg);
+      const localHash = localTipHash();
       if (msg.hash && msg.hash !== localHash) {
         send(sock, { type: 'getblocks', magic });
       }
@@ -86,7 +175,10 @@ export function createP2p({
       return;
     }
     if (msg.type === 'blocks') {
-      const fork = (msg.blocks || []).map(decodeWireBlock);
+      const list = msg.blocks || [];
+      const last = list[list.length - 1];
+      if (last) notePeerTip(sock, { hash: last.hash, height: last.height });
+      const fork = list.map(decodeWireBlock);
       const before = store.tip();
       const got = store.ingest(fork);
       const after = store.tip();
@@ -97,8 +189,14 @@ export function createP2p({
     }
   }
 
+  function drop(sock) {
+    sockets.delete(sock);
+    peers.delete(sock);
+  }
+
   function attach(sock) {
     sockets.add(sock);
+    peers.set(sock, { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 });
     let buf = '';
     sock.on('data', (chunk) => {
       buf += chunk.toString('utf8');
@@ -112,9 +210,9 @@ export function createP2p({
         handle(sock, msg);
       }
     });
-    sock.on('close', () => sockets.delete(sock));
-    sock.on('error', () => sockets.delete(sock));
-    send(sock, { type: 'hello', magic, ua: P2P_UA });
+    sock.on('close', () => drop(sock));
+    sock.on('error', () => drop(sock));
+    send(sock, { type: 'hello', magic, ua: P2P_UA, port: listenPortOf() });
     send(sock, tipMsg());
   }
 
@@ -147,10 +245,19 @@ export function createP2p({
       try { s.destroy(); } catch { /* ignore */ }
     }
     sockets.clear();
+    peers.clear();
     if (server) {
       server.close();
       server = null;
     }
+  }
+
+  function syncedOnline() {
+    return countSyncedOnline({
+      localHash: localTipHash(),
+      peers: [...peers.values()],
+      includeSelf: true,
+    });
   }
 
   function wrap(name) {
@@ -173,6 +280,8 @@ export function createP2p({
     close,
     announce,
     sockets,
+    peers,
+    syncedOnline,
     get port() { return server?.address()?.port ?? port; },
     get listening() { return Boolean(server?.listening); },
   };

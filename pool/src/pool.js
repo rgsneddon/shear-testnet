@@ -15,7 +15,6 @@ import {
   TARGET_BLOCK_INTERVAL_MS,
   HASH_BONUS_NANOS,
   HASH_TX_LIVE,
-  bitsForBlock,
   consensusFingerprint,
   consensusLaw,
 } from '../../crypto/asert.js';
@@ -37,17 +36,23 @@ export const HASHRATE_WINDOW_MS = 180_000;
 export const HASHRATE_EMA_TAU_S = 30;
 /** After the last socket closes, keep the row this long. Still-connected hashers with proven shares stay listed (header bits can put shares >12s apart). */
 export const HASH_PRESENCE_MS = 12_000;
-/** Mean interval of recent headers so the live 9s cadence is not buried under old 90s history. */
-export const AVG_BLOCK_WINDOW = 20;
+/** Default is every sealed header. Pass a finite window to clip a test. */
+export const AVG_BLOCK_WINDOW = Infinity;
+/** Re-stamp the live job this often so sealed header time tracks wall clock. */
+export const JOB_RESTAMP_MS = 1000;
 
 /**
- * Average time between consecutive blocks over the last `windowBlocks`
- * headers. Span of first→last timestamp divided by (n − 1).
+ * Mean interval of consecutive sealed headers. Default is every block on
+ * the book, not only the last pair and not a sliding window of 20.
+ * Non-positive gaps (stale/frozen stamps) are skipped.
  */
 export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
   const list = Array.isArray(blocks) ? blocks : [];
-  const keep = Math.max(2, Math.floor(Number(windowBlocks) || AVG_BLOCK_WINDOW));
-  const window = list.length > keep ? list.slice(-keep) : list;
+  let window = list;
+  if (Number.isFinite(Number(windowBlocks)) && Number(windowBlocks) > 0) {
+    const keep = Math.max(2, Math.floor(Number(windowBlocks)));
+    if (list.length > keep) window = list.slice(-keep);
+  }
   if (window.length < 2) return null;
   const times = [];
   for (const b of window) {
@@ -57,9 +62,16 @@ export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
     } catch { /* skip a bad header */ }
   }
   if (times.length < 2) return null;
-  const span = times[times.length - 1] - times[0];
-  if (!Number.isFinite(span) || span < 0) return null;
-  return span / (times.length - 1);
+  let sum = 0;
+  let n = 0;
+  for (let i = 1; i < times.length; i += 1) {
+    const dt = times[i] - times[i - 1];
+    if (!Number.isFinite(dt) || dt <= 0) continue;
+    sum += dt;
+    n += 1;
+  }
+  if (!n) return null;
+  return sum / n;
 }
 
 /** 1 SHE pot split by proven work this round. 1% of the pot may go to the pool dest. */
@@ -496,9 +508,17 @@ export function createPool({
   miner,
   shareBits = SHARE_BITS_V2_START,
   bits = 16,
+  p2p = null,
 } = {}) {
   const store = createStore(dataDir);
   const miners = new Map();
+  let p2pNet = p2p;
+  function setP2p(next) { p2pNet = next; }
+  function nodesOnline() {
+    const n = p2pNet?.syncedOnline?.();
+    const v = Number(n);
+    return Number.isFinite(v) && v >= 0 ? v : 1;
+  }
   function liveShareMin() {
     return Number(shareBits) >= SHARE_BITS_V2_START ? SHARE_BITS_V2_START : 1;
   }
@@ -540,20 +560,24 @@ export function createPool({
     const now = Date.now();
     const liveBits = blockBitsNow();
     if (!force && lastJob && Number(lastJob.blockBits || lastJob.bits) === liveBits) {
-      if (Number(lastJob.shareBits) === sb) return lastJob;
-      lastJob = {
-        ...lastJob,
-        shareBitsPrev: Number(lastJob.shareBits),
-        shareBitsAt: now,
-        shareBits: sb,
-      };
-      const rec = store.jobs.get(String(lastJob.jobId));
-      if (rec) {
-        rec.job = lastJob;
-        rec.shareBits = sb;
+      const jobTs = Number(lastJob.timestamp) || 0;
+      const stampFresh = jobTs > 0 && (now - jobTs) < JOB_RESTAMP_MS;
+      if (stampFresh) {
+        if (Number(lastJob.shareBits) === sb) return lastJob;
+        lastJob = {
+          ...lastJob,
+          shareBitsPrev: Number(lastJob.shareBits),
+          shareBitsAt: now,
+          shareBits: sb,
+        };
+        const rec = store.jobs.get(String(lastJob.jobId));
+        if (rec) {
+          rec.job = lastJob;
+          rec.shareBits = sb;
+        }
+        lastIssueAt = now;
+        return lastJob;
       }
-      lastIssueAt = now;
-      return lastJob;
     }
     const hasherPay = payoutDest(
       [...miners.values()].find((m) => !isCminerFeeLogin(m.workerKey || m.login))?.login
@@ -620,21 +644,20 @@ export function createPool({
     return n;
   }
 
-  /** ASERT ±2 per parent. Re-stamp the live job as wall time eases bits toward 90s. */
+  /** Re-stamp header time from wall clock so sealed times (and wallet interval) match find time. ASERT bits follow. */
   let lastEaseAt = Date.now();
-  function maybeEaseJob() {
-    const t = store.tip();
-    if (!t?.header || !lastJob) return;
+  let restampTimer = null;
+  function maybeRestampJob() {
+    if (!lastJob) return lastJob;
     const now = Date.now();
-    if (now - lastEaseAt < 60_000) return;
-    let parent;
-    try { parent = decodeHeader(Buffer.from(t.header)); } catch { return; }
-    const want = bitsForBlock(parent.bits, parent.timestamp, now);
-    const have = Number(lastJob.blockBits || lastJob.bits || 0);
-    if (!(want < have)) return;
+    const jobTs = Number(lastJob.timestamp) || 0;
+    if (jobTs > 0 && (now - jobTs) < JOB_RESTAMP_MS && (now - lastEaseAt) < JOB_RESTAMP_MS) {
+      return lastJob;
+    }
     lastEaseAt = now;
     const job = issueJob(shareBits, { force: true });
     if (job) broadcastJob(job);
+    return job;
   }
 
   const sockets = new Set();
@@ -798,7 +821,14 @@ export function createPool({
                 store.mempool.length = 0;
               }
               stats.blocks += 1;
-              stats.lastFoundAt = Date.now();
+              try {
+                const sealed = store.tip();
+                stats.lastFoundAt = sealed?.header
+                  ? (Number(decodeHeader(Buffer.from(sealed.header)).timestamp) || Date.now())
+                  : Date.now();
+              } catch {
+                stats.lastFoundAt = Date.now();
+              }
               if (session) session.blocks = (Number(session.blocks) || 0) + 1;
               pendingPayout = snapshotRound();
               for (const m of miners.values()) {
@@ -919,7 +949,9 @@ export function createPool({
         try { return Number(decodeHeader(Buffer.from(tip.header)).timestamp) || 0; } catch { return 0; }
       })(),
       avgBlockTimeMs: avgBlockIntervalMs(store.blocks),
-      avgBlockWindow: AVG_BLOCK_WINDOW,
+      networkAvgBlockTimeMs: avgBlockIntervalMs(store.blocks),
+      avgBlockWindow: (store.blocks || []).length,
+      nodesOnline: nodesOnline(),
       uptimeMs: Date.now() - stats.started,
       workers,
       recentTxs: poolRecentBlockTxs(store, 10),
@@ -1039,16 +1071,23 @@ export function createPool({
   function listen() {
     return new Promise((resolve, reject) => {
       stratum.listen(stratumPort, '0.0.0.0', () => {
-        httpServer.listen(httpPort, '127.0.0.1', () => resolve({
-          stratumPort,
-          httpPort,
-        }));
+        httpServer.listen(httpPort, '127.0.0.1', () => {
+          if (!restampTimer) restampTimer = setInterval(maybeRestampJob, JOB_RESTAMP_MS);
+          resolve({
+            stratumPort,
+            httpPort,
+          });
+        });
       });
       stratum.on('error', reject);
     });
   }
 
   function close() {
+    if (restampTimer) {
+      clearInterval(restampTimer);
+      restampTimer = null;
+    }
     for (const s of sockets) try { s.destroy(); } catch { /* ignore */ }
     stratum.close();
     httpServer.close();
@@ -1066,6 +1105,8 @@ export function createPool({
     stratum,
     httpServer,
     snapshotRound,
+    setP2p,
+    restampJob: maybeRestampJob,
     get pendingPayout() { return pendingPayout; },
   };
 }

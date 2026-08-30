@@ -293,6 +293,8 @@ class ShearLedger {
 
   int? _headerTimestampMs;
   int? _prevHeaderTimestampMs;
+  /// Mean interval of every sealed block on the book (from pool /api/stats).
+  int? _avgBlockTimeMs;
 
   /// Last found/sealed block height (Continuum header).
   int get sealedHeight => _sealedHeight;
@@ -305,9 +307,18 @@ class ShearLedger {
     return b - a;
   }
 
+  /// Continuum observed interval: average of all sealed blocks when the pool
+  /// sent one; otherwise the last pair of headers.
+  int? get observedIntervalMs => _avgBlockTimeMs ?? lastSealedHeaderDtMs;
+
+  void applyAvgBlockTimeMs(int? ms) {
+    if (ms == null || ms < 0) return;
+    _avgBlockTimeMs = ms;
+  }
+
   Path1Observation path1Observation() => foldSealedPots(
         _txs,
-        observedIntervalMs: lastSealedHeaderDtMs,
+        observedIntervalMs: observedIntervalMs,
       );
 
   /// Last height Continuum already settled into spendable.
@@ -607,6 +618,9 @@ class ShearLedger {
       final sealed = (json['height'] as num?)?.toInt() ?? 0;
       final hex = json['header']?.toString() ?? '';
       applyTipHex(hex, sealedHeight: sealed);
+      final raw = json['networkAvgBlockTimeMs'] ?? json['avgBlockTimeMs'];
+      final avg = raw is num ? raw.round() : int.tryParse('$raw');
+      if (avg != null && avg >= 0) applyAvgBlockTimeMs(avg);
     } catch (_) {}
   }
 

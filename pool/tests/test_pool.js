@@ -12,13 +12,43 @@ import {
   MAGIC_TESTNET,
   HASH_TX_LIVE,
 } from '../../crypto/asert.js';
-import { requiredJobFields } from '../../crypto/header.js';
+import { requiredJobFields, encodeHeader } from '../../crypto/header.js';
 import { payoutDest } from '../../crypto/address.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, JOB_RESTAMP_MS } from '../src/pool.js';
 import { publicJob, buildTemplate, hashBonusByMiner } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
+
+describe('observed interval', () => {
+  it('averages every consecutive sealed header, not only the last pair or a window of 20', () => {
+    const hdr = (ms) => encodeHeader({
+      prevBlockHash: Buffer.alloc(32),
+      merkleRoot: Buffer.alloc(32),
+      continuityRoot: Buffer.alloc(32),
+      timestamp: BigInt(ms),
+      bits: 16,
+    });
+    const blocks = [
+      { header: hdr(1_000_000) },
+      { header: hdr(1_090_000) },
+      { header: hdr(1_180_000) },
+      { header: hdr(1_370_000) },
+    ];
+    assert.equal(avgBlockIntervalMs(blocks), (90_000 + 90_000 + 190_000) / 3);
+    assert.equal(avgBlockIntervalMs(blocks.slice(-2)), 190_000);
+    assert.equal(avgBlockIntervalMs(blocks, 2), 190_000);
+  });
+
+  it('pool restamps live jobs so header time tracks wall clock', () => {
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.match(src, /JOB_RESTAMP_MS/);
+    assert.match(src, /maybeRestampJob/);
+    assert.match(src, /setInterval\(maybeRestampJob/);
+    assert.equal(/if \(!\(want < have\)\) return/.test(src), false);
+    assert.equal(JOB_RESTAMP_MS, 1000);
+  });
+});
 
 describe('job gate', () => {
   it('refuses a job missing header fields', () => {
@@ -160,7 +190,10 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /function shortDest/);
     assert.match(html, /slice\(0, 9\)/);
     assert.equal(/Honesty|honesty|inflate/.test(html), false);
+    assert.match(html, />NODES ONLINE</);
+    assert.equal(html.includes('Blocks this uptime'), false);
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+    assert.equal(stats.nodesOnline, 1);
     assert.equal(stats.magic, MAGIC_TESTNET);
     assert.equal(stats.magic, 'shear-testnet-v2');
     assert.equal(stats.network, MAGIC_TESTNET);
@@ -387,6 +420,13 @@ describe('public miner listing', () => {
     assert.ok(bannerIdx >= 0 && feeIdx > bannerIdx, 'TESTNET banner must sit above the fee disclaimer');
     assert.match(dash.slice(bannerIdx, feeIdx), />TESTNET</);
     assert.match(dash, /#testnet-banner/);
+    const grid = dash.match(/id="stat-grid"[\s\S]*?id="miners"/);
+    assert.ok(grid, 'stat-grid');
+    const labels = [...grid[0].matchAll(/class="label">([^<]+)</g)].map((m) => m[1]);
+    assert.deepEqual(labels, [
+      'Coin', 'Algo', 'Network', 'Proof', 'NODES ONLINE', 'Height',
+      'Pool hashrate', 'Workers online', 'Resistance', 'Uptime', 'AVG BLOCK TIME', 'Last block',
+    ]);
     assert.match(dash, /pool fee is 1% of the 1 SHE pot for development/);
     assert.match(dash, /your hashes pay in full and are not subject to pool fees/);
     assert.doesNotMatch(dash, /0\.1 SHE pot/);

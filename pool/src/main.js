@@ -48,6 +48,7 @@ if (p2pPort > 0) {
     host: process.env.SHEAR_P2P_BIND || '0.0.0.0',
   });
   const bound = await p2p.listen();
+  pool.setP2p(p2p);
   p2pBound = bound.port;
 }
 console.log(JSON.stringify({

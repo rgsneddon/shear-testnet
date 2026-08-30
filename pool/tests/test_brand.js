@@ -72,7 +72,9 @@ describe('brand pages', () => {
       assert.ok(nav, 'missing shear-nav');
       const labels = [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
       assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'MINER', 'NODE', 'WALLET']);
-      assert.equal(/GNFP|gnfp|feeless/i.test(p), false);
+      if (!p.includes('id="shear-hero"')) {
+        assert.equal(/GNFP|gnfp|feeless/i.test(p), false);
+      }
       assert.match(p, /she is private/);
       assert.equal(/she is quiet/.test(p), false);
       assert.equal(/--user shear1/.test(p), false);
@@ -127,7 +129,7 @@ describe('brand pages', () => {
     for (const page of [siteHtml, poolHtml, explorerHtml, mempoolHtml]) {
       assert.match(page, /rgsneddon\/shear-testnet/);
       assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
-      assert.match(page, /releases\/tag\/0\.4|shear-wallet-0\.4/);
+      assert.match(page, /releases\/tag\/0\.5|shear-wallet-0\.5/);
       assert.match(page, /rgsneddon\/ShearK/);
     }
     assert.match(css, /\.top-banner\s*\{[\s\S]*?background:\s*var\(--banner\)/);

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
@@ -18,8 +19,11 @@ import 'shear_vortex.dart';
 import 'shear_reserve.dart';
 import 'shear_join.dart';
 import 'shear_confirm_pie.dart';
+import 'shear_biometrics.dart';
+import 'shear_export.dart';
+import 'shear_social.dart';
 
-const kWalletVersion = '0.4';
+const kWalletVersion = '0.5';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -29,6 +33,8 @@ const kTabs = [
   'Closure',
 ];
 const kSymbols = ['∇·J = 0', 'J^μ', 'η', 'Ω^{μν}', 'S_{μν}', 'G_{μν}'];
+/// Continuum side-by-side spendable | stats at this width and above.
+const kContinuumSplitWidth = 720.0;
 const kExplains = [
   'Your spendable balance and she1 address.',
   'Send SHEAR to anyone with a she1 address.',
@@ -39,7 +45,7 @@ const kExplains = [
 ];
 
 void main() {
-  runApp(ShearWalletApp(demoTx: kDebugMode));
+  runApp(ShearWalletApp(demoTx: kDebugMode, biometrics: DeviceBiometrics()));
 }
 
 class ShearWalletApp extends StatefulWidget {
@@ -52,6 +58,10 @@ class ShearWalletApp extends StatefulWidget {
     this.reserve,
     this.join,
     this.downloadVortice,
+    this.biometrics,
+    this.exportDest,
+    this.openUrl,
+    this.startUnlocked = false,
   });
 
   final ShearSession? session;
@@ -63,6 +73,12 @@ class ShearWalletApp extends StatefulWidget {
   final ShearJoin? join;
   /// Test hook. Production fetches the origin named in the vort1. key.
   final Future<Vortice?> Function(String key)? downloadVortice;
+  final ShearBiometrics? biometrics;
+  /// Test hook. Production writes to Downloads/Documents.
+  final File Function()? exportDest;
+  final Future<bool> Function(Uri url)? openUrl;
+  /// Tests: session already sealed and identity in memory.
+  final bool startUnlocked;
 
   @override
   State<ShearWalletApp> createState() => _ShearWalletAppState();
@@ -71,14 +87,18 @@ class ShearWalletApp extends StatefulWidget {
 class _ShearWalletAppState extends State<ShearWalletApp> {
   late final ShearSession session = widget.session ?? ShearSession();
   late final ShearLedger ledger = widget.ledger ?? ShearLedger(pool: ShearPoolClient());
+  late final ShearBiometrics biometrics = widget.biometrics ?? const NoBiometrics();
   ShearIdentity? id;
   String password = '';
   bool unlocked = false;
+  String? _lockError;
+  bool _bioReady = false;
   int tab = 0;
   final flowTo = TextEditingController();
   final flowAmt = TextEditingController();
   final flowMemo = TextEditingController();
   final unlockCtrl = TextEditingController();
+  final confirmCtrl = TextEditingController();
   final reserveAmt = TextEditingController();
   final joinKeyCtrl = TextEditingController();
   final vorticeKeyCtrl = TextEditingController();
@@ -108,6 +128,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     flowAmt.dispose();
     flowMemo.dispose();
     unlockCtrl.dispose();
+    confirmCtrl.dispose();
     reserveAmt.dispose();
     joinKeyCtrl.dispose();
     vorticeKeyCtrl.dispose();
@@ -119,6 +140,15 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   Future<void> _boot() async {
     id = await session.loadOrCreate();
     _syncJoinRoster();
+    try {
+      _bioReady = await biometrics.available;
+    } catch (_) {
+      _bioReady = false;
+    }
+    if (widget.startUnlocked && session.identity != null && session.password != null) {
+      await _enterWallet(session.password!);
+      return;
+    }
     if (mounted) setState(() {});
   }
 
@@ -168,22 +198,90 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       session.deployedVortices = next
           .where((v) => !isPinnedProgram(v.id) && v.id.isNotEmpty)
           .toList();
-      await session.persist();
       if (!mounted) return;
       setState(() {
         vortices = next;
         vortexTab = next.where(vorticeChipVisible).length - 1;
         vorticeKeyCtrl.clear();
       });
+      await session.persist();
     } finally {
       _vorticeBusy = false;
     }
   }
 
+  Future<void> _setPassword(String pw, String confirm) async {
+    final err = walletPasswordError(pw, confirm: confirm);
+    if (err != null) {
+      setState(() {
+        _lockError = err == 'mismatch'
+            ? 'Passwords do not match.'
+            : err == 'too_short'
+                ? 'Use at least $kMinWalletPasswordLen characters.'
+                : 'Enter a password that encrypts shewall.bin.';
+      });
+      return;
+    }
+    try {
+      await session.setPassword(pw, confirm: confirm);
+    } catch (e) {
+      setState(() => _lockError = 'Could not seal the wallet.');
+      return;
+    }
+    if (_bioReady) {
+      try {
+        await biometrics.rememberPassword(pw);
+      } catch (_) {}
+    }
+    await _enterWallet(pw);
+  }
+
   Future<void> _unlock(String pw) async {
-    if (pw.isEmpty || id == null) return;
+    if (session.needsPasswordSet) {
+      await _setPassword(pw, confirmCtrl.text);
+      return;
+    }
+    if (pw.isEmpty) {
+      setState(() => _lockError = 'Enter your wallet password.');
+      return;
+    }
+    try {
+      id = await session.unlock(pw);
+    } catch (_) {
+      setState(() => _lockError = 'Wrong password.');
+      return;
+    }
+    if (_bioReady) {
+      try {
+        await biometrics.rememberPassword(pw);
+      } catch (_) {}
+    }
+    await _enterWallet(pw);
+  }
+
+  Future<void> _unlockBiometric() async {
+    if (!_bioReady) return;
+    final ok = await biometrics.authenticate();
+    if (!ok) {
+      setState(() => _lockError = 'Biometrics failed. Use your password.');
+      return;
+    }
+    final stored = await biometrics.recalledPassword();
+    if (stored == null || stored.isEmpty) {
+      setState(() => _lockError = 'No password stored for biometrics. Unlock once with your password.');
+      return;
+    }
+    await _unlock(stored);
+  }
+
+  Future<void> _enterWallet(String pw) async {
+    if (session.identity == null) return;
+    id = session.identity;
     password = pw;
     ledger.viewSecret = id!.viewKey;
+    setState(() {
+      _lockError = null;
+    });
     try {
       await ledger.syncTip().timeout(const Duration(seconds: 3));
     } catch (_) {}
@@ -368,6 +466,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
 
   Widget _lockGate(BuildContext context) {
     final theme = Theme.of(context);
+    final first = session.needsPasswordSet;
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
       body: Center(
@@ -389,21 +488,54 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Create a password for this wallet. It encrypts shewall.bin.',
+                  first
+                      ? 'Set a password. It encrypts shewall.bin so you can restore this wallet on any device. You will enter it on every run.'
+                      : 'Enter the password that encrypts shewall.bin.',
                   style: TextStyle(color: theme.colorScheme.onSurface),
                   textAlign: TextAlign.center,
                 ),
                 TextField(
                   controller: unlockCtrl,
                   obscureText: true,
-                  decoration: const InputDecoration(labelText: 'Password'),
-                  onSubmitted: (_) => _unlock(unlockCtrl.text),
+                  decoration: InputDecoration(labelText: first ? 'New password' : 'Password'),
+                  onSubmitted: (_) {
+                    if (first) {
+                      _setPassword(unlockCtrl.text, confirmCtrl.text);
+                    } else {
+                      _unlock(unlockCtrl.text);
+                    }
+                  },
                 ),
+                if (first) ...[
+                  TextField(
+                    controller: confirmCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(labelText: 'Confirm password'),
+                    onSubmitted: (_) => _setPassword(unlockCtrl.text, confirmCtrl.text),
+                  ),
+                ],
+                if (_lockError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(_lockError!, style: TextStyle(color: theme.colorScheme.error)),
+                ],
                 const SizedBox(height: 12),
                 FilledButton(
-                  onPressed: () => _unlock(unlockCtrl.text),
-                  child: const Text('Unlock'),
+                  onPressed: () {
+                    if (first) {
+                      _setPassword(unlockCtrl.text, confirmCtrl.text);
+                    } else {
+                      _unlock(unlockCtrl.text);
+                    }
+                  },
+                  child: Text(first ? 'Set password' : 'Unlock'),
                 ),
+                if (!first && _bioReady) ...[
+                  const SizedBox(height: 8),
+                  OutlinedButton(
+                    onPressed: _unlockBiometric,
+                    child: const Text('Unlock with biometrics'),
+                  ),
+                ],
                 const SizedBox(height: 8),
                 TextButton(
                   onPressed: _toggleTheme,
@@ -510,34 +642,66 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
 
   Widget _card(List<Widget> kids) {
     return Builder(builder: (context) {
-      final theme = Theme.of(context);
       return ListView(
         padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            color: theme.cardColor,
-            surfaceTintColor: Colors.transparent,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: DefaultTextStyle.merge(
-                style: TextStyle(color: theme.colorScheme.onSurface),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: kids),
-              ),
-            ),
-          ),
-        ],
+        children: [_panel(context, kids)],
       );
     });
   }
 
+  Future<void> _openSocial(String url) async {
+    final uri = Uri.parse(url);
+    final opener = widget.openUrl;
+    if (opener != null) {
+      await opener(uri);
+      return;
+    }
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Widget _socialIcon(BuildContext context, String name, String url) {
+    final IconData icon;
+    switch (name) {
+      case 'Discord':
+        icon = Icons.forum;
+        break;
+      case 'Telegram':
+        icon = Icons.send;
+        break;
+      default:
+        icon = Icons.close;
+    }
+    return IconButton(
+      tooltip: name,
+      onPressed: () => _openSocial(url),
+      icon: name == 'X'
+          ? const Text('X', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18))
+          : Icon(icon),
+    );
+  }
+
+  Widget _panel(BuildContext context, List<Widget> kids) {
+    final theme = Theme.of(context);
+    return Card(
+      color: theme.cardColor,
+      surfaceTintColor: Colors.transparent,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: DefaultTextStyle.merge(
+          style: TextStyle(color: theme.colorScheme.onSurface),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: kids),
+        ),
+      ),
+    );
+  }
+
   Widget _continuum(BuildContext context, ShearIdentity ident) {
-    final dest = ledger.currentDest(ident.address);
     final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
     final pending = ledger.pendingTxs(ident.address);
     final path1 = ledger.path1Observation();
     final fluxSec = (path1.targetIntervalMs / 1000).round();
     final dt = path1.observedIntervalMs;
-    return _card([
+    final spendPane = <Widget>[
       Text(
         '${formatShe(spend)} SHE',
         style: TextStyle(
@@ -547,7 +711,17 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         ),
       ),
       Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
-      const SizedBox(height: 16),
+      const SizedBox(height: 12),
+      Text('Receive ID', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+      const SizedBox(height: 6),
+      SelectableText(ident.paymentCode),
+      const SizedBox(height: 8),
+      OutlinedButton(
+        onPressed: () => Clipboard.setData(ClipboardData(text: ident.paymentCode)),
+        child: const Text('Copy ID'),
+      ),
+    ];
+    final statsPane = <Widget>[
       Text(
         '1 SHE per block continuity',
         style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface),
@@ -555,57 +729,84 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       Text('Closure quantum  ${formatShe(path1.quantumShe)} SHE', style: TextStyle(color: shearMutedOf(context))),
       Text('Target flux  ${formatShe(path1.quantumShe)} SHE / $fluxSec s', style: TextStyle(color: shearMutedOf(context))),
       Text(
-        dt == null ? 'Observed interval  —' : 'Observed interval  $dt ms',
+        dt == null ? 'Observed interval  —' : 'Observed interval  ${(dt / 1000).toStringAsFixed(1)} s',
         style: TextStyle(color: shearMutedOf(context)),
       ),
       Text('Integral Q  ${formatShe(path1.integralQShe)} SHE', style: TextStyle(color: shearMutedOf(context))),
-      if (pending.isNotEmpty) ...[
-        const SizedBox(height: 16),
-        Text('Pending', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
-        Text(
-          'Each pending block fills a 6-slice pie (spendable at ${ShearLedger.spendableConfirmations}). Hash rewards are inside the block, not listed as their own txs.',
-          style: TextStyle(color: shearMutedOf(context)),
-        ),
-        for (final t in pending)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                ConfirmPie(
-                  key: Key('confirm-pie-${t.id}'),
-                  filled: ledger.confirmationsOf(t.height ?? 0),
-                  size: 40,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('${walletTxLabel(t)}  ${formatShe(t.amount)} SHE'),
-                      Text(
-                        '${ledger.confirmationsOf(t.height ?? 0).clamp(0, ShearLedger.continuumConfirmations)}/${ShearLedger.continuumConfirmations} conf  ${t.from} → ${t.to}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: shearMutedOf(context), fontSize: 12),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-      ],
-      const SizedBox(height: 20),
-      Text('Receive ID', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
-      const SizedBox(height: 6),
-      SelectableText(ident.paymentCode),
       const SizedBox(height: 12),
-      OutlinedButton(
-        onPressed: () => Clipboard.setData(ClipboardData(text: ident.paymentCode)),
-        child: const Text('Copy ID'),
+      Row(
+        children: [
+          _socialIcon(context, 'Discord', kDiscordUrl),
+          _socialIcon(context, 'Telegram', kTelegramUrl),
+          _socialIcon(context, 'X', kXUrl),
+        ],
       ),
-    ]);
+    ];
+    final pendingPane = <Widget>[
+      Text('Pending', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+      Text(
+        'Each pending block fills a 6-slice pie (spendable at ${ShearLedger.spendableConfirmations}). Hash rewards are inside the block, not listed as their own txs.',
+        style: TextStyle(color: shearMutedOf(context), fontSize: 12),
+      ),
+      for (final t in pending)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              ConfirmPie(
+                key: Key('confirm-pie-${t.id}'),
+                filled: ledger.confirmationsOf(t.height ?? 0),
+                size: 28,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${walletTxLabel(t)}  ${formatShe(t.amount)} SHE',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    Text(
+                      '${ledger.confirmationsOf(t.height ?? 0).clamp(0, ShearLedger.continuumConfirmations)}/${ShearLedger.continuumConfirmations} conf  ${t.from} → ${t.to}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: shearMutedOf(context), fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+    ];
+    return LayoutBuilder(builder: (context, constraints) {
+      final wide = constraints.maxWidth >= kContinuumSplitWidth;
+      return ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (wide)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(flex: 2, child: _panel(context, spendPane)),
+                const SizedBox(width: 12),
+                Expanded(flex: 1, child: _panel(context, statsPane)),
+              ],
+            )
+          else ...[
+            _panel(context, spendPane),
+            const SizedBox(height: 12),
+            _panel(context, statsPane),
+          ],
+          if (pending.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            _panel(context, pendingPane),
+          ],
+        ],
+      );
+    });
   }
 
   Widget _shearview(BuildContext context, ShearIdentity ident) {
@@ -984,6 +1185,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
           'Third-party vortice cannot mint SHE.',
         ),
         TextField(
+          key: const Key('vortice-key'),
           controller: vorticeKeyCtrl,
           decoration: const InputDecoration(labelText: 'Vortice deploy key'),
           minLines: 2,
@@ -1014,35 +1216,40 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   Widget _closure(BuildContext context, ShearIdentity ident) {
-    final pw = TextEditingController();
     return _card([
       const Text('Closure  G_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
       const Text(
-        'Geometric closure of the wallet: password seals shewall.bin '
-        '(AES-256-GCM packed). Copy that one file to restore address and balances. '
-        'The password is the view key. Dest scan stays in this wallet.',
+        'Geometric closure of the wallet: your password seals shewall.bin '
+        '(AES-256-GCM packed). Export that file and the same password restores '
+        'address and balances on any new or formatted device. '
+        'Biometrics only unlock this device. Dest scan stays in this wallet.',
       ),
       SelectableText('View key  ${ident.viewKey}', style: TextStyle(fontSize: 12, color: shearMutedOf(context))),
       const SizedBox(height: 8),
       const Text('CTF dests this view key opens (amounts on Shearview)'),
       SelectableText(ledger.currentDest(ident.address)),
-      TextField(
-        controller: pw,
-        obscureText: true,
-        decoration: const InputDecoration(labelText: 'Wallet password'),
-        onChanged: (v) => password = v,
-      ),
       const SizedBox(height: 8),
       FilledButton(
         onPressed: () async {
-          if (password.isEmpty) return;
-          final packed = exportShewall(identity: ident, ledger: ledger);
-          final sealed = await sealShewallBin(packed, password);
-          final dest = File('${Directory.systemTemp.path}/$shewallName');
-          await writeShewallFile(dest, sealed);
+          final pw = session.password ?? password;
+          if (pw.isEmpty) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Unlock with your password first.')),
+              );
+            }
+            return;
+          }
+          final dest = widget.exportDest?.call() ?? defaultShewallExportFile();
+          await exportEncryptedShewall(
+            identity: ident,
+            ledger: ledger,
+            password: pw,
+            dest: dest,
+          );
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Wrote encrypted $shewallName')),
+              SnackBar(content: Text('Wrote encrypted $shewallName to ${dest.path}')),
             );
           }
         },
