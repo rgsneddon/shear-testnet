@@ -3,10 +3,13 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <script src="/brand/theme.js?v=4"></script>
-  <title>Shear pool · ShearHash</title>
+  <script src="/brand/theme.js?v=7"></script>
+  <title>Shear pool · ShearHash-v2</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="/brand/theme.css?v=12"/>
   <style>
     :root {
@@ -32,13 +35,8 @@
     .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; }
     .value { font-size:.9rem; font-weight:650; margin-top:2px; color:var(--cyan); }
     a { color:var(--cyan); }
-    .repo-btns { display:grid; grid-template-columns:repeat(2, max-content); gap:8px; justify-content:center; margin:10px auto; width:fit-content; }
-    a.repo-btn {
-      display:block; text-align:center; padding:.45rem .9rem; color:var(--cyan); text-decoration:none;
-      border:1px solid var(--cyan); font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.1em; font-size:.8rem;
-    }
-    a.repo-btn:hover { background:rgba(0,136,168,.08); }
-    code, pre { background:var(--code); padding:.2em .45em; color:var(--green); white-space:pre-wrap; display:block; }
+    code { background:var(--code); padding:.2em .45em; color:var(--green); }
+    pre { background:var(--code); padding:.2em .45em; color:var(--green); white-space:pre-wrap; display:block; }
     input, select { width:100%; max-width:36rem; margin:.3rem 0 .6rem; padding:.4rem .5rem; background:var(--input); color:var(--ink); border:1px solid var(--blue); font-size:16px; font-family:"Segoe UI",system-ui,sans-serif; }
     .cmd-row { display:flex; gap:8px; align-items:stretch; }
     .cmd-row pre { flex:1; margin:0; }
@@ -64,7 +62,30 @@
         linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
       background-origin:border-box; background-clip:padding-box, border-box;
     }
-    .top-row { display:grid; grid-template-columns:1fr 3fr; gap:8px; margin:0 0 16px; }
+    .top-row { display:grid; grid-template-columns:1fr 2fr; gap:8px; margin:0 0 16px; align-items:stretch; }
+    .top-row > .panel-card { margin:0; display:flex; flex-direction:column; height:100%; }
+    .she-private {
+      flex: 1 1 auto;
+      margin: 2px 0 8px;
+      padding: 2px 0 6px;
+      min-height: 2.2rem;
+    }
+    .she-private-lockup {
+      display: block;
+      font-family: "Great Vibes", "Snell Roundhand", "Apple Chancery", "Segoe Script", cursive;
+      font-size: clamp(1.55rem, 2.8vw, 2.2rem);
+      font-weight: 400;
+      font-style: normal;
+      line-height: 1.2;
+      letter-spacing: .04em;
+      text-align: left;
+      white-space: nowrap;
+      color: #0d2b55;
+    }
+    html[data-theme="dark"] .she-private-lockup { color: #c9d3de; }
+    @media (prefers-color-scheme: dark) {
+      html:not([data-theme="light"]) .she-private-lockup { color: #c9d3de; }
+    }
     #testnet-banner {
       display:block; text-align:center; margin:4px 0 8px; padding:18px 12px;
       font-size:2.6rem; font-weight:900; letter-spacing:.42em; text-indent:.42em;
@@ -109,6 +130,8 @@
     @media (max-width: 640px) {
       #stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       #testnet-banner { font-size:1.6rem; letter-spacing:.28em; text-indent:.28em; padding:14px 8px; }
+      .she-private { min-height: 2rem; padding: 2px 0 4px; }
+      .she-private-lockup { font-size: clamp(1.35rem, 6.4vw, 1.75rem); }
     }
   </style>
 </head>
@@ -142,13 +165,11 @@
   <div class="wrap">
     <div class="top-row">
       <section class="panel-card">
-        <h1>SHEAR. Private by default.</h1>
-        <p><em>she is private</em></p>
-        <p>SHE pool. Proof of work only — ShearHash CPU. Use your she1 address from the wallet (a silent ID). Chain dests are ssa1.</p>
-        <p class="repo-btns">
-          <a class="repo-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.1">MINER</a>
-          <a class="repo-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.7">WALLET</a>
-        </p>
+        <h1>Shear</h1>
+        <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
+        <p>Private by default. Proof of work only. Continuity-settled. <strong>Testnet.</strong></p>
+        <p>Offer <code>she1</code> (silent ID). Chain dests are revolving <code>ssa1</code>. Never share rest-frame shear1.</p>
+        <p>Algo: ShearHash-v2 · Coin: SHE · Network: shear-testnet-v2</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
       </section>
       <section class="panel-card">
@@ -173,8 +194,8 @@
     <p id="fee-note">pool fee is 1% of the 1 SHE pot for development — your hashes pay in full and are not subject to pool fees.</p>
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
-      <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash</div></article>
-      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v1</div></article>
+      <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash-v2</div></article>
+      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v2</div></article>
       <article class="panel-card"><div class="label">Proof</div><div class="value" id="proof">PoW</div></article>
       <article class="panel-card"><div class="label">NODES ONLINE</div><div class="value" id="nodes-n">0</div></article>
       <article class="panel-card"><div class="label">Height</div><div class="value" id="height">0</div></article>
@@ -235,7 +256,7 @@
       const ok = /^(she1|ssa1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(addr)
         && !/^shear1/i.test(addr);
       document.getElementById('cmd-hint').textContent = ok
-        ? 'Ready to copy · ShearHash · :1111'
+        ? 'Ready to copy · ShearHash-v2 · :1111'
         : 'Valid she1 required. she1 is the silent ID and the login. Never share shear1.';
     }
     document.getElementById('addr').addEventListener('input', renderCmd);
@@ -283,7 +304,7 @@
     }
     function paint(s) {
       document.getElementById('coin').textContent = s.coin || 'SHE';
-      document.getElementById('algo').textContent = s.algo || 'ShearHash';
+      document.getElementById('algo').textContent = s.personalisation || 'ShearHash-v2';
       document.getElementById('miners-n').textContent = String(s.miners || 0);
       document.getElementById('hashrate').textContent = fmtRate(s.hashrate);
       document.getElementById('nodes-n').textContent = String(Math.max(0, Number(s.nodesOnline) || 0));
@@ -291,7 +312,7 @@
       document.getElementById('difficulty').textContent = String(s.bits || '—');
       document.getElementById('avg-block').textContent = fmtAvgBlock(s.avgBlockTimeMs);
       const net = document.getElementById('network');
-      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v1';
+      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v2';
       document.getElementById('uptime').textContent = fmtUptime(s.uptimeMs);
       document.getElementById('updated').textContent = fmtSinceBlock(s.lastFoundAt);
       const tb = document.querySelector('#miners tbody');
@@ -345,7 +366,9 @@
       if (!body) return;
       const rows = Array.isArray(txs) ? txs.slice(0, 10) : [];
       const tip = Number(s && s.height) || 0;
-      const need = Math.max(1, Number(s && s.spendableConfirmations) || 6);
+      const need = Math.max(1, Number(s && s.confirmedNeed)
+        || Number(s && s.policy && s.policy.operational && s.policy.operational.pool_merchant)
+        || 30);
       const sig = rows.map(function (t) { return t.id; }).join('|');
       const html = rows.length
         ? rows.map(function (t) {

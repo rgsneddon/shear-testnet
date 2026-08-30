@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { newIdentity, isDestAddress } from '../../crypto/address.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
-import { RESERVE_PROGRAM } from '../../crypto/asert.js';
+import { RESERVE_PROGRAM, wrapMintForbidden, extraMintAllowed } from '../../crypto/asert.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -69,5 +69,8 @@ describe('verifyBlock extra mint', () => {
     assert.equal(allowed.ok, true);
     const stored = store.append(reserved);
     assert.equal(stored.ok, true);
+    assert.equal(wrapMintForbidden({ kind: 'wrap', programId: 'wrap-she-v1', ticker: 'wSHE' }), true);
+    assert.equal(wrapMintForbidden({ programId: 'vort1.random-printer', mint: true }), false);
+    assert.equal(extraMintAllowed('vort1.random-printer', { kind: 'mint' }), false);
   });
 });

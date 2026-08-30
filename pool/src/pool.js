@@ -595,6 +595,7 @@ export function createPool({
   }
   let lastJob = null;
   let pendingPayout = [];
+  let sealing = false;
   const stats = {
     started: Date.now(),
     lastFoundAt: 0,
@@ -626,11 +627,49 @@ export function createPool({
   }
 
   let lastIssueAt = 0;
+  function resetOpenRound() {
+    pendingPayout = [];
+    for (const m of miners.values()) {
+      m.roundHashes = 0;
+      m.clientHashesRound0 = Number(m.clientHashes) || 0;
+      for (const c of m.connections || []) {
+        if (!c) continue;
+        c.shareBits = shareBits;
+        c.varShares = 0;
+        c.varWindowAt = Date.now();
+      }
+    }
+    const job = issueJob(shareBits, { force: true });
+    broadcastJob(job);
+    return job;
+  }
+
+  if (typeof store.on === 'function') {
+    store.on('reorg', () => {
+      if (sealing) return;
+      resetOpenRound();
+    });
+    store.on('tip', (t) => {
+      if (sealing || t?.reorg) return;
+      const tipHash = store.tip()
+        ? Buffer.from(store.tip().hash).toString('hex')
+        : '';
+      if (lastJob && String(lastJob.prevBlockHash) === tipHash) return;
+      resetOpenRound();
+    });
+  }
+
   function issueJob(shareBitsNow, { force = false } = {}) {
     const sb = clampShareBits(shareBitsNow ?? shareBits, { blockBits: blockBitsNow(), minBits: liveShareMin() });
     const now = Date.now();
     const liveBits = blockBitsNow();
-    if (!force && lastJob && Number(lastJob.blockBits || lastJob.bits) === liveBits) {
+    const tipNow = store.tip();
+    const tipHash = tipNow
+      ? (Buffer.isBuffer(tipNow.hash) ? tipNow.hash.toString('hex') : String(tipNow.hash))
+      : '';
+    const jobPrev = String(lastJob?.prevBlockHash || '');
+    const parentOk = !tipHash || jobPrev === tipHash;
+    if (!force && lastJob && parentOk && Number(lastJob.blockBits || lastJob.bits) === liveBits) {
       const jobTs = Number(lastJob.timestamp) || 0;
       const stampFresh = jobTs > 0 && (now - jobTs) < JOB_RESTAMP_MS;
       if (stampFresh) {
@@ -844,11 +883,13 @@ export function createPool({
     }
     let nextJob = null;
     if (scored.block) {
+      sealing = true;
       const got = store.submitHeader({
         jobId: params.jobId || job.jobId,
         nonce: params.nonce,
         miner: payoutDest(session?.login) || session?.login,
       });
+      sealing = false;
       if (got.ok) {
         if (Array.isArray(store.mempool) && store.mempool.length) {
           store.mempool.length = 0;
@@ -1083,6 +1124,11 @@ export function createPool({
       hashTxLive: HASH_TX_LIVE,
       bookLawFingerprint: consensusFingerprint(),
       ...consensusLaw(),
+      policy: typeof store.getpolicy === 'function' ? store.getpolicy() : undefined,
+      frozen: typeof store.getpolicy === 'function' ? !!store.getpolicy().frozen : false,
+      confirmedNeed: typeof store.getpolicy === 'function'
+        ? (store.getpolicy().operational?.pool_merchant || 30)
+        : 30,
       stratum: `:${stratumPort}`,
       proof: 'PoW',
       miners: workers.length,
@@ -1130,6 +1176,36 @@ export function createPool({
       res.end(statsSnap.json);
       return;
     }
+    if (url.pathname === '/api/policy') {
+      res.setHeader('content-type', 'application/json');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(JSON.stringify(typeof store.getpolicy === 'function' ? store.getpolicy() : { ok: false }));
+      return;
+    }
+    if (url.pathname === '/api/chaintips') {
+      res.setHeader('content-type', 'application/json');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(JSON.stringify({
+        ok: true,
+        tips: typeof store.getchaintips === 'function' ? store.getchaintips() : [],
+      }));
+      return;
+    }
+    if (url.pathname === '/api/reorgs') {
+      res.setHeader('content-type', 'application/json');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(JSON.stringify({
+        ok: true,
+        reorgs: typeof store.getreorgs === 'function' ? store.getreorgs() : [],
+      }));
+      return;
+    }
+    if (url.pathname === '/api/credits_frozen' && req.method === 'POST') {
+      res.setHeader('content-type', 'application/json');
+      const policy = typeof store.getpolicy === 'function' ? store.getpolicy() : { frozen: false };
+      res.end(JSON.stringify({ ok: true, frozen: !!policy.frozen, reason: policy.freeze_reason || '', policy }));
+      return;
+    }
     if (url.pathname.startsWith('/api/miners/')) {
       const tag = decodeURIComponent(url.pathname.slice('/api/miners/'.length).split('/')[0] || '');
       const rows = minerByTag(tag);
@@ -1156,6 +1232,7 @@ export function createPool({
         version: uniquePublicLabels(views.map((v) => v.version)),
         client: views[0].client,
         algo: ALGO,
+        personalisation: PERSONAL,
         connected: views.some((v) => v.connected),
         lastSeen: Math.max(...views.map((v) => v.lastSeen)),
         firstSeen: Math.min(...views.map((v) => v.firstSeen || now)),

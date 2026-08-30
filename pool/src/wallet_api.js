@@ -4,6 +4,7 @@ import {
   NANOS_PER_SHE,
   BLOCK_SUBSIDY_NANOS,
   SPENDABLE_CONFIRMATIONS,
+  MIN_CONFIRMS_POLICY,
   RESERVE_PROGRAM,
   JOIN_PROGRAM,
   extraMintAllowed,
@@ -500,6 +501,8 @@ export function mempoolLattice(store, limit = 24) {
     ok: true,
     live: true,
     spendableConfirmations: SPENDABLE_CONFIRMATIONS,
+    minConfirmsPolicy: MIN_CONFIRMS_POLICY,
+    policy: typeof store?.getpolicy === 'function' ? store.getpolicy() : undefined,
     tip,
     pending,
     generations,
@@ -514,6 +517,23 @@ function joinCommitPending(store, commit) {
   if (held && held[c]) return true;
   for (const tx of store?.mempool || []) {
     if (tx && String(tx.kind || '') === 'claim' && String(tx.commit || '') === c) return true;
+  }
+  return false;
+}
+
+function joinIsMarkedPaid(store, commit, policy) {
+  const pol = policy || (typeof store?.getpolicy === 'function' ? store.getpolicy() : null);
+  if (pol?.frozen) return false;
+  const need = Math.max(1, Number(pol?.operational?.join_mark_paid) || 200);
+  const tipH = Number(store?.tip?.()?.height || (store?.blocks || []).at(-1)?.height || 0);
+  const want = String(commit || '');
+  if (!want) return false;
+  for (const b of store?.blocks || []) {
+    for (const tx of b.txs || []) {
+      if (String(tx.kind || '') === 'claim' && String(tx.commit || '') === want) {
+        return isSpendableHeight(b.height, tipH, need);
+      }
+    }
   }
   return false;
 }
@@ -707,6 +727,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
       return { status: 400, json: { ok: false, reason: queued.reason || 'queue_failed', public: false } };
     }
     rememberJoinPending(store, got.commit);
+    const policy = typeof store.getpolicy === 'function'
+      ? store.getpolicy()
+      : { frozen: false, operational: { join_mark_paid: 200 } };
+    const paid = !policy.frozen && joinIsMarkedPaid(store, got.commit, policy);
     return {
       status: 200,
       json: {
@@ -720,6 +744,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
         genesisMs: vault.genesisMs,
         burned: !!vault.burned,
         root: vault.root || '',
+        paid,
+        frozen: !!policy.frozen,
       },
     };
   }

@@ -16,6 +16,7 @@ import {
   sealedExplorerRows,
   lag1Continuity,
   shouldAdopt,
+  chainWorkOf,
 } from './chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
@@ -30,6 +31,14 @@ import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
 import { blockWeight } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
+import { blockWork } from '../../crypto/asert.js';
+import {
+  emptyPolicyState,
+  recordReorg,
+  applySignals,
+  getpolicy as policyView,
+  hashRatioFromHours,
+} from '../../crypto/confirm_policy.js';
 
 function toRow(block) {
   const compact = compactChainBlock(block);
@@ -40,7 +49,49 @@ function toRow(block) {
   };
 }
 
-export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {}) {
+function hex32(h) {
+  if (Buffer.isBuffer(h)) return h.toString('hex');
+  return String(h || '');
+}
+
+function workOfBlock(block) {
+  try {
+    return blockWork(decodeHeader(Buffer.from(block.header)).bits);
+  } catch {
+    return 0;
+  }
+}
+
+function commonPrefixLen(a, b) {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  for (; i < n; i += 1) {
+    if (!Buffer.from(a[i].hash).equals(Buffer.from(b[i].hash))) break;
+  }
+  return i;
+}
+
+function txIdOf(tx) {
+  return String(tx?.id || '');
+}
+
+function potIdsOf(block) {
+  const hid = hex32(block.hash);
+  const ids = [];
+  const cb = (block.txs || [])[0];
+  if (cb?.coinbase && Array.isArray(cb.vout)) {
+    for (const o of cb.vout) {
+      if (o.kind === 'hash' || o.kind === 'finder-fee' || o.kind === 'reserve-fee') continue;
+      ids.push(`${hid}-${o.kind || 'cb'}`);
+    }
+  }
+  return ids;
+}
+
+export function createStore(dir, {
+  pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
+  reorgHaltDepth = Number(process.env.SHEAR_REORG_HALT_DEPTH || 0),
+} = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
@@ -49,6 +100,14 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
   const blocks = [];
   const explorer = [];
   const spentB = new Set();
+  const headers = new Map();
+  const forks = new Map();
+  const listeners = { reorg: [], credits_frozen: [], tip: [] };
+  const reorgs = [];
+  let policyState = emptyPolicyState();
+  const pause = { join: false, reserveInterest: false, poolWithdraw: false };
+  const haltDepth = Math.max(0, Math.floor(Number(reorgHaltDepth) || 0));
+
   if (fs.existsSync(binFile)) {
     for (const b of readChainBin(binFile)) {
       blocks.push(b);
@@ -61,6 +120,45 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
       b.hash = Buffer.from(b.hash, 'hex');
       blocks.push(b);
     }
+  }
+
+  function on(ev, fn) {
+    if (!listeners[ev]) listeners[ev] = [];
+    listeners[ev].push(fn);
+    return () => {
+      listeners[ev] = (listeners[ev] || []).filter((x) => x !== fn);
+    };
+  }
+
+  function emit(ev, payload) {
+    for (const fn of listeners[ev] || []) {
+      try { fn(payload); } catch { /* keep */ }
+    }
+  }
+
+  function rememberHeaders(chain, status) {
+    if (!Array.isArray(chain)) return;
+    for (const b of chain) {
+      let prev = '';
+      try {
+        prev = Buffer.from(decodeHeader(Buffer.from(b.header)).prevBlockHash).toString('hex');
+      } catch { prev = ''; }
+      const h = hex32(b.hash);
+      headers.set(h, {
+        hash: h,
+        height: Number(b.height || 0),
+        work: workOfBlock(b),
+        status,
+        prev,
+      });
+    }
+  }
+
+  function rememberFork(chain, status) {
+    if (!Array.isArray(chain) || !chain.length) return;
+    rememberHeaders(chain, status);
+    const tipB = chain[chain.length - 1];
+    forks.set(hex32(tipB.hash), { blocks: chain.slice(), work: chainWorkOf(chain), status });
   }
 
   function writeExplorer() {
@@ -84,6 +182,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
   }
 
   rebuildExplorer();
+  rememberHeaders(blocks, 'active');
 
   const reserveVault = emptyVault();
   const loadedOracle = (() => {
@@ -185,6 +284,198 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     return dirty;
   }
 
+  function hourlyWork(nowMs) {
+    const buckets = Array(24).fill(0);
+    for (const b of blocks) {
+      const ts = blockTimeMs(b);
+      const ago = nowMs - ts;
+      if (ago < 0 || ago >= 24 * 3_600_000) continue;
+      const i = 23 - Math.floor(ago / 3_600_000);
+      if (i >= 0 && i < 24) buckets[i] += workOfBlock(b);
+    }
+    return buckets;
+  }
+
+  function sideLeadWork() {
+    const active = blocks.length ? chainWorkOf(blocks) : 0;
+    const activeHash = tip() ? hex32(tip().hash) : '';
+    let best = 0;
+    for (const [h, f] of forks) {
+      if (h === activeHash) continue;
+      const w = Number(f.work) || 0;
+      if (w > best) best = w;
+    }
+    return best - active;
+  }
+
+  function refreshPolicy({ newBlock = false, reorgDepth = 0, nowMs = Date.now() } = {}) {
+    if (reorgDepth > 0) {
+      policyState = recordReorg(policyState, { depth: reorgDepth, atMs: nowMs });
+    }
+    const before = policyState.frozen;
+    policyState = applySignals(policyState, {
+      nowMs,
+      h_ratio: hashRatioFromHours(hourlyWork(nowMs)),
+      side_lead: sideLeadWork(),
+      newBlock,
+    });
+    if (before !== policyState.frozen) {
+      emit('credits_frozen', {
+        frozen: policyState.frozen,
+        reason: policyState.freezeReason,
+        d_max: policyState.d_max,
+        side_lead: policyState.side_lead,
+        h_ratio: policyState.h_ratio,
+      });
+    }
+  }
+
+  function rebuildSpentB() {
+    spentB.clear();
+    for (let i = 0; i < blocks.length; i += 1) {
+      const b = blocks[i];
+      const prev = i === 0 ? null : {
+        hash: blocks[i - 1].hash,
+        header: blocks[i - 1].header,
+        height: blocks[i - 1].height,
+        rootA: blocks[i - 1].rootA,
+        rootB: blocks[i - 1].rootB,
+        txs: blocks[i - 1].txs,
+        bLeaves: blocks[i - 1].bLeaves,
+        weight: blocks[i - 1].weight,
+      };
+      verifyBlock(b, prev, {
+        buried: !!b.samplesPruned,
+        joinFunded: !!joinVault.genesisMs,
+        spentB,
+        tipHeight: b.height,
+        hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
+      });
+    }
+  }
+
+  function bounceMempool(disconnected, connected) {
+    const winnerIds = new Set();
+    const winnerInputs = new Set();
+    for (const b of connected || []) {
+      for (const tx of (b.txs || []).slice(1)) {
+        const id = txIdOf(tx);
+        if (id) winnerIds.add(id);
+        for (const vin of tx.vin || []) {
+          winnerInputs.add(`${vin.prev || ''}:${vin.index}`);
+        }
+      }
+    }
+    for (let i = mempool.length - 1; i >= 0; i -= 1) {
+      const tx = mempool[i];
+      const id = txIdOf(tx);
+      const spent = (tx.vin || []).some((v) => winnerInputs.has(`${v.prev || ''}:${v.index}`));
+      if ((id && winnerIds.has(id)) || spent) mempool.splice(i, 1);
+    }
+    let base = 1;
+    const t = tip();
+    try {
+      if (t?.header) base = Number(decodeHeader(Buffer.from(t.header)).baseFee || 1n);
+    } catch { base = 1; }
+    const book = emptyMempool();
+    book.txs = mempool;
+    for (const b of disconnected || []) {
+      for (const tx of (b.txs || []).slice(1)) {
+        if (tx?.coinbase) continue;
+        const id = txIdOf(tx);
+        if (id && winnerIds.has(id)) continue;
+        const spent = (tx.vin || []).some((v) => winnerInputs.has(`${v.prev || ''}:${v.index}`));
+        if (spent) continue;
+        if (id && mempool.some((m) => txIdOf(m) === id)) continue;
+        admitMempool(book, {
+          ...tx,
+          kind: tx.kind || 'send',
+          to: tx.to || tx.vout?.[0]?.address,
+          from: tx.from || tx.vin?.[0]?.address,
+          nanos: tx.nanos || tx.vout?.[0]?.nanos,
+          fee: tx.fee,
+        }, { baseFee: base });
+      }
+    }
+    mempool.length = 0;
+    mempool.push(...book.txs);
+  }
+
+  function makeReorgEvent({ fromBlocks, toBlocks, lca }) {
+    const disconnected = fromBlocks.slice(lca);
+    const connected = toBlocks.slice(lca);
+    const fromB = fromBlocks[fromBlocks.length - 1];
+    const toB = toBlocks[toBlocks.length - 1];
+    const forkB = lca > 0 ? fromBlocks[lca - 1] : null;
+    const depth = disconnected.length;
+    const forkHeight = lca > 0 ? Number(fromBlocks[lca - 1].height || lca) : 0;
+    const tipH = Number(toB?.height || toBlocks.length);
+    const samples_pruned = forkHeight > 0 && (tipH - forkHeight) >= SAMPLE_PRUNE_CONFIRMATIONS;
+    const orphaned_txids = [];
+    const orphaned_pots = [];
+    for (const b of disconnected) {
+      orphaned_pots.push(...potIdsOf(b));
+      for (const tx of (b.txs || []).slice(1)) {
+        const id = txIdOf(tx);
+        if (id) orphaned_txids.push(id);
+      }
+    }
+    return {
+      type: 'reorg',
+      from_hash: fromB ? hex32(fromB.hash) : '',
+      to_hash: toB ? hex32(toB.hash) : '',
+      fork_hash: forkB ? hex32(forkB.hash) : '',
+      from_height: Number(fromB?.height || fromBlocks.length),
+      to_height: Number(toB?.height || toBlocks.length),
+      depth,
+      work_delta: chainWorkOf(toBlocks) - chainWorkOf(fromBlocks),
+      orphaned_txids,
+      orphaned_pots,
+      disconnected: disconnected.map((b) => Number(b.height || 0)),
+      connected: connected.map((b) => Number(b.height || 0)),
+      samples_pruned,
+    };
+  }
+
+  function getchaintips() {
+    const activeHash = tip() ? hex32(tip().hash) : '';
+    const inActive = new Set(blocks.map((b) => hex32(b.hash)));
+    const hasChild = new Set();
+    for (const rec of headers.values()) {
+      if (rec.prev) hasChild.add(rec.prev);
+    }
+    const out = [];
+    const seen = new Set();
+    if (tip()) {
+      out.push({
+        height: Number(tip().height || blocks.length),
+        hash: activeHash,
+        branchlen: 0,
+        status: 'active',
+      });
+      seen.add(activeHash);
+    }
+    for (const rec of headers.values()) {
+      if (hasChild.has(rec.hash)) continue;
+      if (seen.has(rec.hash)) continue;
+      seen.add(rec.hash);
+      let lca = 0;
+      let walk = rec;
+      let guard = 0;
+      while (walk && !inActive.has(walk.hash) && guard++ < 10_000) {
+        lca += 1;
+        walk = walk.prev ? headers.get(walk.prev) : null;
+      }
+      out.push({
+        height: rec.height,
+        hash: rec.hash,
+        branchlen: lca,
+        status: rec.status === 'valid-headers' ? 'valid-headers' : 'valid-fork',
+      });
+    }
+    return out.sort((a, b) => b.height - a.height || a.status.localeCompare(b.status));
+  }
+
   function append(block) {
     const prev = tip();
     const check = verifyBlock(block, prev ? {
@@ -201,6 +492,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
       spentB,
       tipHeight: prev ? prev.height + 1 : 1,
       hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
+      buried: !!block.samplesPruned,
     });
     if (!check.ok) return check;
     const gated = validateJoinBlock({
@@ -219,6 +511,7 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     blocks.push(stored);
     persist(stored);
     indexSealed(stored);
+    rememberHeaders([stored], 'active');
     {
       const sealedIds = new Set((stored.txs || []).map((t) => String(t.id || '')));
       for (let i = mempool.length - 1; i >= 0; i -= 1) {
@@ -237,10 +530,21 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
       mempool.push(...book.txs);
       void dropped;
     } catch { /* keep */ }
+    refreshPolicy({ newBlock: true, nowMs: blockTimeMs(stored) });
+    emit('tip', { hash: hex32(stored.hash), height: stored.height });
     return { ok: true, block: stored };
   }
 
   function queueTx(tx) {
+    if (pause.join && String(tx?.kind || '') === 'claim') {
+      return { ok: false, reason: 'paused' };
+    }
+    if (pause.reserveInterest && tx?.mint && String(tx.kind || '') !== 'lock' && String(tx.kind || '') !== 'vote') {
+      return { ok: false, reason: 'paused' };
+    }
+    if (pause.poolWithdraw && String(tx?.kind || '') === 'pool-withdraw') {
+      return { ok: false, reason: 'paused' };
+    }
     let base = 1;
     const t = tip();
     try {
@@ -251,14 +555,29 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     return admitMempool(book, tx, { baseFee: base });
   }
 
-  function adopt(fork) {
-    if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
+  function verifyFork(fork) {
     const accepted = [];
     let joinFunded = false;
     const trialJoin = emptyJoin();
+    const trialSpent = new Set();
     for (let i = 0; i < fork.length; i += 1) {
-      const prev = i === 0 ? null : { hash: accepted[i - 1].hash, header: accepted[i - 1].header };
-      const check = verifyBlock(fork[i], prev, { joinFunded });
+      const prev = i === 0 ? null : {
+        hash: accepted[i - 1].hash,
+        header: accepted[i - 1].header,
+        height: accepted[i - 1].height,
+        rootA: accepted[i - 1].rootA,
+        rootB: accepted[i - 1].rootB,
+        txs: accepted[i - 1].txs,
+        bLeaves: accepted[i - 1].bLeaves,
+        weight: accepted[i - 1].weight,
+      };
+      const check = verifyBlock(fork[i], prev, {
+        joinFunded,
+        buried: !!fork[i].samplesPruned,
+        spentB: trialSpent,
+        tipHeight: i + 1,
+        hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
+      });
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
       const gated = validateJoinBlock({
         state: trialJoin,
@@ -273,19 +592,48 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
         magic: MAGIC_TESTNET,
         hash: check.hash,
         height: i + 1,
+        weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
       }));
     }
+    return { ok: true, accepted };
+  }
+
+  function adopt(fork) {
+    if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
+    const verified = verifyFork(fork);
+    if (!verified.ok) return verified;
+    const accepted = verified.accepted;
+    rememberFork(accepted, 'valid-fork');
     if (!shouldAdopt(blocks, accepted)) {
       return { ok: false, reason: 'not_heavier', tip: tip() };
     }
+    const fromBlocks = blocks.slice();
+    const lca = commonPrefixLen(fromBlocks, accepted);
+    const depth = fromBlocks.length - lca;
+    if (haltDepth > 0 && depth >= haltDepth) {
+      console.error(JSON.stringify({ type: 'REORG_HALT', depth, halt: haltDepth }));
+      return { ok: false, reason: 'reorg_halt', depth, halt: haltDepth, tip: tip() };
+    }
+    const disconnected = fromBlocks.slice(lca);
+    const connected = accepted.slice(lca);
+    if (fromBlocks.length) rememberFork(fromBlocks, 'valid-fork');
+    const event = makeReorgEvent({ fromBlocks, toBlocks: accepted, lca });
     blocks.length = 0;
     for (const b of accepted) blocks.push(b);
+    rememberHeaders(accepted, 'active');
     rewriteChain();
     rebuildExplorer();
     replayVault();
     replayJoin();
+    rebuildSpentB();
+    bounceMempool(disconnected, connected);
     pruneBuried();
-    return { ok: true, reorg: true, tip: tip() };
+    reorgs.push(event);
+    if (reorgs.length > 64) reorgs.splice(0, reorgs.length - 64);
+    refreshPolicy({ reorgDepth: event.depth, nowMs: Date.now() });
+    emit('reorg', event);
+    emit('tip', { hash: hex32(tip().hash), height: tip().height, reorg: true });
+    return { ok: true, reorg: true, tip: tip(), event };
   }
 
   function ingest(fork) {
@@ -369,7 +717,12 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
         vin: [{ address: m.from }],
         vout: [{ address: dest, nanos: m.nanos, kind: m.kind, memoCt: m.memoCt }],
       };
-    }).filter((tx) => admitMempool({ txs: [], baseFee: baseFeeNow }, tx, { baseFee: baseFeeNow }).ok);
+    }).filter((tx) => {
+      if (pause.join && tx.kind === 'claim') return false;
+      if (pause.reserveInterest && tx.mint) return false;
+      if (pause.poolWithdraw && tx.kind === 'pool-withdraw') return false;
+      return admitMempool({ txs: [], baseFee: baseFeeNow }, tx, { baseFee: baseFeeNow }).ok;
+    });
     const tpl = buildTemplate({
       prev: t ? t.hash : GENESIS_PREV,
       prevHeader: t ? t.header : null,
@@ -441,5 +794,14 @@ export function createStore(dir, { pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS } = {
     mintVorticeFromOrigin: vortice.mintFromOrigin,
     lookupVorticeKey: vortice.lookupByKey,
     listPublicVortices: vortice.listPublic,
+    on,
+    emit,
+    getpolicy: () => policyView(policyState),
+    getchaintips,
+    getreorgs: () => reorgs.slice(),
+    pause,
+    reorgHaltDepth: haltDepth,
+    headers,
+    policyState,
   };
 }

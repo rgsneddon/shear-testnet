@@ -94,6 +94,14 @@ describe('brand pages', () => {
     assert.match(theme, /toggleShearNav/);
     assert.match(theme, /nav-open/);
     assert.match(theme, /CustomEvent\('shear-theme'/);
+    assert.match(theme, /document\.cookie/);
+    assert.match(theme, /Domain=\.shear\.digital/);
+    assert.match(theme, /localStorage/);
+    assert.match(theme, /cookieGet/);
+    assert.match(theme, /cookieSet/);
+    assert.match(theme, /onShearHost/);
+    const siteTheme = read('site/brand/theme.js');
+    assert.equal(siteTheme, theme);
     const pool = read('pool/public/index.html');
     assert.match(pool, /table-wrap/);
     assert.match(pool, /overflow-wrap:\s*anywhere/);
@@ -131,7 +139,18 @@ describe('brand pages', () => {
       assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
       assert.match(page, /releases\/tag\/0\.7|shear-wallet-0\.7/);
       assert.match(page, /rgsneddon\/ShearK/);
+      assert.match(page, /theme\.js\?v=7/);
     }
+    assert.match(poolHtml, /Shear pool · ShearHash-v2/);
+    assert.match(poolHtml, /Great Vibes/);
+    assert.match(poolHtml, /grid-template-columns:\s*1fr 2fr/);
+    assert.doesNotMatch(poolHtml, /grid-template-columns:\s*1fr 3fr/);
+    assert.match(poolHtml, /class="she-private-lockup">She is Private</);
+    assert.match(explorerHtml, /Shear explorer · ShearHash-v2/);
+    assert.match(explorerHtml, /Great Vibes/);
+    assert.match(explorerHtml, /class="she-private-lockup">She is Private</);
+    assert.match(read('pool/public/miner.html'), /Shear miner · ShearHash-v2/);
+    assert.match(siteHtml, /Algo: ShearHash-v2/);
     assert.match(css, /\.top-banner\s*\{[\s\S]*?background:\s*var\(--banner\)/);
     assert.match(css, /grid-template-columns:\s*1fr auto 1fr/);
     assert.match(css, /header\.top-banner\s*\{\s*grid-template-columns:\s*1fr auto/);
@@ -246,6 +265,7 @@ describe('mempool pulse', () => {
   it('uses API spendableConfirmations, not a hard-coded 6', () => {
     const page = read('mempool/index.html');
     assert.match(page, /data\.spendableConfirmations/);
+    assert.match(page, /data\.policy/);
     assert.equal(/6 conf spendable/.test(page), false);
     assert.match(page, /isDark/);
     assert.match(page, /palette/);

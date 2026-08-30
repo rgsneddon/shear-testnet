@@ -234,12 +234,12 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /:1111/);
     assert.match(html, />SHE</);
     assert.equal(html.toLowerCase().includes('shearhash'), true);
-    assert.match(html, /she is private/);
+    assert.match(html, /She is Private/);
     assert.match(html, /ssa1/);
     assert.match(html, /YOUR_SHE1/);
     assert.equal(/--user shear1/.test(html), false);
     assert.equal(html.includes('YOUR_SHEAR1'), false);
-    assert.match(html, /shear-testnet-v1/);
+    assert.match(html, /shear-testnet-v2/);
     assert.match(html, /Pool explorer · last 10 transactions/);
     assert.match(html, />Id</);
     assert.match(html, />Time</);
@@ -249,7 +249,7 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /pending/);
     assert.match(html, /function blockStatus/);
     assert.match(html, /slice\(0, 10\)/);
-    assert.match(html, /s\.spendableConfirmations/);
+    assert.match(html, /s\.confirmedNeed/);
     assert.match(html, />From</);
     assert.match(html, />To</);
     assert.match(html, />Amount</);
@@ -287,6 +287,10 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.destHrp, 'ssa');
     assert.equal(stats.spendableConfirmations, 6);
     assert.equal(stats.minConfirmsPolicy, 12);
+    assert.equal(stats.confirmedNeed, 30);
+    assert.equal(stats.policy.consensus_min, 6);
+    assert.equal(stats.policy.bands.pool_merchant, 30);
+    assert.equal(stats.frozen, false);
     assert.equal(stats.productVersion, '0.3');
     assert.equal(stats.minerVersion, '1.1');
     if (stats.header) assert.equal(stats.header.length, 256);
@@ -474,6 +478,8 @@ describe('public miner listing', () => {
     assert.match(dash, /s\.workers/);
     assert.match(miner, /d\.workers/);
     assert.equal(/localStorage/.test(dash + miner), false);
+    assert.match(miner, /id="m-algo">ShearHash-v2</);
+    assert.match(miner, /d\.personalisation \|\| 'ShearHash-v2'/);
   });
 
   it('dashboard last-10 table uses Status not Kind; TESTNET sits above the fee note', () => {
@@ -483,7 +489,7 @@ describe('public miner listing', () => {
     assert.doesNotMatch(dash, />Kind</);
     assert.match(dash, /function blockStatus/);
     assert.match(dash, /slice\(0, 10\)/);
-    assert.match(dash, /s\.spendableConfirmations/);
+    assert.match(dash, /s\.confirmedNeed/);
     const fn = dash.match(/function blockStatus\(t, tip, need\) \{[\s\S]*?\n    \}/);
     assert.ok(fn, 'blockStatus must ship');
     const blockStatus = new Function(`${fn[0]}; return blockStatus;`)();
@@ -506,6 +512,17 @@ describe('public miner listing', () => {
     assert.match(dash, /your hashes pay in full and are not subject to pool fees/);
     assert.doesNotMatch(dash, /0\.1 SHE pot/);
     assert.equal(/feeless/i.test(dash), false);
+    assert.match(dash, /id="algo">ShearHash-v2</);
+    assert.match(dash, /s\.personalisation \|\| 'ShearHash-v2'/);
+    assert.doesNotMatch(dash, /class="repo-btn"/);
+    assert.doesNotMatch(dash, /class="repo-btns"/);
+    assert.match(dash, /grid-template-columns:\s*1fr 2fr/);
+    assert.match(dash, /class="she-private-lockup">She is Private</);
+    assert.match(dash, /Great Vibes/);
+    assert.match(dash, /<h1>Shear<\/h1>/);
+    assert.match(dash, /Algo: ShearHash-v2 · Coin: SHE · Network: shear-testnet-v2/);
+    assert.doesNotMatch(dash, /Pool: <a href="https:\/\/pool\.shear\.digital"/);
+    assert.doesNotMatch(dash, /Explorer: <a href="https:\/\/explorer\.shear\.digital"/);
   });
 
   it('miner and version boxes list each distinct label once', () => {

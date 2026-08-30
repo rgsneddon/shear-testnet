@@ -40,8 +40,8 @@ describe('p2p gossip', () => {
     const dest = destMiner();
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-b-'));
-    const a = await startNode({ dataDir: dirA, p2pPort: 0, p2pBind: '127.0.0.1', seeds: [] });
-    const b = await startNode({ dataDir: dirB, p2pPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
     try {
       const mined = mineOne(a.store, dest);
       assert.equal(mined.ok, true, mined.reason);
@@ -60,6 +60,8 @@ describe('p2p gossip', () => {
     } finally {
       a.p2p.close();
       b.p2p.close();
+      await a.rpc?.close?.();
+      await b.rpc?.close?.();
     }
   });
 
@@ -88,8 +90,8 @@ describe('p2p gossip', () => {
   it('two connected empty nodes each see the other as online, then drop on close', async () => {
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-on-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-on-b-'));
-    const a = await startNode({ dataDir: dirA, p2pPort: 0, p2pBind: '127.0.0.1', seeds: [] });
-    const b = await startNode({ dataDir: dirB, p2pPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
     try {
       assert.equal(a.p2p.syncedOnline(), 1);
       await a.p2p.connect('127.0.0.1', b.bound.port);
@@ -98,6 +100,8 @@ describe('p2p gossip', () => {
     } finally {
       a.p2p.close();
       b.p2p.close();
+      await a.rpc?.close?.();
+      await b.rpc?.close?.();
     }
     assert.equal(a.p2p.syncedOnline(), 1);
   });
@@ -109,5 +113,7 @@ describe('p2p gossip', () => {
     assert.equal(cfg.magic, MAGIC_TESTNET);
     assert.equal(cfg.magic, 'shear-testnet-v2');
     assert.equal(cfg.mainnet, false);
+    assert.equal(cfg.phaseBGate, false);
+    assert.equal(cfg.rpc, 18332);
   });
 });

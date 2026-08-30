@@ -50,6 +50,18 @@ describe('most-work adopt', () => {
     assert.equal(equal.reason, 'not_heavier');
     assert.equal(Buffer.from(local.tip().hash).equals(firstHash), true);
 
+    const events = [];
+    local.on('reorg', (e) => events.push(e));
+    local.queueTx({
+      id: 'bounce-1',
+      kind: 'send',
+      from: dest,
+      to: dest,
+      nanos: 1,
+      fee: 100,
+      vin: [{ address: dest }],
+      vout: [{ address: dest, nanos: 1 }],
+    });
     const heavier = tmpStore();
     assert.equal(mineOne(heavier, dest).ok, true);
     assert.equal(mineOne(heavier, dest).ok, true);
@@ -60,6 +72,18 @@ describe('most-work adopt', () => {
     assert.equal(got.reorg, true);
     assert.equal(local.tip().height, 2);
     assert.equal(Buffer.from(local.tip().hash).equals(Buffer.from(heavier.tip().hash)), true);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, 'reorg');
+    assert.ok(events[0].from_hash);
+    assert.ok(events[0].to_hash);
+    assert.ok(events[0].depth >= 1);
+    assert.equal(Array.isArray(events[0].orphaned_txids), true);
+    const tips = local.getchaintips();
+    assert.equal(tips.some((t) => t.status === 'active'), true);
+    assert.equal(tips.some((t) => t.status === 'valid-fork'), true);
+    assert.equal(local.getpolicy().consensus_min, 6);
+    assert.equal(local.getpolicy().bands.pool_merchant, 30);
+    assert.equal(local.mempool.some((t) => t.id === 'bounce-1'), true);
   });
 
   it('ingest of an invalid child of the tip fails verifyBlock and keeps the tip', () => {

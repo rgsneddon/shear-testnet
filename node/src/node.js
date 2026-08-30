@@ -11,6 +11,7 @@ import { emptyVault } from '../../crypto/reserve_vault.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS } from '../../crypto/reserve_oracle.js';
 import { createStore } from './store.js';
 import { createP2p, P2P_PORT } from './p2p.js';
+import { createRpc, RPC_PORT } from './rpc.js';
 import { mintVorticeDeployKey, parseVorticeKey, VORTICE_KEY_PREFIX } from '../../crypto/vortex.js';
 
 const VERSION = PRODUCT_VERSION;
@@ -25,6 +26,9 @@ export function printConfig() {
     headerBytes: HEADER_LEN,
     genesisBits: GENESIS_BITS,
     p2p: P2P_PORT,
+    rpc: RPC_PORT,
+    phaseBGate: false,
+    extraMintThirdPartyCannotPrint: !extraMintAllowed('third-party-vortice'),
     reserveProgram: RESERVE_PROGRAM,
     extraMintOnlyReserve: extraMintAllowed(RESERVE_PROGRAM),
     joinProgram: JOIN_PROGRAM,
@@ -41,12 +45,14 @@ export function printConfig() {
   };
 }
 
-export { createP2p, P2P_PORT, createStore, mintVorticeDeployKey, parseVorticeKey };
+export { createP2p, P2P_PORT, createStore, createRpc, RPC_PORT, mintVorticeDeployKey, parseVorticeKey };
 
 export async function startNode({
   dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v2'),
   p2pPort = Number(process.env.SHEAR_P2P_PORT || P2P_PORT),
   p2pBind = process.env.SHEAR_P2P_BIND || '0.0.0.0',
+  rpcPort = Number(process.env.SHEAR_RPC_PORT || RPC_PORT),
+  rpcBind = process.env.SHEAR_RPC_BIND || '127.0.0.1',
   seeds = (process.env.SHEAR_SEEDS || '').split(',').map((s) => s.trim()).filter(Boolean),
 } = {}) {
   fs.mkdirSync(dataDir, { recursive: true });
@@ -54,6 +60,8 @@ export async function startNode({
   store.reserveVault = store.reserveVault || emptyVault();
   const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET });
   const bound = await p2p.listen();
+  const rpc = createRpc({ store, p2p, port: rpcPort, host: rpcBind });
+  const rpcBound = await rpc.listen();
   for (const seed of seeds) {
     const cut = seed.lastIndexOf(':');
     const host = cut > 0 ? seed.slice(0, cut) : seed;
@@ -67,7 +75,7 @@ export async function startNode({
       }
     }
   }
-  return { store, p2p, bound, magic: MAGIC_TESTNET, mainnet: false };
+  return { store, p2p, rpc, bound, rpcBound, magic: MAGIC_TESTNET, mainnet: false, phaseBGate: false };
 }
 
 async function main() {
@@ -80,8 +88,10 @@ async function main() {
   console.log(JSON.stringify({
     ok: true,
     p2p: started.bound.port,
+    rpc: started.rpcBound?.port,
     bind: started.bound.host,
     magic: MAGIC_TESTNET,
+    phaseBGate: false,
     height: tip?.height || 0,
     hash: tip ? Buffer.from(tip.hash).toString('hex') : '',
     mainnet: false,

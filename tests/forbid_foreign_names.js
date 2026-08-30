@@ -73,7 +73,7 @@ describe('dest HRP pin', () => {
     assert.match(miner, /she1/);
     assert.equal(/--user shear1/.test(miner), false);
     const html = fs.readFileSync(path.join(root, 'pool/public/index.html'), 'utf8');
-    assert.match(html, /she is private/);
+    assert.match(html, /She is Private/);
     assert.match(html, /ssa1|she1/);
     assert.match(html, /she1/);
     assert.equal(/--user shear1/.test(html), false);

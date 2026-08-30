@@ -175,6 +175,18 @@ export function formatShe(n) {
   return s;
 }
 
+/** Wrapped SHE / ticker SHE on a foreign programme never extra-mints. */
+export function wrapMintForbidden(tx) {
+  const kind = String(tx?.kind || '').toLowerCase();
+  const id = String(tx?.programId || '').toLowerCase();
+  const ticker = String(tx?.ticker || tx?.symbol || tx?.asset || '').toLowerCase();
+  if (kind === 'wrap' || kind === 'wrapped' || kind === 'wshe' || kind === 'wrapped-she') return true;
+  if (id.includes('wrap') || id.includes('wshe') || id.includes('wrapped-she')) return true;
+  if (ticker === 'wshe' || ticker === 'wrapped-she' || ticker === 'wrapped she') return true;
+  if (ticker === 'she' && id && id !== RESERVE_PROGRAM && id !== JOIN_PROGRAM) return true;
+  return false;
+}
+
 export function extraMintAllowed(programId, opts = {}) {
   const id = String(programId || '');
   const kind = String(opts.kind || '');

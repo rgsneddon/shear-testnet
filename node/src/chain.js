@@ -10,6 +10,7 @@ import {
   HASH_BONUS_NANOS,
   MAGIC_TESTNET,
   extraMintAllowed,
+  wrapMintForbidden,
   DEST_HRP,
 } from '../../crypto/asert.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp } from '../../crypto/address.js';
@@ -338,7 +339,10 @@ export function verifyBlock(block, prev, {
       if (i?.address && isShearAddress(i.address)) return { ok: false, reason: 'rest_frame_on_chain' };
     }
     const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint;
-    if (unfunded && !extraMintAllowed(tx.programId, { kind: tx.kind, funded: joinFunded })) {
+    if (wrapMintForbidden(tx)) {
+      return { ok: false, reason: 'mint_forbidden' };
+    }
+    if ((unfunded || tx.mint) && !extraMintAllowed(tx.programId, { kind: tx.kind, funded: joinFunded })) {
       return { ok: false, reason: 'mint_forbidden' };
     }
     const w = txWeight({

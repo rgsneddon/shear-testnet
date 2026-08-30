@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <script src="/brand/theme.js?v=6"></script>
+  <script src="/brand/theme.js?v=7"></script>
   <title>Shear mempool · logarithmic lattice</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
@@ -500,7 +500,7 @@
       document.getElementById('h-fee').textContent = String(data.tip?.baseFee ?? 1);
       const pulse = document.getElementById('pulse');
       pulse.textContent = data.live
-        ? ('live · tip down · ' + (data.spendableConfirmations ?? 1) + ' conf spendable · policy 12')
+        ? ('live · tip down · ' + (data.spendableConfirmations ?? 1) + ' conf spendable · policy ' + (data.policy && data.policy.merchant_default != null ? data.policy.merchant_default : (data.minConfirmsPolicy ?? 12)))
         : 'node paused · demo lattice from tip';
       pulse.className = data.live ? '' : 'stale';
     }

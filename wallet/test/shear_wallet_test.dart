@@ -426,6 +426,25 @@ void main() {
     expect(ledger.policyAvailable(id.address, paymentCode: id.paymentCode), 1);
   });
 
+  test('getpolicy freeze holds Continuum pending past 6; reorg bounces rows', () {
+    final id = createIdentity();
+    final ledger = ShearLedger();
+    expect(ledger.confirmedNeed, 30);
+    ledger.applyPolicy({
+      'frozen': true,
+      'operational': {'pool_merchant': 30, 'join_mark_paid': 200},
+    });
+    expect(ledger.creditsFrozen, isTrue);
+    ledger.confirmRound(address: id.address, pot: 1, height: 1);
+    ledger.settleTo(12);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+    ledger.applyPolicy({'frozen': false, 'operational': {'pool_merchant': 30}});
+    ledger.settleTo(12);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 1);
+    ledger.bounceHeights([1]);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(1));
+  });
+
   test('shewall.bin password seal restores address and balances; JSON refused', () async {
     final id = createIdentity();
     final ledger = ShearLedger();

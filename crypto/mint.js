@@ -3,6 +3,7 @@ import {
   BLOCK_SUBSIDY_NANOS,
   HASH_BONUS_NANOS,
   extraMintAllowed,
+  wrapMintForbidden,
 } from './asert.js';
 import { isDestAddress, isShearAddress } from './address.js';
 import { hashBonusByMiner, coinbaseTx } from '../node/src/chain.js';
@@ -16,7 +17,12 @@ export {
   extraMintAllowed,
 };
 
+export { wrapMintForbidden };
+
 export function extraMint({ programId, to, nanos, kind }) {
+  if (wrapMintForbidden({ programId, kind })) {
+    return { ok: false, reason: 'mint_forbidden' };
+  }
   if (!extraMintAllowed(programId, { kind })) {
     return { ok: false, reason: 'mint_forbidden' };
   }

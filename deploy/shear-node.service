@@ -8,7 +8,12 @@ WorkingDirectory=/opt/shear-v2
 Environment=SHEAR_DATA=/var/lib/shear/node-v2
 Environment=SHEAR_P2P_PORT=30304
 Environment=SHEAR_P2P_BIND=0.0.0.0
+Environment=SHEAR_RPC_PORT=18332
+Environment=SHEAR_RPC_BIND=127.0.0.1
+# Second validating node belongs OFF 178.105.187.178 (stratum may stay on DE).
+# Example: SHEAR_SEEDS=other.seed:30303
 Environment=SHEAR_SEEDS=127.0.0.1:30303
+Environment=SHEAR_REORG_HALT_DEPTH=0
 ExecStart=/usr/local/bin/node node/src/node.js
 Restart=on-failure
 RestartSec=3

@@ -329,6 +329,10 @@ class ShearLedger {
   static const continuumConfirmations = 6;
   /// Third-party/merchant policy (~18 min). Not consensus.
   static const minConfirms = 12;
+  /// Pool/merchant "confirmed" band. Policy, not consensus. From getpolicy.
+  int confirmedNeed = 30;
+  /// Policy freeze: Continuum spendable stays pending even past 6.
+  bool creditsFrozen = false;
   final List<({String dest, double amount, int height})> _immature = [];
 
   /// Read lag-1 continuity from a 128-byte tip header. Next dest uses sealedHeight+1.
@@ -561,12 +565,36 @@ class ShearLedger {
     return n;
   }
 
+  void applyPolicy(Map<String, dynamic> json) {
+    creditsFrozen = json['frozen'] == true;
+    final op = json['operational'];
+    if (op is Map && op['pool_merchant'] is num) {
+      confirmedNeed = (op['pool_merchant'] as num).toInt();
+    }
+  }
+
+  /// Disconnect orphaned heights; rows bounce to pending.
+  void bounceHeights(Iterable<int> heights) {
+    final drop = heights.toSet();
+    for (var i = 0; i < _txs.length; i++) {
+      final h = _txs[i].height ?? 0;
+      if (!drop.contains(h)) continue;
+      final t = _txs[i];
+      if (t.confirmed) {
+        _spendable[t.to] = (_spendable[t.to] ?? 0) - t.amount;
+      }
+      _txs[i] = t.copyWith(confirmed: false);
+      _immature.add((dest: t.to, amount: t.amount, height: h));
+    }
+    prune();
+  }
+
   /// Move immature credits into spendable once the committing block is accepted.
   void settleTo(int tip) {
     if (tip > _sealedHeight) _sealedHeight = tip;
     final keep = <({String dest, double amount, int height})>[];
     for (final row in _immature) {
-      if (confirmationsOf(row.height, tip) >= spendableConfirmations) {
+      if (!creditsFrozen && confirmationsOf(row.height, tip) >= spendableConfirmations) {
         _spendable[row.dest] = (_spendable[row.dest] ?? 0) + row.amount;
         if (row.height > _settledHeight) _settledHeight = row.height;
       } else {
@@ -578,7 +606,7 @@ class ShearLedger {
       ..addAll(keep);
     for (var i = 0; i < _txs.length; i++) {
       final h = _txs[i].height ?? 0;
-      if (confirmationsOf(h, tip) >= spendableConfirmations) {
+      if (!creditsFrozen && confirmationsOf(h, tip) >= spendableConfirmations) {
         _txs[i] = _txs[i].copyWith(confirmed: true);
       }
     }
@@ -615,6 +643,11 @@ class ShearLedger {
     if (pool == null) return;
     try {
       final json = await pool!.stats();
+      if (json['policy'] is Map) {
+        applyPolicy(Map<String, dynamic>.from(json['policy'] as Map));
+      } else if (json['frozen'] is bool) {
+        creditsFrozen = json['frozen'] as bool;
+      }
       final sealed = (json['height'] as num?)?.toInt() ?? 0;
       final hex = json['header']?.toString() ?? '';
       applyTipHex(hex, sealedHeight: sealed);
@@ -1087,6 +1120,8 @@ class ShearPoolClient {
       });
 
   Future<Map<String, dynamic>> stats() => _get('/api/stats');
+
+  Future<Map<String, dynamic>> policy() => _get('/api/policy');
 
   /// Per-portal Reserve stake/idle/accrued. Not a public vortice.
   Future<Map<String, dynamic>> reservePortal(String dest) =>

@@ -22,6 +22,7 @@ import {
   JOIN_WINDOW_DAYS,
   JOIN_WINDOW_MS,
   extraMintAllowed,
+  wrapMintForbidden,
   RESERVE_PROGRAM,
   MAGIC_TESTNET,
   MAGIC_TESTNET_V1,
@@ -149,6 +150,14 @@ describe('Join extra mint is genesis-only', () => {
     assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: JOIN_KIND_GENESIS, funded: true }), false);
     assert.equal(extraMintAllowed('third-party-vortice'), false);
     assert.equal(extraMintAllowed('stake-pool-a', { kind: 'withdraw' }), false);
+  });
+});
+
+describe('wrap mint is forbidden', () => {
+  it('rejects wrap kinds and wrapped tickers', () => {
+    assert.equal(wrapMintForbidden({ kind: 'wrap', programId: 'x' }), true);
+    assert.equal(wrapMintForbidden({ ticker: 'wSHE' }), true);
+    assert.equal(wrapMintForbidden({ programId: 'shear-reserve-v1', kind: 'withdraw' }), false);
   });
 });
 
