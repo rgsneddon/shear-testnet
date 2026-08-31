@@ -109,6 +109,18 @@ void main() {
     final names = _zipNames(zip);
     expect(names.contains('PKGBUILD') || names.any((n) => n.endsWith('/PKGBUILD')), isTrue);
     expect(names.any((n) => n == 'shear_wallet' || n.endsWith('/shear_wallet')), isTrue);
+    final listed = Process.runSync(
+      'python',
+      [
+        '-c',
+        "import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read('PKGBUILD').decode())",
+        zip.path,
+      ],
+      runInShell: true,
+    );
+    expect(listed.exitCode, 0, reason: listed.stderr.toString());
+    expect(listed.stdout.toString(), contains('pkgver=0.8'));
+    expect(listed.stdout.toString().contains('pkgver=0.8.0'), isFalse);
     for (final n in names) {
       final base = n.split('/').last;
       expect(base.toLowerCase(), isNot(equals('shear-miner')));
