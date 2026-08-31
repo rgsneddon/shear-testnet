@@ -495,7 +495,8 @@ describe('public miner listing', () => {
     assert.ok(statsAt >= 0 && workersAt > statsAt && pullAt > workersAt);
     assert.match(miner, /ninety hours/);
     assert.match(miner, /she1 never goes on the book/);
-    assert.match(miner, /You do not withdraw hash bonuses/);
+    assert.match(miner, /bundled into that block’s coinbase as one line/);
+    assert.match(miner, /no Flow levy and no pool fee/);
     assert.match(miner, /only your share of the 1 SHE block pot/);
     assert.match(miner, /ssa1 dest this round \(pay\)/);
     assert.match(miner, /Copy ID/);
