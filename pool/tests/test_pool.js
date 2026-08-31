@@ -494,14 +494,12 @@ describe('public miner listing', () => {
     const pullAt = miner.indexOf('id="pull-row"');
     const statsAt = miner.indexOf('id="stat-grid"');
     assert.ok(explainerAt >= 0 && pullAt > explainerAt && statsAt > pullAt && workersAt > statsAt);
-    assert.match(miner, /ninety hours/);
-    assert.match(miner, /she1 never goes on the book/);
-    assert.match(miner, /bundled into that block’s coinbase as one line/);
-    assert.match(miner, /no Flow levy and no pool fee/);
-    assert.match(miner, /only your share of the 1 SHE block pot/);
+    assert.match(miner, /1 hash = 1 tx leaf/);
+    assert.match(miner, /Hash bonuses are automatic/);
+    assert.match(miner, /Withdraw confirmed sum/);
     assert.match(miner, /ssa1 dest this round \(pay\)/);
     assert.match(miner, /Copy ID/);
-    assert.match(miner, /Continuum Receive ID/);
+    assert.match(miner, /wait 90 hours before the next one/);
     assert.doesNotMatch(miner, />raskul</);
     assert.equal(/localStorage/.test(dash + miner), false);
     assert.match(miner, /id="m-algo">ShearHash-v2</);

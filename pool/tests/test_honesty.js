@@ -23,6 +23,7 @@ import {
   CMINER_FEE_SHE,
   HASHRATE_WINDOW_MS,
   HASHRATE_EMA_TAU_S,
+  HASHRATE_STALL_HOLD_MS,
 } from '../src/pool.js';
 import { extraMintAllowed, RESERVE_PROGRAM, JOIN_PROGRAM, HASH_BONUS_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
 import { pendingFor } from '../src/wallet_api.js';
@@ -274,6 +275,26 @@ describe('folded-row inventory', () => {
     delete other.emaAt;
     assert.equal(Math.round(reportedHashrate(other, now + 10_000)), 225_000_000);
     assert.equal(reportedHashrate(one, now), 900_000);
+  });
+
+  it('connected self-rate uses HASHRATE_EMA_TAU_S and holds across a short stall', () => {
+    assert.equal(HASHRATE_EMA_TAU_S, 30);
+    assert.ok(HASHRATE_STALL_HOLD_MS >= 5_000);
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.equal(/easeHashrate\(\s*miner,\s*client,\s*now,\s*3\s*\)/.test(src), false);
+    assert.equal(/easeHashrate\(miner, client, now, 3\)/.test(src), false);
+    assert.match(src, /easeHashrate\(miner, client, at, HASHRATE_EMA_TAU_S\)/);
+    const t0 = 1_700_000_000_000;
+    const m = { connections: [{ sock: {} }], clientHs: 100 };
+    const a = reportedHashrate(m, t0);
+    assert.equal(a, 100);
+    m.clientHs = 10;
+    const b = reportedHashrate(m, t0 + 1000);
+    assert.ok(b > 90, `1s poll must not drop to the new instant, got ${b}`);
+    assert.ok(b < 100, `must still ease, got ${b}`);
+    m.clientHs = 0;
+    const c = reportedHashrate(m, t0 + 2000);
+    assert.ok(c > 50, `few-second stall must not paint ~0, got ${c}`);
   });
 
   it('reported hashrate eases over HASHRATE_EMA_TAU_S instead of jumping each 1s poll', () => {

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <script src="/brand/theme.js?v=4"></script>
+  <script src="/brand/theme.js?v=7"></script>
   <title>Shear — testnet</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
@@ -217,7 +217,7 @@
       <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.1" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.3" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.7" target="_blank" rel="noopener">WALLET</a>
     </nav>
@@ -238,8 +238,9 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.7</strong> · miner <strong>1.2</strong>
+      wallet <strong>0.7</strong> · miner <strong>1.3</strong>
     </p>
+    <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
         <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.7">WALLET</a>
@@ -252,11 +253,11 @@
         </div>
       </div>
       <div class="client-dd">
-        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.2">MINER</a>
+        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.3">MINER</a>
         <div class="client-menu" id="menu-miner">
-          <a data-pack="miner-macos" href="https://github.com/rgsneddon/ShearK/releases/download/1.2/ShearK-Miner-1.2-macos.zip">macOS</a>
-          <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/download/1.2/ShearK-Miner-1.2-windows.zip">Windows</a>
-          <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/download/1.2/ShearK-Miner-1.2-linux.zip">Linux</a>
+          <a data-pack="miner-macos" href="https://github.com/rgsneddon/ShearK/releases/download/1.3/ShearK-Miner-1.3-macos.zip">macOS</a>
+          <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/download/1.3/ShearK-Miner-1.3-windows.zip">Windows</a>
+          <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/download/1.3/ShearK-Miner-1.3-linux.zip">Linux</a>
         </div>
       </div>
       <div class="client-dd">
@@ -311,7 +312,7 @@
     <div class="guide-grid">
       <section class="panel-card" id="emission">
         <h2>How SHE is created</h2>
-        <p>No premine, no ICO. Shear is a migration from the GNFP project and users who mined there were entitled to a 1:1 claim of coins GNFP to SHEAR. Shear is now created via CPU-only proof-of-work on a Nakamoto consensus using the ShearK algorithm (a variant of RandomX).</p>
+        <p>No premine, no ICO. Shear is a migration from the GNFP project and users who mined there were entitled to a 1:1 claim of coins GNFP to SHEAR. Shear is now created via CPU-only proof-of-work on a Nakamoto consensus using ShearHash-v2 (a variant of RandomX).</p>
         <table class="sched">
           <tr><th>Block pot</th><td>Exactly 1 SHE, every found block</td></tr>
           <tr><th>Hash bonus</th><td>0.00000000001 SHE for each accepted hash, paid to the miner who produced it</td></tr>
@@ -381,11 +382,11 @@
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
-        macos: SHEARK + '/download/1.2/ShearK-Miner-1.2-macos.zip',
-        windows: SHEARK + '/download/1.2/ShearK-Miner-1.2-windows.zip',
-        linux: SHEARK + '/download/1.2/ShearK-Miner-1.2-linux.zip',
-        android: SHEARK + '/download/1.2/ShearK-Miner-1.2-macos.zip',
-        ios: SHEARK + '/download/1.2/ShearK-Miner-1.2-macos.zip'
+        macos: SHEARK + '/download/1.3/ShearK-Miner-1.3-macos.zip',
+        windows: SHEARK + '/download/1.3/ShearK-Miner-1.3-windows.zip',
+        linux: SHEARK + '/download/1.3/ShearK-Miner-1.3-linux.zip',
+        android: SHEARK + '/download/1.3/ShearK-Miner-1.3-macos.zip',
+        ios: SHEARK + '/download/1.3/ShearK-Miner-1.3-macos.zip'
       };
       var node = 'https://github.com/rgsneddon/shear-testnet/tree/main/node';
       function bind(id, href) {

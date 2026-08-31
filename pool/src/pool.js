@@ -50,6 +50,12 @@ export const HASH_PRESENCE_MS = 12_000;
 export const AVG_BLOCK_WINDOW = Infinity;
 /** Re-stamp the live job this often so sealed header time tracks wall clock. */
 export const JOB_RESTAMP_MS = 10_000;
+/** Keep this many prior restamp headers per job so in-flight shares still verify. */
+export const JOB_HEADER_HISTORY = 4;
+/** After the tip moves, accept the previous job this long without new-round credit. */
+export const PREV_JOB_GRACE_MS = 3_000;
+/** Hold last positive self-rate this long across a RandomX cache pause. */
+export const HASHRATE_STALL_HOLD_MS = 8_000;
 /** Rebuild /api/stats JSON on this cadence. The HTTP handler never computes it. */
 export const STATS_REFRESH_MS = 400;
 const HASH_WORKER = fileURLToPath(new URL('./hash_worker.js', import.meta.url));
@@ -236,14 +242,54 @@ export function gateJob(job) {
   return requiredJobFields(job);
 }
 
-export function prepareShareHeader({ job, nonce }) {
+export function prepareShareHeader({ job, nonce, headerHex } = {}) {
   const gate = gateJob(job);
   if (!gate.ok) return { ok: false, reason: 'incomplete_job', missing: gate.missing };
   try {
-    return { ok: true, header: setNonce(headerFromHex(job.header), BigInt(nonce)) };
+    return { ok: true, header: setNonce(headerFromHex(headerHex || job.header), BigInt(nonce)) };
   } catch {
     return { ok: false, reason: 'bad_nonce' };
   }
+}
+
+/** Push an outgoing header onto the job before a restamp overwrites it. */
+export function rememberJobHeader(job, outgoingHex) {
+  if (!job || typeof job !== 'object') return job;
+  const hex = String(outgoingHex || '').toLowerCase();
+  if (!hex) return job;
+  if (!Array.isArray(job.headerHistory)) job.headerHistory = [];
+  if (!job.headerHistory.includes(hex)) {
+    job.headerHistory.unshift(hex);
+    if (job.headerHistory.length > JOB_HEADER_HISTORY) job.headerHistory.length = JOB_HEADER_HISTORY;
+  }
+  return job;
+}
+
+/** Current header first, then prior restamps of the same job. */
+export function candidateShareHeaders(job) {
+  const out = [];
+  const seen = new Set();
+  const hist = Array.isArray(job?.headerHistory) ? job.headerHistory : [];
+  for (const h of [job?.header, ...hist]) {
+    const hex = String(h || '').toLowerCase();
+    if (!hex || seen.has(hex)) continue;
+    seen.add(hex);
+    out.push(hex);
+  }
+  return out;
+}
+
+/** Only a job that is no longer live (and outside grace) is stale. */
+export function isStaleReject(reason) {
+  const r = String(reason || '');
+  return r === 'stale_job' || r === 'stale';
+}
+
+export function jobWithinGrace(job, prevJob, prevJobAt, now = Date.now()) {
+  if (!job || !prevJob) return false;
+  if (String(job.jobId) !== String(prevJob.jobId)) return false;
+  const at = Number(prevJobAt) || 0;
+  return at > 0 && (Number(now) - at) < PREV_JOB_GRACE_MS;
 }
 
 export function judgeShare({ job, header, hash }) {
@@ -270,10 +316,28 @@ export function judgeShare({ job, header, hash }) {
 }
 
 /** Sync path for tests. Live submits use the RandomX worker so HTTP cannot stall. */
-export function scoreShare({ job, nonce }) {
-  const prep = prepareShareHeader({ job, nonce });
-  if (!prep.ok) return prep;
-  return judgeShare({ job, header: prep.header, hash: shearHash(prep.header) });
+export function scoreShare({ job, nonce, claimed } = {}) {
+  const want = claimed ? String(claimed).toLowerCase() : '';
+  const headers = candidateShareHeaders(job);
+  const list = headers.length ? headers : [job?.header];
+  let last = { ok: false, reason: 'incomplete_job' };
+  for (const headerHex of list) {
+    const prep = prepareShareHeader({ job, nonce, headerHex });
+    if (!prep.ok) {
+      last = prep;
+      continue;
+    }
+    const hash = shearHash(prep.header);
+    const hex = hash.toString('hex');
+    if (want && hex !== want) {
+      last = { ok: false, reason: 'bad_hash', hash: hex };
+      continue;
+    }
+    const judged = judgeShare({ job, header: prep.header, hash });
+    if (judged.ok) return judged;
+    last = judged;
+  }
+  return last;
 }
 
 /** One accept per job+nonce+hash. A copied submit must not double roundHashes or H/s. */
@@ -485,11 +549,21 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
  * Disconnected rows fall back to proven so the 12s linger is not a fake H/s.
  */
 export function reportedHashrate(miner, now = Date.now()) {
+  const at = Number(now) || Date.now();
   if (minerConnected(miner)) {
     const client = Number(miner?.clientHs) || 0;
-    if (client > 0) return easeHashrate(miner, client, now, 3);
+    if (client > 0) {
+      miner.lastPositiveHs = client;
+      miner.lastPositiveAt = at;
+      return easeHashrate(miner, client, at, HASHRATE_EMA_TAU_S);
+    }
+    const held = Number(miner?.lastPositiveHs) || 0;
+    const heldAt = Number(miner?.lastPositiveAt) || Number(miner?.emaAt) || 0;
+    if (held > 0 && heldAt > 0 && (at - heldAt) <= HASHRATE_STALL_HOLD_MS) {
+      return easeHashrate(miner, held, at, HASHRATE_EMA_TAU_S);
+    }
   }
-  return easeHashrate(miner, provenHashrate(miner, now), now);
+  return easeHashrate(miner, provenHashrate(miner, at), at);
 }
 
 export function sortMinersByHashrate(miners, now = Date.now()) {
@@ -573,11 +647,28 @@ export function createPool({
       }
     });
   }
-  async function scoreShareLive({ job, nonce }) {
-    const prep = prepareShareHeader({ job, nonce });
-    if (!prep.ok) return prep;
-    const hash = await hashOffThread(prep.header);
-    return judgeShare({ job, header: prep.header, hash });
+  async function scoreShareLive({ job, nonce, claimed } = {}) {
+    const want = claimed ? String(claimed).toLowerCase() : '';
+    const headers = candidateShareHeaders(job);
+    const list = headers.length ? headers : [job?.header];
+    let last = { ok: false, reason: 'incomplete_job' };
+    for (const headerHex of list) {
+      const prep = prepareShareHeader({ job, nonce, headerHex });
+      if (!prep.ok) {
+        last = prep;
+        continue;
+      }
+      const hash = await hashOffThread(prep.header);
+      const hex = hash.toString('hex');
+      if (want && hex !== want) {
+        last = { ok: false, reason: 'bad_hash', hash: hex };
+        continue;
+      }
+      const judged = judgeShare({ job, header: prep.header, hash });
+      if (judged.ok) return judged;
+      last = judged;
+    }
+    return last;
   }
   function setP2p(next) { p2pNet = next; }
   function nodesOnline() {
@@ -589,6 +680,8 @@ export function createPool({
     return Number(shareBits) >= SHARE_BITS_V2_START ? SHARE_BITS_V2_START : 1;
   }
   let lastJob = null;
+  let prevJob = null;
+  let prevJobAt = 0;
   let pendingPayout = [];
   let sealing = false;
   const stats = {
@@ -627,6 +720,7 @@ export function createPool({
     for (const m of miners.values()) {
       m.roundHashes = 0;
       m.clientHashesRound0 = Number(m.clientHashes) || 0;
+      // never zero accepted / stale here — listing and linger use accepted.
       for (const c of m.connections || []) {
         if (!c) continue;
         c.shareBits = shareBits;
@@ -708,6 +802,10 @@ export function createPool({
     });
     const gate = gateJob(job);
     if (!gate.ok) return null;
+    if (lastJob && String(lastJob.jobId) !== String(job.jobId)) {
+      prevJob = lastJob;
+      prevJobAt = now;
+    }
     lastJob = job;
     lastIssueAt = now;
     return job;
@@ -785,6 +883,7 @@ export function createPool({
       baseFee: decoded.baseFee,
     });
     const hex = header.toString('hex');
+    rememberJobHeader(lastJob, lastJob.header);
     lastJob = {
       ...lastJob,
       header: hex,
@@ -812,29 +911,61 @@ export function createPool({
     return job;
   }
 
-  async function acceptSubmit({ sock, session, conn, params, msg, job }) {
+  function resolveSubmitJob(params, conn) {
+    const id = String(params?.jobId || '');
+    const byId = id ? store.jobs.get(id)?.job : null;
+    const liveId = String(lastJob?.jobId || '');
+    if (byId && String(byId.jobId) === liveId) {
+      return { job: byId, closedRound: false, stale: false };
+    }
+    if (byId && jobWithinGrace(byId, prevJob, prevJobAt)) {
+      return { job: byId, closedRound: true, stale: false };
+    }
+    if (prevJob && id && id === String(prevJob.jobId) && jobWithinGrace(prevJob, prevJob, prevJobAt)) {
+      return { job: prevJob, closedRound: true, stale: false };
+    }
+    if (id && liveId && id !== liveId) {
+      return { job: byId || conn?.job || lastJob, closedRound: false, stale: true };
+    }
+    return { job: byId || conn?.job || lastJob, closedRound: false, stale: false };
+  }
+
+  function paintReject(session, reason) {
+    if (isStaleReject(reason)) {
+      stats.stale += 1;
+      if (session) session.stale += 1;
+    }
+  }
+
+  async function acceptSubmit({ sock, session, conn, params, msg, job: passed }) {
     const claimed = submittedShareDigest(params);
     if (!claimed) {
       try { sock.write(line({ id: msg.id, error: 'need_hash' })); } catch { /* ignore */ }
       return;
     }
+    const resolved = resolveSubmitJob(params, conn);
+    const job = resolved.job || passed;
+    if (resolved.stale) {
+      paintReject(session, 'stale_job');
+      try { sock.write(line({ id: msg.id, error: 'stale_job' })); } catch { /* ignore */ }
+      return;
+    }
+    const closedRound = !!resolved.closedRound;
     let scored;
     try {
-      scored = await scoreShareLive({ job, nonce: params.nonce });
+      scored = await scoreShareLive({ job, nonce: params.nonce, claimed });
     } catch (e) {
       const reason = String(e?.message || e) === 'hash_busy' ? 'busy' : 'hash_failed';
       try { sock.write(line({ id: msg.id, error: reason })); } catch { /* ignore */ }
       return;
     }
     if (!scored.ok) {
-      stats.stale += 1;
-      if (session) session.stale += 1;
+      paintReject(session, scored.reason);
       try { sock.write(line({ id: msg.id, error: scored.reason })); } catch { /* ignore */ }
       return;
     }
     if (scored.hash !== claimed) {
-      stats.stale += 1;
-      if (session) session.stale += 1;
+      paintReject(session, 'bad_hash');
       try { sock.write(line({ id: msg.id, error: 'bad_hash' })); } catch { /* ignore */ }
       return;
     }
@@ -842,8 +973,7 @@ export function createPool({
       if (!(job.seenHashes instanceof Set)) job.seenHashes = new Set();
       const dup = rememberShare(job.seenHashes, shareFingerprint(job, params.nonce, scored.hash));
       if (!dup.ok) {
-        stats.stale += 1;
-        if (session) session.stale += 1;
+        paintReject(session, dup.reason);
         try { sock.write(line({ id: msg.id, error: dup.reason })); } catch { /* ignore */ }
         return;
       }
@@ -852,32 +982,36 @@ export function createPool({
     if (session) {
       session.accepted += 1;
       const proven = hashesProvenByShare(Number(scored.creditedShareBits || job?.shareBits) || 0);
-      session.roundHashes += proven;
-      session.hashes += proven;
+      if (!closedRound) {
+        session.roundHashes += proven;
+        session.hashes += proven;
+      }
       session.seen = Date.now();
       session.lastShareAt = session.seen;
-      const work = proven;
-      if (!Array.isArray(session.acceptAt)) session.acceptAt = [];
-      if (!Array.isArray(session.acceptWork)) session.acceptWork = [];
-      session.acceptAt.push(session.lastShareAt);
-      session.acceptWork.push(work);
-      {
-        const drop = Date.now() - HASHRATE_WINDOW_MS;
-        const nextT = [];
-        const nextW = [];
-        for (let i = 0; i < session.acceptAt.length; i += 1) {
-          if (Number(session.acceptAt[i]) > drop) {
-            nextT.push(session.acceptAt[i]);
-            nextW.push(session.acceptWork[i]);
+      if (!closedRound) {
+        const work = proven;
+        if (!Array.isArray(session.acceptAt)) session.acceptAt = [];
+        if (!Array.isArray(session.acceptWork)) session.acceptWork = [];
+        session.acceptAt.push(session.lastShareAt);
+        session.acceptWork.push(work);
+        {
+          const drop = Date.now() - HASHRATE_WINDOW_MS;
+          const nextT = [];
+          const nextW = [];
+          for (let i = 0; i < session.acceptAt.length; i += 1) {
+            if (Number(session.acceptAt[i]) > drop) {
+              nextT.push(session.acceptAt[i]);
+              nextW.push(session.acceptWork[i]);
+            }
           }
+          session.acceptAt = nextT;
+          session.acceptWork = nextW;
         }
-        session.acceptAt = nextT;
-        session.acceptWork = nextW;
       }
       refreshMinerRow(session);
     }
     let nextJob = null;
-    if (scored.block) {
+    if (scored.block && !closedRound) {
       sealing = true;
       const got = await Promise.resolve(store.submitHeader({
         jobId: params.jobId || job.jobId,
@@ -927,7 +1061,7 @@ export function createPool({
     }
     try { sock.write(line({ id: msg.id, result: { status: 'OK', hash: scored.hash, block: !!scored.block } })); } catch { /* ignore */ }
     paintStatsSnap();
-    if (!nextJob && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login)) {
+    if (!nextJob && !closedRound && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login)) {
       conn.varShares = (Number(conn.varShares) || 0) + 1;
       const now = Date.now();
       const elapsed = now - (Number(conn.varWindowAt) || now);
@@ -1446,6 +1580,7 @@ export function createPool({
     setP2p,
     restampJob: maybeRestampJob,
     get pendingPayout() { return pendingPayout; },
+    get prevJob() { return prevJob; },
     pullBook,
   };
 }

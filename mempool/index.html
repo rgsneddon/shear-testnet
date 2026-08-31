@@ -17,6 +17,8 @@
       --lattice-link: rgba(109, 24, 168, .62);
       --lattice-gold: #c48a00;
       --lattice-cyan: #007a96;
+      --lattice-tip: #00d85a;
+      --lattice-form: #e6c000;
       --card-fill: rgba(255, 255, 255, .92);
       --card-line: rgba(26, 111, 181, .28);
       --card-ink: #0d2137;
@@ -37,6 +39,8 @@
       --lattice-link: rgba(196, 107, 255, .55);
       --lattice-gold: #ffd24a;
       --lattice-cyan: #4fd8e8;
+      --lattice-tip: #39ff6a;
+      --lattice-form: #ffe14a;
       --card-fill: rgba(6, 14, 28, .78);
       --card-line: rgba(79, 216, 232, .22);
       --card-ink: #d6e6f5;
@@ -58,6 +62,8 @@
         --lattice-link: rgba(196, 107, 255, .55);
         --lattice-gold: #ffd24a;
         --lattice-cyan: #4fd8e8;
+        --lattice-tip: #39ff6a;
+        --lattice-form: #ffe14a;
         --card-fill: rgba(6, 14, 28, .78);
         --card-line: rgba(79, 216, 232, .22);
         --card-ink: #d6e6f5;
@@ -91,7 +97,7 @@
     }
     a.nav-btn.is-on { color:var(--gold, var(--lattice-gold)); }
     .stage { position:relative; height:calc(100% - 48px); background:var(--lattice-bg); }
-    canvas { display:block; width:100%; height:100%; cursor:grab; background:var(--lattice-bg); }
+    canvas { display:block; width:100%; height:100%; cursor:crosshair; background:var(--lattice-bg); }
     canvas:active { cursor:grabbing; }
     .hud {
       position:absolute; inset:0; pointer-events:none; display:grid;
@@ -152,7 +158,7 @@
       <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn is-on" href="/">MEMPOOL</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.1" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.3" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.7" target="_blank" rel="noopener">WALLET</a>
     </nav>
@@ -170,51 +176,64 @@
       <div class="col">
         <section class="card">
           <div class="label">Logarithmic spiral of txs</div>
-          <p>Each tx sits at radius <span class="eq">r = ln(1 + n)</span> and angle <span class="eq">θ = k Δθ</span>. Generation <span class="eq">n = 0</span> is the open mempool under the tip.</p>
+          <p>Sealed heights fall on <span class="eq">r = ln(1 + n)</span>. Above them, pending rings converge toward the tip as fee and weight commission a tx into the next block.</p>
         </section>
         <section class="card">
           <div class="label">Visual legend</div>
           <div class="legend">
             <div><span class="dot" style="background:var(--lattice-gold)"></span>Prime node — ssa1 send / B-spend / coinbase</div>
-            <div><span class="dot" style="background:var(--lattice-cyan)"></span>Composite — collated hash rows</div>
-            <div><span class="dot" style="background:var(--lattice-link)"></span>Descendancy link (σ-flow from tip)</div>
-            <div><span class="dot" style="background:linear-gradient(90deg,#5dcc7a,#ffe14a,#e24b4b)"></span>Recoverability: high at tip → low at depth</div>
+            <div><span class="dot" style="background:var(--lattice-tip)"></span>Tip — neon green apex</div>
+            <div><span class="dot" style="background:var(--lattice-cyan)"></span>Forming — neon cyan hoop, one glowing dot per miner’s rewards</div>
+            <div><span class="dot" style="background:var(--lattice-gold)"></span>Gold hoop — empty: wide at the base. Full: climbs, tightens, tilts to forming</div>
+            <div><span class="dot" style="background:var(--lattice-link)"></span>σ-flow filaments — outer rings falling inward</div>
+            <div><span class="dot" style="background:var(--lattice-cyan)"></span>Hover glass — move the pointer over the lattice to magnify</div>
           </div>
         </section>
         <section class="card">
-          <div class="label">Axes</div>
-          <p>Vertical <span class="eq">n</span>: generations from tip down. Radial <span class="eq">r = ln(1+n)</span>. Angular <span class="eq">θ</span>: order in the generation.</p>
-          <p>Consensus spendable at <strong>6 confirmations</strong> (minimum). Third-party <span class="eq">min_confirms</span> default 12.</p>
+          <div class="label">Hover glass</div>
+          <p>Move the pointer over any part of the lattice. A zoom box follows it and magnifies that neighbourhood so you can read nodes, hoops, and filaments up close. Drag still orbits; scroll still zooms the whole stage.</p>
+        </section>
+        <section class="card">
+          <div class="label">Commission</div>
+          <p>When the gold hoop is empty it rests at the base of the lattice, wide around the circumference. As sends arrive and near inclusion it climbs, contracts, and tilts so the next-in tx sits nearest the tip.</p>
+          <p>When that hoop reaches the cyan forming block, those sends merge into it. Each cyan dot is one miner’s hash-bonus. The hoop widens as more miners join.</p>
+          <p>At blockfound the cyan hoop tilts to the tip and the miners’ rewards zap in as mini fireworks — then the new block is on the spiral.</p>
+          <p>Consensus spendable at <strong>6 confirmations</strong>. Third-party <span class="eq">min_confirms</span> default 12.</p>
         </section>
       </div>
       <div class="col mid">
         <div>
           <h1 class="title">Shear Mempool — Logarithmic Lattice from Tip</h1>
-          <p class="sub">Transactions descend the σ-flow. Recoverability falls through sealed generations. she is private</p>
+          <p class="sub">Pending rings breathe, lean, and converge as they commission into the next block. she is private</p>
           <p id="pulse">waiting · lattice</p>
         </div>
-        <p class="foot">The tip is the apex. Pending txs hang at n=0. Sealed blocks spiral down. Drag to orbit · scroll to zoom.</p>
+        <p class="foot">Gold hoop climbs until it merges into cyan. At blockfound, miner rewards firework into the tip. Hover to magnify · drag to orbit · scroll to zoom.</p>
       </div>
       <div class="col">
         <section class="card">
           <div class="label">Hierarchy descendancy law</div>
           <p class="eq">continuity_root = H(rootA ∥ rootB)</p>
           <p>A-leaves: dest20 + count. B-leaves: opt-in extras. B-spend only after the committing block is accepted.</p>
+          <p>Each cyan dot is one miner’s collated open-round rewards. More miners, wider hoop. At blockfound those rewards firework into the tip.</p>
         </section>
         <section class="card">
           <div class="label">Live book</div>
           <p>Tip height <span class="eq" id="h-tip">—</span></p>
-          <p>Pending <span class="eq" id="h-pend">0</span> · Base fee <span class="eq" id="h-fee">1</span></p>
-          <p>Mature depth <span class="eq">6 conf</span> · policy <span class="eq">12</span></p>
+          <p>Pending sends <span class="eq" id="h-pend">0</span> · Forming hashes <span class="eq" id="h-hashes">0</span></p>
+          <p>Forming block <span class="eq" id="h-form">—</span> · Forming miners <span class="eq" id="h-miners">0</span></p>
+          <p>Rings <span class="eq" id="h-rings">0</span></p>
+          <p>Forming weight <span class="eq" id="h-weight">0</span> · Levy in flight <span class="eq" id="h-levy">0</span></p>
+          <p>Next in <span class="eq" id="h-next">—</span></p>
+          <p>Base fee <span class="eq" id="h-fee">1</span> · Mature depth <span class="eq">6 conf</span></p>
           <pre id="pick">select a node</pre>
         </section>
         <section class="card">
           <div class="label">Interpretation</div>
           <ul>
-            <li>Tip forms the backbone on a logarithmic spiral.</li>
-            <li>Each sealed height emits σ-flow descendants in the next generation.</li>
-            <li>Structure densifies and is less recoverable at depth.</li>
-            <li>Credits are consensus-spendable at 6 confirmations; min_confirms 12 is third-party policy.</li>
+            <li>Tip is the apex. The forming block is the inner cyan hoop.</li>
+            <li>Empty gold hoop sits wide at the base. Fee × weight lifts it and contracts it toward the cyan forming block.</li>
+            <li>Sends that reach cyan merge into the pending block. Each cyan dot is one miner. At blockfound their rewards firework into the tip.</li>
+            <li>Sealed heights then spiral down, denser and less recoverable.</li>
           </ul>
         </section>
       </div>
@@ -223,9 +242,9 @@
   <script>
     const canvas = document.getElementById('lattice');
     const ctx = canvas.getContext('2d');
-    const GOLD = 2.399963229728653;
     const state = {
-      yaw: 0.55, pitch: 0.72, zoom: 1, nodes: [], links: [], rails: [],
+      yaw: 0.55, pitch: 0.72, zoom: 1.05, nodes: [], links: [], rails: [],
+      pendRings: [], nextIn: null, t: 0, loupe: null, snap: null, zaps: [], tipH: 0,
       dragging: false, lx: 0, ly: 0, hover: null, live: false, seq: 0,
     };
 
@@ -260,6 +279,8 @@
         link: cssVar('--lattice-link', dark ? 'rgba(196,107,255,.55)' : 'rgba(109,24,168,.62)'),
         gold: cssVar('--lattice-gold', dark ? '#ffd24a' : '#c48a00'),
         cyan: cssVar('--lattice-cyan', dark ? '#4fd8e8' : '#007a96'),
+        tip: cssVar('--lattice-tip', dark ? '#39ff6a' : '#00d85a'),
+        form: cssVar('--lattice-form', dark ? '#ffe14a' : '#e6c000'),
         stroke: dark ? 'rgba(255,255,255,.7)' : 'rgba(13,33,55,.55)',
         glow: dark ? 0.16 : 0.22,
       };
@@ -286,6 +307,25 @@
       return { x: w * 0.5 + x1 * f * 42 * state.zoom, y: h * 0.52 - y1 * f * 38 * state.zoom, s: f, z: z2 };
     }
 
+    function massOf(tx) {
+      if (!tx) return 1;
+      if (tx.kind === 'hash') return Math.max(1, Number(tx.count) || 1);
+      const w = Math.max(1, Number(tx.weight) || 1);
+      const fee = Math.max(0, Number(tx.fee) || 0);
+      return w * (1 + Math.log1p(fee));
+    }
+
+    function bandSends(sends) {
+      const sorted = (sends || []).slice().sort((a, b) => (Number(b.priority) || massOf(b)) - (Number(a.priority) || massOf(a)));
+      if (!sorted.length) return [];
+      if (sorted.length <= 3) return [sorted];
+      const n = Math.min(3, Math.ceil(sorted.length / 3));
+      const size = Math.ceil(sorted.length / n);
+      const bands = [];
+      for (let i = 0; i < n; i += 1) bands.push(sorted.slice(i * size, (i + 1) * size));
+      return bands.filter((b) => b.length);
+    }
+
     function layout(data) {
       const nodes = [];
       const links = [];
@@ -293,23 +333,175 @@
       const gens = data.generations || [];
       const pending = data.pending || [];
       const tipH = data.tip?.height || 0;
+      const prevCyan = (state.pendRings || []).find((r) => r.kind === 'block');
+      const origins = [];
+      if (prevCyan) {
+        if (prevCyan.hubNode) origins.push({ x: prevCyan.hubNode.x, y: prevCyan.hubNode.y, z: prevCyan.hubNode.z, kind: 'hub' });
+        (prevCyan.nodes || []).forEach((n) => {
+          if (n.kind === 'hash' || n.role === 'form' || n.role === 'cyan') origins.push({ x: n.x, y: n.y, z: n.z, kind: 'miner' });
+        });
+      }
+      const Y_TIP = 11.2;
       nodes.push({
         id: 'tip', label: 'TIP ' + tipH, kind: 'tip', prime: true,
-        gen: -0.15, x: 0, y: 11.2, z: 0, role: 'gold', r: 7.5, meta: data.tip || {},
+        gen: -0.15, x: 0, y: Y_TIP, z: 0, role: 'gold', r: 8.2, meta: data.tip || {},
       });
-      const memN = Math.max(1, pending.length);
-      pending.forEach((tx, i) => {
-        const theta = i * GOLD;
-        const rad = 0.55 + 0.12 * Math.log(1 + i);
-        const node = {
-          id: tx.id, label: (tx.kind || 'send') + ' ' + (tx.id || '').slice(0, 8),
-          kind: tx.kind || 'send', prime: true, gen: 0,
-          x: rad * Math.cos(theta), y: 9.6, z: rad * Math.sin(theta),
-          role: 'gold', r: 4.2, meta: tx,
+      const block = data.pendingBlock || { height: tipH + 1, hashes: 0, txs: [] };
+      const hashTxs = Array.isArray(block.txs) ? block.txs.slice() : [];
+      const MERGE_AT = 0.78;
+      function sendProx(tx) {
+        const heat = Math.tanh(massOf(tx) / 5.5);
+        const inc = tx.included ? 1 : 0.32;
+        return Math.max(0, Math.min(1, (0.18 + 0.82 * heat) * (0.22 + 0.78 * inc)));
+      }
+      const commissioned = pending.filter((tx) => sendProx(tx) >= MERGE_AT)
+        .sort((a, b) => massOf(b) - massOf(a));
+      const waiting = pending.filter((tx) => sendProx(tx) < MERGE_AT);
+      const bands = bandSends(waiting);
+      const rings = [];
+      function addRing({ kind, y, baseRad, items, label, color, hub, tilt, expand }) {
+        const sorted = (items || []).slice().sort((a, b) => massOf(b) - massOf(a));
+        const mass = sorted.reduce((a, t) => a + massOf(t), 0) + (hub ? 8 : 0);
+        const grow = expand == null
+          ? (color === 'gold' ? 1 : (0.66 + 0.5 * Math.tanh(Math.log1p(mass) / 3.1)))
+          : expand;
+        const tiltAmt = tilt != null
+          ? tilt
+          : ((0.16 + 0.28 * Math.tanh(mass / 10)) * (kind === 'block' || kind === 'send0' ? 1 : 0.45));
+        rings.push({
+          kind, y, baseRad: baseRad * grow, tilt: tiltAmt, peak: 0, mass, label, color,
+          ox: 0, oz: 0, items: sorted, hub: !!hub, nodes: [], hubNode: null,
+        });
+      }
+      const minerN = Math.max(hashTxs.length, 1);
+      const cyanRad = 1.22 + 2.55 * Math.tanh(minerN / 5.2) + 0.1 * Math.min(minerN, 20);
+      const cyanItems = hashTxs.concat(commissioned);
+      addRing({
+        kind: 'block',
+        y: Y_TIP - 0.88,
+        baseRad: cyanRad,
+        expand: 1,
+        items: cyanItems,
+        label: 'forming #' + (block.height || (tipH + 1)) + ' · ' + hashTxs.length + ' miners',
+        color: 'cyan',
+        hub: true,
+        tilt: 0.1,
+      });
+      const cyan = rings[rings.length - 1];
+      cyan.yRest = Y_TIP - 0.88;
+      cyan.yKiss = Y_TIP - 0.55;
+      cyan.tiltRest = 0.1;
+      cyan.tiltKiss = 0.5;
+      cyan.radRest = cyanRad;
+      cyan.radKiss = cyanRad * 0.96;
+      cyan.minerN = hashTxs.length;
+      const Y_BASE = -1.55;
+      const Y_GOLD_TOP = Y_TIP - 1.08;
+      const RAD_WIDE = 7.2;
+      const RAD_TIGHT = 1.52;
+      function goldPose(items, bandIndex, bandCount) {
+        if (!items.length) {
+          return { y: Y_BASE, baseRad: RAD_WIDE, tilt: 0.04, prox: 0 };
+        }
+        const mass = items.reduce((a, t) => a + massOf(t), 0);
+        const included = items.filter((t) => t.included).length / items.length;
+        const heat = Math.tanh(mass / 5.5);
+        const bandFrac = bandCount <= 1 ? 1 : 1 - bandIndex / Math.max(1, bandCount);
+        const prox = Math.max(0, Math.min(1, (0.18 + 0.82 * heat) * (0.2 + 0.8 * included) * bandFrac));
+        return {
+          y: Y_BASE + (Y_GOLD_TOP - Y_BASE) * prox,
+          baseRad: RAD_WIDE + (RAD_TIGHT - RAD_WIDE) * prox,
+          tilt: 0.05 + 0.42 * prox,
+          prox,
         };
-        nodes.push(node);
-        links.push({ a: 'tip', b: tx.id });
+      }
+      if (!bands.length) {
+        const pose = goldPose([], 0, 1);
+        addRing({
+          kind: 'send0',
+          y: pose.y,
+          baseRad: pose.baseRad,
+          tilt: pose.tilt,
+          expand: 1,
+          items: [],
+          label: 'pending  0',
+          color: 'gold',
+          hub: false,
+        });
+      } else {
+        bands.forEach((items, i) => {
+          const pose = goldPose(items, i, bands.length);
+          addRing({
+            kind: i === 0 ? 'send0' : 'send',
+            y: pose.y,
+            baseRad: pose.baseRad,
+            tilt: pose.tilt,
+            expand: 1,
+            items,
+            label: i === 0 ? 'next in' : ('pending  ' + (i + 1)),
+            color: 'gold',
+            hub: false,
+          });
+        });
+      }
+      rings.forEach((ring) => {
+        if (ring.hub) {
+          const hub = {
+            id: 'pend-block',
+            label: ring.label,
+            kind: 'pending-block',
+            prime: true,
+            gen: 0,
+            pending: true,
+            role: 'form',
+            r: 6.6,
+            x: 0, y: ring.y + 0.28, z: 0,
+            meta: block,
+          };
+          ring.hubNode = hub;
+          nodes.push(hub);
+          links.push({ a: 'tip', b: hub.id, flow: true });
+        }
+        ring.items.forEach((tx, i) => {
+          const n = Math.max(ring.items.length, 1);
+          const th = (i / n) * Math.PI * 2;
+          const id = String(tx.id || (ring.kind + '-' + i));
+          const hash = tx.kind === 'hash';
+          const node = {
+            id,
+            label: (tx.kind || 'send') + ' ' + id.slice(0, 8),
+            kind: tx.kind || 'send',
+            prime: !!tx.prime || !hash,
+            gen: 0,
+            pending: true,
+            nextIn: false,
+            role: hash ? 'form' : 'gold',
+            r: 3.3 + 2.6 * Math.tanh(massOf(tx) / 8),
+            _theta: th,
+            x: 0, y: ring.y, z: 0,
+            meta: tx,
+          };
+          if ((ring.kind === 'block' && !hash && commissioned.length && i === hashTxs.length) ||
+              (ring.kind === 'send0' && i === 0 && !commissioned.length)) {
+            node.nextIn = true;
+          }
+          ring.nodes.push(node);
+          nodes.push(node);
+          const parent = ring.hubNode ? ring.hubNode.id : (rings[0].hubNode ? rings[0].hubNode.id : 'tip');
+          links.push({ a: parent, b: id, flow: ring.kind !== 'block' });
+        });
       });
+      const nextIn = rings.flatMap((r) => r.nodes).find((n) => n.nextIn) || null;
+      if (nextIn) nextIn.nextIn = true;
+      state.pendRings = rings;
+      state.nextIn = nextIn;
+      state.pendRing = rings.find((r) => r.color === 'gold') || rings[0] || null;
+      state.tipAt = Number(data.tip?.timestamp) || 0;
+      state.blockIntervalMs = Number(data.targetBlockIntervalMs) || 90_000;
+      if (state.tipH && tipH > state.tipH) {
+        spawnFireworks(origins, { x: 0, y: Y_TIP, z: 0 }, tipH);
+      }
+      state.tipH = tipH;
       gens.forEach((g, gi) => {
         const n = gi + 1;
         const y = 9.2 - n * 0.72;
@@ -356,8 +548,22 @@
 
     function demoData() {
       const tip = 3908 + (state.seq % 3);
-      const pending = Array.from({ length: 5 + (state.seq % 4) }, (_, i) => ({
-        id: 'mem-' + (state.seq + i), kind: i % 3 === 0 ? 'b-spend' : 'send', fee: 1 + i, amount: 0.01 * (i + 1), prime: true,
+      const pending = Array.from({ length: 9 + (state.seq % 5) }, (_, i) => {
+        const fee = 1 + i * i;
+        const weight = 1 + (i % 3);
+        return {
+          id: 'mem-' + (state.seq + i),
+          kind: i % 4 === 0 ? 'b-spend' : 'send',
+          fee, weight,
+          amount: 0.01 * (i + 1),
+          prime: true,
+          included: i < 3,
+          priority: (i < 3 ? 400 : 0) + weight * (1 + Math.log1p(fee)),
+        };
+      });
+      const hashTxs = Array.from({ length: 4 }, (_, i) => ({
+        id: 'hash-demo-' + i, kind: 'hash', count: 12 + i * 9, weight: 12 + i * 9,
+        fee: 0, amount: 0.00000000001 * (12 + i * 9), included: true, prime: false,
       }));
       const generations = Array.from({ length: 16 }, (_, gi) => {
         const height = tip - gi;
@@ -369,24 +575,197 @@
         }));
         return { height, hash: '', confirmations: gi + 1, spendable: gi >= 0, txs };
       });
-      return { tip: { height: tip, hash: '', baseFee: 1 }, pending, generations, live: false };
+      return {
+        tip: { height: tip, hash: '', baseFee: 1, timestamp: Date.now() - 55_000 },
+        pending,
+        pendingBlock: { height: tip + 1, hashes: hashTxs.reduce((a, t) => a + t.count, 0), txs: hashTxs, weight: 80, fee: 12 },
+        targetBlockIntervalMs: 90_000,
+        generations,
+        live: false,
+      };
+    }
+
+    function hash32(n) {
+      let x = (n | 0) + 0x9e3779b9;
+      x = Math.imul(x ^ (x >>> 16), 0x85ebca6b);
+      x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35);
+      return (x ^ (x >>> 16)) >>> 0;
+    }
+    function rng(seed) {
+      let s = hash32(seed) || 1;
+      return function () {
+        s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+        return s / 4294967296;
+      };
+    }
+
+    function spawnFireworks(origins, tip, height) {
+      const t0 = performance.now();
+      const src = (origins && origins.length) ? origins : [{ x: 0, y: 10.3, z: 0, kind: 'hub' }];
+      const bursts = src.map((o, i) => {
+        const rand = rng(height * 997 + i * 131 + (t0 | 0));
+        const sparks = [];
+        const n = o.kind === 'hub' ? 28 : 16;
+        for (let k = 0; k < n; k += 1) {
+          const th = rand() * Math.PI * 2;
+          const ph = rand() * Math.PI;
+          const spd = 0.9 + rand() * 2.4;
+          sparks.push({
+            vx: Math.cos(th) * Math.sin(ph) * spd,
+            vy: Math.cos(ph) * spd * 0.85 + 0.35,
+            vz: Math.sin(th) * Math.sin(ph) * spd,
+            hue: 175 + rand() * 28,
+          });
+        }
+        return { x: o.x, y: o.y, z: o.z, kind: o.kind, sparks };
+      });
+      state.zaps.push({ t0, life: 1100, height, tip, bursts });
+    }
+
+    function drawFireworks(t) {
+      const pal = palette();
+      const live = [];
+      for (const zap of state.zaps || []) {
+        const age = t - zap.t0;
+        if (age < 0 || age > zap.life) continue;
+        live.push(zap);
+        const u = age / zap.life;
+        const fade = u < 0.18 ? u / 0.18 : Math.max(0, 1 - (u - 0.18) / 0.82);
+        const dest = project(zap.tip.x, zap.tip.y, zap.tip.z);
+        for (const burst of zap.bursts) {
+          const origin = project(burst.x, burst.y, burst.z);
+          const pull = Math.min(1, u * 1.35);
+          const bx = origin.x + (dest.x - origin.x) * pull;
+          const by = origin.y + (dest.y - origin.y) * pull;
+          ctx.beginPath();
+          ctx.moveTo(origin.x, origin.y);
+          ctx.lineTo(bx, by);
+          ctx.strokeStyle = pal.cyan;
+          ctx.globalAlpha = 0.35 * fade;
+          ctx.lineWidth = burst.kind === 'hub' ? 2.2 : 1.3;
+          ctx.stroke();
+          for (const sp of burst.sparks) {
+            const drag = 0.62;
+            const px = bx + sp.vx * 38 * u;
+            const py = by - sp.vy * 38 * u + 42 * u * u * drag;
+            const pr = (burst.kind === 'hub' ? 2.6 : 2.1) * (1 - u * 0.7);
+            ctx.beginPath();
+            ctx.arc(px, py, Math.max(0.6, pr), 0, Math.PI * 2);
+            ctx.fillStyle = `hsl(${sp.hue} 92% ${isDark() ? 62 : 48}%)`;
+            ctx.globalAlpha = fade;
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(px, py, pr * 2.4, 0, Math.PI * 2);
+            ctx.globalAlpha = fade * 0.22;
+            ctx.fill();
+          }
+        }
+        ctx.globalAlpha = 1;
+        const bloom = ctx.createRadialGradient(dest.x, dest.y, 4, dest.x, dest.y, 70 + 40 * (1 - u));
+        bloom.addColorStop(0, isDark() ? `rgba(57,255,106,${0.38 * fade})` : `rgba(0,216,90,${0.28 * fade})`);
+        bloom.addColorStop(0.45, isDark() ? `rgba(79,216,232,${0.16 * fade})` : `rgba(0,122,150,${0.14 * fade})`);
+        bloom.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = bloom;
+        ctx.beginPath();
+        ctx.arc(dest.x, dest.y, 90, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      state.zaps = live;
     }
 
     function nodeFill(n) {
       const p = palette();
-      if (n.role === 'gold' || n.kind === 'tip') return p.gold;
-      if (n.role === 'cyan' || n.kind === 'hash') return p.cyan;
+      if (n.kind === 'tip') return p.tip;
+      if (n.kind === 'pending-block' || n.kind === 'hash' || n.role === 'form' || n.role === 'cyan') return p.cyan;
+      if (n.role === 'gold') return p.gold;
       return recoverColor((Number(n.gen) || 0) / 18);
     }
 
-    function draw() {
+    function blockDue() {
+      const interval = Number(state.blockIntervalMs) || 90_000;
+      const ts = Number(state.tipAt) || 0;
+      if (!ts) return 0;
+      return Math.max(0, Math.min(1.08, (Date.now() - ts) / interval));
+    }
+
+    function poseRings(t) {
+      const due = blockDue();
+      for (const ring of state.pendRings || []) {
+        if (ring.kind === 'block') {
+          const u = Math.max(0, Math.min(1, due));
+          ring.y = (ring.yRest ?? ring.y) + ((ring.yKiss ?? ring.y) - (ring.yRest ?? ring.y)) * u;
+          ring.tilt = (ring.tiltRest ?? ring.tilt) + ((ring.tiltKiss ?? ring.tilt) - (ring.tiltRest ?? ring.tilt)) * u;
+          ring.baseRad = (ring.radRest ?? ring.baseRad) + ((ring.radKiss ?? ring.baseRad) - (ring.radRest ?? ring.baseRad)) * u;
+        }
+        const breath = 1 + 0.055 * Math.sin(t / 620 + (ring.kind === 'block' ? 0.35 : 1.15))
+          * Math.tanh(Math.log1p(ring.mass) / 2.1);
+        const rad = ring.baseRad * breath;
+        ring.rad = rad;
+        const n = Math.max(ring.items.length, 1);
+        ring.nodes.forEach((node, i) => {
+          const th = (i / n) * Math.PI * 2;
+          node._theta = th;
+          node.x = ring.ox + rad * Math.cos(th);
+          node.z = ring.oz + rad * Math.sin(th);
+          node.y = ring.y + ring.tilt * Math.cos(th - ring.peak);
+        });
+        if (ring.hubNode) {
+          ring.hubNode.x = ring.ox;
+          ring.hubNode.z = ring.oz;
+          ring.hubNode.y = ring.y + 0.3 + 0.045 * Math.sin(t / 480);
+        }
+      }
+    }
+
+    function strokeHoop(ring, color, t) {
+      const rad = ring.rad || ring.baseRad;
+      ctx.beginPath();
+      const steps = 96;
+      for (let i = 0; i <= steps; i += 1) {
+        const th = (i / steps) * Math.PI * 2;
+        const p = project(
+          ring.ox + rad * Math.cos(th),
+          ring.y + ring.tilt * Math.cos(th - ring.peak),
+          ring.oz + rad * Math.sin(th),
+        );
+        if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+      }
+      ctx.setLineDash(ring.kind === 'block' ? [2, 6] : [7, 5]);
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 4.2;
+      ctx.stroke();
+      ctx.globalAlpha = 0.95;
+      ctx.lineWidth = 1.7;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      const lab = project(ring.ox, ring.y + ring.tilt, ring.oz - rad);
+      ctx.font = '700 11px "Segoe UI",system-ui,sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = color;
+      const n = ring.items.length;
+      ctx.fillText(ring.label + (ring.kind === 'block' ? '' : ('  ' + n)), lab.x, lab.y - 10);
+    }
+
+    function draw(t) {
+      const now = t == null ? state.t : t;
+      poseRings(now);
       const pal = palette();
       const w = canvas.clientWidth, h = canvas.clientHeight;
       ctx.clearRect(0, 0, w, h);
-      const g = ctx.createRadialGradient(w * 0.5, h * 0.42, 20, w * 0.5, h * 0.55, Math.max(w, h) * 0.7);
+      const g = ctx.createRadialGradient(w * 0.5, h * 0.38, 16, w * 0.5, h * 0.58, Math.max(w, h) * 0.72);
       g.addColorStop(0, pal.core);
       g.addColorStop(1, pal.bg);
       ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+
+      const apex = project(0, 11.2, 0);
+      const wash = ctx.createRadialGradient(apex.x, apex.y, 8, apex.x, apex.y, 220);
+      wash.addColorStop(0, isDark() ? 'rgba(57,255,106,.22)' : 'rgba(0,216,90,.16)');
+      wash.addColorStop(0.45, isDark() ? 'rgba(255,225,74,.10)' : 'rgba(230,192,0,.08)');
+      wash.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = wash;
       ctx.fillRect(0, 0, w, h);
 
       const floorY = -2.2;
@@ -409,20 +788,36 @@
       ctx.lineWidth = 1.4;
       ctx.stroke();
 
+      for (const ring of state.pendRings || []) {
+        strokeHoop(ring, ring.color === 'cyan' ? pal.cyan : pal.gold, now);
+      }
+
       const drawnLinks = state.links.map((l) => {
         const A = byId[l.a], B = byId[l.b];
         if (!A || !B) return null;
-        return { A, B, z: (project(A.x, A.y, A.z).z + project(B.x, B.y, B.z).z) / 2 };
+        return { A, B, flow: !!l.flow, z: (project(A.x, A.y, A.z).z + project(B.x, B.y, B.z).z) / 2 };
       }).filter(Boolean).sort((a, b) => a.z - b.z);
       for (const l of drawnLinks) {
         const a = project(l.A.x, l.A.y, l.A.z);
         const b = project(l.B.x, l.B.y, l.B.z);
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.strokeStyle = pal.link;
-        ctx.globalAlpha = 0.7;
-        ctx.lineWidth = 1;
+        if (l.flow) {
+          const mid = project(
+            (l.A.x + l.B.x) * 0.5,
+            Math.max(l.A.y, l.B.y) + 0.55,
+            (l.A.z + l.B.z) * 0.5,
+          );
+          ctx.quadraticCurveTo(mid.x, mid.y, b.x, b.y);
+          ctx.strokeStyle = pal.link;
+          ctx.globalAlpha = 0.42;
+          ctx.lineWidth = 1.35;
+        } else {
+          ctx.lineTo(b.x, b.y);
+          ctx.strokeStyle = pal.link;
+          ctx.globalAlpha = 0.7;
+          ctx.lineWidth = 1;
+        }
         ctx.stroke();
         ctx.globalAlpha = 1;
       }
@@ -430,45 +825,172 @@
       const pts = state.nodes.map((n) => ({ n, p: project(n.x, n.y, n.z) })).sort((a, b) => a.p.z - b.p.z);
       for (const { n, p } of pts) {
         const fill = nodeFill(n);
-        const r = n.r * p.s * (n.id === state.hover ? 1.45 : 1);
+        const neon = n.kind === 'tip' || n.kind === 'pending-block' || n.kind === 'hash' || n.role === 'form';
+        const pulse = n.nextIn ? (1.18 + 0.1 * Math.sin((now || 0) / 220)) : (n.kind === 'tip' ? (1.06 + 0.04 * Math.sin((now || 0) / 380)) : 1);
+        const r = n.r * p.s * (n.id === state.hover ? 1.45 : 1) * pulse;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, r * 2.4, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, r * (neon ? 4.2 : (n.nextIn ? 3.1 : 2.4)), 0, Math.PI * 2);
         ctx.fillStyle = fill;
-        ctx.globalAlpha = pal.glow;
+        ctx.globalAlpha = neon ? (isDark() ? 0.28 : 0.2) : (n.nextIn ? pal.glow + 0.12 : pal.glow);
+        ctx.fill();
+        ctx.globalAlpha = neon ? (isDark() ? 0.55 : 0.38) : 1;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r * (neon ? 1.85 : 1), 0, Math.PI * 2);
+        ctx.fillStyle = fill;
         ctx.fill();
         ctx.globalAlpha = 1;
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
         ctx.fillStyle = fill;
         ctx.fill();
-        if (n.prime) {
-          ctx.strokeStyle = pal.stroke;
-          ctx.lineWidth = 0.8;
+        if (n.prime || n.nextIn || neon) {
+          ctx.strokeStyle = n.kind === 'tip' ? pal.tip : (neon ? pal.cyan : (n.nextIn ? pal.gold : pal.stroke));
+          ctx.lineWidth = neon || n.nextIn ? 1.6 : 0.8;
+          ctx.shadowColor = fill;
+          ctx.shadowBlur = neon ? 18 : 0;
           ctx.stroke();
+          ctx.shadowBlur = 0;
+        }
+        if (n.kind === 'tip' || n.kind === 'pending-block' || n.nextIn) {
+          ctx.font = (n.nextIn ? '800 11px' : '650 11px') + ' "Segoe UI",system-ui,sans-serif';
+          ctx.fillStyle = n.kind === 'tip' ? pal.tip : (n.kind === 'pending-block' || n.role === 'form' || n.role === 'cyan' ? pal.cyan : pal.gold);
+          ctx.shadowColor = ctx.fillStyle;
+          ctx.shadowBlur = 10;
+          ctx.textAlign = 'left';
+          ctx.fillText(n.nextIn ? ('NEXT IN  ' + n.label) : n.label, p.x + r + 5, p.y + 4);
+          ctx.shadowBlur = 0;
         }
         n._sx = p.x; n._sy = p.y; n._sr = r;
       }
+      drawFireworks(now);
+      drawLoupe();
+    }
+
+    function drawLoupe() {
+      if (state.dragging || !state.loupe) return;
+      const pal = palette();
+      const mx = state.loupe.x, my = state.loupe.y;
+      const src = 52;
+      const dest = 98;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      if (!state.snap) state.snap = document.createElement('canvas');
+      const snap = state.snap;
+      if (snap.width !== canvas.width || snap.height !== canvas.height) {
+        snap.width = canvas.width;
+        snap.height = canvas.height;
+      }
+      snap.getContext('2d').drawImage(canvas, 0, 0);
+      let lx = mx + 18;
+      let ly = my - dest * 2 - 18;
+      if (lx + dest * 2 > w - 8) lx = mx - dest * 2 - 18;
+      if (ly < 8) ly = my + 18;
+      if (ly + dest * 2 > h - 8) ly = Math.max(8, h - dest * 2 - 8);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(lx + dest, ly + dest, dest, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(
+        snap,
+        (mx - src) * dpr, (my - src) * dpr, src * 2 * dpr, src * 2 * dpr,
+        lx, ly, dest * 2, dest * 2,
+      );
+      ctx.restore();
+      ctx.beginPath();
+      ctx.arc(lx + dest, ly + dest, dest, 0, Math.PI * 2);
+      ctx.strokeStyle = pal.gold;
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(lx + dest, ly + dest, dest - 5, 0, Math.PI * 2);
+      ctx.strokeStyle = pal.cyan;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.arc(mx, my, src, 0, Math.PI * 2);
+      ctx.strokeStyle = pal.cyan;
+      ctx.globalAlpha = 0.4;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.moveTo(lx + dest - 8, ly + dest);
+      ctx.lineTo(lx + dest + 8, ly + dest);
+      ctx.moveTo(lx + dest, ly + dest - 8);
+      ctx.lineTo(lx + dest, ly + dest + 8);
+      ctx.strokeStyle = pal.gold;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      const near = [];
+      for (const n of state.nodes) {
+        if (n._sx == null) continue;
+        const d = Math.hypot(n._sx - mx, n._sy - my);
+        if (d <= src + (n._sr || 0) + 6) near.push({ n, d });
+      }
+      near.sort((a, b) => a.d - b.d);
+      const lines = near.slice(0, 4).map(({ n }) => {
+        const m = n.meta || {};
+        const bits = [
+          n.nextIn ? 'NEXT IN' : '',
+          n.label,
+          m.kind || n.kind,
+          m.count != null ? m.count + ' hashes' : '',
+          m.fee != null ? 'levy ' + m.fee : '',
+          m.weight != null ? 'w ' + m.weight : '',
+        ].filter(Boolean);
+        return bits.join(' · ');
+      });
+      if (!lines.length) lines.push('empty neighbourhood');
+      const boxY = ly + dest * 2 + 8;
+      ctx.font = '650 11px "Segoe UI",system-ui,sans-serif';
+      const textW = Math.min(w - 16, Math.max(dest * 2, ...lines.map((s) => ctx.measureText(s).width + 16)));
+      const boxH = 18 + lines.length * 15;
+      let bx = lx;
+      if (bx + textW > w - 8) bx = w - textW - 8;
+      if (bx < 8) bx = 8;
+      let by = boxY;
+      if (by + boxH > h - 8) by = ly - boxH - 8;
+      ctx.fillStyle = isDark() ? 'rgba(6,20,31,.88)' : 'rgba(255,255,255,.92)';
+      ctx.strokeStyle = pal.gold;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(bx, by, textW, boxH);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = pal.gold;
+      ctx.textAlign = 'left';
+      ctx.fillText('glass ×2.8', bx + 8, by + 14);
+      ctx.fillStyle = isDark() ? '#d6e6f5' : '#0d2137';
+      lines.forEach((line, i) => {
+        ctx.fillText(line, bx + 8, by + 30 + i * 15);
+      });
     }
 
     function tick(t) {
-      if (!state.dragging) state.yaw += 0.0016;
-      draw();
+      state.t = t;
+      if (!state.dragging) state.yaw += 0.00115;
+      draw(t);
       requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
 
     canvas.addEventListener('pointerdown', (e) => {
-      state.dragging = true; state.lx = e.clientX; state.ly = e.clientY; canvas.setPointerCapture(e.pointerId);
+      state.dragging = true; state.loupe = null; state.lx = e.clientX; state.ly = e.clientY; canvas.setPointerCapture(e.pointerId);
     });
     canvas.addEventListener('pointerup', () => { state.dragging = false; });
+    canvas.addEventListener('pointerleave', () => { state.loupe = null; });
     canvas.addEventListener('pointermove', (e) => {
       if (state.dragging) {
         state.yaw += (e.clientX - state.lx) * 0.005;
         state.pitch = Math.max(0.2, Math.min(1.25, state.pitch + (e.clientY - state.ly) * 0.004));
         state.lx = e.clientX; state.ly = e.clientY;
+        state.loupe = null;
       }
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left, y = e.clientY - rect.top;
+      if (!state.dragging) state.loupe = { x, y };
       let hit = null, best = 12;
       for (const n of state.nodes) {
         if (n._sx == null) continue;
@@ -480,10 +1002,16 @@
       if (hit) {
         const m = hit.meta || {};
         pick.textContent = [
+          hit.nextIn ? 'NEXT IN' : '',
           hit.label,
           m.height != null ? 'height ' + m.height : '',
           m.kind ? 'kind ' + m.kind : '',
+          m.count != null ? 'hashes ' + m.count : '',
+          m.weight != null ? 'weight ' + m.weight : '',
+          m.fee != null ? 'levy ' + m.fee : '',
           m.amount != null ? 'amount ' + m.amount : '',
+          m.included === true ? 'in forming block' : '',
+          m.hashes != null ? 'forming hashes ' + m.hashes : '',
           m.confirmations != null ? 'conf ' + m.confirmations : '',
           m.spendable === true ? 'spendable' : (m.spendable === false ? 'immature' : ''),
         ].filter(Boolean).join('\n');
@@ -495,12 +1023,23 @@
     }, { passive: false });
 
     function paintHud(data) {
-      document.getElementById('h-tip').textContent = data.tip?.height ?? '—';
-      document.getElementById('h-pend').textContent = String((data.pending || []).length);
-      document.getElementById('h-fee').textContent = String(data.tip?.baseFee ?? 1);
+      const pb = data.pendingBlock || {};
+      const pending = data.pending || [];
+      const next = pending[0];
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+      set('h-tip', data.tip?.height ?? '—');
+      set('h-pend', String(pending.length));
+      set('h-hashes', String(pb.hashes || 0));
+      set('h-form', pb.height != null ? ('#' + pb.height) : '—');
+      set('h-miners', String((pb.txs || []).length));
+      set('h-rings', String((state.pendRings || []).length));
+      set('h-weight', String(pb.weight || 0));
+      set('h-levy', String(pb.fee || pending.reduce((a, t) => a + (Number(t.fee) || 0), 0)));
+      set('h-next', next ? ((next.kind || 'send') + ' ' + String(next.id || '').slice(0, 8)) : '—');
+      set('h-fee', String(data.tip?.baseFee ?? 1));
       const pulse = document.getElementById('pulse');
       pulse.textContent = data.live
-        ? ('live · tip down · ' + (data.spendableConfirmations ?? 1) + ' conf spendable · policy ' + (data.policy && data.policy.merchant_default != null ? data.policy.merchant_default : (data.minConfirmsPolicy ?? 12)))
+        ? ('live · forming #' + (pb.height ?? '—') + ' · ' + (data.spendableConfirmations ?? 6) + ' conf spendable · policy ' + (data.policy && data.policy.merchant_default != null ? data.policy.merchant_default : (data.minConfirmsPolicy ?? 12)))
         : 'node paused · demo lattice from tip';
       pulse.className = data.live ? '' : 'stale';
     }
