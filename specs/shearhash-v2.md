@@ -116,7 +116,7 @@ v2 nodes must not load the v1 book.
 
 ## Official miner
 
-**ShearK-Miner** `1.2` (two-part). Banner: `ShearK-Miner 1.2 (ShearHash-v2 light)`. Submit carries the ShearHash-v2 digest.
+**ShearK-Miner** `1.3` (two-part). Banner: `ShearK-Miner 1.3 (ShearHash-v2 light)`. Submit carries the ShearHash-v2 digest. A queued share is dropped when the live job generation moves.
 
 `--print-config` includes `algorithm=ShearHash`, `personalisation=ShearHash-v2`, `headerBytes=128`, `rxMode=light`, `rxCacheMiB=128`, `feePct=0`, `magic=shear-testnet-v2`. Do not write “feeless”.
 
