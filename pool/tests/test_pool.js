@@ -483,6 +483,9 @@ describe('public miner listing', () => {
     assert.match(miner, /Withdraw confirmed sum/);
     assert.match(miner, /ninety hours/);
     assert.match(miner, /she1 never goes on the book/);
+    assert.match(miner, /ssa1 dest this round \(pay\)/);
+    assert.match(miner, /Copy ID/);
+    assert.match(miner, /Continuum Receive ID/);
     assert.doesNotMatch(miner, />raskul</);
     assert.equal(/localStorage/.test(dash + miner), false);
     assert.match(miner, /id="m-algo">ShearHash-v2</);
