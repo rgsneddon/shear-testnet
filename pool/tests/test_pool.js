@@ -382,7 +382,8 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /pending/);
     assert.match(html, /function blockStatus/);
     assert.match(html, /slice\(0, 10\)/);
-    assert.match(html, /s\.confirmedNeed/);
+    assert.match(html, /s\.spendableConfirmations/);
+    assert.doesNotMatch(html, /s\.confirmedNeed/);
     assert.match(html, />From</);
     assert.match(html, />To</);
     assert.match(html, />Amount</);
@@ -650,13 +651,17 @@ describe('public miner listing', () => {
     assert.doesNotMatch(dash, />Kind</);
     assert.match(dash, /function blockStatus/);
     assert.match(dash, /slice\(0, 10\)/);
-    assert.match(dash, /s\.confirmedNeed/);
+    assert.match(dash, /s\.spendableConfirmations/);
+    assert.doesNotMatch(dash, /s\.confirmedNeed/);
     const fn = dash.match(/function blockStatus\(t, tip, need\) \{[\s\S]*?\n    \}/);
     assert.ok(fn, 'blockStatus must ship');
     const blockStatus = new Function(`${fn[0]}; return blockStatus;`)();
     assert.equal(blockStatus({ height: 10 }, 10, 6), 'pending');
     assert.equal(blockStatus({ height: 5 }, 9, 6), 'pending');
     assert.equal(blockStatus({ height: 5 }, 10, 6), 'confirmed');
+    assert.equal(blockStatus({ height: 1 }, 6, 6), 'confirmed');
+    assert.equal(blockStatus({ height: 1 }, 5, 6), 'pending');
+    assert.equal(blockStatus({ height: 1 }, 6, 30), 'pending');
     const bannerIdx = dash.indexOf('id="testnet-banner"');
     const feeIdx = dash.indexOf('id="fee-note"');
     assert.ok(bannerIdx >= 0 && feeIdx > bannerIdx, 'TESTNET banner must sit above the fee disclaimer');

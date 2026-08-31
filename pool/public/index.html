@@ -368,9 +368,9 @@
       if (!body) return;
       const rows = Array.isArray(txs) ? txs.slice(0, 10) : [];
       const tip = Number(s && s.height) || 0;
-      const need = Math.max(1, Number(s && s.confirmedNeed)
-        || Number(s && s.policy && s.policy.operational && s.policy.operational.pool_merchant)
-        || 30);
+      const need = Math.max(1, Number(s && s.spendableConfirmations)
+        || Number(s && s.policy && s.policy.consensus_min)
+        || 6);
       const sig = rows.map(function (t) { return t.id; }).join('|');
       const html = rows.length
         ? rows.map(function (t) {

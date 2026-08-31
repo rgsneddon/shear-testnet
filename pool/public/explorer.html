@@ -306,13 +306,13 @@
       }
     }
     let tipHeight = 0;
-    let spendableNeed = 30;
-    function blockStatus(t) {
+    let spendableNeed = 6;
+    function blockStatus(t, tip, need) {
       const h = Number(t && t.height) || 0;
-      const tip = Number(tipHeight) || 0;
-      const need = Math.max(1, Number(spendableNeed) || 6);
-      const confs = (h >= 1 && tip >= h) ? (tip - h + 1) : 0;
-      return confs >= need ? 'confirmed' : 'pending';
+      const tipH = Number(tip != null ? tip : tipHeight) || 0;
+      const n = Math.max(1, Number(need != null ? need : spendableNeed) || 6);
+      const confs = (h >= 1 && tipH >= h) ? (tipH - h + 1) : 0;
+      return confs >= n ? 'confirmed' : 'pending';
     }
     function paintTxs(txs, status) {
       const body = document.querySelector('#ex-txs tbody');
@@ -325,7 +325,7 @@
             const href = '/tx/' + encodeURIComponent(t.id);
             return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
               esc(fmtLocalTs(t.at)) + '</td><td>' +
-              esc(blockStatus(t)) + '</td><td class="mono">' + esc(t.from || 'coinbase') +
+              esc(blockStatus(t, tipHeight, spendableNeed)) + '</td><td class="mono">' + esc(t.from || 'coinbase') +
               '</td><td class="mono">' + esc(shortDest(t.to)) + '</td><td>' +
               esc(fmtShe(t.amount)) + '</td></tr>';
           }).join('')
@@ -366,9 +366,9 @@
         pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v2') + ' · height ' + (stats.height ?? 0);
       }
       tipHeight = Number(stats.height) || 0;
-      spendableNeed = Number(stats.confirmedNeed)
-        || Number(stats.policy && stats.policy.operational && stats.policy.operational.pool_merchant)
-        || 30;
+      spendableNeed = Number(stats.spendableConfirmations)
+        || Number(stats.policy && stats.policy.consensus_min)
+        || 6;
       setText('ex-height', stats.height ?? 0);
       setText('ex-hashrate', fmtRate(stats.hashrate));
       lastBlockAt = Number(stats.lastFoundAt || 0);
@@ -391,9 +391,10 @@
       }
       const stats = await fetchJson('/stats').catch(function () { return {}; });
       tipHeight = Number(stats.height) || tipHeight;
-      spendableNeed = Number(stats.confirmedNeed)
-        || Number(stats.policy && stats.policy.operational && stats.policy.operational.pool_merchant)
-        || spendableNeed;
+      spendableNeed = Number(stats.spendableConfirmations)
+        || Number(stats.policy && stats.policy.consensus_min)
+        || spendableNeed
+        || 6;
       const got = await fetchJson('/explorer/search?' + q.toString());
       const n = (got.txs || []).length;
       let status = n + ' block(s)';
