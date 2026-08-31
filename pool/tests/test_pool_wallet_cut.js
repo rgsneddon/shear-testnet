@@ -16,7 +16,7 @@ describe('wallet cut updates the pool wallet', () => {
     const sh = read('wallet/pack/sync_pool_wallet.sh');
     const mac = read('wallet/pack_macos.sh');
     const linux = read('wallet/pack/pack_linux_de.sh');
-    assert.match(dart, /kWalletVersion = '0\.8'/);
+    assert.match(dart, /kWalletVersion = '0\.9'/);
     assert.match(sh, /\/opt\/shear-v2\/wallet/);
     assert.match(sh, /kWalletVersion/);
     assert.match(sh, /shear_eip712/);

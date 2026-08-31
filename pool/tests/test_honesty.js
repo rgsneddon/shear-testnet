@@ -326,6 +326,18 @@ describe('folded-row inventory', () => {
     assert.ok(c > 1_000_000);
   });
 
+  it('blockfound K-pause fat dt does not tank clientHs', () => {
+    const t0 = 1_700_000_000_000;
+    const m = {};
+    applyMinerSelfRate(m, { hashes: 1_000_000 }, t0);
+    applyMinerSelfRate(m, { hashes: 1_000_000 + 200_000 * 10 }, t0 + 10_000);
+    assert.equal(m.clientHs, 200_000);
+    applyMinerSelfRate(m, { hashes: 1_000_000 + 200_000 * 10 + 5_000 }, t0 + 30_000);
+    assert.equal(m.clientHs, 200_000);
+    applyMinerSelfRate(m, { hashes: 1_000_000 + 200_000 * 10 + 5_000 + 200_000 * 4 }, t0 + 34_000);
+    assert.equal(m.clientHs, 200_000);
+  });
+
   it('connect hashrate ramps up from own hashes, never down from a session-average spike', () => {
     const t0 = Date.now();
     const miner = {};

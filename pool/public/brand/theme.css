@@ -81,6 +81,7 @@ button.nav-toggle {
 }
 
 input, select, button { background: var(--input); color: var(--ink); }
+input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 code, pre { background: var(--code); }
 html[data-theme="dark"] { color-scheme: dark; }
 html[data-theme="light"] { color-scheme: light; }

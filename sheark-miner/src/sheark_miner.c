@@ -112,6 +112,7 @@ static int enqueue_front(const Share *s);
 static uint64_t g_dropped = 0;
 static uint64_t g_submitted = 0;
 static uint64_t g_round0 = 0;
+static double g_smooth_hs = 0;
 static int g_height = 0;
 static char g_last_job[80];
 static uint64_t g_last_nonce = 0;
@@ -402,7 +403,7 @@ static void identity_json(char *out, size_t cap, const char *login, int threads)
   unsigned long long hashes = (unsigned long long)atomic_load_explicit(&g_hashes, memory_order_relaxed);
   double elapsed = (double)(time(NULL) - (g_t0 ? g_t0 : time(NULL)));
   if (elapsed < 1) elapsed = 1;
-  double hs = (double)hashes / elapsed;
+  double hs = g_smooth_hs > 0 ? g_smooth_hs : (double)hashes / elapsed;
   snprintf(out, cap,
            "\"login\":\"%s\",\"threads\":%d,\"cpuCores\":%d,\"cpuThreads\":%d,"
            "\"name\":\"%s\",\"client\":\"%s\",\"version\":\"%s\",\"algorithm\":\"%s\","
@@ -871,7 +872,6 @@ static int mine_once(void) {
       uint64_t h = atomic_load_explicit(&g_hashes, memory_order_relaxed);
       static uint64_t rate_h0;
       static time_t rate_t0;
-      static double smooth_hs;
       if (rate_t0 == 0) {
         rate_h0 = h;
         rate_t0 = now;
@@ -880,20 +880,26 @@ static int mine_once(void) {
       if (dt < 1) dt = 1;
       if (h > rate_h0) {
         double inst = (double)(h - rate_h0) / dt;
-        if (smooth_hs <= 0) smooth_hs = inst;
-        else {
-          double alpha = 1.0 - exp(-dt / 8.0);
-          smooth_hs += alpha * (inst - smooth_hs);
-        }
-        if (dt >= 8) {
+        if (g_smooth_hs > 0 && dt >= 3 && inst < g_smooth_hs * 0.5) {
+          /* Blockfound RandomX K pause — hold the last linear rate. */
           rate_h0 = h;
           rate_t0 = now;
+        } else {
+          if (g_smooth_hs <= 0) g_smooth_hs = inst;
+          else {
+            double alpha = 1.0 - exp(-dt / 8.0);
+            g_smooth_hs += alpha * (inst - g_smooth_hs);
+          }
+          if (dt >= 8) {
+            rate_h0 = h;
+            rate_t0 = now;
+          }
         }
       } else if (dt >= 8) {
         rate_t0 = now;
       }
       char rate[32];
-      fmt_hashrate(smooth_hs, rate, sizeof(rate));
+      fmt_hashrate(g_smooth_hs, rate, sizeof(rate));
       char jobId[80] = "-";
       int sb = 0, bb = 0, height = g_height;
       pthread_mutex_lock(&g_job_mu);

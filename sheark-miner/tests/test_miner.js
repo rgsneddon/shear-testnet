@@ -30,7 +30,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
     assert.equal(j.personalisation, 'ShearHash-v2');
-    assert.equal(j.version, '1.4');
+    assert.equal(j.version, '1.5');
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.headerBytes, 128);
     assert.equal(j.magic, 'shear-testnet-v2');
@@ -44,7 +44,7 @@ describe('ShearK-Miner', () => {
     assert.equal(src.toLowerCase().includes('feeless'), false);
     assert.equal(/g_fee_login/.test(src), false);
     const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
-    assert.match(help.stdout, /ShearK-Miner 1\.4 \(ShearHash-v2 light\)/);
+    assert.match(help.stdout, /ShearK-Miner 1\.5 \(ShearHash-v2 light\)/);
     assert.match(help.stdout, /ShearHash-v2 light/);
     assert.equal(help.stdout.toLowerCase().includes('feeless'), false);
     assert.match(src, /hashes=%llu round=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu blocks=%d dropped=%llu/);
@@ -76,6 +76,9 @@ describe('ShearK-Miner', () => {
     assert.match(src, /#define IN_FLIGHT_MAX 1/);
     assert.match(src, /strstr\(low, "busy"\)/);
     assert.match(src, /memcmp\(g_main_job\.header, job\.header, 100\)/);
+    assert.match(src, /g_smooth_hs/);
+    assert.match(src, /Blockfound RandomX K pause/);
+    assert.match(src, /g_smooth_hs \* 0\.5/);
   });
 
   it('leftover windows zip is only ShearK-Miner.exe + example.bat', () => {

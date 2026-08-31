@@ -526,9 +526,17 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
       if (dt >= SELF_RATE_MIN_DT_S) {
         const delta = hashes - prev;
         if (delta > 0) {
-          session.clientHs = delta / dt;
-          session.rateHashes0 = hashes;
-          session.rateAt0 = now;
+          const inst = delta / dt;
+          const held = Number(session.clientHs) || 0;
+          // Blockfound RandomX K pause: one fat dt with few hashes must not tank H/s.
+          if (held > 0 && dt >= 8 && inst < held * 0.5) {
+            session.rateHashes0 = hashes;
+            session.rateAt0 = now;
+          } else {
+            session.clientHs = inst;
+            session.rateHashes0 = hashes;
+            session.rateAt0 = now;
+          }
         } else if (dt >= 8) {
           session.rateHashes0 = hashes;
           session.rateAt0 = now;
@@ -939,8 +947,19 @@ export function createPool({
     } catch {
       return lastJob;
     }
-    // Keep live bits (they are in RandomX K). Always tick timestamp so ASERT
-    // sees wall-clock intervals. Skipping the stamp froze time and bits climbed.
+    // Keep live bits (they are in RandomX K). Only tick time while ASERT still
+    // matches those bits so a found header verifies. Stamping past the window
+    // made every later find fail with reason bits. 90s-ahead stamps stay until
+    // wall clock catches up (do not pull them back).
+    const tip = store.tip();
+    if (tip?.header) {
+      try {
+        const parent = decodeHeader(Buffer.from(tip.header));
+        const wantBits = bitsForBlock(parent.bits, parent.timestamp, BigInt(now));
+        if (wantBits !== Number(decoded.bits)) return lastJob;
+      } catch { /* keep live stamp */ }
+    }
+    if (now <= Number(decoded.timestamp)) return lastJob;
     const header = encodeHeader({
       version: decoded.version,
       prevBlockHash: decoded.prevBlockHash,
@@ -1104,9 +1123,8 @@ export function createPool({
         stats.blocks += 1;
         try {
           const sealed = store.tip();
-          stats.lastFoundAt = sealed?.header
-            ? (Number(decodeHeader(Buffer.from(sealed.header)).timestamp) || Date.now())
-            : Date.now();
+          // Wall clock, not header time: the job stamp may be 90s ahead of now.
+          stats.lastFoundAt = Date.now();
           pullBook.creditRound(
             [...miners.values()]
               .filter((m) => (Number(m.roundHashes) || 0) > 0 && !isCminerFeeLogin(m.login || m.workerKey))
@@ -1365,10 +1383,7 @@ export function createPool({
       height: tip?.height || 0,
       header: tip?.header ? Buffer.from(tip.header).toString('hex') : '',
       bits: lastJob?.bits || bits,
-      lastFoundAt: stats.lastFoundAt || (() => {
-        if (!tip?.header) return 0;
-        try { return Number(decodeHeader(Buffer.from(tip.header)).timestamp) || 0; } catch { return 0; }
-      })(),
+      lastFoundAt: stats.lastFoundAt || 0,
       avgBlockTimeMs: avgMs,
       networkAvgBlockTimeMs: avgMs,
       avgBlockWindow: (store.blocks || []).length,
@@ -1595,7 +1610,13 @@ export function createPool({
           }));
         } catch { body = {}; }
         const login = String(body.login || '').trim();
-        if (publicMinerTag(login) !== tag) {
+        const she = login.split('.')[0];
+        const pay = payoutDest(she) || '';
+        const postedDest = payoutDest(String(body.dest || '')) || String(body.dest || '').trim();
+        const tagMatch = publicMinerTag(she) === tag
+          || (pay && publicMinerTag(pay) === tag)
+          || (postedDest && publicMinerTag(postedDest) === tag);
+        if (!tagMatch) {
           res.statusCode = 400;
           res.end(JSON.stringify({ ok: false, reason: 'auth' }));
           return;
@@ -1610,7 +1631,13 @@ export function createPool({
           res.end(JSON.stringify({ ok: false, reason: 'none_confirmed' }));
           return;
         }
-        const dest = payoutDest(String(body.dest || '')) || payoutDest(login) || '';
+        const rawDest = String(body.dest || '').trim();
+        if (!rawDest || containsShe1(rawDest) || /^she1/i.test(rawDest)) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, reason: 'she1' }));
+          return;
+        }
+        const dest = payoutDest(rawDest) || '';
         const off = verifyPoolWithdrawOffchain({
           login,
           dest,

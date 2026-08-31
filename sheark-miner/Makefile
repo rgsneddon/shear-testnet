@@ -1,4 +1,4 @@
-VERSION ?= 1.4
+VERSION ?= 1.5
 CC ?= cc
 # GNU Make defaults CXX to g++ even when g++ is absent (WSL clang-only).
 ifeq ($(origin CXX),default)

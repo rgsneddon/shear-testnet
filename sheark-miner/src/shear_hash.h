@@ -11,7 +11,7 @@
 #define SHEAR_ALGO "ShearHash"
 #define SHEAR_CLIENT "ShearHash"
 #define SHEAR_MINER_NAME "ShearK-Miner"
-#define SHEAR_VERSION "1.4"
+#define SHEAR_VERSION "1.5"
 #define SHEAR_MAGIC "shear-testnet-v2"
 #define SHEAR_RX_CACHE_MIB 128
 

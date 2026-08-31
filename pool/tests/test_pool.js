@@ -17,6 +17,8 @@ import { payoutDest } from '../../crypto/address.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, JOB_RESTAMP_MS, STATS_REFRESH_MS } from '../src/pool.js';
+import { signPoolWithdraw } from '../../crypto/eip712.js';
+import { verifyPoolWithdrawOffchain } from '../../crypto/levy.js';
 import { publicJob, buildTemplate, hashBonusByMiner } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
@@ -45,8 +47,10 @@ describe('observed interval', () => {
     assert.match(src, /JOB_RESTAMP_MS/);
     assert.match(src, /maybeRestampJob/);
     assert.match(src, /setInterval\(maybeRestampJob/);
-    assert.equal(/if \(!\(want < have\)\) return/.test(src), false);
+    assert.match(src, /wantBits !== Number\(decoded\.bits\)/);
     assert.equal(/if \(hashWait\.size > 0\) return lastJob/.test(src), false);
+    assert.match(src, /stats\.lastFoundAt = Date\.now\(\)/);
+    assert.equal(/stats\.lastFoundAt = sealed\?\.header/.test(src), false);
     assert.equal(JOB_RESTAMP_MS, 10_000);
   });
 
@@ -65,7 +69,21 @@ describe('observed interval', () => {
     const job = pool.issueJob();
     assert.ok(job?.header);
     const before = decodeHeader(headerFromHex(job.header));
-    job.timestamp = String(Date.now() - JOB_RESTAMP_MS - 50);
+    // Rewind both the job stamp and the header so restamp is allowed to tick
+    // forward. A 90s-ahead template stamp must not be pulled back.
+    const late = Number(before.timestamp) - JOB_RESTAMP_MS - 50_000;
+    const lateHeader = encodeHeader({
+      version: before.version,
+      prevBlockHash: before.prevBlockHash,
+      merkleRoot: before.merkleRoot,
+      continuityRoot: before.continuityRoot,
+      timestamp: BigInt(late),
+      bits: before.bits,
+      nonce: 0n,
+      baseFee: before.baseFee,
+    });
+    job.header = lateHeader.toString('hex');
+    job.timestamp = String(late);
     const next = pool.restampJob();
     assert.equal(next.jobId, job.jobId);
     const after = decodeHeader(headerFromHex(next.header));
@@ -73,7 +91,31 @@ describe('observed interval', () => {
     assert.ok(after.continuityRoot.equals(before.continuityRoot));
     assert.ok(after.prevBlockHash.equals(before.prevBlockHash));
     assert.equal(after.bits, before.bits);
-    assert.ok(after.timestamp > before.timestamp);
+    assert.ok(after.timestamp > Number(late), 'late header must tick forward');
+    assert.ok(after.merkleRoot.equals(before.merkleRoot));
+    pool.close();
+  });
+
+  it('restamp does not pull a 90s-ahead template stamp back', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-restamp-ahead-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 8,
+      bits: 16,
+    });
+    const job = pool.issueJob();
+    const before = decodeHeader(headerFromHex(job.header));
+    job.timestamp = String(Date.now() - JOB_RESTAMP_MS - 50);
+    const next = pool.restampJob();
+    const after = decodeHeader(headerFromHex(next.header));
+    assert.ok(Number(after.timestamp) >= Number(before.timestamp), 'do not rewind 90s-ahead stamp');
+    assert.ok(after.merkleRoot.equals(before.merkleRoot));
+    assert.equal(after.bits, before.bits);
     pool.close();
   });
 });
@@ -500,7 +542,13 @@ describe('public miner listing', () => {
     assert.match(miner, /Withdraw confirmed sum/);
     assert.match(miner, /ssa1 dest this round \(pay\)/);
     assert.match(miner, /Copy ID/);
+    assert.match(miner, /Copy dest/);
     assert.match(miner, /wait 90 hours before the next one/);
+    assert.match(miner, /j\.reason/);
+    assert.doesNotMatch(miner, /sig: 'pull-'/);
+    assert.match(miner, /background:var\(--input\); color:var\(--ink\)/);
+    assert.match(miner, /input::placeholder \{ color:var\(--muted\)/);
+    assert.doesNotMatch(miner, /\.pull-form input[^}]*background:#fff/);
     assert.doesNotMatch(miner, />raskul</);
     assert.equal(/localStorage/.test(dash + miner), false);
     assert.match(miner, /id="m-algo">ShearHash-v2</);
@@ -851,6 +899,59 @@ describe('public miner listing', () => {
     assert.equal(feePage.status, 404);
     main.destroy();
     fee.destroy();
+    pool.close();
+  });
+
+  it('miner pull stub/empty sig is unsigned; EIP-712 she1+ssa1 is ok; she1 dest fails', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pull-http-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const tag = publicMinerTag(id.paymentCode);
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 4,
+      bits: 8,
+    });
+    await new Promise((resolve, reject) => {
+      pool.httpServer.listen(0, '127.0.0.1', resolve);
+      pool.httpServer.on('error', reject);
+    });
+    const httpPort = pool.httpServer.address().port;
+    pool.store.tip = () => ({ height: 40 });
+    pool.store.getpolicy = () => ({ operational: { pool_merchant: 6 } });
+    assert.equal(pool.pullBook.creditRound([{ tag, dest, count: 10 }], { height: 1 }).ok, true);
+    const url = `http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}/withdraw`;
+    async function post(body) {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return { status: r.status, json: await r.json() };
+    }
+    const stub = await post({ login: id.paymentCode, dest, sig: `pull-${tag}-1` });
+    assert.equal(stub.json.ok, false);
+    assert.equal(stub.json.reason, 'unsigned');
+    assert.equal(verifyPoolWithdrawOffchain({
+      login: id.paymentCode, dest, nanos: 2e9, sig: `pull-${tag}-1`,
+    }).reason, 'unsigned');
+    const empty = await post({ login: id.paymentCode, dest });
+    assert.equal(empty.json.reason, 'unsigned');
+    const leak = await post({ login: id.paymentCode, dest: id.paymentCode, sig: 'x' });
+    assert.equal(leak.json.reason, 'she1');
+    const ripe = pool.pullBook.view(tag, { tipHeight: 40, need: 6 });
+    const sig = signPoolWithdraw({
+      seed: Buffer.alloc(32, 7),
+      login: id.paymentCode,
+      dest,
+      nanos: ripe.confirmedNanos,
+    });
+    const ok = await post({ login: id.paymentCode, dest, sig });
+    assert.equal(ok.json.ok, true, ok.json.reason);
+    assert.equal(String(ok.json.to).startsWith('ssa1'), true);
     pool.close();
   });
 });

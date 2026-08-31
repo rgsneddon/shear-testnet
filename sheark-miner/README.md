@@ -1,4 +1,4 @@
-# ShearK-Miner 1.4
+# ShearK-Miner 1.5
 
 Official CPU miner for **ShearHash-v2** (RandomX light, 128 MiB cache).
 

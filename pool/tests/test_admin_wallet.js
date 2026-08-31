@@ -50,6 +50,9 @@ describe('kyrusfables admin fee wallet', () => {
     assert.match(html, /Restart pool/);
     assert.match(html, /Pause/);
     assert.match(html, /Resume/);
+    assert.match(html, /json\.reason/);
+    assert.match(html, /input::placeholder \{ color:var\(--muted\)/);
+    assert.match(html, /color:var\(--ink\)/);
     assert.doesNotMatch(html, /mempool/i);
     const robots = fs.readFileSync(path.join(ADMIN_DIR, 'robots.txt'), 'utf8');
     assert.match(robots, /Disallow: \//);

@@ -34,6 +34,9 @@
     .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; }
     .spend { font-size:1.6rem; font-weight:750; color:var(--cyan); margin:6px 0 0; }
     input { width:100%; margin:.35rem 0 .7rem; padding:.45rem .55rem; background:var(--input); color:var(--ink); border:1px solid var(--blue); font-size:16px; }
+    input::placeholder { color:var(--muted); opacity:1; }
+    html[data-theme="dark"] { color-scheme: dark; }
+    html[data-theme="light"] { color-scheme: light; }
     button { padding:.45rem .8rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer; font-weight:650; }
     button.warn { color:var(--err); }
     .err { color:var(--err); min-height:1.2em; font-size:.9rem; }
@@ -280,7 +283,7 @@
       e.preventDefault();
       $('flow-err').textContent = '';
       const got = await api('/api/admin/withdraw', 'POST', { to: $('to').value, amount: $('amount').value });
-      if (!got.json.ok) { $('flow-err').textContent = 'Not sent'; return; }
+      if (!got.json.ok) { $('flow-err').textContent = got.json.reason || 'unsigned'; return; }
       $('amount').value = '';
       await paintWallet();
     });

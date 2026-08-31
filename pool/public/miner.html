@@ -47,8 +47,9 @@
     .pull-form { display:flex; flex-wrap:nowrap; gap:8px; align-items:center; margin-top:8px; width:100%; min-width:0; }
     .pull-form input {
       flex:1 1 0; min-width:0; width:auto; margin:0; padding:.4rem .5rem; font-size:16px;
-      border:1px solid var(--blue); background:#fff; color:var(--ink);
+      border:1px solid var(--blue); background:var(--input); color:var(--ink);
     }
+    .pull-form input::placeholder { color:var(--muted); opacity:1; }
     .pull-form .withdraw-btn { flex:0 0 auto; margin:0; width:auto; white-space:nowrap; }
     .hid { display:none !important; }
     .err { color:#b42318; font-size:.85rem; min-height:1.1em; margin:6px 0 0; }
@@ -99,7 +100,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.4" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.8" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.9" target="_blank" rel="noopener">WALLET</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -113,7 +114,7 @@
     <section class="panel-card">
       <p><a href="/">Back to pool</a></p>
       <h1>Miner stats · <span class="mono" id="miner-tag">—</span></h1>
-      <p>Hash bonuses are automatic: 1 hash = 1 tx leaf on the found block, paid to your dest — no withdraw. To pull your share of the 1 SHE pot, click Withdraw confirmed sum and paste <code>she1</code> from Continuum Copy ID plus <code>ssa1</code> from Flow (“ssa1 dest this round (pay)”). Not the public tag on this page. After a withdraw, wait 90 hours before the next one.</p>
+      <p>Hash bonuses are automatic: 1 hash = 1 tx leaf on the found block, paid to your dest — no withdraw. To pull your share of the 1 SHE pot, use wallet Flow → Pull from pool (EIP-712). Continuum Copy ID is <code>she1</code>; Copy dest is <code>ssa1 dest this round (pay)</code>. Not the public tag on this page. This page cannot sign; a stub or empty sig is unsigned. After a withdraw, wait 90 hours before the next one.</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
     </section>
     <div class="pull-row" id="pull-row">
@@ -252,12 +253,12 @@
       fetch('/api/miners/' + encodeURIComponent(tag) + '/withdraw', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ login: login, dest: dest, sig: 'pull-' + tag + '-' + Date.now() }),
+        body: JSON.stringify({ login: login, dest: dest }),
       }).then(function (r) { return r.json(); }).then(function (j) {
-        if (!j.ok) { err.textContent = 'Not sent'; return; }
+        if (!j.ok) { err.textContent = j.reason || 'unsigned'; return; }
         document.getElementById('pull-form').classList.add('hid');
         tick();
-      }).catch(function () { err.textContent = 'Not sent'; });
+      }).catch(function () { err.textContent = 'unsigned'; });
     });
     setInterval(tick, 1000);
     tick();

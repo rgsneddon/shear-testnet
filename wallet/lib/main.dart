@@ -25,7 +25,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.8';
+const kWalletVersion = '0.9';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -773,8 +773,19 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       SelectableText(ident.paymentCode),
       const SizedBox(height: 8),
       OutlinedButton(
+        key: const Key('copy-id'),
         onPressed: () => Clipboard.setData(ClipboardData(text: ident.paymentCode)),
         child: const Text('Copy ID'),
+      ),
+      const SizedBox(height: 12),
+      Text('ssa1 dest this round (pay)', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+      const SizedBox(height: 6),
+      SelectableText(ledger.currentDest(ident.address), key: const Key('continuum-ssa1')),
+      const SizedBox(height: 8),
+      OutlinedButton(
+        key: const Key('copy-dest'),
+        onPressed: () => Clipboard.setData(ClipboardData(text: ledger.currentDest(ident.address))),
+        child: const Text('Copy dest'),
       ),
     ];
     final statsPane = <Widget>[
