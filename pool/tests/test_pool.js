@@ -62,7 +62,33 @@ describe('observed interval', () => {
     assert.match(src, /stats\.lastFoundAt = Date\.now\(\)/);
     assert.equal(/stats\.lastFoundAt = sealed\?\.header/.test(src), false);
     assert.match(src, /wallIntervalMs: avgWallFindIntervalMs\(stats\.findAt\)/);
+    assert.match(src, /templateStampMs/);
     assert.equal(JOB_RESTAMP_MS, 10_000);
+  });
+
+  it('issued job header timestamp is never after wall and never parent+90s', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stamp-wall-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 8,
+      bits: 16,
+    });
+    const beforeWall = Date.now();
+    const job = pool.issueJob();
+    const afterWall = Date.now();
+    assert.ok(job?.header);
+    const decoded = decodeHeader(headerFromHex(job.header));
+    const ts = Number(decoded.timestamp);
+    assert.ok(ts <= afterWall + 50, `stamp ${ts} must not lead wall ${afterWall}`);
+    assert.ok(ts >= beforeWall - 50);
+    assert.notEqual(ts, beforeWall + TARGET_BLOCK_INTERVAL_MS);
+    assert.notEqual(ts, afterWall + TARGET_BLOCK_INTERVAL_MS);
+    pool.close();
   });
 
   it('restamp patches timestamp only; merkle/bits/jobId stay so RandomX K does not rebuild', async () => {
@@ -81,7 +107,7 @@ describe('observed interval', () => {
     assert.ok(job?.header);
     const before = decodeHeader(headerFromHex(job.header));
     // Rewind both the job stamp and the header so restamp is allowed to tick
-    // forward. A 90s-ahead template stamp must not be pulled back.
+    // forward. Restamp must not rewind a header.
     const late = Number(before.timestamp) - JOB_RESTAMP_MS - 50_000;
     const lateHeader = encodeHeader({
       version: before.version,
@@ -107,7 +133,7 @@ describe('observed interval', () => {
     pool.close();
   });
 
-  it('restamp does not pull a 90s-ahead template stamp back', () => {
+  it('restamp refuses to rewind a future header stamp', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-restamp-ahead-'));
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
@@ -121,10 +147,22 @@ describe('observed interval', () => {
     });
     const job = pool.issueJob();
     const before = decodeHeader(headerFromHex(job.header));
+    const future = Date.now() + 180_000;
+    const futureHeader = encodeHeader({
+      version: before.version,
+      prevBlockHash: before.prevBlockHash,
+      merkleRoot: before.merkleRoot,
+      continuityRoot: before.continuityRoot,
+      timestamp: BigInt(future),
+      bits: before.bits,
+      nonce: 0n,
+      baseFee: before.baseFee,
+    });
+    job.header = futureHeader.toString('hex');
     job.timestamp = String(Date.now() - JOB_RESTAMP_MS - 50);
     const next = pool.restampJob();
     const after = decodeHeader(headerFromHex(next.header));
-    assert.ok(Number(after.timestamp) >= Number(before.timestamp), 'do not rewind 90s-ahead stamp');
+    assert.ok(Number(after.timestamp) >= future - 1, 'do not rewind a future stamp');
     assert.ok(after.merkleRoot.equals(before.merkleRoot));
     assert.equal(after.bits, before.bits);
     pool.close();

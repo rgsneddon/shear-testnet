@@ -241,34 +241,23 @@ export function bitsForBlock(parentBits, parentTimestamp, blockTimestamp) {
 }
 
 /**
- * Header offset that sits in the ASERT +1 window (~32–64s), never +2
- * (≤~32s). Pool policy only — not in the consensus fingerprint.
- */
-export const TEMPLATE_PLUS1_STAMP_MS = 45_000;
-/** Wall-clock finds faster than this get a +1 stamp; else 90s hold. */
-export const TEMPLATE_FAST_WALL_MS = 64_000;
-
-/**
- * Template time for the next header. Not consensus — verifiers only
- * see the sealed header timestamp.
+ * Template time for the next header. Pool policy — not consensus.
+ * Verifiers only see the sealed header timestamp.
  *
- * - Wall already past the 90s aim: stamp wall so bits can drop.
- * - Recent wall finds faster than ~64s: stamp +1 window (~45s).
- * - Otherwise aim 90s after parent so bits hold.
- * Never returns a stamp in the +2 window (≤~32s after parent).
+ * Never after wall (the old parent+90s template ran headers hours ahead).
+ * Never before parent (≤0 interval is treated as 1 ms and climbs bits).
+ * Clock skew `wall < parent` stamps parent, not wall.
+ * Fast rounds may raise bits; they must not write a future stamp.
+ * `wallIntervalMs` is accepted for callers and ignored: wall is the interval.
  */
 export function templateStampMs(parentTimestamp, now = Date.now(), wallIntervalMs = null) {
+  void wallIntervalMs;
   const wall = Number(now);
   const parent = Number(parentTimestamp);
   if (!Number.isFinite(wall)) return Date.now();
   if (!Number.isFinite(parent)) return wall;
-  const holdAimed = parent + TARGET_BLOCK_INTERVAL_MS;
-  if (wall >= holdAimed) return wall;
-  const seen = Number(wallIntervalMs);
-  if (Number.isFinite(seen) && seen > 0 && seen < TEMPLATE_FAST_WALL_MS) {
-    return parent + TEMPLATE_PLUS1_STAMP_MS;
-  }
-  return holdAimed;
+  if (wall <= parent) return parent;
+  return wall;
 }
 
 export function blockWork(bits) {

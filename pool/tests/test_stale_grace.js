@@ -17,7 +17,7 @@ import {
   PREV_JOB_GRACE_MS,
   JOB_HEADER_HISTORY,
 } from '../src/pool.js';
-import { decodeHeader, headerFromHex } from '../../crypto/header.js';
+import { decodeHeader, encodeHeader, headerFromHex } from '../../crypto/header.js';
 
 function tmpPool(shareBits = 1) {
   const dest = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey, height: 1 });
@@ -138,6 +138,19 @@ describe('stale classification and restamp/grace accept', () => {
     const job = pool.issueJob();
     const hit = findShare(job);
     const beforeHeader = job.header;
+    rememberJobHeader(job, beforeHeader);
+    const before = decodeHeader(headerFromHex(job.header));
+    const late = Number(before.timestamp) - JOB_RESTAMP_MS - 50_000;
+    job.header = encodeHeader({
+      version: before.version,
+      prevBlockHash: before.prevBlockHash,
+      merkleRoot: before.merkleRoot,
+      continuityRoot: before.continuityRoot,
+      timestamp: BigInt(late),
+      bits: before.bits,
+      nonce: 0n,
+      baseFee: before.baseFee,
+    }).toString('hex');
     job.timestamp = String(Date.now() - JOB_RESTAMP_MS - 50);
     const next = pool.restampJob();
     assert.equal(next.jobId, job.jobId);

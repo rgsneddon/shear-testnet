@@ -17,6 +17,7 @@ import {
   HASH_BONUS_NANOS,
   HASH_TX_LIVE,
   bitsForBlock,
+  templateStampMs,
   consensusFingerprint,
   consensusLaw,
   formatShe,
@@ -968,9 +969,10 @@ export function createPool({
 
   /**
    * Re-stamp header time from wall clock so sealed times match find time.
-   * Do not rebuild merkle/continuity/bits — those are in RandomX K, and a new
-   * K on every restamp rebinds the dataset and paints a hashrate dip.
-   * If ASERT would move bits, keep the live template (miners stay on the same K).
+   * Never write a stamp after wall. Never rewind (that would be a negative
+   * interval). Do not rebuild merkle/continuity/bits on a same-bits tick —
+   * those are in RandomX K. If ASERT would move bits, maybeRestampJob cuts a
+   * new wall-stamped template so a long round can ease.
    */
   let lastEaseAt = Date.now();
   let restampTimer = null;
@@ -982,25 +984,25 @@ export function createPool({
     } catch {
       return lastJob;
     }
-    // Keep live bits (they are in RandomX K). Only tick time while ASERT still
-    // matches those bits so a found header verifies. Stamping past the window
-    // made every later find fail with reason bits. 90s-ahead stamps stay until
-    // wall clock catches up (do not pull them back).
+    const wall = Number(now);
+    let stamp = wall;
     const tip = store.tip();
     if (tip?.header) {
       try {
         const parent = decodeHeader(Buffer.from(tip.header));
-        const wantBits = bitsForBlock(parent.bits, parent.timestamp, BigInt(now));
+        stamp = templateStampMs(parent.timestamp, wall);
+        const wantBits = bitsForBlock(parent.bits, parent.timestamp, BigInt(stamp));
         if (wantBits !== Number(decoded.bits)) return lastJob;
       } catch { /* keep live stamp */ }
     }
-    if (now <= Number(decoded.timestamp)) return lastJob;
+    if (stamp > wall) return lastJob;
+    if (stamp <= Number(decoded.timestamp)) return lastJob;
     const header = encodeHeader({
       version: decoded.version,
       prevBlockHash: decoded.prevBlockHash,
       merkleRoot: decoded.merkleRoot,
       continuityRoot: decoded.continuityRoot,
-      timestamp: BigInt(now),
+      timestamp: BigInt(stamp),
       bits: decoded.bits,
       nonce: 0n,
       baseFee: decoded.baseFee,
@@ -1010,7 +1012,7 @@ export function createPool({
     lastJob = {
       ...lastJob,
       header: hex,
-      timestamp: String(now),
+      timestamp: String(stamp),
     };
     const rec = store.jobs.get(String(lastJob.jobId));
     if (rec) {
@@ -1030,7 +1032,24 @@ export function createPool({
     lastEaseAt = now;
     const before = lastJob.header;
     const job = restampLiveHeader(now);
-    if (job && job.header !== before) broadcastJob(job);
+    if (job && job.header !== before) {
+      broadcastJob(job);
+      return job;
+    }
+    const tip = store.tip();
+    if (job && tip?.header) {
+      try {
+        const parent = decodeHeader(Buffer.from(tip.header));
+        const decoded = decodeHeader(headerFromHex(lastJob.header));
+        const stamp = templateStampMs(parent.timestamp, now);
+        const wantBits = bitsForBlock(parent.bits, parent.timestamp, BigInt(stamp));
+        if (wantBits !== Number(decoded.bits) && stamp > Number(decoded.timestamp)) {
+          const next = issueJob(undefined, { force: true });
+          if (next) broadcastJob(next);
+          return next;
+        }
+      } catch { /* keep live job */ }
+    }
     return job;
   }
 

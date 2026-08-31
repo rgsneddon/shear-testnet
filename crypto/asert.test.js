@@ -5,8 +5,6 @@ import {
   nextBits,
   bitsForBlock,
   templateStampMs,
-  TEMPLATE_PLUS1_STAMP_MS,
-  TEMPLATE_FAST_WALL_MS,
   TARGET_BLOCK_INTERVAL_MS,
   GENESIS_BITS,
   LIVE_MIN_BITS,
@@ -75,38 +73,44 @@ describe('ASERT 90s block retarget', () => {
     assert.equal(eased, bitsForBlock(36, parentTs, parentTs + 12 * 3600_000));
   });
 
-  it('template stamp aims 90s after parent, or wall if the round is already late', () => {
+  it('template stamp is never after wall and never parent+90s ahead', () => {
     const parentTs = 1_700_000_000_000;
-    assert.equal(templateStampMs(parentTs, parentTs + 1_000), parentTs + TARGET_BLOCK_INTERVAL_MS);
+    const oneSec = templateStampMs(parentTs, parentTs + 1_000);
+    assert.equal(oneSec, parentTs + 1_000);
+    assert.notEqual(oneSec, parentTs + TARGET_BLOCK_INTERVAL_MS);
+    assert.ok(oneSec <= parentTs + 1_000);
+    assert.ok(oneSec >= parentTs);
     assert.equal(templateStampMs(parentTs, parentTs + TARGET_BLOCK_INTERVAL_MS), parentTs + TARGET_BLOCK_INTERVAL_MS);
-    assert.equal(templateStampMs(parentTs, parentTs + 400_000), parentTs + 400_000);
-    assert.equal(bitsForBlock(21, parentTs, templateStampMs(parentTs, parentTs + 1_000)), 21);
-    assert.equal(bitsForBlock(21, parentTs, templateStampMs(parentTs, parentTs + 400_000)), 19);
+    const late = templateStampMs(parentTs, parentTs + 400_000);
+    assert.equal(late, parentTs + 400_000);
+    assert.ok(late <= parentTs + 400_000);
+    assert.ok(bitsForBlock(21, parentTs, late) < 21);
+    const src = fs.readFileSync(new URL('./asert.js', import.meta.url), 'utf8');
+    assert.equal(/parent \+ TARGET_BLOCK_INTERVAL_MS/.test(src), false);
+    assert.equal(/holdAimed/.test(src), false);
   });
 
-  it('fast wall finds stamp the +1 window, hold at ~90s, ease when late, and never +2', () => {
+  it('fast wall rounds may raise bits; clock skew does not stamp a negative interval', () => {
     const parentTs = 1_700_000_000_000;
     const parentBits = 21;
-    assert.equal(nextBits(parentBits, TEMPLATE_PLUS1_STAMP_MS), parentBits + 1);
-    assert.notEqual(nextBits(parentBits, TEMPLATE_PLUS1_STAMP_MS), parentBits + 2);
-    assert.ok(TEMPLATE_PLUS1_STAMP_MS < TEMPLATE_FAST_WALL_MS);
-    const storeSrc = fs.readFileSync(new URL('../node/src/store.js', import.meta.url), 'utf8');
-    assert.match(storeSrc, /templateStampMs\(parent\.timestamp, wall, wallIntervalMs\)/);
     const fast = templateStampMs(parentTs, parentTs + 1_000, 26_000);
-    assert.equal(fast, parentTs + TEMPLATE_PLUS1_STAMP_MS);
-    assert.equal(bitsForBlock(parentBits, parentTs, fast), parentBits + 1);
-    assert.notEqual(nextBits(parentBits, fast - parentTs), parentBits + 2);
+    assert.equal(fast, parentTs + 1_000);
+    assert.ok(fast <= parentTs + 1_000);
+    assert.ok(bitsForBlock(parentBits, parentTs, fast) > parentBits);
     const stillFast = templateStampMs(parentTs, parentTs + 1_000, 10_000);
-    assert.equal(bitsForBlock(parentBits, parentTs, stillFast), parentBits + 1);
-    assert.notEqual(nextBits(parentBits, stillFast - parentTs), parentBits + 2);
-    const hold = templateStampMs(parentTs, parentTs + 1_000, 90_000);
-    assert.equal(hold, parentTs + TARGET_BLOCK_INTERVAL_MS);
+    assert.equal(stillFast, parentTs + 1_000);
+    const hold = templateStampMs(parentTs, parentTs + 90_000, 90_000);
+    assert.equal(hold, parentTs + 90_000);
     assert.equal(bitsForBlock(parentBits, parentTs, hold), parentBits);
-    const edgeHold = templateStampMs(parentTs, parentTs + 1_000, TEMPLATE_FAST_WALL_MS);
-    assert.equal(bitsForBlock(parentBits, parentTs, edgeHold), parentBits);
     const late = templateStampMs(parentTs, parentTs + 400_000, 26_000);
     assert.equal(late, parentTs + 400_000);
     assert.ok(bitsForBlock(parentBits, parentTs, late) < parentBits);
+    const skew = templateStampMs(parentTs, parentTs - 5_000);
+    assert.equal(skew, parentTs);
+    assert.ok(skew >= parentTs);
+    assert.notEqual(skew, parentTs - 5_000);
+    const storeSrc = fs.readFileSync(new URL('../node/src/store.js', import.meta.url), 'utf8');
+    assert.match(storeSrc, /templateStampMs\(parent\.timestamp, wall, wallIntervalMs\)/);
   });
 });
 
