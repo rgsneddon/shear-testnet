@@ -116,6 +116,23 @@
       <p>This is the public page for one hasher. Hash bonuses are not separate payments and they are not withdrawn here. On each found block they are bundled into that block’s coinbase as one line to your dest — every accepted hash this round, in full, with no Flow levy and no pool fee. Routing them through a pool withdraw would tax them. What you withdraw here is only your share of the 1 SHE block pot. That share sits with the pool until you pull it. The yellow figure is that pot credit, not yet withdrawn. Confirmed credits can leave now; unconfirmed work stays and will be ready on a later pull, once it has settled — at ninety-second blocks that is a quiet wait, and after a withdrawal the next confirmed pull is ninety hours later so the remaining sum can finish confirming. To withdraw you need two strings from your Shear wallet, not the public tag on this page. <code>she1</code> is Continuum Receive ID — Copy ID — the same silent ID you mine with. <code>ssa1</code> is on Continuum, Flow: the selectable line labelled “ssa1 dest this round (pay)”. Paste both. The mined transaction pays that dest only. Your she1 never goes on the book.</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
     </section>
+    <div class="pull-row" id="pull-row">
+      <article class="panel-card pull-acc">
+        <div class="label">Accumulated</div>
+        <div class="value yellow" id="m-pending">0 SHE</div>
+      </article>
+      <article class="panel-card pull-conf">
+        <div class="label">Confirmed pull</div>
+        <div class="value yellow" id="m-confirmed">0 SHE</div>
+        <button type="button" class="withdraw-btn" id="m-withdraw">Withdraw confirmed sum</button>
+        <form class="pull-form hid" id="pull-form" autocomplete="off">
+          <input id="pull-login" name="login" type="text" spellcheck="false" placeholder="she1 login"/>
+          <input id="pull-dest" name="dest" type="text" spellcheck="false" placeholder="ssa1 dest"/>
+          <button type="submit" class="withdraw-btn">Send confirmed sum</button>
+        </form>
+        <p class="err" id="pull-err"></p>
+      </article>
+    </div>
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Tag</div><div class="value mono" id="m-tag">—</div></article>
       <article class="panel-card"><div class="label">Miner</div><div class="value" id="m-name">—</div></article>
@@ -152,23 +169,6 @@
         <tbody></tbody>
       </table>
     </section>
-    <div class="pull-row" id="pull-row">
-      <article class="panel-card pull-acc">
-        <div class="label">Accumulated</div>
-        <div class="value yellow" id="m-pending">0 SHE</div>
-      </article>
-      <article class="panel-card pull-conf">
-        <div class="label">Confirmed pull</div>
-        <div class="value yellow" id="m-confirmed">0 SHE</div>
-        <button type="button" class="withdraw-btn" id="m-withdraw">Withdraw confirmed sum</button>
-        <form class="pull-form hid" id="pull-form" autocomplete="off">
-          <input id="pull-login" name="login" type="text" spellcheck="false" placeholder="she1 login"/>
-          <input id="pull-dest" name="dest" type="text" spellcheck="false" placeholder="ssa1 dest"/>
-          <button type="submit" class="withdraw-btn">Send confirmed sum</button>
-        </form>
-        <p class="err" id="pull-err"></p>
-      </article>
-    </div>
     <a class="back-pool" href="/">back to pool</a>
   </div>
   <script>

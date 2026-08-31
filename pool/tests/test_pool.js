@@ -489,10 +489,11 @@ describe('public miner listing', () => {
     assert.match(miner, /pull-acc \{ grid-column: span 1/);
     assert.match(miner, /pull-conf \{ grid-column: span 3/);
     assert.match(miner, /pull-form \{ display:flex; flex-wrap:nowrap/);
+    const explainerAt = miner.indexOf('id="live-pulse"');
     const workersAt = miner.indexOf('id="workers"');
     const pullAt = miner.indexOf('id="pull-row"');
     const statsAt = miner.indexOf('id="stat-grid"');
-    assert.ok(statsAt >= 0 && workersAt > statsAt && pullAt > workersAt);
+    assert.ok(explainerAt >= 0 && pullAt > explainerAt && statsAt > pullAt && workersAt > statsAt);
     assert.match(miner, /ninety hours/);
     assert.match(miner, /she1 never goes on the book/);
     assert.match(miner, /bundled into that block’s coinbase as one line/);
