@@ -1959,7 +1959,8 @@ void main() {
     aliceL.settleTo(1 + ShearLedger.spendableConfirmations);
     expect(aliceL.spendable(from), closeTo(1, 1e-12));
     expect(aliceL.spendable(from), aliceL.spendable(alice.address));
-    final tx = await aliceL.send(from: from, to: to, amount: 1, memo: 'secret-flow');
+    // Taxed send pays Phase B L on top of the amount (1 SHE empty L = 0.0002).
+    final tx = await aliceL.send(from: from, to: to, amount: 0.5, memo: 'secret-flow');
     expect(tx.from, from);
     expect(tx.to, to);
     expect(tx.memoPlain, 'secret-flow');
