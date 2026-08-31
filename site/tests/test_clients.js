@@ -66,12 +66,12 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /shear-wallet-0\.7-/);
     assert.match(html, /rgsneddon\/shear-testnet/);
     assert.doesNotMatch(html, /github\.com\/rgsneddon\/shear"/);
-    assert.match(html, /miner <strong>1\.3<\/strong>/);
+    assert.match(html, /miner <strong>1\.4<\/strong>/);
     assert.doesNotMatch(html, /sha256/);
     assert.match(html, /rgsneddon\/ShearK/);
-    assert.match(html, /ShearK-Miner-1\.3-macos\.zip/);
-    assert.match(html, /ShearK-Miner-1\.3-windows\.zip/);
-    assert.match(html, /ShearK-Miner-1\.3-linux\.zip/);
+    assert.match(html, /ShearK-Miner-1\.4-macos\.zip/);
+    assert.match(html, /ShearK-Miner-1\.4-windows\.zip/);
+    assert.match(html, /ShearK-Miner-1\.4-linux\.zip/);
     assert.match(html, /SmartScreen/);
     assert.match(html, /Authenticode/);
     assert.match(html, /Run anyway/);

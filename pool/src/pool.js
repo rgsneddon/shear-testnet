@@ -43,8 +43,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
 /** Public H/s is proven hashes in this window, not lifetime hashes / first-seen. */
 export const HASHRATE_WINDOW_MS = 180_000;
-/** Display H/s eases toward the window mean. 1s UI polls must not paint each share. */
-export const HASHRATE_EMA_TAU_S = 30;
+/** Display H/s eases toward the hasher's own rate. 60s tau: ~63% at 1 min, ~95% at 3 min. */
+export const HASHRATE_EMA_TAU_S = 60;
 /** After the last socket closes, keep the row this long. Still-connected hashers with proven shares stay listed (header bits can put shares >12s apart). */
 export const HASH_PRESENCE_MS = 12_000;
 /** Default is every sealed header. Pass a finite window to clip a test. */
@@ -52,17 +52,19 @@ export const AVG_BLOCK_WINDOW = Infinity;
 /** Re-stamp the live job this often so sealed header time tracks wall clock. */
 export const JOB_RESTAMP_MS = 10_000;
 /** Keep this many prior restamp headers per job so in-flight shares still verify. */
-export const JOB_HEADER_HISTORY = 4;
+export const JOB_HEADER_HISTORY = 12;
 /** After the tip moves, accept the previous job this long without new-round credit. */
 export const PREV_JOB_GRACE_MS = 3_000;
 /** Hold last positive self-rate this long across a RandomX cache pause. */
-export const HASHRATE_STALL_HOLD_MS = 8_000;
+export const HASHRATE_STALL_HOLD_MS = 90_000;
 /** Rebuild /api/stats JSON on this cadence. The HTTP handler never computes it. */
 export const STATS_REFRESH_MS = 400;
 const HASH_WORKER = fileURLToPath(new URL('./hash_worker.js', import.meta.url));
 const HASH_WORKER_TIMEOUT_MS = 15_000;
 /** Cap in-flight RandomX verifies so a junk submit flood cannot stall HTTP. */
-export const HASH_QUEUE_MAX = 4;
+export const HASH_QUEUE_MAX = 16;
+/** One hasher cannot fill the verify queue. Small miners still get a slot. */
+export const HASH_INFLIGHT_PER_CONN = 2;
 
 /**
  * Mean interval of consecutive sealed headers. Default is every block on
@@ -549,6 +551,15 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
  * (hashes delta / time). Proven shareBits work still mints / roundHashes.
  * Disconnected rows fall back to proven so the 12s linger is not a fake H/s.
  */
+/** Instant H/s for the operator desk. Not the public 90s ease. */
+export function liveHashrate(miner, now = Date.now()) {
+  if (minerConnected(miner)) {
+    const client = Number(miner?.clientHs) || 0;
+    if (client > 0) return client;
+  }
+  return provenHashrate(miner, now);
+}
+
 export function reportedHashrate(miner, now = Date.now()) {
   const at = Number(now) || Date.now();
   if (minerConnected(miner)) {
@@ -602,7 +613,8 @@ export function adminMinerView(m, now = Date.now()) {
     version: String(m?.version || ''),
     name: String(m?.name || ''),
     client: String(m?.client || CLIENT),
-    hashrate: reportedHashrate(m, now),
+    hashrate: liveHashrate(m, now),
+    hashrateEased: reportedHashrate(m, now),
     hashes: roundActualHashes(m),
     roundHashes: roundActualHashes(m),
     provenHashes: Number(m?.roundHashes) || 0,
@@ -664,18 +676,22 @@ export function createPool({
     hashWorker = w;
     return w;
   }
-  function hashOffThread(header) {
+  function hashOffThread(header, conn) {
     if (hashWait.size >= HASH_QUEUE_MAX) {
+      return Promise.reject(new Error('hash_busy'));
+    }
+    if (conn && Number(conn.hashInflight) >= HASH_INFLIGHT_PER_CONN) {
       return Promise.reject(new Error('hash_busy'));
     }
     const id = (hashSeq += 1);
     const copy = Buffer.from(header);
+    if (conn) conn.hashInflight = (Number(conn.hashInflight) || 0) + 1;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         hashWait.delete(id);
         reject(new Error('hash_timeout'));
       }, HASH_WORKER_TIMEOUT_MS);
-      hashWait.set(id, { resolve, reject, timer });
+      hashWait.set(id, { resolve, reject, timer, conn });
       try {
         bootHashWorker().postMessage({ id, header: copy });
       } catch (e) {
@@ -683,9 +699,11 @@ export function createPool({
         clearTimeout(timer);
         reject(e);
       }
+    }).finally(() => {
+      if (conn) conn.hashInflight = Math.max(0, (Number(conn.hashInflight) || 1) - 1);
     });
   }
-  async function scoreShareLive({ job, nonce, claimed } = {}) {
+  async function scoreShareLive({ job, nonce, claimed, conn } = {}) {
     const want = claimed ? String(claimed).toLowerCase() : '';
     const headers = candidateShareHeaders(job);
     const list = headers.length ? headers : [job?.header];
@@ -696,7 +714,7 @@ export function createPool({
         last = prep;
         continue;
       }
-      const hash = await hashOffThread(prep.header);
+      const hash = await hashOffThread(prep.header, conn);
       const hex = hash.toString('hex');
       if (want && hex !== want) {
         last = { ok: false, reason: 'bad_hash', hash: hex };
@@ -784,7 +802,6 @@ export function createPool({
       // never zero accepted / stale here — listing and linger use accepted.
       for (const c of m.connections || []) {
         if (!c) continue;
-        c.shareBits = shareBits;
         c.varShares = 0;
         c.varWindowAt = Date.now();
       }
@@ -820,24 +837,15 @@ export function createPool({
     const jobPrev = String(lastJob?.prevBlockHash || '');
     const parentOk = !tipHash || jobPrev === tipHash;
     if (!force && lastJob && parentOk && Number(lastJob.blockBits || lastJob.bits) === liveBits) {
-      const jobTs = Number(lastJob.timestamp) || 0;
-      const stampFresh = jobTs > 0 && (now - jobTs) < JOB_RESTAMP_MS;
-      if (stampFresh) {
-        if (Number(lastJob.shareBits) === sb) return lastJob;
-        lastJob = {
-          ...lastJob,
-          shareBitsPrev: Number(lastJob.shareBits),
-          shareBitsAt: now,
-          shareBits: sb,
-        };
-        const rec = store.jobs.get(String(lastJob.jobId));
-        if (rec) {
-          rec.job = lastJob;
-          rec.shareBits = sb;
-        }
-        lastIssueAt = now;
-        return lastJob;
-      }
+      lastIssueAt = now;
+      if (Number(lastJob.shareBits) === sb) return lastJob;
+      const job = {
+        ...lastJob,
+        shareBitsPrev: Number(lastJob.shareBits),
+        shareBitsAt: now,
+        shareBits: sb,
+      };
+      return job;
     }
     const hasherPay = payoutDest(
       [...miners.values()].find((m) => !isCminerFeeLogin(m.workerKey || m.login))?.login
@@ -894,17 +902,23 @@ export function createPool({
   function broadcastJob(job, { force = false } = {}) {
     if (!job) return 0;
     if (paused && !force) return 0;
-    const payload = line({ method: 'job', params: job });
     let n = 0;
-    for (const s of sockets) {
-      try {
-        if (typeof s.setNoDelay === 'function') s.setNoDelay(true);
-        if (typeof s.cork === 'function') s.cork();
-        s.write(payload);
-        if (typeof s.uncork === 'function') s.uncork();
-        bindJob(s, job);
-        n += 1;
-      } catch { /* ignore */ }
+    for (const m of miners.values()) {
+      for (const c of m.connections || []) {
+        if (!c || !c.sock) continue;
+        const sb = clampShareBits(
+          c.shareBits != null ? c.shareBits : job.shareBits,
+          { blockBits: job.blockBits || job.bits, minBits: liveShareMin() },
+        );
+        c.shareBits = sb;
+        const payload = { ...job, shareBits: sb };
+        c.job = payload;
+        try {
+          if (typeof c.sock.setNoDelay === 'function') c.sock.setNoDelay(true);
+          c.sock.write(line({ method: 'job', params: payload }));
+          n += 1;
+        } catch { /* ignore */ }
+      }
     }
     return n;
   }
@@ -1022,7 +1036,7 @@ export function createPool({
     const closedRound = !!resolved.closedRound;
     let scored;
     try {
-      scored = await scoreShareLive({ job, nonce: params.nonce, claimed });
+      scored = await scoreShareLive({ job, nonce: params.nonce, claimed, conn });
     } catch (e) {
       const reason = String(e?.message || e) === 'hash_busy' ? 'busy' : 'hash_failed';
       try { sock.write(line({ id: msg.id, error: reason })); } catch { /* ignore */ }
@@ -1118,7 +1132,6 @@ export function createPool({
           m.clientHashesRound0 = Number(m.clientHashes) || 0;
           for (const c of m.connections || []) {
             if (!c) continue;
-            c.shareBits = shareBits;
             c.varShares = 0;
             c.varWindowAt = Date.now();
           }

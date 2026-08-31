@@ -49,7 +49,7 @@
 #define LINE_CAP 8192
 #define HEX_CAP (SHEAR_HEADER_LEN * 2 + 16)
 #define QCAP 8192
-#define IN_FLIGHT_MAX 4096
+#define IN_FLIGHT_MAX 1
 #define DEFAULT_WORKER "worker"
 
 static const char *g_user = NULL;
@@ -106,6 +106,9 @@ static int g_color = 1;
 
 
 static atomic_int g_inflight = 0;
+static Share g_sent;
+static int g_have_sent = 0;
+static int enqueue_front(const Share *s);
 static uint64_t g_dropped = 0;
 static uint64_t g_submitted = 0;
 static uint64_t g_round0 = 0;
@@ -472,6 +475,20 @@ static void apply_job(const char *line) {
     pthread_mutex_unlock(&g_job_mu);
     return;
   }
+  /* Timestamp/nonce restamp: same RandomX K. Do not bump gen (that aborts
+     the hash pipeline and paints a hashrate dip every JOB_RESTAMP). */
+  if (g_have_main && g_main_job.have
+      && memcmp(g_main_job.header, job.header, 100) == 0
+      && memcmp(g_main_job.header + 108, job.header + 108, 4) == 0) {
+    memcpy(g_main_job.header, job.header, SHEAR_HEADER_LEN);
+    g_main_job.share_bits = job.share_bits;
+    g_main_job.block_bits = job.block_bits;
+    if (job.height > 0) g_main_job.height = job.height;
+    if (job.jobId[0]) snprintf(g_main_job.jobId, sizeof(g_main_job.jobId), "%s", job.jobId);
+    atomic_store_explicit(&g_share_bits_live, job.share_bits, memory_order_release);
+    pthread_mutex_unlock(&g_job_mu);
+    return;
+  }
   g_job_gen++;
   job.gen = g_job_gen;
   job.have = 1;
@@ -502,6 +519,7 @@ static void apply_ack(const char *line) {
   if (strstr(low, "ok") && !err[0]) {
     if (inflight > 0) {
       g_accepted++;
+      g_have_sent = 0;
       atomic_fetch_sub(&g_inflight, 1);
       char blk[16] = "";
       json_token(line, "block", blk, sizeof(blk));
@@ -551,11 +569,17 @@ static void apply_ack(const char *line) {
     }
     return;
   }
+  if (strstr(low, "busy")) {
+    if (inflight > 0) atomic_fetch_sub(&g_inflight, 1);
+    if (g_have_sent) enqueue_front(&g_sent);
+    return;
+  }
   if (err[0] || strstr(low, "error") || strstr(low, "refus")) {
     if (inflight > 0) {
       g_rejected++;
       atomic_fetch_sub(&g_inflight, 1);
     }
+    g_have_sent = 0;
     if (strstr(low, "old_miner") || strstr(low, "client")) {
       fprintf(stderr, "pool refused this client — use ShearHash\n");
     }
@@ -679,6 +703,11 @@ static void *hash_worker(void *arg) {
       memcpy(header, job.header, SHEAR_HEADER_LEN);
       shear_bind(header);
       n = g_origin + (uint64_t)tid;
+    } else {
+      pthread_mutex_lock(&g_job_mu);
+      if (g_have_main && g_main_job.have)
+        memcpy(header, g_main_job.header, SHEAR_HEADER_LEN);
+      pthread_mutex_unlock(&g_job_mu);
     }
     shear_set_nonce(header, n);
     if (!primed) {
@@ -749,12 +778,18 @@ static void flush_shares(Conn *mainc) {
       g_dropped++;
       continue;
     }
+    if (atomic_load_explicit(&g_inflight, memory_order_acquire) >= IN_FLIGHT_MAX) {
+      enqueue_front(&s);
+      return;
+    }
     int wr = send_submit(mainc, g_login, g_threads, s.jobId, s.nonce, s.hash);
     if (wr == 1) {
       enqueue_front(&s);
       return;
     }
     if (wr == 0) {
+      g_sent = s;
+      g_have_sent = 1;
       atomic_fetch_add_explicit(&g_inflight, 1, memory_order_relaxed);
       g_submitted++;
     }

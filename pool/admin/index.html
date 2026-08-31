@@ -97,7 +97,7 @@
           <table>
             <thead>
               <tr>
-                <th>Tag</th><th>Worker</th><th>Ver</th><th>H/s</th><th>Acc</th><th>Stale</th>
+                <th>Tag</th><th>Worker</th><th>Ver</th><th>Live H/s</th><th>Eased</th><th>Acc</th><th>Stale</th>
                 <th>Round</th><th>Blk</th><th>Thr</th><th>Bits</th><th>Seen</th><th>Reject</th><th></th>
               </tr>
             </thead>
@@ -230,6 +230,7 @@
           + '<td>' + (r.worker || '') + '</td>'
           + '<td>' + (r.version || '') + '</td>'
           + '<td class="num">' + fmtHs(r.hashrate) + '</td>'
+          + '<td class="num">' + fmtHs(r.hashrateEased) + '</td>'
           + '<td class="num">' + (r.accepted || 0) + '</td>'
           + '<td class="num">' + (r.stale || 0) + '</td>'
           + '<td class="num">' + (r.roundHashes || 0) + '</td>'
@@ -241,7 +242,7 @@
           + '<td><button type="button" data-kick="' + key + '">Kick</button> '
           + '<button type="button" data-ban="' + key + '" class="warn">Ban</button></td>'
           + '</tr>';
-      }).join('') || '<tr><td colspan="13">none</td></tr>';
+      }).join('') || '<tr><td colspan="14">none</td></tr>';
     }
     async function paintLive() {
       if (!live) return;

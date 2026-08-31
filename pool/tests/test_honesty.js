@@ -12,6 +12,7 @@ import {
   foldConnectionInventory,
   provenHashrate,
   reportedHashrate,
+  liveHashrate,
   applyMinerSelfRate,
   roundActualHashes,
   sortMinersByHashrate,
@@ -24,6 +25,8 @@ import {
   HASHRATE_WINDOW_MS,
   HASHRATE_EMA_TAU_S,
   HASHRATE_STALL_HOLD_MS,
+  HASH_QUEUE_MAX,
+  HASH_INFLIGHT_PER_CONN,
 } from '../src/pool.js';
 import { extraMintAllowed, RESERVE_PROGRAM, JOIN_PROGRAM, HASH_BONUS_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
 import { pendingFor } from '../src/wallet_api.js';
@@ -278,12 +281,15 @@ describe('folded-row inventory', () => {
   });
 
   it('connected self-rate uses HASHRATE_EMA_TAU_S and holds across a short stall', () => {
-    assert.equal(HASHRATE_EMA_TAU_S, 30);
-    assert.ok(HASHRATE_STALL_HOLD_MS >= 5_000);
+    assert.equal(HASHRATE_EMA_TAU_S, 60);
+    assert.ok(HASHRATE_STALL_HOLD_MS >= 60_000);
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     assert.equal(/easeHashrate\(\s*miner,\s*client,\s*now,\s*3\s*\)/.test(src), false);
     assert.equal(/easeHashrate\(miner, client, now, 3\)/.test(src), false);
     assert.match(src, /easeHashrate\(miner, client, at, HASHRATE_EMA_TAU_S\)/);
+    assert.equal(HASH_QUEUE_MAX, 16);
+    assert.equal(HASH_INFLIGHT_PER_CONN, 2);
+    assert.equal(/c\.shareBits = shareBits/.test(src), false);
     const t0 = 1_700_000_000_000;
     const m = { connections: [{ sock: {} }], clientHs: 100 };
     const a = reportedHashrate(m, t0);
@@ -295,10 +301,13 @@ describe('folded-row inventory', () => {
     m.clientHs = 0;
     const c = reportedHashrate(m, t0 + 2000);
     assert.ok(c > 50, `few-second stall must not paint ~0, got ${c}`);
+    const live = { connections: [{ sock: {} }], clientHs: 55, emaHs: 400, emaAt: t0 };
+    assert.equal(liveHashrate(live, t0 + 1000), 55);
+    assert.ok(reportedHashrate({ ...live, emaHs: 400, emaAt: t0 }, t0 + 1000) > 55);
   });
 
   it('reported hashrate eases over HASHRATE_EMA_TAU_S instead of jumping each 1s poll', () => {
-    assert.equal(HASHRATE_EMA_TAU_S, 30);
+    assert.equal(HASHRATE_EMA_TAU_S, 60);
     const now = 1_700_000_000_000;
     const m = {
       connections: [{ sock: {} }],
@@ -312,7 +321,7 @@ describe('folded-row inventory', () => {
     const b = reportedHashrate(m, now + 1000);
     assert.ok(b < 2_980_000, `eased down from 3MH/s, got ${b}`);
     assert.ok(b > 2_800_000, `1s poll must not drop to the new instant, got ${b}`);
-    const c = reportedHashrate(m, now + 30_000);
+    const c = reportedHashrate(m, now + HASHRATE_EMA_TAU_S * 1000);
     assert.ok(c < 2_200_000, `after ~tau should be near 1MH/s, got ${c}`);
     assert.ok(c > 1_000_000);
   });
