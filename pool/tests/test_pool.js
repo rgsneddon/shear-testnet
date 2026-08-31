@@ -236,6 +236,9 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, />SHE</);
     assert.equal(html.toLowerCase().includes('shearhash'), true);
     assert.match(html, /She is Private/);
+    assert.match(html, /SmartScreen/);
+    assert.match(html, /Authenticode/);
+    assert.match(html, /win-smartscreen/);
     assert.match(html, /ssa1/);
     assert.match(html, /YOUR_SHE1/);
     assert.equal(/--user shear1/.test(html), false);
@@ -481,6 +484,15 @@ describe('public miner listing', () => {
     assert.match(miner, /id="m-pending"/);
     assert.match(miner, /value yellow/);
     assert.match(miner, /Withdraw confirmed sum/);
+    assert.match(miner, /id="pull-row"/);
+    assert.match(miner, /grid-template-columns: repeat\(4/);
+    assert.match(miner, /pull-acc \{ grid-column: span 1/);
+    assert.match(miner, /pull-conf \{ grid-column: span 3/);
+    assert.match(miner, /pull-form \{ display:flex; flex-wrap:nowrap/);
+    const workersAt = miner.indexOf('id="workers"');
+    const pullAt = miner.indexOf('id="pull-row"');
+    const statsAt = miner.indexOf('id="stat-grid"');
+    assert.ok(statsAt >= 0 && workersAt > statsAt && pullAt > workersAt);
     assert.match(miner, /ninety hours/);
     assert.match(miner, /she1 never goes on the book/);
     assert.match(miner, /ssa1 dest this round \(pay\)/);

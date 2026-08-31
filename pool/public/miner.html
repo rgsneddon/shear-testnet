@@ -28,17 +28,30 @@
     }
     .grid { display:grid; gap:8px; width:100%; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 8px 0 16px; }
     .grid .panel-card { margin:0; padding:7px 8px; }
+    .pull-row {
+      display:grid; gap:8px; width:100%;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin: 8px 0 16px; align-items: stretch;
+    }
+    .pull-row .panel-card { margin:0; padding:7px 8px; min-width:0; }
+    .pull-acc { grid-column: span 1; }
+    .pull-conf { grid-column: span 3; }
     .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; }
     .value { font-size:.9rem; font-weight:650; margin-top:2px; color:var(--cyan); overflow-wrap:anywhere; }
     .value.yellow { color:#d4a017; }
     .withdraw-btn {
-      width:100%; margin-top:6px; padding:.45rem .6rem; cursor:pointer;
+      margin-top:6px; padding:.45rem .6rem; cursor:pointer;
       background:var(--input, #fff); color:var(--cyan); border:1px solid var(--blue);
       font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; font-size:.78rem; text-transform:uppercase; letter-spacing:.04em;
     }
-    .pull-form input { width:100%; margin:.3rem 0; padding:.4rem .5rem; font-size:16px; border:1px solid var(--blue); background:#fff; color:var(--ink); }
-    .hid { display:none; }
-    .err { color:#b42318; font-size:.85rem; min-height:1.1em; }
+    .pull-form { display:flex; flex-wrap:nowrap; gap:8px; align-items:center; margin-top:8px; width:100%; min-width:0; }
+    .pull-form input {
+      flex:1 1 0; min-width:0; width:auto; margin:0; padding:.4rem .5rem; font-size:16px;
+      border:1px solid var(--blue); background:#fff; color:var(--ink);
+    }
+    .pull-form .withdraw-btn { flex:0 0 auto; margin:0; width:auto; white-space:nowrap; }
+    .hid { display:none !important; }
+    .err { color:#b42318; font-size:.85rem; min-height:1.1em; margin:6px 0 0; }
     a { color:var(--cyan); }
     .mono { font-family: ui-monospace, Consolas, monospace; font-size:.88rem; }
     table { width:100%; border-collapse:collapse; }
@@ -62,7 +75,11 @@
       color: var(--muted); font-size: .8rem; text-decoration: none;
     }
     .back-pool:hover { color: var(--cyan); }
-    @media (max-width: 1024px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 1024px) {
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .pull-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .pull-conf { grid-column: span 1; }
+    }
   </style>
 </head>
 <body>
@@ -80,7 +97,7 @@
       <a class="nav-btn" href="/">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.1" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.3" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.7" target="_blank" rel="noopener">WALLET</a>
     </nav>
@@ -100,18 +117,6 @@
       <p class="pulse" id="live-pulse">live · testnet</p>
     </section>
     <div class="grid" id="stat-grid">
-      <article class="panel-card"><div class="label">Accumulated</div><div class="value yellow" id="m-pending">0 SHE</div></article>
-      <article class="panel-card">
-        <div class="label">Confirmed pull</div>
-        <div class="value yellow" id="m-confirmed">0 SHE</div>
-        <button type="button" class="withdraw-btn" id="m-withdraw">Withdraw confirmed sum</button>
-        <form class="pull-form hid" id="pull-form" autocomplete="off">
-          <input id="pull-login" name="login" type="text" spellcheck="false" placeholder="she1 login"/>
-          <input id="pull-dest" name="dest" type="text" spellcheck="false" placeholder="ssa1 dest"/>
-          <button type="submit" class="withdraw-btn">Send confirmed sum</button>
-          <p class="err" id="pull-err"></p>
-        </form>
-      </article>
       <article class="panel-card"><div class="label">Tag</div><div class="value mono" id="m-tag">—</div></article>
       <article class="panel-card"><div class="label">Miner</div><div class="value" id="m-name">—</div></article>
       <article class="panel-card"><div class="label">Version</div><div class="value" id="m-version">—</div></article>
@@ -147,6 +152,23 @@
         <tbody></tbody>
       </table>
     </section>
+    <div class="pull-row" id="pull-row">
+      <article class="panel-card pull-acc">
+        <div class="label">Accumulated</div>
+        <div class="value yellow" id="m-pending">0 SHE</div>
+      </article>
+      <article class="panel-card pull-conf">
+        <div class="label">Confirmed pull</div>
+        <div class="value yellow" id="m-confirmed">0 SHE</div>
+        <button type="button" class="withdraw-btn" id="m-withdraw">Withdraw confirmed sum</button>
+        <form class="pull-form hid" id="pull-form" autocomplete="off">
+          <input id="pull-login" name="login" type="text" spellcheck="false" placeholder="she1 login"/>
+          <input id="pull-dest" name="dest" type="text" spellcheck="false" placeholder="ssa1 dest"/>
+          <button type="submit" class="withdraw-btn">Send confirmed sum</button>
+        </form>
+        <p class="err" id="pull-err"></p>
+      </article>
+    </div>
     <a class="back-pool" href="/">back to pool</a>
   </div>
   <script>
