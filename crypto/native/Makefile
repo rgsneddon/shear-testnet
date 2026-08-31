@@ -3,7 +3,6 @@ RX := $(abspath ../randomx)
 RXLIB := $(RX)/build/librandomx.a
 MINER := $(abspath ../../sheark-miner)
 CC ?= cc
-CXX ?= c++
 CFLAGS ?= -O2 -Wall -fPIC
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
@@ -16,8 +15,9 @@ endif
 
 all: shearhash.node
 
+# C sources. Do not link with g++ — stdatomic.h is not C++ on this box.
 shearhash.node: shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(RXLIB)
-	$(CXX) $(CFLAGS) $(LINKFLAGS) \
+	$(CC) $(CFLAGS) $(LINKFLAGS) \
 	  -I$(NODE_INC) -I$(MINER)/src -I$(RX)/src \
 	  -o $@ shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(RXLIB) \
 	  -pthread

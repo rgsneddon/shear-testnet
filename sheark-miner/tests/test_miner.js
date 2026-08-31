@@ -101,6 +101,25 @@ describe('ShearK-Miner', () => {
     assert.deepEqual(zipNames.sort(), ['ShearK-Miner.exe', 'example.bat'].sort());
   });
 
+  it('1.5 linux zip is ELF, never Darwin Mach-O', () => {
+    const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.5-linux.zip');
+    if (!fs.existsSync(zip)) return;
+    const py = spawnSync('python3', ['-c',
+      'import zipfile,sys\n'
+      + 'z=zipfile.ZipFile(sys.argv[1])\n'
+      + 'print("\\n".join(z.namelist()))\n'
+      + 'b=z.read("ShearK-Miner")[:4]\n'
+      + 'print("MAGIC", b.hex())\n'
+      + 'print("MODE", oct((z.getinfo("ShearK-Miner").external_attr >> 16) & 0o777))',
+      zip], { encoding: 'utf8' });
+    assert.equal(py.status, 0, py.stderr);
+    const out = py.stdout;
+    assert.match(out, /ShearK-Miner/);
+    assert.match(out, /example\.sh/);
+    assert.match(out, /MAGIC 7f454c46/);
+    assert.equal(/MAGIC cffaedfe/.test(out), false);
+  });
+
   it('leftover linux zip is ShearK-Miner + example.sh', () => {
     const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.4-linux.zip');
     if (!fs.existsSync(zip)) return;
