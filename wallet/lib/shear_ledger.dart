@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'shear_ctf.dart';
 import 'shear_identity.dart';
+import 'shear_eip712.dart';
+import 'shear_levy.dart';
 
 const kSheDecimals = 11;
 const kShePublicDigits = 9;
@@ -1006,12 +1008,24 @@ class ShearLedger {
       throw ArgumentError('rest_frame');
     }
     var src = from;
-    if (spendable(src) < amount && restFrame != null) {
-      if (spendableOwned(restFrame, paymentCode: paymentCode) >= amount) {
-        src = spendFrom(restFrame, paymentCode: paymentCode, amount: amount);
+    var depth = 0;
+    if (pool != null && !local) {
+      try {
+        final pressure = await pool!.mempoolPressure();
+        depth = (pressure['depth'] as num?)?.toInt() ?? 0;
+      } catch (_) {}
+    }
+    final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
+    final taxed = levyTaxed(sendKind);
+    final nanos = (amount * kUnitsPerShe).round();
+    final levy = taxed ? levyNanos(nanos, depth: depth) : 0;
+    final needShe = amount + levy / kUnitsPerShe;
+    if (spendable(src) < needShe && restFrame != null) {
+      if (spendableOwned(restFrame, paymentCode: paymentCode) >= needShe) {
+        src = spendFrom(restFrame, paymentCode: paymentCode, amount: needShe);
       }
     }
-    if (spendable(src) < amount) throw StateError('insufficient');
+    if (spendable(src) < needShe) throw StateError('insufficient');
     Map<String, dynamic>? memoCt;
     if (memo != null && memo.isNotEmpty) {
       memoCt = await memoSeal(to, memo);
@@ -1046,6 +1060,37 @@ class ShearLedger {
       memo: memoCt != null,
       memoPlain: memo,
       memoCt: memoCt,
+    );
+    _txs.add(tx);
+    return tx;
+  }
+
+  Future<ShearTx> pullPool({
+    required String login,
+    required String dest,
+    required double amount,
+    required Uint8List seed,
+  }) async {
+    if (amount <= 0) throw ArgumentError('amount');
+    if (isShearAddress(dest) || dest.startsWith('she1')) {
+      throw ArgumentError('she1');
+    }
+    if (!isDestAddress(dest)) throw ArgumentError('dest');
+    if (!login.startsWith('she1')) throw ArgumentError('need_she1');
+    final nanos = (amount * kUnitsPerShe).round();
+    final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos);
+    if (pool == null) throw StateError('no_pool');
+    final json = await pool!.poolWithdraw(login: login, dest: dest, nanos: nanos, sig: sig);
+    if (json['ok'] != true) {
+      throw StateError(json['reason']?.toString() ?? 'withdraw');
+    }
+    final tx = ShearTx(
+      id: json['tx']?['id']?.toString() ?? 'pull-${DateTime.now().millisecondsSinceEpoch}',
+      from: 'pool',
+      to: dest,
+      amount: amount,
+      kind: 'pool-withdraw',
+      confirmed: false,
     );
     _txs.add(tx);
     return tx;
@@ -1117,6 +1162,21 @@ class ShearPoolClient {
         'to': to,
         'amount': amount,
         if (memoCt != null) 'memoCt': memoCt,
+      });
+
+  Future<Map<String, dynamic>> mempoolPressure() => _get('/api/mempoolPressure');
+
+  Future<Map<String, dynamic>> poolWithdraw({
+    required String login,
+    required String dest,
+    required int nanos,
+    required String sig,
+  }) =>
+      _post('/api/pool/withdraw', {
+        'login': login,
+        'dest': dest,
+        'nanos': nanos,
+        'sig': sig,
       });
 
   Future<Map<String, dynamic>> stats() => _get('/api/stats');

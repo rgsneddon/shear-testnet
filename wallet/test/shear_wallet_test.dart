@@ -22,6 +22,8 @@ import 'package:shear_wallet/shear_confirm_pie.dart';
 import 'package:shear_wallet/shear_export.dart';
 import 'package:shear_wallet/shear_biometrics.dart';
 import 'package:shear_wallet/shear_social.dart';
+import 'package:shear_wallet/shear_eip712.dart';
+import 'package:shear_wallet/shear_levy.dart';
 import 'package:crypto/crypto.dart';
 
 const kGatePassword = 'correct-horse';
@@ -58,7 +60,7 @@ void main() {
     final relEnt = File('macos/Runner/Release.entitlements').readAsStringSync();
     expect(debugEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.7"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.8"'), isTrue);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
     expect(activity.contains('FlutterActivity()'), isFalse);
@@ -667,7 +669,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.7');
+    expect(kWalletVersion, '0.8');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -677,6 +679,23 @@ void main() {
     expect(formatShe(kHashBonusShe), '0.000000000');
     expect(formatShe(1e-8), '0.000000010');
     expect(kHashBonusShe, 0.00000000001);
+    expect(kShePublicDigits, 9);
+    expect(levyNanos(kUnitsPerShe), 20000000);
+    expect(levyNanos(kUnitsPerShe) / kUnitsPerShe, 0.0002);
+    expect(kEip712ChainId, 2701);
+    const login = 'she1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
+    const dest = 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
+    const nanos = 5000000000;
+    final digest = poolWithdrawDigest(login: login, dest: dest, nanos: nanos);
+    expect(
+      digest.map((e) => e.toRadixString(16).padLeft(2, '0')).join(),
+      'd1ffd589655cb0f2b443c32b8c6fdefad1afa5ed81910a4a6c9c4636c78ab6a9',
+    );
+    final seed = Uint8List.fromList(List<int>.filled(32, 7));
+    final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos);
+    expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos, sig: sig), isTrue);
+    expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos, sig: ''), isFalse);
+    expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos + 1, sig: sig), isFalse);
     const origin = 'https://dapp.example/stake-pool-a.json';
     const source = '{"id":"stake-pool-a"}';
     expect(issueVorticeKey('stake-pool-a'), isNull);
@@ -998,10 +1017,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.7');
-    expect(kWalletVersion, '0.7');
+    expect(app.title, 'Shear 0.8');
+    expect(kWalletVersion, '0.8');
     await tester.pump();
-    expect(find.textContaining('0.7'), findsWidgets);
+    expect(find.textContaining('0.8'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);

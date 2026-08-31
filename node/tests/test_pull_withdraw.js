@@ -10,6 +10,7 @@ import {
   verifyPoolWithdrawOffchain,
   containsShe1,
 } from '../../crypto/levy.js';
+import { signPoolWithdraw } from '../../crypto/eip712.js';
 import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { splitPot } from '../../pool/src/pool.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
@@ -48,18 +49,24 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     assert.equal(fee.address, poolFeeDest());
     assert.equal(containsShe1(shares), false);
 
-    assert.equal(verifyPoolWithdrawOffchain({ login: '', dest, nanos: 1e8, sig: 'x' }).ok, false);
-    assert.equal(verifyPoolWithdrawOffchain({ login: 'she1abc', dest, nanos: 1e8, sig: '' }).reason, 'unsigned');
-    assert.equal(verifyPoolWithdrawOffchain({ login: 'ssa1nope', dest, nanos: 1e8, sig: 'x' }).reason, 'need_she1');
-    assert.equal(verifyPoolWithdrawOffchain({ login: 'she1abc', dest: 'she1leak', nanos: 1e8, sig: 'x' }).reason, 'she1');
+    assert.equal(verifyPoolWithdrawOffchain({ login: '', dest, nanos: 2e9, sig: 'x' }).ok, false);
+    assert.equal(verifyPoolWithdrawOffchain({ login: 'she1abc', dest, nanos: 2e9, sig: '' }).reason, 'unsigned');
+    assert.equal(verifyPoolWithdrawOffchain({ login: 'ssa1nope', dest, nanos: 2e9, sig: 'x' }).reason, 'need_she1');
+    assert.equal(verifyPoolWithdrawOffchain({ login: 'she1abc', dest: 'she1leak', nanos: 2e9, sig: 'x' }).reason, 'she1');
 
+    const sig = signPoolWithdraw({
+      seed: Buffer.alloc(32, 7),
+      login: id.paymentCode,
+      dest,
+      nanos: 2_000_000_000,
+    });
     const off = verifyPoolWithdrawOffchain({
       login: id.paymentCode,
       dest,
       nanos: 2_000_000_000,
-      sig: 'ok',
+      sig,
     });
-    assert.equal(off.ok, true);
+    assert.equal(off.ok, true, off.reason);
     const from = poolPayoutDest();
     const L = levyNanos(off.nanos);
     const tx = poolWithdrawTx({ from, to: dest, nanos: off.nanos, fee: L });

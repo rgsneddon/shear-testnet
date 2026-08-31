@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto';
 import { encodeDest } from './address.js';
 import { NANOS_PER_SHE } from './asert.js';
+import { verifyPoolWithdrawSig } from './eip712.js';
 
 export const FEE_TAU_MS = 90_000;
 export const FEE_TARGET_WEIGHT = 8;
@@ -200,13 +201,16 @@ export function poolWithdrawTx({ from, to, nanos, fee, id } = {}) {
   };
 }
 
-/** Off-chain EIP-712 stand-in: she1 never enters the mined body. */
+/** Off-chain EIP-712 PoolWithdraw on chainId 2701. she1 never enters the mined body. */
 export function verifyPoolWithdrawOffchain({ login, dest, nanos, sig } = {}) {
   const she = String(login || '').trim().split('.')[0];
   if (!she.startsWith('she1')) return { ok: false, reason: 'need_she1' };
-  if (!sig) return { ok: false, reason: 'unsigned' };
   if (!dest || containsShe1(dest)) return { ok: false, reason: 'she1' };
   const n = Math.floor(Number(nanos) || 0);
   if (n < WITHDRAW_MIN_NANOS) return { ok: false, reason: 'min' };
+  if (!sig) return { ok: false, reason: 'unsigned' };
+  if (!verifyPoolWithdrawSig({ login: she, dest, nanos: n, sig })) {
+    return { ok: false, reason: 'unsigned' };
+  }
   return { ok: true, login: she, dest, nanos: n };
 }

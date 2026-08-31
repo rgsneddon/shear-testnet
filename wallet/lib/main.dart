@@ -22,8 +22,10 @@ import 'shear_confirm_pie.dart';
 import 'shear_biometrics.dart';
 import 'shear_export.dart';
 import 'shear_social.dart';
+import 'shear_levy.dart';
+import 'shear_eip712.dart';
 
-const kWalletVersion = '0.7';
+const kWalletVersion = '0.8';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -949,9 +951,36 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         },
         child: const Text('Send'),
       ),
+      FilledButton(
+        onPressed: () async {
+          try {
+            final amt = double.parse(flowAmt.text);
+            final dest = ledger.currentDest(ident.address);
+            final tx = await ledger.pullPool(
+              login: ident.paymentCode,
+              dest: dest,
+              amount: amt,
+              seed: hexToBytes(ident.seedHex),
+            );
+            _ingestTx(ident, tx);
+            _focusedTxId = tx.id;
+            setState(() {});
+          } catch (e) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+            }
+          }
+        },
+        child: const Text('Pull from pool'),
+      ),
       const SizedBox(height: 8),
+      Builder(builder: (_) {
+        final amt = double.tryParse(flowAmt.text) ?? 0;
+        final L = levyNanos((amt * kUnitsPerShe).round());
+        return Text('Flow levy (empty mempool) ${formatShe(L / kUnitsPerShe)} SHE. Hash bonuses stay on the found block.');
+      }),
       const Text(
-        'Receive: offer she1 (silent ID). Chain dests are ssa1. Never share shear1. Memo text is only in Shearview and theirs.',
+        'Receive: offer she1 (silent ID). Chain dests are ssa1. Never share shear1. Memo text is only in Shearview and theirs. Pull from pool signs EIP-712 PoolWithdraw (chainId 2701); she1 never goes on the book.',
       ),
     ]);
   }
