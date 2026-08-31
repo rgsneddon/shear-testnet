@@ -98,7 +98,7 @@
       <a class="nav-btn" href="/">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.4" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.9" target="_blank" rel="noopener">WALLET</a>
     </nav>
@@ -255,9 +255,17 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ login: login, dest: dest }),
       }).then(function (r) { return r.json(); }).then(function (j) {
-        if (!j.ok) { err.textContent = j.reason || 'unsigned'; return; }
-        document.getElementById('pull-form').classList.add('hid');
-        tick();
+        if (j && j.ok) {
+          document.getElementById('pull-form').classList.add('hid');
+          err.textContent = '';
+          tick();
+          return;
+        }
+        if (j && j.reason === 'unsigned' && j.pending) {
+          err.textContent = 'Waiting for wallet to sign';
+          return;
+        }
+        err.textContent = (j && j.reason) || 'unsigned';
       }).catch(function () { err.textContent = 'unsigned'; });
     });
     setInterval(tick, 1000);

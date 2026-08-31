@@ -705,6 +705,16 @@ void main() {
     expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos, sig: sig), isTrue);
     expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos, sig: ''), isFalse);
     expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos + 1, sig: sig), isFalse);
+    final dartMain = File('lib/main.dart').readAsStringSync();
+    expect(dartMain.contains("Key('pull-sign')"), isTrue);
+    expect(dartMain.contains("Key('pull-sign-accept')"), isTrue);
+    expect(dartMain.contains("Key('pull-sign-cancel')"), isTrue);
+    expect(dartMain.contains('Sign pool pull'), isTrue);
+    expect(dartMain.contains('signPendingPull'), isTrue);
+    expect(dartMain.contains("login != ident.paymentCode.split('.')[0]"), isTrue);
+    final dartLedger = File('lib/shear_ledger.dart').readAsStringSync();
+    expect(dartLedger.contains('signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos)'), isTrue);
+    expect(dartLedger.contains('fetchPendingPull'), isTrue);
     const origin = 'https://dapp.example/stake-pool-a.json';
     const source = '{"id":"stake-pool-a"}';
     expect(issueVorticeKey('stake-pool-a'), isNull);
@@ -2164,6 +2174,152 @@ void main() {
     expect(again, isNull);
     expect(ledger.spendable(payout), closeTo(issued.she, 1e-12));
   });
+
+  testWidgets('unlocked matching she1 signs pending pool pull; cancel and mismatch do not', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-pull-sign-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final dest = destForLogin(ident.address, height: 1, viewKey: ident.viewKey)!;
+    expect(dest.startsWith('ssa1'), isTrue);
+    const confirmedNanos = 5 * 100000000000; // 5 SHE confirmed, not a Flow field
+    final other = createIdentity();
+    final pool = _MemPullPool();
+    final ledger = ShearLedger(pool: pool)..viewSecret = ident.viewKey;
+    ledger.confirmRound(address: ident.address, pot: 1, height: 1);
+    ledger.settleTo(ShearLedger.spendableConfirmations);
+    final appKey = GlobalKey<ShearWalletAppState>();
+    await tester.pumpWidget(ShearWalletApp(
+      key: appKey,
+      session: session,
+      ledger: ledger,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Spendable'), findsOneWidget);
+
+    pool.pending = {
+      'id': 'pull-other-1',
+      'login': other.paymentCode,
+      'dest': dest,
+      'nanos': confirmedNanos,
+      'chainId': 2701,
+    };
+    final mismatchFut = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    await mismatchFut;
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+    expect(find.text('Sign pool pull'), findsNothing);
+    expect(pool.posted, isEmpty);
+    expect(ledger.transactions.where((t) => t.kind == 'pool-withdraw'), isEmpty);
+
+    pool.pending = {
+      'id': 'pull-match-cancel',
+      'login': ident.paymentCode,
+      'dest': dest,
+      'nanos': confirmedNanos,
+      'chainId': 2701,
+    };
+    final cancelFut = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('pull-sign')), findsOneWidget);
+    expect(find.text('Sign pool pull'), findsOneWidget);
+    expect(find.byKey(const Key('pull-sign-accept')), findsOneWidget);
+    expect(find.byKey(const Key('pull-sign-cancel')), findsOneWidget);
+    expect(
+      find.descendant(of: find.byKey(const Key('pull-sign')), matching: find.byType(TextField)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: find.byKey(const Key('pull-sign')), matching: find.text('Flow')),
+      findsNothing,
+    );
+    expect(find.textContaining(dest), findsWidgets);
+    await tester.tap(find.byKey(const Key('pull-sign-cancel')));
+    await tester.pump();
+    await cancelFut;
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+    expect(pool.posted, isEmpty);
+    expect(ledger.transactions.where((t) => t.kind == 'pool-withdraw'), isEmpty);
+
+    pool.pending = {
+      'id': 'pull-match-sign',
+      'login': ident.paymentCode,
+      'dest': dest,
+      'nanos': confirmedNanos,
+      'chainId': 2701,
+    };
+    final signFut = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('pull-sign')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('pull-sign-accept')));
+    await tester.pump();
+    await signFut;
+    expect(pool.posted, hasLength(1));
+    final posted = pool.posted.single;
+    expect(posted['login'], ident.paymentCode);
+    expect(posted['dest'], dest);
+    expect(posted['nanos'], confirmedNanos);
+    expect(posted.containsKey('amount'), isFalse);
+    expect(posted['nanos'], isNot(1 * 100000000000));
+    expect(
+      verifyPoolWithdrawSig(
+        login: ident.paymentCode,
+        dest: dest,
+        nanos: confirmedNanos,
+        sig: posted['sig']?.toString() ?? '',
+      ),
+      isTrue,
+    );
+    expect(
+      verifyPoolWithdrawSig(
+        login: ident.paymentCode,
+        dest: dest,
+        nanos: 1 * 100000000000,
+        sig: posted['sig']?.toString() ?? '',
+      ),
+      isFalse,
+    );
+    final pulls = ledger.transactions.where((t) => t.kind == 'pool-withdraw').toList();
+    expect(pulls, hasLength(1));
+    expect(pulls.single.to, dest);
+    expect(pulls.single.amount, closeTo(confirmedNanos / kUnitsPerShe, 1e-12));
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+  });
+}
+
+class _MemPullPool extends ShearPoolClient {
+  _MemPullPool() : super(baseUrl: 'http://127.0.0.1:9');
+
+  Map<String, dynamic>? pending;
+  final List<Map<String, dynamic>> posted = [];
+
+  @override
+  Future<Map<String, dynamic>> pullPending(String login) async => {
+        'ok': true,
+        'public': false,
+        'pending': pending,
+        'chainId': 2701,
+      };
+
+  @override
+  Future<Map<String, dynamic>> poolWithdraw({
+    required String login,
+    required String dest,
+    required int nanos,
+    required String sig,
+  }) async {
+    posted.add({'login': login, 'dest': dest, 'nanos': nanos, 'sig': sig});
+    return {
+      'ok': true,
+      'tx': {'id': 'pull-tx-1', 'to': dest, 'nanos': nanos, 'kind': 'pool-withdraw'},
+    };
+  }
 }
 
 HttpClient _realHttp() {
@@ -2203,6 +2359,8 @@ class _PoolLive {
   Map<String, dynamic>? reservePortal;
   Map<String, dynamic>? joinVault;
   final Set<String> joinClaimed = {};
+  Map<String, dynamic>? pendingPull;
+  final List<Map<String, dynamic>> postedWithdraws = [];
 
   double reconstructed(String addr) {
     if (destBalances.isEmpty) {
@@ -2303,6 +2461,29 @@ Future<HttpServer> _fakePool({
             'root': j.root,
           }));
         }
+      }
+    } else if (req.uri.path == '/api/pool/pullPending' || req.uri.path == '/api/pool/pullpending') {
+      req.response.write(jsonEncode({
+        'ok': true,
+        'public': false,
+        'pending': state.pendingPull,
+        'chainId': 2701,
+      }));
+    } else if (req.uri.path == '/api/pool/withdraw') {
+      state.postedWithdraws.add(Map<String, dynamic>.from(body));
+      final login = body['login']?.toString() ?? '';
+      final dest = body['dest']?.toString() ?? '';
+      final nanos = (body['nanos'] as num?)?.round() ?? 0;
+      final sig = body['sig']?.toString() ?? '';
+      if (!verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos, sig: sig)) {
+        req.response.statusCode = 400;
+        req.response.write(jsonEncode({'ok': false, 'reason': 'unsigned'}));
+      } else {
+        state.pendingPull = null;
+        req.response.write(jsonEncode({
+          'ok': true,
+          'tx': {'id': 'pull-tx-1', 'to': dest, 'nanos': nanos, 'kind': 'pool-withdraw'},
+        }));
       }
     } else if (req.uri.path == '/api/wallet/send') {
       posted?.add(body);

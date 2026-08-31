@@ -1096,6 +1096,45 @@ class ShearLedger {
     return tx;
   }
 
+  Future<Map<String, dynamic>?> fetchPendingPull(String login) async {
+    if (pool == null) return null;
+    final json = await pool!.pullPending(login);
+    if (json['ok'] != true) return null;
+    final p = json['pending'];
+    if (p is Map) return Map<String, dynamic>.from(p);
+    return null;
+  }
+
+  Future<ShearTx> signPendingPull({
+    required String login,
+    required String dest,
+    required int nanos,
+    required Uint8List seed,
+  }) async {
+    if (nanos <= 0) throw ArgumentError('nanos');
+    if (isShearAddress(dest) || dest.startsWith('she1')) {
+      throw ArgumentError('she1');
+    }
+    if (!isDestAddress(dest)) throw ArgumentError('dest');
+    if (!login.startsWith('she1')) throw ArgumentError('need_she1');
+    final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos);
+    if (pool == null) throw StateError('no_pool');
+    final json = await pool!.poolWithdraw(login: login, dest: dest, nanos: nanos, sig: sig);
+    if (json['ok'] != true) {
+      throw StateError(json['reason']?.toString() ?? 'withdraw');
+    }
+    final tx = ShearTx(
+      id: json['tx']?['id']?.toString() ?? 'pull-${DateTime.now().millisecondsSinceEpoch}',
+      from: 'pool',
+      to: dest,
+      amount: nanos / kUnitsPerShe,
+      kind: 'pool-withdraw',
+      confirmed: false,
+    );
+    _txs.add(tx);
+    return tx;
+  }
+
   void replaceFromBackup({
     required String address,
     required double spendable,
@@ -1178,6 +1217,9 @@ class ShearPoolClient {
         'nanos': nanos,
         'sig': sig,
       });
+
+  Future<Map<String, dynamic>> pullPending(String login) =>
+      _get('/api/pool/pullPending?login=${Uri.encodeQueryComponent(login)}');
 
   Future<Map<String, dynamic>> stats() => _get('/api/stats');
 

@@ -16,7 +16,7 @@ import { requiredJobFields, encodeHeader, decodeHeader, headerFromHex } from '..
 import { payoutDest } from '../../crypto/address.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, JOB_RESTAMP_MS, STATS_REFRESH_MS } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, JOB_RESTAMP_MS, STATS_REFRESH_MS } from '../src/pool.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
 import { verifyPoolWithdrawOffchain } from '../../crypto/levy.js';
 import { publicJob, buildTemplate, hashBonusByMiner } from '../../node/src/chain.js';
@@ -40,6 +40,16 @@ describe('observed interval', () => {
     assert.equal(avgBlockIntervalMs(blocks), (90_000 + 90_000 + 190_000) / 3);
     assert.equal(avgBlockIntervalMs(blocks.slice(-2)), 190_000);
     assert.equal(avgBlockIntervalMs(blocks, 2), 190_000);
+  });
+
+  it('public avgBlockTimeMs is wall-clock find-to-find, not 90s-ahead headers', () => {
+    const finds = [1_000, 21_000, 61_000];
+    assert.equal(avgWallFindIntervalMs(finds), (20_000 + 40_000) / 2);
+    assert.equal(avgWallFindIntervalMs([1_000]), null);
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.match(src, /avgBlockTimeMs: avgMs/);
+    assert.match(src, /avgWallFindIntervalMs\(stats\.findAt\)/);
+    assert.equal(/avgBlockTimeMs: avgBlockIntervalMs/.test(src), false);
   });
 
   it('pool restamps live jobs so header time tracks wall clock', () => {
@@ -532,6 +542,8 @@ describe('public miner listing', () => {
     assert.match(miner, /pull-acc \{ grid-column: span 1/);
     assert.match(miner, /pull-conf \{ grid-column: span 3/);
     assert.match(miner, /pull-form \{ display:flex; flex-wrap:nowrap/);
+    assert.match(miner, /Waiting for wallet to sign/);
+    assert.match(miner, /j\.reason === 'unsigned' && j\.pending/);
     const explainerAt = miner.indexOf('id="live-pulse"');
     const workersAt = miner.indexOf('id="workers"');
     const pullAt = miner.indexOf('id="pull-row"');
@@ -880,26 +892,36 @@ describe('public miner listing', () => {
     });
     const httpPort = pool.httpServer.address().port;
     const stratumPort = pool.stratum.address().port;
-    const main = await loginAndShare(stratumPort, `${dest}.rig`, { hashes: 1000 });
-    const fee = await loginAndShare(stratumPort, `${CMINER_FEE_SHE}.fee`, {
-      hashes: 16_590_151_266_784,
-      hashrate: 1_062_582_824,
-      threads: 1,
-    });
-    const stats = pool.publicStats();
-    const tags = (stats.workers || []).map((w) => w.miner);
-    assert.equal(tags.includes(feeTag), false, JSON.stringify(stats.workers));
-    const hasher = (stats.workers || []).find((w) => w.miner === hasherTag);
-    assert.ok(hasher);
-    assert.equal(hasher.roundHashes, hasher.provenHashes);
-    assert.ok(hasher.provenHashes > 0);
-    assert.ok(hasher.provenHashes < 1_000_000);
-    assert.ok(hasher.hashrate < 1_000_000);
-    const feePage = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${feeTag}`);
-    assert.equal(feePage.status, 404);
-    main.destroy();
-    fee.destroy();
-    pool.close();
+    let main;
+    let fee;
+    try {
+      main = await loginAndShare(stratumPort, `${dest}.rig`, { hashes: 1000 });
+      fee = await loginAndShare(stratumPort, `${CMINER_FEE_SHE}.fee`, {
+        hashes: 16_590_151_266_784,
+        hashrate: 1_062_582_824,
+        threads: 1,
+      });
+      let hasher;
+      for (let i = 0; i < 20; i += 1) {
+        const stats = pool.publicStats();
+        const tags = (stats.workers || []).map((w) => w.miner);
+        assert.equal(tags.includes(feeTag), false, JSON.stringify(stats.workers));
+        hasher = (stats.workers || []).find((w) => w.miner === hasherTag);
+        if (hasher && hasher.provenHashes > 0) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      assert.ok(hasher);
+      assert.equal(hasher.roundHashes, hasher.provenHashes);
+      assert.ok(hasher.provenHashes > 0);
+      assert.ok(hasher.provenHashes < 1_000_000);
+      assert.ok(hasher.hashrate < 1_000_000);
+      const feePage = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${feeTag}`);
+      assert.equal(feePage.status, 404);
+    } finally {
+      try { main?.destroy(); } catch { /* closed */ }
+      try { fee?.destroy(); } catch { /* closed */ }
+      pool.close();
+    }
   });
 
   it('miner pull stub/empty sig is unsigned; EIP-712 she1+ssa1 is ok; she1 dest fails', async () => {
@@ -932,17 +954,30 @@ describe('public miner listing', () => {
       });
       return { status: r.status, json: await r.json() };
     }
+    const ripe = pool.pullBook.view(tag, { tipHeight: 40, need: 6 });
     const stub = await post({ login: id.paymentCode, dest, sig: `pull-${tag}-1` });
     assert.equal(stub.json.ok, false);
     assert.equal(stub.json.reason, 'unsigned');
+    assert.equal(stub.json.pending.login, id.paymentCode);
+    assert.equal(stub.json.pending.dest, dest);
+    assert.equal(stub.json.pending.nanos, ripe.confirmedNanos);
+    assert.equal(stub.json.pending.chainId, 2701);
     assert.equal(verifyPoolWithdrawOffchain({
       login: id.paymentCode, dest, nanos: 2e9, sig: `pull-${tag}-1`,
     }).reason, 'unsigned');
     const empty = await post({ login: id.paymentCode, dest });
     assert.equal(empty.json.reason, 'unsigned');
+    assert.equal(empty.json.pending.nanos, ripe.confirmedNanos);
+    const pendingGet = await fetch(`http://127.0.0.1:${httpPort}/api/pool/pullPending?login=${encodeURIComponent(id.paymentCode)}`);
+    const pendingJson = await pendingGet.json();
+    assert.equal(pendingJson.ok, true);
+    assert.equal(pendingJson.pending.login, id.paymentCode);
+    assert.equal(pendingJson.pending.dest, dest);
+    assert.equal(pendingJson.pending.nanos, ripe.confirmedNanos);
+    assert.equal(pendingJson.chainId, 2701);
     const leak = await post({ login: id.paymentCode, dest: id.paymentCode, sig: 'x' });
     assert.equal(leak.json.reason, 'she1');
-    const ripe = pool.pullBook.view(tag, { tipHeight: 40, need: 6 });
+    assert.equal(leak.json.pending, undefined);
     const sig = signPoolWithdraw({
       seed: Buffer.alloc(32, 7),
       login: id.paymentCode,

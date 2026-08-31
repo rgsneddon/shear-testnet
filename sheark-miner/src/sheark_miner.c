@@ -113,6 +113,10 @@ static uint64_t g_dropped = 0;
 static uint64_t g_submitted = 0;
 static uint64_t g_round0 = 0;
 static double g_smooth_hs = 0;
+static uint64_t g_rate_h0 = 0;
+static time_t g_rate_t0 = 0;
+#define RATE_MIN_DT 2
+#define RATE_HOLD_FRAC 0.9
 static int g_height = 0;
 static char g_last_job[80];
 static uint64_t g_last_nonce = 0;
@@ -498,6 +502,9 @@ static void apply_job(const char *line) {
   atomic_store_explicit(&g_share_bits_live, job.share_bits, memory_order_release);
   atomic_store_explicit(&g_job_seq, g_job_gen, memory_order_release);
   pthread_mutex_unlock(&g_job_mu);
+  /* New RandomX K — freeze the rate window so rebuild time is not a dip. */
+  g_rate_h0 = (uint64_t)atomic_load_explicit(&g_hashes, memory_order_relaxed);
+  g_rate_t0 = time(NULL);
   printf("job %s height=%d shareBits=%d blockBits=%d algo=%s workers=%d backend=%s cpuCores=%d cpuThreads=%d\n",
          job.jobId, job.height, job.share_bits, job.block_bits, SHEAR_ALGO, g_threads,
          shear_hash_backend(), g_cpu_cores, g_cpu_threads);
@@ -870,33 +877,30 @@ static int mine_once(void) {
       (void)send_stats(&mainc, g_login, g_threads);
       last_stats = now;
       uint64_t h = atomic_load_explicit(&g_hashes, memory_order_relaxed);
-      static uint64_t rate_h0;
-      static time_t rate_t0;
-      if (rate_t0 == 0) {
-        rate_h0 = h;
-        rate_t0 = now;
+      if (g_rate_t0 == 0) {
+        g_rate_h0 = h;
+        g_rate_t0 = now;
       }
-      double dt = (double)(now - rate_t0);
-      if (dt < 1) dt = 1;
-      if (h > rate_h0) {
-        double inst = (double)(h - rate_h0) / dt;
-        if (g_smooth_hs > 0 && dt >= 3 && inst < g_smooth_hs * 0.5) {
-          /* Blockfound RandomX K pause — hold the last linear rate. */
-          rate_h0 = h;
-          rate_t0 = now;
+      double dt = (double)(now - g_rate_t0);
+      if (dt >= RATE_MIN_DT) {
+        if (h > g_rate_h0) {
+          double inst = (double)(h - g_rate_h0) / dt;
+          if (g_smooth_hs > 0 && inst < g_smooth_hs * RATE_HOLD_FRAC) {
+            /* Blockfound RandomX K pause — hold the last linear rate. */
+            g_rate_h0 = h;
+            g_rate_t0 = now;
+          } else {
+            if (g_smooth_hs <= 0) g_smooth_hs = inst;
+            else {
+              double alpha = 1.0 - exp(-dt / 8.0);
+              g_smooth_hs += alpha * (inst - g_smooth_hs);
+            }
+            g_rate_h0 = h;
+            g_rate_t0 = now;
+          }
         } else {
-          if (g_smooth_hs <= 0) g_smooth_hs = inst;
-          else {
-            double alpha = 1.0 - exp(-dt / 8.0);
-            g_smooth_hs += alpha * (inst - g_smooth_hs);
-          }
-          if (dt >= 8) {
-            rate_h0 = h;
-            rate_t0 = now;
-          }
+          g_rate_t0 = now;
         }
-      } else if (dt >= 8) {
-        rate_t0 = now;
       }
       char rate[32];
       fmt_hashrate(g_smooth_hs, rate, sizeof(rate));

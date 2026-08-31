@@ -1,8 +1,51 @@
 (function () {
   var KEY = 'shear-theme';
+  function onShearHost() {
+    return /(^|\.)shear\.digital$/.test(location.hostname || '');
+  }
+  function cookieGet() {
+    var parts = String(document.cookie || '').split(';');
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i].trim();
+      if (p.indexOf(KEY + '=') === 0) {
+        var v = decodeURIComponent(p.slice(KEY.length + 1));
+        if (v === 'dark' || v === 'light') return v;
+      }
+    }
+    return '';
+  }
+  function cookieSet(t) {
+    var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+    if (onShearHost()) bits += '; Domain=.shear.digital';
+    if (location.protocol === 'https:') bits += '; Secure';
+    document.cookie = bits;
+  }
+  function storeGet() {
+    try {
+      var v = localStorage.getItem(KEY);
+      if (v === 'dark' || v === 'light') return v;
+    } catch (e) {}
+    return '';
+  }
+  function storeSet(t) {
+    try { localStorage.setItem(KEY, t); } catch (e) {}
+  }
+  function saved() {
+    var fromCookie = cookieGet();
+    if (fromCookie) {
+      storeSet(fromCookie);
+      return fromCookie;
+    }
+    var fromStore = storeGet();
+    if (fromStore) {
+      cookieSet(fromStore);
+      return fromStore;
+    }
+    return '';
+  }
   function mode() {
-    var saved = localStorage.getItem(KEY);
-    if (saved === 'dark' || saved === 'light') return saved;
+    var s = saved();
+    if (s) return s;
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   }
   function apply(t) {
@@ -55,14 +98,15 @@
   }
   var mq = window.matchMedia('(prefers-color-scheme: dark)');
   function onScheme() {
-    if (localStorage.getItem(KEY) === 'dark' || localStorage.getItem(KEY) === 'light') return;
+    if (cookieGet() || storeGet()) return;
     apply(mode());
   }
   if (mq.addEventListener) mq.addEventListener('change', onScheme);
   else if (mq.addListener) mq.addListener(onScheme);
   window.toggleShearTheme = function () {
     var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    localStorage.setItem(KEY, next);
+    storeSet(next);
+    cookieSet(next);
     apply(next);
   };
 })();

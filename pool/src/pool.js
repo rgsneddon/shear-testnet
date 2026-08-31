@@ -57,6 +57,8 @@ export const JOB_HEADER_HISTORY = 12;
 export const PREV_JOB_GRACE_MS = 3_000;
 /** Hold last positive self-rate this long across a RandomX cache pause. */
 export const HASHRATE_STALL_HOLD_MS = 90_000;
+/** Mixed hashing+K-pause windows often land at 50–90% of the true rate. */
+export const HASHRATE_HOLD_FRAC = 0.9;
 /** Rebuild /api/stats JSON on this cadence. The HTTP handler never computes it. */
 export const STATS_REFRESH_MS = 400;
 const HASH_WORKER = fileURLToPath(new URL('./hash_worker.js', import.meta.url));
@@ -71,6 +73,24 @@ export const HASH_INFLIGHT_PER_CONN = 2;
  * the book, not only the last pair and not a sliding window of 20.
  * Non-positive gaps (stale/frozen stamps) are skipped.
  */
+export function avgWallFindIntervalMs(findTimes) {
+  const times = (Array.isArray(findTimes) ? findTimes : [])
+    .map((t) => Number(t))
+    .filter((t) => Number.isFinite(t) && t > 0)
+    .sort((a, b) => a - b);
+  if (times.length < 2) return null;
+  let sum = 0;
+  let n = 0;
+  for (let i = 1; i < times.length; i += 1) {
+    const dt = times[i] - times[i - 1];
+    if (!Number.isFinite(dt) || dt <= 0) continue;
+    sum += dt;
+    n += 1;
+  }
+  if (!n) return null;
+  return sum / n;
+}
+
 export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
   const list = Array.isArray(blocks) ? blocks : [];
   let window = list;
@@ -528,12 +548,18 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
         if (delta > 0) {
           const inst = delta / dt;
           const held = Number(session.clientHs) || 0;
-          // Blockfound RandomX K pause: one fat dt with few hashes must not tank H/s.
-          if (held > 0 && dt >= 8 && inst < held * 0.5) {
+          const heldAt = Number(session.clientHsAt) || 0;
+          // Blockfound RandomX K pause: mixed hashing+stall windows (often
+          // 50–90% of the true rate) must not paint a V on the public H/s.
+          const goodAt = heldAt > 0 ? heldAt : now;
+          if (held > 0 && inst < held * HASHRATE_HOLD_FRAC
+              && (now - goodAt) <= HASHRATE_STALL_HOLD_MS) {
+            if (!(heldAt > 0)) session.clientHsAt = now;
             session.rateHashes0 = hashes;
             session.rateAt0 = now;
           } else {
             session.clientHs = inst;
+            session.clientHsAt = now;
             session.rateHashes0 = hashes;
             session.rateAt0 = now;
           }
@@ -573,6 +599,12 @@ export function reportedHashrate(miner, now = Date.now()) {
   if (minerConnected(miner)) {
     const client = Number(miner?.clientHs) || 0;
     if (client > 0) {
+      const held = Number(miner?.lastPositiveHs) || 0;
+      const heldAt = Number(miner?.lastPositiveAt) || 0;
+      if (held > 0 && client < held * HASHRATE_HOLD_FRAC && heldAt > 0
+          && (at - heldAt) <= HASHRATE_STALL_HOLD_MS) {
+        return easeHashrate(miner, held, at, HASHRATE_EMA_TAU_S);
+      }
       miner.lastPositiveHs = client;
       miner.lastPositiveAt = at;
       return easeHashrate(miner, client, at, HASHRATE_EMA_TAU_S);
@@ -773,6 +805,7 @@ export function createPool({
   const stats = {
     started: Date.now(),
     lastFoundAt: 0,
+    findAt: [],
     accepted: 0,
     stale: 0,
     blocks: 0,
@@ -780,6 +813,7 @@ export function createPool({
     algo: ALGO,
     stratum: `0.0.0.0:${stratumPort}`,
   };
+  const pendingPulls = new Map();
 
   function blockBitsNow() {
     return Number(lastJob?.blockBits || lastJob?.bits || bits);
@@ -1125,6 +1159,9 @@ export function createPool({
           const sealed = store.tip();
           // Wall clock, not header time: the job stamp may be 90s ahead of now.
           stats.lastFoundAt = Date.now();
+          stats.findAt = Array.isArray(stats.findAt) ? stats.findAt : [];
+          stats.findAt.push(stats.lastFoundAt);
+          if (stats.findAt.length > 256) stats.findAt = stats.findAt.slice(-256);
           pullBook.creditRound(
             [...miners.values()]
               .filter((m) => (Number(m.roundHashes) || 0) > 0 && !isCminerFeeLogin(m.login || m.workerKey))
@@ -1137,6 +1174,8 @@ export function createPool({
           );
         } catch {
           stats.lastFoundAt = Date.now();
+          stats.findAt = Array.isArray(stats.findAt) ? stats.findAt : [];
+          stats.findAt.push(stats.lastFoundAt);
         }
         if (session) session.blocks = (Number(session.blocks) || 0) + 1;
         pendingPayout = snapshotRound();
@@ -1346,7 +1385,7 @@ export function createPool({
       active.map((m) => publicMinerView(m, now, active)),
     ).sort((a, b) => (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0));
     const tip = store.tip();
-    const avgMs = avgBlockIntervalMs(store.blocks);
+    const avgMs = avgWallFindIntervalMs(stats.findAt);
     const supply = networkSupply(store);
     return {
       ok: true,
@@ -1645,10 +1684,21 @@ export function createPool({
           sig: body.sig || body.signature,
         });
         if (!off.ok) {
+          const pending = {
+            id: `pull-${tag}-${pull.confirmedNanos}`,
+            login: she,
+            dest,
+            nanos: pull.confirmedNanos,
+            chainId: 2701,
+            tag,
+            at: Date.now(),
+          };
+          if (off.reason === 'unsigned') pendingPulls.set(she.toLowerCase(), pending);
           res.statusCode = 400;
-          res.end(JSON.stringify({ ok: false, reason: off.reason }));
+          res.end(JSON.stringify({ ok: false, reason: off.reason, pending: off.reason === 'unsigned' ? pending : undefined }));
           return;
         }
+        pendingPulls.delete(she.toLowerCase());
         const from = payoutDest(miner) || poolFeeDest();
         const fee = levyNanos(pull.confirmedNanos, { depth: mempoolDepthBytes(store.mempool || []) });
         const tx = poolWithdrawTx({ from, to: dest, nanos: pull.confirmedNanos, fee });
@@ -1725,6 +1775,20 @@ export function createPool({
         lastJob,
         poolDest: miner,
         queueSend,
+        pendingPulls,
+        completeMinerPull: (login, dest, nanos) => {
+          const t = publicMinerTag(login);
+          const tipH = Number(store.tip?.()?.height || 0);
+          const confNeed = typeof store.getpolicy === 'function'
+            ? (store.getpolicy().operational?.pool_merchant || 30)
+            : 30;
+          const view = pullBook.view(t, { tipHeight: tipH, need: confNeed });
+          if (!(view.confirmedNanos > 0)) return { ok: false, reason: 'none_confirmed' };
+          if (Number(nanos) !== view.confirmedNanos) return { ok: false, reason: 'nanos' };
+          const taken = pullBook.takeConfirmed(t, { tipHeight: tipH, need: confNeed });
+          pendingPulls.delete(String(login || '').split('.')[0].toLowerCase());
+          return taken;
+        },
       });
       if (out) {
         res.statusCode = out.status;

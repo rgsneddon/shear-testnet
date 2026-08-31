@@ -78,7 +78,10 @@ describe('ShearK-Miner', () => {
     assert.match(src, /memcmp\(g_main_job\.header, job\.header, 100\)/);
     assert.match(src, /g_smooth_hs/);
     assert.match(src, /Blockfound RandomX K pause/);
-    assert.match(src, /g_smooth_hs \* 0\.5/);
+    assert.match(src, /RATE_HOLD_FRAC 0\.9/);
+    assert.match(src, /RATE_MIN_DT 2/);
+    assert.match(src, /g_rate_t0 = time\(NULL\)/);
+    assert.equal(/g_smooth_hs \* 0\.5/.test(src), false);
   });
 
   it('leftover windows zip is only ShearK-Miner.exe + example.bat', () => {
@@ -155,11 +158,11 @@ describe('ShearK-Miner', () => {
     await new Promise((r) => child.once('close', r));
     server.close();
     assert.match(loginLine, /"name":"ShearK-Miner"/);
-    assert.match(loginLine, /"version":"1\.4"/);
+    assert.match(loginLine, /"version":"1\.5"/);
     assert.match(loginLine, /"client":"ShearHash"/);
     assert.match(loginLine, /"algorithm":"ShearHash"/);
     assert.equal(/"version":"1\.[01]"/.test(loginLine), false, loginLine);
-    assert.match(out, /ShearK-Miner 1\.4 \(ShearHash-v2 light\)/);
+    assert.match(out, /ShearK-Miner 1\.5 \(ShearHash-v2 light\)/);
     assert.match(out, /hashes=(?:\x1b\[(?:32m|1;92m))?\d+/);
     assert.match(out, /accepted=(?:\x1b\[(?:33m|1;93m))?0/);
     assert.match(out, /rejected=(?:\x1b\[(?:31m|1;91m))?0/);

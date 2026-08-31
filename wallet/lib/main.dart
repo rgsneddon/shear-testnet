@@ -66,6 +66,7 @@ class ShearWalletApp extends StatefulWidget {
     this.importSrc,
     this.openUrl,
     this.startUnlocked = false,
+    this.skipPoolSync = false,
   });
 
   final ShearSession? session;
@@ -87,15 +88,18 @@ class ShearWalletApp extends StatefulWidget {
   final Future<bool> Function(Uri url)? openUrl;
   /// Tests: session already sealed and identity in memory.
   final bool startUnlocked;
+  /// Tests: skip unlock HTTP so the sign-pull dialog can be driven without a hung pool.
+  final bool skipPoolSync;
 
   @override
-  State<ShearWalletApp> createState() => _ShearWalletAppState();
+  ShearWalletAppState createState() => ShearWalletAppState();
 }
 
-class _ShearWalletAppState extends State<ShearWalletApp> {
+class ShearWalletAppState extends State<ShearWalletApp> {
   late final ShearSession session = widget.session ?? ShearSession();
   late final ShearLedger ledger = widget.ledger ?? ShearLedger(pool: ShearPoolClient());
   late final ShearBiometrics biometrics = widget.biometrics ?? const NoBiometrics();
+  final GlobalKey<NavigatorState> _nav = GlobalKey<NavigatorState>();
   ShearIdentity? id;
   String password = '';
   bool unlocked = false;
@@ -123,6 +127,8 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   final Map<String, String> _cliById = {};
   String? _focusedTxId;
   Timer? _accrualTick;
+  Map<String, dynamic>? _pullOffer;
+  bool _pullPrompting = false;
 
   @override
   void initState() {
@@ -311,14 +317,16 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     setState(() {
       _lockError = null;
     });
-    try {
-      await ledger.syncTip().timeout(const Duration(seconds: 3));
-    } catch (_) {}
-    try {
-      await ledger
-          .syncCredits(id!.address, paymentCode: id!.paymentCode)
-          .timeout(const Duration(seconds: 8));
-    } catch (_) {}
+    if (!widget.skipPoolSync) {
+      try {
+        await ledger.syncTip().timeout(const Duration(seconds: 3));
+      } catch (_) {}
+      try {
+        await ledger
+            .syncCredits(id!.address, paymentCode: id!.paymentCode)
+            .timeout(const Duration(seconds: 8));
+      } catch (_) {}
+    }
     try {
       if (widget.demoTx) {
         var pay = ledger.currentDest(id!.address);
@@ -334,7 +342,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     if (mounted) setState(() => unlocked = true);
     _accrualTick?.cancel();
     _syncJoinRoster();
-    if (id != null) unawaited(_syncVaults(id!));
+    if (id != null && !widget.skipPoolSync) unawaited(_syncVaults(id!));
     var ticks = 0;
     var tipBusy = false;
     var creditBusy = false;
@@ -342,7 +350,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
       if (!mounted || !unlocked) return;
       _syncJoinRoster();
       final ident = id;
-      if (ident != null && !tipBusy) {
+      if (ident != null && !tipBusy && !widget.skipPoolSync) {
         tipBusy = true;
         unawaited(ledger.syncTip().whenComplete(() {
           tipBusy = false;
@@ -350,7 +358,10 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
         }));
       }
       ticks += 1;
-      if (ticks % 5 == 0 && ident != null && !creditBusy) {
+      if (ident != null && ticks % 2 == 0 && !widget.skipPoolSync) {
+        unawaited(_pollPull(ident));
+      }
+      if (ticks % 5 == 0 && ident != null && !creditBusy && !widget.skipPoolSync) {
         creditBusy = true;
         unawaited(ledger.syncCredits(ident.address, paymentCode: ident.paymentCode).whenComplete(() {
           unawaited(_syncVaults(ident));
@@ -364,6 +375,67 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
     if (widget.demoTx) {
       unawaited(_playDemoLive());
     }
+  }
+
+  Future<void> _pollPull(ShearIdentity ident) async {
+    if (_pullPrompting || !mounted || !unlocked) return;
+    try {
+      final p = await ledger.fetchPendingPull(ident.paymentCode);
+      if (p == null || p['login'] == null) return;
+      final login = p['login'].toString().split('.')[0];
+      if (login != ident.paymentCode.split('.')[0]) return;
+      if (_pullOffer?['id'] == p['id'] && _pullPrompting) return;
+      if (!mounted) return;
+      _pullPrompting = true;
+      _pullOffer = p;
+      final nanos = (p['nanos'] as num?)?.round() ?? 0;
+      final dest = p['dest']?.toString() ?? '';
+      final she = formatShe(nanos / kUnitsPerShe);
+      final navCtx = _nav.currentContext;
+      if (navCtx == null || !navCtx.mounted) return;
+      final go = await showDialog<bool>(
+        context: navCtx,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          key: const Key('pull-sign'),
+          title: const Text('Sign pool pull'),
+          content: Text('Pay $she SHE to $dest'),
+          actions: [
+            TextButton(
+              key: const Key('pull-sign-cancel'),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              key: const Key('pull-sign-accept'),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Sign'),
+            ),
+          ],
+        ),
+      );
+      if (go == true && mounted) {
+        final tx = await ledger.signPendingPull(
+          login: ident.paymentCode,
+          dest: dest,
+          nanos: nanos,
+          seed: hexToBytes(ident.seedHex),
+        );
+        _ingestTx(ident, tx);
+      }
+    } catch (_) {
+      /* pool unreachable */
+    } finally {
+      _pullPrompting = false;
+      _pullOffer = null;
+    }
+  }
+
+  @visibleForTesting
+  Future<void> pollPullNow() async {
+    final ident = id;
+    if (ident == null || !unlocked) return;
+    await _pollPull(ident);
   }
 
   Future<void> _playDemoLive() async {
@@ -445,6 +517,7 @@ class _ShearWalletAppState extends State<ShearWalletApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Shear $kWalletVersion',
+      navigatorKey: _nav,
       theme: shearLightTheme(),
       darkTheme: shearDarkTheme(),
       themeMode: _themeMode,

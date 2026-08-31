@@ -25,6 +25,7 @@ import {
   HASHRATE_WINDOW_MS,
   HASHRATE_EMA_TAU_S,
   HASHRATE_STALL_HOLD_MS,
+  HASHRATE_HOLD_FRAC,
   HASH_QUEUE_MAX,
   HASH_INFLIGHT_PER_CONN,
 } from '../src/pool.js';
@@ -296,8 +297,7 @@ describe('folded-row inventory', () => {
     assert.equal(a, 100);
     m.clientHs = 10;
     const b = reportedHashrate(m, t0 + 1000);
-    assert.ok(b > 90, `1s poll must not drop to the new instant, got ${b}`);
-    assert.ok(b < 100, `must still ease, got ${b}`);
+    assert.ok(b > 95, `stall must not ease toward the dipped instant, got ${b}`);
     m.clientHs = 0;
     const c = reportedHashrate(m, t0 + 2000);
     assert.ok(c > 50, `few-second stall must not paint ~0, got ${c}`);
@@ -336,6 +336,25 @@ describe('folded-row inventory', () => {
     assert.equal(m.clientHs, 200_000);
     applyMinerSelfRate(m, { hashes: 1_000_000 + 200_000 * 10 + 5_000 + 200_000 * 4 }, t0 + 34_000);
     assert.equal(m.clientHs, 200_000);
+  });
+
+  it('mixed hashing+K-pause window (67% of true rate) holds linear H/s', () => {
+    assert.equal(HASHRATE_HOLD_FRAC, 0.9);
+    const t0 = 1_700_000_000_000;
+    const m = { connections: [{ sock: {} }] };
+    applyMinerSelfRate(m, { hashes: 0 }, t0);
+    applyMinerSelfRate(m, { hashes: 200_000 * 10 }, t0 + 10_000);
+    assert.equal(m.clientHs, 200_000);
+    // 8s hashing + 4s stall in one 12s window → 133 kH/s (66.7%), above the old 0.5 cut.
+    const afterMix = 200_000 * 10 + 200_000 * 8;
+    applyMinerSelfRate(m, { hashes: afterMix }, t0 + 22_000);
+    assert.equal(m.clientHs, 200_000);
+    const painted = reportedHashrate(m, t0 + 22_000);
+    assert.ok(painted > 190_000, `public H/s must stay linear, got ${painted}`);
+    applyMinerSelfRate(m, { hashes: afterMix + 1_000 }, t0 + 10_000 + HASHRATE_STALL_HOLD_MS - 1_000);
+    assert.equal(m.clientHs, 200_000);
+    applyMinerSelfRate(m, { hashes: afterMix + 1_000 + 50_000 * 2 }, t0 + 10_000 + HASHRATE_STALL_HOLD_MS + 1_000);
+    assert.equal(m.clientHs, 50_000);
   });
 
   it('connect hashrate ramps up from own hashes, never down from a session-average spike', () => {

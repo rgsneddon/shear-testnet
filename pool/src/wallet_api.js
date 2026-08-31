@@ -631,7 +631,7 @@ function rememberJoinPending(store, commit) {
   }
 }
 
-export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest } = {}) {
+export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
   if ((path === '/api/mempoolPressure' || path === '/api/mempoolpressure') && verb === 'GET') {
@@ -850,6 +850,24 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       },
     };
   }
+  if ((path === '/api/pool/pullPending' || path === '/api/pool/pullpending') && verb === 'GET') {
+    const login = String(url.searchParams.get('login') || url.searchParams.get('she1') || '').trim().split('.')[0];
+    if (!login.startsWith('she1')) {
+      return { status: 400, json: { ok: false, reason: 'need_she1', public: false } };
+    }
+    const rec = pendingPulls && typeof pendingPulls.get === 'function'
+      ? pendingPulls.get(login.toLowerCase())
+      : null;
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        public: false,
+        pending: rec || null,
+        chainId: 2701,
+      },
+    };
+  }
   if (path === '/api/pool/withdraw' && verb === 'POST') {
     const off = verifyPoolWithdrawOffchain({
       login: body.login || body.she1,
@@ -876,6 +894,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (typeof queueSend === 'function') queued = queueSend(tx);
     if (queued && typeof queued === 'object' && queued.ok === false) {
       return { status: 400, json: { ok: false, reason: queued.reason || 'queue_failed' } };
+    }
+    if (typeof completeMinerPull === 'function') {
+      try { completeMinerPull(off.login, off.dest, off.nanos); } catch { /* pull book is optional */ }
     }
     return { status: 200, json: { ok: true, tx: { id: (queued && queued.id) || tx.id, to: off.dest, nanos: off.nanos, kind: 'pool-withdraw' } } };
   }

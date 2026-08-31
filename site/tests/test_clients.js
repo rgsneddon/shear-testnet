@@ -48,9 +48,9 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /\/api\/stats/);
     assert.doesNotMatch(html, /Spendable|Copy ID|paymentCode/);
     assert.match(html, /TESTNET/);
-    assert.match(html, /MAINNET LAUNCH at 11pm UK time on 1st September 2026/);
+    assert.match(html, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
     assert.match(html, /id="mainnet-countdown"/);
-    assert.match(html, /2026-09-01T23:00:00\+01:00/);
+    assert.match(html, /2026-09-11T21:00:00\+01:00/);
     assert.match(html, />WALLET</);
     assert.match(html, />MINER</);
     assert.match(html, />NODE</);
@@ -72,12 +72,12 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /shear-wallet-0\.8-/);
     assert.match(html, /rgsneddon\/shear-testnet/);
     assert.doesNotMatch(html, /github\.com\/rgsneddon\/shear"/);
-    assert.match(html, /miner <strong>1\.4<\/strong>/);
+    assert.match(html, /miner <strong>1\.5<\/strong>/);
     assert.doesNotMatch(html, /sha256/);
     assert.match(html, /rgsneddon\/ShearK/);
-    assert.match(html, /ShearK-Miner-1\.4-macos\.zip/);
-    assert.match(html, /ShearK-Miner-1\.4-windows\.zip/);
-    assert.match(html, /ShearK-Miner-1\.4-linux\.zip/);
+    assert.match(html, /ShearK-Miner-1\.5-macos\.zip/);
+    assert.match(html, /ShearK-Miner-1\.5-windows\.zip/);
+    assert.match(html, /ShearK-Miner-1\.5-linux\.zip/);
     assert.match(html, /SmartScreen/);
     assert.match(html, /Authenticode/);
     assert.match(html, /Run anyway/);
