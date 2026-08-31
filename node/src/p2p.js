@@ -63,6 +63,7 @@ export function createP2p({
   const sockets = new Set();
   const peers = new Map();
   const linking = new Set();
+  const seenTx = new Set();
   let server = null;
   let peerSeq = 0;
 
@@ -128,6 +129,41 @@ export function createP2p({
     }
   }
 
+  function rememberTxId(id) {
+    if (!id) return false;
+    if (seenTx.size > 8000) seenTx.clear();
+    if (seenTx.has(id)) return false;
+    seenTx.add(id);
+    return true;
+  }
+
+  function ingestRemoteTx(tx, fromSock) {
+    const id = String(tx?.id || '');
+    if (!id || !rememberTxId(id)) return;
+    if (typeof store.queueTx !== 'function') return;
+    const got = store.queueTx(tx);
+    if (!got?.ok) {
+      seenTx.delete(id);
+      return;
+    }
+    broadcast({ type: 'tx', magic, tx: got.tx || tx }, fromSock);
+  }
+
+  if (store && typeof store.on === 'function') {
+    store.on('tx', (tx) => {
+      const id = String(tx?.id || '');
+      if (!id) return;
+      if (!rememberTxId(id)) return;
+      broadcast({ type: 'tx', magic, tx });
+    });
+  }
+
+  function publishWork(rows = []) {
+    const list = Array.isArray(rows) ? rows.filter((r) => r && r.tag && Number(r.count) > 0) : [];
+    if (typeof store.noteOpenRound === 'function') store.noteOpenRound(list, { source: 'local' });
+    if (list.length) broadcast({ type: 'work', magic, rows: list });
+  }
+
   function handle(sock, msg) {
     if (!msg || typeof msg !== 'object') return;
     if (msg.magic && msg.magic !== magic) {
@@ -143,6 +179,33 @@ export function createP2p({
       peers.set(sock, rec);
       send(sock, tipMsg());
       send(sock, { type: 'addr', magic, peers: advertisedPeers(sock) });
+      send(sock, { type: 'getmempool', magic });
+      return;
+    }
+    if (msg.type === 'getmempool') {
+      send(sock, {
+        type: 'mempool',
+        magic,
+        txs: Array.isArray(store.mempool) ? store.mempool.slice(0, 4096) : [],
+        work: typeof store.openRoundRows === 'function' ? store.openRoundRows() : [],
+      });
+      return;
+    }
+    if (msg.type === 'mempool') {
+      for (const tx of msg.txs || []) ingestRemoteTx(tx, sock);
+      if (typeof store.noteOpenRound === 'function' && Array.isArray(msg.work)) {
+        store.noteOpenRound(msg.work, { source: 'peer' });
+      }
+      return;
+    }
+    if (msg.type === 'tx') {
+      ingestRemoteTx(msg.tx, sock);
+      return;
+    }
+    if (msg.type === 'work') {
+      if (typeof store.noteOpenRound === 'function') {
+        store.noteOpenRound(msg.rows || [], { source: 'peer' });
+      }
       return;
     }
     if (msg.type === 'addr') {
@@ -286,6 +349,7 @@ export function createP2p({
     connect,
     close,
     announce,
+    publishWork,
     sockets,
     peers,
     syncedOnline,

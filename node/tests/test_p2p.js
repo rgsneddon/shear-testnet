@@ -106,6 +106,59 @@ describe('p2p gossip', () => {
     assert.equal(a.p2p.syncedOnline(), 1);
   });
 
+  it('gossips pending sends and open-round miner rows onto a peer lattice', async () => {
+    const dest = destMiner();
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-mem-a-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-mem-b-'));
+    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    try {
+      await a.p2p.connect('127.0.0.1', b.bound.port);
+      const linked = await waitFor(() => a.p2p.syncedOnline() === 2 && b.p2p.syncedOnline() === 2);
+      assert.equal(linked, true);
+      const { levyNanos } = await import('../../crypto/levy.js');
+      const sendNanos = 2;
+      const fee = levyNanos(sendNanos);
+      const queued = a.store.queueTx({
+        id: 'net-send-1',
+        kind: 'send',
+        from: dest,
+        to: dest,
+        nanos: sendNanos,
+        fee,
+        vin: [{ address: dest }],
+        vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
+      });
+      assert.equal(queued.ok, true, queued.reason);
+      const tag = 'she1cafef00d';
+      a.p2p.publishWork([{ tag, count: 42 }]);
+      const saw = await waitFor(() => {
+        const tx = (b.store.mempool || []).some((t) => String(t.id) === 'net-send-1');
+        const work = typeof b.store.openRoundRows === 'function'
+          && b.store.openRoundRows().some((r) => r.tag === tag && Number(r.count) === 42);
+        return tx && work;
+      }, 5000);
+      assert.equal(saw, true, 'peer book never received send or miner row');
+      const { mempoolLattice } = await import('../../pool/src/wallet_api.js');
+      const out = mempoolLattice(b.store, {
+        miners: new Map(),
+        lastJob: { height: 1, jobId: 'peer' },
+        nodesOnline: b.p2p.syncedOnline(),
+      });
+      assert.equal(out.scope, 'network');
+      assert.equal(out.pending.some((t) => t.id === 'net-send-1'), true);
+      const row = out.pendingBlock.txs.find((t) => t.tag === tag);
+      assert.ok(row, 'lattice payload missing peer miner row');
+      assert.equal(row.count, 42);
+      assert.equal(row.kind, 'hash');
+    } finally {
+      a.p2p.close();
+      b.p2p.close();
+      await a.rpc?.close?.();
+      await b.rpc?.close?.();
+    }
+  });
+
   it('printConfig pins p2p 30303, testnet magic, not mainnet', () => {
     const cfg = printConfig();
     assert.equal(cfg.p2p, P2P_PORT);

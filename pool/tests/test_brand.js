@@ -271,4 +271,56 @@ describe('mempool pulse', () => {
     assert.match(page, /palette/);
     assert.match(page, /--pick-bg/);
   });
+
+  it('paints gold hoop, cyan forming hoop, hover glass, fireworks without ZAP, neon-green tip', () => {
+    const page = read('mempool/index.html');
+    assert.match(page, /function goldPose\(/);
+    assert.match(page, /pendRings/);
+    assert.match(page, /--lattice-gold/);
+    assert.match(page, /--lattice-cyan/);
+    assert.match(page, /--lattice-tip:\s*#39ff6a/);
+    assert.match(page, /--lattice-tip:\s*#00d85a/);
+    assert.match(page, /color === 'gold'/);
+    assert.match(page, /color === 'cyan'/);
+    assert.match(page, /function spawnFireworks\(/);
+    assert.match(page, /function drawFireworks\(/);
+    assert.match(page, /function drawLoupe\(/);
+    assert.match(page, /glass ×2\.8/);
+    assert.equal(/ZAP!/.test(page), false);
+    assert.equal(/blockfound #/.test(page), false);
+    assert.match(page, /one glowing dot per miner/);
+    assert.match(page, /Empty gold hoop sits wide at the base/);
+    assert.match(page, /graphics only, no lettering/);
+    assert.match(page, /y: h \* 0\.64/);
+    assert.match(page, /\.col\s*\{[^}]*overflow-y:\s*auto/);
+    assert.match(page, /\.col\s*\{[^}]*min-height:\s*0/);
+    assert.match(page, /\.stage\s*\{[^}]*overflow:\s*hidden/);
+    assert.match(page, /html,\s*body\s*\{[^}]*overflow:\s*hidden/);
+    const mid = page.match(/\.col\.mid\s*\{[^}]+\}/);
+    assert.ok(mid, 'missing .col.mid rule');
+    assert.match(mid[0], /overflow:\s*visible/);
+  });
+});
+
+describe('sticky public navbar', () => {
+  it('pins .top-banner on every public Shear page', () => {
+    const pages = [
+      'site/index.html',
+      'pool/public/index.html',
+      'pool/public/explorer.html',
+      'pool/public/miner.html',
+      'mempool/index.html',
+    ];
+    for (const rel of pages) {
+      const banner = bannerBlock(read(rel));
+      assert.match(banner, /position:\s*sticky/, `${rel} banner must stay visible`);
+      assert.match(banner, /top:\s*0/, `${rel} banner must stick to the top`);
+    }
+    for (const rel of ['brand/theme.css', 'site/brand/theme.css', 'pool/public/brand/theme.css']) {
+      const css = read(rel);
+      const banner = bannerBlock(css);
+      assert.match(banner, /position:\s*sticky/, `${rel} shared banner must stay visible`);
+      assert.match(banner, /top:\s*0/, `${rel} shared banner must stick to the top`);
+    }
+  });
 });

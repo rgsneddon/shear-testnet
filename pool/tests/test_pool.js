@@ -61,6 +61,7 @@ describe('observed interval', () => {
     assert.equal(/if \(hashWait\.size > 0\) return lastJob/.test(src), false);
     assert.match(src, /stats\.lastFoundAt = Date\.now\(\)/);
     assert.equal(/stats\.lastFoundAt = sealed\?\.header/.test(src), false);
+    assert.match(src, /wallIntervalMs: avgWallFindIntervalMs\(stats\.findAt\)/);
     assert.equal(JOB_RESTAMP_MS, 10_000);
   });
 

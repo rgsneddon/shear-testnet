@@ -27,7 +27,7 @@ import { poolFeeDest, levyNanos, mempoolDepthBytes, poolWithdrawTx, verifyPoolWi
 import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
 import { createPullBook, PULL_COOLDOWN_MS } from './pull_book.js';
 import { createStore } from '../../node/src/store.js';
-import { poolRecentBlockTxs, networkSupply } from './wallet_api.js';
+import { poolRecentBlockTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import {
   clampShareBits,
@@ -910,6 +910,7 @@ export function createPool({
       potShares,
       shareBits: sb,
       ...(chainLen >= 1 ? {} : { bits }),
+      wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
     });
     const gate = gateJob(job);
     if (!gate.ok) return null;
@@ -1151,9 +1152,6 @@ export function createPool({
       }));
       sealing = false;
       if (got.ok) {
-        if (Array.isArray(store.mempool) && store.mempool.length) {
-          store.mempool.length = 0;
-        }
         stats.blocks += 1;
         try {
           const sealed = store.tip();
@@ -1373,6 +1371,10 @@ export function createPool({
   let statsTimer = null;
   function paintStatsSnap() {
     try {
+      const rows = openRoundHashRows(miners, store.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS)
+        .map((r) => ({ tag: r.tag, count: r.count }));
+      if (typeof store.noteOpenRound === 'function') store.noteOpenRound(rows, { source: 'local' });
+      if (typeof p2pNet?.publishWork === 'function') p2pNet.publishWork(rows);
       statsSnap = { at: Date.now(), json: JSON.stringify(publicStats()) };
     } catch {
       if (!statsSnap.json) statsSnap = { at: Date.now(), json: '{"ok":true}' };
@@ -1773,6 +1775,7 @@ export function createPool({
         store,
         miners,
         lastJob,
+        nodesOnline: nodesOnline(),
         poolDest: miner,
         queueSend,
         pendingPulls,

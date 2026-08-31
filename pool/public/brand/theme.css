@@ -47,8 +47,9 @@ html[data-theme="dark"] .theme-toggle .icon-sun { display: block; }
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   background: var(--banner);
-  position: relative;
-  z-index: 20;
+  position: sticky;
+  top: 0;
+  z-index: 40;
 }
 .banner-brand { display: flex; align-items: center; justify-self: start; }
 .top-banner > .nav { justify-content: center; justify-self: center; }

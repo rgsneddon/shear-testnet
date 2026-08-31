@@ -578,7 +578,13 @@ export function createStore(dir, {
     } catch { base = 1; }
     const book = emptyMempool();
     book.txs = mempool;
-    return admitMempool(book, tx, { baseFee: base });
+    const id = String(tx?.id || '');
+    if (id && mempool.some((m) => String(m.id) === id)) {
+      return { ok: true, tx, duplicate: true };
+    }
+    const got = admitMempool(book, tx, { baseFee: base });
+    if (got.ok && got.tx && !got.duplicate) emit('tx', got.tx);
+    return got;
   }
 
   function verifyOneForkBlock(fork, i, accepted, joinFunded, trialSpent, trialSession = null) {
@@ -773,8 +779,37 @@ export function createStore(dir, {
   let jobSeq = 1;
   const jobs = new Map();
   const mempool = [];
+  const openRound = new Map();
+  const OPEN_ROUND_TTL_MS = 180_000;
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn } = {}) {
+  function noteOpenRound(rows = [], { source = 'local' } = {}) {
+    const now = Date.now();
+    for (const r of rows || []) {
+      const tag = String(r.tag || '').trim().toLowerCase();
+      if (!/^she1[0-9a-f]{8}$/.test(tag)) continue;
+      const count = Math.floor(Number(r.count) || 0);
+      if (count < 1) continue;
+      const prev = openRound.get(tag);
+      if (!prev || source === 'local' || count >= prev.count || (now - prev.at) > 12_000) {
+        openRound.set(tag, { tag, count, at: now, source: String(source || 'peer') });
+      }
+    }
+    for (const [k, v] of openRound) {
+      if (now - v.at > OPEN_ROUND_TTL_MS) openRound.delete(k);
+    }
+  }
+
+  function openRoundRows() {
+    const now = Date.now();
+    const out = [];
+    for (const [k, v] of openRound) {
+      if (now - v.at > OPEN_ROUND_TTL_MS) openRound.delete(k);
+      else out.push({ tag: v.tag, count: v.count, source: v.source });
+    }
+    return out.sort((a, b) => b.count - a.count);
+  }
+
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null } = {}) {
     const t = tip();
     const height = t ? t.height + 1 : 1;
     const wall = nowIn != null ? Number(nowIn) : Date.now();
@@ -782,7 +817,7 @@ export function createStore(dir, {
     if (bitsIn == null && t?.header) {
       try {
         const parent = decodeHeader(Buffer.from(t.header));
-        now = templateStampMs(parent.timestamp, wall);
+        now = templateStampMs(parent.timestamp, wall, wallIntervalMs);
       } catch { /* keep wall */ }
     }
     const bits = bitsIn != null ? bitsIn : retarget(blocks, now);
@@ -863,6 +898,8 @@ export function createStore(dir, {
     mempool,
     spentB,
     queueTx,
+    noteOpenRound,
+    openRoundRows,
     hashHex,
     headerHash,
     historyFor,

@@ -15,6 +15,7 @@ import { portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
 import { claim as joinClaim, publicJoinView, claimTx } from '../../crypto/join_vault.js';
 import {
   levyNanos,
+  txWeight,
   mempoolPressure,
   mempoolDepthBytes,
   poolFeeDest,
@@ -480,7 +481,7 @@ function publicHashTag(login) {
   return `she1${createHash('sha256').update('shear-miner-tag-v1').update(dest).digest('hex').slice(0, 8)}`;
 }
 
-function openRoundHashRows(miners, hashBonusNanos) {
+export function openRoundHashRows(miners, hashBonusNanos) {
   const book = miners && typeof miners.values === 'function'
     ? [...miners.values()]
     : (Array.isArray(miners) ? miners : []);
@@ -547,7 +548,35 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       priority: (included ? 400 : 0) + mass,
     };
   }).filter((t) => t.id).sort((a, b) => b.priority - a.priority);
-  const hashRows = openRoundHashRows(opts.miners, opts.hashBonusNanos ?? HASH_BONUS_NANOS);
+  const unit = Number(opts.hashBonusNanos ?? HASH_BONUS_NANOS) / NANOS_PER_SHE;
+  const byTag = new Map();
+  for (const r of openRoundHashRows(opts.miners, opts.hashBonusNanos ?? HASH_BONUS_NANOS)) {
+    byTag.set(r.tag, r);
+  }
+  const netRows = typeof store.openRoundRows === 'function' ? store.openRoundRows() : [];
+  for (const r of netRows) {
+    const tag = String(r.tag || '').toLowerCase();
+    if (!/^she1[0-9a-f]{8}$/.test(tag)) continue;
+    const count = Math.floor(Number(r.count) || 0);
+    if (count < 1) continue;
+    const prev = byTag.get(tag);
+    if (!prev || count > prev.count) {
+      byTag.set(tag, {
+        id: `hash-${tag}`,
+        kind: 'hash',
+        count,
+        weight: count,
+        fee: 0,
+        amount: count * unit,
+        included: true,
+        priority: 800 + count,
+        prime: false,
+        tag,
+        source: r.source || 'peer',
+      });
+    }
+  }
+  const hashRows = [...byTag.values()].sort((a, b) => b.count - a.count);
   const hashes = hashRows.reduce((a, r) => a + (Number(r.count) || 0), 0);
   const pendingBlock = {
     height: Number(lastJob?.height || (tip.height + 1)),
@@ -587,6 +616,8 @@ export function mempoolLattice(store, limitOrOpts = 24) {
     pending,
     pendingBlock,
     targetBlockIntervalMs: TARGET_BLOCK_INTERVAL_MS,
+    scope: 'network',
+    nodesOnline: Number(opts.nodesOnline) || 0,
     generations,
   };
 }
@@ -631,7 +662,7 @@ function rememberJoinPending(store, commit) {
   }
 }
 
-export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull } = {}) {
+export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
   if ((path === '/api/mempoolPressure' || path === '/api/mempoolpressure') && verb === 'GET') {
@@ -643,6 +674,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       json: mempoolLattice(store, {
         miners,
         lastJob,
+        nodesOnline,
         hashBonusNanos: store?.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS,
       }),
     };
