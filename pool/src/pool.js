@@ -266,6 +266,17 @@ export function gateJob(job) {
   return requiredJobFields(job);
 }
 
+/** Stratum payload. headerHistory is pool-side only — a 12-header blob
+ *  blew up the miner recv line so ShearK never submitted after restamp. */
+export function wireJob(job, shareBits) {
+  if (!job || typeof job !== 'object') return job;
+  const { headerHistory, ...rest } = job;
+  void headerHistory;
+  const out = { ...rest };
+  if (shareBits != null) out.shareBits = shareBits;
+  return out;
+}
+
 export function prepareShareHeader({ job, nonce, headerHex } = {}) {
   const gate = gateJob(job);
   if (!gate.ok) return { ok: false, reason: 'incomplete_job', missing: gate.missing };
@@ -955,7 +966,7 @@ export function createPool({
           { blockBits: job.blockBits || job.bits, minBits: liveShareMin() },
         );
         c.shareBits = sb;
-        const payload = { ...job, shareBits: sb };
+        const payload = wireJob(job, sb);
         c.job = payload;
         try {
           if (typeof c.sock.setNoDelay === 'function') c.sock.setNoDelay(true);
@@ -1231,7 +1242,7 @@ export function createPool({
           const retargeted = issueJob(next);
           if (retargeted) {
             conn.job = retargeted;
-            try { sock.write(line({ method: 'job', params: retargeted })); } catch { /* ignore */ }
+            try { sock.write(line({ method: 'job', params: wireJob(retargeted, next) })); } catch { /* ignore */ }
           }
         }
       }
@@ -1322,7 +1333,7 @@ export function createPool({
             ? lastJob
             : issueJob(conn.shareBits);
           conn.job = job;
-          sock.write(line({ id: msg.id, result: { status: 'OK' }, job }));
+          sock.write(line({ id: msg.id, result: { status: 'OK' }, job: wireJob(job, conn.shareBits) }));
           continue;
         }
         if (method === 'stats') {

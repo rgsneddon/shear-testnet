@@ -16,11 +16,48 @@ import { requiredJobFields, encodeHeader, decodeHeader, headerFromHex } from '..
 import { payoutDest } from '../../crypto/address.js';
 import { newIdentity, encodeHrp } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, JOB_RESTAMP_MS, STATS_REFRESH_MS } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, JOB_RESTAMP_MS, STATS_REFRESH_MS, wireJob } from '../src/pool.js';
+import { hasherHasValidRoundShare, roundActualHashes } from '../src/hash_credit.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
 import { verifyPoolWithdrawOffchain } from '../../crypto/levy.js';
 import { publicJob, buildTemplate, hashBonusByMiner } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
+
+describe('stratum wire job', () => {
+  it('omits headerHistory so great and small miners can parse and submit', () => {
+    const j = wireJob({
+      jobId: 'shear-1-1',
+      header: 'aa',
+      headerHistory: ['aa', 'bb', 'cc'],
+      shareBits: 8,
+    }, 9);
+    assert.equal(j.headerHistory, undefined);
+    assert.equal(j.jobId, 'shear-1-1');
+    assert.equal(j.header, 'aa');
+    assert.equal(j.shareBits, 9);
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.match(src, /export function wireJob/);
+    assert.match(src, /payload = wireJob\(job, sb\)/);
+    assert.match(src, /job: wireJob\(job, conn\.shareBits\)/);
+    assert.match(src, /params: wireJob\(retargeted, next\)/);
+  });
+
+  it('hash bonus follows every hasher with a valid share this round, not only the largest', () => {
+    const small = { roundHashes: 8, clientHashes: 40, clientHashesRound0: 0 };
+    const large = { roundHashes: 256, clientHashes: 4000, clientHashesRound0: 0 };
+    const none = { roundHashes: 0, clientHashes: 9e9, clientHashesRound0: 0 };
+    assert.equal(hasherHasValidRoundShare(small), true);
+    assert.equal(hasherHasValidRoundShare(large), true);
+    assert.equal(hasherHasValidRoundShare(none), false);
+    assert.equal(roundActualHashes(small), 40);
+    assert.equal(roundActualHashes(large), 4000);
+    assert.equal(roundActualHashes(none), 0);
+    const rows = [small, large, none]
+      .map((m) => ({ miner: 'x', count: Number(m.roundHashes) || 0, proven: Number(m.roundHashes) || 0 }))
+      .filter((s) => s.count > 0);
+    assert.equal(rows.length, 2);
+  });
+});
 
 describe('observed interval', () => {
   it('averages every consecutive sealed header, not only the last pair or a window of 20', () => {
