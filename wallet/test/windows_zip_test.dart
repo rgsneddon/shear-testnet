@@ -119,8 +119,8 @@ void main() {
       runInShell: true,
     );
     expect(listed.exitCode, 0, reason: listed.stderr.toString());
-    expect(listed.stdout.toString(), contains('pkgver=0.8'));
-    expect(listed.stdout.toString().contains('pkgver=0.8.0'), isFalse);
+    expect(listed.stdout.toString(), contains('pkgver=0.9'));
+    expect(listed.stdout.toString().contains('pkgver=0.9.0'), isFalse);
     for (final n in names) {
       final base = n.split('/').last;
       expect(base.toLowerCase(), isNot(equals('shear-miner')));
