@@ -2290,6 +2290,16 @@ void main() {
     expect(pulls.single.to, dest);
     expect(pulls.single.amount, closeTo(confirmedNanos / kUnitsPerShe, 1e-12));
     expect(find.byKey(const Key('pull-sign')), findsNothing);
+    ledger.prune();
+    expect(ledger.transactions.where((t) => t.kind == 'pool-withdraw'), hasLength(1));
+    final continuum = ledger.pendingTxs(ident.address).where((t) => t.kind == 'pool-withdraw').toList();
+    expect(continuum, hasLength(1));
+    expect(continuum.single.to, dest);
+    expect(continuum.single.confirmed, isFalse);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.textContaining('pool-withdraw'), findsWidgets);
+    expect(find.textContaining(formatShe(confirmedNanos / kUnitsPerShe)), findsWidgets);
   });
 }
 

@@ -615,8 +615,9 @@ class ShearLedger {
     prune();
   }
 
-  /// Drop per-hash sample noise. Keep sealed txs + in-flight send/hash/receive.
-  /// Hash rows with a height are already bundled into the block and dropped.
+  /// Drop per-hash sample noise. Keep sealed txs + in-flight send/hash/receive
+  /// and unsigned-then-signed pool-withdraw. Hash rows with a height are
+  /// already bundled into the block and dropped.
   void prune() {
     final seen = <String>{};
     final next = <ShearTx>[];
@@ -628,7 +629,8 @@ class ShearLedger {
           t.kind != 'hash' &&
           t.kind != 'receive' &&
           t.kind != 'coinbase' &&
-          t.kind != 'blockfound') continue;
+          t.kind != 'blockfound' &&
+          t.kind != 'pool-withdraw') continue;
       if (!seen.add(t.id)) continue;
       next.add(t);
     }
@@ -897,7 +899,7 @@ class ShearLedger {
 
   List<ShearTx> ownerHistory(String address) {
     return _ownedRolled(address)
-        .where((t) => t.kind != 'hash' && (t.confirmed || t.kind == 'send'))
+        .where((t) => t.kind != 'hash' && (t.confirmed || t.kind == 'send' || t.kind == 'pool-withdraw'))
         .toList();
   }
 
@@ -909,7 +911,8 @@ class ShearLedger {
           keys.contains(t.from) ||
           t.from == 'hash' ||
           t.from == 'coinbase' ||
-          t.from == 'pending';
+          t.from == 'pending' ||
+          t.from == 'pool';
     });
     return rollupExplorerTxs(mine).where((t) => t.kind != 'hash').toList();
   }
@@ -931,11 +934,11 @@ class ShearLedger {
   }
 
   /// Continuum: full blocks still filling the 6-slice pie, plus in-flight
-  /// send/receive. Hash rewards never list on their own — they sit in the block.
+  /// send/receive/pool-withdraw. Hash rewards never list on their own — they sit in the block.
   List<ShearTx> pendingTxs(String address) {
     final rows = _ownedRolled(address).where((t) {
       if (t.kind == 'hash' || t.kind == 'sample') return false;
-      if (t.kind == 'send' && !t.confirmed) return true;
+      if (!t.confirmed && (t.kind == 'send' || t.kind == 'pool-withdraw')) return true;
       final h = t.height ?? 0;
       if (h < 1) return t.kind == 'receive' && !t.confirmed;
       return confirmationsOf(h) < continuumConfirmations;
