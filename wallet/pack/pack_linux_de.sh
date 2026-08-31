@@ -5,6 +5,12 @@ WALLET="${SHEAR_WALLET:-/opt/shear-v2/wallet}"
 FLUTTER_ROOT="${FLUTTER_ROOT:-/opt/flutter}"
 VER="$(sed -n "s/^const kWalletVersion = '\\(.*\\)';/\\1/p" "$WALLET/lib/main.dart" | head -1)"
 BUILD_NUMBER="${BUILD_NUMBER:-20}"
+# Flutter file version is x.y.z+N. Public zip pin stays two-part $VER.
+FLUTTER_NAME="$VER"
+case "$FLUTTER_NAME" in
+  *.*.*) ;;
+  *.*) FLUTTER_NAME="${FLUTTER_NAME}.0" ;;
+esac
 export PATH="$FLUTTER_ROOT/bin:$PATH"
 export HOME="${HOME:-/root}"
 export PUB_CACHE="${PUB_CACHE:-/opt/flutter/.pub-cache}"
@@ -15,7 +21,7 @@ cd "$WALLET"
 git config --global --add safe.directory "$FLUTTER_ROOT" || true
 flutter config --enable-linux-desktop --no-analytics >/dev/null
 flutter pub get
-flutter build linux --release --build-name="$VER" --build-number="$BUILD_NUMBER"
+flutter build linux --release --build-name="$FLUTTER_NAME" --build-number="$BUILD_NUMBER"
 BUNDLE="$WALLET/build/linux/x64/release/bundle"
 test -x "$BUNDLE/shear_wallet"
 DIST="$WALLET/dist"
