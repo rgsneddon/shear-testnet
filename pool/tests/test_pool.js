@@ -46,6 +46,7 @@ describe('observed interval', () => {
     assert.match(src, /maybeRestampJob/);
     assert.match(src, /setInterval\(maybeRestampJob/);
     assert.equal(/if \(!\(want < have\)\) return/.test(src), false);
+    assert.equal(/if \(hashWait\.size > 0\) return lastJob/.test(src), false);
     assert.equal(JOB_RESTAMP_MS, 10_000);
   });
 

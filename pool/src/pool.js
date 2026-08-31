@@ -939,15 +939,8 @@ export function createPool({
     } catch {
       return lastJob;
     }
-    const tip = store.tip();
-    let wantBits = Number(decoded.bits);
-    if (tip?.header) {
-      try {
-        const parent = decodeHeader(Buffer.from(tip.header));
-        wantBits = bitsForBlock(parent.bits, parent.timestamp, BigInt(now));
-      } catch { /* keep live bits */ }
-    }
-    if (wantBits !== Number(decoded.bits)) return lastJob;
+    // Keep live bits (they are in RandomX K). Always tick timestamp so ASERT
+    // sees wall-clock intervals. Skipping the stamp froze time and bits climbed.
     const header = encodeHeader({
       version: decoded.version,
       prevBlockHash: decoded.prevBlockHash,
@@ -974,7 +967,6 @@ export function createPool({
   }
   function maybeRestampJob() {
     if (paused) return lastJob;
-    if (hashWait.size > 0) return lastJob;
     if (!lastJob) return lastJob;
     const now = Date.now();
     const jobTs = Number(lastJob.timestamp) || 0;
@@ -1096,8 +1088,11 @@ export function createPool({
     let nextJob = null;
     if (scored.block && !closedRound) {
       sealing = true;
+      const jid = String(params.jobId || job.jobId || '');
+      const rec = jid ? store.jobs.get(jid) : null;
+      if (rec && scored.header) rec.tpl = { ...rec.tpl, header: scored.header };
       const got = await Promise.resolve(store.submitHeader({
-        jobId: params.jobId || job.jobId,
+        jobId: jid,
         nonce: params.nonce,
         miner: payoutDest(session?.login) || session?.login,
       }));
