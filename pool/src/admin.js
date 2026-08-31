@@ -286,8 +286,15 @@ function clearCookie() {
   return `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
 }
 
+function needOps(ops, name) {
+  if (!ops || typeof ops[name] !== 'function') {
+    return { status: 501, json: { ok: false, reason: 'no_ops' } };
+  }
+  return null;
+}
+
 export function handleAdminApi(url, method, body, {
-  store, queueSend, cookie, admin,
+  store, queueSend, cookie, admin, ops,
 } = {}) {
   const pathName = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
@@ -386,6 +393,74 @@ export function handleAdminApi(url, method, body, {
         tx: { id: queued?.id || queued?.tx?.id, to, amount, fee, kind: 'send' },
       },
     };
+  }
+  if (pathName === '/api/admin/health' && verb === 'GET') {
+    const miss = needOps(ops, 'health');
+    if (miss) return miss;
+    return { status: 200, json: { ok: true, ...ops.health() } };
+  }
+  if (pathName === '/api/admin/miners' && verb === 'GET') {
+    const miss = needOps(ops, 'miners');
+    if (miss) return miss;
+    const rows = ops.miners() || [];
+    return { status: 200, json: { ok: true, miners: rows, n: rows.length } };
+  }
+  if (pathName === '/api/admin/pause' && verb === 'POST') {
+    const miss = needOps(ops, 'setPaused');
+    if (miss) return miss;
+    const next = body.pause !== false && body.paused !== false && body.resume !== true;
+    return { status: 200, json: { ok: true, ...ops.setPaused(!!next) } };
+  }
+  if (pathName === '/api/admin/resume' && verb === 'POST') {
+    const miss = needOps(ops, 'setPaused');
+    if (miss) return miss;
+    return { status: 200, json: { ok: true, ...ops.setPaused(false) } };
+  }
+  if (pathName === '/api/admin/restart' && verb === 'POST') {
+    const miss = needOps(ops, 'restart');
+    if (miss) return miss;
+    return { status: 200, json: { ok: true, ...ops.restart() } };
+  }
+  if (pathName === '/api/admin/restart-hasher' && verb === 'POST') {
+    const miss = needOps(ops, 'restartHasher');
+    if (miss) return miss;
+    return { status: 200, json: { ok: true, ...ops.restartHasher() } };
+  }
+  if (pathName === '/api/admin/rebroadcast' && verb === 'POST') {
+    const miss = needOps(ops, 'rebroadcast');
+    if (miss) return miss;
+    return { status: 200, json: { ok: true, ...ops.rebroadcast() } };
+  }
+  if (pathName === '/api/admin/disconnect-all' && verb === 'POST') {
+    const miss = needOps(ops, 'disconnectAll');
+    if (miss) return miss;
+    return { status: 200, json: { ok: true, ...ops.disconnectAll() } };
+  }
+  if (pathName === '/api/admin/kick' && verb === 'POST') {
+    const miss = needOps(ops, 'kick');
+    if (miss) return miss;
+    const want = String(body.miner || body.tag || body.workerKey || body.dest || '');
+    if (!want) return { status: 400, json: { ok: false, reason: 'need_miner' } };
+    return { status: 200, json: { ok: true, ...ops.kick(want) } };
+  }
+  if (pathName === '/api/admin/ban' && verb === 'POST') {
+    const miss = needOps(ops, 'ban');
+    if (miss) return miss;
+    const want = String(body.miner || body.tag || body.workerKey || body.dest || '');
+    if (!want) return { status: 400, json: { ok: false, reason: 'need_miner' } };
+    return { status: 200, json: { ok: true, ...ops.ban(want) } };
+  }
+  if (pathName === '/api/admin/unban' && verb === 'POST') {
+    const miss = needOps(ops, 'unban');
+    if (miss) return miss;
+    const want = String(body.miner || body.tag || body.workerKey || body.dest || '');
+    if (!want) return { status: 400, json: { ok: false, reason: 'need_miner' } };
+    return { status: 200, json: { ok: true, ...ops.unban(want) } };
+  }
+  if (pathName === '/api/admin/clear-stale' && verb === 'POST') {
+    const miss = needOps(ops, 'clearStale');
+    if (miss) return miss;
+    return { status: 200, json: { ok: true, ...ops.clearStale() } };
   }
   return { status: 404, json: { ok: false, reason: 'unknown' } };
 }

@@ -44,7 +44,13 @@ describe('kyrusfables admin fee wallet', () => {
     assert.doesNotMatch(html, new RegExp(ADMIN_USER));
     assert.match(html, /Spendable/);
     assert.match(html, /Flow/);
-    assert.doesNotMatch(html, /hashrate|stratum|explorer|mempool/i);
+    assert.match(html, /theme-toggle/);
+    assert.match(html, /data-theme/);
+    assert.match(html, /setInterval\(paintLive/);
+    assert.match(html, /Restart pool/);
+    assert.match(html, /Pause/);
+    assert.match(html, /Resume/);
+    assert.doesNotMatch(html, /mempool/i);
     const robots = fs.readFileSync(path.join(ADMIN_DIR, 'robots.txt'), 'utf8');
     assert.match(robots, /Disallow: \//);
     const nginx = fs.readFileSync(path.join(root, 'deploy/nginx-kyrusfables.shear.digital.conf'), 'utf8');

@@ -7,13 +7,27 @@
   <meta name="referrer" content="no-referrer"/>
   <title></title>
   <style>
-    :root { --bg:#eef3f8; --ink:#0d2137; --muted:#5a738c; --cyan:#0088a8; --blue:#1a6fb5; --input:#fff; }
+    :root {
+      --bg:#eef3f8; --ink:#0d2137; --muted:#5a738c; --cyan:#0088a8; --blue:#1a6fb5;
+      --input:#fff; --card:#fff; --line:rgba(26,111,181,.2); --err:#b42318; --ok:#1a9a4a;
+    }
+    html[data-theme="dark"] {
+      --bg:#07111c; --ink:#d6e6f5; --muted:#8aa0b5; --cyan:#4fd8e8; --blue:#4a9fe0;
+      --input:#0d2137; --card:#0b1a28; --line:rgba(79,216,232,.18); --err:#f07070; --ok:#5dcc7a;
+    }
     * { box-sizing: border-box; }
     html, body { margin:0; font:15px/1.45 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
-    .wrap { width:100%; max-width:28rem; margin:0 auto; padding:32px 16px 48px; }
+    .wrap { width:100%; max-width:72rem; margin:0 auto; padding:20px 12px 48px; }
+    .top { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; }
+    .theme-toggle {
+      display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px;
+      padding:0; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer;
+    }
+    html[data-theme="light"] .icon-sun { display:none; }
+    html[data-theme="dark"] .icon-moon { display:none; }
     .card {
       border:1px solid transparent; padding:16px 18px; margin:12px 0;
-      background: linear-gradient(165deg,#fff 0%,#f4f8fc 58%) padding-box,
+      background: linear-gradient(165deg,var(--card) 0%,var(--bg) 58%) padding-box,
         linear-gradient(135deg,#4fd8e8,#4a9fe0,#5dcc7a) border-box;
       background-origin:border-box; background-clip:padding-box,border-box;
     }
@@ -21,15 +35,35 @@
     .spend { font-size:1.6rem; font-weight:750; color:var(--cyan); margin:6px 0 0; }
     input { width:100%; margin:.35rem 0 .7rem; padding:.45rem .55rem; background:var(--input); color:var(--ink); border:1px solid var(--blue); font-size:16px; }
     button { padding:.45rem .8rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer; font-weight:650; }
-    .err { color:#b42318; min-height:1.2em; font-size:.9rem; }
+    button.warn { color:var(--err); }
+    .err { color:var(--err); min-height:1.2em; font-size:.9rem; }
+    .ok { color:var(--ok); }
     .row { display:flex; gap:8px; flex-wrap:wrap; }
+    .grid { display:grid; gap:8px; grid-template-columns:repeat(auto-fit,minmax(9rem,1fr)); }
+    .grid .card { margin:0; padding:8px 10px; }
+    .value { font-weight:700; color:var(--cyan); margin-top:2px; }
     code { font-size:.85rem; word-break:break-all; }
     .hid { display:none; }
+    .table-wrap { width:100%; overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; table-layout:auto; }
+    th, td { text-align:left; padding:.35rem .4rem; border-bottom:1px solid var(--line); font-size:.82rem; }
+    th { color:var(--muted); font-size:.72rem; letter-spacing:.04em; text-transform:uppercase; }
+    td.num { font-variant-numeric:tabular-nums; }
+    .paused-flag { color:var(--err); font-weight:750; }
+    .gate-wrap { max-width:28rem; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <form id="gate" class="card" autocomplete="off">
+    <div class="top">
+      <div class="label" id="pulse"> </div>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark">
+        <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+    </div>
+
+    <form id="gate" class="card gate-wrap" autocomplete="off">
       <div class="label" id="gate-label">Sign in</div>
       <input id="user" name="user" type="text" autocomplete="username" spellcheck="false"/>
       <input id="pass" name="password" type="password" autocomplete="current-password"/>
@@ -40,32 +74,91 @@
       <p class="err" id="gate-err"></p>
     </form>
 
-    <div id="wallet" class="hid">
+    <div id="desk" class="hid">
+      <div class="grid" id="health"></div>
+
       <div class="card">
-        <div class="label">Spendable</div>
-        <div class="spend" id="bal">—</div>
+        <div class="label">Maintenance</div>
+        <div class="row" style="margin-top:8px">
+          <button type="button" id="btn-pause">Pause</button>
+          <button type="button" id="btn-resume">Resume</button>
+          <button type="button" id="btn-rebroadcast">Rebroadcast job</button>
+          <button type="button" id="btn-clear-stale">Clear stale</button>
+          <button type="button" id="btn-disconnect" class="warn">Disconnect all</button>
+          <button type="button" id="btn-restart-hasher" class="warn">Restart hasher</button>
+          <button type="button" id="btn-restart" class="warn">Restart pool</button>
+        </div>
+        <p class="err" id="ops-err"></p>
       </div>
-      <form id="flow" class="card" autocomplete="off">
-        <div class="label">Flow</div>
-        <input id="to" name="to" type="text" spellcheck="false" placeholder="ssa1 dest"/>
-        <input id="amount" name="amount" type="text" inputmode="decimal" placeholder="SHE"/>
-        <button type="submit">Withdraw</button>
-        <p class="err" id="flow-err"></p>
-      </form>
-      <div id="totp-box" class="card hid">
-        <div class="label">Google Authenticator</div>
-        <p>Add this key, then enter a 6-digit code.</p>
-        <p><code id="totp-secret"></code></p>
-        <input id="totp-code" type="text" inputmode="numeric" autocomplete="one-time-code"/>
-        <button type="button" id="totp-ok">Confirm</button>
-        <p class="err" id="totp-err"></p>
+
+      <div class="card">
+        <div class="label">Miners</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Tag</th><th>Worker</th><th>Ver</th><th>H/s</th><th>Acc</th><th>Stale</th>
+                <th>Round</th><th>Blk</th><th>Thr</th><th>Bits</th><th>Seen</th><th>Reject</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="miners-body"></tbody>
+          </table>
+        </div>
       </div>
-      <p><button type="button" id="add-2fa" class="hid">Add Google Authenticator</button>
-         <button type="button" id="out">Leave</button></p>
+
+      <div id="wallet">
+        <div class="card">
+          <div class="label">Spendable</div>
+          <div class="spend" id="bal">—</div>
+        </div>
+        <form id="flow" class="card" autocomplete="off">
+          <div class="label">Flow</div>
+          <input id="to" name="to" type="text" spellcheck="false" placeholder="ssa1 dest"/>
+          <input id="amount" name="amount" type="text" inputmode="decimal" placeholder="SHE"/>
+          <button type="submit">Withdraw</button>
+          <p class="err" id="flow-err"></p>
+        </form>
+        <div id="totp-box" class="card hid">
+          <div class="label">Google Authenticator</div>
+          <p>Add this key, then enter a 6-digit code.</p>
+          <p><code id="totp-secret"></code></p>
+          <input id="totp-code" type="text" inputmode="numeric" autocomplete="one-time-code"/>
+          <button type="button" id="totp-ok">Confirm</button>
+          <p class="err" id="totp-err"></p>
+        </div>
+        <p><button type="button" id="add-2fa" class="hid">Add Google Authenticator</button>
+           <button type="button" id="out">Leave</button></p>
+      </div>
     </div>
   </div>
   <script>
+    const KEY = 'shear-theme';
     const $ = (id) => document.getElementById(id);
+    let live = false;
+    let paused = false;
+
+    function savedTheme() {
+      try {
+        const v = localStorage.getItem(KEY);
+        if (v === 'dark' || v === 'light') return v;
+      } catch (e) {}
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    function applyTheme(t) {
+      document.documentElement.setAttribute('data-theme', t);
+      const btn = $('theme-toggle');
+      if (btn) {
+        const label = t === 'dark' ? 'Light' : 'Dark';
+        btn.setAttribute('aria-label', label);
+        btn.setAttribute('title', label);
+      }
+      try { localStorage.setItem(KEY, t); } catch (e) {}
+    }
+    applyTheme(savedTheme());
+    $('theme-toggle').addEventListener('click', () => {
+      applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+    });
+
     async function api(path, method, body) {
       const opt = { method, credentials: 'same-origin', headers: {} };
       if (body) { opt.headers['content-type'] = 'application/json'; opt.body = JSON.stringify(body); }
@@ -73,25 +166,102 @@
       const json = await res.json().catch(() => ({ ok: false }));
       return { status: res.status, json };
     }
+    function fmtHs(n) {
+      const x = Number(n) || 0;
+      if (x >= 1e6) return (x / 1e6).toFixed(2) + ' MH/s';
+      if (x >= 1e3) return (x / 1e3).toFixed(2) + ' kH/s';
+      return x.toFixed(1) + ' H/s';
+    }
+    function ago(ms) {
+      const t = Number(ms) || 0;
+      if (!t) return '—';
+      const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+      if (s < 60) return s + 's';
+      if (s < 3600) return Math.floor(s / 60) + 'm';
+      return Math.floor(s / 3600) + 'h';
+    }
+    function cell(h, n) {
+      return '<div class="card"><div class="label">' + h + '</div><div class="value">' + n + '</div></div>';
+    }
+    function signedOut() {
+      live = false;
+      $('desk').classList.add('hid');
+      $('gate').classList.remove('hid');
+    }
     async function paintWallet() {
       const w = await api('/api/admin/wallet', 'GET');
-      if (w.status === 401) { $('wallet').classList.add('hid'); $('gate').classList.remove('hid'); return; }
+      if (w.status === 401) { signedOut(); return false; }
       $('bal').textContent = (w.json.display || '0') + ' SHE';
-      $('wallet').classList.remove('hid');
-      $('gate').classList.add('hid');
       if (w.json.totp) {
         $('add-2fa').classList.add('hid');
         $('totp-box').classList.add('hid');
       } else {
         $('add-2fa').classList.remove('hid');
       }
+      return true;
+    }
+    async function paintOps() {
+      const h = await api('/api/admin/health', 'GET');
+      if (h.status === 401) { signedOut(); return; }
+      if (!h.json.ok) return;
+      paused = !!h.json.paused;
+      $('pulse').innerHTML = paused ? '<span class="paused-flag">paused</span>' : 'live';
+      $('health').innerHTML = [
+        cell('Height', h.json.height || 0),
+        cell('Job', h.json.jobId || '—'),
+        cell('Share bits', h.json.shareBits || '—'),
+        cell('Accepted', h.json.accepted || 0),
+        cell('Stale', h.json.stale || 0),
+        cell('Blocks', h.json.blocks || 0),
+        cell('Connected', (h.json.connected || 0) + ' / ' + (h.json.miners || 0)),
+        cell('Sockets', h.json.sockets || 0),
+        cell('Hash queue', h.json.hashQueue || 0),
+        cell('Bans', h.json.bans || 0),
+      ].join('');
+      const m = await api('/api/admin/miners', 'GET');
+      if (!m.json.ok) return;
+      const tb = $('miners-body');
+      tb.innerHTML = (m.json.miners || []).map((r) => {
+        const reject = r.lastReject ? String(r.lastReject.reason || '') + ' ' + ago(r.lastReject.at) : '—';
+        const bits = (r.shareBits || []).join(',') || '—';
+        const key = r.tag || r.workerKey || '';
+        return '<tr>'
+          + '<td>' + (r.tag || '') + (r.connected ? '' : ' · off') + (r.fee ? ' · fee' : '') + '</td>'
+          + '<td>' + (r.worker || '') + '</td>'
+          + '<td>' + (r.version || '') + '</td>'
+          + '<td class="num">' + fmtHs(r.hashrate) + '</td>'
+          + '<td class="num">' + (r.accepted || 0) + '</td>'
+          + '<td class="num">' + (r.stale || 0) + '</td>'
+          + '<td class="num">' + (r.roundHashes || 0) + '</td>'
+          + '<td class="num">' + (r.blocks || 0) + '</td>'
+          + '<td class="num">' + (r.threads || 0) + '</td>'
+          + '<td class="num">' + bits + '</td>'
+          + '<td>' + ago(r.lastShareAt || r.lastSeen) + '</td>'
+          + '<td>' + reject + '</td>'
+          + '<td><button type="button" data-kick="' + key + '">Kick</button> '
+          + '<button type="button" data-ban="' + key + '" class="warn">Ban</button></td>'
+          + '</tr>';
+      }).join('') || '<tr><td colspan="13">none</td></tr>';
+    }
+    async function paintLive() {
+      if (!live) return;
+      const ok = await paintWallet();
+      if (!ok) return;
+      await paintOps();
+    }
+    async function enterDesk() {
+      live = true;
+      $('gate').classList.add('hid');
+      $('desk').classList.remove('hid');
+      await paintLive();
     }
     async function boot() {
       const st = await api('/api/admin/status', 'GET');
       $('code').classList.toggle('hid', !(st.json.setup && st.json.totp));
       $('gate-label').textContent = st.json.setup ? 'Sign in' : 'Create access';
       $('gate-go').textContent = st.json.setup ? 'Enter' : 'Create';
-      await paintWallet();
+      const w = await api('/api/admin/wallet', 'GET');
+      if (w.status === 200 && w.json.ok) await enterDesk();
     }
     $('gate').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -103,7 +273,7 @@
       if (!got.json.ok) { $('gate-err').textContent = 'Not accepted'; return; }
       $('pass').value = '';
       $('code').value = '';
-      await paintWallet();
+      await enterDesk();
     });
     $('flow').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -128,9 +298,29 @@
     });
     $('out').addEventListener('click', async () => {
       await api('/api/admin/logout', 'POST', {});
-      $('wallet').classList.add('hid');
-      $('gate').classList.remove('hid');
+      signedOut();
     });
+    async function runOp(path, body, confirmText) {
+      $('ops-err').textContent = '';
+      if (confirmText && !window.confirm(confirmText)) return;
+      const got = await api(path, 'POST', body || {});
+      if (!got.json.ok) $('ops-err').textContent = got.json.reason || 'failed';
+      await paintOps();
+    }
+    $('btn-pause').addEventListener('click', () => runOp('/api/admin/pause', { pause: true }));
+    $('btn-resume').addEventListener('click', () => runOp('/api/admin/resume', {}));
+    $('btn-rebroadcast').addEventListener('click', () => runOp('/api/admin/rebroadcast', {}));
+    $('btn-clear-stale').addEventListener('click', () => runOp('/api/admin/clear-stale', {}, 'Zero the stale column? Accepted stays.'));
+    $('btn-disconnect').addEventListener('click', () => runOp('/api/admin/disconnect-all', {}, 'Drop every stratum socket?'));
+    $('btn-restart-hasher').addEventListener('click', () => runOp('/api/admin/restart-hasher', {}, 'Restart the local hasher unit?'));
+    $('btn-restart').addEventListener('click', () => runOp('/api/admin/restart', {}, 'Restart the pool process? Miners reconnect.'));
+    $('miners-body').addEventListener('click', (e) => {
+      const kick = e.target && e.target.getAttribute && e.target.getAttribute('data-kick');
+      const ban = e.target && e.target.getAttribute && e.target.getAttribute('data-ban');
+      if (kick) runOp('/api/admin/kick', { miner: kick });
+      if (ban) runOp('/api/admin/ban', { miner: ban }, 'Ban and drop this hasher?');
+    });
+    setInterval(paintLive, 2000);
     boot();
   </script>
 </body>

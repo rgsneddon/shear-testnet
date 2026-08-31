@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { spawn } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest } from '../../crypto/address.js';
@@ -585,6 +586,41 @@ export function refreshMinerRow(miner, now = Date.now()) {
   return miner;
 }
 
+/** Operator table on kyrusfables. Dest + workerKey stay off the public pool page. */
+export function adminMinerView(m, now = Date.now()) {
+  const connected = minerConnected(m);
+  const bits = [];
+  for (const c of m?.connections || []) {
+    const n = Number(c?.shareBits);
+    if (Number.isFinite(n) && n > 0) bits.push(n);
+  }
+  return {
+    tag: publicMinerTag(m?.login || m?.workerKey),
+    worker: publicWorkerName(m?.workerKey || m?.login),
+    dest: parseLogin(m?.login || m?.workerKey),
+    workerKey: String(m?.workerKey || m?.login || ''),
+    version: String(m?.version || ''),
+    name: String(m?.name || ''),
+    client: String(m?.client || CLIENT),
+    hashrate: reportedHashrate(m, now),
+    hashes: roundActualHashes(m),
+    roundHashes: roundActualHashes(m),
+    provenHashes: Number(m?.roundHashes) || 0,
+    accepted: Number(m?.accepted) || 0,
+    stale: Number(m?.stale) || 0,
+    blocks: Number(m?.blocks) || 0,
+    threads: Number(m?.threads) || 0,
+    sessions: Number(m?.sessions) || (m?.connections || []).length,
+    connected,
+    lastSeen: Number(m?.seen) || 0,
+    firstSeen: Number(m?.firstSeen) || Number(m?.seen) || 0,
+    lastShareAt: lastValidWorkAt(m),
+    lastReject: m?.lastReject || null,
+    shareBits: bits,
+    fee: isCminerFeeLogin(m?.workerKey || m?.login),
+  };
+}
+
 export function createPool({
   dataDir,
   stratumPort = 1111,
@@ -593,6 +629,8 @@ export function createPool({
   shareBits = SHARE_BITS_V2_START,
   bits = 16,
   p2p = null,
+  onRestart = null,
+  onRestartHasher = null,
 } = {}) {
   const store = createStore(dataDir);
   const admin = createAdmin(dataDir);
@@ -684,6 +722,28 @@ export function createPool({
   let prevJobAt = 0;
   let pendingPayout = [];
   let sealing = false;
+  let paused = false;
+  let restarting = false;
+  const banPath = path.join(dataDir, 'pool-bans.json');
+  function loadBans() {
+    try {
+      const j = JSON.parse(fs.readFileSync(banPath, 'utf8'));
+      return new Set((Array.isArray(j?.bans) ? j.bans : []).map(String));
+    } catch {
+      return new Set();
+    }
+  }
+  let bans = loadBans();
+  function saveBans() {
+    fs.writeFileSync(banPath, JSON.stringify({ bans: [...bans] }), { mode: 0o600 });
+  }
+  function isBanned(key) {
+    const raw = String(key || '');
+    if (!raw) return false;
+    const dest = parseLogin(raw);
+    const tag = publicMinerTag(raw);
+    return bans.has(raw) || bans.has(dest) || bans.has(tag);
+  }
   const stats = {
     started: Date.now(),
     lastFoundAt: 0,
@@ -716,6 +776,7 @@ export function createPool({
 
   let lastIssueAt = 0;
   function resetOpenRound() {
+    if (paused) return lastJob;
     pendingPayout = [];
     for (const m of miners.values()) {
       m.roundHashes = 0;
@@ -830,8 +891,9 @@ export function createPool({
     }
   }
 
-  function broadcastJob(job) {
+  function broadcastJob(job, { force = false } = {}) {
     if (!job) return 0;
+    if (paused && !force) return 0;
     const payload = line({ method: 'job', params: job });
     let n = 0;
     for (const s of sockets) {
@@ -897,6 +959,7 @@ export function createPool({
     return lastJob;
   }
   function maybeRestampJob() {
+    if (paused) return lastJob;
     if (hashWait.size > 0) return lastJob;
     if (!lastJob) return lastJob;
     const now = Date.now();
@@ -931,6 +994,7 @@ export function createPool({
   }
 
   function paintReject(session, reason) {
+    if (session) session.lastReject = { reason: String(reason || ''), at: Date.now() };
     if (isStaleReject(reason)) {
       stats.stale += 1;
       if (session) session.stale += 1;
@@ -938,6 +1002,11 @@ export function createPool({
   }
 
   async function acceptSubmit({ sock, session, conn, params, msg, job: passed }) {
+    if (paused) {
+      paintReject(session, 'paused');
+      try { sock.write(line({ id: msg.id, error: 'paused' })); } catch { /* ignore */ }
+      return;
+    }
     const claimed = submittedShareDigest(params);
     if (!claimed) {
       try { sock.write(line({ id: msg.id, error: 'need_hash' })); } catch { /* ignore */ }
@@ -1061,7 +1130,7 @@ export function createPool({
     }
     try { sock.write(line({ id: msg.id, result: { status: 'OK', hash: scored.hash, block: !!scored.block } })); } catch { /* ignore */ }
     paintStatsSnap();
-    if (!nextJob && !closedRound && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login)) {
+    if (!paused && !nextJob && !closedRound && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login)) {
       conn.varShares = (Number(conn.varShares) || 0) + 1;
       const now = Date.now();
       const elapsed = now - (Number(conn.varWindowAt) || now);
@@ -1115,6 +1184,10 @@ export function createPool({
           const adm = admitClient(params);
           if (!adm.ok) {
             sock.write(line({ id: msg.id, error: adm.reason }));
+            continue;
+          }
+          if (isBanned(adm.workerKey) || isBanned(adm.login)) {
+            sock.write(line({ id: msg.id, error: 'banned' }));
             continue;
           }
           const key = adm.workerKey;
@@ -1320,10 +1393,130 @@ export function createPool({
     return tx;
   }
 
+  function dropSockets(list) {
+    let n = 0;
+    for (const s of list) {
+      try { s.destroy(); n += 1; } catch { /* ignore */ }
+    }
+    return n;
+  }
+
+  function minerMatches(m, want) {
+    const w = String(want || '').trim();
+    if (!w) return false;
+    const tag = publicMinerTag(m.login || m.workerKey);
+    return tag === w
+      || String(m.workerKey || '') === w
+      || String(m.login || '') === w
+      || parseLogin(m.login || m.workerKey) === w;
+  }
+
+  function kickMiner(want) {
+    const socks = [];
+    for (const m of miners.values()) {
+      if (!minerMatches(m, want)) continue;
+      for (const c of m.connections || []) {
+        if (c?.sock) socks.push(c.sock);
+      }
+    }
+    return { dropped: dropSockets(socks) };
+  }
+
+  const adminOps = {
+    health() {
+      const tip = store.tip();
+      let connected = 0;
+      for (const m of miners.values()) {
+        if (minerConnected(m)) connected += 1;
+      }
+      return {
+        paused,
+        height: tip?.height || 0,
+        jobId: lastJob?.jobId || '',
+        jobHeight: Number(lastJob?.height) || 0,
+        shareBits: Number(lastJob?.shareBits) || shareBits,
+        blockBits: blockBitsNow(),
+        accepted: stats.accepted,
+        stale: stats.stale,
+        blocks: stats.blocks,
+        miners: miners.size,
+        connected,
+        sockets: sockets.size,
+        hashQueue: hashWait.size,
+        bans: bans.size,
+        uptimeMs: Date.now() - stats.started,
+        lastFoundAt: stats.lastFoundAt || 0,
+        stratum: stats.stratum,
+      };
+    },
+    miners() {
+      const now = Date.now();
+      return [...miners.values()].map((m) => adminMinerView(m, now));
+    },
+    setPaused(next) {
+      paused = !!next;
+      if (!paused && lastJob) broadcastJob(lastJob, { force: true });
+      return { paused };
+    },
+    rebroadcast() {
+      if (paused) return { paused: true, n: 0, reason: 'paused' };
+      if (!lastJob) return { n: 0, reason: 'no_job' };
+      return { n: broadcastJob(lastJob, { force: true }), jobId: lastJob.jobId };
+    },
+    disconnectAll() {
+      return { dropped: dropSockets([...sockets]) };
+    },
+    kick(want) {
+      return kickMiner(want);
+    },
+    ban(want) {
+      const w = String(want || '').trim();
+      if (!w) return { banned: false };
+      bans.add(w);
+      saveBans();
+      const kicked = kickMiner(w);
+      return { banned: true, ...kicked };
+    },
+    unban(want) {
+      const w = String(want || '').trim();
+      bans.delete(w);
+      saveBans();
+      return { banned: false };
+    },
+    clearStale() {
+      stats.stale = 0;
+      for (const m of miners.values()) m.stale = 0;
+      paintStatsSnap();
+      return { stale: 0 };
+    },
+    restart() {
+      if (typeof onRestart === 'function') return onRestart();
+      if (restarting) return { scheduled: true };
+      restarting = true;
+      setTimeout(() => {
+        try { process.exit(0); } catch { /* ignore */ }
+      }, 400);
+      return { scheduled: true };
+    },
+    restartHasher() {
+      if (typeof onRestartHasher === 'function') return onRestartHasher();
+      try {
+        const child = spawn('systemctl', ['restart', 'sheark-miner'], {
+          detached: true,
+          stdio: 'ignore',
+        });
+        child.unref();
+        return { scheduled: true };
+      } catch {
+        return { scheduled: false, reason: 'hasher_restart_failed' };
+      }
+    },
+  };
+
   const httpServer = http.createServer(async (req, res) => {
     const host = String(req.headers.host || '').split(':')[0].toLowerCase();
     if (isAdminHost(host)) {
-      await handleAdminHttp(req, res, { store, admin, queueSend });
+      await handleAdminHttp(req, res, { store, admin, queueSend, ops: adminOps });
       return;
     }
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -1581,6 +1774,9 @@ export function createPool({
     restampJob: maybeRestampJob,
     get pendingPayout() { return pendingPayout; },
     get prevJob() { return prevJob; },
+    get paused() { return paused; },
+    admin,
+    adminOps,
     pullBook,
   };
 }
