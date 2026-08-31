@@ -30,7 +30,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
     assert.equal(j.personalisation, 'ShearHash-v2');
-    assert.equal(j.version, '1.3');
+    assert.equal(j.version, '1.2');
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.headerBytes, 128);
     assert.equal(j.magic, 'shear-testnet-v2');
@@ -44,7 +44,7 @@ describe('ShearK-Miner', () => {
     assert.equal(src.toLowerCase().includes('feeless'), false);
     assert.equal(/g_fee_login/.test(src), false);
     const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
-    assert.match(help.stdout, /ShearK-Miner 1\.3 \(ShearHash-v2 light\)/);
+    assert.match(help.stdout, /ShearK-Miner 1\.2 \(ShearHash-v2 light\)/);
     assert.match(help.stdout, /ShearHash-v2 light/);
     assert.equal(help.stdout.toLowerCase().includes('feeless'), false);
     assert.match(src, /hashes=%llu round=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu blocks=%d dropped=%llu/);
@@ -70,13 +70,10 @@ describe('ShearK-Miner', () => {
     assert.equal(/randomx_calculate_hash\(g_vm,/.test(hashc), false);
     assert.match(src, /pthread_setaffinity_np/);
     assert.match(src, /g_cpu_map/);
-    assert.match(src, /s\.gen != live_gen/);
-    assert.match(src, /enqueue_share\(job\.jobId, n, hash, job\.gen\)/);
-    assert.match(src, /enqueue_share\(job\.jobId, primed_n, hash, job\.gen\)/);
   });
 
   it('leftover windows zip is only ShearK-Miner.exe + example.bat', () => {
-    const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.3-windows.zip');
+    const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.2-windows.zip');
     if (!fs.existsSync(zip)) return;
     const listed = spawnSync('tar', ['-tf', zip], { encoding: 'utf8' });
     const names = (listed.status === 0 ? listed.stdout : '')
@@ -93,9 +90,9 @@ describe('ShearK-Miner', () => {
   });
 
   it('leftover linux zip is ShearK-Miner + example.sh', () => {
-    const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.3-linux.zip');
+    const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.2-linux.zip');
     if (!fs.existsSync(zip)) return;
-    const py = spawnSync('python3', ['-c',
+    const py = spawnSync('python', ['-c',
       'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]);\n'
       + 'print("\\n".join(i.filename for i in z.infolist()));\n'
       + 'print("MODE", oct((z.getinfo("ShearK-Miner").external_attr >> 16) & 0o777))',
@@ -149,11 +146,11 @@ describe('ShearK-Miner', () => {
     await new Promise((r) => child.once('close', r));
     server.close();
     assert.match(loginLine, /"name":"ShearK-Miner"/);
-    assert.match(loginLine, /"version":"1\.3"/);
+    assert.match(loginLine, /"version":"1\.2"/);
     assert.match(loginLine, /"client":"ShearHash"/);
     assert.match(loginLine, /"algorithm":"ShearHash"/);
     assert.equal(/"version":"1\.[01]"/.test(loginLine), false, loginLine);
-    assert.match(out, /ShearK-Miner 1\.3 \(ShearHash-v2 light\)/);
+    assert.match(out, /ShearK-Miner 1\.2 \(ShearHash-v2 light\)/);
     assert.match(out, /hashes=(?:\x1b\[(?:32m|1;92m))?\d+/);
     assert.match(out, /accepted=(?:\x1b\[(?:33m|1;93m))?0/);
     assert.match(out, /rejected=(?:\x1b\[(?:31m|1;91m))?0/);

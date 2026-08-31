@@ -85,7 +85,6 @@ typedef struct {
   char jobId[80];
   uint64_t nonce;
   int share_bits;
-  int gen;
   char hash[65];
 } Share;
 
@@ -595,7 +594,7 @@ static int copy_main_job(JobSnap *out) {
   return ok;
 }
 
-static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char hash[32], int gen) {
+static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char hash[32]) {
   pthread_mutex_lock(&g_q_mu);
   int next = (g_qtail + 1) % QCAP;
   if (next == g_qhead) {
@@ -607,7 +606,6 @@ static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char 
   Share *s = &g_q[g_qtail];
   snprintf(s->jobId, sizeof(s->jobId), "%s", jobId);
   s->nonce = nonce;
-  s->gen = gen;
   s->share_bits = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
   shear_hash_hex(hash, s->hash);
   snprintf(g_last_job, sizeof(g_last_job), "%s", jobId);
@@ -688,7 +686,7 @@ static void *hash_worker(void *arg) {
         atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
         if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
             && shear_meets_target(hash, atomic_load_explicit(&g_share_bits_live, memory_order_relaxed))) {
-          enqueue_share(job.jobId, n, hash, job.gen);
+          enqueue_share(job.jobId, n, hash);
         }
         n += (uint64_t)g_threads;
         continue;
@@ -706,7 +704,7 @@ static void *hash_worker(void *arg) {
     atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
     if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
         && shear_meets_target(hash, atomic_load_explicit(&g_share_bits_live, memory_order_relaxed))) {
-      enqueue_share(job.jobId, primed_n, hash, job.gen);
+      enqueue_share(job.jobId, primed_n, hash);
     }
     primed_n = n;
     n += (uint64_t)g_threads;
@@ -739,11 +737,6 @@ static void clear_jobs(void) {
 static void flush_shares(Conn *mainc) {
   Share s;
   while (dequeue_share(&s)) {
-    int live_gen = atomic_load_explicit(&g_job_seq, memory_order_acquire);
-    if (s.gen != live_gen) {
-      g_dropped++;
-      continue;
-    }
     int live = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
     if (live > s.share_bits && s.share_bits > 0) {
       g_dropped++;
