@@ -240,6 +240,21 @@ export function bitsForBlock(parentBits, parentTimestamp, blockTimestamp) {
   return nextBits(parentBits, Number(blockTimestamp) - Number(parentTimestamp));
 }
 
+/**
+ * Template time for the next header. Aim 90s after parent so ASERT
+ * holds bits instead of +2 on a same-tick stamp. If the round is
+ * already late, use wall clock so bits can drop. Not consensus —
+ * verifiers only see the sealed header timestamp.
+ */
+export function templateStampMs(parentTimestamp, now = Date.now()) {
+  const wall = Number(now);
+  const parent = Number(parentTimestamp);
+  if (!Number.isFinite(wall)) return Date.now();
+  if (!Number.isFinite(parent)) return wall;
+  const aimed = parent + TARGET_BLOCK_INTERVAL_MS;
+  return wall < aimed ? aimed : wall;
+}
+
 export function blockWork(bits) {
   const n = clampBits(bits);
   return 2 ** n;

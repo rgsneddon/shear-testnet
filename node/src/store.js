@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, templateStampMs } from '../../crypto/asert.js';
 import { hashHex } from '../../crypto/shear_hash.js';
 import {
   buildTemplate,
@@ -777,7 +777,14 @@ export function createStore(dir, {
   function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn } = {}) {
     const t = tip();
     const height = t ? t.height + 1 : 1;
-    const now = nowIn != null ? Number(nowIn) : Date.now();
+    const wall = nowIn != null ? Number(nowIn) : Date.now();
+    let now = wall;
+    if (bitsIn == null && t?.header) {
+      try {
+        const parent = decodeHeader(Buffer.from(t.header));
+        now = templateStampMs(parent.timestamp, wall);
+      } catch { /* keep wall */ }
+    }
     const bits = bitsIn != null ? bitsIn : retarget(blocks, now);
     const lag1 = lag1Continuity(t ? t.header : null);
     let baseFeeNow = 1;

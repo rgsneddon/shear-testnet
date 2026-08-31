@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import {
   nextBits,
   bitsForBlock,
+  templateStampMs,
   TARGET_BLOCK_INTERVAL_MS,
   GENESIS_BITS,
   LIVE_MIN_BITS,
@@ -70,6 +71,15 @@ describe('ASERT 90s block retarget', () => {
     const eased = bitsForBlock(36, parentTs, parentTs + 12 * 3600_000);
     assert.ok(eased < 36, `12h header delta must ease 36-bit freeze, got ${eased}`);
     assert.equal(eased, bitsForBlock(36, parentTs, parentTs + 12 * 3600_000));
+  });
+
+  it('template stamp aims 90s after parent, or wall if the round is already late', () => {
+    const parentTs = 1_700_000_000_000;
+    assert.equal(templateStampMs(parentTs, parentTs + 1_000), parentTs + TARGET_BLOCK_INTERVAL_MS);
+    assert.equal(templateStampMs(parentTs, parentTs + TARGET_BLOCK_INTERVAL_MS), parentTs + TARGET_BLOCK_INTERVAL_MS);
+    assert.equal(templateStampMs(parentTs, parentTs + 400_000), parentTs + 400_000);
+    assert.equal(bitsForBlock(21, parentTs, templateStampMs(parentTs, parentTs + 1_000)), 21);
+    assert.equal(bitsForBlock(21, parentTs, templateStampMs(parentTs, parentTs + 400_000)), 19);
   });
 });
 
