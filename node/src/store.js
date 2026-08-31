@@ -30,7 +30,7 @@ import { emptyJoin, applyJoinBlock, validateJoinBlock } from '../../crypto/join_
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
-import { blockWeight, mempoolDepthBytes } from '../../crypto/levy.js';
+import { blockWeight } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
 import { blockWork } from '../../crypto/asert.js';
 import {
@@ -508,7 +508,6 @@ export function createStore(dir, {
       buried: !!block.samplesPruned,
       evmSession,
       evmHistory: blocks,
-      mempoolDepth: mempoolDepthBytes(mempool),
     });
     return settleCheck(check, (okCheck) => completeAppend(okCheck, block));
   }
@@ -785,29 +784,24 @@ export function createStore(dir, {
     try {
       if (t?.header) baseFeeNow = Number(decodeHeader(Buffer.from(t.header)).baseFee || 1n);
     } catch { baseFeeNow = 1; }
-    const pendingTxs = mempool.map((m) => {
+    const book = emptyMempool();
+    book.baseFee = baseFeeNow;
+    const pendingTxs = [];
+    for (const m of mempool) {
       const dest = destForLogin(m.to, { continuityRoot: lag1, height }) || m.to;
-      return {
-        id: m.id,
-        from: m.from,
+      const tx = {
+        ...m,
         to: dest,
-        nanos: m.nanos,
-        fee: m.fee,
-        kind: m.kind,
-        programId: m.programId,
-        commit: m.commit,
-        key: m.key,
-        root: m.root,
         bFlag: m.kind === 'b-spend' || m.bFlag,
-        vin: [{ address: m.from }],
-        vout: [{ address: dest, nanos: m.nanos, kind: m.kind, memoCt: m.memoCt }],
+        vin: m.vin || [{ address: m.from }],
+        vout: m.vout || [{ address: dest, nanos: m.nanos, kind: m.kind, memoCt: m.memoCt }],
       };
-    }).filter((tx) => {
-      if (pause.join && tx.kind === 'claim') return false;
-      if (pause.reserveInterest && tx.mint) return false;
-      if (pause.poolWithdraw && tx.kind === 'pool-withdraw') return false;
-      return admitMempool({ txs: [], baseFee: baseFeeNow }, tx, { baseFee: baseFeeNow }).ok;
-    });
+      if (pause.join && tx.kind === 'claim') continue;
+      if (pause.reserveInterest && tx.mint) continue;
+      if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
+      const got = admitMempool(book, tx, { baseFee: baseFeeNow });
+      if (got.ok) pendingTxs.push(got.tx);
+    }
     const tpl = buildTemplate({
       prev: t ? t.hash : GENESIS_PREV,
       prevHeader: t ? t.header : null,
@@ -853,6 +847,7 @@ export function createStore(dir, {
     explorer,
     tip,
     append,
+    verifyFork,
     adopt,
     ingest,
     template,

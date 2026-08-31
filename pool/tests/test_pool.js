@@ -478,6 +478,12 @@ describe('public miner listing', () => {
     const miner = fs.readFileSync(new URL('../public/miner.html', import.meta.url), 'utf8');
     assert.match(dash, /s\.workers/);
     assert.match(miner, /d\.workers/);
+    assert.match(miner, /id="m-pending"/);
+    assert.match(miner, /value yellow/);
+    assert.match(miner, /Withdraw confirmed sum/);
+    assert.match(miner, /ninety hours/);
+    assert.match(miner, /she1 never goes on the book/);
+    assert.doesNotMatch(miner, />raskul</);
     assert.equal(/localStorage/.test(dash + miner), false);
     assert.match(miner, /id="m-algo">ShearHash-v2</);
     assert.match(miner, /d\.personalisation \|\| 'ShearHash-v2'/);

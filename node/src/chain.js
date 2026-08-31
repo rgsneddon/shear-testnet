@@ -26,13 +26,12 @@ import { buildDualTree, spendB } from '../../crypto/clearing.js';
 import {
   nextBaseFee,
   blockWeight,
-  levyNanos,
   splitLevy,
   txWeight,
   reserveFeeDest,
   levyTaxed,
-  txAmountNanos,
   containsShe1,
+  levyNeed,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
 
@@ -278,7 +277,6 @@ function verifyBlockConsensus(block, prev, {
   spentB = null,
   tipHeight = 0,
   hashBonusNanos = HASH_BONUS_NANOS,
-  mempoolDepth = 0,
 } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
@@ -350,7 +348,9 @@ function verifyBlockConsensus(block, prev, {
   const base = Number(decoded.baseFee || 1n);
   let fees = 0;
   const spent = spentB instanceof Set ? spentB : new Set(spentB || []);
-  for (const tx of txs.slice(1)) {
+  const body = txs.slice(1);
+  for (let i = 0; i < body.length; i += 1) {
+    const tx = body[i];
     const outs = Array.isArray(tx.vout) ? tx.vout : [];
     for (const o of outs) {
       if (o?.address && !ssaOk(o.address)) {
@@ -370,9 +370,7 @@ function verifyBlockConsensus(block, prev, {
     }
     if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
     const taxed = levyTaxed(tx);
-    const need = taxed
-      ? levyNanos(txAmountNanos(tx), { depth: Number(mempoolDepth || 0) })
-      : 0;
+    const need = levyNeed(tx, body.slice(0, i));
     const paid = Math.floor(Number(tx.fee || 0));
     if (paid < need) return { ok: false, reason: 'levy' };
     if (taxed && tx.maxLevy != null && need > Number(tx.maxLevy)) {

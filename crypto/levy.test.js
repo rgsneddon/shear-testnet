@@ -9,6 +9,8 @@ import {
   reserveFeeDest,
   levyTaxed,
   quoteLevy,
+  levyNeed,
+  mempoolDepthBytes,
   SURGE_MAX,
   LEVY_FLOOR_UNITS,
 } from './levy.js';
@@ -45,5 +47,10 @@ describe('Phase B Flow levy', () => {
     const q = quoteLevy(one, { depth: 0 });
     assert.equal(q.L, 20_000_000);
     assert.equal(q.finder + q.reserve, q.L);
+    const first = { kind: 'send', nanos: 2, vin: [{}], vout: [{ nanos: 2 }] };
+    assert.equal(levyNeed(first, []), 100);
+    const fat = { kind: 'send', nanos: 2, pad: 'x'.repeat(3000), vin: [{}], vout: [{ nanos: 2 }] };
+    assert.ok(mempoolDepthBytes([fat]) > 2048);
+    assert.ok(levyNeed(first, [fat]) > 100);
   });
 });

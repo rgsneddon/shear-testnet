@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { levyNanos } from '../../crypto/levy.js';
+import { levyNanos, mempoolDepthBytes } from '../../crypto/levy.js';
 import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS } from '../../crypto/asert.js';
 import { lockTx, withdrawTx } from '../../crypto/reserve_vault.js';
 import {
@@ -37,9 +37,19 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const destA = destForLogin(idA.address, { viewKey: idA.viewKey, height: 1 });
     const destB = destForLogin(idB.address, { viewKey: idB.viewKey, height: 1 });
     const sendNanos = 2;
-    const need = levyNanos(sendNanos);
     const lockNanos = 1000;
     const valueNanos = 77;
+    const sendTx = {
+      id: 'flow-send',
+      kind: 'send',
+      from: destA,
+      to: destB,
+      nanos: sendNanos,
+      fee: levyNanos(sendNanos),
+      vin: [{ address: destA }],
+      vout: [{ address: destB, nanos: sendNanos }],
+    };
+    const evmNeed = levyNanos(valueNanos, { depth: mempoolDepthBytes([sendTx]) });
     const base = {
       prev: GENESIS_PREV,
       height: 1,
@@ -51,15 +61,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const block = mine(buildTemplate({
       ...base,
       txs: [
-        {
-          id: 'flow-send',
-          from: destA,
-          to: destB,
-          nanos: sendNanos,
-          fee: need,
-          vin: [{ address: destA }],
-          vout: [{ address: destB, nanos: sendNanos }],
-        },
+        sendTx,
         {
           id: 'reserve-lock',
           programId: RESERVE_PROGRAM,
@@ -67,7 +69,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
           from: destA,
           to: destA,
           nanos: lockNanos,
-          fee: need,
+          fee: 0,
           vin: [{ address: destA }],
           vout: [{ address: destA, nanos: lockNanos, kind: 'lock' }],
         },
@@ -77,7 +79,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
           from: destA,
           to: destB,
           nanos: valueNanos,
-          fee: need,
+          fee: evmNeed,
           vin: [{ address: destA }],
           vout: [{ address: destB, nanos: valueNanos, kind: 'evm-value' }],
         },

@@ -18,9 +18,13 @@ import {
   bitsForBlock,
   consensusFingerprint,
   consensusLaw,
+  formatShe,
+  NANOS_PER_SHE,
+  SPENDABLE_CONFIRMATIONS,
 } from '../../crypto/asert.js';
-import { poolFeeDest } from '../../crypto/levy.js';
+import { poolFeeDest, levyNanos, mempoolDepthBytes, poolWithdrawTx, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
+import { createPullBook, PULL_COOLDOWN_MS } from './pull_book.js';
 import { createStore } from '../../node/src/store.js';
 import { poolRecentBlockTxs, networkSupply } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
@@ -518,6 +522,7 @@ export function createPool({
 } = {}) {
   const store = createStore(dataDir);
   const admin = createAdmin(dataDir);
+  const pullBook = createPullBook(dataDir);
   const miners = new Map();
   let p2pNet = p2p;
   let hashWorker = null;
@@ -890,6 +895,16 @@ export function createPool({
           stats.lastFoundAt = sealed?.header
             ? (Number(decodeHeader(Buffer.from(sealed.header)).timestamp) || Date.now())
             : Date.now();
+          pullBook.creditRound(
+            [...miners.values()]
+              .filter((m) => (Number(m.roundHashes) || 0) > 0 && !isCminerFeeLogin(m.login || m.workerKey))
+              .map((m) => ({
+                tag: publicMinerTag(m.login || m.workerKey),
+                dest: payoutDest(m.login) || m.login,
+                count: roundActualHashes(m),
+              })),
+            { height: Number(sealed?.height || 0) },
+          );
         } catch {
           stats.lastFoundAt = Date.now();
         }
@@ -1220,16 +1235,86 @@ export function createPool({
       return;
     }
     if (url.pathname.startsWith('/api/miners/')) {
-      const tag = decodeURIComponent(url.pathname.slice('/api/miners/'.length).split('/')[0] || '');
+      const parts = url.pathname.slice('/api/miners/'.length).split('/').filter(Boolean);
+      const tag = decodeURIComponent(parts[0] || '');
       const rows = minerByTag(tag);
       res.setHeader('content-type', 'application/json');
-      if (!rows.length) {
+      const tipH = Number(store.tip?.()?.height || 0);
+      const need = typeof store.getpolicy === 'function'
+        ? (store.getpolicy().operational?.pool_merchant || 30)
+        : 30;
+      const pull = pullBook.view(tag, { tipHeight: tipH, need });
+      if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs) {
         res.statusCode = 404;
         res.end(JSON.stringify({ ok: false, reason: 'unknown_miner', tag }));
         return;
       }
+      if (parts[1] === 'withdraw' && req.method === 'POST') {
+        let body = {};
+        try {
+          body = JSON.parse(await new Promise((resolve, reject) => {
+            const chunks = [];
+            req.on('data', (c) => chunks.push(c));
+            req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8') || '{}'));
+            req.on('error', reject);
+          }));
+        } catch { body = {}; }
+        const login = String(body.login || '').trim();
+        if (publicMinerTag(login) !== tag) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, reason: 'auth' }));
+          return;
+        }
+        if (pull.lastPullMs && Date.now() < pull.nextPullMs) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, reason: 'cooldown', nextPullMs: pull.nextPullMs }));
+          return;
+        }
+        if (!(pull.confirmedNanos > 0)) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, reason: 'none_confirmed' }));
+          return;
+        }
+        const dest = payoutDest(String(body.dest || '')) || payoutDest(login) || '';
+        const off = verifyPoolWithdrawOffchain({
+          login,
+          dest,
+          nanos: pull.confirmedNanos,
+          sig: body.sig || body.signature,
+        });
+        if (!off.ok) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, reason: off.reason }));
+          return;
+        }
+        const from = payoutDest(miner) || poolFeeDest();
+        const fee = levyNanos(pull.confirmedNanos, { depth: mempoolDepthBytes(store.mempool || []) });
+        const tx = poolWithdrawTx({ from, to: dest, nanos: pull.confirmedNanos, fee });
+        if (containsShe1(tx)) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, reason: 'she1_on_chain' }));
+          return;
+        }
+        const queued = queueSend(tx);
+        if (queued && queued.ok === false) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, reason: queued.reason || 'queue_failed' }));
+          return;
+        }
+        const taken = pullBook.takeConfirmed(tag, { tipHeight: tipH, need });
+        res.end(JSON.stringify({
+          ok: true,
+          nanos: taken.nanos,
+          she: taken.nanos / NANOS_PER_SHE,
+          to: dest,
+          cooldownMs: PULL_COOLDOWN_MS,
+        }));
+        return;
+      }
       const now = Date.now();
-      const views = rows.map((m) => publicMinerView(m, now)).sort((a, b) => (b.hashrate || 0) - (a.hashrate || 0));
+      const views = rows.length
+        ? rows.map((m) => publicMinerView(m, now)).sort((a, b) => (b.hashrate || 0) - (a.hashrate || 0))
+        : [];
       const roll = views.reduce((a, v) => ({
         hashrate: a.hashrate + v.hashrate,
         roundHashes: a.roundHashes + v.roundHashes,
@@ -1240,17 +1325,24 @@ export function createPool({
       }), { hashrate: 0, roundHashes: 0, accepted: 0, stale: 0, blocks: 0, threads: 0 });
       res.end(JSON.stringify({
         ok: true,
-        tag: publicMinerTag(rows[0].login || rows[0].workerKey),
+        tag,
         name: uniquePublicLabels(views.map((v) => v.name)),
         version: uniquePublicLabels(views.map((v) => v.version)),
-        client: views[0].client,
+        client: views[0]?.client || CLIENT,
         algo: ALGO,
         personalisation: PERSONAL,
         connected: views.some((v) => v.connected),
-        lastSeen: Math.max(...views.map((v) => v.lastSeen)),
-        firstSeen: Math.min(...views.map((v) => v.firstSeen || now)),
+        lastSeen: views.length ? Math.max(...views.map((v) => v.lastSeen)) : 0,
+        firstSeen: views.length ? Math.min(...views.map((v) => v.firstSeen || now)) : 0,
         ...roll,
         workers: views,
+        pendingShe: pull.pendingNanos / NANOS_PER_SHE,
+        confirmedShe: pull.confirmedNanos / NANOS_PER_SHE,
+        unconfirmedShe: pull.unconfirmedNanos / NANOS_PER_SHE,
+        pendingDisplay: formatShe(pull.pendingNanos / NANOS_PER_SHE),
+        confirmedDisplay: formatShe(pull.confirmedNanos / NANOS_PER_SHE),
+        nextPullMs: pull.nextPullMs,
+        cooldownMs: PULL_COOLDOWN_MS,
       }));
       return;
     }
@@ -1354,6 +1446,7 @@ export function createPool({
     setP2p,
     restampJob: maybeRestampJob,
     get pendingPayout() { return pendingPayout; },
+    pullBook,
   };
 }
 

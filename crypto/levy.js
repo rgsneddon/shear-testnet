@@ -148,6 +148,12 @@ export function mempoolDepthBytes(txs = []) {
   return n;
 }
 
+/** Consensus L for tx given the taxed txs already waiting (not including tx). */
+export function levyNeed(tx, prefix = []) {
+  if (!levyTaxed(tx)) return 0;
+  return levyNanos(txAmountNanos(tx), { depth: mempoolDepthBytes(prefix) });
+}
+
 export function mempoolPressure(txs = []) {
   const depth = mempoolDepthBytes(txs);
   return {

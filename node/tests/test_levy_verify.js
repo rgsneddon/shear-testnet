@@ -1,9 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { splitLevy, levyNanos } from '../../crypto/levy.js';
 import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
+import { createStore } from '../src/store.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -130,5 +134,49 @@ describe('verifyBlock Phase B Flow levy', () => {
     assert.equal(evmOk.ok, true, evmOk.reason || evmOk.error);
     assert.equal(evmOk.evmRan, true);
     assert.equal(evmOk.evm.valueMoved, valueNanos);
+  });
+
+  it('queueTx quoted L, template, mine, append; verifyFork agrees', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-levy-path-'));
+    const store = createStore(dir);
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const sendNanos = 2;
+    const fee = levyNanos(sendNanos);
+    const queued = store.queueTx({
+      id: 'q-send',
+      kind: 'send',
+      from: dest,
+      to: dest,
+      nanos: sendNanos,
+      fee,
+      vin: [{ address: dest }],
+      vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
+    });
+    assert.equal(queued.ok, true, queued.reason);
+    const { tpl } = store.template({
+      miner: dest,
+      bits: 4,
+      now: Date.now(),
+      samples: [{ miner: dest, nonce: '1', tag: 'a', count: 1 }],
+    });
+    assert.equal(tpl.txs.slice(1).some((t) => t.id === 'q-send'), true);
+    const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
+    assert.ok(found && found.block, 'pow');
+    const block = {
+      header: found.header,
+      txs: tpl.txs,
+      samples: tpl.samples,
+      miner: tpl.miner,
+      aLeaves: tpl.aLeaves,
+      bLeaves: tpl.bLeaves,
+      rootA: tpl.rootA,
+      rootB: tpl.rootB,
+      weight: tpl.weight,
+    };
+    const appended = await store.append(block);
+    assert.equal(appended.ok, true, appended.reason);
+    const fork = await store.verifyFork([block]);
+    assert.equal(fork.ok, true, fork.reason);
   });
 });
