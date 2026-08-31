@@ -59,8 +59,14 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /text-indent:\.12em/);
     assert.match(html, /shear-wallet-0\.8-macos\.dmg/);
     assert.match(html, /shear-wallet-0\.8-windows\.zip/);
+    assert.match(html, /shear-wallet-0\.8-android\.apk/);
     assert.match(html, /shear-wallet-0\.8-linux\.zip/);
     assert.match(html, /shear-wallet-0\.8-archlinux\.zip/);
+    assert.match(html, /data-pack="wallet-macos"/);
+    assert.match(html, /data-pack="wallet-windows"/);
+    assert.match(html, /data-pack="wallet-android"/);
+    assert.match(html, /data-pack="wallet-linux"/);
+    assert.match(html, /data-pack="wallet-archlinux"/);
     assert.match(html, /id="pack-advisory"/);
     assert.match(html, /wallet <strong>0\.8<\/strong>/);
     assert.doesNotMatch(html, /shear-wallet-0\.7-/);
