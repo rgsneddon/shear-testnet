@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import { isDestAddress, isPaymentCode, isShearAddress, payoutDest } from '../../crypto/address.js';
 import {
   HASH_BONUS_NANOS,
   NANOS_PER_SHE,
   BLOCK_SUBSIDY_NANOS,
+  TARGET_BLOCK_INTERVAL_MS,
   SPENDABLE_CONFIRMATIONS,
   MIN_CONFIRMS_POLICY,
   RESERVE_PROGRAM,
@@ -11,7 +13,16 @@ import {
 } from '../../crypto/asert.js';
 import { portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
 import { claim as joinClaim, publicJoinView, claimTx } from '../../crypto/join_vault.js';
-import { levyNanos, txWeight } from '../../crypto/levy.js';
+import {
+  levyNanos,
+  mempoolPressure,
+  mempoolDepthBytes,
+  poolFeeDest,
+  poolPayoutDest,
+  poolWithdrawTx,
+  verifyPoolWithdrawOffchain,
+  containsShe1,
+} from '../../crypto/levy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
@@ -457,7 +468,48 @@ export function explorerCirculation(store) {
   };
 }
 
-export function mempoolLattice(store, limit = 24) {
+function memoTxWeight(m) {
+  const vouts = Math.max(1, (m?.vout || []).length || (m?.to ? 1 : 0));
+  const memo = m?.memoCt || m?.memoH ? 1 : 0;
+  const bFlag = m?.kind === 'b-spend' || m?.bFlag ? 1 : 0;
+  return txWeight({ vouts, memoChunks: memo, bFlag });
+}
+
+function publicHashTag(login) {
+  const dest = String(login || '').trim().split('.')[0];
+  return `she1${createHash('sha256').update('shear-miner-tag-v1').update(dest).digest('hex').slice(0, 8)}`;
+}
+
+function openRoundHashRows(miners, hashBonusNanos) {
+  const book = miners && typeof miners.values === 'function'
+    ? [...miners.values()]
+    : (Array.isArray(miners) ? miners : []);
+  const unit = Number(hashBonusNanos || HASH_BONUS_NANOS) / NANOS_PER_SHE;
+  const rows = [];
+  for (const m of book) {
+    const login = String(m?.login || m?.workerKey || '');
+    if (/\.fee$/i.test(login)) continue;
+    const count = roundActualHashes(m);
+    if (count < 1) continue;
+    const tag = publicHashTag(login);
+    rows.push({
+      id: `hash-${tag}`,
+      kind: 'hash',
+      count,
+      weight: count,
+      fee: 0,
+      amount: count * unit,
+      included: true,
+      priority: 800 + count,
+      prime: false,
+      tag,
+    });
+  }
+  return rows.sort((a, b) => b.count - a.count);
+}
+
+export function mempoolLattice(store, limitOrOpts = 24) {
+  const opts = limitOrOpts && typeof limitOrOpts === 'object' ? limitOrOpts : { limit: limitOrOpts };
   const list = Array.isArray(store?.blocks) ? store.blocks : [];
   const tipB = (typeof store?.tip === 'function' ? store.tip() : null) || list[list.length - 1] || null;
   let decoded = {};
@@ -470,15 +522,43 @@ export function mempoolLattice(store, limit = 24) {
     timestamp: Number(decoded.timestamp || 0),
     baseFee: Number(decoded.baseFee || 1),
   };
-  const pending = (store?.mempool || []).map((m) => ({
-    id: String(m.id || ''),
-    kind: m.kind || 'send',
-    fee: Number(m.fee || 0),
-    amount: Number(m.amount) > 0 ? Number(m.amount) : nanosToShe(m.nanos),
-    to: publicDest(m.to),
-    prime: m.kind === 'b-spend' || m.kind === 'send',
-  })).filter((t) => t.id);
-  const n = Math.max(1, Math.min(48, Math.floor(Number(limit) || 24)));
+  const lastJob = opts.lastJob || null;
+  const rec = lastJob?.jobId && store?.jobs && typeof store.jobs.get === 'function'
+    ? store.jobs.get(String(lastJob.jobId))
+    : null;
+  const tplTxs = rec?.tpl?.txs || [];
+  const includedIds = new Set(
+    tplTxs.filter((t) => t && !t.coinbase).map((t) => String(t.id || '')).filter(Boolean),
+  );
+  const pending = (store?.mempool || []).map((m) => {
+    const weight = memoTxWeight(m);
+    const fee = Number(m.fee || 0);
+    const included = includedIds.size ? includedIds.has(String(m.id || '')) : true;
+    const mass = weight * (1 + Math.log1p(Math.max(0, fee)));
+    return {
+      id: String(m.id || ''),
+      kind: m.kind || 'send',
+      fee,
+      weight,
+      amount: Number(m.amount) > 0 ? Number(m.amount) : nanosToShe(m.nanos),
+      to: publicDest(m.to),
+      prime: m.kind === 'b-spend' || m.kind === 'send' || m.kind === 'claim',
+      included,
+      priority: (included ? 400 : 0) + mass,
+    };
+  }).filter((t) => t.id).sort((a, b) => b.priority - a.priority);
+  const hashRows = openRoundHashRows(opts.miners, opts.hashBonusNanos ?? HASH_BONUS_NANOS);
+  const hashes = hashRows.reduce((a, r) => a + (Number(r.count) || 0), 0);
+  const pendingBlock = {
+    height: Number(lastJob?.height || (tip.height + 1)),
+    jobId: String(lastJob?.jobId || ''),
+    bits: Number(lastJob?.bits || lastJob?.blockBits || 0),
+    hashes,
+    weight: hashes + pending.reduce((a, t) => a + (Number(t.weight) || 0), 0),
+    fee: pending.reduce((a, t) => a + (Number(t.fee) || 0), 0),
+    txs: hashRows,
+  };
+  const n = Math.max(1, Math.min(48, Math.floor(Number(opts.limit) || 24)));
   const generations = [];
   for (let i = list.length - 1; i >= 0 && generations.length < n; i -= 1) {
     const b = list[i];
@@ -505,6 +585,8 @@ export function mempoolLattice(store, limit = 24) {
     policy: typeof store?.getpolicy === 'function' ? store.getpolicy() : undefined,
     tip,
     pending,
+    pendingBlock,
+    targetBlockIntervalMs: TARGET_BLOCK_INTERVAL_MS,
     generations,
   };
 }
@@ -549,11 +631,21 @@ function rememberJoinPending(store, commit) {
   }
 }
 
-export function handleWalletApi(url, method, body, { store, miners, queueSend }) {
+export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
+  if ((path === '/api/mempoolPressure' || path === '/api/mempoolpressure') && verb === 'GET') {
+    return { status: 200, json: mempoolPressure(store?.mempool || []) };
+  }
   if ((path === '/api/mempool' || path === '/api/explorer/mempool') && verb === 'GET') {
-    return { status: 200, json: mempoolLattice(store) };
+    return {
+      status: 200,
+      json: mempoolLattice(store, {
+        miners,
+        lastJob,
+        hashBonusNanos: store?.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS,
+      }),
+    };
   }
   if (path === '/api/wallet/balance' && verb === 'GET') {
     const address = url.searchParams.get('address') || '';
@@ -657,13 +749,22 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const memoCt = body.memoCt || null;
-    const tx = queueSend({ from, to, nanos, amount, memoCt });
+    const depth = mempoolDepthBytes(store?.mempool || []);
+    const fee = levyNanos(nanos, { depth });
+    if (rec.spendableNanos < nanos + fee) {
+      return { status: 400, json: { ok: false, reason: 'insufficient' } };
+    }
+    const tx = queueSend({
+      kind: 'send', from, to, nanos, amount, fee, maxLevy: fee, memoCt,
+      vin: [{ address: from }],
+      vout: [{ address: to, nanos, kind: 'send' }],
+    });
     return {
       status: 200,
       json: {
         ok: true,
         tx: { id: tx.id, from, to, amount, kind: 'send', confirmed: false, memo: !!memoCt },
-        fromBalance: nanosToShe(rec.spendableNanos - nanos),
+        fromBalance: nanosToShe(rec.spendableNanos - nanos - fee),
       },
     };
   }
@@ -713,7 +814,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
     const tx = claimTx({ from: vaultDest, to: payout, nanos: got.nanos, commit: got.commit });
     tx.key = key;
     tx.root = vault.root;
-    tx.fee = levyNanos(1, txWeight({ vouts: 1 }));
+    tx.fee = 0;
     tx.amount = got.she;
     if (!tx.id) tx.id = `claim-${String(got.commit).slice(0, 16)}`;
     if (joinCommitPending(store, got.commit)) {
@@ -748,6 +849,35 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend })
         frozen: !!policy.frozen,
       },
     };
+  }
+  if (path === '/api/pool/withdraw' && verb === 'POST') {
+    const off = verifyPoolWithdrawOffchain({
+      login: body.login || body.she1,
+      dest: body.dest || body.to,
+      nanos: body.nanos != null ? body.nanos : Math.round(Number(body.amount || 0) * NANOS_PER_SHE),
+      sig: body.sig || body.signature,
+    });
+    if (!off.ok) return { status: 400, json: { ...off, public: false } };
+    const from = payoutDest(String(poolDest || '')) || poolPayoutDest();
+    if (!isDestAddress(from)) return { status: 503, json: { ok: false, reason: 'no_pool_dest' } };
+    const rec = reconstructOwner(store, from);
+    const fee = levyNanos(off.nanos, { depth: mempoolDepthBytes(store?.mempool || []) });
+    const sponsor = poolFeeDest();
+    const sponsorRec = reconstructOwner(store, sponsor);
+    if (rec.spendableNanos < off.nanos) {
+      return { status: 400, json: { ok: false, reason: 'insufficient' } };
+    }
+    if (sponsorRec.spendableNanos < fee) {
+      return { status: 400, json: { ok: false, reason: 'levy_sponsor' } };
+    }
+    const tx = poolWithdrawTx({ from, to: off.dest, nanos: off.nanos, fee });
+    if (containsShe1(tx)) return { status: 400, json: { ok: false, reason: 'she1_on_chain' } };
+    let queued = { ok: true, tx };
+    if (typeof queueSend === 'function') queued = queueSend(tx);
+    if (queued && typeof queued === 'object' && queued.ok === false) {
+      return { status: 400, json: { ok: false, reason: queued.reason || 'queue_failed' } };
+    }
+    return { status: 200, json: { ok: true, tx: { id: (queued && queued.id) || tx.id, to: off.dest, nanos: off.nanos, kind: 'pool-withdraw' } } };
   }
   if (path === '/api/vortex/list' && verb === 'GET') {
     const issued = store?.vortice?.issued || store?.listPublicVortices?.() || [];

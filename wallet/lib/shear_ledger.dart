@@ -6,7 +6,7 @@ import 'shear_ctf.dart';
 import 'shear_identity.dart';
 
 const kSheDecimals = 11;
-const kShePublicDigits = 8;
+const kShePublicDigits = 9;
 const kUnitsPerShe = 100000000000; // 10^11
 /// Fingerprint pot (BLOCK_SUBSIDY_NANOS / NANOS_PER_SHE). Continuum display only; do not mint from this.
 const kBlockPotShe = 1.0;
@@ -17,11 +17,11 @@ const kHashBonusShe = 0.00000000001;
 const kHashBonusVoteDeltaShe = 0.00000000001;
 
 String formatShe(num she) {
-  if (!she.isFinite) return '0.00000000';
-  final trunc = (she * 1e8).truncateToDouble() / 1e8;
-  if (trunc == 0 && she != 0) return she < 0 ? '-0.00000000' : '0.00000000';
+  if (!she.isFinite) return '0.000000000';
+  final trunc = (she * 1e9).truncateToDouble() / 1e9;
+  if (trunc == 0 && she != 0) return she < 0 ? '-0.000000000' : '0.000000000';
   final s = trunc.toStringAsFixed(kShePublicDigits);
-  if (RegExp(r'^-?\d+\.00000000$').hasMatch(s)) return trunc.truncate().toString();
+  if (RegExp(r'^-?\d+\.000000000$').hasMatch(s)) return trunc.truncate().toString();
   return s;
 }
 

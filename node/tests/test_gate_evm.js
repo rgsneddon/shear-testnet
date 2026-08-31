@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { levyNanos, txWeight } from '../../crypto/levy.js';
+import { levyNanos } from '../../crypto/levy.js';
 import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS } from '../../crypto/asert.js';
 import { lockTx, withdrawTx } from '../../crypto/reserve_vault.js';
 import {
@@ -36,8 +36,8 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const idB = newIdentity();
     const destA = destForLogin(idA.address, { viewKey: idA.viewKey, height: 1 });
     const destB = destForLogin(idB.address, { viewKey: idB.viewKey, height: 1 });
-    const need = levyNanos(1, txWeight({ vouts: 1, memoChunks: 0, bFlag: 0 }));
     const sendNanos = 2;
+    const need = levyNanos(sendNanos);
     const lockNanos = 1000;
     const valueNanos = 77;
     const base = {
@@ -117,10 +117,9 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
   it('persists EVM session: lock then withdraw against shipped verifyBlock', async () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
-    const need = levyNanos(1, txWeight({ vouts: 1, memoChunks: 0, bFlag: 0 }));
     const t0 = 1_700_000_000_000;
     const lock = lockTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'lock-p' });
-    lock.fee = need;
+    lock.fee = 0;
     const b1 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -135,7 +134,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     assert.equal(v1.evm.totalLocked, PI_SHE_NANOS);
     const t1 = t0 + RESERVE_EPOCH_MS;
     const wd = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'wd-p' });
-    wd.fee = need;
+    wd.fee = 0;
     const b2 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,

@@ -148,9 +148,10 @@ describe('admit', () => {
     assert.match(publicMinerLabel(id.paymentCode), /^she1[0-9a-f]{8}$/);
     assert.equal(publicMinerLabel(id.paymentCode).includes(id.paymentCode.slice(4)), false);
     const silent = payoutDest(id.paymentCode);
-    const shares = splitPot([{ miner: id.paymentCode, count: 99 }], 'ssa1unused');
+    const shares = splitPot([{ miner: id.paymentCode, count: 99 }], silent);
     assert.ok(silent);
-    assert.equal(shares.some((s) => s.address === silent && s.nanos === Math.floor(BLOCK_SUBSIDY_NANOS * 0.99)), true);
+    assert.equal(shares.some((s) => s.address === silent && s.nanos === Math.floor(BLOCK_SUBSIDY_NANOS * 0.99) && s.kind === 'pot'), true);
+    assert.equal(shares.some((s) => s.kind === 'pool-fee' && s.nanos === Math.floor(BLOCK_SUBSIDY_NANOS * 0.01)), true);
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
     assert.equal(POOL_FEE_BPS, 100);
     const hashes = 1_000_000;

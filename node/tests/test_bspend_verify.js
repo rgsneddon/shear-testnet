@@ -2,7 +2,6 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { levyNanos, txWeight } from '../../crypto/levy.js';
 import { bProof } from '../../crypto/clearing.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { bitsForBlock, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
@@ -56,11 +55,7 @@ describe('verifyBlock B-spend uses the committing header', () => {
     assert.equal(commitOk.ok, true, commitOk.reason);
     const commitBlock = { ...commit, hash: commitOk.hash, height: 1 };
     const proof = bProof([leaf], 0);
-    const fee = levyNanos(Number(decodeHeader(commit.header).baseFee || 1), txWeight({
-      vouts: 1,
-      memoChunks: 0,
-      bFlag: 1,
-    }));
+    const fee = 0;
     const spendTx = {
       id: 'bspend-1',
       kind: 'b-spend',

@@ -19,6 +19,8 @@ import {
   consensusFingerprint,
   consensusLaw,
 } from '../../crypto/asert.js';
+import { poolFeeDest } from '../../crypto/levy.js';
+import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
 import { createStore } from '../../node/src/store.js';
 import { poolRecentBlockTxs, networkSupply } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
@@ -86,29 +88,16 @@ export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
 
 /** 1 SHE pot split by proven work this round. 1% of the pot may go to the pool dest. */
 export function splitPot(round, poolDest) {
-  const rows = [];
-  for (const s of round || []) {
-    const dest = payoutDest(s.miner || s.address);
-    const count = Number(s.count) || 0;
-    if (!dest || count <= 0) continue;
-    rows.push({ dest, count });
-  }
-  const total = rows.reduce((a, r) => a + r.count, 0);
-  if (!total) {
-    const fallback = payoutDest(poolDest);
-    return fallback ? [{ address: fallback, nanos: BLOCK_SUBSIDY_NANOS }] : [];
-  }
   const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
   const rest = BLOCK_SUBSIDY_NANOS - fee;
-  const shares = rows.map((r) => ({
-    address: r.dest,
-    nanos: Math.floor(rest * r.count / total),
-  }));
-  const paid = shares.reduce((a, s) => a + s.nanos, 0);
-  if (shares.length) shares[0].nanos += rest - paid;
-  const poolPay = payoutDest(poolDest);
-  if (fee > 0 && poolPay) shares.push({ address: poolPay, nanos: fee });
-  return shares.filter((s) => s.nanos > 0);
+  const pay = payoutDest(poolDest);
+  const out = [];
+  if (pay && rest > 0) out.push({ address: pay, nanos: rest, kind: 'pot' });
+  const feeAddr = poolFeeDest();
+  if (fee > 0 && feeAddr) out.push({ address: feeAddr, nanos: fee, kind: 'pool-fee' });
+  if (!out.length && pay) out.push({ address: pay, nanos: BLOCK_SUBSIDY_NANOS, kind: 'pot' });
+  void round;
+  return out.filter((s) => s.nanos > 0);
 }
 
 /** Dest (ssa1) or silent ID (she1) — worker identity. Payout dest is never she1. */
@@ -528,6 +517,7 @@ export function createPool({
   p2p = null,
 } = {}) {
   const store = createStore(dataDir);
+  const admin = createAdmin(dataDir);
   const miners = new Map();
   let p2pNet = p2p;
   let hashWorker = null;
@@ -1168,8 +1158,31 @@ export function createPool({
     ));
   }
 
+  function queueSend(t) {
+    const id = t.id || `send-${Date.now()}`;
+    const tx = { id, ...t };
+    if (typeof store.queueTx === 'function') {
+      const got = store.queueTx(tx);
+      if (!got.ok) return got;
+      return got.tx || tx;
+    }
+    store.mempool = store.mempool || [];
+    store.mempool.push(tx);
+    return tx;
+  }
+
   const httpServer = http.createServer(async (req, res) => {
+    const host = String(req.headers.host || '').split(':')[0].toLowerCase();
+    if (isAdminHost(host)) {
+      await handleAdminHttp(req, res, { store, admin, queueSend });
+      return;
+    }
     const url = new URL(req.url, 'http://127.0.0.1');
+    if (url.pathname.startsWith('/api/admin')) {
+      res.statusCode = 404;
+      res.end('missing');
+      return;
+    }
     if (url.pathname === '/api/stats') {
       res.setHeader('content-type', 'application/json');
       res.setHeader('Cache-Control', 'no-store');
@@ -1241,7 +1254,7 @@ export function createPool({
       }));
       return;
     }
-    if (url.pathname === '/api/mempool' || url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/') || url.pathname.startsWith('/api/pool/') || url.pathname.startsWith('/api/vault/') || url.pathname.startsWith('/api/join/')) {
+    if (url.pathname === '/api/mempool' || url.pathname === '/api/mempoolPressure' || url.pathname === '/api/mempoolpressure' || url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/') || url.pathname.startsWith('/api/pool/') || url.pathname.startsWith('/api/vault/') || url.pathname.startsWith('/api/join/')) {
       let body = {};
       if (req.method === 'POST') {
         body = JSON.parse(await new Promise((resolve, reject) => {
@@ -1256,18 +1269,8 @@ export function createPool({
         store,
         miners,
         lastJob,
-        queueSend: (t) => {
-          const id = `send-${Date.now()}`;
-          const tx = { id, ...t };
-          if (typeof store.queueTx === 'function') {
-            const got = store.queueTx(tx);
-            if (!got.ok) return got;
-            return got.tx || tx;
-          }
-          store.mempool = store.mempool || [];
-          store.mempool.push(tx);
-          return tx;
-        },
+        poolDest: miner,
+        queueSend,
       });
       if (out) {
         res.statusCode = out.status;

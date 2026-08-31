@@ -8,9 +8,9 @@ export const MIN_BITS = 1;
 export const MAX_BITS = 256;
 export const LIVE_MIN_BITS = 14;
 export const GENESIS_BITS = 21;
-/** Protocol unit is 10⁻¹¹ SHE (11 decimals). Vote steps are integers of this unit. Public amounts show eight fractional digits. */
+/** Protocol unit is 10⁻¹¹ SHE (11 decimals). Vote steps are integers of this unit. Public amounts show nine fractional digits. */
 export const SHE_DECIMALS = 11;
-export const SHE_PUBLIC_DIGITS = 8;
+export const SHE_PUBLIC_DIGITS = 9;
 export const NANOS_PER_SHE = 100_000_000_000; // 10^11
 /** 1 SHE pot (100_000_000_000 units). Hash bonus stays 1 unit. */
 export const BLOCK_SUBSIDY_NANOS = 100_000_000_000;
@@ -164,14 +164,17 @@ export const RESERVE_EPOCH_MS = RESERVE_EPOCH_DAYS * 86_400_000;
 export const RESERVE_JOIN_CUTOFF_MS = RESERVE_JOIN_CUTOFF_DAYS * 86_400_000;
 export const HASH_BONUS_VOTE_DELTA = HASH_BONUS_VOTE_DELTA_NANOS / NANOS_PER_SHE;
 
-/** Public amount frame: eight fractional digits. Sub-1e-8 dust stays on the sealed book. */
+/** Public amount frame: nine fractional digits. Sub-display dust stays on the sealed book. */
+const PUBLIC_SCALE = 10 ** SHE_PUBLIC_DIGITS;
+const PUBLIC_ZERO = `0.${'0'.repeat(SHE_PUBLIC_DIGITS)}`;
+
 export function formatShe(n) {
   const v = Number(n);
-  if (!Number.isFinite(v)) return '0.00000000';
-  const trunc = (v < 0 ? Math.ceil(v * 1e8 - 1e-9) : Math.floor(v * 1e8 + 1e-9)) / 1e8;
-  if (trunc === 0 && v !== 0) return (v < 0 ? '-' : '') + '0.00000000';
+  if (!Number.isFinite(v)) return PUBLIC_ZERO;
+  const trunc = (v < 0 ? Math.ceil(v * PUBLIC_SCALE - 1e-9) : Math.floor(v * PUBLIC_SCALE + 1e-9)) / PUBLIC_SCALE;
+  if (trunc === 0 && v !== 0) return (v < 0 ? '-' : '') + PUBLIC_ZERO;
   const s = trunc.toFixed(SHE_PUBLIC_DIGITS);
-  if (/^-?\d+\.00000000$/.test(s)) return String(Math.trunc(trunc));
+  if (new RegExp(`^-?\\d+\\.${'0'.repeat(SHE_PUBLIC_DIGITS)}$`).test(s)) return String(Math.trunc(trunc));
   return s;
 }
 

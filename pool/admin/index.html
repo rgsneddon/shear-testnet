@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="robots" content="noindex, nofollow, noarchive"/>
+  <meta name="referrer" content="no-referrer"/>
+  <title></title>
+  <style>
+    :root { --bg:#eef3f8; --ink:#0d2137; --muted:#5a738c; --cyan:#0088a8; --blue:#1a6fb5; --input:#fff; }
+    * { box-sizing: border-box; }
+    html, body { margin:0; font:15px/1.45 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { width:100%; max-width:28rem; margin:0 auto; padding:32px 16px 48px; }
+    .card {
+      border:1px solid transparent; padding:16px 18px; margin:12px 0;
+      background: linear-gradient(165deg,#fff 0%,#f4f8fc 58%) padding-box,
+        linear-gradient(135deg,#4fd8e8,#4a9fe0,#5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box,border-box;
+    }
+    .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; }
+    .spend { font-size:1.6rem; font-weight:750; color:var(--cyan); margin:6px 0 0; }
+    input { width:100%; margin:.35rem 0 .7rem; padding:.45rem .55rem; background:var(--input); color:var(--ink); border:1px solid var(--blue); font-size:16px; }
+    button { padding:.45rem .8rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer; font-weight:650; }
+    .err { color:#b42318; min-height:1.2em; font-size:.9rem; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; }
+    code { font-size:.85rem; word-break:break-all; }
+    .hid { display:none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <form id="gate" class="card" autocomplete="off">
+      <div class="label" id="gate-label">Sign in</div>
+      <input id="user" name="user" type="text" autocomplete="username" spellcheck="false"/>
+      <input id="pass" name="password" type="password" autocomplete="current-password"/>
+      <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Authenticator" class="hid"/>
+      <div class="row">
+        <button type="submit" id="gate-go">Enter</button>
+      </div>
+      <p class="err" id="gate-err"></p>
+    </form>
+
+    <div id="wallet" class="hid">
+      <div class="card">
+        <div class="label">Spendable</div>
+        <div class="spend" id="bal">—</div>
+      </div>
+      <form id="flow" class="card" autocomplete="off">
+        <div class="label">Flow</div>
+        <input id="to" name="to" type="text" spellcheck="false" placeholder="ssa1 dest"/>
+        <input id="amount" name="amount" type="text" inputmode="decimal" placeholder="SHE"/>
+        <button type="submit">Withdraw</button>
+        <p class="err" id="flow-err"></p>
+      </form>
+      <div id="totp-box" class="card hid">
+        <div class="label">Google Authenticator</div>
+        <p>Add this key, then enter a 6-digit code.</p>
+        <p><code id="totp-secret"></code></p>
+        <input id="totp-code" type="text" inputmode="numeric" autocomplete="one-time-code"/>
+        <button type="button" id="totp-ok">Confirm</button>
+        <p class="err" id="totp-err"></p>
+      </div>
+      <p><button type="button" id="add-2fa" class="hid">Add Google Authenticator</button>
+         <button type="button" id="out">Leave</button></p>
+    </div>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    async function api(path, method, body) {
+      const opt = { method, credentials: 'same-origin', headers: {} };
+      if (body) { opt.headers['content-type'] = 'application/json'; opt.body = JSON.stringify(body); }
+      const res = await fetch(path, opt);
+      const json = await res.json().catch(() => ({ ok: false }));
+      return { status: res.status, json };
+    }
+    async function paintWallet() {
+      const w = await api('/api/admin/wallet', 'GET');
+      if (w.status === 401) { $('wallet').classList.add('hid'); $('gate').classList.remove('hid'); return; }
+      $('bal').textContent = (w.json.display || '0') + ' SHE';
+      $('wallet').classList.remove('hid');
+      $('gate').classList.add('hid');
+      if (w.json.totp) {
+        $('add-2fa').classList.add('hid');
+        $('totp-box').classList.add('hid');
+      } else {
+        $('add-2fa').classList.remove('hid');
+      }
+    }
+    async function boot() {
+      const st = await api('/api/admin/status', 'GET');
+      $('code').classList.toggle('hid', !(st.json.setup && st.json.totp));
+      $('gate-label').textContent = st.json.setup ? 'Sign in' : 'Create access';
+      $('gate-go').textContent = st.json.setup ? 'Enter' : 'Create';
+      await paintWallet();
+    }
+    $('gate').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      $('gate-err').textContent = '';
+      const st = await api('/api/admin/status', 'GET');
+      const body = { user: $('user').value, password: $('pass').value, code: $('code').value };
+      const path = st.json.setup ? '/api/admin/login' : '/api/admin/setup';
+      const got = await api(path, 'POST', body);
+      if (!got.json.ok) { $('gate-err').textContent = 'Not accepted'; return; }
+      $('pass').value = '';
+      $('code').value = '';
+      await paintWallet();
+    });
+    $('flow').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      $('flow-err').textContent = '';
+      const got = await api('/api/admin/withdraw', 'POST', { to: $('to').value, amount: $('amount').value });
+      if (!got.json.ok) { $('flow-err').textContent = 'Not sent'; return; }
+      $('amount').value = '';
+      await paintWallet();
+    });
+    $('add-2fa').addEventListener('click', async () => {
+      const got = await api('/api/admin/totp/start', 'POST', {});
+      if (!got.json.ok) return;
+      $('totp-secret').textContent = got.json.secret;
+      $('totp-box').classList.remove('hid');
+    });
+    $('totp-ok').addEventListener('click', async () => {
+      $('totp-err').textContent = '';
+      const got = await api('/api/admin/totp/confirm', 'POST', { code: $('totp-code').value });
+      if (!got.json.ok) { $('totp-err').textContent = 'Not accepted'; return; }
+      $('totp-box').classList.add('hid');
+      $('add-2fa').classList.add('hid');
+    });
+    $('out').addEventListener('click', async () => {
+      await api('/api/admin/logout', 'POST', {});
+      $('wallet').classList.add('hid');
+      $('gate').classList.remove('hid');
+    });
+    boot();
+  </script>
+</body>
+</html>

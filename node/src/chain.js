@@ -30,7 +30,11 @@ import {
   splitLevy,
   txWeight,
   reserveFeeDest,
+  levyTaxed,
+  txAmountNanos,
+  containsShe1,
 } from '../../crypto/levy.js';
+import { gateVorticeRegister } from '../../crypto/vortex.js';
 
 export { blockWeight, nextBaseFee } from '../../crypto/levy.js';
 
@@ -144,7 +148,7 @@ export function coinbaseTx({
   for (const s of shares) {
     const pay = destOf(s.address);
     if (!isDestAddress(pay) || !s.nanos) continue;
-    vout.push({ address: pay, nanos: s.nanos, kind: 'pot' });
+    vout.push({ address: pay, nanos: s.nanos, kind: s.kind || 'pot' });
   }
   for (const [address, nanos] of bonuses) {
     const pay = destOf(address);
@@ -274,6 +278,7 @@ function verifyBlockConsensus(block, prev, {
   spentB = null,
   tipHeight = 0,
   hashBonusNanos = HASH_BONUS_NANOS,
+  mempoolDepth = 0,
 } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
@@ -363,15 +368,20 @@ function verifyBlockConsensus(block, prev, {
     if ((unfunded || tx.mint) && !extraMintAllowed(tx.programId, { kind: tx.kind, funded: joinFunded })) {
       return { ok: false, reason: 'mint_forbidden' };
     }
-    const w = txWeight({
-      vouts: Math.max(1, outs.length || (tx.to ? 1 : 0)),
-      memoChunks: tx.memoCt || tx.memoH ? 1 : 0,
-      bFlag: tx.bFlag || tx.kind === 'b-spend' ? 1 : 0,
-    });
-    const need = levyNanos(base, w);
+    if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
+    const taxed = levyTaxed(tx);
+    const need = taxed
+      ? levyNanos(txAmountNanos(tx), { depth: Number(mempoolDepth || 0) })
+      : 0;
     const paid = Math.floor(Number(tx.fee || 0));
     if (paid < need) return { ok: false, reason: 'levy' };
+    if (taxed && tx.maxLevy != null && need > Number(tx.maxLevy)) {
+      return { ok: false, reason: 'max_levy' };
+    }
     fees += paid;
+    if (String(tx.kind || '') === 'vortice-register') {
+      void gateVorticeRegister(tx);
+    }
     if (tx.kind === 'b-spend') {
       const commitH = Number(tx.commitHeight || 0);
       const tip = Number(tipHeight || block.height || (prev?.height || 0) + 1);

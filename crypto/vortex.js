@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { extraMintAllowed, RESERVE_PROGRAM, JOIN_PROGRAM } from './asert.js';
+import { containsShe1 } from './levy.js';
+import { isDestAddress, bech32Hrp } from './address.js';
 
 export const VORTEX_PERSONAL = 'chronoflux-Omega-v1';
 export const VORTICE_KEY_PREFIX = 'vort1.';
@@ -12,6 +14,66 @@ const PINNED = new Set([RESERVE_PROGRAM, JOIN_PROGRAM, JOIN_WATCH_PROGRAM]);
 
 export function isPinnedProgram(id) {
   return PINNED.has(String(id || ''));
+}
+
+/**
+ * Consensus vort1 register gate. Fail = no id. Caller still pays levy.
+ * Mined fields: bytesHash + author ssa1 + vort1. No she1.
+ */
+export function gateVorticeRegister(tx) {
+  if (containsShe1(tx)) return { ok: false, reason: 'she1', issued: false };
+  const ticker = String(tx?.ticker || tx?.symbol || '').trim().toUpperCase();
+  if (ticker === 'SHE' || ticker === 'WSHE' || ticker.includes('WRAP')) {
+    return { ok: false, reason: 'ticker', issued: false };
+  }
+  if (tx?.mint && !extraMintAllowed(tx.programId, { kind: tx.kind })) {
+    return { ok: false, reason: 'mint', issued: false };
+  }
+  const author = String(tx?.to || tx?.from || tx?.vout?.[0]?.address || '');
+  if (!isDestAddress(author) || bech32Hrp(author) !== 'ssa') {
+    return { ok: false, reason: 'author', issued: false };
+  }
+  const bytesHash = String(tx?.bytesHash || tx?.bundle || '');
+  if (!/^[0-9a-f]{64}$/i.test(bytesHash)) {
+    return { ok: false, reason: 'bytesHash', issued: false };
+  }
+  const vort1 = String(tx?.vort1 || tx?.programId || '');
+  if (!vort1.startsWith('vort1')) return { ok: false, reason: 'vort1', issued: false };
+  if (isPinnedProgram(vort1) || isPinnedProgram(tx.programId)) {
+    return { ok: false, reason: 'pinned', issued: false };
+  }
+  return {
+    ok: true,
+    issued: true,
+    id: vort1.startsWith('vort1.') ? vort1 : `vort1.${vort1}`,
+    bytesHash,
+    author,
+  };
+}
+
+export function vorticeRegisterTx({
+  from,
+  bytesHash,
+  vort1,
+  ticker,
+  mint = false,
+  fee = 0,
+  id,
+} = {}) {
+  return {
+    id: id || `vort1-reg-${String(vort1 || '').slice(0, 12)}`,
+    kind: 'vortice-register',
+    from,
+    to: from,
+    nanos: 0,
+    fee,
+    bytesHash,
+    vort1,
+    ticker,
+    mint: !!mint,
+    vin: [{ address: from }],
+    vout: [{ address: from, nanos: 0, kind: 'vortice-register' }],
+  };
 }
 
 /** Issued creator dapps only. Reserve and Join VAULTs are never a public vortice. */

@@ -30,7 +30,7 @@ import { emptyJoin, applyJoinBlock, validateJoinBlock } from '../../crypto/join_
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
-import { blockWeight } from '../../crypto/levy.js';
+import { blockWeight, mempoolDepthBytes } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
 import { blockWork } from '../../crypto/asert.js';
 import {
@@ -508,6 +508,7 @@ export function createStore(dir, {
       buried: !!block.samplesPruned,
       evmSession,
       evmHistory: blocks,
+      mempoolDepth: mempoolDepthBytes(mempool),
     });
     return settleCheck(check, (okCheck) => completeAppend(okCheck, block));
   }
@@ -540,6 +541,11 @@ export function createStore(dir, {
     }
     applyReserve(stored);
     applyJoin(stored);
+    for (const tx of (stored.txs || []).slice(1)) {
+      if (String(tx.kind || '') === 'vortice-register' && typeof vortice.registerFromTx === 'function') {
+        vortice.registerFromTx(tx);
+      }
+    }
     pruneBuried();
     try {
       const bf = Number(decodeHeader(Buffer.from(stored.header)).baseFee || 1n);

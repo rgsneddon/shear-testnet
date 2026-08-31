@@ -74,9 +74,9 @@ describe('ASERT 90s block retarget', () => {
 });
 
 describe('SHEAR 11-decimal protocol unit', () => {
-  it('pays 1 SHE per block and 0.00000000001 SHE per hash; public frame is eight digits', () => {
+  it('pays 1 SHE per block and 0.00000000001 SHE per hash; public frame is nine digits', () => {
     assert.equal(SHE_DECIMALS, 11);
-    assert.equal(SHE_PUBLIC_DIGITS, 8);
+    assert.equal(SHE_PUBLIC_DIGITS, 9);
     assert.equal(NANOS_PER_SHE, 100_000_000_000);
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
     assert.equal(BLOCK_SUBSIDY_NANOS / NANOS_PER_SHE, 1);
@@ -86,8 +86,9 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(HASH_BONUS_VOTE_DELTA, 1 / NANOS_PER_SHE);
     assert.equal(HASH_BONUS_VOTE_DELTA, 1e-11);
     assert.equal(formatShe(1), '1');
-    assert.equal(formatShe(1e-11), '0.00000000');
-    assert.equal(formatShe(1e-8), '0.00000001');
+    assert.equal(formatShe(1e-11), '0.000000000');
+    assert.equal(formatShe(1e-9), '0.000000001');
+    assert.equal(formatShe(1e-8), '0.000000010');
     assert.equal(MAGIC_TESTNET, 'shear-testnet-v2');
     assert.equal(MAGIC_TESTNET_V1, 'shear-testnet-v1');
     assert.equal(MAGIC_TESTNET_V2, 'shear-testnet-v2');

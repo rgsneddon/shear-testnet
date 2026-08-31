@@ -340,7 +340,14 @@ export async function executeBlockEvm(session, txs, nowMs) {
   for (const tx of (txs || []).slice(1)) {
     if (!isReserveCall(tx) && !isEvmValueTx(tx)) continue;
     const got = await executeReserveTx(session, tx, nowMs);
-    if (!got.ok) return { ok: false, reason: got.reason || 'evm' };
+    if (!got.ok) {
+      if (isEvmValueTx(tx)) {
+        evm.calls += 1;
+        evm.failed = (evm.failed || 0) + 1;
+        continue;
+      }
+      return { ok: false, reason: got.reason || 'evm' };
+    }
     evm.calls += 1;
     evm.valueMoved += Number(got.valueMoved || 0);
   }

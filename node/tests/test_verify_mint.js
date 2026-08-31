@@ -34,7 +34,7 @@ describe('verifyBlock extra mint', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 8,
+      bits: 4,
       now: Date.now(),
     };
     const good = mine(buildTemplate(base));
@@ -72,5 +72,7 @@ describe('verifyBlock extra mint', () => {
     assert.equal(wrapMintForbidden({ kind: 'wrap', programId: 'wrap-she-v1', ticker: 'wSHE' }), true);
     assert.equal(wrapMintForbidden({ programId: 'vort1.random-printer', mint: true }), false);
     assert.equal(extraMintAllowed('vort1.random-printer', { kind: 'mint' }), false);
+    assert.equal(extraMintAllowed('shear-reserve-v1-fee', { kind: 'reserve-fee' }), false);
+    assert.equal(extraMintAllowed('', { kind: 'reserve-fee' }), false);
   });
 });

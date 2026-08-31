@@ -674,8 +674,8 @@ void main() {
     expect(RegExp(r'^\d+\.\d+$').hasMatch('0.10'), isTrue);
     expect(RegExp(r'^\d+\.\d+$').hasMatch('0.1.0'), isFalse);
     expect(formatShe(1), '1');
-    expect(formatShe(kHashBonusShe), '0.00000000');
-    expect(formatShe(1e-8), '0.00000001');
+    expect(formatShe(kHashBonusShe), '0.000000000');
+    expect(formatShe(1e-8), '0.000000010');
     expect(kHashBonusShe, 0.00000000001);
     const origin = 'https://dapp.example/stake-pool-a.json';
     const source = '{"id":"stake-pool-a"}';

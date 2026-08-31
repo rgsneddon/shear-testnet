@@ -7,6 +7,7 @@ import {
   mintVorticeDeployKeyFromOrigin,
   isPinnedProgram,
   listPublicVortices,
+  gateVorticeRegister,
 } from '../../crypto/vortex.js';
 
 export {
@@ -92,6 +93,21 @@ export function createVorticeCatalog(dir) {
     return listPublicVortices(issued);
   }
 
+  function registerFromTx(tx) {
+    const gate = gateVorticeRegister(tx);
+    if (!gate.ok) return { ...gate, issued: false };
+    if (issued[gate.id]) return { ok: false, reason: 'already', issued: false, id: gate.id };
+    issued[gate.id] = {
+      id: gate.id,
+      bytesHash: gate.bytesHash,
+      author: gate.author,
+      vort1: gate.id,
+      mintedMs: Date.now(),
+    };
+    save();
+    return { ok: true, issued: true, ...issued[gate.id] };
+  }
+
   return {
     mintVorticeDeployKey,
     mintFromOrigin,
@@ -99,6 +115,7 @@ export function createVorticeCatalog(dir) {
     listPublic,
     parseVorticeKey,
     verifyVorticeDownload,
+    registerFromTx,
     issued,
   };
 }

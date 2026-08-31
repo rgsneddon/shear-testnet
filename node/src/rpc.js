@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { mempoolPressure } from '../../crypto/levy.js';
 
 export const RPC_PORT = 18332;
 export const RPC_HOST = '127.0.0.1';
@@ -62,6 +63,9 @@ export function createRpc({
     if (m === 'setTip' || m === 'settip') {
       return { ok: false, reason: 'setTip_forbidden' };
     }
+    if (m === 'mempoolPressure' || m === 'mempoolpressure') {
+      return mempoolPressure(store?.mempool || []);
+    }
     return { ok: false, reason: 'unknown_method', method: m };
   }
 
@@ -88,6 +92,10 @@ export function createRpc({
     }
     if (req.method === 'GET' && (url.pathname === '/reorgs' || url.pathname === '/getreorgs')) {
       json(res, 200, dispatch('getreorgs'));
+      return;
+    }
+    if (req.method === 'GET' && (url.pathname === '/mempoolPressure' || url.pathname === '/mempoolpressure')) {
+      json(res, 200, dispatch('mempoolPressure'));
       return;
     }
     let body = {};
