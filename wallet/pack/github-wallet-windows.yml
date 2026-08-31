@@ -1,0 +1,44 @@
+# One-shot Windows pack for a wallet pin. Darwin and Dedicated-de cannot
+# `flutter build windows`. Dispatch after a wallet cut, then the zip is
+# attached to the same GitHub tag.
+name: wallet-windows
+on:
+  workflow_dispatch:
+    inputs:
+      pin:
+        description: Public two-part wallet pin (release tag)
+        required: true
+        default: '0.8'
+      build_number:
+        description: Flutter build-number
+        required: true
+        default: '20'
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      - name: Build Windows release
+        working-directory: wallet
+        run: |
+          flutter config --enable-windows-desktop
+          flutter pub get
+          flutter build windows --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }}
+      - name: Zip
+        run: python wallet/pack/zip_windows.py
+      - name: Attach to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-windows.zip --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shear-wallet-${{ inputs.pin }}-windows
+          path: dist/shear-wallet-${{ inputs.pin }}-windows.zip
