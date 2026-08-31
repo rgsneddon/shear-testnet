@@ -61,6 +61,15 @@ void main() {
     expect(debugEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(main.readAsStringSync().contains('android:label="Shear 0.8"'), isTrue);
+    final winMain = File('windows/runner/main.cpp').readAsStringSync();
+    final winRc = File('windows/runner/Runner.rc').readAsStringSync();
+    final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
+    expect(winMain.contains('L"Shear 0.8"'), isTrue);
+    expect(winMain.contains('Shear 0.6'), isFalse);
+    expect(winRc.contains('"Shear 0.8"'), isTrue);
+    expect(winRc.contains('Shear 0.7'), isFalse);
+    expect(linuxApp.contains('"Shear 0.8"'), isTrue);
+    expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
     expect(activity.contains('FlutterActivity()'), isFalse);
