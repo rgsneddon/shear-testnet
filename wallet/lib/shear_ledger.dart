@@ -760,6 +760,7 @@ class ShearLedger {
       if (isDestAddress(a) || isPaymentCode(a)) keys.add(a);
     }
 
+    add(homeDest(restFrame, paymentCode: paymentCode));
     add(currentDest(restFrame));
     add(paymentCode);
     add(payoutDest(paymentCode ?? ''));
@@ -806,7 +807,6 @@ class ShearLedger {
       if (live > 0 || prev == 0) {
         _spendable[key] = live;
       }
-      if (live > 0) _pending[key] = 0;
     }
   }
 

@@ -25,7 +25,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.11';
+const kWalletVersion = '0.12';
 const kTabs = [
   'Continuum',
   'Flow',

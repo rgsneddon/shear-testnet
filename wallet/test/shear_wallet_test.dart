@@ -60,15 +60,15 @@ void main() {
     final relEnt = File('macos/Runner/Release.entitlements').readAsStringSync();
     expect(debugEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.11"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.12"'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.11"'), isTrue);
+    expect(winMain.contains('L"Shear 0.12"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.11"'), isTrue);
+    expect(winRc.contains('"Shear 0.12"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.11"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.12"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -678,7 +678,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.11');
+    expect(kWalletVersion, '0.12');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -778,7 +778,7 @@ void main() {
       ),
     ];
     await session.persist();
-    await tester.pumpWidget(ShearWalletApp(session: session, startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
     await tester.tap(find.text('Vortex'));
@@ -932,7 +932,7 @@ void main() {
     final session = ShearSession(store: store);
     await session.loadOrCreate();
     expect(session.needsPasswordSet, isTrue);
-    await tester.pumpWidget(ShearWalletApp(key: UniqueKey(), session: session, ledger: ShearLedger()));
+    await tester.pumpWidget(ShearWalletApp(key: UniqueKey(), session: session, ledger: ShearLedger(), skipPoolSync: true));
     await tester.pump();
     expect(find.text('Set password'), findsOneWidget);
     expect(find.text('Import shewall.bin'), findsOneWidget);
@@ -954,7 +954,7 @@ void main() {
     final locked = ShearSession(store: store);
     await locked.loadOrCreate();
     expect(locked.needsUnlock, isTrue);
-    await tester.pumpWidget(ShearWalletApp(key: UniqueKey(), session: locked, ledger: ShearLedger()));
+    await tester.pumpWidget(ShearWalletApp(key: UniqueKey(), session: locked, ledger: ShearLedger(), skipPoolSync: true));
     await tester.pump();
     expect(find.text('Unlock'), findsOneWidget);
     await tester.enterText(find.byType(TextField).first, 'not-the-password');
@@ -988,6 +988,7 @@ void main() {
       session: session,
       ledger: ShearLedger(),
       importSrc: () => backup,
+      skipPoolSync: true,
     ));
     await tester.pump();
     expect(find.text('Import shewall.bin'), findsOneWidget);
@@ -1038,6 +1039,7 @@ void main() {
       session: fresh,
       ledger: ShearLedger(),
       importSrc: () => dest,
+      skipPoolSync: true,
     ));
     await tester.pump();
     await tester.enterText(find.byType(TextField).first, kGatePassword);
@@ -1061,6 +1063,7 @@ void main() {
       session: session,
       ledger: ShearLedger(),
       startUnlocked: true,
+      skipPoolSync: true,
       savePicker: ({bytes}) async {
         seen = bytes;
         if (bytes != null) throw UnsupportedError('Bytes are not supported on macOS');
@@ -1091,15 +1094,15 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-ui-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.11');
-    expect(kWalletVersion, '0.11');
+    expect(app.title, 'Shear 0.12');
+    expect(kWalletVersion, '0.12');
     await tester.pump();
-    expect(find.textContaining('0.11'), findsWidgets);
+    expect(find.textContaining('0.12'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -1129,7 +1132,7 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-theme-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     expect(shearDarkBg.value, isNot(shearBg.value));
     expect(kShearLogoAsset, 'assets/brand/logo.png');
@@ -1157,7 +1160,7 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-continuum-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
 
@@ -1186,13 +1189,13 @@ void main() {
     expect(statsBox.left > spendBox.right, isTrue);
     expect(find.text('Pending'), findsNothing);
     expect(find.text('Copy dest'), findsOneWidget);
-    expect(find.text('ssa1 dest this round (pay)'), findsOneWidget);
+    expect(find.text('ssa1 dest (from your shear1 — chain mailbox)'), findsOneWidget);
     expect(find.byKey(const Key('copy-id')), findsOneWidget);
     expect(find.byKey(const Key('copy-dest')), findsOneWidget);
     expect(find.byKey(const Key('continuum-ssa1')), findsOneWidget);
     final dest = ShearLedger()
       ..viewSecret = session.identity!.viewKey;
-    final ssa1 = dest.currentDest(session.identity!.address);
+    final ssa1 = dest.homeDest(session.identity!.address, paymentCode: session.identity!.paymentCode);
     expect(ssa1.startsWith('ssa1'), isTrue);
     expect(find.textContaining(ssa1), findsWidgets);
     expect(find.text('New dest'), findsNothing);
@@ -1324,7 +1327,7 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-continuum-narrow-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
     final spend = tester.getTopLeft(find.text('Spendable'));
@@ -1347,7 +1350,7 @@ void main() {
     final ledger = ShearLedger()..viewSecret = ident.viewKey;
     ledger.confirmRound(address: ident.address, pot: 1, height: 1);
     ledger.confirmRound(address: ident.address, pot: 1, height: 2);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
 
@@ -1378,7 +1381,7 @@ void main() {
     final other = createIdentity();
     final bob = destForLogin(other.address, height: 1, viewKey: other.viewKey)!;
     await ledger.send(from: dest, to: bob, amount: 0.25);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
     expect(find.text('Pending'), findsOneWidget);
@@ -1415,7 +1418,7 @@ void main() {
     final peer = createIdentity();
     final from = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
     ledger.creditReceive(to: dest, amount: 0.4, from: from, id: 'in-live');
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
     expect(find.text('Pending'), findsOneWidget);
@@ -1543,7 +1546,7 @@ void main() {
     final peer = createIdentity();
     final from = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
     ledger.creditReceive(to: dest, amount: 0.4, from: from, id: 'in-early');
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
     expect(find.text('Pending'), findsOneWidget);
@@ -1612,7 +1615,7 @@ void main() {
               : t,
       ],
     );
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
     await tester.tap(find.text('Shearview'));
@@ -1633,7 +1636,7 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-surfaces-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
 
@@ -1670,7 +1673,7 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-nomine-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
     await tester.tap(find.text('Resistance'));
@@ -1729,7 +1732,7 @@ void main() {
     final ledger = ShearLedger()..viewSecret = ident.viewKey;
     final tx = ledger.confirmRound(address: ident.address, pot: 1, height: 3);
     ledger.settleTo(3 + ShearLedger.continuumConfirmations - 1);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
     await tester.tap(find.text('Shearview'));
@@ -1749,7 +1752,7 @@ void main() {
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
     final ident = session.identity!;
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), demoTx: true, startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), demoTx: true, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
     expect(find.text('Pending'), findsNothing);
@@ -1916,7 +1919,7 @@ void main() {
     final vault = ShearReserve();
     final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
     vault.deposit(dest: dest, she: kPiShe, nowMs: DateTime.now().millisecondsSinceEpoch);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), reserve: vault, startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), reserve: vault, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
     await tester.tap(find.text('Vortex'));
@@ -1963,6 +1966,7 @@ void main() {
       session: session,
       ledger: ShearLedger(),
       startUnlocked: true,
+      skipPoolSync: true,
       downloadVortice: (k) async => verifyVorticeDownload(k, source),
     ));
     await tester.pump();
@@ -2002,7 +2006,7 @@ void main() {
     expect(vault.deposit(dest: dest, she: kPiShe, nowMs: now), isNull);
     expect(vault.portal(dest).canVote, isTrue);
     expect(vault.cutoffDisclaimer(now), isTrue);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), reserve: vault, startUnlocked: true));
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), reserve: vault, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
     await tester.tap(find.text('Vortex'));

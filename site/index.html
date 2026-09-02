@@ -221,7 +221,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.11" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.12" target="_blank" rel="noopener">WALLET</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -240,16 +240,16 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.11</strong> · miner <strong>1.5</strong>
+      wallet <strong>0.12</strong> · miner <strong>1.5</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.11">WALLET</a>
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.12">WALLET</a>
         <div class="client-menu" id="menu-wallet">
-          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.11/shear-wallet-0.11-macos.dmg">macOS</a>
+          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.12/shear-wallet-0.12-macos.dmg">macOS</a>
           <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.11/shear-wallet-0.11-windows.zip">Windows</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.11/shear-wallet-0.11-android.apk">Android</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.12/shear-wallet-0.12-android.apk">Android</a>
           <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.11/shear-wallet-0.11-linux.zip">Linux</a>
           <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.11/shear-wallet-0.11-archlinux.zip">Arch</a>
         </div>
@@ -353,12 +353,12 @@
     </div>
     <section class="panel-card guide-wide" id="wallet-start">
       <h2>Start a wallet from scratch</h2>
-      <p>Current pin is <strong>0.10</strong>. Use the WALLET button above and pick your system.</p>
+      <p>Current pin is <strong>0.12</strong>. Use the WALLET button above and pick your system.</p>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
         <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
         <li>You will enter that password each time you open the app. If it is lost, the wallet cannot be opened. Where the phone or computer offers a fingerprint or face unlock, that only works on this device.</li>
-        <li>Continuum shows your spendable balance and your <code>she1</code>. Copy that <code>she1</code> when someone needs to pay you. Incoming coin lands on a revolving <code>ssa1</code> that you do not hand out. Never share a <code>shear1</code> string.</li>
+        <li>Continuum shows your spendable balance and your <code>she1</code>. Copy that <code>she1</code> when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code> dest that you do not hand out. Never share a <code>shear1</code> string.</li>
         <li>Open Closure and tap <strong>Export shewall.bin</strong>. Keep that file with the password. Together they restore the same wallet on another machine.</li>
         <li>This app does not mine. To hash, run the miner against <code>pool.shear.digital:1111</code> and log in with your <code>she1</code>.</li>
       </ol>
@@ -376,11 +376,11 @@
       else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
-        macos: BASE + '/0.11/shear-wallet-0.11-macos.dmg',
+        macos: BASE + '/0.12/shear-wallet-0.12-macos.dmg',
         windows: BASE + '/0.11/shear-wallet-0.11-windows.zip',
-        android: BASE + '/0.11/shear-wallet-0.11-android.apk',
+        android: BASE + '/0.12/shear-wallet-0.12-android.apk',
         linux: BASE + '/0.11/shear-wallet-0.11-linux.zip',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.11'
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.12'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
