@@ -40,7 +40,7 @@ class ShearSession {
   final File store;
   ShearIdentity? identity;
   bool joinRetired = false;
-  bool biometricsEnabled = true;
+  bool biometricsEnabled = false;
   List<String> rememberedDests = const [];
   List<Vortice> deployedVortices = const [];
   bool sealed = false;
@@ -147,7 +147,7 @@ class ShearSession {
   void _applyPlain(Map<String, dynamic> j) {
     identity = ShearIdentity.fromJson(j);
     joinRetired = j['joinRetired'] == true;
-    biometricsEnabled = j['biometricsEnabled'] != false;
+    biometricsEnabled = j['biometricsEnabled'] == true;
     rememberedDests = ((j['dests'] as List?) ?? const [])
         .map((e) => e.toString())
         .where((d) => d.startsWith('ssa1'))

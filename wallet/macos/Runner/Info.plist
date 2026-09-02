@@ -30,5 +30,7 @@
 	<string>NSApplication</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Unlock Shear with biometrics after you have set a wallet password. The password still encrypts shewall.bin.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Scan a receive QR from another Shear wallet to fill the send dest.</string>
 </dict>
 </plist>

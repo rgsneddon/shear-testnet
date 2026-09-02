@@ -21,11 +21,14 @@ import 'shear_join.dart';
 import 'shear_confirm_pie.dart';
 import 'shear_biometrics.dart';
 import 'shear_export.dart';
+import 'shear_qr.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.13';
+const kWalletVersion = '0.14';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -65,6 +68,7 @@ class ShearWalletApp extends StatefulWidget {
     this.savePicker,
     this.importSrc,
     this.openUrl,
+    this.scanQr,
     this.startUnlocked = false,
     this.skipPoolSync = false,
   });
@@ -86,6 +90,8 @@ class ShearWalletApp extends StatefulWidget {
   /// Test hook. Production opens a user open dialog for shewall.bin.
   final File Function()? importSrc;
   final Future<bool> Function(Uri url)? openUrl;
+  /// Test hook. Production opens the device camera to scan a Continuum receive QR.
+  final Future<String?> Function()? scanQr;
   /// Tests: session already sealed and identity in memory.
   final bool startUnlocked;
   /// Tests: skip unlock HTTP so the sign-pull dialog can be driven without a hung pool.
@@ -105,6 +111,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   bool unlocked = false;
   String? _lockError;
   bool _bioReady = false;
+  bool _bioStored = false;
   int tab = 0;
   final flowTo = TextEditingController();
   final flowAmt = TextEditingController();
@@ -159,6 +166,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       _bioReady = await biometrics.available;
     } catch (_) {
       _bioReady = false;
+    }
+    try {
+      final stored = await biometrics.recalledPassword();
+      _bioStored = stored != null && stored.isNotEmpty;
+    } catch (_) {
+      _bioStored = false;
     }
     if (widget.startUnlocked && session.identity != null && session.password != null) {
       await _enterWallet(session.password!);
@@ -243,7 +256,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       setState(() => _lockError = 'Could not seal the wallet.');
       return;
     }
-    if (_bioReady) {
+    if (session.biometricsEnabled && _bioReady) {
       try {
         await biometrics.rememberPassword(pw);
       } catch (_) {}
@@ -266,7 +279,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       setState(() => _lockError = 'Wrong password.');
       return;
     }
-    if (_bioReady) {
+    if (session.biometricsEnabled && _bioReady) {
       try {
         await biometrics.rememberPassword(pw);
       } catch (_) {}
@@ -295,8 +308,59 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     }
   }
 
+  Future<bool> _sealBiometricsOn(BuildContext context) async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        key: const Key('bio-seal'),
+        title: const Text('Seal biometrics with password'),
+        content: TextField(
+          key: const Key('bio-seal-password'),
+          controller: ctrl,
+          obscureText: true,
+          decoration: const InputDecoration(labelText: 'Wallet password'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Seal')),
+        ],
+      ),
+    );
+    if (ok != true) {
+      ctrl.dispose();
+      return false;
+    }
+    final pw = ctrl.text;
+    ctrl.dispose();
+    try {
+      if (session.password != null && session.password != pw) {
+        throw const FormatException('wrong_password');
+      }
+      if (session.needsUnlock || session.identity == null) {
+        await session.unlock(pw);
+      } else if (session.password != pw) {
+        throw const FormatException('wrong_password');
+      }
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Wrong password. Biometrics stay off.')),
+        );
+      }
+      return false;
+    }
+    try {
+      await biometrics.rememberPassword(pw);
+    } catch (_) {}
+    session.biometricsEnabled = true;
+    _bioStored = true;
+    await session.persist();
+    return true;
+  }
+
   Future<void> _unlockBiometric() async {
-    if (!_bioReady) return;
+    if (!_bioReady || !_bioStored) return;
     final ok = await biometrics.authenticate();
     if (!ok) {
       setState(() => _lockError = 'Biometrics failed. Use your password.');
@@ -668,7 +732,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                     onPressed: _importShewall,
                     child: const Text('Import shewall.bin'),
                   ),
-                  if (!first && _bioReady) ...[
+                  if (!first && _bioReady && _bioStored) ...[
                     const SizedBox(height: 8),
                     OutlinedButton(
                       onPressed: _unlockBiometric,
@@ -789,6 +853,29 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     });
   }
 
+  Future<void> _scanReceiveQr(BuildContext context) async {
+    String? raw;
+    if (widget.scanQr != null) {
+      raw = await widget.scanQr!();
+    } else {
+      raw = await Navigator.of(context).push<String>(
+        MaterialPageRoute(builder: (_) => const _ScanReceiveQrPage()),
+      );
+    }
+    if (raw == null || raw.isEmpty) return;
+    final got = parseReceiveQr(raw);
+    if (got == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Not a Shear receive QR.')),
+        );
+      }
+      return;
+    }
+    flowTo.text = got;
+    if (mounted) setState(() {});
+  }
+
   Future<void> _openSocial(String url) async {
     final uri = Uri.parse(url);
     final opener = widget.openUrl;
@@ -880,6 +967,23 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         key: const Key('copy-id'),
         onPressed: () => Clipboard.setData(ClipboardData(text: ident.paymentCode)),
         child: const Text('Copy ID'),
+      ),
+      const SizedBox(height: 12),
+      Text('Receive QR', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+      const SizedBox(height: 6),
+      Center(
+        child: ColoredBox(
+          color: Colors.white,
+          child: CustomPaint(
+            key: const Key('receive-qr'),
+            size: const Size(168, 168),
+            painter: QrPainter(
+              data: encodeReceiveQr(ident.paymentCode),
+              version: QrVersions.auto,
+              gapless: true,
+            ),
+          ),
+        ),
       ),
       const SizedBox(height: 12),
       Text('ssa1 dest (from your shear1 — chain mailbox)', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
@@ -1041,7 +1145,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       const Text('ssa1 dest this round (pay). Offer she1, never shear1.'),
       SelectableText(ledger.currentDest(ident.address)),
       const SizedBox(height: 8),
-      TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (ssa1…)')),
+      TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (she1 or ssa1)')),
+      OutlinedButton(
+        key: const Key('scan-qr'),
+        onPressed: () => _scanReceiveQr(context),
+        child: const Text('Scan receive QR'),
+      ),
       TextField(controller: flowAmt, decoration: const InputDecoration(labelText: 'Amount SHE'), keyboardType: TextInputType.number),
       TextField(controller: flowMemo, decoration: const InputDecoration(labelText: 'Memo (optional)')),
       FilledButton(
@@ -1066,28 +1175,6 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         },
         child: const Text('Send'),
       ),
-      FilledButton(
-        onPressed: () async {
-          try {
-            final amt = double.parse(flowAmt.text);
-            final dest = ledger.currentDest(ident.address);
-            final tx = await ledger.pullPool(
-              login: ident.paymentCode,
-              dest: dest,
-              amount: amt,
-              seed: hexToBytes(ident.seedHex),
-            );
-            _ingestTx(ident, tx);
-            _focusedTxId = tx.id;
-            setState(() {});
-          } catch (e) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
-            }
-          }
-        },
-        child: const Text('Pull from pool'),
-      ),
       const SizedBox(height: 8),
       Builder(builder: (_) {
         final amt = double.tryParse(flowAmt.text) ?? 0;
@@ -1095,7 +1182,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         return Text('Flow levy (empty mempool) ${formatShe(L / kUnitsPerShe)} SHE. Hash bonuses stay on the found block.');
       }),
       const Text(
-        'Receive: offer she1 (silent ID). Chain dests are ssa1. Never share shear1. Memo text is only in Shearview and theirs. Pull from pool signs EIP-712 PoolWithdraw (chainId 2701); she1 never goes on the book.',
+        'Receive: offer she1 (silent ID). Chain dests are ssa1. Never share shear1. Memo text is only in Shearview and theirs. Miner pulls sign in a popup (EIP-712 PoolWithdraw, chainId 2701); she1 never goes on the book.',
       ),
     ]);
   }
@@ -1482,18 +1569,23 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         contentPadding: EdgeInsets.zero,
         title: const Text('Unlock with biometrics'),
         subtitle: const Text('Password still encrypts shewall.bin. Biometrics only unlock this device.'),
-        value: session.biometricsEnabled && _bioReady,
+        value: session.biometricsEnabled && _bioReady && _bioStored,
         onChanged: !_bioReady
             ? null
             : (on) async {
-                session.biometricsEnabled = on;
                 if (on) {
-                  final pw = session.password ?? password;
-                  if (pw.isNotEmpty) await biometrics.rememberPassword(pw);
+                  final sealed = await _sealBiometricsOn(context);
+                  if (!sealed) {
+                    session.biometricsEnabled = false;
+                    if (mounted) setState(() {});
+                    return;
+                  }
                 } else {
+                  session.biometricsEnabled = false;
+                  _bioStored = false;
                   await biometrics.forget();
+                  await session.persist();
                 }
-                await session.persist();
                 if (mounted) setState(() {});
               },
       ),
@@ -1581,5 +1673,37 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         child: const Text('Import shewall.bin'),
       ),
     ]);
+  }
+}
+
+class _ScanReceiveQrPage extends StatefulWidget {
+  const _ScanReceiveQrPage();
+
+  @override
+  State<_ScanReceiveQrPage> createState() => _ScanReceiveQrPageState();
+}
+
+class _ScanReceiveQrPageState extends State<_ScanReceiveQrPage> {
+  var _done = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Scan receive QR')),
+      body: MobileScanner(
+        onDetect: (barcodes) {
+          if (_done) return;
+          for (final b in barcodes.barcodes) {
+            final raw = b.rawValue;
+            if (raw == null || raw.isEmpty) continue;
+            final got = parseReceiveQr(raw);
+            if (got == null) continue;
+            _done = true;
+            Navigator.pop(context, got);
+            return;
+          }
+        },
+      ),
+    );
   }
 }
