@@ -108,6 +108,26 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-pack="miner-windows"/);
   });
 
+  it('WALLET nav on MAIN DAG MEMPOOL POOL EXPLORER pins 0.13 and refuses older tags', () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const pages = {
+      main: html,
+      dag: fs.readFileSync(path.join(here, '../dag/index.html'), 'utf8'),
+      mempool: fs.readFileSync(path.join(here, '../../mempool/index.html'), 'utf8'),
+      pool: fs.readFileSync(path.join(here, '../../pool/public/index.html'), 'utf8'),
+      explorer: fs.readFileSync(path.join(here, '../../pool/public/explorer.html'), 'utf8'),
+      miner: fs.readFileSync(path.join(here, '../../pool/public/miner.html'), 'utf8'),
+    };
+    for (const [name, page] of Object.entries(pages)) {
+      assert.match(page, /releases\/tag\/0\.13/, `${name} WALLET must pin 0.13`);
+      assert.doesNotMatch(page, /releases\/tag\/0\.12/, `${name} must not offer 0.12`);
+      assert.doesNotMatch(page, /releases\/tag\/0\.11/, `${name} must not offer 0.11`);
+      assert.doesNotMatch(page, /releases\/tag\/0\.9[^\d]/, `${name} must not offer 0.9`);
+      assert.doesNotMatch(page, /shear-wallet-0\.12-/);
+      assert.doesNotMatch(page, /shear-wallet-0\.11-/);
+    }
+  });
+
   it('puts emissions, governance, vortex columns and a full-width wallet box', () => {
     const shear = html.indexOf('<h1>Shear</h1>');
     const emission = html.indexOf('id="emission"');
