@@ -67,10 +67,10 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /justify-content:center/);
     assert.match(html, /text-indent:\.12em/);
     assert.match(html, /shear-wallet-0\.10-macos\.dmg/);
-    assert.match(html, /shear-wallet-0\.10-windows\.zip/);
+    assert.match(html, /shear-wallet-0\.9-windows\.zip/);
     assert.match(html, /shear-wallet-0\.10-android\.apk/);
-    assert.match(html, /shear-wallet-0\.10-linux\.zip/);
-    assert.match(html, /shear-wallet-0\.10-archlinux\.zip/);
+    assert.match(html, /shear-wallet-0\.9-linux\.zip/);
+    assert.match(html, /shear-wallet-0\.9-archlinux\.zip/);
     assert.match(html, /data-pack="wallet-macos"/);
     assert.match(html, /data-pack="wallet-windows"/);
     assert.match(html, /data-pack="wallet-android"/);
