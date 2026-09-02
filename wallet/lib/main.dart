@@ -28,7 +28,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.15';
+const kWalletVersion = '0.16';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -139,6 +139,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   bool _pullPrompting = false;
   final Set<String> _handledPullIds = {};
   bool _poolUnlockQueued = false;
+  bool _showReceiveQr = false;
 
   @override
   void initState() {
@@ -361,8 +362,11 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     return true;
   }
 
+  @visibleForTesting
+  Future<void> unlockBiometricsNow() => _unlockBiometric();
+
   Future<void> _unlockBiometric() async {
-    if (!_bioReady || !_bioStored) return;
+    if (!_bioReady || !(_bioStored || session.biometricsEnabled)) return;
     final ok = await biometrics.authenticate();
     if (!ok) {
       setState(() => _lockError = 'Biometrics failed. Use your password.');
@@ -772,9 +776,10 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                     onPressed: _importShewall,
                     child: const Text('Import shewall.bin'),
                   ),
-                  if (!first && _bioReady && _bioStored) ...[
+                  if (!first && _bioReady && (_bioStored || session.biometricsEnabled)) ...[
                     const SizedBox(height: 8),
                     OutlinedButton(
+                      key: const Key('unlock-biometrics'),
                       onPressed: _unlockBiometric,
                       child: const Text('Unlock with biometrics'),
                     ),
@@ -1011,20 +1016,28 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       const SizedBox(height: 12),
       Text('Receive QR', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
       const SizedBox(height: 6),
-      Center(
-        child: ColoredBox(
-          color: Colors.white,
-          child: CustomPaint(
-            key: const Key('receive-qr'),
-            size: const Size(168, 168),
-            painter: QrPainter(
-              data: encodeReceiveQr(ident.paymentCode),
-              version: QrVersions.auto,
-              gapless: true,
+      OutlinedButton(
+        key: const Key('show-qr'),
+        onPressed: () => setState(() => _showReceiveQr = !_showReceiveQr),
+        child: Text(_showReceiveQr ? 'Hide QR code' : 'Show QR code'),
+      ),
+      if (_showReceiveQr) ...[
+        const SizedBox(height: 6),
+        Center(
+          child: ColoredBox(
+            color: Colors.white,
+            child: CustomPaint(
+              key: const Key('receive-qr'),
+              size: const Size(168, 168),
+              painter: QrPainter(
+                data: encodeReceiveQr(ident.paymentCode),
+                version: QrVersions.auto,
+                gapless: true,
+              ),
             ),
           ),
         ),
-      ),
+      ],
       const SizedBox(height: 12),
       Text('ssa1 dest (from your shear1 — chain mailbox)', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
       const SizedBox(height: 6),
@@ -1056,7 +1069,11 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             'Observed interval',
             dt == null ? '—' : '${(dt / 1000).toStringAsFixed(1)} s',
           ),
-          _continuumStatRow(context, 'Integral Q', '${formatShe(path1.integralQShe)} SHE'),
+          _continuumStatRow(
+            context,
+            'Integral Q',
+            '${formatShe((ledger.circulatingNanos ?? (path1.integralQShe * kUnitsPerShe).round()) / kUnitsPerShe)} SHE (circulation)',
+          ),
         ],
       ),
       const SizedBox(height: 12),

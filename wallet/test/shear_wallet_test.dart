@@ -70,16 +70,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.15"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.16"'), isTrue);
+    expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
+    expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.15"'), isTrue);
+    expect(winMain.contains('L"Shear 0.16"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.15"'), isTrue);
+    expect(winRc.contains('"Shear 0.16"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.15"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.16"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -527,6 +529,8 @@ void main() {
     expect(await bio.authenticate(), isFalse);
     bio.passAuth = true;
     expect(await bio.authenticate(), isTrue);
+    expect(shearAuthOptions(macos: true).biometricOnly, isFalse);
+    expect(shearAuthOptions(macos: false).biometricOnly, isTrue);
   });
 
   test('encodeReceiveQr is she1; parseReceiveQr accepts she1, ssa1, shear: prefix, rejects junk', () {
@@ -558,6 +562,10 @@ void main() {
     expect(loadedOff.biometricsEnabled, isFalse);
     s.biometricsEnabled = true;
     await s.persist();
+    final lockedOn = ShearSession(store: s.store);
+    await lockedOn.loadOrCreate();
+    expect(lockedOn.identity, isNull);
+    expect(lockedOn.biometricsEnabled, isTrue);
     final loadedOn = ShearSession(store: s.store);
     await loadedOn.loadOrCreate();
     await loadedOn.unlock(kGatePassword);
@@ -724,7 +732,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.15');
+    expect(kWalletVersion, '0.16');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -762,6 +770,10 @@ void main() {
     expect(dartMain.contains('Sign pool send'), isTrue);
     expect(dartMain.contains('Pull from pool'), isFalse);
     expect(dartMain.contains("Key('receive-qr')"), isTrue);
+    expect(dartMain.contains("Key('show-qr')"), isTrue);
+    expect(dartMain.contains("Key('unlock-biometrics')"), isTrue);
+    expect(dartMain.contains('SHE (circulation)'), isTrue);
+    expect(dartMain.contains('Show QR code'), isTrue);
     expect(dartMain.contains("Key('scan-qr')"), isTrue);
     expect(dartMain.contains("Key('bio-seal')"), isTrue);
     expect(dartMain.contains('Sign pool pull'), isTrue);
@@ -1165,10 +1177,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.15');
-    expect(kWalletVersion, '0.15');
+    expect(app.title, 'Shear 0.16');
+    expect(kWalletVersion, '0.16');
     await tester.pump();
-    expect(find.textContaining('0.15'), findsWidgets);
+    expect(find.textContaining('0.16'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -1416,6 +1428,7 @@ void main() {
     final ledger = ShearLedger()..viewSecret = ident.viewKey;
     ledger.confirmRound(address: ident.address, pot: 1, height: 1);
     ledger.confirmRound(address: ident.address, pot: 1, height: 2);
+    ledger.circulatingNanos = 12 * kUnitsPerShe;
     await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
@@ -1426,7 +1439,8 @@ void main() {
     expect(find.textContaining('Integral Q'), findsOneWidget);
     expect(find.textContaining('Observed interval'), findsOneWidget);
     expect(find.text('Integral Q'), findsOneWidget);
-    expect(find.text('2 SHE'), findsOneWidget);
+    expect(find.textContaining('(circulation)'), findsOneWidget);
+    expect(find.textContaining('12 SHE (circulation)'), findsOneWidget);
     expect(find.textContaining('infinite schedule'), findsNothing);
     expect(find.textContaining('Oracle rate'), findsNothing);
     expect(find.text('Vote'), findsNothing);
@@ -2835,6 +2849,11 @@ void main() {
     ));
     await tester.pump();
     await tester.pump();
+    expect(find.byKey(const Key('receive-qr')), findsNothing);
+    expect(find.byKey(const Key('show-qr')), findsOneWidget);
+    expect(find.text('Show QR code'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('show-qr')));
+    await tester.pump();
     expect(find.byKey(const Key('receive-qr')), findsOneWidget);
     expect(find.byType(CustomPaint), findsWidgets);
     expect(encodeReceiveQr(she1), she1);
@@ -2864,6 +2883,38 @@ void main() {
     await tester.pump();
     expect(find.text('Not a Shear receive QR.'), findsOneWidget);
     expect(tester.widget<TextField>(toField).controller!.text, dest);
+  });
+
+  testWidgets('lock gate Unlock with biometrics after Enable biometrics is sealed', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-bio-lock-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    session.biometricsEnabled = true;
+    await tester.runAsync(() async {
+      await session.persist();
+    });
+    final locked = ShearSession(store: session.store);
+    final bio = MemoryBiometrics();
+    await bio.rememberPassword(kGatePassword);
+    final appKey = GlobalKey<ShearWalletAppState>();
+    await tester.pumpWidget(ShearWalletApp(
+      key: appKey,
+      session: locked,
+      ledger: ShearLedger(),
+      biometrics: bio,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Spendable'), findsNothing);
+    expect(find.byKey(const Key('unlock-biometrics')), findsOneWidget);
+    expect(find.text('Unlock with biometrics'), findsOneWidget);
+    await tester.runAsync(() async {
+      await appKey.currentState!.unlockBiometricsNow();
+    });
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Spendable'), findsOneWidget);
   });
 
   testWidgets('MemoryBiometrics unlocks; toggling off forgets; shewall still needs password', (tester) async {

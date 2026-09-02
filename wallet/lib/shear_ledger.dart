@@ -295,6 +295,9 @@ class ShearLedger {
 
   int? _headerTimestampMs;
   int? _prevHeaderTimestampMs;
+  /// Network circulating supply from pool /api/stats. Continuum Integral Q.
+  int? circulatingNanos;
+
   /// Mean interval of every sealed block on the book (from pool /api/stats).
   int? _avgBlockTimeMs;
 
@@ -694,6 +697,8 @@ class ShearLedger {
       final raw = json['networkAvgBlockTimeMs'] ?? json['avgBlockTimeMs'];
       final avg = raw is num ? raw.round() : int.tryParse('$raw');
       if (avg != null && avg >= 0) applyAvgBlockTimeMs(avg);
+      final circ = json['circulatingNanos'];
+      if (circ is num && circ >= 0) circulatingNanos = circ.round();
     } catch (_) {}
   }
 

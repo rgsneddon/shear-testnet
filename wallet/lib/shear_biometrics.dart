@@ -1,5 +1,19 @@
+import 'dart:io';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
+
+/// macOS Touch ID in a sandboxed app fails with biometricOnly + data-protection keychain.
+AuthenticationOptions shearAuthOptions({bool macos = false}) {
+  if (macos) {
+    return const AuthenticationOptions(
+      biometricOnly: false,
+      stickyAuth: true,
+      useErrorDialogs: true,
+    );
+  }
+  return const AuthenticationOptions(biometricOnly: true, stickyAuth: true);
+}
 
 /// Optional convenience unlock. The wallet password remains the shewall.bin key.
 abstract class ShearBiometrics {
@@ -62,7 +76,10 @@ class DeviceBiometrics implements ShearBiometrics {
     LocalAuthentication? auth,
     FlutterSecureStorage? store,
   })  : _auth = auth ?? LocalAuthentication(),
-        _store = store ?? const FlutterSecureStorage();
+        _store = store ??
+            const FlutterSecureStorage(
+              mOptions: MacOsOptions(useDataProtectionKeyChain: false),
+            );
 
   static const _key = 'shear.wallet.password';
   final LocalAuthentication _auth;
@@ -84,10 +101,18 @@ class DeviceBiometrics implements ShearBiometrics {
     try {
       return await _auth.authenticate(
         localizedReason: reason,
-        options: const AuthenticationOptions(biometricOnly: true, stickyAuth: true),
+        options: shearAuthOptions(macos: Platform.isMacOS),
       );
     } catch (_) {
-      return false;
+      if (!Platform.isMacOS) return false;
+      try {
+        return await _auth.authenticate(
+          localizedReason: reason,
+          options: shearAuthOptions(macos: true),
+        );
+      } catch (_) {
+        return false;
+      }
     }
   }
 

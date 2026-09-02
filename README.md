@@ -4,7 +4,7 @@ Private by default. Proof of work only. Continuity-settled.
 
 - Ticker: **SHE**
 - Algo: **ShearHash** (CPU)
-- Miner pin: **ShearK-Miner 1.5** (`[Testnet] ShearK`, ShearHash-v2). Wallet **0.15**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.5
+- Miner pin: **ShearK-Miner 1.5** (`[Testnet] ShearK`, ShearHash-v2). Wallet **0.16**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.5
 - Stratum: `pool.shear.digital:1111`
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital

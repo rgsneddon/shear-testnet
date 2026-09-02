@@ -33,6 +33,7 @@ class ShearSession {
       if (j['kind'] == ShearLock.kind) {
         sealed = true;
         _envelope = j;
+        biometricsEnabled = j['biometricsEnabled'] == true;
       }
     } catch (_) {}
   }
@@ -90,6 +91,7 @@ class ShearSession {
       _envelope = j;
       identity = null;
       _password = null;
+      biometricsEnabled = j['biometricsEnabled'] == true;
       return null;
     }
     _applyPlain(j);
@@ -131,7 +133,8 @@ class ShearSession {
   Future<void> persist() async {
     if (!sealed || _password == null || identity == null) return;
     store.parent.createSync(recursive: true);
-    final env = await ShearLock.seal(_plainBody(), _password!);
+    final env = Map<String, dynamic>.from(await ShearLock.seal(_plainBody(), _password!));
+    env['biometricsEnabled'] = biometricsEnabled;
     _envelope = env;
     store.writeAsStringSync(jsonEncode(env));
   }
