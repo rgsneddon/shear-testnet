@@ -70,16 +70,16 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.14"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.15"'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.14"'), isTrue);
+    expect(winMain.contains('L"Shear 0.15"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.14"'), isTrue);
+    expect(winRc.contains('"Shear 0.15"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.14"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.15"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -724,7 +724,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.14');
+    expect(kWalletVersion, '0.15');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -755,6 +755,9 @@ void main() {
     expect(dartMain.contains("Key('pull-sign')"), isTrue);
     expect(dartMain.contains("Key('pull-sign-accept')"), isTrue);
     expect(dartMain.contains("Key('pull-sign-cancel')"), isTrue);
+    expect(dartMain.contains('_handledPullIds'), isTrue);
+    expect(dartMain.contains('Pool withdraw:'), isTrue);
+    expect(dartMain.contains('Sign pool send'), isTrue);
     expect(dartMain.contains('Pull from pool'), isFalse);
     expect(dartMain.contains("Key('receive-qr')"), isTrue);
     expect(dartMain.contains("Key('scan-qr')"), isTrue);
@@ -1160,10 +1163,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.14');
-    expect(kWalletVersion, '0.14');
+    expect(app.title, 'Shear 0.15');
+    expect(kWalletVersion, '0.15');
     await tester.pump();
-    expect(find.textContaining('0.14'), findsWidgets);
+    expect(find.textContaining('0.15'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -2625,7 +2628,39 @@ void main() {
     expect(find.byKey(const Key('pull-sign')), findsNothing);
     expect(pool.posted, isEmpty);
     expect(ledger.transactions.where((t) => t.kind == 'pool-withdraw'), isEmpty);
+    final cancelAgain = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+    await cancelAgain;
 
+    pool.withdrawOk = false;
+    pool.withdrawReason = 'unsigned';
+    pool.pending = {
+      'id': 'pull-match-fail',
+      'login': ident.paymentCode,
+      'dest': dest,
+      'nanos': confirmedNanos,
+      'chainId': 2701,
+    };
+    final failFut = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('pull-sign')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('pull-sign-accept')));
+    await tester.pump();
+    await failFut;
+    await tester.pump();
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+    expect(find.byKey(const Key('pull-sign-error-unsigned')), findsOneWidget);
+    expect(find.textContaining('Pool withdraw: unsigned'), findsWidgets);
+    final failAgain = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+    await failAgain;
+
+    pool.withdrawOk = true;
     pool.pending = {
       'id': 'pull-match-sign',
       'login': ident.paymentCode,
@@ -2640,8 +2675,9 @@ void main() {
     await tester.tap(find.byKey(const Key('pull-sign-accept')));
     await tester.pump();
     await signFut;
-    expect(pool.posted, hasLength(1));
-    final posted = pool.posted.single;
+    pool.pending = null;
+    expect(pool.posted, hasLength(2));
+    final posted = pool.posted.last;
     expect(posted['login'], ident.paymentCode);
     expect(posted['dest'], dest);
     expect(posted['nanos'], confirmedNanos);
@@ -2682,6 +2718,61 @@ void main() {
     await tester.pump();
     expect(find.textContaining('pool-withdraw'), findsWidgets);
     expect(find.textContaining(formatShe(confirmedNanos / kUnitsPerShe)), findsWidgets);
+    final afterOk = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+    await afterOk;
+
+    pool.withdrawOk = false;
+    pool.withdrawReason = 'miner_coins';
+    pool.pending = {
+      'id': 'admin-send-5',
+      'kind': 'admin-spendable',
+      'login': ident.paymentCode,
+      'dest': dest,
+      'nanos': confirmedNanos,
+      'chainId': 2701,
+    };
+    final adminFut = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Sign pool send'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('pull-sign-cancel')));
+    await tester.pump();
+    await adminFut;
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+    final adminAgain = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+    await adminAgain;
+
+    pool.pending = {
+      'id': 'admin-send-5-fail',
+      'kind': 'admin-spendable',
+      'login': ident.paymentCode,
+      'dest': dest,
+      'nanos': confirmedNanos,
+      'chainId': 2701,
+    };
+    final adminFail = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Sign pool send'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('pull-sign-accept')));
+    await tester.pump();
+    await adminFail;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(pool.posted, hasLength(3));
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+    expect(find.textContaining('Pool withdraw:'), findsWidgets);
+    final adminFailAgain = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+    await adminFailAgain;
   });
 
   testWidgets('Continuum receive-qr encodes she1; Flow scan-qr fills To from scanQr', (tester) async {
@@ -2835,6 +2926,8 @@ class _MemPullPool extends ShearPoolClient {
 
   Map<String, dynamic>? pending;
   final List<Map<String, dynamic>> posted = [];
+  bool withdrawOk = true;
+  String withdrawReason = 'unsigned';
 
   @override
   Future<Map<String, dynamic>> pullPending(String login) async => {
@@ -2852,6 +2945,9 @@ class _MemPullPool extends ShearPoolClient {
     required String sig,
   }) async {
     posted.add({'login': login, 'dest': dest, 'nanos': nanos, 'sig': sig});
+    if (!withdrawOk) {
+      return {'ok': false, 'reason': withdrawReason, 'public': false};
+    }
     return {
       'ok': true,
       'tx': {'id': 'pull-tx-1', 'to': dest, 'nanos': nanos, 'kind': 'pool-withdraw'},

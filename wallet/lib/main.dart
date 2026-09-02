@@ -28,7 +28,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.14';
+const kWalletVersion = '0.15';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -106,6 +106,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   late final ShearLedger ledger = widget.ledger ?? ShearLedger(pool: ShearPoolClient());
   late final ShearBiometrics biometrics = widget.biometrics ?? const NoBiometrics();
   final GlobalKey<NavigatorState> _nav = GlobalKey<NavigatorState>();
+  final GlobalKey<ScaffoldMessengerState> _snack = GlobalKey<ScaffoldMessengerState>();
   ShearIdentity? id;
   String password = '';
   bool unlocked = false;
@@ -136,6 +137,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   Timer? _accrualTick;
   Map<String, dynamic>? _pullOffer;
   bool _pullPrompting = false;
+  final Set<String> _handledPullIds = {};
   bool _poolUnlockQueued = false;
 
   @override
@@ -454,6 +456,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       if (p == null || p['login'] == null) return;
       final login = p['login'].toString().split('.')[0];
       if (login != ident.paymentCode.split('.')[0]) return;
+      final offerId = p['id']?.toString() ?? '';
+      if (offerId.isNotEmpty && _handledPullIds.contains(offerId)) return;
       if (_pullOffer?['id'] == p['id'] && _pullPrompting) return;
       if (!mounted) return;
       _pullPrompting = true;
@@ -484,14 +488,30 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           ],
         ),
       );
+      if (offerId.isNotEmpty) _handledPullIds.add(offerId);
       if (go == true && mounted) {
-        final tx = await ledger.signPendingPull(
-          login: ident.paymentCode,
-          dest: dest,
-          nanos: nanos,
-          seed: hexToBytes(ident.seedHex),
-        );
-        _ingestTx(ident, tx);
+        try {
+          final tx = await ledger.signPendingPull(
+            login: ident.paymentCode,
+            dest: dest,
+            nanos: nanos,
+            seed: hexToBytes(ident.seedHex),
+          );
+          _ingestTx(ident, tx);
+          if (mounted) setState(() {});
+        } catch (e) {
+          if (!mounted) return;
+          final reason = e is StateError
+              ? e.message
+              : (e is ArgumentError ? '${e.message}' : '$e');
+          _snack.currentState?.clearSnackBars();
+          _snack.currentState?.showSnackBar(
+            SnackBar(
+              key: Key('pull-sign-error-$reason'),
+              content: Text('Pool withdraw: $reason'),
+            ),
+          );
+        }
       }
     } catch (_) {
       /* pool unreachable */
@@ -613,6 +633,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     return MaterialApp(
       title: 'Shear $kWalletVersion',
       navigatorKey: _nav,
+      scaffoldMessengerKey: _snack,
       theme: shearLightTheme(),
       darkTheme: shearDarkTheme(),
       themeMode: _themeMode,
