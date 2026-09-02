@@ -501,16 +501,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           if (mounted) setState(() {});
         } catch (e) {
           if (!mounted) return;
-          final reason = e is StateError
-              ? e.message
-              : (e is ArgumentError ? '${e.message}' : '$e');
-          _snack.currentState?.clearSnackBars();
-          _snack.currentState?.showSnackBar(
-            SnackBar(
-              key: Key('pull-sign-error-$reason'),
-              content: Text('Pool withdraw: $reason'),
-            ),
-          );
+          _showPoolWithdrawError(_pullFailReason(e));
         }
       }
     } catch (_) {
@@ -519,6 +510,34 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       _pullPrompting = false;
       _pullOffer = null;
     }
+  }
+
+  String _pullFailReason(Object e) {
+    if (e is StateError) return e.message;
+    if (e is ArgumentError) return '${e.message}';
+    final s = '$e';
+    const prefix = 'Bad state: ';
+    return s.startsWith(prefix) ? s.substring(prefix.length) : s;
+  }
+
+  void _showPoolWithdrawError(String reason) {
+    void show() {
+      if (!mounted) return;
+      final messenger = _snack.currentState;
+      if (messenger == null) return;
+      // hide/clear keep the current bar on an exit animation and queue the
+      // next one behind it — a second failed Sign would still paint the first
+      // reason. Yank the current bar so the new pool reason is visible now.
+      messenger.removeCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          key: Key('pull-sign-error-$reason'),
+          content: Text('Pool withdraw: $reason'),
+        ),
+      );
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => show());
   }
 
   @visibleForTesting

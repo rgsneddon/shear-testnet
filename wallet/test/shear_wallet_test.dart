@@ -757,6 +757,8 @@ void main() {
     expect(dartMain.contains("Key('pull-sign-cancel')"), isTrue);
     expect(dartMain.contains('_handledPullIds'), isTrue);
     expect(dartMain.contains('Pool withdraw:'), isTrue);
+    expect(dartMain.contains('_showPoolWithdrawError'), isTrue);
+    expect(dartMain.contains('removeCurrentSnackBar'), isTrue);
     expect(dartMain.contains('Sign pool send'), isTrue);
     expect(dartMain.contains('Pull from pool'), isFalse);
     expect(dartMain.contains("Key('receive-qr')"), isTrue);
@@ -2651,6 +2653,7 @@ void main() {
     await tester.pump();
     await failFut;
     await tester.pump();
+    await tester.pump();
     expect(find.byKey(const Key('pull-sign')), findsNothing);
     expect(find.byKey(const Key('pull-sign-error-unsigned')), findsOneWidget);
     expect(find.textContaining('Pool withdraw: unsigned'), findsWidgets);
@@ -2764,15 +2767,56 @@ void main() {
     await tester.pump();
     await adminFail;
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pump();
     expect(pool.posted, hasLength(3));
     expect(find.byKey(const Key('pull-sign')), findsNothing);
-    expect(find.textContaining('Pool withdraw:'), findsWidgets);
+    expect(find.byKey(const Key('pull-sign-error-miner_coins')), findsOneWidget);
+    expect(find.textContaining('Pool withdraw: miner_coins'), findsWidgets);
     final adminFailAgain = appKey.currentState!.pollPullNow();
     await tester.pump();
     await tester.pump();
     expect(find.byKey(const Key('pull-sign')), findsNothing);
     await adminFailAgain;
+
+    pool.withdrawOk = true;
+    pool.pending = {
+      'id': 'admin-send-5-ok',
+      'kind': 'admin-spendable',
+      'login': ident.paymentCode,
+      'dest': dest,
+      'nanos': confirmedNanos,
+      'chainId': 2701,
+    };
+    final adminOk = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('pull-sign')), findsOneWidget);
+    expect(find.text('Sign pool send'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('pull-sign-accept')));
+    await tester.pump();
+    await adminOk;
+    pool.pending = null;
+    expect(pool.posted, hasLength(4));
+    final adminPosted = pool.posted.last;
+    expect(adminPosted['login'], ident.paymentCode);
+    expect(adminPosted['dest'], dest);
+    expect(adminPosted['nanos'], confirmedNanos);
+    expect(
+      verifyPoolWithdrawSig(
+        login: ident.paymentCode,
+        dest: dest,
+        nanos: confirmedNanos,
+        sig: adminPosted['sig']?.toString() ?? '',
+      ),
+      isTrue,
+    );
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+    expect(find.text('Spendable'), findsOneWidget);
+    final afterAdminOk = appKey.currentState!.pollPullNow();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('pull-sign')), findsNothing);
+    await afterAdminOk;
   });
 
   testWidgets('Continuum receive-qr encodes she1; Flow scan-qr fills To from scanQr', (tester) async {
