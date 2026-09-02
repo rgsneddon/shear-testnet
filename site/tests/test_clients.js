@@ -68,7 +68,10 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /justify-content:center/);
     assert.match(html, /text-indent:\.12em/);
     assert.match(html, /shear-wallet-0\.13-macos\.dmg/);
+    assert.match(html, /shear-wallet-0\.13-windows\.zip/);
     assert.match(html, /shear-wallet-0\.13-android\.apk/);
+    assert.match(html, /shear-wallet-0\.13-linux\.zip/);
+    assert.match(html, /shear-wallet-0\.13-archlinux\.zip/);
     assert.doesNotMatch(html, /shear-wallet-0\.12-/);
     assert.doesNotMatch(html, /releases\/tag\/0\.12/);
     assert.doesNotMatch(html, /shear-wallet-0\.11-windows\.zip/);
@@ -78,10 +81,10 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /shear-wallet-0\.9-linux\.zip/);
     assert.doesNotMatch(html, /shear-wallet-0\.9-archlinux\.zip/);
     assert.match(html, /data-pack="wallet-macos"/);
+    assert.match(html, /data-pack="wallet-windows"/);
     assert.match(html, /data-pack="wallet-android"/);
-    assert.doesNotMatch(html, /data-pack="wallet-windows"/);
-    assert.doesNotMatch(html, /data-pack="wallet-linux"/);
-    assert.doesNotMatch(html, /data-pack="wallet-archlinux"/);
+    assert.match(html, /data-pack="wallet-linux"/);
+    assert.match(html, /data-pack="wallet-archlinux"/);
     assert.match(html, /id="pack-advisory"/);
     assert.match(html, /wallet <strong>0\.13<\/strong>/);
     assert.doesNotMatch(html, /shear-wallet-0\.8-/);

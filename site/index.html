@@ -248,7 +248,10 @@
         <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.13">WALLET</a>
         <div class="client-menu" id="menu-wallet">
           <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.13/shear-wallet-0.13-macos.dmg">macOS</a>
+          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.13/shear-wallet-0.13-windows.zip">Windows</a>
           <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.13/shear-wallet-0.13-android.apk">Android</a>
+          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.13/shear-wallet-0.13-linux.zip">Linux</a>
+          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.13/shear-wallet-0.13-archlinux.zip">Arch</a>
         </div>
       </div>
       <div class="client-dd">
@@ -374,7 +377,9 @@
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
         macos: BASE + '/0.13/shear-wallet-0.13-macos.dmg',
+        windows: BASE + '/0.13/shear-wallet-0.13-windows.zip',
         android: BASE + '/0.13/shear-wallet-0.13-android.apk',
+        linux: BASE + '/0.13/shear-wallet-0.13-linux.zip',
         ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.13'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
