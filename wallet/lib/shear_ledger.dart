@@ -801,6 +801,7 @@ class ShearLedger {
         _dropProgramVaults();
         return;
       }
+      if (live > 0) rememberDest(key);
       final prev = _spendable[key] ?? 0;
       if (live > 0 || prev == 0) {
         _spendable[key] = live;
@@ -904,7 +905,85 @@ class ShearLedger {
     return ownerHistory(address);
   }
 
-  /// Recover Join payout dests from public vault history (height-tethered dests).
+  /// Dests this shear1 wallet has seen. Encrypted session stores these locally.
+  List<String> exportedDests() =>
+      _dests.where(isDestAddress).where((d) => !_isProgramVaultDest(d)).toList();
+
+  void restoreDests(Iterable<String> dests) {
+    for (final d in dests) {
+      rememberDest(d);
+    }
+  }
+
+  /// Stable ssa1 mailbox for this shear1 wallet (indexed dest 0).
+  /// Chain dests stay ssa1 — shear1 never goes on the book.
+  String homeDest(String restFrame, {String? paymentCode}) {
+    if (isDestAddress(restFrame)) return restFrame;
+    final indexed = destAt(restFrame, 0);
+    if (indexed != null && isDestAddress(indexed) && !_isProgramVaultDest(indexed)) {
+      return indexed;
+    }
+    final silent = payoutDest(paymentCode ?? '');
+    if (silent != null && isDestAddress(silent)) return silent;
+    return currentDest(restFrame);
+  }
+
+  final Map<int, Uint8List> _continuityAt = {};
+
+  Future<Uint8List?> continuityAtHeight(int height) async {
+    if (height < 1) return null;
+    final hit = _continuityAt[height];
+    if (hit != null) return hit;
+    if (pool == null) return lag1Root;
+    try {
+      final json = await pool!.headerAt(height);
+      final raw = _continuityBytes(json['continuity']?.toString() ?? json['continuityRoot']?.toString() ?? '');
+      if (raw != null) {
+        _continuityAt[height] = raw;
+        return raw;
+      }
+      final hex = json['header']?.toString() ?? '';
+      final hdr = headerFromHex(hex);
+      if (hdr != null) {
+        final c = lag1ContinuityFromHeader(hdr);
+        _continuityAt[height] = c;
+        return c;
+      }
+    } catch (_) {}
+    await _warmContinuityFromDag();
+    return _continuityAt[height] ?? lag1Root;
+  }
+
+  Future<void> _warmContinuityFromDag() async {
+    if (pool == null || _continuityAt.length > 1) return;
+    try {
+      final json = await pool!.explorerDag();
+      final blocks = json['blocks'] as List? ?? const [];
+      for (final b in blocks) {
+        if (b is! Map) continue;
+        final h = (b['height'] as num?)?.toInt() ?? 0;
+        final c = _continuityBytes(b['continuity']?.toString() ?? '');
+        if (h > 0 && c != null) _continuityAt[h] = c;
+      }
+    } catch (_) {}
+  }
+
+  static Uint8List? _continuityBytes(String hex) {
+    final s = hex.trim().replaceFirst(RegExp(r'^0x'), '');
+    if (s.length != 64) return null;
+    try {
+      final out = Uint8List(32);
+      for (var i = 0; i < 32; i++) {
+        out[i] = int.parse(s.substring(i * 2, i * 2 + 2), radix: 16);
+      }
+      return out;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Recover Join payout dests from public vault history.
+  /// Ownership is proven locally (view key never leaves the wallet).
   Future<void> ingestJoinClaims(String restFrame) async {
     if (pool == null || viewSecret == null || viewSecret!.isEmpty) return;
     final vault = canonicalJoinVaultDest();
@@ -916,14 +995,23 @@ class ShearLedger {
       if (k != 'claim') continue;
       final to = '${row['to'] ?? ''}';
       final h = (row['height'] as num?)?.toInt() ?? 0;
-      if (to.isEmpty || h < 1) continue;
-      final mine = destForLogin(
-        restFrame,
-        height: h,
-        continuityRoot: lag1Root,
-        viewKey: viewSecret,
-      );
-      if (mine == to) rememberDest(to);
+      if (to.isEmpty || h < 1 || !isDestAddress(to)) continue;
+      if (_dests.contains(to)) continue;
+      final root = await continuityAtHeight(h);
+      var matched = false;
+      for (final hh in {h, h + 1, if (h > 1) h - 1}) {
+        final mine = destForLogin(
+          restFrame,
+          height: hh,
+          continuityRoot: root ?? lag1Root,
+          viewKey: viewSecret,
+        );
+        if (mine == to) {
+          matched = true;
+          break;
+        }
+      }
+      if (matched) rememberDest(to);
     }
   }
 
@@ -1306,6 +1394,13 @@ class ShearPoolClient {
       _get('/api/pool/pullPending?login=${Uri.encodeQueryComponent(login)}');
 
   Future<Map<String, dynamic>> stats() => _get('/api/stats');
+
+  /// Public header at height. No identity, view key, or shear1.
+  Future<Map<String, dynamic>> headerAt(int height) =>
+      _get('/api/explorer/header?height=$height');
+
+  /// Public HASH_TX DAG. Used only to read continuity at a claim height.
+  Future<Map<String, dynamic>> explorerDag() => _get('/api/explorer/dag');
 
   Future<Map<String, dynamic>> policy() => _get('/api/policy');
 

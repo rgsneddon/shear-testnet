@@ -315,6 +315,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     id = session.identity;
     password = pw;
     ledger.viewSecret = id!.viewKey;
+    ledger.restoreDests(session.rememberedDests);
     setState(() {
       _lockError = null;
     });
@@ -326,6 +327,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         await ledger
             .syncCredits(id!.address, paymentCode: id!.paymentCode)
             .timeout(const Duration(seconds: 8));
+        session.rememberedDests = ledger.exportedDests();
+        await session.persist();
       } catch (_) {}
     }
     try {
@@ -365,6 +368,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       if (ticks % 5 == 0 && ident != null && !creditBusy && !widget.skipPoolSync) {
         creditBusy = true;
         unawaited(ledger.syncCredits(ident.address, paymentCode: ident.paymentCode).whenComplete(() {
+          session.rememberedDests = ledger.exportedDests();
+          unawaited(session.persist());
           unawaited(_syncVaults(ident));
           creditBusy = false;
           if (mounted) setState(() {});
@@ -877,13 +882,13 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         child: const Text('Copy ID'),
       ),
       const SizedBox(height: 12),
-      Text('ssa1 dest this round (pay)', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+      Text('ssa1 dest (from your shear1 — chain mailbox)', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
       const SizedBox(height: 6),
-      SelectableText(ledger.currentDest(ident.address), key: const Key('continuum-ssa1')),
+      SelectableText(ledger.homeDest(ident.address, paymentCode: ident.paymentCode), key: const Key('continuum-ssa1')),
       const SizedBox(height: 8),
       OutlinedButton(
         key: const Key('copy-dest'),
-        onPressed: () => Clipboard.setData(ClipboardData(text: ledger.currentDest(ident.address))),
+        onPressed: () => Clipboard.setData(ClipboardData(text: ledger.homeDest(ident.address, paymentCode: ident.paymentCode))),
         child: const Text('Copy dest'),
       ),
     ];
@@ -1301,7 +1306,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   Future<void> _joinCredit(BuildContext context, ShearIdentity ident) async {
-    final payout = ledger.currentDest(ident.address);
+    final payout = ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
     final now = DateTime.now().millisecondsSinceEpoch;
     final parsed = join.decodeKey(joinKeyCtrl.text);
     if (parsed == null) {
@@ -1460,15 +1465,43 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     return _card([
       const Text('Closure  G_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
       const Text(
-        'Geometric closure of the wallet: your password seals shewall.bin '
-        '(AES-256-GCM packed). Export that file and the same password restores '
-        'address and balances on any new or formatted device. '
-        'Biometrics only unlock this device. Dest scan stays in this wallet.',
+        'This is your rest-frame shear1. It never goes on the book. '
+        'Confirmed SHE settles here. Chain dests are ssa1 mailboxes derived '
+        'from this identity; they do not need to be kept after prune.',
       ),
-      SelectableText('View key  ${ident.viewKey}', style: TextStyle(fontSize: 12, color: shearMutedOf(context))),
       const SizedBox(height: 8),
-      const Text('CTF dests this view key opens (amounts on Shearview)'),
-      SelectableText(ledger.currentDest(ident.address)),
+      const Text('shear1 (rest-frame — do not share)'),
+      SelectableText(ident.address, key: const Key('closure-shear1')),
+      const SizedBox(height: 8),
+      const Text('she1 (public receive ID)'),
+      SelectableText(ident.paymentCode, key: const Key('closure-she1')),
+      const SizedBox(height: 16),
+      const Text('Settings', style: TextStyle(fontWeight: FontWeight.w700)),
+      SwitchListTile(
+        key: const Key('settings-biometrics'),
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Unlock with biometrics'),
+        subtitle: const Text('Password still encrypts shewall.bin. Biometrics only unlock this device.'),
+        value: session.biometricsEnabled && _bioReady,
+        onChanged: !_bioReady
+            ? null
+            : (on) async {
+                session.biometricsEnabled = on;
+                if (on) {
+                  final pw = session.password ?? password;
+                  if (pw.isNotEmpty) await biometrics.rememberPassword(pw);
+                } else {
+                  await biometrics.forget();
+                }
+                await session.persist();
+                if (mounted) setState(() {});
+              },
+      ),
+      const SizedBox(height: 8),
+      const Text(
+        'Password seals shewall.bin (AES-256-GCM). Export that file and the '
+        'same password restores this shear1 on another device.',
+      ),
       const SizedBox(height: 8),
       FilledButton(
         onPressed: () async {

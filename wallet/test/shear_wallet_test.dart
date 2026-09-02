@@ -1010,12 +1010,16 @@ void main() {
       session: session,
       ledger: ShearLedger(),
       startUnlocked: true,
+      skipPoolSync: true,
       exportDest: () => dest,
     ));
     await tester.pump();
     await tester.pump();
     await tester.tap(find.text('Closure'));
     await tester.pump();
+    expect(find.byKey(const Key('closure-shear1')), findsOneWidget);
+    expect(find.text(ident.address), findsOneWidget);
+    expect(ident.address.startsWith('shear1'), isTrue);
     expect(find.text('Export shewall.bin'), findsOneWidget);
     expect(find.text('Import shewall.bin'), findsWidgets);
     await tester.tap(find.text('Export shewall.bin'));
@@ -2308,6 +2312,89 @@ void main() {
     expect(got, closeTo(she, 1e-12));
   });
 
+  test('homeDest is a stable ssa1 from shear1 — never the rest-frame on chain', () {
+    final alice = createIdentity();
+    final ledger = ShearLedger()..viewSecret = alice.viewKey;
+    expect(alice.address.startsWith('shear1'), isTrue);
+    final home = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
+    expect(home.startsWith('ssa1'), isTrue);
+    expect(home, isNot(equals(alice.address)));
+    expect(isShearAddress(home), isFalse);
+    ledger.tipHeight = 900;
+    ledger.lag1Root = Uint8List(32)..fillRange(0, 32, 9);
+    expect(ledger.homeDest(alice.address, paymentCode: alice.paymentCode), home);
+    expect(ledger.currentDest(alice.address), isNot(equals(home)));
+  });
+
+  test('Join dest-at-height recovers spendable onto shear1 after dests are wiped', () async {
+    final alice = createIdentity();
+    final claimHeader = Uint8List(128);
+    for (var i = 68; i < 100; i++) {
+      claimHeader[i] = 1;
+    }
+    final tipHeader = Uint8List(128);
+    for (var i = 68; i < 100; i++) {
+      tipHeader[i] = 2;
+    }
+    const claimHeight = 740;
+    const tip = 770;
+    const she = 5.342943808;
+    final claimRoot = lag1ContinuityFromHeader(claimHeader);
+    final destAtClaim = destForLogin(
+      alice.address,
+      height: claimHeight,
+      continuityRoot: claimRoot,
+      viewKey: alice.viewKey,
+    )!;
+    final destNow = destForLogin(
+      alice.address,
+      height: tip,
+      continuityRoot: lag1ContinuityFromHeader(tipHeader),
+      viewKey: alice.viewKey,
+    )!;
+    expect(destAtClaim, isNot(equals(destNow)));
+    expect(destAtClaim.startsWith('ssa1'), isTrue);
+    final live = _PoolLive(
+      headerHex: tipHeader.map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
+      height: tip,
+      balance: 0,
+    );
+    live.headerAtHeight[claimHeight] =
+        claimHeader.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    live.history = [
+      {'kind': 'claim', 'to': destAtClaim, 'height': claimHeight, 'amount': she},
+    ];
+    live.destBalances[destAtClaim] = she;
+    live.destBalances[destNow] = 0;
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
+    final got = await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
+    expect(ledger.exportedDests(), contains(destAtClaim));
+    expect(got, closeTo(she, 1e-12));
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(she, 1e-12));
+    // Prune dest cache — shear1 spendable must return via dest-at-height, not a kept list.
+    final fresh = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
+    final again = await fresh.syncCredits(alice.address, paymentCode: alice.paymentCode);
+    expect(again, closeTo(she, 1e-12));
+    expect(fresh.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(she, 1e-12));
+  });
+
+  test('remembered dests restore onto a new ledger so Continuum does not paint zero', () {
+    final alice = createIdentity();
+    final ledger = ShearLedger()..viewSecret = alice.viewKey;
+    final home = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
+    ledger.applyPoolSnapshot(home, {'balance': 5.0, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(5.0, 1e-12));
+    final dests = ledger.exportedDests();
+    final resumed = ShearLedger()..viewSecret = alice.viewKey;
+    resumed.restoreDests(dests);
+    resumed.applyPoolSnapshot(home, {'balance': 5.0, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
+    expect(resumed.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(5.0, 1e-12));
+  });
+
   testWidgets('unlocked matching she1 signs pending pool pull; cancel and mismatch do not', (tester) async {
     final dir = Directory.systemTemp.createTempSync('shear-pull-sign-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -2504,6 +2591,7 @@ class _PoolLive {
   final Set<String> joinClaimed = {};
   Map<String, dynamic>? pendingPull;
   final List<Map<String, dynamic>> postedWithdraws = [];
+  final Map<int, String> headerAtHeight = {};
 
   double reconstructed(String addr) {
     if (destBalances.isEmpty) {
@@ -2547,6 +2635,15 @@ Future<HttpServer> _fakePool({
         'header': state.headerHex,
         'avgBlockTimeMs': state.avgBlockTimeMs,
         'networkAvgBlockTimeMs': state.avgBlockTimeMs,
+      }));
+    } else if (req.uri.path == '/api/explorer/header') {
+      final h = int.tryParse(req.uri.queryParameters['height'] ?? '') ?? 0;
+      final hex = state.headerAtHeight[h] ?? state.headerHex;
+      req.response.write(jsonEncode({
+        'ok': true,
+        'height': h,
+        'header': hex,
+        'continuity': hex.length >= 200 ? hex.substring(136, 200) : '',
       }));
     } else if (req.uri.path == '/api/wallet/balance') {
       state.balanceHits += 1;
