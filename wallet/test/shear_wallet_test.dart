@@ -60,15 +60,15 @@ void main() {
     final relEnt = File('macos/Runner/Release.entitlements').readAsStringSync();
     expect(debugEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.10"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.11"'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.10"'), isTrue);
+    expect(winMain.contains('L"Shear 0.11"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.10"'), isTrue);
+    expect(winRc.contains('"Shear 0.11"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.10"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.11"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -678,11 +678,11 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.10');
+    expect(kWalletVersion, '0.11');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
-    expect(RegExp(r'^\d+\.\d+$').hasMatch('0.10'), isTrue);
+    expect(RegExp(r'^\d+\.\d+$').hasMatch('0.11'), isTrue);
     expect(RegExp(r'^\d+\.\d+$').hasMatch('0.1.0'), isFalse);
     expect(formatShe(1), '1');
     expect(formatShe(kHashBonusShe), '0.000000000');
@@ -1092,10 +1092,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.10');
-    expect(kWalletVersion, '0.10');
+    expect(app.title, 'Shear 0.11');
+    expect(kWalletVersion, '0.11');
     await tester.pump();
-    expect(find.textContaining('0.10'), findsWidgets);
+    expect(find.textContaining('0.11'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -2250,6 +2250,62 @@ void main() {
     ledger.applyPoolSnapshot(vault, {'balance': 16.82513805424, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
     expect(ledger.spendable(vault), 0);
     expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(3.17486194576, 1e-12));
+  });
+
+  test('Join claim is pending until pool snapshot, then spendable; vault leftover stays 0', () {
+    final alice = createIdentity();
+    final ledger = ShearLedger()..viewSecret = alice.viewKey;
+    const she = 3.17486194576;
+    const leftover = 16.82513805424;
+    final payout = ledger.currentDest(alice.address);
+    final vault = canonicalJoinVaultDest();
+    ledger.noteJoinPending(to: payout, amount: she);
+    expect(ledger.pending(payout), closeTo(she, 1e-12));
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
+    ledger.applyPoolSnapshot(payout, {'balance': she, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
+    ledger.applyPoolSnapshot(vault, {'balance': leftover, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
+    expect(ledger.pending(payout), 0);
+    expect(ledger.spendable(vault), 0);
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(she, 1e-12));
+  });
+
+  test('ingestJoinClaims remembers dest at claim height so Continuum still sees spendable', () async {
+    final alice = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    const claimHeight = 636;
+    const tip = 700;
+    const she = 3.17486194576;
+    final root = lag1ContinuityFromHeader(header);
+    final destAtClaim = destForLogin(
+      alice.address,
+      height: claimHeight,
+      continuityRoot: root,
+      viewKey: alice.viewKey,
+    )!;
+    final destNow = destForLogin(
+      alice.address,
+      height: tip,
+      continuityRoot: root,
+      viewKey: alice.viewKey,
+    )!;
+    expect(destAtClaim.startsWith('ssa1'), isTrue);
+    expect(destAtClaim, isNot(equals(destNow)));
+    final live = _PoolLive(headerHex: hex, height: tip, balance: 0);
+    live.history = [
+      {'kind': 'claim', 'to': destAtClaim, 'height': claimHeight, 'amount': she},
+    ];
+    live.destBalances[destAtClaim] = she;
+    live.destBalances[destNow] = 0;
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
+    final got = await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
+    expect(ledger.syncDests(alice.address, paymentCode: alice.paymentCode), contains(destAtClaim));
+    expect(ledger.spendable(destAtClaim), closeTo(she, 1e-12));
+    expect(got, closeTo(she, 1e-12));
   });
 
   testWidgets('unlocked matching she1 signs pending pool pull; cancel and mismatch do not', (tester) async {

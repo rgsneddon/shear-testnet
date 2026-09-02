@@ -232,8 +232,8 @@ class ShearJoin {
       final she = (json['she'] as num?)?.toDouble() ?? parsed.she;
       if (she <= 0) return null;
       claimed[parsed.commit] = parsed.shearNanos;
-      // Book remaining and Continuum spendable come from sealed vault/balance.
-      // Do not creditJoin here — mempool ok is not spendable.
+      ledger.rememberDest(payout);
+      ledger.noteJoinPending(to: payout, amount: she);
       return {'nanos': parsed.shearNanos, 'pending': 1};
     } catch (_) {
       return null;

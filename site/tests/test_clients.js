@@ -46,7 +46,7 @@ describe('shear.digital client buttons', () => {
     assert.match(dag, /\/api\/explorer\/dag/);
     assert.match(dag, /spy glass/);
     assert.match(dag, /HASH_BUNDLE = 50/);
-    assert.match(dag, /releases\/tag\/0\.10/);
+    assert.match(dag, /releases\/tag\/0\.11/);
     assert.match(html, /white-space: nowrap/);
     assert.match(html, /text-align: left/);
     assert.match(html, /color: #0d2b55/);
@@ -66,9 +66,9 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /height:72px/);
     assert.match(html, /justify-content:center/);
     assert.match(html, /text-indent:\.12em/);
-    assert.match(html, /shear-wallet-0\.10-macos\.dmg/);
+    assert.match(html, /shear-wallet-0\.11-macos\.dmg/);
     assert.match(html, /shear-wallet-0\.9-windows\.zip/);
-    assert.match(html, /shear-wallet-0\.10-android\.apk/);
+    assert.match(html, /shear-wallet-0\.11-android\.apk/);
     assert.match(html, /shear-wallet-0\.9-linux\.zip/);
     assert.match(html, /shear-wallet-0\.9-archlinux\.zip/);
     assert.match(html, /data-pack="wallet-macos"/);
@@ -77,7 +77,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-pack="wallet-linux"/);
     assert.match(html, /data-pack="wallet-archlinux"/);
     assert.match(html, /id="pack-advisory"/);
-    assert.match(html, /wallet <strong>0\.10<\/strong>/);
+    assert.match(html, /wallet <strong>0\.11<\/strong>/);
     assert.doesNotMatch(html, /shear-wallet-0\.8-/);
     assert.match(html, /rgsneddon\/shear-testnet/);
     assert.doesNotMatch(html, /github\.com\/rgsneddon\/shear"/);

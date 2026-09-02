@@ -4,7 +4,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WALLET="$ROOT/wallet"
 DIST="$WALLET/dist"
-VER=0.10
+VER=0.11
 APPNAME="Shear"
 VOLNAME="Shear $VER"
 DMG="$DIST/shear-wallet-$VER-macos.dmg"

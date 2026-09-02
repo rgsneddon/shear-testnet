@@ -405,6 +405,22 @@ class ShearLedger {
 
   bool _isProgramVaultDest(String address) => isJoinVaultDest(address);
 
+  /// Track a Continuum dest without crediting spendable (Join payout, etc).
+  void rememberDest(String address) {
+    if (address.isEmpty) return;
+    final key = payKey(address);
+    if (_isProgramVaultDest(address) || _isProgramVaultDest(key)) return;
+    _dests.add(key);
+  }
+
+  /// Join claim is in mempool / unconfirmed. Not spendable until 6 conf.
+  void noteJoinPending({required String to, required double amount}) {
+    if (amount <= 0) return;
+    rememberDest(to);
+    final key = payKey(to);
+    _pending[key] = (_pending[key] ?? 0) + amount;
+  }
+
   void _dropProgramVaults() {
     final drop = <String>[];
     for (final d in _dests) {
@@ -789,6 +805,7 @@ class ShearLedger {
       if (live > 0 || prev == 0) {
         _spendable[key] = live;
       }
+      if (live > 0) _pending[key] = 0;
     }
   }
 
@@ -799,6 +816,9 @@ class ShearLedger {
     final before = _settledHeight;
     try {
       await syncTip();
+    } catch (_) {}
+    try {
+      await ingestJoinClaims(restFrame);
     } catch (_) {}
     final dests = syncDests(restFrame, paymentCode: paymentCode);
     for (final d in dests) {
@@ -882,6 +902,29 @@ class ShearLedger {
     } catch (_) {}
     prune();
     return ownerHistory(address);
+  }
+
+  /// Recover Join payout dests from public vault history (height-tethered dests).
+  Future<void> ingestJoinClaims(String restFrame) async {
+    if (pool == null || viewSecret == null || viewSecret!.isEmpty) return;
+    final vault = canonicalJoinVaultDest();
+    final json = await pool!.history(vault);
+    final rows = (json['txs'] as List?) ?? const [];
+    for (final row in rows) {
+      if (row is! Map) continue;
+      final k = '${row['kind'] ?? ''}';
+      if (k != 'claim') continue;
+      final to = '${row['to'] ?? ''}';
+      final h = (row['height'] as num?)?.toInt() ?? 0;
+      if (to.isEmpty || h < 1) continue;
+      final mine = destForLogin(
+        restFrame,
+        height: h,
+        continuityRoot: lag1Root,
+        viewKey: viewSecret,
+      );
+      if (mine == to) rememberDest(to);
+    }
   }
 
   String? viewSecret;
