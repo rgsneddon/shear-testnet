@@ -17,7 +17,6 @@ import 'package:shear_wallet/shear_ctf.dart';
 import 'package:shear_wallet/shear_ctf_cli.dart';
 import 'package:shear_wallet/shear_vortex.dart';
 import 'package:shear_wallet/shear_reserve.dart';
-import 'package:shear_wallet/shear_join.dart';
 import 'package:shear_wallet/shear_confirm_pie.dart';
 import 'package:shear_wallet/shear_export.dart';
 import 'package:shear_wallet/shear_biometrics.dart';
@@ -70,18 +69,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.16"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.17"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.16"'), isTrue);
+    expect(winMain.contains('L"Shear 0.17"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.16"'), isTrue);
+    expect(winRc.contains('"Shear 0.17"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.16"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.17"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -456,7 +455,7 @@ void main() {
     expect(ledger.confirmedNeed, 30);
     ledger.applyPolicy({
       'frozen': true,
-      'operational': {'pool_merchant': 30, 'join_mark_paid': 200},
+      'operational': {'pool_merchant': 30},
     });
     expect(ledger.creditsFrozen, isTrue);
     ledger.confirmRound(address: id.address, pot: 1, height: 1);
@@ -732,7 +731,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.16');
+    expect(kWalletVersion, '0.17');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -795,45 +794,28 @@ void main() {
     expect(addVortice(const [reserveVortice], key, source: source).length, 2);
     expect(verifyVorticeDownload(key, 'tamper'), isNull);
     expect(vorticeChipVisible(joinWatchVortice), isFalse);
+    expect(vorticeChipVisible(joinVortice), isFalse);
     expect(
       reapExpiredJoin(const [reserveVortice, joinVortice, joinWatchVortice], expired: true)
           .every((v) => v.id != joinProgram),
       isTrue,
     );
     expect(poolUnlockProgram, 'pool-unlock-2044');
-    expect(poolUnlockOpensHeight, 6312001);
-    expect(poolUnlockDue(height: 64, nowMs: 1_700_000_000_000), isFalse);
-    expect(poolUnlockDue(height: 6_312_001, nowMs: 1), isTrue);
-    expect(poolUnlockDue(height: 1, nowMs: poolUnlockOpensAtMs), isTrue);
-    expect(poolUnlockCountdown(nowMs: poolUnlockOpensAtMs - 1000, height: 64), contains('heights'));
-    expect(poolUnlockCountdown(nowMs: poolUnlockOpensAtMs, height: 6_312_001), 'open');
+    expect(isReservedProgram(poolUnlockProgram), isTrue);
+    expect(validProgramId(poolUnlockProgram), isNull);
   });
 
-  test('poolUnlockSend returns dest/amount/memo when due else null', () {
-    expect(poolUnlockSend(height: 64, nowMs: 1_700_000_000_000), isNull);
-    final byHeight = poolUnlockSend(height: 6_312_001, nowMs: 1);
-    expect(byHeight, isNotNull);
-    expect(byHeight!['to'], poolUnlockDest);
-    expect(byHeight['to'], 'ssa1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7mhq4z');
-    expect(byHeight['amountShe'], poolUnlockAmountShe);
-    expect(byHeight['amountShe'], 1000000.0);
-    expect(byHeight['memo'], poolUnlockMemo);
-    expect(byHeight['memo'], 'pool wallet is now unlocked');
-    expect(byHeight.containsKey('dest'), isFalse);
-    expect(byHeight.containsKey('confirm'), isFalse);
-    expect(byHeight.containsKey('amount'), isFalse);
-    expect(poolUnlockSend(height: 1, nowMs: poolUnlockOpensAtMs)!['to'], poolUnlockDest);
-    expect(poolUnlockSend(height: 6_312_001, nowMs: 1, source: '{"id":"other-dapp"}'), isNull);
-    expect(
-      poolUnlockSend(height: 6_312_001, nowMs: 1, source: '{"id":"pool-unlock-2044"}')!['memo'],
-      poolUnlockMemo,
-    );
+  test('wallet has no admin lock / pool-unlock vortice', () {
     final dartMain = File('lib/main.dart').readAsStringSync();
-    expect(dartMain.contains('poolUnlockSend('), isTrue);
-    expect(dartMain.contains('_maybeFirePoolUnlock'), isTrue);
+    expect(dartMain.contains('poolUnlockSend('), isFalse);
+    expect(dartMain.contains('_maybeFirePoolUnlock'), isFalse);
+    expect(dartMain.contains('pool-unlock-countdown'), isFalse);
+    expect(dartMain.contains('pool wallet is now unlocked'), isFalse);
+    expect(File('lib/shear_vortex.dart').readAsStringSync().contains('poolUnlockSend'), isFalse);
+    expect(File('lib/shear_vortex.dart').readAsStringSync().contains('poolUnlockCountdown'), isFalse);
   });
 
-  testWidgets('poolUnlockSend vortice pane has no dest/amount/confirm fields', (tester) async {
+  testWidgets('saved pool-unlock vortice is not shown on Vortex', (tester) async {
     final dir = Directory.systemTemp.createTempSync('shear-unlock-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
@@ -852,12 +834,8 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    await tester.tap(find.text('Pool wallet unlock'));
-    await tester.pump();
-    expect(find.byKey(const Key('pool-unlock-countdown')), findsOneWidget);
-    expect(find.text('To (ssa1…)'), findsNothing);
-    expect(find.text('Amount SHE'), findsNothing);
-    expect(find.widgetWithText(FilledButton, 'Send'), findsNothing);
+    expect(find.text('Pool wallet unlock'), findsNothing);
+    expect(find.byKey(const Key('pool-unlock-countdown')), findsNothing);
   });
 
   test('downloadVorticeFromOrigin fetches the host named in the key and refuses a swap', () async {
@@ -1177,10 +1155,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.16');
-    expect(kWalletVersion, '0.16');
+    expect(app.title, 'Shear 0.17');
+    expect(kWalletVersion, '0.17');
     await tester.pump();
-    expect(find.textContaining('0.16'), findsWidgets);
+    expect(find.textContaining('0.17'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -1961,38 +1939,13 @@ void main() {
     expect(r.rewards(vb, late + 86400000).projected, 0);
   });
 
-  test('Join credits Continuum 1:1, refuses a second claim, and burns the rest after 99 days', () {
-    final alice = createIdentity();
-    final ledger = ShearLedger()..viewSecret = alice.viewKey;
-    final payout = ledger.currentDest(alice.address);
-    const t0 = 1800000000000;
-    const owner = 'prior1alice';
-    const amountPrior = 100000000000;
-    final commit = sha256
-        .convert(utf8.encode(kJoinLeafPersonal) + utf8.encode(owner) + utf8.encode('$amountPrior'))
-        .toString();
-    final vault = ShearJoin();
-    vault.fundGenesis(nanos: 4 * kUnitsPerShe, nowMs: t0, snapshotRoot: commit);
-    final key =
-        'join1.${base64Url.encode(utf8.encode(jsonEncode({
-              'v': 1,
-              'owner': owner,
-              'amountPrior': amountPrior,
-              'commit': commit,
-              'index': 0,
-              'proof': [],
-            }))).replaceAll('=', '')}';
-    expect(vault.windowOpen(t0 + 1000), isTrue);
-    expect(vault.claimTo(ledger, key: key, payout: payout, nowMs: t0 + 1000), isNotNull);
-    expect(ledger.spendable(payout), closeTo(1, 1e-12));
-    expect(vault.claimTo(ledger, key: key, payout: payout, nowMs: t0 + 2000), isNull);
-    expect(ledger.spendable(payout), closeTo(1, 1e-12));
-    vault.burnUnclaimed(t0 + kJoinWindowMs);
-    expect(vault.burned, isTrue);
-    expect(vault.remainingNanos, 0);
-    final dump = jsonEncode(vault.publicView(t0));
-    expect(dump.contains(alice.address), isFalse);
-    expect(dump.contains(alice.viewKey), isFalse);
+  test('The Join is gone from the wallet — no claim credit, no join1 parser', () {
+    expect(File('lib/shear_join.dart').existsSync(), isFalse);
+    expect(File('lib/main.dart').readAsStringSync().contains('The Join'), isFalse);
+    expect(File('lib/main.dart').readAsStringSync().contains('join1.'), isFalse);
+    expect(extraMintAllowed(joinProgram), isFalse);
+    expect(vorticeChipVisible(joinVortice), isFalse);
+    expect(kTabs.contains('Join'), isFalse);
   });
 
   testWidgets('Vortex Reserve has amount, Send, add more, and votes when portal holds π', (tester) async {
@@ -2024,11 +1977,8 @@ void main() {
     expect(find.textContaining(kReserveAccruedLabel), findsOneWidget);
     expect(find.textContaining('At epoch end'), findsOneWidget);
     expect(find.textContaining('Observed rate'), findsOneWidget);
-    expect(find.text('The Join'), findsOneWidget);
-    await tester.tap(find.text('The Join'));
-    await tester.pump();
-    expect(find.text('Migration key'), findsOneWidget);
-    expect(find.text('Credit'), findsOneWidget);
+    expect(find.text('The Join'), findsNothing);
+    expect(find.text('Migration key'), findsNothing);
     expect(kTabs.contains('Join'), isFalse);
     expect(find.text('Add new vortice'), findsOneWidget);
     expect(find.text(joinWatchProgram), findsNothing);
@@ -2251,7 +2201,7 @@ void main() {
     );
   });
 
-  test('wallet reads Reserve portal and Join remaining from node vaults, not public vortices', () async {
+  test('wallet reads Reserve portal from node vaults, not public vortices; Join HTTP is gone', () async {
     final alice = createIdentity();
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
@@ -2266,13 +2216,6 @@ void main() {
       'accrued': 1000,
       'projected': 2000,
     };
-    live.joinVault = {
-      'ok': true,
-      'public': false,
-      'programId': 'shear-join-v1',
-      'remainingNanos': 3 * kUnitsPerShe,
-      'burned': false,
-    };
     final server = await _fakePool(live: live);
     addTearDown(() => server.close(force: true));
     final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
@@ -2280,124 +2223,27 @@ void main() {
     expect(portal['public'], isFalse);
     expect(portal['staked'], kPiSheNanos);
     expect(portal['accrued'], 1000);
-    final join = await pool.joinVault(dest: vault);
-    expect(join['public'], isFalse);
-    expect(join['remainingNanos'], 3 * kUnitsPerShe);
     final r = ShearReserve();
     r.applyRemotePortal(vault, portal);
     expect(r.portal(vault).staked, kPiSheNanos);
     expect(r.rewards(vault, DateTime.now().millisecondsSinceEpoch).accrued, 1000);
+    expect(File('lib/shear_ledger.dart').readAsStringSync().contains('/api/vault/join'), isFalse);
+    expect(File('lib/shear_ledger.dart').readAsStringSync().contains('/api/join/claim'), isFalse);
   });
 
-  test('Join claimViaPool credits Continuum 1:1 from a prior-ledger join1. key and refuses a second claim', () async {
-    final alice = createIdentity();
-    final header = Uint8List(128);
-    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-    const holders = [
-      {'owner': 'prior1alice', 'coins': 2.0},
-      {'owner': 'prior1bob', 'coins': 5.0},
-    ];
-    final issued = issueJoinKey(owner: 'prior1alice', holders: holders)!;
-    final parsed = ShearJoin().decodeKey(issued.key)!;
-    final live = _PoolLive(headerHex: hex, height: 8, balance: 0);
-    live.joinVault = {
-      'genesisMs': 1800000000000,
-      'remainingNanos': issued.circulatingNanos,
-      'circulatingNanos': issued.circulatingNanos,
-      'burned': false,
-      'root': issued.root,
-    };
-    final server = await _fakePool(live: live);
-    addTearDown(() => server.close(force: true));
-    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
-    final ledger = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
-    final payout = ledger.currentDest(alice.address);
-    final join = ShearJoin();
-    join.applyRemote(Map<String, dynamic>.from(live.joinVault!));
-    expect(join.windowOpen(1800000001000), isTrue);
-    final out = await join.claimViaPool(ledger, pool: pool, key: issued.key, payout: payout);
-    expect(out, isNotNull);
-    expect(out!['pending'], 1);
-    expect(ledger.spendable(payout), 0);
-    final again = await join.claimViaPool(ledger, pool: pool, key: issued.key, payout: payout);
-    expect(again, isNull);
-    expect(ledger.spendable(payout), 0);
-    ledger.applyPoolSnapshot(
-      payout,
-      {'balance': issued.she, 'pending': 0},
-      beforeHeight: 1,
-      tipSealed: ShearLedger.spendableConfirmations + 2,
-    );
-    expect(ledger.spendable(payout), closeTo(issued.she, 1e-12));
+  test('Join claim APIs and vault dest helpers are gone', () {
+    final dart = File('lib/shear_ledger.dart').readAsStringSync();
+    expect(dart.contains('creditJoin'), isFalse);
+    expect(dart.contains('noteJoinPending'), isFalse);
+    expect(dart.contains('ingestJoinClaims'), isFalse);
+    expect(dart.contains('canonicalJoinVaultDest'), isFalse);
+    expect(File('lib/shear_identity.dart').readAsStringSync().contains('canonicalJoinVaultDest'), isFalse);
   });
 
-  test('Continuum spendable ignores Join vault leftover', () {
-    final alice = createIdentity();
-    final ledger = ShearLedger()..viewSecret = alice.viewKey;
-    final payout = ledger.currentDest(alice.address);
-    final vault = canonicalJoinVaultDest();
-    expect(vault.startsWith('ssa1'), isTrue);
-    expect(isJoinVaultDest(vault), isTrue);
-    ledger.applyPoolSnapshot(payout, {'balance': 3.17486194576, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
-    ledger.applyPoolSnapshot(vault, {'balance': 16.82513805424, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
-    expect(ledger.spendable(vault), 0);
-    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(3.17486194576, 1e-12));
-  });
-
-  test('Join claim is pending until pool snapshot, then spendable; vault leftover stays 0', () {
-    final alice = createIdentity();
-    final ledger = ShearLedger()..viewSecret = alice.viewKey;
-    const she = 3.17486194576;
-    const leftover = 16.82513805424;
-    final payout = ledger.currentDest(alice.address);
-    final vault = canonicalJoinVaultDest();
-    ledger.noteJoinPending(to: payout, amount: she);
-    expect(ledger.pending(payout), closeTo(she, 1e-12));
-    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
-    ledger.applyPoolSnapshot(payout, {'balance': she, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
-    ledger.applyPoolSnapshot(vault, {'balance': leftover, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
-    expect(ledger.pending(payout), 0);
-    expect(ledger.spendable(vault), 0);
-    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(she, 1e-12));
-  });
-
-  test('ingestJoinClaims remembers dest at claim height so Continuum still sees spendable', () async {
-    final alice = createIdentity();
-    final header = Uint8List(128);
-    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-    const claimHeight = 636;
-    const tip = 700;
-    const she = 3.17486194576;
-    final root = lag1ContinuityFromHeader(header);
-    final destAtClaim = destForLogin(
-      alice.address,
-      height: claimHeight,
-      continuityRoot: root,
-      viewKey: alice.viewKey,
-    )!;
-    final destNow = destForLogin(
-      alice.address,
-      height: tip,
-      continuityRoot: root,
-      viewKey: alice.viewKey,
-    )!;
-    expect(destAtClaim.startsWith('ssa1'), isTrue);
-    expect(destAtClaim, isNot(equals(destNow)));
-    final live = _PoolLive(headerHex: hex, height: tip, balance: 0);
-    live.history = [
-      {'kind': 'claim', 'to': destAtClaim, 'height': claimHeight, 'amount': she},
-    ];
-    live.destBalances[destAtClaim] = she;
-    live.destBalances[destNow] = 0;
-    final server = await _fakePool(live: live);
-    addTearDown(() => server.close(force: true));
-    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
-    final ledger = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
-    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
-    final got = await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
-    expect(ledger.syncDests(alice.address, paymentCode: alice.paymentCode), contains(destAtClaim));
-    expect(ledger.spendable(destAtClaim), closeTo(she, 1e-12));
-    expect(got, closeTo(she, 1e-12));
+  test('syncCredits does not hunt a Join vault dest', () {
+    final dart = File('lib/shear_ledger.dart').readAsStringSync();
+    expect(dart.contains('ingestJoinClaims'), isFalse);
+    expect(dart.contains('shear-join-v1-vault'), isFalse);
   });
 
   test('homeDest is a stable ssa1 from shear1 — never the rest-frame on chain', () {
@@ -2414,60 +2260,8 @@ void main() {
     expect(ledger.currentDest(alice.address), isNot(equals(home)));
   });
 
-  test('Join dest-at-height recovers spendable onto shear1 after dests are wiped', () async {
-    final alice = createIdentity();
-    final claimHeader = Uint8List(128);
-    for (var i = 68; i < 100; i++) {
-      claimHeader[i] = 1;
-    }
-    final tipHeader = Uint8List(128);
-    for (var i = 68; i < 100; i++) {
-      tipHeader[i] = 2;
-    }
-    const claimHeight = 740;
-    const tip = 770;
-    const she = 5.342943808;
-    final claimRoot = lag1ContinuityFromHeader(claimHeader);
-    final destAtClaim = destForLogin(
-      alice.address,
-      height: claimHeight,
-      continuityRoot: claimRoot,
-      viewKey: alice.viewKey,
-    )!;
-    final destNow = destForLogin(
-      alice.address,
-      height: tip,
-      continuityRoot: lag1ContinuityFromHeader(tipHeader),
-      viewKey: alice.viewKey,
-    )!;
-    expect(destAtClaim, isNot(equals(destNow)));
-    expect(destAtClaim.startsWith('ssa1'), isTrue);
-    final live = _PoolLive(
-      headerHex: tipHeader.map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
-      height: tip,
-      balance: 0,
-    );
-    live.headerAtHeight[claimHeight] =
-        claimHeader.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-    live.history = [
-      {'kind': 'claim', 'to': destAtClaim, 'height': claimHeight, 'amount': she},
-    ];
-    live.destBalances[destAtClaim] = she;
-    live.destBalances[destNow] = 0;
-    final server = await _fakePool(live: live);
-    addTearDown(() => server.close(force: true));
-    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
-    final ledger = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
-    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
-    final got = await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
-    expect(ledger.exportedDests(), contains(destAtClaim));
-    expect(got, closeTo(she, 1e-12));
-    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(she, 1e-12));
-    // Prune dest cache — shear1 spendable must return via dest-at-height, not a kept list.
-    final fresh = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
-    final again = await fresh.syncCredits(alice.address, paymentCode: alice.paymentCode);
-    expect(again, closeTo(she, 1e-12));
-    expect(fresh.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(she, 1e-12));
+  test('Join dest-at-height recovery is gone with The Join', () {
+    expect(File('lib/shear_ledger.dart').readAsStringSync().contains('ingestJoinClaims'), isFalse);
   });
 
   test('remembered dests restore onto a new ledger so Continuum does not paint zero', () {
@@ -2564,7 +2358,7 @@ void main() {
     final vortexFn = dartMain.substring(dartMain.indexOf('Widget _vortex('), dartMain.indexOf('Widget _closure('));
     expect(vortexFn.contains('labelText: \'Password\''), isFalse);
     expect(vortexFn.contains('twelve'), isFalse);
-    expect(dartMain.contains('poolUnlockSend('), isTrue);
+    expect(dartMain.contains('poolUnlockSend('), isFalse);
     expect(dartMain.contains('Third-party vortice cannot mint SHE'), isTrue);
     final third = dartMain.substring(
       dartMain.indexOf('Third-party vortice cannot mint SHE'),
@@ -3085,8 +2879,6 @@ class _PoolLive {
   /// /api/wallet/send use it instead of the single [balance]/[owner] pair.
   final Map<String, double> destBalances = {};
   Map<String, dynamic>? reservePortal;
-  Map<String, dynamic>? joinVault;
-  final Set<String> joinClaimed = {};
   Map<String, dynamic>? pendingPull;
   final List<Map<String, dynamic>> postedWithdraws = [];
   final Map<int, String> headerAtHeight = {};
@@ -3162,44 +2954,9 @@ Future<HttpServer> _fakePool({
       req.response.write(jsonEncode({'ok': true}));
     } else if (req.uri.path == '/api/vault/reserve') {
       req.response.write(jsonEncode(state.reservePortal ?? {'ok': true, 'public': false, 'staked': 0, 'idle': 0, 'accrued': 0}));
-    } else if (req.uri.path == '/api/vault/join') {
-      req.response.write(jsonEncode(state.joinVault ?? {'ok': true, 'public': false, 'remainingNanos': 0, 'burned': false}));
-    } else if (req.uri.path == '/api/join/claim') {
-      final key = body['key']?.toString() ?? '';
-      final payout = body['payout']?.toString() ?? '';
-      final j = ShearJoin();
-      if (state.joinVault != null) j.applyRemote(Map<String, dynamic>.from(state.joinVault!));
-      final parsed = j.decodeKey(key);
-      if (parsed == null) {
-        req.response.statusCode = 400;
-        req.response.write(jsonEncode({'ok': false, 'reason': 'bad_key'}));
-      } else if (j.genesisMs == 0) {
-        req.response.statusCode = 400;
-        req.response.write(jsonEncode({'ok': false, 'reason': 'no_snapshot'}));
-      } else if (parsed != null && state.joinClaimed.contains(parsed.commit)) {
-        req.response.statusCode = 400;
-        req.response.write(jsonEncode({'ok': false, 'reason': 'already_claimed'}));
-      } else {
-        final err = j.claim(key: key, payout: payout, nowMs: DateTime.now().millisecondsSinceEpoch);
-        if (err != null) {
-          req.response.statusCode = 400;
-          req.response.write(jsonEncode({'ok': false, 'reason': err}));
-        } else {
-          state.joinVault = Map<String, dynamic>.from(j.publicView(DateTime.now().millisecondsSinceEpoch));
-          state.joinClaimed.add(parsed.commit);
-          req.response.write(jsonEncode({
-            'ok': true,
-            'public': false,
-            'she': parsed.she,
-            'nanos': parsed.shearNanos,
-            'to': payout,
-            'remainingNanos': j.remainingNanos,
-            'genesisMs': j.genesisMs,
-            'burned': j.burned,
-            'root': j.root,
-          }));
-        }
-      }
+    } else if (req.uri.path == '/api/vault/join' || req.uri.path == '/api/join/claim') {
+      req.response.statusCode = 404;
+      req.response.write(jsonEncode({'ok': false, 'reason': 'join_removed'}));
     } else if (req.uri.path == '/api/pool/pullPending' || req.uri.path == '/api/pool/pullpending') {
       req.response.write(jsonEncode({
         'ok': true,

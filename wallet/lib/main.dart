@@ -17,7 +17,6 @@ import 'shear_ctf.dart';
 import 'shear_ctf_cli.dart';
 import 'shear_vortex.dart';
 import 'shear_reserve.dart';
-import 'shear_join.dart';
 import 'shear_confirm_pie.dart';
 import 'shear_biometrics.dart';
 import 'shear_export.dart';
@@ -28,7 +27,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.16';
+const kWalletVersion = '0.17';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -61,7 +60,6 @@ class ShearWalletApp extends StatefulWidget {
     this.launchExecutable,
     this.demoTx = false,
     this.reserve,
-    this.join,
     this.downloadVortice,
     this.biometrics,
     this.exportDest,
@@ -79,7 +77,6 @@ class ShearWalletApp extends StatefulWidget {
   /// Local observation only: confirm one testnet round so Shearview/Resistance have a tx.
   final bool demoTx;
   final ShearReserve? reserve;
-  final ShearJoin? join;
   /// Test hook. Production fetches the origin named in the vort1. key.
   final Future<Vortice?> Function(String key)? downloadVortice;
   final ShearBiometrics? biometrics;
@@ -120,15 +117,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   final unlockCtrl = TextEditingController();
   final confirmCtrl = TextEditingController();
   final reserveAmt = TextEditingController();
-  final joinKeyCtrl = TextEditingController();
   final vorticeKeyCtrl = TextEditingController();
   final shearviewQuery = TextEditingController();
   bool _vorticeBusy = false;
   late final ShearReserve reserve = widget.reserve ?? ShearReserve();
-  late final ShearJoin join = widget.join ?? ShearJoin();
-  String? joinStatus;
   int vortexTab = 0;
-  List<Vortice> vortices = const [reserveVortice, joinVortice, joinWatchVortice];
+  List<Vortice> vortices = const [reserveVortice];
   final Set<String> openedMemos = {};
   String? lastMemoPlain;
   ThemeMode _themeMode = ThemeMode.light;
@@ -138,7 +132,6 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   Map<String, dynamic>? _pullOffer;
   bool _pullPrompting = false;
   final Set<String> _handledPullIds = {};
-  bool _poolUnlockQueued = false;
   bool _showReceiveQr = false;
 
   @override
@@ -155,7 +148,6 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     unlockCtrl.dispose();
     confirmCtrl.dispose();
     reserveAmt.dispose();
-    joinKeyCtrl.dispose();
     vorticeKeyCtrl.dispose();
     shearviewQuery.dispose();
     _accrualTick?.cancel();
@@ -184,30 +176,17 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   void _syncJoinRoster() {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    join.burnUnclaimed(now);
-    final expired = session.joinRetired ||
-        (join.genesisMs != 0 && (join.burned || join.remainingMs(now) == 0));
-    if (expired && !session.joinRetired) {
-      session.joinRetired = true;
-      session.persist();
-    }
     final seen = <String>{};
     final extras = <Vortice>[];
     for (final v in [...session.deployedVortices, ...vortices]) {
-      if (isPinnedProgram(v.id) || v.id.isEmpty || seen.contains(v.id)) continue;
+      if (isPinnedProgram(v.id) || isReservedProgram(v.id) || v.id.isEmpty || seen.contains(v.id)) continue;
       seen.add(v.id);
       extras.add(v);
     }
-    vortices = reapExpiredJoin(
-      [
-        reserveVortice,
-        if (!session.joinRetired) joinVortice,
-        joinWatchVortice,
-        ...extras,
-      ],
-      expired: session.joinRetired,
-    );
+    vortices = [
+      reserveVortice,
+      ...extras,
+    ];
     final chips = vortices.where(vorticeChipVisible).length + 1;
     if (vortexTab >= chips) vortexTab = 0;
   }
@@ -576,31 +555,6 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   int get _resistanceTab => kTabs.indexOf('Resistance');
-
-  void _maybeFirePoolUnlock(ShearIdentity ident, String? source) {
-    final send = poolUnlockSend(
-      height: ledger.sealedHeight,
-      nowMs: DateTime.now().toUtc().millisecondsSinceEpoch,
-      source: source,
-    );
-    if (send == null || _poolUnlockQueued) return;
-    _poolUnlockQueued = true;
-    final payload = send;
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if (!mounted) return;
-      try {
-        final tx = await ledger.send(
-          from: ledger.currentDest(ident.address),
-          to: payload['to'] as String,
-          amount: payload['amountShe'] as double,
-          memo: payload['memo'] as String,
-          restFrame: ident.address,
-          paymentCode: ident.paymentCode,
-        );
-        _ingestTx(ident, tx);
-      } catch (_) {}
-    });
-  }
 
   void _findBlock() {
     final ident = id;
@@ -1438,95 +1392,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     final pool = ledger.pool;
     if (pool == null) return;
     try {
-      join.applyRemote(await pool.joinVault());
-    } catch (_) {}
-    try {
       final dest = _reserveDestOf(ident);
       if (dest != null) {
         reserve.applyRemotePortal(dest, await pool.reservePortal(dest));
       }
     } catch (_) {}
     if (mounted) setState(() {});
-  }
-
-  Future<void> _joinCredit(BuildContext context, ShearIdentity ident) async {
-    final payout = ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final parsed = join.decodeKey(joinKeyCtrl.text);
-    if (parsed == null) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('That migration key cannot be read.')));
-      }
-      return;
-    }
-    Map<String, int>? out;
-    final pool = ledger.pool;
-    if (pool != null) {
-      out = await join.claimViaPool(ledger, pool: pool, key: joinKeyCtrl.text, payout: payout);
-    } else {
-      out = join.claimTo(ledger, key: joinKeyCtrl.text, payout: payout, nowMs: now);
-    }
-    if (out == null) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(join.windowOpen(now) ? 'This key has already been used, or the proof failed.' : kJoinWindowClosed),
-        ));
-      }
-      return;
-    }
-    final pending = (out['pending'] ?? 0) > 0;
-    if (mounted) setState(() => joinStatus = pending ? 'queued' : 'credited');
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            pending
-                ? '${formatShe(parsed.she)} SHE queued. Spendable after the claim is sealed and confirmed.'
-                : '${formatShe(parsed.she)} SHE credited to Continuum',
-          ),
-        ),
-      );
-    }
-  }
-
-  List<Widget> _joinPane(BuildContext context, ShearIdentity ident) {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final daysLeft = (join.remainingMs(now) / 86400000).floor();
-    final parsed = join.decodeKey(joinKeyCtrl.text);
-    final amount = parsed == null ? '—' : '${formatShe(parsed.she)} SHE';
-    join.burnUnclaimed(now);
-    return [
-      const Text('The Join', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text(
-        'The Join vault is minted once at snapshot — the full prior-ledger circulation. '
-        'Paste a join1. key from the prior-ledger wallet to claim your share onto this Continuum dest (1:1, no interest). '
-        'The window is ninety-nine days from genesis. After that, unclaimed allocation is burned.',
-      ),
-      if (!join.windowOpen(now) && join.genesisMs != 0) ...[
-        const SizedBox(height: 8),
-        const Text(kJoinWindowClosed),
-      ],
-      const SizedBox(height: 8),
-      Text(join.genesisMs == 0
-          ? 'No genesis snapshot on this node yet.'
-          : '$daysLeft days remaining in the claim window.'),
-      Text('Vault remaining  ${formatShe(join.remainingNanos / kUnitsPerShe)} SHE'),
-      const SizedBox(height: 8),
-      TextField(
-        controller: joinKeyCtrl,
-        decoration: const InputDecoration(labelText: 'Migration key'),
-        onChanged: (_) => setState(() {}),
-        minLines: 2,
-        maxLines: 4,
-      ),
-      const SizedBox(height: 8),
-      Text('Amount to credit  $amount'),
-      const SizedBox(height: 8),
-      FilledButton(
-        onPressed: (join.windowOpen(now) || ledger.pool != null) ? () => _joinCredit(context, ident) : null,
-        child: const Text('Credit'),
-      ),
-    ];
   }
 
   Widget _vortex(BuildContext context, ShearIdentity ident) {
@@ -1579,26 +1450,11 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       ]);
     } else if (cur.id == reserveProgram) {
       kids.addAll(_reservePane(context, ident));
-    } else if (cur.id == joinProgram) {
-      kids.addAll(_joinPane(context, ident));
     } else {
-      final body = parseVorticeSource(cur.source);
-      final unlock = cur.id == poolUnlockProgram || body?['id'] == poolUnlockProgram;
-      if (unlock) _maybeFirePoolUnlock(ident, cur.source);
       kids.addAll([
         Text(cur.name, style: const TextStyle(fontWeight: FontWeight.w600)),
         Text('Program  ${cur.id}'),
         if (cur.origin != null) Text('Origin  ${cur.origin}'),
-        if (unlock) ...[
-          const SizedBox(height: 8),
-          Text(
-            poolUnlockCountdown(nowMs: DateTime.now().toUtc().millisecondsSinceEpoch, height: ledger.sealedHeight),
-            key: const Key('pool-unlock-countdown'),
-            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
-          ),
-          const Text('Opens 11 September 2044 21:00 UTC · height 6,312,001'),
-          const Text('Then signs 1,000,000 SHE to the ssa1 dest with memo: pool wallet is now unlocked. No tap.'),
-        ],
         const Text('Third-party vortice cannot mint SHE; it must fund its own rewards.'),
       ]);
     }

@@ -29,7 +29,7 @@ export function extraMint({ programId, to, nanos, kind }) {
   if (!isDestAddress(to) && !isShearAddress(to)) return { ok: false, reason: 'bad_address' };
   const n = Number(nanos);
   if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: 'bad_nanos' };
-  const k = String(kind || (programId === RESERVE_PROGRAM ? 'reserve' : 'join-genesis'));
+  const k = String(kind || (programId === RESERVE_PROGRAM ? 'reserve' : 'mint'));
   return { ok: true, programId, to, nanos: n, kind: k, mint: true };
 }
 

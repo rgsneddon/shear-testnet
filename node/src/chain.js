@@ -12,6 +12,8 @@ import {
   extraMintAllowed,
   wrapMintForbidden,
   DEST_HRP,
+  JOIN_PROGRAM,
+  JOIN_KIND_GENESIS,
 } from '../../crypto/asert.js';
 import {
   bootReserveEvm,
@@ -274,7 +276,6 @@ export { blockNeedsEvm };
 
 function verifyBlockConsensus(block, prev, {
   buried = false,
-  joinFunded = false,
   spentB = null,
   tipHeight = 0,
   hashBonusNanos = HASH_BONUS_NANOS,
@@ -367,7 +368,10 @@ function verifyBlockConsensus(block, prev, {
     if (wrapMintForbidden(tx)) {
       return { ok: false, reason: 'mint_forbidden' };
     }
-    if ((unfunded || tx.mint) && !extraMintAllowed(tx.programId, { kind: tx.kind, funded: joinFunded })) {
+    if (String(tx.programId || '') === JOIN_PROGRAM || String(tx.kind || '') === JOIN_KIND_GENESIS) {
+      return { ok: false, reason: 'join_removed' };
+    }
+    if ((unfunded || tx.mint) && !extraMintAllowed(tx.programId, { kind: tx.kind })) {
       return { ok: false, reason: 'mint_forbidden' };
     }
     if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };

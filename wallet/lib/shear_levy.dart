@@ -28,7 +28,6 @@ bool levyTaxed(String kind, {bool coinbase = false}) {
   if (coinbase) return false;
   const untaxed = {
     'claim',
-    'join-claim',
     'lock',
     'vote',
     'withdraw',

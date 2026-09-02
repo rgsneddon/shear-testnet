@@ -183,15 +183,16 @@ describe('hash-tx consensus law', () => {
   });
 });
 
-describe('Join extra mint is genesis-only', () => {
-  it('allows join-genesis and refuses a plain Join mint', () => {
+describe('snapshot genesis extra mint is refused', () => {
+  it('never allows a dead-id genesis mint', () => {
     assert.equal(extraMintAllowed(RESERVE_PROGRAM), true);
     assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }), true);
     assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'lock' }), false);
     assert.equal(extraMintAllowed(JOIN_PROGRAM), false);
     assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: 'claim' }), false);
-    assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: JOIN_KIND_GENESIS }), true);
+    assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: JOIN_KIND_GENESIS }), false);
     assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: JOIN_KIND_GENESIS, funded: true }), false);
+    assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: JOIN_KIND_GENESIS, funded: false }), false);
     assert.equal(extraMintAllowed('third-party-vortice'), false);
     assert.equal(extraMintAllowed('stake-pool-a', { kind: 'withdraw' }), false);
   });
@@ -205,9 +206,9 @@ describe('wrap mint is forbidden', () => {
   });
 });
 
-describe('Join migration window', () => {
-  it('is 99 days from genesis', () => {
-    assert.equal(JOIN_WINDOW_DAYS, 99);
-    assert.equal(JOIN_WINDOW_MS, 99 * 86_400_000);
+describe('dead-id claim window', () => {
+  it('is closed', () => {
+    assert.equal(JOIN_WINDOW_DAYS, 0);
+    assert.equal(JOIN_WINDOW_MS, 0);
   });
 });

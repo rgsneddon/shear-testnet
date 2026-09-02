@@ -406,22 +406,14 @@ class ShearLedger {
     return currentDest(address);
   }
 
-  bool _isProgramVaultDest(String address) => isJoinVaultDest(address);
+  bool _isProgramVaultDest(String address) => false;
 
-  /// Track a Continuum dest without crediting spendable (Join payout, etc).
+  /// Track a Continuum dest without crediting spendable.
   void rememberDest(String address) {
     if (address.isEmpty) return;
     final key = payKey(address);
     if (_isProgramVaultDest(address) || _isProgramVaultDest(key)) return;
     _dests.add(key);
-  }
-
-  /// Join claim is in mempool / unconfirmed. Not spendable until 6 conf.
-  void noteJoinPending({required String to, required double amount}) {
-    if (amount <= 0) return;
-    rememberDest(to);
-    final key = payKey(to);
-    _pending[key] = (_pending[key] ?? 0) + amount;
   }
 
   void _dropProgramVaults() {
@@ -821,9 +813,6 @@ class ShearLedger {
     try {
       await syncTip();
     } catch (_) {}
-    try {
-      await ingestJoinClaims(restFrame);
-    } catch (_) {}
     final dests = syncDests(restFrame, paymentCode: paymentCode);
     for (final d in dests) {
       try {
@@ -1001,39 +990,6 @@ class ShearLedger {
     }
   }
 
-  /// Recover Join payout dests from public vault history.
-  /// Ownership is proven locally (view key never leaves the wallet).
-  Future<void> ingestJoinClaims(String restFrame) async {
-    if (pool == null || viewSecret == null || viewSecret!.isEmpty) return;
-    final vault = canonicalJoinVaultDest();
-    final json = await pool!.history(vault);
-    final rows = (json['txs'] as List?) ?? const [];
-    for (final row in rows) {
-      if (row is! Map) continue;
-      final k = '${row['kind'] ?? ''}';
-      if (k != 'claim') continue;
-      final to = '${row['to'] ?? ''}';
-      final h = (row['height'] as num?)?.toInt() ?? 0;
-      if (to.isEmpty || h < 1 || !isDestAddress(to)) continue;
-      if (_dests.contains(to)) continue;
-      final root = await continuityAtHeight(h);
-      var matched = false;
-      for (final hh in {h, h + 1, if (h > 1) h - 1}) {
-        final mine = destForLogin(
-          restFrame,
-          height: hh,
-          continuityRoot: root ?? lag1Root,
-          viewKey: viewSecret,
-        );
-        if (mine == to) {
-          matched = true;
-          break;
-        }
-      }
-      if (matched) rememberDest(to);
-    }
-  }
-
   String? viewSecret;
 
   String? destAt(String restFrame, int index) {
@@ -1152,30 +1108,6 @@ class ShearLedger {
       to: key,
       amount: amount,
       kind: 'reserve',
-      height: height,
-      confirmed: true,
-    );
-    _txs.add(tx);
-    return tx;
-  }
-
-  /// Snapshot claim from The Join, paid to a Continuum dest.
-  ShearTx creditJoin({
-    required String to,
-    required double amount,
-    int? height,
-  }) {
-    if (amount <= 0) throw ArgumentError('amount');
-    if (isShearAddress(to)) throw ArgumentError('rest_frame');
-    final key = payKey(to);
-    _spendable[key] = spendable(key) + amount;
-    _dests.add(key);
-    final tx = ShearTx(
-      id: 'join-${DateTime.now().millisecondsSinceEpoch}',
-      from: 'shear-join-v1',
-      to: key,
-      amount: amount,
-      kind: 'join',
       height: height,
       confirmed: true,
     );
@@ -1434,11 +1366,4 @@ class ShearPoolClient {
   /// Per-portal Reserve stake/idle/accrued. Not a public vortice.
   Future<Map<String, dynamic>> reservePortal(String dest) =>
       _get('/api/vault/reserve?dest=$dest');
-
-  /// Join remaining (prior-ledger migration, no APR). Not a public vortice.
-  Future<Map<String, dynamic>> joinVault({String? dest}) =>
-      _get('/api/vault/join${dest != null ? '?dest=$dest' : ''}');
-
-  Future<Map<String, dynamic>> joinClaim({required String key, required String payout}) =>
-      _post('/api/join/claim', {'key': key, 'payout': payout});
 }

@@ -4,7 +4,7 @@ Network: `shear-testnet-v2`. Policy, not a second fork-choice. No operator `setT
 
 ## Steps
 
-1. **Freeze credits and Join marks.** `credits_frozen` from node policy / `shear-watch`. Pool “confirmed”, Join mark-paid, wallet Continuum spendable stay pending even past 6. Consensus 6-conf floor does not move.
+1. **Freeze credits.** `credits_frozen` from node policy / `shear-watch`. Pool “confirmed” and wallet Continuum spendable stay pending even past 6. Consensus 6-conf floor does not move.
 2. **Measure** depth / work / valid vs invalid. Invalid branches are ignored (`verifyBlock` fail). Valid heavier wins (`shouldAdopt`).
 3. **No “roll back to height H” binary.** There is no `setTip`. `reorg_halt_depth` (default 0 / off) may refuse to *apply* a deeper reorg and stay on the current public tip; it is not a rewind tool.
 4. **Keep mining the valid public branch.** Pool rebuilds the open round from the new parent. Orphaned pot is not paid twice.
@@ -21,7 +21,7 @@ Two nodes, one killed: no freeze (that is not a reorg).
 
 ## Testnet drill
 
-Planned 8-block private branch before Join opens. Honest nodes reorg iff it is heavier and valid; loser is `valid-fork`; Continuum bounces; pool does not double-pay.
+Planned 8-block private branch. Honest nodes reorg iff it is heavier and valid; loser is `valid-fork`; Continuum bounces; pool does not double-pay.
 
 ## Second seed
 

@@ -249,25 +249,6 @@ String encodeHrp(String hrp, Uint8List bytes) {
 
 String encodeShearAddress(Uint8List pubkeyHash20) => encodeHrp(shearHrp, pubkeyHash20);
 
-/// Global Join vault dest. Not a user Continuum dest. Not The Reserve portal.
-String canonicalJoinVaultDest() {
-  final h = Uint8List.fromList(sha256.convert(utf8.encode('shear-join-v1-vault')).bytes.sublist(0, 20));
-  return encodeDestAddress(h);
-}
-
-bool isJoinVaultDest(String addr) {
-  final a = addr.trim();
-  if (a.isEmpty) return false;
-  if (a == canonicalJoinVaultDest()) return true;
-  final got = hash20FromAddress(a);
-  if (got == null || got.length < 20) return false;
-  final want = sha256.convert(utf8.encode('shear-join-v1-vault')).bytes.sublist(0, 20);
-  for (var i = 0; i < 20; i++) {
-    if (got[i] != want[i]) return false;
-  }
-  return true;
-}
-
 String encodeDestAddress(Uint8List pubkeyHash20) {
   if (pubkeyHash20.length != 20) {
     throw ArgumentError('spend hash must be 20 bytes');

@@ -41,15 +41,15 @@ describe('store policy and pause', () => {
     assert.equal(fp.includes(':30:'), false);
   });
 
-  it('module pause refuses new join txs and does not rewind the tip', () => {
+  it('module pause refuses new pool-withdraw txs and does not rewind the tip', () => {
     const dest = destMiner();
     const store = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pause-')));
     assert.equal(mineOne(store, dest).ok, true);
     const before = Buffer.from(store.tip().hash);
-    store.pause.join = true;
+    store.pause.poolWithdraw = true;
     const q = store.queueTx({
-      id: 'claim-paused',
-      kind: 'claim',
+      id: 'pull-paused',
+      kind: 'pool-withdraw',
       from: dest,
       to: dest,
       nanos: 1,

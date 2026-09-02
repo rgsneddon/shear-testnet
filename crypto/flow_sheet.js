@@ -7,7 +7,6 @@ export const FLOW_PERSONAL = 'chronoflux-J-v1';
 export const CLOSURE_PERSONAL = 'chronoflux-G-v1';
 export const DEST_INDEX_PERSONAL = 'chronoflux-J-n-v1';
 export const VAULT_DOMAIN = 'shear-reserve-v1';
-export const JOIN_DOMAIN = 'shear-join-v1';
 export const VIEW_KDF_INFO = 'chronoflux-G-v1';
 
 export function asBuf(x, n) {
@@ -160,23 +159,6 @@ export function vaultDest(restFrame, { viewKey, closureCommit: C } = {}) {
     spendHash20: s,
     closureCommit: commit,
     continuityRoot: vaultRoot(),
-    height: 0,
-  });
-}
-
-export function joinRoot() {
-  return createHash('sha256').update(JOIN_DOMAIN).digest();
-}
-
-export function joinDest(restFrame, { viewKey, closureCommit: C } = {}) {
-  const s = spendHashFromAddress(restFrame);
-  if (!s) return null;
-  const commit = C ? asBuf(C, 32) : (viewKey ? closureCommit(viewKey) : null);
-  if (!commit) return null;
-  return flowDestAddress({
-    spendHash20: s,
-    closureCommit: commit,
-    continuityRoot: joinRoot(),
     height: 0,
   });
 }

@@ -2,7 +2,7 @@
 
 Shear does not host your dapp. You host it. The node mints a `vort1.` deploy key that names your origin and pins a hash of the exact bytes you serve. Holders paste that key in Vortex. The wallet fetches your origin, checks the hash, and deploys the dapp locally. There is no catalog browse: **no key, no dapp.**
 
-The Reserve and The Join are pinned. They are not minted this way.
+The Reserve is pinned. It is not minted this way.
 
 ## What you host
 
@@ -12,9 +12,9 @@ Do not put Shear rest-frame `shear1` addresses, view keys, or seeds in the hoste
 
 ## What you must not do
 
-- Use a reserved program id: `shear-reserve-v1`, `shear-join-v1`, `shear-join-watch-v1`.
+- Use a reserved program id: `shear-reserve-v1`.
 - Print SHE. Third-party vortice cannot mint. If you pay rewards, top them up from SHE already in circulation.
-- Ask users for a Shear password, twelve words, or a `join1.` migration key.
+- Ask users for a Shear password or backup file.
 - Ship a key that points at an origin you do not control.
 
 ## Mint the key

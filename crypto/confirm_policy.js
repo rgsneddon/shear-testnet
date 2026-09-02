@@ -12,7 +12,6 @@ export const POLICY_BANDS = Object.freeze({
   peer_small_flow: MERCHANT_DEFAULT,
   pool_merchant: 30,
   otc_large: 120,
-  join_mark_paid: 200,
 });
 
 export const REORG_WINDOW_MS = 6 * 3_600_000;

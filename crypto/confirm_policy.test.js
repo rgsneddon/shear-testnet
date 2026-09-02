@@ -20,7 +20,7 @@ describe('confirm policy is not consensus', () => {
     assert.equal(MIN_CONFIRMS_POLICY, 12);
     assert.equal(CONSENSUS_MIN, 6);
     assert.equal(POLICY_BANDS.pool_merchant, 30);
-    assert.equal(POLICY_BANDS.join_mark_paid, 200);
+    assert.equal(POLICY_BANDS.join_mark_paid, undefined);
     const fp = consensusFingerprint();
     assert.match(fp, /:6:1:HASH_FN=ShearHash-v2/);
     assert.equal(fp.includes(':12:'), false);
@@ -39,7 +39,7 @@ describe('getpolicy object', () => {
     assert.equal(p.bands.peer_small_flow, 12);
     assert.equal(p.bands.pool_merchant, 30);
     assert.equal(p.bands.otc_large, 120);
-    assert.equal(p.bands.join_mark_paid, 200);
+    assert.equal(p.bands.join_mark_paid, undefined);
     assert.equal(p.frozen, false);
     assert.equal(p.d_max, 0);
     assert.equal(p.h_ratio, 1);
@@ -86,7 +86,7 @@ describe('dynamic raise and freeze', () => {
     assert.equal(s.freezeReason, 'h_ratio');
     const op = operationalBands(s);
     assert.equal(op.pool_merchant, 60);
-    assert.equal(op.join_mark_paid, 400);
+    assert.equal(op.join_mark_paid, undefined);
     assert.equal(op.consensus_spendable, 6);
   });
 

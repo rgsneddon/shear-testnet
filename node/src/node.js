@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MAGIC_TESTNET, GENESIS_BITS, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { CLIENT, ALGO, HEADER_LEN } from '../../crypto/shear_hash.js';
-import { RESERVE_PROGRAM, RESERVE_EPOCH_DAYS, RESERVE_JOIN_CUTOFF_DAYS, JOIN_PROGRAM, JOIN_WINDOW_DAYS } from '../../crypto/asert.js';
+import { RESERVE_PROGRAM, RESERVE_EPOCH_DAYS, RESERVE_JOIN_CUTOFF_DAYS } from '../../crypto/asert.js';
 import { extraMintAllowed } from '../../crypto/mint.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS } from '../../crypto/reserve_oracle.js';
@@ -32,9 +32,7 @@ export function printConfig() {
     extraMintThirdPartyCannotPrint: !extraMintAllowed('third-party-vortice'),
     reserveProgram: RESERVE_PROGRAM,
     extraMintOnlyReserve: extraMintAllowed(RESERVE_PROGRAM),
-    joinProgram: JOIN_PROGRAM,
-    joinWindowDays: JOIN_WINDOW_DAYS,
-    extraMintJoinGenesis: extraMintAllowed(JOIN_PROGRAM, { kind: 'join-genesis' }),
+    extraMintJoinGenesis: false,
     reserveEpochDays: RESERVE_EPOCH_DAYS,
     reserveJoinCutoffDays: RESERVE_JOIN_CUTOFF_DAYS,
     reserveOracle: RESERVE_ORACLE_ID,

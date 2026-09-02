@@ -8,11 +8,9 @@ import {
   SPENDABLE_CONFIRMATIONS,
   MIN_CONFIRMS_POLICY,
   RESERVE_PROGRAM,
-  JOIN_PROGRAM,
   extraMintAllowed,
 } from '../../crypto/asert.js';
 import { portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
-import { claim as joinClaim, publicJoinView, claimTx } from '../../crypto/join_vault.js';
 import {
   levyNanos,
   txWeight,
@@ -622,46 +620,6 @@ export function mempoolLattice(store, limitOrOpts = 24) {
   };
 }
 
-function joinCommitPending(store, commit) {
-  const c = String(commit || '');
-  if (!c) return false;
-  const held = store?.joinPendingCommits;
-  if (held && typeof held.has === 'function' && held.has(c)) return true;
-  if (held && held[c]) return true;
-  for (const tx of store?.mempool || []) {
-    if (tx && String(tx.kind || '') === 'claim' && String(tx.commit || '') === c) return true;
-  }
-  return false;
-}
-
-function joinIsMarkedPaid(store, commit, policy) {
-  const pol = policy || (typeof store?.getpolicy === 'function' ? store.getpolicy() : null);
-  if (pol?.frozen) return false;
-  const need = Math.max(1, Number(pol?.operational?.join_mark_paid) || 200);
-  const tipH = Number(store?.tip?.()?.height || (store?.blocks || []).at(-1)?.height || 0);
-  const want = String(commit || '');
-  if (!want) return false;
-  for (const b of store?.blocks || []) {
-    for (const tx of b.txs || []) {
-      if (String(tx.kind || '') === 'claim' && String(tx.commit || '') === want) {
-        return isSpendableHeight(b.height, tipH, need);
-      }
-    }
-  }
-  return false;
-}
-
-function rememberJoinPending(store, commit) {
-  const c = String(commit || '');
-  if (!c || !store) return;
-  if (!store.joinPendingCommits) store.joinPendingCommits = new Set();
-  if (typeof store.joinPendingCommits.add === 'function') {
-    store.joinPendingCommits.add(c);
-  } else {
-    store.joinPendingCommits[c] = true;
-  }
-}
-
 export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
@@ -819,68 +777,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     };
   }
   if (path === '/api/vault/join' && verb === 'GET') {
-    const vault = store?.joinVault;
-    if (!vault) return { status: 503, json: { ok: false, reason: 'no_vault' } };
-    return {
-      status: 200,
-      json: { ok: true, public: false, extraMint: extraMintAllowed(JOIN_PROGRAM), ...publicJoinView(vault, Date.now()) },
-    };
+    return { status: 404, json: { ok: false, reason: 'not_found', public: false } };
   }
   if (path === '/api/join/claim' && verb === 'POST') {
-    const vault = store?.joinVault;
-    if (!vault) return { status: 503, json: { ok: false, reason: 'no_vault' } };
-    const vaultDest = String(vault.vaultDest || '');
-    if (!isDestAddress(vaultDest)) {
-      return { status: 503, json: { ok: false, reason: 'no_vault_dest', public: false } };
-    }
-    const payout = payoutDest(String(body.payout || '')) || String(body.payout || '');
-    const key = String(body.key || '');
-    const trial = { ...vault, claimed: { ...(vault.claimed || {}) } };
-    const got = joinClaim({
-      state: trial,
-      key,
-      payout,
-      nowMs: Date.now(),
-    });
-    if (!got.ok) return { status: 400, json: { ...got, public: false } };
-    const tx = claimTx({ from: vaultDest, to: payout, nanos: got.nanos, commit: got.commit });
-    tx.key = key;
-    tx.root = vault.root;
-    tx.fee = 0;
-    tx.amount = got.she;
-    if (!tx.id) tx.id = `claim-${String(got.commit).slice(0, 16)}`;
-    if (joinCommitPending(store, got.commit)) {
-      return { status: 400, json: { ok: false, reason: 'already_claimed', public: false } };
-    }
-    let queued = { ok: true, tx };
-    if (typeof queueSend === 'function') {
-      queued = queueSend(tx);
-    }
-    if (queued && typeof queued === 'object' && queued.ok === false) {
-      return { status: 400, json: { ok: false, reason: queued.reason || 'queue_failed', public: false } };
-    }
-    rememberJoinPending(store, got.commit);
-    const policy = typeof store.getpolicy === 'function'
-      ? store.getpolicy()
-      : { frozen: false, operational: { join_mark_paid: 200 } };
-    const paid = !policy.frozen && joinIsMarkedPaid(store, got.commit, policy);
-    return {
-      status: 200,
-      json: {
-        ok: true,
-        public: false,
-        she: got.she,
-        nanos: got.nanos,
-        to: payout,
-        from: vaultDest,
-        remainingNanos: trial.remainingNanos,
-        genesisMs: vault.genesisMs,
-        burned: !!vault.burned,
-        root: vault.root || '',
-        paid,
-        frozen: !!policy.frozen,
-      },
-    };
+    return { status: 404, json: { ok: false, reason: 'not_found', public: false } };
   }
   if ((path === '/api/pool/pullPending' || path === '/api/pool/pullpending') && verb === 'GET') {
     const login = String(url.searchParams.get('login') || url.searchParams.get('she1') || '').trim().split('.')[0];

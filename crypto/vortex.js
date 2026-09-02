@@ -8,6 +8,7 @@ export const VORTICE_KEY_PREFIX = 'vort1.';
 export const JOIN_WATCH_PROGRAM = 'shear-join-watch-v1';
 export const POOL_UNLOCK_PROGRAM = 'pool-unlock-2044';
 export const RESERVE_VORTICE = { id: RESERVE_PROGRAM, name: 'The Reserve', pinned: true };
+/** Removed. Kept so impersonation keys still fail the pinned gate. */
 export const JOIN_VORTICE = { id: JOIN_PROGRAM, name: 'The Join', pinned: true };
 export const JOIN_WATCH_VORTICE = { id: JOIN_WATCH_PROGRAM, name: '', pinned: true };
 
@@ -78,7 +79,7 @@ export function vorticeRegisterTx({
   };
 }
 
-/** Issued creator dapps only. Reserve and Join VAULTs are never a public vortice. */
+/** Issued creator dapps only. The Reserve vault is never a public vortice. */
 export function listPublicVortices(issued) {
   return Object.values(issued || {}).filter((r) => r && r.id && !isPinnedProgram(r.id));
 }

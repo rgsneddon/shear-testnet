@@ -40,7 +40,6 @@ class ShearSession {
 
   final File store;
   ShearIdentity? identity;
-  bool joinRetired = false;
   bool biometricsEnabled = false;
   List<String> rememberedDests = const [];
   List<Vortice> deployedVortices = const [];
@@ -141,7 +140,6 @@ class ShearSession {
 
   Map<String, dynamic> _plainBody() => {
         ...identity!.toJson(),
-        'joinRetired': joinRetired,
         'biometricsEnabled': biometricsEnabled,
         'dests': rememberedDests.where((d) => d.startsWith('ssa1')).toList(),
         'vortices': deployedVortices.map((v) => v.toJson()).toList(),
@@ -149,7 +147,6 @@ class ShearSession {
 
   void _applyPlain(Map<String, dynamic> j) {
     identity = ShearIdentity.fromJson(j);
-    joinRetired = j['joinRetired'] == true;
     biometricsEnabled = j['biometricsEnabled'] == true;
     rememberedDests = ((j['dests'] as List?) ?? const [])
         .map((e) => e.toString())
@@ -158,7 +155,7 @@ class ShearSession {
     deployedVortices = ((j['vortices'] as List?) ?? const [])
         .whereType<Map>()
         .map((e) => Vortice.fromJson(Map<String, dynamic>.from(e)))
-        .where((v) => v.id.isNotEmpty && !isPinnedProgram(v.id))
+        .where((v) => v.id.isNotEmpty && !isPinnedProgram(v.id) && !isReservedProgram(v.id))
         .toList();
   }
 }

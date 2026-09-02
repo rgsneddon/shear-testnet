@@ -221,7 +221,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.16" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.17" target="_blank" rel="noopener">WALLET</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -240,18 +240,18 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.16</strong> · miner <strong>1.5</strong>
+      wallet <strong>0.17</strong> · miner <strong>1.5</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.16">WALLET</a>
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.17">WALLET</a>
         <div class="client-menu" id="menu-wallet">
-          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.16/shear-wallet-0.16-macos.dmg">macOS</a>
-          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.16/shear-wallet-0.16-windows.zip">Windows</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.16/shear-wallet-0.16-android.apk">Android</a>
-          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.16/shear-wallet-0.16-linux.zip">Linux</a>
-          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.16/shear-wallet-0.16-archlinux.zip">Arch</a>
+          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.17/shear-wallet-0.17-macos.dmg">macOS</a>
+          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.17/shear-wallet-0.17-windows.zip">Windows</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.17/shear-wallet-0.17-android.apk">Android</a>
+          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.17/shear-wallet-0.17-linux.zip">Linux</a>
+          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.17/shear-wallet-0.17-archlinux.zip">Arch</a>
         </div>
       </div>
       <div class="client-dd">
@@ -314,7 +314,7 @@
     <div class="guide-grid">
       <section class="panel-card" id="emission">
         <h2>How SHE is created</h2>
-        <p>No premine, no ICO. Shear is a migration from the GNFP project and users who mined there were entitled to a 1:1 claim of coins GNFP to SHEAR. Shear is now created via CPU-only proof-of-work on a Nakamoto consensus using ShearHash-v2 (a variant of RandomX).</p>
+        <p>No premine, no ICO. SHE is created via CPU-only proof-of-work on a Nakamoto consensus using ShearHash-v2 (a variant of RandomX). There is no snapshot, no inherited allocation, and no claim window. The first coins exist when the first blocks are found.</p>
         <table class="sched">
           <tr><th>Block pot</th><td>Exactly 1 SHE, every found block</td></tr>
           <tr><th>Hash bonus</th><td>0.00000000001 SHE for each accepted hash, paid to the miner who produced it</td></tr>
@@ -342,18 +342,17 @@
         <p>Vortex is a tab in the wallet. It is a drawer of smart programs that run on Shear. Each of those programs is a vortice.</p>
         <h3>Already installed</h3>
         <p><strong>The Reserve</strong> is already here. Stake, votes, and interest live in community governance.</p>
-        <p><strong>The Join</strong> waits for mainnet. At genesis a vault is filled once, then pays claims for ninety-nine days. Whatever is still sitting there afterwards is burned. It does not keep creating coin, and there is nothing to claim on today’s testnet.</p>
         <h3>Adding another</h3>
         <p>Anyone can publish a vortice but you host it off-chain. To install any 3rd party vortice, you must use the author's <code>vort1.</code> key. Simply 'add new vortice', paste that key. The wallet fetches the program, checks the pin, and installs it on your device. You never type a web address, and you never pick from a list. No key, no program.</p>
         <h3>What they can do</h3>
         <p>A third-party vortice may have the ability to move SHE you already have, keep a vault, or pay rewards it has funded itself. Please be careful to verify the safety of any 3rd party vortice. If the hosted file changes, the old key stops working; a new body needs a new key.</p>
         <h3>What they must not</h3>
-        <p>They cannot create new SHE. They cannot ask for your wallet password, your backup file, or a <code>join1.</code> key. They cannot raise or lower the 1 SHE pot. The author must keep serving the pinned bytes of a vortice for as long as they want the key to work.</p>
+        <p>They cannot create new SHE. They cannot ask for your wallet password or your backup file. They cannot raise or lower the 1 SHE pot. The author must keep serving the pinned bytes of a vortice for as long as they want the key to work.</p>
       </section>
     </div>
     <section class="panel-card guide-wide" id="wallet-start">
       <h2>Start a wallet from scratch</h2>
-      <p>Current pin is <strong>0.16</strong>. Use the WALLET button above and pick your system.</p>
+      <p>Current pin is <strong>0.17</strong>. Use the WALLET button above and pick your system.</p>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
         <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
@@ -376,11 +375,11 @@
       else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
-        macos: BASE + '/0.16/shear-wallet-0.16-macos.dmg',
-        windows: BASE + '/0.16/shear-wallet-0.16-windows.zip',
-        android: BASE + '/0.16/shear-wallet-0.16-android.apk',
-        linux: BASE + '/0.16/shear-wallet-0.16-linux.zip',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.16'
+        macos: BASE + '/0.17/shear-wallet-0.17-macos.dmg',
+        windows: BASE + '/0.17/shear-wallet-0.17-windows.zip',
+        android: BASE + '/0.17/shear-wallet-0.17-android.apk',
+        linux: BASE + '/0.17/shear-wallet-0.17-linux.zip',
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.17'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {

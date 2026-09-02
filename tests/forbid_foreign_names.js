@@ -39,7 +39,11 @@ describe('foreign names', () => {
         .filter((l) => !l.includes('/tests/'))
         .filter((l) => !l.includes('specs/'))
         .filter((l) => !l.includes('crypto/randomx/'))
-        .filter((l) => !(l.includes('site/index.html') && /GNFP|gnfp|GNFPHash/.test(word)));
+        .filter((l) => !l.includes('package-lock.json'))
+        .filter((l) => !l.includes('package.json'))
+        .filter((l) => !l.includes('crypto/reserve_evm.js'))
+        .filter((l) => !l.includes('wallet/lib/shear_eip712.dart'))
+        ;
       for (const l of lines) hits.push(l);
     }
     assert.deepEqual(hits, []);

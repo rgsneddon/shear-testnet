@@ -224,9 +224,9 @@ describe('duplicate shares cannot inflate round work', () => {
     pool.close();
   });
 
-  it('third-party vortices cannot extra-mint; Reserve APR and Join genesis only', () => {
+  it('third-party vortices cannot extra-mint; Reserve APR only; Join genesis refused', () => {
     assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }), true);
-    assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: 'join-genesis' }), true);
+    assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: 'join-genesis' }), false);
     assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: 'claim' }), false);
     assert.equal(extraMintAllowed('third-party-vortice'), false);
     assert.equal(extraMintAllowed('stake-pool-a', { kind: 'withdraw' }), false);

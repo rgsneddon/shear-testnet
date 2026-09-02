@@ -148,13 +148,14 @@ export function consensusLaw() {
     magicTestnetV1: MAGIC_TESTNET_V1,
   };
 }
-/** Reserve may mint interest. Join may mint once at genesis into its vault. */
+/** Reserve may mint interest. Extra mint is Reserve-only. */
 export const RESERVE_PROGRAM = 'shear-reserve-v1';
+/** Dead program id. extraMintAllowed is always false. */
 export const JOIN_PROGRAM = 'shear-join-v1';
 export const JOIN_KIND_GENESIS = 'join-genesis';
-export const JOIN_WINDOW_DAYS = 99;
-export const JOIN_WINDOW_MS = JOIN_WINDOW_DAYS * 86_400_000;
-/** Prior-ledger coin uses 11 decimals; Shear uses 11. 1 coin → 1 SHE. */
+export const JOIN_WINDOW_DAYS = 0;
+export const JOIN_WINDOW_MS = 0;
+/** Protocol units per coin (11 decimals). */
 export const PRIOR_UNITS_PER_COIN = 100_000_000_000;
 export const PRIOR_TO_SHEAR_UNITS = NANOS_PER_SHE / PRIOR_UNITS_PER_COIN;
 export const PI_SHE_NANOS = 314159265358; // floor(π × 10^11) SHE in protocol units
@@ -186,7 +187,7 @@ export function wrapMintForbidden(tx) {
   if (kind === 'wrap' || kind === 'wrapped' || kind === 'wshe' || kind === 'wrapped-she') return true;
   if (id.includes('wrap') || id.includes('wshe') || id.includes('wrapped-she')) return true;
   if (ticker === 'wshe' || ticker === 'wrapped-she' || ticker === 'wrapped she') return true;
-  if (ticker === 'she' && id && id !== RESERVE_PROGRAM && id !== JOIN_PROGRAM) return true;
+  if (ticker === 'she' && id && id !== RESERVE_PROGRAM) return true;
   return false;
 }
 
@@ -205,10 +206,6 @@ export function extraMintAllowed(programId, opts = {}) {
       return true;
     }
     if (kind && kind !== 'withdraw' && kind !== 'reserve') return false;
-    return true;
-  }
-  // The Join extra-mints once: snapshot genesis into the vault. Claims are not mint.
-  if (id === JOIN_PROGRAM && kind === JOIN_KIND_GENESIS && !opts.funded) {
     return true;
   }
   return false;

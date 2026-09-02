@@ -26,7 +26,6 @@ import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
 import { emptyVault, applyReserveBlock } from '../../crypto/reserve_vault.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
-import { emptyJoin, applyJoinBlock, validateJoinBlock } from '../../crypto/join_vault.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
@@ -107,7 +106,7 @@ export function createStore(dir, {
   const listeners = { reorg: [], credits_frozen: [], tip: [] };
   const reorgs = [];
   let policyState = emptyPolicyState();
-  const pause = { join: false, reserveInterest: false, poolWithdraw: false };
+  const pause = { reserveInterest: false, poolWithdraw: false };
   const haltDepth = Math.max(0, Math.floor(Number(reorgHaltDepth) || 0));
   let evmSession = null;
 
@@ -232,31 +231,6 @@ export function createStore(dir, {
 
   replayVault();
 
-  const joinFile = path.join(dir, 'join.json');
-  const joinVault = emptyJoin();
-  function saveJoin() {
-    fs.writeFileSync(joinFile, JSON.stringify(joinVault));
-  }
-  function applyJoin(block) {
-    applyJoinBlock({ state: joinVault, block, nowMs: blockTimeMs(block) });
-    saveJoin();
-  }
-  function replayJoin() {
-    const fresh = emptyJoin({
-      genesisMs: 0,
-      root: joinVault.root,
-      circulatingNanos: 0,
-    });
-    for (const k of Object.keys(joinVault)) delete joinVault[k];
-    Object.assign(joinVault, fresh);
-    joinVault.claimed = Object.create(null);
-    for (const b of blocks) {
-      applyJoinBlock({ state: joinVault, block: b, nowMs: blockTimeMs(b) });
-    }
-    saveJoin();
-  }
-  replayJoin();
-
   const vortice = createVorticeCatalog(dir);
 
   function persist(_block) {
@@ -349,7 +323,6 @@ export function createStore(dir, {
       };
       const spentCheck = verifyBlock(b, prev, {
         buried: !!b.samplesPruned,
-        joinFunded: !!joinVault.genesisMs,
         spentB,
         tipHeight: b.height,
         hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
@@ -503,7 +476,6 @@ export function createStore(dir, {
       bLeaves: prev.bLeaves,
       weight: prev.weight,
     } : null, {
-      joinFunded: !!joinVault.genesisMs,
       spentB,
       tipHeight: prev ? prev.height + 1 : 1,
       hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
@@ -518,12 +490,6 @@ export function createStore(dir, {
   function completeAppend(check, block) {
     if (!check.ok) return check;
     const prev = tip();
-    const gated = validateJoinBlock({
-      state: joinVault,
-      block,
-      nowMs: blockTimeMs(block),
-    });
-    if (!gated.ok) return gated;
     const stored = leanBlock({
       ...block,
       magic: MAGIC_TESTNET,
@@ -542,7 +508,6 @@ export function createStore(dir, {
       }
     }
     applyReserve(stored);
-    applyJoin(stored);
     for (const tx of (stored.txs || []).slice(1)) {
       if (String(tx.kind || '') === 'vortice-register' && typeof vortice.registerFromTx === 'function') {
         vortice.registerFromTx(tx);
@@ -565,9 +530,6 @@ export function createStore(dir, {
   }
 
   function queueTx(tx) {
-    if (pause.join && String(tx?.kind || '') === 'claim') {
-      return { ok: false, reason: 'paused' };
-    }
     if (pause.reserveInterest && tx?.mint && String(tx.kind || '') !== 'lock' && String(tx.kind || '') !== 'vote') {
       return { ok: false, reason: 'paused' };
     }
@@ -601,7 +563,7 @@ export function createStore(dir, {
     return got;
   }
 
-  function verifyOneForkBlock(fork, i, accepted, joinFunded, trialSpent, trialSession = null) {
+  function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null) {
     const prev = i === 0 ? null : {
       hash: accepted[i - 1].hash,
       header: accepted[i - 1].header,
@@ -616,7 +578,6 @@ export function createStore(dir, {
     const rows = [];
     for (const b of accepted) rows.push(...sealedExplorerRows(b));
     return verifyBlock(fork[i], prev, {
-      joinFunded,
       buried: !!fork[i].samplesPruned,
       spentB: trialSpent,
       tipHeight: i + 1,
@@ -631,20 +592,10 @@ export function createStore(dir, {
     const needs = (fork || []).some((b) => blockNeedsEvm(b?.txs || []));
     if (needs) return verifyForkAsync(fork);
     const accepted = [];
-    let joinFunded = false;
-    const trialJoin = emptyJoin();
     const trialSpent = new Set();
     for (let i = 0; i < fork.length; i += 1) {
-      const check = verifyOneForkBlock(fork, i, accepted, joinFunded, trialSpent);
+      const check = verifyOneForkBlock(fork, i, accepted, trialSpent);
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
-      const gated = validateJoinBlock({
-        state: trialJoin,
-        block: fork[i],
-        nowMs: blockTimeMs(fork[i]),
-      });
-      if (!gated.ok) return { ok: false, reason: gated.reason, at: i };
-      applyJoinBlock({ state: trialJoin, block: fork[i], nowMs: blockTimeMs(fork[i]) });
-      if (trialJoin.genesisMs) joinFunded = true;
       accepted.push(leanBlock({
         ...fork[i],
         magic: MAGIC_TESTNET,
@@ -658,24 +609,14 @@ export function createStore(dir, {
 
   async function verifyForkAsync(fork) {
     const accepted = [];
-    let joinFunded = false;
-    const trialJoin = emptyJoin();
     const trialSpent = new Set();
     let trialSession = null;
     for (let i = 0; i < fork.length; i += 1) {
       const check = await Promise.resolve(
-        verifyOneForkBlock(fork, i, accepted, joinFunded, trialSpent, trialSession),
+        verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession),
       );
       if (check.evmSession) trialSession = check.evmSession;
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
-      const gated = validateJoinBlock({
-        state: trialJoin,
-        block: fork[i],
-        nowMs: blockTimeMs(fork[i]),
-      });
-      if (!gated.ok) return { ok: false, reason: gated.reason, at: i };
-      applyJoinBlock({ state: trialJoin, block: fork[i], nowMs: blockTimeMs(fork[i]) });
-      if (trialJoin.genesisMs) joinFunded = true;
       accepted.push(leanBlock({
         ...fork[i],
         magic: MAGIC_TESTNET,
@@ -856,7 +797,6 @@ export function createStore(dir, {
         vin: m.vin || [{ address: m.from }],
         vout: m.vout || [{ address: dest, nanos: m.nanos, kind: m.kind, memoCt: m.memoCt }],
       };
-      if (pause.join && tx.kind === 'claim') continue;
       if (pause.reserveInterest && tx.mint) continue;
       if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
       const got = admitMempool(book, tx, { baseFee: baseFeeNow });
@@ -929,8 +869,6 @@ export function createStore(dir, {
     viewKeyForAddress,
     reserveVault,
     saveReserve,
-    joinVault,
-    saveJoin,
     vortice,
     mintVorticeDeployKey: vortice.mintVorticeDeployKey,
     mintVorticeFromOrigin: vortice.mintFromOrigin,

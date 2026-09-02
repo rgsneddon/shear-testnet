@@ -46,15 +46,11 @@ class Vortice {
 }
 
 const reserveVortice = Vortice(id: reserveProgram, name: 'The Reserve', pinned: true);
+/// Reserved dead id. Not a chip. Impersonation keys must still fail.
 const joinVortice = Vortice(id: joinProgram, name: 'The Join', pinned: true);
 const joinWatchVortice = Vortice(id: joinWatchProgram, name: '', pinned: true);
 
 const poolUnlockProgram = 'pool-unlock-2044';
-const poolUnlockOpensHeight = 6312001;
-const poolUnlockOpensAtMs = 2357240400000; // 2044-09-11T21:00:00Z
-const poolUnlockDest = 'ssa1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7mhq4z';
-const poolUnlockMemo = 'pool wallet is now unlocked';
-const poolUnlockAmountShe = 1000000.0;
 
 Map<String, dynamic>? parseVorticeSource(String? source) {
   if (source == null || source.isEmpty) return null;
@@ -66,57 +62,16 @@ Map<String, dynamic>? parseVorticeSource(String? source) {
   }
 }
 
-bool poolUnlockDue({required int height, required int nowMs}) {
-  return height >= poolUnlockOpensHeight || nowMs >= poolUnlockOpensAtMs;
-}
-
-/// Auto-send payload when the pool-unlock vortice is due. No dest/amount/confirm UI.
-/// Returns `{to, amountShe, memo}` or null if still locked / wrong programme.
-Map<String, dynamic>? poolUnlockSend({
-  required int height,
-  required int nowMs,
-  String? source,
-}) {
-  final body = parseVorticeSource(source);
-  if (body != null) {
-    final id = body['id']?.toString() ?? '';
-    if (id.isNotEmpty && id != poolUnlockProgram) return null;
-  }
-  if (!poolUnlockDue(height: height, nowMs: nowMs)) return null;
-  return {
-    'to': poolUnlockDest,
-    'amountShe': poolUnlockAmountShe,
-    'memo': poolUnlockMemo,
-  };
-}
-
-String poolUnlockCountdown({required int nowMs, int height = 0}) {
-  final left = poolUnlockOpensAtMs - nowMs;
-  if (left <= 0 && height >= poolUnlockOpensHeight) return 'open';
-  final s = left <= 0 ? 0 : left ~/ 1000;
-  final days = s ~/ 86400;
-  final hours = (s % 86400) ~/ 3600;
-  final mins = (s % 3600) ~/ 60;
-  final secs = s % 60;
-  final years = days ~/ 365;
-  final dayRem = days % 365;
-  final blocks = (poolUnlockOpensHeight - height).clamp(0, poolUnlockOpensHeight);
-  final clock = years > 0
-      ? '${years}y ${dayRem}d ${hours}h ${mins}m ${secs}s'
-      : '${days}d ${hours}h ${mins}m ${secs}s';
-  return '$clock  ·  $blocks heights';
-}
-
 bool isPinnedProgram(String id) =>
     id == reserveProgram || id == joinProgram || id == joinWatchProgram;
 
 bool isReservedProgram(String id) => isPinnedProgram(id) || id == poolUnlockProgram;
 
-bool vorticeChipVisible(Vortice v) => v.id != joinWatchProgram && v.id.isNotEmpty;
+bool vorticeChipVisible(Vortice v) =>
+    v.id != joinWatchProgram && v.id != joinProgram && v.id.isNotEmpty;
 
 List<Vortice> reapExpiredJoin(List<Vortice> list, {required bool expired}) {
-  if (!expired) return list;
-  return list.where((v) => v.id != joinProgram).toList();
+  return list.where((v) => v.id != joinProgram && v.id != joinWatchProgram).toList();
 }
 
 String? validProgramId(String programId) {

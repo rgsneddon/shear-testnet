@@ -14,6 +14,6 @@ Start Phase B when `verifyBlock` accepts EVM **and** a native Flow send plus an 
 | Native Flow send can land in a block | **TRUE.** Funded vin/vout + levy. |
 | EVM SHE value transfer in the same block | **TRUE.** `kind: evm-value` moves protocol nanos as EVM `value` between `ssa1` 20-byte accounts. |
 
-**GATE = TRUE** (`PHASE_B_GATE` / `printConfig().phaseBGate`). Extra mint remains `extraMintAllowed` only (`shear-reserve-v1` + Join genesis). A random vortice still cannot print SHE.
+**GATE = TRUE** (`PHASE_B_GATE` / `printConfig().phaseBGate`). Extra mint remains `extraMintAllowed` only (`shear-reserve-v1`). A random vortice still cannot print SHE.
 
 Phase B product (Book B, pool pull-withdraw, Closure, vort1 CREATE) is **not** started by this GATE.
