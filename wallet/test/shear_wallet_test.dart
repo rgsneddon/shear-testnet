@@ -60,15 +60,15 @@ void main() {
     final relEnt = File('macos/Runner/Release.entitlements').readAsStringSync();
     expect(debugEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.9"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.10"'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.9"'), isTrue);
+    expect(winMain.contains('L"Shear 0.10"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.9"'), isTrue);
+    expect(winRc.contains('"Shear 0.10"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.9"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.10"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -678,7 +678,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.9');
+    expect(kWalletVersion, '0.10');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -733,6 +733,62 @@ void main() {
           .every((v) => v.id != joinProgram),
       isTrue,
     );
+    expect(poolUnlockProgram, 'pool-unlock-2044');
+    expect(poolUnlockOpensHeight, 6312001);
+    expect(poolUnlockDue(height: 64, nowMs: 1_700_000_000_000), isFalse);
+    expect(poolUnlockDue(height: 6_312_001, nowMs: 1), isTrue);
+    expect(poolUnlockDue(height: 1, nowMs: poolUnlockOpensAtMs), isTrue);
+    expect(poolUnlockCountdown(nowMs: poolUnlockOpensAtMs - 1000, height: 64), contains('heights'));
+    expect(poolUnlockCountdown(nowMs: poolUnlockOpensAtMs, height: 6_312_001), 'open');
+  });
+
+  test('poolUnlockSend returns dest/amount/memo when due else null', () {
+    expect(poolUnlockSend(height: 64, nowMs: 1_700_000_000_000), isNull);
+    final byHeight = poolUnlockSend(height: 6_312_001, nowMs: 1);
+    expect(byHeight, isNotNull);
+    expect(byHeight!['to'], poolUnlockDest);
+    expect(byHeight['to'], 'ssa1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7mhq4z');
+    expect(byHeight['amountShe'], poolUnlockAmountShe);
+    expect(byHeight['amountShe'], 1000000.0);
+    expect(byHeight['memo'], poolUnlockMemo);
+    expect(byHeight['memo'], 'pool wallet is now unlocked');
+    expect(byHeight.containsKey('dest'), isFalse);
+    expect(byHeight.containsKey('confirm'), isFalse);
+    expect(byHeight.containsKey('amount'), isFalse);
+    expect(poolUnlockSend(height: 1, nowMs: poolUnlockOpensAtMs)!['to'], poolUnlockDest);
+    expect(poolUnlockSend(height: 6_312_001, nowMs: 1, source: '{"id":"other-dapp"}'), isNull);
+    expect(
+      poolUnlockSend(height: 6_312_001, nowMs: 1, source: '{"id":"pool-unlock-2044"}')!['memo'],
+      poolUnlockMemo,
+    );
+    final dartMain = File('lib/main.dart').readAsStringSync();
+    expect(dartMain.contains('poolUnlockSend('), isTrue);
+    expect(dartMain.contains('_maybeFirePoolUnlock'), isTrue);
+  });
+
+  testWidgets('poolUnlockSend vortice pane has no dest/amount/confirm fields', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-unlock-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    session.deployedVortices = [
+      const Vortice(
+        id: poolUnlockProgram,
+        name: 'Pool wallet unlock',
+        source: '{"id":"pool-unlock-2044"}',
+      ),
+    ];
+    await session.persist();
+    await tester.pumpWidget(ShearWalletApp(session: session, startUnlocked: true));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.tap(find.text('Pool wallet unlock'));
+    await tester.pump();
+    expect(find.byKey(const Key('pool-unlock-countdown')), findsOneWidget);
+    expect(find.text('To (ssa1…)'), findsNothing);
+    expect(find.text('Amount SHE'), findsNothing);
+    expect(find.widgetWithText(FilledButton, 'Send'), findsNothing);
   });
 
   test('downloadVorticeFromOrigin fetches the host named in the key and refuses a swap', () async {
@@ -1036,10 +1092,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.9');
-    expect(kWalletVersion, '0.9');
+    expect(app.title, 'Shear 0.10');
+    expect(kWalletVersion, '0.10');
     await tester.pump();
-    expect(find.textContaining('0.9'), findsWidgets);
+    expect(find.textContaining('0.10'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -2169,10 +2225,31 @@ void main() {
     expect(join.windowOpen(1800000001000), isTrue);
     final out = await join.claimViaPool(ledger, pool: pool, key: issued.key, payout: payout);
     expect(out, isNotNull);
-    expect(ledger.spendable(payout), closeTo(issued.she, 1e-12));
+    expect(out!['pending'], 1);
+    expect(ledger.spendable(payout), 0);
     final again = await join.claimViaPool(ledger, pool: pool, key: issued.key, payout: payout);
     expect(again, isNull);
+    expect(ledger.spendable(payout), 0);
+    ledger.applyPoolSnapshot(
+      payout,
+      {'balance': issued.she, 'pending': 0},
+      beforeHeight: 1,
+      tipSealed: ShearLedger.spendableConfirmations + 2,
+    );
     expect(ledger.spendable(payout), closeTo(issued.she, 1e-12));
+  });
+
+  test('Continuum spendable ignores Join vault leftover', () {
+    final alice = createIdentity();
+    final ledger = ShearLedger()..viewSecret = alice.viewKey;
+    final payout = ledger.currentDest(alice.address);
+    final vault = canonicalJoinVaultDest();
+    expect(vault.startsWith('ssa1'), isTrue);
+    expect(isJoinVaultDest(vault), isTrue);
+    ledger.applyPoolSnapshot(payout, {'balance': 3.17486194576, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
+    ledger.applyPoolSnapshot(vault, {'balance': 16.82513805424, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
+    expect(ledger.spendable(vault), 0);
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(3.17486194576, 1e-12));
   });
 
   testWidgets('unlocked matching she1 signs pending pool pull; cancel and mismatch do not', (tester) async {

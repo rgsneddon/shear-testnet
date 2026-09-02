@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <script src="/brand/theme.js?v=7"></script>
+  <script src="/brand/theme.js?v=12"></script>
   <title>Shear pool · ShearHash-v2</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=13"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=25"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
@@ -20,8 +20,8 @@
     html, body { margin:0; font:15px/1.4 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
     .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
     h1, h2, .label { font-family:"Segoe UI",system-ui,sans-serif; }
-    h1 { font-size:1.28rem; font-weight:800; margin:0 0 8px; }
-    h2 { font-size:1.12rem; font-weight:800; margin:0 0 8px; }
+    h1 { font-size:1.28rem; font-weight:800; }
+    h2 { font-size:1.12rem; font-weight:800; }
     p { margin:0 0 8px; overflow-wrap:anywhere; }
     .panel-card {
       border: 1px solid transparent; border-radius: var(--radius); padding: 10px 12px; margin: 8px 0;
@@ -31,9 +31,50 @@
     }
     .grid { display:grid; gap:8px; width:100%; }
     #stat-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 16px 0 8px; }
-    .grid .panel-card { margin:0; padding:7px 8px; }
-    .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; }
-    .value { font-size:.9rem; font-weight:650; margin-top:2px; color:var(--cyan); }
+    .grid .panel-card { margin:0; padding:8px; }
+    .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; margin:0; }
+    .value { font-size:.9rem; font-weight:650; margin:0; color:var(--cyan); }
+    h1, h2 { margin: 0 0 8px; }
+    #stat-grid .panel-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      justify-content: flex-start;
+    }
+    #stat-grid .value {
+      min-height: 1.4rem;
+      display: flex;
+      align-items: center;
+    }
+    #stat-grid .resist-meter,
+    #stat-grid .avg-block-box,
+    #stat-grid .last-block-box {
+      display: block;
+      width: 100%;
+      min-height: 1.4rem;
+    }
+    #stat-grid .split-card { gap: 0; }
+    .split-stat {
+      display: grid;
+      grid-template-columns: 1fr 1px 1fr;
+      width: 100%;
+      align-items: stretch;
+      min-height: calc(1.2em + 8px + 1.4rem);
+    }
+    .split-col {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: center;
+      text-align: center;
+      min-width: 0;
+    }
+    .split-rule {
+      width: 1px;
+      background: rgba(26,111,181,.28);
+    }
+    html[data-theme="dark"] .split-rule { background: rgba(79,216,232,.28); }
+    #stat-grid .split-col .value { min-height: 1.4rem; justify-content: center; }
     a { color:var(--cyan); }
     code { background:var(--code); padding:.2em .45em; color:var(--green); }
     pre { background:var(--code); padding:.2em .45em; color:var(--green); white-space:pre-wrap; display:block; }
@@ -48,6 +89,95 @@
     #recent-txs td:nth-child(2) { white-space: nowrap; }
     .panel-card { min-width:0; }
     .pulse { color:var(--green); font-size:.8rem; }
+    .resist-meter { margin: 0; }
+    .resist-track {
+      position: relative;
+      height: 1.4rem;
+      background: rgba(26,111,181,.12);
+      overflow: hidden;
+    }
+    .resist-fill {
+      position: absolute; inset: 0 auto 0 0;
+      width: 0%;
+      background: var(--green);
+      box-shadow: 0 0 10px rgba(26,154,74,.55);
+      transition: width .7s ease;
+    }
+    .resist-word {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 1.4rem;
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .04em;
+      text-transform: lowercase;
+      color: var(--ink);
+    }
+    html[data-theme="dark"] .resist-track { background: rgba(79,216,232,.12); }
+    html[data-theme="dark"] .resist-fill { background: #2ee36a; box-shadow: 0 0 12px rgba(46,227,106,.55); }
+    html[data-theme="dark"] .resist-word { color: #f4fff6; }
+    .avg-block-box, .last-block-box { margin: 0; }
+    .avg-block-track, .last-block-track {
+      position: relative;
+      height: 1.4rem;
+      background: rgba(26,111,181,.12);
+      overflow: hidden;
+    }
+    .avg-block-mid, .last-block-mid {
+      position: absolute;
+      left: 50%;
+      top: 0; bottom: 0;
+      width: 1px;
+      background: rgba(26,111,181,.28);
+    }
+    .avg-block-needle, .last-block-needle {
+      position: absolute;
+      top: 2px; bottom: 2px;
+      width: 3px;
+      margin-left: -1.5px;
+      left: 50%;
+      background: #2ee36a;
+      box-shadow: 0 0 6px #2ee36a, 0 0 14px #1a9a4a, 0 0 28px rgba(46,227,106,.85);
+      transition: left .7s ease, background .7s ease, box-shadow .7s ease;
+    }
+    .avg-block-read, .last-block-read {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 1.4rem;
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .04em;
+      color: var(--ink);
+    }
+    html[data-theme="dark"] .avg-block-track,
+    html[data-theme="dark"] .last-block-track { background: rgba(79,216,232,.12); }
+    html[data-theme="dark"] .avg-block-mid, html[data-theme="dark"] .last-block-mid { background: rgba(255,255,255,.22); }
+    html[data-theme="dark"] .avg-block-read, html[data-theme="dark"] .last-block-read { color: #f4fff6; }
+    html[data-theme="dark"] .avg-block-needle, html[data-theme="dark"] .last-block-needle {
+      box-shadow: 0 0 8px #2ee36a, 0 0 18px #1a9a4a, 0 0 32px rgba(46,227,106,.95);
+    }
+    .last-block-spark {
+      position: absolute;
+      top: 50%;
+      width: 3px;
+      height: 3px;
+      margin: -1.5px 0 0 -1.5px;
+      border-radius: 50%;
+      pointer-events: none;
+      background: #2ee36a;
+      box-shadow: 0 0 5px #2ee36a, 0 0 10px #ffe14a;
+      animation: lastBlockBoom .55s ease-out forwards;
+    }
+    @keyframes lastBlockBoom {
+      0% { transform: translate(0, 0) scale(1); opacity: 1; }
+      100% { transform: translate(var(--dx), var(--dy)) scale(0.15); opacity: 0; }
+    }
     .top-banner {
       display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
       border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
@@ -56,7 +186,7 @@
     .wordmark { font-weight:800; letter-spacing:.12em; color:var(--blue); font-size:.85rem; }
     .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
     a.nav-btn {
-      display:inline-flex; align-items:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
+      display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
       font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
       border:1px solid transparent;
       background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
@@ -150,10 +280,11 @@
       <a class="nav-btn" href="https://shear.digital">MAIN</a>
       <a class="nav-btn is-on" href="/">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
+      <a class="nav-btn" href="https://dag.shear.digital">DAG</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.9" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.10" target="_blank" rel="noopener">WALLET</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -202,11 +333,46 @@
       <article class="panel-card"><div class="label">NODES ONLINE</div><div class="value" id="nodes-n">0</div></article>
       <article class="panel-card"><div class="label">Height</div><div class="value" id="height">0</div></article>
       <article class="panel-card"><div class="label">Pool hashrate</div><div class="value" id="hashrate">0 H/s</div></article>
-      <article class="panel-card"><div class="label">Workers online</div><div class="value" id="miners-n">0</div></article>
-      <article class="panel-card"><div class="label">Resistance</div><div class="value" id="difficulty">—</div></article>
+      <article class="panel-card"><div class="label">Resistance</div>
+        <div class="value resist-meter" id="difficulty" role="meter" aria-label="Resistance">
+          <div class="resist-track">
+            <div class="resist-fill" id="resist-fill"></div>
+            <span class="resist-word" id="resist-word">—</span>
+          </div>
+        </div>
+      </article>
+      <article class="panel-card split-card">
+        <div class="split-stat">
+          <div class="split-col">
+            <div class="label">Miners</div>
+            <div class="value" id="miners-n">0</div>
+          </div>
+          <div class="split-rule" aria-hidden="true"></div>
+          <div class="split-col">
+            <div class="label">Workers</div>
+            <div class="value" id="workers-n">0</div>
+          </div>
+        </div>
+      </article>
+      <article class="panel-card"><div class="label">AVG BLOCK TIME</div>
+        <div class="value avg-block-box" id="avg-block" role="meter" aria-label="Average block time">
+          <div class="avg-block-track">
+            <div class="avg-block-mid"></div>
+            <div class="avg-block-needle" id="avg-block-needle"></div>
+            <span class="avg-block-read" id="avg-block-read">—</span>
+          </div>
+        </div>
+      </article>
       <article class="panel-card"><div class="label">Uptime</div><div class="value" id="uptime">0s</div></article>
-      <article class="panel-card"><div class="label">AVG BLOCK TIME</div><div class="value" id="avg-block">—</div></article>
-      <article class="panel-card"><div class="label">Last block</div><div class="value" id="updated">—</div></article>
+      <article class="panel-card"><div class="label">Last block</div>
+        <div class="value last-block-box" id="updated">
+          <div class="last-block-track">
+            <div class="last-block-mid"></div>
+            <div class="last-block-needle" id="last-block-needle"></div>
+            <span class="last-block-read" id="last-block-read">—</span>
+          </div>
+        </div>
+      </article>
     </div>
     <section class="panel-card">
       <h2>Pool miners</h2>
@@ -277,11 +443,30 @@
     }
     function fmtUptime(ms) {
       const sec = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
-      const d = Math.floor(sec / 86400);
-      const h = Math.floor((sec % 86400) / 3600);
-      const m = Math.floor((sec % 3600) / 60);
-      const s = sec % 60;
-      if (d) return d + 'd ' + h + 'h ' + m + 'm ' + s + 's';
+      const Y = 365 * 86400;
+      const MO = 30 * 86400;
+      const W = 7 * 86400;
+      const y = Math.floor(sec / Y);
+      let rem = sec - y * Y;
+      const mo = Math.floor(rem / MO);
+      rem -= mo * MO;
+      const w = Math.floor(rem / W);
+      rem -= w * W;
+      const d = Math.floor(rem / 86400);
+      const h = Math.floor((rem % 86400) / 3600);
+      const m = Math.floor((rem % 3600) / 60);
+      const s = rem % 60;
+      const parts = [];
+      if (y) parts.push(y + 'y');
+      if (mo) parts.push(mo + 'mo');
+      if (w) parts.push(w + 'w');
+      if (d || y || mo || w) {
+        parts.push(d + 'd');
+        parts.push(h + 'h');
+        parts.push(m + 'm');
+        parts.push(s + 's');
+        return parts.join(' ');
+      }
       if (h) return h + 'h ' + m + 'm ' + s + 's';
       if (m) return m + 'm ' + s + 's';
       return s + 's';
@@ -304,19 +489,209 @@
       const h = Math.floor(m / 60);
       return h + 'h ' + (m % 60) + 'm ' + Math.floor(s) + 's';
     }
+    function avgBlockAxisStops() {
+      return [
+        [0, 0],
+        [50, 50 / 90 * 50],
+        [90, 50],
+        [120, 50 + (120 - 90) / (240 - 90) * 50],
+        [240, 100],
+      ];
+    }
+    function avgBlockNeedlePct(ms) {
+      const v = Number(ms);
+      if (!Number.isFinite(v) || v < 0) return 50;
+      const sec = v / 1000;
+      const stops = avgBlockAxisStops();
+      if (sec <= stops[0][0]) return stops[0][1];
+      for (let i = 1; i < stops.length; i += 1) {
+        if (sec <= stops[i][0]) {
+          const u = (sec - stops[i - 1][0]) / (stops[i][0] - stops[i - 1][0]);
+          return stops[i - 1][1] + (stops[i][1] - stops[i - 1][1]) * u;
+        }
+      }
+      return 100;
+    }
+    function avgBlockBarColor(ms) {
+      const v = Number(ms);
+      if (!Number.isFinite(v) || v < 0) return '#2ee36a';
+      const sec = v / 1000;
+      const cols = [
+        [0, '#ffffff'],
+        [50, '#ffe14a'],
+        [90, '#2ee36a'],
+        [120, '#ff8a00'],
+        [240, '#b42318'],
+      ];
+      if (sec <= cols[0][0]) return cols[0][1];
+      for (let i = 1; i < cols.length; i += 1) {
+        if (sec <= cols[i][0]) {
+          const u = (sec - cols[i - 1][0]) / (cols[i][0] - cols[i - 1][0]);
+          return lerpHex(cols[i - 1][1], cols[i][1], u);
+        }
+      }
+      return cols[cols.length - 1][1];
+    }
+    function avgMsFromDagBlocks(blocks) {
+      const times = (Array.isArray(blocks) ? blocks : [])
+        .map(function (b) { return Number(b && b.timestamp); })
+        .filter(function (t) { return Number.isFinite(t) && t > 0; })
+        .sort(function (a, b) { return a - b; });
+      if (times.length < 2) return null;
+      let sum = 0, n = 0;
+      for (let i = 1; i < times.length; i += 1) {
+        const dt = times[i] - times[i - 1];
+        if (!Number.isFinite(dt) || dt <= 0) continue;
+        sum += dt;
+        n += 1;
+      }
+      return n ? sum / n : null;
+    }
+    function paintAvgBlock(s) {
+      const read = document.getElementById('avg-block-read');
+      const needle = document.getElementById('avg-block-needle');
+      const box = document.getElementById('avg-block');
+      const ms = (chainAvgMs != null) ? chainAvgMs : (s && s.avgBlockTimeMs);
+      const label = fmtAvgBlock(ms);
+      if (read) read.textContent = label;
+      const pct = avgBlockNeedlePct(ms);
+      const col = avgBlockBarColor(ms);
+      if (needle) {
+        needle.style.left = pct + '%';
+        needle.style.background = col;
+        needle.style.boxShadow = '0 0 6px ' + col + ', 0 0 16px ' + col;
+      }
+      if (box) {
+        box.setAttribute('aria-valuenow', String(Number(ms) || 0));
+        box.setAttribute('aria-valuetext', label);
+      }
+    }
+    function lerpHex(a, b, t) {
+      function rgb(h) {
+        h = String(h || '').replace('#', '');
+        return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+      }
+      const A = rgb(a), B = rgb(b);
+      const u = Math.max(0, Math.min(1, Number(t) || 0));
+      return 'rgb(' + [0, 1, 2].map(function (i) {
+        return Math.round(A[i] + (B[i] - A[i]) * u);
+      }).join(',') + ')';
+    }
+    function lastBlockNeedleColor(elapsedMs, tau) {
+      const t = Math.max(0, Number(elapsedMs) || 0);
+      const target = Number(tau) || 90_000;
+      if (t <= target) return lerpHex('#c8e86a', '#2ee36a', t / target);
+      return lerpHex('#2ee36a', '#7a0010', Math.min(1, (t - target) / target));
+    }
+    let lastSeenFoundAt = 0;
+    function burstLastBlockFirework(originPct) {
+      const track = document.querySelector('.last-block-track');
+      if (!track) return;
+      const x = Math.max(4, Math.min(96, Number(originPct) || 4));
+      const colors = ['#2ee36a', '#ffe14a', '#4fd8e8', '#ffffff', '#ff8a00'];
+      for (let i = 0; i < 14; i += 1) {
+        const spark = document.createElement('span');
+        spark.className = 'last-block-spark';
+        const ang = (i / 14) * Math.PI * 2 + Math.random() * 0.4;
+        const dist = 6 + Math.random() * 8;
+        spark.style.left = x + '%';
+        spark.style.setProperty('--dx', (Math.cos(ang) * dist) + 'px');
+        spark.style.setProperty('--dy', (Math.sin(ang) * dist) + 'px');
+        spark.style.background = colors[i % colors.length];
+        spark.style.boxShadow = '0 0 5px ' + colors[i % colors.length];
+        track.appendChild(spark);
+        setTimeout(function () { spark.remove(); }, 600);
+      }
+    }
+    function paintLastBlock(s) {
+      const read = document.getElementById('last-block-read');
+      const needle = document.getElementById('last-block-needle');
+      const box = document.getElementById('updated');
+      const at = s && s.lastFoundAt;
+      const tau = (s && s.targetBlockIntervalMs) || 90_000;
+      const label = fmtSinceBlock(at);
+      if (read) read.textContent = label;
+      const elapsed = at ? Math.max(0, Date.now() - Number(at)) : 0;
+      const pct = at ? avgBlockNeedlePct(elapsed) : 4;
+      const col = at ? lastBlockNeedleColor(elapsed, tau) : '#c8e86a';
+      if (needle) {
+        needle.style.left = pct + '%';
+        needle.style.background = col;
+        needle.style.boxShadow = '0 0 6px ' + col + ', 0 0 16px ' + col;
+      }
+      if (box) {
+        box.setAttribute('aria-valuenow', String(elapsed));
+        box.setAttribute('aria-valuetext', label);
+      }
+      if (lastSeenFoundAt && at && Number(at) > Number(lastSeenFoundAt)) {
+        burstLastBlockFirework(pct);
+      }
+      if (at) lastSeenFoundAt = Number(at);
+    }
+    function bitsWord(n) {
+      const v = Math.floor(Number(n));
+      if (!Number.isFinite(v) || v <= 0) return '—';
+      const ones = ['zero','one','two','three','four','five','six','seven','eight','nine',
+        'ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen'];
+      const tens = ['','','twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'];
+      function u100(x) {
+        if (x < 20) return ones[x];
+        const t = Math.floor(x / 10), o = x % 10;
+        return o ? tens[t] + '-' + ones[o] : tens[t];
+      }
+      if (v < 100) return u100(v);
+      if (v < 1000) {
+        const h = Math.floor(v / 100), r = v % 100;
+        return ones[h] + ' hundred' + (r ? ' ' + u100(r) : '');
+      }
+      return String(v);
+    }
+    function resistFillPct(bits, minBits, maxBits) {
+      const lo = Number(minBits);
+      const hi = Number(maxBits);
+      const b = Number(bits);
+      if (!Number.isFinite(b) || !Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return 0;
+      return Math.max(0, Math.min(100, ((b - lo) / (hi - lo)) * 100));
+    }
+    function paintResistance(s) {
+      const bits = Number(s && s.bits);
+      const lo = Number(s && s.liveMinBits) || 14;
+      const hi = Number(s && s.maxBits) || 256;
+      const wordEl = document.getElementById('resist-word');
+      const fillEl = document.getElementById('resist-fill');
+      const meter = document.getElementById('difficulty');
+      if (!wordEl || !fillEl) return;
+      if (!Number.isFinite(bits) || bits <= 0) {
+        wordEl.textContent = '—';
+        fillEl.style.width = '0%';
+        return;
+      }
+      fillEl.style.width = resistFillPct(bits, lo, hi) + '%';
+      wordEl.textContent = bitsWord(bits);
+      if (meter) {
+        meter.setAttribute('aria-valuemin', String(lo));
+        meter.setAttribute('aria-valuemax', String(hi));
+        meter.setAttribute('aria-valuenow', String(bits));
+        meter.setAttribute('aria-valuetext', bitsWord(bits));
+      }
+    }
     function paint(s) {
       document.getElementById('coin').textContent = s.coin || 'SHE';
       document.getElementById('algo').textContent = s.personalisation || 'ShearHash-v2';
       document.getElementById('miners-n').textContent = String(s.miners || 0);
+      const workerN = (s.workers || []).reduce(function (n, w) {
+        return n + (Number(w.sessions) || 1);
+      }, 0);
+      document.getElementById('workers-n').textContent = String(workerN || s.miners || 0);
       document.getElementById('hashrate').textContent = fmtRate(s.hashrate);
       document.getElementById('nodes-n').textContent = String(Math.max(0, Number(s.nodesOnline) || 0));
       document.getElementById('height').textContent = String(s.height || 0);
-      document.getElementById('difficulty').textContent = String(s.bits || '—');
-      document.getElementById('avg-block').textContent = fmtAvgBlock(s.avgBlockTimeMs);
+      paintResistance(s);
+      paintAvgBlock(s);
       const net = document.getElementById('network');
       if (net) net.textContent = s.magic || s.network || 'shear-testnet-v2';
       document.getElementById('uptime').textContent = fmtUptime(s.uptimeMs);
-      document.getElementById('updated').textContent = fmtSinceBlock(s.lastFoundAt);
+      paintLastBlock(s);
       const tb = document.querySelector('#miners tbody');
       tb.innerHTML = (s.workers || []).slice().sort(function (a, b) {
         return (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0);
@@ -385,6 +760,15 @@
       body.innerHTML = html;
       recentSig = sig;
     }
+    let chainAvgMs = null;
+    function pullChainAvg() {
+      fetch('/api/explorer/dag?_=' + Date.now(), { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d && d.ok && Array.isArray(d.blocks)) chainAvgMs = avgMsFromDagBlocks(d.blocks);
+        })
+        .catch(function () {});
+    }
     function tick() {
       fetch('/api/stats?_=' + Date.now(), { cache: 'no-store' })
         .then(function (r) { return r.json(); })
@@ -392,6 +776,8 @@
         .catch(function () {});
     }
     setInterval(tick, 1000);
+    setInterval(pullChainAvg, 5000);
+    pullChainAvg();
     tick();
     renderCmd();
   </script>

@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Shear — hash DAG</title>
+  <script src="/brand/theme.js?v=12"></script>
+  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=25"/>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Red+Hat+Mono:wght@700&amp;display=swap"/>
+  <style>
+    html, body {
+      margin:0; width:100%; height:100%; max-width:100%; background:#eeeeee;
+      overflow:hidden; box-sizing:border-box;
+    }
+    html[data-theme="dark"], html[data-theme="dark"] body { background:#2b2b2b; }
+    .top-banner {
+      position:fixed; top:0; left:0; right:0; z-index:50;
+      width:auto; max-width:100%; min-width:0; box-sizing:border-box; overflow-x:clip; overflow-y:visible;
+    }
+    .dag-stage {
+      position:fixed; left:0; right:0; width:auto; max-width:100%; min-width:0;
+      top:var(--shear-banner-h, 52px); bottom:0;
+      overflow:hidden; box-sizing:border-box;
+    }
+    canvas {
+      position:absolute; inset:0; width:100% !important; height:100% !important;
+      max-width:100% !important; max-height:100% !important;
+      min-width:0 !important; min-height:0 !important;
+      display:block; cursor:grab; box-sizing:border-box;
+    }
+    canvas.is-drag { cursor:grabbing; }
+    canvas.is-spy { cursor: zoom-in; }
+    .kgi-side {
+      position:absolute; top:2vw; bottom:2vw; right:8px; width:92px; max-width:30%; z-index:5;
+      display:flex; flex-direction:column; justify-content:space-between; align-items:center; gap:24px;
+      pointer-events:none;
+    }
+    .kgi-side > * { pointer-events:auto; }
+    .kgi-stack { display:flex; flex-direction:column; align-items:center; gap:12px; }
+    .kgi-scale {
+      display:flex; flex-direction:column; width:28px; border-radius:4px; overflow:hidden;
+      background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.18);
+    }
+    html[data-theme="dark"] .kgi-scale { background:#3b3b3b; }
+    .kgi-scale button {
+      border:0; background:transparent; color:#175676; cursor:pointer; padding:4px 0; font:700 16px/1 sans-serif;
+    }
+    html[data-theme="dark"] .kgi-scale button { color:#adc1de; }
+    .kgi-scale button:disabled { opacity:.35; cursor:default; }
+    .kgi-track, .kgi-warn {
+      width:40px; height:40px; border:0; border-radius:8px; cursor:pointer;
+      background:#fff; color:#175676; box-shadow:0 1px 4px rgba(0,0,0,.18);
+      font:700 11px/1 "Segoe UI",system-ui,sans-serif;
+    }
+    html[data-theme="dark"] .kgi-track, html[data-theme="dark"] .kgi-warn { background:#3b3b3b; color:#adc1de; }
+    .kgi-track.is-on { outline:2px solid #5581AA; }
+    .kgi-warn { display:none; background:#B34D50; color:#fff; }
+    .kgi-warn.is-on { display:block; }
+    .kgi-panel {
+      position:absolute; top:0; left:0; bottom:0; width:min(320px, 100%); min-width:0; z-index:6;
+      background:#fff; box-shadow:4px 0 18px rgba(0,0,0,.18); transform:translateX(-105%);
+      transition:transform .28s ease; display:flex; flex-direction:column;
+      font-family:"Segoe UI",system-ui,sans-serif; color:#222;
+    }
+    html[data-theme="dark"] .kgi-panel { background:#3b3b3b; color:#eee; }
+    .kgi-panel.is-open { transform:translateX(0); }
+    .kgi-panel header { display:flex; align-items:center; padding:20px 20px 0; }
+    .kgi-panel h1 { margin:0; font-size:1.25rem; font-weight:600; flex:1; }
+    .kgi-panel .x { border:0; background:transparent; font-size:22px; cursor:pointer; color:inherit; padding:8px; }
+    .kgi-panel .body { flex:1; overflow:auto; padding:8px 20px 16px; }
+    .kgi-panel .row { padding:10px 0; border-bottom:1px solid rgba(128,128,128,.35); }
+    .kgi-panel .lbl { font-size:.72rem; letter-spacing:.04em; text-transform:uppercase; color:#777; margin:0 0 4px; }
+    .kgi-panel .val { font-size:.92rem; overflow-wrap:anywhere; margin:0; }
+    .kgi-panel .hash { font-family:"Red Hat Mono","Lucida Console",monospace; font-size:.78rem; word-break:break-all; }
+    .kgi-panel .hash.blue { color:#5581AA; font-weight:700; }
+    .kgi-panel .hash.red { color:#B34D50; font-weight:700; }
+    .kgi-panel footer { padding:15px 20px; text-align:right; font-size:.82rem; }
+    .kgi-panel footer a { color:inherit; font-weight:700; }
+    .dag-key {
+      position:absolute; top:10px; left:10px; z-index:4; width:min(228px, 46vw);
+      padding:8px 10px 7px; pointer-events:none;
+      background:rgba(255,255,255,.9); color:#222; border:1px solid rgba(85,129,170,.35);
+      box-shadow:0 1px 6px rgba(0,0,0,.12); font:12px/1.3 "Segoe UI",system-ui,sans-serif;
+    }
+    html[data-theme="dark"] .dag-key { background:rgba(43,43,43,.9); color:#eee; border-color:rgba(133,162,193,.35); }
+    .dag-key h1 { margin:0 0 6px; font-size:11px; letter-spacing:.07em; text-transform:uppercase; font-weight:700; }
+    .dag-key .krow { display:flex; align-items:flex-start; gap:7px; margin:0 0 4px; }
+    .dag-key .krow:last-child { margin:0; }
+    .dag-key .sw { flex:0 0 10px; width:10px; height:10px; margin-top:2px; border-radius:50%; }
+    .dag-key .sw.blk { border-radius:2px; background:#5581AA; }
+    .dag-key .sw.min { width:12px; height:12px; margin-top:1px; background:#e24a8a; box-shadow:0 0 0 1.5px #fff; }
+    .dag-key .sw.live { width:6px; height:6px; margin:4px 2px 0; background:#7ec8ff; }
+    .dag-key .sw.seal { background:#888; }
+    .dag-key p { margin:0; color:#555; font-size:11px; }
+    html[data-theme="dark"] .dag-key p { color:#bbb; }
+    .dag-key strong { color:inherit; font-weight:700; }
+  </style>
+</head>
+<body>
+  <header class="top-banner">
+    <div class="banner-brand">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </div>
+    <nav class="nav" id="shear-nav">
+      <a class="nav-btn" href="https://shear.digital">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
+      <a class="nav-btn is-on" href="https://dag.shear.digital">DAG</a>
+      <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.10" target="_blank" rel="noopener">WALLET</a>
+    </nav>
+    <div class="banner-tools">
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
+    </div>
+  </header>
+  <div class="dag-stage" id="stage">
+    <canvas id="c"></canvas>
+    <aside class="dag-key" id="dag-key">
+      <h1>Key</h1>
+      <div class="krow"><span class="sw blk"></span><p><strong>Block</strong> — sealed height. Chain runs left → right.</p></div>
+      <div class="krow"><span class="sw min"></span><p><strong>Miner</strong> — one colour per hasher at the open tip.</p></div>
+      <div class="krow"><span class="sw live"></span><p><strong>Live hashes</strong> — 50 hashes each; the swarm grows as they hash.</p></div>
+      <div class="krow"><span class="sw seal"></span><p><strong>Sealed hashes</strong> — static dots already in a found block.</p></div>
+      <div class="krow"><span class="sw" style="background:transparent;border:1.5px solid #c48a00;border-radius:50%"></span><p><strong>Spy glass</strong> — hover to magnify; click any piece for detail.</p></div>
+    </aside>
+    <aside class="kgi-panel" id="panel" aria-hidden="true">
+      <header>
+        <h1 id="panel-title">Inspector</h1>
+        <button type="button" class="x" id="panel-x" aria-label="Close">×</button>
+      </header>
+      <div class="body" id="panel-body"></div>
+      <footer id="panel-foot"></footer>
+    </aside>
+    <aside class="kgi-side">
+      <div class="kgi-stack"></div>
+      <div class="kgi-warn" id="warn">!</div>
+      <div class="kgi-stack">
+        <div class="kgi-scale">
+          <button type="button" id="zoom-out" title="Larger">+</button>
+          <button type="button" id="zoom-in" title="Smaller">−</button>
+        </div>
+        <button type="button" class="kgi-track is-on" id="spy" title="spy glass" aria-label="spy glass">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="10" cy="10" r="6.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15 15l6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+        <button type="button" class="kgi-track is-on" id="track" title="Track head">HEAD</button>
+      </div>
+    </aside>
+  </div>
+  <script>
+    const DAG_URL = '/api/explorer/dag';
+    const HASH_BUNDLE = 50;
+    const LIVE_MAX = 2500;
+    const SEALED_MAX = 50;
+    const DOT_R = 3.8;
+    const DOT_PITCH = 14;
+    const MAX_PER_HEIGHT = 12;
+    const REF_BLOCK = 88;
+    const HEAD_RIGHT = 120;
+    const ROUND = 10;
+    const MARGIN_X = 2.0;
+    const VISIBLE_PAD = 2;
+    const LIGHT = {
+      bg: '#eeeeee',
+      blue: { fill: '#5581AA', text: '#ffffff', border: '#ffffff', bw: 2, hi: '#85a2c1' },
+      red: { fill: '#B34D50', text: '#ffffff', border: '#ffffff', bw: 2, hi: '#a06765' },
+      gray: { fill: '#f5f5f5', text: '#666666', border: '#aaaaaa', bw: 2, hi: '#949494' },
+      edge: '#aaaaaa', vspc: '#85a2c1',
+      height: '#777777',
+    };
+    const DARK = {
+      bg: '#2b2b2b',
+      blue: { fill: '#5581AA', text: '#ffffff', border: '#2b2b2b', bw: 0, hi: '#85a2c1' },
+      red: { fill: '#B34D50', text: '#ffffff', border: '#2b2b2b', bw: 0, hi: '#a06765' },
+      gray: { fill: '#dcdcdc', text: '#666666', border: '#2b2b2b', bw: 0, hi: '#949494' },
+      edge: '#787878', vspc: '#48759d',
+      height: '#777777',
+    };
+
+    const c = document.getElementById('c');
+    const ctx = c.getContext('2d');
+    const stage = document.getElementById('stage');
+    const panel = document.getElementById('panel');
+    const panelBody = document.getElementById('panel-body');
+    const panelFoot = document.getElementById('panel-foot');
+    const warnEl = document.getElementById('warn');
+    const trackBtn = document.getElementById('track');
+    const spyBtn = document.getElementById('spy');
+    const panelTitle = document.getElementById('panel-title');
+    const zoomInBtn = document.getElementById('zoom-in');
+    const zoomOutBtn = document.getElementById('zoom-out');
+
+    let W = 0, H = 0, dpr = 1, scale = 0.5, camX = 0, camY = 0;
+    let tracking = true, dragging = false, inspecting = true, mx = 0, my = 0, lx = 0, lastNow = 0;
+    let loupe = null, snap = null;
+    c.classList.add('is-spy');
+    let hoverId = null, selectedId = null;
+    let dag = { blocks: [], live: [], tip: 0 };
+    const nodes = new Map();
+    let edges = [];
+    const tweens = [];
+
+    function theme() {
+      return document.documentElement.getAttribute('data-theme') === 'dark' ? DARK : LIGHT;
+    }
+    function boundedScale(s) { return Math.round(Math.max(0.2, Math.min(1.2, s)) * 10) / 10; }
+    function sc(measure, bs) { return measure * bs / REF_BLOCK; }
+    function quadOut(t) { return 1 - (1 - t) * (1 - t); }
+    function tween(obj, props, ms) {
+      const from = {};
+      for (const k of Object.keys(props)) from[k] = Number(obj[k]) || 0;
+      tweens.push({ obj, from, props, t0: performance.now(), ms, ease: quadOut });
+    }
+    function bundleN(count) { return Math.ceil(Math.max(0, Math.floor(Number(count) || 0)) / HASH_BUNDLE); }
+    function bundleSize(total, i, n) {
+      if (n <= 0) return 0;
+      if (i < n - 1) return HASH_BUNDLE;
+      return Math.max(1, (Math.floor(Number(total) || 0)) - HASH_BUNDLE * (n - 1));
+    }
+    function minerKey(s, i) { return String(s.dest || s.tag || i); }
+    function hashHue(s) {
+      let n = 0;
+      const t = String(s || '');
+      for (let i = 0; i < t.length; i++) n = (n * 33 + t.charCodeAt(i)) >>> 0;
+      return n % 360;
+    }
+    function hashU32(s) {
+      let n = 2166136261;
+      const t = String(s || '');
+      for (let i = 0; i < t.length; i++) n = Math.imul(n ^ t.charCodeAt(i), 16777619);
+      return n >>> 0;
+    }
+    function sealedStem(n, bs) {
+      const u = hashU32(n.miner + ':' + n.bundle + ':' + n.height);
+      const v = hashU32('r:' + n.miner + ':' + n.bundle + ':' + n.height);
+      const ang = (u / 4294967295) * Math.PI * 2;
+      const rx = Math.min(bs * 1.45, marginX(bs) * 0.62);
+      const ry = Math.max(bs * 1.8, H * 0.46);
+      const minT = 0.38 + (v / 4294967295) * 0.62;
+      return { x: Math.cos(ang) * rx * minT, y: Math.sin(ang) * ry * minT };
+    }
+
+    function resize() {
+      dpr = Math.min(2, window.devicePixelRatio || 1);
+      const maxW = Math.max(1, Math.floor(document.documentElement.clientWidth || window.innerWidth));
+      const box = stage.getBoundingClientRect();
+      W = Math.max(1, Math.min(Math.floor(box.width) || maxW, maxW));
+      H = Math.max(1, Math.floor(box.height));
+      c.width = W * dpr; c.height = H * dpr;
+      c.style.width = W + 'px';
+      c.style.height = H + 'px';
+      c.style.minWidth = '0';
+      c.style.maxWidth = W + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    addEventListener('resize', resize);
+    resize();
+
+    function blockSize() { return Math.max(10, Math.floor(H * scale / MAX_PER_HEIGHT)); }
+    function marginX(bs) { return bs * MARGIN_X; }
+    function blockX(height, bs, mxg) { return height * (bs + mxg); }
+    function groupY(index, size, bs) {
+      if (size === 1) return 0;
+      if (index === 0 && size % 2 === 1) return 0;
+      const offset = (index * 2) + ((size - index - 1) % 2);
+      const sign = size % 2 === 0 ? 1 : -1;
+      const centered = (Math.ceil(offset / 2) * ((-1) ** (offset + 1))) * sign;
+      let marginY = Math.max(bs, (Math.min(H, H * scale) / size) - bs);
+      if ((bs + marginY) * size > H) marginY = Math.max(0, (H / size) - bs);
+      return centered * (bs + marginY) / 2;
+    }
+    function maxOnHalf() {
+      const bs = blockSize(), mxg = marginX(bs);
+      return Math.ceil((W / (bs + mxg)) / 2) + VISIBLE_PAD;
+    }
+    function slotsAfterHalf(right) {
+      const bs = blockSize(), mxg = marginX(bs), hw = bs + mxg;
+      const span = Math.max(0, ((W - hw) / 2) - right + (mxg / 2));
+      return Math.floor(span / hw);
+    }
+    function packGrid(n, colW, colH) {
+      if (n <= MAX_PER_HEIGHT) return { mode: 'stack', cols: 1, rows: n, cell: blockSize() };
+      let best = { mode: 'grid', cols: 1, rows: n, cell: 0 };
+      for (let cols = 1; cols <= n; cols++) {
+        const rows = Math.ceil(n / cols);
+        const cell = Math.min(colW / cols, colH / rows) * 0.9;
+        if (cell > best.cell) best = { mode: 'grid', cols, rows, cell };
+      }
+      best.cell = Math.max(4, best.cell);
+      return best;
+    }
+
+    function displayHash(hash, bs) {
+      const h = String(hash || '').replace(/^0x/i, '');
+      const lines = bs < 22 ? 1 : (bs < 36 ? 2 : 3);
+      const lineLen = Math.max(2, Math.min(6, Math.floor(bs / 8)));
+      const take = lineLen * lines;
+      const last = h.slice(-take).toUpperCase() || '··';
+      const out = [];
+      for (let i = 0; i < last.length; i += lineLen) out.push(last.slice(i, i + lineLen));
+      return out;
+    }
+    function roundRect(x, y, w, h, r) {
+      const rr = Math.min(r, w / 2, h / 2);
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x, y, w, h, rr);
+      else {
+        ctx.moveTo(x + rr, y);
+        ctx.arcTo(x + w, y, x + w, y + h, rr);
+        ctx.arcTo(x + w, y + h, x, y + h, rr);
+        ctx.arcTo(x, y + h, x, y, rr);
+        ctx.arcTo(x, y, x + w, y, rr);
+        ctx.closePath();
+      }
+    }
+    function clampToBlock(bs, vx, vy) {
+      const half = bs / 2;
+      if (vy === 0) return { x: vx >= 0 ? half : -half, y: 0 };
+      const mag = Math.hypot(vx, vy) || 1;
+      return { x: vx / mag * half, y: vy / mag * half };
+    }
+
+    function addBundles(next, height, miners, color, kind, cap) {
+      const shares = miners.map((s, i) => ({
+        key: minerKey(s, i),
+        count: Math.max(0, Math.floor(Number(s.count) || 0)),
+        dest: s.dest || s.tag || '',
+      })).filter((s) => s.count > 0);
+      const wants = shares.map((s) => bundleN(s.count));
+      const sum = wants.reduce((a, b) => a + b, 0);
+      const caps = wants.slice();
+      if (sum > cap) {
+        let left = cap;
+        for (let i = 0; i < caps.length; i++) {
+          caps[i] = Math.max(1, Math.floor(wants[i] * cap / sum));
+          left -= caps[i];
+        }
+        for (let i = 0; left > 0 && i < caps.length; i++) { caps[i] += 1; left -= 1; }
+      }
+      shares.forEach((s, mi) => {
+        const n = bundleN(s.count);
+        const keep = Math.min(n, caps[mi] || n);
+        if (kind === 'live') {
+          next.set('m-' + height + '-' + s.key, {
+            id: 'm-' + height + '-' + s.key, height, color, vspc: false, kind: 'miner',
+            hash: s.key, dest: s.dest, miner: s.key, hue: hashHue(s.key),
+            count: s.count, minerIndex: mi, minerCount: shares.length,
+          });
+        }
+        for (let i = 0; i < keep; i++) {
+          const id = 'h-' + height + '-' + s.key + '-' + i;
+          next.set(id, {
+            id, height, color, vspc: false, kind,
+            hash: s.key + ':' + i, dest: s.dest, bundle: i, miner: s.key,
+            hue: hashHue(s.key),
+            count: bundleSize(s.count, i, n),
+            minerIndex: mi, minerCount: shares.length,
+          });
+        }
+      });
+    }
+
+    function buildGraph() {
+      const tip = Number(dag.tip) || 0;
+      const blocks = dag.blocks || [];
+      const live = dag.live || [];
+      const next = new Map();
+
+      for (const b of blocks) {
+        if (b.missing) continue;
+        const h = Number(b.height);
+        next.set('b-' + h, {
+          id: 'b-' + h, height: h, color: 'blue', vspc: true, kind: 'block',
+          hash: b.hash || '', prev: b.prev || '', count: b.hashes || 0,
+          dest: '', samples: b.samples || [], txs: b.txs || [], bits: b.bits, timestamp: b.timestamp,
+        });
+        addBundles(next, h, b.samples || [], 'gray', 'hash', SEALED_MAX);
+      }
+      if (live.length) {
+        addBundles(next, tip + 1, live, 'red', 'live', LIVE_MAX);
+      }
+
+      const byH = new Map();
+      for (const n of next.values()) {
+        if (!byH.has(n.height)) byH.set(n.height, []);
+        byH.get(n.height).push(n);
+      }
+      for (const list of byH.values()) {
+        list.forEach((n, i) => { n.index = i; n.size = list.length; });
+      }
+
+      for (const [id, spec] of next) {
+        let node = nodes.get(id);
+        if (!node) {
+          node = Object.assign({ x: 0, y: 0, alpha: 0, hover: 1, cell: blockSize(), phase: Math.random() * Math.PI * 2 }, spec);
+          nodes.set(id, node);
+          tween(node, { alpha: 1 }, 420);
+        } else {
+          const prevColor = node.color;
+          Object.assign(node, spec);
+          if (prevColor === 'red' && spec.color === 'gray') node.alpha = 1;
+        }
+      }
+      for (const id of [...nodes.keys()]) {
+        if (!next.has(id)) nodes.delete(id);
+      }
+
+      const ed = [];
+      for (const n of nodes.values()) {
+        let p = null;
+        if (n.kind === 'block') p = nodes.get('b-' + (n.height - 1));
+        else if (n.kind === 'live') p = nodes.get('m-' + n.height + '-' + n.miner);
+        else if (n.kind === 'miner') p = nodes.get('b-' + (n.height - 1));
+        else p = nodes.get('b-' + n.height) || nodes.get('b-' + (n.height - 1));
+        if (!p) continue;
+        ed.push({
+          from: n.id, to: p.id,
+          vspc: !!(n.vspc && p.vspc),
+          alpha: 1,
+          hue: n.hue,
+          minerLine: false,
+        });
+      }
+      const prevKeys = new Set(edges.map((e) => e.from + '>' + e.to));
+      edges = ed.map((e) => {
+        if (!prevKeys.has(e.from + '>' + e.to)) {
+          e.alpha = 0;
+          tween(e, { alpha: 1 }, 420);
+        }
+        return e;
+      });
+    }
+
+    function layout(animateY) {
+      const bs = blockSize();
+      const mxg = marginX(bs);
+      const groups = new Map();
+      for (const n of nodes.values()) {
+        if (!groups.has(n.height)) groups.set(n.height, []);
+        groups.get(n.height).push(n);
+      }
+      for (const [h, list] of groups) {
+        const originX = blockX(h, bs, mxg);
+        const block = list.find((n) => n.kind === 'block');
+        if (block) {
+          block.cell = bs;
+          block.x = originX;
+          if (animateY && block.alpha > 0.05 && block.y !== 0) tween(block, { y: 0 }, 400);
+          else block.y = 0;
+        }
+        const dots = list.filter((n) => n.kind !== 'block')
+          .sort((a, b) => (a.miner || '').localeCompare(b.miner || '') || a.bundle - b.bundle);
+        const live = dots.filter((n) => n.kind === 'live');
+        const hubs = list.filter((n) => n.kind === 'miner');
+        const sealed = dots.filter((n) => n.kind === 'hash');
+        // Tip: KGI-style cluster, but each miner's bundles stem from that miner.
+        const minerKeys = [];
+        hubs.forEach((h) => { if (!minerKeys.includes(h.miner)) minerKeys.push(h.miner); });
+        live.forEach((n) => { if (!minerKeys.includes(n.miner)) minerKeys.push(n.miner); });
+        hubs.forEach((n) => {
+          const mi = Math.max(0, minerKeys.indexOf(n.miner));
+          n.minerIndex = mi;
+          n.minerCount = minerKeys.length;
+          n.cell = 9;
+          n.r = 3.35;
+          n.x = originX;
+          n.y = 0;
+        });
+        live.forEach((n) => {
+          const mi = Math.max(0, minerKeys.indexOf(n.miner));
+          n.minerIndex = mi;
+          n.minerCount = minerKeys.length;
+          const u = hashU32(n.miner + ':' + n.bundle + ':live');
+          const v = hashU32('lr:' + n.miner + ':' + n.bundle);
+          const ang = (u / 4294967295) * Math.PI * 2;
+          const rad = 12 + Math.sqrt(n.bundle + 1) * 12 + (v / 4294967295) * 8;
+          n.cell = 4;
+          n.r = 1.55;
+          n.x = originX + Math.cos(ang) * rad * 0.55;
+          n.y = Math.sin(ang) * rad;
+        });
+        // Sealed: static randomised graph stems around the found block.
+        sealed.forEach((n) => {
+          const off = sealedStem(n, bs);
+          n.cell = DOT_R * 2;
+          n.r = DOT_R;
+          n.x = originX + off.x;
+          const ty = off.y;
+          if (animateY && n.alpha > 0.05 && Math.abs((n.y || 0) - ty) > 1) tween(n, { y: ty }, 280);
+          else n.y = ty;
+        });
+      }
+    }
+
+    function headTarget() {
+      const tip = Number(dag.tip) || 0;
+      const liveN = (dag.live || []).length ? 1 : 0;
+      return Math.max(0, tip + liveN - slotsAfterHalf(HEAD_RIGHT));
+    }
+    function followCam() {
+      if (tracking) {
+        const bs = blockSize(), mxg = marginX(bs);
+        const want = W / 2 - blockX(headTarget(), bs, mxg);
+        camX += (want - camX) * 0.12;
+      }
+      camY = H / 2;
+    }
+    function visibleRange() {
+      const th = tracking ? headTarget()
+        : (selectedId && nodes.get(selectedId) ? nodes.get(selectedId).height : headTarget());
+      const half = maxOnHalf();
+      return [Math.max(1, th - half), th + half];
+    }
+    function palOf(color) {
+      const t = theme();
+      return t[color] || t.gray;
+    }
+    function jitter(n, now) {
+      if (!n || n.kind !== 'live') return { x: 0, y: 0 };
+      const ph = n.phase || 0;
+      const amp = 1.35;
+      return {
+        x: Math.sin(now / 170 + ph) * amp + Math.sin(now / 93 + ph * 1.7) * amp * 0.4,
+        y: Math.cos(now / 205 + ph * 1.3) * amp + Math.cos(now / 127 + ph * 0.8) * amp * 0.45,
+      };
+    }
+    function orbit(n, now) {
+      if (!n || (n.kind !== 'live' && n.kind !== 'miner')) return { x: 0, y: 0 };
+      const nMiners = Math.max(1, n.minerCount || 1);
+      const mi = n.minerIndex || 0;
+      const ang = (mi / nMiners) * Math.PI * 2 + now / 3400;
+      const rad = blockSize() * 0.92;
+      return { x: Math.cos(ang) * rad, y: Math.sin(ang) * rad };
+    }
+    function motion(n, now) {
+      const j = jitter(n, now);
+      const o = orbit(n, now);
+      return { x: j.x + o.x, y: j.y + o.y };
+    }
+
+    function drawEdge(e, now) {
+      const a = nodes.get(e.from), b = nodes.get(e.to);
+      if (!a || !b) return;
+      const ja = motion(a, now), jb = motion(b, now);
+      const cell = Math.min(a.cell || blockSize(), b.cell || blockSize());
+      const vx = (b.x + jb.x) - (a.x + ja.x), vy = (b.y + jb.y) - (a.y + ja.y);
+      const clamp = clampToBlock(cell, vx, vy);
+      const toX = vx - clamp.x, toY = vy - clamp.y;
+      const t = theme();
+      const hi = selectedId && (e.from === selectedId || e.to === selectedId);
+      const vspc = e.vspc;
+      const minerLine = !!e.minerLine;
+      const lineW = minerLine ? (hi ? 1.8 : 1.05) : Math.max(1, sc(vspc ? (hi ? 11 : 8) : (hi ? 6 : 2), cell));
+      const arrowR = minerLine ? 0 : Math.max(2, sc(vspc ? 10 : 5, cell));
+      const color = minerLine && e.hue != null
+        ? ('hsla(' + e.hue + ',70%,55%,' + (a.kind === 'live' ? 0.55 : 0.35) + ')')
+        : (vspc ? t.vspc : t.edge);
+      const mag = Math.hypot(toX, toY) || 1;
+      const ox = arrowR ? -toX * (arrowR + lineW) / mag : 0;
+      const oy = arrowR ? -toY * (arrowR + lineW) / mag : 0;
+      const ax = a.x + camX + ja.x, ay = a.y + camY + ja.y;
+      ctx.save();
+      ctx.globalAlpha *= e.alpha * Math.min(a.alpha, b.alpha);
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = lineW;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(ax + toX + ox, ay + toY + oy);
+      ctx.stroke();
+      if (arrowR) {
+        const ang = Math.atan2(vy, vx) + Math.PI / 2;
+        const px = ax + toX + ox, py = ay + toY + oy;
+        ctx.beginPath();
+        for (let i = 0; i < 3; i++) {
+          const a0 = ang + i * (Math.PI * 2 / 3) - Math.PI / 2;
+          const x = px + Math.cos(a0) * arrowR;
+          const y = py + Math.sin(a0) * arrowR;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawNode(n, now) {
+      const pal = palOf(n.color);
+      const j = motion(n, now);
+      const x = n.x + camX + j.x, y = n.y + camY + j.y;
+      const s = n.hover || 1;
+      n._sx = x; n._sy = y;
+      ctx.save();
+      ctx.globalAlpha *= n.alpha;
+      ctx.translate(x, y);
+      if (n.kind !== 'block') {
+        const r = (n.r || DOT_R) * s;
+        n._sr = r;
+        const live = n.kind === 'live' || n.kind === 'miner';
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fillStyle = 'hsla(' + (n.hue || 200) + ',' + (n.kind === 'miner' ? 92 : (live ? 88 : 70)) + '%,' + (n.kind === 'miner' ? 58 : (live ? 64 : 58)) + '%,0.96)';
+        ctx.fill();
+        if (n.kind === 'miner') {
+          ctx.lineWidth = 1.8;
+          ctx.strokeStyle = theme() === DARK ? '#f4f7fb' : '#ffffff';
+          ctx.stroke();
+        } else if (selectedId === n.id) {
+          ctx.strokeStyle = pal.hi;
+          ctx.lineWidth = 1.6;
+          ctx.stroke();
+        }
+        ctx.restore();
+        return;
+      }
+      const cell = n.cell || blockSize();
+      const hw = cell * s, r = Math.min(sc(ROUND, cell), hw / 3);
+      n._sr = hw / 2;
+      if (selectedId === n.id) {
+        ctx.strokeStyle = pal.hi;
+        ctx.lineWidth = Math.max(2, sc(8, cell));
+        ctx.globalAlpha *= 0.6;
+        roundRect(-hw / 2 - 4, -hw / 2 - 4, hw + 8, hw + 8, r + 4);
+        ctx.stroke();
+        ctx.globalAlpha = n.alpha;
+      }
+      ctx.fillStyle = pal.fill;
+      ctx.strokeStyle = pal.border;
+      ctx.lineWidth = pal.bw ? Math.max(0.6, sc(pal.bw, cell)) : 0;
+      roundRect(-hw / 2, -hw / 2, hw, hw, r);
+      ctx.fill();
+      if (pal.bw > 0) ctx.stroke();
+      const lines = displayHash(n.hash, cell * s);
+      const fs = Math.max(6, Math.min(16, Math.floor(cell * s * 0.22)));
+      ctx.fillStyle = pal.text;
+      ctx.font = '700 ' + fs + 'px "Red Hat Mono","Lucida Console",monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const lh = fs * 1.05;
+      const top = -((lines.length - 1) * lh) / 2;
+      lines.forEach((line, i) => ctx.fillText(line, 0, top + i * lh));
+      ctx.restore();
+    }
+
+    function drawHeights() {
+      const bs = blockSize(), mxg = marginX(bs), t = theme();
+      const [from, to] = visibleRange();
+      const fs = Math.round(Math.max(12, Math.min(bs * 0.25, 15)));
+      const bottom = Math.round(Math.max(10, Math.min(bs * 0.5, 40)));
+      ctx.font = fs + 'px Verdana,Arial,sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = t.height;
+      const sample = (to || 1).toLocaleString();
+      const spread = Math.max(1, Math.ceil(ctx.measureText(sample).width / (bs + mxg) + 1.25));
+      for (let h = from; h <= to; h++) {
+        if (spread > 1 && h % spread !== 0) continue;
+        ctx.fillText(h.toLocaleString(), blockX(h, bs, mxg) + camX, H - bottom);
+      }
+    }
+
+    function hitTest(px, py) {
+      let hit = null, best = 1e9;
+      for (const n of nodes.values()) {
+        const m = motion(n, lastNow);
+        const cell = n.cell || blockSize();
+        const dx = px - (n.x + camX + m.x), dy = py - (n.y + camY + m.y);
+        const d = Math.hypot(dx, dy);
+        if (d <= cell / 2 + 6 && d < best) { best = d; hit = n; }
+      }
+      return hit;
+    }
+    function drawLoupe() {
+      if (dragging || !inspecting || !loupe) return;
+      const mx0 = loupe.x, my0 = loupe.y;
+      const src = 52;
+      const dest = 98;
+      if (!snap) snap = document.createElement('canvas');
+      if (snap.width !== c.width || snap.height !== c.height) {
+        snap.width = c.width;
+        snap.height = c.height;
+      }
+      snap.getContext('2d').drawImage(c, 0, 0);
+      let lx0 = mx0 + 18;
+      let ly0 = my0 - dest * 2 - 18;
+      if (lx0 + dest * 2 > W - 8) lx0 = mx0 - dest * 2 - 18;
+      if (ly0 < 8) ly0 = my0 + 18;
+      if (ly0 + dest * 2 > H - 8) ly0 = Math.max(8, H - dest * 2 - 8);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(lx0 + dest, ly0 + dest, dest, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(snap, (mx0 - src) * dpr, (my0 - src) * dpr, src * 2 * dpr, src * 2 * dpr, lx0, ly0, dest * 2, dest * 2);
+      ctx.restore();
+      const gold = theme() === DARK ? '#ffd24a' : '#c48a00';
+      const cyan = theme() === DARK ? '#4fd8e8' : '#007a96';
+      ctx.beginPath();
+      ctx.arc(lx0 + dest, ly0 + dest, dest, 0, Math.PI * 2);
+      ctx.strokeStyle = gold;
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(lx0 + dest, ly0 + dest, dest - 5, 0, Math.PI * 2);
+      ctx.strokeStyle = cyan;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.arc(mx0, my0, src, 0, Math.PI * 2);
+      ctx.strokeStyle = cyan;
+      ctx.globalAlpha = 0.4;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      const near = [];
+      for (const n of nodes.values()) {
+        if (n._sx == null) continue;
+        const d = Math.hypot(n._sx - mx0, n._sy - my0);
+        if (d <= src + (n._sr || 0) + 6) near.push({ n, d });
+      }
+      near.sort((a, b) => a.d - b.d);
+      const lines = near.slice(0, 4).map(({ n }) => {
+        const kind = n.kind === 'block' ? 'block' : n.kind === 'miner' ? 'miner' : n.kind === 'live' ? 'live hash' : 'sealed hash';
+        return [kind, n.hash ? String(n.hash).slice(0, 14) : '', n.dest || n.miner || '', n.count != null ? n.count + ' hashes' : '', 'h' + n.height].filter(Boolean).join(' · ');
+      });
+      if (!lines.length) lines.push('empty neighbourhood');
+      const boxY = ly0 + dest * 2 + 8;
+      ctx.font = '650 11px "Segoe UI",system-ui,sans-serif';
+      const textW = Math.min(W - 16, Math.max(dest * 2, ...lines.map((s) => ctx.measureText(s).width + 16)));
+      const boxH = 18 + lines.length * 15;
+      let bx = lx0;
+      if (bx + textW > W - 8) bx = W - textW - 8;
+      if (bx < 8) bx = 8;
+      let by = boxY;
+      if (by + boxH > H - 8) by = ly0 - boxH - 8;
+      ctx.fillStyle = theme() === DARK ? 'rgba(6,20,31,.88)' : 'rgba(255,255,255,.92)';
+      ctx.strokeStyle = gold;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(bx, by, textW, boxH);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = gold;
+      ctx.textAlign = 'left';
+      ctx.fillText('glass ×2.8', bx + 8, by + 14);
+      ctx.fillStyle = theme() === DARK ? '#d6e6f5' : '#0d2137';
+      lines.forEach((line, i) => ctx.fillText(line, bx + 8, by + 30 + i * 15));
+    }
+
+    function openPanel(n) {
+      selectedId = n.id;
+      const parent = nodes.get(n.kind === 'live' || n.kind === 'miner'
+        ? 'm-' + n.height + '-' + n.miner
+        : 'b-' + (n.kind === 'block' ? n.height - 1 : n.height)) || nodes.get('b-' + (n.height - 1));
+      const child = nodes.get('b-' + (n.height + 1));
+      const colorName = n.color === 'blue' ? 'Blue' : n.color === 'red' ? 'Red' : 'Gray';
+      const kindLabel = n.kind === 'block' ? 'Block' : n.kind === 'miner' ? 'Miner' : n.kind === 'live' ? 'Live hash bundle' : 'Sealed hash bundle';
+      panelTitle.textContent = kindLabel;
+      const samples = (n.samples || []).map((s) =>
+        '<div class="hash">hasher · ' + (s.dest || s.tag || '') + ' · ' + Number(s.count || 0).toLocaleString() + ' hashes</div>'
+      ).join('');
+      const txs = (n.txs || []).map((t) =>
+        '<div class="hash">' + (t.kind || 'tx') + ' · ' + (t.to || '') + ' · ' + Number(t.amount || 0) + ' SHE</div>'
+      ).join('');
+      const rows = [];
+      function row(lbl, val, cls) {
+        rows.push('<div class="row"><p class="lbl">' + lbl + '</p><p class="' + (cls || 'val') + '">' + val + '</p></div>');
+      }
+      row('Kind', kindLabel);
+      row('Height', Number(n.height).toLocaleString());
+      if (n.hash) row(n.kind === 'block' ? 'Block hash' : 'Id', n.hash, 'hash ' + (n.color || ''));
+      if (n.prev) row('Prev block', n.prev, 'hash blue');
+      if (parent && parent.hash) row('Parent', parent.hash, 'hash blue');
+      if (child && child.hash) row('Child', child.hash, 'hash blue');
+      if (n.miner || n.dest) row('Miner', n.dest || n.miner, 'hash');
+      if (n.bundle != null && n.kind !== 'block' && n.kind !== 'miner') row('Bundle index', String(n.bundle));
+      row('Hashes in this point', Number(n.count || 0).toLocaleString() + (n.kind === 'block' ? '' : ' (bundle ' + HASH_BUNDLE + ')'));
+      row('In VSPC', n.vspc ? 'Yes' : 'No');
+      row('Color', '<b style="color:' + palOf(n.color).fill + '">' + colorName + '</b>');
+      if (n.bits) row('Bits', String(n.bits));
+      if (n.timestamp) row('Timestamp', String(n.timestamp));
+      if (samples) rows.push('<div class="row"><p class="lbl">Hasher set</p>' + samples + '</div>');
+      if (txs) rows.push('<div class="row"><p class="lbl">Txs</p>' + txs + '</div>');
+      panelBody.innerHTML = rows.join('');
+      const href = n.kind === 'block' && n.hash
+        ? 'https://explorer.shear.digital/?id=' + encodeURIComponent(n.hash)
+        : 'https://explorer.shear.digital/?height=' + encodeURIComponent(n.height);
+      panelFoot.innerHTML = 'More details on <a href="' + href + '" target="_blank" rel="noopener">Shear explorer</a>';
+      panel.classList.add('is-open');
+      panel.setAttribute('aria-hidden', 'false');
+    }
+    function closePanel() {
+      selectedId = null;
+      panel.classList.remove('is-open');
+      panel.setAttribute('aria-hidden', 'true');
+    }
+
+    async function pull() {
+      try {
+        const d = await fetch(DAG_URL).then((r) => r.json());
+        warnEl.classList.toggle('is-on', !(d && d.ok));
+        if (d && d.ok && Array.isArray(d.blocks)) dag = d;
+        buildGraph();
+        layout(true);
+      } catch (e) {
+        warnEl.classList.add('is-on');
+        void e;
+      }
+    }
+
+    function tick(now) {
+      lastNow = now;
+      for (const tw of tweens) {
+        const u = Math.min(1, (now - tw.t0) / tw.ms);
+        const e = tw.ease(u);
+        for (const k of Object.keys(tw.props)) tw.obj[k] = tw.from[k] + (tw.props[k] - tw.from[k]) * e;
+      }
+      for (let i = tweens.length - 1; i >= 0; i--) {
+        if ((now - tweens[i].t0) / tweens[i].ms >= 1) tweens.splice(i, 1);
+      }
+      followCam();
+      const t = theme();
+      ctx.fillStyle = t.bg;
+      ctx.fillRect(0, 0, W, H);
+      const [from, to] = visibleRange();
+      for (const e of edges) {
+        const a = nodes.get(e.from);
+        if (!a || a.height < from - 1 || a.height > to + 1) continue;
+        drawEdge(e, now);
+      }
+      const order = ['hash', 'live', 'miner', 'block'];
+      const vis = [...nodes.values()].filter((n) => n.height >= from && n.height <= to);
+      vis.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+      for (const n of vis) {
+        if (hoverId === n.id) n.hover = Math.min(1.1, (n.hover || 1) + 0.04);
+        else n.hover = Math.max(1, (n.hover || 1) - 0.04);
+        drawNode(n, now);
+      }
+      drawHeights();
+      drawLoupe();
+      requestAnimationFrame(tick);
+    }
+
+    c.addEventListener('pointerdown', (e) => {
+      dragging = true; loupe = null; lx = e.clientX; c.classList.add('is-drag');
+    });
+    addEventListener('pointerup', () => { dragging = false; c.classList.remove('is-drag'); });
+    c.addEventListener('pointerleave', () => { loupe = null; });
+    addEventListener('pointermove', (e) => {
+      const rect = c.getBoundingClientRect();
+      mx = e.clientX - rect.left; my = e.clientY - rect.top;
+      if (dragging) {
+        tracking = false;
+        trackBtn.classList.remove('is-on');
+        camX += e.clientX - lx;
+        lx = e.clientX;
+        loupe = null;
+      } else if (inspecting) {
+        loupe = { x: mx, y: my };
+      }
+      const hit = hitTest(mx, my);
+      hoverId = hit ? hit.id : null;
+    });
+    c.addEventListener('click', (e) => {
+      const rect = c.getBoundingClientRect();
+      const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+      if (hit) openPanel(hit); else closePanel();
+    });
+    stage.addEventListener('wheel', (e) => {
+      tracking = false;
+      trackBtn.classList.remove('is-on');
+      camX -= e.deltaY * 0.9 + e.deltaX * 0.9;
+      e.preventDefault();
+    }, { passive: false });
+    spyBtn.addEventListener('click', () => {
+      inspecting = !inspecting;
+      spyBtn.classList.toggle('is-on', inspecting);
+      c.classList.toggle('is-spy', inspecting);
+      if (inspecting) { dragging = false; c.classList.remove('is-drag'); }
+    });
+    trackBtn.addEventListener('click', () => {
+      tracking = true;
+      trackBtn.classList.add('is-on');
+      closePanel();
+    });
+    function refreshZoom() {
+      zoomInBtn.disabled = scale <= 0.2;
+      zoomOutBtn.disabled = scale >= 1.2;
+    }
+    zoomOutBtn.addEventListener('click', () => { scale = boundedScale(scale + 0.1); layout(false); refreshZoom(); });
+    zoomInBtn.addEventListener('click', () => { scale = boundedScale(scale - 0.1); layout(false); refreshZoom(); });
+    refreshZoom();
+    document.getElementById('panel-x').addEventListener('click', closePanel);
+
+    pull();
+    setInterval(pull, 1000);
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

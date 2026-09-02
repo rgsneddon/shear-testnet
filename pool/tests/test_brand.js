@@ -27,6 +27,21 @@ function bannerBlock(html) {
 }
 
 describe('brand pages', () => {
+  it('pool fmtUptime adds w, mo, y once those spans elapse', () => {
+    const page = read('pool/public/index.html');
+    const fn = page.match(/function fmtUptime\(ms\) \{[\s\S]*?\n    \}/);
+    assert.ok(fn, 'fmtUptime must ship');
+    const fmtUptime = new Function(`${fn[0]}; return fmtUptime;`)();
+    assert.equal(fmtUptime(5_000), '5s');
+    assert.equal(fmtUptime(90_000), '1m 30s');
+    assert.match(fmtUptime(6 * 86400_000), /^6d /);
+    assert.match(fmtUptime(7 * 86400_000), /^1w /);
+    assert.equal(/8d /.test(fmtUptime(8 * 86400_000)), false);
+    assert.match(fmtUptime(8 * 86400_000), /^1w 1d /);
+    assert.match(fmtUptime(30 * 86400_000), /^1mo /);
+    assert.match(fmtUptime(365 * 86400_000), /^1y /);
+  });
+
   it('pool and explorer fmtRate step 1000 MH/s to GH/s', () => {
     for (const rel of ['pool/public/index.html', 'pool/public/explorer.html']) {
       const page = read(rel);
@@ -71,7 +86,7 @@ describe('brand pages', () => {
       const nav = p.match(/id="shear-nav"[\s\S]*?<\/nav>/);
       assert.ok(nav, 'missing shear-nav');
       const labels = [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
-      assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'MINER', 'NODE', 'WALLET']);
+      assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'DAG', 'MEMPOOL', 'MINER', 'NODE', 'WALLET']);
       if (!p.includes('id="shear-hero"')) {
         assert.equal(/GNFP|gnfp|feeless/i.test(p), false);
       }
@@ -137,9 +152,9 @@ describe('brand pages', () => {
     for (const page of [siteHtml, poolHtml, explorerHtml, mempoolHtml]) {
       assert.match(page, /rgsneddon\/shear-testnet/);
       assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
-      assert.match(page, /releases\/tag\/0\.9|shear-wallet-0\.9/);
+      assert.match(page, /releases\/tag\/0\.10|shear-wallet-0\.10/);
       assert.match(page, /rgsneddon\/ShearK/);
-      assert.match(page, /theme\.js\?v=7/);
+      assert.match(page, /theme\.js\?v=12/);
     }
     assert.match(poolHtml, /Shear pool · ShearHash-v2/);
     assert.match(poolHtml, /Great Vibes/);

@@ -6,6 +6,9 @@
   <meta name="robots" content="noindex, nofollow, noarchive"/>
   <meta name="referrer" content="no-referrer"/>
   <title></title>
+  <script src="/brand/theme.js?v=8"></script>
+  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=13"/>
   <style>
     :root {
       --bg:#eef3f8; --ink:#0d2137; --muted:#5a738c; --cyan:#0088a8; --blue:#1a6fb5;
@@ -39,6 +42,10 @@
     html[data-theme="light"] { color-scheme: light; }
     button { padding:.45rem .8rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer; font-weight:650; }
     button.warn { color:var(--err); }
+    select {
+      padding:.45rem .55rem; background:var(--input); color:var(--ink);
+      border:1px solid var(--blue); font-size:16px; min-width:6rem;
+    }
     .err { color:var(--err); min-height:1.2em; font-size:.9rem; }
     .ok { color:var(--ok); }
     .row { display:flex; gap:8px; flex-wrap:wrap; }
@@ -53,17 +60,100 @@
     th { color:var(--muted); font-size:.72rem; letter-spacing:.04em; text-transform:uppercase; }
     td.num { font-variant-numeric:tabular-nums; }
     .paused-flag { color:var(--err); font-weight:750; }
+    #advise.card { width:100%; margin:12px 0; padding:18px 20px; text-align:center; }
+    #advise .advise-title {
+      margin:4px 0 8px; font-weight:800; letter-spacing:.12em; text-transform:uppercase;
+      font-size:clamp(1.35rem, 3.4vw, 2.15rem);
+    }
+    #advise.ok .advise-title {
+      color:#5dcc7a;
+      text-shadow:
+        0 0 4px #e8ffe8,
+        0 0 10px #5dcc7a,
+        0 0 22px #1a9a4a,
+        0 0 48px #1a9a4a;
+    }
+    #advise.warn .advise-title {
+      color:#ffe14a;
+      text-shadow:
+        0 0 4px #fff6a8,
+        0 0 10px #ffe14a,
+        0 0 22px #ffd24a,
+        0 0 48px #ffb000;
+    }
+    #advise .advise-text { color:var(--ink); max-width:46rem; margin:0 auto 12px; }
+    #advise .advise-go { margin-top:4px; }
+    #advise-ssh {
+      text-align:left; max-width:46rem; margin:12px auto 0;
+      padding:10px 12px; background:var(--input); border:1px solid var(--blue);
+    }
+    #advise-ssh pre {
+      margin:6px 0 0; white-space:pre-wrap; word-break:break-word;
+      font:13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color:var(--ink);
+    }
     .gate-wrap { max-width:28rem; }
+    #flow { position:relative; overflow:hidden; }
+    .neon-lock {
+      position:absolute; inset:0; z-index:2;
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      background:rgba(6,10,2,.78);
+      pointer-events:none; text-align:center; padding:18px 12px;
+    }
+    .neon-lock .clock {
+      font-size:clamp(1.7rem, 4.8vw, 3.4rem);
+      font-weight:800; letter-spacing:.06em;
+      color:#ffe14a;
+      font-variant-numeric:tabular-nums;
+      text-shadow:
+        0 0 4px #fff6a8,
+        0 0 10px #ffe14a,
+        0 0 22px #ffd24a,
+        0 0 48px #ffb000,
+        0 0 80px #ff8a00;
+    }
+    .neon-lock .sub {
+      margin-top:10px; color:#ffe9a0; font-weight:750;
+      letter-spacing:.14em; text-transform:uppercase; font-size:.78rem;
+      text-shadow:0 0 8px #ffd24a, 0 0 18px #ffb000;
+    }
+    .neon-lock .title {
+      margin-bottom:8px; color:#ffe14a; font-weight:800;
+      letter-spacing:.18em; text-transform:uppercase; font-size:.72rem;
+      text-shadow:0 0 10px #ffd24a;
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="top">
-      <div class="label" id="pulse"> </div>
-      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark">
+  <header class="top-banner">
+    <div class="banner-brand">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </div>
+    <nav class="nav" id="shear-nav">
+      <a class="nav-btn" href="https://shear.digital">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
+      <a class="nav-btn" href="https://dag.shear.digital">DAG</a>
+      <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.10" target="_blank" rel="noopener">WALLET</a>
+    </nav>
+    <div class="banner-tools">
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
         <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
         <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
       </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
+    </div>
+  </header>
+  <div class="wrap">
+    <div class="top">
+      <div class="label" id="pulse"> </div>
     </div>
 
     <form id="gate" class="card gate-wrap" autocomplete="off">
@@ -81,17 +171,61 @@
       <div class="grid" id="health"></div>
 
       <div class="card">
+        <div class="label">Stall self-heal</div>
+        <div class="grid" id="stall-health"></div>
+        <div class="card" id="advise" aria-live="polite" style="margin:12px 0 0">
+          <div class="label">Recommended action</div>
+          <div class="advise-title" id="advise-title">—</div>
+          <p class="advise-text" id="advise-text"></p>
+          <div class="row advise-go" style="justify-content:center">
+            <button type="button" id="btn-advise-go" class="hid">Do it</button>
+          </div>
+          <div id="advise-ssh" class="hid">
+            <div class="label">SSH is required</div>
+            <pre id="advise-ssh-connect"></pre>
+            <pre id="advise-ssh-steps"></pre>
+          </div>
+        </div>
+        <div class="table-wrap" style="margin-top:10px">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th><th>Event</th><th>Reason</th><th>Job</th><th>Height</th><th>Bits</th><th>N</th>
+              </tr>
+            </thead>
+            <tbody id="stall-events"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="label">Maintenance</div>
         <div class="row" style="margin-top:8px">
           <button type="button" id="btn-pause">Pause</button>
           <button type="button" id="btn-resume">Resume</button>
+          <button type="button" id="btn-recover-stall">Recover stall</button>
           <button type="button" id="btn-rebroadcast">Rebroadcast job</button>
+          <button type="button" id="btn-retarget-bits">Retarget bits</button>
           <button type="button" id="btn-clear-stale">Clear stale</button>
           <button type="button" id="btn-disconnect" class="warn">Disconnect all</button>
+          <button type="button" id="btn-reconnect" class="warn">Reconnect all</button>
           <button type="button" id="btn-restart-hasher" class="warn">Restart hasher</button>
+          <button type="button" id="btn-bounce" class="warn">Bounce pool</button>
           <button type="button" id="btn-restart" class="warn">Restart pool</button>
         </div>
         <p class="err" id="ops-err"></p>
+      </div>
+
+      <div class="card">
+        <div class="label">Hasher</div>
+        <p id="hasher-state">—</p>
+        <div class="row" style="margin-top:8px; align-items:center">
+          <label class="label" for="hasher-threads">Threads</label>
+          <select id="hasher-threads" aria-label="Miner threads — picking a number applies it now"></select>
+          <button type="button" id="btn-hasher-start">Start miner</button>
+          <button type="button" id="btn-hasher-stop" class="warn">Stop miner</button>
+        </div>
+        <p class="err" id="hasher-err"></p>
       </div>
 
       <div class="card">
@@ -120,6 +254,11 @@
           <input id="amount" name="amount" type="text" inputmode="decimal" placeholder="SHE"/>
           <button type="submit">Withdraw</button>
           <p class="err" id="flow-err"></p>
+          <div class="neon-lock" id="unlock-overlay" aria-live="polite">
+            <div class="title">pool wallet unlock</div>
+            <div class="clock" id="unlock-clock">—</div>
+            <div class="sub" id="unlock-sub">11 Sep 2044 21:00 UTC · height 6,312,001</div>
+          </div>
         </form>
         <div id="totp-box" class="card hid">
           <div class="label">Google Authenticator</div>
@@ -139,6 +278,34 @@
     const $ = (id) => document.getElementById(id);
     let live = false;
     let paused = false;
+    let liveHeight = 0;
+    const UNLOCK_MS = Date.UTC(2044, 8, 11, 21, 0, 0);
+    const UNLOCK_H = 6312001;
+    function pad2(n) { return String(n).padStart(2, '0'); }
+    function tickUnlock() {
+      const clock = $('unlock-clock');
+      const sub = $('unlock-sub');
+      const overlay = $('unlock-overlay');
+      if (!clock || !sub) return;
+      const left = UNLOCK_MS - Date.now();
+      const hNow = Number(liveHeight) || 0;
+      const hLeft = Math.max(0, UNLOCK_H - hNow);
+      const open = hNow >= UNLOCK_H;
+      if (overlay) overlay.classList.toggle('hid', open);
+      if (open) {
+        clock.textContent = 'UNLOCKED';
+        sub.textContent = 'pool wallet is now unlocked';
+        return;
+      }
+      const s = Math.max(0, Math.floor(left / 1000));
+      const years = Math.floor(s / 31557600);
+      const days = Math.floor((s % 31557600) / 86400);
+      const hh = Math.floor((s % 86400) / 3600);
+      const mm = Math.floor((s % 3600) / 60);
+      const ss = s % 60;
+      clock.textContent = years + 'y  ' + days + 'd  ' + pad2(hh) + ':' + pad2(mm) + ':' + pad2(ss);
+      sub.textContent = hLeft.toLocaleString() + ' heights  ·  11 Sep 2044 21:00 UTC';
+    }
 
     function savedTheme() {
       try {
@@ -186,10 +353,118 @@
     function cell(h, n) {
       return '<div class="card"><div class="label">' + h + '</div><div class="value">' + n + '</div></div>';
     }
+    function fmtDur(ms) {
+      const n = Number(ms) || 0;
+      if (n <= 0) return '—';
+      if (n < 1000) return n + 'ms';
+      const s = Math.floor(n / 1000);
+      if (s < 60) return s + 's';
+      const m = Math.floor(s / 60);
+      if (m < 60) return m + 'm ' + (s % 60) + 's';
+      const h = Math.floor(m / 60);
+      return h + 'h ' + (m % 60) + 'm';
+    }
+    const ADVISE_OPS = {
+      resume: { path: '/api/admin/resume', body: {} },
+      'recover-stall': { path: '/api/admin/recover-stall', body: {} },
+      rebroadcast: { path: '/api/admin/rebroadcast', body: {} },
+      reconnect: { path: '/api/admin/reconnect-all', body: {} },
+      bounce: { path: '/api/admin/bounce-pool', body: {} },
+      restart: { path: '/api/admin/restart', body: {} },
+      'hasher-start': { path: '/api/admin/hasher/start', body: {} },
+      disconnect: { path: '/api/admin/disconnect-all', body: {} },
+      'retarget-bits': { path: '/api/admin/retarget-bits', body: {} },
+    };
+    let adviseAction = '';
+    function paintAdvise(ad) {
+      ad = ad || {};
+      const box = $('advise');
+      const go = $('btn-advise-go');
+      box.classList.remove('ok', 'warn');
+      box.classList.add(ad.tone === 'warn' ? 'warn' : 'ok');
+      $('advise-title').textContent = ad.title || 'no action needed';
+      $('advise-text').textContent = ad.text || '';
+      adviseAction = String(ad.action || '');
+      if (adviseAction && ADVISE_OPS[adviseAction]) {
+        go.classList.remove('hid');
+        go.textContent = ad.actionLabel || 'Do it';
+      } else {
+        go.classList.add('hid');
+        go.textContent = 'Do it';
+      }
+      const ssh = ad.ssh;
+      if (ssh && ssh.required && Array.isArray(ssh.steps) && ssh.steps.length) {
+        $('advise-ssh').classList.remove('hid');
+        $('advise-ssh-connect').textContent = [ssh.connect, ssh.name ? '(' + ssh.name + ' · ' + ssh.host + ')' : ''].filter(Boolean).join('  ');
+        $('advise-ssh-steps').textContent = ssh.steps.join('\n');
+      } else {
+        $('advise-ssh').classList.add('hid');
+        $('advise-ssh-connect').textContent = '';
+        $('advise-ssh-steps').textContent = '';
+      }
+    }
+    function paintStall(st) {
+      st = st || {};
+      const stalled = !!st.currentlyStalled;
+      $('stall-health').innerHTML = [
+        cell('Stalled now', stalled ? '<span class="paused-flag">yes</span>' : 'no'),
+        cell('Times stalled', st.timesStalled || 0),
+        cell('Times recovered', st.timesRecovered || 0),
+        cell('Times unstalled', st.timesUnstalled || 0),
+        cell('Last stall', st.lastStallAt ? ago(st.lastStallAt) : '—'),
+        cell('Last recover', st.lastRecoverAt ? ago(st.lastRecoverAt) : '—'),
+        cell('Last stall duration', fmtDur(st.lastStallDurationMs)),
+        cell('Open stall', stalled ? fmtDur(st.stallOpenMs) : '—'),
+        cell('Tip age', fmtDur(st.foundAgeMs)),
+        cell('Block candidates', st.blockCandidates || 0),
+        cell('Append fails', st.appendFails || 0),
+        cell('Last fail', st.lastAppendFailReason || '—'),
+        cell('Last recover job', st.lastRecoverJobId || '—'),
+        cell('Last stall reason', st.lastStallReason || '—'),
+      ].join('');
+      const rows = Array.isArray(st.events) ? st.events.slice().reverse() : [];
+      $('stall-events').innerHTML = rows.length
+        ? rows.map(function (e) {
+          return '<tr>'
+            + '<td>' + ago(e.at) + '</td>'
+            + '<td>' + (e.ev || '') + '</td>'
+            + '<td>' + (e.reason || '—') + '</td>'
+            + '<td>' + (e.jobId || '—') + '</td>'
+            + '<td class="num">' + (e.height != null ? e.height : '—') + '</td>'
+            + '<td class="num">' + (e.bits != null ? e.bits : '—') + '</td>'
+            + '<td class="num">' + (e.n != null ? e.n : '—') + '</td>'
+            + '</tr>';
+        }).join('')
+        : '<tr><td colspan="7">No stall events this book.</td></tr>';
+    }
+    let hasherThreadsTouched = false;
+    function fillHasherSelect(cpus, liveThreads) {
+      const sel = $('hasher-threads');
+      const n = Math.max(1, Number(cpus) || 1);
+      if (sel.options.length !== n) {
+        sel.innerHTML = Array.from({ length: n }, function (_, i) {
+          const v = i + 1;
+          return '<option value="' + v + '">' + v + '</option>';
+        }).join('');
+      }
+      const live = Math.max(1, Number(liveThreads) || 1);
+      if (!hasherThreadsTouched) sel.value = String(Math.min(n, live));
+      else if (Number(sel.value) > n) sel.value = String(n);
+    }
+    function paintHasher(hz) {
+      hz = hz || {};
+      const choices = Array.isArray(hz.choices) ? hz.choices : [];
+      const cpus = Math.max(1, Number(hz.cpuThreads) || Number(hz.cpus) || choices.length || 1);
+      const liveThreads = Math.max(1, Number(hz.threads) || 1);
+      fillHasherSelect(cpus, liveThreads);
+      $('hasher-state').textContent = (hz.active ? 'running' : 'stopped')
+        + ' · ' + liveThreads + ' of ' + cpus + ' threads on this host';
+    }
     function signedOut() {
       live = false;
       $('desk').classList.add('hid');
       $('gate').classList.remove('hid');
+      if (window.flagShearOsadmin) window.flagShearOsadmin(false);
     }
     async function paintWallet() {
       const w = await api('/api/admin/wallet', 'GET');
@@ -208,6 +483,8 @@
       if (h.status === 401) { signedOut(); return; }
       if (!h.json.ok) return;
       paused = !!h.json.paused;
+      liveHeight = Number(h.json.height) || 0;
+      tickUnlock();
       $('pulse').innerHTML = paused ? '<span class="paused-flag">paused</span>' : 'live';
       $('health').innerHTML = [
         cell('Height', h.json.height || 0),
@@ -220,7 +497,20 @@
         cell('Sockets', h.json.sockets || 0),
         cell('Hash queue', h.json.hashQueue || 0),
         cell('Bans', h.json.bans || 0),
+        cell('Block bits', h.json.blockBits || '—'),
+        cell('Last found', h.json.lastFoundAt ? ago(h.json.lastFoundAt) : '—'),
       ].join('');
+      let stall = h.json.stall || {};
+      const st = await api('/api/admin/stall', 'GET');
+      if (st.status !== 401 && st.json && st.json.ok) stall = st.json;
+      paintStall(stall);
+      paintAdvise(h.json.advise || stall.advise || {});
+      let hz = h.json.hasher || {};
+      if (!hz.cpuThreads) {
+        const hs = await api('/api/admin/hasher', 'GET');
+        if (hs.json && hs.json.ok) hz = hs.json;
+      }
+      paintHasher(hz);
       const m = await api('/api/admin/miners', 'GET');
       if (!m.json.ok) return;
       const tb = $('miners-body');
@@ -240,10 +530,11 @@
           + '<td class="num">' + (r.blocks || 0) + '</td>'
           + '<td class="num">' + (r.threads || 0) + '</td>'
           + '<td class="num">' + bits + '</td>'
-          + '<td>' + ago(r.lastShareAt || r.lastSeen) + '</td>'
+          + '<td>' + ago(Math.max(Number(r.lastShareAt) || 0, Number(r.lastSeen) || 0, Number(r.lastReject && r.lastReject.at) || 0)) + '</td>'
           + '<td>' + reject + '</td>'
           + '<td><button type="button" data-kick="' + key + '">Kick</button> '
-          + '<button type="button" data-ban="' + key + '" class="warn">Ban</button></td>'
+          + '<button type="button" data-ban="' + key + '" class="warn">Ban</button> '
+          + '<button type="button" data-unban="' + key + '">Unban</button></td>'
           + '</tr>';
       }).join('') || '<tr><td colspan="14">none</td></tr>';
     }
@@ -257,6 +548,7 @@
       live = true;
       $('gate').classList.add('hid');
       $('desk').classList.remove('hid');
+      if (window.flagShearOsadmin) window.flagShearOsadmin(true);
       await paintLive();
     }
     async function boot() {
@@ -313,18 +605,81 @@
     }
     $('btn-pause').addEventListener('click', () => runOp('/api/admin/pause', { pause: true }));
     $('btn-resume').addEventListener('click', () => runOp('/api/admin/resume', {}));
+    $('btn-recover-stall').addEventListener('click', () => runOp(
+      '/api/admin/recover-stall',
+      {},
+      'Issue a new live header job and broadcast it? This is the unstall — no ssh.',
+    ));
     $('btn-rebroadcast').addEventListener('click', () => runOp('/api/admin/rebroadcast', {}));
+    $('btn-retarget-bits').addEventListener('click', () => runOp(
+      '/api/admin/retarget-bits',
+      {},
+      'Cut a new live job from ASERT (parent + wall) and push it? Use this if bits stall. Rebroadcast only resends the current job.',
+    ));
+    $('btn-advise-go').addEventListener('click', () => {
+      const spec = ADVISE_OPS[adviseAction];
+      if (!spec) return;
+      const body = Object.assign({}, spec.body || {});
+      if (adviseAction === 'hasher-start') {
+        body.threads = Number($('hasher-threads').value) || 1;
+      }
+      runOp(spec.path, body);
+    });
     $('btn-clear-stale').addEventListener('click', () => runOp('/api/admin/clear-stale', {}, 'Zero the stale column? Accepted stays.'));
     $('btn-disconnect').addEventListener('click', () => runOp('/api/admin/disconnect-all', {}, 'Drop every stratum socket?'));
+    $('btn-reconnect').addEventListener('click', () => runOp(
+      '/api/admin/reconnect-all',
+      {},
+      'Drop every stratum socket so hashers log back in on the current job?',
+    ));
     $('btn-restart-hasher').addEventListener('click', () => runOp('/api/admin/restart-hasher', {}, 'Restart the local hasher unit?'));
+    let hasherApplying = false;
+    async function applyHasherThreads() {
+      if (hasherApplying) return;
+      const threads = Number($('hasher-threads').value) || 1;
+      hasherThreadsTouched = true;
+      hasherApplying = true;
+      $('hasher-err').textContent = '';
+      $('hasher-threads').disabled = true;
+      try {
+        const got = await api('/api/admin/hasher/start', 'POST', { threads });
+        if (!got.json.ok) {
+          $('hasher-err').textContent = got.json.reason || 'thread change failed';
+          return;
+        }
+        hasherThreadsTouched = false;
+        await paintOps();
+      } finally {
+        hasherApplying = false;
+        $('hasher-threads').disabled = false;
+      }
+    }
+    $('hasher-threads').addEventListener('change', () => { applyHasherThreads(); });
+    $('btn-hasher-start').addEventListener('click', () => { applyHasherThreads(); });
+    $('btn-hasher-stop').addEventListener('click', async () => {
+      $('hasher-err').textContent = '';
+      if (!window.confirm('Stop the local ShearK hasher on this host?')) return;
+      const got = await api('/api/admin/hasher/stop', 'POST', {});
+      if (!got.json.ok) $('hasher-err').textContent = got.json.reason || 'stop failed';
+      await paintOps();
+    });
+    $('btn-bounce').addEventListener('click', () => runOp(
+      '/api/admin/bounce-pool',
+      {},
+      'Cut a new live job and drop sockets so miners log in on it? Pool process stays up.',
+    ));
     $('btn-restart').addEventListener('click', () => runOp('/api/admin/restart', {}, 'Restart the pool process? Miners reconnect.'));
     $('miners-body').addEventListener('click', (e) => {
       const kick = e.target && e.target.getAttribute && e.target.getAttribute('data-kick');
       const ban = e.target && e.target.getAttribute && e.target.getAttribute('data-ban');
+      const unban = e.target && e.target.getAttribute && e.target.getAttribute('data-unban');
       if (kick) runOp('/api/admin/kick', { miner: kick });
       if (ban) runOp('/api/admin/ban', { miner: ban }, 'Ban and drop this hasher?');
+      if (unban) runOp('/api/admin/unban', { miner: unban });
     });
     setInterval(paintLive, 2000);
+    setInterval(tickUnlock, 1000);
+    tickUnlock();
     boot();
   </script>
 </body>

@@ -3,13 +3,13 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
 
-/// Inspects the **built** `shear-wallet-0.9-windows.zip` (not a mocked listing).
+/// Inspects the **built** `shear-wallet-0.10-windows.zip` (not a mocked listing).
 /// Pack with `python wallet/pack/zip_windows.py` after `flutter build windows --release`.
 File _shippedWindowsZip() {
   final candidates = <File>[
-    File('../dist/shear-wallet-0.9-windows.zip'),
-    File('dist/shear-wallet-0.9-windows.zip'),
-    File('${Directory.current.path}/../dist/shear-wallet-0.9-windows.zip'),
+    File('../dist/shear-wallet-0.10-windows.zip'),
+    File('dist/shear-wallet-0.10-windows.zip'),
+    File('${Directory.current.path}/../dist/shear-wallet-0.10-windows.zip'),
   ];
   for (final f in candidates) {
     if (f.existsSync()) return f;
@@ -29,14 +29,14 @@ List<String> _zipNames(File zip) {
 }
 
 void main() {
-  test('kWalletVersion public pin is two-part 0.9 (not 0.9.0)', () {
-    expect(kWalletVersion, '0.9');
+  test('kWalletVersion public pin is two-part 0.10 (not 0.10.0)', () {
+    expect(kWalletVersion, '0.10');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
   });
 
-  test('built shear-wallet-0.9-windows.zip is a Flutter runner with no miner', () {
+  test('built shear-wallet-0.10-windows.zip is a Flutter runner with no miner', () {
     final zip = _shippedWindowsZip();
     if (!zip.existsSync()) {
       return; // leftover on Windows; Darwin Mac-cut does not pack this zip
@@ -88,8 +88,8 @@ void main() {
     return candidates.first;
   }
 
-  test('built shear-wallet-0.9-linux.zip has shear_wallet and no miner', () {
-    final zip = _zipAt('shear-wallet-0.9-linux.zip');
+  test('built shear-wallet-0.10-linux.zip has shear_wallet and no miner', () {
+    final zip = _zipAt('shear-wallet-0.10-linux.zip');
     if (!zip.existsSync()) return;
     expect(zip.lengthSync(), greaterThan(1 * 1024 * 1024));
     final names = _zipNames(zip);
@@ -102,8 +102,8 @@ void main() {
     }
   });
 
-  test('built shear-wallet-0.9-archlinux.zip has PKGBUILD pkgver=0.9 and no miner', () {
-    final zip = _zipAt('shear-wallet-0.9-archlinux.zip');
+  test('built shear-wallet-0.10-archlinux.zip has PKGBUILD pkgver=0.10 and no miner', () {
+    final zip = _zipAt('shear-wallet-0.10-archlinux.zip');
     if (!zip.existsSync()) return;
     expect(zip.lengthSync(), greaterThan(1 * 1024 * 1024));
     final names = _zipNames(zip);
@@ -119,8 +119,8 @@ void main() {
       runInShell: true,
     );
     expect(listed.exitCode, 0, reason: listed.stderr.toString());
-    expect(listed.stdout.toString(), contains('pkgver=0.9'));
-    expect(listed.stdout.toString().contains('pkgver=0.9.0'), isFalse);
+    expect(listed.stdout.toString(), contains('pkgver=0.10'));
+    expect(listed.stdout.toString().contains('pkgver=0.10.0'), isFalse);
     for (final n in names) {
       final base = n.split('/').last;
       expect(base.toLowerCase(), isNot(equals('shear-miner')));

@@ -403,7 +403,27 @@ class ShearLedger {
     return currentDest(address);
   }
 
-  double spendable(String address) => _spendable[payKey(address)] ?? _spendable[address] ?? 0;
+  bool _isProgramVaultDest(String address) => isJoinVaultDest(address);
+
+  void _dropProgramVaults() {
+    final drop = <String>[];
+    for (final d in _dests) {
+      if (_isProgramVaultDest(d)) drop.add(d);
+    }
+    for (final d in [..._spendable.keys]) {
+      if (_isProgramVaultDest(d)) drop.add(d);
+    }
+    for (final d in drop) {
+      _dests.remove(d);
+      _spendable.remove(d);
+      _pending.remove(d);
+    }
+  }
+
+  double spendable(String address) {
+    if (_isProgramVaultDest(address) || _isProgramVaultDest(payKey(address))) return 0;
+    return _spendable[payKey(address)] ?? _spendable[address] ?? 0;
+  }
   double pending(String address) => _pending[payKey(address)] ?? _pending[address] ?? 0;
 
   /// Accrue 0.00000000001 SHE per hash this open round. Live pending row (lean: one
@@ -678,8 +698,10 @@ class ShearLedger {
   }
 
   double spendableOwned(String restFrame, {String? paymentCode}) {
+    _dropProgramVaults();
     var n = 0.0;
     for (final d in ownedAddresses(restFrame, paymentCode: paymentCode)) {
+      if (_isProgramVaultDest(d)) continue;
       n += _spendable[d] ?? 0;
     }
     return n;
@@ -718,6 +740,7 @@ class ShearLedger {
     final keys = <String>{};
     void add(String? a) {
       if (a == null || a.isEmpty) return;
+      if (_isProgramVaultDest(a)) return;
       if (isDestAddress(a) || isPaymentCode(a)) keys.add(a);
     }
 
@@ -751,9 +774,17 @@ class ShearLedger {
       confirmRound(address: address, pot: 0, height: beforeHeight + 1);
       settleTo(tipSealed);
     }
+    if (_isProgramVaultDest(address)) {
+      _dropProgramVaults();
+      return;
+    }
     final live = (json['balance'] as num?)?.toDouble();
     if (live != null && live >= 0) {
       final key = payKey(address);
+      if (_isProgramVaultDest(key)) {
+        _dropProgramVaults();
+        return;
+      }
       final prev = _spendable[key] ?? 0;
       if (live > 0 || prev == 0) {
         _spendable[key] = live;
@@ -833,8 +864,13 @@ class ShearLedger {
             pot: tx.pot,
           );
         }
-        if (tx.to.isNotEmpty) _dests.add(tx.to);
-        if (tx.from.isNotEmpty && tx.from != 'coinbase' && tx.from != 'hash') _dests.add(tx.from);
+        if (tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) _dests.add(tx.to);
+        if (tx.from.isNotEmpty &&
+            tx.from != 'coinbase' &&
+            tx.from != 'hash' &&
+            !_isProgramVaultDest(tx.from)) {
+          _dests.add(tx.from);
+        }
         final i = _txs.indexWhere((t) => t.id == tx.id);
         if (i >= 0) {
           _txs[i] = tx;
@@ -886,6 +922,7 @@ class ShearLedger {
   }
 
   Set<String> ownedAddresses(String restFrame, {String? paymentCode}) {
+    _dropProgramVaults();
     final keys = <String>{restFrame, ..._dests, currentDest(restFrame)};
     final silent = payoutDest(paymentCode ?? restFrame);
     if (silent != null) keys.add(silent);
@@ -894,6 +931,7 @@ class ShearLedger {
       final h = hash20FromAddress(d);
       if (h != null) keys.addAll(destEncodings(h));
     }
+    keys.removeWhere(_isProgramVaultDest);
     return keys;
   }
 
