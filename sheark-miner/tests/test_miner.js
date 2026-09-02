@@ -126,7 +126,7 @@ describe('ShearK-Miner', () => {
   });
 
   it('leftover linux zip is ShearK-Miner + example.sh', () => {
-    const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.4-linux.zip');
+    const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.5-linux.zip');
     if (!fs.existsSync(zip)) return;
     const py = spawnSync('python3', ['-c',
       'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]);\n'
