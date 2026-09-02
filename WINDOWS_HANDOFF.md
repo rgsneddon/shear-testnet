@@ -11,4 +11,4 @@ git clone https://github.com/rgsneddon/handoff.git ~/handoff
 
 Then read `HANDOFF.md` (section **Shear**). Do not keep a second Shear leftover in this tree.
 
-Current pin leftover is in `HANDOFF.md` only: wallet **0.13** on `rgsneddon/shear-testnet`, miner **ShearK 1.5** on `rgsneddon/ShearK`. Do **not** recut old wallet tags. Do **not** attach a Darwin binary as `*-linux.zip`.
+Current pin leftover is in `HANDOFF.md` only: wallet **0.13** on `rgsneddon/shear-testnet`, miner **ShearK 1.5** on `rgsneddon/ShearK`. Next wallet pin is **0.14** (not cut). Do **not** recut **0.13**. Do **not** restore **0.12**. Do **not** attach a Darwin binary as `*-linux.zip`.
