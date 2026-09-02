@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { extraMintAllowed, RESERVE_PROGRAM, JOIN_PROGRAM } from './asert.js';
 import { containsShe1 } from './levy.js';
 import { isDestAddress, bech32Hrp } from './address.js';
@@ -6,11 +6,12 @@ import { isDestAddress, bech32Hrp } from './address.js';
 export const VORTEX_PERSONAL = 'chronoflux-Omega-v1';
 export const VORTICE_KEY_PREFIX = 'vort1.';
 export const JOIN_WATCH_PROGRAM = 'shear-join-watch-v1';
+export const POOL_UNLOCK_PROGRAM = 'pool-unlock-2044';
 export const RESERVE_VORTICE = { id: RESERVE_PROGRAM, name: 'The Reserve', pinned: true };
 export const JOIN_VORTICE = { id: JOIN_PROGRAM, name: 'The Join', pinned: true };
 export const JOIN_WATCH_VORTICE = { id: JOIN_WATCH_PROGRAM, name: '', pinned: true };
 
-const PINNED = new Set([RESERVE_PROGRAM, JOIN_PROGRAM, JOIN_WATCH_PROGRAM]);
+const PINNED = new Set([RESERVE_PROGRAM, JOIN_PROGRAM, JOIN_WATCH_PROGRAM, POOL_UNLOCK_PROGRAM]);
 
 export function isPinnedProgram(id) {
   return PINNED.has(String(id || ''));
@@ -39,7 +40,8 @@ export function gateVorticeRegister(tx) {
   }
   const vort1 = String(tx?.vort1 || tx?.programId || '');
   if (!vort1.startsWith('vort1')) return { ok: false, reason: 'vort1', issued: false };
-  if (isPinnedProgram(vort1) || isPinnedProgram(tx.programId)) {
+  const ids = [vort1, String(tx?.programId || ''), vort1.replace(/^vort1\./, '')];
+  if (ids.some((x) => isPinnedProgram(x) || x === POOL_UNLOCK_PROGRAM)) {
     return { ok: false, reason: 'pinned', issued: false };
   }
   return {
@@ -84,7 +86,7 @@ export function listPublicVortices(issued) {
 export function validProgramId(programId) {
   const id = String(programId || '').trim().toLowerCase();
   if (!/^[a-z0-9._-]{3,64}$/.test(id)) return null;
-  if (isPinnedProgram(id)) return null;
+  if (isPinnedProgram(id) || id === POOL_UNLOCK_PROGRAM) return null;
   return id;
 }
 
@@ -113,8 +115,14 @@ export function vorticeBundleHash({ programId, name, origin, source }) {
     .digest('hex');
 }
 
-function canonicalBody({ id, name, origin, bundle }) {
-  return JSON.stringify({ v: 1, id, name, origin, bundle });
+function mintNonce() {
+  return randomBytes(16).toString('hex');
+}
+
+function canonicalBody({ id, name, origin, bundle, n }) {
+  const body = { v: 1, id, name, origin, bundle };
+  if (n) body.n = n;
+  return JSON.stringify(body);
 }
 
 function macOf(body) {
@@ -134,8 +142,9 @@ export function mintVorticeDeployKey({ programId, name, origin, source } = {}) {
   const label = String(name || id).trim() || id;
   if (label.length < 1 || label.length > 64) return null;
   const bundle = vorticeBundleHash({ programId: id, name: label, origin: url, source: src });
-  const body = canonicalBody({ id, name: label, origin: url, bundle });
-  const payload = { v: 1, id, name: label, origin: url, bundle, mac: macOf(body) };
+  const n = mintNonce();
+  const body = canonicalBody({ id, name: label, origin: url, bundle, n });
+  const payload = { v: 1, id, name: label, origin: url, bundle, n, mac: macOf(body) };
   return `${VORTICE_KEY_PREFIX}${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
 }
 
@@ -155,8 +164,10 @@ export function parseVorticeKey(key) {
     const name = String(payload.name || '');
     const bundle = String(payload.bundle || '');
     const mac = String(payload.mac || '').toLowerCase();
+    const n = String(payload.n || '');
+    if (n && !/^[0-9a-f]{32}$/i.test(n)) return null;
     if (!id || !origin || !bundle || name.length < 1 || name.length > 64) return null;
-    const want = macOf(canonicalBody({ id, name, origin, bundle }));
+    const want = macOf(canonicalBody({ id, name, origin, bundle, n: n || undefined }));
     if (want !== mac) return null;
     return {
       id,

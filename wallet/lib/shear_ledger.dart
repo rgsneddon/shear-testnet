@@ -589,7 +589,7 @@ class ShearLedger {
     return t - height + 1;
   }
 
-  /// Policy available (default 12 confs). Consensus spendable is 1 conf.
+  /// Policy available (default 12 confs). Consensus spendable is 6 confs.
   double policyAvailable(String address, {int? confirms, String? paymentCode}) {
     final need = confirms ?? minConfirms;
     final keys = ownedAddresses(address, paymentCode: paymentCode);
@@ -803,10 +803,7 @@ class ShearLedger {
         return;
       }
       if (live > 0) rememberDest(key);
-      final prev = _spendable[key] ?? 0;
-      if (live > 0 || prev == 0) {
-        _spendable[key] = live;
-      }
+      _spendable[key] = live;
     }
   }
 
@@ -814,6 +811,7 @@ class ShearLedger {
   /// Mining credits land on the silent dest. Do not query every historical dest.
   Future<double> syncCredits(String restFrame, {String? paymentCode}) async {
     if (pool == null) return spendableOwned(restFrame, paymentCode: paymentCode);
+    keepOwnedDests(restFrame, paymentCode: paymentCode);
     final before = _settledHeight;
     try {
       await syncTip();
@@ -885,12 +883,11 @@ class ShearLedger {
             pot: tx.pot,
           );
         }
-        if (tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) _dests.add(tx.to);
-        if (tx.from.isNotEmpty &&
-            tx.from != 'coinbase' &&
-            tx.from != 'hash' &&
-            !_isProgramVaultDest(tx.from)) {
-          _dests.add(tx.from);
+        // Only remember dests this history was fetched for (ours).
+        // Never adopt counterparty `to` on a send (that was the pool dest)
+        // or `from` on a receive.
+        if (payKey(tx.to) == key && tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) {
+          _dests.add(tx.to);
         }
         final i = _txs.indexWhere((t) => t.id == tx.id);
         if (i >= 0) {
@@ -912,6 +909,23 @@ class ShearLedger {
   void restoreDests(Iterable<String> dests) {
     for (final d in dests) {
       rememberDest(d);
+    }
+  }
+
+  /// Drop dests that are not this wallet's silent dest or indexed dests.
+  void keepOwnedDests(String restFrame, {String? paymentCode}) {
+    final allow = <String>{
+      ...listedDests(restFrame),
+      if (homeDest(restFrame, paymentCode: paymentCode) != restFrame)
+        homeDest(restFrame, paymentCode: paymentCode),
+      if (payoutDest(paymentCode ?? '') != null) payoutDest(paymentCode ?? '')!,
+      if (payoutDest(restFrame) != null) payoutDest(restFrame)!,
+    };
+    final drop = _dests.where((d) => !allow.contains(d) && d != restFrame).toList();
+    for (final d in drop) {
+      _dests.remove(d);
+      _spendable.remove(d);
+      _pending.remove(d);
     }
   }
 
@@ -1203,7 +1217,13 @@ class ShearLedger {
       memoCt = await memoSeal(to, memo);
     }
     if (pool != null && !local) {
-      final json = await pool!.send(from: src, to: to, amount: amount, memoCt: memoCt);
+      String? open;
+      final vk = viewSecret;
+      final rest = restFrame ?? '';
+      if (vk != null && vk.isNotEmpty && rest.isNotEmpty) {
+        open = openingForDest(from: src, restFrame: rest, viewKey: vk, destCount: destCount);
+      }
+      final json = await pool!.send(from: src, to: to, amount: amount, memoCt: memoCt, open: open);
       final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
       final tx = ShearTx(
         id: raw.id,
@@ -1367,12 +1387,14 @@ class ShearPoolClient {
     required String to,
     required double amount,
     Map<String, dynamic>? memoCt,
+    String? open,
   }) =>
       _post('/api/wallet/send', {
         'from': from,
         'to': to,
         'amount': amount,
         if (memoCt != null) 'memoCt': memoCt,
+        if (open != null && open.isNotEmpty) 'open': open,
       });
 
   Future<Map<String, dynamic>> mempoolPressure() => _get('/api/mempoolPressure');

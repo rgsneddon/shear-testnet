@@ -167,6 +167,39 @@ String? paymentCodeAtIndex(String viewKey, Uint8List spendHash20, int index) {
   return encodePaymentCode(scanPub: scanPub, spendPub: spend);
 }
 
+String _hexOf(Uint8List b) => b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+
+/// 64-byte scan||spend hex. Proves dest hash20; she1 never on chain.
+String destOpeningFromView(String viewKey, Uint8List spendHash20, [int index = 0]) {
+  if (index < 0) return '';
+  final scanPub = x25519PublicFromSeed(scanSeedFromView(viewKey, index));
+  final idx = Uint8List(8);
+  var x = index;
+  for (var i = 0; i < 8; i++) {
+    idx[i] = x & 0xff;
+    x >>= 8;
+  }
+  final spend = Uint8List.fromList(
+    sha256.convert(utf8.encode('shear-spend-v1') + _asSpend(spendHash20) + idx).bytes,
+  );
+  return _hexOf(Uint8List.fromList([...scanPub, ...spend]));
+}
+
+String indexedDestOpening(Uint8List spendHash20, Uint8List closure, int index) {
+  if (index < 0) return '';
+  return _hexOf(Uint8List.fromList([...spendHash20.sublist(0, 20), ...closure.sublist(0, 32), ..._u64leOpen(index)]));
+}
+
+Uint8List _u64leOpen(int n) {
+  final o = Uint8List(8);
+  var x = n;
+  for (var i = 0; i < 8; i++) {
+    o[i] = x & 0xff;
+    x >>= 8;
+  }
+  return o;
+}
+
 ShearIdentity createIdentity([Uint8List? seed]) {
   final s = seed ?? _randomBytes(32);
   final seedHex = _hex(s);

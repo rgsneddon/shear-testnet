@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   mintVorticeDeployKey,
   mintVorticeDeployKeyFromOrigin,
@@ -8,9 +9,11 @@ import {
   verifyVorticeDownload,
   addVortice,
   validOrigin,
+  gateVorticeRegister,
   RESERVE_VORTICE,
   JOIN_VORTICE,
   JOIN_WATCH_PROGRAM,
+  POOL_UNLOCK_PROGRAM,
   VORTICE_KEY_PREFIX,
 } from './vortex.js';
 import { extraMintAllowed, JOIN_PROGRAM, RESERVE_PROGRAM } from './asert.js';
@@ -28,6 +31,7 @@ describe('vortice deploy keys', () => {
     assert.equal(mintVorticeDeployKey({ programId: 'stake-pool-a', origin: ORIGIN }), null);
     assert.equal(issueVorticeKey('stake-pool-a'), null);
     assert.equal(validOrigin('javascript:alert(1)'), null);
+    assert.equal(mintVorticeDeployKey({ programId: 'pool-unlock-2044', origin: ORIGIN, source: SOURCE }), null);
     const key = mintVorticeDeployKey({
       programId: 'stake-pool-a',
       name: 'Stake Pool A',
@@ -50,6 +54,15 @@ describe('vortice deploy keys', () => {
     assert.equal(list[0].origin, ORIGIN);
     assert.equal(addVortice([], key).length, 0);
     assert.equal(addVortice(list, key, SOURCE).length, 1);
+    const again = mintVorticeDeployKey({
+      programId: 'stake-pool-a',
+      name: 'Stake Pool A',
+      origin: ORIGIN,
+      source: SOURCE,
+    });
+    assert.notEqual(again, key);
+    assert.equal(parseVorticeKey(again).id, 'stake-pool-a');
+    assert.equal(verifyVorticeDownload(again, SOURCE).ok, true);
   });
 
   it('mintFromOrigin fetches the creator host and refuses a mismatch later', async () => {
@@ -61,5 +74,35 @@ describe('vortice deploy keys', () => {
     assert.equal(parsed.origin, ORIGIN);
     assert.equal(verifyVorticeDownload(key, SOURCE).ok, true);
     assert.equal(verifyVorticeDownload(key, 'other').reason, 'bundle_mismatch');
+  });
+
+  it('third parties cannot mint or impersonate pool-unlock / SHE ticker / extra-mint', () => {
+    assert.equal(POOL_UNLOCK_PROGRAM, 'pool-unlock-2044');
+    assert.equal(mintVorticeDeployKey({
+      programId: 'pool-unlock-2044',
+      name: 'Pool wallet unlock',
+      origin: ORIGIN,
+      source: SOURCE,
+    }), null);
+    const author = 'ssa1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+    assert.equal(gateVorticeRegister({
+      vort1: 'vort1.pool-unlock-2044',
+      programId: 'pool-unlock-2044',
+      bytesHash: 'ab'.repeat(32),
+      to: author,
+    }).reason, 'pinned');
+    assert.equal(gateVorticeRegister({
+      vort1: 'vort1.stake-pool-a',
+      bytesHash: 'ab'.repeat(32),
+      to: author,
+      ticker: 'SHE',
+    }).reason, 'ticker');
+    assert.equal(gateVorticeRegister({
+      vort1: 'vort1.stake-pool-a',
+      bytesHash: 'ab'.repeat(32),
+      to: author,
+      mint: true,
+      programId: 'stake-pool-a',
+    }).reason, 'mint');
   });
 });

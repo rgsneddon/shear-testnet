@@ -20,6 +20,7 @@ import {
 } from '../../crypto/reserve_evm.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp } from '../../crypto/address.js';
 import { collateSamples } from '../../crypto/chronoflux.js';
+import { verifyFundedBody } from '../../crypto/spend.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { packTx, packDigest } from '../../crypto/pack.js';
 import { buildDualTree, spendB } from '../../crypto/clearing.js';
@@ -277,6 +278,7 @@ function verifyBlockConsensus(block, prev, {
   spentB = null,
   tipHeight = 0,
   hashBonusNanos = HASH_BONUS_NANOS,
+  spendableOf = null,
 } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
@@ -408,6 +410,10 @@ function verifyBlockConsensus(block, prev, {
       });
       if (!got.ok) return got;
     }
+  }
+  if (typeof spendableOf === 'function') {
+    const funded = verifyFundedBody(body, spendableOf);
+    if (!funded.ok) return funded;
   }
   const split = splitLevy(fees);
   const finderPaid = txs[0].vout.filter((o) => o.kind === 'finder-fee').reduce((a, o) => a + Number(o.nanos || 0), 0);

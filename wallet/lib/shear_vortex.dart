@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 
@@ -109,6 +110,8 @@ String poolUnlockCountdown({required int nowMs, int height = 0}) {
 bool isPinnedProgram(String id) =>
     id == reserveProgram || id == joinProgram || id == joinWatchProgram;
 
+bool isReservedProgram(String id) => isPinnedProgram(id) || id == poolUnlockProgram;
+
 bool vorticeChipVisible(Vortice v) => v.id != joinWatchProgram && v.id.isNotEmpty;
 
 List<Vortice> reapExpiredJoin(List<Vortice> list, {required bool expired}) {
@@ -119,7 +122,7 @@ List<Vortice> reapExpiredJoin(List<Vortice> list, {required bool expired}) {
 String? validProgramId(String programId) {
   final id = programId.trim().toLowerCase();
   if (!RegExp(r'^[a-z0-9._-]{3,64}$').hasMatch(id)) return null;
-  if (isPinnedProgram(id)) return null;
+  if (isReservedProgram(id)) return null;
   return id;
 }
 
@@ -150,13 +153,30 @@ String vorticeBundleHash({
   return sha256.convert(bytes).toString();
 }
 
+String _mintNonce() {
+  final r = Random.secure();
+  return List<int>.generate(16, (_) => r.nextInt(256))
+      .map((b) => b.toRadixString(16).padLeft(2, '0'))
+      .join();
+}
+
 String _canonicalBody({
   required String id,
   required String name,
   required String origin,
   required String bundle,
-}) =>
-    jsonEncode({'v': 1, 'id': id, 'name': name, 'origin': origin, 'bundle': bundle});
+  String? n,
+}) {
+  final body = <String, Object>{
+    'v': 1,
+    'id': id,
+    'name': name,
+    'origin': origin,
+    'bundle': bundle,
+  };
+  if (n != null && n.isNotEmpty) body['n'] = n;
+  return jsonEncode(body);
+}
 
 String _macOf(String body) {
   final h = sha256.convert(utf8.encode(vortexPersonal) + utf8.encode(body)).bytes;
@@ -189,13 +209,15 @@ String? mintVorticeDeployKey({
   final label = (name ?? id).trim();
   if (label.isEmpty || label.length > 64) return null;
   final bundle = vorticeBundleHash(programId: id, name: label, origin: url, source: source);
-  final body = _canonicalBody(id: id, name: label, origin: url, bundle: bundle);
+  final n = _mintNonce();
+  final body = _canonicalBody(id: id, name: label, origin: url, bundle: bundle, n: n);
   final payload = jsonEncode({
     'v': 1,
     'id': id,
     'name': label,
     'origin': url,
     'bundle': bundle,
+    'n': n,
     'mac': _macOf(body),
   });
   return '$vorticeKeyPrefix${_b64url(utf8.encode(payload))}';
@@ -219,10 +241,20 @@ Vortice? parseVorticeKey(String key) {
     final name = payload['name']?.toString() ?? '';
     final bundle = payload['bundle']?.toString() ?? '';
     final mac = (payload['mac']?.toString() ?? '').toLowerCase();
+    final n = payload['n']?.toString() ?? '';
+    if (n.isNotEmpty && !RegExp(r'^[0-9a-f]{32}$', caseSensitive: false).hasMatch(n)) {
+      return null;
+    }
     if (id == null || origin == null || bundle.isEmpty || name.isEmpty || name.length > 64) {
       return null;
     }
-    final want = _macOf(_canonicalBody(id: id, name: name, origin: origin, bundle: bundle));
+    final want = _macOf(_canonicalBody(
+      id: id,
+      name: name,
+      origin: origin,
+      bundle: bundle,
+      n: n.isEmpty ? null : n,
+    ));
     if (want != mac) return null;
     return Vortice(id: id, name: name, origin: origin, bundle: bundle);
   } catch (_) {

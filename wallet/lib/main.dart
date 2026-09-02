@@ -25,7 +25,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.12';
+const kWalletVersion = '0.13';
 const kTabs = [
   'Continuum',
   'Flow',
@@ -404,7 +404,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         barrierDismissible: false,
         builder: (ctx) => AlertDialog(
           key: const Key('pull-sign'),
-          title: const Text('Sign pool pull'),
+          title: Text(p['kind']?.toString() == 'admin-spendable' ? 'Sign pool send' : 'Sign pool pull'),
           content: Text('Pay $she SHE to $dest'),
           actions: [
             TextButton(

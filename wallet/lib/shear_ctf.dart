@@ -92,6 +92,31 @@ Uint8List indexedDestHash({
   return Uint8List.fromList(_sha(utf8.encode(ctfFlowPersonal), spendHash20, t).sublist(0, 20));
 }
 
+/// Opening that verifies for [from]: silent she1 dest or dest-at-height.
+String? openingForDest({
+  required String from,
+  required String restFrame,
+  required String viewKey,
+  int destCount = 8,
+}) {
+  final spendH = spendHashFromAddress(restFrame);
+  if (spendH == null || viewKey.isEmpty) return null;
+  final n = destCount < 0 ? 0 : destCount;
+  for (var i = 0; i <= n; i++) {
+    final she = paymentCodeAtIndex(viewKey, spendH, i);
+    if (she != null && payoutDest(she) == from) {
+      return destOpeningFromView(viewKey, spendH, i);
+    }
+  }
+  for (var i = 0; i <= n; i++) {
+    final d = destAtIndex(restFrame, index: i, viewKey: viewKey);
+    if (d == from) {
+      return indexedDestOpening(spendH, closureCommit(viewKey), i);
+    }
+  }
+  return destOpeningFromView(viewKey, spendH, 0);
+}
+
 String? destAtIndex(
   String restFrame, {
   required int index,

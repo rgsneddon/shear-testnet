@@ -60,15 +60,15 @@ void main() {
     final relEnt = File('macos/Runner/Release.entitlements').readAsStringSync();
     expect(debugEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.12"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.13"'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.12"'), isTrue);
+    expect(winMain.contains('L"Shear 0.13"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.12"'), isTrue);
+    expect(winRc.contains('"Shear 0.13"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.12"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.13"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -678,7 +678,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.12');
+    expect(kWalletVersion, '0.13');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -814,6 +814,15 @@ void main() {
     expect(verifyVorticeDownload(key, 'tamper'), isNull);
     expect(addVortice(const [reserveVortice], key), hasLength(1));
     expect(addVortice(const [reserveVortice], key, source: source), hasLength(2));
+    final again = mintVorticeDeployKey(
+      programId: 'hosted-a',
+      name: 'Hosted A',
+      origin: origin,
+      source: source,
+    )!;
+    expect(again, isNot(key));
+    expect(parseVorticeKey(again)?.id, 'hosted-a');
+    expect(verifyVorticeDownload(again, source)?.id, 'hosted-a');
   });
 
   test('currentDest is round ssa1 dest; destAtIndex mints unlimited ssa1 tied to shear1', () {
@@ -1099,10 +1108,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.12');
-    expect(kWalletVersion, '0.12');
+    expect(app.title, 'Shear 0.13');
+    expect(kWalletVersion, '0.13');
     await tester.pump();
-    expect(find.textContaining('0.12'), findsWidgets);
+    expect(find.textContaining('0.13'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -2397,6 +2406,97 @@ void main() {
     resumed.restoreDests(dests);
     resumed.applyPoolSnapshot(home, {'balance': 5.0, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
     expect(resumed.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(5.0, 1e-12));
+  });
+
+  test('incoming send from the pool dest does not adopt the pool dest as owned', () async {
+    final alice = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    const poolDest = 'ssa1q59sd89tfvs3qeavud7lwhnf55v58ev8hcxy9kc';
+    final live = _PoolLive(headerHex: hex, height: 20, balance: 0);
+    final silent = payoutDest(alice.paymentCode)!;
+    live.destBalances[silent] = 4.0;
+    live.destBalances[poolDest] = 650.0;
+    live.history = [
+      {
+        'id': 'send-pool',
+        'kind': 'send',
+        'from': poolDest,
+        'to': silent,
+        'amount': 4.0,
+        'height': 10,
+        'confirmed': true,
+      },
+    ];
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
+    await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
+    expect(ledger.exportedDests(), isNot(contains(poolDest)));
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(4.0, 1e-12));
+    expect(ledger.spendable(poolDest), 0);
+
+    ledger.restoreDests([poolDest, silent]);
+    ledger.applyPoolSnapshot(poolDest, {'balance': 650.0, 'pending': 0}, beforeHeight: 0, tipSealed: 20);
+    await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
+    expect(ledger.exportedDests(), isNot(contains(poolDest)));
+    expect(ledger.spendable(poolDest), 0);
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(4.0, 1e-12));
+  });
+
+  test('openingForDest matches silent dest and dest-at-height; send posts that opening', () async {
+    final alice = createIdentity();
+    final bob = createIdentity();
+    final silent = payoutDest(alice.paymentCode)!;
+    final d0 = destAtIndex(alice.address, index: 0, viewKey: alice.viewKey)!;
+    final openSilent = openingForDest(from: silent, restFrame: alice.address, viewKey: alice.viewKey)!;
+    expect(openSilent.length, 128);
+    final openIdx = openingForDest(from: d0, restFrame: alice.address, viewKey: alice.viewKey)!;
+    expect(openIdx.length, 120);
+    expect(openSilent, isNot(openIdx));
+
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 20, balance: 0);
+    live.destBalances[silent] = 2.0;
+    final posted = <Map<String, dynamic>>[];
+    final server = await _fakePool(live: live, posted: posted);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
+    await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
+    final to = destForLogin(bob.address, height: 1, viewKey: bob.viewKey)!;
+    await ledger.send(
+      from: silent,
+      to: to,
+      amount: 0.4,
+      restFrame: alice.address,
+      paymentCode: alice.paymentCode,
+    );
+    expect(posted.single['open'], openSilent);
+    expect(posted.single['from'], silent);
+  });
+
+  test('third-party vortice cannot mint SHE or impersonate Reserve/Join/pool-unlock; UI has no password or join1', () {
+    expect(extraMintAllowed(reserveProgram), isTrue);
+    expect(extraMintAllowed('vort1.random-printer'), isFalse);
+    expect(validProgramId(reserveProgram), isNull);
+    expect(validProgramId(joinProgram), isNull);
+    expect(validProgramId(poolUnlockProgram), isNull);
+    expect(validOrigin('javascript:alert(1)'), isNull);
+    final dartMain = File('lib/main.dart').readAsStringSync();
+    final vortexFn = dartMain.substring(dartMain.indexOf('Widget _vortex('), dartMain.indexOf('Widget _closure('));
+    expect(vortexFn.contains('labelText: \'Password\''), isFalse);
+    expect(vortexFn.contains('twelve'), isFalse);
+    expect(dartMain.contains('poolUnlockSend('), isTrue);
+    expect(dartMain.contains('Third-party vortice cannot mint SHE'), isTrue);
+    final third = dartMain.substring(
+      dartMain.indexOf('Third-party vortice cannot mint SHE'),
+      dartMain.indexOf('Widget _closure('),
+    );
+    expect(third.contains('join1.'), isFalse);
+    expect(third.contains('Password'), isFalse);
   });
 
   testWidgets('unlocked matching she1 signs pending pool pull; cancel and mismatch do not', (tester) async {

@@ -28,6 +28,7 @@ import { emptyVault, applyReserveBlock } from '../../crypto/reserve_vault.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { emptyJoin, applyJoinBlock, validateJoinBlock } from '../../crypto/join_vault.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
 import { blockWeight } from '../../crypto/levy.js';
@@ -491,6 +492,7 @@ export function createStore(dir, {
 
   function append(block) {
     const prev = tip();
+    const parentH = prev ? prev.height : 0;
     const check = verifyBlock(block, prev ? {
       hash: prev.hash,
       header: prev.header,
@@ -508,6 +510,7 @@ export function createStore(dir, {
       buried: !!block.samplesPruned,
       evmSession,
       evmHistory: blocks,
+      spendableOf: (addr) => Math.max(0, matureSpendableNanos(explorer, addr, parentH)),
     });
     return settleCheck(check, (okCheck) => completeAppend(okCheck, block));
   }
@@ -582,6 +585,17 @@ export function createStore(dir, {
     if (id && mempool.some((m) => String(m.id) === id)) {
       return { ok: true, tx, duplicate: true };
     }
+    const debit = fundedDebit(tx);
+    if (debit) {
+      const tipH = Number(t?.height || 0);
+      const have = matureSpendableNanos(explorer, debit.from, tipH) - mempoolDebitNanos(mempool, debit.from);
+      if (have < debit.nanos) {
+        return { ok: false, reason: 'insufficient', need: debit.nanos, have };
+      }
+      if (flowSendNeedsOpen(tx) && !verifyDestOpening(debit.from, tx.open)) {
+        return { ok: false, reason: 'unsigned' };
+      }
+    }
     const got = admitMempool(book, tx, { baseFee: base });
     if (got.ok && got.tx && !got.duplicate) emit('tx', got.tx);
     return got;
@@ -598,6 +612,9 @@ export function createStore(dir, {
       bLeaves: accepted[i - 1].bLeaves,
       weight: accepted[i - 1].weight,
     };
+    const parentH = i === 0 ? 0 : Number(accepted[i - 1].height || i);
+    const rows = [];
+    for (const b of accepted) rows.push(...sealedExplorerRows(b));
     return verifyBlock(fork[i], prev, {
       joinFunded,
       buried: !!fork[i].samplesPruned,
@@ -606,6 +623,7 @@ export function createStore(dir, {
       hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
       evmSession: trialSession,
       evmHistory: trialSession ? [] : accepted,
+      spendableOf: (addr) => Math.max(0, matureSpendableNanos(rows, addr, parentH)),
     });
   }
 

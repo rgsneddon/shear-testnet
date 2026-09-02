@@ -218,6 +218,16 @@ export function paymentCodeFromViewKey(viewKey, spendHash20) {
   return paymentCodeAtIndex(viewKey, spendHash20, 0);
 }
 
+/** 64-byte scan||spend opening for payoutDest(she1) / dest index. Never she1 on chain. */
+export function destOpeningFromView(viewKey, spendHash20, index = 0) {
+  const n = Number(index);
+  if (!Number.isInteger(n) || n < 0) return '';
+  const scanPriv = x25519PrivateFromSeed(scanSeedFromView(viewKey, n));
+  const scanPub = x25519PublicRaw(scanPriv);
+  const spend = spendPubAtIndex(spendHash20, n);
+  return Buffer.concat([Buffer.from(scanPub), Buffer.from(spend)]).toString('hex');
+}
+
 function asSpend(h) {
   const b = Buffer.from(h);
   if (b.length === 32) return b;
