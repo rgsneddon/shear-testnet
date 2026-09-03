@@ -156,6 +156,26 @@ describe('most-work adopt', () => {
     assert.equal(Buffer.from(local.tip().hash).equals(before), true);
   });
 
+  it('adopt from empty rebuilds without a snapshot vault helper', () => {
+    const dest = destMiner();
+    const local = tmpStore();
+    const peer = tmpStore();
+    const now = Date.now();
+    const { tpl } = peer.template({ miner: dest, bits: 1, shareBits: 1, now });
+    const found = mineTemplate({ ...tpl, bits: 1 }, { maxTries: 80_000, shareBits: 1 });
+    assert.ok(found && found.block, 'need pow');
+    assert.equal(peer.append({
+      header: found.header,
+      txs: tpl.txs,
+      samples: tpl.samples,
+      miner: dest,
+    }).ok, true);
+    const got = local.adopt(peer.blocks);
+    assert.equal(got.ok, true, got.reason);
+    assert.equal(got.reorg, true);
+    assert.equal(local.tip().height, 1);
+  });
+
   it('append still extends a child of the current tip', () => {
     const dest = destMiner();
     const store = tmpStore();

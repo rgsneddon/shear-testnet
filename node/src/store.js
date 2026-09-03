@@ -661,7 +661,6 @@ export function createStore(dir, {
     rewriteChain();
     rebuildExplorer();
     replayVault();
-    replayJoin();
     rebuildSpentB();
     bounceMempool(disconnected, connected);
     pruneBuried();
