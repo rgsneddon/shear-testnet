@@ -75,6 +75,8 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /shear-wallet-0\.18-android\.apk/);
     assert.match(html, /shear-wallet-0\.18-linux\.zip/);
     assert.match(html, /shear-wallet-0\.18-archlinux\.zip/);
+    assert.doesNotMatch(html, /shear-wallet-0\.17-/);
+    assert.doesNotMatch(html, /releases\/tag\/0\.17/);
     assert.doesNotMatch(html, /shear-wallet-0\.15-/);
     assert.doesNotMatch(html, /shear-wallet-0\.14-/);
     assert.doesNotMatch(html, /shear-wallet-0\.13-/);
@@ -124,9 +126,12 @@ describe('shear.digital client buttons', () => {
       pool: fs.readFileSync(path.join(here, '../../pool/public/index.html'), 'utf8'),
       explorer: fs.readFileSync(path.join(here, '../../pool/public/explorer.html'), 'utf8'),
       miner: fs.readFileSync(path.join(here, '../../pool/public/miner.html'), 'utf8'),
+      poolAdmin: fs.readFileSync(path.join(here, '../../pool/admin/index.html'), 'utf8'),
     };
     for (const [name, page] of Object.entries(pages)) {
       assert.match(page, /releases\/tag\/0\.18/, `${name} WALLET must pin 0.18`);
+      assert.doesNotMatch(page, /releases\/tag\/0\.17/, `${name} must not offer 0.17`);
+      assert.doesNotMatch(page, /shear-wallet-0\.17-/);
       assert.doesNotMatch(page, /releases\/tag\/0\.16/, `${name} must not offer 0.16`);
       assert.doesNotMatch(page, /releases\/tag\/0\.15/, `${name} must not offer 0.15`);
       assert.doesNotMatch(page, /releases\/tag\/0\.13/, `${name} must not offer 0.13`);
