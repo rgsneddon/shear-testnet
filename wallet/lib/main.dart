@@ -27,7 +27,9 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.17';
+const kWalletVersion = '0.18';
+/// Lock-in card stays up at least this long; Dismiss is disabled until then.
+const kReserveLockHold = Duration(seconds: 6);
 const kTabs = [
   'Continuum',
   'Flow',
@@ -135,6 +137,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   bool _showReceiveQr = false;
   Map<String, dynamic>? _reserveLockNotice;
   String? _reserveVoteDraft;
+  Timer? _reserveLockHold;
+  bool _reserveLockDismissable = false;
 
   @override
   void initState() {
@@ -153,6 +157,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     vorticeKeyCtrl.dispose();
     shearviewQuery.dispose();
     _accrualTick?.cancel();
+    _reserveLockHold?.cancel();
     super.dispose();
   }
 
@@ -927,13 +932,13 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     );
   }
 
-  TableRow _continuumStatRow(BuildContext context, String label, String value) {
+  TableRow _continuumStatRow(BuildContext context, String label, String value, {Key? key}) {
     final style = TextStyle(color: shearMutedOf(context), fontSize: 13);
     return TableRow(
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 0),
-          child: Text(label, style: style),
+          child: Text(label, key: key, style: style),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 0),
@@ -947,6 +952,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
     final pending = ledger.pendingTxs(ident.address);
     final path1 = ledger.path1Observation();
+    final hashBonus = ledger.confirmedHashBonus(ident.address, paymentCode: ident.paymentCode);
     final fluxSec = (path1.targetIntervalMs / 1000).round();
     final dt = path1.observedIntervalMs;
     final spendPane = <Widget>[
@@ -1029,6 +1035,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             context,
             'Integral Q',
             '${formatShe((ledger.circulatingNanos ?? (path1.integralQShe * kUnitsPerShe).round()) / kUnitsPerShe)} SHE (circulation)',
+          ),
+          _continuumStatRow(
+            context,
+            'Hash bonus',
+            '${formatShe(hashBonus)} SHE',
+            key: const Key('continuum-hash-bonus'),
           ),
         ],
       ),
@@ -1311,6 +1323,11 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       return;
     }
     final p = reserve.portal(dest);
+    _reserveLockHold?.cancel();
+    _reserveLockDismissable = false;
+    _reserveLockHold = Timer(kReserveLockHold, () {
+      if (mounted) setState(() => _reserveLockDismissable = true);
+    });
     _reserveLockNotice = {
       'she': she,
       'txid': tx.id,
@@ -1325,6 +1342,41 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     if (dest == null) return;
     final to = ledger.currentDest(ident.address);
     final now = DateTime.now().millisecondsSinceEpoch;
+    final p0 = dest.isNotEmpty ? reserve.portal(dest) : null;
+    final canPrev = (p0?.claimableRewards ?? 0) > 0;
+    if (!reserve.epochIsOver(now) && !canPrev) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('The epoch is still open. Withdraw after 400 days.')),
+        );
+      }
+      return;
+    }
+    final go = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        key: const Key('reserve-withdraw-sign'),
+        title: const Text('Sign Reserve withdraw'),
+        content: const Text(
+          'Return principal and 400-day APR interest to Continuum.\n'
+          'This settles the finished epoch.',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('reserve-withdraw-sign-cancel'),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('reserve-withdraw-sign-accept'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sign'),
+          ),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return;
     final out = reserve.withdrawTo(ledger, dest: dest, payout: to, nowMs: now);
     if (out == null) {
       if (context.mounted) {
@@ -1399,7 +1451,10 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                 Align(
                   alignment: Alignment.centerRight,
                   child: TextButton(
-                    onPressed: () => setState(() => _reserveLockNotice = null),
+                    key: const Key('reserve-lock-dismiss'),
+                    onPressed: _reserveLockDismissable
+                        ? () => setState(() => _reserveLockNotice = null)
+                        : null,
                     child: const Text('Dismiss'),
                   ),
                 ),
@@ -1409,23 +1464,70 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         ),
       ],
       const SizedBox(height: 8),
-      Text('Your holdings', key: const Key('reserve-holdings'), style: const TextStyle(fontWeight: FontWeight.w600)),
-      Text('Your portal  $stakedShe SHE staked · $idleShe SHE idle  ·  $totalShe SHE locked'
-          '${p.joined ? ' · joined this epoch' : ''}'),
-      Text('Program locked  $programShe SHE  ·  live hash bonus ${reserve.liveHashBonusNanos} unit(s)'),
+      Text('Your sums', key: const Key('reserve-holdings'), style: const TextStyle(fontWeight: FontWeight.w600)),
+      Text('Staked  $stakedShe SHE'),
+      Text('Idle  $idleShe SHE'),
+      Text('Locked  $totalShe SHE${p.joined ? '  ·  joined this epoch' : ''}'),
+      Text('Accrued this epoch  $accruedShe SHE  ·  minted daily, locked until epoch end'),
+      Text('Previous-epoch rewards  ${formatShe(p.claimableRewards / kUnitsPerShe)} SHE  ·  withdrawable now'),
       Text(
         p.canVote
             ? 'Vote unlocked  portal holds ≥ π SHE'
             : 'Need $needVoteShe SHE more to reach π and unlock a vote. Deposits add up.',
         key: const Key('reserve-pi-progress'),
       ),
+      const SizedBox(height: 8),
+      Text('Overall sums', key: const Key('reserve-overall'), style: const TextStyle(fontWeight: FontWeight.w600)),
+      Text('Program locked  $programShe SHE'),
+      Text('Program staked  ${formatShe((reserve.totalStakedNanos > 0 ? reserve.totalStakedNanos : reserve.totalLockedNanos) / kUnitsPerShe)} SHE  ·  idle ${formatShe(reserve.totalIdleNanos / kUnitsPerShe)} SHE'),
+      Text('Fee bank  ${formatShe(reserve.feeBankNanos / kUnitsPerShe)} SHE  ·  extra-minted ${formatShe(reserve.mintBankNanos / kUnitsPerShe)} SHE'),
+      Text('Accrued (all portals)  ${formatShe(reserve.totalAccruedNanos / kUnitsPerShe)} SHE  ·  claimable ${formatShe(reserve.totalClaimableNanos / kUnitsPerShe)} SHE'),
+      Text('Live hash bonus  ${reserve.liveHashBonusNanos} unit(s)'),
+      Text('Votes  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}'),
       Text(reserve.epochStartMs == 0
           ? 'No epoch yet. The first π SHE deposit will start it.'
           : '$daysLeft days remaining in this epoch  ·  day $dayOfEpoch of $kReserveEpochDays'),
       if (p.nanos > 0) ...[
         Text('$kReserveAccruedLabel  $accruedShe SHE  ·  updates daily (day $dayOfEpoch)'),
         Text('At epoch end  $endShe SHE'),
-        Text('Observed rate  $rate a year on staked SHE. Idle SHE does not accrue.'),
+        Text(
+          '${reserve.oracleObservedAtMs == 0 ? 'Default' : 'Observed'} $rate 400-day APR on staked SHE. Idle SHE does not accrue. Median of first-world central banks.',
+          key: const Key('reserve-apr'),
+        ),
+      ],
+      if (reserve.epochs.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        const Text('Epochs', style: TextStyle(fontWeight: FontWeight.w600)),
+        Table(
+          key: const Key('reserve-epoch-table'),
+          columnWidths: const {
+            0: FlexColumnWidth(0.7),
+            1: FlexColumnWidth(1.4),
+            2: FlexColumnWidth(1.4),
+          },
+          children: [
+            const TableRow(children: [
+              Padding(padding: EdgeInsets.symmetric(vertical: 2), child: Text('Epoch')),
+              Padding(padding: EdgeInsets.symmetric(vertical: 2), child: Text('Start')),
+              Padding(padding: EdgeInsets.symmetric(vertical: 2), child: Text('End')),
+            ]),
+            for (final e in reserve.epochs)
+              TableRow(children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text('${e.epoch}'),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text(reserveLocalDateTime(e.startMs)),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text(reserveLocalDateTime(e.endMs)),
+                ),
+              ]),
+          ],
+        ),
       ],
       if (p.deposits.isNotEmpty) ...[
         const SizedBox(height: 8),
@@ -1452,10 +1554,13 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           onPressed: () => _reserveSend(context, ident, addMore: true),
           child: const Text('Add more SHE to the vault'),
         ),
-        if (p.nanos > 0 && reserve.epochStartMs != 0 && reserve.remainingMs(now) == 0)
+        if ((p.nanos > 0 && reserve.epochIsOver(now)) || p.claimableRewards > 0)
           FilledButton(
+            key: const Key('reserve-withdraw'),
             onPressed: () => _reserveWithdraw(context, ident),
-            child: const Text('Withdraw to Continuum'),
+            child: Text(p.claimableRewards > 0 && !reserve.epochIsOver(now)
+                ? 'Withdraw previous-epoch rewards'
+                : 'Withdraw to Continuum'),
           ),
       ]),
       if (p.canVote) ...[

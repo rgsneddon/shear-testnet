@@ -23,20 +23,31 @@ const kReserveAccruedLabel = 'Accrued rewards';
 
 bool extraMintAllowed(String programId) => programId == kReserveProgram;
 
+/// 400-day APR on staked SHE. Idle earns 0. Never `* 400 / 365`.
+/// Whole epoch: `floor(stakedNanos * bps / 10000)` i.e.
+/// `(p * bps * days) ~/ (10000 * 400)` when [days] is 400.
 int reserveInterestNanos(int stakedNanos, int annualBps, [int days = kReserveEpochDays]) {
   if (stakedNanos <= 0 || annualBps < 0 || days <= 0) return 0;
-  return (BigInt.from(stakedNanos) * BigInt.from(annualBps) * BigInt.from(days) ~/ BigInt.from(3650000))
+  return (BigInt.from(stakedNanos) * BigInt.from(annualBps) * BigInt.from(days) ~/
+          (BigInt.from(10000) * BigInt.from(kReserveEpochDays)))
       .toInt();
 }
 
+/// Accrued: `floor(stakedNanos * bps * e / (10000 * EPOCH_MS))`. Caps at 400 days.
 int accruedNanos(int stakedNanos, int annualBps, int elapsedMs) {
   if (stakedNanos <= 0 || annualBps < 0 || elapsedMs <= 0) return 0;
   final ms = elapsedMs > kReserveEpochMs ? kReserveEpochMs : elapsedMs;
   return (BigInt.from(stakedNanos) *
           BigInt.from(annualBps) *
           BigInt.from(ms) ~/
-          (BigInt.from(10000) * BigInt.from(365) * BigInt.from(86400000)))
+          (BigInt.from(10000) * BigInt.from(kReserveEpochMs)))
       .toInt();
+}
+
+String reserveLocalDateTime(int ms) {
+  final d = DateTime.fromMillisecondsSinceEpoch(ms).toLocal();
+  String p(int n) => n.toString().padLeft(2, '0');
+  return '${d.year}-${p(d.month)}-${p(d.day)} ${p(d.hour)}:${p(d.minute)}';
 }
 
 class ReserveRewards {
@@ -67,6 +78,13 @@ class ReserveDepositRow {
   final String? txid;
 }
 
+class ReserveEpochRow {
+  ReserveEpochRow({required this.epoch, required this.startMs, required this.endMs});
+  final int epoch;
+  final int startMs;
+  final int endMs;
+}
+
 class ReservePortal {
   ReservePortal({this.staked = 0, this.idle = 0, this.vote, this.joined = false, this.payout, this.voteEpoch = 0});
   int staked;
@@ -76,9 +94,10 @@ class ReservePortal {
   int voteEpoch;
   String? payout;
   int? remoteAccrued;
+  int claimableRewards = 0;
   final List<ReserveDepositRow> deposits = [];
   int get nanos => staked + idle;
-  bool get canVote => joined && nanos >= kPiSheNanos;
+  bool get canVote => nanos >= kPiSheNanos;
   int get remainingToVoteNanos => nanos >= kPiSheNanos ? 0 : kPiSheNanos - nanos;
 }
 
@@ -90,10 +109,17 @@ class ShearReserve {
   int totalLockedNanos = 0;
   int oracleBps = kReserveOracleDefaultBps;
   int oracleObservedAtMs = 0;
+  final List<ReserveEpochRow> epochs = [];
   final Map<String, ReservePortal> portals = {};
   int votesIncrease = 0;
   int votesDecrease = 0;
   int votesHold = 0;
+  int feeBankNanos = 0;
+  int mintBankNanos = 0;
+  int totalStakedNanos = 0;
+  int totalIdleNanos = 0;
+  int totalAccruedNanos = 0;
+  int totalClaimableNanos = 0;
 
   ReservePortal portal(String dest) {
     final id = portalIdFromDest(dest);
@@ -124,6 +150,25 @@ class ShearReserve {
     return e > kReserveEpochMs ? kReserveEpochMs : e;
   }
 
+  bool epochIsOver(int nowMs) =>
+      epochStartMs != 0 && nowMs >= epochStartMs + kReserveEpochMs;
+
+  void _recordEpoch(int startMs) {
+    if (currentEpoch < 1) currentEpoch = 1;
+    if (epochs.any((e) => e.epoch == currentEpoch && e.startMs == startMs)) return;
+    epochs.add(ReserveEpochRow(
+      epoch: currentEpoch,
+      startMs: startMs,
+      endMs: startMs + kReserveEpochMs,
+    ));
+  }
+
+  void _beginEpoch(int nowMs) {
+    epochStartMs = nowMs;
+    bonusEnacted = false;
+    _recordEpoch(nowMs);
+  }
+
   ReserveRewards rewards(String dest, int nowMs) {
     final p = portal(dest);
     final elapsed = elapsedMs(nowMs);
@@ -143,9 +188,20 @@ class ShearReserve {
     p.staked = (json['staked'] as num?)?.toInt() ?? p.staked;
     p.idle = (json['idle'] as num?)?.toInt() ?? p.idle;
     p.remoteAccrued = (json['accrued'] as num?)?.toInt();
-    if (p.staked >= kPiSheNanos) p.joined = true;
+    p.claimableRewards = (json['claimable'] as num?)?.toInt() ?? p.claimableRewards;
+    if (p.nanos >= kPiSheNanos) p.joined = true;
+    feeBankNanos = (json['feeBankNanos'] as num?)?.toInt() ?? feeBankNanos;
+    mintBankNanos = (json['mintBankNanos'] as num?)?.toInt() ?? mintBankNanos;
+    totalStakedNanos = (json['totalStakedNanos'] as num?)?.toInt() ?? totalStakedNanos;
+    totalIdleNanos = (json['totalIdleNanos'] as num?)?.toInt() ?? totalIdleNanos;
+    totalAccruedNanos = (json['totalAccruedNanos'] as num?)?.toInt() ?? totalAccruedNanos;
+    totalClaimableNanos = (json['totalClaimableNanos'] as num?)?.toInt() ?? totalClaimableNanos;
     final epoch = (json['epochStartMs'] as num?)?.toInt();
-    if (epoch != null && epoch > 0) epochStartMs = epoch;
+    if (epoch != null && epoch > 0) {
+      epochStartMs = epoch;
+      if (currentEpoch < 1) currentEpoch = 1;
+      _recordEpoch(epoch);
+    }
     final bps = (json['oracleBps'] as num?)?.toInt();
     if (bps != null && bps >= 0) oracleBps = bps;
   }
@@ -179,15 +235,13 @@ class ShearReserve {
       p.joined = true;
       if (epochStartMs == 0) {
         currentEpoch = 1;
-        epochStartMs = nowMs;
-        bonusEnacted = false;
+        _beginEpoch(nowMs);
       } else if (bonusEnacted) {
         currentEpoch += 1;
-        epochStartMs = nowMs;
-        bonusEnacted = false;
         votesIncrease = 0;
         votesDecrease = 0;
         votesHold = 0;
+        _beginEpoch(nowMs);
       }
     }
     return null;
@@ -216,8 +270,10 @@ class ShearReserve {
   }
 
   Map<String, int>? withdraw({required String dest, required int nowMs, String? payout}) {
-    if (epochStartMs == 0 || nowMs < epochStartMs + kReserveEpochMs) return null;
-    if (!bonusEnacted) {
+    final epochOver = epochStartMs != 0 && nowMs >= epochStartMs + kReserveEpochMs;
+    final p0 = portal(dest);
+    if (!epochOver && p0.claimableRewards <= 0) return null;
+    if (epochOver && !bonusEnacted) {
       final up = votesIncrease, down = votesDecrease, hold = votesHold;
       final m = [up, down, hold].reduce((a, b) => a > b ? a : b);
       var winners = 0;
@@ -230,29 +286,41 @@ class ShearReserve {
       bonusEnacted = true;
     }
     final p = portal(dest);
-    final staked = p.staked;
-    final idle = p.idle;
-    final principal = staked + idle;
-    if (principal <= 0) return null;
+    final claimable = p.claimableRewards;
+    var staked = 0;
+    var idle = 0;
+    var principal = 0;
+    if (epochOver || bonusEnacted) {
+      staked = p.staked;
+      idle = p.idle;
+      principal = staked + idle;
+    }
+    final interest = epochOver
+        ? (claimable > 0 ? claimable : reserveInterestNanos(staked, oracleBps))
+        : claimable;
+    if (principal <= 0 && interest <= 0) return null;
     if (!extraMintAllowed(kReserveProgram)) return null;
     if (payout != null && isDestAddress(payout) && !isShearAddress(payout)) {
       p.payout = payout;
     }
-    final interest = reserveInterestNanos(staked, oracleBps);
-    totalLockedNanos -= principal;
-    if (p.vote == kVoteIncrease) votesIncrease--;
-    if (p.vote == kVoteDecrease) votesDecrease--;
-    if (p.vote == kVoteHold) votesHold--;
-    p.staked = 0;
-    p.idle = 0;
-    p.joined = false;
-    p.vote = null;
-    p.payout = null;
+    if (principal > 0) totalLockedNanos -= principal;
+    if (principal > 0) {
+      if (p.vote == kVoteIncrease) votesIncrease--;
+      if (p.vote == kVoteDecrease) votesDecrease--;
+      if (p.vote == kVoteHold) votesHold--;
+      p.staked = 0;
+      p.idle = 0;
+      p.joined = false;
+      p.vote = null;
+      p.payout = null;
+    }
+    p.claimableRewards = 0;
     return {
       'principal': principal,
       'staked': staked,
       'idle': idle,
       'interest': interest,
+      'claimable': claimable,
       'payout': principal + interest,
     };
   }

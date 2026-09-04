@@ -1,5 +1,5 @@
 name: shear_wallet
-description: "Shear wallet — [testnet] 0.17"
+description: "Shear wallet — [testnet] 0.18"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -16,8 +16,8 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-# Store/file version is x.y.z+build (Flutter/Android). Public pin is two-part 0.17.
-version: 0.17.0+29
+# Store/file version is x.y.z+build (Flutter/Android). Public pin is two-part 0.18.
+version: 0.18.0+30
 
 environment:
   sdk: ^3.12.2

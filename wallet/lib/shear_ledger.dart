@@ -6,6 +6,7 @@ import 'shear_ctf.dart';
 import 'shear_identity.dart';
 import 'shear_eip712.dart';
 import 'shear_levy.dart';
+import 'shear_flyclient.dart';
 
 const kSheDecimals = 11;
 const kShePublicDigits = 9;
@@ -584,6 +585,22 @@ class ShearLedger {
     return t - height + 1;
   }
 
+  /// Hash bonus on verified dests at ≥ 6 confirmations. Display only; no claim.
+  double confirmedHashBonus(String restFrame, {String? paymentCode}) {
+    final keys = ownedAddresses(restFrame, paymentCode: paymentCode);
+    var n = 0.0;
+    for (final t in _txs) {
+      final bonus = t.hashAmount ?? 0;
+      if (bonus <= 0) continue;
+      if (!keys.contains(t.to) && t.to != restFrame) continue;
+      final h = t.height ?? 0;
+      if (h < 1) continue;
+      if (confirmationsOf(h) < spendableConfirmations) continue;
+      n += bonus;
+    }
+    return n;
+  }
+
   /// Policy available (default 12 confs). Consensus spendable is 6 confs.
   double policyAvailable(String address, {int? confirms, String? paymentCode}) {
     final need = confirms ?? minConfirms;
@@ -677,6 +694,7 @@ class ShearLedger {
   Future<void> syncTip() async {
     if (pool == null) return;
     try {
+      await pool!.followLive();
       final json = await pool!.stats();
       if (json['policy'] is Map) {
         applyPolicy(Map<String, dynamic>.from(json['policy'] as Map));
@@ -1286,25 +1304,60 @@ class ShearLedger {
 }
 
 class ShearPoolClient {
-  ShearPoolClient({this.baseUrl = 'https://pool.shear.digital', HttpClient? http})
-      : _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8));
+  /// Production (no [baseUrl]) follows FlyClient's live seed. Tests pin [baseUrl].
+  ShearPoolClient({
+    String? baseUrl,
+    HttpClient? http,
+    ShearFlyClient? fly,
+    String? userUrl,
+  })  : _pinned = baseUrl,
+        _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8)) {
+    _fly = fly ??
+        (baseUrl == null
+            ? ShearFlyClient(http: _http, userUrl: userUrl)
+            : null);
+  }
 
-  final String baseUrl;
+  final String? _pinned;
   final HttpClient _http;
+  ShearFlyClient? _fly;
+
+  String get baseUrl => _pinned ?? _fly?.liveBase ?? kFlyDefaultSeed;
+
+  Future<void> followLive() async {
+    if (_pinned != null) return;
+    await _fly?.ensureLive();
+  }
+
+  void close() {
+    _http.close(force: true);
+  }
 
   Future<Map<String, dynamic>> _get(String path) async {
-    final req = await _http.getUrl(Uri.parse('$baseUrl$path'));
-    final res = await req.close();
-    final text = await utf8.decodeStream(res);
-    return jsonDecode(text) as Map<String, dynamic>;
+    await followLive();
+    try {
+      final req = await _http.getUrl(Uri.parse('$baseUrl$path'));
+      final res = await req.close();
+      final text = await utf8.decodeStream(res);
+      return jsonDecode(text) as Map<String, dynamic>;
+    } catch (_) {
+      if (_pinned == null) _fly?.noteFailure();
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body) async {
-    final req = await _http.postUrl(Uri.parse('$baseUrl$path'));
-    req.headers.contentType = ContentType.json;
-    req.add(utf8.encode(jsonEncode(body)));
-    final res = await req.close();
-    return jsonDecode(await utf8.decodeStream(res)) as Map<String, dynamic>;
+    await followLive();
+    try {
+      final req = await _http.postUrl(Uri.parse('$baseUrl$path'));
+      req.headers.contentType = ContentType.json;
+      req.add(utf8.encode(jsonEncode(body)));
+      final res = await req.close();
+      return jsonDecode(await utf8.decodeStream(res)) as Map<String, dynamic>;
+    } catch (_) {
+      if (_pinned == null) _fly?.noteFailure();
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> balance(String address) =>
