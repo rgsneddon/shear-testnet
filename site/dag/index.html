@@ -1131,7 +1131,7 @@
       return n ? { kind: n.kind, count: n.count, dest: n.dest, selected: !!n.selected, sx: n._sx, sy: n._sy, shareBits: n.shareBits, bonusNanos: n.bonusNanos } : null;
     };
     pull();
-    setInterval(pull, 1000);
+    setInterval(pull, 2500);
     requestAnimationFrame(tick);
   </script>
 </body>
