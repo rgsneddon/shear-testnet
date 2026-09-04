@@ -46,6 +46,17 @@
     .guide-grid p, .guide-wide p { margin: 0 0 10px; line-height: 1.55; }
     .guide-wide ol { margin: 0 0 4px; padding-left: 1.15rem; }
     .guide-wide li { margin: 0 0 9px; line-height: 1.55; }
+    .copy-row { display:flex; align-items:stretch; gap:8px; margin:0 0 12px; }
+    .copy-row pre {
+      flex:1; margin:0; padding:10px 12px; overflow:auto;
+      background:var(--code); color:var(--ink); font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space:pre-wrap; word-break:break-word;
+    }
+    .copy-row button {
+      flex:0 0 auto; cursor:pointer; padding:0 12px; font-weight:750; letter-spacing:.04em;
+      text-transform:uppercase; font-size:.72rem; color:var(--cyan);
+      border:1px solid var(--blue); background:var(--input);
+    }
     .sched { width: 100%; border-collapse: collapse; margin: 4px 0 12px; font-size: .88rem; }
     .sched th, .sched td {
       text-align: left; padding: .45rem .2rem; vertical-align: top;
@@ -363,6 +374,39 @@
       </ol>
       <p>This is testnet. Install only from the buttons on this page or the official release tag.</p>
     </section>
+    <section class="panel-card guide-wide" id="solo-mine">
+      <h2>Solo mine</h2>
+      <p>ShearK-Miner <strong>1.5</strong>, CPU only. Log in with your wallet <code>she1</code> (never <code>shear1</code>). Solo means <em>your</em> node finds the block: you keep the whole <strong>1 SHE</strong> pot plus the hash bonus. The public pool takes 1% of the pot only.</p>
+      <h3>1. Local node + stratum</h3>
+      <p>Node source is the NODE button above. This starts an in-process node with stratum on <code>127.0.0.1:1111</code>.</p>
+      <div class="copy-row">
+        <pre id="solo-node">git clone --depth 1 https://github.com/rgsneddon/shear-testnet.git
+cd shear-testnet
+npm install
+npm run pool</pre>
+        <button type="button" data-copy="solo-node">Copy</button>
+      </div>
+      <h3>2. Point ShearK at localhost</h3>
+      <p>Download miner <strong>1.5</strong>, unzip, then (macOS / Linux):</p>
+      <div class="copy-row">
+        <pre id="solo-unix">./ShearK-Miner --selftest
+./ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SHE1.solo --threads 8</pre>
+        <button type="button" data-copy="solo-unix">Copy</button>
+      </div>
+      <p>Windows:</p>
+      <div class="copy-row">
+        <pre id="solo-win">ShearK-Miner.exe --selftest
+ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SHE1.solo --threads 8</pre>
+        <button type="button" data-copy="solo-win">Copy</button>
+      </div>
+      <p>Replace <code>YOUR_SHE1</code> with Continuum’s <code>she1</code>. <code>.solo</code> is only a worker name. Hash bonus is 10<sup>−11</sup> SHE per accepted hash, paid onto the matching <code>ssa1</code>, immature until 6 confirms.</p>
+      <h3>Public pool instead</h3>
+      <p>Skip the local node and hash on the official stratum:</p>
+      <div class="copy-row">
+        <pre id="solo-pool">./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --threads 8</pre>
+        <button type="button" data-copy="solo-pool">Copy</button>
+      </div>
+    </section>
   </div>
   <script>
     (function () {
@@ -475,6 +519,17 @@
         tick();
         setInterval(tick, 1000);
       })();
+      document.querySelectorAll('button[data-copy]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var el = document.getElementById(btn.getAttribute('data-copy'));
+          if (!el) return;
+          var text = el.textContent || '';
+          var done = function () { btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = 'Copy'; }, 1200); };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(function () {});
+          }
+        });
+      });
       var rateEl = document.getElementById('oracle-rate');
       if (rateEl) {
         fetch('/reserve/latest.json', { cache: 'no-store' })

@@ -188,6 +188,12 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /Start a wallet from scratch/);
     assert.match(html, /Set password/);
     assert.match(html, /Export shewall\.bin/);
+    assert.match(html, /id="solo-mine"/);
+    assert.match(html, /Solo mine/);
+    assert.match(html, /127\.0\.0\.1:1111/);
+    assert.match(html, /npm run pool/);
+    assert.match(html, /YOUR_SHE1\.solo/);
+    assert.match(html, /data-copy="solo-unix"/);
     assert.match(html, /guide-grid/);
     assert.match(html, /guide-wide/);
     assert.doesNotMatch(html, /Bitcoin|Ethereum|feeless/);
