@@ -133,6 +133,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   bool _pullPrompting = false;
   final Set<String> _handledPullIds = {};
   bool _showReceiveQr = false;
+  Map<String, dynamic>? _reserveLockNotice;
+  String? _reserveVoteDraft;
 
   @override
   void initState() {
@@ -1256,8 +1258,51 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       }
       return;
     }
+    final go = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        key: const Key('reserve-sign'),
+        title: Text(addMore ? 'Sign Reserve deposit' : 'Sign Reserve deposit'),
+        content: Text(
+          'Lock ${formatShe(she)} SHE into The Reserve.\n'
+          'This spends Continuum and locks the coins in your portal until the epoch ends.',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('reserve-sign-cancel'),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('reserve-sign-accept'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sign'),
+          ),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return;
     final from = ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: she);
     final now = DateTime.now().millisecondsSinceEpoch;
+    late final dynamic tx;
+    try {
+      tx = await ledger.send(
+        from: from,
+        to: dest,
+        amount: she,
+        local: ledger.pool == null || widget.skipPoolSync,
+        kind: 'lock',
+        programId: kReserveProgram,
+        restFrame: ident.address,
+        paymentCode: ident.paymentCode,
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+      return;
+    }
     final err = reserve.deposit(dest: dest, she: she, nowMs: now, payout: from);
     if (err != null) {
       if (context.mounted) {
@@ -1265,20 +1310,14 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       }
       return;
     }
-    await ledger.send(
-      from: from,
-      to: dest,
-      amount: she,
-      local: true,
-      kind: 'lock',
-      programId: kReserveProgram,
-      restFrame: ident.address,
-      paymentCode: ident.paymentCode,
-    );
+    final p = reserve.portal(dest);
+    _reserveLockNotice = {
+      'she': she,
+      'txid': tx.id,
+      'cumulative': p.nanos / kUnitsPerShe,
+      'canVote': p.canVote,
+    };
     if (mounted) setState(() {});
-    if (context.mounted && addMore) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Added to your Reserve key-portal')));
-    }
   }
 
   Future<void> _reserveWithdraw(BuildContext context, ShearIdentity ident) async {
@@ -1308,8 +1347,14 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     final p = dest.isEmpty ? ReservePortal() : reserve.portal(dest);
     final now = DateTime.now().millisecondsSinceEpoch;
     final daysLeft = (reserve.remainingMs(now) / 86400000).floor();
+    final dayOfEpoch = reserve.epochStartMs == 0
+        ? 0
+        : (reserve.elapsedMs(now) / 86400000).floor().clamp(0, kReserveEpochDays);
     final stakedShe = formatShe(p.staked / kUnitsPerShe);
     final idleShe = formatShe(p.idle / kUnitsPerShe);
+    final totalShe = formatShe(p.nanos / kUnitsPerShe);
+    final programShe = formatShe(reserve.totalLockedNanos / kUnitsPerShe);
+    final needVoteShe = formatShe(p.remainingToVoteNanos / kUnitsPerShe);
     final rw = dest.isEmpty
         ? const ReserveRewards(
             accrued: 0, projected: 0, staked: 0, idle: 0, oracleBps: 0, elapsedMs: 0)
@@ -1317,6 +1362,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     final accruedShe = formatShe(rw.accrued / kUnitsPerShe);
     final endShe = formatShe(rw.projected / kUnitsPerShe);
     final rate = '${(rw.oracleBps / 100).toStringAsFixed(2)}%';
+    final voted = p.vote != null && p.voteEpoch == reserve.currentEpoch;
+    final draft = _reserveVoteDraft ?? p.vote;
     return [
       const Text('The Reserve', style: TextStyle(fontWeight: FontWeight.w700)),
       const Text(
@@ -1330,21 +1377,65 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         const SizedBox(height: 8),
         const Text(kReserveCutoffDisclaimer),
       ],
+      if (_reserveLockNotice != null) ...[
+        const SizedBox(height: 8),
+        Card(
+          key: const Key('reserve-locked-in'),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Locked in  ${formatShe((_reserveLockNotice!['she'] as num).toDouble())} SHE. '
+                  'Coins are locked in your portal.',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                Text('Tx  ${_reserveLockNotice!['txid']}'),
+                Text(
+                  'Portal total  ${formatShe((_reserveLockNotice!['cumulative'] as num).toDouble())} SHE'
+                  '${_reserveLockNotice!['canVote'] == true ? '  ·  vote unlocked' : ''}',
+                ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () => setState(() => _reserveLockNotice = null),
+                    child: const Text('Dismiss'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
       const SizedBox(height: 8),
-      Text('Your portal  $stakedShe SHE staked · $idleShe SHE idle'
+      Text('Your holdings', key: const Key('reserve-holdings'), style: const TextStyle(fontWeight: FontWeight.w600)),
+      Text('Your portal  $stakedShe SHE staked · $idleShe SHE idle  ·  $totalShe SHE locked'
           '${p.joined ? ' · joined this epoch' : ''}'),
+      Text('Program locked  $programShe SHE  ·  live hash bonus ${reserve.liveHashBonusNanos} unit(s)'),
+      Text(
+        p.canVote
+            ? 'Vote unlocked  portal holds ≥ π SHE'
+            : 'Need $needVoteShe SHE more to reach π and unlock a vote. Deposits add up.',
+        key: const Key('reserve-pi-progress'),
+      ),
       Text(reserve.epochStartMs == 0
           ? 'No epoch yet. The first π SHE deposit will start it.'
-          : '$daysLeft days remaining in this epoch.'),
-      Text('Live hash bonus  ${reserve.liveHashBonusNanos} unit(s)  ·  '
-          'votes +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}'),
+          : '$daysLeft days remaining in this epoch  ·  day $dayOfEpoch of $kReserveEpochDays'),
       if (p.nanos > 0) ...[
-        Text('$kReserveAccruedLabel  $accruedShe SHE'),
+        Text('$kReserveAccruedLabel  $accruedShe SHE  ·  updates daily (day $dayOfEpoch)'),
         Text('At epoch end  $endShe SHE'),
         Text('Observed rate  $rate a year on staked SHE. Idle SHE does not accrue.'),
       ],
+      if (p.deposits.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        const Text('Your deposits', style: TextStyle(fontWeight: FontWeight.w600)),
+        for (final d in p.deposits.reversed.take(12))
+          Text('${formatShe(d.nanos / kUnitsPerShe)} SHE  ·  ${DateTime.fromMillisecondsSinceEpoch(d.atMs).toIso8601String().split('T').first}'),
+      ],
       const SizedBox(height: 8),
       TextField(
+        key: const Key('reserve-amount'),
         controller: reserveAmt,
         keyboardType: TextInputType.number,
         decoration: const InputDecoration(labelText: 'Amount SHEAR'),
@@ -1352,10 +1443,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       const SizedBox(height: 8),
       Wrap(spacing: 8, runSpacing: 8, children: [
         FilledButton(
+          key: const Key('reserve-send'),
           onPressed: () => _reserveSend(context, ident, addMore: false),
           child: const Text('Send'),
         ),
         OutlinedButton(
+          key: const Key('reserve-add-more'),
           onPressed: () => _reserveSend(context, ident, addMore: true),
           child: const Text('Add more SHE to the vault'),
         ),
@@ -1367,23 +1460,38 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       ]),
       if (p.canVote) ...[
         const SizedBox(height: 12),
-        const Text('Vote to raise, lower, or leave the hash bonus (±1 unit). The 1 SHE pot does not change.'),
-        Wrap(spacing: 8, runSpacing: 8, children: [
-          for (final v in [kVoteIncrease, kVoteDecrease, kVoteHold])
-            ChoiceChip(
-              label: Text(v),
-              selected: p.vote == v,
-              onSelected: (_) {
-                if (p.vote != null &&
-                    p.voteEpoch == reserve.currentEpoch &&
-                    reserve.remainingMs(now) < kReserveJoinCutoffMs) {
-                  return;
-                }
-                reserve.vote(dest: dest, choice: v, nowMs: now);
-                setState(() {});
-              },
-            ),
-        ]),
+        const Text('Vote to raise, lower, or leave the hash bonus (±1 unit). The 1 SHE pot does not change. You can change this vote at any time.'),
+        for (final v in [kVoteIncrease, kVoteDecrease, kVoteHold])
+          CheckboxListTile(
+            key: Key('reserve-vote-$v'),
+            dense: true,
+            title: Text(v),
+            value: draft == v,
+            onChanged: (on) {
+              setState(() => _reserveVoteDraft = on == true ? v : null);
+            },
+          ),
+        FilledButton(
+          key: const Key('reserve-vote-submit'),
+          onPressed: draft == null
+              ? null
+              : () {
+                  final err = reserve.vote(dest: dest, choice: draft, nowMs: now);
+                  if (err != null && context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                    return;
+                  }
+                  setState(() => _reserveVoteDraft = draft);
+                },
+          child: Text(voted ? 'Update vote' : 'Submit vote'),
+        ),
+      ],
+      if (voted) ...[
+        const SizedBox(height: 12),
+        Text(
+          'Vote results  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}  ·  your vote: ${p.vote}',
+          key: const Key('reserve-vote-results'),
+        ),
       ],
     ];
   }

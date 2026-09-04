@@ -1861,7 +1861,8 @@ void main() {
     expect(r.portal(vb).staked, 0);
     expect(r.portal(vb).canVote, isTrue);
     expect(r.vote(dest: vb, choice: kVoteIncrease, nowMs: late), isNull);
-    expect(r.vote(dest: vb, choice: kVoteHold, nowMs: late), 'vote_locked');
+    expect(r.vote(dest: vb, choice: kVoteHold, nowMs: late), isNull);
+    expect(r.portal(vb).vote, kVoteHold);
     expect(r.deposit(dest: va, she: 0.5, nowMs: late), isNull);
     expect(r.portal(va).idle, kUnitsPerShe ~/ 2);
     expect(r.portal(va).canVote, isTrue);
@@ -1982,6 +1983,70 @@ void main() {
     expect(kTabs.contains('Join'), isFalse);
     expect(find.text('Add new vortice'), findsOneWidget);
     expect(find.text(joinWatchProgram), findsNothing);
+    expect(find.byKey(const Key('reserve-pi-progress')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-submit')), findsOneWidget);
+  });
+
+  testWidgets('Reserve deposit requires Sign, lock-in stays, deposits sum to π then vote+results', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-reserve-sign-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final ledger = ShearLedger();
+    ledger.viewSecret = ident.viewKey;
+    ledger.confirmRound(address: ident.paymentCode, pot: 10, height: 20);
+    ledger.settleTo(30);
+    expect(
+      ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
+      greaterThanOrEqualTo(10),
+    );
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      reserve: ShearReserve(),
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(find.textContaining('Need'), findsWidgets);
+    expect(find.byKey(const Key('reserve-vote-submit')), findsNothing);
+    await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
+    await tester.ensureVisible(find.byKey(const Key('reserve-send')));
+    await tester.tap(find.byKey(const Key('reserve-send')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-sign')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-sign-accept')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byKey(const Key('reserve-locked-in')), findsOneWidget);
+    expect(find.textContaining('Coins are locked in your portal'), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-submit')), findsNothing);
+    await tester.enterText(find.byKey(const Key('reserve-amount')), '$kPiShe');
+    await tester.ensureVisible(find.byKey(const Key('reserve-add-more')));
+    await tester.tap(find.byKey(const Key('reserve-add-more')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-sign')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-sign-accept')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.textContaining('vote unlocked'), findsWidgets);
+    expect(find.textContaining(kReserveAccruedLabel), findsWidgets);
+    expect(find.byKey(const Key('reserve-vote-submit')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-results')), findsNothing);
+    await tester.tap(find.byKey(Key('reserve-vote-$kVoteIncrease')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('reserve-vote-submit')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-vote-results')), findsOneWidget);
+    await tester.tap(find.byKey(Key('reserve-vote-$kVoteHold')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('reserve-vote-submit')));
+    await tester.pump();
+    expect(find.textContaining('your vote: $kVoteHold'), findsOneWidget);
   });
 
   testWidgets('Vortex deploys a third-party dapp only after a valid vort1. key download', (tester) async {

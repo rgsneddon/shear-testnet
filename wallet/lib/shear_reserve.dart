@@ -60,6 +60,13 @@ String portalIdFromDest(String dest) {
   return sha256.convert(utf8.encode('shear-portal-v1') + utf8.encode(dest)).toString();
 }
 
+class ReserveDepositRow {
+  ReserveDepositRow({required this.nanos, required this.atMs, this.txid});
+  final int nanos;
+  final int atMs;
+  final String? txid;
+}
+
 class ReservePortal {
   ReservePortal({this.staked = 0, this.idle = 0, this.vote, this.joined = false, this.payout, this.voteEpoch = 0});
   int staked;
@@ -69,8 +76,10 @@ class ReservePortal {
   int voteEpoch;
   String? payout;
   int? remoteAccrued;
+  final List<ReserveDepositRow> deposits = [];
   int get nanos => staked + idle;
   bool get canVote => joined && nanos >= kPiSheNanos;
+  int get remainingToVoteNanos => nanos >= kPiSheNanos ? 0 : kPiSheNanos - nanos;
 }
 
 class ShearReserve {
@@ -165,6 +174,7 @@ class ShearReserve {
       p.idle += n;
     }
     totalLockedNanos += n;
+    p.deposits.add(ReserveDepositRow(nanos: n, atMs: nowMs));
     if (!p.joined && p.nanos >= kPiSheNanos) {
       p.joined = true;
       if (epochStartMs == 0) {
@@ -192,7 +202,6 @@ class ShearReserve {
       return 'bad_vote';
     }
     final first = p.vote == null || p.voteEpoch != currentEpoch;
-    if (!first && remainingMs(nowMs) < kReserveJoinCutoffMs) return 'vote_locked';
     if (!first) {
       if (p.vote == kVoteIncrease) votesIncrease--;
       if (p.vote == kVoteDecrease) votesDecrease--;
