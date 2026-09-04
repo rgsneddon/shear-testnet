@@ -284,7 +284,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.17" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.18" target="_blank" rel="noopener">WALLET</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -384,10 +384,10 @@
             <th>Client</th>
             <th>Hashrate</th>
             <th>Blocks found</th>
-            <th>Accepted work</th>
+            <th>Accepted shares</th>
+            <th>Valid hashes (round)</th>
             <th>Stale shares</th>
             <th>CPU threads</th>
-            <th>Hashes this round</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -701,8 +701,8 @@
         return '<tr><td><a href="' + href + '">' + tag + '</a></td><td>' +
           ([w.name, w.version].filter(Boolean).join(' ') || '—') + '</td><td>' + fmtRate(w.hashrate) + '</td><td>' +
           (Number(w.blocks) || 0) + '</td><td>' + (w.accepted || 0) + '</td><td>' +
-          (w.stale || 0) + '</td><td>' + (w.threads || 0) + '</td><td>' +
-          (w.roundHashes || 0) + '</td></tr>';
+          (w.roundHashes != null ? w.roundHashes : (w.provenHashes || 0)) + '</td><td>' +
+          (w.stale || 0) + '</td><td>' + (w.threads || 0) + '</td></tr>';
       }).join('');
       paintRecent(s.recentTxs || [], s);
     }

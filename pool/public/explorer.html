@@ -126,7 +126,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.17" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.18" target="_blank" rel="noopener">WALLET</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -147,6 +147,9 @@
       <article class="panel-card"><div class="label">Height</div><div class="value" id="ex-height">0</div></article>
       <article class="panel-card"><div class="label">Network hashrate</div><div class="value" id="ex-hashrate">0 H/s</div></article>
       <article class="panel-card"><div class="label">Last block</div><div class="value" id="ex-updated">—</div></article>
+      <article class="panel-card"><div class="label">Circulating Shear</div><div class="value" id="ex-circ-she">—</div></article>
+      <article class="panel-card"><div class="label">Shear minted by Reserve</div><div class="value" id="ex-reserve-minted">—</div></article>
+      <article class="panel-card"><div class="label">Reserve in vault</div><div class="value" id="ex-reserve-vault">—</div></article>
     </div>
     <section class="panel-card" id="tx-cli-card">
       <h2>Resistance  η  —  public CTF CLI</h2>
@@ -374,6 +377,10 @@
       setText('ex-hashrate', fmtRate(stats.hashrate));
       lastBlockAt = Number(stats.lastFoundAt || 0);
       setText('ex-updated', lastBlockAt ? fmtSinceBlock(lastBlockAt) : '—');
+      const NANOS = 100000000000;
+      setText('ex-circ-she', fmtShe(Number(stats.circulatingNanos || 0) / NANOS) + ' SHE');
+      setText('ex-reserve-minted', fmtShe(Number(stats.reserveMintedNanos || stats.extraMintedNanos || 0) / NANOS) + ' SHE');
+      setText('ex-reserve-vault', fmtShe(Number(stats.reserveVaultNanos || 0) / NANOS) + ' SHE');
       filled = true;
       const hist = await fetchJson('/explorer/recent').catch(function () { return { txs: [] }; });
       const circ = await fetchJson('/explorer/circulation').catch(function () { return { holders: [] }; });

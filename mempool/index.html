@@ -168,7 +168,7 @@
       <a class="nav-btn is-on" href="/">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.17" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.18" target="_blank" rel="noopener">WALLET 0.18</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -190,8 +190,8 @@
           <div class="label">Visual legend</div>
           <div class="legend">
             <div><span class="dot" style="background:var(--lattice-tip)"></span>Tip — neon green apex</div>
-            <div><span class="dot" style="background:var(--lattice-cyan)"></span>Forming — neon cyan hoop, one glowing dot per miner’s rewards; widens as miners join</div>
-            <div><span class="dot" style="background:var(--lattice-gold)"></span>Gold hoop — empty: wide at the base. Full: climbs, tightens, tilts, then merges into cyan</div>
+            <div><span class="dot" style="background:var(--lattice-cyan)"></span>Forming — neon cyan hoop: one seat per hasher with Valid hashes &gt; 0 (immature until 6-conf). Not client hash counters.</div>
+            <div><span class="dot" style="background:var(--lattice-gold)"></span>Gold hoop — user Flow sends. Empty: wide at the base. Full: climbs, tightens, tilts, then merges into cyan</div>
             <div><span class="dot" style="background:var(--lattice-link)"></span>σ-flow filaments — outer rings falling inward</div>
             <div><span class="dot" style="background:var(--lattice-cyan)"></span>Hover glass — pointer magnifies any neighbourhood</div>
           </div>
@@ -203,7 +203,7 @@
         <section class="card">
           <div class="label">Commission</div>
           <p>When the gold hoop is empty it rests at the base of the lattice, wide around the circumference. As sends arrive and near inclusion it climbs, contracts, and tilts so the next-in tx sits nearest the tip.</p>
-          <p>When that hoop reaches the cyan forming block, those sends merge into it. Each cyan dot is one miner’s hash-bonus. The hoop widens as more miners join anywhere on the network.</p>
+          <p>When that hoop reaches the cyan forming block, those sends merge into it. Each cyan seat is one hasher’s <strong>valid-hash bonus</strong> (pending hash vouts). Immature until 6-conf. Client hash totals never paint a seat.</p>
           <p>At blockfound the cyan hoop tilts to the tip and miner rewards firework in — graphics only, no lettering.</p>
           <p>Consensus spendable at <strong>6 confirmations</strong>. Third-party <span class="eq">min_confirms</span> default 12.</p>
         </section>
@@ -239,7 +239,7 @@
           <ul>
             <li>Tip is the neon-green apex. The forming block is the inner cyan hoop.</li>
             <li>Empty gold hoop sits wide at the base. Fee × weight lifts it and contracts it toward cyan.</li>
-            <li>Sends that reach cyan merge into the pending block. Each cyan dot is one miner anywhere on the network.</li>
+            <li>Sends that reach cyan merge into the pending block. Each cyan seat is valid hashes for one hasher, not all hashes this round.</li>
             <li>At blockfound their rewards firework into the tip. Sealed heights then spiral down.</li>
           </ul>
         </section>
@@ -348,7 +348,11 @@
         gen: -0.15, x: 0, y: Y_TIP, z: 0, role: 'tip', r: 8.2, meta: data.tip || {},
       });
       const block = data.pendingBlock || { height: tipH + 1, hashes: 0, txs: [] };
-      const hashTxs = Array.isArray(block.txs) ? block.txs.slice() : [];
+      const hashTxs = (Array.isArray(block.txs) ? block.txs : []).filter(function (tx) {
+        if (tx.kind !== 'hash') return false;
+        const n = Math.floor(Number(tx.roundHashes != null ? tx.roundHashes : tx.count) || 0);
+        return n > 0;
+      });
       const MERGE_AT = 0.78;
       function sendProx(tx) {
         const heat = Math.tanh(massOf(tx) / 5.5);

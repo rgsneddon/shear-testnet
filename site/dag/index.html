@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Shear — hash DAG</title>
+  <title>Shear DAG</title>
   <script src="/brand/theme.js?v=12"></script>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="stylesheet" href="/brand/theme.css?v=25"/>
@@ -95,6 +95,34 @@
     .dag-key p { margin:0; color:#555; font-size:11px; }
     html[data-theme="dark"] .dag-key p { color:#bbb; }
     .dag-key strong { color:inherit; font-weight:700; }
+    .dag-key .sw.seat { width:8px; height:8px; margin-top:2px; background:transparent; border:1.4px solid #888; opacity:.7; }
+    .dag-key .sw.sel { background:#3ecf8e; box-shadow:0 0 0 2px rgba(62,207,142,.35); }
+    .dag-key .sw.deg { background:#c48a00; opacity:.45; }
+    .dag-law {
+      position:absolute; left:10px; right:110px; bottom:10px; z-index:4;
+      max-height:42vh; overflow:auto; pointer-events:auto;
+      display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:8px;
+    }
+    .dag-law .card {
+      background:rgba(255,255,255,.9); color:#222; border:1px solid rgba(85,129,170,.35);
+      box-shadow:0 1px 6px rgba(0,0,0,.12); padding:8px 10px; font:12px/1.35 "Segoe UI",system-ui,sans-serif;
+    }
+    html[data-theme="dark"] .dag-law .card { background:rgba(43,43,43,.92); color:#eee; border-color:rgba(133,162,193,.35); }
+    .dag-law h2 { margin:0 0 6px; font-size:11px; letter-spacing:.07em; text-transform:uppercase; }
+    .dag-law p, .dag-law li { margin:0 0 4px; color:#555; }
+    html[data-theme="dark"] .dag-law p, html[data-theme="dark"] .dag-law li { color:#bbb; }
+    .dag-law ul { margin:0; padding-left:1.1rem; }
+    .dag-law .eq { font-family: ui-monospace, Consolas, monospace; color:#175676; }
+    html[data-theme="dark"] .dag-law .eq { color:#adc1de; }
+    .dag-law .stale { color:#b42318; }
+    .dag-law .num { font-weight:700; color:inherit; }
+    .dag-key { width:min(268px, 52vw); }
+    @media (max-width: 900px) {
+      .dag-law { grid-template-columns: 1fr 1fr; max-height:36vh; right:8px; }
+    }
+    @media (max-width: 640px) {
+      .dag-law { grid-template-columns: 1fr; max-height:28vh; }
+    }
   </style>
 </head>
 <body>
@@ -115,7 +143,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.17" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.18" target="_blank" rel="noopener">WALLET 0.18</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -128,13 +156,45 @@
   <div class="dag-stage" id="stage">
     <canvas id="c"></canvas>
     <aside class="dag-key" id="dag-key">
-      <h1>Key</h1>
-      <div class="krow"><span class="sw blk"></span><p><strong>Block</strong> — sealed height. Chain runs left → right.</p></div>
-      <div class="krow"><span class="sw min"></span><p><strong>Miner</strong> — one colour per hasher at the open tip.</p></div>
-      <div class="krow"><span class="sw live"></span><p><strong>Live hashes</strong> — 50 hashes each; the swarm grows as they hash.</p></div>
-      <div class="krow"><span class="sw seal"></span><p><strong>Sealed hashes</strong> — static dots already in a found block.</p></div>
-      <div class="krow"><span class="sw" style="background:transparent;border:1.5px solid #c48a00;border-radius:50%"></span><p><strong>Spy glass</strong> — hover to magnify; click any piece for detail.</p></div>
+      <h1>Shear DAG</h1>
+      <div class="krow"><span class="sw blk"></span><p><strong>Block</strong> — sealed height. Left → right is height.</p></div>
+      <div class="krow"><span class="sw min"></span><p><strong>Open vertex</strong> — one body per hasher. Size and glow scale with <strong>Valid hashes</strong> this round (same number as the pool column).</p></div>
+      <div class="krow"><span class="sw seat"></span><p><strong>Faint seat</strong> — connected hasher with no accepted share yet. Not paid.</p></div>
+      <div class="krow"><span class="sw sel"></span><p><strong>Selected</strong> — last valid vertex per worker that pins <code>dag_root</code>. Only this set mints.</p></div>
+      <div class="krow"><span class="sw deg"></span><p><strong>Chronoflux</strong> — invalid hashes collapse (rejected, stale, duplicate, client-all-hashes). They do not spawn dots. Not a second paid lane.</p></div>
+      <div class="krow"><span class="sw seal"></span><p><strong>Sealed</strong> — selected set folded into the found block. Bonus = count × unit SHE to <code>ssa1</code>, immature until 6-conf.</p></div>
+      <div class="krow"><span class="sw" style="background:transparent;border:1.5px solid #c48a00;border-radius:50%"></span><p><strong>Spy glass</strong> — hover to magnify; click any piece for the inspector.</p></div>
     </aside>
+    <div class="dag-law" id="dag-law">
+      <section class="card">
+        <h2>What this DAG is</h2>
+        <p>Thin batched Shear DAG. One vertex per worker per round from <strong>valid hashes</strong>.</p>
+        <p>Parents = that worker’s previous vertex + last committed <span class="eq">dag_root</span>.</p>
+        <p>Only the <strong>selected set on the winning tip</strong> mints. 1 valid hash = 1 tx = 10<sup>−11</sup> SHE, auto-paid, no claim button. Immature until 6-conf.</p>
+      </section>
+      <section class="card">
+        <h2>What it is not</h2>
+        <ul>
+          <li>Not one vertex per nonce</li>
+          <li>Not GHOSTDAG, not a second paid lane</li>
+          <li>Not “all hashes this round” / client hash-rate glitter</li>
+          <li>Not a 50-dot spray</li>
+        </ul>
+      </section>
+      <section class="card">
+        <h2>Live numbers</h2>
+        <p>Height <span class="eq num" id="lv-height">—</span> · Valid hashes <span class="eq num" id="lv-valid">—</span></p>
+        <p>Accepted shares <span class="eq num" id="lv-shares">—</span> · Hash bonus emitted <span class="eq num" id="lv-bonus">—</span></p>
+        <p>Pot <span class="eq">1 SHE</span> · Unit <span class="eq" id="lv-unit">10⁻¹¹ SHE</span></p>
+        <p id="lv-pulse">waiting · stats</p>
+      </section>
+      <section class="card">
+        <h2>Law</h2>
+        <p>Continuity includes <span class="eq">dag_root</span>. Vertex bodies prune after 1000 confirms; roots stay.</p>
+        <p>Issuance is share-proven (header + nonce + dest <code>ssa1</code> + shareBits). Sealer cannot pick the unit.</p>
+        <p>If stats lag, this page shows stale honestly — it will not invent a swarm.</p>
+      </section>
+    </div>
     <aside class="kgi-panel" id="panel" aria-hidden="true">
       <header>
         <h1 id="panel-title">Inspector</h1>
@@ -160,9 +220,9 @@
   </div>
   <script>
     const DAG_URL = '/api/explorer/dag';
-    const HASH_BUNDLE = 50;
+    const STATS_URL = '/api/stats';
     const LIVE_MAX = 2500;
-    const SEALED_MAX = 50;
+    const SEALED_MAX = 64;
     const DOT_R = 3.8;
     const DOT_PITCH = 14;
     const MAX_PER_HEIGHT = 12;
@@ -201,15 +261,20 @@
     const zoomInBtn = document.getElementById('zoom-in');
     const zoomOutBtn = document.getElementById('zoom-out');
 
-    let W = 0, H = 0, dpr = 1, scale = 0.5, camX = 0, camY = 0;
+    let W = 0, H = 0, dpr = 1, scale = 0.62, camX = 0, camY = 0;
     let tracking = true, dragging = false, inspecting = true, mx = 0, my = 0, lx = 0, lastNow = 0;
     let loupe = null, snap = null;
     c.classList.add('is-spy');
     let hoverId = null, selectedId = null;
-    let dag = { blocks: [], live: [], tip: 0 };
+    let dag = { blocks: [], live: [], seats: [], tip: 0 };
+    let statsBook = null;
+    let statsAt = 0;
+    let lastTip = 0;
     const nodes = new Map();
     let edges = [];
     const tweens = [];
+    const ghosts = [];
+    const motes = [];
 
     function theme() {
       return document.documentElement.getAttribute('data-theme') === 'dark' ? DARK : LIGHT;
@@ -222,11 +287,42 @@
       for (const k of Object.keys(props)) from[k] = Number(obj[k]) || 0;
       tweens.push({ obj, from, props, t0: performance.now(), ms, ease: quadOut });
     }
-    function bundleN(count) { return Math.ceil(Math.max(0, Math.floor(Number(count) || 0)) / HASH_BUNDLE); }
-    function bundleSize(total, i, n) {
-      if (n <= 0) return 0;
-      if (i < n - 1) return HASH_BUNDLE;
-      return Math.max(1, (Math.floor(Number(total) || 0)) - HASH_BUNDLE * (n - 1));
+    function liveFromBook(workers) {
+      return (workers || []).map(function (w) {
+        return {
+          dest: w.dest || w.payout || '',
+          tag: w.miner || w.tag || w.worker || '',
+          count: Math.max(0, Math.floor(Number(w.roundHashes != null ? w.roundHashes : (w.provenHashes != null ? w.provenHashes : w.validHashes)) || 0)),
+          connected: w.connected !== false,
+          shareBits: Number(w.shareBits) || 0,
+        };
+      }).filter(function (w) {
+        return !/^shear1/i.test(String(w.dest || '')) && !/^shear1/i.test(String(w.tag || ''));
+      });
+    }
+    function vertexRadius(count, seat) {
+      if (seat) return 4.2;
+      const n = Math.max(0, Number(count) || 0);
+      return Math.min(34, 7.5 + Math.log1p(n) * 2.35);
+    }
+    function spawnGhost(n) {
+      ghosts.push({
+        x: n.x || 0, y: n.y || 0, r: n.r || vertexRadius(n.count, n.kind === 'seat'),
+        hue: n.hue || 40, t0: performance.now(), ms: 720,
+      });
+    }
+    function burstMotes(fromNodes, toId) {
+      for (const n of fromNodes) {
+        const c = Math.min(28, Math.max(4, Math.floor(Math.log2((Number(n.count) || 1) + 1) * 5)));
+        for (let i = 0; i < c; i++) {
+          motes.push({
+            x: n.x || 0, y: n.y || 0, toId,
+            t0: performance.now() + i * 18, ms: 520 + (i % 5) * 40,
+            hue: n.hue || 152,
+            count: n.count, dest: n.dest,
+          });
+        }
+      }
     }
     function minerKey(s, i) { return String(s.dest || s.tag || i); }
     function hashHue(s) {
@@ -267,7 +363,7 @@
     addEventListener('resize', resize);
     resize();
 
-    function blockSize() { return Math.max(10, Math.floor(H * scale / MAX_PER_HEIGHT)); }
+    function blockSize() { return Math.max(18, Math.floor(H * scale / MAX_PER_HEIGHT)); }
     function marginX(bs) { return bs * MARGIN_X; }
     function blockX(height, bs, mxg) { return height * (bs + mxg); }
     function groupY(index, size, bs) {
@@ -331,43 +427,28 @@
       return { x: vx / mag * half, y: vy / mag * half };
     }
 
-    function addBundles(next, height, miners, color, kind, cap) {
+    function addBodies(next, height, miners, color, kind) {
       const shares = miners.map((s, i) => ({
         key: minerKey(s, i),
-        count: Math.max(0, Math.floor(Number(s.count) || 0)),
-        dest: s.dest || s.tag || '',
-      })).filter((s) => s.count > 0);
-      const wants = shares.map((s) => bundleN(s.count));
-      const sum = wants.reduce((a, b) => a + b, 0);
-      const caps = wants.slice();
-      if (sum > cap) {
-        let left = cap;
-        for (let i = 0; i < caps.length; i++) {
-          caps[i] = Math.max(1, Math.floor(wants[i] * cap / sum));
-          left -= caps[i];
-        }
-        for (let i = 0; left > 0 && i < caps.length; i++) { caps[i] += 1; left -= 1; }
-      }
+        count: Math.max(0, Math.floor(Number(s.count || s.roundHashes) || 0)),
+        dest: s.dest || '',
+        tag: s.tag || s.dest || '',
+        selected: s.selected === true || (kind !== 'live' && (Number(s.count) || 0) > 0),
+        shareBits: Number(s.shareBits) || 0,
+        bonusNanos: Number(s.bonusNanos) || Math.max(0, Math.floor(Number(s.count || s.roundHashes) || 0)),
+        seat: s.seat === true || ((Number(s.count) || 0) < 1),
+      }));
       shares.forEach((s, mi) => {
-        const n = bundleN(s.count);
-        const keep = Math.min(n, caps[mi] || n);
-        if (kind === 'live') {
-          next.set('m-' + height + '-' + s.key, {
-            id: 'm-' + height + '-' + s.key, height, color, vspc: false, kind: 'miner',
-            hash: s.key, dest: s.dest, miner: s.key, hue: hashHue(s.key),
-            count: s.count, minerIndex: mi, minerCount: shares.length,
-          });
-        }
-        for (let i = 0; i < keep; i++) {
-          const id = 'h-' + height + '-' + s.key + '-' + i;
-          next.set(id, {
-            id, height, color, vspc: false, kind,
-            hash: s.key + ':' + i, dest: s.dest, bundle: i, miner: s.key,
-            hue: hashHue(s.key),
-            count: bundleSize(s.count, i, n),
-            minerIndex: mi, minerCount: shares.length,
-          });
-        }
+        const id = (s.seat ? 's-' : 'v-') + height + '-' + s.key;
+        next.set(id, {
+          id, height, color, vspc: false,
+          kind: s.seat ? 'seat' : kind,
+          hash: s.key, dest: s.dest, miner: s.key, tag: s.tag,
+          hue: hashHue(s.key),
+          count: s.count, selected: !!s.selected && !s.seat,
+          shareBits: s.shareBits, bonusNanos: s.bonusNanos,
+          minerIndex: mi, minerCount: shares.length,
+        });
       });
     }
 
@@ -375,6 +456,9 @@
       const tip = Number(dag.tip) || 0;
       const blocks = dag.blocks || [];
       const live = dag.live || [];
+      const prevLive = [...nodes.values()]
+        .filter((n) => n.kind === 'live')
+        .map((n) => ({ x: n.x, y: n.y, count: n.count, dest: n.dest, hue: n.hue }));
       const next = new Map();
 
       for (const b of blocks) {
@@ -382,13 +466,21 @@
         const h = Number(b.height);
         next.set('b-' + h, {
           id: 'b-' + h, height: h, color: 'blue', vspc: true, kind: 'block',
-          hash: b.hash || '', prev: b.prev || '', count: b.hashes || 0,
-          dest: '', samples: b.samples || [], txs: b.txs || [], bits: b.bits, timestamp: b.timestamp,
+          hash: b.hash || '', prev: b.prev || '',
+          count: Math.max(0, Math.floor(Number(b.count || b.validHashes || b.hashes) || 0)),
+          dest: b.dest || b.miner || '', samples: b.samples || [], txs: b.txs || [],
+          bits: b.bits, timestamp: b.timestamp, selected: true,
         });
-        addBundles(next, h, b.samples || [], 'gray', 'hash', SEALED_MAX);
+        addBodies(next, h, b.samples && b.samples.length
+          ? b.samples
+          : (Number(b.count || b.validHashes) > 0 ? [{ dest: b.dest || b.miner, tag: b.miner, count: b.count || b.validHashes, selected: true, shareBits: b.shareBits, bonusNanos: b.bonusNanos }] : []),
+          'gray', 'hash');
       }
-      if (live.length) {
-        addBundles(next, tip + 1, live, 'red', 'live', LIVE_MAX);
+      const open = (live.length || (dag.seats || []).length)
+        ? live.concat(dag.seats || [])
+        : [];
+      if (open.length) {
+        addBodies(next, tip + 1, open, 'red', 'live');
       }
 
       const byH = new Map();
@@ -413,15 +505,23 @@
         }
       }
       for (const id of [...nodes.keys()]) {
-        if (!next.has(id)) nodes.delete(id);
+        if (!next.has(id)) {
+          const old = nodes.get(id);
+          if (old && old.kind !== 'block') spawnGhost(old);
+          nodes.delete(id);
+        }
       }
+      const tipNow = Number(dag.tip) || 0;
+      if (lastTip && tipNow > lastTip && prevLive.length) {
+        burstMotes(prevLive, 'b-' + tipNow);
+      }
+      lastTip = tipNow;
 
       const ed = [];
       for (const n of nodes.values()) {
         let p = null;
         if (n.kind === 'block') p = nodes.get('b-' + (n.height - 1));
-        else if (n.kind === 'live') p = nodes.get('m-' + n.height + '-' + n.miner);
-        else if (n.kind === 'miner') p = nodes.get('b-' + (n.height - 1));
+        else if (n.kind === 'live' || n.kind === 'seat') p = nodes.get('b-' + (n.height - 1));
         else p = nodes.get('b-' + n.height) || nodes.get('b-' + (n.height - 1));
         if (!p) continue;
         ed.push({
@@ -459,44 +559,34 @@
           if (animateY && block.alpha > 0.05 && block.y !== 0) tween(block, { y: 0 }, 400);
           else block.y = 0;
         }
-        const dots = list.filter((n) => n.kind !== 'block')
-          .sort((a, b) => (a.miner || '').localeCompare(b.miner || '') || a.bundle - b.bundle);
-        const live = dots.filter((n) => n.kind === 'live');
-        const hubs = list.filter((n) => n.kind === 'miner');
-        const sealed = dots.filter((n) => n.kind === 'hash');
-        // Tip: KGI-style cluster, but each miner's bundles stem from that miner.
+        const bodies = list.filter((n) => n.kind !== 'block')
+          .sort((a, b) => (a.miner || '').localeCompare(b.miner || ''));
+        const open = bodies.filter((n) => n.kind === 'live' || n.kind === 'seat');
+        const sealed = bodies.filter((n) => n.kind === 'hash');
         const minerKeys = [];
-        hubs.forEach((h) => { if (!minerKeys.includes(h.miner)) minerKeys.push(h.miner); });
-        live.forEach((n) => { if (!minerKeys.includes(n.miner)) minerKeys.push(n.miner); });
-        hubs.forEach((n) => {
+        open.forEach((n) => { if (!minerKeys.includes(n.miner)) minerKeys.push(n.miner); });
+        sealed.forEach((n) => { if (!minerKeys.includes(n.miner)) minerKeys.push(n.miner); });
+        function placeRing(n, live) {
           const mi = Math.max(0, minerKeys.indexOf(n.miner));
           n.minerIndex = mi;
-          n.minerCount = minerKeys.length;
-          n.cell = 9;
-          n.r = 3.35;
-          n.x = originX;
-          n.y = 0;
-        });
-        live.forEach((n) => {
-          const mi = Math.max(0, minerKeys.indexOf(n.miner));
-          n.minerIndex = mi;
-          n.minerCount = minerKeys.length;
-          const u = hashU32(n.miner + ':' + n.bundle + ':live');
-          const v = hashU32('lr:' + n.miner + ':' + n.bundle);
-          const ang = (u / 4294967295) * Math.PI * 2;
-          const rad = 12 + Math.sqrt(n.bundle + 1) * 12 + (v / 4294967295) * 8;
-          n.cell = 4;
-          n.r = 1.55;
-          n.x = originX + Math.cos(ang) * rad * 0.55;
-          n.y = Math.sin(ang) * rad;
-        });
-        // Sealed: static randomised graph stems around the found block.
+          n.minerCount = Math.max(1, minerKeys.length);
+          const ang = (mi / n.minerCount) * Math.PI * 2;
+          const rad = bs * (n.kind === 'seat' ? 0.72 : 1.05);
+          n.r = vertexRadius(n.count, n.kind === 'seat');
+          n.cell = Math.max(8, n.r * 2.4);
+          n.x = originX + Math.cos(ang) * rad;
+          const ty = Math.sin(ang) * rad;
+          if (live) n.y = ty;
+          else if (animateY && n.alpha > 0.05 && Math.abs((n.y || 0) - ty) > 1) tween(n, { y: ty }, 280);
+          else n.y = ty;
+        }
+        open.forEach((n) => placeRing(n, true));
         sealed.forEach((n) => {
-          const off = sealedStem(n, bs);
-          n.cell = DOT_R * 2;
-          n.r = DOT_R;
-          n.x = originX + off.x;
-          const ty = off.y;
+          const off = sealedStem({ miner: n.miner, bundle: 0, height: n.height }, bs);
+          n.r = vertexRadius(n.count, false);
+          n.cell = Math.max(8, n.r * 2.4);
+          n.x = originX + off.x * 0.55;
+          const ty = off.y * 0.55;
           if (animateY && n.alpha > 0.05 && Math.abs((n.y || 0) - ty) > 1) tween(n, { y: ty }, 280);
           else n.y = ty;
         });
@@ -608,19 +698,35 @@
       if (n.kind !== 'block') {
         const r = (n.r || DOT_R) * s;
         n._sr = r;
-        const live = n.kind === 'live' || n.kind === 'miner';
+        const live = n.kind === 'live';
+        const seat = n.kind === 'seat';
         ctx.beginPath();
         ctx.arc(0, 0, r, 0, Math.PI * 2);
-        ctx.fillStyle = 'hsla(' + (n.hue || 200) + ',' + (n.kind === 'miner' ? 92 : (live ? 88 : 70)) + '%,' + (n.kind === 'miner' ? 58 : (live ? 64 : 58)) + '%,0.96)';
-        ctx.fill();
-        if (n.kind === 'miner') {
-          ctx.lineWidth = 1.8;
-          ctx.strokeStyle = theme() === DARK ? '#f4f7fb' : '#ffffff';
+        if (seat) {
+          ctx.globalAlpha *= 0.38;
+          ctx.strokeStyle = 'hsla(' + (n.hue || 200) + ',40%,55%,0.9)';
+          ctx.lineWidth = 1.4;
           ctx.stroke();
-        } else if (selectedId === n.id) {
-          ctx.strokeStyle = pal.hi;
-          ctx.lineWidth = 1.6;
-          ctx.stroke();
+        } else {
+          const glow = live ? Math.min(0.55, 0.12 + Math.log1p(n.count || 0) * 0.06) : 0;
+          if (glow) {
+            ctx.shadowColor = 'hsla(' + (n.hue || 200) + ',90%,60%,1)';
+            ctx.shadowBlur = 8 + glow * 24;
+          }
+          ctx.fillStyle = n.selected
+            ? 'hsla(152,72%,' + (live ? 52 : 46) + '%,0.96)'
+            : ('hsla(' + (n.hue || 200) + ',' + (live ? 88 : 62) + '%,' + (live ? 62 : 56) + '%,0.96)');
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          if (n.selected) {
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#3ecf8e';
+            ctx.stroke();
+          } else if (selectedId === n.id) {
+            ctx.strokeStyle = pal.hi;
+            ctx.lineWidth = 1.6;
+            ctx.stroke();
+          }
         }
         ctx.restore();
         return;
@@ -654,6 +760,72 @@
       ctx.restore();
     }
 
+    function drawLattice() {
+      const bs = blockSize(), mxg = marginX(bs), t = theme();
+      const [from, to] = visibleRange();
+      const hw = bs + mxg;
+      const dark = t === DARK;
+      const tip = Number(dag.tip) || 0;
+      for (let h = from; h <= to + 1; h++) {
+        const x = blockX(h, bs, mxg) + camX;
+        const isOpen = h === tip + 1;
+        const isTip = h === tip;
+        ctx.fillStyle = isOpen
+          ? (dark ? 'rgba(179,77,80,0.22)' : 'rgba(179,77,80,0.20)')
+          : isTip
+            ? (dark ? 'rgba(85,129,170,0.28)' : 'rgba(85,129,170,0.24)')
+            : (h % 2
+              ? (dark ? 'rgba(255,255,255,0.06)' : 'rgba(85,129,170,0.16)')
+              : (dark ? 'rgba(0,0,0,0.18)' : 'rgba(23,86,118,0.14)'));
+        ctx.fillRect(x - mxg / 2, 0, hw, H);
+        ctx.strokeStyle = dark ? 'rgba(133,162,193,0.22)' : 'rgba(85,129,170,0.26)';
+        ctx.lineWidth = isOpen || isTip ? 1.6 : 1;
+        ctx.beginPath();
+        ctx.moveTo(x, 6);
+        ctx.lineTo(x, H - 6);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = dark ? 'rgba(133,162,193,0.32)' : 'rgba(85,129,170,0.34)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(0, H / 2);
+      ctx.lineTo(W, H / 2);
+      ctx.stroke();
+    }
+    function drawGhosts(now) {
+      for (let i = ghosts.length - 1; i >= 0; i--) {
+        const g = ghosts[i];
+        const u = Math.min(1, (now - g.t0) / g.ms);
+        if (u >= 1) { ghosts.splice(i, 1); continue; }
+        ctx.save();
+        ctx.globalAlpha = (1 - u) * 0.55;
+        ctx.translate(g.x + camX + u * 36, g.y + camY);
+        ctx.scale(1 + u * 1.6, 1 - u * 0.72);
+        ctx.beginPath();
+        ctx.arc(0, 0, g.r || 5, 0, Math.PI * 2);
+        ctx.fillStyle = 'hsla(' + (g.hue || 40) + ',70%,55%,1)';
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+    function drawMotes(now) {
+      for (let i = motes.length - 1; i >= 0; i--) {
+        const m = motes[i];
+        const u = Math.min(1, Math.max(0, (now - m.t0) / m.ms));
+        if (u >= 1) { motes.splice(i, 1); continue; }
+        const e = 1 - (1 - u) * (1 - u);
+        const to = nodes.get(m.toId) || { x: m.x, y: m.y };
+        const x = m.x + ((to.x || 0) - m.x) * e + camX;
+        const y = m.y + ((to.y || 0) - m.y) * e + camY;
+        ctx.save();
+        ctx.globalAlpha = 0.85 * (1 - u);
+        ctx.beginPath();
+        ctx.arc(x, y, 2.4, 0, Math.PI * 2);
+        ctx.fillStyle = 'hsla(' + (m.hue || 152) + ',80%,58%,1)';
+        ctx.fill();
+        ctx.restore();
+      }
+    }
     function drawHeights() {
       const bs = blockSize(), mxg = marginX(bs), t = theme();
       const [from, to] = visibleRange();
@@ -733,8 +905,8 @@
       }
       near.sort((a, b) => a.d - b.d);
       const lines = near.slice(0, 4).map(({ n }) => {
-        const kind = n.kind === 'block' ? 'block' : n.kind === 'miner' ? 'miner' : n.kind === 'live' ? 'live hash' : 'sealed hash';
-        return [kind, n.hash ? String(n.hash).slice(0, 14) : '', n.dest || n.miner || '', n.count != null ? n.count + ' hashes' : '', 'h' + n.height].filter(Boolean).join(' · ');
+        const kind = n.kind === 'block' ? 'block' : n.kind === 'seat' ? 'seat' : n.kind === 'live' ? 'open vertex' : n.selected ? 'selected' : 'sealed vertex';
+        return [kind, n.dest || n.miner || '', n.count != null ? n.count + ' valid hashes' : '', n.selected ? 'mints' : (n.kind === 'seat' ? '0' : ''), 'h' + n.height].filter(Boolean).join(' · ');
       });
       if (!lines.length) lines.push('empty neighbourhood');
       const boxY = ly0 + dest * 2 + 8;
@@ -767,7 +939,7 @@
         : 'b-' + (n.kind === 'block' ? n.height - 1 : n.height)) || nodes.get('b-' + (n.height - 1));
       const child = nodes.get('b-' + (n.height + 1));
       const colorName = n.color === 'blue' ? 'Blue' : n.color === 'red' ? 'Red' : 'Gray';
-      const kindLabel = n.kind === 'block' ? 'Block' : n.kind === 'miner' ? 'Miner' : n.kind === 'live' ? 'Live hash bundle' : 'Sealed hash bundle';
+      const kindLabel = n.kind === 'block' ? 'Block' : n.kind === 'seat' ? 'Faint seat' : n.kind === 'live' ? 'Open vertex' : n.selected ? 'Selected vertex' : 'Sealed vertex';
       panelTitle.textContent = kindLabel;
       const samples = (n.samples || []).map((s) =>
         '<div class="hash">hasher · ' + (s.dest || s.tag || '') + ' · ' + Number(s.count || 0).toLocaleString() + ' hashes</div>'
@@ -787,7 +959,13 @@
       if (child && child.hash) row('Child', child.hash, 'hash blue');
       if (n.miner || n.dest) row('Miner', n.dest || n.miner, 'hash');
       if (n.bundle != null && n.kind !== 'block' && n.kind !== 'miner') row('Bundle index', String(n.bundle));
-      row('Hashes in this point', Number(n.count || 0).toLocaleString() + (n.kind === 'block' ? '' : ' (bundle ' + HASH_BUNDLE + ')'));
+      row('Valid hashes', Number(n.count || 0).toLocaleString());
+      if (n.kind !== 'block') {
+        row('Selected (mints)', n.selected ? 'yes' : 'no (0)');
+        if (n.shareBits) row('shareBits', String(n.shareBits));
+        if (n.bonusNanos != null) row('Bonus nanos', String(n.bonusNanos));
+        if (n.dest) row('Dest ssa1', n.dest, 'hash');
+      }
       row('In VSPC', n.vspc ? 'Yes' : 'No');
       row('Color', '<b style="color:' + palOf(n.color).fill + '">' + colorName + '</b>');
       if (n.bits) row('Bits', String(n.bits));
@@ -808,15 +986,51 @@
       panel.setAttribute('aria-hidden', 'true');
     }
 
+    function paintStats(s, stale) {
+      const set = function (id, v) { const el = document.getElementById(id); if (el) el.textContent = v; };
+      const pulse = document.getElementById('lv-pulse');
+      if (!s || s.ok === false) {
+        if (pulse) { pulse.textContent = 'stale · stats'; pulse.className = 'stale'; }
+        return;
+      }
+      const workers = liveFromBook(s.workers || []);
+      const valid = workers.reduce(function (a, w) { return a + w.count; }, 0);
+      const shares = Number(s.accepted) || workers.filter(function (w) { return w.count > 0; }).length;
+      set('lv-height', s.height == null ? '—' : String(s.height));
+      set('lv-valid', String(valid));
+      set('lv-shares', String(shares));
+      set('lv-bonus', s.hashBonusEmittedNanos == null ? '—' : String(s.hashBonusEmittedNanos));
+      if (pulse) {
+        pulse.textContent = stale ? 'stale · stats' : ('live · height ' + (s.height ?? '—'));
+        pulse.className = stale ? 'stale' : '';
+      }
+      if (!(dag.live && dag.live.length) && workers.length) {
+        dag.live = workers.filter(function (w) { return w.count > 0; });
+        dag.seats = workers.filter(function (w) { return w.count < 1 && w.connected; });
+      }
+    }
     async function pull() {
       try {
-        const d = await fetch(DAG_URL).then((r) => r.json());
+        const d = await fetch(DAG_URL + '?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json());
         warnEl.classList.toggle('is-on', !(d && d.ok));
         if (d && d.ok && Array.isArray(d.blocks)) dag = d;
         buildGraph();
         layout(true);
       } catch (e) {
         warnEl.classList.add('is-on');
+        void e;
+      }
+      try {
+        const s = await fetch(STATS_URL + '?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json());
+        statsBook = s;
+        statsAt = Date.now();
+        paintStats(s, false);
+        if (!(dag.live && dag.live.length)) {
+          buildGraph();
+          layout(true);
+        }
+      } catch (e) {
+        paintStats(statsBook, true);
         void e;
       }
     }
@@ -835,6 +1049,7 @@
       const t = theme();
       ctx.fillStyle = t.bg;
       ctx.fillRect(0, 0, W, H);
+      drawLattice();
       const [from, to] = visibleRange();
       for (const e of edges) {
         const a = nodes.get(e.from);
@@ -850,6 +1065,8 @@
         drawNode(n, now);
       }
       drawHeights();
+      drawGhosts(now);
+      drawMotes(now);
       drawLoupe();
       requestAnimationFrame(tick);
     }
@@ -905,6 +1122,14 @@
     refreshZoom();
     document.getElementById('panel-x').addEventListener('click', closePanel);
 
+    window.shearDagInspect = function (kind) {
+      const want = kind || 'live';
+      const n = [...nodes.values()].find((x) => x.kind === want && (x.count || 0) > 0)
+        || [...nodes.values()].find((x) => x.kind === want)
+        || [...nodes.values()].find((x) => (x.count || 0) > 0);
+      if (n) openPanel(n);
+      return n ? { kind: n.kind, count: n.count, dest: n.dest, selected: !!n.selected, sx: n._sx, sy: n._sy, shareBits: n.shareBits, bonusNanos: n.bonusNanos } : null;
+    };
     pull();
     setInterval(pull, 1000);
     requestAnimationFrame(tick);

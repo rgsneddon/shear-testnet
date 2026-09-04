@@ -221,7 +221,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.17" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.18" target="_blank" rel="noopener">WALLET</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -240,18 +240,18 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.17</strong> · miner <strong>1.5</strong>
+      wallet <strong>0.18</strong> · miner <strong>1.5</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.17">WALLET</a>
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.18">WALLET</a>
         <div class="client-menu" id="menu-wallet">
-          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.17/shear-wallet-0.17-macos.dmg">macOS</a>
-          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.17/shear-wallet-0.17-windows.zip">Windows</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.17/shear-wallet-0.17-android.apk">Android</a>
-          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.17/shear-wallet-0.17-linux.zip">Linux</a>
-          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.17/shear-wallet-0.17-archlinux.zip">Arch</a>
+          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.18/shear-wallet-0.18-macos.dmg">macOS</a>
+          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.18/shear-wallet-0.18-windows.zip">Windows</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.18/shear-wallet-0.18-android.apk">Android</a>
+          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.18/shear-wallet-0.18-linux.zip">Linux</a>
+          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.18/shear-wallet-0.18-archlinux.zip">Arch</a>
         </div>
       </div>
       <div class="client-dd">
@@ -333,9 +333,9 @@
         <p>Everyone with a wallet may lock over 3.14 SHE (π) into your own portal as a stake. That minimum sum entitles one vote per wallet for the current epoch. Inside the last 99 days of any epoch, new deposits still lock to enable voting, but they do not earn stake. Participate in The Reserve within the first 300 days of any epoch to enable voting, and staking.</p>
         <h3>What a vote may move</h3>
         <p>Voting takes place to either; raise the hash bonus to miners by one unit, lower it by one unit, or leave it. That unit is 0.00000000001 SHE. The 1 SHE pot is not on the ballot. Each wallet may vote once; you may change your mind within the first 301 days. Public tallies will show the three piles. They do not name who voted.</p>
-        <h3>Interest on a qualifying stake</h3>
-        <p>The staking rate on every user's qualifying stake, over 400 days is variable and collated by The Reserve Oracle. Staked rewards are paid daily at the current rate of: <strong id="oracle-rate">…</strong></p>
-        <p>When an epoch concludes, all SHE return to your Continuum with the staked rewards. Stake is minted only on what is committed prior to the 99 day cutoff, but still accrues throughout the full 400 days epoch.</p>
+        <h3>The Reserve Oracle</h3>
+        <p>The staking rate on every user's qualifying stake is a <strong>400-day APR</strong>, the <strong>median of first-world central banks</strong> (per-bank spread median, then median across banks). Daily credits sit in your portal until epoch-end <strong>Withdraw + Sign</strong>. Last-99-day deposits unlock a vote but earn no stake. Idle SHE earns nothing. Current rate: <strong id="oracle-rate">…</strong></p>
+        <p>When an epoch concludes, principal and those daily credits return to Continuum after a signed Withdraw. Miss that window and previous-epoch rewards stay claimable at any time; a new epoch does not confiscate them. Vote at π SHE.</p>
       </section>
       <section class="panel-card" id="vortex">
         <h2>Vortex and Vortices</h2>
@@ -352,7 +352,7 @@
     </div>
     <section class="panel-card guide-wide" id="wallet-start">
       <h2>Start a wallet from scratch</h2>
-      <p>Current pin is <strong>0.17</strong>. Use the WALLET button above and pick your system.</p>
+      <p>Current pin is <strong>0.18</strong>. Use the WALLET button above and pick your system.</p>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
         <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
@@ -375,11 +375,11 @@
       else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
-        macos: BASE + '/0.17/shear-wallet-0.17-macos.dmg',
-        windows: BASE + '/0.17/shear-wallet-0.17-windows.zip',
-        android: BASE + '/0.17/shear-wallet-0.17-android.apk',
-        linux: BASE + '/0.17/shear-wallet-0.17-linux.zip',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.17'
+        macos: BASE + '/0.18/shear-wallet-0.18-macos.dmg',
+        windows: BASE + '/0.18/shear-wallet-0.18-windows.zip',
+        android: BASE + '/0.18/shear-wallet-0.18-android.apk',
+        linux: BASE + '/0.18/shear-wallet-0.18-linux.zip',
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.18'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
@@ -480,9 +480,11 @@
         fetch('/reserve/latest.json', { cache: 'no-store' })
           .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
           .then(function (j) {
-            var p = Number(j && j.averagePercent);
+            var bps = Number(j && (j.medianBps != null ? j.medianBps : j.annualBps));
+            var p = Number.isFinite(bps) ? bps / 100 : Number(j && j.medianPercent);
             if (!Number.isFinite(p)) return;
-            rateEl.textContent = p.toFixed(3) + '%';
+            var label = (j && j.label) ? j.label + ' ' : '';
+            rateEl.textContent = label + p.toFixed(2) + '% 400-day APR';
           })
           .catch(function () { rateEl.textContent = '—'; });
       }
