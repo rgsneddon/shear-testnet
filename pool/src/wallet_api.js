@@ -22,7 +22,7 @@ import {
   verifyPoolWithdrawOffchain,
   containsShe1,
 } from '../../crypto/levy.js';
-import { flowSendNeedsOpen, verifyDestOpening } from '../../crypto/spend.js';
+import { flowSendNeedsOpen, verifyDestOpening, fundedDebit, openingForSpentDest } from '../../crypto/spend.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
@@ -167,7 +167,15 @@ export function reconstructOwner(store, address) {
     }
   }
   const tipH = Number(store?.tip?.()?.height || (store.blocks || []).at(-1)?.height || 0);
-  return rowsToHistory(rows, dests, tipH);
+  const rec = rowsToHistory(rows, dests, tipH);
+  let nanos = rec.spendableNanos;
+  const destSet = new Set(dests);
+  for (const tx of store?.mempool || []) {
+    const d = fundedDebit(tx);
+    if (d && destSet.has(d.from)) nanos -= d.nanos;
+  }
+  if (nanos < 0) nanos = 0;
+  return { ...rec, spendableNanos: nanos, spendable: nanosToShe(nanos) };
 }
 
 export function pendingFor(miners, address) {
@@ -621,7 +629,7 @@ export function mempoolLattice(store, limitOrOpts = 24) {
   };
 }
 
-export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline } = {}) {
+export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, poolOpen, poolIdentity } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
   if ((path === '/api/mempoolPressure' || path === '/api/mempoolpressure') && verb === 'GET') {
@@ -824,12 +832,16 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     };
   }
   if (path === '/api/pool/withdraw' && verb === 'POST') {
-    const off = verifyPoolWithdrawOffchain({
-      login: body.login || body.she1,
-      dest: body.dest || body.to,
-      nanos: body.nanos != null ? body.nanos : Math.round(Number(body.amount || 0) * NANOS_PER_SHE),
-      sig: body.sig || body.signature,
-    });
+    const login = body.login || body.she1;
+    const rawDest = String(body.dest || body.to || '').trim();
+    const nanos = body.nanos != null ? body.nanos : Math.round(Number(body.amount || 0) * NANOS_PER_SHE);
+    const sig = body.sig || body.signature;
+    const dests = [...new Set([rawDest, payoutDest(rawDest) || ''].filter(Boolean))];
+    let off = { ok: false, reason: 'unsigned' };
+    for (const dest of dests) {
+      off = verifyPoolWithdrawOffchain({ login, dest, nanos, sig });
+      if (off.ok) break;
+    }
     if (!off.ok) return { status: 400, json: { ...off, public: false } };
     const from = payoutDest(String(poolDest || '')) || poolPayoutDest();
     if (!isDestAddress(from)) return { status: 503, json: { ok: false, reason: 'no_pool_dest' } };
@@ -838,17 +850,53 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (rec.spendableNanos < off.nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
-    const tx = poolWithdrawTx({ from, to: off.dest, nanos: off.nanos, fee });
+    const pending = pendingPulls && typeof pendingPulls.get === 'function'
+      ? pendingPulls.get(String(off.login || '').toLowerCase())
+      : null;
+    let tx;
+    if (pending && pending.kind === 'admin-spendable') {
+      const open = openingForSpentDest(poolIdentity, from) || String(poolOpen || '');
+      const draft = {
+        kind: 'send',
+        from,
+        to: off.dest,
+        nanos: off.nanos,
+        amount: off.nanos / NANOS_PER_SHE,
+        fee,
+        maxLevy: fee,
+        open,
+        vin: [{ address: from }],
+        vout: [{ address: off.dest, nanos: off.nanos, kind: 'send' }],
+      };
+      if (flowSendNeedsOpen(draft) && !verifyDestOpening(from, open)) {
+        return { status: 400, json: { ok: false, reason: 'unsigned', public: false } };
+      }
+      tx = draft;
+    } else {
+      tx = poolWithdrawTx({ from, to: off.dest, nanos: off.nanos, fee });
+    }
     if (containsShe1(tx)) return { status: 400, json: { ok: false, reason: 'she1_on_chain' } };
     let queued = { ok: true, tx };
     if (typeof queueSend === 'function') queued = queueSend(tx);
     if (queued && typeof queued === 'object' && queued.ok === false) {
       return { status: 400, json: { ok: false, reason: queued.reason || 'queue_failed' } };
     }
-    if (typeof completeMinerPull === 'function') {
+    if (pending && pending.kind === 'admin-spendable') {
+      // miner_coins stay in the pull book; this send is operator spendable only.
+      if (pendingPulls && typeof pendingPulls.delete === 'function') {
+        pendingPulls.delete(String(off.login || '').toLowerCase());
+      }
+    } else if (typeof completeMinerPull === 'function') {
       try { completeMinerPull(off.login, off.dest, off.nanos); } catch { /* pull book is optional */ }
     }
-    return { status: 200, json: { ok: true, tx: { id: (queued && queued.id) || tx.id, to: off.dest, nanos: off.nanos, kind: 'pool-withdraw' } } };
+    const kind = pending && pending.kind === 'admin-spendable' ? 'send' : 'pool-withdraw';
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        tx: { id: (queued && queued.id) || tx.id, to: off.dest, nanos: off.nanos, kind },
+      },
+    };
   }
   if (path === '/api/vortex/list' && verb === 'GET') {
     const issued = store?.vortice?.issued || store?.listPublicVortices?.() || [];

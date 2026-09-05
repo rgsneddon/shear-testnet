@@ -184,6 +184,8 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /What a vote may move/);
     assert.match(html, /The Reserve Oracle/);
     assert.match(html, /id="oracle-rate"/);
+    assert.doesNotMatch(html, /median of first-world/);
+    assert.doesNotMatch(html, /central banks/);
     assert.match(html, /\/reserve\/latest\.json/);
     assert.doesNotMatch(html, /starts at 4\.25%/);
     const emissionChunk = html.slice(emission, governance);

@@ -1,7 +1,30 @@
 /** The Reserve oracle — variable annual rate, observed on every node. Not consensus-critical. */
 export const RESERVE_ORACLE_ID = 'shear-reserve-oracle-v1';
-export const RESERVE_ORACLE_DEFAULT_BPS = 425;
+/**
+ * Unweighted arithmetic mean of all observed first-world policy rates in
+ * `reserve/latest.json` (14 banks, half-up). 2.636% → 264 bps.
+ * Not a median. Not a single-bank print.
+ */
+export const RESERVE_ORACLE_DEFAULT_BPS = 264;
 export const RESERVE_ORACLE_MAX_BPS = 10_000;
+
+/** Average of every listed bank's policy rate in bps (half-up). */
+export function averagePolicyBps(components = []) {
+  const rates = [];
+  for (const c of components || []) {
+    let bps = Number(c?.bps);
+    if (!Number.isFinite(bps) && c?.normalisedPercent != null) {
+      bps = Number(c.normalisedPercent) * 100;
+    }
+    if (!Number.isFinite(bps) && c?.normalisedInteger != null) {
+      bps = Number(c.normalisedInteger) / 10;
+    }
+    if (Number.isFinite(bps) && bps >= 0) rates.push(bps);
+  }
+  if (!rates.length) return RESERVE_ORACLE_DEFAULT_BPS;
+  const sum = rates.reduce((a, n) => a + n, 0);
+  return Math.round(sum / rates.length);
+}
 
 export function emptyOracle({ annualBps = RESERVE_ORACLE_DEFAULT_BPS, nowMs = 0 } = {}) {
   return {

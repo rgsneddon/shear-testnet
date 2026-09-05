@@ -70,18 +70,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.19"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.20"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.19"'), isTrue);
+    expect(winMain.contains('L"Shear 0.20"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.19"'), isTrue);
+    expect(winRc.contains('"Shear 0.20"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.19"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.20"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -732,7 +732,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.19');
+    expect(kWalletVersion, '0.20');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -1156,8 +1156,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.19');
-    expect(kWalletVersion, '0.19');
+    expect(app.title, 'Shear 0.20');
+    expect(kWalletVersion, '0.20');
     await tester.pump();
     expect(find.textContaining('0.18'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -1978,7 +1978,7 @@ void main() {
     expect(kTabs.contains('Join'), isFalse);
   });
 
-  testWidgets('Vortex Reserve has amount, Send, add more, and votes when portal holds π', (tester) async {
+  testWidgets('Vortex Reserve has amount, Send, two boxes, and votes when portal holds π', (tester) async {
     final dir = Directory.systemTemp.createTempSync('shear-reserve-ui-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
@@ -1996,7 +1996,12 @@ void main() {
     expect(find.text('The Reserve'), findsWidgets);
     expect(find.text('Amount SHEAR'), findsOneWidget);
     expect(find.text('Send'), findsOneWidget);
-    expect(find.text('Add more SHE to the vault'), findsOneWidget);
+    expect(find.text('Add more SHE to the vault'), findsNothing);
+    expect(find.byKey(const Key('reserve-yours-box')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-overall-box')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-box')), findsOneWidget);
+    expect(find.textContaining('central bank'), findsNothing);
+    expect(find.textContaining('Median'), findsNothing);
     expect(find.text('increase bonus'), findsOneWidget);
     expect(find.text('decrease bonus'), findsOneWidget);
     expect(find.text('leave bonus as-is'), findsOneWidget);
@@ -2057,8 +2062,8 @@ void main() {
     expect(find.textContaining('Coins are locked in your portal'), findsOneWidget);
     expect(find.byKey(const Key('reserve-vote-submit')), findsNothing);
     await tester.enterText(find.byKey(const Key('reserve-amount')), '$kPiShe');
-    await tester.ensureVisible(find.byKey(const Key('reserve-add-more')));
-    await tester.tap(find.byKey(const Key('reserve-add-more')));
+    await tester.ensureVisible(find.byKey(const Key('reserve-send')));
+    await tester.tap(find.byKey(const Key('reserve-send')));
     await tester.pump();
     expect(find.byKey(const Key('reserve-sign')), findsOneWidget);
     await tester.tap(find.byKey(const Key('reserve-sign-accept')));
@@ -2175,7 +2180,7 @@ void main() {
     expect(find.text('increase bonus'), findsOneWidget);
     expect(find.text('Amount SHEAR'), findsOneWidget);
     expect(find.text('Send'), findsOneWidget);
-    expect(find.text('Add more SHE to the vault'), findsOneWidget);
+    expect(find.text('Add more SHE to the vault'), findsNothing);
   });
 
   test('send posts ssa1 from + memoCt; sender and recipient dests open plaintext, other dest does not', () async {
@@ -2935,17 +2940,28 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.19 and 400-day APR is 0.0425 SHE not 0.046575342', () {
-    expect(kWalletVersion, '0.19');
-    expect(reserveInterestNanos(100000000000, 425), 4250000000);
-    expect(reserveInterestNanos(kUnitsPerShe, 425), 4250000000);
-    expect(reserveInterestNanos(kUnitsPerShe, 425) / kUnitsPerShe, 0.0425);
-    expect(reserveInterestNanos(kUnitsPerShe, 425) / kUnitsPerShe, isNot(closeTo(0.046575342, 1e-9)));
-    expect(accruedNanos(kUnitsPerShe, 425, kReserveEpochMs), 4250000000);
-    expect(accruedNanos(kUnitsPerShe, 425, 0), 0);
+  test('kWalletVersion == 0.20 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.20');
+    expect(kReserveOracleDefaultBps, 264);
+    expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
+    expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
     final dart = File('lib/shear_reserve.dart').readAsStringSync();
     expect(dart.contains('3650000'), isFalse);
     expect(dart.contains('a year'), isFalse);
+    expect(File('lib/main.dart').readAsStringSync().contains('central bank'), isFalse);
+  });
+
+  test('Reserve epoch table records one row per epoch number', () {
+    final ident = createIdentity();
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final vault = ShearReserve();
+    expect(vault.deposit(dest: dest, she: kPiShe, nowMs: 1000), isNull);
+    vault.applyRemotePortal(dest, {
+      'epochStartMs': 2000,
+      'staked': 1,
+    });
+    expect(vault.uniqueEpochs.length, 1);
+    expect(vault.uniqueEpochs.single.epoch, 1);
   });
 
   test('lib/ and assets/ do not contain reserve1.png or reserve2.png', () {
@@ -2996,7 +3012,7 @@ void main() {
     expect(pool.baseUrl, liveUrl);
   });
 
-  testWidgets('0.19 lock card still present after 6s; vote at π; no claim-hashes', (tester) async {
+  testWidgets('0.20 lock card still present after 6s; vote at π; no claim-hashes', (tester) async {
     _tallContinuum(tester);
     final opened = await _open018(tester);
     final ident = opened.session.identity!;
@@ -3038,7 +3054,7 @@ void main() {
     await _end018(tester, opened.ledger);
   });
 
-  testWidgets('0.19 withdraw shows Sign; epoch table has start/end', (tester) async {
+  testWidgets('0.20 withdraw shows Sign; epoch table has start/end', (tester) async {
     _tallContinuum(tester);
     final opened = await _open018(tester);
     final ident = opened.session.identity!;

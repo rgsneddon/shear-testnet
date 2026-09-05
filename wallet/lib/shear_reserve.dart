@@ -13,7 +13,8 @@ const kReserveEpochDays = 400;
 const kReserveJoinCutoffDays = 99;
 const kReserveEpochMs = kReserveEpochDays * 86400000;
 const kReserveJoinCutoffMs = kReserveJoinCutoffDays * 86400000;
-const kReserveOracleDefaultBps = 425;
+/// Unweighted mean of all observed first-world policy rates (14 banks). 2.636% → 264 bps.
+const kReserveOracleDefaultBps = 264;
 const kVoteIncrease = 'increase bonus';
 const kVoteDecrease = 'decrease bonus';
 const kVoteHold = 'leave bonus as-is';
@@ -155,12 +156,17 @@ class ShearReserve {
 
   void _recordEpoch(int startMs) {
     if (currentEpoch < 1) currentEpoch = 1;
-    if (epochs.any((e) => e.epoch == currentEpoch && e.startMs == startMs)) return;
+    if (epochs.any((e) => e.epoch == currentEpoch)) return;
     epochs.add(ReserveEpochRow(
       epoch: currentEpoch,
       startMs: startMs,
       endMs: startMs + kReserveEpochMs,
     ));
+  }
+
+  List<ReserveEpochRow> get uniqueEpochs {
+    final seen = <int>{};
+    return [for (final e in epochs) if (seen.add(e.epoch)) e];
   }
 
   void _beginEpoch(int nowMs) {

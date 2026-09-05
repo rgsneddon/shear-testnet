@@ -27,7 +27,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.19';
+const kWalletVersion = '0.20';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 const kTabs = [
@@ -371,6 +371,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     id = session.identity;
     password = pw;
     ledger.viewSecret = id!.viewKey;
+    ledger.bindVaultDest(restFrame: id!.address, viewKey: id!.viewKey);
     ledger.restoreDests(session.rememberedDests);
     setState(() {
       _lockError = null;
@@ -478,21 +479,23 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           ],
         ),
       );
-      if (offerId.isNotEmpty) _handledPullIds.add(offerId);
       if (go == true && mounted) {
         try {
           final tx = await ledger.signPendingPull(
-            login: ident.paymentCode,
+            login: login,
             dest: dest,
             nanos: nanos,
             seed: hexToBytes(ident.seedHex),
           );
+          if (offerId.isNotEmpty) _handledPullIds.add(offerId);
           _ingestTx(ident, tx);
           if (mounted) setState(() {});
         } catch (e) {
           if (!mounted) return;
           _showPoolWithdrawError(_pullFailReason(e));
         }
+      } else if (go == false && offerId.isNotEmpty) {
+        _handledPullIds.add(offerId);
       }
     } catch (_) {
       /* pool unreachable */
@@ -952,7 +955,6 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
     final pending = ledger.pendingTxs(ident.address);
     final path1 = ledger.path1Observation();
-    final hashBonus = ledger.confirmedHashBonus(ident.address, paymentCode: ident.paymentCode);
     final fluxSec = (path1.targetIntervalMs / 1000).round();
     final dt = path1.observedIntervalMs;
     final spendPane = <Widget>[
@@ -1024,6 +1026,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         },
         defaultVerticalAlignment: TableCellVerticalAlignment.middle,
         children: [
+          _continuumStatRow(context, 'Height', '${ledger.sealedHeight}'),
+          _continuumStatRow(
+            context,
+            'Network hashrate',
+            ledger.networkHashrate == null ? '—' : '${ledger.networkHashrate} H/s',
+          ),
           _continuumStatRow(context, 'Closure quantum', '${formatShe(path1.quantumShe)} SHE'),
           _continuumStatRow(context, 'Target flux', '${formatShe(path1.quantumShe)} SHE / $fluxSec s'),
           _continuumStatRow(
@@ -1039,8 +1047,23 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           _continuumStatRow(
             context,
             'Hash bonus',
-            '${formatShe(hashBonus)} SHE',
+            '${ledger.liveHashBonusNanos ?? 1} unit(s)',
             key: const Key('continuum-hash-bonus'),
+          ),
+          _continuumStatRow(
+            context,
+            'VAULT',
+            '${formatShe((ledger.vaultLockedNanos ?? 0) / kUnitsPerShe)} SHE',
+          ),
+          _continuumStatRow(
+            context,
+            'Extra minted',
+            '${formatShe((ledger.extraMintedNanos ?? 0) / kUnitsPerShe)} SHE',
+          ),
+          _continuumStatRow(
+            context,
+            'Resistance',
+            ledger.networkBits == null ? '—' : '${ledger.networkBits}',
           ),
         ],
       ),
@@ -1259,7 +1282,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   String? _reserveDestOf(ShearIdentity ident) =>
       vaultDest(ident.address, viewKey: ledger.viewSecret ?? ident.viewKey);
 
-  Future<void> _reserveSend(BuildContext context, ShearIdentity ident, {required bool addMore}) async {
+  Future<void> _reserveSend(BuildContext context, ShearIdentity ident) async {
     final dest = _reserveDestOf(ident);
     if (dest == null) return;
     final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
@@ -1275,7 +1298,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         key: const Key('reserve-sign'),
-        title: Text(addMore ? 'Sign Reserve deposit' : 'Sign Reserve deposit'),
+        title: const Text('Sign Reserve deposit'),
         content: Text(
           'Lock ${formatShe(she)} SHE into The Reserve.\n'
           'This spends Continuum and locks the coins in your portal until the epoch ends.',
@@ -1295,6 +1318,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       ),
     );
     if (go != true || !mounted) return;
+    ledger.rememberVaultDest(dest);
     final from = ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: she);
     final now = DateTime.now().millisecondsSinceEpoch;
     late final dynamic tx;
@@ -1416,187 +1440,230 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     final rate = '${(rw.oracleBps / 100).toStringAsFixed(2)}%';
     final voted = p.vote != null && p.voteEpoch == reserve.currentEpoch;
     final draft = _reserveVoteDraft ?? p.vote;
-    return [
-      const Text('The Reserve', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text(
-        'The Reserve is Shear governance. Lock over π SHE into your portal. '
-        'The first qualifying stake opens a 400-day epoch. '
-        'Last-99-day deposits still unlock a vote but earn no stake. '
-        'Interest is a variable rate observed by The Reserve oracle. '
-        'The winning vote then moves the hash bonus by one unit.',
-      ),
-      if (reserve.cutoffDisclaimer(now)) ...[
-        const SizedBox(height: 8),
-        const Text(kReserveCutoffDisclaimer),
-      ],
-      if (_reserveLockNotice != null) ...[
-        const SizedBox(height: 8),
-        Card(
-          key: const Key('reserve-locked-in'),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Locked in  ${formatShe((_reserveLockNotice!['she'] as num).toDouble())} SHE. '
-                  'Coins are locked in your portal.',
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                Text('Tx  ${_reserveLockNotice!['txid']}'),
-                Text(
-                  'Portal total  ${formatShe((_reserveLockNotice!['cumulative'] as num).toDouble())} SHE'
-                  '${_reserveLockNotice!['canVote'] == true ? '  ·  vote unlocked' : ''}',
-                ),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    key: const Key('reserve-lock-dismiss'),
-                    onPressed: _reserveLockDismissable
-                        ? () => setState(() => _reserveLockNotice = null)
-                        : null,
-                    child: const Text('Dismiss'),
+    final yours = Card(
+      key: const Key('reserve-yours-box'),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('The Reserve', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text(
+              'The Reserve is Shear governance. Lock over π SHE into your portal. '
+              'The first qualifying stake opens a 400-day epoch. '
+              'Last-99-day deposits still unlock a vote but earn no stake. '
+              'Interest is a variable rate observed by The Reserve oracle. '
+              'The winning vote then moves the hash bonus by one unit.',
+            ),
+            if (reserve.cutoffDisclaimer(now)) ...[
+              const SizedBox(height: 8),
+              const Text(kReserveCutoffDisclaimer),
+            ],
+            if (_reserveLockNotice != null) ...[
+              const SizedBox(height: 8),
+              Card(
+                key: const Key('reserve-locked-in'),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Locked in  ${formatShe((_reserveLockNotice!['she'] as num).toDouble())} SHE. '
+                        'Coins are locked in your portal.',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      Text('Tx  ${_reserveLockNotice!['txid']}'),
+                      Text(
+                        'Portal total  ${formatShe((_reserveLockNotice!['cumulative'] as num).toDouble())} SHE'
+                        '${_reserveLockNotice!['canVote'] == true ? '  ·  vote unlocked' : ''}',
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          key: const Key('reserve-lock-dismiss'),
+                          onPressed: _reserveLockDismissable
+                              ? () => setState(() => _reserveLockNotice = null)
+                              : null,
+                          child: const Text('Dismiss'),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-              ],
+              ),
+            ],
+            const SizedBox(height: 8),
+            Text('Your sums', key: const Key('reserve-holdings'), style: const TextStyle(fontWeight: FontWeight.w600)),
+            Text('Staked  $stakedShe SHE'),
+            Text('Idle  $idleShe SHE'),
+            Text('Locked  $totalShe SHE${p.joined ? '  ·  joined this epoch' : ''}'),
+            Text('Accrued this epoch  $accruedShe SHE  ·  minted daily, locked until epoch end'),
+            Text('Previous-epoch rewards  ${formatShe(p.claimableRewards / kUnitsPerShe)} SHE  ·  withdrawable now'),
+            Text(
+              p.canVote
+                  ? 'Vote unlocked  portal holds ≥ π SHE'
+                  : 'Need $needVoteShe SHE more to reach π and unlock a vote. Deposits add up.',
+              key: const Key('reserve-pi-progress'),
             ),
-          ),
-        ),
-      ],
-      const SizedBox(height: 8),
-      Text('Your sums', key: const Key('reserve-holdings'), style: const TextStyle(fontWeight: FontWeight.w600)),
-      Text('Staked  $stakedShe SHE'),
-      Text('Idle  $idleShe SHE'),
-      Text('Locked  $totalShe SHE${p.joined ? '  ·  joined this epoch' : ''}'),
-      Text('Accrued this epoch  $accruedShe SHE  ·  minted daily, locked until epoch end'),
-      Text('Previous-epoch rewards  ${formatShe(p.claimableRewards / kUnitsPerShe)} SHE  ·  withdrawable now'),
-      Text(
-        p.canVote
-            ? 'Vote unlocked  portal holds ≥ π SHE'
-            : 'Need $needVoteShe SHE more to reach π and unlock a vote. Deposits add up.',
-        key: const Key('reserve-pi-progress'),
-      ),
-      const SizedBox(height: 8),
-      Text('Overall sums', key: const Key('reserve-overall'), style: const TextStyle(fontWeight: FontWeight.w600)),
-      Text('Program locked  $programShe SHE'),
-      Text('Program staked  ${formatShe((reserve.totalStakedNanos > 0 ? reserve.totalStakedNanos : reserve.totalLockedNanos) / kUnitsPerShe)} SHE  ·  idle ${formatShe(reserve.totalIdleNanos / kUnitsPerShe)} SHE'),
-      Text('Fee bank  ${formatShe(reserve.feeBankNanos / kUnitsPerShe)} SHE  ·  extra-minted ${formatShe(reserve.mintBankNanos / kUnitsPerShe)} SHE'),
-      Text('Accrued (all portals)  ${formatShe(reserve.totalAccruedNanos / kUnitsPerShe)} SHE  ·  claimable ${formatShe(reserve.totalClaimableNanos / kUnitsPerShe)} SHE'),
-      Text('Live hash bonus  ${reserve.liveHashBonusNanos} unit(s)'),
-      Text('Votes  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}'),
-      Text(reserve.epochStartMs == 0
-          ? 'No epoch yet. The first π SHE deposit will start it.'
-          : '$daysLeft days remaining in this epoch  ·  day $dayOfEpoch of $kReserveEpochDays'),
-      if (p.nanos > 0) ...[
-        Text('$kReserveAccruedLabel  $accruedShe SHE  ·  updates daily (day $dayOfEpoch)'),
-        Text('At epoch end  $endShe SHE'),
-        Text(
-          '${reserve.oracleObservedAtMs == 0 ? 'Default' : 'Observed'} $rate 400-day APR on staked SHE. Idle SHE does not accrue. Median of first-world central banks.',
-          key: const Key('reserve-apr'),
-        ),
-      ],
-      if (reserve.epochs.isNotEmpty) ...[
-        const SizedBox(height: 8),
-        const Text('Epochs', style: TextStyle(fontWeight: FontWeight.w600)),
-        Table(
-          key: const Key('reserve-epoch-table'),
-          columnWidths: const {
-            0: FlexColumnWidth(0.7),
-            1: FlexColumnWidth(1.4),
-            2: FlexColumnWidth(1.4),
-          },
-          children: [
-            const TableRow(children: [
-              Padding(padding: EdgeInsets.symmetric(vertical: 2), child: Text('Epoch')),
-              Padding(padding: EdgeInsets.symmetric(vertical: 2), child: Text('Start')),
-              Padding(padding: EdgeInsets.symmetric(vertical: 2), child: Text('End')),
+            if (p.nanos > 0) ...[
+              Text('$kReserveAccruedLabel  $accruedShe SHE  ·  updates daily (day $dayOfEpoch)'),
+              Text('At epoch end  $endShe SHE'),
+              Text(
+                '${reserve.oracleObservedAtMs == 0 ? 'Default' : 'Observed'} $rate 400-day APR on staked SHE. Idle SHE does not accrue.',
+                key: const Key('reserve-apr'),
+              ),
+            ],
+            if (p.deposits.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              const Text('Your deposits', style: TextStyle(fontWeight: FontWeight.w600)),
+              for (final d in p.deposits.reversed.take(12))
+                Text('${formatShe(d.nanos / kUnitsPerShe)} SHE  ·  ${DateTime.fromMillisecondsSinceEpoch(d.atMs).toIso8601String().split('T').first}'),
+            ],
+            const SizedBox(height: 8),
+            TextField(
+              key: const Key('reserve-amount'),
+              controller: reserveAmt,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Amount SHEAR'),
+            ),
+            const SizedBox(height: 8),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              FilledButton(
+                key: const Key('reserve-send'),
+                onPressed: () => _reserveSend(context, ident),
+                child: const Text('Send'),
+              ),
+              if ((p.nanos > 0 && reserve.epochIsOver(now)) || p.claimableRewards > 0)
+                FilledButton(
+                  key: const Key('reserve-withdraw'),
+                  onPressed: () => _reserveWithdraw(context, ident),
+                  child: Text(p.claimableRewards > 0 && !reserve.epochIsOver(now)
+                      ? 'Withdraw previous-epoch rewards'
+                      : 'Withdraw to Continuum'),
+                ),
             ]),
-            for (final e in reserve.epochs)
-              TableRow(children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Text('${e.epoch}'),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Text(reserveLocalDateTime(e.startMs)),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Text(reserveLocalDateTime(e.endMs)),
-                ),
-              ]),
           ],
         ),
-      ],
-      if (p.deposits.isNotEmpty) ...[
-        const SizedBox(height: 8),
-        const Text('Your deposits', style: TextStyle(fontWeight: FontWeight.w600)),
-        for (final d in p.deposits.reversed.take(12))
-          Text('${formatShe(d.nanos / kUnitsPerShe)} SHE  ·  ${DateTime.fromMillisecondsSinceEpoch(d.atMs).toIso8601String().split('T').first}'),
-      ],
-      const SizedBox(height: 8),
-      TextField(
-        key: const Key('reserve-amount'),
-        controller: reserveAmt,
-        keyboardType: TextInputType.number,
-        decoration: const InputDecoration(labelText: 'Amount SHEAR'),
       ),
-      const SizedBox(height: 8),
-      Wrap(spacing: 8, runSpacing: 8, children: [
-        FilledButton(
-          key: const Key('reserve-send'),
-          onPressed: () => _reserveSend(context, ident, addMore: false),
-          child: const Text('Send'),
-        ),
-        OutlinedButton(
-          key: const Key('reserve-add-more'),
-          onPressed: () => _reserveSend(context, ident, addMore: true),
-          child: const Text('Add more SHE to the vault'),
-        ),
-        if ((p.nanos > 0 && reserve.epochIsOver(now)) || p.claimableRewards > 0)
-          FilledButton(
-            key: const Key('reserve-withdraw'),
-            onPressed: () => _reserveWithdraw(context, ident),
-            child: Text(p.claimableRewards > 0 && !reserve.epochIsOver(now)
-                ? 'Withdraw previous-epoch rewards'
-                : 'Withdraw to Continuum'),
-          ),
-      ]),
-      if (p.canVote) ...[
-        const SizedBox(height: 12),
-        const Text('Vote to raise, lower, or leave the hash bonus (±1 unit). The 1 SHE pot does not change. You can change this vote at any time.'),
-        for (final v in [kVoteIncrease, kVoteDecrease, kVoteHold])
-          CheckboxListTile(
-            key: Key('reserve-vote-$v'),
-            dense: true,
-            title: Text(v),
-            value: draft == v,
-            onChanged: (on) {
-              setState(() => _reserveVoteDraft = on == true ? v : null);
-            },
-          ),
-        FilledButton(
-          key: const Key('reserve-vote-submit'),
-          onPressed: draft == null
-              ? null
-              : () {
-                  final err = reserve.vote(dest: dest, choice: draft, nowMs: now);
-                  if (err != null && context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
-                    return;
-                  }
-                  setState(() => _reserveVoteDraft = draft);
+    );
+    final overall = Card(
+      key: const Key('reserve-overall-box'),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Overall sums', key: const Key('reserve-overall'), style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text('Program locked  $programShe SHE'),
+            Text('Program staked  ${formatShe((reserve.totalStakedNanos > 0 ? reserve.totalStakedNanos : reserve.totalLockedNanos) / kUnitsPerShe)} SHE  ·  idle ${formatShe(reserve.totalIdleNanos / kUnitsPerShe)} SHE'),
+            Text('Fee bank  ${formatShe(reserve.feeBankNanos / kUnitsPerShe)} SHE  ·  extra-minted ${formatShe(reserve.mintBankNanos / kUnitsPerShe)} SHE'),
+            Text('Accrued (all portals)  ${formatShe(reserve.totalAccruedNanos / kUnitsPerShe)} SHE  ·  claimable ${formatShe(reserve.totalClaimableNanos / kUnitsPerShe)} SHE'),
+            Text('Live hash bonus  ${reserve.liveHashBonusNanos} unit(s)'),
+            Text('Votes  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}'),
+            Text(reserve.epochStartMs == 0
+                ? 'No epoch yet. The first π SHE deposit will start it.'
+                : '$daysLeft days remaining in this epoch  ·  day $dayOfEpoch of $kReserveEpochDays'),
+            if (reserve.uniqueEpochs.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              const Text('Epochs', style: TextStyle(fontWeight: FontWeight.w600)),
+              Table(
+                key: const Key('reserve-epoch-table'),
+                columnWidths: const {
+                  0: FlexColumnWidth(0.7),
+                  1: FlexColumnWidth(1.4),
+                  2: FlexColumnWidth(1.4),
                 },
-          child: Text(voted ? 'Update vote' : 'Submit vote'),
+                children: [
+                  const TableRow(children: [
+                    Padding(padding: EdgeInsets.symmetric(vertical: 2), child: Text('Epoch')),
+                    Padding(padding: EdgeInsets.symmetric(vertical: 2), child: Text('Start')),
+                    Padding(padding: EdgeInsets.symmetric(vertical: 2), child: Text('End')),
+                  ]),
+                  for (final e in reserve.uniqueEpochs)
+                    TableRow(children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text('${e.epoch}'),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(reserveLocalDateTime(e.startMs)),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(reserveLocalDateTime(e.endMs)),
+                      ),
+                    ]),
+                ],
+              ),
+            ],
+          ],
         ),
-      ],
-      if (voted) ...[
-        const SizedBox(height: 12),
-        Text(
-          'Vote results  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}  ·  your vote: ${p.vote}',
-          key: const Key('reserve-vote-results'),
+      ),
+    );
+    final vote = Card(
+      key: const Key('reserve-vote-box'),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('Vote to raise, lower, or leave the hash bonus (±1 unit). The 1 SHE pot does not change. You can change this vote at any time.'),
+            for (final v in [kVoteIncrease, kVoteDecrease, kVoteHold])
+              CheckboxListTile(
+                key: Key('reserve-vote-$v'),
+                dense: true,
+                title: Text(v),
+                value: draft == v,
+                onChanged: (on) {
+                  setState(() => _reserveVoteDraft = on == true ? v : null);
+                },
+              ),
+            FilledButton(
+              key: const Key('reserve-vote-submit'),
+              onPressed: draft == null
+                  ? null
+                  : () {
+                      final err = reserve.vote(dest: dest, choice: draft, nowMs: now);
+                      if (err != null && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                        return;
+                      }
+                      setState(() => _reserveVoteDraft = draft);
+                    },
+              child: Text(voted ? 'Update vote' : 'Submit vote'),
+            ),
+            if (voted)
+              Text(
+                'Vote results  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}  ·  your vote: ${p.vote}',
+                key: const Key('reserve-vote-results'),
+              ),
+          ],
         ),
+      ),
+    );
+    return [
+      LayoutBuilder(builder: (ctx, box) {
+        final side = box.maxWidth >= 560;
+        if (side) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: yours),
+              const SizedBox(width: 8),
+              Expanded(child: overall),
+            ],
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [yours, const SizedBox(height: 8), overall],
+        );
+      }),
+      if (p.canVote) ...[
+        const SizedBox(height: 8),
+        SizedBox(width: double.infinity, child: vote),
       ],
     ];
   }

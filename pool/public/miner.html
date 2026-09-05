@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <script src="/brand/theme.js?v=12"></script>
+  <script src="/brand/theme.js?v=8"></script>
   <title>Shear miner · ShearHash-v2</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=25"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=13"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
@@ -53,6 +53,7 @@
     .pull-form .withdraw-btn { flex:0 0 auto; margin:0; width:auto; white-space:nowrap; }
     .hid { display:none !important; }
     .err { color:#b42318; font-size:.85rem; min-height:1.1em; margin:6px 0 0; }
+    .err.sent { color:var(--green); font-weight:750; }
     a { color:var(--cyan); }
     .mono { font-family: ui-monospace, Consolas, monospace; font-size:.88rem; }
     table { width:100%; border-collapse:collapse; }
@@ -98,10 +99,11 @@
       <a class="nav-btn" href="https://shear.digital">MAIN</a>
       <a class="nav-btn" href="/">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
+      <a class="nav-btn" href="https://dag.shear.digital">DAG</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.19" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.16" target="_blank" rel="noopener">WALLET</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -146,6 +148,7 @@
       <article class="panel-card"><div class="label">Blocks found</div><div class="value" id="m-blocks">0</div></article>
       <article class="panel-card"><div class="label">Accepted work</div><div class="value" id="m-accepted">0</div></article>
       <article class="panel-card"><div class="label">Stale shares</div><div class="value" id="m-stale">0</div></article>
+      <article class="panel-card"><div class="label">Orphans</div><div class="value" id="m-orphans">0</div></article>
       <article class="panel-card"><div class="label">CPU threads</div><div class="value" id="m-threads">0</div></article>
       <article class="panel-card"><div class="label">Hashes this round</div><div class="value" id="m-round">0</div></article>
       <article class="panel-card"><div class="label">First seen</div><div class="value" id="m-first">—</div></article>
@@ -197,6 +200,9 @@
       const el = document.getElementById(id);
       if (el) el.textContent = v;
     }
+    let pullWatching = false;
+    let lastPullSeen = 0;
+    let paintedPullMs = 0;
     function paint(d) {
       if (!d || !d.ok) {
         set('live-pulse', 'unknown miner');
@@ -213,12 +219,21 @@
       set('m-blocks', String(d.blocks || 0));
       set('m-accepted', String(d.accepted || 0));
       set('m-stale', String(d.stale || 0));
+      set('m-orphans', String(d.orphans || 0));
       set('m-threads', String(d.threads || 0));
       set('m-round', String(d.roundHashes || 0));
       set('m-pending', (d.pendingDisplay || '0') + ' SHE');
       set('m-confirmed', (d.confirmedDisplay || '0') + ' SHE');
       set('m-first', ago(d.firstSeen));
       set('m-last', ago(d.lastSeen));
+      const pulled = Number(d.lastPullMs) || 0;
+      paintedPullMs = pulled;
+      if (pullWatching && pulled > lastPullSeen) {
+        const err = document.getElementById('pull-err');
+        document.getElementById('pull-form').classList.add('hid');
+        if (err) { err.className = 'err sent'; err.textContent = 'sent'; }
+        pullWatching = false;
+      }
       document.title = d.tag + ' · Shear miner';
       const tb = document.querySelector('#workers tbody');
       tb.innerHTML = (d.workers || []).slice().sort(function (a, b) {
@@ -248,6 +263,7 @@
     document.getElementById('pull-form').addEventListener('submit', function (e) {
       e.preventDefault();
       const err = document.getElementById('pull-err');
+      err.className = 'err';
       err.textContent = '';
       const login = document.getElementById('pull-login').value.trim();
       const dest = document.getElementById('pull-dest').value.trim();
@@ -258,14 +274,19 @@
       }).then(function (r) { return r.json(); }).then(function (j) {
         if (j && j.ok) {
           document.getElementById('pull-form').classList.add('hid');
-          err.textContent = '';
+          err.className = 'err sent';
+          err.textContent = 'sent';
           tick();
           return;
         }
-        if (j && j.reason === 'unsigned' && j.pending) {
+        if (j && j.reason === 'unsigned') {
+          err.className = 'err';
           err.textContent = 'Waiting for wallet to sign';
+          lastPullSeen = paintedPullMs;
+          pullWatching = true;
           return;
         }
+        err.className = 'err';
         err.textContent = (j && j.reason) || 'unsigned';
       }).catch(function () { err.textContent = 'unsigned'; });
     });

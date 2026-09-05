@@ -1715,7 +1715,7 @@ export function createPool({
         const off = verifyPoolWithdrawOffchain({
           login,
           dest,
-          nanos: pull.confirmedNanos,
+          nanos: body.nanos != null ? Math.floor(Number(body.nanos) || 0) : pull.confirmedNanos,
           sig: body.sig || body.signature,
         });
         if (!off.ok) {

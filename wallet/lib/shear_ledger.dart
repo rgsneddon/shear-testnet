@@ -279,6 +279,7 @@ class ShearLedger {
   final Map<String, double> _pending = {};
   final List<ShearTx> _txs = [];
   final Set<String> _dests = {};
+  final Set<String> _vaultDests = {};
   /// Next dest height (tip sealed height + 1).
   int tipHeight = 1;
   /// continuity_root of the sealed tip (lag-1 for the next dest).
@@ -298,6 +299,15 @@ class ShearLedger {
   int? _prevHeaderTimestampMs;
   /// Network circulating supply from pool /api/stats. Continuum Integral Q.
   int? circulatingNanos;
+  /// Network-wide stats from /api/stats (Continuum right-hand box).
+  int? networkHashrate;
+  int? liveHashBonusNanos;
+  int? extraMintedNanos;
+  int? vaultLockedNanos;
+  int? potEmittedNanos;
+  int? hashBonusEmittedNanos;
+  int? networkBits;
+  int? networkMiners;
 
   /// Mean interval of every sealed block on the book (from pool /api/stats).
   int? _avgBlockTimeMs;
@@ -407,7 +417,41 @@ class ShearLedger {
     return currentDest(address);
   }
 
-  bool _isProgramVaultDest(String address) => false;
+  bool _isProgramVaultDest(String address) {
+    if (address.isEmpty) return false;
+    if (_vaultDests.contains(address)) return true;
+    final key = isDestAddress(address) ? address : (payoutDest(address) ?? '');
+    if (key.isNotEmpty && _vaultDests.contains(key)) return true;
+    final vk = viewSecret;
+    if (vk == null || vk.isEmpty) return false;
+    for (final rest in _restFrames()) {
+      final v = vaultDest(rest, viewKey: vk);
+      if (v != null && (v == address || v == key)) {
+        _vaultDests.add(v);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Iterable<String> _restFrames() sync* {
+    for (final d in _dests) {
+      yield d;
+    }
+  }
+
+  void rememberVaultDest(String dest) {
+    if (dest.isEmpty) return;
+    _vaultDests.add(dest);
+    _spendable.remove(dest);
+    _pending.remove(dest);
+    _dests.remove(dest);
+  }
+
+  void bindVaultDest({required String restFrame, required String viewKey}) {
+    final v = vaultDest(restFrame, viewKey: viewKey);
+    if (v != null) rememberVaultDest(v);
+  }
 
   /// Track a Continuum dest without crediting spendable.
   void rememberDest(String address) {
@@ -709,6 +753,22 @@ class ShearLedger {
       if (avg != null && avg >= 0) applyAvgBlockTimeMs(avg);
       final circ = json['circulatingNanos'];
       if (circ is num && circ >= 0) circulatingNanos = circ.round();
+      void take(String k, void Function(int) set) {
+        final v = json[k];
+        if (v is num && v >= 0) set(v.round());
+      }
+      take('hashrate', (n) => networkHashrate = n);
+      take('hashBonusNanos', (n) => liveHashBonusNanos = n);
+      take('extraMintedNanos', (n) => extraMintedNanos = n);
+      take('lockedNanos', (n) => vaultLockedNanos = n);
+      if (json['reserveVaultNanos'] is num) {
+        vaultLockedNanos = (json['reserveVaultNanos'] as num).round();
+      }
+      take('potEmittedNanos', (n) => potEmittedNanos = n);
+      take('hashBonusEmittedNanos', (n) => hashBonusEmittedNanos = n);
+      take('bits', (n) => networkBits = n);
+      take('blockBits', (n) => networkBits = n);
+      take('miners', (n) => networkMiners = n);
     } catch (_) {}
   }
 

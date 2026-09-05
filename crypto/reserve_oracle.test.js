@@ -7,7 +7,11 @@ import {
   observeRate,
   interestNanos,
   accruedNanos,
+  averagePolicyBps,
 } from './reserve_oracle.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { PI_SHE_NANOS } from './asert.js';
 
 describe('Reserve oracle', () => {
@@ -37,5 +41,12 @@ describe('Reserve oracle', () => {
     assert.equal(full, interestNanos(PI_SHE_NANOS, 425, 400));
     assert.equal(accruedNanos(PI_SHE_NANOS, 425, 500 * day), full);
     assert.equal(accruedNanos(0, 425, 200 * day), 0);
+  });
+
+  it('default bps is the unweighted average of all observed policy rates', () => {
+    const latest = JSON.parse(readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../reserve/latest.json'), 'utf8'));
+    const avg = averagePolicyBps(latest.components);
+    assert.equal(RESERVE_ORACLE_DEFAULT_BPS, avg);
+    assert.notEqual(RESERVE_ORACLE_DEFAULT_BPS, 425);
   });
 });

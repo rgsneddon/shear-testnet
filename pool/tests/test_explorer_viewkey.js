@@ -160,6 +160,9 @@ describe('explorer dests', () => {
     const shipped = searchExplorerTxs(store, { height: 1 });
     assert.deepEqual(shipped.map((t) => t.id).sort(), byHeight.json.txs.map((t) => t.id).sort());
 
+    const dash = fs.readFileSync(new URL('../public/explorer.html', import.meta.url), 'utf8');
+    assert.match(dash, />VAULT</);
+    assert.doesNotMatch(dash, />Reserve in vault</);
     const circ = get(store, '/api/explorer/circulation');
     assert.equal(circ.status, 200);
     assert.equal(circ.json.ok, true);
