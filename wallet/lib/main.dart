@@ -27,7 +27,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.18';
+const kWalletVersion = '0.19';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 const kTabs = [
@@ -1607,7 +1607,14 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     try {
       final dest = _reserveDestOf(ident);
       if (dest != null) {
+        final p = reserve.portal(dest);
+        final keepStaked = p.staked;
+        final keepIdle = p.idle;
         reserve.applyRemotePortal(dest, await pool.reservePortal(dest));
+        if (_reserveLockNotice != null) {
+          if (p.staked < keepStaked) p.staked = keepStaked;
+          if (p.idle < keepIdle) p.idle = keepIdle;
+        }
       }
     } catch (_) {}
     if (mounted) setState(() {});

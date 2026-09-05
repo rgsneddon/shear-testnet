@@ -47,7 +47,7 @@ describe('shear.digital client buttons', () => {
     assert.match(dag, /spy glass/);
     assert.match(dag, /liveFromBook/);
     assert.doesNotMatch(dag, /HASH_BUNDLE/);
-    assert.match(dag, /releases\/tag\/0\.18/);
+    assert.match(dag, /releases\/tag\/0\.19/);
     assert.doesNotMatch(dag, /releases\/tag\/0\.15/);
     assert.doesNotMatch(dag, /releases\/tag\/0\.13/);
     assert.doesNotMatch(dag, /releases\/tag\/0\.12/);
@@ -70,11 +70,13 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /height:72px/);
     assert.match(html, /justify-content:center/);
     assert.match(html, /text-indent:\.12em/);
-    assert.match(html, /shear-wallet-0\.18-macos\.dmg/);
-    assert.match(html, /shear-wallet-0\.18-windows\.zip/);
-    assert.match(html, /shear-wallet-0\.18-android\.apk/);
-    assert.match(html, /shear-wallet-0\.18-linux\.zip/);
-    assert.match(html, /shear-wallet-0\.18-archlinux\.zip/);
+    assert.match(html, /shear-wallet-0\.19-macos\.dmg/);
+    assert.match(html, /shear-wallet-0\.19-windows\.zip/);
+    assert.match(html, /shear-wallet-0\.19-android\.apk/);
+    assert.match(html, /shear-wallet-0\.19-linux\.zip/);
+    assert.match(html, /shear-wallet-0\.19-archlinux\.zip/);
+    assert.doesNotMatch(html, /shear-wallet-0\.18-/);
+    assert.doesNotMatch(html, /releases\/tag\/0\.18/);
     assert.doesNotMatch(html, /shear-wallet-0\.17-/);
     assert.doesNotMatch(html, /releases\/tag\/0\.17/);
     assert.doesNotMatch(html, /shear-wallet-0\.15-/);
@@ -92,7 +94,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-pack="wallet-linux"/);
     assert.match(html, /data-pack="wallet-archlinux"/);
     assert.match(html, /id="pack-advisory"/);
-    assert.match(html, /wallet <strong>0\.18<\/strong>/);
+    assert.match(html, /wallet <strong>0\.19<\/strong>/);
     assert.doesNotMatch(html, /shear-wallet-0\.8-/);
     assert.match(html, /rgsneddon\/shear-testnet/);
     assert.doesNotMatch(html, /github\.com\/rgsneddon\/shear"/);
@@ -117,7 +119,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-pack="miner-windows"/);
   });
 
-  it('WALLET nav on MAIN DAG MEMPOOL POOL EXPLORER pins 0.18 and refuses older tags', () => {
+  it('WALLET nav on MAIN DAG MEMPOOL POOL EXPLORER pins 0.19 and refuses older tags', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const pages = {
       main: html,
@@ -129,7 +131,8 @@ describe('shear.digital client buttons', () => {
       poolAdmin: fs.readFileSync(path.join(here, '../../pool/admin/index.html'), 'utf8'),
     };
     for (const [name, page] of Object.entries(pages)) {
-      assert.match(page, /releases\/tag\/0\.18/, `${name} WALLET must pin 0.18`);
+      assert.match(page, /releases\/tag\/0\.19/, `${name} WALLET must pin 0.19`);
+      assert.doesNotMatch(page, /releases\/tag\/0\.18/, `${name} must not offer 0.18`);
       assert.doesNotMatch(page, /releases\/tag\/0\.17/, `${name} must not offer 0.17`);
       assert.doesNotMatch(page, /shear-wallet-0\.17-/);
       assert.doesNotMatch(page, /releases\/tag\/0\.16/, `${name} must not offer 0.16`);
@@ -166,6 +169,13 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /ShearHash-v2 \(a variant of RandomX\)/);
     assert.doesNotMatch(html, /using the ShearK algorithm/);
     assert.match(html, /Exactly 1 SHE, every found block/);
+    const potChunk = html.slice(html.indexOf('<h3>The pot</h3>'), html.indexOf('<h3>Each hash</h3>'));
+    assert.match(potChunk, /split proportionally to each miner's proven work in that round/);
+    assert.match(potChunk, /PROP, minus any pool fee/);
+    assert.match(potChunk, /Solo miners receive that full pot plus their own hash bonuses/);
+    assert.match(potChunk, /not PROP-split/);
+    assert.doesNotMatch(potChunk, /it is split between miners who hashed during the round/);
+    assert.match(html, /Hash bonuses are always paid in full to the miner who produced them/);
     assert.match(html, /Staked SHE/);
     assert.match(html, /Staking may occur in The Reserve vortice at a variable rate to reward participants in Shear's community governance model/);
     assert.match(html, /0\.00000000001 SHE for each accepted hash/);
@@ -215,7 +225,7 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /The Reserve/);
     assert.match(admin, /pool\.shear\.digital:1111/);
     assert.match(admin, /ShearK-Miner 1\.5/);
-    assert.match(admin, /shear-wallet-0\.18-/);
+    assert.match(admin, /shear-wallet-0\.19-/);
     assert.match(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
     assert.doesNotMatch(admin, /The Join/);
     assert.doesNotMatch(admin, /join1\./);

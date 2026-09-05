@@ -23,6 +23,7 @@ import {
   formatShe,
   NANOS_PER_SHE,
   SPENDABLE_CONFIRMATIONS,
+  GENESIS_BITS,
 } from '../../crypto/asert.js';
 import { poolFeeDest, levyNanos, mempoolDepthBytes, poolWithdrawTx, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
@@ -691,7 +692,7 @@ export function createPool({
   httpPort = 8088,
   miner,
   shareBits = SHARE_BITS_V2_START,
-  bits = 16,
+  bits = GENESIS_BITS,
   p2p = null,
   onRestart = null,
   onRestartHasher = null,
@@ -1453,7 +1454,9 @@ export function createPool({
       burnedNanos: supply.burnedNanos,
       height: tip?.height || 0,
       header: tip?.header ? Buffer.from(tip.header).toString('hex') : '',
-      bits: lastJob?.bits || bits,
+      bits: lastJob?.blockBits || lastJob?.bits || bits,
+      blockBits: Number(lastJob?.blockBits || lastJob?.bits || bits),
+      shareBits: Number(lastJob?.shareBits || shareBits),
       lastFoundAt: stats.lastFoundAt || 0,
       avgBlockTimeMs: avgMs,
       networkAvgBlockTimeMs: avgMs,

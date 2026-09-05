@@ -10,9 +10,10 @@ import {
   RESERVE_PROGRAM,
   extraMintAllowed,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
+  levyTaxed,
   txWeight,
   mempoolPressure,
   mempoolDepthBytes,
@@ -22,6 +23,7 @@ import {
   verifyPoolWithdrawOffchain,
   containsShe1,
 } from '../../crypto/levy.js';
+import { flowSendNeedsOpen, verifyDestOpening } from '../../crypto/spend.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
@@ -733,27 +735,49 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (!isDestAddress(from) || !isDestAddress(to) || !(amount > 0)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
+    const poolPay = payoutDest(String(poolDest || '')) || '';
+    if (poolPay && from === poolPay) {
+      return { status: 403, json: { ok: false, reason: 'pool_dest' } };
+    }
     const rec = reconstructOwner(store, from);
     const nanos = Math.round(amount * NANOS_PER_SHE);
     if (rec.spendableNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const memoCt = body.memoCt || null;
+    const kindIn = String(body.kind || 'send');
+    const programIn = String(body.programId || '');
+    const isLock = kindIn === 'lock' && programIn === RESERVE_PROGRAM;
+    if (kindIn !== 'send' && !isLock) {
+      return { status: 400, json: { ok: false, reason: 'bad_kind' } };
+    }
+    const kind = isLock ? 'lock' : 'send';
+    const programId = isLock ? RESERVE_PROGRAM : '';
+    const taxed = levyTaxed({ kind, programId });
     const depth = mempoolDepthBytes(store?.mempool || []);
-    const fee = levyNanos(nanos, { depth });
+    const fee = taxed ? levyNanos(nanos, { depth }) : 0;
     if (rec.spendableNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
-    const tx = queueSend({
-      kind: 'send', from, to, nanos, amount, fee, maxLevy: fee, memoCt,
-      vin: [{ address: from }],
-      vout: [{ address: to, nanos, kind: 'send' }],
-    });
+    const draft = isLock
+      ? { ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }), fee, memoCt, open: body.open, amount }
+      : {
+        kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, open: body.open,
+        vin: [{ address: from }],
+        vout: [{ address: to, nanos, kind }],
+      };
+    if (flowSendNeedsOpen(draft) && !verifyDestOpening(from, body.open)) {
+      return { status: 403, json: { ok: false, reason: 'unsigned' } };
+    }
+    const tx = queueSend(draft);
+    if (tx && typeof tx === 'object' && tx.ok === false) {
+      return { status: 400, json: { ok: false, reason: tx.reason || 'queue_failed' } };
+    }
     return {
       status: 200,
       json: {
         ok: true,
-        tx: { id: tx.id, from, to, amount, kind: 'send', confirmed: false, memo: !!memoCt },
+        tx: { id: tx.id, from, to, amount, kind, programId: programId || undefined, confirmed: false, memo: !!memoCt },
         fromBalance: nanosToShe(rec.spendableNanos - nanos - fee),
       },
     };

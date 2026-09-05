@@ -232,7 +232,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.18" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.19" target="_blank" rel="noopener">WALLET</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -251,18 +251,18 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.18</strong> · miner <strong>1.5</strong>
+      wallet <strong>0.19</strong> · miner <strong>1.5</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.18">WALLET</a>
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.19">WALLET</a>
         <div class="client-menu" id="menu-wallet">
-          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.18/shear-wallet-0.18-macos.dmg">macOS</a>
-          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.18/shear-wallet-0.18-windows.zip">Windows</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.18/shear-wallet-0.18-android.apk">Android</a>
-          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.18/shear-wallet-0.18-linux.zip">Linux</a>
-          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.18/shear-wallet-0.18-archlinux.zip">Arch</a>
+          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.19/shear-wallet-0.19-macos.dmg">macOS</a>
+          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.19/shear-wallet-0.19-windows.zip">Windows</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.19/shear-wallet-0.19-android.apk">Android</a>
+          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.19/shear-wallet-0.19-linux.zip">Linux</a>
+          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.19/shear-wallet-0.19-archlinux.zip">Arch</a>
         </div>
       </div>
       <div class="client-dd">
@@ -332,7 +332,7 @@
           <tr><th>Staked SHE</th><td>Staking may occur in The Reserve vortice at a variable rate to reward participants in Shear's community governance model</td></tr>
         </table>
         <h3>The pot</h3>
-        <p>A found block creates 1 SHE. Solo miners receive that full block + hashes bonus. On the public pool it is split between miners who hashed during the round (minus any pool fee). Hash bonuses are always paid in full to miners.</p>
+        <p>A found block creates 1 SHE. The 1 SHE pot is split proportionally to each miner's proven work in that round (PROP, minus any pool fee). Solo miners receive that full pot plus their own hash bonuses. Hash bonuses are always paid in full to the miner who produced them; they are not PROP-split.</p>
         <h3>Each hash</h3>
         <p>Your accepted hashes are yours. Finding the block does not let anyone take another person’s bonus. Public pages show eight decimal places, so a single hash looks like dust; the extra unit is still written into the payout.</p>
         <p>Shear developers do not sell SHE. You hash, or you are paid by someone who already holds coin. Testnet balances can vanish; treat them as a practice run before mainnet.</p>
@@ -363,7 +363,7 @@
     </div>
     <section class="panel-card guide-wide" id="wallet-start">
       <h2>Start a wallet from scratch</h2>
-      <p>Current pin is <strong>0.18</strong>. Use the WALLET button above and pick your system.</p>
+      <p>Current pin is <strong>0.19</strong>. Use the WALLET button above and pick your system.</p>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
         <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
@@ -419,11 +419,11 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SHE1.solo --threads 8</pre>
       else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
-        macos: BASE + '/0.18/shear-wallet-0.18-macos.dmg',
-        windows: BASE + '/0.18/shear-wallet-0.18-windows.zip',
-        android: BASE + '/0.18/shear-wallet-0.18-android.apk',
-        linux: BASE + '/0.18/shear-wallet-0.18-linux.zip',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.18'
+        macos: BASE + '/0.19/shear-wallet-0.19-macos.dmg',
+        windows: BASE + '/0.19/shear-wallet-0.19-windows.zip',
+        android: BASE + '/0.19/shear-wallet-0.19-android.apk',
+        linux: BASE + '/0.19/shear-wallet-0.19-linux.zip',
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.19'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {

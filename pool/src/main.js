@@ -6,7 +6,7 @@ import { createPool } from './pool.js';
 import { newIdentity, isShearAddress } from '../../crypto/address.js';
 import { destForLogin, payoutDest } from '../../crypto/flow_sheet.js';
 import { createP2p, P2P_PORT } from '../../node/src/p2p.js';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, GENESIS_BITS } from '../../crypto/asert.js';
 import { SHARE_BITS_V2_START } from './share_vardiff.js';
 
 const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v2');
@@ -36,7 +36,7 @@ const pool = createPool({
   httpPort: Number(process.env.SHEAR_HTTP || 8088),
   miner,
   shareBits: Number(process.env.SHEAR_SHARE_BITS || SHARE_BITS_V2_START),
-  bits: Number(process.env.SHEAR_BITS || 21),
+  bits: Number(process.env.SHEAR_BITS || GENESIS_BITS),
 });
 await pool.listen();
 const p2pPort = Number(process.env.SHEAR_P2P_PORT ?? P2P_PORT);

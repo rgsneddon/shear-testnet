@@ -1178,7 +1178,18 @@ class ShearLedger {
       if (vk != null && vk.isNotEmpty && rest.isNotEmpty) {
         open = openingForDest(from: src, restFrame: rest, viewKey: vk, destCount: destCount);
       }
-      final json = await pool!.send(from: src, to: to, amount: amount, memoCt: memoCt, open: open);
+      final json = await pool!.send(
+        from: src,
+        to: to,
+        amount: amount,
+        memoCt: memoCt,
+        open: open,
+        kind: sendKind,
+        programId: programId,
+      );
+      if (json['ok'] != true || json['tx'] is! Map) {
+        throw StateError('${json['reason'] ?? 'send failed'}');
+      }
       final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
       final tx = ShearTx(
         id: raw.id,
@@ -1378,6 +1389,8 @@ class ShearPoolClient {
     required double amount,
     Map<String, dynamic>? memoCt,
     String? open,
+    String? kind,
+    String? programId,
   }) =>
       _post('/api/wallet/send', {
         'from': from,
@@ -1385,6 +1398,8 @@ class ShearPoolClient {
         'amount': amount,
         if (memoCt != null) 'memoCt': memoCt,
         if (open != null && open.isNotEmpty) 'open': open,
+        if (kind != null && kind.isNotEmpty) 'kind': kind,
+        if (programId != null && programId.isNotEmpty) 'programId': programId,
       });
 
   Future<Map<String, dynamic>> mempoolPressure() => _get('/api/mempoolPressure');

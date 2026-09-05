@@ -7,7 +7,7 @@ import path from 'node:path';
 import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { isSpendableHeight } from '../../crypto/chronoflux.js';
 
-export const PULL_COOLDOWN_MS = 90 * 60 * 60 * 1000;
+export const PULL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 export function potCreditNanos() {
   const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);

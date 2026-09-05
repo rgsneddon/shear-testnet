@@ -632,7 +632,8 @@ describe('public miner listing', () => {
     assert.match(miner, /ssa1 dest this round \(pay\)/);
     assert.match(miner, /Copy ID/);
     assert.match(miner, /Copy dest/);
-    assert.match(miner, /wait 90 hours before the next one/);
+    assert.match(miner, /wait 24 hours before the next one/);
+    assert.doesNotMatch(miner, /wait 90 hours before the next one/);
     assert.match(miner, /j\.reason/);
     assert.doesNotMatch(miner, /sig: 'pull-'/);
     assert.match(miner, /background:var\(--input\); color:var\(--ink\)/);

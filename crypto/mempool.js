@@ -26,6 +26,9 @@ export function admitMempool(pool, tx, { baseFee } = {}) {
     'evm-value',
     'pool-withdraw',
     'vortice-register',
+    'lock',
+    'vote',
+    'withdraw',
   ]);
   if (!allowed.has(kind)) {
     return { ok: false, reason: 'kind' };

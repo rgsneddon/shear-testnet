@@ -70,18 +70,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.18"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.19"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.18"'), isTrue);
+    expect(winMain.contains('L"Shear 0.19"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.18"'), isTrue);
+    expect(winRc.contains('"Shear 0.19"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.18"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.19"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -732,7 +732,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.18');
+    expect(kWalletVersion, '0.19');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -1156,8 +1156,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.18');
-    expect(kWalletVersion, '0.18');
+    expect(app.title, 'Shear 0.19');
+    expect(kWalletVersion, '0.19');
     await tester.pump();
     expect(find.textContaining('0.18'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -1921,6 +1921,31 @@ void main() {
     expect(r.portal(vault).nanos, 0);
   });
 
+  test('Reserve lock above spendable is refused and does not credit the portal', () async {
+    final alice = createIdentity();
+    final ledger = ShearLedger();
+    ledger.viewSecret = alice.viewKey;
+    ledger.confirmRound(address: alice.address, pot: 1, height: 1);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    final continuum = ledger.currentDest(alice.address);
+    final vault = vaultDest(alice.address, viewKey: alice.viewKey)!;
+    expect(ledger.spendable(continuum), closeTo(1, 1e-12));
+    final r = ShearReserve();
+    await expectLater(
+      ledger.send(
+        from: continuum,
+        to: vault,
+        amount: kPiShe,
+        local: true,
+        kind: 'lock',
+        programId: kReserveProgram,
+      ),
+      throwsA(isA<StateError>()),
+    );
+    expect(ledger.spendable(continuum), closeTo(1, 1e-12));
+    expect(r.portal(vault).nanos, 0);
+  });
+
   test('Reserve accrued rewards grow on staked SHE and stay zero on idle SHE', () {
     final alice = createIdentity();
     final bob = createIdentity();
@@ -2053,6 +2078,36 @@ void main() {
     await tester.tap(find.byKey(const Key('reserve-vote-submit')));
     await tester.pump();
     expect(find.textContaining('your vote: $kVoteHold'), findsOneWidget);
+  });
+
+  testWidgets('Reserve Sign is not offered when Continuum spendable is short', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-reserve-short-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final ledger = ShearLedger();
+    ledger.viewSecret = ident.viewKey;
+    ledger.confirmRound(address: ident.paymentCode, pot: 1, height: 20);
+    ledger.settleTo(30);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      reserve: ShearReserve(),
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.enterText(find.byKey(const Key('reserve-amount')), '$kPiShe');
+    await tester.ensureVisible(find.byKey(const Key('reserve-send')));
+    await tester.tap(find.byKey(const Key('reserve-send')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-sign')), findsNothing);
+    expect(find.text('Not enough spendable SHE'), findsOneWidget);
+    expect(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode), closeTo(1, 1e-12));
   });
 
   testWidgets('Vortex deploys a third-party dapp only after a valid vort1. key download', (tester) async {
@@ -2880,8 +2935,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.18 and 400-day APR is 0.0425 SHE not 0.046575342', () {
-    expect(kWalletVersion, '0.18');
+  test('kWalletVersion == 0.19 and 400-day APR is 0.0425 SHE not 0.046575342', () {
+    expect(kWalletVersion, '0.19');
     expect(reserveInterestNanos(100000000000, 425), 4250000000);
     expect(reserveInterestNanos(kUnitsPerShe, 425), 4250000000);
     expect(reserveInterestNanos(kUnitsPerShe, 425) / kUnitsPerShe, 0.0425);
@@ -2941,7 +2996,7 @@ void main() {
     expect(pool.baseUrl, liveUrl);
   });
 
-  testWidgets('0.18 lock card still present after 6s; vote at π; no claim-hashes', (tester) async {
+  testWidgets('0.19 lock card still present after 6s; vote at π; no claim-hashes', (tester) async {
     _tallContinuum(tester);
     final opened = await _open018(tester);
     final ident = opened.session.identity!;
@@ -2983,7 +3038,7 @@ void main() {
     await _end018(tester, opened.ledger);
   });
 
-  testWidgets('0.18 withdraw shows Sign; epoch table has start/end', (tester) async {
+  testWidgets('0.19 withdraw shows Sign; epoch table has start/end', (tester) async {
     _tallContinuum(tester);
     final opened = await _open018(tester);
     final ident = opened.session.identity!;

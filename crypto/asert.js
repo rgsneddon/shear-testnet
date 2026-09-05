@@ -6,8 +6,16 @@ export const MIN_BITS = 1;
  * ASERT use the whole hash.
  */
 export const MAX_BITS = 256;
-export const LIVE_MIN_BITS = 14;
-export const GENESIS_BITS = 21;
+/**
+ * Testnet floor. RandomX-lite at ~50 H/s finds a block on the 90s scale
+ * near 12 bits (2^12 / 50 ≈ 82s). 14 was minutes; 21 was hours.
+ * Share vardiff opens at 8 and must be able to sit under header bits.
+ */
+export const LIVE_MIN_BITS = 4;
+export const GENESIS_BITS = 12;
+/** Per-block ASERT step caps. log2 clamp 1/4…4 → ±2. Not an 8-bit jump. */
+export const ASERT_HARDEN_MAX = 2;
+export const ASERT_EASE_MAX = 2;
 /** Protocol unit is 10⁻¹¹ SHE (11 decimals). Vote steps are integers of this unit. Public amounts show nine fractional digits. */
 export const SHE_DECIMALS = 11;
 export const SHE_PUBLIC_DIGITS = 9;
@@ -40,7 +48,7 @@ export const SHEARK_MINER_VERSION = '1.5';
 /** Frozen consensus identity. A different fingerprint is a different law. */
 export const BOOK_LAW_ID = 'shear-book-law-1';
 /** Display/tag version for wallet, node, and pool. Two-part only (`*.*`, never `0.1.0`). Start 0.1; later 0.10+ legal. Never 1.* unless the operator says so. */
-export const PRODUCT_VERSION = '0.3';
+export const PRODUCT_VERSION = '0.4';
 /** Official C miner display/tag version. Two-part only (`*.*`). Operator set Shear-Miner to 1.1 (fee-free). 1.0 keeps the built-in fee. */
 export const MINER_VERSION = '1.1';
 /** Hash bonus commits on accept. Not env. */
@@ -228,7 +236,11 @@ export function nextBits(previousBits, intervalMs) {
   let seen = Number(intervalMs);
   if (!Number.isFinite(seen) || seen < 1) seen = 1;
   const ratio = TARGET_BLOCK_INTERVAL_MS / seen;
-  const delta = Math.round(Math.log2(Math.max(1 / 4, Math.min(4, ratio))));
+  const lo = 2 ** -ASERT_EASE_MAX;
+  const hi = 2 ** ASERT_HARDEN_MAX;
+  let delta = Math.round(Math.log2(Math.max(lo, Math.min(hi, ratio))));
+  if (delta > ASERT_HARDEN_MAX) delta = ASERT_HARDEN_MAX;
+  if (delta < -ASERT_EASE_MAX) delta = -ASERT_EASE_MAX;
   return clampBits(prev + delta);
 }
 

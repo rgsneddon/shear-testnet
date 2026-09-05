@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pack the Flutter Windows release tree into shear-wallet-0.18-windows.zip.
+"""Pack the Flutter Windows release tree into shear-wallet-0.19-windows.zip.
 
 Wallet zip is GUI only. Official miner is a separate GitHub release (1.1 / 1.0).
 """
@@ -12,7 +12,7 @@ import zipfile
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BUNDLE = os.path.join(REPO, "wallet", "build", "windows", "x64", "runner", "Release")
 DIST = os.path.join(REPO, "dist")
-OUT_NAME = "shear-wallet-0.18-windows.zip"
+OUT_NAME = "shear-wallet-0.19-windows.zip"
 EXE_NAME = "shear_wallet.exe"
 MINER_BASENAMES = {
     "shear-miner.exe",
@@ -22,8 +22,8 @@ MINER_BASENAMES = {
     "sheark-miner",
 }
 
-# Keep the public pin two-part 0.18. Flutter file version 0.18.0+N is not the pin.
-PUBLIC_PIN = "0.18"
+# Keep the public pin two-part 0.19. Flutter file version 0.19.0+N is not the pin.
+PUBLIC_PIN = "0.19"
 
 
 def add_tree(z: zipfile.ZipFile, root: str) -> None:
