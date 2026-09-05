@@ -21,6 +21,7 @@ import {
   vote,
   withdraw,
   enact,
+  applyReserveBlock,
   creditFeeBank,
   payoutStakeReward,
   canJoin,
@@ -138,6 +139,26 @@ describe('Reserve vault protocol', () => {
     assert.equal(state.bonusEnacted, true);
     const again = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
     assert.equal(again.ok, false);
+  });
+
+  it('first sealed block after epoch auto-enacts the winning vote; height is unchanged', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
+    const height = 40;
+    const block = { height, txs: [{ coinbase: true, vout: [] }] };
+    applyReserveBlock({ state, block, nowMs: t0 + 10 * DAY });
+    assert.equal(state.liveHashBonusNanos, 1);
+    assert.equal(state.bonusEnacted, false);
+    applyReserveBlock({ state, block, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(state.liveHashBonusNanos, 2);
+    assert.equal(state.bonusEnacted, true);
+    assert.equal(block.height, height);
+    applyReserveBlock({ state, block: { height: height + 1, txs: [] }, nowMs: t0 + RESERVE_EPOCH_MS + 90_000 });
+    assert.equal(state.liveHashBonusNanos, 2);
   });
 
   it('accrued rewards grow on staked SHE and stay zero on idle SHE', () => {

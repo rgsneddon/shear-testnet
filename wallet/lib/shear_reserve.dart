@@ -188,6 +188,17 @@ class ShearReserve {
     );
   }
 
+  /// Restore this wallet's portal from shewall.bin / session. Node sync may overlay.
+  void applyLocalSnapshot(Map<String, dynamic> json) {
+    final dest = json['dest']?.toString() ?? '';
+    if (dest.isEmpty) return;
+    applyRemotePortal(dest, json);
+    final p = portal(dest);
+    p.joined = json['joined'] == true || p.nanos >= kPiSheNanos;
+    if (json['vote'] != null) p.vote = json['vote'].toString();
+    p.voteEpoch = (json['voteEpoch'] as num?)?.toInt() ?? p.voteEpoch;
+  }
+
   /// Node Join/Reserve VAULT read. Not a public vortice.
   void applyRemotePortal(String dest, Map<String, dynamic> json) {
     final p = portal(dest);
@@ -195,13 +206,27 @@ class ShearReserve {
     p.idle = (json['idle'] as num?)?.toInt() ?? p.idle;
     p.remoteAccrued = (json['accrued'] as num?)?.toInt();
     p.claimableRewards = (json['claimable'] as num?)?.toInt() ?? p.claimableRewards;
-    if (p.nanos >= kPiSheNanos) p.joined = true;
+    if (json['joined'] == true || p.nanos >= kPiSheNanos) p.joined = true;
     feeBankNanos = (json['feeBankNanos'] as num?)?.toInt() ?? feeBankNanos;
     mintBankNanos = (json['mintBankNanos'] as num?)?.toInt() ?? mintBankNanos;
     totalStakedNanos = (json['totalStakedNanos'] as num?)?.toInt() ?? totalStakedNanos;
     totalIdleNanos = (json['totalIdleNanos'] as num?)?.toInt() ?? totalIdleNanos;
     totalAccruedNanos = (json['totalAccruedNanos'] as num?)?.toInt() ?? totalAccruedNanos;
     totalClaimableNanos = (json['totalClaimableNanos'] as num?)?.toInt() ?? totalClaimableNanos;
+    final locked = (json['totalLockedNanos'] as num?)?.toInt();
+    if (locked != null && locked >= 0) totalLockedNanos = locked;
+    final votes = json['votes'];
+    if (votes is Map) {
+      votesIncrease = (votes['increase'] as num?)?.toInt() ?? votesIncrease;
+      votesDecrease = (votes['decrease'] as num?)?.toInt() ?? votesDecrease;
+      votesHold = (votes['hold'] as num?)?.toInt() ?? votesHold;
+    }
+    final bonus = (json['liveHashBonusNanos'] as num?)?.toInt();
+    if (bonus != null && bonus >= 0) liveHashBonusNanos = bonus;
+    if (json['bonusEnacted'] == true) bonusEnacted = true;
+    if (json['bonusEnacted'] == false) bonusEnacted = false;
+    final epochN = (json['currentEpoch'] as num?)?.toInt();
+    if (epochN != null && epochN > 0) currentEpoch = epochN;
     final epoch = (json['epochStartMs'] as num?)?.toInt();
     if (epoch != null && epoch > 0) {
       epochStartMs = epoch;

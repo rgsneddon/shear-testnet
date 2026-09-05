@@ -101,11 +101,31 @@ export function canVote(stakedNanos, idleNanos = 0) {
 }
 
 export function publicVaultView(state, nowMs) {
+  let totalStaked = 0;
+  let totalIdle = 0;
+  let totalAccrued = 0;
+  let totalClaimable = 0;
+  const bps = state.oracle?.annualBps ?? 0;
+  const elapsed = elapsedMs(state, nowMs);
+  for (const p of Object.values(state.portals || {})) {
+    const staked = Math.floor(Number(p.staked) || 0);
+    const idle = Math.floor(Number(p.idle) || 0);
+    totalStaked += staked;
+    totalIdle += idle;
+    totalAccrued += accruedNanos(staked, bps, elapsed);
+    totalClaimable += Math.floor(Number(p.claimableRewards) || 0);
+  }
   return {
     programId: RESERVE_PROGRAM,
     epochStartMs: state.epochStartMs || 0,
     remainingMs: remainingMs(state, nowMs),
     totalLockedNanos: state.totalLockedNanos || 0,
+    totalStakedNanos: totalStaked,
+    totalIdleNanos: totalIdle,
+    totalAccruedNanos: totalAccrued,
+    totalClaimableNanos: totalClaimable,
+    feeBankNanos: Math.floor(Number(state.feeBankNanos) || 0),
+    mintBankNanos: Math.floor(Number(state.mintBankNanos) || 0),
     votes: { ...state.votes },
     oracleBps: state.oracle?.annualBps ?? 0,
     liveHashBonusNanos: Number(state.liveHashBonusNanos || 1),
@@ -315,6 +335,11 @@ function txKind(tx) {
 export function applyReserveBlock({ state, block, nowMs }) {
   const txs = Array.isArray(block?.txs) ? block.txs : [];
   const results = [];
+  // First block whose time is past the epoch collates votes into the live
+  // hash bonus. Winning plurality moves the bonus by ±1. Height is unchanged.
+  if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + RESERVE_EPOCH_MS) {
+    results.push({ action: 'enact', ...enact({ state, nowMs }) });
+  }
   const cb = txs.find((t) => t?.coinbase) || txs[0];
   for (const o of cb?.vout || []) {
     if (o?.kind === 'reserve-fee') creditFeeBank(state, o.nanos);
@@ -354,9 +379,6 @@ export function applyReserveBlock({ state, block, nowMs }) {
         }),
       });
     }
-  }
-  if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + RESERVE_EPOCH_MS) {
-    results.push({ action: 'enact', ...enact({ state, nowMs }) });
   }
   return results;
 }

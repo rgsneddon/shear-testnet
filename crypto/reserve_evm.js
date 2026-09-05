@@ -337,6 +337,15 @@ export async function executeReserveTx(session, tx, nowMs) {
 /** Run pinned Reserve bytecode + EVM SHE value for a block body. Fail closed. */
 export async function executeBlockEvm(session, txs, nowMs) {
   const evm = { totalLocked: 0, valueMoved: 0, calls: 0 };
+  const prior = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
+  if (prior.ok) {
+    const view0 = decodePublicView(prior.returnValue);
+    const ended = view0.epochStartMs && nowMs >= view0.epochStartMs + RESERVE_EPOCH_MS;
+    if (ended && !view0.bonusEnacted) {
+      const en = await callReserve(session, encodeEnact(nowMs));
+      if (!en.ok) return { ok: false, reason: en.reason || 'enact' };
+    }
+  }
   for (const tx of (txs || []).slice(1)) {
     if (!isReserveCall(tx) && !isEvmValueTx(tx)) continue;
     const got = await executeReserveTx(session, tx, nowMs);

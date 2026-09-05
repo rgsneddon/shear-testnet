@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
 import 'shear_lock.dart';
+import 'shear_reserve.dart';
 import 'shear_vortex.dart';
 import 'shear_shewall.dart';
 export 'shear_shewall.dart' show shewallName;
@@ -42,6 +43,11 @@ class ShearSession {
   ShearIdentity? identity;
   bool biometricsEnabled = false;
   List<String> rememberedDests = const [];
+  List<Map<String, dynamic>> rememberedTxs = const [];
+  int rememberedDestCount = 1;
+  int rememberedDestIndex = 0;
+  int rememberedSealedHeight = 0;
+  Map<String, dynamic>? rememberedReserve;
   List<Vortice> deployedVortices = const [];
   bool sealed = false;
   Map<String, dynamic>? _envelope;
@@ -142,6 +148,11 @@ class ShearSession {
         ...identity!.toJson(),
         'biometricsEnabled': biometricsEnabled,
         'dests': rememberedDests.where((d) => d.startsWith('ssa1')).toList(),
+        'destCount': rememberedDestCount,
+        'destIndex': rememberedDestIndex,
+        'sealedHeight': rememberedSealedHeight,
+        'txs': rememberedTxs,
+        if (rememberedReserve != null) 'reserve': rememberedReserve,
         'vortices': deployedVortices.map((v) => v.toJson()).toList(),
       };
 
@@ -152,6 +163,14 @@ class ShearSession {
         .map((e) => e.toString())
         .where((d) => d.startsWith('ssa1'))
         .toList();
+    rememberedDestCount = (j['destCount'] as num?)?.toInt() ?? 1;
+    rememberedDestIndex = (j['destIndex'] as num?)?.toInt() ?? 0;
+    rememberedSealedHeight = (j['sealedHeight'] as num?)?.toInt() ?? 0;
+    rememberedTxs = ((j['txs'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+    rememberedReserve = j['reserve'] is Map ? Map<String, dynamic>.from(j['reserve'] as Map) : null;
     deployedVortices = ((j['vortices'] as List?) ?? const [])
         .whereType<Map>()
         .map((e) => Vortice.fromJson(Map<String, dynamic>.from(e)))
@@ -169,42 +188,87 @@ Uint8List _hexBytes(String hex) {
   return out;
 }
 
+Map<String, dynamic> ledgerUserArchive(ShearLedger ledger) {
+  ledger.prune();
+  return {
+    'dests': ledger.exportedDests(),
+    'destCount': ledger.destCount,
+    'destIndex': ledger.destIndex,
+    'sealedHeight': ledger.sealedHeight,
+    'txs': [
+      for (final t in ledger.transactions)
+        if (t.kind != 'sample') t.toJson(),
+    ],
+  };
+}
+
+void applyUserArchive(ShearLedger ledger, Map<String, dynamic> archive) {
+  final dests = ((archive['dests'] as List?) ?? const []).map((e) => e.toString()).toList();
+  final txs = <ShearTx>[
+    for (final row in (archive['txs'] as List?) ?? const [])
+      if (row is Map) ShearTx.fromJson(Map<String, dynamic>.from(row)),
+  ];
+  ledger.replaceFromBackup(
+    address: dests.isNotEmpty ? dests.first : '',
+    spendable: 0,
+    pending: 0,
+    txs: txs,
+    destCount: (archive['destCount'] as num?)?.toInt(),
+    destIndex: (archive['destIndex'] as num?)?.toInt(),
+  );
+  ledger.restoreDests(dests);
+  final sums = <String, double>{};
+  for (final t in txs) {
+    if (!t.confirmed || t.to.isEmpty) continue;
+    if (t.kind == 'send') continue;
+    sums[t.to] = (sums[t.to] ?? 0) + t.amount;
+  }
+  for (final e in sums.entries) {
+    ledger.rememberSpendable(e.key, e.value);
+  }
+}
+
 Uint8List exportShewall({
   required ShearIdentity identity,
   required ShearLedger ledger,
+  Map<String, dynamic>? reserveSnapshot,
 }) {
   ledger.prune();
   final dest20 = hash20FromAddress(identity.address) ?? Uint8List(20);
+  final archive = ledgerUserArchive(ledger);
+  if (reserveSnapshot != null) archive['reserve'] = reserveSnapshot;
   return packShewall(
     seed32: _hexBytes(identity.seedHex),
     dest20: dest20,
-    spendableNanos: (ledger.spendable(identity.address) * kUnitsPerShe).round(),
+    spendableNanos: (ledger.spendableOwned(identity.address, paymentCode: identity.paymentCode) * kUnitsPerShe).round(),
     pendingNanos: (ledger.pending(identity.address) * kUnitsPerShe).round(),
+    archive: archive,
   );
 }
 
-ShearIdentity importShewall(Uint8List packed, ShearLedger ledger) {
+ShearIdentity importShewall(Uint8List packed, ShearLedger ledger, {ShearReserve? reserve}) {
   final u = unpackShewall(packed);
   final id = createIdentity(u['seed32']!);
   final spend = shewallU64(u['spendableNanos']!) / kUnitsPerShe;
   final pend = shewallU64(u['pendingNanos']!) / kUnitsPerShe;
+  final archive = unpackShewallArchive(packed);
+  if (archive != null) {
+    applyUserArchive(ledger, archive);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    if (spend > ledger.spendableOwned(id.address, paymentCode: id.paymentCode)) {
+      ledger.rememberSpendable(home, spend);
+    }
+    final snap = archive['reserve'];
+    if (reserve != null && snap is Map) {
+      reserve.applyLocalSnapshot(Map<String, dynamic>.from(snap));
+    }
+    return id;
+  }
   ledger.replaceFromBackup(
     address: id.address,
     spendable: spend,
     pending: pend,
-    txs: spend > 0
-        ? [
-            ShearTx(
-              id: 'shewall-restore',
-              from: 'backup',
-              to: id.address,
-              amount: spend,
-              kind: 'coinbase',
-              height: 1,
-              confirmed: true,
-            ),
-          ]
-        : const [],
+    txs: const [],
   );
   return id;
 }
@@ -231,9 +295,10 @@ Future<File> exportEncryptedShewall({
   required ShearLedger ledger,
   required String password,
   required File dest,
+  Map<String, dynamic>? reserveSnapshot,
 }) async {
   if (password.isEmpty) throw const FormatException('empty');
-  final packed = exportShewall(identity: identity, ledger: ledger);
+  final packed = exportShewall(identity: identity, ledger: ledger, reserveSnapshot: reserveSnapshot);
   final sealed = await sealShewallBin(packed, password);
   return writeShewallFile(dest, sealed);
 }
@@ -242,7 +307,8 @@ Future<ShearIdentity> importEncryptedShewall({
   required File src,
   required String password,
   required ShearLedger ledger,
+  ShearReserve? reserve,
 }) async {
   final opened = await openShewallBin(readShewallFile(src), password);
-  return importShewall(opened, ledger);
+  return importShewall(opened, ledger, reserve: reserve);
 }

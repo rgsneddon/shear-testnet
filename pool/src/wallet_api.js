@@ -671,6 +671,36 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
   if (path === '/api/wallet/register' && verb === 'POST') {
     return { status: 404, json: { ok: false, reason: 'register_disabled' } };
   }
+  if (path === '/api/explorer/header' && verb === 'GET') {
+    const height = Math.floor(Number(url.searchParams.get('height') || 0));
+    const b = (store?.blocks || []).find((x) => Number(x.height) === height);
+    if (!b) return { status: 404, json: { ok: false, reason: 'unknown_height' } };
+    const raw = Buffer.isBuffer(b.header) ? b.header : Buffer.from(b.header || []);
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        height,
+        header: raw.toString('hex'),
+        continuity: raw.length >= 100 ? raw.subarray(68, 100).toString('hex') : '',
+      },
+    };
+  }
+  if (path === '/api/explorer/headers' && verb === 'GET') {
+    const from = Math.max(1, Math.floor(Number(url.searchParams.get('from') || 1)));
+    const toRaw = Math.floor(Number(url.searchParams.get('to') || from));
+    const to = Math.min(Math.max(from, toRaw), from + 1999);
+    const list = store?.blocks || [];
+    const byH = new Map(list.map((b) => [Number(b.height) || 0, b]));
+    const headers = [];
+    for (let h = from; h <= to; h += 1) {
+      const b = byH.get(h);
+      if (!b) continue;
+      const raw = Buffer.isBuffer(b.header) ? b.header : Buffer.from(b.header || []);
+      headers.push({ height: h, header: raw.toString('hex') });
+    }
+    return { status: 200, json: { ok: true, from, to, headers } };
+  }
   if ((path === '/api/explorer/tx' || path.startsWith('/api/explorer/tx/')) && verb === 'GET') {
     const id = url.searchParams.get('id')
       || decodeURIComponent(path.slice('/api/explorer/tx/'.length).split('/')[0] || '');

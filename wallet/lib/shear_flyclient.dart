@@ -2,7 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-/// Quiet FlyClient node-find. Not a full archive, not a 1s node-scan.
+/// Quiet FlyClient node-find. The wallet is not a full node; it mirrors
+/// headers and stats the node relays. Not a 1s node-scan and not an archive.
 const kFlyDefaultSeed = 'https://pool.shear.digital';
 
 /// Logarithmic header heights: 1, 2, 4, … tip.
@@ -19,6 +20,20 @@ List<int> flyclientSampleHeights(int tip) {
   out.add(tip);
   final list = out.toList()..sort();
   return list;
+}
+
+/// Honesty is proven FlyClient samples vs the logarithmic set at the claimed tip.
+/// Never returns HONEST unless [live] and [proven] >= [wanted] > 0.
+String walletHonestyText({
+  required bool live,
+  required int proven,
+  required int wanted,
+  int failures = 0,
+}) {
+  if (live && wanted > 0 && proven >= wanted) return 'HONEST';
+  if (!live && failures > 0) return 'OFFLINE';
+  if (wanted > 0 && proven < wanted) return 'SYNCING $proven/$wanted';
+  return 'SYNCING';
 }
 
 class ShearFlyClient {
@@ -44,6 +59,22 @@ class ShearFlyClient {
   String? liveBase;
   DateTime? _backoffUntil;
   int _failures = 0;
+  final Set<int> _proven = {};
+  int sampledTip = 0;
+
+  int get provenHeaders => _proven.length;
+  /// Bitcoin Core–shaped: want every relayed header 1…tip, not only the locator.
+  int get wantedHeaders => sampledTip < 1 ? 0 : sampledTip;
+  int get failures => _failures;
+  bool get honest =>
+      liveBase != null && wantedHeaders > 0 && provenHeaders >= wantedHeaders;
+
+  String honestyText() => walletHonestyText(
+        live: liveBase != null,
+        proven: provenHeaders,
+        wanted: wantedHeaders,
+        failures: _failures,
+      );
 
   static List<String> _dedupe(Iterable<String> raw) {
     final out = <String>[];
@@ -70,6 +101,22 @@ class ShearFlyClient {
     final until = _backoffUntil;
     if (until != null && DateTime.now().isBefore(until)) return null;
     return findLiveNode();
+  }
+
+  /// Locator samples, then header catch-up 1…tip like Bitcoin Core IBD.
+  /// Already-proven heights are skipped so the 1s timer is not a rescan.
+  Future<void> followTip() async {
+    final base = await ensureLive();
+    if (base == null) return;
+    final stats = await _get(base, '/api/stats');
+    if (stats == null) {
+      noteFailure();
+      return;
+    }
+    final tip = (stats['height'] as num?)?.toInt() ?? 0;
+    if (tip < 1) return;
+    await _proveAt(base, tip);
+    await _catchUpHeaders(base, tip);
   }
 
   /// One jittered probe of the seed list. Exponential backoff is recorded on
@@ -110,17 +157,57 @@ class ShearFlyClient {
     _backoffUntil = DateTime.now().add(Duration(milliseconds: 1000 * (1 << shift)));
   }
 
+  Future<int> _proveAt(String base, int tip) async {
+    var n = 0;
+    for (final h in flyclientSampleHeights(tip)) {
+      if (_proven.contains(h)) {
+        n++;
+        continue;
+      }
+      final hdr = await _get(base, '/api/explorer/header?height=$h');
+      final hex = hdr?['header']?.toString() ?? '';
+      if (hex.isEmpty) continue;
+      _proven.add(h);
+      n++;
+    }
+    sampledTip = tip;
+    return n;
+  }
+
+  Future<void> _catchUpHeaders(String base, int tip) async {
+    var h = 1;
+    while (h <= tip) {
+      if (_proven.contains(h)) {
+        h++;
+        continue;
+      }
+      final to = h + 1999 > tip ? tip : h + 1999;
+      final batch = await _get(base, '/api/explorer/headers?from=$h&to=$to');
+      final rows = batch?['headers'];
+      if (rows is List && rows.isNotEmpty) {
+        for (final row in rows) {
+          if (row is! Map) continue;
+          final hh = (row['height'] as num?)?.toInt() ?? 0;
+          final hex = row['header']?.toString() ?? '';
+          if (hh > 0 && hex.isNotEmpty) _proven.add(hh);
+        }
+        h = to + 1;
+        continue;
+      }
+      final hdr = await _get(base, '/api/explorer/header?height=$h');
+      final hex = hdr?['header']?.toString() ?? '';
+      if (hex.isNotEmpty) _proven.add(h);
+      h++;
+    }
+    sampledTip = tip;
+  }
+
   Future<int> _score(String base) async {
     final stats = await _get(base, '/api/stats');
     if (stats == null) return -1;
     final tip = (stats['height'] as num?)?.toInt() ?? 0;
     if (tip < 1) return -1;
-    var proven = 0;
-    for (final h in flyclientSampleHeights(tip)) {
-      final hdr = await _get(base, '/api/explorer/header?height=$h');
-      final hex = hdr?['header']?.toString() ?? '';
-      if (hex.isNotEmpty) proven++;
-    }
+    final proven = await _proveAt(base, tip);
     if (proven == 0) return -1;
     return tip * 1000 + proven;
   }

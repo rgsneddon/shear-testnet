@@ -8,22 +8,35 @@ import 'shear_pack.dart';
 
 const shewallName = 'shewall.bin';
 const shewallEncKind = 'shear-shewall-bin-v1-enc';
+/// Trailer after the v1 identity head: this user's dests + txs (wallet.dat analog).
+const shewallArchiveTag = 0x02;
+const shewallHeadLen = 13 + 32 + 20 + 16;
 
 Uint8List packShewall({
   required Uint8List seed32,
   required Uint8List dest20,
   int spendableNanos = 0,
   int pendingNanos = 0,
+  Map<String, dynamic>? archive,
 }) {
   if (seed32.length != 32) throw ArgumentError('seed32');
   if (dest20.length != 20) throw ArgumentError('dest20');
-  return Uint8List.fromList([
+  final head = <int>[
     ...utf8.encode(encMagic),
     0x77,
     ...seed32,
     ...dest20,
     ..._u64(spendableNanos),
     ..._u64(pendingNanos),
+  ];
+  if (archive == null) return Uint8List.fromList(head);
+  final js = utf8.encode(jsonEncode(archive));
+  final len = ByteData(4)..setUint32(0, js.length, Endian.little);
+  return Uint8List.fromList([
+    ...head,
+    shewallArchiveTag,
+    ...len.buffer.asUint8List(),
+    ...js,
   ]);
 }
 
@@ -32,7 +45,7 @@ Map<String, Uint8List> unpackShewall(Uint8List buf) {
     throw const FormatException('json_refused');
   }
   final magic = utf8.encode(encMagic);
-  if (buf.length < 13 + 32 + 20 + 16) throw const FormatException('not_shewall_bin');
+  if (buf.length < shewallHeadLen) throw const FormatException('not_shewall_bin');
   for (var i = 0; i < magic.length; i++) {
     if (buf[i] != magic[i]) throw const FormatException('not_shewall_bin');
   }
@@ -43,6 +56,21 @@ Map<String, Uint8List> unpackShewall(Uint8List buf) {
     'spendableNanos': buf.sublist(65, 73),
     'pendingNanos': buf.sublist(73, 81),
   };
+}
+
+/// This user's dests and txs from a 0.20 shewall.bin. Null on a v1-only file.
+Map<String, dynamic>? unpackShewallArchive(Uint8List buf) {
+  if (buf.length <= shewallHeadLen) return null;
+  if (buf[shewallHeadLen] != shewallArchiveTag) return null;
+  if (buf.length < shewallHeadLen + 1 + 4) return null;
+  final len = ByteData.sublistView(buf, shewallHeadLen + 1, shewallHeadLen + 5)
+      .getUint32(0, Endian.little);
+  final start = shewallHeadLen + 5;
+  if (len < 2 || start + len > buf.length) return null;
+  final decoded = jsonDecode(utf8.decode(buf.sublist(start, start + len)));
+  if (decoded is Map<String, dynamic>) return decoded;
+  if (decoded is Map) return Map<String, dynamic>.from(decoded);
+  return null;
 }
 
 int shewallU64(Uint8List le) {

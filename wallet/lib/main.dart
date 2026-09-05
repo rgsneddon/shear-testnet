@@ -26,6 +26,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
+import 'shear_flyclient.dart';
 
 const kWalletVersion = '0.20';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
@@ -373,6 +374,18 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     ledger.viewSecret = id!.viewKey;
     ledger.bindVaultDest(restFrame: id!.address, viewKey: id!.viewKey);
     ledger.restoreDests(session.rememberedDests);
+    if (session.rememberedTxs.isNotEmpty) {
+      applyUserArchive(ledger, {
+        'dests': session.rememberedDests,
+        'destCount': session.rememberedDestCount,
+        'destIndex': session.rememberedDestIndex,
+        'sealedHeight': session.rememberedSealedHeight,
+        'txs': session.rememberedTxs,
+      });
+    }
+    if (session.rememberedReserve != null) {
+      reserve.applyLocalSnapshot(session.rememberedReserve!);
+    }
     setState(() {
       _lockError = null;
     });
@@ -384,7 +397,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         await ledger
             .syncCredits(id!.address, paymentCode: id!.paymentCode)
             .timeout(const Duration(seconds: 8));
-        session.rememberedDests = ledger.exportedDests();
+        _rememberLedger();
         await session.persist();
       } catch (_) {}
     }
@@ -413,10 +426,22 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       final ident = id;
       if (ident != null && !tipBusy && !widget.skipPoolSync) {
         tipBusy = true;
-        unawaited(ledger.syncTip().whenComplete(() {
+        unawaited(() async {
+          await ledger.syncTip();
+          await _syncVaults(ident);
+          if (ledger.needsHistoryRefresh && !creditBusy) {
+            creditBusy = true;
+            try {
+              await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
+              _rememberLedger();
+              unawaited(session.persist());
+            } finally {
+              creditBusy = false;
+            }
+          }
           tipBusy = false;
           if (mounted) setState(() {});
-        }));
+        }());
       }
       ticks += 1;
       if (ident != null && ticks % 2 == 0 && !widget.skipPoolSync) {
@@ -425,7 +450,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       if (ticks % 5 == 0 && ident != null && !creditBusy && !widget.skipPoolSync) {
         creditBusy = true;
         unawaited(ledger.syncCredits(ident.address, paymentCode: ident.paymentCode).whenComplete(() {
-          session.rememberedDests = ledger.exportedDests();
+          _rememberLedger();
           unawaited(session.persist());
           unawaited(_syncVaults(ident));
           creditBusy = false;
@@ -491,6 +516,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           _ingestTx(ident, tx);
           if (mounted) setState(() {});
         } catch (e) {
+          if (offerId.isNotEmpty) _handledPullIds.add(offerId);
           if (!mounted) return;
           _showPoolWithdrawError(_pullFailReason(e));
         }
@@ -762,6 +788,61 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     );
   }
 
+  void _rememberLedger() {
+    session.rememberedDests = ledger.exportedDests();
+    session.rememberedDestCount = ledger.destCount;
+    session.rememberedDestIndex = ledger.destIndex;
+    session.rememberedSealedHeight = ledger.sealedHeight;
+    session.rememberedTxs = [
+      for (final t in ledger.transactions)
+        if (t.kind != 'sample') t.toJson(),
+    ];
+    final ident = id;
+    final dest = ident == null ? null : _reserveDestOf(ident);
+    if (dest != null) {
+      final p = reserve.portal(dest);
+      session.rememberedReserve = {
+        'dest': dest,
+        'staked': p.staked,
+        'idle': p.idle,
+        'joined': p.joined,
+        'vote': p.vote,
+        'voteEpoch': p.voteEpoch,
+        'claimable': p.claimableRewards,
+      };
+    }
+  }
+
+  String get _honestyText {
+    final pool = ledger.pool;
+    if (pool == null) {
+      return walletHonestyText(live: false, proven: 0, wanted: 0);
+    }
+    return pool.honestyText();
+  }
+
+  Widget _honestyBar(BuildContext context) {
+    final label = _honestyText;
+    final color = label == 'HONEST'
+        ? const Color(0xFF1A9A4A)
+        : label == 'OFFLINE'
+            ? Theme.of(context).colorScheme.error
+            : const Color(0xFFD4A017);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Text(
+        label,
+        key: const Key('wallet-honesty-bar'),
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.04,
+          color: color,
+        ),
+      ),
+    );
+  }
+
   Widget _shell(BuildContext context) {
     final ident = id;
     if (ident == null) {
@@ -796,6 +877,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           ),
         ),
         actions: [
+          Center(child: _honestyBar(context)),
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: Center(
@@ -1455,6 +1537,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
               'Interest is a variable rate observed by The Reserve oracle. '
               'The winning vote then moves the hash bonus by one unit.',
             ),
+            const SizedBox(height: 8),
+            Text(
+              'current hashbonus reward per u = ${reserve.liveHashBonusNanos}',
+              key: const Key('reserve-hashbonus-per-u'),
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
             if (reserve.cutoffDisclaimer(now)) ...[
               const SizedBox(height: 8),
               const Text(kReserveCutoffDisclaimer),
@@ -1556,7 +1644,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           children: [
             Text('Overall sums', key: const Key('reserve-overall'), style: const TextStyle(fontWeight: FontWeight.w700)),
             Text('Program locked  $programShe SHE'),
-            Text('Program staked  ${formatShe((reserve.totalStakedNanos > 0 ? reserve.totalStakedNanos : reserve.totalLockedNanos) / kUnitsPerShe)} SHE  ·  idle ${formatShe(reserve.totalIdleNanos / kUnitsPerShe)} SHE'),
+            Text('Program staked  ${formatShe(reserve.totalStakedNanos / kUnitsPerShe)} SHE  ·  idle ${formatShe(reserve.totalIdleNanos / kUnitsPerShe)} SHE'),
             Text('Fee bank  ${formatShe(reserve.feeBankNanos / kUnitsPerShe)} SHE  ·  extra-minted ${formatShe(reserve.mintBankNanos / kUnitsPerShe)} SHE'),
             Text('Accrued (all portals)  ${formatShe(reserve.totalAccruedNanos / kUnitsPerShe)} SHE  ·  claimable ${formatShe(reserve.totalClaimableNanos / kUnitsPerShe)} SHE'),
             Text('Live hash bonus  ${reserve.liveHashBonusNanos} unit(s)'),
@@ -1677,11 +1765,15 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         final p = reserve.portal(dest);
         final keepStaked = p.staked;
         final keepIdle = p.idle;
-        reserve.applyRemotePortal(dest, await pool.reservePortal(dest));
+        final keepJoined = p.joined;
+        final json = await pool.reservePortal(dest);
+        if (json['ok'] == false) return;
+        reserve.applyRemotePortal(dest, json);
         if (_reserveLockNotice != null) {
           if (p.staked < keepStaked) p.staked = keepStaked;
           if (p.idle < keepIdle) p.idle = keepIdle;
         }
+        if (keepJoined && p.nanos >= kPiSheNanos) p.joined = true;
       }
     } catch (_) {}
     if (mounted) setState(() {});
@@ -1792,7 +1884,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       const SizedBox(height: 8),
       const Text(
         'Password seals shewall.bin (AES-256-GCM). Export that file and the '
-        'same password restores this shear1 on another device.',
+        'same password restores this shear1, dests, and this wallet\'s '
+        'transactions on another device — like Bitcoin Core\'s wallet file.',
       ),
       const SizedBox(height: 8),
       FilledButton(
@@ -1807,7 +1900,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             return;
           }
           try {
-            final packed = exportShewall(identity: ident, ledger: ledger);
+            _rememberLedger();
+            final packed = exportShewall(
+              identity: ident,
+              ledger: ledger,
+              reserveSnapshot: session.rememberedReserve,
+            );
             final sealed = await sealShewallBin(packed, pw);
             final path = await saveShewallBytes(
               sealed,
@@ -1851,7 +1949,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
               }
               return;
             }
-            final imported = await importEncryptedShewall(src: src, password: pw, ledger: ledger);
+            final imported = await importEncryptedShewall(
+              src: src,
+              password: pw,
+              ledger: ledger,
+              reserve: reserve,
+            );
             session.identity = imported;
             await session.setPassword(pw);
             id = imported;

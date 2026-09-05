@@ -401,7 +401,11 @@ class ShearLedger {
       final openAmt = _pending[d] ?? 0;
       final openTx = _txs.any((t) =>
           !t.confirmed &&
-          (t.kind == 'hash' || t.kind == 'receive' || t.kind == 'send' || t.kind == 'coinbase') &&
+          (t.kind == 'hash' ||
+              t.kind == 'receive' ||
+              t.kind == 'send' ||
+              t.kind == 'coinbase' ||
+              t.kind == 'pool-withdraw') &&
           (t.to == d || t.from == d || t.id == _hashPendingId(d)));
       if (openAmt <= 0 && !openTx) continue;
       confirmRound(address: d, pot: 0, height: height);
@@ -557,7 +561,52 @@ class ShearLedger {
     _upsertHashPending(key, hashAmount);
   }
 
-  /// Live mempool pays. Same row as [creditReceive]; skip ids we already have.
+  /// Merge a chain/history row onto a local tx (same id, or a height-less
+  /// pool-withdraw to the same dest and amount). Height and kind come from
+  /// the node — never invented.
+  void mergeChainTx(ShearTx tx) {
+    var i = _txs.indexWhere((t) => t.id == tx.id);
+    if (i < 0 && tx.kind == 'pool-withdraw') {
+      i = _txs.indexWhere((t) =>
+          t.kind == 'pool-withdraw' &&
+          (t.height ?? 0) < 1 &&
+          t.to == tx.to &&
+          (t.amount - tx.amount).abs() < 1e-9);
+    }
+    if (i >= 0) {
+      final prev = _txs[i];
+      final nextHeight = (tx.height ?? 0) > (prev.height ?? 0) ? tx.height : prev.height;
+      _txs[i] = ShearTx(
+        id: tx.id.isNotEmpty ? tx.id : prev.id,
+        from: tx.from.isNotEmpty ? tx.from : prev.from,
+        to: prev.to.isNotEmpty ? prev.to : tx.to,
+        amount: tx.amount > 0 ? tx.amount : prev.amount,
+        kind: tx.kind.isNotEmpty ? tx.kind : prev.kind,
+        height: nextHeight,
+        confirmed: tx.confirmed || prev.confirmed,
+        memo: prev.memo || tx.memo,
+        memoPlain: prev.memoPlain ?? tx.memoPlain,
+        memoCt: prev.memoCt ?? tx.memoCt,
+        rounds: prev.rounds ?? tx.rounds,
+        hashAmount: prev.hashAmount ?? tx.hashAmount,
+        threads: prev.threads ?? tx.threads,
+        pot: prev.pot ?? tx.pot,
+      );
+      return;
+    }
+    if (tx.kind == 'receive' && (tx.height ?? 0) < 1 && !tx.confirmed) {
+      creditReceive(to: tx.to, amount: tx.amount, from: tx.from, id: tx.id);
+      return;
+    }
+    _txs.add(tx);
+    if (tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) rememberDest(tx.to);
+  }
+
+  bool get needsHistoryRefresh => _txs.any((t) =>
+      (t.kind == 'pool-withdraw' || t.kind == 'receive') && (t.height ?? 0) < 1);
+
+  /// Live mempool pays. Same row as [creditReceive]; merge height when the
+  /// node already sealed the pay.
   void _ingestIncoming(Map<String, dynamic> json) {
     final rows = json['incoming'];
     if (rows is! List) return;
@@ -567,8 +616,17 @@ class ShearLedger {
       final to = row['to']?.toString() ?? '';
       final amount = (row['amount'] as num?)?.toDouble() ?? 0;
       if (id.isEmpty || to.isEmpty || amount <= 0) continue;
-      if (_txs.any((t) => t.id == id)) continue;
-      creditReceive(to: to, amount: amount, from: row['from']?.toString(), id: id);
+      final kind = row['kind']?.toString() ?? 'receive';
+      final height = (row['height'] as num?)?.toInt();
+      mergeChainTx(ShearTx(
+        id: id,
+        from: row['from']?.toString() ?? (kind == 'pool-withdraw' ? 'pool' : 'pending'),
+        to: to,
+        amount: amount,
+        kind: kind == 'pool-withdraw' ? 'pool-withdraw' : 'receive',
+        height: height,
+        confirmed: row['confirmed'] == true,
+      ));
     }
   }
 
@@ -922,7 +980,9 @@ class ShearLedger {
   Future<List<ShearTx>> syncHistory(String address) async {
     if (pool == null) return ownerHistory(address);
     final key = payKey(address);
-    if (_historyAt[key] == _sealedHeight) return ownerHistory(address);
+    if (_historyAt[key] == _sealedHeight && !needsHistoryRefresh) {
+      return ownerHistory(address);
+    }
     try {
       final json = await pool!.history(address);
       final rows = (json['txs'] as List?) ?? const [];
@@ -961,12 +1021,7 @@ class ShearLedger {
         if (payKey(tx.to) == key && tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) {
           _dests.add(tx.to);
         }
-        final i = _txs.indexWhere((t) => t.id == tx.id);
-        if (i >= 0) {
-          _txs[i] = tx;
-        } else {
-          _txs.add(tx);
-        }
+        mergeChainTx(tx);
       }
       _historyAt[key] = _sealedHeight;
     } catch (_) {}
@@ -1302,15 +1357,18 @@ class ShearLedger {
     if (json['ok'] != true) {
       throw StateError(json['reason']?.toString() ?? 'withdraw');
     }
+    final raw = json['tx'];
+    final map = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
     final tx = ShearTx(
-      id: json['tx']?['id']?.toString() ?? 'pull-${DateTime.now().millisecondsSinceEpoch}',
+      id: map['id']?.toString() ?? 'pull-${DateTime.now().millisecondsSinceEpoch}',
       from: 'pool',
       to: dest,
       amount: amount,
       kind: 'pool-withdraw',
+      height: (map['height'] as num?)?.toInt(),
       confirmed: false,
     );
-    _txs.add(tx);
+    mergeChainTx(tx);
     return tx;
   }
 
@@ -1341,15 +1399,18 @@ class ShearLedger {
     if (json['ok'] != true) {
       throw StateError(json['reason']?.toString() ?? 'withdraw');
     }
+    final raw = json['tx'];
+    final map = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
     final tx = ShearTx(
-      id: json['tx']?['id']?.toString() ?? 'pull-${DateTime.now().millisecondsSinceEpoch}',
+      id: map['id']?.toString() ?? 'pull-${DateTime.now().millisecondsSinceEpoch}',
       from: 'pool',
       to: dest,
       amount: nanos / kUnitsPerShe,
       kind: 'pool-withdraw',
+      height: (map['height'] as num?)?.toInt(),
       confirmed: false,
     );
-    _txs.add(tx);
+    mergeChainTx(tx);
     return tx;
   }
 
@@ -1392,25 +1453,90 @@ class ShearPoolClient {
   final String? _pinned;
   final HttpClient _http;
   ShearFlyClient? _fly;
+  final Set<int> _pinnedProven = {};
+  int _pinnedTip = 0;
+
+  ShearFlyClient? get fly => _fly;
+  bool get isPinned => _pinned != null;
 
   String get baseUrl => _pinned ?? _fly?.liveBase ?? kFlyDefaultSeed;
 
+  int get provenHeaders => _fly?.provenHeaders ?? _pinnedProven.length;
+  int get wantedHeaders =>
+      flyclientSampleHeights(_fly?.sampledTip ?? _pinnedTip).length;
+  bool get nodeLive =>
+      _fly != null ? _fly!.liveBase != null : _pinned != null && _pinnedTip > 0;
+
+  String honestyText() => walletHonestyText(
+        live: nodeLive,
+        proven: provenHeaders,
+        wanted: wantedHeaders,
+        failures: _fly?.failures ?? 0,
+      );
+
   Future<void> followLive() async {
-    if (_pinned != null) return;
-    await _fly?.ensureLive();
+    if (_pinned != null) {
+      await _provePinned();
+      return;
+    }
+    await _fly?.followTip();
+  }
+
+  Future<void> _provePinned() async {
+    try {
+      final stats = await _getRaw('/api/stats');
+      final tip = (stats['height'] as num?)?.toInt() ?? 0;
+      if (tip < 1) return;
+      _pinnedTip = tip;
+      for (final h in flyclientSampleHeights(tip)) {
+        if (_pinnedProven.contains(h)) continue;
+        final hdr = await _getRaw('/api/explorer/header?height=$h');
+        if ((hdr['header']?.toString() ?? '').isNotEmpty) _pinnedProven.add(h);
+      }
+      var h = 1;
+      while (h <= tip) {
+        if (_pinnedProven.contains(h)) {
+          h++;
+          continue;
+        }
+        final to = h + 1999 > tip ? tip : h + 1999;
+        try {
+          final batch = await _getRaw('/api/explorer/headers?from=$h&to=$to');
+          final rows = batch['headers'];
+          if (rows is List && rows.isNotEmpty) {
+            for (final row in rows) {
+              if (row is! Map) continue;
+              final hh = (row['height'] as num?)?.toInt() ?? 0;
+              if (hh > 0 && (row['header']?.toString() ?? '').isNotEmpty) {
+                _pinnedProven.add(hh);
+              }
+            }
+            h = to + 1;
+            continue;
+          }
+        } catch (_) {}
+        final hdr = await _getRaw('/api/explorer/header?height=$h');
+        if ((hdr['header']?.toString() ?? '').isNotEmpty) _pinnedProven.add(h);
+        h++;
+      }
+    } catch (_) {}
   }
 
   void close() {
     _http.close(force: true);
   }
 
+  Future<Map<String, dynamic>> _getRaw(String path) async {
+    final req = await _http.getUrl(Uri.parse('$baseUrl$path'));
+    final res = await req.close();
+    final text = await utf8.decodeStream(res);
+    return jsonDecode(text) as Map<String, dynamic>;
+  }
+
   Future<Map<String, dynamic>> _get(String path) async {
     await followLive();
     try {
-      final req = await _http.getUrl(Uri.parse('$baseUrl$path'));
-      final res = await req.close();
-      final text = await utf8.decodeStream(res);
-      return jsonDecode(text) as Map<String, dynamic>;
+      return await _getRaw(path);
     } catch (_) {
       if (_pinned == null) _fly?.noteFailure();
       rethrow;
