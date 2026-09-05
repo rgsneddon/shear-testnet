@@ -38,7 +38,6 @@ describe('shear.digital client buttons', () => {
     assert.match(left, /She is Private/);
     assert.doesNotMatch(left, /She is<br/);
     assert.match(html, /Great Vibes/);
-    assert.match(html, /dag\.shear\.digital/);
     const dag = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), '../dag/index.html'),
       'utf8',
@@ -112,6 +111,12 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /Linux leftover/);
     assert.match(html, /navigator\.userAgent/);
     assert.match(html, /client-dd:hover \.client-menu/);
+    assert.doesNotMatch(html, /dag\.shear\.digital/);
+    assert.doesNotMatch(html, />DAG</);
+    const nav = html.match(/id="shear-nav"[\s\S]*?<\/nav>/);
+    assert.ok(nav);
+    const labels = [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
+    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'MINER', 'NODE', 'WALLET']);
     assert.match(html, /id="menu-wallet"/);
     assert.match(html, /id="menu-miner"/);
     assert.match(html, /id="menu-node"/);
