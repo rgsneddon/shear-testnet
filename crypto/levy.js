@@ -188,14 +188,17 @@ export function containsShe1(obj) {
 }
 
 export function poolWithdrawTx({ from, to, nanos, fee, id } = {}) {
+  const L = Math.max(0, Math.floor(Number(fee) || 0));
+  // One pool wallet: miner pots and the pull levy both sit on `from`.
+  // Until unlock height the only spends from that dest are miner pulls + levy.
   return {
     id: id || `pull-${Date.now()}`,
     kind: KIND_POOL_WITHDRAW,
     from,
     to,
     nanos,
-    fee,
-    sponsor: poolFeeDest(),
+    fee: L,
+    sponsor: from,
     vin: [{ address: from }],
     vout: [{ address: to, nanos, kind: KIND_POOL_WITHDRAW }],
   };

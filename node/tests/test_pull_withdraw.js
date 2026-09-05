@@ -114,4 +114,50 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     }, { store: { historyFor: () => [], tip: () => ({ height: 20 }), mempool: [] }, queueSend: () => ({}) });
     assert.equal(api.json.ok, false);
   });
+
+  it('miner pull and levy still spend the pool wallet while operator Flow is locked', () => {
+    const prev = process.env.SHEAR_POOL_WALLET_LOCK;
+    process.env.SHEAR_POOL_WALLET_LOCK = '1';
+    try {
+      const hasher = newIdentity();
+      const dest = destForLogin(hasher.address, { viewKey: hasher.viewKey, height: 1 });
+      const pool = destForLogin(newIdentity().address, { viewKey: Buffer.alloc(32, 3), height: 1 });
+      const nanos = 2_000_000_000;
+      const fee = levyNanos(nanos);
+      const sig = signPoolWithdraw({
+        seed: Buffer.alloc(32, 7),
+        login: hasher.paymentCode,
+        dest,
+        nanos,
+      });
+      const posted = [];
+      const got = handleWalletApi(new URL('http://127.0.0.1/api/pool/withdraw'), 'POST', {
+        login: hasher.paymentCode,
+        dest,
+        nanos,
+        sig,
+      }, {
+        store: {
+          historyFor: (addr) => (addr === pool ? [{
+            id: 'pot-1', from: 'coinbase', to: pool, nanos: 10 * 100_000_000_000, height: 10, kind: 'pot',
+          }] : []),
+          tip: () => ({ height: 40 }),
+          mempool: [],
+        },
+        poolDest: pool,
+        queueSend: (t) => {
+          posted.push(t);
+          return { ok: true, id: 'pull-1', ...t };
+        },
+      });
+      assert.equal(got.json.ok, true, got.json.reason);
+      assert.equal(posted[0].from, pool);
+      assert.equal(posted[0].sponsor, pool);
+      assert.equal(posted[0].fee, fee);
+      assert.equal(posted[0].kind, 'pool-withdraw');
+    } finally {
+      if (prev === undefined) delete process.env.SHEAR_POOL_WALLET_LOCK;
+      else process.env.SHEAR_POOL_WALLET_LOCK = prev;
+    }
+  });
 });

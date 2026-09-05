@@ -17,7 +17,6 @@ import {
   txWeight,
   mempoolPressure,
   mempoolDepthBytes,
-  poolFeeDest,
   poolPayoutDest,
   poolWithdrawTx,
   verifyPoolWithdrawOffchain,
@@ -836,13 +835,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (!isDestAddress(from)) return { status: 503, json: { ok: false, reason: 'no_pool_dest' } };
     const rec = reconstructOwner(store, from);
     const fee = levyNanos(off.nanos, { depth: mempoolDepthBytes(store?.mempool || []) });
-    const sponsor = poolFeeDest();
-    const sponsorRec = reconstructOwner(store, sponsor);
-    if (rec.spendableNanos < off.nanos) {
+    if (rec.spendableNanos < off.nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
-    }
-    if (sponsorRec.spendableNanos < fee) {
-      return { status: 400, json: { ok: false, reason: 'levy_sponsor' } };
     }
     const tx = poolWithdrawTx({ from, to: off.dest, nanos: off.nanos, fee });
     if (containsShe1(tx)) return { status: 400, json: { ok: false, reason: 'she1_on_chain' } };
