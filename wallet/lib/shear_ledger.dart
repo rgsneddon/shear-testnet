@@ -1297,7 +1297,12 @@ class ShearLedger {
       final vk = viewSecret;
       final rest = restFrame ?? '';
       if (vk != null && vk.isNotEmpty && rest.isNotEmpty) {
-        open = openingForDest(from: src, restFrame: rest, viewKey: vk, destCount: destCount);
+        open = openingForDest(
+          from: sendKind == 'vote' ? to : src,
+          restFrame: rest,
+          viewKey: vk,
+          destCount: destCount,
+        );
       }
       final json = await pool!.send(
         from: src,

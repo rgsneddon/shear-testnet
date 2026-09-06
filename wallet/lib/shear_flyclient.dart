@@ -33,16 +33,18 @@ int walletSyncPercent({required int proven, required int wanted}) {
   return (walletSyncFill(proven: proven, wanted: wanted) * 100).floor().clamp(0, 100);
 }
 
-/// Sync strip label. Never paints HONEST — fill + n% is the live state.
+/// Sync label. Never paints HONEST. No fill bar.
 String walletHonestyText({
   required bool live,
   required int proven,
   required int wanted,
   int failures = 0,
 }) {
-  if (!live && failures > 0) return 'OFFLINE';
-  if (!live && wanted <= 0) return 'OFFLINE';
-  return '${walletSyncPercent(proven: proven, wanted: wanted)}% synchronised';
+  if (!live && failures > 0) return 'no network';
+  if (!live && wanted <= 0) return 'no network';
+  final pct = walletSyncPercent(proven: proven, wanted: wanted);
+  if (pct >= 100) return '100% synchronised';
+  return '$pct% synchronising...';
 }
 
 class ShearFlyClient {

@@ -70,18 +70,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.22"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.23"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.22"'), isTrue);
+    expect(winMain.contains('L"Shear 0.23"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.22"'), isTrue);
+    expect(winRc.contains('"Shear 0.23"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.22"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.23"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -734,7 +734,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.22');
+    expect(kWalletVersion, '0.23');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -1158,10 +1158,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.22');
-    expect(kWalletVersion, '0.22');
+    expect(app.title, 'Shear 0.23');
+    expect(kWalletVersion, '0.23');
     await tester.pump();
-    expect(find.textContaining('0.22'), findsWidgets);
+    expect(find.textContaining('0.23'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -1997,7 +1997,12 @@ void main() {
     expect(kTabs.contains('Join'), isFalse);
     expect(find.text('The Reserve'), findsWidgets);
     expect(find.byKey(const Key('reserve-hashbonus-per-u')), findsOneWidget);
-    expect(find.textContaining('current hashbonus reward per u ='), findsOneWidget);
+    expect(find.textContaining('CURRENT HASHBONUS REWARD PER U ='), findsOneWidget);
+    expect(find.byKey(const Key('reserve-yours-sums-box')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-apr')), findsOneWidget);
+    expect(find.text('Cast vote'), findsOneWidget);
+    expect(find.text('Update vote'), findsNothing);
+    expect(find.textContaining('change this vote at any time'), findsNothing);
     expect(find.text('Amount SHEAR'), findsOneWidget);
     expect(find.text('Send'), findsOneWidget);
     expect(find.text('Add more SHE to the vault'), findsNothing);
@@ -2951,8 +2956,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.22 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.22');
+  test('kWalletVersion == 0.23 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.23');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -3018,10 +3023,10 @@ void main() {
     final got = await fly.findLiveNode();
     expect(got, liveUrl);
     expect(fly.liveBase, liveUrl);
-    expect(walletHonestyText(live: true, proven: 2, wanted: 5), '40% synchronised');
+    expect(walletHonestyText(live: true, proven: 2, wanted: 5), '40% synchronising...');
     expect(walletSyncPercent(proven: 2, wanted: 5), 40);
     expect(walletHonestyText(live: true, proven: 5, wanted: 5), '100% synchronised');
-    expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), 'OFFLINE');
+    expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), 'no network');
     await fly.followTip();
     expect(fly.wantedHeaders, 16);
     expect(fly.provenHeaders, 16);
@@ -3201,7 +3206,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    expect(find.text('current hashbonus reward per u = 1'), findsOneWidget);
+    expect(find.text('CURRENT HASHBONUS REWARD PER U = 1'), findsOneWidget);
     vault.applyRemotePortal(dest, {
       'staked': kPiSheNanos,
       'idle': 0,
@@ -3210,8 +3215,8 @@ void main() {
     });
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    expect(find.text('current hashbonus reward per u = 1'), findsNothing);
-    expect(find.text('current hashbonus reward per u = 2'), findsOneWidget);
+    expect(find.text('CURRENT HASHBONUS REWARD PER U = 1'), findsNothing);
+    expect(find.text('CURRENT HASHBONUS REWARD PER U = 2'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(seconds: 2));
   });

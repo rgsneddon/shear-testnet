@@ -101,6 +101,10 @@ String? openingForDest({
 }) {
   final spendH = spendHashFromAddress(restFrame);
   if (spendH == null || viewKey.isEmpty) return null;
+  final vault = vaultDest(restFrame, viewKey: viewKey);
+  if (vault != null && vault == from) {
+    return indexedDestOpening(spendH, closureCommit(viewKey), 0);
+  }
   final n = destCount < 0 ? 0 : destCount;
   for (var i = 0; i <= n; i++) {
     final she = paymentCodeAtIndex(viewKey, spendH, i);
