@@ -35,7 +35,6 @@ describe('foreign names', () => {
         .map((l) => l.trim())
         .filter(Boolean)
         .filter((l) => !l.includes('forbid_foreign_names.js'))
-        .filter((l) => !l.includes('SHEPLAN.md'))
         .filter((l) => !l.includes('/tests/'))
         .filter((l) => !l.includes('specs/'))
         .filter((l) => !l.includes('crypto/randomx/'))
