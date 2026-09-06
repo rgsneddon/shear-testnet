@@ -28,7 +28,7 @@ import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_flyclient.dart';
 
-const kWalletVersion = '0.21';
+const kWalletVersion = '0.22';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 const kTabs = [
