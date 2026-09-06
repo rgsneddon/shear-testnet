@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { levyNanos, mempoolDepthBytes } from '../../crypto/levy.js';
+import { levyNanos, levyNeed, mempoolDepthBytes } from '../../crypto/levy.js';
 import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS } from '../../crypto/asert.js';
 import { lockTx, withdrawTx } from '../../crypto/reserve_vault.js';
 import {
@@ -49,7 +49,27 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
       vin: [{ address: destA }],
       vout: [{ address: destB, nanos: sendNanos }],
     };
-    const evmNeed = levyNanos(valueNanos, { depth: mempoolDepthBytes([sendTx]) });
+    const lock = {
+      id: 'reserve-lock',
+      programId: RESERVE_PROGRAM,
+      kind: 'lock',
+      from: destA,
+      to: destA,
+      nanos: lockNanos,
+      vin: [{ address: destA }],
+      vout: [{ address: destA, nanos: lockNanos, kind: 'lock' }],
+    };
+    lock.fee = levyNeed(lock, [sendTx]);
+    const evmTx = {
+      id: 'evm-value',
+      kind: 'evm-value',
+      from: destA,
+      to: destB,
+      nanos: valueNanos,
+      vin: [{ address: destA }],
+      vout: [{ address: destB, nanos: valueNanos, kind: 'evm-value' }],
+    };
+    evmTx.fee = levyNeed(evmTx, [sendTx, lock]);
     const base = {
       prev: GENESIS_PREV,
       height: 1,
@@ -60,30 +80,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     };
     const block = mine(buildTemplate({
       ...base,
-      txs: [
-        sendTx,
-        {
-          id: 'reserve-lock',
-          programId: RESERVE_PROGRAM,
-          kind: 'lock',
-          from: destA,
-          to: destA,
-          nanos: lockNanos,
-          fee: 0,
-          vin: [{ address: destA }],
-          vout: [{ address: destA, nanos: lockNanos, kind: 'lock' }],
-        },
-        {
-          id: 'evm-value',
-          kind: 'evm-value',
-          from: destA,
-          to: destB,
-          nanos: valueNanos,
-          fee: evmNeed,
-          vin: [{ address: destA }],
-          vout: [{ address: destB, nanos: valueNanos, kind: 'evm-value' }],
-        },
-      ],
+      txs: [sendTx, lock, evmTx],
     }));
     const got = await verifyBlock(block, null);
     assert.equal(got.ok, true, got.reason || got.error);
@@ -121,7 +118,8 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     const t0 = 1_700_000_000_000;
     const lock = lockTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'lock-p' });
-    lock.fee = 0;
+    lock.fee = levyNeed(lock, []);
+    lock.maxLevy = lock.fee;
     const b1 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,

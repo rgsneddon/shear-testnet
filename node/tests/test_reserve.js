@@ -26,6 +26,7 @@ import {
 import { newIdentity, destOpeningFromView, hash20FromAddress, payoutDest } from '../../crypto/address.js';
 import { vaultDest } from '../../crypto/flow_sheet.js';
 import { matureSpendableNanos } from '../../crypto/spend.js';
+import { levyNanos } from '../../crypto/levy.js';
 
 async function mineOne(store, dest, { bits = 4, now } = {}) {
   const parent = store.tip();
@@ -74,8 +75,11 @@ describe('node Reserve vault', () => {
     const t0 = 1_700_000_000_000;
     const pid = portalIdFromDest(vault);
 
+    const lockL = levyNanos(PI_SHE_NANOS);
     const lock = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-1' });
     lock.open = open;
+    lock.fee = lockL;
+    lock.maxLevy = lockL;
 
     const unfunded = store.queueTx(lock);
     assert.equal(unfunded.ok, false);
@@ -88,9 +92,12 @@ describe('node Reserve vault', () => {
     }
     const before = spendableOf(store, continuum);
     assert.ok(before >= fundBlocks * NANOS_PER_SHE, `spendable ${before} after ${fundBlocks} pots`);
-    assert.ok(before >= PI_SHE_NANOS);
+    assert.ok(before >= PI_SHE_NANOS + lockL);
 
-    const unsigned = store.queueTx(lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-unsigned' }));
+    const unsignedLock = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-unsigned' });
+    unsignedLock.fee = lockL;
+    unsignedLock.maxLevy = lockL;
+    const unsigned = store.queueTx(unsignedLock);
     assert.equal(unsigned.ok, false);
     assert.equal(unsigned.reason, 'unsigned');
     assert.equal(store.reserveVault.totalLockedNanos, 0);
@@ -103,6 +110,8 @@ describe('node Reserve vault', () => {
       id: 'lock-too-much',
     });
     tooMuch.open = open;
+    tooMuch.fee = levyNanos(tooMuch.nanos);
+    tooMuch.maxLevy = tooMuch.fee;
     const refused = store.queueTx(tooMuch);
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'insufficient');
@@ -122,7 +131,7 @@ describe('node Reserve vault', () => {
     assert.equal(store.reserveVault.portals[pid].joined, true);
     const afterLock = spendableOf(store, continuum);
     // Mining the lock block also matures one more prior pot (same miner).
-    assert.equal(afterLock, before - PI_SHE_NANOS + NANOS_PER_SHE);
+    assert.equal(afterLock, before - PI_SHE_NANOS - lockL + NANOS_PER_SHE);
     const pub = JSON.stringify(publicVaultView(store.reserveVault, t0));
     assert.equal(pub.includes(alice.address), false);
     assert.equal(pub.includes(alice.viewKey), false);

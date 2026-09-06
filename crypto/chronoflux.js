@@ -135,6 +135,23 @@ export function sealedExplorerRows(block) {
       memo: !!(tx.memoCt || tx.vout?.[0]?.memoCt),
       memoCt: tx.memoCt || tx.vout?.[0]?.memoCt,
     });
+    const fee = Math.floor(Number(tx.fee || 0));
+    if ((kind === 'lock' || kind === 'vote') && fee > 0) {
+      const levyFrom = kind === 'vote'
+        ? String(tx.payer || tx.vin?.[0]?.address || '')
+        : String(from || '');
+      if (levyFrom) {
+        rows.push({
+          id: `${tx.id || `${hid}-tx`}-levy`,
+          kind: 'levy',
+          from: levyFrom,
+          to: '',
+          nanos: fee,
+          height,
+          confirmed: true,
+        });
+      }
+    }
   }
   return rows;
 }
