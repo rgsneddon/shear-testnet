@@ -42,8 +42,12 @@ describe('Phase B Flow levy', () => {
     assert.equal(isDestAddress(reserveFeeDest()), true);
     assert.equal(levyTaxed({ kind: 'send', vin: [{}] }), true);
     assert.equal(levyTaxed({ kind: 'evm-value' }), true);
+    assert.equal(levyTaxed({ kind: 'lock', vin: [{}] }), true);
+    assert.equal(levyTaxed({ kind: 'vote', vin: [{}] }), true);
+    assert.equal(levyTaxed({ kind: 'withdraw' }), false);
     assert.equal(levyTaxed({ kind: 'claim' }), false);
     assert.equal(levyTaxed({ kind: 'hash', coinbase: true }), false);
+    assert.equal(levyNanos(0), 100);
     const q = quoteLevy(one, { depth: 0 });
     assert.equal(q.L, 20_000_000);
     assert.equal(q.finder + q.reserve, q.L);

@@ -28,7 +28,7 @@ import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_flyclient.dart';
 
-const kWalletVersion = '0.23';
+const kWalletVersion = '0.24';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 const kTabs = [
@@ -140,6 +140,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   String? _reserveVoteDraft;
   Timer? _reserveLockHold;
   bool _reserveLockDismissable = false;
+  int _mempoolDepth = 0;
 
   @override
   void initState() {
@@ -1409,14 +1410,34 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   String? _reserveDestOf(ShearIdentity ident) =>
       vaultDest(ident.address, viewKey: ledger.viewSecret ?? ident.viewKey);
 
+  String _txFeeAdvice(int amountNanos, {required String oneFeeTo, int? depth}) {
+    final L = levyNanos(amountNanos, depth: depth ?? _mempoolDepth);
+    return 'Tx fee ${formatShe(L / kUnitsPerShe)} SHE from Continuum spendable (mempool L now). One fee to $oneFeeTo.';
+  }
+
+  Future<int> _mempoolDepthNow() async {
+    if (ledger.pool == null || widget.skipPoolSync) return _mempoolDepth;
+    try {
+      final p = await ledger.pool!.mempoolPressure();
+      _mempoolDepth = (p['depth'] as num?)?.toInt() ?? _mempoolDepth;
+    } catch (_) {}
+    return _mempoolDepth;
+  }
+
   Future<void> _reserveSend(BuildContext context, ShearIdentity ident) async {
     final dest = _reserveDestOf(ident);
     if (dest == null) return;
     final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
     if (she <= 0) return;
-    if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < she) {
+    final depth = await _mempoolDepthNow();
+    final lockNanos = (she * kUnitsPerShe).round();
+    final lockL = levyNanos(lockNanos, depth: depth);
+    final need = she + lockL / kUnitsPerShe;
+    if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < need) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Not enough spendable SHE')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Not enough Continuum spendable for lock + tx fee ${formatShe(lockL / kUnitsPerShe)} SHE'),
+        ));
       }
       return;
     }
@@ -1426,9 +1447,20 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       builder: (ctx) => AlertDialog(
         key: const Key('reserve-sign'),
         title: const Text('Sign Reserve deposit'),
-        content: Text(
-          'Lock ${formatShe(she)} SHE into The Reserve.\n'
-          'This spends Continuum and locks the coins in your portal until the epoch ends.',
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Lock ${formatShe(she)} SHE into The Reserve.\n'
+              'This spends Continuum and locks the coins in your portal until the epoch ends.',
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _txFeeAdvice(lockNanos, oneFeeTo: 'add funds to the vault', depth: depth),
+              key: const Key('reserve-lock-sign-levy'),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -1446,7 +1478,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     );
     if (go != true || !mounted) return;
     ledger.rememberVaultDest(dest);
-    final from = ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: she);
+    final from = ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: need);
     final now = DateTime.now().millisecondsSinceEpoch;
     late final dynamic tx;
     try {
@@ -1484,6 +1516,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       'txid': tx.id,
       'cumulative': p.nanos / kUnitsPerShe,
       'canVote': p.canVote,
+      'levyShe': lockL / kUnitsPerShe,
     };
     if (mounted) setState(() {});
   }
@@ -1548,6 +1581,16 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   Future<void> _reserveVote(BuildContext context, ShearIdentity ident, String choice) async {
     final dest = _reserveDestOf(ident);
     if (dest == null || dest.isEmpty) return;
+    var depth = await _mempoolDepthNow();
+    var voteL = levyNanos(0, depth: depth);
+    if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < voteL / kUnitsPerShe) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Not enough Continuum spendable for vote tx fee ${formatShe(voteL / kUnitsPerShe)} SHE'),
+        ));
+      }
+      return;
+    }
     final typed = TextEditingController();
     final sealed = await showDialog<bool>(
       context: context,
@@ -1565,6 +1608,11 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                 const Text(
                   'You will not be entitled to change your mind before the end of this epoch.\n'
                   'Type CONFIRM to continue.',
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _txFeeAdvice(0, oneFeeTo: 'cast this vote', depth: depth),
+                  key: const Key('reserve-vote-confirm-levy'),
                 ),
                 TextField(
                   key: const Key('reserve-vote-confirm-field'),
@@ -1592,15 +1640,36 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     );
     typed.dispose();
     if (sealed != true || !mounted) return;
+    depth = await _mempoolDepthNow();
+    voteL = levyNanos(0, depth: depth);
+    if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < voteL / kUnitsPerShe) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Not enough Continuum spendable for vote tx fee ${formatShe(voteL / kUnitsPerShe)} SHE'),
+        ));
+      }
+      return;
+    }
     final go = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         key: const Key('reserve-vote-sign'),
         title: const Text('Sign Reserve vote'),
-        content: Text(
-          'Post this vote to the chain so every node and wallet reads the same tally.\n'
-          'Choice: $choice',
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Post this vote to the chain so every node and wallet reads the same tally.\n'
+              'Choice: $choice',
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _txFeeAdvice(0, oneFeeTo: 'cast this vote', depth: depth),
+              key: const Key('reserve-vote-sign-levy'),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -1618,7 +1687,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     );
     if (go != true || !mounted) return;
     final now = DateTime.now().millisecondsSinceEpoch;
-    final from = ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: 0);
+    final from = ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: voteL / kUnitsPerShe);
     try {
       await ledger.send(
         from: from,
@@ -1703,6 +1772,11 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                         'Coins are locked in your portal.',
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
+                      if (_reserveLockNotice!['levyShe'] != null)
+                        Text(
+                          'Tx fee ${formatShe((_reserveLockNotice!['levyShe'] as num).toDouble())} SHE from Continuum spendable. One fee to add funds to the vault.',
+                          key: const Key('reserve-locked-in-levy'),
+                        ),
                       Text('Tx  ${_reserveLockNotice!['txid']}'),
                       Text(
                         'Portal total  ${formatShe((_reserveLockNotice!['cumulative'] as num).toDouble())} SHE'
@@ -1792,7 +1866,15 @@ class ShearWalletAppState extends State<ShearWalletApp> {
               key: const Key('reserve-amount'),
               controller: reserveAmt,
               keyboardType: TextInputType.number,
+              onChanged: (_) => setState(() {}),
               decoration: const InputDecoration(labelText: 'Amount SHEAR'),
+            ),
+            Text(
+              _txFeeAdvice(
+                ((double.tryParse(reserveAmt.text.trim()) ?? 0) * kUnitsPerShe).round(),
+                oneFeeTo: 'add funds to the vault',
+              ),
+              key: const Key('reserve-lock-levy'),
             ),
             const SizedBox(height: 8),
             Wrap(spacing: 8, runSpacing: 8, children: [
@@ -1874,6 +1956,10 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                   setState(() => _reserveVoteDraft = on == true ? v : null);
                 },
               ),
+            Text(
+              _txFeeAdvice(0, oneFeeTo: 'cast this vote'),
+              key: const Key('reserve-vote-levy'),
+            ),
             FilledButton(
               key: const Key('reserve-vote-submit'),
               onPressed: draft == null ? null : () => _reserveVote(context, ident, draft),
@@ -1945,6 +2031,10 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         ledger.vaultLockedNanos = reserve.totalLockedNanos;
         ledger.extraMintedNanos = reserve.mintBankNanos;
       }
+    } catch (_) {}
+    try {
+      final p = await pool.mempoolPressure();
+      _mempoolDepth = (p['depth'] as num?)?.toInt() ?? _mempoolDepth;
     } catch (_) {}
     if (mounted) setState(() {});
   }

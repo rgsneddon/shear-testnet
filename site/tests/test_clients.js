@@ -46,7 +46,7 @@ describe('shear.digital client buttons', () => {
     assert.match(dag, /spy glass/);
     assert.match(dag, /liveFromBook/);
     assert.doesNotMatch(dag, /HASH_BUNDLE/);
-    assert.match(dag, /releases\/tag\/0\.23/);
+    assert.match(dag, /releases\/tag\/0\.24/);
     assert.doesNotMatch(dag, /releases\/tag\/0\.15/);
     assert.doesNotMatch(dag, /releases\/tag\/0\.13/);
     assert.doesNotMatch(dag, /releases\/tag\/0\.12/);
@@ -69,11 +69,11 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /height:72px/);
     assert.match(html, /justify-content:center/);
     assert.match(html, /text-indent:\.12em/);
-    assert.match(html, /shear-wallet-0\.23-macos\.dmg/);
-    assert.match(html, /shear-wallet-0\.23-windows\.zip/);
-    assert.match(html, /shear-wallet-0\.23-android\.apk/);
-    assert.match(html, /shear-wallet-0\.23-linux\.zip/);
-    assert.match(html, /shear-wallet-0\.23-archlinux\.zip/);
+    assert.match(html, /shear-wallet-0\.24-macos\.dmg/);
+    assert.match(html, /shear-wallet-0\.24-windows\.zip/);
+    assert.match(html, /shear-wallet-0\.24-android\.apk/);
+    assert.match(html, /shear-wallet-0\.24-linux\.zip/);
+    assert.match(html, /shear-wallet-0\.24-archlinux\.zip/);
     assert.doesNotMatch(html, /shear-wallet-0\.20-/);
     assert.doesNotMatch(html, /releases\/tag\/0\.20/);
     assert.doesNotMatch(html, /shear-wallet-0\.19-/);
@@ -97,7 +97,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-pack="wallet-linux"/);
     assert.match(html, /data-pack="wallet-archlinux"/);
     assert.match(html, /id="pack-advisory"/);
-    assert.match(html, /wallet <strong>0\.23<\/strong>/);
+    assert.match(html, /wallet <strong>0\.24<\/strong>/);
     assert.doesNotMatch(html, /shear-wallet-0\.8-/);
     assert.match(html, /rgsneddon\/shear-testnet/);
     assert.doesNotMatch(html, /github\.com\/rgsneddon\/shear"/);
@@ -128,7 +128,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-pack="miner-windows"/);
   });
 
-  it('WALLET nav on MAIN DAG MEMPOOL POOL EXPLORER pins 0.23 and refuses older tags', () => {
+  it('WALLET nav on MAIN DAG MEMPOOL POOL EXPLORER pins 0.24 and refuses older tags', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const pages = {
       main: html,
@@ -140,7 +140,9 @@ describe('shear.digital client buttons', () => {
       poolAdmin: fs.readFileSync(path.join(here, '../../pool/admin/index.html'), 'utf8'),
     };
     for (const [name, page] of Object.entries(pages)) {
-      assert.match(page, /releases\/tag\/0\.23/, `${name} WALLET must pin 0.23`);
+      assert.match(page, /releases\/tag\/0\.24/, `${name} WALLET must pin 0.24`);
+      assert.doesNotMatch(page, /releases\/tag\/0\.23/, `${name} must not offer 0.23`);
+      assert.doesNotMatch(page, /shear-wallet-0\.23-/);
       assert.doesNotMatch(page, /releases\/tag\/0\.22/, `${name} must not offer 0.22`);
       assert.doesNotMatch(page, /shear-wallet-0\.22-/);
       assert.doesNotMatch(page, /releases\/tag\/0\.21/, `${name} must not offer 0.21`);
@@ -244,7 +246,7 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /The Reserve/);
     assert.match(admin, /pool\.shear\.digital:1111/);
     assert.match(admin, /ShearK-Miner 1\.5/);
-    assert.match(admin, /shear-wallet-0\.23-/);
+    assert.match(admin, /shear-wallet-0\.24-/);
     assert.match(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
     assert.doesNotMatch(admin, /The Join/);
     assert.doesNotMatch(admin, /join1\./);

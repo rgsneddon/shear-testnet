@@ -70,18 +70,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.23"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.24"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.23"'), isTrue);
+    expect(winMain.contains('L"Shear 0.24"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.23"'), isTrue);
+    expect(winRc.contains('"Shear 0.24"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.23"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.24"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -734,7 +734,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.23');
+    expect(kWalletVersion, '0.24');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -747,6 +747,10 @@ void main() {
     expect(kShePublicDigits, 9);
     expect(levyNanos(kUnitsPerShe), 20000000);
     expect(levyNanos(kUnitsPerShe) / kUnitsPerShe, 0.0002);
+    expect(levyNanos(0), 100);
+    expect(levyTaxed('lock'), isTrue);
+    expect(levyTaxed('vote'), isTrue);
+    expect(levyTaxed('withdraw'), isFalse);
     expect(kEip712ChainId, 2701);
     const login = 'she1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
     const dest = 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
@@ -1158,10 +1162,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.23');
-    expect(kWalletVersion, '0.23');
+    expect(app.title, 'Shear 0.24');
+    expect(kWalletVersion, '0.24');
     await tester.pump();
-    expect(find.textContaining('0.23'), findsWidgets);
+    expect(find.textContaining('0.24'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -1910,7 +1914,8 @@ void main() {
       programId: kReserveProgram,
     );
     final afterLock = ledger.spendable(continuum);
-    expect(afterLock, closeTo(10 - kPiShe, 1e-12));
+    final lockL = levyNanos(kPiSheNanos) / kUnitsPerShe;
+    expect(afterLock, closeTo(10 - kPiShe - lockL, 1e-12));
     expect(r.withdrawTo(ledger, dest: vault, payout: continuum, nowMs: t0 + 10 * 86400000), isNull);
     final out = r.withdrawTo(ledger, dest: vault, payout: continuum, nowMs: t0 + kReserveEpochMs);
     expect(out, isNotNull);
@@ -1918,7 +1923,7 @@ void main() {
     expect(out['principal'], kPiSheNanos);
     final paid = (out['principal']! + out['interest']!) / kUnitsPerShe;
     expect(ledger.spendable(continuum), closeTo(afterLock + paid, 1e-12));
-    expect(ledger.spendable(continuum), closeTo(10 - kPiShe + paid, 1e-12));
+    expect(ledger.spendable(continuum), closeTo(10 - kPiShe - lockL + paid, 1e-12));
     expect(ledger.ownerHistory(alice.address).where((t) => t.kind == 'reserve').single.to, continuum);
     expect(r.portal(vault).nanos, 0);
   });
@@ -2004,6 +2009,8 @@ void main() {
     expect(find.text('Update vote'), findsNothing);
     expect(find.textContaining('change this vote at any time'), findsNothing);
     expect(find.text('Amount SHEAR'), findsOneWidget);
+    expect(find.byKey(const Key('reserve-lock-levy')), findsOneWidget);
+    expect(find.textContaining('from Continuum spendable'), findsWidgets);
     expect(find.text('Send'), findsOneWidget);
     expect(find.text('Add more SHE to the vault'), findsNothing);
     expect(find.byKey(const Key('reserve-yours-box')), findsOneWidget);
@@ -2030,6 +2037,7 @@ void main() {
     expect(find.text(joinWatchProgram), findsNothing);
     expect(find.byKey(const Key('reserve-pi-progress')), findsOneWidget);
     expect(find.byKey(const Key('reserve-vote-submit')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-levy')), findsOneWidget);
   });
 
   testWidgets('Reserve deposit requires Sign, lock-in stays, deposits sum to π then vote+results', (tester) async {
@@ -2064,11 +2072,14 @@ void main() {
     await tester.tap(find.byKey(const Key('reserve-send')));
     await tester.pump();
     expect(find.byKey(const Key('reserve-sign')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-lock-sign-levy')), findsOneWidget);
+    expect(find.textContaining('One fee to add funds to the vault'), findsWidgets);
     await tester.tap(find.byKey(const Key('reserve-sign-accept')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.byKey(const Key('reserve-locked-in')), findsOneWidget);
     expect(find.textContaining('Coins are locked in your portal'), findsOneWidget);
+    expect(find.byKey(const Key('reserve-locked-in-levy')), findsOneWidget);
     expect(find.byKey(const Key('reserve-vote-submit')), findsNothing);
     await tester.enterText(find.byKey(const Key('reserve-amount')), '$kPiShe');
     await tester.ensureVisible(find.byKey(const Key('reserve-send')));
@@ -2087,6 +2098,8 @@ void main() {
     await tester.tap(find.byKey(const Key('reserve-vote-submit')));
     await tester.pump();
     expect(find.byKey(const Key('reserve-vote-confirm')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-confirm-levy')), findsOneWidget);
+    expect(find.textContaining('One fee to cast this vote'), findsWidgets);
     expect(find.byKey(const Key('reserve-vote-confirm-accept')), findsOneWidget);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-vote-confirm-accept'))).onPressed, isNull);
     await tester.enterText(find.byKey(const Key('reserve-vote-confirm-field')), 'CONFIRM');
@@ -2095,6 +2108,7 @@ void main() {
     await tester.tap(find.byKey(const Key('reserve-vote-confirm-accept')));
     await tester.pump();
     expect(find.byKey(const Key('reserve-vote-sign')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-sign-levy')), findsOneWidget);
     await tester.tap(find.byKey(const Key('reserve-vote-sign-accept')));
     await tester.pump();
     expect(find.byKey(const Key('reserve-vote-results')), findsOneWidget);
@@ -2282,7 +2296,7 @@ void main() {
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     final live = _PoolLive(headerHex: hex, height: 20, balance: 0);
     final silent = payoutDest(alice.paymentCode)!;
-    live.destBalances[silent] = kPiShe;
+    live.destBalances[silent] = kPiShe + levyNanos(kPiSheNanos) / kUnitsPerShe;
     final server = await _fakePool(live: live);
     addTearDown(() => server.close(force: true));
     final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
@@ -2290,8 +2304,9 @@ void main() {
     await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
     final flow = ledger.currentDest(alice.address);
     expect(ledger.spendable(flow) < kPiShe, isTrue);
-    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(kPiShe, 1e-12));
-    final from = ledger.spendFrom(alice.address, paymentCode: alice.paymentCode, amount: kPiShe);
+    final lockNeed = kPiShe + levyNanos(kPiSheNanos) / kUnitsPerShe;
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(lockNeed, 1e-12));
+    final from = ledger.spendFrom(alice.address, paymentCode: alice.paymentCode, amount: lockNeed);
     expect(from, silent);
     final vault = vaultDest(alice.address, viewKey: alice.viewKey)!;
     final r = ShearReserve();
@@ -2956,8 +2971,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.23 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.23');
+  test('kWalletVersion == 0.24 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.24');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -3342,7 +3357,9 @@ void main() {
     addTearDown(() => server.close(force: true));
     final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
     final ledger = ShearLedger(pool: pool)..viewSecret = id.viewKey;
-    final from = destForLogin(id.address, height: 1, viewKey: id.viewKey)!;
+    ledger.confirmRound(address: id.paymentCode, pot: 1, height: 1);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    final from = ledger.spendFrom(id.address, paymentCode: id.paymentCode, amount: levyNanos(0) / kUnitsPerShe);
     await ledger.send(
       from: from,
       to: dest,
@@ -3350,6 +3367,8 @@ void main() {
       kind: 'vote',
       programId: kReserveProgram,
       choice: kVoteIncrease,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
     );
     expect(posted.single['kind'], 'vote');
     expect(posted.single['choice'], kVoteIncrease);

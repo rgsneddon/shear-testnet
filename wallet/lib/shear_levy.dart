@@ -28,8 +28,6 @@ bool levyTaxed(String kind, {bool coinbase = false}) {
   if (coinbase) return false;
   const untaxed = {
     'claim',
-    'lock',
-    'vote',
     'withdraw',
     'hash',
     'pot',
@@ -38,6 +36,15 @@ bool levyTaxed(String kind, {bool coinbase = false}) {
     'reserve-shortfall',
   };
   if (untaxed.contains(kind)) return false;
-  const taxed = {'send', 'evm-value', 'pool-withdraw', 'vortice-register', 'transfer', 'user-spend'};
+  const taxed = {
+    'send',
+    'evm-value',
+    'pool-withdraw',
+    'vortice-register',
+    'transfer',
+    'user-spend',
+    'lock',
+    'vote',
+  };
   return taxed.contains(kind);
 }

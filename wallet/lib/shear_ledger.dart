@@ -1276,18 +1276,16 @@ class ShearLedger {
         depth = (pressure['depth'] as num?)?.toInt() ?? 0;
       } catch (_) {}
     }
-    final taxed = sendKind != 'vote' && levyTaxed(sendKind);
+    final taxed = levyTaxed(sendKind);
     final nanos = sendKind == 'vote' ? 0 : (amount * kUnitsPerShe).round();
     final levy = taxed ? levyNanos(nanos, depth: depth) : 0;
-    final needShe = sendKind == 'vote' ? 0.0 : amount + levy / kUnitsPerShe;
-    if (sendKind != 'vote') {
-      if (spendable(src) < needShe && restFrame != null) {
-        if (spendableOwned(restFrame, paymentCode: paymentCode) >= needShe) {
-          src = spendFrom(restFrame, paymentCode: paymentCode, amount: needShe);
-        }
+    final needShe = (sendKind == 'vote' ? 0.0 : amount) + levy / kUnitsPerShe;
+    if (spendable(src) < needShe && restFrame != null) {
+      if (spendableOwned(restFrame, paymentCode: paymentCode) >= needShe) {
+        src = spendFrom(restFrame, paymentCode: paymentCode, amount: needShe);
       }
-      if (spendable(src) < needShe) throw StateError('insufficient');
     }
+    if (spendable(src) < needShe) throw StateError('insufficient');
     Map<String, dynamic>? memoCt;
     if (memo != null && memo.isNotEmpty) {
       memoCt = await memoSeal(to, memo);
@@ -1296,13 +1294,22 @@ class ShearLedger {
       String? open;
       final vk = viewSecret;
       final rest = restFrame ?? '';
+      String? portalOpen;
       if (vk != null && vk.isNotEmpty && rest.isNotEmpty) {
         open = openingForDest(
-          from: sendKind == 'vote' ? to : src,
+          from: src,
           restFrame: rest,
           viewKey: vk,
           destCount: destCount,
         );
+        if (sendKind == 'vote') {
+          portalOpen = openingForDest(
+            from: to,
+            restFrame: rest,
+            viewKey: vk,
+            destCount: destCount,
+          );
+        }
       }
       final json = await pool!.send(
         from: src,
@@ -1310,6 +1317,7 @@ class ShearLedger {
         amount: sendKind == 'vote' ? 0 : amount,
         memoCt: memoCt,
         open: open,
+        portalOpen: portalOpen,
         kind: sendKind,
         programId: programId,
         choice: choice,
@@ -1332,15 +1340,12 @@ class ShearLedger {
         memoPlain: memo,
         memoCt: memoCt ?? raw.memoCt,
       );
-      if (sendKind != 'vote') {
-        _spendable[src] = (json['fromBalance'] as num?)?.toDouble() ?? (spendable(src) - amount);
-      }
+      _spendable[src] = (json['fromBalance'] as num?)?.toDouble()
+          ?? (spendable(src) - needShe);
       _txs.add(tx);
       return tx;
     }
-    if (sendKind != 'vote') {
-      _spendable[src] = spendable(src) - amount;
-    }
+    _spendable[src] = spendable(src) - needShe;
     final tx = ShearTx(
       id: 'send-${DateTime.now().millisecondsSinceEpoch}',
       from: src,
@@ -1592,6 +1597,7 @@ class ShearPoolClient {
     required double amount,
     Map<String, dynamic>? memoCt,
     String? open,
+    String? portalOpen,
     String? kind,
     String? programId,
     String? choice,
@@ -1604,6 +1610,7 @@ class ShearPoolClient {
         'amount': amount,
         if (memoCt != null) 'memoCt': memoCt,
         if (open != null && open.isNotEmpty) 'open': open,
+        if (portalOpen != null && portalOpen.isNotEmpty) 'portalOpen': portalOpen,
         if (kind != null && kind.isNotEmpty) 'kind': kind,
         if (programId != null && programId.isNotEmpty) 'programId': programId,
         if (choice != null && choice.isNotEmpty) 'choice': choice,

@@ -17,6 +17,7 @@ const OUT_KINDS = new Set([
   'evm-value',
   'vortice-register',
   'lock',
+  'vote',
   'claim',
   'user-spend',
 ]);
@@ -78,7 +79,9 @@ export function fundedDebit(tx) {
   if (!tx || tx.coinbase) return null;
   if (tx.mint && String(tx.kind || '') !== 'pool-withdraw') return null;
   const kind = String(tx.kind || tx.vout?.[0]?.kind || 'send');
-  const from = String(tx.from || tx.vin?.[0]?.address || '');
+  const from = kind === 'vote'
+    ? String(tx.payer || tx.vin?.[0]?.address || '')
+    : String(tx.from || tx.vin?.[0]?.address || '');
   if (!from) return null;
   const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0;
   if (unfunded) return null;
