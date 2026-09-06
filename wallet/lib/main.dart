@@ -1553,6 +1553,50 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   Future<void> _reserveVote(BuildContext context, ShearIdentity ident, String choice) async {
     final dest = _reserveDestOf(ident);
     if (dest == null || dest.isEmpty) return;
+    final typed = TextEditingController();
+    final sealed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(builder: (ctx, setLocal) {
+          final ok = typed.text == 'CONFIRM';
+          return AlertDialog(
+            key: const Key('reserve-vote-confirm'),
+            title: const Text('YOUR VOTE WILL BE SEALED'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'You will not be entitled to change your mind before the end of this epoch.\n'
+                  'Type CONFIRM to continue.',
+                ),
+                TextField(
+                  key: const Key('reserve-vote-confirm-field'),
+                  controller: typed,
+                  onChanged: (_) => setLocal(() {}),
+                  decoration: const InputDecoration(labelText: 'Type CONFIRM'),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                key: const Key('reserve-vote-confirm-cancel'),
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                key: const Key('reserve-vote-confirm-accept'),
+                onPressed: ok ? () => Navigator.pop(ctx, true) : null,
+                child: const Text('Accept'),
+              ),
+            ],
+          );
+        });
+      },
+    );
+    typed.dispose();
+    if (sealed != true || !mounted) return;
     final go = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -1591,6 +1635,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         restFrame: ident.address,
         paymentCode: ident.paymentCode,
         choice: choice,
+        currentEpoch: reserve.currentEpoch,
+        epochStartMs: reserve.epochStartMs,
       );
     } catch (e) {
       if (context.mounted) {
@@ -1740,7 +1786,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             Text('Fee bank  ${formatShe(reserve.feeBankNanos / kUnitsPerShe)} SHE  ·  extra-minted ${formatShe(reserve.mintBankNanos / kUnitsPerShe)} SHE'),
             Text('Accrued (all portals)  ${formatShe(reserve.totalAccruedNanos / kUnitsPerShe)} SHE  ·  claimable ${formatShe(reserve.totalClaimableNanos / kUnitsPerShe)} SHE'),
             Text('Live hash bonus  ${reserve.liveHashBonusNanos} unit(s)'),
-            Text('Votes  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}'),
+            Text(
+              reserve.bonusEnacted
+                  ? 'Enacted +${reserve.enactedUp} / −${reserve.enactedDown} / hold ${reserve.enactedHold} → delta ${reserve.enactedDelta}, live bonus = ${reserve.enactedLiveBonus}'
+                  : 'Votes  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}',
+              key: const Key('reserve-overall-votes'),
+            ),
             Text(reserve.epochStartMs == 0
                 ? 'No epoch yet. The first π SHE deposit will start it.'
                 : '$daysLeft days remaining in this epoch  ·  day $dayOfEpoch of $kReserveEpochDays'),

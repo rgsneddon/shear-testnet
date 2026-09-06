@@ -2081,17 +2081,19 @@ void main() {
     await tester.pump();
     await tester.tap(find.byKey(const Key('reserve-vote-submit')));
     await tester.pump();
+    expect(find.byKey(const Key('reserve-vote-confirm')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-confirm-accept')), findsOneWidget);
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-vote-confirm-accept'))).onPressed, isNull);
+    await tester.enterText(find.byKey(const Key('reserve-vote-confirm-field')), 'CONFIRM');
+    await tester.pump();
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-vote-confirm-accept'))).onPressed, isNotNull);
+    await tester.tap(find.byKey(const Key('reserve-vote-confirm-accept')));
+    await tester.pump();
     expect(find.byKey(const Key('reserve-vote-sign')), findsOneWidget);
     await tester.tap(find.byKey(const Key('reserve-vote-sign-accept')));
     await tester.pump();
     expect(find.byKey(const Key('reserve-vote-results')), findsOneWidget);
-    await tester.tap(find.byKey(Key('reserve-vote-$kVoteHold')));
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('reserve-vote-submit')));
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('reserve-vote-sign-accept')));
-    await tester.pump();
-    expect(find.textContaining('your vote: $kVoteHold'), findsOneWidget);
+    expect(find.textContaining('your vote: $kVoteIncrease'), findsOneWidget);
   });
 
   testWidgets('Reserve Sign is not offered when Continuum spendable is short', (tester) async {

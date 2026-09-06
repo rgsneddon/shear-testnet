@@ -15,6 +15,8 @@ const kReserveEpochMs = kReserveEpochDays * 86400000;
 const kReserveJoinCutoffMs = kReserveJoinCutoffDays * 86400000;
 /// Unweighted mean of all observed first-world policy rates (14 banks). 2.636% → 264 bps.
 const kReserveOracleDefaultBps = 264;
+const kBpsStepCap = 100;
+const kStaleObserveMs = 14 * 86400000;
 const kVoteIncrease = 'increase bonus';
 const kVoteDecrease = 'decrease bonus';
 const kVoteHold = 'leave bonus as-is';
@@ -24,14 +26,11 @@ const kReserveAccruedLabel = 'Accrued rewards';
 
 bool extraMintAllowed(String programId) => programId == kReserveProgram;
 
-/// 400-day APR on staked SHE. Idle earns 0. Never `* 400 / 365`.
-/// Whole epoch: `floor(stakedNanos * bps / 10000)` i.e.
-/// `(p * bps * days) ~/ (10000 * 400)` when [days] is 400.
-int reserveInterestNanos(int stakedNanos, int annualBps, [int days = kReserveEpochDays]) {
-  if (stakedNanos <= 0 || annualBps < 0 || days <= 0) return 0;
-  return (BigInt.from(stakedNanos) * BigInt.from(annualBps) * BigInt.from(days) ~/
-          (BigInt.from(10000) * BigInt.from(kReserveEpochDays)))
-      .toInt();
+/// Full-epoch interest: floor(stakedNanos * epochBps / 10000). Never `* 400 / 365`.
+int reserveInterestNanos(int stakedNanos, int epochBps, [int days = kReserveEpochDays]) {
+  if (stakedNanos <= 0 || epochBps < 0) return 0;
+  days;
+  return (BigInt.from(stakedNanos) * BigInt.from(epochBps) ~/ BigInt.from(10000)).toInt();
 }
 
 /// Accrued: `floor(stakedNanos * bps * e / (10000 * EPOCH_MS))`. Caps at 400 days.
@@ -115,6 +114,13 @@ class ShearReserve {
   int votesIncrease = 0;
   int votesDecrease = 0;
   int votesHold = 0;
+  int epochBps = kReserveOracleDefaultBps;
+  int enactedUp = 0;
+  int enactedDown = 0;
+  int enactedHold = 0;
+  int enactedDelta = 0;
+  int enactedLiveBonus = 1;
+  int enactedAtMs = 0;
   int feeBankNanos = 0;
   int mintBankNanos = 0;
   int totalStakedNanos = 0;
@@ -169,9 +175,22 @@ class ShearReserve {
     return [for (final e in epochs) if (seen.add(e.epoch)) e];
   }
 
+  int _freezeEpochBps(int nowMs) {
+    final prev = epochBps >= 0 ? epochBps : kReserveOracleDefaultBps;
+    if (oracleObservedAtMs <= 0 || (nowMs > 0 && nowMs - oracleObservedAtMs > kStaleObserveMs)) {
+      return prev;
+    }
+    var next = oracleBps;
+    if (next > prev + kBpsStepCap) next = prev + kBpsStepCap;
+    if (next < prev - kBpsStepCap) next = prev - kBpsStepCap;
+    if (next < 0) next = 0;
+    return next;
+  }
+
   void _beginEpoch(int nowMs) {
     epochStartMs = nowMs;
     bonusEnacted = false;
+    epochBps = _freezeEpochBps(nowMs);
     _recordEpoch(nowMs);
   }
 
@@ -179,11 +198,11 @@ class ShearReserve {
     final p = portal(dest);
     final elapsed = elapsedMs(nowMs);
     return ReserveRewards(
-      accrued: p.remoteAccrued ?? accruedNanos(p.staked, oracleBps, elapsed),
-      projected: reserveInterestNanos(p.staked, oracleBps),
+      accrued: p.remoteAccrued ?? accruedNanos(p.staked, epochBps, elapsed),
+      projected: reserveInterestNanos(p.staked, epochBps),
       staked: p.staked,
       idle: p.idle,
-      oracleBps: oracleBps,
+      oracleBps: epochBps,
       elapsedMs: elapsed,
     );
   }
@@ -225,6 +244,14 @@ class ShearReserve {
       votesDecrease = (votes['decrease'] as num?)?.toInt() ?? 0;
       votesHold = (votes['hold'] as num?)?.toInt() ?? 0;
     }
+    final freeze = (json['epochBps'] as num?)?.toInt();
+    if (freeze != null && freeze >= 0) epochBps = freeze;
+    enactedUp = (json['enactedUp'] as num?)?.toInt() ?? enactedUp;
+    enactedDown = (json['enactedDown'] as num?)?.toInt() ?? enactedDown;
+    enactedHold = (json['enactedHold'] as num?)?.toInt() ?? enactedHold;
+    enactedDelta = (json['enactedDelta'] as num?)?.toInt() ?? enactedDelta;
+    enactedLiveBonus = (json['enactedLiveBonus'] as num?)?.toInt() ?? enactedLiveBonus;
+    enactedAtMs = (json['enactedAtMs'] as num?)?.toInt() ?? enactedAtMs;
     final bonus = (json['liveHashBonusNanos'] as num?)?.toInt();
     if (bonus != null && bonus >= 0) liveHashBonusNanos = bonus;
     if (json['bonusEnacted'] == true) bonusEnacted = true;
@@ -291,11 +318,7 @@ class ShearReserve {
       return 'bad_vote';
     }
     final first = p.vote == null || p.voteEpoch != currentEpoch;
-    if (!first) {
-      if (p.vote == kVoteIncrease) votesIncrease--;
-      if (p.vote == kVoteDecrease) votesDecrease--;
-      if (p.vote == kVoteHold) votesHold--;
-    }
+    if (!first) return 'vote_locked';
     p.vote = choice;
     p.voteEpoch = currentEpoch;
     if (choice == kVoteIncrease) votesIncrease++;
@@ -319,8 +342,15 @@ class ShearReserve {
       if (winners == 1 && delta > 0) liveHashBonusNanos += 1;
       if (winners == 1 && delta < 0 && liveHashBonusNanos > 0) liveHashBonusNanos -= 1;
       bonusEnacted = true;
+      enactedUp = up;
+      enactedDown = down;
+      enactedHold = hold;
+      enactedDelta = winners == 1 ? delta : 0;
+      enactedLiveBonus = liveHashBonusNanos;
+      enactedAtMs = nowMs;
     }
     final p = portal(dest);
+    if (p.payout != null && payout != null && payout != p.payout) return null;
     final claimable = p.claimableRewards;
     var staked = 0;
     var idle = 0;
@@ -331,11 +361,11 @@ class ShearReserve {
       principal = staked + idle;
     }
     final interest = epochOver
-        ? (claimable > 0 ? claimable : reserveInterestNanos(staked, oracleBps))
+        ? (claimable > 0 ? claimable : reserveInterestNanos(staked, epochBps))
         : claimable;
     if (principal <= 0 && interest <= 0) return null;
     if (!extraMintAllowed(kReserveProgram)) return null;
-    if (payout != null && isDestAddress(payout) && !isShearAddress(payout)) {
+    if (p.payout == null && payout != null && isDestAddress(payout) && !isShearAddress(payout)) {
       p.payout = payout;
     }
     if (principal > 0) totalLockedNanos -= principal;
@@ -377,13 +407,20 @@ class ShearReserve {
         'epochStartMs': epochStartMs,
         'remainingMs': remainingMs(nowMs),
         'totalLockedNanos': totalLockedNanos,
-        'votesIncrease': votesIncrease,
-        'votesDecrease': votesDecrease,
-        'votesHold': votesHold,
+        'votesIncrease': bonusEnacted ? enactedUp : votesIncrease,
+        'votesDecrease': bonusEnacted ? enactedDown : votesDecrease,
+        'votesHold': bonusEnacted ? enactedHold : votesHold,
         'oracleBps': oracleBps,
+        'epochBps': epochBps,
         'liveHashBonusNanos': liveHashBonusNanos,
         'bonusEnacted': bonusEnacted,
         'currentEpoch': currentEpoch,
+        'enactedUp': enactedUp,
+        'enactedDown': enactedDown,
+        'enactedHold': enactedHold,
+        'enactedDelta': enactedDelta,
+        'enactedLiveBonus': enactedLiveBonus,
+        'enactedAtMs': enactedAtMs,
       };
 
   String publicJson(int nowMs) => jsonEncode(publicView(nowMs));

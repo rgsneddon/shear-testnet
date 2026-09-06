@@ -1260,6 +1260,8 @@ class ShearLedger {
     String? restFrame,
     String? paymentCode,
     String? choice,
+    int? currentEpoch,
+    int? epochStartMs,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
     if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
@@ -1306,6 +1308,8 @@ class ShearLedger {
         kind: sendKind,
         programId: programId,
         choice: choice,
+        currentEpoch: currentEpoch,
+        epochStartMs: epochStartMs,
       );
       if (json['ok'] != true || json['tx'] is! Map) {
         throw StateError('${json['reason'] ?? 'send failed'}');
@@ -1586,6 +1590,8 @@ class ShearPoolClient {
     String? kind,
     String? programId,
     String? choice,
+    int? currentEpoch,
+    int? epochStartMs,
   }) =>
       _post('/api/wallet/send', {
         'from': from,
@@ -1596,6 +1602,8 @@ class ShearPoolClient {
         if (kind != null && kind.isNotEmpty) 'kind': kind,
         if (programId != null && programId.isNotEmpty) 'programId': programId,
         if (choice != null && choice.isNotEmpty) 'choice': choice,
+        if (currentEpoch != null) 'currentEpoch': currentEpoch,
+        if (epochStartMs != null) 'epochStartMs': epochStartMs,
       });
 
   Future<Map<String, dynamic>> mempoolPressure() => _get('/api/mempoolPressure');
