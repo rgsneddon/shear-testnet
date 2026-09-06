@@ -70,18 +70,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.20"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.21"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.20"'), isTrue);
+    expect(winMain.contains('L"Shear 0.21"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.20"'), isTrue);
+    expect(winRc.contains('"Shear 0.21"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.20"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.21"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -734,7 +734,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.20');
+    expect(kWalletVersion, '0.21');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -1158,10 +1158,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.20');
-    expect(kWalletVersion, '0.20');
+    expect(app.title, 'Shear 0.21');
+    expect(kWalletVersion, '0.21');
     await tester.pump();
-    expect(find.textContaining('0.20'), findsWidgets);
+    expect(find.textContaining('0.21'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -2081,10 +2081,15 @@ void main() {
     await tester.pump();
     await tester.tap(find.byKey(const Key('reserve-vote-submit')));
     await tester.pump();
+    expect(find.byKey(const Key('reserve-vote-sign')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-vote-sign-accept')));
+    await tester.pump();
     expect(find.byKey(const Key('reserve-vote-results')), findsOneWidget);
     await tester.tap(find.byKey(Key('reserve-vote-$kVoteHold')));
     await tester.pump();
     await tester.tap(find.byKey(const Key('reserve-vote-submit')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('reserve-vote-sign-accept')));
     await tester.pump();
     expect(find.textContaining('your vote: $kVoteHold'), findsOneWidget);
   });
@@ -2944,8 +2949,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.20 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.20');
+  test('kWalletVersion == 0.21 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.21');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -3011,17 +3016,18 @@ void main() {
     final got = await fly.findLiveNode();
     expect(got, liveUrl);
     expect(fly.liveBase, liveUrl);
-    expect(walletHonestyText(live: true, proven: 2, wanted: 5), 'SYNCING 2/5');
-    expect(walletHonestyText(live: true, proven: 5, wanted: 5), 'HONEST');
+    expect(walletHonestyText(live: true, proven: 2, wanted: 5), '40% synchronised');
+    expect(walletSyncPercent(proven: 2, wanted: 5), 40);
+    expect(walletHonestyText(live: true, proven: 5, wanted: 5), '100% synchronised');
     expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), 'OFFLINE');
     await fly.followTip();
     expect(fly.wantedHeaders, 16);
     expect(fly.provenHeaders, 16);
-    expect(fly.honestyText(), 'HONEST');
+    expect(fly.honestyText(), '100% synchronised');
     final pool = ShearPoolClient(fly: fly, http: http);
     await pool.followLive();
     expect(pool.baseUrl, liveUrl);
-    expect(pool.honestyText(), 'HONEST');
+    expect(pool.honestyText(), '100% synchronised');
   });
 
   testWidgets('0.20 lock card still present after 6s; vote at π; no claim-hashes', (tester) async {
@@ -3257,36 +3263,27 @@ void main() {
     await _sealSession(tester, session);
     final ident = session.identity!;
     final dest = destForLogin(ident.address, height: 1, viewKey: ident.viewKey)!;
-    final header = Uint8List(128);
-    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-    final live = _PoolLive(headerHex: hex, height: 10, balance: 3);
-    live.owner = dest;
-    live.history = [
-      {
-        'id': 'pull-live-1',
-        'from': 'pool',
-        'to': dest,
-        'amount': 1,
-        'kind': 'pool-withdraw',
-        'height': 8,
-        'confirmed': false,
-      },
-    ];
-    live.reservePortal = {
-      'ok': true,
-      'public': false,
+    final vaultDestAddr = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final ledger = ShearLedger()..viewSecret = ident.viewKey;
+    ledger.mergeChainTx(ShearTx(
+      id: 'pull-live-1',
+      from: 'pool',
+      to: dest,
+      amount: 1,
+      kind: 'pool-withdraw',
+      height: 8,
+      confirmed: false,
+    ));
+    ledger.applyTipHex(List.filled(256, '0').join(), sealedHeight: 10);
+    final vault = ShearReserve();
+    vault.applyRemotePortal(vaultDestAddr, {
       'staked': 0,
       'idle': 0,
       'totalLockedNanos': 4 * kUnitsPerShe,
       'totalStakedNanos': 4 * kUnitsPerShe,
       'epochStartMs': 1,
       'currentEpoch': 1,
-    };
-    final server = await _fakePool(live: live);
-    addTearDown(() => server.close(force: true));
-    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
-    final ledger = ShearLedger(pool: pool)..viewSecret = ident.viewKey;
-    final vault = ShearReserve();
+    });
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ledger,
@@ -3298,15 +3295,7 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('wallet-honesty-bar')), findsOneWidget);
     expect(find.textContaining('block height:'), findsWidgets);
-    await tester.runAsync(() async {
-      await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
-      await pool.followLive();
-      final vaultDestAddr = vaultDest(ident.address, viewKey: ident.viewKey)!;
-      vault.applyRemotePortal(vaultDestAddr, await pool.reservePortal(vaultDestAddr));
-    });
-    await tester.pump();
-    await tester.pump(const Duration(seconds: 1));
-    expect(find.text('HONEST'), findsOneWidget);
+    expect(find.text('HONEST'), findsNothing);
     expect(find.byType(ConfirmPie), findsWidgets);
     final pie = tester.widget<ConfirmPie>(find.byType(ConfirmPie).first);
     expect(pie.filled, greaterThan(0));
@@ -3319,6 +3308,138 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('reserve-overall-box')), findsOneWidget);
     expect(find.textContaining('Program locked  4 SHE'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
+  test('signed vote hydrates program tallies on the voting wallet and a peer vault', () async {
+    final id = createIdentity();
+    final dest = vaultDest(id.address, viewKey: id.viewKey)!;
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 12, balance: 10);
+    live.reservePortal = {
+      'ok': true,
+      'public': false,
+      'staked': kPiSheNanos,
+      'idle': 0,
+      'joined': true,
+      'totalLockedNanos': kPiSheNanos,
+      'totalStakedNanos': kPiSheNanos,
+      'epochStartMs': 1,
+      'currentEpoch': 1,
+      'votes': {'increase': 0, 'decrease': 0, 'hold': 0},
+    };
+    final posted = <Map<String, dynamic>>[];
+    final server = await _fakePool(live: live, posted: posted);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = id.viewKey;
+    final from = destForLogin(id.address, height: 1, viewKey: id.viewKey)!;
+    await ledger.send(
+      from: from,
+      to: dest,
+      amount: 0,
+      kind: 'vote',
+      programId: kReserveProgram,
+      choice: kVoteIncrease,
+    );
+    expect(posted.single['kind'], 'vote');
+    expect(posted.single['choice'], kVoteIncrease);
+    final voter = ShearReserve();
+    voter.applyRemotePortal(dest, await pool.reservePortal(dest));
+    expect(voter.votesIncrease, 1);
+    expect(voter.votesDecrease, 0);
+    expect(voter.votesHold, 0);
+    expect(voter.portal(dest).vote, kVoteIncrease);
+    final peer = ShearReserve();
+    final other = vaultDest(createIdentity().address, viewKey: createIdentity().viewKey)!;
+    final view = Map<String, dynamic>.from(await pool.reservePortal(other));
+    view['staked'] = 0;
+    view['idle'] = 0;
+    view['vote'] = null;
+    view['joined'] = false;
+    peer.applyRemotePortal(other, view);
+    expect(peer.votesIncrease, 1);
+    expect(peer.votesDecrease, 0);
+    expect(peer.votesHold, 0);
+    expect(peer.portal(other).canVote, isFalse);
+  });
+
+  testWidgets('vote box sits under Overall sums on the right; hidden below π', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-vote-place-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final vault = ShearReserve();
+    vault.applyRemotePortal(dest, {'staked': (kPiSheNanos / 2).floor(), 'idle': 0});
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ShearLedger(),
+      reserve: vault,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-vote-box')), findsNothing);
+    vault.applyRemotePortal(dest, {
+      'staked': kPiSheNanos,
+      'idle': 0,
+      'epochStartMs': 1,
+      'currentEpoch': 1,
+    });
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-vote-box')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-overall-box')), findsOneWidget);
+    final overall = tester.getTopLeft(find.byKey(const Key('reserve-overall-box')));
+    final vote = tester.getTopLeft(find.byKey(const Key('reserve-vote-box')));
+    expect(vote.dy, greaterThan(overall.dy));
+    expect(vote.dx, closeTo(overall.dx, 2));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 2));
+  });
+
+  testWidgets('Continuum VAULT and Extra minted follow Reserve vault totals', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-cont-vault-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final vault = ShearReserve();
+    const locked = 4 * kUnitsPerShe;
+    const minted = 2 * kUnitsPerShe;
+    vault.applyRemotePortal(dest, {
+      'staked': 0,
+      'idle': 0,
+      'totalLockedNanos': locked,
+      'totalStakedNanos': locked,
+      'mintBankNanos': minted,
+    });
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ShearLedger(),
+      reserve: vault,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(find.textContaining('VAULT'), findsWidgets);
+    expect(find.textContaining('Extra minted'), findsWidgets);
+    expect(find.textContaining('4 SHE'), findsWidgets);
+    expect(find.textContaining('2 SHE'), findsWidgets);
+    expect(find.text('HONEST'), findsNothing);
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(find.textContaining('Program locked  4 SHE'), findsOneWidget);
+    expect(find.textContaining('extra-minted 2 SHE'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(seconds: 2));
   });
@@ -3500,12 +3621,20 @@ Future<HttpServer> _fakePool({
     }
     req.response.headers.contentType = ContentType.json;
     if (req.uri.path == '/api/stats') {
+      final portal = state.reservePortal ?? {};
       req.response.write(jsonEncode({
         'ok': true,
         'height': state.height,
         'header': state.headerHex,
         'avgBlockTimeMs': state.avgBlockTimeMs,
         'networkAvgBlockTimeMs': state.avgBlockTimeMs,
+        'lockedNanos': portal['totalLockedNanos'] ?? 0,
+        'mintBankNanos': portal['mintBankNanos'] ?? 0,
+        'extraMintedNanos': portal['mintBankNanos'] ?? portal['extraMintedNanos'] ?? 0,
+        'totalStakedNanos': portal['totalStakedNanos'] ?? 0,
+        'totalIdleNanos': portal['totalIdleNanos'] ?? 0,
+        'votes': portal['votes'] ?? {'increase': 0, 'decrease': 0, 'hold': 0},
+        'hashBonusNanos': portal['liveHashBonusNanos'] ?? 1,
       }));
     } else if (req.uri.path == '/api/explorer/header') {
       final h = int.tryParse(req.uri.queryParameters['height'] ?? '') ?? 0;
@@ -3578,7 +3707,44 @@ Future<HttpServer> _fakePool({
       final from = body['from']?.toString() ?? '';
       final to = body['to']?.toString() ?? '';
       final amount = (body['amount'] as num?)?.toDouble() ?? 0;
+      final kind = body['kind']?.toString() ?? 'send';
       final fromKey = payoutDest(from) ?? from;
+      if (kind == 'vote') {
+        final choice = body['choice']?.toString() ?? '';
+        final portal = Map<String, dynamic>.from(state.reservePortal ?? {'ok': true, 'public': false});
+        final votes = Map<String, dynamic>.from(
+          (portal['votes'] as Map?) ?? {'increase': 0, 'decrease': 0, 'hold': 0},
+        );
+        String pile(String c) {
+          if (c.contains('increase')) return 'increase';
+          if (c.contains('decrease')) return 'decrease';
+          return 'hold';
+        }
+        final prev = portal['vote']?.toString() ?? '';
+        if (prev.isNotEmpty) {
+          final pk = pile(prev);
+          votes[pk] = (((votes[pk] as num?)?.toInt() ?? 0) - 1).clamp(0, 1 << 30);
+        }
+        final nk = pile(choice);
+        votes[nk] = ((votes[nk] as num?)?.toInt() ?? 0) + 1;
+        portal['votes'] = votes;
+        portal['vote'] = choice;
+        portal['ok'] = true;
+        state.reservePortal = portal;
+        req.response.write(jsonEncode({
+          'ok': true,
+          'tx': {
+            'id': 'vote-${state.incoming.length + 1}',
+            'from': fromKey,
+            'to': to,
+            'amount': 0,
+            'kind': 'vote',
+            'choice': choice,
+            'programId': 'shear-reserve-v1',
+            'confirmed': false,
+          },
+        }));
+      } else {
       final fromBal = state.reconstructed(from);
       if (fromBal < amount) {
         req.response.statusCode = 400;
@@ -3614,6 +3780,7 @@ Future<HttpServer> _fakePool({
             'memo': body['memoCt'] != null,
           },
         }));
+      }
       }
     } else {
       req.response.statusCode = 404;

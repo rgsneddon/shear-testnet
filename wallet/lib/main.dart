@@ -28,7 +28,7 @@ import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_flyclient.dart';
 
-const kWalletVersion = '0.20';
+const kWalletVersion = '0.21';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 const kTabs = [
@@ -420,6 +420,10 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     var ticks = 0;
     var tipBusy = false;
     var creditBusy = false;
+    if (widget.skipPoolSync) {
+      if (widget.demoTx) unawaited(_playDemoLive());
+      return;
+    }
     _accrualTick = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || !unlocked) return;
       _syncJoinRoster();
@@ -821,24 +825,63 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     return pool.honestyText();
   }
 
+  int get _continuumVaultNanos =>
+      reserve.totalLockedNanos > 0 ? reserve.totalLockedNanos : (ledger.vaultLockedNanos ?? 0);
+
+  int get _continuumExtraMintedNanos =>
+      reserve.mintBankNanos > 0 ? reserve.mintBankNanos : (ledger.extraMintedNanos ?? 0);
+
   Widget _honestyBar(BuildContext context) {
+    final pool = ledger.pool;
+    final live = pool?.nodeLive ?? false;
+    final proven = pool?.provenHeaders ?? 0;
+    final wanted = pool?.wantedHeaders ?? 0;
     final label = _honestyText;
-    final color = label == 'HONEST'
-        ? const Color(0xFF1A9A4A)
-        : label == 'OFFLINE'
-            ? Theme.of(context).colorScheme.error
-            : const Color(0xFFD4A017);
+    final fill = walletSyncFill(proven: proven, wanted: wanted);
+    final pct = walletSyncPercent(proven: proven, wanted: wanted);
+    final offline = label == 'OFFLINE' || !live;
+    const green = Color(0xFF1A9A4A);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
-      child: Text(
-        label,
+      child: SizedBox(
         key: const Key('wallet-honesty-bar'),
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w800,
-          letterSpacing: 0.04,
-          color: color,
-        ),
+        width: 108,
+        child: offline
+            ? Text(
+                'OFFLINE',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.04,
+                  color: Theme.of(context).colorScheme.error,
+                ),
+              )
+            : Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      key: const Key('wallet-sync-bar'),
+                      value: fill,
+                      minHeight: 7,
+                      color: green,
+                      backgroundColor: green.withOpacity(0.22),
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '$pct% synchronised',
+                    key: const Key('wallet-sync-percent'),
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: green,
+                    ),
+                  ),
+                ],
+              ),
       ),
     );
   }
@@ -877,26 +920,31 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           ),
         ),
         actions: [
-          Center(child: _honestyBar(context)),
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: Center(
-              child: InkWell(
-                onTap: (kDebugMode || widget.demoTx) ? _findBlock : null,
-                child: Text(
-                  'block height: ${ledger.sealedHeight}',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).colorScheme.onSurface,
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Row(
+              children: [
+                _honestyBar(context),
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: InkWell(
+                    onTap: (kDebugMode || widget.demoTx) ? _findBlock : null,
+                    child: Text(
+                      'block height: ${ledger.sealedHeight}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
                   ),
                 ),
-              ),
+                IconButton(
+                  tooltip: _themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode',
+                  onPressed: _toggleTheme,
+                  icon: Icon(_themeMode == ThemeMode.dark ? Icons.light_mode : Icons.dark_mode),
+                ),
+              ],
             ),
-          ),
-          IconButton(
-            tooltip: _themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode',
-            onPressed: _toggleTheme,
-            icon: Icon(_themeMode == ThemeMode.dark ? Icons.light_mode : Icons.dark_mode),
           ),
         ],
       ),
@@ -1135,12 +1183,14 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           _continuumStatRow(
             context,
             'VAULT',
-            '${formatShe((ledger.vaultLockedNanos ?? 0) / kUnitsPerShe)} SHE',
+            '${formatShe(_continuumVaultNanos / kUnitsPerShe)} SHE',
+            key: const Key('continuum-vault'),
           ),
           _continuumStatRow(
             context,
             'Extra minted',
-            '${formatShe((ledger.extraMintedNanos ?? 0) / kUnitsPerShe)} SHE',
+            '${formatShe(_continuumExtraMintedNanos / kUnitsPerShe)} SHE',
+            key: const Key('continuum-extra-minted'),
           ),
           _continuumStatRow(
             context,
@@ -1500,6 +1550,63 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     }
   }
 
+  Future<void> _reserveVote(BuildContext context, ShearIdentity ident, String choice) async {
+    final dest = _reserveDestOf(ident);
+    if (dest == null || dest.isEmpty) return;
+    final go = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        key: const Key('reserve-vote-sign'),
+        title: const Text('Sign Reserve vote'),
+        content: Text(
+          'Post this vote to the chain so every node and wallet reads the same tally.\n'
+          'Choice: $choice',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('reserve-vote-sign-cancel'),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('reserve-vote-sign-accept'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sign'),
+          ),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final from = ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: 0);
+    try {
+      await ledger.send(
+        from: from,
+        to: dest,
+        amount: 0,
+        local: ledger.pool == null || widget.skipPoolSync,
+        kind: 'vote',
+        programId: kReserveProgram,
+        restFrame: ident.address,
+        paymentCode: ident.paymentCode,
+        choice: choice,
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+      return;
+    }
+    final err = reserve.vote(dest: dest, choice: choice, nowMs: now);
+    if (err != null && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      return;
+    }
+    if (!widget.skipPoolSync) await _syncVaults(ident);
+    if (mounted) setState(() => _reserveVoteDraft = choice);
+  }
+
   List<Widget> _reservePane(BuildContext context, ShearIdentity ident) {
     final dest = _reserveDestOf(ident) ?? '';
     final p = dest.isEmpty ? ReservePortal() : reserve.portal(dest);
@@ -1522,13 +1629,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     final rate = '${(rw.oracleBps / 100).toStringAsFixed(2)}%';
     final voted = p.vote != null && p.voteEpoch == reserve.currentEpoch;
     final draft = _reserveVoteDraft ?? p.vote;
-    final yours = Card(
-      key: const Key('reserve-yours-box'),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+    final yours = _panel(context, [
             const Text('The Reserve', style: TextStyle(fontWeight: FontWeight.w700)),
             const Text(
               'The Reserve is Shear governance. Lock over π SHE into your portal. '
@@ -1631,17 +1732,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                       : 'Withdraw to Continuum'),
                 ),
             ]),
-          ],
-        ),
-      ),
-    );
-    final overall = Card(
-      key: const Key('reserve-overall-box'),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+    ], key: const Key('reserve-yours-box'));
+    final overall = _panel(context, [
             Text('Overall sums', key: const Key('reserve-overall'), style: const TextStyle(fontWeight: FontWeight.w700)),
             Text('Program locked  $programShe SHE'),
             Text('Program staked  ${formatShe(reserve.totalStakedNanos / kUnitsPerShe)} SHE  ·  idle ${formatShe(reserve.totalIdleNanos / kUnitsPerShe)} SHE'),
@@ -1686,17 +1778,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                 ],
               ),
             ],
-          ],
-        ),
-      ),
-    );
-    final vote = Card(
-      key: const Key('reserve-vote-box'),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+    ], key: const Key('reserve-overall-box'));
+    final vote = _panel(context, [
             const Text('Vote to raise, lower, or leave the hash bonus (±1 unit). The 1 SHE pot does not change. You can change this vote at any time.'),
             for (final v in [kVoteIncrease, kVoteDecrease, kVoteHold])
               CheckboxListTile(
@@ -1710,16 +1793,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
               ),
             FilledButton(
               key: const Key('reserve-vote-submit'),
-              onPressed: draft == null
-                  ? null
-                  : () {
-                      final err = reserve.vote(dest: dest, choice: draft, nowMs: now);
-                      if (err != null && context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
-                        return;
-                      }
-                      setState(() => _reserveVoteDraft = draft);
-                    },
+              onPressed: draft == null ? null : () => _reserveVote(context, ident, draft),
               child: Text(voted ? 'Update vote' : 'Submit vote'),
             ),
             if (voted)
@@ -1727,32 +1801,43 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                 'Vote results  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}  ·  your vote: ${p.vote}',
                 key: const Key('reserve-vote-results'),
               ),
-          ],
-        ),
-      ),
-    );
+    ], key: const Key('reserve-vote-box'));
     return [
       LayoutBuilder(builder: (ctx, box) {
         final side = box.maxWidth >= 560;
+        final right = Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            overall,
+            if (p.canVote) ...[
+              const SizedBox(height: 12),
+              vote,
+            ],
+          ],
+        );
         if (side) {
           return Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(child: yours),
-              const SizedBox(width: 8),
-              Expanded(child: overall),
+              const SizedBox(width: 12),
+              Expanded(child: right),
             ],
           );
         }
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [yours, const SizedBox(height: 8), overall],
+          children: [
+            yours,
+            const SizedBox(height: 12),
+            overall,
+            if (p.canVote) ...[
+              const SizedBox(height: 12),
+              vote,
+            ],
+          ],
         );
       }),
-      if (p.canVote) ...[
-        const SizedBox(height: 8),
-        SizedBox(width: double.infinity, child: vote),
-      ],
     ];
   }
 
@@ -1774,6 +1859,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           if (p.idle < keepIdle) p.idle = keepIdle;
         }
         if (keepJoined && p.nanos >= kPiSheNanos) p.joined = true;
+        ledger.vaultLockedNanos = reserve.totalLockedNanos;
+        ledger.extraMintedNanos = reserve.mintBankNanos;
       }
     } catch (_) {}
     if (mounted) setState(() {});
@@ -1828,7 +1915,14 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         ),
       ]);
     } else if (cur.id == reserveProgram) {
-      kids.addAll(_reservePane(context, ident));
+      return ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _panel(context, kids),
+          const SizedBox(height: 12),
+          ..._reservePane(context, ident),
+        ],
+      );
     } else {
       kids.addAll([
         Text(cur.name, style: const TextStyle(fontWeight: FontWeight.w600)),

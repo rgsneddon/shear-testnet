@@ -215,11 +215,15 @@ class ShearReserve {
     totalClaimableNanos = (json['totalClaimableNanos'] as num?)?.toInt() ?? totalClaimableNanos;
     final locked = (json['totalLockedNanos'] as num?)?.toInt();
     if (locked != null && locked >= 0) totalLockedNanos = locked;
+    if (json['vote'] != null && json['vote'].toString().isNotEmpty) {
+      p.vote = json['vote'].toString();
+      p.voteEpoch = (json['voteEpoch'] as num?)?.toInt() ?? currentEpoch;
+    }
     final votes = json['votes'];
     if (votes is Map) {
-      votesIncrease = (votes['increase'] as num?)?.toInt() ?? votesIncrease;
-      votesDecrease = (votes['decrease'] as num?)?.toInt() ?? votesDecrease;
-      votesHold = (votes['hold'] as num?)?.toInt() ?? votesHold;
+      votesIncrease = (votes['increase'] as num?)?.toInt() ?? 0;
+      votesDecrease = (votes['decrease'] as num?)?.toInt() ?? 0;
+      votesHold = (votes['hold'] as num?)?.toInt() ?? 0;
     }
     final bonus = (json['liveHashBonusNanos'] as num?)?.toInt();
     if (bonus != null && bonus >= 0) liveHashBonusNanos = bonus;

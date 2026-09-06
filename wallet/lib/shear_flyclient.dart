@@ -22,18 +22,27 @@ List<int> flyclientSampleHeights(int tip) {
   return list;
 }
 
-/// Honesty is proven FlyClient samples vs the logarithmic set at the claimed tip.
-/// Never returns HONEST unless [live] and [proven] >= [wanted] > 0.
+/// Fill 0..1 of proven FlyClient headers vs headers 1…tip.
+double walletSyncFill({required int proven, required int wanted}) {
+  if (wanted <= 0) return 0;
+  if (proven >= wanted) return 1;
+  return (proven / wanted).clamp(0.0, 1.0);
+}
+
+int walletSyncPercent({required int proven, required int wanted}) {
+  return (walletSyncFill(proven: proven, wanted: wanted) * 100).floor().clamp(0, 100);
+}
+
+/// Sync strip label. Never paints HONEST — fill + n% is the live state.
 String walletHonestyText({
   required bool live,
   required int proven,
   required int wanted,
   int failures = 0,
 }) {
-  if (live && wanted > 0 && proven >= wanted) return 'HONEST';
   if (!live && failures > 0) return 'OFFLINE';
-  if (wanted > 0 && proven < wanted) return 'SYNCING $proven/$wanted';
-  return 'SYNCING';
+  if (!live && wanted <= 0) return 'OFFLINE';
+  return '${walletSyncPercent(proven: proven, wanted: wanted)}% synchronised';
 }
 
 class ShearFlyClient {

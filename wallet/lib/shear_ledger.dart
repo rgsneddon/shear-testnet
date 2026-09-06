@@ -818,6 +818,7 @@ class ShearLedger {
       take('hashrate', (n) => networkHashrate = n);
       take('hashBonusNanos', (n) => liveHashBonusNanos = n);
       take('extraMintedNanos', (n) => extraMintedNanos = n);
+      take('mintBankNanos', (n) => extraMintedNanos = n);
       take('lockedNanos', (n) => vaultLockedNanos = n);
       if (json['reserveVaultNanos'] is num) {
         vaultLockedNanos = (json['reserveVaultNanos'] as num).round();
@@ -1258,8 +1259,10 @@ class ShearLedger {
     String? programId,
     String? restFrame,
     String? paymentCode,
+    String? choice,
   }) async {
-    if (amount <= 0) throw ArgumentError('amount');
+    final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
+    if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
     if (isShearAddress(from) || isShearAddress(to)) {
       throw ArgumentError('rest_frame');
     }
@@ -1271,17 +1274,18 @@ class ShearLedger {
         depth = (pressure['depth'] as num?)?.toInt() ?? 0;
       } catch (_) {}
     }
-    final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
-    final taxed = levyTaxed(sendKind);
-    final nanos = (amount * kUnitsPerShe).round();
+    final taxed = sendKind != 'vote' && levyTaxed(sendKind);
+    final nanos = sendKind == 'vote' ? 0 : (amount * kUnitsPerShe).round();
     final levy = taxed ? levyNanos(nanos, depth: depth) : 0;
-    final needShe = amount + levy / kUnitsPerShe;
-    if (spendable(src) < needShe && restFrame != null) {
-      if (spendableOwned(restFrame, paymentCode: paymentCode) >= needShe) {
-        src = spendFrom(restFrame, paymentCode: paymentCode, amount: needShe);
+    final needShe = sendKind == 'vote' ? 0.0 : amount + levy / kUnitsPerShe;
+    if (sendKind != 'vote') {
+      if (spendable(src) < needShe && restFrame != null) {
+        if (spendableOwned(restFrame, paymentCode: paymentCode) >= needShe) {
+          src = spendFrom(restFrame, paymentCode: paymentCode, amount: needShe);
+        }
       }
+      if (spendable(src) < needShe) throw StateError('insufficient');
     }
-    if (spendable(src) < needShe) throw StateError('insufficient');
     Map<String, dynamic>? memoCt;
     if (memo != null && memo.isNotEmpty) {
       memoCt = await memoSeal(to, memo);
@@ -1296,11 +1300,12 @@ class ShearLedger {
       final json = await pool!.send(
         from: src,
         to: to,
-        amount: amount,
+        amount: sendKind == 'vote' ? 0 : amount,
         memoCt: memoCt,
         open: open,
         kind: sendKind,
         programId: programId,
+        choice: choice,
       );
       if (json['ok'] != true || json['tx'] is! Map) {
         throw StateError('${json['reason'] ?? 'send failed'}');
@@ -1318,11 +1323,15 @@ class ShearLedger {
         memoPlain: memo,
         memoCt: memoCt ?? raw.memoCt,
       );
-      _spendable[src] = (json['fromBalance'] as num?)?.toDouble() ?? (spendable(src) - amount);
+      if (sendKind != 'vote') {
+        _spendable[src] = (json['fromBalance'] as num?)?.toDouble() ?? (spendable(src) - amount);
+      }
       _txs.add(tx);
       return tx;
     }
-    _spendable[src] = spendable(src) - amount;
+    if (sendKind != 'vote') {
+      _spendable[src] = spendable(src) - amount;
+    }
     final tx = ShearTx(
       id: 'send-${DateTime.now().millisecondsSinceEpoch}',
       from: src,
@@ -1462,8 +1471,7 @@ class ShearPoolClient {
   String get baseUrl => _pinned ?? _fly?.liveBase ?? kFlyDefaultSeed;
 
   int get provenHeaders => _fly?.provenHeaders ?? _pinnedProven.length;
-  int get wantedHeaders =>
-      flyclientSampleHeights(_fly?.sampledTip ?? _pinnedTip).length;
+  int get wantedHeaders => _fly?.wantedHeaders ?? (_pinnedTip < 1 ? 0 : _pinnedTip);
   bool get nodeLive =>
       _fly != null ? _fly!.liveBase != null : _pinned != null && _pinnedTip > 0;
 
@@ -1577,6 +1585,7 @@ class ShearPoolClient {
     String? open,
     String? kind,
     String? programId,
+    String? choice,
   }) =>
       _post('/api/wallet/send', {
         'from': from,
@@ -1586,6 +1595,7 @@ class ShearPoolClient {
         if (open != null && open.isNotEmpty) 'open': open,
         if (kind != null && kind.isNotEmpty) 'kind': kind,
         if (programId != null && programId.isNotEmpty) 'programId': programId,
+        if (choice != null && choice.isNotEmpty) 'choice': choice,
       });
 
   Future<Map<String, dynamic>> mempoolPressure() => _get('/api/mempoolPressure');
