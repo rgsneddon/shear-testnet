@@ -34,6 +34,9 @@ describe('docs.shear.digital', () => {
     assert.match(content, /ShearK-Miner 1\.5/);
     assert.match(content, /shewall\.bin/);
     assert.match(content, /Continuum/);
+    assert.match(content, /0\.001 SHE/);
+    assert.match(content, /not sent - try again/);
+    assert.match(content, /twenty rows/);
     assert.match(app, /hashchange/);
     assert.match(app, /SHEAR_DOCS/);
     assert.match(app, /tree-folder/);

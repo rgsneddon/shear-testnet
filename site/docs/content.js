@@ -68,6 +68,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Block pot</th><td>Exactly 1 SHE</td></tr>' +
       '<tr><th>Target interval</th><td>90 seconds (ASERT)</td></tr>' +
       '<tr><th>Spendable</th><td>6 confirmations</td></tr>' +
+      '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
       '<tr><th>Wallet pin</th><td>0.26</td></tr>' +
       '<tr><th>Miner pin</th><td>ShearK 1.5</td></tr></table>' +
@@ -149,8 +150,8 @@ window.SHEAR_DOCS = {
     crumb: 'wallet / flow',
     html:
       '<p>Flow sends SHE to a <code>she1</code> or <code>ssa1</code>. Optional memo is ciphertext on the wire. The public explorer only shows that a memo exists.</p>' +
-      '<p>Scan receive QR fills the dest. Amount sits below that button. After Send, the tab keeps an advisory: <strong>sent</strong> or <strong>not sent - try again</strong>.</p>' +
-      '<p>One levy is quoted for the send, from current mempool depth. Continuum spendable pays it. See Levy.</p>'
+      '<p>Scan receive QR fills the dest. Amount sits below that button. After Send, the tab keeps an advisory: <strong>sent</strong> (green) or <strong>not sent - try again</strong> (red). That line stays on Flow so you can read it.</p>' +
+      '<p>One levy is quoted for the send, from current mempool depth, never more than 0.001 SHE. Continuum spendable pays it. See Levy.</p>'
   };
 
   P.resistance = {
@@ -188,7 +189,7 @@ window.SHEAR_DOCS = {
     crumb: 'wallet / levy',
     html:
       '<p>Flow send, Reserve lock, and Reserve vote each pay one levy <code>L</code> quoted from mempool depth at that step. Withdraw of Reserve principal is not taxed. Hash bonus and the block pot are not taxed.</p>' +
-      '<p><code>L_base</code> is the greater of 100 units and two basis points of the amount. Surge rises with waiting bytes. Empty-mempool floor is 100 units. Continuum spendable pays <code>L</code>. Lock and vote quote separately — they can differ if the mempool moved between the two.</p>'
+      '<p><code>L_base</code> is the greater of 100 units and two basis points of the amount. Surge rises with waiting bytes. Empty-mempool floor is 100 units. <strong>L never exceeds 0.001 SHE</strong>, even on a large send or a crowded mempool. Continuum spendable pays <code>L</code>. Lock and vote quote separately — they can differ if the mempool moved between the two.</p>'
   };
 
   P.mine = {
@@ -377,7 +378,7 @@ window.SHEAR_DOCS = {
     title: 'Explorer',
     crumb: 'network / explorer',
     html:
-      '<p><a href="https://explorer.shear.digital">explorer.shear.digital</a> paints confirmed blocks, public amounts, dests, and Reserve vault stats. Last block is age of the tip. AVG BLOCK TIME is the mean interval of every sealed header since genesis. Search is by height, id, from, to. The Resistance CLI on that page is public fields only.</p>'
+      '<p><a href="https://explorer.shear.digital">explorer.shear.digital</a> paints confirmed blocks, public amounts, dests, and Reserve vault stats. Last block is age of the tip. AVG BLOCK TIME is the mean interval of every sealed header since genesis. The block list is the whole chain, newest first, twenty rows in view; scroll for the rest. Search is by height, id, from, to. The Resistance CLI on that page is public fields only.</p>'
   };
 
   P.mempool = {
