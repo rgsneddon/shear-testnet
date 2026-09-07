@@ -31,6 +31,8 @@ import 'shear_flyclient.dart';
 const kWalletVersion = '0.26';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
+/// Your deposits scroller: two rows visible; extra deposits scroll inside.
+const kDepositRowHeight = 22.0;
 const kTabs = [
   'Continuum',
   'Flow',
@@ -144,10 +146,13 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   String? _flowSendAdvisory;
   bool _flowSendOk = false;
   bool _newMemoExpanded = false;
+  late final List<ScrollController> _tabScroll;
+  final _depositsScroll = ScrollController();
 
   @override
   void initState() {
     super.initState();
+    _tabScroll = List.generate(kTabs.length, (_) => ScrollController());
     _boot();
   }
 
@@ -161,6 +166,10 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     reserveAmt.dispose();
     vorticeKeyCtrl.dispose();
     shearviewQuery.dispose();
+    for (final c in _tabScroll) {
+      c.dispose();
+    }
+    _depositsScroll.dispose();
     _accrualTick?.cancel();
     _reserveLockHold?.cancel();
     super.dispose();
@@ -424,15 +433,16 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     var ticks = 0;
     var tipBusy = false;
     var creditBusy = false;
-    if (widget.skipPoolSync) {
-      if (widget.demoTx) unawaited(_playDemoLive());
-      return;
-    }
+    if (widget.skipPoolSync && widget.demoTx) unawaited(_playDemoLive());
     _accrualTick = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || !unlocked) return;
+      if (widget.skipPoolSync) {
+        setState(() {});
+        return;
+      }
       _syncJoinRoster();
       final ident = id;
-      if (ident != null && !tipBusy && !widget.skipPoolSync) {
+      if (ident != null && !tipBusy) {
         tipBusy = true;
         unawaited(() async {
           await ledger.syncTip();
@@ -957,6 +967,9 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   Widget _card(List<Widget> kids) {
     return Builder(builder: (context) {
       return ListView(
+        key: PageStorageKey<String>('tab-$tab'),
+        controller: _tabScroll[tab],
+        primary: false,
         padding: const EdgeInsets.all(16),
         children: [_panel(context, kids)],
       );
@@ -1323,6 +1336,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     return LayoutBuilder(builder: (context, constraints) {
       final wide = constraints.maxWidth >= kContinuumSplitWidth;
       return ListView(
+        controller: _tabScroll[0],
+        primary: false,
         padding: const EdgeInsets.all(16),
         children: [
           if (wide)
@@ -1487,6 +1502,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                 color: bg,
                 alignment: Alignment.topLeft,
                 child: SingleChildScrollView(
+                  controller: _tabScroll[2],
                   child: SelectableText(
                     _cliText,
                     style: TextStyle(
@@ -1906,8 +1922,24 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             if (p.deposits.isNotEmpty) ...[
               const SizedBox(height: 8),
               const Text('Your deposits', style: TextStyle(fontWeight: FontWeight.w600)),
-              for (final d in p.deposits.reversed.take(12))
-                Text('${formatShe(d.nanos / kUnitsPerShe)} SHE  ·  ${DateTime.fromMillisecondsSinceEpoch(d.atMs).toIso8601String().split('T').first}'),
+              SizedBox(
+                key: const Key('reserve-deposits-scroll'),
+                height: kDepositRowHeight * 2,
+                child: ListView.builder(
+                  controller: _depositsScroll,
+                  primary: false,
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  itemExtent: kDepositRowHeight,
+                  itemCount: p.deposits.length,
+                  itemBuilder: (context, i) {
+                    final d = p.deposits.reversed.elementAt(i);
+                    return Text(
+                      '${formatShe(d.nanos / kUnitsPerShe)} SHE  ·  ${DateTime.fromMillisecondsSinceEpoch(d.atMs).toIso8601String().split('T').first}',
+                      key: Key('reserve-deposit-$i'),
+                    );
+                  },
+                ),
+              ),
             ],
             const SizedBox(height: 8),
             TextField(
@@ -2204,6 +2236,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       ]);
     } else if (cur.id == reserveProgram) {
       return ListView(
+        controller: _tabScroll[3],
+        primary: false,
         padding: const EdgeInsets.all(16),
         children: [
           _panel(context, kids),

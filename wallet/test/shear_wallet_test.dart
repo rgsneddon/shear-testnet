@@ -3554,6 +3554,80 @@ void main() {
     await tester.pump();
   });
 
+  testWidgets('Your deposits viewport is two rows; extra deposits scroll inside', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-deposits-viewport-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final vault = ShearReserve();
+    final t0 = DateTime.utc(2026, 1, 1).millisecondsSinceEpoch;
+    expect(vault.deposit(dest: dest, she: 0.5, nowMs: t0), isNull);
+    expect(vault.deposit(dest: dest, she: 0.6, nowMs: t0 + 86400000), isNull);
+    expect(vault.deposit(dest: dest, she: 0.7, nowMs: t0 + 2 * 86400000), isNull);
+    expect(vault.portal(dest).deposits.length, greaterThan(2));
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ShearLedger()..viewSecret = ident.viewKey,
+      reserve: vault,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(find.text('Your deposits'), findsOneWidget);
+    final scroller = find.byKey(const Key('reserve-deposits-scroll'));
+    await tester.ensureVisible(scroller);
+    await tester.pump();
+    expect(tester.getSize(scroller).height, kDepositRowHeight * 2);
+    expect(find.byKey(const Key('reserve-deposit-0')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-deposit-1')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-deposit-2')).hitTestable(), findsNothing);
+    await tester.drag(scroller, Offset(0, -kDepositRowHeight * 2));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-deposit-2')).hitTestable(), findsOneWidget);
+  });
+
+  testWidgets('tab ListView offset survives a live accrual tick', (tester) async {
+    tester.view.physicalSize = const Size(800, 360);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final dir = Directory.systemTemp.createTempSync('shear-tab-scroll-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ShearLedger(),
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+
+    Future<void> assertTickHolds(String tabLabel) async {
+      if (tabLabel != 'Continuum') {
+        await tester.tap(find.text(tabLabel));
+        await tester.pump();
+      }
+      final scrollable = find.byType(Scrollable).first;
+      await tester.drag(scrollable, const Offset(0, -120));
+      await tester.pump();
+      final pos = tester.state<ScrollableState>(scrollable).position;
+      final before = pos.pixels;
+      expect(before, greaterThan(0), reason: '$tabLabel must actually scroll');
+      await tester.pump(const Duration(seconds: 1));
+      expect(pos.pixels, before, reason: '$tabLabel offset must survive the 1s tick');
+      expect(pos.pixels, isNot(0));
+    }
+
+    await assertTickHolds('Continuum');
+    await assertTickHolds('Flow');
+  });
+
   test('signed vote hydrates program tallies on the voting wallet and a peer vault', () async {
     final id = createIdentity();
     final dest = vaultDest(id.address, viewKey: id.viewKey)!;

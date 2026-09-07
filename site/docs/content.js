@@ -379,7 +379,7 @@ window.SHEAR_DOCS = {
     title: 'Explorer',
     crumb: 'network / explorer',
     html:
-      '<p><a href="https://explorer.shear.digital">explorer.shear.digital</a> paints confirmed blocks, public amounts, dests, and Reserve vault stats. Last block is age of the tip. AVG BLOCK TIME is the mean interval of every sealed header since genesis. The block list is the whole chain, newest first, twenty rows in view; scroll for the rest. Search is by height, id, from, to. The Resistance CLI on that page is public fields only.</p>'
+      '<p><a href="https://explorer.shear.digital">explorer.shear.digital</a> paints confirmed blocks, public amounts, dests, and Reserve vault stats. Last block is age of the tip. AVG BLOCK TIME is the mean interval of every sealed header since genesis. The block list is the whole chain, newest first, ten rows in view; scroll for the rest. Search is by height, id, from, to. The Resistance CLI on that page is public fields only.</p>'
   };
 
   P.mempool = {

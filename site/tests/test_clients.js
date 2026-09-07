@@ -121,6 +121,8 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /Linux leftover/);
     assert.match(html, /navigator\.userAgent/);
     assert.match(html, /client-dd:hover \.client-menu/);
+    assert.match(html, /html\[data-theme="dark"\] \.client-menu \{/);
+    assert.match(html, /\.client-menu \{[\s\S]*?background: linear-gradient\(165deg, var\(--card\) 0%, var\(--bg\) 58%\)/);
     assert.doesNotMatch(html, /dag\.shear\.digital/);
     assert.doesNotMatch(html, />DAG</);
     const nav = html.match(/id="shear-nav"[\s\S]*?<\/nav>/);

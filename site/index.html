@@ -109,7 +109,7 @@
       display:none; position:absolute; top:100%; left:0; right:0; z-index:40;
       flex-direction:column; gap:0; padding:6px 0;
       border:1px solid transparent;
-      background: linear-gradient(165deg, #ffffff 0%, #f4f8fc 58%) padding-box,
+      background: linear-gradient(165deg, var(--card) 0%, var(--bg) 58%) padding-box,
         linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
       background-origin:border-box; background-clip:padding-box, border-box;
       box-shadow: 0 10px 24px rgba(6,20,31,.18);
@@ -119,6 +119,22 @@
       font-weight:700; font-size:.9rem; letter-spacing:.04em; text-align:left;
     }
     .client-menu a:hover { color:var(--cyan); background:rgba(26,111,181,.08); }
+    html[data-theme="dark"] .client-menu {
+      background: linear-gradient(165deg, #1a3a5c 0%, #132a4a 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box, border-box;
+      box-shadow: 0 10px 24px rgba(0,0,0,.45);
+    }
+    html[data-theme="dark"] .client-menu a:hover { background: rgba(79,216,232,.12); }
+    @media (prefers-color-scheme: dark) {
+      html:not([data-theme="light"]) .client-menu {
+        background: linear-gradient(165deg, #1a3a5c 0%, #132a4a 58%) padding-box,
+          linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+        background-origin:border-box; background-clip:padding-box, border-box;
+        box-shadow: 0 10px 24px rgba(0,0,0,.45);
+      }
+      html:not([data-theme="light"]) .client-menu a:hover { background: rgba(79,216,232,.12); }
+    }
     .client-dd:hover .client-menu, .client-dd:focus-within .client-menu { display:flex; }
     @media (max-width: 640px) {
       .client-dd { width:100%; }
