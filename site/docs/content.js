@@ -282,7 +282,7 @@ window.SHEAR_DOCS = {
     title: 'The Reserve',
     crumb: 'reserve / overview',
     html:
-      '<p>The Reserve is the first vortice and the only programme allowed to mint extra SHE. Open it from the Vortex tab. You lock SHE into your own portal. π SHE (about 3.14159265358 SHE) unlocks one vote for the current epoch.</p>'
+      '<p>The Reserve is the first vortice and the only programme allowed to mint extra SHE. Open it from the Vortex tab. You lock SHE into your own portal. π SHE (about 3.14159265358 SHE) unlocks one vote for the current epoch. <strong>Your deposits</strong> shows two rows; extra deposits scroll inside that pane.</p>'
   };
 
   P.epochs = {

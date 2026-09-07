@@ -41,6 +41,8 @@ describe('docs.shear.digital', () => {
     assert.match(content, /The Reserve vault fee bank/);
     assert.match(content, /not sent - try again/);
     assert.match(content, /ten rows/);
+    assert.match(content, /Your deposits/);
+    assert.match(content, /two rows/);
     assert.doesNotMatch(content, /twenty rows/);
     assert.match(app, /hashchange/);
     assert.match(app, /SHEAR_DOCS/);
@@ -57,7 +59,7 @@ describe('docs.shear.digital', () => {
     assert.match(docs, /border-bottom:1px solid rgba\(26,111,181,\.25\)/);
     assert.match(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
     assert.match(docs, /\.banner-wordmark \{ height:36px; width:auto; max-width:none/);
-    assert.match(docs, /content\.js\?v=5/);
+    assert.match(docs, /content\.js\?v=6/);
     assert.match(content, /Remove vortice/);
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);
