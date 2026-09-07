@@ -75,6 +75,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /shear-wallet-0\.26-linux\.zip/);
     assert.match(html, /shear-wallet-0\.26-archlinux\.zip/);
     assert.doesNotMatch(html, /shear-wallet-0\.25-/);
+    assert.doesNotMatch(html, /releases\/tag\/0\.25/);
     assert.doesNotMatch(html, /shear-wallet-0\.24-/);
     assert.doesNotMatch(html, /releases\/tag\/0\.24/);
     assert.doesNotMatch(html, /shear-wallet-0\.23-/);
