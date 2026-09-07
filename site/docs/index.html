@@ -19,9 +19,13 @@
       position:sticky; top:0; z-index:40;
     }
     .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
+    .banner-wordmark { height:36px; width:auto; max-width:none; display:block; }
+    .banner-brand { display:flex; align-items:center; justify-self:start; min-width:unset; }
+    .top-banner > .nav { justify-content:center; justify-self:center; min-width:unset; max-width:none; }
     a.nav-btn {
       display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
       font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
+      flex: none; width: auto;
       border:1px solid transparent;
       background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
         linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
@@ -137,7 +141,7 @@
     </aside>
     <article class="read" id="docs-read"></article>
   </div>
-  <script src="content.js?v=2"></script>
+  <script src="content.js?v=3"></script>
   <script src="app.js?v=2"></script>
 </body>
 </html>
