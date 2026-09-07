@@ -30,14 +30,20 @@
       width:100%; margin:0 0 10px; padding:.4rem .5rem;
       background:var(--input); color:var(--ink); border:1px solid var(--blue); font-size:16px;
     }
-    .tree details { margin: 0 0 2px; }
+    .tree details.tree-folder { margin: 0 0 2px; }
     .tree summary {
-      cursor:pointer; list-style:none; padding:5px 8px; font-weight:750; font-size:.82rem;
-      letter-spacing:.03em; color:var(--ink);
+      display:flex; align-items:center; gap:6px;
+      cursor:pointer; list-style:none; padding:6px 8px; font-weight:750; font-size:.82rem;
+      letter-spacing:.03em; color:var(--ink); user-select:none;
     }
     .tree summary::-webkit-details-marker { display:none; }
-    .tree summary::before { content:"+  "; color:var(--muted); font-family: ui-monospace, Menlo, monospace; }
-    .tree details[open] > summary::before { content:"–  "; }
+    .tree summary::marker { content:""; }
+    .tree summary::before {
+      content:"+"; display:inline-flex; width:1rem; justify-content:center;
+      color:var(--muted); font-family: ui-monospace, Menlo, monospace; font-weight:800;
+    }
+    .tree details[open] > summary::before { content:"–"; }
+    .tree .tree-kids { padding: 0 0 4px; }
     .tree a {
       display:block; padding:4px 8px 4px 22px; text-decoration:none; color:var(--cyan);
       font-size:.84rem; font-weight:650;
@@ -116,7 +122,7 @@
     </aside>
     <article class="read" id="docs-read"></article>
   </div>
-  <script src="content.js?v=1"></script>
-  <script src="app.js?v=1"></script>
+  <script src="content.js?v=2"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

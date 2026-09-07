@@ -36,6 +36,12 @@ describe('docs.shear.digital', () => {
     assert.match(content, /Continuum/);
     assert.match(app, /hashchange/);
     assert.match(app, /SHEAR_DOCS/);
+    assert.match(app, /tree-folder/);
+    assert.match(app, /data-folder/);
+    assert.match(app, /addEventListener\('toggle'/);
+    assert.doesNotMatch(app, /<details open>/);
+    assert.match(docs, /details\.tree-folder/);
+    assert.match(docs, /summary::before/);
     const labels = navLabels(docs);
     assert.deepEqual(labels, withDocs);
     assert.equal(labels.includes('WHITEPAPER'), false);

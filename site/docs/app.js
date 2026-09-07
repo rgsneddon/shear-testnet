@@ -5,9 +5,23 @@
   var data = window.SHEAR_DOCS;
   if (!treeEl || !readEl || !data) return;
 
+  var openFolders = Object.create(null);
+
   function pageId() {
     var h = (location.hash || '#/overview').replace(/^#\/?/, '');
     return data.pages[h] ? h : 'overview';
+  }
+
+  function folderHasPage(folder, id) {
+    return folder.children.some(function (c) { return c.id === id; });
+  }
+
+  function folderOpen(folder, q) {
+    if (q) return true;
+    if (Object.prototype.hasOwnProperty.call(openFolders, folder.title)) {
+      return !!openFolders[folder.title];
+    }
+    return folderHasPage(folder, pageId());
   }
 
   function renderTree(filter) {
@@ -19,11 +33,13 @@
         return (c.title + ' ' + folder.title + ' ' + c.id).toLowerCase().indexOf(q) >= 0;
       });
       if (!kids.length && q) return;
-      html += '<details open><summary>' + folder.title + '</summary>';
+      var open = folderOpen(folder, q);
+      html += '<details class="tree-folder" data-folder="' + folder.title + '"' + (open ? ' open' : '') + '>';
+      html += '<summary>' + folder.title + '</summary><div class="tree-kids">';
       kids.forEach(function (c) {
         html += '<a href="#/' + c.id + '" data-id="' + c.id + '">' + c.title + '</a>';
       });
-      html += '</details>';
+      html += '</div></details>';
     });
     treeEl.innerHTML = html;
   }
@@ -35,8 +51,22 @@
     treeEl.querySelectorAll('a').forEach(function (a) {
       a.classList.toggle('is-on', a.getAttribute('data-id') === id);
     });
+    treeEl.querySelectorAll('details.tree-folder').forEach(function (d) {
+      var name = d.getAttribute('data-folder');
+      var folder = data.tree.filter(function (f) { return f.title === name; })[0];
+      if (folder && folderHasPage(folder, id) && openFolders[name] !== false) {
+        d.open = true;
+        openFolders[name] = true;
+      }
+    });
     document.title = page.title + ' · Shear documentation';
   }
+
+  treeEl.addEventListener('toggle', function (ev) {
+    var d = ev.target;
+    if (!d || d.tagName !== 'DETAILS' || !d.getAttribute('data-folder')) return;
+    openFolders[d.getAttribute('data-folder')] = d.open;
+  }, true);
 
   renderTree('');
   paint();
