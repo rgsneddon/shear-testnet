@@ -1,31 +1,24 @@
 /**
  * Prepared mainnet genesis envelope. Does not start a public book.
- * Timestamp 2026-09-11 20:00:00 UTC. Magic shear-v1. Empty premine.
+ * Timestamp Friday 11 September 2026 20:00:00 UTC. Magic shear-v1. Empty premine.
+ * This goal does not mine genesis POW; hash stays TBD until cutover.
  */
 import { writeFileSync } from 'node:fs';
-import { encodeDest } from './address.js';
-import { MAGIC_MAINNET } from './asert.js';
+import { MAGIC_MAINNET, GENESIS_BITS } from './asert.js';
 import { MAINNET_GENESIS_MS } from './network.js';
-import { prepareGenesis } from '../node/src/chain.js';
-import { hashHex } from './shear_hash.js';
-import { decodeHeader } from './header.js';
-
-const SEED_MINER = encodeDest(Buffer.alloc(20, 0));
 
 export function generateMainnetGenesis({
-  miner = SEED_MINER,
   now = MAINNET_GENESIS_MS,
 } = {}) {
-  const block = prepareGenesis({ miner, now, magic: MAGIC_MAINNET });
-  const decoded = decodeHeader(Buffer.from(block.header));
+  const timestamp = Number(now);
   return {
-    magic: block.magic,
-    height: block.height,
-    timestamp: Number(decoded.timestamp),
-    bits: decoded.bits,
-    hash: hashHex(block.hash),
-    headerHex: Buffer.from(block.header).toString('hex'),
-    miner: block.miner,
+    magic: MAGIC_MAINNET,
+    height: 1,
+    timestamp,
+    timestampISO: new Date(timestamp).toISOString(),
+    bits: GENESIS_BITS,
+    hash: 'TBD',
+    headerHex: 'TBD',
     premine: [],
   };
 }

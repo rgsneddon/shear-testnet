@@ -37,6 +37,22 @@ describe('ShearK-Miner', () => {
     const hdr = fs.readFileSync(path.join(root, 'src/shear_hash.h'), 'utf8');
     assert.match(hdr, /#ifndef SHEAR_MAGIC/);
     assert.match(hdr, /#define SHEAR_MAGIC "shear-testnet-v2"/);
+    const mnBin = path.join(root, 'ShearK-Miner-mainnet');
+    if (!fs.existsSync(mnBin)) {
+      const built = spawnSync('make', ['mainnet'], { cwd: root, encoding: 'utf8' });
+      assert.equal(built.status, 0, built.stderr + built.stdout);
+    }
+    assert.equal(fs.existsSync(mnBin), true, 'ShearK-Miner-mainnet missing');
+    const mnCfg = spawnSync(mnBin, ['--print-config'], { encoding: 'utf8' });
+    assert.equal(mnCfg.status, 0, mnCfg.stderr);
+    const mnLine = (mnCfg.stdout || '').split('\n').map((l) => l.trim()).find((l) => l.startsWith('{'));
+    assert.ok(mnLine, mnCfg.stdout);
+    const mn = JSON.parse(mnLine);
+    assert.equal(mn.magic, 'shear-v1');
+    assert.equal(String(mnCfg.stdout).includes('shear-testnet-v2'), false);
+    assert.equal(mn.version, '1.5');
+    assert.equal(mn.feePct, 0);
+    assert.equal(mn.personalisation, 'ShearHash-v2');
     assert.equal(j.rxMode, 'light');
     assert.equal(j.rxCacheMiB, 128);
     assert.equal(j.feePct, 0);

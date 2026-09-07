@@ -4,6 +4,8 @@ miner/Shear-Miner
 miner/Shear-Miner.exe
 sheark-miner/ShearK-Miner
 sheark-miner/ShearK-Miner.exe
+sheark-miner/ShearK-Miner-mainnet
+sheark-miner/src/*_mainnet.o
 sheark-miner/dist/
 crypto/native/shearhash.node
 crypto/randomx/build/

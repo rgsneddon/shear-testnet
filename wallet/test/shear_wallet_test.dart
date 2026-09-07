@@ -3266,7 +3266,7 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('mainnet profile is shear-v1 with p2p.shear.digital seeds; testnet profile unchanged', () {
+  testWidgets('mainnet profile is shear-v1 with p2p.shear.digital seeds; testnet profile unchanged', (tester) async {
     expect(kWalletVersion, '0.27');
     expect(kTestnetNetwork.magic, 'shear-testnet-v2');
     expect(kTestnetNetwork.flySeed, 'https://pool.shear.digital');
@@ -3276,6 +3276,21 @@ void main() {
     expect(kMainnetNetwork.magic.contains('testnet'), isFalse);
     expect(shearNetworkOf('mainnet').id, 'mainnet');
     expect(shearNetworkOf(null).id, 'testnet');
+    final dir = Directory.systemTemp.createTempSync('shear-mainnet-profile-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      network: 'mainnet',
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    final s = tester.state<ShearWalletAppState>(find.byType(ShearWalletApp));
+    expect(s.net.magic, 'shear-v1');
+    expect(s.net.p2pSeeds, contains('p2p.shear.digital:30303'));
+    expect(s.ledger.pool!.baseUrl.contains('pool.shear.digital'), isFalse);
   });
 
   test('kWalletVersion == 0.27 and 400-day APR uses observed average bps', () {

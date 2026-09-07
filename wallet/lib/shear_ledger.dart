@@ -1510,7 +1510,15 @@ class ShearPoolClient {
   ShearFlyClient? get fly => _fly;
   bool get isPinned => _pinned != null;
 
-  String get baseUrl => _pinned ?? _fly?.liveBase ?? kFlyDefaultSeed;
+  String get baseUrl {
+    if (_pinned != null) return _pinned!;
+    if (_fly?.liveBase != null) return _fly!.liveBase!;
+    if (_fly != null) {
+      if (_fly!.seeds.isNotEmpty) return _fly!.seeds.first;
+      return '';
+    }
+    return kFlyDefaultSeed;
+  }
 
   int get provenHeaders => _fly?.provenHeaders ?? _pinnedProven.length;
   int get wantedHeaders => _fly?.wantedHeaders ?? (_pinnedTip < 1 ? 0 : _pinnedTip);

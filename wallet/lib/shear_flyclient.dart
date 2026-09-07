@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'shear_network.dart';
+
 /// Quiet FlyClient node-find. The wallet is not a full node; it mirrors
 /// headers and stats the node relays. Not a 1s node-scan and not an archive.
 const kFlyDefaultSeed = 'https://pool.shear.digital';
@@ -56,7 +58,7 @@ class ShearFlyClient {
     Random? random,
   })  : seeds = List<String>.unmodifiable(_dedupe([
           if (userUrl != null && userUrl.trim().isNotEmpty) userUrl,
-          if (seeds == null) kFlyDefaultSeed else ...seeds,
+          if (seeds == null) kTestnetNetwork.flySeed else ...seeds,
         ])),
         _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8)),
         _rng = random ?? Random();

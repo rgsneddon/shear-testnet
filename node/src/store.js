@@ -92,6 +92,7 @@ function potIdsOf(block) {
 export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
   reorgHaltDepth = Number(process.env.SHEAR_REORG_HALT_DEPTH || 0),
+  magic = MAGIC_TESTNET,
 } = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
@@ -326,6 +327,7 @@ export function createStore(dir, {
         spentB,
         tipHeight: b.height,
         hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
+        magic,
       });
       if (spentCheck && typeof spentCheck.then === 'function') {
         spentCheck.catch(() => {});
@@ -483,6 +485,7 @@ export function createStore(dir, {
       evmSession,
       evmHistory: blocks,
       spendableOf: (addr) => Math.max(0, matureSpendableNanos(explorer, addr, parentH)),
+      magic,
     });
     return settleCheck(check, (okCheck) => completeAppend(okCheck, block));
   }
@@ -492,7 +495,7 @@ export function createStore(dir, {
     const prev = tip();
     const stored = leanBlock({
       ...block,
-      magic: MAGIC_TESTNET,
+      magic,
       hash: check.hash,
       height: prev ? prev.height + 1 : 1,
       weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
@@ -585,6 +588,7 @@ export function createStore(dir, {
       evmSession: trialSession,
       evmHistory: trialSession ? [] : accepted,
       spendableOf: (addr) => Math.max(0, matureSpendableNanos(rows, addr, parentH)),
+      magic,
     });
   }
 
@@ -598,7 +602,7 @@ export function createStore(dir, {
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
       accepted.push(leanBlock({
         ...fork[i],
-        magic: MAGIC_TESTNET,
+        magic,
         hash: check.hash,
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
@@ -619,7 +623,7 @@ export function createStore(dir, {
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
       accepted.push(leanBlock({
         ...fork[i],
-        magic: MAGIC_TESTNET,
+        magic,
         hash: check.hash,
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
@@ -836,12 +840,14 @@ export function createStore(dir, {
       bLeaves: rec.tpl.bLeaves,
       rootA: rec.tpl.rootA,
       rootB: rec.tpl.rootB,
+      magic,
     };
     return append(block);
   }
 
   return {
     dir,
+    magic,
     blocks,
     explorer,
     tip,

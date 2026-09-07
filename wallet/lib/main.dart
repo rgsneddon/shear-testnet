@@ -27,6 +27,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_flyclient.dart';
+import 'shear_network.dart';
 
 const kWalletVersion = '0.27';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
@@ -74,6 +75,7 @@ class ShearWalletApp extends StatefulWidget {
     this.scanQr,
     this.startUnlocked = false,
     this.skipPoolSync = false,
+    this.network,
   });
 
   final ShearSession? session;
@@ -98,14 +100,24 @@ class ShearWalletApp extends StatefulWidget {
   final bool startUnlocked;
   /// Tests: skip unlock HTTP so the sign-pull dialog can be driven without a hung pool.
   final bool skipPoolSync;
+  /// `testnet` (default) or `mainnet`. Mainnet uses shear-v1 seeds; do not connect a live book in prep.
+  final String? network;
 
   @override
   ShearWalletAppState createState() => ShearWalletAppState();
 }
 
 class ShearWalletAppState extends State<ShearWalletApp> {
+  ShearNetwork get net => shearNetworkOf(widget.network);
   late final ShearSession session = widget.session ?? ShearSession();
-  late final ShearLedger ledger = widget.ledger ?? ShearLedger(pool: ShearPoolClient());
+  late final ShearLedger ledger = widget.ledger ??
+      ShearLedger(
+        pool: ShearPoolClient(
+          fly: ShearFlyClient(
+            seeds: net.flySeed.isEmpty ? const <String>[] : [net.flySeed],
+          ),
+        ),
+      );
   late final ShearBiometrics biometrics = widget.biometrics ?? const NoBiometrics();
   final GlobalKey<NavigatorState> _nav = GlobalKey<NavigatorState>();
   final GlobalKey<ScaffoldMessengerState> _snack = GlobalKey<ScaffoldMessengerState>();

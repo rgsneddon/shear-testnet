@@ -72,7 +72,7 @@ export async function startNode({
     .map((s) => s.trim())
     .filter(Boolean);
   fs.mkdirSync(resolvedDir, { recursive: true });
-  const store = createStore(resolvedDir);
+  const store = createStore(resolvedDir, { magic: net.magic });
   store.reserveVault = store.reserveVault || emptyVault();
   const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: net.magic });
   const bound = await p2p.listen();

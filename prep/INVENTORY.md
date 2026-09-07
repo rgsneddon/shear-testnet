@@ -60,3 +60,4 @@ Record of what is actually true. Do not rewind testnet.
 - Phase 1: `acceptsMagic` + `verifyBlock` foreign_magic + levy cap tests green. Launch weekday **Friday** 11 Sep 2026 (not Thursday).
 - Phase 2: unit + seed doc written. SSH to 46.224.132.83: **Permission denied (publickey)** — packages + markdown only; book not started.
 - Phase 3–7: mainnet profile, unpublished staged site, packaging notes, unposted announce, cutover HANDOFF, WINDOWS-HANDOFF. Live homepage still TESTNET / 0.27.
+- Skeptic fix: `createStore({ magic })` threads into append/verifyFork; genesis timestamp `1789156800000` = 2026-09-11T20:00:00.000Z; wallet `network: 'mainnet'` wires FlyClient; `make -C sheark-miner mainnet` print-config is shear-v1.

@@ -10,7 +10,7 @@ Launch: **Friday 11 September 2026**, 21:00 BST. Do not publish genesis hash. Do
 | Node `--network mainnet` | yes | separate datadir `mainnet` |
 | `deploy/shear-node-mainnet.service` | yes | no stratum, no 1111 |
 | `deploy/seed-p2p.shear.digital.md` | yes | do not start until cutover |
-| ShearK 1.5 magic-only Makefile `mainnet` | source yes | binary built only if `make mainnet` is run; default `ShearK-Miner` stays testnet magic |
+| ShearK 1.5 magic-only Makefile `mainnet` | **yes** (local `ShearK-Miner-mainnet`) | `--print-config` `"magic":"shear-v1"`; default `ShearK-Miner` stays testnet magic; binary not committed |
 | Wallet `shear_network.dart` mainnet profile | yes | pin remains **0.27** |
 | Pool copy | snapshot + `prep/pool-mainnet/` only | **not deployed** |
 | Staged `prep/site/index.html` | yes | unpublished |

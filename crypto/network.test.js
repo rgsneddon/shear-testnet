@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { MAGIC_MAINNET, MAGIC_TESTNET, NANOS_PER_SHE, extraMintAllowed } from './asert.js';
 import { levyNanos, LEVY_CAP_NANOS as LEVY_CAP, FEE_SPLIT_FINDER_BPS, FEE_SPLIT_RESERVE_BPS, splitLevy } from './levy.js';
 import { networkOf, acceptsMagic, MAINNET_GENESIS_MS, MAINNET_SEEDS, NETWORKS } from './network.js';
+import { generateMainnetGenesis } from './genesis_mainnet.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { verifyBlock } from '../node/src/chain.js';
 import { shearHash, hashHex, HEADER_LEN, V2_SELFTEST, V1_SELFTEST, setHashBackend, PERSONAL } from './shear_hash.js';
 
@@ -23,7 +27,15 @@ describe('network profiles', () => {
     assert.equal(JSON.stringify(mn).toLowerCase().includes('feeless'), false);
     assert.equal(networkOf('shear-v1').id, 'mainnet');
     assert.equal(MAINNET_GENESIS_MS, Date.parse('2026-09-11T20:00:00.000Z'));
+    assert.equal(new Date(MAINNET_GENESIS_MS).toISOString(), '2026-09-11T20:00:00.000Z');
     assert.equal(NETWORKS.mainnet.genesisMs, MAINNET_GENESIS_MS);
+    const rec = generateMainnetGenesis();
+    assert.equal(rec.timestamp, MAINNET_GENESIS_MS);
+    assert.equal(rec.magic, MAGIC_MAINNET);
+    const stubPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '../prep/genesis-mainnet.json');
+    const stub = JSON.parse(fs.readFileSync(stubPath, 'utf8'));
+    assert.equal(stub.timestamp, MAINNET_GENESIS_MS);
+    assert.equal(stub.timestampISO, '2026-09-11T20:00:00.000Z');
   });
 
   it('acceptsMagic isolates books: testnet rejects shear-v1, mainnet rejects shear-testnet-v2', () => {
