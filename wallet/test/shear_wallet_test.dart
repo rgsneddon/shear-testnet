@@ -70,18 +70,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.25"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.26"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.25"'), isTrue);
+    expect(winMain.contains('L"Shear 0.26"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.25"'), isTrue);
+    expect(winRc.contains('"Shear 0.26"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.25"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.26"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -174,13 +174,19 @@ void main() {
     final sent = await ledger.send(from: dest, to: bob, amount: 0.25);
     expect(sent.confirmed, isFalse);
     expect(ledger.pendingTxs(id.address).where((t) => t.id == sent.id).length, 1);
+    expect(ledger.shearviewTxs(id.address).where((t) => t.id == sent.id), isEmpty);
     ledger.confirmRound(address: id.address, pot: 1, height: 3);
     expect(ledger.pendingTxs(id.address).any((t) => t.id == sent.id), isTrue);
-    expect(ledger.shearviewTxs(id.address).where((t) => t.id == sent.id), isEmpty);
+    expect(ledger.shearviewTxs(id.address).where((t) => t.id == sent.id).length, 1);
+    expect(ledger.confirmationsOf(sent.height ?? 3), 1);
     ledger.settleTo(3 + ShearLedger.spendableConfirmations - 1);
     expect(ledger.ownerHistory(id.address).where((t) => t.id == sent.id).single.confirmed, isTrue);
     expect(ledger.pendingTxs(id.address), isEmpty);
     expect(ledger.shearviewTxs(id.address).where((t) => t.id == sent.id).single.confirmed, isTrue);
+    expect(
+      shearviewKindLabel(sent, outgoing: true, confs: ShearLedger.continuumConfirmations),
+      'sent',
+    );
     expect(ledger.sealedHeight, 3 + ShearLedger.continuumConfirmations - 1);
   });
 
@@ -734,7 +740,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.25');
+    expect(kWalletVersion, '0.26');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -747,6 +753,10 @@ void main() {
     expect(kShePublicDigits, 9);
     expect(levyNanos(kUnitsPerShe), 20000000);
     expect(levyNanos(kUnitsPerShe) / kUnitsPerShe, 0.0002);
+    expect(levyNanos(kUnitsPerShe * 5), 100000000);
+    expect(levyNanos(kUnitsPerShe * 100), 100000000);
+    expect(levyNanos(kUnitsPerShe * 100, depth: 1 << 30), 100000000);
+    expect(levyNanos(kUnitsPerShe * 100) / kUnitsPerShe, 0.001);
     expect(formatHashBonusShe(1), '0.00000000001');
     expect(formatHashBonusShe(2), '0.00000000002');
     expect(levyNanos(0), 100);
@@ -1164,10 +1174,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.25');
-    expect(kWalletVersion, '0.25');
+    expect(app.title, 'Shear 0.26');
+    expect(kWalletVersion, '0.26');
     await tester.pump();
-    expect(find.textContaining('0.25'), findsWidgets);
+    expect(find.textContaining('0.26'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -1466,16 +1476,191 @@ void main() {
     await tester.pump();
     expect(find.text('Pending'), findsOneWidget);
     expect(find.byKey(Key('confirm-pie-${ledger.pendingTxs(ident.address).first.id}')), findsWidgets);
+    expect(find.textContaining('sending'), findsWidgets);
+    expect(find.textContaining(RegExp(r'\bsend\b')), findsNothing);
     await tester.tap(find.text('Shearview'));
     await tester.pump();
-    expect(find.textContaining(formatShe(0.25)), findsNothing);
+    expect(find.textContaining('pending'), findsWidgets);
+    expect(find.textContaining('sending'), findsWidgets);
+    expect(find.textContaining(formatShe(0.25)), findsWidgets);
     ledger.settleTo(3 + ShearLedger.continuumConfirmations - 1);
     await tester.tap(find.text('Shearview'));
     await tester.pump();
     expect(find.textContaining(formatShe(0.25)), findsWidgets);
+    expect(find.textContaining('pending'), findsNothing);
+    expect(find.textContaining('sending'), findsNothing);
+    expect(find.textContaining('sent'), findsWidgets);
     await tester.tap(find.text('Continuum'));
     await tester.pump();
     expect(find.text('Pending'), findsNothing);
+  });
+
+  testWidgets('Flow Send advisory is neon sent or not sent - try again', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-flow-send-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final ledger = ShearLedger()..viewSecret = ident.viewKey;
+    ledger.confirmRound(address: ident.address, pot: 2, height: 2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations);
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Flow'));
+    await tester.pump();
+    final scanY = tester.getBottomLeft(find.byKey(const Key('scan-qr'))).dy;
+    final amtY = tester.getTopLeft(find.byKey(const Key('flow-amount'))).dy;
+    expect(amtY, greaterThan(scanY + 8));
+    await tester.enterText(find.widgetWithText(TextField, 'To (she1 or ssa1)'), bob);
+    await tester.enterText(find.byKey(const Key('flow-amount')), '0.2');
+    await tester.tap(find.byKey(const Key('flow-send')));
+    await tester.pump();
+    expect(find.byKey(const Key('flow-send-advisory')), findsOneWidget);
+    expect(find.text('sent'), findsOneWidget);
+    final ok = tester.widget<Text>(find.byKey(const Key('flow-send-advisory')));
+    expect(ok.data, 'sent');
+    expect(ok.style!.color, const Color(0xFF00FF41));
+    await tester.enterText(find.byKey(const Key('flow-amount')), '9999');
+    await tester.tap(find.byKey(const Key('flow-send')));
+    await tester.pump();
+    expect(find.text('not sent - try again'), findsOneWidget);
+    final bad = tester.widget<Text>(find.byKey(const Key('flow-send-advisory')));
+    expect(bad.data, 'not sent - try again');
+    expect(bad.style!.color, const Color(0xFFFF3B3B));
+  });
+
+  test('Flow send is in both shearviewTxs at 1 conf as sending/receiving and sent/received at 6', () async {
+    final alice = createIdentity();
+    final bob = createIdentity();
+    final aliceL = ShearLedger()..viewSecret = alice.viewKey;
+    final bobL = ShearLedger()..viewSecret = bob.viewKey;
+    aliceL.confirmRound(address: alice.address, pot: 2, height: 4);
+    aliceL.settleTo(4 + ShearLedger.spendableConfirmations);
+    final to = bobL.homeDest(bob.address, paymentCode: bob.paymentCode);
+    final sent = await aliceL.send(
+      from: aliceL.currentDest(alice.address),
+      to: to,
+      amount: 0.3,
+      restFrame: alice.address,
+      paymentCode: alice.paymentCode,
+    );
+    expect(aliceL.shearviewTxs(alice.address).where((t) => t.id == sent.id), isEmpty);
+    bobL.creditReceive(to: to, amount: 0.3, from: sent.from, id: sent.id);
+    expect(bobL.shearviewTxs(bob.address).where((t) => t.id == sent.id), isEmpty);
+    aliceL.confirmRound(address: alice.address, pot: 1, height: 11);
+    bobL.confirmRound(address: bob.address, pot: 0, height: 11);
+    expect(aliceL.confirmationsOf(11), 1);
+    expect(aliceL.shearviewTxs(alice.address).where((t) => t.id == sent.id).length, 1);
+    expect(bobL.shearviewTxs(bob.address).where((t) => t.id == sent.id).length, 1);
+    expect(
+      shearviewKindLabel(sent, outgoing: true, confs: 1),
+      'sending',
+    );
+    expect(
+      shearviewKindLabel(
+        bobL.shearviewTxs(bob.address).firstWhere((t) => t.id == sent.id),
+        outgoing: false,
+        confs: 1,
+      ),
+      'receiving',
+    );
+    aliceL.settleTo(11 + ShearLedger.continuumConfirmations - 1);
+    bobL.settleTo(11 + ShearLedger.continuumConfirmations - 1);
+    expect(aliceL.shearviewTxs(alice.address).where((t) => t.id == sent.id).length, 1);
+    expect(bobL.shearviewTxs(bob.address).where((t) => t.id == sent.id).length, 1);
+    expect(shearviewKindLabel(sent, outgoing: true, confs: 6), 'sent');
+    expect(
+      shearviewKindLabel(
+        bobL.shearviewTxs(bob.address).firstWhere((t) => t.id == sent.id),
+        outgoing: false,
+        confs: 6,
+      ),
+      'received',
+    );
+  });
+
+  testWidgets('recipient Continuum pending remarks receive; Shearview memo expands then Dismiss', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-recv-memo-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final ledger = ShearLedger()..viewSecret = ident.viewKey;
+    final dest = ledger.currentDest(ident.address);
+    final peer = createIdentity();
+    final from = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
+    ledger.creditReceive(to: dest, amount: 0.4, from: from, id: 'in-memo');
+    ledger.replaceFromBackup(
+      address: dest,
+      spendable: 0,
+      pending: 0.4,
+      txs: [
+        for (final t in ledger.transactions)
+          t.id == 'in-memo'
+              ? ShearTx(
+                  id: t.id,
+                  from: t.from,
+                  to: t.to,
+                  amount: t.amount,
+                  kind: t.kind,
+                  height: t.height,
+                  confirmed: t.confirmed,
+                  memo: true,
+                  memoPlain: 'hello-secret',
+                )
+              : t,
+      ],
+    );
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
+    await tester.pump();
+    await tester.pump();
+    expect(find.textContaining('receive'), findsWidgets);
+    expect(find.byKey(const Key('confirm-pie-in-memo')), findsOneWidget);
+    ledger.confirmRound(address: ident.address, pot: 1, height: 8);
+    await tester.tap(find.text('Shearview'));
+    await tester.pump();
+    expect(find.textContaining('pending'), findsWidgets);
+    expect(find.textContaining('receiving'), findsWidgets);
+    expect(find.text('you have a new memo'), findsOneWidget);
+    expect(find.text('hello-secret'), findsNothing);
+    await tester.tap(find.byKey(const Key('shearview-new-memo')));
+    await tester.pump();
+    expect(find.text('hello-secret'), findsOneWidget);
+    expect(find.byKey(const Key('shearview-memo-dismiss')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('shearview-memo-dismiss')));
+    await tester.pump();
+    expect(find.text('you have a new memo'), findsNothing);
+    expect(find.textContaining('memo: hello-secret'), findsOneWidget);
+  });
+
+  testWidgets('sender Shearview does not show you have a new memo', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-send-memo-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final ledger = ShearLedger()..viewSecret = ident.viewKey;
+    ledger.confirmRound(address: ident.address, pot: 2, height: 2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations);
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'cd' * 32)!;
+    await ledger.send(
+      from: ledger.currentDest(ident.address),
+      to: bob,
+      amount: 0.1,
+      memo: 'from-me',
+      restFrame: ident.address,
+      paymentCode: ident.paymentCode,
+    );
+    ledger.confirmRound(address: ident.address, pot: 1, height: 9);
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Shearview'));
+    await tester.pump();
+    expect(find.text('you have a new memo'), findsNothing);
+    expect(find.textContaining('pending'), findsWidgets);
   });
 
   testWidgets('Continuum live-feeds pending hashes and receives until block-found', (tester) async {
@@ -3006,8 +3191,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.25 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.25');
+  test('kWalletVersion == 0.26 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.26');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);

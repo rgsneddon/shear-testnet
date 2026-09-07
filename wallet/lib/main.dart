@@ -28,7 +28,7 @@ import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_flyclient.dart';
 
-const kWalletVersion = '0.25';
+const kWalletVersion = '0.26';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 const kTabs = [
@@ -141,6 +141,9 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   Timer? _reserveLockHold;
   bool _reserveLockDismissable = false;
   int _mempoolDepth = 0;
+  String? _flowSendAdvisory;
+  bool _flowSendOk = false;
+  bool _newMemoExpanded = false;
 
   @override
   void initState() {
@@ -1014,6 +1017,80 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     );
   }
 
+  Widget _neonText(String text, Color glow, {Key? key}) {
+    return Text(
+      text,
+      key: key,
+      style: TextStyle(
+        fontWeight: FontWeight.w800,
+        color: glow,
+        shadows: [
+          Shadow(color: glow, blurRadius: 10),
+          Shadow(color: glow.withOpacity(0.55), blurRadius: 18),
+        ],
+      ),
+    );
+  }
+
+  String _shearviewTitle(String address, ShearTx t) {
+    final confs = ledger.confirmationsOf(t.height ?? 0);
+    final kind = shearviewKindLabel(
+      t,
+      outgoing: ledger.isOutgoingTx(address, t),
+      confs: confs,
+    );
+    final pending = isFlowTransfer(t) && confs >= 1 && confs < ShearLedger.continuumConfirmations;
+    if (pending) return 'pending  $kind  ${formatShe(t.amount)} SHE';
+    return '$kind  ${formatShe(t.amount)} SHE';
+  }
+
+  List<Widget> _shearviewMemoAdvice(ShearIdentity ident, List<ShearTx> hist) {
+    final unread = hist.where((t) {
+      if (t.kind != 'receive') return false;
+      if (!t.memo || t.memoPlain == null || t.memoPlain!.isEmpty) return false;
+      if (ledger.isOutgoingTx(ident.address, t)) return false;
+      return !openedMemos.contains(t.id);
+    }).toList();
+    if (unread.isEmpty) return const [];
+    return [
+      InkWell(
+        key: const Key('shearview-new-memo'),
+        onTap: () {
+          if (!_newMemoExpanded) setState(() => _newMemoExpanded = true);
+        },
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'you have a new memo',
+              style: TextStyle(fontWeight: FontWeight.w700, color: shearAccentOf(context)),
+            ),
+            if (_newMemoExpanded) ...[
+              const SizedBox(height: 6),
+              for (final t in unread)
+                Text(t.memoPlain!, key: Key('shearview-memo-body-${t.id}')),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  key: const Key('shearview-memo-dismiss'),
+                  onPressed: () {
+                    setState(() {
+                      for (final t in unread) {
+                        openedMemos.add(t.id);
+                      }
+                      _newMemoExpanded = false;
+                    });
+                  },
+                  child: const Text('Dismiss'),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    ];
+  }
+
   Widget _glowBanner(BuildContext context, {required Key key, required String text}) {
     final dark = Theme.of(context).brightness == Brightness.dark;
     final fill = dark ? const Color(0xFFE8F1F8) : const Color(0xFF0A1628);
@@ -1227,7 +1304,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '${walletTxLabel(t)}  ${formatShe(t.amount)} SHE',
+                      '${continuumPendingRemark(t, outgoing: ledger.isOutgoingTx(ident.address, t))}  ${formatShe(t.amount)} SHE',
                       style: const TextStyle(fontSize: 13),
                     ),
                     Text(
@@ -1290,15 +1367,14 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         decoration: const InputDecoration(labelText: 'Search id, dest, kind, amount, height, memo'),
         onChanged: (_) => setState(() {}),
       ),
-      if (hist.any((t) => t.memo && t.memoPlain != null && !openedMemos.contains(t.id)))
-        Text('you have a new memo', style: TextStyle(fontWeight: FontWeight.w700, color: shearAccentOf(context))),
+      ..._shearviewMemoAdvice(ident, hist),
       if (hist.isEmpty) Text('No confirmed transactions yet.', style: TextStyle(color: shearMutedOf(context))),
       for (final t in hist)
         ListTile(
           dense: true,
-          title: Text('${walletTxLabel(t)}  ${formatShe(t.amount)} SHE'),
+          title: Text(_shearviewTitle(ident.address, t)),
           subtitle: Text(
-            t.memo && openedMemos.contains(t.id) && t.memoPlain != null
+            t.kind == 'receive' && t.memo && openedMemos.contains(t.id) && t.memoPlain != null
                 ? '${t.from} → ${t.to}  h=${t.height ?? '-'}  memo: ${t.memoPlain}'
                 : '${t.from} → ${t.to}  h=${t.height ?? '-'}',
           ),
@@ -1322,14 +1398,22 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       SelectableText(ledger.currentDest(ident.address)),
       const SizedBox(height: 8),
       TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (she1 or ssa1)')),
+      const SizedBox(height: 8),
       OutlinedButton(
         key: const Key('scan-qr'),
         onPressed: () => _scanReceiveQr(context),
         child: const Text('Scan receive QR'),
       ),
-      TextField(controller: flowAmt, decoration: const InputDecoration(labelText: 'Amount SHE'), keyboardType: TextInputType.number),
+      const SizedBox(height: 20),
+      TextField(
+        key: const Key('flow-amount'),
+        controller: flowAmt,
+        decoration: const InputDecoration(labelText: 'Amount SHE'),
+        keyboardType: TextInputType.number,
+      ),
       TextField(controller: flowMemo, decoration: const InputDecoration(labelText: 'Memo (optional)')),
       FilledButton(
+        key: const Key('flow-send'),
         onPressed: () async {
           try {
             final tx = await ledger.send(
@@ -1342,15 +1426,29 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             );
             _ingestTx(ident, tx);
             _focusedTxId = tx.id;
-            setState(() {});
+            setState(() {
+              _flowSendAdvisory = 'sent';
+              _flowSendOk = true;
+            });
           } catch (e) {
             if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+              setState(() {
+                _flowSendAdvisory = 'not sent - try again';
+                _flowSendOk = false;
+              });
             }
           }
         },
         child: const Text('Send'),
       ),
+      if (_flowSendAdvisory != null) ...[
+        const SizedBox(height: 8),
+        _neonText(
+          _flowSendAdvisory!,
+          _flowSendOk ? const Color(0xFF00FF41) : const Color(0xFFFF3B3B),
+          key: const Key('flow-send-advisory'),
+        ),
+      ],
       const SizedBox(height: 8),
       Builder(builder: (_) {
         final amt = double.tryParse(flowAmt.text) ?? 0;
@@ -1797,55 +1895,6 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                 ),
               ),
             ],
-            const SizedBox(height: 8),
-            Container(
-              key: const Key('reserve-yours-sums-box'),
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    'Your sums',
-                    key: const Key('reserve-holdings'),
-                    textAlign: TextAlign.left,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  Text('Staked  $stakedShe SHE', textAlign: TextAlign.justify),
-                  Text('Idle  $idleShe SHE', textAlign: TextAlign.justify),
-                  Text(
-                    'Locked  $totalShe SHE${p.joined ? '  ·  joined this epoch' : ''}',
-                    textAlign: TextAlign.justify,
-                  ),
-                  Text(
-                    'Accrued this epoch  $accruedShe SHE  ·  minted daily, locked until epoch end',
-                    textAlign: TextAlign.justify,
-                  ),
-                  Text(
-                    'Previous-epoch rewards  ${formatShe(p.claimableRewards / kUnitsPerShe)} SHE  ·  withdrawable now',
-                    textAlign: TextAlign.justify,
-                  ),
-                  Text(
-                    p.canVote
-                        ? 'Vote unlocked  portal holds ≥ π SHE'
-                        : 'Need $needVoteShe SHE more to reach π and unlock a vote. Deposits add up.',
-                    key: const Key('reserve-pi-progress'),
-                    textAlign: TextAlign.justify,
-                  ),
-                  if (p.nanos > 0) ...[
-                    Text(
-                      '$kReserveAccruedLabel  $accruedShe SHE  ·  updates daily (day $dayOfEpoch)',
-                      textAlign: TextAlign.justify,
-                    ),
-                    Text('At epoch end  $endShe SHE', textAlign: TextAlign.justify),
-                  ],
-                ],
-              ),
-            ),
             if (p.nanos > 0) ...[
               const SizedBox(height: 8),
               _glowBanner(
@@ -1987,6 +2036,54 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       ));
     }
     final vote = _panel(context, voteKids, key: const Key('reserve-vote-box'));
+    final sumsBox = Container(
+      key: const Key('reserve-yours-sums-box'),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Your sums',
+            key: const Key('reserve-holdings'),
+            textAlign: TextAlign.left,
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          Text('Staked  $stakedShe SHE', textAlign: TextAlign.justify),
+          Text('Idle  $idleShe SHE', textAlign: TextAlign.justify),
+          Text(
+            'Locked  $totalShe SHE${p.joined ? '  ·  joined this epoch' : ''}',
+            textAlign: TextAlign.justify,
+          ),
+          Text(
+            'Accrued this epoch  $accruedShe SHE  ·  minted daily, locked until epoch end',
+            textAlign: TextAlign.justify,
+          ),
+          Text(
+            'Previous-epoch rewards  ${formatShe(p.claimableRewards / kUnitsPerShe)} SHE  ·  withdrawable now',
+            textAlign: TextAlign.justify,
+          ),
+          Text(
+            p.canVote
+                ? 'Vote unlocked  portal holds ≥ π SHE'
+                : 'Need $needVoteShe SHE more to reach π and unlock a vote. Deposits add up.',
+            key: const Key('reserve-pi-progress'),
+            textAlign: TextAlign.justify,
+          ),
+          if (p.nanos > 0) ...[
+            Text(
+              '$kReserveAccruedLabel  $accruedShe SHE  ·  updates daily (day $dayOfEpoch)',
+              textAlign: TextAlign.justify,
+            ),
+            Text('At epoch end  $endShe SHE', textAlign: TextAlign.justify),
+          ],
+        ],
+      ),
+    );
     return [
       LayoutBuilder(builder: (ctx, box) {
         final side = box.maxWidth >= 560;
@@ -2023,6 +2120,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           ],
         );
       }),
+      const SizedBox(height: 12),
+      sumsBox,
     ];
   }
 
@@ -2168,7 +2267,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       const Text(
         'Password seals shewall.bin (AES-256-GCM). Export that file and the '
         'same password restores this shear1, dests, and this wallet\'s '
-        'transactions on another device — like Bitcoin Core\'s wallet file.',
+        'transactions on another device.',
       ),
       const SizedBox(height: 8),
       FilledButton(

@@ -205,6 +205,22 @@ Path1Observation foldSealedPots(
 /// Wallet lists: full blocks only. Hash rewards live inside the block row.
 String walletTxLabel(ShearTx t) => isWalletBlockKind(t.kind) ? 'block' : t.kind;
 
+bool isFlowTransfer(ShearTx t) => t.kind == 'send' || t.kind == 'receive';
+
+/// Continuum pending pie remark. Sender: sending. Recipient: receive.
+String continuumPendingRemark(ShearTx t, {required bool outgoing}) {
+  if (t.kind == 'send' || t.kind == 'pool-withdraw') return 'sending';
+  if (t.kind == 'receive') return outgoing ? 'sending' : 'receive';
+  return walletTxLabel(t);
+}
+
+/// Shearview kind after 1 conf. Pending remarks drop at 6: sent / received.
+String shearviewKindLabel(ShearTx t, {required bool outgoing, required int confs}) {
+  if (!isFlowTransfer(t)) return walletTxLabel(t);
+  if (confs >= ShearLedger.continuumConfirmations) return outgoing ? 'sent' : 'received';
+  return outgoing ? 'sending' : 'receiving';
+}
+
 /// Fold per-hash / pot / mine rows into one block row per dest+height.
 /// Open-round hashes (no height) are not a block yet and are omitted.
 List<ShearTx> rollupExplorerTxs(Iterable<ShearTx> txs) {
@@ -1201,13 +1217,19 @@ class ShearLedger {
     return rollupExplorerTxs(mine).where((t) => t.kind != 'hash').toList();
   }
 
-  /// Dedicated explorer list: one row per full block. Never per-hash pieces.
+  bool isOutgoingTx(String address, ShearTx t) {
+    return ownedAddresses(address).contains(t.from);
+  }
+
+  /// Dedicated explorer list: full blocks at 6 confs; Flow send/receive from 1 conf.
   List<ShearTx> shearviewTxs(String address) {
     final rows = _ownedRolled(address).where((t) {
       if (t.kind == 'hash' || t.kind == 'sample') return false;
       final h = t.height ?? 0;
       if (h < 1) return false;
-      return confirmationsOf(h) >= continuumConfirmations;
+      final confs = confirmationsOf(h);
+      if (isFlowTransfer(t)) return confs >= 1;
+      return confs >= continuumConfirmations;
     }).toList();
     rows.sort((a, b) => (b.height ?? 0).compareTo(a.height ?? 0));
     return rows;

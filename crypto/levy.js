@@ -1,7 +1,7 @@
 /**
- * Phase B Flow levy. L = ceil(L_base * (1 + surge)).
+ * Phase B Flow levy. L = min(cap, ceil(L_base * (1 + surge))).
  * L_base = max(100 units, ceil(A * 2 bps)). Surge from mempool depth.
- * Coinbase pot/hash: 0. Split half finder, half Book B (Reserve fee bank).
+ * Cap is 0.001 SHE. Coinbase pot/hash: 0. Split half finder, half Book B.
  */
 import { createHash } from 'node:crypto';
 import { encodeDest } from './address.js';
@@ -14,6 +14,8 @@ export const FEE_SPLIT_FINDER_BPS = 5000;
 export const FEE_SPLIT_RESERVE_BPS = 5000;
 export const LEVY_FLOOR_UNITS = 100;
 export const LEVY_BPS = 2;
+/** Hard ceiling: 0.001 SHE. Never quote or require more. */
+export const LEVY_CAP_NANOS = Math.floor(0.001 * NANOS_PER_SHE);
 export const SURGE_MAX = 3;
 /** Waiting-bytes scale. Full surge at 3 * SURGE_REF. */
 export const SURGE_REF = 2048;
@@ -90,7 +92,7 @@ export function levyNanos(amountNanos, opts = 0) {
   const ref = typeof opts === 'object' && opts && opts.surgeRef != null ? opts.surgeRef : SURGE_REF;
   const base = levyBase(amountNanos);
   const surge = levySurge(depth, ref);
-  return Math.ceil(base * (1 + surge));
+  return Math.min(LEVY_CAP_NANOS, Math.ceil(base * (1 + surge)));
 }
 
 export function quoteLevy(amountNanos, pressure = {}) {
@@ -167,6 +169,7 @@ export function mempoolPressure(txs = []) {
     surgeRef: SURGE_REF,
     levyFloor: LEVY_FLOOR_UNITS,
     levyBps: LEVY_BPS,
+    levyCap: LEVY_CAP_NANOS,
     chainId: CHAIN_ID,
   };
 }

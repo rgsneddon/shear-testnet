@@ -18,7 +18,7 @@ import { NANOS_PER_SHE as UNITS } from './asert.js';
 import { isDestAddress, bech32Hrp } from './address.js';
 
 describe('Phase B Flow levy', () => {
-  it('dust empty mempool is 100 units; 1 SHE empty is 0.0002 SHE; surge caps at 4× L_base', () => {
+  it('dust empty mempool is 100 units; 1 SHE empty is 0.0002 SHE; L never exceeds 0.001 SHE', () => {
     assert.equal(LEVY_FLOOR_UNITS, 100);
     const dust = Math.floor(0.000005 * UNITS);
     assert.equal(levyBase(1), 100);
@@ -34,6 +34,11 @@ describe('Phase B Flow levy', () => {
     const full = levyNanos(dust, { depth: 1e12 });
     assert.equal(full, 100 * (1 + SURGE_MAX));
     assert.equal(full, 4 * levyBase(dust));
+    const cap = Math.floor(0.001 * UNITS);
+    assert.equal(levyNanos(5 * UNITS), cap);
+    assert.equal(levyNanos(100 * UNITS), cap);
+    assert.equal(levyNanos(100 * UNITS, { depth: 1e12 }), cap);
+    assert.ok(levyNanos(one, { depth: 1e12 }) <= cap);
     assert.deepEqual(splitLevy(12), { finder: 6, reserve: 6 });
     assert.deepEqual(splitLevy(1), { finder: 0, reserve: 1 });
     assert.equal(nextBaseFee(1, 8), 1);

@@ -3,6 +3,8 @@ const kLevyBps = 2;
 const kSurgeMax = 3.0;
 const kSurgeRef = 2048;
 const kChainId = 2701;
+/// Hard ceiling: 0.001 SHE. Never quote more.
+const kLevyCapNanos = 100000000;
 
 int levyBase(int amountNanos) {
   final a = amountNanos < 0 ? 0 : amountNanos;
@@ -21,7 +23,8 @@ double levySurge(int depth) {
 int levyNanos(int amountNanos, {int depth = 0}) {
   final base = levyBase(amountNanos);
   final surge = levySurge(depth);
-  return (base * (1 + surge)).ceil();
+  final raw = (base * (1 + surge)).ceil();
+  return raw > kLevyCapNanos ? kLevyCapNanos : raw;
 }
 
 bool levyTaxed(String kind, {bool coinbase = false}) {
