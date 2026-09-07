@@ -28,7 +28,7 @@ import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_flyclient.dart';
 
-const kWalletVersion = '0.24';
+const kWalletVersion = '0.25';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 const kTabs = [
@@ -1752,7 +1752,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             _glowBanner(
               context,
               key: const Key('reserve-hashbonus-per-u'),
-              text: 'CURRENT HASHBONUS REWARD PER U = ${reserve.liveHashBonusNanos}',
+              text: "Miner's HashBonus now = ${formatHashBonusShe(reserve.liveHashBonusNanos)}",
             ),
             if (reserve.cutoffDisclaimer(now)) ...[
               const SizedBox(height: 8),
@@ -1812,14 +1812,14 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                   Text(
                     'Your sums',
                     key: const Key('reserve-holdings'),
-                    textAlign: TextAlign.center,
+                    textAlign: TextAlign.left,
                     style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
-                  Text('Staked  $stakedShe SHE', textAlign: TextAlign.center),
-                  Text('Idle  $idleShe SHE', textAlign: TextAlign.center),
+                  Text('Staked  $stakedShe SHE', textAlign: TextAlign.justify),
+                  Text('Idle  $idleShe SHE', textAlign: TextAlign.justify),
                   Text(
                     'Locked  $totalShe SHE${p.joined ? '  ·  joined this epoch' : ''}',
-                    textAlign: TextAlign.center,
+                    textAlign: TextAlign.justify,
                   ),
                   Text(
                     'Accrued this epoch  $accruedShe SHE  ·  minted daily, locked until epoch end',
@@ -1834,14 +1834,14 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                         ? 'Vote unlocked  portal holds ≥ π SHE'
                         : 'Need $needVoteShe SHE more to reach π and unlock a vote. Deposits add up.',
                     key: const Key('reserve-pi-progress'),
-                    textAlign: TextAlign.center,
+                    textAlign: TextAlign.justify,
                   ),
                   if (p.nanos > 0) ...[
                     Text(
                       '$kReserveAccruedLabel  $accruedShe SHE  ·  updates daily (day $dayOfEpoch)',
                       textAlign: TextAlign.justify,
                     ),
-                    Text('At epoch end  $endShe SHE', textAlign: TextAlign.center),
+                    Text('At epoch end  $endShe SHE', textAlign: TextAlign.justify),
                   ],
                 ],
               ),
@@ -1851,8 +1851,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
               _glowBanner(
                 context,
                 key: const Key('reserve-apr'),
-                text:
-                    '${reserve.oracleObservedAtMs == 0 ? 'Default' : 'Observed'} $rate 400-day APR on staked SHE. Idle SHE does not accrue.',
+                text: 'Oracle observed Apr $rate',
               ),
             ],
             if (p.deposits.isNotEmpty) ...[
@@ -1944,33 +1943,50 @@ class ShearWalletAppState extends State<ShearWalletApp> {
               ),
             ],
     ], key: const Key('reserve-overall-box'));
-    final vote = _panel(context, [
-            const Text('Vote to raise, lower, or leave the hash bonus (±1 unit). The 1 SHE pot does not change. Your vote is sealed for this epoch.'),
-            for (final v in [kVoteIncrease, kVoteDecrease, kVoteHold])
-              CheckboxListTile(
-                key: Key('reserve-vote-$v'),
-                dense: true,
-                title: Text(v),
-                value: draft == v,
-                onChanged: (on) {
-                  setState(() => _reserveVoteDraft = on == true ? v : null);
-                },
-              ),
-            Text(
-              _txFeeAdvice(0, oneFeeTo: 'cast this vote'),
-              key: const Key('reserve-vote-levy'),
-            ),
-            FilledButton(
-              key: const Key('reserve-vote-submit'),
-              onPressed: draft == null ? null : () => _reserveVote(context, ident, draft),
-              child: const Text('Cast vote'),
-            ),
-            if (voted)
-              Text(
-                'Vote results  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}  ·  your vote: ${p.vote}',
-                key: const Key('reserve-vote-results'),
-              ),
-    ], key: const Key('reserve-vote-box'));
+    final voteKids = <Widget>[
+      const Text('Vote to raise, lower, or leave the hash bonus (±1 unit). The 1 SHE pot does not change. Your vote is sealed for this epoch.'),
+    ];
+    if (voted) {
+      final choice = p.vote!;
+      voteKids.add(ListTile(
+        key: Key('reserve-vote-$choice'),
+        dense: true,
+        leading: const Icon(Icons.check, color: Color(0xFF1A9A4A), key: Key('reserve-vote-check')),
+        title: Text(choice),
+      ));
+      voteKids.add(Text(
+        'Vote results  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}',
+        key: const Key('reserve-vote-results'),
+      ));
+      voteKids.add(const SizedBox(height: 8));
+      voteKids.add(_glowBanner(
+        context,
+        key: const Key('reserve-your-vote'),
+        text: 'Your vote: $choice',
+      ));
+    } else {
+      for (final v in [kVoteIncrease, kVoteDecrease, kVoteHold]) {
+        voteKids.add(CheckboxListTile(
+          key: Key('reserve-vote-$v'),
+          dense: true,
+          title: Text(v),
+          value: draft == v,
+          onChanged: (on) {
+            setState(() => _reserveVoteDraft = on == true ? v : null);
+          },
+        ));
+      }
+      voteKids.add(Text(
+        _txFeeAdvice(0, oneFeeTo: 'cast this vote'),
+        key: const Key('reserve-vote-levy'),
+      ));
+      voteKids.add(FilledButton(
+        key: const Key('reserve-vote-submit'),
+        onPressed: draft == null ? null : () => _reserveVote(context, ident, draft),
+        child: const Text('Cast vote'),
+      ));
+    }
+    final vote = _panel(context, voteKids, key: const Key('reserve-vote-box'));
     return [
       LayoutBuilder(builder: (ctx, box) {
         final side = box.maxWidth >= 560;

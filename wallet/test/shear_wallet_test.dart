@@ -70,18 +70,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.24"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.25"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.24"'), isTrue);
+    expect(winMain.contains('L"Shear 0.25"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.24"'), isTrue);
+    expect(winRc.contains('"Shear 0.25"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.24"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.25"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -734,7 +734,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.24');
+    expect(kWalletVersion, '0.25');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -747,6 +747,8 @@ void main() {
     expect(kShePublicDigits, 9);
     expect(levyNanos(kUnitsPerShe), 20000000);
     expect(levyNanos(kUnitsPerShe) / kUnitsPerShe, 0.0002);
+    expect(formatHashBonusShe(1), '0.00000000001');
+    expect(formatHashBonusShe(2), '0.00000000002');
     expect(levyNanos(0), 100);
     expect(levyTaxed('lock'), isTrue);
     expect(levyTaxed('vote'), isTrue);
@@ -1162,10 +1164,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.24');
-    expect(kWalletVersion, '0.24');
+    expect(app.title, 'Shear 0.25');
+    expect(kWalletVersion, '0.25');
     await tester.pump();
-    expect(find.textContaining('0.24'), findsWidgets);
+    expect(find.textContaining('0.25'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -2002,9 +2004,25 @@ void main() {
     expect(kTabs.contains('Join'), isFalse);
     expect(find.text('The Reserve'), findsWidgets);
     expect(find.byKey(const Key('reserve-hashbonus-per-u')), findsOneWidget);
-    expect(find.textContaining('CURRENT HASHBONUS REWARD PER U ='), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(const Key('reserve-hashbonus-per-u'))).data,
+      matches(RegExp(r"Miner's HashBonus now = \d+\.\d{11}$")),
+    );
     expect(find.byKey(const Key('reserve-yours-sums-box')), findsOneWidget);
+    final sums = tester.widgetList<Text>(find.descendant(
+      of: find.byKey(const Key('reserve-yours-sums-box')),
+      matching: find.byType(Text),
+    ));
+    for (final t in sums) {
+      expect(t.textAlign == TextAlign.left || t.textAlign == TextAlign.justify, isTrue);
+      expect(t.textAlign, isNot(TextAlign.center));
+    }
     expect(find.byKey(const Key('reserve-apr')), findsOneWidget);
+    final apr = tester.widget<Text>(find.byKey(const Key('reserve-apr')));
+    expect(apr.data, contains('Oracle observed Apr '));
+    expect(apr.data, contains(RegExp(r'\d+\.\d{2}%')));
+    expect(apr.data!.contains('Default'), isFalse);
+    expect(apr.data!.contains('400-day APR'), isFalse);
     expect(find.text('Cast vote'), findsOneWidget);
     expect(find.text('Update vote'), findsNothing);
     expect(find.textContaining('change this vote at any time'), findsNothing);
@@ -2027,8 +2045,7 @@ void main() {
     expect(find.textContaining('Reserve oracle'), findsWidgets);
     expect(find.textContaining(kReserveAccruedLabel), findsOneWidget);
     expect(find.textContaining('At epoch end'), findsOneWidget);
-    expect(find.textContaining('400-day APR'), findsOneWidget);
-    expect(find.textContaining('Default'), findsWidgets);
+    expect(find.textContaining('400-day APR'), findsNothing);
     expect(find.textContaining('a year'), findsNothing);
     expect(find.text('The Join'), findsNothing);
     expect(find.text('Migration key'), findsNothing);
@@ -2112,7 +2129,25 @@ void main() {
     await tester.tap(find.byKey(const Key('reserve-vote-sign-accept')));
     await tester.pump();
     expect(find.byKey(const Key('reserve-vote-results')), findsOneWidget);
-    expect(find.textContaining('your vote: $kVoteIncrease'), findsOneWidget);
+    expect(find.textContaining('your vote:'), findsNothing);
+    expect(find.byKey(const Key('reserve-your-vote')), findsOneWidget);
+    expect(find.text('Your vote: $kVoteIncrease'), findsOneWidget);
+    expect(find.text('Cast vote'), findsNothing);
+    expect(find.byKey(const Key('reserve-vote-submit')), findsNothing);
+    expect(find.byKey(Key('reserve-vote-$kVoteDecrease')), findsNothing);
+    expect(find.byKey(Key('reserve-vote-$kVoteHold')), findsNothing);
+    expect(find.byKey(Key('reserve-vote-$kVoteIncrease')), findsOneWidget);
+    final check = tester.widget<Icon>(find.descendant(
+      of: find.byKey(Key('reserve-vote-$kVoteIncrease')),
+      matching: find.byIcon(Icons.check),
+    ));
+    expect(check.color, const Color(0xFF1A9A4A));
+    await tester.tap(find.byKey(Key('reserve-vote-$kVoteIncrease')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-vote-confirm')), findsNothing);
+    final resultsY = tester.getTopLeft(find.byKey(const Key('reserve-vote-results'))).dy;
+    final yoursY = tester.getTopLeft(find.byKey(const Key('reserve-your-vote'))).dy;
+    expect(yoursY, greaterThan(resultsY));
   });
 
   testWidgets('Reserve Sign is not offered when Continuum spendable is short', (tester) async {
@@ -2971,8 +3006,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.24 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.24');
+  test('kWalletVersion == 0.25 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.25');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -3221,7 +3256,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    expect(find.text('CURRENT HASHBONUS REWARD PER U = 1'), findsOneWidget);
+    expect(find.text("Miner's HashBonus now = ${formatHashBonusShe(1)}"), findsOneWidget);
     vault.applyRemotePortal(dest, {
       'staked': kPiSheNanos,
       'idle': 0,
@@ -3230,8 +3265,8 @@ void main() {
     });
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    expect(find.text('CURRENT HASHBONUS REWARD PER U = 1'), findsNothing);
-    expect(find.text('CURRENT HASHBONUS REWARD PER U = 2'), findsOneWidget);
+    expect(find.text("Miner's HashBonus now = ${formatHashBonusShe(1)}"), findsNothing);
+    expect(find.text("Miner's HashBonus now = ${formatHashBonusShe(2)}"), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(seconds: 2));
   });

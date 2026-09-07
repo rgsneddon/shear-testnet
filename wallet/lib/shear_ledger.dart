@@ -28,6 +28,12 @@ String formatShe(num she) {
   return s;
 }
 
+/// Full nano SHE (`*.***********`). Do not use [formatShe] for the hashbonus banner.
+String formatHashBonusShe(int nanos) {
+  final n = nanos < 0 ? 0 : nanos;
+  return (n / kUnitsPerShe).toStringAsFixed(11);
+}
+
 class ShearTx {
   const ShearTx({
     required this.id,
