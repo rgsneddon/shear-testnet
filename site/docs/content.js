@@ -70,7 +70,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Spendable</th><td>6 confirmations</td></tr>' +
       '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
-      '<tr><th>Wallet pin</th><td>0.26</td></tr>' +
+      '<tr><th>Wallet pin</th><td>0.27</td></tr>' +
       '<tr><th>Miner pin</th><td>ShearK 1.5</td></tr></table>' +
       '<p>How-to lives in this tree. The architecture note is a PDF at <a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> — that URL is not in the navbar on purpose.</p>'
   };
@@ -114,7 +114,7 @@ window.SHEAR_DOCS = {
     title: 'Wallet overview',
     crumb: 'wallet / overview',
     html:
-      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.26</strong> (macOS, Android, leftover Windows / Linux / Arch).</p>' +
+      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.27</strong> (macOS, Android, leftover Windows / Linux / Arch).</p>' +
       '<table><tr><th>Continuum</th><td>Spendable balance, <code>she1</code>, six-slice pending pie</td></tr>' +
       '<tr><th>Flow</th><td>Send and receive</td></tr>' +
       '<tr><th>Resistance</th><td>Public CTF CLI</td></tr>' +
@@ -133,7 +133,7 @@ window.SHEAR_DOCS = {
       '<li>You will enter that password each time. If it is lost, the wallet cannot be opened. Fingerprint or face unlock, where the device offers it, only works on this device.</li>' +
       '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
       '<li>Open Closure and export <code>shewall.bin</code>. Keep that file with the password.</li></ol>' +
-      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.26">shear-testnet 0.26</a>.</p>'
+      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.27">shear-testnet 0.27</a>.</p>'
   };
 
   P.continuum = {
@@ -244,7 +244,7 @@ window.SHEAR_DOCS = {
     title: 'Vortex',
     crumb: 'vortex / tab',
     html:
-      '<p>Vortex is a tab in the wallet. It is a drawer of programmes that run on Shear. Each programme is a vortice. The Reserve is already installed. You do not browse a catalog of the rest.</p>'
+      '<p>Vortex is a tab in the wallet. It is a drawer of programmes that run on Shear. Each programme is a vortice. The Reserve is already installed and cannot be removed. You do not browse a catalog of the rest. A vortice you pasted can be removed from this wallet only — the vort1 origin the creator published stays up.</p>'
   };
 
   P.vortices = {
@@ -252,7 +252,7 @@ window.SHEAR_DOCS = {
     crumb: 'vortex / vortices',
     html:
       '<p>A vortice is a hosted programme. Third-party vortices cannot mint SHE. They may move coin you already have, keep a vault, or pay rewards they have funded themselves. They cannot ask for a password, a backup file, or rest-frame. They cannot raise or lower the 1 SHE pot.</p>' +
-      '<p>If the hosted file changes, the old key stops working. A new body needs a new key. Verify a third-party vortice before you paste anything.</p>'
+      '<p>If the hosted file changes, the old key stops working. A new body needs a new key. Verify a third-party vortice before you paste anything. Open that vortice and tap <strong>Remove vortice</strong> to drop it from this wallet only. That does not take the programme down at the vort1 origin. The Reserve stays on Vortex for every user.</p>'
   };
 
   P.vort1 = {

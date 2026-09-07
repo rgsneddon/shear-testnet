@@ -70,18 +70,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.26"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.27"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.26"'), isTrue);
+    expect(winMain.contains('L"Shear 0.27"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.26"'), isTrue);
+    expect(winRc.contains('"Shear 0.27"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.26"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.27"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -740,7 +740,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.26');
+    expect(kWalletVersion, '0.27');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -811,6 +811,19 @@ void main() {
     expect(parseVorticeKey(key)?.origin, origin);
     expect(addVortice(const [reserveVortice], key).length, 1);
     expect(addVortice(const [reserveVortice], key, source: source).length, 2);
+    final roster = addVortice(const [reserveVortice], key, source: source);
+    expect(removeVortice(roster, reserveProgram).map((v) => v.id), roster.map((v) => v.id));
+    expect(removeVortice(roster, 'stake-pool-a').map((v) => v.id).toList(), [reserveProgram]);
+    expect(removeVortice(roster, 'stake-pool-a').any((v) => v.id == reserveProgram), isTrue);
+    expect(File('lib/shear_vortex.dart').readAsStringSync().contains('Future<Vortice?> removeVortice'), isFalse);
+    expect(File('lib/main.dart').readAsStringSync().contains('downloadVorticeFromOrigin'), isTrue);
+    final removeFn = File('lib/main.dart').readAsStringSync();
+    final removeBody = removeFn.substring(removeFn.indexOf('Future<void> _removeVortice'), removeFn.indexOf('Future<void> _setPassword'));
+    expect(removeBody.contains('downloadVorticeFromOrigin'), isFalse);
+    expect(removeBody.contains('widget.downloadVortice'), isFalse);
+    expect(removeBody.contains('HttpClient'), isFalse);
+    expect(removeBody.contains('this wallet'), isTrue);
+    expect(removeBody.contains('vort1 origin'), isTrue);
     expect(verifyVorticeDownload(key, 'tamper'), isNull);
     expect(vorticeChipVisible(joinWatchVortice), isFalse);
     expect(vorticeChipVisible(joinVortice), isFalse);
@@ -1174,10 +1187,10 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.26');
-    expect(kWalletVersion, '0.26');
+    expect(app.title, 'Shear 0.27');
+    expect(kWalletVersion, '0.27');
     await tester.pump();
-    expect(find.textContaining('0.26'), findsWidgets);
+    expect(find.textContaining('0.27'), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
     expect(session.identity!.paymentCode.startsWith('she1'), isTrue);
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
@@ -2406,6 +2419,67 @@ void main() {
     expect(reloaded.deployedVortices.single.origin, origin);
   });
 
+  testWidgets('Remove vortice drops it from this wallet only; Reserve stays; origin is not fetched', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-vortice-remove-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    const origin = 'https://dapp.example/stake-pool-a.json';
+    const source = '{"id":"stake-pool-a","pane":"ok"}';
+    final key = mintVorticeDeployKey(
+      programId: 'stake-pool-a',
+      name: 'Stake Pool A',
+      origin: origin,
+      source: source,
+    )!;
+    var fetches = 0;
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ShearLedger(),
+      startUnlocked: true,
+      skipPoolSync: true,
+      downloadVortice: (k) async {
+        fetches += 1;
+        return verifyVorticeDownload(k, source);
+      },
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(find.byKey(const Key('vortice-remove')), findsNothing);
+    await tester.tap(find.text('Add new vortice'));
+    await tester.pump();
+    await tester.enterText(find.byKey(const Key('vortice-key')), key);
+    await tester.tap(find.text('Add vortice'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+    expect(fetches, 1);
+    expect(find.text('Stake Pool A'), findsWidgets);
+    await tester.tap(find.text('Stake Pool A').first);
+    await tester.pump();
+    expect(find.byKey(const Key('vortice-remove')), findsOneWidget);
+    expect(find.textContaining('only drops it from this wallet'), findsOneWidget);
+    expect(find.textContaining('vort1 origin'), findsWidgets);
+    await tester.tap(find.byKey(const Key('vortice-remove')));
+    await tester.pump();
+    expect(find.textContaining('from this wallet'), findsWidgets);
+    expect(find.textContaining('vort1 origin'), findsWidgets);
+    await tester.tap(find.byKey(const Key('vortice-remove-confirm')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+    expect(fetches, 1, reason: 'remove must not fetch the vort1 origin');
+    expect(find.text('Stake Pool A'), findsNothing);
+    expect(find.byKey(const Key('vortice-remove')), findsNothing);
+    expect(find.text('The Reserve'), findsWidgets);
+    expect(session.deployedVortices, isEmpty);
+    await tester.runAsync(() => session.persist());
+    final reloaded = ShearSession(store: File('${dir.path}/session.json'));
+    await reloaded.loadOrCreate();
+    await tester.runAsync(() => reloaded.unlock(kGatePassword));
+    expect(reloaded.deployedVortices, isEmpty);
+  });
+
   testWidgets('Vortex Reserve idle disclaimer only when remaining is under 99 days', (tester) async {
     final dir = Directory.systemTemp.createTempSync('shear-reserve-idle-ui-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -3191,8 +3265,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.26 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.26');
+  test('kWalletVersion == 0.27 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.27');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);

@@ -251,6 +251,18 @@ List<Vortice> deployVortice(List<Vortice> list, Vortice v) {
   return [...list, v];
 }
 
+/// Drop a pasted vortice from this wallet roster only. Does not fetch or
+/// change the vort1 origin. The Reserve (and other pinned ids) stay.
+List<Vortice> removeVortice(List<Vortice> list, String id) {
+  final want = id.trim();
+  if (want.isEmpty || want == '_add' || isPinnedProgram(want) || isReservedProgram(want)) {
+    return list;
+  }
+  final next = list.where((v) => v.id != want).toList();
+  if (next.any((v) => v.id == reserveProgram)) return next;
+  return [reserveVortice, ...next];
+}
+
 Future<Vortice?> downloadVorticeFromOrigin(
   String key, {
   HttpClient? http,

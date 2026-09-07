@@ -28,7 +28,7 @@ import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_flyclient.dart';
 
-const kWalletVersion = '0.26';
+const kWalletVersion = '0.27';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
@@ -239,6 +239,43 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     } finally {
       _vorticeBusy = false;
     }
+  }
+
+  Future<void> _removeVortice(BuildContext context, Vortice v) async {
+    if (v.id == reserveProgram || isPinnedProgram(v.id) || isReservedProgram(v.id) || v.id == '_add') {
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove vortice'),
+        content: Text(
+          'Remove ${v.name} from this wallet? The programme stays at the vort1 origin. The Reserve stays.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('vortice-remove-confirm'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final next = removeVortice(vortices, v.id);
+    session.deployedVortices = next
+        .where((x) => !isPinnedProgram(x.id) && x.id.isNotEmpty)
+        .toList();
+    if (!mounted) return;
+    setState(() {
+      vortices = next;
+      vortexTab = 0;
+    });
+    await session.persist();
   }
 
   Future<void> _setPassword(String pw, String confirm) async {
@@ -2251,6 +2288,15 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         Text('Program  ${cur.id}'),
         if (cur.origin != null) Text('Origin  ${cur.origin}'),
         const Text('Third-party vortice cannot mint SHE; it must fund its own rewards.'),
+        const Text(
+          'Removing it only drops it from this wallet. The vort1 origin the creator published is unchanged.',
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton(
+          key: const Key('vortice-remove'),
+          onPressed: () => _removeVortice(context, cur),
+          child: const Text('Remove vortice'),
+        ),
       ]);
     }
     return _card(kids);
