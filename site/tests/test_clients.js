@@ -124,7 +124,8 @@ describe('shear.digital client buttons', () => {
     const nav = html.match(/id="shear-nav"[\s\S]*?<\/nav>/);
     assert.ok(nav);
     const labels = [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
-    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'MINER', 'NODE', 'WALLET']);
+    assert.deepEqual(labels, ['MAIN', 'DOCS', 'POOL', 'EXPLORER', 'MEMPOOL', 'MINER', 'NODE', 'WALLET']);
+    assert.equal(labels.includes('WHITEPAPER'), false);
     assert.match(html, /id="menu-wallet"/);
     assert.match(html, /id="menu-miner"/);
     assert.match(html, /id="menu-node"/);

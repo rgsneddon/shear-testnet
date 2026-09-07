@@ -86,7 +86,8 @@ describe('brand pages', () => {
       const nav = p.match(/id="shear-nav"[\s\S]*?<\/nav>/);
       assert.ok(nav, 'missing shear-nav');
       const labels = [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
-      assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'DAG', 'MEMPOOL', 'MINER', 'NODE', 'WALLET']);
+      assert.deepEqual(labels, ['MAIN', 'DOCS', 'POOL', 'EXPLORER', 'MEMPOOL', 'MINER', 'NODE', 'WALLET']);
+      assert.equal(labels.includes('WHITEPAPER'), false);
       if (!p.includes('id="shear-hero"')) {
         assert.equal(/GNFP|gnfp|feeless/i.test(p), false);
       }

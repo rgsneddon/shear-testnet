@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="description" content="Shear whitepaper: continuity-settled proof of work. Testnet preprint."/>
+  <script src="/brand/theme.js?v=14"></script>
+  <title>Shear: Continuity-settled Proof of Work · whitepaper</title>
+  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="icon" href="/brand/favicon.ico"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=27"/>
+  <style>
+    html, body { margin:0; background:var(--bg); color:var(--ink); }
+    .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
+    h1 { font-size:1.45rem; font-weight:800; margin:0 0 8px; line-height:1.25; }
+    h2 { font-size:.78rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:0 0 10px; font-weight:800; }
+    p { margin:0 0 10px; line-height:1.55; }
+    a { color:var(--cyan); }
+    .record {
+      border: 1px solid transparent; padding: 18px 20px; margin: 8px 0 16px;
+      background: linear-gradient(165deg, var(--card) 0%, var(--bg) 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin: border-box; background-clip: padding-box, border-box;
+    }
+    .chips { display:flex; flex-wrap:wrap; gap:8px; margin: 0 0 14px; }
+    .chip {
+      display:inline-block; padding:4px 10px; font-size:.75rem; font-weight:750;
+      letter-spacing:.04em; text-transform:uppercase; color:var(--cyan);
+      border:1px solid var(--blue); background:var(--input);
+    }
+    .meta { display:grid; gap:8px 24px; grid-template-columns: 9rem minmax(0,1fr); margin: 12px 0 4px; }
+    .meta .k { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; font-weight:700; }
+    .meta .v { font-weight:650; }
+    .files {
+      margin: 16px 0 0; padding: 12px 14px; background:var(--input); border:1px solid rgba(26,111,181,.25);
+    }
+    .files a.dl {
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+      text-decoration:none; color:var(--ink); font-weight:700;
+    }
+    .files a.dl:hover { color:var(--cyan); }
+    .files .name { font-family: ui-monospace, Menlo, monospace; font-size:.9rem; }
+    .files .size { color:var(--muted); font-size:.8rem; font-weight:600; }
+    .preview-label { margin: 18px 0 8px; }
+    .paper-frame {
+      background: #5a6570;
+      padding: 18px 12px 28px;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,.25);
+    }
+    html[data-theme="dark"] .paper-frame { background:#06141f; }
+    .paper-frame iframe {
+      display:block; width:min(210mm, 100%); height:80vh; margin:0 auto;
+      background:#fff; border:0; box-shadow: 0 8px 28px rgba(0,0,0,.35);
+    }
+    .lede { color:var(--muted); max-width: 48rem; }
+  </style>
+</head>
+<body>
+  <header class="top-banner">
+    <div class="banner-brand">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </div>
+    <nav class="nav" id="shear-nav">
+      <a class="nav-btn" href="https://shear.digital">MAIN</a>
+      <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
+      <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.25" target="_blank" rel="noopener">WALLET</a>
+    </nav>
+    <div class="banner-tools">
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
+    </div>
+  </header>
+  <div class="wrap">
+    <article class="record" id="zenodo-record">
+      <div class="chips">
+        <span class="chip">Publication</span>
+        <span class="chip">Preprint</span>
+        <span class="chip">Testnet</span>
+        <span class="chip">Version 1.0</span>
+      </div>
+      <h1>Shear: Continuity-settled Proof of Work</h1>
+      <p class="lede">Shear project · 7 September 2026 · <code>shear-testnet-v2</code></p>
+      <div class="meta">
+        <div class="k">Publication date</div><div class="v">7 September 2026</div>
+        <div class="k">Resource type</div><div class="v">Publication / Preprint</div>
+        <div class="k">License</div><div class="v">MIT (software). This note may be copied with the project.</div>
+        <div class="k">Keywords</div><div class="v">ShearHash-v2, RandomX, Flow, Vortex, vort1, The Reserve, CPU mining</div>
+        <div class="k">How-to</div><div class="v"><a href="https://docs.shear.digital">docs.shear.digital</a></div>
+      </div>
+      <h2 style="margin-top:18px">Description</h2>
+      <p>Shear is a CPU-mined ledger whose coin, SHE, is created when a block is found and not before. There is no premine and no sale of SHE by the developers. Privacy is the default: the rest-frame identity never appears on the book. Holders offer a silent ID; the chain writes revolving dests. Proof of work is ShearHash-v2. A found block closes exactly one SHE. This preprint states the project’s goals and the architecture that carries them.</p>
+      <div class="files" id="files">
+        <a class="dl" href="shear-whitepaper.pdf" download>
+          <span class="name">shear-whitepaper.pdf</span>
+          <span class="size">PDF · 4 pages · download</span>
+        </a>
+      </div>
+    </article>
+    <h2 class="preview-label">Preview</h2>
+    <div class="paper-frame">
+      <iframe title="Shear whitepaper PDF" src="shear-whitepaper.pdf"></iframe>
+    </div>
+  </div>
+</body>
+</html>

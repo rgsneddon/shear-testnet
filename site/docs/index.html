@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="description" content="Shear documentation: wallet, mining, Vortex, vort1, The Reserve, node, pool, consensus."/>
+  <script src="/brand/theme.js?v=14"></script>
+  <title>Shear documentation</title>
+  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="icon" href="/brand/favicon.ico"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=27"/>
+  <style>
+    html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); }
+    a { color:var(--cyan); }
+    .docs-shell {
+      display:grid; grid-template-columns: 19rem minmax(0,1fr);
+      min-height: calc(100vh - var(--shear-banner-h, 52px));
+    }
+    .tree-pane {
+      border-right:1px solid rgba(26,111,181,.22);
+      background: var(--banner);
+      padding: 12px 10px 32px;
+      overflow:auto;
+    }
+    .tree-pane h2 {
+      font-size:.72rem; letter-spacing:.08em; text-transform:uppercase;
+      color:var(--muted); margin: 4px 8px 10px; font-weight:800;
+    }
+    .tree-search {
+      width:100%; margin:0 0 10px; padding:.4rem .5rem;
+      background:var(--input); color:var(--ink); border:1px solid var(--blue); font-size:16px;
+    }
+    .tree details { margin: 0 0 2px; }
+    .tree summary {
+      cursor:pointer; list-style:none; padding:5px 8px; font-weight:750; font-size:.82rem;
+      letter-spacing:.03em; color:var(--ink);
+    }
+    .tree summary::-webkit-details-marker { display:none; }
+    .tree summary::before { content:"+  "; color:var(--muted); font-family: ui-monospace, Menlo, monospace; }
+    .tree details[open] > summary::before { content:"–  "; }
+    .tree a {
+      display:block; padding:4px 8px 4px 22px; text-decoration:none; color:var(--cyan);
+      font-size:.84rem; font-weight:650;
+    }
+    .tree a.is-on { color: var(--gold); background: rgba(26,111,181,.08); }
+    .tree a:hover { color: var(--gold); }
+    .read {
+      padding: 18px 22px 64px;
+      max-width: 48rem;
+    }
+    .read h1 { font-size:1.28rem; font-weight:800; margin:0 0 10px; }
+    .read h2 { font-size:1.05rem; font-weight:800; margin:18px 0 8px; }
+    .read h3 {
+      font-size:.78rem; letter-spacing:.05em; text-transform:uppercase;
+      color:var(--cyan); margin:14px 0 6px; font-weight:800;
+    }
+    .read p, .read li { line-height:1.55; margin:0 0 10px; }
+    .read ul, .read ol { margin:0 0 12px; padding-left:1.2rem; }
+    .read code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size:.9em; background:var(--code); padding:.12em .35em; color:var(--green);
+    }
+    .read pre {
+      margin:0 0 12px; padding:10px 12px; overflow:auto;
+      background:var(--code); color:var(--ink);
+      font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space:pre-wrap; word-break:break-word;
+    }
+    .read table { width:100%; border-collapse:collapse; margin: 4px 0 14px; font-size:.9rem; }
+    .read th, .read td {
+      text-align:left; padding:.45rem .2rem; vertical-align:top;
+      border-bottom:1px solid rgba(26,111,181,.18);
+    }
+    .read th { color:var(--muted); font-size:.7rem; letter-spacing:.05em; text-transform:uppercase; width:34%; }
+    .crumb { color:var(--muted); font-size:.78rem; margin:0 0 8px; }
+    @media (max-width: 860px) {
+      .docs-shell { grid-template-columns: 1fr; }
+      .tree-pane { border-right:0; border-bottom:1px solid rgba(26,111,181,.22); max-height: 42vh; }
+      .read { padding: 16px 12px 48px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top-banner">
+    <div class="banner-brand">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </div>
+    <nav class="nav" id="shear-nav">
+      <a class="nav-btn" href="https://shear.digital">MAIN</a>
+      <a class="nav-btn is-on" href="/">DOCS</a>
+      <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.25" target="_blank" rel="noopener">WALLET</a>
+    </nav>
+    <div class="banner-tools">
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
+    </div>
+  </header>
+  <div class="docs-shell">
+    <aside class="tree-pane" id="tree-pane">
+      <h2>File tree</h2>
+      <input class="tree-search" id="tree-search" type="search" placeholder="Filter pages" aria-label="Filter documentation"/>
+      <nav class="tree" id="docs-tree"></nav>
+    </aside>
+    <article class="read" id="docs-read"></article>
+  </div>
+  <script src="content.js?v=1"></script>
+  <script src="app.js?v=1"></script>
+</body>
+</html>
