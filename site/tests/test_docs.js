@@ -17,7 +17,7 @@ function navLabels(html) {
   return [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
 }
 
-const withDocs = ['MAIN', 'DOCS', 'POOL', 'EXPLORER', 'MEMPOOL', 'MINER', 'NODE', 'WALLET'];
+const withDocs = ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'MINER', 'NODE', 'WALLET', 'DOCS'];
 
 describe('docs.shear.digital', () => {
   it('is a file-tree browser with wallet, mining, vortex, vort1, reserve', () => {
@@ -57,5 +57,13 @@ describe('whitepaper.shear.digital', () => {
     assert.deepEqual(labels, withDocs);
     assert.equal(labels.includes('WHITEPAPER'), false);
     assert.match(paper, /href="https:\/\/docs\.shear\.digital">DOCS</);
+    assert.equal(labels[labels.length - 1], 'DOCS');
+    assert.equal(labels[labels.length - 2], 'WALLET');
+    const src = fs.readFileSync(path.join(here, '../whitepaper/build_pdf.py'), 'utf8');
+    assert.doesNotMatch(src, /The Join/);
+    assert.doesNotMatch(src, /join1\./);
+    assert.equal(pdf.includes(Buffer.from('The Join')), false);
+    assert.doesNotMatch(content, /The Join/);
+    assert.doesNotMatch(content, /join1\./);
   });
 });

@@ -136,7 +136,7 @@ def main() -> None:
     bullet(
         pdf,
         [
-            "Proof of work only. Coin comes from hashing, not from an allocation, an auction, or a snapshot of some other book — except The Join, a reserved vortice that may pay a one-shot genesis vault at mainnet and then burns what is left.",
+            "Proof of work only. Coin comes from hashing, not from an allocation, an auction, or a snapshot of some other book.",
             "CPU only. ShearHash-v2 is RandomX light. GPU and ASIC farms are not the intended surface.",
             "Private by default. Rest-frame shear1 never goes on chain. Holders offer she1. Settled dests are ssa1.",
             "One coin per block. The pot is 1 SHE. Votes do not move it. The Reserve oracle does not move it.",
