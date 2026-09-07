@@ -10,8 +10,23 @@
   <link rel="icon" href="/brand/favicon.ico"/>
   <link rel="stylesheet" href="/brand/theme.css?v=27"/>
   <style>
-    html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); }
+    * { box-sizing: border-box; }
+    html, body { margin:0; height:100%; max-width:100%; overflow-x:hidden; font:15px/1.4 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
     a { color:var(--cyan); }
+    .top-banner {
+      display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
+      border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
+      position:sticky; top:0; z-index:40;
+    }
+    .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
+    a.nav-btn {
+      display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
+      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
+      border:1px solid transparent;
+      background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box, border-box;
+    }
     .docs-shell {
       display:grid; grid-template-columns: 19rem minmax(0,1fr);
       min-height: calc(100vh - var(--shear-banner-h, 52px));

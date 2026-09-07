@@ -49,6 +49,8 @@ describe('docs.shear.digital', () => {
     assert.deepEqual(labels, withDocs);
     assert.equal(labels.includes('WHITEPAPER'), false);
     assert.match(docs, /class="nav-btn is-on" href="\/">DOCS</);
+    assert.match(docs, /border-bottom:1px solid rgba\(26,111,181,\.25\)/);
+    assert.match(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
   });
 });
 
@@ -66,6 +68,12 @@ describe('whitepaper.shear.digital', () => {
     assert.deepEqual(labels, withDocs);
     assert.equal(labels.includes('WHITEPAPER'), false);
     assert.match(paper, /href="https:\/\/docs\.shear\.digital">DOCS</);
+    assert.match(paper, /overflow-x:hidden/);
+    assert.match(paper, /box-sizing: border-box/);
+    assert.match(paper, /iframe \{\s*display:block; width:100%; max-width:100%/);
+    assert.match(paper, /border-bottom:1px solid rgba\(26,111,181,\.25\)/);
+    assert.match(paper, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
+    assert.doesNotMatch(paper, /width:min\(210mm/);
     assert.equal(labels[labels.length - 1], 'DOCS');
     assert.equal(labels[labels.length - 2], 'WALLET');
     const src = fs.readFileSync(path.join(here, '../whitepaper/build_pdf.py'), 'utf8');
