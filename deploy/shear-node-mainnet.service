@@ -1,0 +1,26 @@
+[Unit]
+Description=Shear mainnet validating node (P2P only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shear
+Group=shear
+Environment=SHEAR_NETWORK=mainnet
+Environment=SHEAR_MAGIC=shear-v1
+Environment=SHEAR_DATA=/var/lib/shear/mainnet
+Environment=SHEAR_P2P_BIND=0.0.0.0
+Environment=SHEAR_P2P_PORT=30303
+Environment=SHEAR_RPC_BIND=127.0.0.1
+Environment=SHEAR_RPC_PORT=8088
+Environment=SHEAR_SEEDS=p2p.shear.digital:30303,46.224.132.83:30303,178.105.187.178:30303
+WorkingDirectory=/opt/shear-node
+ExecStart=/usr/bin/node /opt/shear-node/node/src/node.js --network mainnet
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+# Seed VPS is P2P only.
+
+[Install]
+WantedBy=multi-user.target

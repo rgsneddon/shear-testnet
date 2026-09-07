@@ -60,7 +60,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /\/api\/stats/);
     assert.doesNotMatch(html, /Spendable|Copy ID|paymentCode/);
     assert.match(html, /TESTNET/);
-    assert.match(html, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
+    assert.match(html, /MAINNET LAUNCH at 9pm UK time on Friday 11th September 2026/);
     assert.match(html, /id="mainnet-countdown"/);
     assert.match(html, /2026-09-11T21:00:00\+01:00/);
     assert.match(html, />WALLET</);
@@ -260,7 +260,7 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /pool\.shear\.digital:1111/);
     assert.match(admin, /ShearK-Miner 1\.5/);
     assert.match(admin, /shear-wallet-0\.27-/);
-    assert.match(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
+    assert.match(admin, /MAINNET LAUNCH at 9pm UK time on Friday 11th September 2026/);
     assert.doesNotMatch(admin, /The Join/);
     assert.doesNotMatch(admin, /join1\./);
     assert.doesNotMatch(admin, /GNFP/);

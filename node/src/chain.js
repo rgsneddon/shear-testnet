@@ -9,6 +9,7 @@ import {
   BLOCK_SUBSIDY_NANOS,
   HASH_BONUS_NANOS,
   MAGIC_TESTNET,
+  MAGIC_MAINNET,
   extraMintAllowed,
   wrapMintForbidden,
   DEST_HRP,
@@ -37,6 +38,7 @@ import {
   levyNeed,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
+import { acceptsMagic } from '../../crypto/network.js';
 
 export { blockWeight, nextBaseFee } from '../../crypto/levy.js';
 
@@ -280,8 +282,10 @@ function verifyBlockConsensus(block, prev, {
   tipHeight = 0,
   hashBonusNanos = HASH_BONUS_NANOS,
   spendableOf = null,
+  magic = MAGIC_TESTNET,
 } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
+  if (!acceptsMagic(magic, block.magic)) return { ok: false, reason: 'foreign_magic' };
   const h = Buffer.from(block.header);
   let decoded;
   try {
@@ -505,7 +509,12 @@ export function retarget(chain, candidateTimestamp) {
   return nextBits(last.bits, Number(last.timestamp) - Number(prev.timestamp));
 }
 
-export function genesisBlock({ miner, now = Date.now() }) {
+export function prepareGenesis({
+  miner,
+  now = Date.now(),
+  magic = MAGIC_TESTNET,
+  bits = GENESIS_BITS,
+} = {}) {
   const tpl = buildTemplate({
     prev: GENESIS_PREV,
     height: 1,
@@ -513,20 +522,20 @@ export function genesisBlock({ miner, now = Date.now() }) {
     samples: [],
     txs: [],
     now,
-    bits: GENESIS_BITS,
+    bits,
   });
   let found = null;
   for (let n = 0n; n < 5_000_000n; n += 1n) {
     const header = setNonce(tpl.header, n);
     const hash = shearHash(header);
-    if (meetsTarget(hash, GENESIS_BITS)) {
+    if (meetsTarget(hash, bits)) {
       found = { header, hash, nonce: n };
       break;
     }
   }
   if (!found) throw new Error('genesis_pow');
   return {
-    magic: MAGIC_TESTNET,
+    magic,
     height: 1,
     header: found.header,
     hash: found.hash,
@@ -538,6 +547,18 @@ export function genesisBlock({ miner, now = Date.now() }) {
     rootA: tpl.rootA,
     rootB: tpl.rootB,
   };
+}
+
+export function genesisBlock({ miner, now = Date.now() }) {
+  return prepareGenesis({ miner, now, magic: MAGIC_TESTNET });
+}
+
+export function genesisBlockMainnet({ miner, now } = {}) {
+  return prepareGenesis({
+    miner,
+    now: now ?? Date.parse('2026-09-11T20:00:00.000Z'),
+    magic: MAGIC_MAINNET,
+  });
 }
 
 export function publicJob(tpl, { jobId, shareBits }) {

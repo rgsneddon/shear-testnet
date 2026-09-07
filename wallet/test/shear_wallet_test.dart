@@ -25,6 +25,7 @@ import 'package:shear_wallet/shear_social.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_levy.dart';
 import 'package:shear_wallet/shear_flyclient.dart';
+import 'package:shear_wallet/shear_network.dart';
 import 'package:crypto/crypto.dart';
 
 const kGatePassword = 'correct-horse';
@@ -3263,6 +3264,18 @@ void main() {
     await tester.pump(const Duration(seconds: 2));
     expect(await bio.authenticate(), isTrue);
     expect(await bio.recalledPassword(), kGatePassword);
+  });
+
+  test('mainnet profile is shear-v1 with p2p.shear.digital seeds; testnet profile unchanged', () {
+    expect(kWalletVersion, '0.27');
+    expect(kTestnetNetwork.magic, 'shear-testnet-v2');
+    expect(kTestnetNetwork.flySeed, 'https://pool.shear.digital');
+    expect(kMainnetNetwork.magic, 'shear-v1');
+    expect(kMainnetNetwork.p2pSeeds, contains('p2p.shear.digital:30303'));
+    expect(kMainnetNetwork.p2pSeeds, contains('46.224.132.83:30303'));
+    expect(kMainnetNetwork.magic.contains('testnet'), isFalse);
+    expect(shearNetworkOf('mainnet').id, 'mainnet');
+    expect(shearNetworkOf(null).id, 'testnet');
   });
 
   test('kWalletVersion == 0.27 and 400-day APR uses observed average bps', () {

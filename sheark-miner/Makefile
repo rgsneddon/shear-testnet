@@ -29,7 +29,17 @@ endif
 
 OBJS := src/sheark_miner.o src/shear_hash.o src/sha512.o
 
-.PHONY: all clean selftest randomx
+.PHONY: all clean selftest randomx mainnet
+
+# Magic-only 1.5 rebuild. Does not recut version. Do not replace the testnet binary.
+MAINNET_BIN := ShearK-Miner-mainnet
+MAINNET_CFLAGS := $(CFLAGS) -DSHEAR_MAGIC=\"shear-v1\"
+
+mainnet: $(RXLIB)
+	$(CC) $(MAINNET_CFLAGS) $(INCLUDES) -c -o src/sheark_miner_mainnet.o src/sheark_miner.c
+	$(CC) $(MAINNET_CFLAGS) $(INCLUDES) -c -o src/shear_hash_mainnet.o src/shear_hash.c
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o src/sha512.o src/sha512.c
+	$(CXX) $(CFLAGS) -o $(MAINNET_BIN) src/sheark_miner_mainnet.o src/shear_hash_mainnet.o src/sha512.o $(RXLIB) $(LIBS)
 
 all: $(BIN)
 

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MAGIC_TESTNET, GENESIS_BITS, PRODUCT_VERSION } from '../../crypto/asert.js';
+import { networkOf } from '../../crypto/network.js';
 import { CLIENT, ALGO, HEADER_LEN } from '../../crypto/shear_hash.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_DAYS, RESERVE_JOIN_CUTOFF_DAYS } from '../../crypto/asert.js';
 import { extraMintAllowed } from '../../crypto/mint.js';
@@ -17,11 +18,12 @@ import { mintVorticeDeployKey, parseVorticeKey, VORTICE_KEY_PREFIX } from '../..
 
 const VERSION = PRODUCT_VERSION;
 
-export function printConfig() {
+export function printConfig(networkName) {
+  const net = networkOf(networkName);
   return {
     name: 'shear-node',
     version: VERSION,
-    magic: MAGIC_TESTNET,
+    magic: net.magic,
     client: CLIENT,
     algorithm: ALGO,
     headerBytes: HEADER_LEN,
@@ -40,28 +42,43 @@ export function printConfig() {
     vorticeKeyPrefix: VORTICE_KEY_PREFIX,
     vorticeCreatorsHostOwnDapps: true,
     extraMintThirdParty: extraMintAllowed('third-party-vortice'),
-    mainnet: false,
+    mainnet: net.mainnet,
+    network: net.id,
+    dataDirName: net.dataDirName,
+    seeds: net.seeds,
   };
 }
 
 export { createP2p, P2P_PORT, createStore, createRpc, RPC_PORT, mintVorticeDeployKey, parseVorticeKey };
 
 export async function startNode({
-  dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v2'),
+  network: networkName,
+  dataDir,
   p2pPort = Number(process.env.SHEAR_P2P_PORT || P2P_PORT),
   p2pBind = process.env.SHEAR_P2P_BIND || '0.0.0.0',
   rpcPort = Number(process.env.SHEAR_RPC_PORT || RPC_PORT),
   rpcBind = process.env.SHEAR_RPC_BIND || '127.0.0.1',
-  seeds = (process.env.SHEAR_SEEDS || '').split(',').map((s) => s.trim()).filter(Boolean),
+  seeds,
 } = {}) {
-  fs.mkdirSync(dataDir, { recursive: true });
-  const store = createStore(dataDir);
+  const net = networkOf(networkName);
+  const resolvedDir = dataDir
+    || process.env.SHEAR_DATA
+    || path.join(os.homedir(), '.shear', net.dataDirName);
+  const resolvedSeeds = (seeds != null
+    ? seeds
+    : (process.env.SHEAR_SEEDS || net.seeds.join(',')))
+    .toString()
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  fs.mkdirSync(resolvedDir, { recursive: true });
+  const store = createStore(resolvedDir);
   store.reserveVault = store.reserveVault || emptyVault();
-  const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET });
+  const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: net.magic });
   const bound = await p2p.listen();
   const rpc = createRpc({ store, p2p, port: rpcPort, host: rpcBind });
   const rpcBound = await rpc.listen();
-  for (const seed of seeds) {
+  for (const seed of resolvedSeeds) {
     const cut = seed.lastIndexOf(':');
     const host = cut > 0 ? seed.slice(0, cut) : seed;
     const port = cut > 0 ? Number(seed.slice(cut + 1)) : P2P_PORT;
@@ -74,26 +91,41 @@ export async function startNode({
       }
     }
   }
-  return { store, p2p, rpc, bound, rpcBound, magic: MAGIC_TESTNET, mainnet: false, phaseBGate: PHASE_B_GATE };
+  return {
+    store, p2p, rpc, bound, rpcBound,
+    magic: net.magic,
+    mainnet: net.mainnet,
+    network: net.id,
+    dataDir: resolvedDir,
+    phaseBGate: PHASE_B_GATE,
+  };
+}
+
+function networkArg(argv = process.argv) {
+  const i = argv.indexOf('--network');
+  if (i >= 0 && argv[i + 1]) return argv[i + 1];
+  return process.env.SHEAR_NETWORK;
 }
 
 async function main() {
+  const netName = networkArg();
   if (process.argv.includes('--print-config')) {
-    console.log(JSON.stringify(printConfig()));
+    console.log(JSON.stringify(printConfig(netName)));
     return;
   }
-  const started = await startNode();
+  const started = await startNode({ network: netName });
   const tip = started.store.tip();
   console.log(JSON.stringify({
     ok: true,
     p2p: started.bound.port,
     rpc: started.rpcBound?.port,
     bind: started.bound.host,
-    magic: MAGIC_TESTNET,
+    magic: started.magic,
     phaseBGate: PHASE_B_GATE,
     height: tip?.height || 0,
     hash: tip ? Buffer.from(tip.hash).toString('hex') : '',
-    mainnet: false,
+    mainnet: started.mainnet,
+    network: started.network,
   }));
 }
 

@@ -34,6 +34,9 @@ describe('ShearK-Miner', () => {
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.headerBytes, 128);
     assert.equal(j.magic, 'shear-testnet-v2');
+    const hdr = fs.readFileSync(path.join(root, 'src/shear_hash.h'), 'utf8');
+    assert.match(hdr, /#ifndef SHEAR_MAGIC/);
+    assert.match(hdr, /#define SHEAR_MAGIC "shear-testnet-v2"/);
     assert.equal(j.rxMode, 'light');
     assert.equal(j.rxCacheMiB, 128);
     assert.equal(j.feePct, 0);
