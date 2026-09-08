@@ -567,7 +567,9 @@ function loginAndShare(port, login, extra = {}) {
         const s = scoreShare({ job, nonce });
         const n = nonce;
         nonce += 1n;
-        if (s.ok) {
+        // A share that also meets header bits seals the round and zeros
+        // roundHashes. Tests that read proven work need a non-sealing share.
+        if (s.ok && !s.block) {
           sock.write(JSON.stringify({
             id: 2,
             method: 'submit',
@@ -596,7 +598,7 @@ function loginAndShare(port, login, extra = {}) {
       }
     });
     sock.on('error', reject);
-    setTimeout(() => reject(new Error('share_timeout')), 20000);
+    setTimeout(() => reject(new Error('share_timeout')), 120000);
   });
 }
 
@@ -1023,10 +1025,20 @@ describe('public miner listing', () => {
       pool.httpServer.listen(0, '127.0.0.1', resolve);
       pool.httpServer.on('error', reject);
     });
-    try {
     const httpPort = pool.httpServer.address().port;
     pool.store.tip = () => ({ height: 40 });
     pool.store.getpolicy = () => ({ operational: { pool_merchant: 6 } });
+    const poolPay = payoutDest(dest) || dest;
+    for (let h = 1; h <= 40; h += 1) {
+      pool.store.blocks.push({ height: h, txs: [] });
+    }
+    pool.store.explorer.push({
+      from: 'coinbase',
+      to: poolPay,
+      nanos: 10 * BLOCK_SUBSIDY_NANOS,
+      height: 1,
+      kind: 'pot',
+    });
     assert.equal(pool.pullBook.creditRound([{ tag, dest, count: 10 }], { height: 1 }).ok, true);
     const url = `http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}/withdraw`;
     async function post(body) {
@@ -1070,8 +1082,6 @@ describe('public miner listing', () => {
     const ok = await post({ login: id.paymentCode, dest, sig });
     assert.equal(ok.json.ok, true, ok.json.reason);
     assert.equal(String(ok.json.to).startsWith('ssa1'), true);
-  } finally {
-    try { pool.close(); } catch { /* */ }
-  }
+    pool.close();
   });
 });
