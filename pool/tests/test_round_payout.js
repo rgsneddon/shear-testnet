@@ -51,9 +51,11 @@ async function login(port, login) {
   return { sock, job: hello.job };
 }
 
-function findNonces(job, n, { block = false } = {}) {
+function findNonces(job, n, { block = false, skip = [] } = {}) {
+  const seen = new Set([...skip].map((x) => String(x)));
   const out = [];
-  for (let nonce = 0n; nonce < 2_000_000n && out.length < n; nonce += 1n) {
+  for (let nonce = 0n; nonce < 250n && out.length < n; nonce += 1n) {
+    if (seen.has(String(nonce))) continue;
     const s = scoreShare({ job, nonce });
     if (!s.ok) continue;
     if (block && !s.block) continue;
@@ -91,7 +93,7 @@ describe('round hash bonuses', () => {
     const nA = 3;
     const nB = 2;
     const aliceShares = findNonces(job1, nA, { block: false });
-    const bobShares = findNonces(job1, nB, { block: false });
+    const bobShares = findNonces(job1, nB, { block: false, skip: aliceShares });
     assert.equal(aliceShares.length, nA);
     assert.equal(bobShares.length, nB);
     for (const nonce of aliceShares) {

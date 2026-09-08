@@ -1023,6 +1023,7 @@ describe('public miner listing', () => {
       pool.httpServer.listen(0, '127.0.0.1', resolve);
       pool.httpServer.on('error', reject);
     });
+    try {
     const httpPort = pool.httpServer.address().port;
     pool.store.tip = () => ({ height: 40 });
     pool.store.getpolicy = () => ({ operational: { pool_merchant: 6 } });
@@ -1069,6 +1070,8 @@ describe('public miner listing', () => {
     const ok = await post({ login: id.paymentCode, dest, sig });
     assert.equal(ok.json.ok, true, ok.json.reason);
     assert.equal(String(ok.json.to).startsWith('ssa1'), true);
-    pool.close();
+  } finally {
+    try { pool.close(); } catch { /* */ }
+  }
   });
 });
