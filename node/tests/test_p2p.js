@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
-import { P2P_PORT } from '../src/p2p.js';
+import { P2P_PORT, pickStemSocket, fluffDelayMs, FLUFF_MIN_MS, FLUFF_MAX_MS, STEM_MAX_HOPS, lineHasIpBesideIdentity, peerEventFields } from '../src/p2p.js';
 import { mineTemplate } from '../src/chain.js';
 import { printConfig, startNode } from '../src/node.js';
 import { countSyncedOnline } from '../src/p2p.js';
@@ -126,7 +126,6 @@ describe('p2p gossip', () => {
         to: dest,
         nanos: sendNanos,
         fee,
-        vin: [{ address: dest }],
         vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
       });
       assert.equal(queued.ok, true, queued.reason);
@@ -168,5 +167,134 @@ describe('p2p gossip', () => {
     assert.equal(cfg.mainnet, false);
     assert.equal(cfg.phaseBGate, true);
     assert.equal(cfg.rpc, 18332);
+  });
+
+  it('pickStemSocket returns one peer; fluff delay is 1–3 s; no IP beside dest in logs', () => {
+    const a = { id: 'a' };
+    const b = { id: 'b' };
+    const c = { id: 'c' };
+    const picked = pickStemSocket(new Set([a, b, c]), a, () => 0);
+    assert.equal(picked === b || picked === c, true);
+    assert.notEqual(picked, a);
+    assert.equal(pickStemSocket(new Set([a]), a), null);
+    const d = fluffDelayMs(() => 0);
+    const e = fluffDelayMs(() => 0.999);
+    assert.ok(d >= FLUFF_MIN_MS && d <= FLUFF_MAX_MS);
+    assert.ok(e >= FLUFF_MIN_MS && e <= FLUFF_MAX_MS);
+    assert.equal(STEM_MAX_HOPS, 3);
+    assert.equal(lineHasIpBesideIdentity('remoteAddress 1.2.3.4 dest ssa1abc'), true);
+    assert.equal(lineHasIpBesideIdentity('tx net-send-1 queued'), false);
+    const note = peerEventFields({ event: 'stem', remote: '1.2.3.4' });
+    assert.equal(note.remote, 'peer');
+    assert.equal(JSON.stringify(note).includes('1.2.3.4'), false);
+    const src = fs.readFileSync(new URL('../src/p2p.js', import.meta.url), 'utf8');
+    for (const line of src.split('\n')) {
+      if (!/console\.(log|info|warn|error)/.test(line)) continue;
+      assert.equal(lineHasIpBesideIdentity(line), false, line);
+    }
+  });
+
+  it('originator first inv set size is 1, then fluff reaches a 3-node graph', async () => {
+    const dest = destMiner();
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stem-a-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stem-b-'));
+    const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stem-c-'));
+    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 40 });
+    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 40 });
+    const c = await startNode({ dataDir: dirC, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 40 });
+    try {
+      await a.p2p.connect('127.0.0.1', b.bound.port);
+      await a.p2p.connect('127.0.0.1', c.bound.port);
+      const linked = await waitFor(() => a.p2p.syncedOnline() >= 2);
+      assert.equal(linked, true);
+      const { levyNanos } = await import('../../crypto/levy.js');
+      const sendNanos = 2;
+      const fee = levyNanos(sendNanos);
+      const queued = a.store.queueTx({
+        id: 'stem-send-1',
+        kind: 'send',
+        from: dest,
+        to: dest,
+        nanos: sendNanos,
+        fee,
+        vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
+      });
+      assert.equal(queued.ok, true, queued.reason);
+      assert.equal(JSON.stringify(queued.tx || queued).includes('remoteAddress'), false);
+      assert.equal(a.p2p.originInvSetSize('stem-send-1'), 1);
+      const has = (node) => (node.store.mempool || []).some((t) => String(t.id) === 'stem-send-1');
+      const fluffed = await waitFor(() => has(b) && has(c), 3000);
+      assert.equal(fluffed, true, 'fluff did not reach both peers');
+    } finally {
+      a.p2p.close();
+      b.p2p.close();
+      c.p2p.close();
+      await a.rpc?.close?.();
+      await b.rpc?.close?.();
+      await c.rpc?.close?.();
+    }
+  });
+
+  it('lock and vote still paint (pending) after fluff', async () => {
+    const dest = destMiner();
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-a-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-b-'));
+    const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-c-'));
+    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 40 });
+    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 40 });
+    const c = await startNode({ dataDir: dirC, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 40 });
+    try {
+      await a.p2p.connect('127.0.0.1', b.bound.port);
+      await a.p2p.connect('127.0.0.1', c.bound.port);
+      await waitFor(() => a.p2p.syncedOnline() >= 2);
+      const { levyNanos } = await import('../../crypto/levy.js');
+      const lockNanos = 314159265358;
+      const lock = {
+        id: 'lock-fluff',
+        kind: 'lock',
+        from: dest,
+        to: dest,
+        nanos: lockNanos,
+        fee: levyNanos(lockNanos, { depth: 1e9 }),
+        vout: [{ address: dest, nanos: lockNanos, kind: 'lock' }],
+      };
+      const vote = {
+        id: 'vote-fluff',
+        kind: 'vote',
+        from: dest,
+        to: dest,
+        nanos: 0,
+        payer: dest,
+        fee: levyNanos(0, { depth: 1e9 }),
+        portalOpen: 'ab'.repeat(64),
+        vout: [{ address: dest, nanos: 0, kind: 'vote' }],
+      };
+      const qLock = a.store.queueTx(lock);
+      const qVote = a.store.queueTx(vote);
+      assert.equal(qLock.ok, true, qLock.reason);
+      assert.equal(qVote.ok, true, qVote.reason);
+      assert.equal(a.p2p.originInvSetSize('lock-fluff'), 1);
+      const { explorerRecentTxs, publicPayloadLeaksIdentity } = await import('../../pool/src/wallet_api.js');
+      const painted = await waitFor(() => {
+        const rows = explorerRecentTxs(c.store, 30);
+        const lockRow = rows.find((t) => t.id === 'lock-fluff');
+        const voteRow = rows.find((t) => t.id === 'vote-fluff');
+        return lockRow?.pending === true && voteRow?.pending === true
+          && lockRow.kind === 'lock' && voteRow.kind === 'vote';
+      }, 3000);
+      assert.equal(painted, true);
+      const rows = explorerRecentTxs(c.store, 30);
+      const lockRow = rows.find((t) => t.id === 'lock-fluff');
+      assert.ok(String(lockRow.to).startsWith('ssa1'));
+      assert.equal(publicPayloadLeaksIdentity(lockRow), false);
+      assert.equal(lockRow.memoPlain, undefined);
+    } finally {
+      a.p2p.close();
+      b.p2p.close();
+      c.p2p.close();
+      await a.rpc?.close?.();
+      await b.rpc?.close?.();
+      await c.rpc?.close?.();
+    }
   });
 });

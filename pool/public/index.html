@@ -178,6 +178,12 @@
       0% { transform: translate(0, 0) scale(1); opacity: 1; }
       100% { transform: translate(var(--dx), var(--dy)) scale(0.15); opacity: 0; }
     }
+    .reserve-chip {
+      display: inline-block; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em;
+      text-transform: uppercase; color: #0d5c4d; background: #d4f0e8;
+      padding: 1px 6px; margin-right: 6px;
+    }
+    }
     .top-banner {
       display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
       border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
@@ -774,9 +780,14 @@
             const href = 'https://explorer.shear.digital/tx/' + encodeURIComponent(t.id);
             const st = t.status || blockStatus(t, tip, need);
             const pendingLabel = st === 'pending' || st === '(pending)' ? '(pending)' : 'confirmed';
+            const kind = String(t.kind || 'block');
+            const reserve = kind === 'lock' || kind === 'vote';
+            const statusCell = reserve
+              ? '<span class="reserve-chip">Reserve</span>' + esc(kind) + ' ' + esc(pendingLabel)
+              : esc(pendingLabel);
             return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
-              esc(fmtLocalTs(t.at)) + '</td><td>' +
-              esc(pendingLabel) + '</td><td class="mono">' + esc(t.from || 'coinbase') +
+              esc(fmtLocalTs(t.at)) + '</td><td>' + statusCell + '</td><td class="mono">' +
+              esc(t.from || 'coinbase') +
               '</td><td class="mono">' + esc(shortDest(t.to)) + '</td><td>' +
               esc(t.amount) + '</td></tr>';
           }).join('')

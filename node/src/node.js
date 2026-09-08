@@ -55,11 +55,12 @@ export async function startNode({
   rpcPort = Number(process.env.SHEAR_RPC_PORT || RPC_PORT),
   rpcBind = process.env.SHEAR_RPC_BIND || '127.0.0.1',
   seeds = (process.env.SHEAR_SEEDS || '').split(',').map((s) => s.trim()).filter(Boolean),
+  fluffDelayMs = null,
 } = {}) {
   fs.mkdirSync(dataDir, { recursive: true });
   const store = createStore(dataDir);
   store.reserveVault = store.reserveVault || emptyVault();
-  const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET });
+  const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET, fluffDelayMs });
   const bound = await p2p.listen();
   const rpc = createRpc({ store, p2p, port: rpcPort, host: rpcBind });
   const rpcBound = await rpc.listen();

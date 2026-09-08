@@ -3,6 +3,10 @@ import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 
 export const P2P_PORT = 30303;
 export const P2P_UA = `shear-node/${PRODUCT_VERSION}`;
+/** Originator stem: one random peer, then fluff after hops or 1–3 s. */
+export const STEM_MAX_HOPS = 3;
+export const FLUFF_MIN_MS = 1000;
+export const FLUFF_MAX_MS = 3000;
 
 export function encodeWireBlock(b) {
   return {
@@ -43,6 +47,40 @@ export function peerRemoteKey(sock) {
  * tip hash. Disconnected peers are not in `peers`, so historical uniques
  * do not accumulate.
  */
+/** One random live socket, never the inbound peer. */
+export function pickStemSocket(sockets, except, rng = Math.random) {
+  const list = [];
+  for (const s of sockets || []) {
+    if (s && s !== except) list.push(s);
+  }
+  if (!list.length) return null;
+  const n = Number(rng());
+  const i = Math.min(list.length - 1, Math.max(0, Math.floor((Number.isFinite(n) ? n : 0) * list.length)));
+  return list[i];
+}
+
+export function fluffDelayMs(rng = Math.random) {
+  const span = FLUFF_MAX_MS - FLUFF_MIN_MS;
+  const n = Number(rng());
+  const u = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0;
+  return FLUFF_MIN_MS + Math.floor(u * (span + 1));
+}
+
+/** Logs must never put remoteAddress next to dest, she1, or txid. */
+export function peerEventFields({ event, remote } = {}) {
+  return {
+    event: String(event || ''),
+    remote: remote ? 'peer' : undefined,
+  };
+}
+
+export function lineHasIpBesideIdentity(line) {
+  const s = String(line || '');
+  const ip = /remoteAddress|peerIp|"ip"\s*:|\b\d{1,3}(?:\.\d{1,3}){3}\b/.test(s);
+  const id = /she1|shear1|txid|ssa1/i.test(s);
+  return ip && id;
+}
+
 export function countSyncedOnline({ localHash = '', peers = [], includeSelf = true } = {}) {
   const want = String(localHash || '');
   const seen = new Set();
@@ -59,11 +97,15 @@ export function createP2p({
   port = P2P_PORT,
   host = '0.0.0.0',
   magic = MAGIC_TESTNET,
+  fluffDelayMs: fluffMs = null,
+  stemRng = Math.random,
 } = {}) {
   const sockets = new Set();
   const peers = new Map();
   const linking = new Set();
   const seenTx = new Set();
+  const originInvSize = new Map();
+  const fluffTimers = new Map();
   let server = null;
   let peerSeq = 0;
 
@@ -137,7 +179,29 @@ export function createP2p({
     return true;
   }
 
-  function ingestRemoteTx(tx, fromSock) {
+  function delayFluff() {
+    if (fluffMs != null) return Math.max(0, Number(fluffMs) || 0);
+    return fluffDelayMs(stemRng);
+  }
+
+  function scheduleFluff(id, tx, except) {
+    const key = String(id || '');
+    if (!key || fluffTimers.has(key)) return;
+    const t = setTimeout(() => {
+      fluffTimers.delete(key);
+      broadcast({ type: 'tx', magic, tx, stem: false }, except);
+    }, delayFluff());
+    fluffTimers.set(key, t);
+  }
+
+  function stemRelay(tx, fromSock, hops) {
+    const nextHop = (Number(hops) || 0) + 1;
+    const next = pickStemSocket(sockets, fromSock, stemRng);
+    if (next) send(next, { type: 'tx', magic, tx, stem: true, hops: nextHop });
+    return next ? 1 : 0;
+  }
+
+  function ingestRemoteTx(tx, fromSock, { stem = false, hops = 0 } = {}) {
     const id = String(tx?.id || '');
     if (!id || !rememberTxId(id)) return;
     if (typeof store.queueTx !== 'function') return;
@@ -146,7 +210,13 @@ export function createP2p({
       seenTx.delete(id);
       return;
     }
-    broadcast({ type: 'tx', magic, tx: got.tx || tx }, fromSock);
+    const payload = got.tx || tx;
+    if (stem && hops < STEM_MAX_HOPS) {
+      stemRelay(payload, fromSock, hops);
+      scheduleFluff(id, payload, fromSock);
+      return;
+    }
+    broadcast({ type: 'tx', magic, tx: payload, stem: false }, fromSock);
   }
 
   if (store && typeof store.on === 'function') {
@@ -154,7 +224,9 @@ export function createP2p({
       const id = String(tx?.id || '');
       if (!id) return;
       if (!rememberTxId(id)) return;
-      broadcast({ type: 'tx', magic, tx });
+      const n = stemRelay(tx, null, 0);
+      originInvSize.set(id, n);
+      scheduleFluff(id, tx, null);
     });
   }
 
@@ -199,7 +271,7 @@ export function createP2p({
       return;
     }
     if (msg.type === 'tx') {
-      ingestRemoteTx(msg.tx, sock);
+      ingestRemoteTx(msg.tx, sock, { stem: !!msg.stem, hops: Number(msg.hops) || 0 });
       return;
     }
     if (msg.type === 'work') {
@@ -305,6 +377,8 @@ export function createP2p({
   }
 
   function close() {
+    for (const t of fluffTimers.values()) clearTimeout(t);
+    fluffTimers.clear();
     for (const s of sockets) {
       try { s.destroy(); } catch { /* ignore */ }
     }
@@ -353,6 +427,7 @@ export function createP2p({
     sockets,
     peers,
     syncedOnline,
+    originInvSetSize: (id) => Number(originInvSize.get(String(id || '')) || 0),
     get port() { return server?.address()?.port ?? port; },
     get listening() { return Boolean(server?.listening); },
   };

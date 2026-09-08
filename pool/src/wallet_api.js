@@ -325,6 +325,37 @@ export function sealedReservePaint(store) {
   return rows;
 }
 
+/** Public explorer/stats row: kind + dest + amount + status. No she1, memo-plain, IP. */
+export function publicSurfaceRow(t) {
+  const kind = String(t?.kind || 'send');
+  const to = publicPaintDest(t?.to);
+  const from = String(t?.from || '') === 'coinbase' ? 'coinbase' : publicPaintDest(t?.from);
+  const amount = t?.amount != null ? t.amount : nanosToShe(t?.nanos);
+  const pending = t?.pending === true || t?.status === 'pending' || t?.status === '(pending)';
+  const row = {
+    id: String(t?.id || ''),
+    kind,
+    from,
+    to,
+    amount,
+    height: Number(t?.height || 0),
+    pending,
+    status: pending ? 'pending' : String(t?.status || 'confirmed'),
+  };
+  if (t?.nanos != null) row.nanos = Math.floor(Number(t.nanos) || 0);
+  if (t?.confirmations != null) row.confirmations = Number(t.confirmations) || 0;
+  if (t?.at != null) row.at = t.at;
+  return row;
+}
+
+export function publicPayloadLeaksIdentity(obj) {
+  const s = JSON.stringify(obj ?? '');
+  if (/memoPlain|memo-plain/i.test(s) && !/ABSENT/.test(s)) return true;
+  if (/"ip"\s*:|remoteAddress|peerIp/i.test(s)) return true;
+  if (/\.worker\b/i.test(s)) return true;
+  return /(?:^|[^a-z])she1|shear1/i.test(s.replace(/ssa1/gi, ''));
+}
+
 export function isExplorerPendingRow(t) {
   if (!t) return false;
   if (t.pending === true) return true;
@@ -361,7 +392,7 @@ export function explorerRecentTxs(store, limit = 30) {
     if (/she1|shear1/i.test(String(t.to || ''))) continue;
     if (t.from !== 'coinbase' && /she1|shear1/i.test(String(t.from || ''))) continue;
     seen.add(id);
-    out.push(t);
+    out.push(publicSurfaceRow(t));
   }
   return orderExplorerRecent(out, limit);
 }
@@ -568,8 +599,9 @@ export function explorerCirculation(store) {
   const holders = [...bal.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
-    .map(([, amount], i) => ({
+    .map(([dest, amount], i) => ({
       rank: i + 1,
+      dest: publicPaintDest(dest),
       amount,
       share: circulating ? amount / circulating : 0,
     }));

@@ -304,6 +304,7 @@ class ShearLedger {
   final List<ShearTx> _txs = [];
   final Set<String> _dests = {};
   final Set<String> _vaultDests = {};
+  final Set<String> _spentHistory = {};
   /// Next dest height (tip sealed height + 1).
   int tipHeight = 1;
   /// continuity_root of the sealed tip (lag-1 for the next dest).
@@ -1180,6 +1181,46 @@ class ShearLedger {
     return d;
   }
 
+  /// Continuum receive: always a newly derived ssa1. Two receives → two dests.
+  String allocateReceiveDest(String restFrame) => newDest(restFrame);
+
+  /// Send change to a newly derived dest. Never [from] and never the Reserve portal.
+  String allocateChangeDest(String restFrame, {String? from, String? portalDest}) {
+    for (var i = 0; i < 24; i++) {
+      final d = newDest(restFrame);
+      if (d != from && d != portalDest && !_isProgramVaultDest(d)) return d;
+    }
+    throw StateError('change_dest');
+  }
+
+  void rememberSpentDest(String dest) {
+    if (dest.isEmpty || !isDestAddress(dest)) return;
+    _spentHistory.add(dest);
+  }
+
+  /// True when the user pastes an ssa1 already in this wallet's spend history.
+  bool warnSpentDestPaste(String dest) => _spentHistory.contains(dest);
+
+  /// Official sheet: same-dest change and Reserve portal as Flow change cannot be signed.
+  void refuseSheetChange({
+    required String from,
+    String? to,
+    String? change,
+    String? portalDest,
+  }) {
+    if (to != null && to == from) {
+      throw ArgumentError('same_dest');
+    }
+    if (change != null && change == from) {
+      throw ArgumentError('same_dest');
+    }
+    if (portalDest != null && portalDest.isNotEmpty) {
+      if (to == portalDest || change == portalDest) {
+        throw ArgumentError('portal_change');
+      }
+    }
+  }
+
   void selectDest(int index) {
     if (index < 0 || index >= destCount) return;
     destIndex = index;
@@ -1297,6 +1338,7 @@ class ShearLedger {
     String? choice,
     int? currentEpoch,
     int? epochStartMs,
+    String? change,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
     if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
@@ -1321,6 +1363,15 @@ class ShearLedger {
       }
     }
     if (spendable(src) < needShe) throw StateError('insufficient');
+    if (sendKind == 'send') {
+      String? portal;
+      if (restFrame != null && (viewSecret ?? '').isNotEmpty) {
+        portal = vaultDest(restFrame, viewKey: viewSecret!);
+      }
+      refuseSheetChange(from: src, to: to, change: change, portalDest: portal);
+      rememberSpentDest(src);
+      rememberSpentDest(to);
+    }
     Map<String, dynamic>? memoCt;
     if (memo != null && memo.isNotEmpty) {
       memoCt = await memoSeal(to, memo);

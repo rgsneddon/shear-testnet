@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
 import { PI_SHE_NANOS } from '../../crypto/asert.js';
-import { explorerRecentTxs, orderExplorerRecent } from '../../pool/src/wallet_api.js';
+import { explorerRecentTxs, orderExplorerRecent, publicPayloadLeaksIdentity, publicSurfaceRow } from '../../pool/src/wallet_api.js';
 import { createStore } from '../../node/src/store.js';
 import { createPool } from '../../pool/src/pool.js';
 
@@ -42,6 +42,9 @@ describe('explorer pending paint', () => {
     assert.doesNotMatch(explorer, /portal id|viewKey|memoPlain/);
     assert.match(explorer, /orderRecentTxs\(hist\.txs/);
     assert.doesNotMatch(explorer, /hist\.txs \|\| \[\]\)\.slice\(\)\.sort/);
+    assert.match(explorer, /reserve-chip/);
+    assert.match(explorer, />Reserve</);
+    assert.doesNotMatch(explorer, /memoPlain|memo-plain/);
   });
 
   it('30 sealed blocks plus a mempool lock still paint (pending) first after the page transform', () => {
@@ -124,6 +127,12 @@ describe('explorer pending paint', () => {
       assert.equal(stats.recentTxs[0].id, 'lock-live');
       assert.equal(stats.recentTxs[0].pending, true);
       assert.ok(stats.recentTxs.length <= 10);
+      assert.equal(publicPayloadLeaksIdentity(stats.recentTxs), false);
+      const row = publicSurfaceRow(stats.recentTxs[0]);
+      assert.ok(String(row.to).startsWith('ssa1'));
+      assert.equal(row.kind, 'lock');
+      assert.ok(row.amount != null);
+      assert.equal(row.memoPlain, undefined);
     } finally {
       pool.close();
     }

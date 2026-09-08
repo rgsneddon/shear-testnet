@@ -684,6 +684,76 @@ void main() {
     expect(unlocked.address, id.address);
   });
 
+  test('two Continuum receives yield two dests', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..viewSecret = id.viewKey;
+    final a = ledger.allocateReceiveDest(id.address);
+    final b = ledger.allocateReceiveDest(id.address);
+    expect(a.startsWith('ssa1'), isTrue);
+    expect(b.startsWith('ssa1'), isTrue);
+    expect(a, isNot(b));
+    expect(isDestAddress(a), isTrue);
+    expect(isDestAddress(b), isTrue);
+  });
+
+  test('change-to-same-dest cannot be signed in the official sheet', () async {
+    final id = createIdentity();
+    final ledger = ShearLedger()..viewSecret = id.viewKey;
+    final from = ledger.currentDest(id.address);
+    ledger.creditHash(id.address, hashes: 0);
+    ledger.confirmRound(address: id.address, pot: 1, height: 1);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    expect(
+      () => ledger.refuseSheetChange(from: from, to: from),
+      throwsA(isA<ArgumentError>()),
+    );
+    expect(
+      () => ledger.refuseSheetChange(from: from, change: from),
+      throwsA(isA<ArgumentError>()),
+    );
+    await expectLater(
+      ledger.send(from: from, to: from, amount: 0.1, local: true),
+      throwsA(isA<ArgumentError>()),
+    );
+  });
+
+  test('Reserve portal dest is refused as Flow change', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..viewSecret = id.viewKey;
+    final from = ledger.currentDest(id.address);
+    final portal = vaultDest(id.address, viewKey: id.viewKey)!;
+    expect(portal.startsWith('ssa1'), isTrue);
+    expect(portal, isNot(from));
+    expect(
+      () => ledger.refuseSheetChange(from: from, to: portal, portalDest: portal),
+      throwsA(isA<ArgumentError>()),
+    );
+    expect(
+      () => ledger.refuseSheetChange(from: from, change: portal, portalDest: portal),
+      throwsA(isA<ArgumentError>()),
+    );
+    final change = ledger.allocateChangeDest(id.address, from: from, portalDest: portal);
+    expect(change, isNot(from));
+    expect(change, isNot(portal));
+    expect(change.startsWith('ssa1'), isTrue);
+  });
+
+  test('pasting an ssa1 already in spend history warns', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..viewSecret = id.viewKey;
+    final dest = ledger.currentDest(id.address);
+    expect(ledger.warnSpentDestPaste(dest), isFalse);
+    ledger.rememberSpentDest(dest);
+    expect(ledger.warnSpentDestPaste(dest), isTrue);
+  });
+
+  test('FlyClient source defaults to 127.0.0.1 before the public seed', () {
+    final fly = ShearFlyClient(jitter: Duration.zero);
+    expect(fly.seeds.first.contains('127.0.0.1'), isTrue);
+    expect(fly.seeds, contains(kLocalPoolHttp));
+    expect(fly.seeds, contains(kLocalNodeRpc));
+  });
+
   test('CTF dest is she1 with password C, not C-from-S', () {
     final a = createIdentity();
     final b = createIdentity();

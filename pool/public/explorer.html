@@ -51,6 +51,11 @@
     th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.88rem; overflow-wrap:anywhere; word-break:break-word; }
     .table-wrap { width:100%; max-width:100%; overflow:visible; }
     #ex-txs td:nth-child(2) { white-space: nowrap; }
+    .reserve-chip {
+      display: inline-block; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em;
+      text-transform: uppercase; color: #0d5c4d; background: #d4f0e8;
+      padding: 1px 6px; margin-right: 6px;
+    }
     .mono { font-family: ui-monospace, Consolas, monospace; font-size:.88rem; }
     .pulse { color:var(--green); font-size:.8rem; }
     .she-private {
@@ -209,7 +214,7 @@
       <h2>Top holders</h2>
       <table id="ex-holders">
         <thead>
-          <tr><th>#</th><th>Amount</th><th>Share</th></tr>
+          <tr><th>#</th><th>Dest</th><th>Amount</th><th>Share</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -353,8 +358,12 @@
             const st = t.status || blockStatus(t, tipHeight, spendableNeed);
             const pendingLabel = st === 'pending' || st === '(pending)' ? '(pending)' : 'confirmed';
             const kind = String(t.kind || 'block');
+            const reserve = kind === 'lock' || kind === 'vote';
+            const kindCell = reserve
+              ? '<span class="reserve-chip">Reserve</span>' + esc(kind)
+              : esc(kind);
             return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
-              esc(fmtLocalTs(t.at)) + '</td><td>' + esc(kind) + '</td><td>' +
+              esc(fmtLocalTs(t.at)) + '</td><td>' + kindCell + '</td><td>' +
               esc(pendingLabel) + '</td><td class="mono">' + esc(t.from || 'coinbase') +
               '</td><td class="mono">' + esc(shortDest(t.to)) + '</td><td>' +
               esc(fmtShe(t.amount)) + '</td></tr>';
@@ -385,8 +394,8 @@
       if (!body) return;
       const holders = Array.isArray(circ.holders) ? circ.holders : [];
       body.innerHTML = holders.length
-        ? holders.map((h) => '<tr><td>'+esc(h.rank)+'</td><td>'+esc(fmtShe(h.amount))+'</td><td>'+((Number(h.share)||0)*100).toFixed(2)+'%</td></tr>').join('')
-        : '<tr><td colspan="3">No holders yet.</td></tr>';
+        ? holders.map((h) => '<tr><td>'+esc(h.rank)+'</td><td class="mono">'+esc(shortDest(h.dest))+'</td><td>'+esc(fmtShe(h.amount))+'</td><td>'+((Number(h.share)||0)*100).toFixed(2)+'%</td></tr>').join('')
+        : '<tr><td colspan="4">No holders yet.</td></tr>';
     }
     async function loadRecent() {
       const stats = await fetchJson('/stats');

@@ -5,6 +5,9 @@ import 'dart:math';
 /// Quiet FlyClient node-find. The wallet is not a full node; it mirrors
 /// headers and stats the node relays. Not a 1s node-scan and not an archive.
 const kFlyDefaultSeed = 'https://pool.shear.digital';
+/// Prefer a local node/pool when one is running (0.28 / kit source).
+const kLocalPoolHttp = 'http://127.0.0.1:8088';
+const kLocalNodeRpc = 'http://127.0.0.1:18332';
 
 /// Logarithmic header heights: 1, 2, 4, … tip.
 List<int> flyclientSampleHeights(int tip) {
@@ -56,7 +59,7 @@ class ShearFlyClient {
     Random? random,
   })  : seeds = List<String>.unmodifiable(_dedupe([
           if (userUrl != null && userUrl.trim().isNotEmpty) userUrl,
-          if (seeds == null) kFlyDefaultSeed else ...seeds,
+          if (seeds == null) ...[kLocalPoolHttp, kLocalNodeRpc, kFlyDefaultSeed] else ...seeds,
         ])),
         _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8)),
         _rng = random ?? Random();

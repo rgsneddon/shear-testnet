@@ -33,7 +33,7 @@ import { roundActualHashes } from '../../pool/src/hash_credit.js';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { newIdentity, destOpeningFromView, hash20FromAddress, payoutDest } from '../../crypto/address.js';
-import { vaultDest } from '../../crypto/flow_sheet.js';
+import { vaultDest, destForLogin } from '../../crypto/flow_sheet.js';
 import { matureSpendableNanos } from '../../crypto/spend.js';
 import { levyNanos } from '../../crypto/levy.js';
 
@@ -205,6 +205,27 @@ describe('node Reserve vault', () => {
         assert.match(line, /do not use 365/, `${rel}: ${line}`);
       }
     }
+  });
+
+  it('GATE still accepts a reused dest', () => {
+    const alice = newIdentity();
+    const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reuse-dest-'));
+    const store = createStore(dir);
+    const mk = (id) => ({
+      id,
+      kind: 'send',
+      from: dest,
+      to: dest,
+      nanos: 2,
+      fee: levyNanos(2, { depth: 1e9 }),
+      vout: [{ address: dest, nanos: 2, kind: 'send' }],
+    });
+    const a = store.queueTx(mk('reuse-a'));
+    const b = store.queueTx(mk('reuse-b'));
+    assert.equal(a.ok, true, a.reason);
+    assert.equal(b.ok, true, b.reason);
+    assert.equal(a.tx?.to || dest, dest);
   });
 
   it('Reserve lock then vote in mempool paint (pending) before the next block', { timeout: 600_000 }, async () => {
