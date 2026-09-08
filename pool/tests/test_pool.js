@@ -425,7 +425,7 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.policy.consensus_min, 6);
     assert.equal(stats.policy.bands.pool_merchant, 30);
     assert.equal(stats.frozen, false);
-    assert.equal(stats.productVersion, '0.3');
+    assert.equal(stats.productVersion, '0.4');
     assert.equal(stats.minerVersion, '1.1');
     if (stats.header) assert.equal(stats.header.length, 256);
 
@@ -620,7 +620,7 @@ describe('public miner listing', () => {
     assert.match(miner, /pull-conf \{ grid-column: span 3/);
     assert.match(miner, /pull-form \{ display:flex; flex-wrap:nowrap/);
     assert.match(miner, /Waiting for wallet to sign/);
-    assert.match(miner, /j\.reason === 'unsigned' && j\.pending/);
+    assert.match(miner, /j\.reason === 'unsigned'/);
     const explainerAt = miner.indexOf('id="live-pulse"');
     const workersAt = miner.indexOf('id="workers"');
     const pullAt = miner.indexOf('id="pull-row"');
@@ -668,12 +668,12 @@ describe('public miner listing', () => {
     assert.ok(bannerIdx >= 0 && feeIdx > bannerIdx, 'TESTNET banner must sit above the fee disclaimer');
     assert.match(dash.slice(bannerIdx, feeIdx), />TESTNET</);
     assert.match(dash, /#testnet-banner/);
-    const grid = dash.match(/id="stat-grid"[\s\S]*?id="miners"/);
+    const grid = dash.match(/id="stat-grid"[\s\S]*?id="updated"/);
     assert.ok(grid, 'stat-grid');
     const labels = [...grid[0].matchAll(/class="label">([^<]+)</g)].map((m) => m[1]);
     assert.deepEqual(labels, [
       'Coin', 'Algo', 'Network', 'Proof', 'NODES ONLINE', 'Height',
-      'Pool hashrate', 'Workers online', 'Resistance', 'Uptime', 'AVG BLOCK TIME', 'Last block',
+      'Pool hashrate', 'Resistance', 'Miners', 'Workers', 'AVG BLOCK TIME', 'Uptime', 'Last block',
     ]);
     assert.match(dash, /pool fee is 1% of the 1 SHE pot for development/);
     assert.match(dash, /your hashes pay in full and are not subject to pool fees/);

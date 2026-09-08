@@ -35,15 +35,6 @@ function readLine(sock, timeoutMs = 8000) {
   });
 }
 
-async function readResult(sock, id, timeoutMs = 8000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const msg = await readLine(sock, Math.max(250, deadline - Date.now()));
-    if (msg && Number(msg.id) === Number(id)) return msg;
-  }
-  throw new Error('no result for id ' + id);
-}
-
 async function login(port, login) {
   const sock = net.connect(port, '127.0.0.1');
   await new Promise((res, rej) => {
@@ -60,11 +51,9 @@ async function login(port, login) {
   return { sock, job: hello.job };
 }
 
-function findNonces(job, n, { block = false, skip = [] } = {}) {
-  const seen = new Set([...skip].map((x) => String(x)));
+function findNonces(job, n, { block = false } = {}) {
   const out = [];
   for (let nonce = 0n; nonce < 2_000_000n && out.length < n; nonce += 1n) {
-    if (seen.has(String(nonce))) continue;
     const s = scoreShare({ job, nonce });
     if (!s.ok) continue;
     if (block && !s.block) continue;
@@ -95,43 +84,34 @@ describe('round hash bonuses', () => {
       });
       pool.stratum.on('error', reject);
     });
-    let a;
-    let b;
-    try {
     const port = pool.stratum.address().port;
-    a = await login(port, destA + '.a');
-    b = await login(port, destB + '.b');
+    const a = await login(port, destA + '.a');
+    const b = await login(port, destB + '.b');
     const job1 = a.job;
     const nA = 3;
     const nB = 2;
     const aliceShares = findNonces(job1, nA, { block: false });
-    const bobShares = findNonces(job1, nB, { block: false, skip: aliceShares });
+    const bobShares = findNonces(job1, nB, { block: false });
     assert.equal(aliceShares.length, nA);
     assert.equal(bobShares.length, nB);
     for (const nonce of aliceShares) {
       const s = scoreShare({ job: job1, nonce });
       send(a.sock, { id: 2, method: 'submit', params: { jobId: job1.jobId, nonce: String(nonce), hash: s.hash } });
-      const r = await readResult(a.sock, 2);
+      const r = await readLine(a.sock);
       assert.equal(r.result?.status, 'OK');
     }
     for (const nonce of bobShares) {
       const s = scoreShare({ job: job1, nonce });
       send(b.sock, { id: 2, method: 'submit', params: { jobId: job1.jobId, nonce: String(nonce), hash: s.hash } });
-      const r = await readResult(b.sock, 2);
+      const r = await readLine(b.sock);
       assert.equal(r.result?.status, 'OK');
     }
     assert.equal(pool.stats.blocks, 0);
     const win = findNonces(job1, 1, { block: true })[0];
     assert.ok(win != null);
     send(a.sock, { id: 3, method: 'submit', params: { jobId: job1.jobId, nonce: String(win), hash: scoreShare({ job: job1, nonce: win }).hash } });
-    const sealed = await readResult(a.sock, 3, 20000).catch(() => null);
-    if (!sealed || sealed.result?.status !== 'OK') {
-      const t0 = Date.now();
-      while (pool.stats.blocks < 1 && Date.now() - t0 < 20000) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-    }
-    assert.equal(pool.stats.blocks >= 1, true, 'first block should seal');
+    const sealed = await readLine(a.sock);
+    assert.equal(sealed.result?.status, 'OK');
     let job2 = null;
     for (let i = 0; i < 5 && !job2; i += 1) {
       const maybe = await readLine(a.sock, 3000).catch(() => null);
@@ -147,7 +127,7 @@ describe('round hash bonuses', () => {
     const win2 = findNonces(job2, 1, { block: true })[0];
     assert.ok(win2 != null);
     send(a.sock, { id: 4, method: 'submit', params: { jobId: job2.jobId, nonce: String(win2), hash: scoreShare({ job: job2, nonce: win2 }).hash } });
-    const sealed2 = await readResult(a.sock, 4);
+    const sealed2 = await readLine(a.sock);
     assert.equal(sealed2.result?.status, 'OK');
     const paid = pool.store.blocks[pool.store.blocks.length - 1];
     const split = coinbaseSplit(paid.txs[0]);
@@ -156,10 +136,8 @@ describe('round hash bonuses', () => {
     assert.notEqual(destA, alice.address);
     assert.equal(split.hashByMiner[destA], (nA + 1) * 16 * HASH_BONUS_NANOS);
     assert.equal(split.hashByMiner[destB], nB * 16 * HASH_BONUS_NANOS);
-    } finally {
-      try { a?.sock?.end(); } catch { /* */ }
-      try { b?.sock?.end(); } catch { /* */ }
-      try { pool.close(); } catch { /* */ }
-    }
+    a.sock.end();
+    b.sock.end();
+    pool.close();
   });
 });

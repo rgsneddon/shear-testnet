@@ -493,7 +493,6 @@ export function createStore(dir, {
 
   function completeAppend(check, block) {
     if (!check.ok) return check;
-    try {
     const prev = tip();
     const stored = leanBlock({
       ...block,
@@ -532,9 +531,6 @@ export function createStore(dir, {
     emit('tip', { hash: hex32(stored.hash), height: stored.height });
     if (check.evmSession) evmSession = check.evmSession;
     return { ok: true, block: stored, evmSession: check.evmSession || evmSession };
-    } catch (e) {
-      return { ok: false, reason: 'append', error: String(e?.message || e) };
-    }
   }
 
   function queueTx(tx) {

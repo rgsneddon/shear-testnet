@@ -1402,7 +1402,7 @@ export function createPool({
   let statsTimer = null;
   function paintStatsSnap() {
     try {
-      const rows = openRoundHashRows(miners, Number(store.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS))
+      const rows = openRoundHashRows(miners, store.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS)
         .map((r) => ({ tag: r.tag, count: r.count }));
       if (typeof store.noteOpenRound === 'function') store.noteOpenRound(rows, { source: 'local' });
       if (typeof p2pNet?.publishWork === 'function') p2pNet.publishWork(rows);
@@ -1430,7 +1430,7 @@ export function createPool({
       network: MAGIC_TESTNET,
       targetBlockIntervalMs: TARGET_BLOCK_INTERVAL_MS,
       blockSubsidyNanos: BLOCK_SUBSIDY_NANOS,
-      hashBonusNanos: Number(store.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS),
+      hashBonusNanos: store.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS,
       hashTxLive: HASH_TX_LIVE,
       bookLawFingerprint: consensusFingerprint(),
       ...consensusLaw(),
