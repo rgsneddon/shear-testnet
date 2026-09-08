@@ -121,28 +121,41 @@ export function sealedExplorerRows(block) {
   }
   for (const tx of txs.slice(1)) {
     const from = tx.from || tx.vin?.[0]?.address;
-    const to = tx.to || tx.vout?.[0]?.address;
-    const nanos = Number(tx.nanos || tx.vout?.[0]?.nanos || 0);
-    const kind = tx.kind || tx.vout?.[0]?.kind || (tx.mint ? 'reserve' : 'transfer');
-    rows.push({
-      id: tx.id || `${hid}-tx`,
-      kind,
-      from,
-      to: kind === 'burn' ? '' : to,
-      nanos,
-      height,
-      confirmed: true,
-      memo: !!(tx.memoCt || tx.vout?.[0]?.memoCt),
-      memoCt: tx.memoCt || tx.vout?.[0]?.memoCt,
-    });
+    const txId = tx.id || `${hid}-tx`;
+    const vouts = Array.isArray(tx.vout) && tx.vout.length
+      ? tx.vout
+      : [{
+          address: tx.to,
+          nanos: Number(tx.nanos || 0),
+          kind: tx.kind || (tx.mint ? 'reserve' : 'transfer'),
+          memoCt: tx.memoCt,
+        }];
+    for (let i = 0; i < vouts.length; i += 1) {
+      const o = vouts[i];
+      const kind = o.kind || tx.kind || (tx.mint ? 'reserve' : 'transfer');
+      const to = o.address || (i === 0 ? tx.to : '');
+      const nanos = Number(o.nanos != null ? o.nanos : (i === 0 ? tx.nanos || 0 : 0));
+      rows.push({
+        id: `${txId}-vout-${i}`,
+        kind,
+        from,
+        to: kind === 'burn' ? '' : to,
+        nanos,
+        height,
+        confirmed: true,
+        memo: !!(tx.memoCt || o.memoCt),
+        memoCt: tx.memoCt || o.memoCt,
+      });
+    }
     const fee = Math.floor(Number(tx.fee || 0));
-    if ((kind === 'lock' || kind === 'vote') && fee > 0) {
-      const levyFrom = kind === 'vote'
+    const kind0 = tx.kind || vouts[0]?.kind || (tx.mint ? 'reserve' : 'transfer');
+    if (fee > 0) {
+      const levyFrom = kind0 === 'vote'
         ? String(tx.payer || tx.vin?.[0]?.address || '')
         : String(from || '');
       if (levyFrom) {
         rows.push({
-          id: `${tx.id || `${hid}-tx`}-levy`,
+          id: `${txId}-levy`,
           kind: 'levy',
           from: levyFrom,
           to: '',

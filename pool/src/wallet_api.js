@@ -22,7 +22,7 @@ import {
   verifyPoolWithdrawOffchain,
   containsShe1,
 } from '../../crypto/levy.js';
-import { flowSendNeedsOpen, verifyDestOpening, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen } from '../../crypto/spend.js';
+import { flowSendNeedsOpen, verifyDestOpening, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, matureSpendableNanos, mempoolDebitNanos } from '../../crypto/spend.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
@@ -168,11 +168,11 @@ export function reconstructOwner(store, address) {
   }
   const tipH = Number(store?.tip?.()?.height || (store.blocks || []).at(-1)?.height || 0);
   const rec = rowsToHistory(rows, dests, tipH);
-  let nanos = rec.spendableNanos;
-  const destSet = new Set(dests);
-  for (const tx of store?.mempool || []) {
-    const d = fundedDebit(tx);
-    if (d && destSet.has(d.from)) nanos -= d.nanos;
+  const mempool = store?.mempool || [];
+  let nanos = 0;
+  for (const d of dests) {
+    nanos += matureSpendableNanos(rows, d, tipH);
+    nanos -= mempoolDebitNanos(mempool, d);
   }
   if (nanos < 0) nanos = 0;
   return { ...rec, spendableNanos: nanos, spendable: nanosToShe(nanos) };
@@ -232,7 +232,9 @@ function blockAtMs(block) {
 /** One row per confirmed block. Sum of sealed coinbase (pot + hash bonus). No in-round hashes. */
 function confirmedBlockRow(b) {
   const rows = sealedExplorerRows(b);
-  const nanos = rows.reduce((a, r) => a + Number(r.nanos || 0), 0);
+  const nanos = rows
+    .filter((r) => r.from === 'coinbase' || r.kind === 'coinbase' || r.kind === 'hash')
+    .reduce((a, r) => a + Number(r.nanos || 0), 0);
   const hid = Buffer.isBuffer(b?.hash)
     ? b.hash.toString('hex')
     : String(b?.hash || b?.height || '');

@@ -73,7 +73,7 @@ describe('chronoflux prune + collate', () => {
     const rows = sealedExplorerRows(pruned);
     assert.equal(rows.length, 3);
     assert.ok(rows.some((r) => r.kind === 'coinbase' && r.nanos === 100_000_000_000));
-    assert.ok(rows.some((r) => r.id === 'send-1'));
+    assert.ok(rows.some((r) => r.id === 'send-1-vout-0'));
     assert.throws(() => pruneSamples({ height: 1, txs: [] }), /prune_refuses_empty_txs/);
   });
 
@@ -127,5 +127,44 @@ describe('chronoflux prune + collate', () => {
     assert.equal(lean.samples.length, 2);
     assert.equal(lean.txs[0].samples, undefined);
     assert.ok(JSON.stringify(lean.samples).length < JSON.stringify(fat).length / 50);
+  });
+
+  it('emits one explorer row per body vout so leftover is not left on from', () => {
+    const from = 'ssa1from';
+    const to = 'ssa1to';
+    const change = 'ssa1change';
+    const rows = sealedExplorerRows({
+      height: 9,
+      hash: 'bb',
+      txs: [
+        { coinbase: true, vout: [{ address: from, nanos: 100, kind: 'pot' }] },
+        {
+          id: 'pay-1',
+          kind: 'send',
+          from,
+          to,
+          nanos: 40,
+          fee: 5,
+          vout: [
+            { address: to, nanos: 40, kind: 'send' },
+            { address: change, nanos: 55, kind: 'send' },
+          ],
+        },
+      ],
+    });
+    const pay = rows.find((r) => r.id === 'pay-1-vout-0');
+    const leftover = rows.find((r) => r.id === 'pay-1-vout-1');
+    const levy = rows.find((r) => r.id === 'pay-1-levy');
+    assert.equal(pay.to, to);
+    assert.equal(pay.from, from);
+    assert.equal(pay.nanos, 40);
+    assert.equal(pay.kind, 'send');
+    assert.equal(leftover.to, change);
+    assert.equal(leftover.from, from);
+    assert.equal(leftover.nanos, 55);
+    assert.equal(leftover.kind, 'send');
+    assert.equal(levy.kind, 'levy');
+    assert.equal(levy.from, from);
+    assert.equal(levy.nanos, 5);
   });
 });

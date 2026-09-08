@@ -28,12 +28,12 @@ import {
   VOTE_INCREASE,
 } from '../../crypto/reserve_vault.js';
 import { sampleCapExceeded, sampleCountCap } from '../src/chain.js';
-import { explorerRecentTxs } from '../../pool/src/wallet_api.js';
+import { explorerRecentTxs, reconstructOwner } from '../../pool/src/wallet_api.js';
 import { roundActualHashes } from '../../pool/src/hash_credit.js';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { newIdentity, destOpeningFromView, hash20FromAddress, payoutDest } from '../../crypto/address.js';
-import { vaultDest, destForLogin } from '../../crypto/flow_sheet.js';
+import { vaultDest, destForLogin, destAtIndex } from '../../crypto/flow_sheet.js';
 import { matureSpendableNanos } from '../../crypto/spend.js';
 import { levyNanos } from '../../crypto/levy.js';
 
@@ -289,9 +289,90 @@ describe('node Reserve vault', () => {
         now: t0 + (5 + SPENDABLE_CONFIRMATIONS + i) * 90_000,
       });
     }
-    const sealed = explorerRecentTxs(store).find((t) => t.id === 'lock-pend');
+    const sealed = explorerRecentTxs(store).find((t) => String(t.id).startsWith('lock-pend'));
     assert.ok(sealed);
     assert.equal(sealed.status, 'confirmed');
     assert.equal(sealed.pending, false);
+  });
+
+  it('change vout leftover reconstructs onto the change dest, not from', { timeout: 600_000 }, async () => {
+    const alice = newIdentity();
+    const bob = newIdentity();
+    const minerId = newIdentity();
+    const destA = payoutDest(alice.paymentCode);
+    const destC = destAtIndex(alice.address, { index: 1, viewKey: alice.viewKey });
+    const destB = destForLogin(bob.address, { viewKey: bob.viewKey, height: 1 });
+    const minerDest = destForLogin(minerId.address, { viewKey: minerId.viewKey, height: 1 });
+    const open = destOpeningFromView(alice.viewKey, hash20FromAddress(alice.address), 0);
+    assert.ok(destA.startsWith('ssa1'));
+    assert.ok(destC.startsWith('ssa1'));
+    assert.ok(destB.startsWith('ssa1'));
+    assert.notEqual(destA, destC);
+    assert.notEqual(destA, destB);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-change-vout-'));
+    const store = createStore(dir);
+    const t0 = 1_700_000_000_000;
+    await mineOne(store, destA, { bits: LIVE_MIN_BITS, now: t0 });
+    for (let i = 1; i < SPENDABLE_CONFIRMATIONS; i += 1) {
+      await mineOne(store, minerDest, { bits: LIVE_MIN_BITS, now: t0 + i * 90_000 });
+    }
+    const fundH = Number(store.tip().height);
+    const before = matureSpendableNanos(store.historyFor(destA), destA, fundH);
+    assert.ok(before >= NANOS_PER_SHE, `funded dest A ${before}`);
+
+    const pay = Math.floor(0.1 * NANOS_PER_SHE);
+    const fee = levyNanos(pay);
+    const leftover = before - pay - fee;
+    assert.ok(leftover > 0, `leftover ${leftover}`);
+    const queued = store.queueTx({
+      id: 'flow-change-1',
+      kind: 'send',
+      from: destA,
+      to: destB,
+      nanos: pay,
+      fee,
+      maxLevy: fee,
+      open,
+      vin: [{ address: destA }],
+      vout: [
+        { address: destB, nanos: pay, kind: 'send' },
+        { address: destC, nanos: leftover, kind: 'send' },
+      ],
+    });
+    assert.equal(queued.ok, true, queued.reason);
+
+    await mineOne(store, minerDest, {
+      bits: LIVE_MIN_BITS,
+      now: t0 + SPENDABLE_CONFIRMATIONS * 90_000,
+    });
+    const sealedH = Number(store.tip().height);
+    assert.equal(matureSpendableNanos(store.historyFor(destA), destA, sealedH), 0);
+    assert.equal(reconstructOwner(store, destA).spendableNanos, 0);
+    assert.equal(reconstructOwner(store, destC).spendableNanos, 0);
+
+    const payRow = store.historyFor(destB).find((r) => r.to === destB && Number(r.nanos) === pay);
+    const changeRow = store.historyFor(destC).find((r) => r.to === destC && Number(r.nanos) === leftover);
+    assert.ok(payRow, JSON.stringify(store.historyFor(destB)));
+    assert.ok(changeRow, JSON.stringify(store.historyFor(destC)));
+    assert.ok(String(payRow.to).startsWith('ssa1'));
+    assert.ok(String(changeRow.to).startsWith('ssa1'));
+    assert.equal(payRow.kind, 'send');
+    assert.equal(changeRow.kind, 'send');
+    assert.equal(payRow.from, destA);
+    assert.equal(changeRow.from, destA);
+    assert.equal(/she1|shear1|memoPlain/i.test(JSON.stringify([payRow, changeRow])), false);
+
+    for (let i = 1; i <= SPENDABLE_CONFIRMATIONS; i += 1) {
+      await mineOne(store, minerDest, {
+        bits: LIVE_MIN_BITS,
+        now: t0 + (SPENDABLE_CONFIRMATIONS + i) * 90_000,
+      });
+    }
+    const matureH = Number(store.tip().height);
+    assert.equal(matureSpendableNanos(store.historyFor(destA), destA, matureH), 0);
+    assert.equal(reconstructOwner(store, destA).spendableNanos, 0);
+    assert.equal(matureSpendableNanos(store.historyFor(destC), destC, matureH), leftover);
+    assert.equal(reconstructOwner(store, destC).spendableNanos, leftover);
   });
 });

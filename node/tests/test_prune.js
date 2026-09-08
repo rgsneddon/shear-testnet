@@ -110,8 +110,8 @@ describe('node chain is lean, light, scalable, prunable', () => {
 
     const histAlice = reconstructOwner(store, destA);
     const histBob = reconstructOwner(store, destB);
-    assert.ok(histAlice.txs.some((t) => t.id === 'send-forever'));
-    assert.ok(histBob.txs.some((t) => t.id === 'send-forever'));
+    assert.ok(histAlice.txs.some((t) => String(t.id).startsWith('send-forever')));
+    assert.ok(histBob.txs.some((t) => String(t.id).startsWith('send-forever')));
     assert.ok(histAlice.txs.some((t) => t.kind === 'hash' || t.kind === 'coinbase'));
 
     const buriedCheck = verifyBlock(buried, null, { buried: true });
@@ -119,6 +119,6 @@ describe('node chain is lean, light, scalable, prunable', () => {
 
     const reopened = createStore(dir, { pruneAfter: 2 });
     const again = reconstructOwner(reopened, destB);
-    assert.ok(again.txs.some((t) => t.id === 'send-forever'));
+    assert.ok(again.txs.some((t) => String(t.id).startsWith('send-forever')));
   });
 });
