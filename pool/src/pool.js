@@ -29,7 +29,7 @@ import { poolFeeDest, levyNanos, mempoolDepthBytes, poolWithdrawTx, verifyPoolWi
 import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
 import { createPullBook, PULL_COOLDOWN_MS } from './pull_book.js';
 import { createStore } from '../../node/src/store.js';
-import { poolRecentBlockTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
+import { explorerRecentTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import {
   clampShareBits,
@@ -1464,7 +1464,7 @@ export function createPool({
       nodesOnline: nodesOnline(),
       uptimeMs: Date.now() - stats.started,
       workers,
-      recentTxs: poolRecentBlockTxs(store, 10),
+      recentTxs: explorerRecentTxs(store, 10),
     };
   }
 

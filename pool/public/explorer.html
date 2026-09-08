@@ -319,6 +319,28 @@
       const confs = (h >= 1 && tipH >= h) ? (tipH - h + 1) : 0;
       return confs >= n ? 'confirmed' : 'pending';
     }
+    function isPendingRow(t) {
+      if (!t) return false;
+      if (t.pending === true) return true;
+      const st = String(t.status || '');
+      if (st === 'pending' || st === '(pending)') return true;
+      const kind = String(t.kind || '');
+      return Number(t.height) === 0 && (kind === 'lock' || kind === 'vote');
+    }
+    function orderRecentTxs(txs, limit) {
+      const list = Array.isArray(txs) ? txs.slice() : [];
+      const pending = [];
+      const sealed = [];
+      for (let i = 0; i < list.length; i += 1) {
+        if (isPendingRow(list[i])) pending.push(list[i]);
+        else sealed.push(list[i]);
+      }
+      sealed.sort(function (a, b) {
+        return Number(b.height) - Number(a.height);
+      });
+      const n = Math.max(1, Math.floor(Number(limit) || 30));
+      return pending.concat(sealed).slice(0, n);
+    }
     function paintTxs(txs, status) {
       const body = document.querySelector('#ex-txs tbody');
       const st = document.getElementById('tx-status');
@@ -388,9 +410,7 @@
       filled = true;
       const hist = await fetchJson('/explorer/recent').catch(function () { return { txs: [] }; });
       const circ = await fetchJson('/explorer/circulation').catch(function () { return { holders: [] }; });
-      const recent = (hist.txs || []).slice().sort(function (a, b) {
-        return Number(b.height) - Number(a.height);
-      }).slice(0, 30);
+      const recent = orderRecentTxs(hist.txs || [], 30);
       paintTxs(recent, '');
       paintHolders(circ);
     }

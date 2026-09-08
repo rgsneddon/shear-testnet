@@ -518,13 +518,19 @@ export function withdraw({ state, dest, nowMs, payout } = {}) {
   }
   state.totalLockedNanos = asBig(state.totalLockedNanos) - asBig(principal);
   if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;
-  if (p.vote === VOTE_INCREASE) state.votes.increase -= 1;
-  if (p.vote === VOTE_DECREASE) state.votes.decrease -= 1;
-  if (p.vote === VOTE_HOLD) state.votes.hold -= 1;
+  if (Number(p.voteEpoch || 0) === Number(state.currentEpoch || 0)) {
+    if (p.vote === VOTE_INCREASE && Number(state.votes.increase) > 0) state.votes.increase -= 1;
+    if (p.vote === VOTE_DECREASE && Number(state.votes.decrease) > 0) state.votes.decrease -= 1;
+    if (p.vote === VOTE_HOLD && Number(state.votes.hold) > 0) state.votes.hold -= 1;
+  }
+  if (Number(state.votes.increase) < 0) state.votes.increase = 0;
+  if (Number(state.votes.decrease) < 0) state.votes.decrease = 0;
+  if (Number(state.votes.hold) < 0) state.votes.hold = 0;
   p.staked = 0n;
   p.idle = 0n;
   p.joined = false;
   p.vote = null;
+  p.voteEpoch = 0;
   p.payout = null;
   return {
     ok: true,

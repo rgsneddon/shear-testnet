@@ -82,4 +82,24 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(view.votesIncrease, 1);
     assert.notEqual(view.votesIncrease + view.votesDecrease + view.votesHold, 0);
   });
+
+  it('withdraw after a new epoch opens does not decrement the new piles', async () => {
+    const s = await bootReserveEvm();
+    const t0 = 1_700_000_000_000;
+    assert.equal((await callReserve(s, encodeDeposit(destA, PI_SHE_NANOS, t0))).ok, true);
+    assert.equal((await callReserve(s, encodeVote(destA, 1, t0 + 2))).ok, true);
+    const end1 = t0 + RESERVE_EPOCH_MS;
+    assert.equal((await callReserve(s, encodeEnact(end1))).ok, true);
+    assert.equal((await callReserve(s, encodeDeposit(destB, PI_SHE_NANOS, end1 + 1))).ok, true);
+    assert.equal((await callReserve(s, encodeVote(destB, 3, end1 + 2))).ok, true);
+    const end2 = end1 + 1 + RESERVE_EPOCH_MS;
+    assert.equal((await callReserve(s, encodeEnact(end2))).ok, true);
+    assert.equal((await callReserve(s, encodeWithdraw(destA, end2))).ok, true);
+    const view = decodePublicView((await callReserve(s, encodePublicView(end2), { staticCall: true })).returnValue);
+    assert.equal(view.votesIncrease, 0);
+    assert.equal(view.votesHold, 1);
+    assert.ok(view.votesIncrease >= 0);
+    assert.ok(view.votesDecrease >= 0);
+    assert.ok(view.votesHold >= 0);
+  });
 });

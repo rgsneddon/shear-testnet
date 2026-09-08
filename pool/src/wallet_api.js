@@ -325,11 +325,34 @@ export function sealedReservePaint(store) {
   return rows;
 }
 
+export function isExplorerPendingRow(t) {
+  if (!t) return false;
+  if (t.pending === true) return true;
+  const st = String(t.status || '');
+  if (st === 'pending' || st === '(pending)') return true;
+  const kind = String(t.kind || '');
+  return Number(t.height) === 0 && (kind === 'lock' || kind === 'vote');
+}
+
+/** Pending lock/vote stay first. Sealed rows by height desc. Never drop mempool behind a 30-block slice. */
+export function orderExplorerRecent(txs, limit = 30) {
+  const list = Array.isArray(txs) ? txs.slice() : [];
+  const pending = [];
+  const sealed = [];
+  for (const t of list) {
+    if (isExplorerPendingRow(t)) pending.push(t);
+    else sealed.push(t);
+  }
+  sealed.sort((a, b) => Number(b.height) - Number(a.height));
+  const n = Math.max(1, Math.min(10000, Math.floor(Number(limit) || 30)));
+  return pending.concat(sealed).slice(0, n);
+}
+
 /** Explorer recent: mempool lock/vote first, then sealed reserve rows + blocks. Hash-open-round omitted. */
 export function explorerRecentTxs(store, limit = 30) {
   const pending = mempoolReservePaint(store);
   const sealed = sealedReservePaint(store).slice().reverse();
-  const blocks = confirmedBlockTxs(store, limit);
+  const blocks = confirmedBlockTxs(store, Math.max(Number(limit) || 30, 30));
   const seen = new Set();
   const out = [];
   for (const t of [...pending, ...sealed, ...blocks]) {
@@ -340,7 +363,7 @@ export function explorerRecentTxs(store, limit = 30) {
     seen.add(id);
     out.push(t);
   }
-  return out;
+  return orderExplorerRecent(out, limit);
 }
 
 export function publicExplorerTxs(store) {

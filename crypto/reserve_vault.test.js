@@ -385,4 +385,35 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(ok.ok, true);
     assert.equal(ok.to, continuumA);
   });
+
+  it('withdraw after epoch rollover does not drive the new piles to -1', () => {
+    const alice = newIdentity();
+    const bob = newIdentity();
+    const a = destOf(alice);
+    const b = destOf(bob);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).ok, true);
+    assert.equal(state.votes.increase, 1);
+    const end1 = t0 + RESERVE_EPOCH_MS;
+    assert.equal(enact({ state, nowMs: end1 }).ok, true);
+    assert.equal(deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: end1 + 1 }).ok, true);
+    assert.equal(state.currentEpoch, 2);
+    assert.equal(state.votes.increase, 0);
+    assert.equal(vote({ state, dest: b, choice: VOTE_HOLD, nowMs: end1 + 2 }).ok, true);
+    assert.equal(state.votes.hold, 1);
+    const end2 = end1 + 1 + RESERVE_EPOCH_MS;
+    assert.equal(enact({ state, nowMs: end2 }).ok, true);
+    const out = withdraw({ state, dest: a, nowMs: end2 });
+    assert.equal(out.ok, true, out.reason);
+    assert.equal(state.votes.increase, 0);
+    assert.equal(state.votes.hold, 1);
+    assert.ok(state.votes.increase >= 0);
+    assert.ok(state.votes.decrease >= 0);
+    assert.ok(state.votes.hold >= 0);
+    const portal = state.portals[portalIdFromDest(a)];
+    assert.equal(portal.vote, null);
+    assert.equal(Number(portal.voteEpoch || 0), 0);
+  });
 });
