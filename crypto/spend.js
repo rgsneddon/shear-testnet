@@ -151,9 +151,12 @@ export function fundedDebit(tx) {
   if (!levyTaxed(tx) && !OUT_KINDS.has(kind)) return null;
   const amount = txAmountNanos(tx);
   const fee = Math.max(0, Math.floor(Number(tx.fee || 0)));
-  const nanos = amount + fee;
+  const extra = Array.isArray(tx.vout) && tx.vout.length > 1
+    ? tx.vout.slice(1).reduce((a, o) => a + Math.max(0, Math.floor(Number(o?.nanos) || 0)), 0)
+    : 0;
+  const nanos = amount + extra + fee;
   if (!(nanos > 0)) return null;
-  return { from, nanos, amount, fee };
+  return { from, nanos, amount, fee, change: extra };
 }
 
 /** Unclamped. Credits mature incoming only; debits every sealed outgoing. */

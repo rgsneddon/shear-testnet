@@ -937,6 +937,16 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (rec.spendableNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
+    const rawChange = String(body.change || '').trim();
+    const changeDest = !isLock && !isVote
+      ? (payoutDest(rawChange) || (isDestAddress(rawChange) ? rawChange : ''))
+      : '';
+    const leftover = rec.spendableNanos - nanos - fee;
+    const vout = [{ address: to, nanos, kind }];
+    if (kind === 'send' && changeDest && leftover > 0) {
+      vout.push({ address: changeDest, nanos: leftover, kind: 'send' });
+    }
+    const parked = kind === 'send' && changeDest && leftover > 0;
     const draft = isLock
       ? { ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }), fee, memoCt, open: body.open, portalOpen: body.portalOpen, amount }
       : isVote
@@ -944,7 +954,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         : {
           kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, open: body.open,
           vin: [{ address: from }],
-          vout: [{ address: to, nanos, kind }],
+          vout,
+          ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
     if (flowSendNeedsOpen(draft) && !verifyDestOpening(from, body.open)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
@@ -960,8 +971,12 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       status: 200,
       json: {
         ok: true,
-        tx: { id: tx.id, from, to, amount, kind, programId: programId || undefined, confirmed: false, memo: !!memoCt },
-        fromBalance: nanosToShe(rec.spendableNanos - nanos - fee),
+        tx: {
+          id: tx.id, from, to, amount, kind, programId: programId || undefined, confirmed: false, memo: !!memoCt,
+          ...(parked ? { change: changeDest } : {}),
+        },
+        fromBalance: parked ? 0 : nanosToShe(rec.spendableNanos - nanos - fee),
+        ...(parked ? { changeBalance: nanosToShe(leftover) } : {}),
       },
     };
   }

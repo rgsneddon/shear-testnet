@@ -2734,6 +2734,45 @@ void main() {
     expect(aliceL.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(1.1, 1e-18));
   });
 
+  test('non-local send posts leftover to a new change dest; syncCredits does not restore from', () async {
+    final alice = createIdentity();
+    final bob = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 20, balance: 0);
+    final posted = <Map<String, dynamic>>[];
+    final server = await _fakePool(live: live, posted: posted);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
+    await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
+    final from = ledger.currentDest(alice.address);
+    live.destBalances[from] = 1.0;
+    await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
+    expect(ledger.spendable(from), closeTo(1.0, 1e-12));
+    final to = destForLogin(bob.address, height: 1, viewKey: bob.viewKey)!;
+    final tx = await ledger.send(
+      from: from,
+      to: to,
+      amount: 0.4,
+      restFrame: alice.address,
+      paymentCode: alice.paymentCode,
+    );
+    expect(posted, isNotEmpty);
+    expect(posted.single['to'], to);
+    expect(posted.single['change'], isNotNull);
+    expect(posted.single['change'], isNot(from));
+    expect(posted.single['change'], isNot(to));
+    expect(tx.change, posted.single['change']);
+    expect(ledger.spendable(from), closeTo(0, 1e-12));
+    expect(ledger.spendable(tx.change!), closeTo(0.6, 1e-12));
+    await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
+    expect(ledger.spendable(from), closeTo(0, 1e-12), reason: 'on-chain leftover must not return to from');
+    expect(ledger.spendable(tx.change!), closeTo(0.6, 1e-12));
+    expect(live.destBalances[from], closeTo(0, 1e-12));
+    expect(live.destBalances[tx.change!], closeTo(0.6, 1e-12));
+  });
+
   test('Reserve lock spends owned Continuum, not currentDest-only', () async {
     final alice = createIdentity();
     final header = Uint8List(128);
@@ -4295,7 +4334,13 @@ Future<HttpServer> _fakePool({
         req.response.write(jsonEncode({'ok': false, 'reason': 'insufficient'}));
       } else {
         final next = fromBal - amount;
-        if (state.destBalances.isNotEmpty) {
+        final change = body['change']?.toString() ?? '';
+        final park = change.isNotEmpty && change != fromKey && next > 0;
+        if (park) {
+          state.destBalances[fromKey] = 0;
+          state.destBalances[change] = next;
+          state.balance = 0;
+        } else if (state.destBalances.isNotEmpty) {
           state.destBalances[fromKey] = next;
         } else {
           state.balance = next;
@@ -4310,10 +4355,20 @@ Future<HttpServer> _fakePool({
             'kind': 'receive',
             'confirmed': false,
           },
+          if (park)
+            {
+              'id': 'change-${state.incoming.length + 1}',
+              'from': fromKey,
+              'to': change,
+              'amount': next,
+              'kind': 'receive',
+              'confirmed': false,
+            },
         ];
         req.response.write(jsonEncode({
           'ok': true,
-          'fromBalance': next,
+          'fromBalance': park ? 0 : next,
+          if (park) 'changeBalance': next,
           'tx': {
             'id': 'send-${state.incoming.length}',
             'from': fromKey,
@@ -4322,6 +4377,7 @@ Future<HttpServer> _fakePool({
             'kind': 'send',
             'confirmed': false,
             'memo': body['memoCt'] != null,
+            if (park) 'change': change,
           },
         }));
       }

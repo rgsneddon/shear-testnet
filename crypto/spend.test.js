@@ -26,6 +26,29 @@ describe('funded spend / no double-spend', () => {
     assert.equal(d.nanos, nanos + fee);
   });
 
+  it('fundedDebit includes change vout so leftover leaves from', () => {
+    const pay = 2 * NANOS_PER_SHE;
+    const leftover = 3 * NANOS_PER_SHE;
+    const fee = levyNanos(pay);
+    const change = 'ssa1qzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz';
+    const d = fundedDebit({
+      kind: 'send',
+      from: dest,
+      to: other,
+      nanos: pay,
+      fee,
+      vin: [{ address: dest }],
+      vout: [
+        { address: other, nanos: pay, kind: 'send' },
+        { address: change, nanos: leftover, kind: 'send' },
+      ],
+    });
+    assert.equal(d.from, dest);
+    assert.equal(d.amount, pay);
+    assert.equal(d.change, leftover);
+    assert.equal(d.nanos, pay + leftover + fee);
+  });
+
   it('credits incoming only after 6 confs and always subtracts a sealed send', () => {
     const rows = [
       { from: 'coinbase', to: dest, nanos: 10 * NANOS_PER_SHE, height: 1, kind: 'coinbase' },

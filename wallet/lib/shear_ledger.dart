@@ -1434,6 +1434,7 @@ class ShearLedger {
         choice: choice,
         currentEpoch: currentEpoch,
         epochStartMs: epochStartMs,
+        change: sendKind == 'send' ? changeDest : null,
       );
       if (json['ok'] != true || json['tx'] is! Map) {
         throw StateError('${json['reason'] ?? 'send failed'}');
@@ -1441,7 +1442,14 @@ class ShearLedger {
       final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
       _spendable[src] = (json['fromBalance'] as num?)?.toDouble()
           ?? (spendable(src) - needShe);
-      _parkChange(src, changeDest);
+      final parkedAmt = (json['changeBalance'] as num?)?.toDouble();
+      if (changeDest != null && parkedAmt != null && parkedAmt > 1e-18) {
+        _spendable[src] = 0;
+        _spendable[changeDest] = spendable(changeDest) + parkedAmt;
+        _dests.add(changeDest);
+      } else {
+        _parkChange(src, changeDest);
+      }
       final tx = ShearTx(
         id: raw.id,
         from: raw.from,
@@ -1727,6 +1735,7 @@ class ShearPoolClient {
     String? choice,
     int? currentEpoch,
     int? epochStartMs,
+    String? change,
   }) =>
       _post('/api/wallet/send', {
         'from': from,
@@ -1740,6 +1749,7 @@ class ShearPoolClient {
         if (choice != null && choice.isNotEmpty) 'choice': choice,
         if (currentEpoch != null) 'currentEpoch': currentEpoch,
         if (epochStartMs != null) 'epochStartMs': epochStartMs,
+        if (change != null && change.isNotEmpty) 'change': change,
       });
 
   Future<Map<String, dynamic>> mempoolPressure() => _get('/api/mempoolPressure');
