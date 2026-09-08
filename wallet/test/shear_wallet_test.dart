@@ -1594,6 +1594,37 @@ void main() {
     );
   });
 
+  test('Reserve lock and vote appear in pendingTxs and shearview from mempool', () async {
+    final id = createIdentity();
+    final ledger = ShearLedger()..viewSecret = id.viewKey;
+    ledger.confirmRound(address: id.address, pot: 8, height: 4);
+    ledger.settleTo(4 + ShearLedger.spendableConfirmations);
+    final from = ledger.currentDest(id.address);
+    final lock = await ledger.send(
+      from: from,
+      to: from,
+      amount: 3.2,
+      kind: 'lock',
+      programId: 'shear-reserve-v1',
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+    );
+    expect(ledger.pendingTxs(id.address).any((t) => t.id == lock.id && t.kind == 'lock'), isTrue);
+    expect(ledger.shearviewTxs(id.address).any((t) => t.id == lock.id), isTrue);
+    final vote = await ledger.send(
+      from: from,
+      to: from,
+      amount: 0,
+      kind: 'vote',
+      programId: 'shear-reserve-v1',
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+    );
+    expect(ledger.pendingTxs(id.address).any((t) => t.id == vote.id && t.kind == 'vote'), isTrue);
+    expect(ledger.shearviewTxs(id.address).any((t) => t.id == vote.id), isTrue);
+    expect(lock.to.startsWith('ssa1') || lock.to.isNotEmpty, isTrue);
+  });
+
   testWidgets('recipient Continuum pending remarks receive; Shearview memo expands then Dismiss', (tester) async {
     _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-recv-memo-');

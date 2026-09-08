@@ -10,7 +10,7 @@ import {
   RESERVE_PROGRAM,
   extraMintAllowed,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx, voteTx } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyTaxed,
@@ -22,7 +22,7 @@ import {
   verifyPoolWithdrawOffchain,
   containsShe1,
 } from '../../crypto/levy.js';
-import { flowSendNeedsOpen, verifyDestOpening, fundedDebit, openingForSpentDest } from '../../crypto/spend.js';
+import { flowSendNeedsOpen, verifyDestOpening, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen } from '../../crypto/spend.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
@@ -257,6 +257,88 @@ export function confirmedBlockTxs(store, limit = 30) {
   const out = [];
   for (let i = list.length - 1; i >= 0 && out.length < n; i -= 1) {
     out.push(confirmedBlockRow(list[i]));
+  }
+  return out;
+}
+
+function publicPaintDest(a) {
+  const s = String(a || '');
+  if (!s || /^shear1/i.test(s) || /^she1/i.test(s)) return '';
+  if (s === 'coinbase') return 'coinbase';
+  return payoutDest(s) || (isDestAddress(s) ? s : '');
+}
+
+/** Mempool Reserve lock/vote for explorer. Dest ssa1, amount, kind, (pending). No she1. */
+export function mempoolReservePaint(store) {
+  const rows = [];
+  for (const m of store?.mempool || []) {
+    const kind = String(m.kind || m.vout?.[0]?.kind || '');
+    if (kind !== 'lock' && kind !== 'vote') continue;
+    const to = publicPaintDest(m.to || m.vout?.[0]?.address || '');
+    const from = publicPaintDest(m.from || m.vin?.[0]?.address || '');
+    const nanos = Math.floor(Number(m.nanos || m.vout?.[0]?.nanos || 0));
+    if (/she1|shear1/i.test(`${to}${from}${kind}`)) continue;
+    rows.push({
+      id: String(m.id || ''),
+      kind,
+      from,
+      to,
+      amount: nanosToShe(nanos),
+      nanos,
+      height: 0,
+      confirmations: 0,
+      pending: true,
+      status: 'pending',
+    });
+  }
+  return rows.filter((r) => r.id);
+}
+
+export function sealedReservePaint(store) {
+  const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  const tipH = Number((typeof store?.tip === 'function' ? store.tip()?.height : 0) || list[list.length - 1]?.height || 0);
+  const rows = [];
+  for (const b of list) {
+    for (const r of sealedExplorerRows(b) || []) {
+      const kind = String(r.kind || '');
+      if (kind !== 'lock' && kind !== 'vote') continue;
+      const to = publicPaintDest(r.to);
+      const from = publicPaintDest(r.from);
+      if (/she1|shear1/i.test(`${to}${from}`)) continue;
+      const confs = flowConfirmations(b.height, tipH);
+      const pending = confs < SPENDABLE_CONFIRMATIONS;
+      rows.push({
+        id: String(r.id || ''),
+        kind,
+        from,
+        to,
+        amount: nanosToShe(r.nanos),
+        nanos: Number(r.nanos || 0),
+        height: Number(b.height || 0),
+        confirmations: confs,
+        pending,
+        status: pending ? 'pending' : 'confirmed',
+        at: blockAtMs(b),
+      });
+    }
+  }
+  return rows;
+}
+
+/** Explorer recent: mempool lock/vote first, then sealed reserve rows + blocks. Hash-open-round omitted. */
+export function explorerRecentTxs(store, limit = 30) {
+  const pending = mempoolReservePaint(store);
+  const sealed = sealedReservePaint(store).slice().reverse();
+  const blocks = confirmedBlockTxs(store, limit);
+  const seen = new Set();
+  const out = [];
+  for (const t of [...pending, ...sealed, ...blocks]) {
+    const id = String(t.id || '');
+    if (!id || seen.has(id)) continue;
+    if (/she1|shear1/i.test(String(t.to || ''))) continue;
+    if (t.from !== 'coinbase' && /she1|shear1/i.test(String(t.from || ''))) continue;
+    seen.add(id);
+    out.push(t);
   }
   return out;
 }
@@ -642,7 +724,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         miners,
         lastJob,
         nodesOnline,
-        hashBonusNanos: store?.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS,
+        hashBonusNanos: Number(store?.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS),
       }),
     };
   }
@@ -726,7 +808,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     return { status: 200, json: { ok: true, coin: 'SHE', ...circ } };
   }
   if ((path === '/api/pool/recent-txs' || path === '/api/explorer/recent') && verb === 'GET') {
-    const txs = poolRecentBlockTxs(store, 30);
+    const txs = explorerRecentTxs(store, 30);
     return { status: 200, json: { ok: true, txs, asset: 'SHE' } };
   }
   if (path === '/api/wallet/history' && verb === 'GET') {
@@ -767,9 +849,16 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
   }
   if (path === '/api/wallet/send' && verb === 'POST') {
     const from = payoutDest(String(body.from || '')) || '';
-    const to = payoutDest(String(body.to || '')) || '';
+    const to = payoutDest(String(body.to || '')) || (isDestAddress(String(body.to || '')) ? String(body.to) : '');
     const amount = Number(body.amount);
-    if (!isDestAddress(from) || !isDestAddress(to) || !(amount > 0)) {
+    const kindIn = String(body.kind || 'send');
+    const programIn = String(body.programId || '');
+    const isLock = kindIn === 'lock' && programIn === RESERVE_PROGRAM;
+    const isVote = kindIn === 'vote' && programIn === RESERVE_PROGRAM;
+    if (!isDestAddress(from) || !isDestAddress(to)) {
+      return { status: 400, json: { ok: false, reason: 'bad_send' } };
+    }
+    if (!(amount > 0) && !isVote) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
     const poolPay = payoutDest(String(poolDest || '')) || '';
@@ -777,19 +866,16 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       return { status: 403, json: { ok: false, reason: 'pool_dest' } };
     }
     const rec = reconstructOwner(store, from);
-    const nanos = Math.round(amount * NANOS_PER_SHE);
-    if (rec.spendableNanos < nanos) {
+    const nanos = isVote ? 0 : Math.round(amount * NANOS_PER_SHE);
+    if (!isVote && rec.spendableNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const memoCt = body.memoCt || null;
-    const kindIn = String(body.kind || 'send');
-    const programIn = String(body.programId || '');
-    const isLock = kindIn === 'lock' && programIn === RESERVE_PROGRAM;
-    if (kindIn !== 'send' && !isLock) {
+    if (kindIn !== 'send' && !isLock && !isVote) {
       return { status: 400, json: { ok: false, reason: 'bad_kind' } };
     }
-    const kind = isLock ? 'lock' : 'send';
-    const programId = isLock ? RESERVE_PROGRAM : '';
+    const kind = isLock ? 'lock' : isVote ? 'vote' : 'send';
+    const programId = (isLock || isVote) ? RESERVE_PROGRAM : '';
     const taxed = levyTaxed({ kind, programId });
     const depth = mempoolDepthBytes(store?.mempool || []);
     const fee = taxed ? levyNanos(nanos, { depth }) : 0;
@@ -797,13 +883,18 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const draft = isLock
-      ? { ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }), fee, memoCt, open: body.open, amount }
-      : {
-        kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, open: body.open,
-        vin: [{ address: from }],
-        vout: [{ address: to, nanos, kind }],
-      };
+      ? { ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }), fee, memoCt, open: body.open, portalOpen: body.portalOpen, amount }
+      : isVote
+        ? { ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }), fee, maxLevy: fee, open: body.open, portalOpen: body.portalOpen, payer: from }
+        : {
+          kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, open: body.open,
+          vin: [{ address: from }],
+          vout: [{ address: to, nanos, kind }],
+        };
     if (flowSendNeedsOpen(draft) && !verifyDestOpening(from, body.open)) {
+      return { status: 403, json: { ok: false, reason: 'unsigned' } };
+    }
+    if (reserveNeedsPortalOpen(draft) && !verifyReservePortalOpen(draft)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
     const tx = queueSend(draft);

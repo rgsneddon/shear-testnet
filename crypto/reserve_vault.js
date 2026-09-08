@@ -8,7 +8,14 @@ import {
   NANOS_PER_SHE,
 } from './asert.js';
 import { isDestAddress, isShearAddress } from './address.js';
-import { emptyOracle, interestNanos, accruedNanos, observeRate as observeOracleRate } from './reserve_oracle.js';
+import {
+  emptyOracle,
+  interestNanos,
+  accruedNanos,
+  observeRate as observeOracleRate,
+  freezeEpochBps,
+  GENESIS_BPS,
+} from './reserve_oracle.js';
 import { extraMint } from './mint.js';
 
 export const VOTE_INCREASE = 'increase bonus';
@@ -18,9 +25,29 @@ export const KIND_LOCK = 'lock';
 export const KIND_WITHDRAW = 'withdraw';
 export const KIND_VOTE = 'vote';
 
+function asBig(n) {
+  if (typeof n === 'bigint') return n < 0n ? 0n : n;
+  const v = Math.floor(Number(n) || 0);
+  if (!Number.isFinite(v) || v <= 0) return 0n;
+  return BigInt(v);
+}
+
+function asNum(n) {
+  return Number(asBig(n));
+}
+
 export function portalIdFromDest(dest) {
   const d = String(dest || '');
   return createHash('sha256').update('shear-portal-v1').update(d).digest('hex');
+}
+
+export function withdrawMintId(portalId, epoch) {
+  return createHash('sha256')
+    .update(RESERVE_PROGRAM)
+    .update(String(portalId || ''))
+    .update(String(epoch || 0))
+    .update('withdraw')
+    .digest('hex');
 }
 
 export function emptyVault() {
@@ -29,21 +56,29 @@ export function emptyVault() {
     epochStartMs: 0,
     currentEpoch: 0,
     bonusEnacted: false,
-    liveHashBonusNanos: 1,
-    totalLockedNanos: 0,
-    feeBankNanos: 0,
-    mintBankNanos: 0,
+    liveHashBonusNanos: 1n,
+    totalLockedNanos: 0n,
+    feeBankNanos: 0n,
+    mintBankNanos: 0n,
     mintedIds: Object.create(null),
     portals: Object.create(null),
     votes: { increase: 0, decrease: 0, hold: 0 },
     oracle: emptyOracle(),
+    epochBps: GENESIS_BPS,
+    enactedUp: 0,
+    enactedDown: 0,
+    enactedHold: 0,
+    enactedDelta: 0,
+    enactedLiveBonus: 1,
+    enactedAtMs: 0,
+    enactedAtEpoch: 0,
   };
 }
 
 export function creditFeeBank(state, nanos) {
-  const n = Math.max(0, Math.floor(Number(nanos) || 0));
-  state.feeBankNanos = (state.feeBankNanos || 0) + n;
-  return state.feeBankNanos;
+  const n = asBig(nanos);
+  state.feeBankNanos = asBig(state.feeBankNanos) + n;
+  return asNum(state.feeBankNanos);
 }
 
 /** Stake rewards pay from the fee bank first; mint only the shortfall. */
@@ -55,32 +90,32 @@ export function payoutStakeReward({
 } = {}) {
   const vault = state || emptyVault();
   vault.mintedIds = vault.mintedIds || Object.create(null);
-  if (!gateOk) return { ok: false, reason: 'gate_wait', paid: 0, minted: 0, feeBank: vault.feeBankNanos || 0 };
-  if (vault.mintedIds[id]) return { ok: false, reason: 'double_mint', paid: 0, minted: 0, feeBank: vault.feeBankNanos || 0 };
-  const need = Math.max(0, Math.floor(Number(reward) || 0));
-  const bank = Math.max(0, Math.floor(Number(vault.feeBankNanos) || 0));
-  const fromFee = Math.min(bank, need);
+  if (!gateOk) return { ok: false, reason: 'gate_wait', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
+  if (vault.mintedIds[id]) return { ok: false, reason: 'double_mint', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
+  const need = asBig(reward);
+  const bank = asBig(vault.feeBankNanos);
+  const fromFee = need < bank ? need : bank;
   const gap = need - fromFee;
-  if (gap > 0) {
+  if (gap > 0n) {
     if (!extraMintAllowed(RESERVE_PROGRAM, {
       feeFirst: true,
       gateOk: true,
-      reward: need,
-      feeBank: bank,
-      amount: gap,
+      reward: asNum(need),
+      feeBank: asNum(bank),
+      amount: asNum(gap),
     })) {
-      return { ok: false, reason: 'mint_forbidden', paid: 0, minted: 0, feeBank: bank };
+      return { ok: false, reason: 'mint_forbidden', paid: 0, minted: 0, feeBank: asNum(bank) };
     }
   }
   vault.feeBankNanos = bank - fromFee;
   vault.mintedIds[id] = true;
-  if (gap > 0) vault.mintBankNanos = (vault.mintBankNanos || 0) + gap;
+  if (gap > 0n) vault.mintBankNanos = asBig(vault.mintBankNanos) + gap;
   return {
     ok: true,
-    paid: need,
-    fromFee,
-    minted: gap,
-    feeBank: vault.feeBankNanos,
+    paid: asNum(need),
+    fromFee: asNum(fromFee),
+    minted: asNum(gap),
+    feeBank: asNum(vault.feeBankNanos),
     id,
   };
 }
@@ -97,92 +132,124 @@ export function canJoin(state, nowMs) {
 }
 
 export function canVote(stakedNanos, idleNanos = 0) {
-  return Number(stakedNanos || 0) + Number(idleNanos || 0) >= PI_SHE_NANOS;
+  return asBig(stakedNanos) + asBig(idleNanos) >= BigInt(PI_SHE_NANOS);
+}
+
+function votesView(state) {
+  if (state.bonusEnacted) {
+    return {
+      increase: Number(state.enactedUp || 0),
+      decrease: Number(state.enactedDown || 0),
+      hold: Number(state.enactedHold || 0),
+    };
+  }
+  return { ...state.votes };
 }
 
 export function publicVaultView(state, nowMs) {
-  let totalStaked = 0;
-  let totalIdle = 0;
-  let totalAccrued = 0;
-  let totalClaimable = 0;
-  const bps = state.oracle?.annualBps ?? 0;
+  let totalStaked = 0n;
+  let totalIdle = 0n;
+  let totalAccrued = 0n;
+  let totalClaimable = 0n;
+  const bps = Number(state.epochBps ?? GENESIS_BPS);
   const elapsed = elapsedMs(state, nowMs);
   for (const p of Object.values(state.portals || {})) {
-    const staked = Math.floor(Number(p.staked) || 0);
-    const idle = Math.floor(Number(p.idle) || 0);
+    const staked = asBig(p.staked);
+    const idle = asBig(p.idle);
     totalStaked += staked;
     totalIdle += idle;
-    totalAccrued += accruedNanos(staked, bps, elapsed);
-    totalClaimable += Math.floor(Number(p.claimableRewards) || 0);
+    totalAccrued += asBig(accruedNanos(staked, bps, elapsed));
+    totalClaimable += asBig(p.claimableRewards);
   }
   return {
     programId: RESERVE_PROGRAM,
     epochStartMs: state.epochStartMs || 0,
     remainingMs: remainingMs(state, nowMs),
-    totalLockedNanos: state.totalLockedNanos || 0,
-    totalStakedNanos: totalStaked,
-    totalIdleNanos: totalIdle,
-    totalAccruedNanos: totalAccrued,
-    totalClaimableNanos: totalClaimable,
-    feeBankNanos: Math.floor(Number(state.feeBankNanos) || 0),
-    mintBankNanos: Math.floor(Number(state.mintBankNanos) || 0),
-    votes: { ...state.votes },
+    totalLockedNanos: asNum(state.totalLockedNanos),
+    totalStakedNanos: asNum(totalStaked),
+    totalIdleNanos: asNum(totalIdle),
+    totalAccruedNanos: asNum(totalAccrued),
+    totalClaimableNanos: asNum(totalClaimable),
+    feeBankNanos: asNum(state.feeBankNanos),
+    mintBankNanos: asNum(state.mintBankNanos),
+    votes: votesView(state),
     oracleBps: state.oracle?.annualBps ?? 0,
-    liveHashBonusNanos: Number(state.liveHashBonusNanos || 1),
+    epochBps: Number(state.epochBps ?? GENESIS_BPS),
+    liveHashBonusNanos: asNum(state.liveHashBonusNanos || 1n),
     bonusEnacted: !!state.bonusEnacted,
     currentEpoch: Number(state.currentEpoch || 0),
+    enactedUp: Number(state.enactedUp || 0),
+    enactedDown: Number(state.enactedDown || 0),
+    enactedHold: Number(state.enactedHold || 0),
+    enactedDelta: Number(state.enactedDelta || 0),
+    enactedLiveBonus: Number(state.enactedLiveBonus || 0),
+    enactedAtMs: Number(state.enactedAtMs || 0),
+    enactedAtEpoch: Number(state.enactedAtEpoch || 0),
   };
 }
 
 function portalOf(state, dest) {
   const id = portalIdFromDest(dest);
   if (!state.portals[id]) {
-    state.portals[id] = { id, staked: 0, idle: 0, vote: null, joined: false, voteEpoch: 0 };
+    state.portals[id] = { id, staked: 0n, idle: 0n, vote: null, joined: false, voteEpoch: 0 };
   }
   return state.portals[id];
+}
+
+function beginEpoch(state, nowMs) {
+  state.epochStartMs = nowMs;
+  state.bonusEnacted = false;
+  state.epochBps = freezeEpochBps({
+    prevEpochBps: state.epochBps ?? GENESIS_BPS,
+    annualBps: state.oracle?.annualBps,
+    observedAtMs: state.oracle?.observedAtMs,
+    nowMs,
+  });
+}
+
+function portalPublic(p) {
+  return {
+    id: p.id,
+    staked: asNum(p.staked),
+    idle: asNum(p.idle),
+    nanos: asNum(asBig(p.staked) + asBig(p.idle)),
+    joined: p.joined,
+    vote: p.vote,
+  };
 }
 
 export function deposit({ state, dest, nanos, nowMs, payout } = {}) {
   if (!isDestAddress(dest) || isShearAddress(dest)) {
     return { ok: false, reason: 'bad_dest' };
   }
-  const n = Math.floor(Number(nanos));
-  if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: 'bad_amount' };
+  const n = asBig(nanos);
+  if (n <= 0n) return { ok: false, reason: 'bad_amount' };
   const p = portalOf(state, dest);
   if (payout && isDestAddress(payout) && !isShearAddress(payout)) {
-    p.payout = payout;
+    if (!p.payout) p.payout = payout;
   }
   if (state.epochStartMs && !state.bonusEnacted && remainingMs(state, nowMs) === 0) {
     return { ok: false, reason: 'need_enact' };
   }
   const staking = canJoin(state, nowMs);
-  if (staking) p.staked += n;
-  else p.idle += n;
-  state.totalLockedNanos += n;
-  if (!p.joined && (p.staked + p.idle) >= PI_SHE_NANOS) {
+  if (staking) p.staked = asBig(p.staked) + n;
+  else p.idle = asBig(p.idle) + n;
+  state.totalLockedNanos = asBig(state.totalLockedNanos) + n;
+  if (!p.joined && (asBig(p.staked) + asBig(p.idle)) >= BigInt(PI_SHE_NANOS)) {
     p.joined = true;
     if (!state.epochStartMs) {
       state.currentEpoch = 1;
-      state.epochStartMs = nowMs;
-      state.bonusEnacted = false;
+      beginEpoch(state, nowMs);
     } else if (state.bonusEnacted) {
       state.currentEpoch = (state.currentEpoch || 1) + 1;
-      state.epochStartMs = nowMs;
-      state.bonusEnacted = false;
       state.votes = { increase: 0, decrease: 0, hold: 0 };
+      beginEpoch(state, nowMs);
     }
   }
   return {
     ok: true,
     idle: !staking,
-    portal: {
-      id: p.id,
-      staked: p.staked,
-      idle: p.idle,
-      nanos: p.staked + p.idle,
-      joined: p.joined,
-      vote: p.vote,
-    },
+    portal: portalPublic(p),
   };
 }
 
@@ -198,14 +265,7 @@ export function vote({ state, dest, choice, nowMs }) {
   const allowed = [VOTE_INCREASE, VOTE_DECREASE, VOTE_HOLD];
   if (!allowed.includes(choice)) return { ok: false, reason: 'bad_vote' };
   const first = !p.vote || p.voteEpoch !== state.currentEpoch;
-  if (!first && remainingMs(state, nowMs) < RESERVE_JOIN_CUTOFF_MS) {
-    return { ok: false, reason: 'vote_locked' };
-  }
-  if (!first) {
-    if (p.vote === VOTE_INCREASE) state.votes.increase -= 1;
-    if (p.vote === VOTE_DECREASE) state.votes.decrease -= 1;
-    if (p.vote === VOTE_HOLD) state.votes.hold -= 1;
-  }
+  if (!first) return { ok: false, reason: 'vote_locked' };
   p.vote = choice;
   p.voteEpoch = state.currentEpoch;
   if (choice === VOTE_INCREASE) state.votes.increase += 1;
@@ -213,14 +273,7 @@ export function vote({ state, dest, choice, nowMs }) {
   if (choice === VOTE_HOLD) state.votes.hold += 1;
   return {
     ok: true,
-    portal: {
-      id: p.id,
-      staked: p.staked,
-      idle: p.idle,
-      nanos: p.staked + p.idle,
-      joined: p.joined,
-      vote: p.vote,
-    },
+    portal: portalPublic(p),
   };
 }
 
@@ -229,8 +282,11 @@ export function observeRate({ state, annualBps, nowMs }) {
   return observeOracleRate(state.oracle, { annualBps, nowMs });
 }
 
-export function reserveInterestNanos(stakedNanos, oracle) {
-  return interestNanos(stakedNanos, oracle?.annualBps ?? 0, 400);
+export function reserveInterestNanos(stakedNanos, oracleOrBps) {
+  const bps = typeof oracleOrBps === 'number' || typeof oracleOrBps === 'bigint'
+    ? oracleOrBps
+    : (oracleOrBps?.epochBps ?? oracleOrBps?.annualBps ?? 0);
+  return interestNanos(stakedNanos, bps);
 }
 
 export function elapsedMs(state, nowMs) {
@@ -241,14 +297,15 @@ export function elapsedMs(state, nowMs) {
 /** Per-portal accrued rewards for the owning wallet. Idle SHE earns nothing. */
 export function portalRewards(state, dest, nowMs) {
   const p = portalOf(state, dest);
-  const bps = state.oracle?.annualBps ?? 0;
+  const bps = Number(state.epochBps ?? GENESIS_BPS);
   const elapsed = elapsedMs(state, nowMs);
   return {
     accrued: accruedNanos(p.staked, bps, elapsed),
-    projected: reserveInterestNanos(p.staked, state.oracle),
-    staked: p.staked || 0,
-    idle: p.idle || 0,
+    projected: reserveInterestNanos(p.staked, bps),
+    staked: asNum(p.staked),
+    idle: asNum(p.idle),
     oracleBps: bps,
+    epochBps: bps,
     elapsedMs: elapsed,
   };
 }
@@ -261,12 +318,12 @@ function continuumOf(p, payout, dest) {
 
 export function previewWithdraw(state, dest) {
   const p = portalOf(state, dest);
-  const principal = (p.staked || 0) + (p.idle || 0);
-  const interest = reserveInterestNanos(p.staked, state.oracle);
+  const principal = asNum(asBig(p.staked) + asBig(p.idle));
+  const interest = reserveInterestNanos(p.staked, state.epochBps);
   return {
     principal,
-    staked: p.staked || 0,
-    idle: p.idle || 0,
+    staked: asNum(p.staked),
+    idle: asNum(p.idle),
     interest,
     payout: principal + interest,
     to: continuumOf(p, null, dest),
@@ -329,6 +386,15 @@ function txNanos(tx) {
 
 function txKind(tx) {
   return String(tx?.kind || tx?.vout?.[0]?.kind || '');
+}
+
+export function verifyReservePayout(state, tx) {
+  if (txKind(tx) !== KIND_WITHDRAW) return { ok: true };
+  const dest = txFrom(tx);
+  const to = txDest(tx);
+  const p = state?.portals?.[portalIdFromDest(dest)];
+  if (p?.payout && to && to !== p.payout) return { ok: false, reason: 'payout_mismatch' };
+  return { ok: true };
 }
 
 /** Honour Reserve lock / vote / withdraw txs already sealed in a block. */
@@ -397,12 +463,26 @@ export function enact({ state, nowMs } = {}) {
   if (m > 0 && up === m) { winners += 1; delta = 1; }
   if (m > 0 && down === m) { winners += 1; delta = -1; }
   if (m > 0 && hold === m) { winners += 1; delta = 0; }
-  let live = Number(state.liveHashBonusNanos || 1);
+  let live = asNum(state.liveHashBonusNanos || 1n);
   if (winners === 1 && delta > 0) live += 1;
   else if (winners === 1 && delta < 0) live = Math.max(0, live - 1);
-  state.liveHashBonusNanos = live;
+  state.liveHashBonusNanos = BigInt(live);
   state.bonusEnacted = true;
-  return { ok: true, liveHashBonusNanos: live, delta: winners === 1 ? delta : 0 };
+  state.enactedUp = up;
+  state.enactedDown = down;
+  state.enactedHold = hold;
+  state.enactedDelta = winners === 1 ? delta : 0;
+  state.enactedLiveBonus = live;
+  state.enactedAtMs = nowMs;
+  state.enactedAtEpoch = Number(state.currentEpoch || 0);
+  return {
+    ok: true,
+    liveHashBonusNanos: live,
+    delta: winners === 1 ? delta : 0,
+    enactedUp: up,
+    enactedDown: down,
+    enactedHold: hold,
+  };
 }
 
 export function withdraw({ state, dest, nowMs, payout } = {}) {
@@ -417,25 +497,32 @@ export function withdraw({ state, dest, nowMs, payout } = {}) {
     if (!did.ok) return did;
   }
   const p = portalOf(state, dest);
-  const staked = p.staked;
-  const idle = p.idle;
+  if (p.payout && payout && payout !== p.payout) {
+    return { ok: false, reason: 'payout_mismatch' };
+  }
+  const staked = asNum(p.staked);
+  const idle = asNum(p.idle);
   const principal = staked + idle;
   if (principal <= 0) return { ok: false, reason: 'empty' };
   const to = continuumOf(p, payout, dest);
-  const interest = reserveInterestNanos(staked, state.oracle);
+  const interest = reserveInterestNanos(p.staked, state.epochBps);
   let mint = null;
   if (interest > 0) {
+    const mintId = withdrawMintId(p.id, state.currentEpoch);
+    const paid = payoutStakeReward({ state, reward: interest, id: mintId, gateOk: true });
+    if (!paid.ok) return { ok: false, reason: paid.reason };
     mint = extraMint({ programId: RESERVE_PROGRAM, to, nanos: interest });
     if (!mint.ok) return { ok: false, reason: mint.reason };
   } else if (!extraMintAllowed(RESERVE_PROGRAM)) {
     return { ok: false, reason: 'mint_forbidden' };
   }
-  state.totalLockedNanos -= principal;
+  state.totalLockedNanos = asBig(state.totalLockedNanos) - asBig(principal);
+  if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;
   if (p.vote === VOTE_INCREASE) state.votes.increase -= 1;
   if (p.vote === VOTE_DECREASE) state.votes.decrease -= 1;
   if (p.vote === VOTE_HOLD) state.votes.hold -= 1;
-  p.staked = 0;
-  p.idle = 0;
+  p.staked = 0n;
+  p.idle = 0n;
   p.joined = false;
   p.vote = null;
   p.payout = null;
@@ -454,5 +541,7 @@ export function withdraw({ state, dest, nowMs, payout } = {}) {
 }
 
 export function sheFromNanos(n) {
-  return Number(n) / NANOS_PER_SHE;
+  return asNum(n) / NANOS_PER_SHE;
 }
+
+export { asBig, asNum };

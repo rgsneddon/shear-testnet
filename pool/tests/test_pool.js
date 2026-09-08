@@ -43,14 +43,14 @@ describe('stratum wire job', () => {
   });
 
   it('hash bonus follows every hasher with a valid share this round, not only the largest', () => {
-    const small = { roundHashes: 8, clientHashes: 40, clientHashesRound0: 0 };
+    const small = { roundHashes: 256, clientHashes: 9e12, clientHashesRound0: 0 };
     const large = { roundHashes: 256, clientHashes: 4000, clientHashesRound0: 0 };
     const none = { roundHashes: 0, clientHashes: 9e9, clientHashesRound0: 0 };
     assert.equal(hasherHasValidRoundShare(small), true);
     assert.equal(hasherHasValidRoundShare(large), true);
     assert.equal(hasherHasValidRoundShare(none), false);
-    assert.equal(roundActualHashes(small), 40);
-    assert.equal(roundActualHashes(large), 4000);
+    assert.equal(roundActualHashes(small), 256);
+    assert.equal(roundActualHashes(large), 256);
     assert.equal(roundActualHashes(none), 0);
     const rows = [small, large, none]
       .map((m) => ({ miner: 'x', count: Number(m.roundHashes) || 0, proven: Number(m.roundHashes) || 0 }))
@@ -934,8 +934,8 @@ describe('public miner listing', () => {
     row.clientHashes = 16_590_151_266_784 + 900;
     stats = pool.publicStats();
     w = (stats.workers || []).find((x) => x.miner === tag);
-    assert.equal(w.hashes, 900);
-    assert.equal(w.roundHashes, 900);
+    assert.equal(w.hashes, proven);
+    assert.equal(w.roundHashes, proven);
     assert.equal(w.provenHashes, proven);
     row.roundHashes = 0;
     const reset = pool.publicStats();

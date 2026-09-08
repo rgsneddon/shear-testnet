@@ -30,6 +30,7 @@ import {
   portalIdFromDest,
   observeRate,
   portalRewards,
+  previewWithdraw,
   VOTE_INCREASE,
   VOTE_DECREASE,
   VOTE_HOLD,
@@ -108,8 +109,13 @@ describe('Reserve vault protocol', () => {
     assert.equal(idleBob.portal.joined, true);
     assert.equal(idleBob.portal.staked, 0);
     assert.equal(idleBob.portal.idle, PI_SHE_NANOS);
-    assert.equal(vote({ state, dest: b, choice: VOTE_INCREASE, nowMs: late }).ok, true);
-    assert.equal(vote({ state, dest: b, choice: VOTE_HOLD, nowMs: late }).ok, false);
+    const firstLate = vote({ state, dest: b, choice: VOTE_INCREASE, nowMs: late });
+    assert.equal(firstLate.ok, true);
+    const changeLate = vote({ state, dest: b, choice: VOTE_HOLD, nowMs: late });
+    assert.equal(changeLate.ok, false);
+    assert.equal(changeLate.reason, 'vote_locked');
+    assert.equal(state.votes.increase, 1);
+    assert.equal(state.votes.hold, 0);
     const more = deposit({ state, dest: a, nanos: 100, nowMs: late });
     assert.equal(more.ok, true);
     assert.equal(more.idle, true);
@@ -130,13 +136,22 @@ describe('Reserve vault protocol', () => {
     const state = emptyVault();
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
-    assert.equal(state.liveHashBonusNanos, 1);
+    assert.equal(Number(state.liveHashBonusNanos), 1);
     const tooSoon = enact({ state, nowMs: t0 + 10 * DAY });
     assert.equal(tooSoon.ok, false);
     const done = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(done.ok, true);
-    assert.equal(state.liveHashBonusNanos, 2);
+    assert.equal(Number(state.liveHashBonusNanos), 2);
     assert.equal(state.bonusEnacted, true);
+    assert.equal(state.enactedUp, 1);
+    assert.equal(state.enactedDown, 0);
+    assert.equal(state.enactedHold, 0);
+    assert.equal(state.enactedDelta, 1);
+    const pub = publicVaultView(state, t0 + RESERVE_EPOCH_MS);
+    assert.equal(pub.votes.increase, 1);
+    assert.equal(pub.votes.decrease, 0);
+    assert.equal(pub.votes.hold, 0);
+    assert.notEqual(pub.votes.increase + pub.votes.decrease + pub.votes.hold, 0);
     const again = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
     assert.equal(again.ok, false);
   });
@@ -151,14 +166,14 @@ describe('Reserve vault protocol', () => {
     const height = 40;
     const block = { height, txs: [{ coinbase: true, vout: [] }] };
     applyReserveBlock({ state, block, nowMs: t0 + 10 * DAY });
-    assert.equal(state.liveHashBonusNanos, 1);
+    assert.equal(Number(state.liveHashBonusNanos), 1);
     assert.equal(state.bonusEnacted, false);
     applyReserveBlock({ state, block, nowMs: t0 + RESERVE_EPOCH_MS });
-    assert.equal(state.liveHashBonusNanos, 2);
+    assert.equal(Number(state.liveHashBonusNanos), 2);
     assert.equal(state.bonusEnacted, true);
     assert.equal(block.height, height);
     applyReserveBlock({ state, block: { height: height + 1, txs: [] }, nowMs: t0 + RESERVE_EPOCH_MS + 90_000 });
-    assert.equal(state.liveHashBonusNanos, 2);
+    assert.equal(Number(state.liveHashBonusNanos), 2);
   });
 
   it('accrued rewards grow on staked SHE and stay zero on idle SHE', () => {
@@ -271,6 +286,7 @@ describe('Reserve oracle', () => {
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     const pub = publicVaultView(state, t0);
     assert.equal(pub.oracleBps, RESERVE_ORACLE_DEFAULT_BPS);
+    assert.equal(pub.epochBps, RESERVE_ORACLE_DEFAULT_BPS);
     assert.equal(JSON.stringify(pub).includes(alice.address), false);
     const mid = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(mid.ok, true);
@@ -278,9 +294,95 @@ describe('Reserve oracle', () => {
     const again = emptyVault();
     deposit({ state: again, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     assert.equal(observeRate({ state: again, annualBps: 0, nowMs: t0 + 1 }).ok, true);
-    const zero = withdraw({ state: again, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
-    assert.equal(zero.ok, true);
-    assert.equal(zero.interest, 0);
+    const frozen = withdraw({ state: again, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(frozen.ok, true);
+    assert.equal(frozen.interest, interestNanos(PI_SHE_NANOS, RESERVE_ORACLE_DEFAULT_BPS));
     assert.equal(observeRate({ state: again, annualBps: -1, nowMs: t0 }).ok, false);
+  });
+});
+
+describe('Reserve freeze, vote-once, dest bind', () => {
+  it('two vaults with different annualBps mint the same withdraw nanos when epochBps matches', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const t0 = 1_700_000_000_000;
+    const one = emptyVault();
+    const two = emptyVault();
+    deposit({ state: one, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    deposit({ state: two, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    assert.equal(observeRate({ state: one, annualBps: 100, nowMs: t0 + 1 }).ok, true);
+    assert.equal(observeRate({ state: two, annualBps: 9000, nowMs: t0 + 1 }).ok, true);
+    assert.notEqual(one.oracle.annualBps, two.oracle.annualBps);
+    assert.equal(one.epochBps, two.epochBps);
+    const w1 = withdraw({ state: one, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
+    const w2 = withdraw({ state: two, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(w1.ok, true);
+    assert.equal(w2.ok, true);
+    assert.equal(w1.interest, w2.interest);
+    assert.equal(w1.interest, interestNanos(PI_SHE_NANOS, one.epochBps));
+  });
+
+  it('mid-epoch observeRate(9999) does not change withdraw or preview interest', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    const before = previewWithdraw(state, a).interest;
+    assert.equal(observeRate({ state, annualBps: 9999, nowMs: t0 + 10 * DAY }).ok, true);
+    assert.equal(state.oracle.annualBps, 9999);
+    assert.equal(previewWithdraw(state, a).interest, before);
+    const out = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(out.interest, before);
+  });
+
+  it('first lock after enact updates epochBps automatically; step > 100 is clamped', () => {
+    const alice = newIdentity();
+    const bob = newIdentity();
+    const a = destOf(alice);
+    const b = destOf(bob);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    assert.equal(state.epochBps, 264);
+    enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(observeRate({ state, annualBps: 9999, nowMs: t0 + RESERVE_EPOCH_MS + 1 }).ok, true);
+    deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: t0 + RESERVE_EPOCH_MS + 2 });
+    assert.equal(state.currentEpoch, 2);
+    assert.equal(state.bonusEnacted, false);
+    assert.equal(state.epochBps, 364);
+  });
+
+  it('first vote lands; second same portal same epoch is vote_locked and piles stay', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    const first = vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
+    assert.equal(first.ok, true);
+    assert.equal(state.votes.increase, 1);
+    const second = vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 });
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, 'vote_locked');
+    assert.equal(state.votes.increase, 1);
+    assert.equal(state.votes.hold, 0);
+  });
+
+  it('Alice lock, Bob withdraw fails', () => {
+    const alice = newIdentity();
+    const bob = newIdentity();
+    const a = destOf(alice);
+    const continuumA = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const continuumB = destForLogin(bob.address, { viewKey: bob.viewKey, height: 1 });
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0, payout: continuumA });
+    const stolen = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS, payout: continuumB });
+    assert.equal(stolen.ok, false);
+    assert.equal(stolen.reason, 'payout_mismatch');
+    const ok = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS, payout: continuumA });
+    assert.equal(ok.ok, true);
+    assert.equal(ok.to, continuumA);
   });
 });

@@ -7,13 +7,15 @@ pragma solidity ^0.8.20;
  * Deposit is legal any time an epoch is open. Coin locked in the first 301
  * days is staked (interest, vote). Coin locked in the last 99 days is idle
  * (no interest) but still unlocks a vote if the portal holds ≥ π, even on a
- * first-ever deposit. A wallet may change its vote only in the first 301
- * days. At epoch end the unique plurality of {increase, decrease, hold}
+ * first-ever deposit. A portal votes once per epoch; a second cast reverts
+ * VoteLocked(). At epoch end the unique plurality of {increase, decrease, hold}
  * enacts ±1 protocol unit on the live hash bonus. The 1 SHE pot never
  * moves. Interest is minted by the Shear node on withdraw, only for this
  * program id, only on staked principal. Nodes do not fetch HTTP; they
  * CALL observeRate with the Reserve oracle reading. This contract refuses
  * well-known foreign chain ids.
+ *
+ * Interest: floor(staked * epochBps / 10000). do not use 365.
  */
 error NotShear();
 error BelowPi();
@@ -41,6 +43,10 @@ contract Reserve {
     uint256 public constant CUTOFF_MS = 99 * 86_400_000;
     uint256 public constant MAX_BPS = 10_000;
     uint256 public constant GENESIS_BONUS = 1;
+    uint256 public constant GENESIS_BPS = 264;
+    uint256 public constant BPS_STEP = 100;
+    uint256 public constant ORACLE_MAX_AGE_MS = 14 * 86_400_000;
+    uint256 public constant INTEREST_DENOM_DAYS = 400;
 
     enum Vote {
         None,
@@ -68,6 +74,15 @@ contract Reserve {
     uint256 public votesDecrease;
     uint256 public votesHold;
     uint256 public annualBps;
+    uint256 public epochBps;
+    uint256 public oracleAsOfMs;
+    uint256 public enactedUp;
+    uint256 public enactedDown;
+    uint256 public enactedHold;
+    int256 public enactedDelta;
+    uint256 public enactedLiveBonus;
+    uint256 public enactedAtMs;
+    uint256 public enactedAtEpoch;
 
     modifier onlyShear() {
         _assertShear();
@@ -76,7 +91,8 @@ contract Reserve {
 
     constructor(bytes32 shearMagic) {
         magic = shearMagic;
-        annualBps = 425;
+        annualBps = GENESIS_BPS;
+        epochBps = GENESIS_BPS;
         liveHashBonusNanos = GENESIS_BONUS;
         _assertShear();
     }
@@ -118,9 +134,27 @@ contract Reserve {
     }
 
     function observeRate(uint256 bps, uint256 nowTs) external onlyShear {
-        nowTs;
         if (bps > MAX_BPS) revert BadRate();
         annualBps = bps;
+        oracleAsOfMs = nowTs;
+    }
+
+    function _clampStep(uint256 prev, uint256 proposal) internal pure returns (uint256) {
+        if (proposal > prev) {
+            uint256 d = proposal - prev;
+            if (d > BPS_STEP) return prev + BPS_STEP;
+            return proposal;
+        }
+        uint256 d = prev - proposal;
+        if (d > BPS_STEP) return prev - BPS_STEP;
+        return proposal;
+    }
+
+    function _freeze(uint256 nowTs) internal view returns (uint256) {
+        uint256 prev = epochBps;
+        if (oracleAsOfMs == 0) return prev;
+        if (nowTs > oracleAsOfMs && (nowTs - oracleAsOfMs) > ORACLE_MAX_AGE_MS) return prev;
+        return _clampStep(prev, annualBps);
     }
 
     function _maybeOpenEpoch(uint256 nowTs) internal {
@@ -128,6 +162,7 @@ contract Reserve {
             currentEpoch = 1;
             epochStart = nowTs;
             bonusEnacted = false;
+            epochBps = _freeze(nowTs);
             return;
         }
         if (bonusEnacted) {
@@ -137,6 +172,7 @@ contract Reserve {
             votesIncrease = 0;
             votesDecrease = 0;
             votesHold = 0;
+            epochBps = _freeze(nowTs);
         }
     }
 
@@ -161,6 +197,7 @@ contract Reserve {
     }
 
     function vote(bytes calldata dest, Vote choice, uint256 nowTs) external onlyShear {
+        nowTs;
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
         if (!p.joined || (p.staked + p.idle) < PI_NANOS) revert NotVoter();
@@ -168,12 +205,7 @@ contract Reserve {
         if (epochStart == 0) revert NotVoter();
         if (bonusEnacted) revert EpochClosed();
         bool first = (p.vote == Vote.None || p.voteEpoch != currentEpoch);
-        if (!first && remainingMs(nowTs) < CUTOFF_MS) revert VoteLocked();
-        if (!first) {
-            if (p.vote == Vote.IncreaseBonus) votesIncrease -= 1;
-            if (p.vote == Vote.DecreaseBonus) votesDecrease -= 1;
-            if (p.vote == Vote.LeaveBonusAsIs) votesHold -= 1;
-        }
+        if (!first) revert VoteLocked();
         p.vote = choice;
         p.voteEpoch = currentEpoch;
         if (choice == Vote.IncreaseBonus) votesIncrease += 1;
@@ -201,6 +233,13 @@ contract Reserve {
             if (liveHashBonusNanos > 0) liveHashBonusNanos -= 1;
         }
         bonusEnacted = true;
+        enactedUp = up;
+        enactedDown = down;
+        enactedHold = hold;
+        enactedDelta = winners == 1 ? delta : int256(0);
+        enactedLiveBonus = liveHashBonusNanos;
+        enactedAtMs = nowTs;
+        enactedAtEpoch = currentEpoch;
     }
 
     function withdraw(bytes calldata dest, uint256 nowTs) external onlyShear returns (uint256 principal, uint256 interest) {
@@ -212,7 +251,8 @@ contract Reserve {
         uint256 idle = p.idle;
         principal = staked + idle;
         if (principal == 0) revert BadAmount();
-        interest = (staked * annualBps * EPOCH_DAYS) / (10000 * 365);
+        // Interest: floor(staked * epochBps / 10000). do not use 365.
+        interest = (staked * epochBps) / 10000;
         totalLocked -= principal;
         if (p.voteEpoch == currentEpoch) {
             if (p.vote == Vote.IncreaseBonus && votesIncrease > 0) votesIncrease -= 1;
@@ -242,13 +282,16 @@ contract Reserve {
             uint256 epoch
         )
     {
+        uint256 showUp = bonusEnacted ? enactedUp : votesIncrease;
+        uint256 showDown = bonusEnacted ? enactedDown : votesDecrease;
+        uint256 showHold = bonusEnacted ? enactedHold : votesHold;
         return (
             epochStart,
             remainingDays(nowTs),
             totalLocked,
-            votesIncrease,
-            votesDecrease,
-            votesHold,
+            showUp,
+            showDown,
+            showHold,
             annualBps,
             liveHashBonusNanos,
             bonusEnacted,

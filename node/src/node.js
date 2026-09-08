@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { MAGIC_TESTNET, GENESIS_BITS, PRODUCT_VERSION } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, GENESIS_BITS, PRODUCT_VERSION, HASH_BONUS_NANOS, INTEREST_DENOM_DAYS } from '../../crypto/asert.js';
 import { CLIENT, ALGO, HEADER_LEN } from '../../crypto/shear_hash.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_DAYS, RESERVE_JOIN_CUTOFF_DAYS } from '../../crypto/asert.js';
 import { extraMintAllowed } from '../../crypto/mint.js';
@@ -35,6 +35,8 @@ export function printConfig() {
     extraMintJoinGenesis: false,
     reserveEpochDays: RESERVE_EPOCH_DAYS,
     reserveJoinCutoffDays: RESERVE_JOIN_CUTOFF_DAYS,
+    interestDenomDays: INTEREST_DENOM_DAYS,
+    hashBonusNanos: HASH_BONUS_NANOS,
     reserveOracle: RESERVE_ORACLE_ID,
     reserveOracleDefaultBps: RESERVE_ORACLE_DEFAULT_BPS,
     vorticeKeyPrefix: VORTICE_KEY_PREFIX,

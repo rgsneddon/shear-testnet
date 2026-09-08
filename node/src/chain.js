@@ -118,6 +118,21 @@ function ssaOk(addr) {
   return isDestAddress(addr) && bech32Hrp(addr) === DEST_HRP && !isShearAddress(addr);
 }
 
+/** Dest count above 2^headerBits * 16 is sample_cap. */
+export function sampleCountCap(bits) {
+  const b = BigInt(Math.max(0, Math.floor(Number(bits) || 0)));
+  return (1n << b) * 16n;
+}
+
+export function sampleCapExceeded(samples = [], bits) {
+  const cap = sampleCountCap(bits);
+  for (const s of collateSamples(samples)) {
+    const count = BigInt(Math.max(0, Math.floor(Number(s.count) || 0)));
+    if (count > cap) return true;
+  }
+  return false;
+}
+
 export function hashBonusByMiner(samples = [], unit = HASH_BONUS_NANOS) {
   const u = Number(unit);
   const bonus = Number.isFinite(u) && u >= 0 ? u : HASH_BONUS_NANOS;
@@ -318,6 +333,9 @@ function verifyBlockConsensus(block, prev, {
   const samples = collateSamples(
     Array.isArray(block.samples) ? block.samples : (txs[0].samples || []),
   );
+  if (!block.samplesPruned && sampleCapExceeded(samples, decoded.bits)) {
+    return { ok: false, reason: 'sample_cap' };
+  }
   const potNanos = txs[0].vout
     .filter((o) => o.kind !== 'hash' && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee')
     .reduce((a, o) => a + Number(o.nanos || 0), 0);

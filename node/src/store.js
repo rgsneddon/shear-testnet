@@ -24,10 +24,10 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, applyReserveBlock } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, verifyReservePayout } from '../../crypto/reserve_vault.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening } from '../../crypto/spend.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifyReservePortalOpen, reserveNeedsPortalOpen } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
 import { blockWeight } from '../../crypto/levy.js';
@@ -199,7 +199,7 @@ export function createStore(dir, {
   reserveVault.oracle = loadedOracle;
 
   function saveReserve() {
-    fs.writeFileSync(vaultFile, JSON.stringify(reserveVault));
+    fs.writeFileSync(vaultFile, JSON.stringify(reserveVault, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
   }
 
   function blockTimeMs(block) {
@@ -325,7 +325,7 @@ export function createStore(dir, {
         buried: !!b.samplesPruned,
         spentB,
         tipHeight: b.height,
-        hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
+        hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
       });
       if (spentCheck && typeof spentCheck.then === 'function') {
         spentCheck.catch(() => {});
@@ -478,17 +478,22 @@ export function createStore(dir, {
     } : null, {
       spentB,
       tipHeight: prev ? prev.height + 1 : 1,
-      hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
+      hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
       buried: !!block.samplesPruned,
       evmSession,
       evmHistory: blocks,
       spendableOf: (addr) => Math.max(0, matureSpendableNanos(explorer, addr, parentH)),
     });
+    for (const tx of (block.txs || []).slice(1)) {
+      const pay = verifyReservePayout(reserveVault, tx);
+      if (!pay.ok) return pay;
+    }
     return settleCheck(check, (okCheck) => completeAppend(okCheck, block));
   }
 
   function completeAppend(check, block) {
     if (!check.ok) return check;
+    try {
     const prev = tip();
     const stored = leanBlock({
       ...block,
@@ -527,6 +532,9 @@ export function createStore(dir, {
     emit('tip', { hash: hex32(stored.hash), height: stored.height });
     if (check.evmSession) evmSession = check.evmSession;
     return { ok: true, block: stored, evmSession: check.evmSession || evmSession };
+    } catch (e) {
+      return { ok: false, reason: 'append', error: String(e?.message || e) };
+    }
   }
 
   function queueTx(tx) {
@@ -558,6 +566,11 @@ export function createStore(dir, {
         return { ok: false, reason: 'unsigned' };
       }
     }
+    if (reserveNeedsPortalOpen(tx) && !verifyReservePortalOpen(tx)) {
+      return { ok: false, reason: 'unsigned' };
+    }
+    const pay = verifyReservePayout(reserveVault, tx);
+    if (!pay.ok) return pay;
     const got = admitMempool(book, tx, { baseFee: base });
     if (got.ok && got.tx && !got.duplicate) emit('tx', got.tx);
     return got;
@@ -581,7 +594,7 @@ export function createStore(dir, {
       buried: !!fork[i].samplesPruned,
       spentB: trialSpent,
       tipHeight: i + 1,
-      hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
+      hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
       evmSession: trialSession,
       evmHistory: trialSession ? [] : accepted,
       spendableOf: (addr) => Math.max(0, matureSpendableNanos(rows, addr, parentH)),
@@ -813,7 +826,7 @@ export function createStore(dir, {
       txs: pendingTxs,
       now,
       bits,
-      hashBonusNanos: reserveVault.liveHashBonusNanos || 1,
+      hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
     });
     const jobId = `shear-${height}-${jobSeq++}`;
     const job = publicJob(tpl, { jobId, shareBits });

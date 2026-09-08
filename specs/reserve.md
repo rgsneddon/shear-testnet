@@ -6,9 +6,9 @@ First Vortex dapp. Not the general contract surface (that is Vortex).
 |------|--------|
 | Lock | Full current Vortex (400 days) |
 | Vote unlock | Portal holds ≥ π SHE (staked + idle). First deposit in the last 99 days still unlocks a vote. |
-| Interest | Variable annual rate (Reserve oracle), **staked** principal only, full 400 days. Idle earns none. |
+| Interest | `floor(stakedNanos * epochBps / 10000)` on **staked** principal only. Idle earns none. `annualBps` is the collector proposal and never mints. |
 | Release | After epoch end (and bonus enact): principal (staked + idle) + minted interest on staked SHE to Continuum |
-| Vote | raise / lower / leave hash bonus (±1 unit). 1 SHE pot unchanged. Change only in the first 301 days. |
+| Vote | raise / lower / leave hash bonus (±1 unit). 1 SHE pot unchanged. One vote per portal per epoch (`vote_locked` on a second cast). |
 | Epoch-end enact | Unique plurality of the three piles moves **live** hash bonus ±1 (ties: no change). |
 | Epoch start | First qualifying π deposit — not genesis, not an operator clock |
 | Late deposits | Accepted any time. Last 99 days: idle (no stake interest) but **can vote**. |

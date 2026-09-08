@@ -207,6 +207,8 @@ String walletTxLabel(ShearTx t) => isWalletBlockKind(t.kind) ? 'block' : t.kind;
 
 bool isFlowTransfer(ShearTx t) => t.kind == 'send' || t.kind == 'receive';
 
+bool isReservePendingKind(ShearTx t) => t.kind == 'lock' || t.kind == 'vote';
+
 /// Continuum pending pie remark. Sender: sending. Recipient: receive.
 String continuumPendingRemark(ShearTx t, {required bool outgoing}) {
   if (t.kind == 'send' || t.kind == 'pool-withdraw') return 'sending';
@@ -1222,10 +1224,15 @@ class ShearLedger {
   }
 
   /// Dedicated explorer list: full blocks at 6 confs; Flow send/receive from 1 conf.
+  /// Reserve lock/vote: mempool (0 conf) and 1-conf, same as Flow after the node accepts them.
   List<ShearTx> shearviewTxs(String address) {
     final rows = _ownedRolled(address).where((t) {
       if (t.kind == 'hash' || t.kind == 'sample') return false;
       final h = t.height ?? 0;
+      if (isReservePendingKind(t)) {
+        if (h < 1) return !t.confirmed;
+        return confirmationsOf(h) >= 1;
+      }
       if (h < 1) return false;
       final confs = confirmationsOf(h);
       if (isFlowTransfer(t)) return confs >= 1;
@@ -1244,7 +1251,7 @@ class ShearLedger {
   List<ShearTx> pendingTxs(String address) {
     final rows = _ownedRolled(address).where((t) {
       if (t.kind == 'hash' || t.kind == 'sample') return false;
-      if (!t.confirmed && (t.kind == 'send' || t.kind == 'pool-withdraw')) return true;
+      if (!t.confirmed && (t.kind == 'send' || t.kind == 'pool-withdraw' || t.kind == 'lock' || t.kind == 'vote')) return true;
       final h = t.height ?? 0;
       if (h < 1) return t.kind == 'receive' && !t.confirmed;
       return confirmationsOf(h) < continuumConfirmations;

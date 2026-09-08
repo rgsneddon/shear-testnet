@@ -14,6 +14,8 @@ import {
   LIVE_MIN_BITS,
   SPENDABLE_CONFIRMATIONS,
   NANOS_PER_SHE,
+  HASH_BONUS_NANOS,
+  INTEREST_DENOM_DAYS,
 } from '../../crypto/asert.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, interestNanos } from '../../crypto/reserve_oracle.js';
 import {
@@ -21,8 +23,15 @@ import {
   previewWithdraw,
   lockTx,
   withdrawTx,
+  voteTx,
   portalIdFromDest,
+  VOTE_INCREASE,
 } from '../../crypto/reserve_vault.js';
+import { sampleCapExceeded, sampleCountCap } from '../src/chain.js';
+import { explorerRecentTxs } from '../../pool/src/wallet_api.js';
+import { roundActualHashes } from '../../pool/src/hash_credit.js';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { newIdentity, destOpeningFromView, hash20FromAddress, payoutDest } from '../../crypto/address.js';
 import { vaultDest } from '../../crypto/flow_sheet.js';
 import { matureSpendableNanos } from '../../crypto/spend.js';
@@ -62,7 +71,14 @@ describe('node Reserve vault', () => {
     assert.equal(c.reserveJoinCutoffDays, 99);
     assert.equal(c.reserveOracle, RESERVE_ORACLE_ID);
     assert.equal(c.reserveOracleDefaultBps, RESERVE_ORACLE_DEFAULT_BPS);
+    assert.equal(c.reserveOracleDefaultBps, 264);
+    assert.equal(c.reserveEpochDays, 400);
+    assert.equal(c.interestDenomDays, INTEREST_DENOM_DAYS);
+    assert.equal(c.interestDenomDays, 400);
+    assert.equal(c.hashBonusNanos, HASH_BONUS_NANOS);
+    assert.equal(c.hashBonusNanos, 1);
     assert.equal(c.mainnet, false);
+    assert.equal(c.magic, 'shear-testnet-v2');
   });
 
   it('lock spends mature Continuum, refuses when spendable is short, withdraw returns principal + staked interest', { timeout: 600_000 }, async () => {
@@ -84,7 +100,7 @@ describe('node Reserve vault', () => {
     const unfunded = store.queueTx(lock);
     assert.equal(unfunded.ok, false);
     assert.equal(unfunded.reason, 'insufficient');
-    assert.equal(store.reserveVault.totalLockedNanos, 0);
+    assert.equal(Number(store.reserveVault.totalLockedNanos), 0);
 
     const fundBlocks = 4;
     for (let i = 0; i < fundBlocks + SPENDABLE_CONFIRMATIONS; i += 1) {
@@ -100,7 +116,7 @@ describe('node Reserve vault', () => {
     const unsigned = store.queueTx(unsignedLock);
     assert.equal(unsigned.ok, false);
     assert.equal(unsigned.reason, 'unsigned');
-    assert.equal(store.reserveVault.totalLockedNanos, 0);
+    assert.equal(Number(store.reserveVault.totalLockedNanos), 0);
     assert.equal(spendableOf(store, continuum), before);
 
     const tooMuch = lockTx({
@@ -115,7 +131,7 @@ describe('node Reserve vault', () => {
     const refused = store.queueTx(tooMuch);
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'insufficient');
-    assert.equal(store.reserveVault.totalLockedNanos, 0);
+    assert.equal(Number(store.reserveVault.totalLockedNanos), 0);
     assert.equal(store.reserveVault.portals[pid], undefined);
     assert.equal(spendableOf(store, continuum), before);
 
@@ -126,8 +142,8 @@ describe('node Reserve vault', () => {
       now: t0 + (fundBlocks + SPENDABLE_CONFIRMATIONS) * 90_000,
     });
     assert.equal(store.reserveVault.epochStartMs > 0, true);
-    assert.equal(store.reserveVault.totalLockedNanos, PI_SHE_NANOS);
-    assert.equal(store.reserveVault.portals[pid].staked, PI_SHE_NANOS);
+    assert.equal(Number(store.reserveVault.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(store.reserveVault.portals[pid].staked), PI_SHE_NANOS);
     assert.equal(store.reserveVault.portals[pid].joined, true);
     const afterLock = spendableOf(store, continuum);
     // Mining the lock block also matures one more prior pot (same miner).
@@ -153,8 +169,8 @@ describe('node Reserve vault', () => {
     const qwd = store.queueTx(wd);
     assert.equal(qwd.ok, true, qwd.reason);
     await mineOne(store, continuum, { bits: LIVE_MIN_BITS, now: t1 });
-    assert.equal(store.reserveVault.totalLockedNanos, 0);
-    assert.equal(store.reserveVault.portals[pid].staked, 0);
+    assert.equal(Number(store.reserveVault.totalLockedNanos), 0);
+    assert.equal(Number(store.reserveVault.portals[pid].staked), 0);
     for (let i = 1; i <= SPENDABLE_CONFIRMATIONS; i += 1) {
       await mineOne(store, continuum, { bits: LIVE_MIN_BITS, now: t1 + i * 90_000 });
     }
@@ -162,8 +178,99 @@ describe('node Reserve vault', () => {
     assert.ok(afterWd >= afterLock + preview.payout, `withdraw must credit Continuum, have ${afterWd}`);
 
     const again = createStore(dir);
-    assert.equal(again.reserveVault.totalLockedNanos, 0);
-    assert.equal(JSON.stringify(again.reserveVault).includes(alice.address), false);
-    assert.equal(JSON.stringify(again.reserveVault).includes(alice.viewKey), false);
+    assert.equal(Number(again.reserveVault.totalLockedNanos), 0);
+    const dumped = JSON.stringify(again.reserveVault, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
+    assert.equal(dumped.includes(alice.address), false);
+    assert.equal(dumped.includes(alice.viewKey), false);
+  });
+
+  it('hash bonus is proven-only; sample_cap; no 365 on interest paths', () => {
+    assert.equal(roundActualHashes({ roundHashes: 256, clientHashes: 9e12, clientHashesRound0: 0 }), 256);
+    assert.equal(roundActualHashes({ roundHashes: 0, clientHashes: 9e12, clientHashesRound0: 0 }), 0);
+    assert.equal(HASH_BONUS_NANOS, 1);
+    assert.equal(sampleCountCap(17), 2n ** 17n * 16n);
+    assert.equal(sampleCapExceeded([{ miner: 'ssa1a', count: 630130 }], 17), false);
+    assert.equal(sampleCapExceeded([{ miner: 'ssa1a', count: Number((1n << 17n) * 16n) + 1 }], 17), true);
+    assert.equal(sampleCapExceeded([{ miner: 'ssa1a', count: Number((1n << 8n) * 16n) + 1 }], 8), true);
+    const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
+    for (const rel of [
+      'crypto/reserve_oracle.js',
+      'crypto/reserve_vault.js',
+      'contracts/Reserve.sol',
+      'crypto/reserve_evm.js',
+    ]) {
+      const src = fs.readFileSync(join(root, rel), 'utf8');
+      for (const line of src.split('\n')) {
+        if (!/\b365\b/.test(line)) continue;
+        assert.match(line, /do not use 365/, `${rel}: ${line}`);
+      }
+    }
+  });
+
+  it('Reserve lock then vote in mempool paint (pending) before the next block', { timeout: 600_000 }, async () => {
+    const alice = newIdentity();
+    const continuum = payoutDest(alice.paymentCode);
+    const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
+    const open = destOpeningFromView(alice.viewKey, hash20FromAddress(alice.address), 0);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reserve-pending-'));
+    const store = createStore(dir);
+    const t0 = 1_700_000_000_000;
+    for (let i = 0; i < 4 + SPENDABLE_CONFIRMATIONS; i += 1) {
+      await mineOne(store, continuum, { bits: LIVE_MIN_BITS, now: t0 + i * 90_000 });
+    }
+    const lockL = levyNanos(PI_SHE_NANOS);
+    const lock = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-pend' });
+    lock.open = open;
+    lock.fee = lockL;
+    lock.maxLevy = lockL;
+    const q = store.queueTx(lock);
+    assert.equal(q.ok, true, q.reason);
+    const painted = explorerRecentTxs(store);
+    const lockRow = painted.find((t) => t.id === 'lock-pend');
+    assert.ok(lockRow, JSON.stringify(painted.slice(0, 5)));
+    assert.equal(lockRow.kind, 'lock');
+    assert.equal(lockRow.status, 'pending');
+    assert.equal(lockRow.pending, true);
+    assert.ok(String(lockRow.to).startsWith('ssa1'));
+    assert.equal(/she1|shear1/i.test(JSON.stringify(lockRow)), false);
+    await mineOne(store, continuum, {
+      bits: LIVE_MIN_BITS,
+      now: t0 + (4 + SPENDABLE_CONFIRMATIONS) * 90_000,
+    });
+    const voteL = levyNanos(0);
+    const vt = voteTx({ from: continuum, dest: vault, choice: VOTE_INCREASE, id: 'vote-pend' });
+    vt.open = open;
+    vt.portalOpen = open;
+    vt.fee = voteL;
+    vt.maxLevy = voteL;
+    vt.payer = continuum;
+    const qv = store.queueTx(vt);
+    assert.equal(qv.ok, true, qv.reason);
+    const afterVote = explorerRecentTxs(store);
+    const voteRow = afterVote.find((t) => t.id === 'vote-pend');
+    assert.ok(voteRow, JSON.stringify(afterVote.filter((t) => t.kind === 'vote' || t.kind === 'lock')));
+    assert.equal(voteRow.kind, 'vote');
+    assert.equal(voteRow.status, 'pending');
+    assert.equal(/she1|shear1/i.test(JSON.stringify(voteRow)), false);
+    const bad = lockTx({ from: continuum, to: vault, nanos: 1, id: 'lock-rejected' });
+    const refused = store.queueTx(bad);
+    assert.equal(refused.ok, false);
+    assert.equal(explorerRecentTxs(store).some((t) => t.id === 'lock-rejected'), false);
+    await mineOne(store, continuum, {
+      bits: LIVE_MIN_BITS,
+      now: t0 + (5 + SPENDABLE_CONFIRMATIONS) * 90_000,
+    });
+    assert.equal(store.reserveVault.votes.increase, 1);
+    assert.equal(explorerRecentTxs(store).some((t) => t.id === 'lock-rejected' && t.status === 'confirmed'), false);
+    for (let i = 1; i <= SPENDABLE_CONFIRMATIONS; i += 1) {
+      await mineOne(store, continuum, {
+        bits: LIVE_MIN_BITS,
+        now: t0 + (5 + SPENDABLE_CONFIRMATIONS + i) * 90_000,
+      });
+    }
+    const sealed = explorerRecentTxs(store).find((t) => t.id === 'lock-pend');
+    assert.ok(sealed);
+    assert.equal(sealed.status, 'confirmed');
+    assert.equal(sealed.pending, false);
   });
 });

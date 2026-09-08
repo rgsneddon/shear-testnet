@@ -396,7 +396,7 @@
     </section>
     <section class="panel-card" id="pool-explorer">
       <h2>Pool explorer · last 10 transactions</h2>
-      <p class="label">Sealed blocks only. Hash bonuses in the open round stay off this list. Status is pending until spendable confirmations, then confirmed.</p>
+      <p class="label">Reserve lock and vote appear from mempool as (pending). Hash bonuses in the open round stay off this list. Pending drops at 6 confirmations.</p>
       <div class="table-wrap" id="recent-wrap">
       <table id="recent-txs">
         <thead>
@@ -750,9 +750,11 @@
       const html = rows.length
         ? rows.map(function (t) {
             const href = 'https://explorer.shear.digital/tx/' + encodeURIComponent(t.id);
+            const st = t.status || blockStatus(t, tip, need);
+            const pendingLabel = st === 'pending' || st === '(pending)' ? '(pending)' : 'confirmed';
             return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
               esc(fmtLocalTs(t.at)) + '</td><td>' +
-              esc(blockStatus(t, tip, need)) + '</td><td class="mono">' + esc(t.from || 'coinbase') +
+              esc(pendingLabel) + '</td><td class="mono">' + esc(t.from || 'coinbase') +
               '</td><td class="mono">' + esc(shortDest(t.to)) + '</td><td>' +
               esc(t.amount) + '</td></tr>';
           }).join('')

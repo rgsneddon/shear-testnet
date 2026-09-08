@@ -33,7 +33,7 @@ The Reserve is a Vortex dapp, not a third coinbase line.
 - Vote: raise hash bonus +1 unit (10⁻¹¹ SHE), lower −1 unit, or leave it. The **1 SHE pot does not change**.
 - If fewer than 99 days remain, new deposits still lock, but they sit idle: no interest, no vote.
 
-Interest is protocol-minted by **The Reserve only** at withdraw (oracle rate × staked principal × 400/365). It is not taken from miners’ pot or hash bonuses.
+Interest is protocol-minted by **The Reserve only** at withdraw: `floor(stakedNanos * epochBps / 10000)`. do not use 365. It is not taken from miners’ pot or hash bonuses.
 
 ## Who may draw on emissions
 

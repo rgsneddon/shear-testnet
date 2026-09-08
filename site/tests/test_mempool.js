@@ -14,10 +14,24 @@ describe('mempool lattice honesty', () => {
     assert.doesNotMatch(html, /clientHashes/);
     assert.match(html, /roundHashes/);
     assert.match(html, /valid-hash bonus|Valid hashes/);
-    assert.match(html, /releases\/tag\/0\.18/);
-    assert.doesNotMatch(html, /releases\/tag\/0\.17/);
+    assert.match(html, /releases\/tag\/0\.27/);
+    assert.doesNotMatch(html, /releases\/tag\/0\.26/);
     assert.doesNotMatch(html, /GNFP/);
     assert.doesNotMatch(html, /50 hashes each/);
     assert.match(html, /Gold hoop — user Flow sends/);
+  });
+});
+
+describe('explorer pending paint', () => {
+  const explorer = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '../../pool/public/explorer.html'),
+    'utf8',
+  );
+  it('paints kind and (pending) for mempool lock/vote; never she1', () => {
+    assert.match(explorer, /\(pending\)/);
+    assert.match(explorer, /t\.kind/);
+    assert.match(explorer, /Reserve lock and vote appear from mempool/);
+    assert.match(explorer, /shortDest/);
+    assert.doesNotMatch(explorer, /portal id|viewKey|memoPlain/);
   });
 });

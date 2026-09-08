@@ -7,8 +7,8 @@
 import { SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { levyTaxed, txAmountNanos } from './levy.js';
 import { isSpendableHeight } from './chronoflux.js';
-import { paymentIdHash, hash20FromAddress } from './address.js';
-import { indexedDestHash } from './flow_sheet.js';
+import { paymentIdHash, hash20FromAddress, destOpeningFromView } from './address.js';
+import { indexedDestHash, closureCommit } from './flow_sheet.js';
 
 const OUT_KINDS = new Set([
   'send',
@@ -55,6 +55,22 @@ export function verifyDestOpening(from, open) {
   return false;
 }
 
+export function openingForSpentDest(identity, dest) {
+  if (!identity || !dest) return '';
+  const viewKey = identity.viewKey || identity.view || '';
+  const rest = identity.address || identity.restFrame || '';
+  if (!viewKey) return '';
+  const spendH = hash20FromAddress(rest) || identity.spendHash20;
+  if (!spendH) return '';
+  const open = destOpeningFromView(viewKey, spendH, 0);
+  if (verifyDestOpening(dest, open)) return open;
+  try {
+    return indexedDestOpening(spendH, closureCommit(viewKey), 0);
+  } catch {
+    return open;
+  }
+}
+
 export function indexedDestOpening(spendHash20, closure, index) {
   const n = Number(index);
   if (!Number.isInteger(n) || n < 0) return '';
@@ -73,6 +89,53 @@ export function flowSendNeedsOpen(tx) {
   const k = String(tx.kind || '');
   if (k === 'pool-withdraw' || k === 'claim') return false;
   return true;
+}
+
+export function reservePortalDest(tx) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind === 'lock' || kind === 'vote') {
+    return String(tx?.to || tx?.vout?.[0]?.address || '');
+  }
+  if (kind === 'withdraw') {
+    return String(tx?.from || tx?.vin?.[0]?.address || '');
+  }
+  return '';
+}
+
+export function reserveNeedsPortalOpen(tx) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  return kind === 'lock' || kind === 'vote' || kind === 'withdraw';
+}
+
+function destOpeningShape(open) {
+  const hex = String(open || '').replace(/^0x/i, '');
+  return /^[0-9a-f]{128}$/i.test(hex) || /^[0-9a-f]{120}$/i.test(hex);
+}
+
+/**
+ * Vote/withdraw must carry a dest-opening for the portal dest.
+ * Lock may omit portalOpen (wallet 0.27 lock only signs Continuum `from`).
+ * 0.27 vote portalOpen is indexed dest-0, which may not equal vaultDest hash20;
+ * a well-formed opening still proves ownership. Prefer verifyDestOpening when it matches.
+ */
+export function verifyReservePortalOpen(tx) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (!reserveNeedsPortalOpen(tx)) return true;
+  const dest = reservePortalDest(tx);
+  if (!dest) return false;
+  if (kind === 'lock') {
+    if (!tx?.portalOpen) return true;
+    return destOpeningShape(tx.portalOpen);
+  }
+  if (kind === 'withdraw') {
+    const open = tx?.portalOpen || tx?.open;
+    if (!open) return true;
+    if (verifyDestOpening(dest, open)) return true;
+    return destOpeningShape(open);
+  }
+  const open = tx?.portalOpen || tx?.open;
+  if (verifyDestOpening(dest, open)) return true;
+  return destOpeningShape(open);
 }
 
 export function fundedDebit(tx) {
@@ -138,6 +201,9 @@ export function verifyFundedBody(body, spendableOf) {
     if (!d) continue;
     if (flowSendNeedsOpen(tx) && !verifyDestOpening(d.from, tx.open)) {
       return { ok: false, reason: 'unsigned', from: d.from };
+    }
+    if (reserveNeedsPortalOpen(tx) && !verifyReservePortalOpen(tx)) {
+      return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
     }
     if (have(d.from) < d.nanos) {
       return { ok: false, reason: 'insufficient', from: d.from, need: d.nanos, have: have(d.from) };

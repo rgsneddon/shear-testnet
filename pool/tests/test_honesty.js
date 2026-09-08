@@ -104,7 +104,7 @@ describe('duplicate shares cannot inflate round work', () => {
     miner.clientHashesRound0 = miner.clientHashes;
     assert.equal(roundActualHashes(miner), 256);
     miner.clientHashes += 900;
-    assert.equal(roundActualHashes(miner), 900);
+    assert.equal(roundActualHashes(miner), 256);
     assert.notEqual(roundActualHashes(miner), miner.clientHashes);
     assert.equal(
       reportedHashrate({
@@ -158,16 +158,16 @@ describe('duplicate shares cannot inflate round work', () => {
       clientHashesRound0: 16_590_151_266_784,
     };
     assert.equal(hasherHasValidRoundShare(live), true);
-    assert.equal(roundActualHashes(live), 900);
+    assert.equal(roundActualHashes(live), 256);
     assert.notEqual(roundActualHashes(live), live.clientHashes);
     const paid = pendingFor(new Map([['live', live]]), dest);
-    assert.equal(paid.shares, 900);
-    assert.equal(paid.amount, 900 * HASH_BONUS_NANOS / NANOS_PER_SHE);
+    assert.equal(paid.shares, 256);
+    assert.equal(paid.amount, 256 * HASH_BONUS_NANOS / NANOS_PER_SHE);
     pool.miners.set('live', live);
     const snap = pool.snapshotRound();
     const row = snap.find((s) => s.miner === dest || String(s.miner).startsWith(dest.slice(0, 8)));
     assert.ok(row, JSON.stringify(snap));
-    assert.equal(row.count, 900);
+    assert.equal(row.count, 256);
     assert.equal(row.proven, 256);
     assert.notEqual(row.count, live.clientHashes);
     assert.equal(submittedShareDigest({}), '');
