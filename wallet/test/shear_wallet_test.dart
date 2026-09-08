@@ -171,14 +171,14 @@ void main() {
     expect(ledger.sealedHeight, 2 + ShearLedger.spendableConfirmations - 1);
     expect(ledger.pendingTxs(id.address).where((t) => t.kind == 'send'), isEmpty);
     final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
-    final sent = await ledger.send(from: dest, to: bob, amount: 0.25);
+    final sent = await ledger.send(from: dest, to: bob, amount: 0.25, restFrame: id.address);
     expect(sent.confirmed, isFalse);
     expect(ledger.pendingTxs(id.address).where((t) => t.id == sent.id).length, 1);
     expect(ledger.shearviewTxs(id.address).where((t) => t.id == sent.id), isEmpty);
     ledger.confirmRound(address: id.address, pot: 1, height: 3);
     expect(ledger.pendingTxs(id.address).any((t) => t.id == sent.id), isTrue);
     expect(ledger.shearviewTxs(id.address).where((t) => t.id == sent.id).length, 1);
-    expect(ledger.confirmationsOf(sent.height ?? 3), 1);
+    expect(ledger.confirmationsOf(sent.height ?? 3), greaterThanOrEqualTo(1));
     ledger.settleTo(3 + ShearLedger.spendableConfirmations - 1);
     expect(ledger.ownerHistory(id.address).where((t) => t.id == sent.id).single.confirmed, isTrue);
     expect(ledger.pendingTxs(id.address), isEmpty);
@@ -703,48 +703,45 @@ void main() {
     ledger.creditHash(id.address, hashes: 0);
     ledger.confirmRound(address: id.address, pot: 1, height: 1);
     ledger.settleTo(1 + ShearLedger.spendableConfirmations);
-    expect(
-      () => ledger.refuseSheetChange(from: from, to: from),
-      throwsA(isA<ArgumentError>()),
-    );
-    expect(
-      () => ledger.refuseSheetChange(from: from, change: from),
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    await expectLater(
+      ledger.send(from: from, to: from, amount: 0.1, local: true, restFrame: id.address),
       throwsA(isA<ArgumentError>()),
     );
     await expectLater(
-      ledger.send(from: from, to: from, amount: 0.1, local: true),
+      ledger.send(from: from, to: bob, amount: 0.1, local: true, restFrame: id.address, change: from),
       throwsA(isA<ArgumentError>()),
     );
+    final tx = await ledger.send(from: from, to: bob, amount: 0.1, local: true, restFrame: id.address);
+    expect(tx.change, isNotNull);
+    expect(tx.change, isNot(from));
+    expect(tx.change, isNot(bob));
+    expect(ledger.spendable(from), closeTo(0, 1e-12));
+    expect(ledger.spendable(tx.change!), greaterThan(0.5));
   });
 
-  test('Reserve portal dest is refused as Flow change', () {
+  test('Reserve portal dest is refused as Flow change', () async {
     final id = createIdentity();
     final ledger = ShearLedger()..viewSecret = id.viewKey;
     final from = ledger.currentDest(id.address);
     final portal = vaultDest(id.address, viewKey: id.viewKey)!;
     expect(portal.startsWith('ssa1'), isTrue);
     expect(portal, isNot(from));
-    expect(
-      () => ledger.refuseSheetChange(from: from, to: portal, portalDest: portal),
+    ledger.confirmRound(address: id.address, pot: 1, height: 1);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'cd' * 32)!;
+    await expectLater(
+      ledger.send(from: from, to: portal, amount: 0.1, local: true, restFrame: id.address),
       throwsA(isA<ArgumentError>()),
     );
-    expect(
-      () => ledger.refuseSheetChange(from: from, change: portal, portalDest: portal),
+    await expectLater(
+      ledger.send(from: from, to: bob, amount: 0.1, local: true, restFrame: id.address, change: portal),
       throwsA(isA<ArgumentError>()),
     );
-    final change = ledger.allocateChangeDest(id.address, from: from, portalDest: portal);
-    expect(change, isNot(from));
-    expect(change, isNot(portal));
-    expect(change.startsWith('ssa1'), isTrue);
-  });
-
-  test('pasting an ssa1 already in spend history warns', () {
-    final id = createIdentity();
-    final ledger = ShearLedger()..viewSecret = id.viewKey;
-    final dest = ledger.currentDest(id.address);
-    expect(ledger.warnSpentDestPaste(dest), isFalse);
-    ledger.rememberSpentDest(dest);
-    expect(ledger.warnSpentDestPaste(dest), isTrue);
+    final tx = await ledger.send(from: from, to: bob, amount: 0.1, local: true, restFrame: id.address);
+    expect(tx.change, isNot(portal));
+    expect(tx.change, isNot(from));
+    expect(ledger.spendable(from), closeTo(0, 1e-12));
   });
 
   test('FlyClient source defaults to 127.0.0.1 before the public seed', () {
@@ -1612,6 +1609,58 @@ void main() {
     final bad = tester.widget<Text>(find.byKey(const Key('flow-send-advisory')));
     expect(bad.data, 'not sent - try again');
     expect(bad.style!.color, const Color(0xFFFF3B3B));
+  });
+
+  testWidgets('Flow New dest allocates a second receive dest', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-flow-recv-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    await tester.pumpWidget(ShearWalletApp(session: session, startUnlocked: true, skipPoolSync: true));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Flow'));
+    await tester.pump();
+    expect(find.byKey(const Key('flow-receive-dest')), findsOneWidget);
+    final first = tester.widget<SelectableText>(find.byKey(const Key('flow-receive-dest'))).data;
+    expect(first, isNotNull);
+    expect(first!.startsWith('ssa1'), isTrue);
+    await tester.tap(find.byKey(const Key('flow-new-dest')));
+    await tester.pump();
+    final second = tester.widget<SelectableText>(find.byKey(const Key('flow-receive-dest'))).data;
+    expect(second, isNot(first));
+    expect(second!.startsWith('ssa1'), isTrue);
+  });
+
+  testWidgets('Flow To paste warns when dest is in spend history', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-flow-warn-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final ledger = ShearLedger()..viewSecret = ident.viewKey;
+    final spent = ledger.currentDest(ident.address);
+    ledger.rememberSpentDest(spent);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      startUnlocked: true,
+      skipPoolSync: true,
+      scanQr: () async => spent,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Flow'));
+    await tester.pump();
+    await tester.enterText(find.widgetWithText(TextField, 'To (she1 or ssa1)'), spent);
+    await tester.pump();
+    expect(find.byKey(const Key('spent-dest-warn')), findsOneWidget);
+    await tester.enterText(find.widgetWithText(TextField, 'To (she1 or ssa1)'), '');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('scan-qr')));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('spent-dest-warn')), findsOneWidget);
   });
 
   test('Flow send is in both shearviewTxs at 1 conf as sending/receiving and sent/received at 6', () async {

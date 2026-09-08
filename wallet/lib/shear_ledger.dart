@@ -50,6 +50,7 @@ class ShearTx {
     this.hashAmount,
     this.threads,
     this.pot,
+    this.change,
   });
 
   final String id;
@@ -67,6 +68,8 @@ class ShearTx {
   final int? threads;
   /// Sealed Path 1 pot SHE when this row is a coinbase bundle. Null if none.
   final double? pot;
+  /// Newly derived dest that received leftover. Never [from] or the portal.
+  final String? change;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -83,6 +86,7 @@ class ShearTx {
         if (hashAmount != null) 'hashAmount': hashAmount,
         if (threads != null) 'threads': threads,
         if (pot != null) 'pot': pot,
+        if (change != null) 'change': change,
       };
 
   ShearTx copyWith({bool? confirmed, int? height}) => ShearTx(
@@ -100,6 +104,7 @@ class ShearTx {
         hashAmount: hashAmount,
         threads: threads,
         pot: pot,
+        change: change,
       );
 
   bool get isHashReward => kind == 'hash';
@@ -122,6 +127,7 @@ class ShearTx {
         hashAmount: (j['hashAmount'] as num?)?.toDouble(),
         threads: (j['threads'] as num?)?.toInt(),
         pot: (j['pot'] as num?)?.toDouble(),
+        change: j['change']?.toString(),
       );
 }
 
@@ -1154,7 +1160,15 @@ class ShearLedger {
   String? destAt(String restFrame, int index) {
     final v = viewSecret;
     if (v == null || v.isEmpty) return null;
-    return destAtIndex(restFrame, index: index, viewKey: v);
+    final hit = destAtIndex(restFrame, index: index, viewKey: v);
+    if (hit != null) return hit;
+    final spend = hash20FromAddress(restFrame);
+    if (spend == null) return null;
+    return encodeDestAddress(indexedDestHash(
+      spendHash20: spend,
+      closure: closureCommit(v),
+      index: index,
+    ));
   }
 
   List<String> listedDests(String restFrame) {
@@ -1363,14 +1377,25 @@ class ShearLedger {
       }
     }
     if (spendable(src) < needShe) throw StateError('insufficient');
+    String? changeDest = change;
     if (sendKind == 'send') {
       String? portal;
       if (restFrame != null && (viewSecret ?? '').isNotEmpty) {
         portal = vaultDest(restFrame, viewKey: viewSecret!);
       }
-      refuseSheetChange(from: src, to: to, change: change, portalDest: portal);
+      final leftover = spendable(src) - needShe;
+      if (leftover > 1e-18) {
+        final derive = restFrame ?? src;
+        if ((viewSecret ?? '').isNotEmpty) {
+          changeDest ??= allocateChangeDest(derive, from: src, portalDest: portal);
+        } else {
+          throw ArgumentError('same_dest');
+        }
+      }
+      refuseSheetChange(from: src, to: to, change: changeDest, portalDest: portal);
       rememberSpentDest(src);
       rememberSpentDest(to);
+      if (changeDest != null) rememberSpentDest(changeDest);
     }
     Map<String, dynamic>? memoCt;
     if (memo != null && memo.isNotEmpty) {
@@ -1414,6 +1439,9 @@ class ShearLedger {
         throw StateError('${json['reason'] ?? 'send failed'}');
       }
       final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
+      _spendable[src] = (json['fromBalance'] as num?)?.toDouble()
+          ?? (spendable(src) - needShe);
+      _parkChange(src, changeDest);
       final tx = ShearTx(
         id: raw.id,
         from: raw.from,
@@ -1425,13 +1453,13 @@ class ShearLedger {
         memo: memoCt != null || raw.memo,
         memoPlain: memo,
         memoCt: memoCt ?? raw.memoCt,
+        change: changeDest,
       );
-      _spendable[src] = (json['fromBalance'] as num?)?.toDouble()
-          ?? (spendable(src) - needShe);
       _txs.add(tx);
       return tx;
     }
     _spendable[src] = spendable(src) - needShe;
+    _parkChange(src, changeDest);
     final tx = ShearTx(
       id: 'send-${DateTime.now().millisecondsSinceEpoch}',
       from: src,
@@ -1442,9 +1470,19 @@ class ShearLedger {
       memo: memoCt != null,
       memoPlain: memo,
       memoCt: memoCt,
+      change: changeDest,
     );
     _txs.add(tx);
     return tx;
+  }
+
+  void _parkChange(String src, String? changeDest) {
+    if (changeDest == null || changeDest.isEmpty) return;
+    final leftover = spendable(src);
+    if (leftover <= 1e-18) return;
+    _spendable[src] = 0;
+    _spendable[changeDest] = spendable(changeDest) + leftover;
+    _dests.add(changeDest);
   }
 
   Future<ShearTx> pullPool({

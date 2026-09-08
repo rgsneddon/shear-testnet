@@ -145,6 +145,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   int _mempoolDepth = 0;
   String? _flowSendAdvisory;
   bool _flowSendOk = false;
+  String? _flowReceiveDest;
+  String? _spentDestWarn;
   bool _newMemoExpanded = false;
   late final List<ScrollController> _tabScroll;
   final _depositsScroll = ScrollController();
@@ -1033,7 +1035,24 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       return;
     }
     flowTo.text = got;
+    _noteFlowTo(got);
     if (mounted) setState(() {});
+  }
+
+  void _noteFlowTo(String raw) {
+    final d = raw.trim();
+    final warn = d.isNotEmpty && ledger.warnSpentDestPaste(d)
+        ? 'This dest was already used in this wallet.'
+        : null;
+    if (warn != _spentDestWarn) {
+      _spentDestWarn = warn;
+    }
+  }
+
+  String _offerReceiveDest(ShearIdentity ident) {
+    ledger.viewSecret = ident.viewKey;
+    _flowReceiveDest ??= ledger.allocateReceiveDest(ident.address);
+    return _flowReceiveDest!;
   }
 
   Future<void> _openSocial(String url) async {
@@ -1447,9 +1466,25 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
       const Text('ssa1 dest this round (pay). Offer she1, never shear1.'),
-      SelectableText(ledger.currentDest(ident.address)),
+      SelectableText(_offerReceiveDest(ident), key: const Key('flow-receive-dest')),
       const SizedBox(height: 8),
-      TextField(controller: flowTo, decoration: const InputDecoration(labelText: 'To (she1 or ssa1)')),
+      OutlinedButton(
+        key: const Key('flow-new-dest'),
+        onPressed: () => setState(() {
+          _flowReceiveDest = ledger.allocateReceiveDest(ident.address);
+        }),
+        child: const Text('New dest'),
+      ),
+      const SizedBox(height: 8),
+      TextField(
+        controller: flowTo,
+        decoration: const InputDecoration(labelText: 'To (she1 or ssa1)'),
+        onChanged: (v) => setState(() => _noteFlowTo(v)),
+      ),
+      if (_spentDestWarn != null) ...[
+        const SizedBox(height: 8),
+        Text(_spentDestWarn!, key: const Key('spent-dest-warn')),
+      ],
       const SizedBox(height: 8),
       OutlinedButton(
         key: const Key('scan-qr'),
