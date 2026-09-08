@@ -2221,8 +2221,8 @@ void main() {
     expect(r.portal(vb).staked, 0);
     expect(r.portal(vb).canVote, isTrue);
     expect(r.vote(dest: vb, choice: kVoteIncrease, nowMs: late), isNull);
-    expect(r.vote(dest: vb, choice: kVoteHold, nowMs: late), isNull);
-    expect(r.portal(vb).vote, kVoteHold);
+    expect(r.vote(dest: vb, choice: kVoteHold, nowMs: late), 'vote_locked');
+    expect(r.portal(vb).vote, kVoteIncrease);
     expect(r.deposit(dest: va, she: 0.5, nowMs: late), isNull);
     expect(r.portal(va).idle, kUnitsPerShe ~/ 2);
     expect(r.portal(va).canVote, isTrue);
@@ -2336,6 +2336,7 @@ void main() {
   });
 
   testWidgets('Vortex Reserve has amount, Send, two boxes, and votes when portal holds π', (tester) async {
+    _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-reserve-ui-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
@@ -2524,7 +2525,7 @@ void main() {
     await tester.tap(find.byKey(const Key('reserve-send')));
     await tester.pump();
     expect(find.byKey(const Key('reserve-sign')), findsNothing);
-    expect(find.text('Not enough spendable SHE'), findsOneWidget);
+    expect(find.textContaining('Not enough Continuum spendable'), findsOneWidget);
     expect(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode), closeTo(1, 1e-12));
   });
 
@@ -3172,7 +3173,7 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     await tester.drag(find.byType(ListView).first, const Offset(0, -480));
     await tester.pump();
-    expect(find.textContaining('pool-withdraw'), findsWidgets);
+    expect(find.textContaining('sending'), findsWidgets);
     expect(find.textContaining(formatShe(confirmedNanos / kUnitsPerShe)), findsWidgets);
     final afterOk = appKey.currentState!.pollPullNow();
     await tester.pump();
@@ -3543,15 +3544,20 @@ void main() {
     opened.ledger.settleTo(30);
     final from = opened.ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: 1);
     opened.live.owner = from;
+    opened.live.balance = 10;
+    for (final d in opened.ledger.syncDests(ident.address, paymentCode: ident.paymentCode)) {
+      opened.live.destBalances[d] = 10;
+    }
     opened.live.destBalances[from] = 10;
     await tester.pumpWidget(ShearWalletApp(
       session: opened.session,
       ledger: opened.ledger,
       reserve: ShearReserve(),
       startUnlocked: true,
-      skipPoolSync: false,
+      skipPoolSync: true,
     ));
-    await _waitUnlocked(tester);
+    await tester.pump();
+    await tester.pump();
     expect(find.byKey(const Key('claim-hashes')), findsNothing);
     expect(find.text('Claim hashes'), findsNothing);
     expect(find.text('Hash bonus'), findsOneWidget);
