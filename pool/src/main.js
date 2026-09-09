@@ -6,7 +6,7 @@ import { createPool } from './pool.js';
 import { isShearAddress } from '../../crypto/address.js';
 import { destForLogin, payoutDest } from '../../crypto/flow_sheet.js';
 import { loadOrCreatePoolIdent } from './pool_ident.js';
-import { createP2p, P2P_PORT } from '../../node/src/p2p.js';
+import { createP2p, P2P_PORT, SEED_RETRY_MS } from '../../node/src/p2p.js';
 import { MAGIC_TESTNET, GENESIS_BITS } from '../../crypto/asert.js';
 import { SHARE_BITS_V2_START } from './share_vardiff.js';
 
@@ -41,12 +41,11 @@ if (p2pPort > 0) {
   pool.setP2p(p2p);
   p2pBound = bound.port;
   const seeds = (process.env.SHEAR_SEEDS || '').split(',').map((s) => s.trim()).filter(Boolean);
-  for (const seed of seeds) {
-    const cut = seed.lastIndexOf(':');
-    const host = cut > 0 ? seed.slice(0, cut) : seed;
-    const port = cut > 0 ? Number(seed.slice(cut + 1)) : P2P_PORT;
-    try { await p2p.connect(host, port); } catch { /* seed down */ }
-  }
+  await p2p.dialSeeds(seeds);
+  const seedTimer = setInterval(() => {
+    p2p.dialSeeds(seeds);
+  }, SEED_RETRY_MS);
+  if (typeof seedTimer.unref === 'function') seedTimer.unref();
 }
 console.log(JSON.stringify({
   ok: true,

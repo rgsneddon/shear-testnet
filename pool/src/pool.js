@@ -308,7 +308,7 @@ export function admitClient(params) {
   return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payout || '' };
 }
 
-/** ShearHash-v2 digest the miner claims. Empty if they did not compute the algo. */
+/** ShearHash-v3 digest the miner claims. Empty if they did not compute the algo. */
 export function submittedShareDigest(params) {
   const h = String(params?.hash || '').trim().toLowerCase();
   return /^[0-9a-f]{64}$/.test(h) ? h : '';
@@ -584,12 +584,11 @@ function easeHashrate(miner, instant, now, tauS = HASHRATE_EMA_TAU_S) {
 }
 
 /**
- * Display H/s from this miner's own hash counter over ≥5s.
- * Ignore the submit `hashrate` field on connect — that is hashes/elapsed
- * (spikes in the first second, then crawls toward the true rate).
- * Vardiff 10ms shares stay as-is; this only changes the painted H/s.
+ * Display H/s is hashes delta / wall time the pool actually received.
+ * Same quantity the miner paints. Ignore login `hashrate` (first-second
+ * spike). Do not hold a past spike across a stall. Share work still mints.
  */
-export const SELF_RATE_MIN_DT_S = 2;
+export const SELF_RATE_MIN_DT_S = 5;
 
 export function applyMinerSelfRate(session, params, now = Date.now()) {
   if (!session || !params) return session;
@@ -610,23 +609,10 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
       if (dt >= SELF_RATE_MIN_DT_S) {
         const delta = hashes - prev;
         if (delta > 0) {
-          const inst = delta / dt;
-          const held = Number(session.clientHs) || 0;
-          const heldAt = Number(session.clientHsAt) || 0;
-          // Blockfound RandomX K pause: mixed hashing+stall windows (often
-          // 50–90% of the true rate) must not paint a V on the public H/s.
-          const goodAt = heldAt > 0 ? heldAt : now;
-          if (held > 0 && inst < held * HASHRATE_HOLD_FRAC
-              && (now - goodAt) <= HASHRATE_STALL_HOLD_MS) {
-            if (!(heldAt > 0)) session.clientHsAt = now;
-            session.rateHashes0 = hashes;
-            session.rateAt0 = now;
-          } else {
-            session.clientHs = inst;
-            session.clientHsAt = now;
-            session.rateHashes0 = hashes;
-            session.rateAt0 = now;
-          }
+          session.clientHs = delta / dt;
+          session.clientHsAt = now;
+          session.rateHashes0 = hashes;
+          session.rateAt0 = now;
         } else if (dt >= 8) {
           session.rateHashes0 = hashes;
           session.rateAt0 = now;
@@ -635,21 +621,13 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
     }
     return session;
   }
-  const hs = Number(params.hashrate ?? params.hs ?? params.hashRate);
-  if (Number.isFinite(hs) && hs > 0) {
-    const t0 = Number(session.rateAt0);
-    if (!(t0 > 0)) session.rateAt0 = now;
-    else if ((now - t0) / 1000 >= SELF_RATE_MIN_DT_S) session.clientHs = hs;
-  }
   return session;
 }
 
 /**
- * Public H/s for a connected hasher is that miner's own hash counter
- * (hashes delta / time). Proven shareBits work still mints / roundHashes.
- * Disconnected rows fall back to proven so the 12s linger is not a fake H/s.
+ * Public H/s: connected hasher's own hashes/elapsed. ShareBits work mints
+ * and is the fallback when no counter has arrived yet. No EMA, no hold.
  */
-/** Instant H/s for the operator desk. Not the public 90s ease. */
 export function liveHashrate(miner, now = Date.now()) {
   if (minerConnected(miner)) {
     const client = Number(miner?.clientHs) || 0;
@@ -659,27 +637,7 @@ export function liveHashrate(miner, now = Date.now()) {
 }
 
 export function reportedHashrate(miner, now = Date.now()) {
-  const at = Number(now) || Date.now();
-  if (minerConnected(miner)) {
-    const client = Number(miner?.clientHs) || 0;
-    if (client > 0) {
-      const held = Number(miner?.lastPositiveHs) || 0;
-      const heldAt = Number(miner?.lastPositiveAt) || 0;
-      if (held > 0 && client < held * HASHRATE_HOLD_FRAC && heldAt > 0
-          && (at - heldAt) <= HASHRATE_STALL_HOLD_MS) {
-        return easeHashrate(miner, held, at, HASHRATE_EMA_TAU_S);
-      }
-      miner.lastPositiveHs = client;
-      miner.lastPositiveAt = at;
-      return easeHashrate(miner, client, at, HASHRATE_EMA_TAU_S);
-    }
-    const held = Number(miner?.lastPositiveHs) || 0;
-    const heldAt = Number(miner?.lastPositiveAt) || Number(miner?.emaAt) || 0;
-    if (held > 0 && heldAt > 0 && (at - heldAt) <= HASHRATE_STALL_HOLD_MS) {
-      return easeHashrate(miner, held, at, HASHRATE_EMA_TAU_S);
-    }
-  }
-  return easeHashrate(miner, provenHashrate(miner, at), at);
+  return liveHashrate(miner, now);
 }
 
 export function sortMinersByHashrate(miners, now = Date.now()) {

@@ -16,7 +16,7 @@ Votes do not move the pot. The Reserve Oracle does not move the pot.
 
 ## 2. Per-hash bonus — 10⁻¹¹ SHE × proven units, per miner
 
-Each valid ShearHash-v2 share on the **parent job header** mints **0.00000000001 SHE** (1 protocol unit of 10⁻¹¹ SHE) times `2^SHARE_FLOOR_BITS` to the **miner who produced that share**. Public amounts show eight fractional digits; the extra unit is still sealed on the payout. Counts are proven from `shareBatch`, never from `clientHashes`.
+Each valid ShearHash-v3 share on the **parent job header** mints **0.00000000001 SHE** (1 protocol unit of 10⁻¹¹ SHE) times `2^SHARE_FLOOR_BITS` to the **miner who produced that share**. Public amounts show eight fractional digits; the extra unit is still sealed on the payout. Counts are proven from `shareBatch`, never from `clientHashes`.
 
 Alice 4 000 units + Bob 1 000 units in the same round → Alice 4 000 units, Bob 1 000 units, in the same coinbase as `kind: hash`. The finder does not take anyone else’s hash bonus.
 

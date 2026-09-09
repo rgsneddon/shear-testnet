@@ -1,5 +1,5 @@
 /**
- * Hash-bonus credit. A hasher with no accepted ShearHash-v2 share this
+ * Hash-bonus credit. A hasher with no accepted ShearHash-v3 share this
  * open round contributes 0, even if they report a huge hash counter.
  * After a valid share, bonus is proven roundHashes only.
  * clientHashes may paint HUD; they never mint.

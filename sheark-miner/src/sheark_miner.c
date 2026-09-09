@@ -1,5 +1,5 @@
 /*
- * ShearK-Miner — official SHE CPU miner for ShearHash-v2 (RandomX-lite).
+ * ShearK-Miner — official SHE CPU miner for ShearHash-v3 (RandomX-lite).
  * Hashes the 128-byte Shear header. 1 hash = 1 tx.
  * Do not recut Shear-Miner 1.1 / 1.0.
  */

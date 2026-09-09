@@ -1,5 +1,5 @@
 /**
- * Lag-1 proven shareBatch. A hash is one ShearHash-v2 digest of the frozen
+ * Lag-1 proven shareBatch. A hash is one ShearHash-v3 digest of the frozen
  * parent header (nonce replaced). Units are 2^SHARE_FLOOR_BITS, never a
  * client counter.
  */
@@ -75,7 +75,7 @@ export function aLeavesFromShares(shares = []) {
 }
 
 /**
- * Recompute ShearHash-v2 on the frozen parent job header.
+ * Recompute ShearHash-v3 on the frozen parent job header.
  * Duplicate nonce = dup_share. Miss floor = share_pow. Dest must be ssa1.
  */
 export function verifyShareBatch({

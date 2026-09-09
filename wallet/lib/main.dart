@@ -26,7 +26,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
-import 'shear_flyclient.dart';
+import 'shear_read_sync.dart';
 
 const kWalletVersion = '0.28';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.

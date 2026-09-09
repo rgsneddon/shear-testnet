@@ -31,7 +31,7 @@ class ShearIdentity {
         'address': address,
         'viewKey': viewKey,
         'paymentCode': paymentCode,
-        'network': 'shear-testnet-v1',
+        'network': 'shear-testnet-v2',
       };
 
   static ShearIdentity fromJson(Map<String, dynamic> j) {

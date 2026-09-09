@@ -4,6 +4,91 @@ import { shareRowJson } from '../../crypto/pack.js';
 
 export const P2P_PORT = 30303;
 export const P2P_MAX_FRAME = 1024 * 1024;
+/** Headers served after a locator. A window, not the end of IBD. */
+export const HEADERS_PAGE = 2000;
+/** In-flight getblock window. Sync must continue after this many. */
+export const GETBLOCK_BATCH = 16;
+/** Seed redial so a dropped peer cannot leave a node stuck forever. */
+export const SEED_RETRY_MS = 15_000;
+
+function hexHash(h) {
+  if (Buffer.isBuffer(h)) return h.toString('hex');
+  return String(h || '');
+}
+
+function hexHeader(h) {
+  if (Buffer.isBuffer(h)) return h.toString('hex');
+  return String(h || '');
+}
+
+export function headerIndexByHash(blocks, hash) {
+  const want = String(hash || '');
+  if (!want) return -1;
+  const list = Array.isArray(blocks) ? blocks : [];
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (hexHash(list[i].hash) === want) return i;
+  }
+  return -1;
+}
+
+/** Exponential locators from tip, then genesis-ward. Empty chain → []. */
+export function locatorHashes(blocks, { max = 32 } = {}) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  const out = [];
+  let step = 1;
+  let i = list.length - 1;
+  let seen = 0;
+  while (i >= 0 && out.length < max) {
+    out.push(hexHash(list[i].hash));
+    i -= step;
+    seen += 1;
+    if (seen >= 10) step *= 2;
+  }
+  return out;
+}
+
+/**
+ * Headers after the requester's locator. `locator: []` starts at genesis.
+ * Legacy getheaders (no locator field) treats stopHash as the have-hash.
+ * When locator is present, stopHash is the target to include, then stop.
+ */
+export function selectHeadersAfterLocator(blocks, {
+  locator,
+  stopHash = '',
+  limit = HEADERS_PAGE,
+} = {}) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  const hasLocatorField = Array.isArray(locator);
+  const locators = hasLocatorField
+    ? locator.map((x) => String(x || '')).filter(Boolean)
+    : [];
+  const stop = String(stopHash || '');
+  if (!hasLocatorField && stop) locators.push(stop);
+
+  let start = 0;
+  for (const h of locators) {
+    const idx = headerIndexByHash(list, h);
+    if (idx >= 0) {
+      start = idx + 1;
+      break;
+    }
+  }
+
+  const cap = Math.max(1, Math.min(Math.floor(Number(limit) || HEADERS_PAGE), HEADERS_PAGE));
+  const target = hasLocatorField ? stop : '';
+  const out = [];
+  for (let i = start; i < list.length && out.length < cap; i += 1) {
+    const b = list[i];
+    const hash = hexHash(b.hash);
+    out.push({
+      header: hexHeader(b.header),
+      hash,
+      height: b.height,
+    });
+    if (target && hash === target) break;
+  }
+  return out;
+}
 
 const PRIV_NET = [
   /^127\./,
@@ -273,6 +358,34 @@ export function createP2p({
     if (list.length) broadcast({ type: 'work', magic, rows: list });
   }
 
+  function locators() {
+    return locatorHashes(store.blocks || []);
+  }
+
+  function requestHeaders(sock) {
+    const rec = peers.get(sock);
+    if (!rec) return;
+    if (rec.syncing) return;
+    const local = localTipHash();
+    const peerHash = String(rec.hash || '');
+    if (!peerHash || peerHash === local) return;
+    rec.syncing = true;
+    send(sock, {
+      type: 'getheaders',
+      magic,
+      locator: locators(),
+      stopHash: peerHash,
+    });
+  }
+
+  function finishBatch(sock) {
+    const rec = peers.get(sock);
+    if (!rec) return;
+    rec.syncing = false;
+    rec.pending = null;
+    requestHeaders(sock);
+  }
+
   function handle(sock, msg) {
     if (!msg || typeof msg !== 'object') return;
     if (msg.magic && msg.magic !== magic) {
@@ -332,39 +445,60 @@ export function createP2p({
     }
     if (msg.type === 'tip' || msg.type === 'inv') {
       notePeerTip(sock, msg);
-      const localHash = localTipHash();
-      if (msg.hash && msg.hash !== localHash) {
-        send(sock, { type: 'getheaders', magic, stopHash: localHash });
-      }
+      requestHeaders(sock);
       return;
     }
     if (msg.type === 'getblocks') {
       return;
     }
     if (msg.type === 'getheaders') {
-      const hdrs = (store.blocks || []).map((b) => ({
-        header: Buffer.from(b.header).toString('hex'),
-        hash: Buffer.from(b.hash).toString('hex'),
-        height: b.height,
-      }));
-      send(sock, { type: 'headers', magic, headers: hdrs.slice(-2000) });
+      const hdrs = selectHeadersAfterLocator(store.blocks || [], {
+        locator: msg.locator,
+        stopHash: msg.stopHash || msg.hashStop || '',
+        limit: HEADERS_PAGE,
+      });
+      send(sock, { type: 'headers', magic, headers: hdrs });
       return;
     }
     if (msg.type === 'headers') {
-      const have = new Set((store.blocks || []).map((b) => Buffer.from(b.hash).toString('hex')));
-      let n = 0;
+      const rec = peers.get(sock) || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
+      rec.remote = peerRemoteKey(sock) || rec.remote;
+      if (!rec.failed) rec.failed = new Set();
+      peers.set(sock, rec);
+      const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
+      const missing = [];
       for (const h of msg.headers || []) {
         const hash = String(h.hash || '');
-        if (!hash || have.has(hash)) continue;
-        send(sock, { type: 'getblock', magic, hash });
-        n += 1;
-        if (n >= 16) break;
+        if (!hash || have.has(hash) || rec.failed.has(hash)) continue;
+        missing.push(hash);
+        if (missing.length >= GETBLOCK_BATCH) break;
       }
+      if (!missing.length) {
+        rec.syncing = false;
+        rec.pending = null;
+        const lastHdr = (msg.headers || [])[(msg.headers || []).length - 1];
+        const lastHash = lastHdr ? String(lastHdr.hash || '') : '';
+        if ((msg.headers || []).length >= HEADERS_PAGE && lastHash && have.has(lastHash)) {
+          requestHeaders(sock);
+        }
+        return;
+      }
+      rec.pending = new Set(missing);
+      rec.syncing = true;
+      try {
+        console.error(JSON.stringify({
+          event: 'p2p_headers',
+          n: (msg.headers || []).length,
+          missing: missing.length,
+          local: store.tip()?.height || 0,
+        }));
+      } catch { /* ignore */ }
+      for (const hash of missing) send(sock, { type: 'getblock', magic, hash });
       return;
     }
     if (msg.type === 'getblock') {
       const want = String(msg.hash || '');
-      const b = (store.blocks || []).find((x) => Buffer.from(x.hash).toString('hex') === want);
+      const b = (store.blocks || []).find((x) => hexHash(x.hash) === want);
       if (b) send(sock, { type: 'block', magic, block: encodeWireBlock(b) });
       return;
     }
@@ -372,16 +506,44 @@ export function createP2p({
       const list = msg.block ? [msg.block] : (msg.blocks || []);
       if (list.length > 1 && msg.type === 'blocks') return;
       const last = list[list.length - 1];
-      if (last) notePeerTip(sock, { hash: last.hash, height: last.height });
       const fork = list.map(decodeWireBlock);
       const before = store.tip();
       Promise.resolve(store.ingest(fork)).then((got) => {
+        const rec = peers.get(sock);
+        const lastHash = last ? String(last.hash || '') : '';
+        if (rec) {
+          if (!rec.failed) rec.failed = new Set();
+          if (rec.pending && lastHash) rec.pending.delete(lastHash);
+          if (!got?.ok && lastHash) {
+            rec.failed.add(lastHash);
+            try {
+              console.error(JSON.stringify({
+                event: 'p2p_ingest',
+                ok: false,
+                reason: got?.reason || 'fail',
+                height: last?.height,
+              }));
+            } catch { /* ignore */ }
+          }
+        }
         const after = store.tip();
         const changed = (before && after)
           ? !Buffer.from(before.hash).equals(Buffer.from(after.hash))
           : Boolean(after && !before);
         if (got?.ok && changed) broadcast(tipMsg(), sock);
-      }).catch(() => {});
+        if (rec?.pending && rec.pending.size === 0) {
+          finishBatch(sock);
+        } else if (!rec?.pending) {
+          if (rec) rec.syncing = false;
+          requestHeaders(sock);
+        }
+      }).catch(() => {
+        const rec = peers.get(sock);
+        if (rec) {
+          rec.syncing = false;
+          rec.pending = null;
+        }
+      });
     }
   }
 
@@ -439,6 +601,40 @@ export function createP2p({
     });
   }
 
+  function linkedTo(host, p) {
+    if (alreadyLinked(host, p)) return true;
+    for (const rec of peers.values()) {
+      if (rec.remote === host) return true;
+    }
+    return false;
+  }
+
+  function ensurePeer(peerHost, peerPort) {
+    const p = Number(peerPort) || P2P_PORT;
+    if (linkedTo(peerHost, p)) return Promise.resolve(null);
+    return connect(peerHost, p);
+  }
+
+  function dialSeeds(list) {
+    const jobs = [];
+    for (const seed of list || []) {
+      let host = '';
+      let port = P2P_PORT;
+      if (typeof seed === 'string') {
+        const s = seed.trim();
+        if (!s) continue;
+        const cut = s.lastIndexOf(':');
+        host = cut > 0 ? s.slice(0, cut) : s;
+        port = cut > 0 ? Number(s.slice(cut + 1)) : P2P_PORT;
+      } else if (seed && seed.host) {
+        host = String(seed.host);
+        port = Number(seed.port) || P2P_PORT;
+      } else continue;
+      jobs.push(ensurePeer(host, port).catch(() => null));
+    }
+    return Promise.all(jobs);
+  }
+
   function announce() {
     broadcast(tipMsg());
   }
@@ -488,6 +684,8 @@ export function createP2p({
   return {
     listen,
     connect,
+    ensurePeer,
+    dialSeeds,
     close,
     isRoutablePeerAddr,
     announce,

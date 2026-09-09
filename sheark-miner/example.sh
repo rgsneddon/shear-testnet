@@ -1,5 +1,5 @@
 #!/bin/sh
-# Example launch for ShearK-Miner 1.6 (ShearHash-v2 light).
+# Example launch for ShearK-Miner 1.6 (ShearHash-v3 light).
 # 1 hash = 1 tx. Default pool is pool.shear.digital:1111 (shear-testnet-v2).
 # Replace YOUR_SHE1 and set --threads to this box's CPUs.
 

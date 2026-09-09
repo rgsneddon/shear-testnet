@@ -6,7 +6,7 @@ import 'shear_ctf.dart';
 import 'shear_identity.dart';
 import 'shear_eip712.dart';
 import 'shear_levy.dart';
-import 'shear_flyclient.dart';
+import 'shear_read_sync.dart';
 
 const kSheDecimals = 11;
 const kShePublicDigits = 9;
@@ -1592,41 +1592,41 @@ class ShearLedger {
 }
 
 class ShearPoolClient {
-  /// Production (no [baseUrl]) follows FlyClient's live seed. Tests pin [baseUrl].
+  /// Production (no [baseUrl]) reads headers 1…tip from a live seed. Tests pin [baseUrl].
   ShearPoolClient({
     String? baseUrl,
     HttpClient? http,
-    ShearFlyClient? fly,
+    ShearReadSync? sync,
     String? userUrl,
   })  : _pinned = baseUrl,
         _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8)) {
-    _fly = fly ??
+    _sync = sync ??
         (baseUrl == null
-            ? ShearFlyClient(http: _http, userUrl: userUrl)
+            ? ShearReadSync(http: _http, userUrl: userUrl)
             : null);
   }
 
   final String? _pinned;
   final HttpClient _http;
-  ShearFlyClient? _fly;
+  ShearReadSync? _sync;
   final Set<int> _pinnedProven = {};
   int _pinnedTip = 0;
 
-  ShearFlyClient? get fly => _fly;
+  ShearReadSync? get sync => _sync;
   bool get isPinned => _pinned != null;
 
-  String get baseUrl => _pinned ?? _fly?.liveBase ?? kFlyDefaultSeed;
+  String get baseUrl => _pinned ?? _sync?.liveBase ?? kWalletDefaultSeed;
 
-  int get provenHeaders => _fly?.provenHeaders ?? _pinnedProven.length;
-  int get wantedHeaders => _fly?.wantedHeaders ?? (_pinnedTip < 1 ? 0 : _pinnedTip);
+  int get provenHeaders => _sync?.provenHeaders ?? _pinnedProven.length;
+  int get wantedHeaders => _sync?.wantedHeaders ?? (_pinnedTip < 1 ? 0 : _pinnedTip);
   bool get nodeLive =>
-      _fly != null ? _fly!.liveBase != null : _pinned != null && _pinnedTip > 0;
+      _sync != null ? _sync!.liveBase != null : _pinned != null && _pinnedTip > 0;
 
   String honestyText() => walletHonestyText(
         live: nodeLive,
         proven: provenHeaders,
         wanted: wantedHeaders,
-        failures: _fly?.failures ?? 0,
+        failures: _sync?.failures ?? 0,
       );
 
   Future<void> followLive() async {
@@ -1634,7 +1634,7 @@ class ShearPoolClient {
       await _provePinned();
       return;
     }
-    await _fly?.followTip();
+    await _sync?.followTip();
   }
 
   Future<void> _provePinned() async {
@@ -1643,11 +1643,6 @@ class ShearPoolClient {
       final tip = (stats['height'] as num?)?.toInt() ?? 0;
       if (tip < 1) return;
       _pinnedTip = tip;
-      for (final h in flyclientSampleHeights(tip)) {
-        if (_pinnedProven.contains(h)) continue;
-        final hdr = await _getRaw('/api/explorer/header?height=$h');
-        if ((hdr['header']?.toString() ?? '').isNotEmpty) _pinnedProven.add(h);
-      }
       var h = 1;
       while (h <= tip) {
         if (_pinnedProven.contains(h)) {
@@ -1693,7 +1688,7 @@ class ShearPoolClient {
     try {
       return await _getRaw(path);
     } catch (_) {
-      if (_pinned == null) _fly?.noteFailure();
+      if (_pinned == null) _sync?.noteFailure();
       rethrow;
     }
   }
@@ -1707,7 +1702,7 @@ class ShearPoolClient {
       final res = await req.close();
       return jsonDecode(await utf8.decodeStream(res)) as Map<String, dynamic>;
     } catch (_) {
-      if (_pinned == null) _fly?.noteFailure();
+      if (_pinned == null) _sync?.noteFailure();
       rethrow;
     }
   }

@@ -1,5 +1,5 @@
 @echo off
-REM Example launch for ShearK-Miner 1.6 (ShearHash-v2 light, Windows).
+REM Example launch for ShearK-Miner 1.6 (ShearHash-v3 light, Windows).
 REM 1 hash = 1 tx. Default pool is pool.shear.digital:1111 (shear-testnet-v2).
 REM 1) Replace YOUR_SHE1 with your she1 silent ID or ssa1 dest.
 REM 2) Change .worker to a unique name per box.

@@ -24,7 +24,7 @@ import 'package:shear_wallet/shear_qr.dart';
 import 'package:shear_wallet/shear_social.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_levy.dart';
-import 'package:shear_wallet/shear_flyclient.dart';
+import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:crypto/crypto.dart';
 
 const kGatePassword = 'correct-horse';
@@ -744,11 +744,11 @@ void main() {
     expect(ledger.spendable(from), closeTo(0, 1e-12));
   });
 
-  test('FlyClient source defaults to 127.0.0.1 before the public seed', () {
-    final fly = ShearFlyClient(jitter: Duration.zero);
-    expect(fly.seeds.first.contains('127.0.0.1'), isTrue);
-    expect(fly.seeds, contains(kLocalPoolHttp));
-    expect(fly.seeds, contains(kLocalNodeRpc));
+  test('read-sync source defaults to 127.0.0.1 before the public seed', () {
+    final sync = ShearReadSync(jitter: Duration.zero);
+    expect(sync.seeds.first.contains('127.0.0.1'), isTrue);
+    expect(sync.seeds, contains(kLocalPoolHttp));
+    expect(sync.seeds, contains(kLocalNodeRpc));
   });
 
   test('CTF dest is she1 with password C, not C-from-S', () {
@@ -3497,7 +3497,7 @@ void main() {
     }
   });
 
-  test('FlyClient picks a live mock node', () async {
+  test('read-sync picks a live mock node and reads every header 1…tip', () async {
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     final live = _PoolLive(headerHex: hex, height: 16);
@@ -3512,25 +3512,24 @@ void main() {
     });
     final liveUrl = 'http://127.0.0.1:${liveServer.port}';
     final deadUrl = 'http://127.0.0.1:${dead.port}';
-    expect(flyclientSampleHeights(16), [1, 2, 4, 8, 16]);
     final http = _realHttp();
-    final fly = ShearFlyClient(
+    final sync = ShearReadSync(
       seeds: [deadUrl, liveUrl],
       http: http,
       jitter: Duration.zero,
     );
-    final got = await fly.findLiveNode();
+    final got = await sync.findLiveNode();
     expect(got, liveUrl);
-    expect(fly.liveBase, liveUrl);
+    expect(sync.liveBase, liveUrl);
     expect(walletHonestyText(live: true, proven: 2, wanted: 5), '40% synchronising...');
     expect(walletSyncPercent(proven: 2, wanted: 5), 40);
     expect(walletHonestyText(live: true, proven: 5, wanted: 5), '100% synchronised');
     expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), 'no network');
-    await fly.followTip();
-    expect(fly.wantedHeaders, 16);
-    expect(fly.provenHeaders, 16);
-    expect(fly.honestyText(), '100% synchronised');
-    final pool = ShearPoolClient(fly: fly, http: http);
+    await sync.followTip();
+    expect(sync.wantedHeaders, 16);
+    expect(sync.provenHeaders, 16);
+    expect(sync.honestyText(), '100% synchronised');
+    final pool = ShearPoolClient(sync: sync, http: http);
     await pool.followLive();
     expect(pool.baseUrl, liveUrl);
     expect(pool.honestyText(), '100% synchronised');

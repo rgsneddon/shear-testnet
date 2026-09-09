@@ -2,30 +2,13 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-/// Quiet FlyClient node-find. The wallet is not a full node; it mirrors
-/// headers and stats the node relays. Not a 1s node-scan and not an archive.
-const kFlyDefaultSeed = 'https://pool.shear.digital';
+/// Wallet reads headers 1…tip from a live node/pool. Not FlyClient locators.
+const kWalletDefaultSeed = 'https://pool.shear.digital';
 /// Prefer a local node/pool when one is running (0.28 / kit source).
 const kLocalPoolHttp = 'http://127.0.0.1:8088';
 const kLocalNodeRpc = 'http://127.0.0.1:18332';
 
-/// Logarithmic header heights: 1, 2, 4, … tip.
-List<int> flyclientSampleHeights(int tip) {
-  if (tip < 1) return const [];
-  final out = <int>{};
-  var h = 1;
-  while (h < tip && h > 0) {
-    out.add(h);
-    final next = h * 2;
-    if (next <= h) break;
-    h = next;
-  }
-  out.add(tip);
-  final list = out.toList()..sort();
-  return list;
-}
-
-/// Fill 0..1 of proven FlyClient headers vs headers 1…tip.
+/// Fill 0..1 of headers read vs headers 1…tip.
 double walletSyncFill({required int proven, required int wanted}) {
   if (wanted <= 0) return 0;
   if (proven >= wanted) return 1;
@@ -50,8 +33,8 @@ String walletHonestyText({
   return '$pct% synchronising...';
 }
 
-class ShearFlyClient {
-  ShearFlyClient({
+class ShearReadSync {
+  ShearReadSync({
     List<String>? seeds,
     this.userUrl,
     HttpClient? http,
@@ -59,7 +42,7 @@ class ShearFlyClient {
     Random? random,
   })  : seeds = List<String>.unmodifiable(_dedupe([
           if (userUrl != null && userUrl.trim().isNotEmpty) userUrl,
-          if (seeds == null) ...[kLocalPoolHttp, kLocalNodeRpc, kFlyDefaultSeed] else ...seeds,
+          if (seeds == null) ...[kLocalPoolHttp, kLocalNodeRpc, kWalletDefaultSeed] else ...seeds,
         ])),
         _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8)),
         _rng = random ?? Random();
@@ -77,7 +60,6 @@ class ShearFlyClient {
   int sampledTip = 0;
 
   int get provenHeaders => _proven.length;
-  /// Headers-first: want every relayed header 1…tip, not only the locator.
   int get wantedHeaders => sampledTip < 1 ? 0 : sampledTip;
   int get failures => _failures;
   bool get honest =>
@@ -108,8 +90,6 @@ class ShearFlyClient {
     return s;
   }
 
-  /// Skip rediscovery while a live base is known, or while exponential backoff
-  /// is in force after a failed probe.
   Future<String?> ensureLive() async {
     if (liveBase != null) return liveBase;
     final until = _backoffUntil;
@@ -117,8 +97,7 @@ class ShearFlyClient {
     return findLiveNode();
   }
 
-  /// Locator samples, then header catch-up 1…tip like headers-first IBD.
-  /// Already-proven heights are skipped so the 1s timer is not a rescan.
+  /// Read every header 1…tip (paged). Already-read heights are skipped.
   Future<void> followTip() async {
     final base = await ensureLive();
     if (base == null) return;
@@ -129,12 +108,9 @@ class ShearFlyClient {
     }
     final tip = (stats['height'] as num?)?.toInt() ?? 0;
     if (tip < 1) return;
-    await _proveAt(base, tip);
     await _catchUpHeaders(base, tip);
   }
 
-  /// One jittered probe of the seed list. Exponential backoff is recorded on
-  /// fail so the 1s Continuum timer does not scan nodes.
   Future<String?> findLiveNode() async {
     if (jitter > Duration.zero) {
       final cap = jitter.inMilliseconds;
@@ -171,23 +147,6 @@ class ShearFlyClient {
     _backoffUntil = DateTime.now().add(Duration(milliseconds: 1000 * (1 << shift)));
   }
 
-  Future<int> _proveAt(String base, int tip) async {
-    var n = 0;
-    for (final h in flyclientSampleHeights(tip)) {
-      if (_proven.contains(h)) {
-        n++;
-        continue;
-      }
-      final hdr = await _get(base, '/api/explorer/header?height=$h');
-      final hex = hdr?['header']?.toString() ?? '';
-      if (hex.isEmpty) continue;
-      _proven.add(h);
-      n++;
-    }
-    sampledTip = tip;
-    return n;
-  }
-
   Future<void> _catchUpHeaders(String base, int tip) async {
     var h = 1;
     while (h <= tip) {
@@ -221,9 +180,7 @@ class ShearFlyClient {
     if (stats == null) return -1;
     final tip = (stats['height'] as num?)?.toInt() ?? 0;
     if (tip < 1) return -1;
-    final proven = await _proveAt(base, tip);
-    if (proven == 0) return -1;
-    return tip * 1000 + proven;
+    return tip;
   }
 
   Future<Map<String, dynamic>?> _get(String base, String path) async {

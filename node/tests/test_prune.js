@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { newIdentity, destOpeningFromView, payoutDest } from '../../crypto/address.js';
-import { HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { buildTemplate, mineTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
@@ -138,7 +138,8 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
       ...epochs[0],
       samples: [],
       samplesPruned: true,
-    }, null, { buried: true });
+      height: epochs[0].height || 1,
+    }, null, { tipHeight: SAMPLE_PRUNE_CONFIRMATIONS + 1 });
     assert.equal(buriedBin.ok, true, buriedBin.reason);
 
     const histAlice = reconstructOwner(store, destA);
@@ -147,7 +148,9 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
     assert.ok(histBob.txs.some((t) => String(t.id).startsWith('send-forever')));
     assert.ok(histAlice.txs.some((t) => t.kind === 'hash' || t.kind === 'coinbase'));
 
-    const buriedCheck = verifyBlock(genesis, null, { buried: true });
+    const buriedCheck = verifyBlock(genesis, null, {
+      tipHeight: SAMPLE_PRUNE_CONFIRMATIONS + Number(genesis.height || 1),
+    });
     assert.equal(buriedCheck.ok, true, buriedCheck.reason);
 
     const reopened = createStore(dir, { pruneAfter: 2 });

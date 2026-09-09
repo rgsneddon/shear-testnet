@@ -10,7 +10,7 @@ import { extraMintAllowed } from '../../crypto/mint.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS } from '../../crypto/reserve_oracle.js';
 import { createStore } from './store.js';
-import { createP2p, P2P_PORT } from './p2p.js';
+import { createP2p, P2P_PORT, SEED_RETRY_MS } from './p2p.js';
 import { PHASE_B_GATE } from './chain.js';
 import { createRpc, RPC_PORT } from './rpc.js';
 import { mintVorticeDeployKey, parseVorticeKey, VORTICE_KEY_PREFIX } from '../../crypto/vortex.js';
@@ -66,19 +66,17 @@ export async function startNode({
   const bound = await p2p.listen();
   const rpc = createRpc({ store, p2p, port: rpcPort, host: rpcBind });
   const rpcBound = await rpc.listen();
-  for (const seed of seeds) {
-    const cut = seed.lastIndexOf(':');
-    const host = cut > 0 ? seed.slice(0, cut) : seed;
-    const port = cut > 0 ? Number(seed.slice(cut + 1)) : P2P_PORT;
-    for (let i = 0; i < 20; i += 1) {
-      try {
-        await p2p.connect(host, port);
-        break;
-      } catch {
-        await new Promise((r) => setTimeout(r, 250));
-      }
-    }
-  }
+  const seedList = Array.isArray(seeds) ? seeds : [];
+  await p2p.dialSeeds(seedList);
+  const seedTimer = setInterval(() => {
+    p2p.dialSeeds(seedList);
+  }, SEED_RETRY_MS);
+  if (typeof seedTimer.unref === 'function') seedTimer.unref();
+  const origClose = p2p.close.bind(p2p);
+  p2p.close = () => {
+    clearInterval(seedTimer);
+    origClose();
+  };
   return { store, p2p, rpc, bound, rpcBound, magic: MAGIC_TESTNET, mainnet: false, phaseBGate: PHASE_B_GATE };
 }
 

@@ -3,7 +3,7 @@
  * Header bits stay on ASERT 90 s. Share target only throttles submit rate
  * and must never exceed current block bits.
  *
- * Target ~2s/share under ShearHash-v2. RandomX-lite verify is on the Node
+ * Target ~2s/share under ShearHash-v3. RandomX-lite verify is on the Node
  * event loop; a 250ms SHA-256 farm target dropped shareBits to 5 and 504'd
  * /api/stats. Share bits may equal the header so a farm is throttled; they
  * still never exceed it. GPU/ASIC still mint nothing.
@@ -16,7 +16,7 @@ export const SHARE_VARDIFF_RETARGET_MS = 20_000;
 /** 0: share bits may equal header bits so a farm can be throttled. */
 export const SHARE_BELOW_BLOCK = 0;
 /**
- * Opening share target for ShearHash-v2 RandomX-lite (~50 H/s/thread).
+ * Opening share target for ShearHash-v3 RandomX-lite (~50 H/s/thread).
  * Bits 18 is SHA-256 farm scale (~hours/share at 50 H/s). Header bits stay ASERT.
  */
 export const SHARE_BITS_V2_START = 8;

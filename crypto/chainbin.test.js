@@ -30,11 +30,15 @@ describe('chain.bin + shewall.bin', () => {
       aLeaves: [{ dest20: Buffer.alloc(20, 7), count: 3 }],
       bLeaves: [],
       txs: [{ coinbase: true, height: 4, vout: [] }],
+      shareBatch: [{ dest: 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq', dest20: Buffer.alloc(20, 7).toString('hex'), nonce: '9', lz: 8 }],
     }]);
     const got = readChainBin(p);
     assert.equal(got.length, 1);
     assert.equal(got[0].height, 4);
     assert.equal(Number(got[0].aLeaves[0].count), 3);
+    assert.equal(got[0].shareBatch.length, 1);
+    assert.equal(String(got[0].shareBatch[0].nonce), '9');
+    assert.equal(Number(got[0].shareBatch[0].lz), 8);
 
     const packed = packShewall({
       seed32: Buffer.alloc(32, 9),

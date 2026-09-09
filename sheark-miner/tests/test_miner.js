@@ -325,4 +325,22 @@ describe('ShearK-Miner', () => {
     const two = await runThreads(2);
     assert.ok(two > one, `1-thread hashes=${one} 2-thread hashes=${two}`);
   });
+
+  it('1.6 windows zip is PE + example.bat; linux zip is ELF + example.sh', () => {
+    const dist = path.join(root, '..', 'dist');
+    const win = path.join(dist, 'ShearK-Miner-1.6-windows.zip');
+    const lin = path.join(dist, 'ShearK-Miner-1.6-linux.zip');
+    assert.equal(fs.existsSync(win), true, win);
+    assert.equal(fs.existsSync(lin), true, lin);
+    const winNames = spawnSync('unzip', ['-Z1', win], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+    const linNames = spawnSync('unzip', ['-Z1', lin], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+    assert.deepEqual(winNames, ['ShearK-Miner.exe', 'example.bat']);
+    assert.deepEqual(linNames, ['ShearK-Miner', 'example.sh']);
+    const exe = spawnSync('unzip', ['-p', win, 'ShearK-Miner.exe']).stdout;
+    assert.equal(exe.subarray(0, 2).toString('latin1'), 'MZ');
+    const elf = spawnSync('unzip', ['-p', lin, 'ShearK-Miner']).stdout;
+    assert.equal(elf.subarray(0, 4).toString('hex'), '7f454c46');
+    const fileLin = spawnSync('file', ['-'], { input: elf, encoding: 'utf8' }).stdout;
+    assert.equal(/Mach-O/.test(fileLin), false, fileLin);
+  });
 });

@@ -7,6 +7,7 @@ import {
   HASH_BONUS_NANOS,
   SHARE_FLOOR_BITS,
   HASH_BONUS_NANOS_FLOOR,
+  SAMPLE_PRUNE_CONFIRMATIONS,
 } from '../../crypto/asert.js';
 import { unitsForShare, findShare, dest20OfShare } from '../../crypto/share_batch.js';
 import { roundActualHashes } from '../../pool/src/hash_credit.js';
@@ -200,6 +201,45 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
     const got = verifyBlock(child, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
     assert.equal(got.ok, false);
     assert.equal(got.reason, 'hash_bonus');
+  });
+
+  it('samplesPruned does not skip shareBatch until 1000 confirms vs tip', async () => {
+    const dest = destMiner();
+    const parentTpl = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: dest,
+      bits: 4,
+      now: 1_700_000_000_000,
+      samples: [],
+    });
+    const parent = mine(parentTpl);
+    const okP = verifyBlock(parent, null);
+    assert.equal(okP.ok, true, okP.reason);
+    const share = findShare(parent.header, { dest, floorBits: SHARE_FLOOR_BITS, maxTries: 2_000_000 });
+    assert.ok(share, 'need a floor share');
+    const childTpl = buildTemplate({
+      prev: okP.hash,
+      prevHeader: parent.header,
+      prevBlock: { ...parent, hash: okP.hash, header: parent.header },
+      height: 2,
+      miner: dest,
+      bits: 4,
+      now: 1_700_000_090_000,
+      shareBatch: [{ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz }],
+    });
+    const child = mine(childTpl);
+    child.samplesPruned = true;
+    child.shareBatch = [];
+    const live = await Promise.resolve(verifyBlock(child, {
+      ...parent, hash: okP.hash, header: parent.header, height: 1,
+    }, { tipHeight: 2 }));
+    assert.equal(live.ok, false);
+    assert.equal(live.reason, 'hash_bonus');
+    const buried = await Promise.resolve(verifyBlock(child, {
+      ...parent, hash: okP.hash, header: parent.header, height: 1,
+    }, { tipHeight: 2 + SAMPLE_PRUNE_CONFIRMATIONS }));
+    assert.equal(buried.ok, true, buried.reason);
   });
 });
 

@@ -19,7 +19,7 @@ Do not put Shear rest-frame `shear1` addresses, view keys, or seeds in the hoste
 
 ## Mint the key
 
-On a Shear node (testnet `shear-testnet-v1`), call `store.mintVorticeDeployKey` with the program id, a short display name, the origin URL, and the **exact** bytes the origin will serve:
+On a Shear node (testnet `shear-testnet-v2`), call `store.mintVorticeDeployKey` with the program id, a short display name, the origin URL, and the **exact** bytes the origin will serve:
 
 ```
 store.mintVorticeDeployKey({

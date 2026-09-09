@@ -41,7 +41,7 @@ import {
   executeBlockEvm,
 } from '../../crypto/reserve_evm.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp } from '../../crypto/address.js';
-import { collateSamples } from '../../crypto/chronoflux.js';
+import { collateSamples, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { verifyFundedBody } from '../../crypto/spend.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { packTx, packDigest } from '../../crypto/pack.js';
@@ -435,7 +435,11 @@ function verifyBlockConsensus(block, prev, {
   const potNanos = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
   if (potNanos !== BLOCK_SUBSIDY_NANOS) return { ok: false, reason: 'pot' };
   const bonusNanos = txs[0].vout.filter((o) => o.kind === 'hash').reduce((a, o) => a + Number(o.nanos || 0), 0);
-  const skipFlow = buried && block.samplesPruned;
+  const height = Number(block.height || (prev?.height || 0) + 1);
+  const tip = Number(tipHeight || height);
+  const buriedDeep = shouldPruneSamples(height, tip);
+  void buried;
+  const skipFlow = buriedDeep && !!block.samplesPruned;
   const shareBatch = Array.isArray(block.shareBatch) ? block.shareBatch : [];
   const payAddr = (a) => a;
   const unit = Number(hashBonusNanos);

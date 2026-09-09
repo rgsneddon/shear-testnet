@@ -325,9 +325,8 @@ export function createStore(dir, {
       };
       i += 1;
       const spentCheck = verifyBlock(b, prev, {
-        buried: !!b.samplesPruned,
         spentB,
-        tipHeight: b.height,
+        tipHeight: Number(tip()?.height || b.height),
         hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
         committedBps: Number(reserveVault.epochBps ?? 264),
         reserveState: reserveVault,
@@ -487,7 +486,6 @@ export function createStore(dir, {
       spentB,
       tipHeight: prev ? prev.height + 1 : 1,
       hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
-      buried: !!block.samplesPruned,
       evmSession,
       evmHistory: blocks,
       spendableOf: (addr) => Math.max(0, matureSpendableNanos(explorer, addr, parentH)),
@@ -624,9 +622,8 @@ export function createStore(dir, {
     const rows = [];
     for (const b of accepted) rows.push(...sealedExplorerRows(b));
     return verifyBlock(fork[i], prev, {
-      buried: !!fork[i].samplesPruned,
       spentB: trialSpent,
-      tipHeight: i + 1,
+      tipHeight: Number(fork[fork.length - 1]?.height || fork.length),
       hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
       evmSession: trialSession,
       evmHistory: trialSession ? [] : accepted,

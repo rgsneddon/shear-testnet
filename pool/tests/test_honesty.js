@@ -281,80 +281,41 @@ describe('folded-row inventory', () => {
     assert.equal(reportedHashrate(one, now), 900_000);
   });
 
-  it('connected self-rate uses HASHRATE_EMA_TAU_S and holds across a short stall', () => {
-    assert.equal(HASHRATE_EMA_TAU_S, 60);
-    assert.ok(HASHRATE_STALL_HOLD_MS >= 60_000);
+  it('connected hasher paints current hashes/dt, not a held or eased spike', () => {
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
-    assert.equal(/easeHashrate\(\s*miner,\s*client,\s*now,\s*3\s*\)/.test(src), false);
-    assert.equal(/easeHashrate\(miner, client, now, 3\)/.test(src), false);
-    assert.match(src, /easeHashrate\(miner, client, at, HASHRATE_EMA_TAU_S\)/);
+    assert.equal(/lastPositiveHs/.test(src), false);
     assert.equal(HASH_QUEUE_MAX, 16);
     assert.equal(HASH_INFLIGHT_PER_CONN, 2);
-    assert.equal(/c\.shareBits = shareBits/.test(src), false);
     const t0 = 1_700_000_000_000;
     const m = { connections: [{ sock: {} }], clientHs: 100 };
-    const a = reportedHashrate(m, t0);
-    assert.equal(a, 100);
-    m.clientHs = 10;
-    const b = reportedHashrate(m, t0 + 1000);
-    assert.ok(b > 95, `stall must not ease toward the dipped instant, got ${b}`);
-    m.clientHs = 0;
-    const c = reportedHashrate(m, t0 + 2000);
-    assert.ok(c > 50, `few-second stall must not paint ~0, got ${c}`);
-    const live = { connections: [{ sock: {} }], clientHs: 55, emaHs: 400, emaAt: t0 };
-    assert.equal(liveHashrate(live, t0 + 1000), 55);
-    assert.ok(reportedHashrate({ ...live, emaHs: 400, emaAt: t0 }, t0 + 1000) > 55);
+    assert.equal(reportedHashrate(m, t0), 100);
+    m.clientHs = 55;
+    assert.equal(reportedHashrate(m, t0 + 1000), 55);
+    assert.equal(liveHashrate(m, t0 + 1000), 55);
+    const spiked = { connections: [{ sock: {} }], clientHs: 55, emaHs: 400, emaAt: t0 };
+    assert.equal(reportedHashrate(spiked, t0 + 1000), 55);
   });
 
-  it('reported hashrate eases over HASHRATE_EMA_TAU_S instead of jumping each 1s poll', () => {
-    assert.equal(HASHRATE_EMA_TAU_S, 60);
-    const now = 1_700_000_000_000;
-    const m = {
-      connections: [{ sock: {} }],
-      acceptAt: [now],
-      acceptWork: [3_000_000 * RATE_WIN_S],
-    };
-    const a = reportedHashrate(m, now);
-    assert.equal(Math.round(a), 3_000_000);
-    m.acceptAt = [now + 1000];
-    m.acceptWork = [1_000_000 * RATE_WIN_S];
-    const b = reportedHashrate(m, now + 1000);
-    assert.ok(b < 2_980_000, `eased down from 3MH/s, got ${b}`);
-    assert.ok(b > 2_800_000, `1s poll must not drop to the new instant, got ${b}`);
-    const c = reportedHashrate(m, now + HASHRATE_EMA_TAU_S * 1000);
-    assert.ok(c < 2_200_000, `after ~tau should be near 1MH/s, got ${c}`);
-    assert.ok(c > 1_000_000);
-  });
-
-  it('blockfound K-pause fat dt does not tank clientHs', () => {
+  it('1-thread ~55 H/s hashes/dt paints ~55, not kH/s', () => {
     const t0 = 1_700_000_000_000;
-    const m = {};
+    const m = { connections: [{ sock: {} }] };
+    applyMinerSelfRate(m, { hashes: 0 }, t0);
+    applyMinerSelfRate(m, { hashes: 55 * 10 }, t0 + 10_000);
+    assert.equal(m.clientHs, 55);
+    assert.equal(reportedHashrate(m, t0 + 10_000), 55);
+    assert.equal(liveHashrate(m, t0 + 10_000), 55);
+    assert.ok(reportedHashrate(m, t0 + 10_000) < 200);
+  });
+
+  it('K-pause hashes/dt is the dipped rate, not a held peak', () => {
+    const t0 = 1_700_000_000_000;
+    const m = { connections: [{ sock: {} }] };
     applyMinerSelfRate(m, { hashes: 1_000_000 }, t0);
     applyMinerSelfRate(m, { hashes: 1_000_000 + 200_000 * 10 }, t0 + 10_000);
     assert.equal(m.clientHs, 200_000);
     applyMinerSelfRate(m, { hashes: 1_000_000 + 200_000 * 10 + 5_000 }, t0 + 30_000);
-    assert.equal(m.clientHs, 200_000);
-    applyMinerSelfRate(m, { hashes: 1_000_000 + 200_000 * 10 + 5_000 + 200_000 * 4 }, t0 + 34_000);
-    assert.equal(m.clientHs, 200_000);
-  });
-
-  it('mixed hashing+K-pause window (67% of true rate) holds linear H/s', () => {
-    assert.equal(HASHRATE_HOLD_FRAC, 0.9);
-    const t0 = 1_700_000_000_000;
-    const m = { connections: [{ sock: {} }] };
-    applyMinerSelfRate(m, { hashes: 0 }, t0);
-    applyMinerSelfRate(m, { hashes: 200_000 * 10 }, t0 + 10_000);
-    assert.equal(m.clientHs, 200_000);
-    // 8s hashing + 4s stall in one 12s window → 133 kH/s (66.7%), above the old 0.5 cut.
-    const afterMix = 200_000 * 10 + 200_000 * 8;
-    applyMinerSelfRate(m, { hashes: afterMix }, t0 + 22_000);
-    assert.equal(m.clientHs, 200_000);
-    const painted = reportedHashrate(m, t0 + 22_000);
-    assert.ok(painted > 190_000, `public H/s must stay linear, got ${painted}`);
-    applyMinerSelfRate(m, { hashes: afterMix + 1_000 }, t0 + 10_000 + HASHRATE_STALL_HOLD_MS - 1_000);
-    assert.equal(m.clientHs, 200_000);
-    applyMinerSelfRate(m, { hashes: afterMix + 1_000 + 50_000 * 2 }, t0 + 10_000 + HASHRATE_STALL_HOLD_MS + 1_000);
-    assert.equal(m.clientHs, 50_000);
+    assert.equal(m.clientHs, 250);
+    assert.equal(reportedHashrate(m, t0 + 30_000), 250);
   });
 
   it('connect hashrate ramps up from own hashes, never down from a session-average spike', () => {
