@@ -26,7 +26,7 @@ function mine(tpl) {
 }
 
 describe('verifyBlock extra mint', () => {
-  it('rejects unfunded extra txs and accepts Reserve-only extra mint via append', () => {
+  it('rejects unfunded extra txs and accepts Reserve-only extra mint via append', async () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
@@ -38,8 +38,8 @@ describe('verifyBlock extra mint', () => {
       now: Date.now(),
     };
     const good = mine(buildTemplate(base));
-    const ok = verifyBlock(good, null);
-    assert.equal(ok.ok, true);
+    const ok = await Promise.resolve(verifyBlock(good, null));
+    assert.equal(ok.ok, true, ok.reason);
 
     const thief = {
       vin: [],
@@ -47,28 +47,31 @@ describe('verifyBlock extra mint', () => {
       programId: 'third-party-stake',
     };
     const stolen = mine(buildTemplate({ ...base, txs: [thief] }));
-    const denied = verifyBlock(stolen, null);
+    const denied = await Promise.resolve(verifyBlock(stolen, null));
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'mint_forbidden');
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-store-'));
     const store = createStore(dir);
-    const appended = store.append(stolen);
+    const appended = await Promise.resolve(store.append(stolen));
     assert.equal(appended.ok, false);
     assert.equal(appended.reason, 'mint_forbidden');
 
     const reserveTx = {
       programId: RESERVE_PROGRAM,
       mint: true,
+      kind: 'withdraw',
       fee: 1,
       vin: [],
-      vout: [{ address: vault, nanos: 7, kind: 'reserve' }],
+      vout: [{ address: vault, nanos: 7, kind: 'withdraw' }],
     };
     const reserved = mine(buildTemplate({ ...base, txs: [reserveTx] }));
-    const allowed = verifyBlock(reserved, null);
-    assert.equal(allowed.ok, true);
-    const stored = store.append(reserved);
-    assert.equal(stored.ok, true);
+    const allowed = await Promise.resolve(verifyBlock(reserved, null));
+    assert.equal(allowed.ok, false);
+    assert.equal(allowed.reason, 'mint_amount');
+    const stored = await Promise.resolve(store.append(reserved));
+    assert.equal(stored.ok, false);
+    assert.equal(stored.reason, 'mint_amount');
     assert.equal(wrapMintForbidden({ kind: 'wrap', programId: 'wrap-she-v1', ticker: 'wSHE' }), true);
     assert.equal(wrapMintForbidden({ programId: 'vort1.random-printer', mint: true }), false);
     assert.equal(extraMintAllowed('vort1.random-printer', { kind: 'mint' }), false);

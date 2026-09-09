@@ -73,12 +73,12 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
 describe('extra mint allowlist', () => {
   it('accepts The Reserve and rejects any other program', () => {
     const id = newIdentity();
-    assert.equal(extraMintAllowed(RESERVE_PROGRAM), true);
+    assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }), true);
     assert.equal(extraMintAllowed('shear-vault-v1'), false);
     assert.equal(extraMintAllowed(''), false);
     const ok = extraMint({ programId: RESERVE_PROGRAM, to: id.address, nanos: 10 });
     assert.equal(ok.ok, true);
-    assert.equal(ok.kind, 'reserve');
+    assert.equal(ok.kind, 'withdraw');
     const no = extraMint({ programId: 'third-party-stake', to: id.address, nanos: 10 });
     assert.equal(no.ok, false);
     assert.equal(no.reason, 'mint_forbidden');

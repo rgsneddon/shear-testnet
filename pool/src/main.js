@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createPool } from './pool.js';
-import { newIdentity, isShearAddress } from '../../crypto/address.js';
+import { isShearAddress } from '../../crypto/address.js';
 import { destForLogin, payoutDest } from '../../crypto/flow_sheet.js';
+import { loadOrCreatePoolIdent } from './pool_ident.js';
 import { createP2p, P2P_PORT } from '../../node/src/p2p.js';
 import { MAGIC_TESTNET, GENESIS_BITS } from '../../crypto/asert.js';
 import { SHARE_BITS_V2_START } from './share_vardiff.js';
@@ -14,21 +15,10 @@ fs.mkdirSync(dataDir, { recursive: true });
 const identPath = path.join(dataDir, 'pool-miner.json');
 let miner = process.env.SHEAR_POOL_MINER;
 if (!miner) {
-  let ident;
-  if (fs.existsSync(identPath)) {
-    ident = JSON.parse(fs.readFileSync(identPath, 'utf8'));
-  } else {
-    ident = newIdentity();
-    fs.writeFileSync(identPath, JSON.stringify({
-      address: ident.address,
-      viewKey: ident.viewKey,
-      paymentCode: ident.paymentCode,
-    }, null, 2));
-  }
-  miner = payoutDest(ident.paymentCode)
-    || ident.paymentCode
-    || destForLogin(ident.address, { viewKey: ident.viewKey, height: 1 })
-    || (ident.address && !isShearAddress(ident.address) ? ident.address : '');
+  const ident = loadOrCreatePoolIdent(identPath);
+  miner = ident.miner
+    || destForLogin(ident.paymentCode || '', { viewKey: '', height: 1 })
+    || (ident.miner && !isShearAddress(ident.miner) ? ident.miner : '');
 }
 const pool = createPool({
   dataDir,

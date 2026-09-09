@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
-import { P2P_PORT, pickStemSocket, fluffDelayMs, FLUFF_MIN_MS, FLUFF_MAX_MS, STEM_MAX_HOPS, lineHasIpBesideIdentity, peerEventFields } from '../src/p2p.js';
+import { P2P_PORT, pickStemSocket, fluffDelayMs, FLUFF_MIN_MS, FLUFF_MAX_MS, STEM_MAX_HOPS, lineHasIpBesideIdentity, peerEventFields, isRoutablePeerAddr } from '../src/p2p.js';
+import { DEFAULT_SEEDS } from '../src/node.js';
 import { mineTemplate } from '../src/chain.js';
 import { printConfig, startNode } from '../src/node.js';
 import { countSyncedOnline } from '../src/p2p.js';
@@ -296,5 +297,19 @@ describe('p2p gossip', () => {
       await b.rpc?.close?.();
       await c.rpc?.close?.();
     }
+  });
+
+  it('drops metadata/RFC1918 addrs and getblocks; seeds include the public P2P node', () => {
+    assert.equal(isRoutablePeerAddr('169.254.169.254'), false);
+    assert.equal(isRoutablePeerAddr('10.0.0.1'), false);
+    assert.equal(isRoutablePeerAddr('192.168.1.1'), false);
+    assert.equal(isRoutablePeerAddr('127.0.0.1'), false);
+    assert.equal(isRoutablePeerAddr('1.1.1.1'), true);
+    const src = fs.readFileSync(new URL('../src/p2p.js', import.meta.url), 'utf8');
+    assert.match(src, /getblocks/);
+    assert.match(src, /sock\.destroy\(\)/);
+    assert.equal(src.includes('seenTx.clear()'), false);
+    assert.ok(DEFAULT_SEEDS.includes('p2p.shear.digital:30303'));
+    assert.ok(DEFAULT_SEEDS.includes('46.224.132.83:30303'));
   });
 });

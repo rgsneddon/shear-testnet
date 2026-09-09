@@ -115,9 +115,9 @@ describe('ASERT 90s block retarget', () => {
 });
 
 describe('SHEAR 11-decimal protocol unit', () => {
-  it('pays 1 SHE per block and 0.00000000001 SHE per hash; public frame is nine digits', () => {
+  it('pays 1 SHE per block and 0.00000000001 SHE per hash; public frame is eight digits', () => {
     assert.equal(SHE_DECIMALS, 11);
-    assert.equal(SHE_PUBLIC_DIGITS, 9);
+    assert.equal(SHE_PUBLIC_DIGITS, 8);
     assert.equal(NANOS_PER_SHE, 100_000_000_000);
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
     assert.equal(BLOCK_SUBSIDY_NANOS / NANOS_PER_SHE, 1);
@@ -127,9 +127,9 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(HASH_BONUS_VOTE_DELTA, 1 / NANOS_PER_SHE);
     assert.equal(HASH_BONUS_VOTE_DELTA, 1e-11);
     assert.equal(formatShe(1), '1');
-    assert.equal(formatShe(1e-11), '0.000000000');
-    assert.equal(formatShe(1e-9), '0.000000001');
-    assert.equal(formatShe(1e-8), '0.000000010');
+    assert.equal(formatShe(1e-11), '0.00000000');
+    assert.equal(formatShe(1e-8), '0.00000001');
+    assert.equal(formatShe(1e-9), '0.00000000');
     assert.equal(MAGIC_TESTNET, 'shear-testnet-v2');
     assert.equal(MAGIC_TESTNET_V1, 'shear-testnet-v1');
     assert.equal(MAGIC_TESTNET_V2, 'shear-testnet-v2');
@@ -150,9 +150,17 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /:90000:/);
     assert.match(fp, /:ssa:/);
     assert.match(fp, /:100000000000:/);
-    assert.match(fp, /:6:1:HASH_FN=ShearHash-v2/);
+    assert.match(fp, /HASH_FN=ShearHash-v2/);
     assert.match(fp, /RX_MODE=light/);
     assert.match(fp, /RX_SALT=ShearHash-v2\/rx/);
+    assert.match(fp, /SHARE_FLOOR_BITS=8/);
+    assert.match(fp, /MAX_SHARES_PER_BLOCK=8192/);
+    assert.match(fp, /SPEND_SIG=ed25519-shear-spend-v1/);
+    assert.match(fp, /INTEREST=400d-bps-floor/);
+    assert.match(fp, /ORACLE=basket-mean-14/);
+    assert.match(fp, /HASH_UNIT_FLOOR=1/);
+    assert.match(fp, /POT_PROP=shareBatch/);
+    assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
     assert.equal(HASH_FN, 'ShearHash-v2');
     assert.equal(fp.includes('HASH_FN=ShearHash-v2'), true);
     const law = consensusLaw();
@@ -187,7 +195,7 @@ describe('hash-tx consensus law', () => {
 
 describe('snapshot genesis extra mint is refused', () => {
   it('never allows a dead-id genesis mint', () => {
-    assert.equal(extraMintAllowed(RESERVE_PROGRAM), true);
+    assert.equal(extraMintAllowed(RESERVE_PROGRAM), false);
     assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }), true);
     assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'lock' }), false);
     assert.equal(extraMintAllowed(JOIN_PROGRAM), false);

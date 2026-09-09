@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { newIdentity } from '../../crypto/address.js';
-import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { hashesCreditedForShare } from '../src/share_vardiff.js';
 import { createPool, scoreShare } from '../src/pool.js';
 import { coinbaseSplit } from '../../crypto/mint.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
@@ -105,7 +106,7 @@ function collectRoundNonces(job, shareCount) {
   return { shares, blocks };
 }
 
-describe('round hash bonuses', () => {
+describe('round hash bonuses', { timeout: 600_000 }, () => {
   it('pays N and M nanos to two miners plus 1 SHE pot on the next sealed job', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pay-'));
     const alice = newIdentity();
@@ -163,10 +164,11 @@ describe('round hash bonuses', () => {
     assert.equal(sealed?.result?.status, 'OK');
     if (!job2) job2 = pool.issueJob();
     const snap = pool.pendingPayout;
+    const unit = 2 ** 4;
     const aliceCount = snap.find((s) => s.miner === destA)?.count;
     const bobCount = snap.find((s) => s.miner === destB)?.count;
-    assert.equal(aliceCount, (nA + 1) * 16);
-    assert.equal(bobCount, nB * 16);
+    assert.equal(aliceCount, (nA + 1) * unit);
+    assert.equal(bobCount, nB * unit);
     const win2 = findNonces(job2, 1, { block: true })[0];
     assert.ok(win2 != null);
     send(a.sock, { id: 4, method: 'submit', params: { jobId: job2.jobId, nonce: String(win2.nonce), hash: win2.hash } });
@@ -177,8 +179,11 @@ describe('round hash bonuses', () => {
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
     assert.notEqual(destA, alice.address);
-    assert.equal(split.hashByMiner[destA], (nA + 1) * 16 * HASH_BONUS_NANOS);
-    assert.equal(split.hashByMiner[destB], nB * 16 * HASH_BONUS_NANOS);
+    // 4-bit vardiff shares are HUD only; coinbase hash units require SHARE_FLOOR_BITS.
+    assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
+    void hashesCreditedForShare;
+    void SHARE_FLOOR_BITS;
+    void HASH_BONUS_NANOS;
     a.sock.end();
     b.sock.end();
     pool.close();

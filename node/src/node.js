@@ -31,7 +31,7 @@ export function printConfig() {
     phaseBGate: PHASE_B_GATE,
     extraMintThirdPartyCannotPrint: !extraMintAllowed('third-party-vortice'),
     reserveProgram: RESERVE_PROGRAM,
-    extraMintOnlyReserve: extraMintAllowed(RESERVE_PROGRAM),
+    extraMintOnlyReserve: extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }),
     extraMintJoinGenesis: false,
     reserveEpochDays: RESERVE_EPOCH_DAYS,
     reserveJoinCutoffDays: RESERVE_JOIN_CUTOFF_DAYS,
@@ -47,6 +47,8 @@ export function printConfig() {
 }
 
 export { createP2p, P2P_PORT, createStore, createRpc, RPC_PORT, mintVorticeDeployKey, parseVorticeKey };
+
+export const DEFAULT_SEEDS = ['p2p.shear.digital:30303', '46.224.132.83:30303'];
 
 export async function startNode({
   dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v2'),
@@ -85,7 +87,9 @@ async function main() {
     console.log(JSON.stringify(printConfig()));
     return;
   }
-  const started = await startNode();
+  const started = await startNode({
+    seeds: (process.env.SHEAR_SEEDS || DEFAULT_SEEDS.join(',')).split(',').map((s) => s.trim()).filter(Boolean),
+  });
   const tip = started.store.tip();
   console.log(JSON.stringify({
     ok: true,

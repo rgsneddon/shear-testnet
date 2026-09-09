@@ -8,7 +8,7 @@
  * /api/stats. Share bits may equal the header so a farm is throttled; they
  * still never exceed it. GPU/ASIC still mint nothing.
  */
-import { MAX_BITS } from '../../crypto/asert.js';
+import { MAX_BITS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 
 export const SHARE_VARDIFF_TARGET_MS = 2000;
 export const SHARE_VARDIFF_RETARGET_SHARES = 8;
@@ -29,9 +29,13 @@ export function hashesProvenByShare(shareBits) {
   return 2 ** n;
 }
 
-/** Work credited for one accepted share. Never bitsMet / client padded hashes. */
+/** Work credited for one accepted share. 2^creditedShareBits, clamped ≥ floor. */
 export function hashesCreditedForShare(job) {
-  return hashesProvenByShare(Number(job?.shareBits) || 0);
+  const bits = Math.max(
+    SHARE_FLOOR_BITS,
+    Number(job?.creditedShareBits ?? job?.shareBits) || 0,
+  );
+  return hashesProvenByShare(bits);
 }
 
 /** 1-thread H/s implied by share bits at the vardiff target interval. */

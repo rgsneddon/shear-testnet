@@ -30,16 +30,16 @@ PoW: `ShearHash-v2(header) ≤ target(bits)` (RandomX light, 128 MiB cache). Alg
 Coinbase is the only source of new SHE.
 
 - Base subsidy: `100_000_000_000` units (**1 SHE**, 11 decimals) for the round. Solo: the finder. Pool: split by proven work in that round (1% of this pot may go to a published development address).
-- Per-hash bonus: **1 unit = 0.00000000001 SHE per valid hash**, paid **to each miner who produced that hash in the current block round**. Votes move that bonus by **1 unit** (±10⁻¹¹ SHE). Public amounts show eight fractional digits; sealed coinbase still includes the 10⁻¹¹ dust. The block finder does **not** scoop other miners’ hash bonuses.
-- Samples under `continuity_root` are the audit trail for those hashes (`nonce`, recipient tag, 1 unit). They are collated **per hasher** (one leaf per miner per round, never one JSON object per hash). After 100 confirmations the sample **bodies** may be pruned from storage. The header `continuity_root`, `merkle_root`, coinbase `vout`, and every user tx stay sealed. Explorer reconstructs history from those sealed txs forever. On-disk `chain.jsonl` stores compact rows only (header hex, collated samples until prune, sealed txs). Nodes do not keep template objects or per-hash JSON.
+- Per-hash bonus: **1 unit = 0.00000000001 SHE** per proven share-unit, paid **to each miner who produced that share on the parent job header**. A floor-meeting share is worth `2^SHARE_FLOOR_BITS` units. Votes move that bonus by **1 unit** (±10⁻¹¹ SHE). Public amounts show eight fractional digits; sealed coinbase still includes the 10⁻¹¹ dust. The block finder does **not** scoop other miners’ hash bonuses.
+- Samples under `continuity_root` are the audit trail for those hashes (`nonce`, recipient tag, units from `shareBatch`). They are collated **per hasher** (one leaf per miner per round, never one JSON object per hash). After 1000 confirmations the sample **bodies** may be pruned from storage. The header `continuity_root`, `merkle_root`, coinbase `vout`, and every user tx stay sealed. Explorer reconstructs history from those sealed txs forever. On-disk `chain.jsonl` stores compact rows only (header hex, collated samples until prune, sealed txs). Nodes do not keep template objects or per-hash JSON. Full nodes validate `shareBatch` until prune-1000; money vouts forever.
 - Official miner uses a single login.
 - Extra emission: **The Reserve only** (`shear-reserve-v1`) may mint interest at the rate observed by The Reserve oracle. Any other dapp mint is invalid.
 
 ## Resistance
 
-ASERT toward 90 s, per block. Floor 14 bits, ceiling **256 bits** (SHA-256 width). Genesis 21 bits. Do **not** keep a 32-bit (~4.29e9) lid — that froze GNFP under large CPU farms.
+ASERT toward 90 s, per block. Floor 4 bits (`LIVE_MIN_BITS`), ceiling **256 bits**. Genesis **12** bits. Do **not** keep a 32-bit (~4.29e9) lid — that froze GNFP under large CPU farms.
 
-Work of a block: `2^256 / (target + 1)`. Heaviest valid chain wins. Equal work keeps first-seen.
+Work of a block: `blockWorkBig(bits) => 1n << BigInt(bits)`. Heaviest valid chain wins. Equal work keeps first-seen.
 
 Scale (90 s, opt-in B + prune): see [scale.md](scale.md). Tree A is O(miners) per block, not O(hashes). After 1000 confirmations, sample/B bodies drop; sealed vouts and pot remain. At ~10 MH/s that is still GB-class disk for headers + collated A-leaves + sealed txs, not one JSON object per hash.
 

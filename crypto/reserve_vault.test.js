@@ -68,7 +68,7 @@ describe('Reserve vault protocol', () => {
   });
 
   it('extra mint is only shear-reserve-v1', () => {
-    assert.equal(extraMintAllowed(RESERVE_PROGRAM), true);
+    assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }), true);
     assert.equal(extraMintAllowed('other-dapp'), false);
   });
 
@@ -245,7 +245,7 @@ describe('Reserve vault protocol', () => {
     assert.equal(done.mint.ok, true);
     assert.equal(done.mint.to, continuum);
     assert.equal(done.mint.nanos, done.interest);
-    assert.equal(extraMintAllowed(done.programId), true);
+    assert.equal(extraMintAllowed(done.programId, { kind: 'withdraw' }), true);
   });
 });
 
@@ -416,4 +416,25 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(portal.vote, null);
     assert.equal(Number(portal.voteEpoch || 0), 0);
   });
+
+  it('a decrease vote at the unit floor is invalid; enact never sets liveHashBonusNanos below 1', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    assert.equal(asNumSafe(state.liveHashBonusNanos), 1);
+    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    const down = vote({ state, dest: a, choice: VOTE_DECREASE, nowMs: t0 + 2 });
+    assert.equal(down.ok, false);
+    assert.equal(down.reason, 'unit_floor');
+    assert.equal(vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 }).ok, true);
+    const done = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(done.ok, true);
+    assert.equal(Number(state.liveHashBonusNanos), 1);
+    assert.equal(Number(state.liveHashBonusNanos) >= 1, true);
+  });
 });
+
+function asNumSafe(n) {
+  return Number(n);
+}

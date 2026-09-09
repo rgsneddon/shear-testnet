@@ -3,12 +3,81 @@
  * Incoming in the same block / mempool is not spendable (6-conf).
  * Outgoing on the sealed book always debits, even before 6 confs —
  * otherwise a dest could send, wait, and send the same coins again.
+ * Spend authority is Ed25519 over shear-spend-v1 || packDigest.
  */
-import { SPENDABLE_CONFIRMATIONS } from './asert.js';
+import { createHash, createPublicKey, sign, verify } from 'node:crypto';
+import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN } from './asert.js';
 import { levyTaxed, txAmountNanos } from './levy.js';
 import { isSpendableHeight } from './chronoflux.js';
-import { paymentIdHash, hash20FromAddress, destOpeningFromView } from './address.js';
+import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
+import { packTx, packDigest } from './pack.js';
+
+function dest20Of(addr) {
+  const h = hash20FromAddress(addr);
+  return h ? Buffer.from(h) : Buffer.alloc(20);
+}
+
+function kindByte(kind) {
+  const k = String(kind || '');
+  if (k === 'hash') return 1;
+  if (k === 'pot') return 2;
+  if (k === 'finder-fee') return 3;
+  if (k === 'reserve-fee') return 4;
+  return 0;
+}
+
+/** Pack digest of the spend body. sig and open are not hashed. */
+export function spendPackDigest(tx) {
+  const vins = (tx?.vin || []).map((v, i) => ({
+    prev: v.prev ? Buffer.from(v.prev) : Buffer.alloc(32),
+    index: Number(v.index || i),
+    dest20: dest20Of(v.address || tx?.from || ''),
+  }));
+  const vouts = (tx?.vout || []).map((o) => ({
+    dest20: dest20Of(o.address || ''),
+    nanos: Number(o.nanos || 0),
+    kind: kindByte(o.kind || tx?.kind),
+  }));
+  return packDigest(packTx({
+    version: 1,
+    vins: vins.length ? vins : [{ prev: Buffer.alloc(32), index: Number(tx?.height || 0), dest20: Buffer.alloc(20) }],
+    vouts,
+    memoH: tx?.memoH || null,
+    bFlag: tx?.bFlag || tx?.kind === 'b-spend' ? 1 : 0,
+  }));
+}
+
+export function spendMessage(tx) {
+  return createHash('sha256')
+    .update(Buffer.from(SPEND_SIG_DOMAIN))
+    .update(spendPackDigest(tx))
+    .digest();
+}
+
+export function signSpendTx(tx, privateKey) {
+  const sig = sign(null, spendMessage(tx), privateKey);
+  tx.sig = Buffer.from(sig).toString('hex');
+  return tx;
+}
+
+/** Recover spend pub from the 64-byte dest opening and verify Ed25519. */
+export function verifySpendSig(tx) {
+  const o = parseDestOpening(tx?.open);
+  if (!o) return false;
+  const sigHex = String(tx?.sig || tx?.signature || '').replace(/^0x/i, '');
+  if (!/^[0-9a-f]{128}$/i.test(sigHex)) return false;
+  try {
+    const pub = createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_PREFIX, o.spendPub]),
+      format: 'der',
+      type: 'spki',
+    });
+    return verify(null, spendMessage(tx), pub, Buffer.from(sigHex, 'hex'));
+  } catch {
+    return false;
+  }
+}
 
 const OUT_KINDS = new Set([
   'send',
@@ -60,9 +129,11 @@ export function openingForSpentDest(identity, dest) {
   const viewKey = identity.viewKey || identity.view || '';
   const rest = identity.address || identity.restFrame || '';
   if (!viewKey) return '';
+  const spendPub = identity.spendPub
+    || (identity.publicKey ? identity.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32) : null);
   const spendH = hash20FromAddress(rest) || identity.spendHash20;
-  if (!spendH) return '';
-  const open = destOpeningFromView(viewKey, spendH, 0);
+  if (!spendPub || !spendH) return '';
+  const open = destOpeningFromView(viewKey, spendPub, 0);
   if (verifyDestOpening(dest, open)) return open;
   try {
     return indexedDestOpening(spendH, closureCommit(viewKey), 0);
@@ -193,8 +264,9 @@ export function mempoolDebitNanos(txs, address) {
  * Walk body txs in order. Same-block incoming is not credited.
  * `spendableOf(addr)` is mature Continuum at the parent tip.
  */
-export function verifyFundedBody(body, spendableOf) {
+export function verifyFundedBody(body, spendableOf, { seenDigests = null } = {}) {
   const spent = new Map();
+  const seen = seenDigests instanceof Set ? seenDigests : new Set();
   const have = (addr) => {
     const base = Math.max(0, Math.floor(Number(typeof spendableOf === 'function' ? spendableOf(addr) : 0) || 0));
     return base - (spent.get(addr) || 0);
@@ -202,8 +274,13 @@ export function verifyFundedBody(body, spendableOf) {
   for (const tx of body || []) {
     const d = fundedDebit(tx);
     if (!d) continue;
-    if (flowSendNeedsOpen(tx) && !verifyDestOpening(d.from, tx.open)) {
-      return { ok: false, reason: 'unsigned', from: d.from };
+    if (flowSendNeedsOpen(tx)) {
+      if (!verifyDestOpening(d.from, tx.open) || !verifySpendSig(tx)) {
+        return { ok: false, reason: 'unsigned', from: d.from };
+      }
+      const digest = spendPackDigest(tx).toString('hex');
+      if (seen.has(digest)) return { ok: false, reason: 'replay', from: d.from };
+      seen.add(digest);
     }
     if (reserveNeedsPortalOpen(tx) && !verifyReservePortalOpen(tx)) {
       return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };

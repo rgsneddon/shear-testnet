@@ -1,6 +1,6 @@
 /**
  * kyrusfables.shear.digital — operator fee wallet.
- * Not a public page. Host-gated. Encrypted at rest. Same Phase B levy as the book.
+ * Host is display/routing only, not authorization. TOTP + password after setup.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,7 +25,9 @@ import {
 import { reconstructOwner } from './wallet_api.js';
 
 export const ADMIN_HOST = 'kyrusfables.shear.digital';
-export const ADMIN_USER = 'raskul';
+export const ADMIN_ISSUER = 'shear';
+/** Display host only. Not authorization. */
+export const ADMIN_USER = '';
 const COOKIE = 'shear_admin';
 const SCRYPT = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -157,6 +159,7 @@ export function createAdmin(dir) {
   const machine = machineKey(dir);
   const fileKey = wrapFileKey(machine);
   const sessions = new Map();
+  const setupToken = randomBytes(16).toString('hex');
 
   function load() {
     if (!fs.existsSync(encPath)) return emptyState();
@@ -200,14 +203,18 @@ export function createAdmin(dir) {
     return rec;
   }
 
-  function setup({ user, password } = {}) {
+  function setup({ user, password, setupToken: tokenIn, loopback = false } = {}) {
+    if (fs.existsSync(encPath)) return { ok: false, reason: 'closed' };
     const s = load();
     if (s.pass || s.closed) return { ok: false, reason: 'closed' };
-    if (!same(user, ADMIN_USER)) return { ok: false, reason: 'auth' };
+    const envOk = String(process.env.SHEAR_ADMIN_SETUP || '') === '1';
+    const tokOk = tokenIn && same(tokenIn, setupToken);
+    const loopEnv = loopback === true && envOk;
+    if (!tokOk && !loopEnv) return { ok: false, reason: 'setup_forbidden' };
     const pw = String(password || '');
     if (pw.length < 8) return { ok: false, reason: 'password' };
     const salt = randomBytes(16);
-    s.user = 'ok';
+    s.user = String(user || 'operator').slice(0, 64) || 'operator';
     s.pass = { salt: salt.toString('hex'), hash: passHash(pw, salt).toString('hex') };
     s.totp = null;
     s.closed = false;
@@ -219,7 +226,7 @@ export function createAdmin(dir) {
   function login({ user, password, code } = {}) {
     const s = load();
     if (!s.pass) return { ok: false, reason: 'auth' };
-    if (!same(user, ADMIN_USER)) return { ok: false, reason: 'auth' };
+    void user;
     const salt = Buffer.from(s.pass.salt, 'hex');
     const want = Buffer.from(s.pass.hash, 'hex');
     const got = passHash(password, salt);
@@ -248,7 +255,7 @@ export function createAdmin(dir) {
     const secret = randomBytes(20);
     rec.totpPending = secret;
     const b32 = toBase32(secret);
-    const otpauth = `otpauth://totp/kyrusfables?secret=${b32}&issuer=kyrusfables&algorithm=SHA1&digits=6&period=30`;
+    const otpauth = `otpauth://totp/shear?secret=${b32}&issuer=${ADMIN_ISSUER}&algorithm=SHA1&digits=6&period=30`;
     return { ok: true, secret: b32, otpauth };
   }
 
@@ -269,7 +276,7 @@ export function createAdmin(dir) {
     return { ok: true };
   }
 
-  return { status, setup, login, startTotp, confirmTotp, sessionOf, logout, load };
+  return { status, setup, login, startTotp, confirmTotp, sessionOf, logout, load, setupToken };
 }
 
 function cookieToken(cookie) {
@@ -294,7 +301,7 @@ function needOps(ops, name) {
 }
 
 export function handleAdminApi(url, method, body, {
-  store, queueSend, cookie, admin, ops,
+  store, queueSend, cookie, admin, ops, loopback = false,
 } = {}) {
   const pathName = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
@@ -303,7 +310,12 @@ export function handleAdminApi(url, method, body, {
     return { status: 200, json: admin.status(), headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive' } };
   }
   if (pathName === '/api/admin/setup' && verb === 'POST') {
-    const got = admin.setup({ user: body.user, password: body.password });
+    const got = admin.setup({
+      user: body.user,
+      password: body.password,
+      loopback: loopback === true,
+      setupToken: body.setupToken,
+    });
     if (!got.ok) return { status: 400, json: got };
     return {
       status: 200,
@@ -476,11 +488,9 @@ const PRIVACY = {
 
 export async function handleAdminHttp(req, res, opts) {
   const host = String(req.headers.host || '').split(':')[0].toLowerCase();
-  if (!isAdminHost(host)) {
-    res.statusCode = 404;
-    res.end('missing');
-    return;
-  }
+  const remote = String(opts.remoteAddress || req.socket?.remoteAddress || '');
+  const loopback = remote === '127.0.0.1' || remote === '::1' || remote.endsWith('127.0.0.1');
+  void host;
   for (const [k, v] of Object.entries(PRIVACY)) res.setHeader(k, v);
   const url = new URL(req.url, `https://${ADMIN_HOST}`);
   if (url.pathname === '/robots.txt') {
@@ -502,6 +512,7 @@ export async function handleAdminHttp(req, res, opts) {
     const out = handleAdminApi(url, req.method, body, {
       ...opts,
       cookie: req.headers.cookie,
+      loopback,
     });
     res.statusCode = out.status;
     res.setHeader('content-type', 'application/json');

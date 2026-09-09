@@ -25,7 +25,7 @@ she1_n = she1(SHA256(shear-she1-v2 || scanPub_n || spendPub_n)[0:20])  // short 
 
 Same `(S, C, index)` always regenerates the same `ssa1`. Same `(V, S, n)` regenerates `she1`. No cap on index. Miner `--user` is `she1` or `ssa1`. A `she1` login pays `ssa1` of the same 20-byte payload; the `she1` string never goes on chain. Pool pays dest as-is. Public explorer stays amounts-only. Rest-frame `shear1` is never a dest login. she is private.
 
-Password = view key = `shewall.json` seal. Never POST `V`/`C`/`shear1`.
+Password = view key = `shewall.bin` seal. Never POST `V`/`C`/`shear1`.
 
 ## Memo
 

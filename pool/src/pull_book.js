@@ -89,17 +89,22 @@ export function createPullBook(dir) {
     };
   }
 
-  function takeConfirmed(tag, { tipHeight = 0, need = SPENDABLE_CONFIRMATIONS, now = Date.now() } = {}) {
+  function takeConfirmed(tag, { tipHeight = 0, need = SPENDABLE_CONFIRMATIONS, now = Date.now(), amountNanos = null } = {}) {
     const key = String(tag || '').trim().toLowerCase();
     const v = view(key, { tipHeight, need });
     if (v.lastPullMs && now < v.nextPullMs) {
       return { ok: false, reason: 'cooldown', nextPullMs: v.nextPullMs };
     }
     if (!(v.confirmedNanos > 0)) return { ok: false, reason: 'none_confirmed' };
-    state.pulled.push({ tag: key, nanos: v.confirmedNanos, height: tipHeight, ms: now });
+    const want = amountNanos == null
+      ? v.confirmedNanos
+      : Math.floor(Number(amountNanos) || 0);
+    if (!(want > 0)) return { ok: false, reason: 'none_confirmed' };
+    if (want > v.confirmedNanos) return { ok: false, reason: 'over_unpaid' };
+    state.pulled.push({ tag: key, nanos: want, height: tipHeight, ms: now });
     state.lastPullMs[key] = now;
     save();
-    return { ok: true, nanos: v.confirmedNanos, dest: destOf(key) };
+    return { ok: true, nanos: want, dest: destOf(key) };
   }
 
   function destOf(tag) {

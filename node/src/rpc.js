@@ -25,7 +25,12 @@ export function createRpc({
   p2p = null,
   port = Number(process.env.SHEAR_RPC_PORT || RPC_PORT),
   host = process.env.SHEAR_RPC_BIND || RPC_HOST,
+  token = process.env.SHEAR_RPC_TOKEN || '',
 } = {}) {
+  const bind = String(host || RPC_HOST);
+  if ((bind === '0.0.0.0' || bind === '::' || bind === '*') && !String(token || '').trim()) {
+    throw new Error('rpc_bind_public_needs_token');
+  }
   const sse = new Set();
 
   function pushEvent(ev, payload) {
@@ -42,6 +47,11 @@ export function createRpc({
 
   function dispatch(method, params = {}) {
     const m = String(method || '');
+    const mutating = new Set(['addnode']);
+    if (mutating.has(m) && String(token || '').trim()) {
+      const tok = String(params.token || params.rpcToken || '');
+      if (tok !== String(token)) return { ok: false, reason: 'rpc_token' };
+    }
     if (m === 'getpolicy' || m === 'policy') {
       return { ok: true, ...(typeof store.getpolicy === 'function' ? store.getpolicy() : {}) };
     }
@@ -52,10 +62,20 @@ export function createRpc({
       return { ok: true, reorgs: typeof store.getreorgs === 'function' ? store.getreorgs() : [] };
     }
     if (m === 'addnode') {
+      const tok = String(params.token || params.rpcToken || '');
+      if (String(token || '').trim() && tok !== String(token)) {
+        return { ok: false, reason: 'rpc_token' };
+      }
+      if ((bind === '0.0.0.0' || bind === '::') && tok !== String(token || '')) {
+        return { ok: false, reason: 'rpc_token' };
+      }
       const hostP = String(params.host || params[0] || '');
       const portP = Number(params.port || params[1] || 30303);
       if (!hostP || !p2p || typeof p2p.connect !== 'function') {
         return { ok: false, reason: 'no_p2p' };
+      }
+      if (typeof p2p.isRoutablePeerAddr === 'function' ? !p2p.isRoutablePeerAddr(hostP) : false) {
+        return { ok: false, reason: 'bad_addr' };
       }
       return p2p.connect(hostP, portP).then(() => ({ ok: true, host: hostP, port: portP }))
         .catch((e) => ({ ok: false, reason: String(e?.message || e) }));
@@ -121,8 +141,8 @@ export function createRpc({
   function listen() {
     return new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.listen(port, host, () => {
-        resolve({ host, port: server.address().port });
+      server.listen(port, bind, () => {
+        resolve({ host: bind, port: server.address().port });
       });
     });
   }

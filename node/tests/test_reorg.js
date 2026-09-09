@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { encodeDest, newIdentity } from '../../crypto/address.js';
+import { encodeDest, newIdentity, destOpeningFromView, payoutDest } from '../../crypto/address.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
-import { LIVE_MIN_BITS } from '../../crypto/asert.js';
+import { LIVE_MIN_BITS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { signSpendTx } from '../../crypto/spend.js';
+import { levyNanos } from '../../crypto/levy.js';
 import { createStore } from '../src/store.js';
 import { mineTemplate, shouldAdopt, digestTx } from '../src/chain.js';
 
@@ -27,7 +29,13 @@ function mineOne(store, dest, bits = LIVE_MIN_BITS) {
     header: found.header,
     txs: tpl.txs,
     samples: tpl.samples,
+    shareBatch: tpl.shareBatch || [],
     miner: dest,
+    aLeaves: tpl.aLeaves,
+    bLeaves: tpl.bLeaves,
+    rootA: tpl.rootA,
+    rootB: tpl.rootB,
+    weight: tpl.weight,
   });
 }
 
@@ -36,15 +44,16 @@ function tmpStore() {
 }
 
 describe('most-work adopt', () => {
-  it('heavier valid fork replaces the local tip; equal work keeps first-seen; invalid rest-frame is refused', () => {
-    const dest = destMiner();
+  it('heavier valid fork replaces the local tip; equal work keeps first-seen; invalid rest-frame is refused', async () => {
+    const id = newIdentity();
+    const dest = payoutDest(id.paymentCode);
     const local = tmpStore();
-    const first = mineOne(local, dest);
+    const first = await Promise.resolve(mineOne(local, dest));
     assert.equal(first.ok, true, first.reason);
     const firstHash = Buffer.from(local.tip().hash);
 
     const equalPeer = tmpStore();
-    assert.equal(mineOne(equalPeer, dest).ok, true);
+    assert.equal((await Promise.resolve(mineOne(equalPeer, dest))).ok, true);
     const equal = local.ingest(equalPeer.blocks);
     assert.equal(equal.ok, false);
     assert.equal(equal.reason, 'not_heavier');
@@ -52,25 +61,33 @@ describe('most-work adopt', () => {
 
     const events = [];
     local.on('reorg', (e) => events.push(e));
-    local.queueTx({
+    for (let i = 0; i < SPENDABLE_CONFIRMATIONS; i += 1) {
+      assert.equal((await Promise.resolve(mineOne(local, dest))).ok, true);
+    }
+    const bounce = {
       id: 'bounce-1',
       kind: 'send',
       from: dest,
       to: dest,
       nanos: 1,
-      fee: 100,
+      fee: levyNanos(1),
+      open: destOpeningFromView(id.viewKey, id.spendPub, 0),
       vin: [{ address: dest }],
       vout: [{ address: dest, nanos: 1 }],
-    });
+    };
+    signSpendTx(bounce, id.privateKey);
+    assert.equal(local.queueTx(bounce).ok, true, 'bounce must enter mempool');
     const heavier = tmpStore();
-    assert.equal(mineOne(heavier, dest).ok, true);
-    assert.equal(mineOne(heavier, dest).ok, true);
-    assert.equal(heavier.tip().height, 2);
+    const heavierNeed = local.tip().height + 1;
+    for (let i = 0; i < heavierNeed; i += 1) {
+      assert.equal((await Promise.resolve(mineOne(heavier, dest))).ok, true);
+    }
+    assert.equal(heavier.tip().height, heavierNeed);
     assert.equal(shouldAdopt(local.blocks, heavier.blocks), true);
-    const got = local.ingest(heavier.blocks);
-    assert.equal(got.ok, true, got.reason);
-    assert.equal(got.reorg, true);
-    assert.equal(local.tip().height, 2);
+    const got = await Promise.resolve(local.ingest(heavier.blocks));
+    assert.equal(got.ok, true, `${got.reason || 'ingest'} at=${got.at}`);
+    assert.equal(got.reorg, true, `${got.reason || 'expected reorg'} at=${got.at}`);
+    assert.equal(local.tip().height, heavierNeed);
     assert.equal(Buffer.from(local.tip().hash).equals(Buffer.from(heavier.tip().hash)), true);
     assert.equal(events.length, 1);
     assert.equal(events[0].type, 'reorg');
@@ -83,7 +100,7 @@ describe('most-work adopt', () => {
     assert.equal(tips.some((t) => t.status === 'valid-fork'), true);
     assert.equal(local.getpolicy().consensus_min, 6);
     assert.equal(local.getpolicy().bands.pool_merchant, 30);
-    assert.equal(local.mempool.some((t) => t.id === 'bounce-1'), true);
+    assert.equal(local.mempool.some((t) => t.id === 'bounce-1'), true, 'bounce-1 must remain in mempool after reorg');
   });
 
   it('ingest of an invalid child of the tip fails verifyBlock and keeps the tip', () => {
@@ -154,6 +171,20 @@ describe('most-work adopt', () => {
     assert.equal(refused.reason, 'miner_addr');
     assert.equal(local.tip().height, 1);
     assert.equal(Buffer.from(local.tip().hash).equals(before), true);
+  });
+
+  it('rebuildSpentB awaits verifyBlock instead of swallowing its Promise', async () => {
+    const src = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
+    assert.equal(/Promise\.resolve\(spentCheck\)\.catch\(\(\) => \{\}\)/.test(src), false);
+    assert.match(src, /spentCheck\.then\(step\)/);
+    assert.match(src, /spendableOf:/);
+    const dest = destMiner();
+    const local = tmpStore();
+    const peer = tmpStore();
+    assert.equal(mineOne(peer, dest).ok, true);
+    const got = await Promise.resolve(local.adopt(peer.blocks));
+    assert.equal(got.ok, true, got.reason);
+    assert.equal(local.tip().height, 1);
   });
 
   it('adopt from empty rebuilds without a snapshot vault helper', () => {

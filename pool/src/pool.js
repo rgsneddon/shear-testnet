@@ -8,7 +8,8 @@ import { Worker } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
-import { isMineLogin, isPaymentCode, payoutDest } from '../../crypto/address.js';
+import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, hash20FromAddress } from '../../crypto/address.js';
+import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
   BLOCK_SUBSIDY_NANOS,
   POOL_FEE_BPS,
@@ -24,13 +25,16 @@ import {
   NANOS_PER_SHE,
   SPENDABLE_CONFIRMATIONS,
   GENESIS_BITS,
+  SHARE_FLOOR_BITS,
 } from '../../crypto/asert.js';
 import { poolFeeDest, levyNanos, mempoolDepthBytes, poolWithdrawTx, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
+import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
 import { createPullBook, PULL_COOLDOWN_MS } from './pull_book.js';
 import { createStore } from '../../node/src/store.js';
 import { explorerRecentTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
+import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 import {
   clampShareBits,
   hashesProvenByShare,
@@ -121,17 +125,35 @@ export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
   return sum / n;
 }
 
-/** 1 SHE pot split by proven work this round. 1% of the pot may go to the pool dest. */
+/** 1 SHE pot: PROP of (pot - 100 bps) across hasher dests. Pool dest gets only the fee. */
 export function splitPot(round, poolDest) {
   const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
   const rest = BLOCK_SUBSIDY_NANOS - fee;
-  const pay = payoutDest(poolDest);
+  const feeAddr = poolFeeDest() || payoutDest(poolDest);
+  const by = new Map();
+  for (const r of Array.isArray(round) ? round : []) {
+    const dest = String(r.miner || r.address || r.dest || '').trim();
+    if (!isDestAddress(dest)) continue;
+    const n = Math.max(0, Math.floor(Number(r.count || r.units || r.proven || 0)));
+    if (n <= 0) continue;
+    by.set(dest, (by.get(dest) || 0) + n);
+  }
+  const total = [...by.values()].reduce((a, n) => a + n, 0);
   const out = [];
-  if (pay && rest > 0) out.push({ address: pay, nanos: rest, kind: 'pot' });
-  const feeAddr = poolFeeDest();
-  if (fee > 0 && feeAddr) out.push({ address: feeAddr, nanos: fee, kind: 'pool-fee' });
-  if (!out.length && pay) out.push({ address: pay, nanos: BLOCK_SUBSIDY_NANOS, kind: 'pot' });
-  void round;
+  if (!total) return out;
+  let paid = 0;
+  const dests = [...by.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  for (let i = 0; i < dests.length; i += 1) {
+    const [addr, n] = dests[i];
+    const nanos = i === dests.length - 1 ? rest - paid : Math.floor(rest * n / total);
+    paid += nanos;
+    if (nanos > 0) out.push({ address: addr, nanos, kind: 'pot' });
+  }
+  if (fee > 0 && feeAddr && isDestAddress(feeAddr)) {
+    const existing = out.find((s) => s.address === feeAddr);
+    if (existing) existing.nanos += fee;
+    else out.push({ address: feeAddr, nanos: fee, kind: 'pool-fee' });
+  }
   return out.filter((s) => s.nanos > 0);
 }
 
@@ -254,7 +276,8 @@ export function admitClient(params) {
   const raw = String(params?.login || params?.user || '').trim();
   const dest = parseLogin(raw);
   if (!isMineLogin(dest)) return { ok: false, reason: 'bad_login' };
-  return { ok: true, login: dest, workerKey: raw || dest };
+  const payout = hasherPayoutDest(dest, { dest: params?.dest || params?.payout });
+  return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payout || '' };
 }
 
 /** ShearHash-v2 digest the miner claims. Empty if they did not compute the algo. */
@@ -792,6 +815,8 @@ export function createPool({
   let prevJob = null;
   let prevJobAt = 0;
   let pendingPayout = [];
+  let lag1Shares = [];
+  let openShares = [];
   let sealing = false;
   let paused = false;
   let restarting = false;
@@ -836,15 +861,20 @@ export function createPool({
     return [...miners.values()]
       .filter((m) => (m.roundHashes || 0) > 0)
       .map((m) => {
-        const dest = payoutDest(m.login);
+        const dest = hasherPayoutDest(m.login, {
+          dest: m.payoutDest,
+          height: Number(store.tip()?.height || 0) + 1,
+        });
+        if (!dest) return null;
         return {
-          miner: dest || m.login,
+          miner: dest,
           nonce: String(m.hashes || 0),
           tag: isPaymentCode(parseLogin(m.login)) ? 'she1' : (m.tag || m.login.slice(0, 12)),
           count: roundActualHashes(m),
           proven: Number(m.roundHashes) || 0,
         };
-      });
+      })
+      .filter(Boolean);
   }
 
   let lastIssueAt = 0;
@@ -869,6 +899,8 @@ export function createPool({
   if (typeof store.on === 'function') {
     store.on('reorg', () => {
       if (sealing) return;
+      lag1Shares = [];
+      openShares = [];
       resetOpenRound();
     });
     store.on('tip', (t) => {
@@ -902,10 +934,12 @@ export function createPool({
       };
       return job;
     }
-    const hasherPay = payoutDest(
-      [...miners.values()].find((m) => !isCminerFeeLogin(m.workerKey || m.login))?.login
-      || [...miners.values()][0]?.login,
-    );
+    const hasherRow = [...miners.values()].find((m) => !isCminerFeeLogin(m.workerKey || m.login))
+      || [...miners.values()][0];
+    const hasherPay = hasherPayoutDest(hasherRow?.login, {
+      dest: hasherRow?.payoutDest,
+      height: Number(store.tip()?.height || 0) + 1,
+    });
     const poolPay = payoutDest(miner);
     const live = snapshotRound();
     const potRows = live.map((s) => ({ miner: s.miner, count: Number(s.proven) || 0 })).filter((s) => s.count > 0);
@@ -913,7 +947,9 @@ export function createPool({
       potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
       poolPay,
     );
-    const payout = potShares[0]?.address || hasherPay || poolPay;
+    // she1 login may have no dest yet (dest arrives as owned ssa1). The header
+    // still issues; shareBatch credit stays hasher dests only.
+    const payout = potShares[0]?.address || hasherPay || poolPay || poolFeeDest();
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     const chainLen = (store.blocks || []).length;
@@ -922,6 +958,8 @@ export function createPool({
       samples,
       potShares,
       shareBits: sb,
+      shareBatch: lag1Shares,
+      poolDest: poolPay,
       ...(chainLen >= 1 ? {} : { bits }),
       wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
     });
@@ -1141,6 +1179,22 @@ export function createPool({
     stats.accepted += 1;
     if (session) {
       session.accepted += 1;
+      const destPay = hasherPayoutDest(session.login, {
+        dest: session.payoutDest,
+        height: Number(store.tip()?.height || 0) + 1,
+      });
+      const hashBuf = Buffer.from(String(scored.hash || ''), 'hex');
+      if (isDestAddress(destPay) && hashBuf.length === 32 && meetsTarget(hashBuf, SHARE_FLOOR_BITS)) {
+        const nk = String(params.nonce);
+        if (!openShares.some((s) => String(s.nonce) === nk)) {
+          openShares.push({
+            dest: destPay,
+            dest20: hash20FromAddress(destPay),
+            nonce: BigInt(params.nonce),
+            lz: Number(scored.bitsMet) & 0xff,
+          });
+        }
+      }
       const proven = hashesProvenByShare(Number(scored.creditedShareBits || job?.shareBits) || 0);
       if (!closedRound) {
         session.roundHashes += proven;
@@ -1179,11 +1233,16 @@ export function createPool({
       const got = await Promise.resolve(store.submitHeader({
         jobId: jid,
         nonce: params.nonce,
-        miner: payoutDest(session?.login) || session?.login,
+        miner: hasherPayoutDest(session?.login, {
+          dest: session?.payoutDest,
+          height: Number(store.tip()?.height || 0) + 1,
+        }),
       }));
       sealing = false;
       if (got.ok) {
         stats.blocks += 1;
+        lag1Shares = openShares.slice();
+        openShares = [];
         try {
           const sealed = store.tip();
           // Wall clock, not header time: the job stamp may be 90s ahead of now.
@@ -1196,7 +1255,10 @@ export function createPool({
               .filter((m) => (Number(m.roundHashes) || 0) > 0 && !isCminerFeeLogin(m.login || m.workerKey))
               .map((m) => ({
                 tag: publicMinerTag(m.login || m.workerKey),
-                dest: payoutDest(m.login) || m.login,
+                dest: hasherPayoutDest(m.login, {
+                  dest: m.payoutDest,
+                  height: Number(sealed?.height || 0),
+                }),
                 count: roundActualHashes(m),
               })),
             { height: Number(sealed?.height || 0) },
@@ -1299,7 +1361,9 @@ export function createPool({
             acceptWork: [],
             seen: Date.now(),
             firstSeen: Date.now(),
+            payoutDest: adm.payoutDest || '',
           };
+          if (adm.payoutDest) session.payoutDest = adm.payoutDest;
           if (params.version) session.version = String(params.version);
           else session.version = String(session.version || '');
           session.client = String(params.client || session.client || CLIENT);
@@ -1717,6 +1781,18 @@ export function createPool({
           dest,
           nanos: body.nanos != null ? Math.floor(Number(body.nanos) || 0) : pull.confirmedNanos,
           sig: body.sig || body.signature,
+          minerShe1: she,
+          payoutSsa1: dest,
+          height: body.height,
+          nonce: body.nonce,
+          deadline: body.deadline,
+          confirmedNanos: pull.confirmedNanos,
+          nonceStore: withdrawNonces,
+          seenDigests: withdrawDigests,
+          open: body.open,
+          spendSig: body.spendSig,
+          ownerPub: ownerPubFromOpening(body.open),
+          requireOwner: true,
         });
         if (!off.ok) {
           const pending = {

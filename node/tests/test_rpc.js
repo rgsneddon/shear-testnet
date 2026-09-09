@@ -78,4 +78,14 @@ describe('node RPC', () => {
       await rpc.close();
     }
   });
+
+  it('refuses SHEAR_RPC_BIND=0.0.0.0 without token; addnode needs the token', () => {
+    assert.throws(() => createRpc({ store: createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-rpc-b-'))), host: '0.0.0.0', port: 0 }));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-rpc-t-'));
+    const store = createStore(dir);
+    const rpc = createRpc({ store, host: '127.0.0.1', port: 0, token: 'secret' });
+    const denied = rpc.dispatch('addnode', { host: '1.1.1.1', port: 30303 });
+    assert.equal(denied.ok, false);
+    assert.equal(denied.reason, 'rpc_token');
+  });
 });

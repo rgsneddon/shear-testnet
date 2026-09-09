@@ -77,7 +77,7 @@ class ShearFlyClient {
   int sampledTip = 0;
 
   int get provenHeaders => _proven.length;
-  /// Bitcoin Core–shaped: want every relayed header 1…tip, not only the locator.
+  /// Headers-first: want every relayed header 1…tip, not only the locator.
   int get wantedHeaders => sampledTip < 1 ? 0 : sampledTip;
   int get failures => _failures;
   bool get honest =>
@@ -117,7 +117,7 @@ class ShearFlyClient {
     return findLiveNode();
   }
 
-  /// Locator samples, then header catch-up 1…tip like Bitcoin Core IBD.
+  /// Locator samples, then header catch-up 1…tip like headers-first IBD.
   /// Already-proven heights are skipped so the 1s timer is not a rescan.
   Future<void> followTip() async {
     final base = await ensureLive();

@@ -1,18 +1,18 @@
 # Shear
 
-Private by default. Proof of work only. Continuity-settled.
+Private dests, public amounts. PoW elects the tip. Continuity-settled.
 
 - Ticker: **SHE**
 - Algo: **ShearHash** (CPU)
-- Miner pin: **ShearK-Miner 1.5** (`[Testnet] ShearK`, ShearHash-v2). Wallet **0.16**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.5
+- Miner pin: **ShearK-Miner 1.5** (`[Testnet] ShearK`, ShearHash-v2). Wallet **0.4**. Product **0.4**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.5
 - Stratum: `pool.shear.digital:1111`
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital
 - Chain: `shear-testnet-v2` (testnet first)
 
-One hash is one transaction. The header commits a continuity root. Full nodes
-validate every block. The public pool is an equal node with a stratum, not a
-master book.
+One proven share-hash mints units; user txs are signed Flow. The header commits a
+continuity root. Full nodes validate shareBatch until prune-1000; money vouts forever.
+The public pool is an equal node with a stratum, not a master book.
 
 ## Packages
 
@@ -33,4 +33,4 @@ ShearK-Miner --pool pool.shear.digital:1111 --user she1YOURID.worker --threads 4
 Offer `she1` (silent ID). Miner login is `she1` or a revolving `ssa1` dest. Payouts are `ssa1` on chain — `she1` never appears there. Rest-frame `shear1` is never a login.
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shear, Reserve, Closure.
-Backup: encrypted `shewall.json`. Node and wallet are lean: hash samples collate per miner and prune after 1000 confirmations; sealed transfers stay forever for the explorer.
+Backup: encrypted `shewall.bin`. Node and wallet are lean: hash samples collate per miner and prune after 1000 confirmations; sealed transfers stay forever for the explorer.

@@ -6,6 +6,7 @@ import {
   RESERVE_JOIN_CUTOFF_MS,
   extraMintAllowed,
   NANOS_PER_SHE,
+  HASH_BONUS_NANOS_FLOOR,
 } from './asert.js';
 import { isDestAddress, isShearAddress } from './address.js';
 import {
@@ -264,6 +265,9 @@ export function vote({ state, dest, choice, nowMs }) {
   if (state.bonusEnacted) return { ok: false, reason: 'epoch_closed' };
   const allowed = [VOTE_INCREASE, VOTE_DECREASE, VOTE_HOLD];
   if (!allowed.includes(choice)) return { ok: false, reason: 'bad_vote' };
+  if (choice === VOTE_DECREASE && asNum(state.liveHashBonusNanos || 1n) <= HASH_BONUS_NANOS_FLOOR) {
+    return { ok: false, reason: 'unit_floor' };
+  }
   const first = !p.vote || p.voteEpoch !== state.currentEpoch;
   if (!first) return { ok: false, reason: 'vote_locked' };
   p.vote = choice;
@@ -465,7 +469,13 @@ export function enact({ state, nowMs } = {}) {
   if (m > 0 && hold === m) { winners += 1; delta = 0; }
   let live = asNum(state.liveHashBonusNanos || 1n);
   if (winners === 1 && delta > 0) live += 1;
-  else if (winners === 1 && delta < 0) live = Math.max(0, live - 1);
+  else if (winners === 1 && delta < 0) {
+    if (live <= HASH_BONUS_NANOS_FLOOR) {
+      delta = 0;
+    } else {
+      live -= 1;
+    }
+  }
   state.liveHashBonusNanos = BigInt(live);
   state.bonusEnacted = true;
   state.enactedUp = up;
@@ -513,7 +523,7 @@ export function withdraw({ state, dest, nowMs, payout } = {}) {
     if (!paid.ok) return { ok: false, reason: paid.reason };
     mint = extraMint({ programId: RESERVE_PROGRAM, to, nanos: interest });
     if (!mint.ok) return { ok: false, reason: mint.reason };
-  } else if (!extraMintAllowed(RESERVE_PROGRAM)) {
+  } else if (!extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' })) {
     return { ok: false, reason: 'mint_forbidden' };
   }
   state.totalLockedNanos = asBig(state.totalLockedNanos) - asBig(principal);

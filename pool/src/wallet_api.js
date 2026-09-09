@@ -22,12 +22,14 @@ import {
   verifyPoolWithdrawOffchain,
   containsShe1,
 } from '../../crypto/levy.js';
-import { flowSendNeedsOpen, verifyDestOpening, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, matureSpendableNanos, mempoolDebitNanos } from '../../crypto/spend.js';
+import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, matureSpendableNanos, mempoolDebitNanos } from '../../crypto/spend.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
+import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { roundActualHashes } from './hash_credit.js';
+import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 
 export function nanosToShe(n) {
   return Number(n || 0) / NANOS_PER_SHE;
@@ -905,6 +907,12 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     return { status: 200, json: store.lookupVorticeKey(key) };
   }
   if (path === '/api/wallet/send' && verb === 'POST') {
+    if (body.viewKey || body.V || body.view || body.restFrame || body.rest || body.paymentCode) {
+      return { status: 400, json: { ok: false, reason: 'rest_frame' } };
+    }
+    if (isShearAddress(body.from) || isShearAddress(body.to)) {
+      return { status: 400, json: { ok: false, reason: 'rest_frame' } };
+    }
     const from = payoutDest(String(body.from || '')) || '';
     const to = payoutDest(String(body.to || '')) || (isDestAddress(String(body.to || '')) ? String(body.to) : '');
     const amount = Number(body.amount);
@@ -950,16 +958,16 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     const parked = kind === 'send' && changeDest && leftover > 0;
     const draft = isLock
-      ? { ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }), fee, memoCt, open: body.open, portalOpen: body.portalOpen, amount }
+      ? { ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }), fee, memoCt, open: body.open, sig: body.sig || body.signature, portalOpen: body.portalOpen, amount }
       : isVote
-        ? { ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }), fee, maxLevy: fee, open: body.open, portalOpen: body.portalOpen, payer: from }
+        ? { ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }), fee, maxLevy: fee, open: body.open, sig: body.sig || body.signature, portalOpen: body.portalOpen, payer: from }
         : {
-          kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, open: body.open,
+          kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, open: body.open, sig: body.sig || body.signature,
           vin: [{ address: from }],
           vout,
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
-    if (flowSendNeedsOpen(draft) && !verifyDestOpening(from, body.open)) {
+    if (flowSendNeedsOpen(draft) && (!verifyDestOpening(from, body.open) || !verifySpendSig(draft))) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
     if (reserveNeedsPortalOpen(draft) && !verifyReservePortalOpen(draft)) {
@@ -994,7 +1002,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         ok: true,
         public: false,
         programId: RESERVE_PROGRAM,
-        extraMint: extraMintAllowed(RESERVE_PROGRAM),
+        extraMint: extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }),
         ...publicVaultView(vault, now),
         ...portalRewards(vault, dest, now),
       },
@@ -1032,7 +1040,23 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const dests = [...new Set([rawDest, payoutDest(rawDest) || ''].filter(Boolean))];
     let off = { ok: false, reason: 'unsigned' };
     for (const dest of dests) {
-      off = verifyPoolWithdrawOffchain({ login, dest, nanos, sig });
+      off = verifyPoolWithdrawOffchain({
+        login,
+        dest,
+        nanos,
+        sig,
+        minerShe1: login,
+        payoutSsa1: dest,
+        height: body.height,
+        nonce: body.nonce,
+        deadline: body.deadline,
+        nonceStore: withdrawNonces,
+        seenDigests: withdrawDigests,
+        open: body.open,
+        spendSig: body.spendSig,
+        ownerPub: ownerPubFromOpening(body.open),
+        requireOwner: true,
+      });
       if (off.ok) break;
     }
     if (!off.ok) return { status: 400, json: { ...off, public: false } };

@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import {
   newIdentity, isShearAddress, isDestAddress, isPaymentCode, encodeHrp, encodeAddress,
-  paymentCodeAtIndex, silentDestFromView,
+  paymentCodeAtIndex, silentDestFromView, payoutDest,
 } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
 import {
   destForLogin,
+  hasherPayoutDest,
   destAtIndex,
   destsForViewKey,
   degenerateDest,
@@ -70,6 +71,16 @@ describe('flow sheets', () => {
     assert.equal(shePay.startsWith('she1'), false);
     assert.notEqual(shePay, alice.paymentCode);
     assert.equal(isDestAddress(encodeAddress(spendHashFromAddress(alice.address))), false);
+    assert.equal(hasherPayoutDest(alice.paymentCode, { height: 1 }), null);
+    assert.equal(hasherPayoutDest(alice.paymentCode, { height: 1, viewKey: alice.viewKey }), null);
+    const owned = destAtIndex(alice.address, { index: 1, viewKey: alice.viewKey });
+    assert.equal(hasherPayoutDest(owned), owned);
+    assert.equal(hasherPayoutDest(owned, { dest: owned }), owned);
+    assert.equal(hasherPayoutDest(alice.address, { height: 1, viewKey: alice.viewKey }), owned);
+    assert.equal(hasherPayoutDest(alice.paymentCode, { dest: owned }), owned);
+    assert.equal(hasherPayoutDest(alice.paymentCode, { dest: payoutDest(alice.paymentCode) }), null);
+    assert.notEqual(owned, payoutDest(alice.paymentCode));
+    assert.notEqual(hasherPayoutDest(alice.address, { height: 2, viewKey: alice.viewKey }), owned);
   });
 
   it('indexed she1 dests are unlimited, regenerable, and tied to shear1 + C', () => {
@@ -94,15 +105,15 @@ describe('flow sheets', () => {
     assert.equal(both.every((a) => a.startsWith('ssa1')), true);
     assert.equal(destAtIndex(alice.address, { index: -1, viewKey: alice.viewKey }), null);
     const s = spendHashFromAddress(alice.address);
-    const p0 = paymentCodeAtIndex(alice.viewKey, s, 0);
-    const p1 = paymentCodeAtIndex(alice.viewKey, s, 1);
-    const p2 = paymentCodeAtIndex(alice.viewKey, s, 2);
+    const p0 = paymentCodeAtIndex(alice.viewKey, alice.spendPub, 0);
+    const p1 = paymentCodeAtIndex(alice.viewKey, alice.spendPub, 1);
+    const p2 = paymentCodeAtIndex(alice.viewKey, alice.spendPub, 2);
     assert.equal(p0, alice.paymentCode);
     assert.equal(isPaymentCode(p0), true);
     assert.equal(isDestAddress(p0), false);
     assert.notEqual(p0, p1);
     assert.notEqual(p1, p2);
-    assert.equal(paymentCodeAtIndex(alice.viewKey, s, 1), p1);
+    assert.equal(paymentCodeAtIndex(alice.viewKey, alice.spendPub, 1), p1);
     const { privateKey: eph } = generateKeyPairSync('x25519');
     const silent = silentDestFromView(alice.viewKey, s, eph, 0);
     assert.equal(isDestAddress(silent), true);

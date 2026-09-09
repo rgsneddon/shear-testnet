@@ -20,16 +20,16 @@ export {
 export { wrapMintForbidden };
 
 export function extraMint({ programId, to, nanos, kind }) {
-  if (wrapMintForbidden({ programId, kind })) {
+  const k = String(kind || (programId === RESERVE_PROGRAM ? 'withdraw' : 'mint'));
+  if (wrapMintForbidden({ programId, kind: k })) {
     return { ok: false, reason: 'mint_forbidden' };
   }
-  if (!extraMintAllowed(programId, { kind })) {
+  if (!extraMintAllowed(programId, { kind: k })) {
     return { ok: false, reason: 'mint_forbidden' };
   }
   if (!isDestAddress(to) && !isShearAddress(to)) return { ok: false, reason: 'bad_address' };
   const n = Number(nanos);
   if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: 'bad_nanos' };
-  const k = String(kind || (programId === RESERVE_PROGRAM ? 'reserve' : 'mint'));
   return { ok: true, programId, to, nanos: n, kind: k, mint: true };
 }
 

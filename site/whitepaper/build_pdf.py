@@ -136,9 +136,9 @@ def main() -> None:
     bullet(
         pdf,
         [
-            "Proof of work only. Coin comes from hashing, not from an allocation, an auction, or a snapshot of some other book.",
+            "PoW elects the tip. Coin comes from hashing, not from an allocation, an auction, or a snapshot of some other book.",
             "CPU only. ShearHash-v2 is RandomX light. GPU and ASIC farms are not the intended surface.",
-            "Private by default. Rest-frame shear1 never goes on chain. Holders offer she1. Settled dests are ssa1.",
+            "Private dests, public amounts. Rest-frame shear1 never goes on chain. Holders offer she1. Settled dests are ssa1.",
             "One coin per block. The pot is 1 SHE. Votes do not move it. The Reserve oracle does not move it.",
             "Hashers keep their own bonus. Finding the block does not let anyone take another person’s hashes.",
             "Programmes may move coin you already have. They may not print SHE, other than The Reserve’s interest.",

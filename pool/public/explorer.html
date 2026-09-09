@@ -130,7 +130,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.27" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.4" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -184,7 +184,7 @@
       </form>
     </section>
     <section class="panel-card">
-      <h2>Last 30 transactions</h2>
+      <h2>Last 30 blocks</h2>
       <p class="label">Reserve lock and vote appear from mempool as (pending). Hash bonuses in the open round stay off this list. Pending drops at 6 confirmations.</p>
       <div class="table-wrap" id="ex-tx-wrap">
       <table id="ex-txs">
@@ -192,7 +192,6 @@
           <tr>
             <th>Id</th>
             <th>Time</th>
-            <th>Kind</th>
             <th>Status</th>
             <th>From</th>
             <th>To</th>
@@ -357,18 +356,13 @@
             const href = '/tx/' + encodeURIComponent(t.id);
             const st = t.status || blockStatus(t, tipHeight, spendableNeed);
             const pendingLabel = st === 'pending' || st === '(pending)' ? '(pending)' : 'confirmed';
-            const kind = String(t.kind || 'block');
-            const reserve = kind === 'lock' || kind === 'vote';
-            const kindCell = reserve
-              ? '<span class="reserve-chip">Reserve</span>' + esc(kind)
-              : esc(kind);
             return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
-              esc(fmtLocalTs(t.at)) + '</td><td>' + kindCell + '</td><td>' +
+              esc(fmtLocalTs(t.at)) + '</td><td>' +
               esc(pendingLabel) + '</td><td class="mono">' + esc(t.from || 'coinbase') +
               '</td><td class="mono">' + esc(shortDest(t.to)) + '</td><td>' +
               esc(fmtShe(t.amount)) + '</td></tr>';
           }).join('')
-        : '<tr><td colspan="7">No sealed blocks yet.</td></tr>';
+        : '<tr><td colspan="6">No sealed blocks yet.</td></tr>';
     }
     function queryFromForm() {
       const q = new URLSearchParams();

@@ -28,6 +28,7 @@ error BadAmount();
 error BadRate();
 error AlreadyEnacted();
 error NeedEnact();
+error UnitFloor();
 
 contract Reserve {
     bytes32 public constant SHEAR_TESTNET = keccak256(bytes("shear-testnet-v2"));
@@ -204,6 +205,7 @@ contract Reserve {
         if (choice == Vote.None) revert NotVoter();
         if (epochStart == 0) revert NotVoter();
         if (bonusEnacted) revert EpochClosed();
+        if (choice == Vote.DecreaseBonus && liveHashBonusNanos <= GENESIS_BONUS) revert UnitFloor();
         bool first = (p.vote == Vote.None || p.voteEpoch != currentEpoch);
         if (!first) revert VoteLocked();
         p.vote = choice;
@@ -230,7 +232,8 @@ contract Reserve {
         if (hold == m && m > 0) { winners += 1; delta = 0; }
         if (winners == 1 && delta > 0) liveHashBonusNanos += 1;
         else if (winners == 1 && delta < 0) {
-            if (liveHashBonusNanos > 0) liveHashBonusNanos -= 1;
+            if (liveHashBonusNanos <= GENESIS_BONUS) delta = 0;
+            else liveHashBonusNanos -= 1;
         }
         bonusEnacted = true;
         enactedUp = up;

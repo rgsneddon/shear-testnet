@@ -2,6 +2,27 @@ import net from 'node:net';
 import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 
 export const P2P_PORT = 30303;
+export const P2P_MAX_FRAME = 1024 * 1024;
+
+const PRIV_NET = [
+  /^127\./,
+  /^10\./,
+  /^192\.168\./,
+  /^172\.(1[6-9]|2\d|3[0-1])\./,
+  /^169\.254\./,
+  /^0\./,
+  /^255\./,
+];
+
+export function isRoutablePeerAddr(host) {
+  const h = String(host || '').trim().toLowerCase();
+  if (!h) return false;
+  if (h === 'localhost' || h === '::1' || h === '0.0.0.0' || h === '::') return false;
+  if (h === '169.254.169.254' || h.endsWith('.metadata.google.internal')) return false;
+  if (PRIV_NET.some((re) => re.test(h))) return false;
+  if (h.includes(':') && (h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd'))) return false;
+  return true;
+}
 export const P2P_UA = `shear-node/${PRODUCT_VERSION}`;
 /** Originator stem: one random peer, then fluff after hops or 1–3 s. */
 export const STEM_MAX_HOPS = 3;
@@ -171,11 +192,16 @@ export function createP2p({
     }
   }
 
+  const seenTxOrder = [];
   function rememberTxId(id) {
     if (!id) return false;
-    if (seenTx.size > 8000) seenTx.clear();
     if (seenTx.has(id)) return false;
     seenTx.add(id);
+    seenTxOrder.push(id);
+    while (seenTx.size > 8000) {
+      const old = seenTxOrder.shift();
+      if (old) seenTx.delete(old);
+    }
     return true;
   }
 
@@ -285,7 +311,7 @@ export function createP2p({
         const host = String(p.host || '').trim();
         const portN = Number(p.port);
         if (!host || !Number.isFinite(portN) || portN <= 0) continue;
-        if (host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') continue;
+        if (!isRoutablePeerAddr(host)) continue;
         const key = `${host}:${portN}`;
         if (linking.has(key) || alreadyLinked(host, portN)) continue;
         linking.add(key);
@@ -297,20 +323,43 @@ export function createP2p({
       notePeerTip(sock, msg);
       const localHash = localTipHash();
       if (msg.hash && msg.hash !== localHash) {
-        send(sock, { type: 'getblocks', magic });
+        send(sock, { type: 'getheaders', magic, stopHash: localHash });
       }
       return;
     }
     if (msg.type === 'getblocks') {
-      send(sock, {
-        type: 'blocks',
-        magic,
-        blocks: store.blocks.map(encodeWireBlock),
-      });
       return;
     }
-    if (msg.type === 'blocks') {
-      const list = msg.blocks || [];
+    if (msg.type === 'getheaders') {
+      const hdrs = (store.blocks || []).map((b) => ({
+        header: Buffer.from(b.header).toString('hex'),
+        hash: Buffer.from(b.hash).toString('hex'),
+        height: b.height,
+      }));
+      send(sock, { type: 'headers', magic, headers: hdrs.slice(-2000) });
+      return;
+    }
+    if (msg.type === 'headers') {
+      const have = new Set((store.blocks || []).map((b) => Buffer.from(b.hash).toString('hex')));
+      let n = 0;
+      for (const h of msg.headers || []) {
+        const hash = String(h.hash || '');
+        if (!hash || have.has(hash)) continue;
+        send(sock, { type: 'getblock', magic, hash });
+        n += 1;
+        if (n >= 16) break;
+      }
+      return;
+    }
+    if (msg.type === 'getblock') {
+      const want = String(msg.hash || '');
+      const b = (store.blocks || []).find((x) => Buffer.from(x.hash).toString('hex') === want);
+      if (b) send(sock, { type: 'block', magic, block: encodeWireBlock(b) });
+      return;
+    }
+    if (msg.type === 'block' || msg.type === 'blocks') {
+      const list = msg.block ? [msg.block] : (msg.blocks || []);
+      if (list.length > 1 && msg.type === 'blocks') return;
       const last = list[list.length - 1];
       if (last) notePeerTip(sock, { hash: last.hash, height: last.height });
       const fork = list.map(decodeWireBlock);
@@ -336,6 +385,10 @@ export function createP2p({
     let buf = '';
     sock.on('data', (chunk) => {
       buf += chunk.toString('utf8');
+      if (buf.length > P2P_MAX_FRAME) {
+        sock.destroy();
+        return;
+      }
       let idx;
       while ((idx = buf.indexOf('\n')) >= 0) {
         const raw = buf.slice(0, idx).trim();
@@ -363,6 +416,9 @@ export function createP2p({
   }
 
   function connect(peerHost, peerPort) {
+    if (!isRoutablePeerAddr(peerHost) && peerHost !== '127.0.0.1' && peerHost !== '::1') {
+      return Promise.reject(new Error('bad_addr'));
+    }
     return new Promise((resolve, reject) => {
       const sock = net.connect(peerPort, peerHost, () => {
         attach(sock);
@@ -422,6 +478,7 @@ export function createP2p({
     listen,
     connect,
     close,
+    isRoutablePeerAddr,
     announce,
     publishWork,
     sockets,

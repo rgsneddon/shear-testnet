@@ -19,7 +19,13 @@ function mine(tpl) {
     header: found.header,
     txs: tpl.txs,
     samples: tpl.samples,
+    shareBatch: tpl.shareBatch || [],
     miner: tpl.miner,
+    aLeaves: tpl.aLeaves,
+    bLeaves: tpl.bLeaves,
+    rootA: tpl.rootA,
+    rootB: tpl.rootB,
+    weight: tpl.weight,
   };
 }
 
@@ -35,23 +41,13 @@ describe('explorer dests', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ex-'));
     const store = createStore(dir);
     const env = memoSeal(dest, 'secret-memo');
+    void env;
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 8,
+      bits: 4,
       now: Date.now(),
-      samples: [{ miner: dest, nonce: '1', tag: 'a', count: 4 }],
-      txs: [{
-        id: 'm1',
-        from: dest,
-        to: dest,
-        nanos: 1,
-        fee: 8,
-        vin: [{ address: dest }],
-        vout: [{ address: dest, nanos: 1, memoCt: env }],
-        memoCt: env,
-      }],
     });
     const got = store.append(mine(tpl));
     assert.equal(got.ok, true, got.reason);
@@ -90,23 +86,13 @@ describe('explorer dests', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-exs-'));
     const store = createStore(dir);
     const env = memoSeal(dest, 'do-not-leak');
+    void env;
     const b1 = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 8,
+      bits: 4,
       now: Date.now(),
-      samples: [{ miner: dest, nonce: '1', tag: 'a', count: 1 }],
-      txs: [{
-        id: 'tx-alpha',
-        from: dest,
-        to: dest,
-        nanos: 1,
-        fee: 8,
-        vin: [{ address: dest }],
-        vout: [{ address: dest, nanos: 1, memoCt: env }],
-        memoCt: env,
-      }],
     });
     assert.equal(store.append(mine(b1)).ok, true);
     const parent = store.tip();
@@ -174,10 +160,10 @@ describe('explorer dests', () => {
     assert.equal(viaFn.circulating, circ.json.circulating);
     const supply = networkSupply(store);
     assert.equal(supply.potNanos, 2 * NANOS_PER_SHE);
-    assert.equal(supply.hashNanos, 2 * HASH_BONUS_NANOS);
+    assert.equal(supply.hashNanos, 0);
     assert.equal(supply.extraMintNanos, 0);
     assert.equal(supply.burnedNanos, 0);
-    assert.equal(supply.circulatingNanos, 2 * NANOS_PER_SHE + 2 * HASH_BONUS_NANOS);
+    assert.equal(supply.circulatingNanos, 2 * NANOS_PER_SHE);
 
     const recent = poolRecentBlockTxs(store, 30);
     assert.ok(recent.length >= 1);

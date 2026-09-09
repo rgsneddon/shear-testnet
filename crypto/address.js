@@ -205,37 +205,51 @@ export function scanSeedFromView(viewKey, index = 0) {
     .digest();
 }
 
-export function paymentCodeAtIndex(viewKey, spendHash20, index = 0) {
+export const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+
+/** Raw 32-byte Ed25519 public key. This is the spend pub in dest openings. */
+export function ed25519RawPub(key) {
+  const pub = key.type === 'public' ? key : createPublicKey(key);
+  return pub.export({ type: 'spki', format: 'der' }).subarray(-32);
+}
+
+function needSpendPub32(spendPub32) {
+  const b = Buffer.from(spendPub32 || []);
+  if (b.length !== 32) throw new Error('spend pub must be 32 bytes');
+  return b;
+}
+
+export function paymentCodeAtIndex(viewKey, spendPub32, index = 0) {
   const n = Number(index);
   if (!Number.isInteger(n) || n < 0) return null;
   const scanPriv = x25519PrivateFromSeed(scanSeedFromView(viewKey, n));
   const scanPub = x25519PublicRaw(scanPriv);
-  const spend = spendPubAtIndex(spendHash20, n);
-  return encodePaymentCode({ scanPub, spendPub: spend });
+  return encodePaymentCode({ scanPub, spendPub: needSpendPub32(spendPub32) });
 }
 
-export function paymentCodeFromViewKey(viewKey, spendHash20) {
-  return paymentCodeAtIndex(viewKey, spendHash20, 0);
+export function paymentCodeFromViewKey(viewKey, spendPub32) {
+  return paymentCodeAtIndex(viewKey, spendPub32, 0);
 }
 
-/** 64-byte scan||spend opening for payoutDest(she1) / dest index. Never she1 on chain. */
-export function destOpeningFromView(viewKey, spendHash20, index = 0) {
+/** 64-byte scan||spend opening. spendPub32 is the Ed25519 spend public key. */
+export function destOpeningFromView(viewKey, spendPub32, index = 0) {
   const n = Number(index);
   if (!Number.isInteger(n) || n < 0) return '';
+  const spend = Buffer.from(spendPub32 || []);
+  if (spend.length !== 32) return '';
   const scanPriv = x25519PrivateFromSeed(scanSeedFromView(viewKey, n));
   const scanPub = x25519PublicRaw(scanPriv);
-  const spend = spendPubAtIndex(spendHash20, n);
-  return Buffer.concat([Buffer.from(scanPub), Buffer.from(spend)]).toString('hex');
+  return Buffer.concat([Buffer.from(scanPub), spend]).toString('hex');
 }
 
 function asSpend(h) {
   const b = Buffer.from(h);
   if (b.length === 32) return b;
-  if (b.length === 20) return createHash('sha256').update(b).digest();
   return createHash('sha256').update(b).digest();
 }
 
-function spendPubAtIndex(spendHash20, index) {
+/** Hash mix for silent dest ECDH. Not a signing key. */
+function spendMixAtIndex(spendHash20, index) {
   const idx = Buffer.alloc(8);
   idx.writeBigUInt64LE(BigInt(index));
   return createHash('sha256')
@@ -250,7 +264,7 @@ export function silentDestFromView(viewKey, spendHash20, ephPrivate, index = 0) 
   const n = Number(index);
   if (!Number.isInteger(n) || n < 0) return null;
   const scanPriv = x25519PrivateFromSeed(scanSeedFromView(viewKey, n));
-  const spend = spendPubAtIndex(spendHash20, n);
+  const spend = spendMixAtIndex(spendHash20, n);
   const shared = diffieHellman({ privateKey: ephPrivate, publicKey: createPublicKey(scanPriv) });
   const tweak = createHash('sha256')
     .update(Buffer.from('shear-silent-v1'))
@@ -275,12 +289,13 @@ export function newIdentity() {
   const raw = publicKey.export({ type: 'spki', format: 'der' });
   const hash = createHash('sha256').update(raw).digest().subarray(0, 20);
   const address = encodeAddress(hash);
+  const spendPub = Buffer.from(raw.subarray(-32));
   const viewKey = createHash('sha256').update(Buffer.concat([
     Buffer.from('shear-view-v1'),
     privateKey.export({ type: 'pkcs8', format: 'der' }),
   ])).digest().toString('hex');
-  const paymentCode = paymentCodeFromViewKey(viewKey, hash);
-  return { address, viewKey, publicKey, privateKey, paymentCode };
+  const paymentCode = paymentCodeFromViewKey(viewKey, spendPub);
+  return { address, viewKey, publicKey, privateKey, paymentCode, spendPub };
 }
 
 export function signSpend(privateKey, msg) {

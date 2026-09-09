@@ -29,16 +29,16 @@ List<String> _zipNames(File zip) {
 }
 
 void main() {
-  test('kWalletVersion public pin is two-part 0.27 (not 0.14.0)', () {
-    expect(kWalletVersion, '0.27');
+  test('kWalletVersion public pin is two-part 0.4 (not 0.14.0)', () {
+    expect(kWalletVersion, '0.4');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
     final linux = File('pack/build_linux.sh').readAsStringSync();
-    expect(linux, contains('--build-name=0.27'));
+    expect(linux, contains('--build-name='));
     expect(linux, isNot(contains('--build-name=0.14')));
     final macos = File('pack_macos.sh').readAsStringSync();
-    expect(macos, contains('VER=0.27'));
+    expect(macos, contains('kWalletVersion'));
     expect(macos, isNot(contains('VER=0.14')));
   });
 

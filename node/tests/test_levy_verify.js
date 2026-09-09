@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, payoutDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { splitLevy, levyNanos } from '../../crypto/levy.js';
-import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { signSpendTx } from '../../crypto/spend.js';
 import { createStore } from '../src/store.js';
+import { decodeHeader } from '../../crypto/header.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -140,33 +142,63 @@ describe('verifyBlock Phase B Flow levy', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-levy-path-'));
     const store = createStore(dir);
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = payoutDest(id.paymentCode);
+    const t0 = 1_700_000_000_000;
+    for (let i = 0; i < SPENDABLE_CONFIRMATIONS + 1; i += 1) {
+      const parent = store.tip();
+      const { tpl: fund } = store.template({
+        miner: dest,
+        bits: 4,
+        now: t0 + i * 90_000,
+      });
+      const foundFund = mineTemplate(fund, { maxTries: 3_000_000, shareBits: 4 });
+      assert.ok(foundFund && foundFund.block, 'fund pow');
+      const funded = await store.append({
+        header: foundFund.header,
+        txs: fund.txs,
+        samples: fund.samples,
+        shareBatch: fund.shareBatch || [],
+        miner: dest,
+        aLeaves: fund.aLeaves,
+        bLeaves: fund.bLeaves,
+        rootA: fund.rootA,
+        rootB: fund.rootB,
+        weight: fund.weight,
+      });
+      assert.equal(funded.ok, true, funded.reason);
+    }
     const sendNanos = 2;
     const fee = levyNanos(sendNanos);
-    const queued = store.queueTx({
+    const sendTx = {
       id: 'q-send',
       kind: 'send',
       from: dest,
       to: dest,
       nanos: sendNanos,
       fee,
+      open: destOpeningFromView(id.viewKey, id.spendPub, 0),
       vin: [{ address: dest }],
       vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
-    });
+    };
+    signSpendTx(sendTx, id.privateKey);
+    const queued = store.queueTx(sendTx);
     assert.equal(queued.ok, true, queued.reason);
+    const parent = store.tip();
+    const parentH = decodeHeader(Buffer.from(parent.header));
+    const nowSend = Number(parentH.timestamp) + 90_000;
     const { tpl } = store.template({
       miner: dest,
       bits: 4,
-      now: Date.now(),
-      samples: [{ miner: dest, nonce: '1', tag: 'a', count: 1 }],
+      now: nowSend,
     });
     assert.equal(tpl.txs.slice(1).some((t) => t.id === 'q-send'), true);
-    const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
+    const found = mineTemplate({ ...tpl, bits: 4 }, { maxTries: 3_000_000, shareBits: 4 });
     assert.ok(found && found.block, 'pow');
     const block = {
       header: found.header,
       txs: tpl.txs,
       samples: tpl.samples,
+      shareBatch: tpl.shareBatch || [],
       miner: tpl.miner,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
@@ -176,7 +208,7 @@ describe('verifyBlock Phase B Flow levy', () => {
     };
     const appended = await store.append(block);
     assert.equal(appended.ok, true, appended.reason);
-    const fork = await store.verifyFork([block]);
+    const fork = await store.verifyFork(store.blocks);
     assert.equal(fork.ok, true, fork.reason);
   });
 });

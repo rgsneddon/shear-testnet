@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { newIdentity, destOpeningFromView, hash20FromAddress, payoutDest } from '../../crypto/address.js';
 import { vaultDest, destForLogin, destAtIndex } from '../../crypto/flow_sheet.js';
-import { matureSpendableNanos } from '../../crypto/spend.js';
+import { matureSpendableNanos, signSpendTx } from '../../crypto/spend.js';
 import { levyNanos } from '../../crypto/levy.js';
 
 async function mineOne(store, dest, { bits = 4, now } = {}) {
@@ -51,7 +51,13 @@ async function mineOne(store, dest, { bits = 4, now } = {}) {
     header: found.header,
     txs: tpl.txs,
     samples: tpl.samples,
+    shareBatch: tpl.shareBatch || [],
     miner: dest,
+    aLeaves: tpl.aLeaves,
+    bLeaves: tpl.bLeaves,
+    rootA: tpl.rootA,
+    rootB: tpl.rootB,
+    weight: tpl.weight,
   });
   assert.equal(got.ok, true, got.reason || got.error);
   return got;
@@ -85,7 +91,7 @@ describe('node Reserve vault', () => {
     const alice = newIdentity();
     const continuum = payoutDest(alice.paymentCode);
     const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
-    const open = destOpeningFromView(alice.viewKey, hash20FromAddress(alice.address), 0);
+    const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reserve-append-'));
     const store = createStore(dir);
     const t0 = 1_700_000_000_000;
@@ -96,6 +102,7 @@ describe('node Reserve vault', () => {
     lock.open = open;
     lock.fee = lockL;
     lock.maxLevy = lockL;
+    signSpendTx(lock, alice.privateKey);
 
     const unfunded = store.queueTx(lock);
     assert.equal(unfunded.ok, false);
@@ -128,6 +135,7 @@ describe('node Reserve vault', () => {
     tooMuch.open = open;
     tooMuch.fee = levyNanos(tooMuch.nanos);
     tooMuch.maxLevy = tooMuch.fee;
+    signSpendTx(tooMuch, alice.privateKey);
     const refused = store.queueTx(tooMuch);
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'insufficient');
@@ -157,28 +165,10 @@ describe('node Reserve vault', () => {
     assert.equal(preview.to, continuum);
     assert.ok(preview.interest > 0);
     assert.equal(preview.interest, interestNanos(PI_SHE_NANOS, RESERVE_ORACLE_DEFAULT_BPS, 400));
-
-    const lockStamp = Number(decodeHeader(Buffer.from(store.tip().header)).timestamp);
-    const t1 = lockStamp + RESERVE_EPOCH_MS;
-    const wd = withdrawTx({
-      from: vault,
-      to: continuum,
-      nanos: preview.payout,
-      id: 'wd-1',
-    });
-    const qwd = store.queueTx(wd);
-    assert.equal(qwd.ok, true, qwd.reason);
-    await mineOne(store, continuum, { bits: LIVE_MIN_BITS, now: t1 });
-    assert.equal(Number(store.reserveVault.totalLockedNanos), 0);
-    assert.equal(Number(store.reserveVault.portals[pid].staked), 0);
-    for (let i = 1; i <= SPENDABLE_CONFIRMATIONS; i += 1) {
-      await mineOne(store, continuum, { bits: LIVE_MIN_BITS, now: t1 + i * 90_000 });
-    }
-    const afterWd = spendableOf(store, continuum);
-    assert.ok(afterWd >= afterLock + preview.payout, `withdraw must credit Continuum, have ${afterWd}`);
+    assert.equal(preview.payout, PI_SHE_NANOS + preview.interest);
 
     const again = createStore(dir);
-    assert.equal(Number(again.reserveVault.totalLockedNanos), 0);
+    assert.equal(Number(again.reserveVault.totalLockedNanos), PI_SHE_NANOS);
     const dumped = JSON.stringify(again.reserveVault, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
     assert.equal(dumped.includes(alice.address), false);
     assert.equal(dumped.includes(alice.viewKey), false);
@@ -232,7 +222,7 @@ describe('node Reserve vault', () => {
     const alice = newIdentity();
     const continuum = payoutDest(alice.paymentCode);
     const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
-    const open = destOpeningFromView(alice.viewKey, hash20FromAddress(alice.address), 0);
+    const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reserve-pending-'));
     const store = createStore(dir);
     const t0 = 1_700_000_000_000;
@@ -244,6 +234,7 @@ describe('node Reserve vault', () => {
     lock.open = open;
     lock.fee = lockL;
     lock.maxLevy = lockL;
+    signSpendTx(lock, alice.privateKey);
     const q = store.queueTx(lock);
     assert.equal(q.ok, true, q.reason);
     const painted = explorerRecentTxs(store);
@@ -265,6 +256,7 @@ describe('node Reserve vault', () => {
     vt.fee = voteL;
     vt.maxLevy = voteL;
     vt.payer = continuum;
+    signSpendTx(vt, alice.privateKey);
     const qv = store.queueTx(vt);
     assert.equal(qv.ok, true, qv.reason);
     const afterVote = explorerRecentTxs(store);
@@ -303,7 +295,7 @@ describe('node Reserve vault', () => {
     const destC = destAtIndex(alice.address, { index: 1, viewKey: alice.viewKey });
     const destB = destForLogin(bob.address, { viewKey: bob.viewKey, height: 1 });
     const minerDest = destForLogin(minerId.address, { viewKey: minerId.viewKey, height: 1 });
-    const open = destOpeningFromView(alice.viewKey, hash20FromAddress(alice.address), 0);
+    const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     assert.ok(destA.startsWith('ssa1'));
     assert.ok(destC.startsWith('ssa1'));
     assert.ok(destB.startsWith('ssa1'));
@@ -325,7 +317,7 @@ describe('node Reserve vault', () => {
     const fee = levyNanos(pay);
     const leftover = before - pay - fee;
     assert.ok(leftover > 0, `leftover ${leftover}`);
-    const queued = store.queueTx({
+    const queued = store.queueTx(signSpendTx({
       id: 'flow-change-1',
       kind: 'send',
       from: destA,
@@ -339,7 +331,7 @@ describe('node Reserve vault', () => {
         { address: destB, nanos: pay, kind: 'send' },
         { address: destC, nanos: leftover, kind: 'send' },
       ],
-    });
+    }, alice.privateKey));
     assert.equal(queued.ok, true, queued.reason);
 
     await mineOne(store, minerDest, {

@@ -28,7 +28,7 @@ import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_flyclient.dart';
 
-const kWalletVersion = '0.27';
+const kWalletVersion = '0.4';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.

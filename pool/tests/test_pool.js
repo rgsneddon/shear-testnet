@@ -269,7 +269,12 @@ describe('admit', () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     assert.equal(admitClient({ login: dest, client: 'ShearHash' }).ok, true);
-    assert.equal(admitClient({ login: id.paymentCode, client: 'ShearHash', name: 'Shear-Miner' }).ok, true);
+    const sheOnly = admitClient({ login: id.paymentCode, client: 'ShearHash', name: 'Shear-Miner' });
+    assert.equal(sheOnly.ok, true);
+    assert.equal(sheOnly.payoutDest, '');
+    const sheOwned = admitClient({ login: id.paymentCode, dest, client: 'ShearHash' });
+    assert.equal(sheOwned.payoutDest, dest);
+    assert.equal(admitClient({ login: id.paymentCode, dest: payoutDest(id.paymentCode), client: 'ShearHash' }).payoutDest, '');
     assert.equal(admitClient({ login: dest, client: 'ShearHash', name: 'ShearK-Miner' }).ok, true);
     assert.equal(admitClient({ login: id.address, client: 'ShearHash' }).ok, false);
     assert.equal(admitClient({ login: dest, client: 'other' }).ok, false);
@@ -277,9 +282,10 @@ describe('admit', () => {
     assert.match(publicMinerLabel(id.paymentCode), /^she1[0-9a-f]{8}$/);
     assert.equal(publicMinerLabel(id.paymentCode).includes(id.paymentCode.slice(4)), false);
     const silent = payoutDest(id.paymentCode);
-    const shares = splitPot([{ miner: id.paymentCode, count: 99 }], silent);
     assert.ok(silent);
-    assert.equal(shares.some((s) => s.address === silent && s.nanos === Math.floor(BLOCK_SUBSIDY_NANOS * 0.99) && s.kind === 'pot'), true);
+    assert.equal(splitPot([{ miner: id.paymentCode, count: 99 }], silent).length, 0);
+    const shares = splitPot([{ miner: dest, count: 99 }], silent);
+    assert.equal(shares.some((s) => s.address === dest && s.nanos === Math.floor(BLOCK_SUBSIDY_NANOS * 0.99) && s.kind === 'pot'), true);
     assert.equal(shares.some((s) => s.kind === 'pool-fee' && s.nanos === Math.floor(BLOCK_SUBSIDY_NANOS * 0.01)), true);
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
     assert.equal(POOL_FEE_BPS, 100);
@@ -1074,12 +1080,27 @@ describe('public miner listing', () => {
     assert.equal(leak.json.reason, 'she1');
     assert.equal(leak.json.pending, undefined);
     const sig = signPoolWithdraw({
-      seed: Buffer.alloc(32, 7),
+      seed: id.spendPub,
       login: id.paymentCode,
       dest,
       nanos: ripe.confirmedNanos,
     });
-    const ok = await post({ login: id.paymentCode, dest, sig });
+    const { destOpeningFromView } = await import('../../crypto/address.js');
+    const { poolWithdrawDigest } = await import('../../crypto/eip712.js');
+    const { sign } = await import('node:crypto');
+    const open = destOpeningFromView(id.viewKey, id.spendPub, 0);
+    const digest = poolWithdrawDigest({
+      login: id.paymentCode, dest, minerShe1: id.paymentCode, payoutSsa1: dest, nanos: ripe.confirmedNanos,
+    });
+    const spendSig = sign(null, digest, id.privateKey).toString('hex');
+    const ok = await post({
+      login: id.paymentCode,
+      dest,
+      nanos: ripe.confirmedNanos,
+      sig,
+      open,
+      spendSig,
+    });
     assert.equal(ok.json.ok, true, ok.json.reason);
     assert.equal(String(ok.json.to).startsWith('ssa1'), true);
     pool.close();

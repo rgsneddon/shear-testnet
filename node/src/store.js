@@ -27,7 +27,7 @@ import { requiredJobFields } from '../../crypto/header.js';
 import { emptyVault, applyReserveBlock, verifyReservePayout } from '../../crypto/reserve_vault.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifyReservePortalOpen, reserveNeedsPortalOpen } from '../../crypto/spend.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
 import { blockWeight } from '../../crypto/levy.js';
@@ -274,7 +274,7 @@ export function createStore(dir, {
   }
 
   function sideLeadWork() {
-    const active = blocks.length ? chainWorkOf(blocks) : 0;
+    const active = Number(blocks.length ? chainWorkOf(blocks) : 0n);
     const activeHash = tip() ? hex32(tip().hash) : '';
     let best = 0;
     for (const [h, f] of forks) {
@@ -309,7 +309,9 @@ export function createStore(dir, {
 
   function rebuildSpentB() {
     spentB.clear();
-    for (let i = 0; i < blocks.length; i += 1) {
+    let i = 0;
+    const step = () => {
+      if (i >= blocks.length) return undefined;
       const b = blocks[i];
       const prev = i === 0 ? null : {
         hash: blocks[i - 1].hash,
@@ -321,16 +323,22 @@ export function createStore(dir, {
         bLeaves: blocks[i - 1].bLeaves,
         weight: blocks[i - 1].weight,
       };
+      i += 1;
       const spentCheck = verifyBlock(b, prev, {
         buried: !!b.samplesPruned,
         spentB,
         tipHeight: b.height,
         hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
+        committedBps: Number(reserveVault.epochBps ?? 264),
+        reserveState: reserveVault,
+        spendableOf: (addr) => Math.max(0, matureSpendableNanos(explorer, addr, prev ? prev.height : 0)),
       });
       if (spentCheck && typeof spentCheck.then === 'function') {
-        spentCheck.catch(() => {});
+        return spentCheck.then(step);
       }
-    }
+      return step();
+    };
+    return step();
   }
 
   function bounceMempool(disconnected, connected) {
@@ -357,7 +365,7 @@ export function createStore(dir, {
       if (t?.header) base = Number(decodeHeader(Buffer.from(t.header)).baseFee || 1n);
     } catch { base = 1; }
     const book = emptyMempool();
-    book.txs = mempool;
+    book.txs = mempool.slice();
     for (const b of disconnected || []) {
       for (const tx of (b.txs || []).slice(1)) {
         if (tx?.coinbase) continue;
@@ -483,6 +491,13 @@ export function createStore(dir, {
       evmSession,
       evmHistory: blocks,
       spendableOf: (addr) => Math.max(0, matureSpendableNanos(explorer, addr, parentH)),
+      committedBps: Number(reserveVault.epochBps ?? 264),
+      reserveState: reserveVault,
+      seenDigests: sealedSpendDigests(),
+      mtpTimestamps: blocks.slice(-11).map((b) => {
+        try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
+      }),
+      nowMs: Date.now(),
     });
     for (const tx of (block.txs || []).slice(1)) {
       const pay = verifyReservePayout(reserveVault, tx);
@@ -533,6 +548,16 @@ export function createStore(dir, {
     return { ok: true, block: stored, evmSession: check.evmSession || evmSession };
   }
 
+  function sealedSpendDigests() {
+    const seen = new Set();
+    for (const b of blocks) {
+      for (const tx of (b.txs || []).slice(1)) {
+        if (flowSendNeedsOpen(tx)) seen.add(spendPackDigest(tx).toString('hex'));
+      }
+    }
+    return seen;
+  }
+
   function queueTx(tx) {
     if (pause.reserveInterest && tx?.mint && String(tx.kind || '') !== 'lock' && String(tx.kind || '') !== 'vote') {
       return { ok: false, reason: 'paused' };
@@ -558,8 +583,20 @@ export function createStore(dir, {
       if (have < debit.nanos) {
         return { ok: false, reason: 'insufficient', need: debit.nanos, have };
       }
-      if (flowSendNeedsOpen(tx) && !verifyDestOpening(debit.from, tx.open)) {
-        return { ok: false, reason: 'unsigned' };
+      if (flowSendNeedsOpen(tx)) {
+        if (!verifyDestOpening(debit.from, tx.open) || !verifySpendSig(tx)) {
+          return { ok: false, reason: 'unsigned' };
+        }
+        const digest = spendPackDigest(tx).toString('hex');
+        const inMem = mempool.some((m) => flowSendNeedsOpen(m) && spendPackDigest(m).toString('hex') === digest);
+        if (inMem) return { ok: false, reason: 'replay' };
+        for (const b of blocks) {
+          for (const sealed of (b.txs || []).slice(1)) {
+            if (flowSendNeedsOpen(sealed) && spendPackDigest(sealed).toString('hex') === digest) {
+              return { ok: false, reason: 'replay' };
+            }
+          }
+        }
       }
     }
     if (reserveNeedsPortalOpen(tx) && !verifyReservePortalOpen(tx)) {
@@ -594,6 +631,8 @@ export function createStore(dir, {
       evmSession: trialSession,
       evmHistory: trialSession ? [] : accepted,
       spendableOf: (addr) => Math.max(0, matureSpendableNanos(rows, addr, parentH)),
+      committedBps: Number(reserveVault.epochBps ?? 264),
+      reserveState: reserveVault,
     });
   }
 
@@ -670,16 +709,20 @@ export function createStore(dir, {
     rewriteChain();
     rebuildExplorer();
     replayVault();
-    rebuildSpentB();
-    bounceMempool(disconnected, connected);
-    pruneBuried();
-    reorgs.push(event);
-    if (reorgs.length > 64) reorgs.splice(0, reorgs.length - 64);
-    refreshPolicy({ reorgDepth: event.depth, nowMs: Date.now() });
-    emit('reorg', event);
-    emit('tip', { hash: hex32(tip().hash), height: tip().height, reorg: true });
-    evmSession = null;
-    return { ok: true, reorg: true, tip: tip(), event };
+    const afterSpent = () => {
+      bounceMempool(disconnected, connected);
+      pruneBuried();
+      reorgs.push(event);
+      if (reorgs.length > 64) reorgs.splice(0, reorgs.length - 64);
+      refreshPolicy({ reorgDepth: event.depth, nowMs: Date.now() });
+      emit('reorg', event);
+      emit('tip', { hash: hex32(tip().hash), height: tip().height, reorg: true });
+      evmSession = null;
+      return { ok: true, reorg: true, tip: tip(), event };
+    };
+    const spent = rebuildSpentB();
+    if (spent && typeof spent.then === 'function') return spent.then(afterSpent);
+    return afterSpent();
   }
 
   function ingest(fork) {
@@ -776,7 +819,7 @@ export function createStore(dir, {
     return out.sort((a, b) => b.count - a.count);
   }
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null } = {}) {
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, poolDest = null } = {}) {
     const t = tip();
     const height = t ? t.height + 1 : 1;
     const wall = nowIn != null ? Number(nowIn) : Date.now();
@@ -823,6 +866,8 @@ export function createStore(dir, {
       now,
       bits,
       hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
+      shareBatch: Array.isArray(shareBatch) ? shareBatch : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch : []),
+      poolDest,
     });
     const jobId = `shear-${height}-${jobSeq++}`;
     const job = publicJob(tpl, { jobId, shareBits });
@@ -840,6 +885,7 @@ export function createStore(dir, {
       header,
       txs: rec.tpl.txs,
       samples: rec.tpl.samples,
+      shareBatch: rec.tpl.shareBatch || [],
       miner: destForLogin(miner) || miner || rec.tpl.miner,
       aLeaves: rec.tpl.aLeaves,
       bLeaves: rec.tpl.bLeaves,

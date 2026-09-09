@@ -8,10 +8,12 @@ export const ENC_MAGIC = Buffer.from('shear-enc-v1');
 export const ENC_A = 1;
 export const ENC_B = 2;
 export const ENC_TX = 3;
+export const ENC_SHARE = 4;
 export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
 export const A_BODY_LEN = 28;
 export const B_BODY_LEN = 76;
+export const SHARE_BODY_LEN = 29;
 
 export function u64le(n) {
   const b = Buffer.alloc(8);
@@ -98,4 +100,39 @@ export function unpackBLeaf(packed) {
     memoH: Buffer.from(body.subarray(36, 68)),
     tag: body.subarray(68, 76).toString('utf8').replace(/\0+$/, ''),
   };
+}
+
+/** dest20 || nonce_u64le || lz_u8 */
+export function packShare({ dest20, nonce, lz = 0 } = {}) {
+  const body = Buffer.concat([
+    need20(dest20),
+    u64le(nonce || 0),
+    Buffer.from([Number(lz) & 0xff]),
+  ]);
+  return Buffer.concat([ENC_MAGIC, Buffer.from([ENC_SHARE]), body]);
+}
+
+export function unpackShare(packed) {
+  const { type, body } = unpackType(packed);
+  if (type !== ENC_SHARE || body.length !== SHARE_BODY_LEN) throw new Error('bad_share');
+  return {
+    dest20: Buffer.from(body.subarray(0, 20)),
+    nonce: body.readBigUInt64LE(20),
+    lz: body[28],
+  };
+}
+
+export function packShareBatch(shares = []) {
+  const list = Array.isArray(shares) ? shares : [];
+  return list.map((s) => (Buffer.isBuffer(s) ? s : packShare(s)));
+}
+
+export function unpackShareBatch(rows = []) {
+  return (Array.isArray(rows) ? rows : []).map((s) => (Buffer.isBuffer(s) || typeof s === 'string'
+    ? unpackShare(s)
+    : {
+      dest20: Buffer.from(s.dest20 || s.dest || Buffer.alloc(20)),
+      nonce: typeof s.nonce === 'bigint' ? s.nonce : BigInt(s.nonce || 0),
+      lz: Number(s.lz || 0) & 0xff,
+    }));
 }

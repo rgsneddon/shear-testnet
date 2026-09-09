@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, destOpeningFromView, hash20FromAddress, payoutDest } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, payoutDest } from '../../crypto/address.js';
+import { signSpendTx } from '../../crypto/spend.js';
+import { levyNanos } from '../../crypto/levy.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
 import {
   extraMintAllowed,
@@ -17,6 +19,23 @@ import { handleWalletApi } from '../src/wallet_api.js';
 
 function url(path) {
   return new URL(`http://127.0.0.1${path}`);
+}
+
+function spendSig({ from, to, amount, open, identity, kind = 'send' }) {
+  const nanos = Math.round(amount * NANOS_PER_SHE);
+  const fee = levyNanos(nanos, { depth: 0 });
+  const tx = {
+    kind,
+    from,
+    to,
+    nanos,
+    fee,
+    open,
+    vin: [{ address: from }],
+    vout: [{ address: to, nanos, kind }],
+  };
+  signSpendTx(tx, identity.privateKey);
+  return tx.sig;
 }
 
 function storeWith({ rows = [], reserveVault, issued } = {}) {
@@ -46,8 +65,7 @@ describe('pool send reconstruct and Join vault', () => {
     }];
     const store = storeWith({ rows });
     const posted = [];
-    const spendH = hash20FromAddress(alice.address);
-    const open = destOpeningFromView(alice.viewKey, spendH, 0);
+    const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     const deny = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from: destForLogin(alice.address, { viewKey: alice.viewKey, height: 99 }),
       to: bob,
@@ -70,6 +88,7 @@ describe('pool send reconstruct and Join vault', () => {
       to: bob,
       amount: 0.4,
       open,
+      sig: spendSig({ from: silent, to: bob, amount: 0.4, open, identity: alice }),
     }, { store, miners: new Map(), queueSend: (t) => {
       const tx = { id: 'send-1', ...t };
       posted.push(tx);
@@ -86,8 +105,7 @@ describe('pool send reconstruct and Join vault', () => {
     const alice = newIdentity();
     const silent = payoutDest(alice.paymentCode);
     const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
-    const spendH = hash20FromAddress(alice.address);
-    const open = destOpeningFromView(alice.viewKey, spendH, 0);
+    const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     const she = PI_SHE_NANOS / NANOS_PER_SHE;
     const rows = [{
       id: 'cb-1',
@@ -118,6 +136,7 @@ describe('pool send reconstruct and Join vault', () => {
       kind: 'lock',
       programId: RESERVE_PROGRAM,
       open,
+      sig: spendSig({ from: silent, to: vault, amount: she, open, identity: alice, kind: 'lock' }),
     }, { store, miners: new Map(), queueSend: (t) => {
       const tx = { id: 'lock-1', ...t };
       posted.push(tx);

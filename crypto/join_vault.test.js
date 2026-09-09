@@ -14,7 +14,7 @@ const rootDir = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 describe('The Join is removed', () => {
   it('never extra-mints, including join-genesis', () => {
-    assert.equal(extraMintAllowed(RESERVE_PROGRAM), true);
+    assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }), true);
     assert.equal(extraMintAllowed(JOIN_PROGRAM), false);
     assert.equal(extraMintAllowed(JOIN_PROGRAM, { kind: JOIN_KIND_GENESIS }), false);
   });

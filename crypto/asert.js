@@ -16,9 +16,9 @@ export const GENESIS_BITS = 12;
 /** Per-block ASERT step caps. log2 clamp 1/4…4 → ±2. Not an 8-bit jump. */
 export const ASERT_HARDEN_MAX = 2;
 export const ASERT_EASE_MAX = 2;
-/** Protocol unit is 10⁻¹¹ SHE (11 decimals). Vote steps are integers of this unit. Public amounts show nine fractional digits. */
+/** Protocol unit is 10⁻¹¹ SHE (11 decimals). Vote steps are integers of this unit. Public amounts show eight fractional digits. */
 export const SHE_DECIMALS = 11;
-export const SHE_PUBLIC_DIGITS = 9;
+export const SHE_PUBLIC_DIGITS = 8;
 export const NANOS_PER_SHE = 100_000_000_000; // 10^11
 /** 1 SHE pot (100_000_000_000 units). Hash bonus stays 1 unit. */
 export const BLOCK_SUBSIDY_NANOS = 100_000_000_000;
@@ -26,7 +26,22 @@ export const BLOCK_SUBSIDY_NANOS = 100_000_000_000;
 export const HASH_BONUS_NANOS = 1;
 /** Vote moves the per-hash bonus by one protocol unit (±10⁻¹¹ SHE). The pot does not move. */
 export const HASH_BONUS_VOTE_DELTA_NANOS = 1;
+/** Votes cannot set the hash unit to 0. */
+export const HASH_BONUS_NANOS_FLOOR = 1;
 export const POOL_FEE_BPS = 100;
+/** A digest that meets this floor is worth 2^SHARE_FLOOR_BITS units. */
+export const SHARE_FLOOR_BITS = 8;
+export const MAX_SHARES_PER_BLOCK = 8192;
+export const MAX_HASH_UNITS_PER_BLOCK = MAX_SHARES_PER_BLOCK * (2 ** SHARE_FLOOR_BITS);
+/** Median of last 11 header timestamps. Future skew 2 hours. */
+export const MTP_WINDOW = 11;
+export const MTP_FUTURE_MS = 2 * 3600_000;
+export const SPEND_SIG_DOMAIN = 'shear-spend-v1';
+export const SPEND_SIG = 'ed25519-shear-spend-v1';
+export const INTEREST_LAW = '400d-bps-floor';
+export const ORACLE_LAW = 'basket-mean-14';
+export const POT_PROP = 'shareBatch';
+export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
 export const MAGIC_TESTNET_V1 = 'shear-testnet-v1';
 export const MAGIC_TESTNET_V2 = 'shear-testnet-v2';
 /** Live testnet book for ShearHash-v2. v1 remains readable but is not mined. */
@@ -80,6 +95,9 @@ export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
  * Operator lock 2026-08-28: SIX is the law. Do not change this; flag the operator.
  */
 export const SPENDABLE_CONFIRMATIONS = 6;
+/** Sample bodies may drop after this many confirmations. Money vouts stay. */
+export const SAMPLE_PRUNE_CONFIRMATIONS = 1000;
+const SAMPLE_PRUNE_PIN = SAMPLE_PRUNE_CONFIRMATIONS;
 /** Third-party/merchant wait (~18 min). Not consensus. Not fingerprint. */
 export const MIN_CONFIRMS_POLICY = 12;
 export const RESERVE_FEE_FIRST = 1;
@@ -109,6 +127,11 @@ export function consensusFingerprint() {
     LEAF_B_LAYOUT,
     SPENDABLE_CONFIRMATIONS,
     RESERVE_FEE_FIRST,
+    SAMPLE_PRUNE_PIN,
+    SHARE_FLOOR_BITS,
+    MAX_SHARES_PER_BLOCK,
+    HASH_BONUS_NANOS_FLOOR,
+    SHE_PUBLIC_DIGITS,
     `HASH_FN=${HASH_FN}`,
     `RX_SALT=${RX_SALT}`,
     `RX_ARGON_MEMORY=${RX_ARGON_MEMORY}`,
@@ -120,6 +143,14 @@ export function consensusFingerprint() {
     `RX_SCRATCHPAD_L3=${RX_SCRATCHPAD_L3}`,
     `RX_MODE=${RX_MODE}`,
     `RX_KEY=${RX_KEY}`,
+    `SHARE_FLOOR_BITS=${SHARE_FLOOR_BITS}`,
+    `MAX_SHARES_PER_BLOCK=${MAX_SHARES_PER_BLOCK}`,
+    `SPEND_SIG=${SPEND_SIG}`,
+    `INTEREST=${INTEREST_LAW}`,
+    `ORACLE=${ORACLE_LAW}`,
+    `HASH_UNIT_FLOOR=${HASH_BONUS_NANOS_FLOOR}`,
+    `POT_PROP=${POT_PROP}`,
+    `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
   ].join(':');
 }
 
@@ -217,7 +248,7 @@ export function extraMintAllowed(programId, opts = {}) {
       if (opts.amount != null && Number(opts.amount) > gap) return false;
       return true;
     }
-    if (kind && kind !== 'withdraw' && kind !== 'reserve') return false;
+    if (kind !== 'withdraw') return false;
     return true;
   }
   return false;
@@ -276,4 +307,16 @@ export function templateStampMs(parentTimestamp, now = Date.now(), wallIntervalM
 export function blockWork(bits) {
   const n = clampBits(bits);
   return 2 ** n;
+}
+
+/** Consensus chain work. 2^bits as bigint. Spec 2^256/(target+1) is not used. */
+export function blockWorkBig(bits) {
+  return 1n << BigInt(clampBits(bits));
+}
+
+/** Median of timestamps (MTP window). */
+export function medianTimePast(timestamps = []) {
+  const ts = [...timestamps].map((t) => Number(t)).filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+  if (!ts.length) return 0;
+  return ts[Math.floor((ts.length - 1) / 2)];
 }

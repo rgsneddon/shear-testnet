@@ -4,6 +4,7 @@ miner/Shear-Miner
 miner/Shear-Miner.exe
 sheark-miner/ShearK-Miner
 sheark-miner/ShearK-Miner.exe
+sheark-miner/ShearK-Miner-mainnet
 sheark-miner/dist/
 crypto/native/shearhash.node
 crypto/randomx/build/
@@ -15,6 +16,7 @@ __pycache__/
 .DS_Store
 node_modules/
 .shear/
+scratch/snapshots-worthy-coin/
 *.log
 wallet/build/
 wallet/.dart_tool/

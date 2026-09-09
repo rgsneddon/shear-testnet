@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView } from '../../crypto/address.js';
+import { sign } from 'node:crypto';
+import { poolWithdrawDigest } from '../../crypto/eip712.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   levyNanos,
@@ -125,17 +127,28 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       const nanos = 2_000_000_000;
       const fee = levyNanos(nanos);
       const sig = signPoolWithdraw({
-        seed: Buffer.alloc(32, 7),
+        seed: hasher.spendPub,
         login: hasher.paymentCode,
         dest,
         nanos,
       });
+      const open = destOpeningFromView(hasher.viewKey, hasher.spendPub, 0);
+      const digest = poolWithdrawDigest({
+        login: hasher.paymentCode,
+        dest,
+        minerShe1: hasher.paymentCode,
+        payoutSsa1: dest,
+        nanos,
+      });
+      const spendSig = sign(null, digest, hasher.privateKey).toString('hex');
       const posted = [];
       const got = handleWalletApi(new URL('http://127.0.0.1/api/pool/withdraw'), 'POST', {
         login: hasher.paymentCode,
         dest,
         nanos,
         sig,
+        open,
+        spendSig,
       }, {
         store: {
           historyFor: (addr) => (addr === pool ? [{

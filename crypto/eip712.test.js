@@ -7,6 +7,7 @@ import { levyNanos } from './levy.js';
 import { verifyPoolWithdrawOffchain } from './levy.js';
 import {
   EIP712_CHAIN_ID,
+  EIP712_NAME,
   poolWithdrawDigest,
   signPoolWithdraw,
   verifyPoolWithdrawSig,
@@ -15,6 +16,7 @@ import {
 describe('EIP-712 PoolWithdraw', () => {
   it('chainId 2701; valid seed sig verifies; empty/wrong/unsigned fail; 1 SHE empty L is 0.0002', () => {
     assert.equal(EIP712_CHAIN_ID, 2701);
+    assert.equal(EIP712_NAME, 'ShearPool');
     assert.equal(levyNanos(NANOS_PER_SHE), 20_000_000);
     assert.equal(levyNanos(NANOS_PER_SHE) / NANOS_PER_SHE, 0.0002);
     const id = newIdentity();

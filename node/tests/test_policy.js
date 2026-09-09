@@ -37,7 +37,8 @@ describe('store policy and pause', () => {
     assert.equal(p.consensus_min, 6);
     assert.equal(p.bands.pool_merchant, 30);
     const fp = consensusFingerprint();
-    assert.match(fp, /:6:1:HASH_FN=ShearHash-v2/);
+    assert.match(fp, /:6:1:1000:/);
+    assert.match(fp, /HASH_FN=ShearHash-v2/);
     assert.equal(fp.includes(':30:'), false);
   });
 

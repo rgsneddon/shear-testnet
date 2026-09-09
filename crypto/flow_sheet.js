@@ -1,5 +1,5 @@
 import { createHash, pbkdf2Sync, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { encodeDest, encodeHrp, isShearAddress, isDestAddress, hash20FromAddress, payoutDest } from './address.js';
+import { encodeDest, encodeHrp, isShearAddress, isDestAddress, isPaymentCode, hash20FromAddress, payoutDest, identityOfLogin } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
 
 /** continuity-tethered Flow (CTF). Paid dests need independent Closure C, not C-from-S. */
@@ -97,10 +97,27 @@ export function spendHashFromAddress(address) {
 }
 
 /**
- * Paid dest. Login already ssa1 → pay as-is.
- * she1 silent ID → ssa1 of the same 20 bytes (she1 string never on chain).
- * Rest-frame shear1 requires independent C. No C-from-S.
+ * Paid dest. Login already ssa1 → that dest (miner chose an owned dest).
+ * she1 login may pass dest= indexed ssa1 owned by the spend seed (wallet destAtIndex /
+ * destForLogin). Never encodeDest(she1.hash20), never C-from-S.
+ * she1/shear1 with view C → destAtIndex. No viewKey is stored on disk.
  */
+export function hasherPayoutDest(login, { height = 1, viewKey, closureCommit: C, dest } = {}) {
+  const id = identityOfLogin(login);
+  const offered = String(dest || '').trim();
+  if (isDestAddress(offered)) {
+    // encodeDest(she1.hash20) is not an owned dest. ssa1 login === dest is owned.
+    if (isPaymentCode(id)) {
+      const degenerate = payoutDest(id);
+      if (degenerate && offered === degenerate) return null;
+    }
+    return offered;
+  }
+  if (isDestAddress(id)) return id;
+  const idx = Math.max(1, Math.floor(Number(height) || 1));
+  return destAtIndex(id, { index: idx, viewKey, closureCommit: C });
+}
+
 export function destForLogin(login, { continuityRoot, height, viewKey, closureCommit: C } = {}) {
   const paid = payoutDest(login);
   if (paid) return paid;

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { levyNanos } from './levy.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening } from './spend.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx } from './spend.js';
 import { newIdentity, destOpeningFromView, hash20FromAddress, payoutDest } from './address.js';
 import { destAtIndex, closureCommit } from './flow_sheet.js';
 
@@ -65,27 +65,30 @@ describe('funded spend / no double-spend', () => {
     const id = newIdentity();
     const from = payoutDest(id.paymentCode);
     const to = from;
-    const spendH = hash20FromAddress(id.address);
-    const open = destOpeningFromView(id.viewKey, spendH, 0);
+    const open = destOpeningFromView(id.viewKey, id.spendPub, 0);
     const nanos = NANOS_PER_SHE;
     const fee = levyNanos(nanos);
     const spendableOf = (addr) => (addr === from ? 2 * NANOS_PER_SHE : 0);
-    const tx = (txid) => ({
+    const key = id.privateKey;
+    const tx = (txid, amount) => signSpendTx({
       id: txid,
       kind: 'send',
       from,
       to,
-      nanos,
+      nanos: amount,
       fee,
       open,
       vin: [{ address: from }],
-      vout: [{ address: to, nanos }],
-    });
-    const once = verifyFundedBody([tx('a')], spendableOf);
+      vout: [{ address: to, nanos: amount }],
+    }, key);
+    const once = verifyFundedBody([tx('a', nanos)], spendableOf);
     assert.equal(once.ok, true, once.reason);
-    const twice = verifyFundedBody([tx('a'), tx('b')], spendableOf);
+    const twice = verifyFundedBody([tx('a', nanos), tx('b', nanos)], spendableOf);
     assert.equal(twice.ok, false);
-    assert.equal(twice.reason, 'insufficient');
+    assert.equal(twice.reason, 'replay');
+    const over = verifyFundedBody([tx('a', nanos), tx('b', nanos + NANOS_PER_SHE)], spendableOf);
+    assert.equal(over.ok, false);
+    assert.equal(over.reason, 'insufficient');
   });
 
   it('mempool already-queued debit blocks a second pull of the same coins', () => {
@@ -108,7 +111,7 @@ describe('funded spend / no double-spend', () => {
     const id = newIdentity();
     const from = payoutDest(id.paymentCode);
     const spendH = hash20FromAddress(id.address);
-    const open = destOpeningFromView(id.viewKey, spendH, 0);
+    const open = destOpeningFromView(id.viewKey, id.spendPub, 0);
     assert.equal(verifyDestOpening(from, open), true);
     assert.equal(verifyDestOpening(from, ''), false);
     assert.equal(verifyDestOpening(from, 'ab'.repeat(64)), false);

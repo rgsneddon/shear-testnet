@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
 
-/// Password-encrypted JSON envelope for shewall.json / session.
+/// Password-encrypted JSON envelope for shewall.bin / session.
 class ShearLock {
   static const kind = 'shear-shewall-v1-enc';
   static final _kdf = Pbkdf2(

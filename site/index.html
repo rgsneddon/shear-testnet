@@ -247,7 +247,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.27" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.4" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -267,18 +267,18 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.27</strong> · miner <strong>1.5</strong>
+      wallet <strong>0.4</strong> · miner <strong>1.5</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.27">WALLET</a>
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.4">WALLET</a>
         <div class="client-menu" id="menu-wallet">
-          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.27/shear-wallet-0.27-macos.dmg">macOS</a>
-          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.27/shear-wallet-0.27-windows.zip">Windows</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.27/shear-wallet-0.27-android.apk">Android</a>
-          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.27/shear-wallet-0.27-linux.zip">Linux</a>
-          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.27/shear-wallet-0.27-archlinux.zip">Arch</a>
+          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.4/shear-wallet-0.4-macos.dmg">macOS</a>
+          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.4/shear-wallet-0.4-windows.zip">Windows</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.4/shear-wallet-0.4-android.apk">Android</a>
+          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.4/shear-wallet-0.4-linux.zip">Linux</a>
+          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.4/shear-wallet-0.4-archlinux.zip">Arch</a>
         </div>
       </div>
       <div class="client-dd">
@@ -306,7 +306,7 @@
       <section class="panel-card">
         <h1>Shear</h1>
         <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
-        <p>Private by default. Proof of work only. Continuity-settled. <strong>Testnet.</strong></p>
+        <p>Private dests, public amounts. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
         <p>Offer <code>she1</code> (silent ID). Chain dests are revolving <code>ssa1</code>. Never share rest-frame shear1.</p>
         <p>Pool: <a href="https://pool.shear.digital">pool.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
         <p>Explorer: <a href="https://explorer.shear.digital">explorer.shear.digital</a></p>
@@ -357,7 +357,7 @@
         <h2>Community Governance</h2>
         <p>The Reserve is a vortice, enabling holders to take part in Shear governance, this is the only contract in which extra SHE may be created on the chain, outwith mining it. You open The Reserve from the Vortex tab in the wallet and the first qualifying stake submitted by any user opens the inaugural 400-day epoch.</p>
         <h3>Who may take part</h3>
-        <p>Everyone with a wallet may lock over 3.14 SHE (π) into your own portal as a stake. That minimum sum entitles one vote per wallet for the current epoch. Inside the last 99 days of any epoch, new deposits still lock to enable voting, but they do not earn stake. Participate in The Reserve within the first 300 days of any epoch to enable voting, and staking.</p>
+        <p>Everyone with a wallet may lock over 3.14 SHE (π) into your own portal as a stake. That minimum sum entitles one vote per wallet for the current epoch. Inside the last 99 days of any epoch, new deposits still lock and can vote, but they do not earn stake. Stake in the first 300 days of an epoch to earn interest; late deposits still vote.</p>
         <h3>What a vote may move</h3>
         <p>Voting takes place to either; raise the hash bonus to miners by one unit, lower it by one unit, or leave it. That unit is 0.00000000001 SHE. The 1 SHE pot is not on the ballot. Each wallet may vote once; you may change your mind within the first 301 days. Public tallies will show the three piles. They do not name who voted.</p>
         <h3>The Reserve Oracle</h3>
@@ -379,7 +379,7 @@
     </div>
     <section class="panel-card guide-wide" id="wallet-start">
       <h2>Start a wallet from scratch</h2>
-      <p>Current pin is <strong>0.27</strong>. Use the WALLET button above and pick your system.</p>
+      <p>Current pin is <strong>0.4</strong>. Use the WALLET button above and pick your system.</p>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
         <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
@@ -435,11 +435,11 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SHE1.solo --threads 8</pre>
       else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
-        macos: BASE + '/0.27/shear-wallet-0.27-macos.dmg',
-        windows: BASE + '/0.27/shear-wallet-0.27-windows.zip',
-        android: BASE + '/0.27/shear-wallet-0.27-android.apk',
-        linux: BASE + '/0.27/shear-wallet-0.27-linux.zip',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.27'
+        macos: BASE + '/0.4/shear-wallet-0.4-macos.dmg',
+        windows: BASE + '/0.4/shear-wallet-0.4-windows.zip',
+        android: BASE + '/0.4/shear-wallet-0.4-android.apk',
+        linux: BASE + '/0.4/shear-wallet-0.4-linux.zip',
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.4'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
@@ -551,8 +551,8 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SHE1.solo --threads 8</pre>
         fetch('/reserve/latest.json', { cache: 'no-store' })
           .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
           .then(function (j) {
-            var bps = Number(j && (j.medianBps != null ? j.medianBps : j.annualBps));
-            var p = Number.isFinite(bps) ? bps / 100 : Number(j && j.medianPercent);
+            var bps = Number(j && (j.meanBps != null ? j.meanBps : (j.annualBps != null ? j.annualBps : j.medianBps)));
+            var p = Number.isFinite(bps) ? bps / 100 : Number(j && (j.meanPercent != null ? j.meanPercent : j.medianPercent));
             if (!Number.isFinite(p)) return;
             var label = (j && j.label) ? j.label + ' ' : '';
             rateEl.textContent = label + p.toFixed(2) + '% 400-day APR';

@@ -4,9 +4,17 @@
  * Cap is 0.001 SHE. Coinbase pot/hash: 0. Split half finder, half Book B.
  */
 import { createHash } from 'node:crypto';
-import { encodeDest } from './address.js';
-import { NANOS_PER_SHE } from './asert.js';
-import { verifyPoolWithdrawSig } from './eip712.js';
+import { createPublicKey, verify } from 'node:crypto';
+import { encodeDest, payoutDest, isDestAddress, hash20FromAddress, paymentIdHash, ED25519_SPKI_PREFIX } from './address.js';
+import { NANOS_PER_SHE, MAGIC_TESTNET } from './asert.js';
+import {
+  verifyPoolWithdrawSig,
+  recoverPoolWithdrawPub,
+  ownerSecpPubFromSeed,
+  ownerPubFromOpening,
+  poolWithdrawDigest,
+  POOL_WITHDRAW_DEADLINE_MS,
+} from './eip712.js';
 
 export const FEE_TAU_MS = 90_000;
 export const FEE_TARGET_WEIGHT = 8;
@@ -209,16 +217,104 @@ export function poolWithdrawTx({ from, to, nanos, fee, id } = {}) {
   };
 }
 
-/** Off-chain EIP-712 PoolWithdraw on chainId 2701. she1 never enters the mined body. */
-export function verifyPoolWithdrawOffchain({ login, dest, nanos, sig } = {}) {
-  const she = String(login || '').trim().split('.')[0];
+/**
+ * One HTTP verifier for /api/miners/:tag pull and /api/pool/withdraw.
+ * EIP-712 bound to the miner's spend-derived secp key. she1 never mined.
+ */
+export function verifyPoolWithdrawOffchain({
+  login,
+  dest,
+  nanos,
+  sig,
+  minerShe1,
+  payoutSsa1,
+  height = 0,
+  nonce = 0,
+  deadline = 0,
+  nowMs = Date.now(),
+  ownerSeed = null,
+  ownerPub = null,
+  confirmedNanos = null,
+  nonceStore = null,
+  seenDigests = null,
+  verifyingContract = Buffer.alloc(20),
+  open = '',
+  spendSig = '',
+  requireOwner = false,
+} = {}) {
+  const she = String(minerShe1 || login || '').trim().split('.')[0];
   if (!she.startsWith('she1')) return { ok: false, reason: 'need_she1' };
-  if (!dest || containsShe1(dest)) return { ok: false, reason: 'she1' };
+  const payout = String(payoutSsa1 || dest || '').trim();
+  if (!payout || containsShe1(payout) || /^she1/i.test(payout)) return { ok: false, reason: 'she1' };
+  if (!isDestAddress(payout)) return { ok: false, reason: 'she1' };
+  const sheDest = payoutDest(she);
+  if (sheDest && payout === sheDest) return { ok: false, reason: 'not_indexed' };
   const n = Math.floor(Number(nanos) || 0);
   if (n < WITHDRAW_MIN_NANOS) return { ok: false, reason: 'min' };
-  if (!sig) return { ok: false, reason: 'unsigned' };
-  if (!verifyPoolWithdrawSig({ login: she, dest, nanos: n, sig })) {
-    return { ok: false, reason: 'unsigned' };
+  if (confirmedNanos != null && n > Math.floor(Number(confirmedNanos) || 0)) {
+    return { ok: false, reason: 'over_unpaid' };
   }
-  return { ok: true, login: she, dest, nanos: n };
+  const dl = Math.floor(Number(deadline) || 0);
+  const now = Math.floor(Number(nowMs) || 0);
+  if (dl) {
+    if (dl < now || dl > now + POOL_WITHDRAW_DEADLINE_MS) return { ok: false, reason: 'deadline' };
+  }
+  if (!sig) return { ok: false, reason: 'unsigned' };
+  const fields = {
+    login: she,
+    dest: payout,
+    minerShe1: she,
+    payoutSsa1: payout,
+    nanos: n,
+    height,
+    nonce,
+    deadline: dl,
+    sig,
+    verifyingContract,
+    chainId: MAGIC_TESTNET,
+  };
+  if (!verifyPoolWithdrawSig(fields)) return { ok: false, reason: 'unsigned' };
+  const recovered = recoverPoolWithdrawPub(sig);
+  const want = ownerPub
+    ? Buffer.from(ownerPub)
+    : (ownerSeed ? ownerSecpPubFromSeed(ownerSeed) : ownerPubFromOpening(open));
+  if (want && recovered && !recovered.equals(Buffer.from(want))) return { ok: false, reason: 'not_owner' };
+  if (requireOwner && recovered && !want) return { ok: false, reason: 'not_owner' };
+  if (requireOwner) {
+    const hex = String(open || '').replace(/^0x/i, '');
+    if (!/^[0-9a-f]{128}$/i.test(hex) || !spendSig) return { ok: false, reason: 'not_owner' };
+    const buf = Buffer.from(hex, 'hex');
+    const sheDest = payoutDest(she);
+    const want20 = sheDest && hash20FromAddress(sheDest);
+    const got20 = paymentIdHash(buf.subarray(0, 32), buf.subarray(32, 64));
+    if (!want20 || !Buffer.from(got20).equals(Buffer.from(want20))) return { ok: false, reason: 'not_owner' };
+    try {
+      const pub = createPublicKey({
+        key: Buffer.concat([ED25519_SPKI_PREFIX, buf.subarray(32, 64)]),
+        format: 'der',
+        type: 'spki',
+      });
+      const digest = poolWithdrawDigest(fields);
+      if (!verify(null, digest, pub, Buffer.from(String(spendSig).replace(/^0x/i, ''), 'hex'))) {
+        return { ok: false, reason: 'not_owner' };
+      }
+    } catch {
+      return { ok: false, reason: 'not_owner' };
+    }
+  }
+  const digest = poolWithdrawDigest(fields).toString('hex');
+  if (seenDigests instanceof Set && seenDigests.has(digest)) return { ok: false, reason: 'replay' };
+  const minerKey = she.toLowerCase();
+  const nn = Math.floor(Number(nonce) || 0);
+  if (nonceStore instanceof Map) {
+    const used = nonceStore.get(minerKey) || new Set();
+    if (nn && used.has(nn)) return { ok: false, reason: 'replay' };
+  }
+  if (seenDigests instanceof Set) seenDigests.add(digest);
+  if (nonceStore instanceof Map && nn) {
+    const used = nonceStore.get(minerKey) || new Set();
+    used.add(nn);
+    nonceStore.set(minerKey, used);
+  }
+  return { ok: true, login: she, dest: payout, nanos: n, nonce: nn, digest };
 }

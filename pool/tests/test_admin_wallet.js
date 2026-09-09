@@ -41,7 +41,7 @@ describe('kyrusfables admin fee wallet', () => {
     assert.equal(isAdminHost('shear.digital'), false);
     const html = fs.readFileSync(path.join(ADMIN_DIR, 'index.html'), 'utf8');
     assert.match(html, /noindex/);
-    assert.doesNotMatch(html, new RegExp(ADMIN_USER));
+    assert.doesNotMatch(html, /raskul/);
     assert.match(html, /Spendable/);
     assert.match(html, /Flow/);
     assert.match(html, /theme-toggle/);
@@ -53,7 +53,7 @@ describe('kyrusfables admin fee wallet', () => {
     assert.match(html, /json\.reason/);
     assert.match(html, /input::placeholder \{ color:var\(--muted\)/);
     assert.match(html, /color:var\(--ink\)/);
-    assert.doesNotMatch(html, /mempool/i);
+    assert.doesNotMatch(html, /\/api\/mempool/i);
     const robots = fs.readFileSync(path.join(ADMIN_DIR, 'robots.txt'), 'utf8');
     assert.match(robots, /Disallow: \//);
     const nginx = fs.readFileSync(path.join(root, 'deploy/nginx-kyrusfables.shear.digital.conf'), 'utf8');
@@ -83,20 +83,26 @@ describe('kyrusfables admin fee wallet', () => {
       mempool: [],
     };
     const posted = [];
-    const run = (p, method, body, cookie) => handleAdminApi(url(p), method, body, {
+    const run = (p, method, body, cookie, extra = {}) => handleAdminApi(url(p), method, body, {
       store, admin, cookie, queueSend: (t) => {
         posted.push(t);
         return { id: 'w1', ...t };
       },
+      ...extra,
     });
 
     assert.equal(admin.status().setup, false);
     const stranger = run('/api/admin/setup', 'POST', { user: 'not-it', password: 'aaaaaaaa' });
     assert.equal(stranger.json.ok, false);
-    assert.equal(stranger.json.reason, 'auth');
+    assert.equal(stranger.json.reason, 'setup_forbidden');
     assert.equal(admin.status().setup, false);
 
-    const created = run('/api/admin/setup', 'POST', { user: ADMIN_USER, password: 'aaaaaaaa' });
+    const created = run('/api/admin/setup', 'POST', {
+      user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken,
+    });
+    assert.doesNotMatch(fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8'), /if \(!same\(user, ADMIN_USER\)\)/);
+    assert.match(fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8'), /issuer=\$\{ADMIN_ISSUER\}/);
+    assert.match(fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8'), /ADMIN_ISSUER = 'shear'/);
     assert.equal(created.json.ok, true, created.json.reason);
     const cookie = cookieOf(created.headers);
     assert.ok(cookie);

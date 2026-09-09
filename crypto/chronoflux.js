@@ -2,7 +2,7 @@
  * Chronoflux on the chain (HASH_TX_LIVE=1, collate O(miners)):
  *   Continuum  ∇·J = 0  spendable is conserved; the hash list is not the money
  *   Flow       J^μ      this round's hashes, collated per hasher (never one JSON row per hash)
- *   Resistance η        confirmations; at 100, Flow *samples* may be dropped
+ *   Resistance η        confirmations; at 1000, Flow *samples* may be dropped
  *
  * Sealed forever (explorer reports every transfer for eternity):
  *   - 128-byte header (merkle_root + continuity_root = H(rootA||rootB) + base_fee)
@@ -16,10 +16,9 @@
  * Pruned after 1000 confirmations: per-round hash-sample bodies and B leaves.
  * Never prune vouts. continuity_root in the header remains the 32-byte seal.
  */
-import { SPENDABLE_CONFIRMATIONS } from './asert.js';
+import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS } from './asert.js';
 
-export const SAMPLE_PRUNE_CONFIRMATIONS = 1000;
-export { SPENDABLE_CONFIRMATIONS };
+export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
 
 /** Confirmations of a sealed height, counting the including block as 1. */
 export function flowConfirmations(blockHeight, tipHeight) {
@@ -87,6 +86,7 @@ export function pruneSamples(block) {
   return {
     ...block,
     samples: [],
+    shareBatch: [],
     bLeaves: [],
     samplesPruned: true,
     bLeavesPruned: true,

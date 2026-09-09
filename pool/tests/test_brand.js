@@ -153,7 +153,7 @@ describe('brand pages', () => {
     for (const page of [siteHtml, poolHtml, explorerHtml, mempoolHtml]) {
       assert.match(page, /rgsneddon\/shear-testnet/);
       assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
-      assert.match(page, /releases\/tag\/0\.10|shear-wallet-0\.10/);
+      assert.match(page, /releases\/tag\/0\.4|shear-wallet-0\.4/);
       assert.match(page, /rgsneddon\/ShearK/);
       assert.match(page, /theme\.js\?v=12/);
     }
@@ -162,6 +162,11 @@ describe('brand pages', () => {
     assert.match(poolHtml, /grid-template-columns:\s*1fr 2fr/);
     assert.doesNotMatch(poolHtml, /grid-template-columns:\s*1fr 3fr/);
     assert.match(poolHtml, /class="she-private-lockup">She is Private</);
+    assert.match(poolHtml, /Private dests, public amounts/);
+    assert.match(poolHtml, /PoW elects the tip/);
+    assert.doesNotMatch(poolHtml, /Private by default/);
+    assert.doesNotMatch(poolHtml, /Proof of work only/);
+    assert.doesNotMatch(poolHtml, /shewall\.json/);
     assert.match(explorerHtml, /Shear explorer · ShearHash-v2/);
     assert.match(explorerHtml, /Great Vibes/);
     assert.match(explorerHtml, /class="she-private-lockup">She is Private</);
