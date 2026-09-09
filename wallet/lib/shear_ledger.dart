@@ -325,6 +325,42 @@ class ShearLedger {
   /// fires after syncTip.
   int _settledHeight = 0;
   final Map<String, int> _historyAt = {};
+  /// Height-1 header hex of the book this ledger is bound to.
+  String? _chainGenesis;
+
+  String? get chainGenesis => _chainGenesis;
+
+  /// Restore a previously persisted genesis without wiping the book.
+  void restoreChainGenesis(String genesis) {
+    final g = genesis.trim().toLowerCase();
+    if (g.isEmpty) return;
+    _chainGenesis = g;
+  }
+
+  /// Bind to the live book's genesis. A different genesis (testnet reset or
+  /// testnet→mainnet) drops leftover txs/credits so Continuum cannot keep
+  /// painting the prior chain.
+  void bindChainGenesis(String genesis) {
+    final g = genesis.trim().toLowerCase();
+    if (g.isEmpty) return;
+    if (_chainGenesis == g) return;
+    if (_chainGenesis != null) {
+      _resetChainBook();
+    }
+    _chainGenesis = g;
+  }
+
+  void _resetChainBook() {
+    _txs.clear();
+    _spendable.clear();
+    _pending.clear();
+    _immature.clear();
+    _historyAt.clear();
+    _sealedHeight = 0;
+    _settledHeight = 0;
+    lag1Root = null;
+    tipHeight = 1;
+  }
 
   int? _headerTimestampMs;
   int? _prevHeaderTimestampMs;
@@ -614,7 +650,7 @@ class ShearLedger {
         amount: tx.amount > 0 ? tx.amount : prev.amount,
         kind: tx.kind.isNotEmpty ? tx.kind : prev.kind,
         height: nextHeight,
-        confirmed: tx.confirmed || prev.confirmed,
+        confirmed: tx.confirmed,
         memo: prev.memo || tx.memo,
         memoPlain: prev.memoPlain ?? tx.memoPlain,
         memoCt: prev.memoCt ?? tx.memoCt,
@@ -836,6 +872,8 @@ class ShearLedger {
       }
       final sealed = (json['height'] as num?)?.toInt() ?? 0;
       final hex = json['header']?.toString() ?? '';
+      final genesis = pool!.genesisHex ?? await pool!.fetchGenesisHex();
+      if (genesis != null && genesis.isNotEmpty) bindChainGenesis(genesis);
       applyTipHex(hex, sealedHeight: sealed);
       final raw = json['networkAvgBlockTimeMs'] ?? json['avgBlockTimeMs'];
       final avg = raw is num ? raw.round() : int.tryParse('$raw');
@@ -1022,6 +1060,7 @@ class ShearLedger {
       for (final row in rows) {
         parsed.add(ShearTx.fromJson(Map<String, dynamic>.from(row as Map)));
       }
+      adoptLiveHistory(key, parsed);
       for (final raw in rollupExplorerTxs(parsed)) {
         var tx = raw;
         if (tx.kind == 'hash') continue;
@@ -1266,12 +1305,30 @@ class ShearLedger {
       if (t.kind == 'sample') return false;
       return keys.contains(t.to) ||
           keys.contains(t.from) ||
-          t.from == 'hash' ||
-          t.from == 'coinbase' ||
-          t.from == 'pending' ||
-          t.from == 'pool';
+          ((t.from == 'hash' || t.from == 'coinbase' || t.from == 'pending' || t.from == 'pool') &&
+              keys.contains(t.to));
     });
     return rollupExplorerTxs(mine).where((t) => t.kind != 'hash').toList();
+  }
+
+  /// Live owner history is the book. Leftover ids from a prior genesis go.
+  void adoptLiveHistory(String key, List<ShearTx> live) {
+    if (live.isEmpty) return;
+    final liveIds = <String>{for (final t in live) t.id};
+    _txs.removeWhere((t) {
+      if ((t.height ?? 0) < 1) return false;
+      final mine = payKey(t.to) == key || t.to == key || payKey(t.from) == key || t.from == key;
+      if (!mine) {
+        if ((t.from == 'coinbase' || t.from == 'pool' || t.kind == 'block' || t.kind == 'blockfound') &&
+            !liveIds.contains(t.id)) {
+          return true;
+        }
+        return false;
+      }
+      if (liveIds.contains(t.id)) return false;
+      if (t.kind == 'send' && !t.confirmed && (t.height ?? 0) < 1) return false;
+      return true;
+    });
   }
 
   bool isOutgoingTx(String address, ShearTx t) {
@@ -1614,11 +1671,15 @@ class ShearPoolClient {
 
   ShearReadSync? get sync => _sync;
   bool get isPinned => _pinned != null;
+  String? _pinnedGenesis;
+
+  String? get genesisHex => _sync?.genesisHex ?? _pinnedGenesis;
 
   String get baseUrl => _pinned ?? _sync?.liveBase ?? kWalletDefaultSeed;
 
   int get provenHeaders => _sync?.provenHeaders ?? _pinnedProven.length;
-  int get wantedHeaders => _sync?.wantedHeaders ?? (_pinnedTip < 1 ? 0 : _pinnedTip);
+  int get wantedHeaders =>
+      _sync?.wantedHeaders ?? (_pinnedTip < 1 ? 0 : flyclientSampleHeights(_pinnedTip).length);
   bool get nodeLive =>
       _sync != null ? _sync!.liveBase != null : _pinned != null && _pinnedTip > 0;
 
@@ -1637,37 +1698,43 @@ class ShearPoolClient {
     await _sync?.followTip();
   }
 
+  Future<String?> fetchGenesisHex() async {
+    try {
+      final batch = await _getRaw('/api/explorer/headers?from=1&to=1');
+      final rows = batch['headers'];
+      if (rows is List && rows.isNotEmpty && rows.first is Map) {
+        final hex = (rows.first as Map)['header']?.toString() ?? '';
+        if (hex.isNotEmpty) return hex.toLowerCase();
+      }
+    } catch (_) {}
+    try {
+      final hdr = await _getRaw('/api/explorer/header?height=1');
+      final hex = hdr['header']?.toString() ?? '';
+      if (hex.isNotEmpty) return hex.toLowerCase();
+    } catch (_) {}
+    return null;
+  }
+
   Future<void> _provePinned() async {
     try {
       final stats = await _getRaw('/api/stats');
       final tip = (stats['height'] as num?)?.toInt() ?? 0;
       if (tip < 1) return;
       _pinnedTip = tip;
-      var h = 1;
-      while (h <= tip) {
-        if (_pinnedProven.contains(h)) {
-          h++;
-          continue;
-        }
-        final to = h + 1999 > tip ? tip : h + 1999;
+      final genesis = await fetchGenesisHex();
+      if (genesis != null &&
+          genesis.isNotEmpty &&
+          _pinnedGenesis != null &&
+          genesis != _pinnedGenesis) {
+        _pinnedProven.clear();
+      }
+      if (genesis != null && genesis.isNotEmpty) _pinnedGenesis = genesis;
+      for (final h in flyclientSampleHeights(tip)) {
+        if (_pinnedProven.contains(h)) continue;
         try {
-          final batch = await _getRaw('/api/explorer/headers?from=$h&to=$to');
-          final rows = batch['headers'];
-          if (rows is List && rows.isNotEmpty) {
-            for (final row in rows) {
-              if (row is! Map) continue;
-              final hh = (row['height'] as num?)?.toInt() ?? 0;
-              if (hh > 0 && (row['header']?.toString() ?? '').isNotEmpty) {
-                _pinnedProven.add(hh);
-              }
-            }
-            h = to + 1;
-            continue;
-          }
+          final hdr = await _getRaw('/api/explorer/header?height=$h');
+          if ((hdr['header']?.toString() ?? '').isNotEmpty) _pinnedProven.add(h);
         } catch (_) {}
-        final hdr = await _getRaw('/api/explorer/header?height=$h');
-        if ((hdr['header']?.toString() ?? '').isNotEmpty) _pinnedProven.add(h);
-        h++;
       }
     } catch (_) {}
   }
@@ -1683,8 +1750,14 @@ class ShearPoolClient {
     return jsonDecode(text) as Map<String, dynamic>;
   }
 
+  Future<void> _ensureBase() async {
+    if (_pinned != null) return;
+    if (_sync?.liveBase != null) return;
+    await _sync?.findLiveNode();
+  }
+
   Future<Map<String, dynamic>> _get(String path) async {
-    await followLive();
+    await _ensureBase();
     try {
       return await _getRaw(path);
     } catch (_) {
@@ -1694,7 +1767,7 @@ class ShearPoolClient {
   }
 
   Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body) async {
-    await followLive();
+    await _ensureBase();
     try {
       final req = await _http.postUrl(Uri.parse('$baseUrl$path'));
       req.headers.contentType = ContentType.json;

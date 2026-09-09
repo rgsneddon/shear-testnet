@@ -391,7 +391,7 @@
             <th>Hashrate</th>
             <th>Blocks found</th>
             <th>Accepted shares</th>
-            <th>Valid hashes (round)</th>
+            <th>Hashes (round)</th>
             <th>Stale shares</th>
             <th>CPU threads</th>
           </tr>
@@ -707,7 +707,7 @@
         return '<tr><td><a href="' + href + '">' + tag + '</a></td><td>' +
           ([w.name, w.version].filter(Boolean).join(' ') || '—') + '</td><td>' + fmtRate(w.hashrate) + '</td><td>' +
           (Number(w.blocks) || 0) + '</td><td>' + (w.accepted || 0) + '</td><td>' +
-          (w.roundHashes != null ? w.roundHashes : (w.provenHashes || 0)) + '</td><td>' +
+          (w.hashes != null ? w.hashes : (w.roundHashes || w.provenHashes || 0)) + '</td><td>' +
           (w.stale || 0) + '</td><td>' + (w.threads || 0) + '</td></tr>';
       }).join('');
       paintRecent(s.recentTxs || [], s);

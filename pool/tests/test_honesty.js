@@ -14,6 +14,8 @@ import {
   reportedHashrate,
   liveHashrate,
   applyMinerSelfRate,
+  resetMinerRoundDisplay,
+  liveRoundHashes,
   roundActualHashes,
   sortMinersByHashrate,
   refreshMinerRow,
@@ -31,7 +33,7 @@ import {
 } from '../src/pool.js';
 import { extraMintAllowed, RESERVE_PROGRAM, JOIN_PROGRAM, HASH_BONUS_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
 import { pendingFor } from '../src/wallet_api.js';
-import { hasherHasValidRoundShare } from '../src/hash_credit.js';
+import { hasherHasValidRoundShare, clientHashCreditForbidden } from '../src/hash_credit.js';
 import { expectedOneThreadHs, hashesProvenByShare } from '../src/share_vardiff.js';
 
 const RATE_WIN_S = HASHRATE_WINDOW_MS / 1000;
@@ -248,8 +250,8 @@ describe('folded-row inventory', () => {
       threads: 1,
       connections: [{ sock }],
       acceptAt: [now - 1000],
-      acceptWork: [900_000 * RATE_WIN_S],
-      clientHs: 900_000,
+      acceptWork: [80 * RATE_WIN_S],
+      clientHs: 80,
     };
     const ten = {
       threads: 10,
@@ -261,31 +263,16 @@ describe('folded-row inventory', () => {
     assert.equal(Math.round(reportedHashrate(ten, now)), 256);
     applyMinerSelfRate(ten, { hashrate: 2_000_000_000, hashes: 1_000_000 }, now);
     assert.equal(ten.clientHs, undefined);
-    applyMinerSelfRate(ten, { hashrate: 2_000_000_000, hashes: 1_000_000 + 225_000_000 }, now + 1000);
+    applyMinerSelfRate(ten, { hashrate: 2_000_000_000, hashes: 1_000_000 + 400 }, now + 1000);
     assert.equal(ten.clientHs, undefined);
-    applyMinerSelfRate(ten, { hashrate: 2_000_000_000, hashes: 1_000_000 + 225_000_000 * 10 }, now + 10_000);
-    assert.equal(ten.clientHs, 225_000_000);
+    applyMinerSelfRate(ten, { hashrate: 2_000_000_000, hashes: 1_000_000 + 400 * 10 }, now + 10_000);
+    assert.equal(ten.clientHs, 400);
     assert.equal(Math.round(provenHashrate(ten, now + 10_000)), 256);
-    delete ten.emaHs;
-    delete ten.emaAt;
-    assert.equal(Math.round(reportedHashrate(ten, now + 10_000)), 225_000_000);
-    assert.equal(reportedHashrate(one, now), 900_000);
-    const other = {
-      threads: 10,
-      connections: [{ sock }],
-      acceptAt: [now],
-      acceptWork: [256 * RATE_WIN_S],
-    };
-    applyMinerSelfRate(other, { hashes: 1000 }, now);
-    applyMinerSelfRate(other, { hashes: 1000 + 225_000_000 }, now + 1000);
-    assert.equal(other.clientHs, undefined);
-    applyMinerSelfRate(other, { hashes: 1000 + 225_000_000 * 10 }, now + 10_000);
-    assert.equal(other.clientHs, 225_000_000);
-    assert.equal(Math.round(provenHashrate(other, now)), 256);
-    delete other.emaHs;
-    delete other.emaAt;
-    assert.equal(Math.round(reportedHashrate(other, now + 10_000)), 225_000_000);
-    assert.equal(reportedHashrate(one, now), 900_000);
+    assert.equal(Math.round(reportedHashrate(ten, now + 10_000)), 400);
+    assert.equal(reportedHashrate(one, now), 80);
+    applyMinerSelfRate(ten, { hashes: 1_000_000 + 400 * 10 + 225_000_000 }, now + 20_000);
+    assert.equal(ten.clientHs, 400);
+    assert.equal(reportedHashrate(one, now), 80);
   });
 
   it('connected hasher paints current hashes/dt, not a held or eased spike', () => {
@@ -303,6 +290,34 @@ describe('folded-row inventory', () => {
     assert.equal(reportedHashrate(spiked, t0 + 1000), 55);
   });
 
+  it('blockfound does not paint a kH/s spike on a 1-thread hasher', () => {
+    const t0 = 1_700_000_000_000;
+    const m = { connections: [{ sock: {} }], threads: 1 };
+    applyMinerSelfRate(m, { hashes: 1000 }, t0);
+    applyMinerSelfRate(m, { hashes: 1000 + 55 * 10 }, t0 + 10_000);
+    assert.equal(m.clientHs, 55);
+    resetMinerRoundDisplay(m, t0 + 10_000);
+    assert.equal(m.clientHs, 0);
+    applyMinerSelfRate(m, { hashes: 1000 + 550 + 50_000 }, t0 + 15_000);
+    const hs = reportedHashrate(m, t0 + 15_000);
+    assert.ok(hs < 200, `blockfound spike ${hs}`);
+    applyMinerSelfRate(m, { hashes: 1000 + 550 + 50_000 + 55 * 10 }, t0 + 25_000);
+    assert.equal(reportedHashrate(m, t0 + 25_000), 55);
+  });
+
+  it('HUD hashes follow the miner counter; bonus stays proven 2^shareBits units', () => {
+    const m = {
+      connections: [{ sock: {} }],
+      threads: 1,
+      roundHashes: 256,
+      clientHashes: 1000,
+      clientHashesRound0: 400,
+    };
+    assert.equal(liveRoundHashes(m), 600);
+    assert.equal(roundActualHashes(m), 256);
+    assert.equal(clientHashCreditForbidden(), true);
+  });
+
   it('1-thread ~55 H/s hashes/dt paints ~55, not kH/s', () => {
     const t0 = 1_700_000_000_000;
     const m = { connections: [{ sock: {} }] };
@@ -316,13 +331,13 @@ describe('folded-row inventory', () => {
 
   it('K-pause hashes/dt is the dipped rate, not a held peak', () => {
     const t0 = 1_700_000_000_000;
-    const m = { connections: [{ sock: {} }] };
-    applyMinerSelfRate(m, { hashes: 1_000_000 }, t0);
-    applyMinerSelfRate(m, { hashes: 1_000_000 + 200_000 * 10 }, t0 + 10_000);
-    assert.equal(m.clientHs, 200_000);
-    applyMinerSelfRate(m, { hashes: 1_000_000 + 200_000 * 10 + 5_000 }, t0 + 30_000);
-    assert.equal(m.clientHs, 250);
-    assert.equal(reportedHashrate(m, t0 + 30_000), 250);
+    const m = { connections: [{ sock: {} }], threads: 1 };
+    applyMinerSelfRate(m, { hashes: 1_000 }, t0);
+    applyMinerSelfRate(m, { hashes: 1_000 + 80 * 10 }, t0 + 10_000);
+    assert.equal(m.clientHs, 80);
+    applyMinerSelfRate(m, { hashes: 1_000 + 80 * 10 + 400 }, t0 + 30_000);
+    assert.equal(m.clientHs, 20);
+    assert.equal(reportedHashrate(m, t0 + 30_000), 20);
   });
 
   it('connect hashrate ramps up from own hashes, never down from a session-average spike', () => {
@@ -332,7 +347,7 @@ describe('folded-row inventory', () => {
     assert.equal(miner.clientHs, undefined);
     assert.ok(reportedHashrate(miner, t0) < 2_000_000_000);
     applyMinerSelfRate(miner, { hashrate: 2_000_000_000, hashes: 225_000_000 * 10 }, t0 + 10_000);
-    assert.equal(miner.clientHs, 225_000_000);
+    assert.equal(miner.clientHs, undefined);
     assert.equal(reportedHashrate(miner, t0 + 10_000), 0);
     const low = { acceptAt: [t0], acceptWork: [1_000_000 * RATE_WIN_S] };
     const high = { acceptAt: [t0], acceptWork: [10_000_000 * RATE_WIN_S] };

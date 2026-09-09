@@ -473,6 +473,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     var tipBusy = false;
     var creditBusy = false;
     if (widget.skipPoolSync && widget.demoTx) unawaited(_playDemoLive());
+    var lastPersist = DateTime.fromMillisecondsSinceEpoch(0);
     _accrualTick = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || !unlocked) return;
       if (widget.skipPoolSync) {
@@ -491,7 +492,11 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             try {
               await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
               _rememberLedger();
-              unawaited(session.persist());
+              final now = DateTime.now();
+              if (now.difference(lastPersist) >= const Duration(seconds: 15)) {
+                lastPersist = now;
+                unawaited(session.persist());
+              }
             } finally {
               creditBusy = false;
             }
@@ -508,7 +513,11 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         creditBusy = true;
         unawaited(ledger.syncCredits(ident.address, paymentCode: ident.paymentCode).whenComplete(() {
           _rememberLedger();
-          unawaited(session.persist());
+          final now = DateTime.now();
+          if (now.difference(lastPersist) >= const Duration(seconds: 15)) {
+            lastPersist = now;
+            unawaited(session.persist());
+          }
           unawaited(_syncVaults(ident));
           creditBusy = false;
           if (mounted) setState(() {});

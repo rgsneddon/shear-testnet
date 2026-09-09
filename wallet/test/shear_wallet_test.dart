@@ -3497,7 +3497,7 @@ void main() {
     }
   });
 
-  test('read-sync picks a live mock node and reads every header 1…tip', () async {
+  test('read-sync picks a live mock node and FlyClient-samples log n headers', () async {
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     final live = _PoolLive(headerHex: hex, height: 16);
@@ -3526,13 +3526,123 @@ void main() {
     expect(walletHonestyText(live: true, proven: 5, wanted: 5), '100% synchronised');
     expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), 'no network');
     await sync.followTip();
-    expect(sync.wantedHeaders, 16);
-    expect(sync.provenHeaders, 16);
+    final locators = flyclientSampleHeights(16);
+    expect(locators, [1, 2, 4, 8, 16]);
+    expect(sync.wantedHeaders, locators.length);
+    expect(sync.provenHeaders, locators.length);
     expect(sync.honestyText(), '100% synchronised');
     final pool = ShearPoolClient(sync: sync, http: http);
     await pool.followLive();
     expect(pool.baseUrl, liveUrl);
     expect(pool.honestyText(), '100% synchronised');
+  });
+
+  test('upgraded wallet drops leftover pre-reset txs; live history is the book', () async {
+    String hdr(int b) => List.filled(128, b).map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+    final id = createIdentity();
+    final dest = destForLogin(id.address, viewKey: id.viewKey, height: 1)!;
+    final oldG = hdr(0xaa);
+    final newG = hdr(0xbb);
+    final live = _PoolLive(
+      headerHex: newG,
+      height: 4,
+      owner: dest,
+      history: [
+        {
+          'id': 'new-1',
+          'from': 'coinbase',
+          'to': dest,
+          'amount': 1,
+          'kind': 'coinbase',
+          'height': 2,
+          'confirmed': true,
+        },
+      ],
+    );
+    live.headerAtHeight[1] = newG;
+    live.destBalances[dest] = 1;
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final ledger = ShearLedger(
+      pool: ShearPoolClient(
+        baseUrl: 'http://127.0.0.1:${server.port}',
+        http: _realHttp(),
+      ),
+    )..viewSecret = id.viewKey;
+    applyUserArchive(ledger, {
+      'dests': [dest],
+      'txs': [
+        {
+          'id': 'old-conf',
+          'from': 'coinbase',
+          'to': dest,
+          'amount': 9,
+          'kind': 'coinbase',
+          'height': 40,
+          'confirmed': true,
+        },
+        {
+          'id': 'old-pend',
+          'from': 'pending',
+          'to': dest,
+          'amount': 3,
+          'kind': 'receive',
+          'height': 0,
+          'confirmed': false,
+        },
+      ],
+    });
+    ledger.rememberSpendable(dest, 9);
+    ledger.restoreChainGenesis(oldG);
+    expect(ledger.transactions.any((t) => t.id == 'old-conf'), isTrue);
+    expect(ledger.transactions.any((t) => t.id == 'old-pend'), isTrue);
+    await ledger.syncCredits(dest, paymentCode: id.paymentCode);
+    expect(ledger.chainGenesis, newG);
+    expect(ledger.transactions.any((t) => t.id == 'old-conf'), isFalse);
+    expect(ledger.transactions.any((t) => t.id == 'old-pend'), isFalse);
+    expect(ledger.ownerHistory(dest).any((t) => t.id == 'old-conf'), isFalse);
+    expect(ledger.pendingTxs(dest).any((t) => t.id == 'old-pend'), isFalse);
+    expect(ledger.shearviewTxs(dest).any((t) => t.id == 'old-conf'), isFalse);
+    expect(
+      ledger.transactions.any((t) => t.to == dest && t.amount > 0 && t.id != 'old-conf'),
+      isTrue,
+    );
+    expect(ledger.ownerHistory(dest).any((t) => t.to == dest), isTrue);
+    expect(ledger.spendable(dest), closeTo(1, 1e-12));
+  });
+
+  test('FlyClient binds to canonical genesis, not a taller stale book, and does not rescan', () async {
+    String hdr(int b) => List.filled(128, b).map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+    final oldG = hdr(0x11);
+    final newG = hdr(0x22);
+    final stale = _PoolLive(headerHex: oldG, height: 40);
+    stale.headerAtHeight[1] = oldG;
+    final cur = _PoolLive(headerHex: newG, height: 5);
+    cur.headerAtHeight[1] = newG;
+    final staleServer = await _fakePool(live: stale);
+    final curServer = await _fakePool(live: cur);
+    addTearDown(() => staleServer.close(force: true));
+    addTearDown(() => curServer.close(force: true));
+    final staleUrl = 'http://127.0.0.1:${staleServer.port}';
+    final curUrl = 'http://127.0.0.1:${curServer.port}';
+    final sync = ShearReadSync(
+      seeds: [staleUrl, curUrl],
+      userUrl: curUrl,
+      http: _realHttp(),
+      jitter: Duration.zero,
+    );
+    expect(await sync.findLiveNode(), curUrl);
+    expect(sync.genesisHex, newG);
+    await sync.followTip();
+    expect(sync.wantedHeaders, flyclientSampleHeights(5).length);
+    expect(sync.provenHeaders, flyclientSampleHeights(5).length);
+    expect(sync.honestyText(), '100% synchronised');
+    final headerAfter = cur.headerHits + cur.headersBatchHits;
+    expect(headerAfter, lessThan(20));
+    await sync.followTip();
+    expect(cur.headerHits + cur.headersBatchHits, headerAfter);
+    expect(flyclientSampleHeights(64).length, lessThan(64));
+    expect(flyclientSampleHeights(64), containsAll([1, 2, 4, 8, 16, 32, 64]));
   });
 
   testWidgets('0.20 lock card still present after 6s; vote at π; no claim-hashes', (tester) async {
@@ -4165,6 +4275,9 @@ class _PoolLive {
   List<Map<String, dynamic>> incoming;
   List<Map<String, dynamic>> history;
   int balanceHits = 0;
+  int statsHits = 0;
+  int headerHits = 0;
+  int headersBatchHits = 0;
   /// Per-dest reconstructed spendable. When set, /api/wallet/balance and
   /// /api/wallet/send use it instead of the single [balance]/[owner] pair.
   final Map<String, double> destBalances = {};
@@ -4209,6 +4322,7 @@ Future<HttpServer> _fakePool({
     }
     req.response.headers.contentType = ContentType.json;
     if (req.uri.path == '/api/stats') {
+      state.statsHits += 1;
       final portal = state.reservePortal ?? {};
       req.response.write(jsonEncode({
         'ok': true,
@@ -4225,6 +4339,7 @@ Future<HttpServer> _fakePool({
         'hashBonusNanos': portal['liveHashBonusNanos'] ?? 1,
       }));
     } else if (req.uri.path == '/api/explorer/header') {
+      state.headerHits += 1;
       final h = int.tryParse(req.uri.queryParameters['height'] ?? '') ?? 0;
       final hex = state.headerAtHeight[h] ?? state.headerHex;
       req.response.write(jsonEncode({
@@ -4234,6 +4349,7 @@ Future<HttpServer> _fakePool({
         'continuity': hex.length >= 200 ? hex.substring(136, 200) : '',
       }));
     } else if (req.uri.path == '/api/explorer/headers') {
+      state.headersBatchHits += 1;
       final from = int.tryParse(req.uri.queryParameters['from'] ?? '') ?? 1;
       final toRaw = int.tryParse(req.uri.queryParameters['to'] ?? '') ?? from;
       final to = toRaw < from ? from : (toRaw > from + 1999 ? from + 1999 : toRaw);

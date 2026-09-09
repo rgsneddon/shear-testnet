@@ -140,6 +140,16 @@ function rowsToHistory(rows, addresses, tipHeight = 0) {
   return { spendableNanos, spendable: nanosToShe(spendableNanos), txs };
 }
 
+/** Height-indexed when blocks[i].height === i+1 (the live book). O(1), not a chain scan. */
+export function headerBlockAt(store, height) {
+  const h = Math.floor(Number(height) || 0);
+  if (h < 1) return null;
+  const list = store?.blocks || [];
+  const i = h - 1;
+  if (i >= 0 && i < list.length && Number(list[i].height) === h) return list[i];
+  return list.find((x) => Number(x.height) === h) || null;
+}
+
 export function ownerDests(address) {
   const addr = String(address || '').trim();
   const out = new Set();
@@ -826,7 +836,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
   }
   if (path === '/api/explorer/header' && verb === 'GET') {
     const height = Math.floor(Number(url.searchParams.get('height') || 0));
-    const b = (store?.blocks || []).find((x) => Number(x.height) === height);
+    const b = headerBlockAt(store, height);
     if (!b) return { status: 404, json: { ok: false, reason: 'unknown_height' } };
     const raw = Buffer.isBuffer(b.header) ? b.header : Buffer.from(b.header || []);
     return {
@@ -843,11 +853,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const from = Math.max(1, Math.floor(Number(url.searchParams.get('from') || 1)));
     const toRaw = Math.floor(Number(url.searchParams.get('to') || from));
     const to = Math.min(Math.max(from, toRaw), from + 1999);
-    const list = store?.blocks || [];
-    const byH = new Map(list.map((b) => [Number(b.height) || 0, b]));
     const headers = [];
     for (let h = from; h <= to; h += 1) {
-      const b = byH.get(h);
+      const b = headerBlockAt(store, h);
       if (!b) continue;
       const raw = Buffer.isBuffer(b.header) ? b.header : Buffer.from(b.header || []);
       headers.push({ height: h, header: raw.toString('hex') });

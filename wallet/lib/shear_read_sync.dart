@@ -2,13 +2,29 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-/// Wallet reads headers 1…tip from a live node/pool. Not FlyClient locators.
+/// FlyClient locators: O(log tip) header samples, not a 1…tip flood.
 const kWalletDefaultSeed = 'https://pool.shear.digital';
 /// Prefer a local node/pool when one is running (0.28 / kit source).
 const kLocalPoolHttp = 'http://127.0.0.1:8088';
 const kLocalNodeRpc = 'http://127.0.0.1:18332';
 
-/// Fill 0..1 of headers read vs headers 1…tip.
+/// Logarithmic header heights: 1, 2, 4, … tip (genesis + tip always).
+List<int> flyclientSampleHeights(int tip) {
+  if (tip < 1) return const [];
+  final out = <int>{};
+  var h = 1;
+  while (h < tip && h > 0) {
+    out.add(h);
+    final next = h * 2;
+    if (next <= h) break;
+    h = next;
+  }
+  out.add(tip);
+  final list = out.toList()..sort();
+  return list;
+}
+
+/// Fill 0..1 of FlyClient samples vs the locator set.
 double walletSyncFill({required int proven, required int wanted}) {
   if (wanted <= 0) return 0;
   if (proven >= wanted) return 1;
@@ -58,12 +74,17 @@ class ShearReadSync {
   int _failures = 0;
   final Set<int> _proven = {};
   int sampledTip = 0;
+  /// Header hex at height 1. Identifies the live book after a chain reset.
+  String? genesisHex;
 
-  int get provenHeaders => _proven.length;
-  int get wantedHeaders => sampledTip < 1 ? 0 : sampledTip;
+  int get provenHeaders =>
+      flyclientSampleHeights(sampledTip).where(_proven.contains).length;
+  int get wantedHeaders => flyclientSampleHeights(sampledTip).length;
   int get failures => _failures;
   bool get honest =>
-      liveBase != null && wantedHeaders > 0 && provenHeaders >= wantedHeaders;
+      liveBase != null &&
+      wantedHeaders > 0 &&
+      flyclientSampleHeights(sampledTip).every(_proven.contains);
 
   String honestyText() => walletHonestyText(
         live: liveBase != null,
@@ -97,9 +118,21 @@ class ShearReadSync {
     return findLiveNode();
   }
 
-  /// Read every header 1…tip (paged). Already-read heights are skipped.
+  DateTime? _lastFindAt;
+  static const _refindEvery = Duration(seconds: 60);
+
+  /// Read missing headers only. Once 1…tip is proven, a tick is `/api/stats`.
+  /// Does not re-probe every seed on every call (that stalled the pool).
   Future<void> followTip() async {
-    final base = await ensureLive();
+    final now = DateTime.now();
+    final staleFind = _lastFindAt == null || now.difference(_lastFindAt!) >= _refindEvery;
+    final String? base;
+    if (liveBase == null || staleFind) {
+      base = await findLiveNode();
+      _lastFindAt = now;
+    } else {
+      base = await ensureLive();
+    }
     if (base == null) return;
     final stats = await _get(base, '/api/stats');
     if (stats == null) {
@@ -108,7 +141,20 @@ class ShearReadSync {
     }
     final tip = (stats['height'] as num?)?.toInt() ?? 0;
     if (tip < 1) return;
-    await _catchUpHeaders(base, tip);
+    final chainMovedBack = sampledTip > 0 && tip < sampledTip;
+    if (genesisHex == null || chainMovedBack || !_proven.contains(1)) {
+      final genesis = await _genesisOf(base);
+      if (genesis.isNotEmpty && genesisHex != null && genesis != genesisHex) {
+        _proven.clear();
+        sampledTip = 0;
+      }
+      if (genesis.isNotEmpty) genesisHex = genesis;
+    }
+    sampledTip = tip;
+    if (honest && tip <= sampledTip && _proven.contains(1)) {
+      return;
+    }
+    await _proveSamples(base, tip);
   }
 
   Future<String?> findLiveNode() async {
@@ -118,22 +164,44 @@ class ShearReadSync {
         await Future<void>.delayed(Duration(milliseconds: _rng.nextInt(cap + 1)));
       }
     }
-    String? best;
-    var bestScore = -1;
+    final probes = <String, ({int height, String genesis})>{};
     for (final seed in seeds) {
-      final score = await _score(seed);
-      if (score > bestScore) {
-        bestScore = score;
-        best = seed;
-      }
+      final p = await _probe(seed);
+      if (p != null) probes[seed] = p;
     }
-    if (best == null || bestScore < 0) {
+    if (probes.isEmpty) {
       _failures++;
       final shift = (_failures - 1).clamp(0, 6);
       _backoffUntil = DateTime.now().add(Duration(milliseconds: 1000 * (1 << shift)));
       liveBase = null;
       return null;
     }
+    String? genesisOf(String? url) {
+      if (url == null || url.isEmpty) return null;
+      return probes[_norm(url)]?.genesis;
+    }
+
+    // Canonical public/user seed wins over a taller leftover local book.
+    final want = genesisOf(userUrl) ??
+        genesisOf(kWalletDefaultSeed) ??
+        genesisOf(kLocalPoolHttp) ??
+        genesisHex;
+    String? best;
+    var bestH = -1;
+    for (final e in probes.entries) {
+      if (want != null && want.isNotEmpty && e.value.genesis != want) continue;
+      if (e.value.height > bestH) {
+        bestH = e.value.height;
+        best = e.key;
+      }
+    }
+    best ??= probes.entries.reduce((a, b) => a.value.height >= b.value.height ? a : b).key;
+    final gotGenesis = want ?? probes[best]!.genesis;
+    if (genesisHex != null && gotGenesis.isNotEmpty && gotGenesis != genesisHex) {
+      _proven.clear();
+      sampledTip = 0;
+    }
+    if (gotGenesis.isNotEmpty) genesisHex = gotGenesis;
     _failures = 0;
     _backoffUntil = null;
     liveBase = best;
@@ -147,40 +215,43 @@ class ShearReadSync {
     _backoffUntil = DateTime.now().add(Duration(milliseconds: 1000 * (1 << shift)));
   }
 
-  Future<void> _catchUpHeaders(String base, int tip) async {
-    var h = 1;
-    while (h <= tip) {
-      if (_proven.contains(h)) {
-        h++;
-        continue;
-      }
-      final to = h + 1999 > tip ? tip : h + 1999;
-      final batch = await _get(base, '/api/explorer/headers?from=$h&to=$to');
-      final rows = batch?['headers'];
-      if (rows is List && rows.isNotEmpty) {
-        for (final row in rows) {
-          if (row is! Map) continue;
-          final hh = (row['height'] as num?)?.toInt() ?? 0;
-          final hex = row['header']?.toString() ?? '';
-          if (hh > 0 && hex.isNotEmpty) _proven.add(hh);
-        }
-        h = to + 1;
-        continue;
-      }
+  Future<void> _proveSamples(String base, int tip) async {
+    for (final h in flyclientSampleHeights(tip)) {
+      if (_proven.contains(h)) continue;
       final hdr = await _get(base, '/api/explorer/header?height=$h');
       final hex = hdr?['header']?.toString() ?? '';
-      if (hex.isNotEmpty) _proven.add(h);
-      h++;
+      if (hex.isEmpty) continue;
+      if (h == 1) {
+        final g = hex.toLowerCase();
+        if (genesisHex != null && genesisHex != g) {
+          _proven.clear();
+        }
+        genesisHex = g;
+      }
+      _proven.add(h);
     }
     sampledTip = tip;
   }
 
-  Future<int> _score(String base) async {
+  Future<({int height, String genesis})?> _probe(String base) async {
     final stats = await _get(base, '/api/stats');
-    if (stats == null) return -1;
+    if (stats == null) return null;
     final tip = (stats['height'] as num?)?.toInt() ?? 0;
-    if (tip < 1) return -1;
-    return tip;
+    if (tip < 1) return null;
+    var genesis = await _genesisOf(base);
+    if (genesis.isEmpty) genesis = (stats['header']?.toString() ?? '').toLowerCase();
+    return (height: tip, genesis: genesis);
+  }
+
+  Future<String> _genesisOf(String base) async {
+    final batch = await _get(base, '/api/explorer/headers?from=1&to=1');
+    final rows = batch?['headers'];
+    if (rows is List && rows.isNotEmpty && rows.first is Map) {
+      final hex = (rows.first as Map)['header']?.toString() ?? '';
+      if (hex.isNotEmpty) return hex.toLowerCase();
+    }
+    final hdr = await _get(base, '/api/explorer/header?height=1');
+    return (hdr?['header']?.toString() ?? '').toLowerCase();
   }
 
   Future<Map<String, dynamic>?> _get(String base, String path) async {

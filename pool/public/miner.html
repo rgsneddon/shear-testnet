@@ -221,7 +221,7 @@
       set('m-stale', String(d.stale || 0));
       set('m-orphans', String(d.orphans || 0));
       set('m-threads', String(d.threads || 0));
-      set('m-round', String(d.roundHashes || 0));
+      set('m-round', String(d.hashes || d.roundHashes || 0));
       set('m-pending', (d.pendingDisplay || '0') + ' SHE');
       set('m-confirmed', (d.confirmedDisplay || '0') + ' SHE');
       set('m-first', ago(d.firstSeen));
@@ -243,7 +243,7 @@
         return '<tr><td class="mono">' + name + '</td><td>' + ([w.name, w.version].filter(Boolean).join(' ') || '—') +
           '</td><td>' + fmtRate(w.hashrate) + '</td><td>' + (w.blocks || 0) +
           '</td><td>' + (w.accepted || 0) + '</td><td>' + (w.stale || 0) +
-          '</td><td>' + (w.threads || 0) + '</td><td>' + (w.roundHashes || 0) +
+          '</td><td>' + (w.threads || 0) + '</td><td>' + (w.hashes || w.roundHashes || 0) +
           '</td><td>' + (w.connected ? 'yes' : 'no') + '</td></tr>';
       }).join('');
     }

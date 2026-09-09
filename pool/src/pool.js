@@ -173,22 +173,25 @@ export function splitPot(round, poolDest) {
 export function provenLag1Shares(parentHeader, shares) {
   const list = Array.isArray(shares) ? shares : [];
   if (!list.length || !parentHeader) return [];
+  const parentHex = (Buffer.isBuffer(parentHeader)
+    ? parentHeader.toString('hex')
+    : String(parentHeader || '')).toLowerCase();
+  const trusted = [];
+  const unknown = [];
+  for (const s of list) {
+    const v = String(s?.verifiedHeader || '').toLowerCase();
+    if (v && parentHex && v === parentHex) trusted.push(s);
+    else unknown.push(s);
+  }
+  if (!unknown.length) return sortShares(trusted);
   const all = verifyShareBatch({
     parentHeader,
-    shares: list,
+    shares: unknown,
     floorBits: SHARE_FLOOR_BITS,
   });
-  if (all.ok) return sortShares(list);
-  const kept = [];
-  for (const s of list) {
-    const one = verifyShareBatch({
-      parentHeader,
-      shares: [s],
-      floorBits: SHARE_FLOOR_BITS,
-    });
-    if (one.ok) kept.push(s);
-  }
-  return sortShares(kept);
+  if (all.ok) return sortShares(trusted.concat(unknown));
+  // Do not RandomX each leftover row. That stalled stratum/HTTP/UI on blockfound.
+  return sortShares(trusted);
 }
 
 /** Dest (ssa1) or silent ID (she1) — worker identity. Payout dest is never she1. */
@@ -610,20 +613,24 @@ export function provenHashrate(miner, now = Date.now()) {
       work += Number.isFinite(w) && w > 0 ? w : 1;
     }
   }
-  const connected = minerConnected(miner);
-  const lastHash = Number(miner?.seen) || 0;
-  const recent = lastHash > 0 && at - lastHash <= HASH_PRESENCE_MS;
-  if (work <= 0) {
-    const held = Number(miner?.lastHashrate) || 0;
-    if (held > 0 && (connected || recent)) return held;
-    return 0;
-  }
+  if (work <= 0) return 0;
   // Always the full window. now-first floored at 1s painted GH/s on a
   // high-bit share, then dropped to 0 when the next share was slower than
   // the window (1-thread at block bits 26+ is ~90s between shares).
-  const hs = work / (HASHRATE_WINDOW_MS / 1000);
-  if (miner && typeof miner === 'object') miner.lastHashrate = hs;
-  return hs;
+  return work / (HASHRATE_WINDOW_MS / 1000);
+}
+
+/** After a sealed header, rebase the display counter so the next job cannot paint a spike. */
+export function resetMinerRoundDisplay(m, now = Date.now()) {
+  if (!m || typeof m !== 'object') return m;
+  m.roundHashes = 0;
+  m.clientHashesRound0 = Number(m.clientHashes) || 0;
+  m.rateHashes0 = Number(m.clientHashes) || 0;
+  m.rateAt0 = now;
+  m.lastHashrate = 0;
+  m.clientHs = 0;
+  m.clientHsAt = 0;
+  return m;
 }
 
 function easeHashrate(miner, instant, now, tauS = HASHRATE_EMA_TAU_S) {
@@ -671,10 +678,22 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
       if (dt >= SELF_RATE_MIN_DT_S) {
         const delta = hashes - prev;
         if (delta > 0) {
-          session.clientHs = delta / dt;
-          session.clientHsAt = now;
-          session.rateHashes0 = hashes;
-          session.rateAt0 = now;
+          const hs = delta / dt;
+          const threads = Math.max(1, Number(session.threads) || Number(session.claimedThreads) || 1);
+          const prevHs = Number(session.clientHs) || 0;
+          // ShearHash-v3 light is tens–hundreds H/s/thread. After blockfound
+          // a counter discontinuity used to paint ~kH/s on a 1-thread box.
+          const cap = threads * 500;
+          const jumped = prevHs > 1 && hs > prevHs * 4 && hs > threads * 200;
+          if (hs > cap || jumped) {
+            session.rateHashes0 = hashes;
+            session.rateAt0 = now;
+          } else {
+            session.clientHs = hs;
+            session.clientHsAt = now;
+            session.rateHashes0 = hashes;
+            session.rateAt0 = now;
+          }
         } else if (dt >= 8) {
           session.rateHashes0 = hashes;
           session.rateAt0 = now;
@@ -700,6 +719,14 @@ export function liveHashrate(miner, now = Date.now()) {
 
 export function reportedHashrate(miner, now = Date.now()) {
   return liveHashrate(miner, now);
+}
+
+/** HUD: miner's own hash counter this round. Never a mint path. */
+export function liveRoundHashes(miner) {
+  const h = Math.floor(Number(miner?.clientHashes) || 0);
+  const z = Math.floor(Number(miner?.clientHashesRound0) || 0);
+  const d = h - z;
+  return d > 0 ? d : 0;
 }
 
 export function sortMinersByHashrate(miners, now = Date.now()) {
@@ -977,8 +1004,7 @@ export function createPool({
     if (paused) return lastJob;
     pendingPayout = [];
     for (const m of miners.values()) {
-      m.roundHashes = 0;
-      m.clientHashesRound0 = Number(m.clientHashes) || 0;
+      resetMinerRoundDisplay(m);
       // never zero accepted / stale here — listing and linger use accepted.
       for (const c of m.connections || []) {
         if (!c) continue;
@@ -1292,6 +1318,9 @@ export function createPool({
             dest20: hash20FromAddress(destPay),
             nonce: BigInt(params.nonce),
             lz: Number(scored.bitsMet) & 0xff,
+            verifiedHeader: Buffer.isBuffer(scored.header)
+              ? scored.header.toString('hex').toLowerCase()
+              : String(job?.header || '').toLowerCase(),
           });
         }
       }
@@ -1373,8 +1402,7 @@ export function createPool({
         if (session) session.blocks = (Number(session.blocks) || 0) + 1;
         pendingPayout = snapshotRound();
         for (const m of miners.values()) {
-          m.roundHashes = 0;
-          m.clientHashesRound0 = Number(m.clientHashes) || 0;
+          resetMinerRoundDisplay(m);
           for (const c of m.connections || []) {
             if (!c) continue;
             c.varShares = 0;
@@ -1573,9 +1601,9 @@ export function createPool({
       client: String(m.client || CLIENT),
       algo: ALGO,
       hashrate: reportedHashrate(m, now),
-      hashes: roundActualHashes(m),
-      roundHashes: roundActualHashes(m),
-      provenHashes: Number(m.roundHashes) || 0,
+      hashes: liveRoundHashes(m) || roundActualHashes(m),
+      roundHashes: liveRoundHashes(m) || roundActualHashes(m),
+      provenHashes: roundActualHashes(m),
       accepted: m.accepted || 0,
       stale: m.stale || 0,
       blocks: Number(m.blocks) || 0,
