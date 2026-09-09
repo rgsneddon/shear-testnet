@@ -49,7 +49,7 @@ POOL_WITHDRAW=eip712-spend-bound
 
 ## Hash unit (proven)
 
-A **hash** is one ShearHash-v2 digest of the frozen 128-byte job header with a unique nonce.
+A **hash** is one ShearHash-v3 digest of the frozen 128-byte job header with a unique nonce.
 
 A **unit** is `HASH_BONUS_NANOS = 1`.
 
@@ -57,7 +57,7 @@ A digest that meets `SHARE_FLOOR_BITS` is worth `units(share) = 2^SHARE_FLOOR_BI
 
 Forbidden: count from `clientHashes`, banners, thread counts, or a number the template author typed. `applyMinerSelfRate` is not a credit path. `roundActualHashes` has no client-hash branch. After one valid share the bonus may not jump to a reported counter.
 
-Lag-1: ShearHash-v2 key K includes `continuity_root` and `merkle_root`. This-round shares must not write this-round `continuity_root`.
+Lag-1: ShearHash-v3 key K includes `continuity_root` and `merkle_root`. This-round shares must not write this-round `continuity_root`.
 
 Block N pays the shares proven on the frozen job header of the previous open round (parent sealed header; nonce replaced per share; no restamp).
 

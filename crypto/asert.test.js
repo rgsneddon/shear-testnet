@@ -150,9 +150,9 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /:90000:/);
     assert.match(fp, /:ssa:/);
     assert.match(fp, /:100000000000:/);
-    assert.match(fp, /HASH_FN=ShearHash-v2/);
+    assert.match(fp, /HASH_FN=ShearHash-v3/);
     assert.match(fp, /RX_MODE=light/);
-    assert.match(fp, /RX_SALT=ShearHash-v2\/rx/);
+    assert.match(fp, /RX_SALT=ShearHash-v3\/rx/);
     assert.match(fp, /SHARE_FLOOR_BITS=8/);
     assert.match(fp, /MAX_SHARES_PER_BLOCK=8192/);
     assert.match(fp, /SPEND_SIG=ed25519-shear-spend-v1/);
@@ -161,8 +161,9 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
-    assert.equal(HASH_FN, 'ShearHash-v2');
-    assert.equal(fp.includes('HASH_FN=ShearHash-v2'), true);
+    assert.equal(HASH_FN, 'ShearHash-v3');
+    assert.equal(fp.includes('HASH_FN=ShearHash-v3'), true);
+    assert.equal(fp.includes('HASH_FN=ShearHash-v2'), false);
     const law = consensusLaw();
     assert.equal(PRODUCT_VERSION, '0.4');
     assert.equal(MINER_VERSION, '1.1');

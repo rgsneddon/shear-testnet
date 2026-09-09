@@ -2,12 +2,12 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { scoreShare } from '../src/pool.js';
 import { encodeHeader } from '../../crypto/header.js';
-import { shearHash, shearHashV1, hashHex, V1_SELFTEST, V2_SELFTEST, HEADER_LEN } from '../../crypto/shear_hash.js';
+import { shearHash, shearHashV1, hashHex, V1_SELFTEST, V2_SELFTEST, V3_SELFTEST, HEADER_LEN } from '../../crypto/shear_hash.js';
 import { EMPTY_ROOT } from '../../crypto/merkle.js';
 
 const z32 = Buffer.alloc(32);
 
-describe('pool ShearHash-v2 share gate', () => {
+describe('pool ShearHash-v3 share gate', () => {
   it('accepts a v2 digest that meets shareBits and rejects a pretender nonce', () => {
     const header = encodeHeader({
       prevBlockHash: z32,
@@ -53,7 +53,8 @@ describe('pool ShearHash-v2 share gate', () => {
     const header = Buffer.alloc(HEADER_LEN);
     header[0] = 1;
     assert.equal(hashHex(shearHashV1(header)), V1_SELFTEST);
-    assert.equal(hashHex(shearHash(header)), V2_SELFTEST);
-    assert.notEqual(V1_SELFTEST, V2_SELFTEST);
+    assert.equal(hashHex(shearHash(header)), V3_SELFTEST);
+    assert.notEqual(hashHex(shearHash(header)), V2_SELFTEST);
+    assert.notEqual(V1_SELFTEST, V3_SELFTEST);
   });
 });

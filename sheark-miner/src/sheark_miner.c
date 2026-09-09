@@ -142,7 +142,7 @@ static void on_sig(int s) {
 
 static void usage(FILE *out) {
   fprintf(out,
-          "ShearK-Miner %s (ShearHash-v2 light)\n"
+          "ShearK-Miner %s (ShearHash-v3 light)\n"
           "Hashes the 128-byte Shear header. One proven share-hash mints units.\n\n"
           "  --user she1…|ssa1….worker   required (not shear1)\n"
           "  --dest ssa1…                owned payout dest (she1 login)\n"
@@ -601,6 +601,7 @@ static void apply_ack(const char *line) {
       atomic_fetch_sub(&g_inflight, 1);
     }
     g_have_sent = 0;
+    fprintf(stderr, "reject %s\n", err[0] ? err : (low[0] ? low : "unknown"));
     if (strstr(low, "old_miner") || strstr(low, "client")) {
       fprintf(stderr, "pool refused this client — use ShearHash\n");
     }
@@ -710,6 +711,7 @@ static void *hash_worker(void *arg) {
   memset(&job, 0, sizeof(job));
   int last_gen = -1;
   unsigned char header[SHEAR_HEADER_LEN];
+  unsigned char primed_hdr[SHEAR_HEADER_LEN];
   int primed = 0;
   uint64_t primed_n = 0;
   while (!g_stop) {
@@ -725,10 +727,24 @@ static void *hash_worker(void *arg) {
       shear_bind(header);
       n = g_origin + (uint64_t)tid;
     } else {
+      unsigned char live[SHEAR_HEADER_LEN];
       pthread_mutex_lock(&g_job_mu);
-      if (g_have_main && g_main_job.have)
-        memcpy(header, g_main_job.header, SHEAR_HEADER_LEN);
+      int have_live = g_have_main && g_main_job.have;
+      if (have_live) memcpy(live, g_main_job.header, SHEAR_HEADER_LEN);
       pthread_mutex_unlock(&g_job_mu);
+      if (!have_live) {
+        usleep(10000);
+        continue;
+      }
+      /* Restamp keeps RandomX K (bytes 0-99 and bits) but changes time.
+       * hash_next returns the digest of the previous input. Feeding a new
+       * timestamp there submits a digest the pool's current header will not
+       * match. Drop the in-flight pair and start on the live header. */
+      if (primed && (memcmp(live, primed_hdr, 100) != 0
+                     || memcmp(live + 108, primed_hdr + 108, 4) != 0)) {
+        primed = 0;
+      }
+      memcpy(header, live, SHEAR_HEADER_LEN);
     }
     shear_set_nonce(header, n);
     if (!primed) {
@@ -745,6 +761,7 @@ static void *hash_worker(void *arg) {
       }
       primed = 1;
       primed_n = n;
+      memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
       n += (uint64_t)g_threads;
       continue;
     }
@@ -759,6 +776,7 @@ static void *hash_worker(void *arg) {
       enqueue_share(job.jobId, primed_n, hash, job.gen);
     }
     primed_n = n;
+    memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
     n += (uint64_t)g_threads;
   }
   return NULL;
@@ -1098,7 +1116,7 @@ int main(int argc, char **argv) {
       SetConsoleMode(hout, mode | 0x0004);
   }
 #endif
-  printf("ShearK-Miner %s (ShearHash-v2 light)\n", SHEAR_VERSION);
+  printf("ShearK-Miner %s (ShearHash-v3 light)\n", SHEAR_VERSION);
   printf("tcp://%s:%d user=%s dest=%s threads=%d coin=SHE algo=%s backend=%s hugePages=%s\n",
          g_host, g_port, g_login, g_dest[0] ? g_dest : "-", g_threads, SHEAR_ALGO,
          shear_hash_backend(), shear_hash_huge_pages() ? "yes" : "no");

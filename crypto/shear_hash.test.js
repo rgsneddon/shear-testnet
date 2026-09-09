@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -13,6 +14,8 @@ import {
   V1_SELFTEST,
   V2_SELFTEST,
   V2_SELFTEST_K,
+  V3_SELFTEST,
+  V3_SELFTEST_K,
   setHashBackend,
 } from './shear_hash.js';
 import { encodeHeader } from './header.js';
@@ -37,18 +40,20 @@ function minerVerify(header, backend = 'interpreter') {
   return { digest: d[1], k: k[1] };
 }
 
-describe('ShearHash-v2', () => {
-  it('selftest header matches C interpreter vector and not v1', () => {
+describe('ShearHash-v3', () => {
+  it('selftest header matches C interpreter vector and not v1 or v2', () => {
     const header = selftestHeader();
     setHashBackend('interpreter');
-    assert.equal(PERSONAL, 'ShearHash-v2');
-    assert.equal(hashHex(shearHash(header)), V2_SELFTEST);
-    assert.equal(hashHex(shearKey(header)), V2_SELFTEST_K);
+    assert.equal(PERSONAL, 'ShearHash-v3');
+    assert.equal(hashHex(shearHash(header)), V3_SELFTEST);
+    assert.equal(hashHex(shearKey(header)), V3_SELFTEST_K);
     assert.equal(hashHex(shearHashV1(header)), V1_SELFTEST);
-    assert.notEqual(V2_SELFTEST, V1_SELFTEST);
+    assert.notEqual(V3_SELFTEST, V1_SELFTEST);
+    assert.notEqual(V3_SELFTEST, V2_SELFTEST);
+    assert.notEqual(V3_SELFTEST_K, V2_SELFTEST_K);
     const c = minerVerify(header, 'interpreter');
-    assert.equal(c.digest, V2_SELFTEST);
-    assert.equal(c.k, V2_SELFTEST_K);
+    assert.equal(c.digest, V3_SELFTEST);
+    assert.equal(c.k, V3_SELFTEST_K);
   });
 
   it('light JIT matches light interpreter on the selftest header', () => {
@@ -101,6 +106,44 @@ describe('ShearHash-v2', () => {
       assert.equal(js, c.digest);
       assert.equal(kjs, c.k);
     }
+  });
+
+  it('timestamp restamp keeps K and changes the digest', () => {
+    setHashBackend('interpreter');
+    const a = encodeHeader({
+      prevBlockHash: Buffer.alloc(32),
+      merkleRoot: Buffer.alloc(32, 1),
+      continuityRoot: Buffer.alloc(32, 2),
+      timestamp: 1_700_000_000_000n,
+      bits: 14,
+      nonce: 7n,
+    });
+    const b = encodeHeader({
+      prevBlockHash: Buffer.alloc(32),
+      merkleRoot: Buffer.alloc(32, 1),
+      continuityRoot: Buffer.alloc(32, 2),
+      timestamp: 1_700_000_010_000n,
+      bits: 14,
+      nonce: 7n,
+    });
+    assert.equal(hashHex(shearKey(a)), hashHex(shearKey(b)));
+    assert.notEqual(hashHex(shearHash(a)), hashHex(shearHash(b)));
+    const ca = minerVerify(a, 'interpreter');
+    const cb = minerVerify(b, 'interpreter');
+    assert.equal(ca.k, cb.k);
+    assert.notEqual(ca.digest, cb.digest);
+    assert.equal(ca.digest, hashHex(shearHash(a)));
+    assert.equal(cb.digest, hashHex(shearHash(b)));
+  });
+
+  it('verify path is light interpreter, not FULL_MEM', () => {
+    setHashBackend('interpreter');
+    assert.equal(setHashBackend('interpreter'), 'interpreter');
+    const header = selftestHeader();
+    assert.equal(hashHex(shearHash(header)), V3_SELFTEST);
+    const js = fs.readFileSync(path.join(root, 'crypto', 'shear_hash.js'), 'utf8');
+    assert.match(js, /native\.backend\('interpreter'\)/);
+    assert.equal(js.includes('jit-full'), false);
   });
 
   it('K changes when continuity_root changes; nonce-only keeps K', () => {

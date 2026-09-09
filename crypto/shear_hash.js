@@ -5,17 +5,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const PERSONAL = 'ShearHash-v2';
+export const PERSONAL = 'ShearHash-v3';
 export const ALGO = 'ShearHash';
 export const HEADER_LEN = 128;
 export const CLIENT = 'ShearHash';
 export const RX_MODE = 'light';
 export const V1_SELFTEST =
   '5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066';
+/** v2 light vector. Must miss under v3. */
 export const V2_SELFTEST =
   '64d41fa97f5ebea8a7e2a2625b1824467ce9d081bf29b0b2ae0a7fe617599895';
 export const V2_SELFTEST_K =
   'e46e00191cde74015961b7a68274933c680b69f05bdbbad1ef51e75fbc19f389';
+export const V3_SELFTEST =
+  '98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b';
+export const V3_SELFTEST_K =
+  '55111f0216ab10a6ba15fc0146990b10d26edcf58c86fa1418c41d96fa40b8e4';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let native = null;

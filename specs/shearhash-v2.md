@@ -44,7 +44,9 @@ Salt must differ from `"RandomX\x03"`.
 
 ## Mode
 
-Mining and verification use **light mode only** (`RANDOMX_FLAG_FULL_MEM` off). Fast-mode dataset precompute is not consensus. If two implementations disagree, the **light-mode interpreter** digest wins. JIT is allowed for mining iff it matches the interpreter on the selftest vector.
+Mining and verification use **light mode only** (`RANDOMX_FLAG_FULL_MEM` off). The 2 GiB dataset path (`jit-full` / `FULL_MEM`) is a **different digest** and is not ShearHash-v2. Fast-mode dataset precompute is not consensus. If two implementations disagree, the **light-mode interpreter** digest wins. JIT is allowed for mining iff it matches the interpreter on the selftest vector and on the submitted header. Pool and node verify with light interpreter (or a JIT that has been proven identical). `clientHashes` is not a digest.
+
+ShearK-Miner must implement this hash. The hash is not recut to match a miner.
 
 ## Key and input
 
@@ -52,10 +54,14 @@ Header is the frozen 128-byte little-endian testnet header (do not change size).
 
 ```
 K     = first_32_bytes( SHA-512( "ShearHash-v2/key" || prev || continuity_root || merkle_root || bits_le32 ) )
-input = full 128-byte header including nonce
+input = the entire 128-byte header (version, prev, merkle, continuity, timestamp, bits, nonce, baseFee)
 digest = RandomX_lite(K, input)     # 32 bytes, Blake2b as in RandomX
-valid  iff be256(digest) <= target(bits)
+valid  iff leading-zero-bits(digest) >= bits   # share: shareBits; block: blockBits
 ```
+
+`K` does **not** include timestamp or nonce. Cache therefore survives a pool timestamp restamp. The **digest does include timestamp and nonce**: walking nonce or restamping time produces a different input and a different digest. A share is the light digest of one exact 128-byte header. Submitting digest(H0) with nonce applied to a later restamp H1 is `bad_hash`.
+
+Consensus (sealed block) hashes the sealed header: nonce replaced per share, no restamp (`specs/law.md`). Stratum may restamp time on the live job so wall-clock tracks; the pool must verify the digest against that exact header or a remembered prior restamp of the same jobId.
 
 Field layout in K (not header order):
 
@@ -67,7 +73,7 @@ Field layout in K (not header order):
 | 32 | `merkle_root` | 36 |
 | 4 | `bits` little-endian u32 | 108 |
 
-K rebuilds every block from sealed header fields except nonce. Cache init from K once per block template; threads share that cache. Nonce only walks `input`. Do not put miner id, login, or pool job-id into K or input.
+K rebuilds when prev, continuity_root, merkle_root, or bits change. Cache init from K once per template; threads share that cache. Nonce and timestamp walk `input` only. Do not put miner id, login, or pool job-id into K or input.
 
 ## Fingerprint strings (frozen identity)
 

@@ -44,11 +44,11 @@ export const POT_PROP = 'shareBatch';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
 export const MAGIC_TESTNET_V1 = 'shear-testnet-v1';
 export const MAGIC_TESTNET_V2 = 'shear-testnet-v2';
-/** Live testnet book for ShearHash-v2. v1 remains readable but is not mined. */
+/** Live testnet book for ShearHash-v3. v1 remains readable but is not mined. */
 export const MAGIC_TESTNET = MAGIC_TESTNET_V2;
 export const MAGIC_MAINNET = 'shear-v1';
-export const HASH_FN = 'ShearHash-v2';
-export const RX_SALT = 'ShearHash-v2/rx';
+export const HASH_FN = 'ShearHash-v3';
+export const RX_SALT = 'ShearHash-v3/rx';
 export const RX_ARGON_MEMORY = 131072;
 export const RX_ARGON_ITERS = 3;
 export const RX_CACHE_ACCESSES = 8;
@@ -57,7 +57,7 @@ export const RX_PROGRAM_ITERATIONS = 2048;
 export const RX_PROGRAM_COUNT = 8;
 export const RX_SCRATCHPAD_L3 = 2097152;
 export const RX_MODE = 'light';
-export const RX_KEY = 'ShearHash-v2/key';
+export const RX_KEY = 'ShearHash-v3/key';
 export const SHEARK_MINER_NAME = 'ShearK-Miner';
 export const SHEARK_MINER_VERSION = '1.6';
 /** Frozen consensus identity. A different fingerprint is a different law. */

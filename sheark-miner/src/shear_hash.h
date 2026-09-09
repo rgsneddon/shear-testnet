@@ -5,9 +5,9 @@
 #include <stdint.h>
 
 #define SHEAR_HEADER_LEN 128
-#define SHEAR_PERSONAL "ShearHash-v2"
-#define SHEAR_KEY_PERSONAL "ShearHash-v2/key"
-#define SHEAR_RX_SALT "ShearHash-v2/rx"
+#define SHEAR_PERSONAL "ShearHash-v3"
+#define SHEAR_KEY_PERSONAL "ShearHash-v3/key"
+#define SHEAR_RX_SALT "ShearHash-v3/rx"
 #define SHEAR_ALGO "ShearHash"
 #define SHEAR_CLIENT "ShearHash"
 #define SHEAR_MINER_NAME "ShearK-Miner"

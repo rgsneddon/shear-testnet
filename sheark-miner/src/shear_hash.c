@@ -22,7 +22,7 @@ static const char V1_SELFTEST[] =
     "5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066";
 
 const char SHEAR_SELFTEST_HASH[] =
-    "64d41fa97f5ebea8a7e2a2625b1824467ce9d081bf29b0b2ae0a7fe617599895";
+    "98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b";
 
 #define SHEAR_MAX_VM 256
 
@@ -474,15 +474,13 @@ void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[
     return;
   }
   for (;;) {
+    if (shear_bind(header) != 0) {
+      memset(out, 0, 32);
+      return;
+    }
     unsigned gen = 0;
     randomx_vm *vm = hot_vm(tls, &gen);
-    if (!vm) {
-      if (shear_bind(header) != 0) {
-        memset(out, 0, 32);
-        return;
-      }
-      continue;
-    }
+    if (!vm) continue;
     rx_rd();
     if (atomic_load_explicit(&g_gen, memory_order_acquire) != gen || g_vms[tls->tid] != vm) {
       rx_un();
@@ -498,13 +496,10 @@ void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[
 int shear_hash_first(const unsigned char header[SHEAR_HEADER_LEN]) {
   RxTls *tls = tls_slot();
   if (!tls) return -1;
+  if (shear_bind(header) != 0) return -1;
   unsigned gen = 0;
   randomx_vm *vm = hot_vm(tls, &gen);
-  if (!vm) {
-    if (shear_bind(header) != 0) return -1;
-    vm = hot_vm(tls, &gen);
-    if (!vm) return -1;
-  }
+  if (!vm) return -1;
   rx_rd();
   if (atomic_load_explicit(&g_gen, memory_order_acquire) != gen || g_vms[tls->tid] != vm) {
     rx_un();

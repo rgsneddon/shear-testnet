@@ -12,21 +12,22 @@ const bin = process.platform === 'win32'
   : path.join(root, 'ShearK-Miner');
 
 describe('ShearK-Miner', () => {
-  it('selftest and print-config are ShearHash-v2 light', () => {
+  it('selftest and print-config are ShearHash-v3 light', () => {
     assert.equal(fs.existsSync(bin), true, `missing ${bin}`);
     const st = spawnSync(bin, ['--backend', 'interpreter', '--selftest'], { encoding: 'utf8' });
     assert.equal(st.status, 0, st.stderr + st.stdout);
-    assert.match(st.stdout, /selftest ok 64d41fa97f5ebea8a7e2a2625b1824467ce9d081bf29b0b2ae0a7fe617599895/);
+    assert.match(st.stdout, /selftest ok 98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b/);
     const stJit = spawnSync(bin, ['--backend', 'jit', '--selftest'], { encoding: 'utf8' });
     assert.equal(stJit.status, 0, stJit.stderr + stJit.stdout);
-    assert.match(stJit.stdout, /selftest ok 64d41fa97f5ebea8a7e2a2625b1824467ce9d081bf29b0b2ae0a7fe617599895/);
+    assert.match(stJit.stdout, /selftest ok 98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b/);
     assert.match(stJit.stdout, /backend=(jit|interpreter)/);
     assert.equal(stJit.stdout.includes('jit-full'), false);
     if (process.platform === 'linux') assert.match(stJit.stdout, /backend=jit/);
-    assert.match(st.stdout, /k e46e00191cde74015961b7a68274933c680b69f05bdbbad1ef51e75fbc19f389/);
+    assert.match(st.stdout, /k 55111f0216ab10a6ba15fc0146990b10d26edcf58c86fa1418c41d96fa40b8e4/);
+    assert.equal(st.stdout.includes('64d41fa97f5ebea8a7e2a2625b1824467ce9d081bf29b0b2ae0a7fe617599895'), false);
     assert.match(st.stdout, /client=ShearHash/);
     assert.match(st.stdout, /algorithm=ShearHash/);
-    assert.match(st.stdout, /personalisation=ShearHash-v2/);
+    assert.match(st.stdout, /personalisation=ShearHash-v3/);
     assert.equal(st.stdout.includes('5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066'), false);
     assert.equal(st.stdout.toLowerCase().includes('feeless'), false);
     const cfg = spawnSync(bin, ['--print-config'], { encoding: 'utf8' });
@@ -35,7 +36,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.name, 'ShearK-Miner');
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
-    assert.equal(j.personalisation, 'ShearHash-v2');
+    assert.equal(j.personalisation, 'ShearHash-v3');
     assert.equal(j.version, '1.6');
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.headerBytes, 128);
@@ -54,8 +55,8 @@ describe('ShearK-Miner', () => {
     if (process.platform === 'linux') assert.equal(j.backend, 'jit');
     assert.equal(typeof j.hugePages, 'boolean');
     const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
-    assert.match(help.stdout, /ShearK-Miner 1\.6 \(ShearHash-v2 light\)/);
-    assert.match(help.stdout, /ShearHash-v2 light/);
+    assert.match(help.stdout, /ShearK-Miner 1\.6 \(ShearHash-v3 light\)/);
+    assert.match(help.stdout, /ShearHash-v3 light/);
     assert.match(help.stdout, /--backend jit/);
     assert.match(help.stdout, /huge pages/);
     const srcEx = fs.readFileSync(path.join(root, 'example.sh'), 'utf8');
@@ -101,6 +102,9 @@ describe('ShearK-Miner', () => {
     assert.match(src, /#define IN_FLIGHT_MAX 1/);
     assert.match(src, /strstr\(low, "busy"\)/);
     assert.match(src, /memcmp\(g_main_job\.header, job\.header, 100\)/);
+    assert.match(src, /primed_hdr/);
+    assert.match(src, /Drop the in-flight pair and start on the live header/);
+    assert.match(src, /reject %s/);
     assert.match(src, /g_smooth_hs/);
     assert.match(src, /Blockfound RandomX K pause/);
     assert.match(src, /RATE_HOLD_FRAC 0\.9/);
@@ -212,7 +216,7 @@ describe('ShearK-Miner', () => {
     assert.match(loginLine, /"algorithm":"ShearHash"/);
     assert.equal(/"dest"/.test(loginLine), false, loginLine);
     assert.equal(/"version":"1\.[01]"/.test(loginLine), false, loginLine);
-    assert.match(out, /ShearK-Miner 1\.6 \(ShearHash-v2 light\)/);
+    assert.match(out, /ShearK-Miner 1\.6 \(ShearHash-v3 light\)/);
     assert.match(out, /hashes=(?:\x1b\[(?:32m|1;92m))?\d+/);
     assert.match(out, /accepted=(?:\x1b\[(?:33m|1;93m))?0/);
     assert.match(out, /rejected=(?:\x1b\[(?:31m|1;91m))?0/);

@@ -1,10 +1,10 @@
 # Shear consensus
 
-Network magic (testnet, ShearHash-v2 book): `shear-testnet-v2`  
+Network magic (testnet, ShearHash-v3 book): `shear-testnet-v2`  
 Frozen previous book: `shear-testnet-v1` (readable, not mined).  
 Mainnet magic (`shear-v1`) is a later genesis. Do not merge v2 into live v1 until the operator cuts over.
 
-PoW for this book is **ShearHash-v2** (RandomX light). See [shearhash-v2.md](shearhash-v2.md). Header size is still **128 bytes**.
+PoW for this book is **ShearHash-v3** (RandomX light). See [shearhash-v3.md](shearhash-v3.md). Header size is still **128 bytes**.
 
 Hash-tx law is consensus, not env: `HASH_TX_LIVE=1`, `HASH_TX_COLLATE=1`, confirm on block-found. 1 hash = 1 bonus unit. Collate is O(miners), never one JSON object per hash. Mainnet genesis seals `consensusFingerprint()` (includes `HASH_TX_LIVE=1`); flipping it is a different book.
 
@@ -23,7 +23,7 @@ The field list is authoritative. Packed size is **128 bytes** (4+32+32+32+8+4+8+
 | 112 | 8 | `nonce` u64 |
 | 120 | 8 | `base_fee` u64 Flow levy base |
 
-PoW: `ShearHash-v2(header) ≤ target(bits)` (RandomX light, 128 MiB cache). Algorithm name on the wire: `ShearHash`. Personalisation: `ShearHash-v2`. v1 8-round SHA-256 shares mint nothing.
+PoW: `ShearHash-v3(header) ≤ target(bits)` (RandomX light, 128 MiB cache). Algorithm name on the wire: `ShearHash`. Personalisation: `ShearHash-v3`. v1/v2 pretender hashes mint nothing.
 
 ## Mint
 
