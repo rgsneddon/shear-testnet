@@ -192,7 +192,7 @@ def main() -> None:
         "is bound to previous hash, continuity root, merkle root, and bits, so it rebuilds every block and does not "
         "include miner identity. Mining may JIT if the digest matches the interpreter on the self-test vector. "
         "Verification is the light-mode interpreter. Wire algorithm name is ShearHash. Personalisation is ShearHash-v2. "
-        "The official hasher is ShearK-Miner 1.5.",
+        "The official hasher is ShearK-Miner 1.6.",
     )
 
     h2(pdf, "2.4  Emissions")
@@ -282,7 +282,7 @@ def main() -> None:
         0,
         5,
         "Correspondence: shear.digital. Software under the MIT License, Copyright 2026 Shear. "
-        "RandomX is vendored from tevador/RandomX v1.2.3 (BSD). Official miner ShearK-Miner 1.5. "
+        "RandomX is vendored from tevador/RandomX v1.2.3 (BSD). Official miner ShearK-Miner 1.6. "
         "Wallet pin at publication: 0.25.",
         new_x=XPos.LMARGIN,
         new_y=YPos.NEXT,

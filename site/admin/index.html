@@ -75,13 +75,13 @@
     </section>
     <section class="panel-card" id="mine">
       <h2>How to mine</h2>
-      <p>Official miner is <strong>ShearK-Miner 1.5</strong>. CPU only. Log in with your <code>she1</code>.</p>
-      <p><a href="https://github.com/rgsneddon/ShearK/releases/tag/1.5">github.com/rgsneddon/ShearK/releases/tag/1.5</a></p>
+      <p>Official miner is <strong>ShearK-Miner 1.6</strong>. CPU only. Log in with your <code>she1</code>.</p>
+      <p><a href="https://github.com/rgsneddon/ShearK/releases/tag/1.6">github.com/rgsneddon/ShearK/releases/tag/1.6</a></p>
       <ol>
         <li>Download the zip for your system (macOS, Windows, or Linux).</li>
         <li>Unzip. Run a self-test: <code>./ShearK-Miner --selftest</code></li>
         <li>Start hashing:
-          <br/><code>./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --threads 8</code></li>
+          <br/><code>./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --dest YOUR_SSA1 --backend jit --threads 8</code></li>
         <li><code>--user</code> is one string: your <code>she1</code>, a dot, then a worker name for this machine.</li>
       </ol>
       <p>Each found block mints <strong>1 SHE</strong> (the pot), split by proven work on the public pool. Each accepted hash also mints <strong>0.00000000001 SHE</strong> to the miner who produced it. The public pool may take 1% of the pot only. Hash bonuses are not fee'd.</p>

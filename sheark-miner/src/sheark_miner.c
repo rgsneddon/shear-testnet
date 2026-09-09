@@ -58,7 +58,7 @@ static char g_dest[128];
 static char g_host_buf[256];
 static const char *g_host = DEFAULT_HOST;
 static int g_port = DEFAULT_PORT;
-static int g_threads = 1;
+static int g_threads = 0;
 static int g_cpu_cores = 1;
 static int g_cpu_threads = 1;
 static volatile int g_stop = 0;
@@ -148,7 +148,8 @@ static void usage(FILE *out) {
           "  --dest ssa1…                owned payout dest (she1 login)\n"
           "  --pool host:port            default %s:%d\n"
           "  --threads N                 no 256 farm cap\n"
-          "  --backend auto|interpreter|jit\n"
+          "  --backend jit                default: light JIT + HARD_AES + huge pages\n"
+          "  --backend interpreter\n"
           "  --notls                     plaintext (default on this pool)\n"
           "  --bench [SECONDS]\n"
           "  --selftest\n"
@@ -837,11 +838,12 @@ static void print_config(void) {
   printf("{\"name\":\"%s\",\"client\":\"%s\",\"algorithm\":\"%s\",\"personalisation\":\"%s\","
          "\"version\":\"%s\",\"clientLogin\":\"direct\",\"feePct\":0,"
          "\"pool\":\"%s:%d\",\"headerBytes\":%d,\"magic\":\"%s\","
-         "\"rxMode\":\"light\",\"rxCacheMiB\":%d,"
+         "\"rxMode\":\"light\",\"rxCacheMiB\":%d,\"hugePages\":%s,"
          "\"threads\":%d,\"backend\":\"%s\"}\n",
          SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_ALGO, SHEAR_PERSONAL,
          SHEAR_VERSION, g_host, g_port, SHEAR_HEADER_LEN, SHEAR_MAGIC,
-         SHEAR_RX_CACHE_MIB, g_threads, shear_hash_backend());
+         SHEAR_RX_CACHE_MIB, shear_hash_huge_pages() ? "true" : "false",
+         g_threads, shear_hash_backend());
 }
 
 static int mine_once(void) {
@@ -962,13 +964,11 @@ int main(int argc, char **argv) {
   int do_selftest = 0;
   int do_cfg = 0;
   int bench_secs = 0;
-  const char *backend_arg = "auto";
+  const char *backend_arg = "jit";
   const char *verify_hex = NULL;
   device_inventory();
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) backend_arg = argv[++i];
-    if (strcmp(argv[i], "--selftest") == 0 || strcmp(argv[i], "--verify") == 0)
-      if (strcmp(backend_arg, "auto") == 0) backend_arg = "interpreter";
   }
   if (shear_hash_set_backend(backend_arg) != 0) {
     fprintf(stderr, "unknown or unavailable --backend %s; using %s\n", backend_arg,
@@ -1014,7 +1014,6 @@ int main(int argc, char **argv) {
     char khex[65];
     memset(header, 0, SHEAR_HEADER_LEN);
     header[0] = 1;
-    shear_hash_set_backend("interpreter");
     int ok = shear_selftest(hex);
     shear_key(header, k);
     shear_hash_hex(k, khex);
@@ -1035,6 +1034,11 @@ int main(int argc, char **argv) {
     }
     printf("digest %s\nk %s\n", digest, khex);
     return 0;
+  }
+  if (g_threads < 1) g_threads = g_cpu_cores > 0 ? g_cpu_cores : 1;
+  if (g_dest[0] && strncmp(g_dest, "ssa1", 4) != 0) {
+    fprintf(stderr, "dest must be ssa1... (owned payout dest)\n");
+    return 2;
   }
   if (do_cfg) {
     print_config();
@@ -1095,8 +1099,9 @@ int main(int argc, char **argv) {
   }
 #endif
   printf("ShearK-Miner %s (ShearHash-v2 light)\n", SHEAR_VERSION);
-  printf("tcp://%s:%d user=%s threads=%d coin=SHE algo=%s backend=%s\n",
-         g_host, g_port, g_login, g_threads, SHEAR_ALGO, shear_hash_backend());
+  printf("tcp://%s:%d user=%s dest=%s threads=%d coin=SHE algo=%s backend=%s hugePages=%s\n",
+         g_host, g_port, g_login, g_dest[0] ? g_dest : "-", g_threads, SHEAR_ALGO,
+         shear_hash_backend(), shear_hash_huge_pages() ? "yes" : "no");
   printf("device cpuCores=%d cpuThreads=%d", g_cpu_cores, g_cpu_threads);
   if (g_cpu_map_n > 0) {
     printf(" pin=");

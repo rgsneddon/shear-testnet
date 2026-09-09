@@ -11,7 +11,7 @@
 #define SHEAR_ALGO "ShearHash"
 #define SHEAR_CLIENT "ShearHash"
 #define SHEAR_MINER_NAME "ShearK-Miner"
-#define SHEAR_VERSION "1.5"
+#define SHEAR_VERSION "1.6"
 #define SHEAR_MAGIC "shear-testnet-v2"
 #define SHEAR_RX_CACHE_MIB 128
 
@@ -30,6 +30,7 @@ int shear_meets_target(const unsigned char hash[32], int bits);
 int shear_selftest(char got_hex[65]);
 int shear_verify_header_hex(const char *header_hex, char digest_hex[65], char k_hex[65]);
 const char *shear_hash_backend(void);
+int shear_hash_huge_pages(void);
 int shear_hash_set_backend(const char *name);
 
 #ifdef __cplusplus

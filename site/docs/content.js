@@ -23,7 +23,7 @@ window.SHEAR_DOCS = {
     { title: 'Mining', children: [
       { id: 'mine', title: 'How to mine' },
       { id: 'solo', title: 'Solo mine' },
-      { id: 'sheark', title: 'ShearK 1.5' },
+      { id: 'sheark', title: 'ShearK 1.6' },
       { id: 'shares', title: 'Shares and PROP' },
       { id: 'hash-bonus', title: 'Hash bonus' }
     ]},
@@ -71,7 +71,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
       '<tr><th>Wallet pin</th><td>0.28</td></tr>' +
-      '<tr><th>Miner pin</th><td>ShearK 1.5</td></tr></table>' +
+      '<tr><th>Miner pin</th><td>ShearK 1.6</td></tr></table>' +
       '<p>How-to lives in this tree. The architecture note is a PDF at <a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> — that URL is not in the navbar on purpose.</p>'
   };
 
@@ -197,10 +197,10 @@ window.SHEAR_DOCS = {
     title: 'How to mine',
     crumb: 'mining / how-to',
     html:
-      '<p>Official miner is <strong>ShearK-Miner 1.5</strong>, CPU only. Log in with your wallet <code>she1</code> (never <code>shear1</code>).</p>' +
+      '<p>Official miner is <strong>ShearK-Miner 1.6</strong>, CPU only. Log in with your wallet <code>she1</code> (never <code>shear1</code>).</p>' +
       '<pre>./ShearK-Miner --selftest\n' +
-      './ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --threads 8</pre>' +
-      '<p>Windows: <code>ShearK-Miner.exe</code> with the same flags. <code>.worker</code> is only a name. Downloads: <a href="https://github.com/rgsneddon/ShearK/releases/tag/1.5">ShearK 1.5</a>.</p>' +
+      './ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --dest YOUR_SSA1 --backend jit --threads 8</pre>' +
+      '<p>Windows: <code>ShearK-Miner.exe</code> with the same flags. <code>.worker</code> is only a name. Downloads: <a href="https://github.com/rgsneddon/ShearK/releases/tag/1.6">ShearK 1.6</a>.</p>' +
       '<p>The public pool takes 1% of the 1 SHE pot. Hash bonuses are paid in full to the hasher who produced them.</p>'
   };
 
@@ -217,10 +217,10 @@ window.SHEAR_DOCS = {
   };
 
   P.sheark = {
-    title: 'ShearK 1.5',
+    title: 'ShearK 1.6',
     crumb: 'mining / sheark',
     html:
-      '<p>ShearK-Miner is the official hasher. Pin <strong>1.5</strong>. Do not recut 1.1 or 1.0. Backends include JIT. Always run <code>--selftest</code> once on a new machine.</p>' +
+      '<p>ShearK-Miner is the official hasher. Pin <strong>1.6</strong>. Do not recut 1.1 or 1.0. Default <code>--backend jit</code> is ShearHash-v2 light JIT. Always run <code>--selftest</code> once on a new machine.</p>' +
       '<p>One login. No miner-fee dual-login. Keep any extra fee yourself if you run a private stratum.</p>'
   };
 

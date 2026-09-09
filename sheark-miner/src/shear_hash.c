@@ -162,14 +162,21 @@ static void drop_cache_locked(void) {
 }
 
 static randomx_flags flags_interpreter(void) {
-  return RANDOMX_FLAG_DEFAULT;
+  randomx_flags f = randomx_get_flags();
+  f = (randomx_flags)(f & ~RANDOMX_FLAG_FULL_MEM);
+  f = (randomx_flags)(f & ~RANDOMX_FLAG_JIT);
+  f = (randomx_flags)(f | RANDOMX_FLAG_LARGE_PAGES);
+  return f;
 }
 
+/* Fastest path this book will accept: compiled light VM + AES-NI + 2 MiB
+ * pages over the 128 MiB cache. FULL_MEM is a different digest (dataset
+ * path) and the pool light-verifies, so jit-full shares are rejected.
+ * Keep RANDOMX_FLAG_SECURE when get_flags set it (Apple aarch64 W^X). */
 static randomx_flags flags_jit_light(void) {
   randomx_flags f = randomx_get_flags();
   f = (randomx_flags)(f & ~RANDOMX_FLAG_FULL_MEM);
-  f = (randomx_flags)(f & ~RANDOMX_FLAG_SECURE);
-  f = (randomx_flags)(f | RANDOMX_FLAG_JIT | RANDOMX_FLAG_HARD_AES);
+  f = (randomx_flags)(f | RANDOMX_FLAG_JIT | RANDOMX_FLAG_HARD_AES | RANDOMX_FLAG_LARGE_PAGES);
   return f;
 }
 
@@ -180,9 +187,7 @@ static randomx_flags flags_jit_full(void) {
 }
 
 static randomx_cache *alloc_cache(randomx_flags flags) {
-  randomx_cache *c = randomx_alloc_cache((randomx_flags)(flags | RANDOMX_FLAG_LARGE_PAGES));
-  if (!c) c = randomx_alloc_cache(flags);
-  return c;
+  return randomx_alloc_cache(flags);
 }
 
 typedef struct {
@@ -202,8 +207,10 @@ static int init_dataset_locked(void) {
   if (!(g_flags & RANDOMX_FLAG_FULL_MEM)) return 0;
   if (!g_cache) return -1;
   if (!g_dataset) {
-    g_dataset = randomx_alloc_dataset((randomx_flags)(g_flags | RANDOMX_FLAG_LARGE_PAGES));
-    if (!g_dataset) g_dataset = randomx_alloc_dataset(g_flags);
+    g_dataset = randomx_alloc_dataset(g_flags);
+    if (!g_dataset && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+      g_dataset = randomx_alloc_dataset((randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES));
+    }
   }
   if (!g_dataset) {
     fprintf(stderr, "ShearK-Miner: dataset alloc failed\n");
@@ -244,8 +251,10 @@ static int init_dataset_locked(void) {
 static randomx_vm *create_vm_locked(void) {
   randomx_dataset *ds = (g_flags & RANDOMX_FLAG_FULL_MEM) ? g_dataset : NULL;
   if ((g_flags & RANDOMX_FLAG_FULL_MEM) && !ds) return NULL;
-  randomx_vm *vm = randomx_create_vm((randomx_flags)(g_flags | RANDOMX_FLAG_LARGE_PAGES), g_cache, ds);
-  if (!vm) vm = randomx_create_vm(g_flags, g_cache, ds);
+  randomx_vm *vm = randomx_create_vm(g_flags, g_cache, ds);
+  if (!vm && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+    vm = randomx_create_vm((randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES), g_cache, ds);
+  }
   return vm;
 }
 
@@ -253,26 +262,20 @@ static int init_cache_locked(const unsigned char k[32]);
 static int backend_matches_selftest_locked(void);
 
 int shear_hash_set_backend(const char *name) {
+  randomx_flags next = flags_jit_light();
+  const char *label = "jit";
   int want_full = 0;
-  randomx_flags next = flags_interpreter();
-  const char *label = "interpreter";
-  if (name && (strcmp(name, "jit") == 0 || strcmp(name, "auto") == 0 || strcmp(name, "jit-full") == 0)) {
-    want_full = strcmp(name, "jit") != 0 || strcmp(name, "auto") == 0 || strcmp(name, "jit-full") == 0;
-    /* auto and jit-full take the dataset path; bare --backend jit stays light. */
-    if (name && strcmp(name, "jit") == 0) {
-      next = flags_jit_light();
-      label = "jit";
-      want_full = 0;
-    } else {
-      next = flags_jit_full();
-      label = "jit-full";
-      want_full = 1;
-    }
-  }
-  if (name && strcmp(name, "interpreter") == 0) {
+  if (name && (strcmp(name, "jit") == 0 || strcmp(name, "auto") == 0)) {
+    next = flags_jit_light();
+    label = "jit";
+  } else if (name && strcmp(name, "jit-full") == 0) {
+    next = flags_jit_full();
+    label = "jit-full";
+    want_full = 1;
+    fprintf(stderr, "ShearK-Miner: jit-full is FULL_MEM; this pool light-verifies and will reject those shares\n");
+  } else if (name && strcmp(name, "interpreter") == 0) {
     next = flags_interpreter();
     label = "interpreter";
-    want_full = 0;
   }
   rx_wr();
   if (next != g_flags) {
@@ -281,11 +284,59 @@ int shear_hash_set_backend(const char *name) {
   }
   if (!g_cache) {
     g_cache = alloc_cache(g_flags);
+    if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+      g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
+      g_cache = alloc_cache(g_flags);
+      fprintf(stderr, "ShearK-Miner: huge pages unavailable, using 4K pages\n");
+    }
     if (!g_cache && (g_flags & RANDOMX_FLAG_JIT)) {
       g_flags = flags_interpreter();
       label = "interpreter";
       g_cache = alloc_cache(g_flags);
+      if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+        g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
+        g_cache = alloc_cache(g_flags);
+      }
+      fprintf(stderr, "ShearK-Miner: JIT unavailable, using interpreter\n");
     }
+  }
+  if (g_cache && (g_flags & RANDOMX_FLAG_JIT)) {
+    unsigned char header[SHEAR_HEADER_LEN];
+    unsigned char k[32];
+    memset(header, 0, SHEAR_HEADER_LEN);
+    header[0] = 1;
+    shear_key(header, k);
+    if (init_cache_locked(k) != 0) {
+      drop_cache_locked();
+      g_flags = flags_interpreter();
+      label = "interpreter";
+      g_cache = alloc_cache(g_flags);
+      if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+        g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
+        g_cache = alloc_cache(g_flags);
+      }
+      fprintf(stderr, "ShearK-Miner: JIT cache init failed, using interpreter\n");
+    }
+    randomx_vm *probe = g_cache ? create_vm_locked() : NULL;
+    if (!probe && g_cache) {
+      g_flags = (randomx_flags)(g_flags | RANDOMX_FLAG_SECURE);
+      probe = create_vm_locked();
+    }
+    if (!probe) {
+      drop_cache_locked();
+      g_flags = flags_interpreter();
+      label = "interpreter";
+      g_cache = alloc_cache(g_flags);
+      if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+        g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
+        g_cache = alloc_cache(g_flags);
+      }
+      fprintf(stderr, "ShearK-Miner: JIT VM create failed, using interpreter\n");
+    } else {
+      randomx_destroy_vm(probe);
+    }
+  } else if (!(g_flags & RANDOMX_FLAG_LARGE_PAGES) && (next & RANDOMX_FLAG_LARGE_PAGES)) {
+    /* cache already stood up without huge pages */
   }
   if (g_cache && (g_flags & RANDOMX_FLAG_FULL_MEM)) {
     unsigned char header[SHEAR_HEADER_LEN];
@@ -298,6 +349,10 @@ int shear_hash_set_backend(const char *name) {
       g_flags = flags_jit_light();
       label = "jit";
       g_cache = alloc_cache(g_flags);
+      if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+        g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
+        g_cache = alloc_cache(g_flags);
+      }
       fprintf(stderr, "ShearK-Miner: dataset path failed selftest, using light JIT\n");
     }
   }
@@ -312,13 +367,26 @@ const char *shear_hash_backend(void) {
   return g_backend;
 }
 
+int shear_hash_huge_pages(void) {
+  return (g_flags & RANDOMX_FLAG_LARGE_PAGES) ? 1 : 0;
+}
+
 static int init_cache_locked(const unsigned char k[32]) {
   if (!g_cache) {
     g_cache = alloc_cache(g_flags);
+    if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+      g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
+      g_cache = alloc_cache(g_flags);
+      fprintf(stderr, "ShearK-Miner: huge pages unavailable, using 4K pages\n");
+    }
     if (!g_cache && (g_flags & RANDOMX_FLAG_JIT)) {
       g_flags = flags_interpreter();
       g_backend = "interpreter";
       g_cache = alloc_cache(g_flags);
+      if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+        g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
+        g_cache = alloc_cache(g_flags);
+      }
     }
     if (!g_cache) return -1;
   }
@@ -510,7 +578,6 @@ int shear_selftest(char got_hex[65]) {
   unsigned char k[32];
   memset(header, 0, SHEAR_HEADER_LEN);
   header[0] = 1;
-  shear_hash_set_backend("interpreter");
   shear_key(header, k);
   shear_hash(header, hash);
   shear_hash_hex(hash, got_hex);

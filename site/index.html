@@ -245,7 +245,7 @@
       <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.6" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.28" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
@@ -267,7 +267,7 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.28</strong> · miner <strong>1.5</strong>
+      wallet <strong>0.28</strong> · miner <strong>1.6</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
@@ -282,11 +282,11 @@
         </div>
       </div>
       <div class="client-dd">
-        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.5">MINER</a>
+        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.6">MINER</a>
         <div class="client-menu" id="menu-miner">
-          <a data-pack="miner-macos" href="https://github.com/rgsneddon/ShearK/releases/download/1.5/ShearK-Miner-1.5-macos.zip">macOS</a>
-          <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/download/1.5/ShearK-Miner-1.5-windows.zip">Windows</a>
-          <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/download/1.5/ShearK-Miner-1.5-linux.zip">Linux</a>
+          <a data-pack="miner-macos" href="https://github.com/rgsneddon/ShearK/releases/download/1.6/ShearK-Miner-1.6-macos.zip">macOS</a>
+          <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/download/1.6/ShearK-Miner-1.6-windows.zip">Windows</a>
+          <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/download/1.6/ShearK-Miner-1.6-linux.zip">Linux</a>
         </div>
       </div>
       <div class="client-dd">
@@ -392,7 +392,7 @@
     </section>
     <section class="panel-card guide-wide" id="solo-mine">
       <h2>Solo mine</h2>
-      <p>ShearK-Miner <strong>1.5</strong>, CPU only. Log in with your wallet <code>she1</code> (never <code>shear1</code>). Solo means <em>your</em> node finds the block: you keep the whole <strong>1 SHE</strong> pot plus the hash bonus. The public pool takes 1% of the pot only.</p>
+      <p>ShearK-Miner <strong>1.6</strong>, CPU only. Log in with your wallet <code>she1</code> (never <code>shear1</code>). Solo means <em>your</em> node finds the block: you keep the whole <strong>1 SHE</strong> pot plus the hash bonus. The public pool takes 1% of the pot only.</p>
       <h3>1. Local node + stratum</h3>
       <p>Node source is the NODE button above. This starts an in-process node with stratum on <code>127.0.0.1:1111</code>.</p>
       <div class="copy-row">
@@ -403,7 +403,7 @@ npm run pool</pre>
         <button type="button" data-copy="solo-node">Copy</button>
       </div>
       <h3>2. Point ShearK at localhost</h3>
-      <p>Download miner <strong>1.5</strong>, unzip, then (macOS / Linux):</p>
+      <p>Download miner <strong>1.6</strong>, unzip, then (macOS / Linux):</p>
       <div class="copy-row">
         <pre id="solo-unix">./ShearK-Miner --selftest
 ./ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SHE1.solo --threads 8</pre>
@@ -443,11 +443,11 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SHE1.solo --threads 8</pre>
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
-        macos: SHEARK + '/download/1.5/ShearK-Miner-1.5-macos.zip',
-        windows: SHEARK + '/download/1.5/ShearK-Miner-1.5-windows.zip',
-        linux: SHEARK + '/download/1.5/ShearK-Miner-1.5-linux.zip',
-        android: SHEARK + '/download/1.5/ShearK-Miner-1.5-macos.zip',
-        ios: SHEARK + '/download/1.5/ShearK-Miner-1.5-macos.zip'
+        macos: SHEARK + '/download/1.6/ShearK-Miner-1.6-macos.zip',
+        windows: SHEARK + '/download/1.6/ShearK-Miner-1.6-windows.zip',
+        linux: SHEARK + '/download/1.6/ShearK-Miner-1.6-linux.zip',
+        android: SHEARK + '/download/1.6/ShearK-Miner-1.6-macos.zip',
+        ios: SHEARK + '/download/1.6/ShearK-Miner-1.6-macos.zip'
       };
       var node = 'https://github.com/rgsneddon/shear-testnet/tree/main/node';
       function bind(id, href) {
