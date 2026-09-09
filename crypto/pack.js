@@ -3,6 +3,7 @@
  * Magic 12 ASCII + type u8 + body. Digest is SHA-256 of the packed buffer.
  */
 import { sha256 } from './shear_hash.js';
+import { hash20FromAddress } from './address.js';
 
 export const ENC_MAGIC = Buffer.from('shear-enc-v1');
 export const ENC_A = 1;
@@ -128,11 +129,18 @@ export function packShareBatch(shares = []) {
 }
 
 export function unpackShareBatch(rows = []) {
-  return (Array.isArray(rows) ? rows : []).map((s) => (Buffer.isBuffer(s) || typeof s === 'string'
-    ? unpackShare(s)
-    : {
-      dest20: Buffer.from(s.dest20 || s.dest || Buffer.alloc(20)),
+  return (Array.isArray(rows) ? rows : []).map((s) => {
+    if (Buffer.isBuffer(s) || typeof s === 'string') return unpackShare(s);
+    const raw20 = s.dest20 ? Buffer.from(s.dest20) : null;
+    const dest = String(s.dest || s.address || s.miner || '');
+    const dest20 = (raw20 && raw20.length === 20)
+      ? raw20
+      : (hash20FromAddress(dest) || Buffer.alloc(20));
+    return {
+      dest20,
+      dest,
       nonce: typeof s.nonce === 'bigint' ? s.nonce : BigInt(s.nonce || 0),
       lz: Number(s.lz || 0) & 0xff,
-    }));
+    };
+  });
 }

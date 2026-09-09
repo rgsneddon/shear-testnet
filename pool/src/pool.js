@@ -32,6 +32,8 @@ import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
 import { createPullBook, PULL_COOLDOWN_MS } from './pull_book.js';
 import { createStore } from '../../node/src/store.js';
+import { potSharesFromBatch } from '../../node/src/chain.js';
+import { verifyShareBatch, sortShares } from '../../crypto/share_batch.js';
 import { explorerRecentTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
@@ -155,6 +157,32 @@ export function splitPot(round, poolDest) {
     else out.push({ address: feeAddr, nanos: fee, kind: 'pool-fee' });
   }
   return out.filter((s) => s.nanos > 0);
+}
+
+/**
+ * Lag-1 shares must verify against the sealed parent. A restamped share or a
+ * bech32-as-dest20 row that fails share_pow/miner_addr must not freeze the
+ * next template. Drop the bad rows; an empty batch is still sealable.
+ */
+export function provenLag1Shares(parentHeader, shares) {
+  const list = Array.isArray(shares) ? shares : [];
+  if (!list.length || !parentHeader) return [];
+  const all = verifyShareBatch({
+    parentHeader,
+    shares: list,
+    floorBits: SHARE_FLOOR_BITS,
+  });
+  if (all.ok) return sortShares(list);
+  const kept = [];
+  for (const s of list) {
+    const one = verifyShareBatch({
+      parentHeader,
+      shares: [s],
+      floorBits: SHARE_FLOOR_BITS,
+    });
+    if (one.ok) kept.push(s);
+  }
+  return sortShares(kept);
 }
 
 /** Dest (ssa1) or silent ID (she1) — worker identity. Payout dest is never she1. */
@@ -941,12 +969,19 @@ export function createPool({
       height: Number(store.tip()?.height || 0) + 1,
     });
     const poolPay = payoutDest(miner);
+    const tipHdr = store.tip()?.header || null;
+    lag1Shares = provenLag1Shares(tipHdr, lag1Shares);
     const live = snapshotRound();
     const potRows = live.map((s) => ({ miner: s.miner, count: Number(s.proven) || 0 })).filter((s) => s.count > 0);
-    const potShares = splitPot(
-      potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
-      poolPay,
-    );
+    // Coinbase pot is PROP of proven lag-1 dests. splitPot of the live hasher
+    // disagrees with shareBatch whenever the connected dest changed, and
+    // verifyBlock then rejects every block-quality share (pot_prop).
+    const potShares = lag1Shares.length
+      ? potSharesFromBatch(lag1Shares, poolPay)
+      : splitPot(
+        potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
+        poolPay,
+      );
     // she1 login may have no dest yet (dest arrives as owned ssa1). The header
     // still issues; shareBatch credit stays hasher dests only.
     const payout = potShares[0]?.address || hasherPay || poolPay || poolFeeDest();
@@ -1225,6 +1260,7 @@ export function createPool({
       refreshMinerRow(session);
     }
     let nextJob = null;
+    let sealedBlock = false;
     if (scored.block && !closedRound) {
       sealing = true;
       const jid = String(params.jobId || job.jobId || '');
@@ -1239,7 +1275,8 @@ export function createPool({
         }),
       }));
       sealing = false;
-      if (got.ok) {
+      if (got?.ok) {
+        sealedBlock = true;
         stats.blocks += 1;
         lag1Shares = openShares.slice();
         openShares = [];
@@ -1282,9 +1319,28 @@ export function createPool({
         const base = issueJob(shareBits, { force: true });
         broadcastJob(base);
         nextJob = true;
+      } else {
+        console.error(JSON.stringify({
+          event: 'seal_failed',
+          reason: String(got?.reason || 'append'),
+          jobId: jid,
+          height: Number(store.tip()?.height || 0) + 1,
+        }));
+        try {
+          const base = issueJob(shareBits, { force: true });
+          if (base) {
+            broadcastJob(base);
+            nextJob = true;
+          }
+        } catch { /* keep live job */ }
       }
     }
-    try { sock.write(line({ id: msg.id, result: { status: 'OK', hash: scored.hash, block: !!scored.block } })); } catch { /* ignore */ }
+    try {
+      sock.write(line({
+        id: msg.id,
+        result: { status: 'OK', hash: scored.hash, block: sealedBlock },
+      }));
+    } catch { /* ignore */ }
     paintStatsSnap();
     if (!paused && !nextJob && !closedRound && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login)) {
       conn.varShares = (Number(conn.varShares) || 0) + 1;

@@ -609,9 +609,11 @@ function loginAndShare(port, login, extra = {}) {
 }
 
 describe('public miner listing', () => {
-  it('share ACK includes block so the miner can paint blockfound', () => {
+  it('share ACK paints block only after submitHeader appends the tip', () => {
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
-    assert.match(src, /block: !!scored\.block/);
+    assert.match(src, /block: sealedBlock/);
+    assert.equal(src.includes('block: !!scored.block'), false);
+    assert.match(src, /event: 'seal_failed'/);
   });
 
   it('pool and miner HTML paint from live API workers, not a local stash', () => {
