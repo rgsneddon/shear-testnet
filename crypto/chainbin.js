@@ -3,6 +3,7 @@
  */
 import fs from 'node:fs';
 import { encodeHeader, decodeHeader } from './header.js';
+import { shareRowJson } from './pack.js';
 
 const MAGIC = Buffer.from('shear-chn-v1\0\0\0');
 
@@ -35,6 +36,7 @@ export function packEpochBlock(block) {
   const aJson = Buffer.from(JSON.stringify((block.aLeaves || []).map(leafWire)));
   const bJson = Buffer.from(JSON.stringify((block.bLeaves || []).map(leafWire)));
   const txs = Buffer.from(JSON.stringify(block.txs || []));
+  const sJson = Buffer.from(JSON.stringify((block.shareBatch || []).map(shareRowJson)));
   const parts = [header, rootA, rootB];
   const lens = Buffer.alloc(12);
   lens.writeUInt32LE(aJson.length, 0);
@@ -48,7 +50,9 @@ export function packEpochBlock(block) {
   meta.writeUInt32LE(flags, 4);
   meta.writeUInt32LE(Number(block.weight || 0), 8);
   const hash = Buffer.from(block.hash || Buffer.alloc(32));
-  return Buffer.concat([parts[0], rootA, rootB, hash, meta, lens, aJson, bJson, txs]);
+  const sLen = Buffer.alloc(4);
+  sLen.writeUInt32LE(sJson.length, 0);
+  return Buffer.concat([parts[0], rootA, rootB, hash, meta, lens, aJson, bJson, txs, sLen, sJson]);
 }
 
 export function unpackEpochBlock(buf) {
@@ -68,6 +72,15 @@ export function unpackEpochBlock(buf) {
   const bLeaves = JSON.parse(b.subarray(o, o + bLen).toString() || '[]').map(leafRead);
   o += bLen;
   const txs = JSON.parse(b.subarray(o, o + tLen).toString() || '[]');
+  o += tLen;
+  let shareBatch = [];
+  if (o + 4 <= b.length) {
+    const sLen = b.readUInt32LE(o);
+    o += 4;
+    if (sLen > 0 && o + sLen <= b.length) {
+      try { shareBatch = JSON.parse(b.subarray(o, o + sLen).toString() || '[]'); } catch { shareBatch = []; }
+    }
+  }
   decodeHeader(header);
   return {
     header,
@@ -78,6 +91,7 @@ export function unpackEpochBlock(buf) {
     aLeaves,
     bLeaves,
     txs,
+    shareBatch,
     samples: [],
     samplesPruned: !!(flags & 1),
     bLeavesPruned: !!(flags & 2),

@@ -128,16 +128,38 @@ export function packShareBatch(shares = []) {
   return list.map((s) => (Buffer.isBuffer(s) ? s : packShare(s)));
 }
 
+function coerceDest20(raw, dest) {
+  if (Buffer.isBuffer(raw) && raw.length === 20) return Buffer.from(raw);
+  if (typeof raw === 'string' && /^[0-9a-fA-F]{40}$/.test(raw)) {
+    return Buffer.from(raw, 'hex');
+  }
+  if (raw && typeof raw === 'object' && Array.isArray(raw.data) && raw.data.length === 20) {
+    return Buffer.from(raw.data);
+  }
+  if (raw) {
+    const b = Buffer.from(raw);
+    if (b.length === 20) return b;
+  }
+  return hash20FromAddress(dest) || Buffer.alloc(20);
+}
+
+export function shareRowJson(s) {
+  const dest = String(s?.dest || s?.address || s?.miner || '');
+  const dest20 = coerceDest20(s?.dest20, dest);
+  return {
+    dest,
+    dest20: dest20.toString('hex'),
+    nonce: String(s?.nonce ?? 0),
+    lz: Number(s?.lz || 0) & 0xff,
+  };
+}
+
 export function unpackShareBatch(rows = []) {
   return (Array.isArray(rows) ? rows : []).map((s) => {
     if (Buffer.isBuffer(s) || typeof s === 'string') return unpackShare(s);
-    const raw20 = s.dest20 ? Buffer.from(s.dest20) : null;
     const dest = String(s.dest || s.address || s.miner || '');
-    const dest20 = (raw20 && raw20.length === 20)
-      ? raw20
-      : (hash20FromAddress(dest) || Buffer.alloc(20));
     return {
-      dest20,
+      dest20: coerceDest20(s.dest20, dest),
       dest,
       nonce: typeof s.nonce === 'bigint' ? s.nonce : BigInt(s.nonce || 0),
       lz: Number(s.lz || 0) & 0xff,

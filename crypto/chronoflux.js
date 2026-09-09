@@ -17,6 +17,7 @@
  * Never prune vouts. continuity_root in the header remains the 32-byte seal.
  */
 import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS } from './asert.js';
+import { shareRowJson } from './pack.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
 
@@ -256,5 +257,6 @@ export function compactChainBlock(block) {
     rootB: block.rootB,
     weight: Number(block.weight || 0),
     txs: (block.txs || []).map(compactTx),
+    shareBatch: Array.isArray(block.shareBatch) ? block.shareBatch.map(shareRowJson) : [],
   };
 }

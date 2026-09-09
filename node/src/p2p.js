@@ -1,5 +1,6 @@
 import net from 'node:net';
 import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
+import { shareRowJson } from '../../crypto/pack.js';
 
 export const P2P_PORT = 30303;
 export const P2P_MAX_FRAME = 1024 * 1024;
@@ -37,6 +38,11 @@ export function encodeWireBlock(b) {
     txs: b.txs,
     samples: b.samples,
     miner: b.miner,
+    shareBatch: Array.isArray(b.shareBatch) ? b.shareBatch.map(shareRowJson) : [],
+    aLeaves: b.aLeaves,
+    bLeaves: b.bLeaves,
+    rootA: b.rootA,
+    rootB: b.rootB,
   };
 }
 
@@ -48,6 +54,11 @@ export function decodeWireBlock(w) {
     txs: w.txs,
     samples: w.samples,
     miner: w.miner,
+    shareBatch: Array.isArray(w.shareBatch) ? w.shareBatch : [],
+    aLeaves: w.aLeaves,
+    bLeaves: w.bLeaves,
+    rootA: w.rootA,
+    rootB: w.rootB,
   };
 }
 
