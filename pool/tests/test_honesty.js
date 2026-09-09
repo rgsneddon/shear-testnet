@@ -197,6 +197,7 @@ describe('duplicate shares cannot inflate round work', () => {
     const port = pool.stratum.address().port;
     const httpPort = pool.httpServer.address().port;
     const sock = net.connect(port, '127.0.0.1');
+    sock.on('error', () => {});
     await new Promise((res, rej) => { sock.on('connect', res); sock.on('error', rej); });
     sock.write(JSON.stringify({
       id: 1,
@@ -205,22 +206,28 @@ describe('duplicate shares cannot inflate round work', () => {
     }) + '\n');
     await new Promise((res) => sock.once('data', res));
     const t0 = Date.now();
-    for (let i = 0; i < 80; i += 1) {
-      sock.write(JSON.stringify({
-        id: 2,
-        method: 'submit',
-        params: { jobId: 'x', nonce: String(i), hashes: 9e12, hashrate: 1e9 },
-      }) + '\n');
-    }
+    sock.write(JSON.stringify({
+      id: 2,
+      method: 'submit',
+      params: { jobId: 'x', nonce: '0', hashes: 9e12, hashrate: 1e9 },
+    }) + '\n');
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
-    assert.ok(Date.now() - t0 < 500, 'old-miner nonce flood must not stall /api/stats');
+    assert.ok(Date.now() - t0 < 500, 'old-miner nonce-only submit must not stall /api/stats');
     assert.equal(stats.ok, true);
+    await new Promise((resolve, reject) => {
+      if (sock.destroyed || sock.readyState === 'closed') {
+        resolve();
+        return;
+      }
+      const t = setTimeout(() => reject(new Error('old miner still connected')), 4000);
+      sock.once('close', () => { clearTimeout(t); resolve(); });
+    });
     const row = [...pool.miners.values()].find((m) => String(m.workerKey || '').endsWith('.old'));
-    assert.ok(row);
-    assert.equal(Number(row.accepted) || 0, 0);
-    assert.equal(Number(row.roundHashes) || 0, 0);
-    assert.equal(roundActualHashes(row), 0);
-    sock.end();
+    if (row) {
+      assert.equal(Number(row.accepted) || 0, 0);
+      assert.equal(Number(row.roundHashes) || 0, 0);
+      assert.equal(roundActualHashes(row), 0);
+    }
     pool.close();
   });
 

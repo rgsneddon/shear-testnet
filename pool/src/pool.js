@@ -75,6 +75,12 @@ const HASH_WORKER_TIMEOUT_MS = 15_000;
 export const HASH_QUEUE_MAX = 16;
 /** One hasher cannot fill the verify queue. Small miners still get a slot. */
 export const HASH_INFLIGHT_PER_CONN = 2;
+/**
+ * Connected hasher with zero accepted ShearHash-v3 shares is dropped after
+ * this. RandomX light cache init is seconds, not minutes; 90s is several
+ * expected share intervals at ~50 H/s and opening shareBits 8.
+ */
+export const NO_VALID_SHARE_MS = 90_000;
 
 /**
  * Mean interval of consecutive sealed headers. Default is every block on
@@ -308,6 +314,24 @@ export function admitClient(params) {
   return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payout || '' };
 }
 
+/** Wrong-algo login or a submit that is not a ShearHash-v3 digest. */
+export function isWrongAlgoReject(reason) {
+  const r = String(reason || '');
+  return r === 'client_refused' || r === 'bad_hash' || r === 'need_hash';
+}
+
+/**
+ * Drop the TCP session: refused algo, nonce-only (not hashing), or a
+ * bad_hash before any accepted ShearHash-v3 share. A hasher that already
+ * scored stays up through one restamp-history miss.
+ */
+export function shouldDropOnReject(session, reason) {
+  const r = String(reason || '');
+  if (r === 'client_refused' || r === 'need_hash') return true;
+  if (r === 'bad_hash') return !(Number(session?.accepted) || 0);
+  return false;
+}
+
 /** ShearHash-v3 digest the miner claims. Empty if they did not compute the algo. */
 export function submittedShareDigest(params) {
   const h = String(params?.hash || '').trim().toLowerCase();
@@ -463,6 +487,27 @@ export function foldConnectionInventory(connections) {
 
 export function minerConnected(miner) {
   return (miner?.connections || []).some((c) => c && c.sock);
+}
+
+/**
+ * Sockets on a hasher that never scored a valid share and have been
+ * authed longer than timeoutMs. low_diff / stale / duplicate stay;
+ * only the idle never-shared case. Fee sockets are not public workers.
+ */
+export function idleDropSocks(session, now = Date.now(), timeoutMs = NO_VALID_SHARE_MS) {
+  if (!session) return [];
+  if ((Number(session.accepted) || 0) > 0) return [];
+  if (isCminerFeeLogin(session.workerKey || session.login)) return [];
+  const wait = Number(timeoutMs);
+  const ms = Number.isFinite(wait) && wait > 0 ? wait : NO_VALID_SHARE_MS;
+  const out = [];
+  for (const c of session.connections || []) {
+    if (!c?.sock) continue;
+    if (Number(c.hashInflight) > 0) continue;
+    const start = Number(c.authedAt) || 0;
+    if (start > 0 && (now - start) >= ms) out.push(c.sock);
+  }
+  return out;
 }
 
 /** Latest accepted-share time. Login/connect does not count as valid work. */
@@ -705,6 +750,7 @@ export function createPool({
   p2p = null,
   onRestart = null,
   onRestartHasher = null,
+  noValidShareMs = NO_VALID_SHARE_MS,
 } = {}) {
   const store = createStore(dataDir);
   const admin = createAdmin(dataDir);
@@ -833,11 +879,40 @@ export function createPool({
     accepted: 0,
     stale: 0,
     blocks: 0,
+    dropped: 0,
     coin: 'SHE',
     algo: ALGO,
     stratum: `0.0.0.0:${stratumPort}`,
   };
   const pendingPulls = new Map();
+  const idleMs = Number.isFinite(Number(noValidShareMs)) && Number(noValidShareMs) > 0
+    ? Number(noValidShareMs)
+    : NO_VALID_SHARE_MS;
+  let dropTimer = null;
+
+  function endSock(sock, payload) {
+    if (!sock) return;
+    try {
+      if (payload) sock.end(payload);
+      else sock.end();
+    } catch {
+      try { sock.destroy(); } catch { /* ignore */ }
+    }
+    stats.dropped = (Number(stats.dropped) || 0) + 1;
+  }
+
+  function replyLine(sock, obj, { drop = false } = {}) {
+    const payload = line(obj);
+    if (drop) endSock(sock, payload);
+    else {
+      try { sock.write(payload); } catch { /* ignore */ }
+    }
+  }
+
+  function rejectSubmit(sock, session, msg, reason) {
+    paintReject(session, reason);
+    replyLine(sock, { id: msg.id, error: reason }, { drop: shouldDropOnReject(session, reason) });
+  }
 
   function blockBitsNow() {
     return Number(lastJob?.blockBits || lastJob?.bits || bits);
@@ -1126,19 +1201,19 @@ export function createPool({
   async function acceptSubmit({ sock, session, conn, params, msg, job: passed }) {
     if (paused) {
       paintReject(session, 'paused');
-      try { sock.write(line({ id: msg.id, error: 'paused' })); } catch { /* ignore */ }
+      replyLine(sock, { id: msg.id, error: 'paused' });
       return;
     }
     const claimed = submittedShareDigest(params);
     if (!claimed) {
-      try { sock.write(line({ id: msg.id, error: 'need_hash' })); } catch { /* ignore */ }
+      rejectSubmit(sock, session, msg, 'need_hash');
       return;
     }
     const resolved = resolveSubmitJob(params, conn);
     const job = resolved.job || passed;
     if (resolved.stale) {
       paintReject(session, 'stale_job');
-      try { sock.write(line({ id: msg.id, error: 'stale_job' })); } catch { /* ignore */ }
+      replyLine(sock, { id: msg.id, error: 'stale_job' });
       return;
     }
     const closedRound = !!resolved.closedRound;
@@ -1147,17 +1222,15 @@ export function createPool({
       scored = await scoreShareLive({ job, nonce: params.nonce, claimed, conn });
     } catch (e) {
       const reason = String(e?.message || e) === 'hash_busy' ? 'busy' : 'hash_failed';
-      try { sock.write(line({ id: msg.id, error: reason })); } catch { /* ignore */ }
+      replyLine(sock, { id: msg.id, error: reason });
       return;
     }
     if (!scored.ok) {
-      paintReject(session, scored.reason);
-      try { sock.write(line({ id: msg.id, error: scored.reason })); } catch { /* ignore */ }
+      rejectSubmit(sock, session, msg, scored.reason);
       return;
     }
     if (scored.hash !== claimed) {
-      paintReject(session, 'bad_hash');
-      try { sock.write(line({ id: msg.id, error: 'bad_hash' })); } catch { /* ignore */ }
+      rejectSubmit(sock, session, msg, 'bad_hash');
       return;
     }
     if (job && typeof job === 'object') {
@@ -1353,11 +1426,11 @@ export function createPool({
         if (isLogin) {
           const adm = admitClient(params);
           if (!adm.ok) {
-            sock.write(line({ id: msg.id, error: adm.reason }));
+            replyLine(sock, { id: msg.id, error: adm.reason }, { drop: true });
             continue;
           }
           if (isBanned(adm.workerKey) || isBanned(adm.login)) {
-            sock.write(line({ id: msg.id, error: 'banned' }));
+            replyLine(sock, { id: msg.id, error: 'banned' }, { drop: true });
             continue;
           }
           const key = adm.workerKey;
@@ -1393,6 +1466,7 @@ export function createPool({
             varShares: 0,
             varWindowAt: Date.now(),
             seen: Date.now(),
+            authedAt: Date.now(),
           };
           session.connections = (session.connections || []).filter((c) => c.sock && c.sock !== sock);
           session.connections.push(conn);
@@ -1576,6 +1650,38 @@ export function createPool({
     return n;
   }
 
+  function pruneNeverShared() {
+    for (const [k, m] of miners) {
+      if (minerConnected(m)) continue;
+      if ((Number(m.accepted) || 0) > 0) continue;
+      miners.delete(k);
+    }
+  }
+
+  function sweepIdleMiners(now = Date.now()) {
+    if (paused) {
+      pruneNeverShared();
+      return { dropped: 0 };
+    }
+    const socks = [];
+    for (const m of miners.values()) {
+      for (const s of idleDropSocks(m, now, idleMs)) socks.push(s);
+    }
+    let n = 0;
+    for (const s of socks) {
+      endSock(s, line({ method: 'error', error: 'no_valid_share' }));
+      n += 1;
+    }
+    pruneNeverShared();
+    return { dropped: n };
+  }
+
+  {
+    const dropEvery = Math.max(25, Math.min(STATS_REFRESH_MS, Math.floor(idleMs / 2) || STATS_REFRESH_MS));
+    dropTimer = setInterval(() => sweepIdleMiners(), dropEvery);
+    dropTimer.unref?.();
+  }
+
   function minerMatches(m, want) {
     const w = String(want || '').trim();
     if (!w) return false;
@@ -1613,6 +1719,7 @@ export function createPool({
         blockBits: blockBitsNow(),
         accepted: stats.accepted,
         stale: stats.stale,
+        dropped: Number(stats.dropped) || 0,
         blocks: stats.blocks,
         miners: miners.size,
         connected,
@@ -1974,6 +2081,10 @@ export function createPool({
       clearInterval(statsTimer);
       statsTimer = null;
     }
+    if (dropTimer) {
+      clearInterval(dropTimer);
+      dropTimer = null;
+    }
     if (hashWorker) {
       try { hashWorker.terminate(); } catch { /* ignore */ }
       hashWorker = null;
@@ -1997,6 +2108,7 @@ export function createPool({
     snapshotRound,
     setP2p,
     restampJob: maybeRestampJob,
+    sweepIdle: sweepIdleMiners,
     get pendingPayout() { return pendingPayout; },
     get prevJob() { return prevJob; },
     get paused() { return paused; },
