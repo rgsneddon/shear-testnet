@@ -31,7 +31,7 @@ describe('docs.shear.digital', () => {
     assert.match(content, /id: 'creators'/);
     assert.match(content, /id: 'reserve'/);
     assert.match(content, /vort1\./);
-    assert.match(content, /ShearK-Miner 1\.5/);
+    assert.match(content, /ShearK-Miner 1\.6/);
     assert.match(content, /shewall\.bin/);
     assert.match(content, /Continuum/);
     assert.match(content, /0\.001 SHE/);

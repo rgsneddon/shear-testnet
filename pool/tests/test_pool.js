@@ -657,6 +657,8 @@ describe('public miner listing', () => {
 
   it('dashboard last-10 table uses Status not Kind; TESTNET sits above the fee note', () => {
     const dash = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+    assert.match(dash, /<th>Hashes reported<\/th>/);
+    assert.doesNotMatch(dash, /Valid hashes \(round\)/);
     assert.match(dash, /Pool explorer · last 10 transactions/);
     assert.match(dash, />Status</);
     assert.doesNotMatch(dash, />Kind</);
