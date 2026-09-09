@@ -12,16 +12,18 @@ import {
   isWrongAlgoReject,
   shouldDropOnReject,
   idleDropSocks,
+  banInvalidKeys,
+  publicMinerTag,
   NO_VALID_SHARE_MS,
 } from '../src/pool.js';
 
-function dest() {
+function newDest() {
   const id = newIdentity();
   return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
 }
 
 function tmpPool(shareBits = 1, extra = {}) {
-  const d = dest();
+  const d = newDest();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-drop-'));
   const pool = createPool({
     dataDir: dir,
@@ -32,7 +34,15 @@ function tmpPool(shareBits = 1, extra = {}) {
     bits: 16,
     ...extra,
   });
-  return { pool, dest: d };
+  return { pool, dest: d, dir };
+}
+
+function readBans(dir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, 'pool-bans.json'), 'utf8'));
+  } catch {
+    return { bans: [] };
+  }
 }
 
 async function listen(pool) {
@@ -137,6 +147,13 @@ describe('drop idle / wrong-algo miners', () => {
       connections: [{ sock: live, authedAt: 1, hashInflight: 1 }],
     };
     assert.equal(idleDropSocks(inflight).length, 0);
+
+    const d = newDest();
+    const keys = banInvalidKeys({ login: d, workerKey: `${d}.rx` });
+    assert.ok(keys.includes(d));
+    assert.ok(keys.includes(`${d}.rx`));
+    assert.ok(keys.includes(publicMinerTag(d)));
+    assert.equal(keys.some((k) => String(k).startsWith('ip:')), false);
   });
 
   it('drops a login that names the wrong algo and does not list the hasher', async () => {
@@ -294,6 +311,96 @@ describe('drop idle / wrong-algo miners', () => {
     const miner = [...pool.miners.values()][0];
     assert.ok(Number(miner.accepted) >= 1);
     sock.destroy();
+    pool.close();
+  });
+
+  it('wrong-algo software is dest-banned and cannot log back in; IP is not banned', async () => {
+    const { pool, dest, dir } = tmpPool(1);
+    const port = await listen(pool);
+    const sock = net.connect(port, '127.0.0.1');
+    sock.on('error', () => {});
+    const msgs = [];
+    readLines(sock, msgs);
+    await new Promise((res, rej) => { sock.on('connect', res); sock.on('error', rej); });
+    sock.write(JSON.stringify({
+      id: 1,
+      method: 'login',
+      params: { login: `${dest}.old`, client: 'ShearHash', name: 'Shear-Miner', threads: 1 },
+    }) + '\n');
+    await waitMsg(msgs, (m) => m.id === 1);
+    sock.write(JSON.stringify({
+      id: 2,
+      method: 'submit',
+      params: { jobId: 'x', nonce: '1', hashes: 99 },
+    }) + '\n');
+    assert.equal((await waitMsg(msgs, (m) => m.id === 2)).error, 'need_hash');
+    await waitClose(sock);
+
+    const book = readBans(dir);
+    assert.ok(book.bans.includes(dest), JSON.stringify(book));
+    assert.equal(book.bans.some((k) => String(k).startsWith('ip:') || /^\d+\.\d+\.\d+\.\d+$/.test(k)), false);
+
+    async function tryLogin(login) {
+      const s = net.connect(port, '127.0.0.1');
+      s.on('error', () => {});
+      const out = [];
+      readLines(s, out);
+      await new Promise((res, rej) => { s.on('connect', res); s.on('error', rej); });
+      s.write(JSON.stringify({
+        id: 1,
+        method: 'login',
+        params: { login, client: 'ShearHash', name: 'ShearK-Miner', threads: 1 },
+      }) + '\n');
+      const reply = await waitMsg(out, (m) => m.id === 1);
+      await waitClose(s).catch(() => {});
+      s.destroy();
+      return reply;
+    }
+
+    const again = await tryLogin(`${dest}.old`);
+    assert.equal(again.error, 'banned');
+    const otherWorker = await tryLogin(`${dest}.other`);
+    assert.equal(otherWorker.error, 'banned');
+
+    const fresh = newDest();
+    const ok = await tryLogin(`${fresh}.rig`);
+    assert.equal(ok.error, undefined, JSON.stringify(ok));
+    assert.equal(ok.result?.status, 'OK');
+    pool.close();
+  });
+
+  it('idle drop of a ShearHash login does not dest-ban; reconnect is allowed', async () => {
+    const { pool, dest, dir } = tmpPool(1, { noValidShareMs: 80 });
+    const port = await listen(pool);
+    const sock = net.connect(port, '127.0.0.1');
+    sock.on('error', () => {});
+    const msgs = [];
+    readLines(sock, msgs);
+    await new Promise((res, rej) => { sock.on('connect', res); sock.on('error', rej); });
+    sock.write(JSON.stringify({
+      id: 1,
+      method: 'login',
+      params: { login: `${dest}.idle`, client: 'ShearHash', name: 'ShearK-Miner', threads: 1 },
+    }) + '\n');
+    await waitMsg(msgs, (m) => m.id === 1);
+    await waitClose(sock, 2000);
+    const book = readBans(dir);
+    assert.equal((book.bans || []).includes(dest), false, JSON.stringify(book));
+
+    const s2 = net.connect(port, '127.0.0.1');
+    s2.on('error', () => {});
+    const out = [];
+    readLines(s2, out);
+    await new Promise((res, rej) => { s2.on('connect', res); s2.on('error', rej); });
+    s2.write(JSON.stringify({
+      id: 1,
+      method: 'login',
+      params: { login: `${dest}.idle`, client: 'ShearHash', name: 'ShearK-Miner', threads: 1 },
+    }) + '\n');
+    const reply = await waitMsg(out, (m) => m.id === 1);
+    assert.equal(reply.error, undefined, JSON.stringify(reply));
+    assert.equal(reply.result?.status, 'OK');
+    s2.destroy();
     pool.close();
   });
 });

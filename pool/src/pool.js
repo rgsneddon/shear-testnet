@@ -332,6 +332,23 @@ export function shouldDropOnReject(session, reason) {
   return false;
 }
 
+/**
+ * Dest + worker + public tag for a hasher whose software is not ShearHash.
+ * Never an IP — another wallet on the same box with real ShearK must still
+ * be able to mine. Operator unban is dest/tag.
+ */
+export function banInvalidKeys({ login, workerKey } = {}) {
+  const keys = [];
+  const wk = String(workerKey || login || '').trim();
+  const dest = parseLogin(wk || login);
+  if (wk) keys.push(wk);
+  if (dest) {
+    keys.push(dest);
+    keys.push(publicMinerTag(dest));
+  }
+  return [...new Set(keys.filter(Boolean))];
+}
+
 /** ShearHash-v3 digest the miner claims. Empty if they did not compute the algo. */
 export function submittedShareDigest(params) {
   const h = String(params?.hash || '').trim().toLowerCase();
@@ -909,9 +926,26 @@ export function createPool({
     }
   }
 
+  function rememberInvalid(session, extraLogin) {
+    const keys = banInvalidKeys({
+      login: extraLogin || session?.login,
+      workerKey: session?.workerKey || extraLogin,
+    });
+    let added = 0;
+    for (const k of keys) {
+      if (bans.has(k)) continue;
+      bans.add(k);
+      added += 1;
+    }
+    if (added) saveBans();
+    return keys;
+  }
+
   function rejectSubmit(sock, session, msg, reason) {
     paintReject(session, reason);
-    replyLine(sock, { id: msg.id, error: reason }, { drop: shouldDropOnReject(session, reason) });
+    const drop = shouldDropOnReject(session, reason);
+    if (drop) rememberInvalid(session);
+    replyLine(sock, { id: msg.id, error: reason }, { drop });
   }
 
   function blockBitsNow() {
@@ -1426,6 +1460,9 @@ export function createPool({
         if (isLogin) {
           const adm = admitClient(params);
           if (!adm.ok) {
+            if (isWrongAlgoReject(adm.reason)) {
+              rememberInvalid(null, String(params.login || params.user || ''));
+            }
             replyLine(sock, { id: msg.id, error: adm.reason }, { drop: true });
             continue;
           }
