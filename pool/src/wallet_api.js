@@ -231,8 +231,8 @@ function blockAtMs(block) {
   }
 }
 
-/** One row per confirmed block. Sum of sealed coinbase (pot + hash bonus). No in-round hashes. */
-function confirmedBlockRow(b) {
+/** One row per sealed block. Pending until consensus_spendable (6), not ui_seen. */
+function confirmedBlockRow(b, tipH) {
   const rows = sealedExplorerRows(b);
   const nanos = rows
     .filter((r) => r.from === 'coinbase' || r.kind === 'coinbase' || r.kind === 'hash')
@@ -242,6 +242,9 @@ function confirmedBlockRow(b) {
     : String(b?.hash || b?.height || '');
   const rawTo = String(b?.miner || rows.find((r) => r.to)?.to || '');
   const dest = isShearAddress(rawTo) ? '' : (payoutDest(rawTo) || (isDestAddress(rawTo) ? rawTo : ''));
+  const height = Number(b?.height || 0);
+  const confs = flowConfirmations(height, tipH);
+  const pending = !isSpendableHeight(height, tipH, SPENDABLE_CONFIRMATIONS);
   return {
     id: hid,
     kind: 'block',
@@ -249,7 +252,10 @@ function confirmedBlockRow(b) {
     to: dest,
     amount: nanosToShe(nanos),
     asset: 'SHE',
-    height: Number(b?.height || 0),
+    height,
+    confirmations: confs,
+    pending,
+    status: pending ? 'pending' : 'confirmed',
     at: blockAtMs(b),
   };
 }
@@ -258,9 +264,14 @@ export function confirmedBlockTxs(store, limit = 30) {
   const list = Array.isArray(store?.blocks) ? store.blocks : [];
   const unlimited = limit === Infinity;
   const n = unlimited ? list.length : Math.max(1, Math.min(10000, Math.floor(Number(limit) || 30)));
+  const tipH = Number(
+    (typeof store?.tip === 'function' ? store.tip()?.height : 0)
+    || list[list.length - 1]?.height
+    || 0,
+  );
   const out = [];
   for (let i = list.length - 1; i >= 0 && out.length < n; i -= 1) {
-    out.push(confirmedBlockRow(list[i]));
+    out.push(confirmedBlockRow(list[i], tipH));
   }
   return out;
 }
@@ -343,6 +354,7 @@ export function publicSurfaceRow(t) {
     to,
     amount,
     height: Number(t?.height || 0),
+    confirmations: Number(t?.confirmations || 0),
     pending,
     status: pending ? 'pending' : String(t?.status || 'confirmed'),
   };

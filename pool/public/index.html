@@ -778,7 +778,9 @@
       const html = rows.length
         ? rows.map(function (t) {
             const href = 'https://explorer.shear.digital/tx/' + encodeURIComponent(t.id);
-            const st = t.status || blockStatus(t, tip, need);
+            const st = Number(t.height) >= 1
+              ? blockStatus(t, tip, need)
+              : (t.status || 'pending');
             const pendingLabel = st === 'pending' || st === '(pending)' ? '(pending)' : 'confirmed';
             const kind = String(t.kind || 'block');
             const reserve = kind === 'lock' || kind === 'vote';

@@ -354,7 +354,9 @@
       body.innerHTML = rows.length
         ? rows.map(function (t) {
             const href = '/tx/' + encodeURIComponent(t.id);
-            const st = t.status || blockStatus(t, tipHeight, spendableNeed);
+            const st = Number(t.height) >= 1
+              ? blockStatus(t, tipHeight, spendableNeed)
+              : (t.status || 'pending');
             const pendingLabel = st === 'pending' || st === '(pending)' ? '(pending)' : 'confirmed';
             return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
               esc(fmtLocalTs(t.at)) + '</td><td>' +
