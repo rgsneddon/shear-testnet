@@ -148,8 +148,9 @@ def main() -> None:
     body(
         pdf,
         "The public sites — shear.digital, pool.shear.digital, explorer.shear.digital, mempool.shear.digital — "
-        "are the face of the testnet. Mainnet is scheduled for 21:00 UK time on 11 September 2026. Until then "
-        "the network magic stays shear-testnet-v2. Testnet balances can vanish. Treat them as a practice run.",
+        "are the face of the testnet. Mainnet shear-v1 is not scheduled and must not launch until P0 1–14 "
+        "on a public testnet book are green. Until then the network magic stays shear-testnet-v2. "
+        "Testnet balances can vanish. Treat them as a practice run.",
     )
 
     h1(pdf, "2.  Architecture")

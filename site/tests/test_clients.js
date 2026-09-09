@@ -64,9 +64,12 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /\/api\/stats/);
     assert.doesNotMatch(html, /Spendable|Copy ID|paymentCode/);
     assert.match(html, /TESTNET/);
-    assert.match(html, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
+    assert.match(html, /Mainnet shear-v1 is not scheduled/);
+    assert.match(html, /Do not launch until P0 1–14/);
     assert.match(html, /id="mainnet-countdown"/);
-    assert.match(html, /2026-09-11T21:00:00\+01:00/);
+    assert.doesNotMatch(html, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
+    assert.doesNotMatch(html, /2026-09-11T21:00:00\+01:00/);
+    assert.doesNotMatch(html, /21:00 BST 11 Sep/);
     assert.match(html, />WALLET</);
     assert.match(html, />MINER</);
     assert.match(html, />NODE</);
@@ -269,7 +272,11 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /pool\.shear\.digital:1111/);
     assert.match(admin, /ShearK-Miner 1\.5/);
     assert.match(admin, /shear-wallet-0\.4-/);
-    assert.match(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
+    assert.match(admin, /Mainnet shear-v1 is not scheduled/);
+    assert.match(admin, /Do not launch until P0 1–14/);
+    assert.doesNotMatch(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
+    assert.doesNotMatch(admin, /11th September 2026/);
+    assert.doesNotMatch(admin, /9pm UK/);
     assert.match(admin, /Private dests, public amounts/);
     assert.match(admin, /PoW elects the tip/);
     assert.match(admin, /can still vote/);

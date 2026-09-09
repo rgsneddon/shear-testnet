@@ -80,7 +80,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / testnet',
     html:
       '<p>This is testnet. Balances can vanish. Treat them as a practice run before mainnet.</p>' +
-      '<p>Mainnet is scheduled for <strong>21:00 UK time on 11 September 2026</strong>. Until then the magic stays <code>shear-testnet-v2</code>. Do not flip it early. Do not cut a mainnet genesis zip from these pages.</p>' +
+      '<p>Mainnet <code>shear-v1</code> is not scheduled. Do not launch until P0 1–14 on a public testnet book are green. Until then the magic stays <code>shear-testnet-v2</code>. Do not flip it early. Do not cut a mainnet genesis zip from these pages.</p>' +
       '<p>Install clients only from the buttons on <a href="https://shear.digital">shear.digital</a> or the official GitHub tags. Windows SmartScreen may warn that ShearK-Miner.exe is unrecognized; this testnet build is not Authenticode-signed.</p>'
   };
 
