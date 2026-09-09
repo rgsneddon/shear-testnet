@@ -47,6 +47,7 @@ class ShearSession {
   int rememberedDestCount = 1;
   int rememberedDestIndex = 0;
   int rememberedSealedHeight = 0;
+  String? rememberedChainGenesis;
   Map<String, dynamic>? rememberedReserve;
   List<Vortice> deployedVortices = const [];
   bool sealed = false;
@@ -151,6 +152,8 @@ class ShearSession {
         'destCount': rememberedDestCount,
         'destIndex': rememberedDestIndex,
         'sealedHeight': rememberedSealedHeight,
+        if (rememberedChainGenesis != null && rememberedChainGenesis!.isNotEmpty)
+          'chainGenesis': rememberedChainGenesis,
         'txs': rememberedTxs,
         if (rememberedReserve != null) 'reserve': rememberedReserve,
         'vortices': deployedVortices.map((v) => v.toJson()).toList(),
@@ -166,6 +169,7 @@ class ShearSession {
     rememberedDestCount = (j['destCount'] as num?)?.toInt() ?? 1;
     rememberedDestIndex = (j['destIndex'] as num?)?.toInt() ?? 0;
     rememberedSealedHeight = (j['sealedHeight'] as num?)?.toInt() ?? 0;
+    rememberedChainGenesis = j['chainGenesis']?.toString();
     rememberedTxs = ((j['txs'] as List?) ?? const [])
         .whereType<Map>()
         .map((e) => Map<String, dynamic>.from(e))
@@ -195,6 +199,8 @@ Map<String, dynamic> ledgerUserArchive(ShearLedger ledger) {
     'destCount': ledger.destCount,
     'destIndex': ledger.destIndex,
     'sealedHeight': ledger.sealedHeight,
+    if (ledger.chainGenesis != null && ledger.chainGenesis!.isNotEmpty)
+      'chainGenesis': ledger.chainGenesis,
     'txs': [
       for (final t in ledger.transactions)
         if (t.kind != 'sample') t.toJson(),
@@ -217,6 +223,8 @@ void applyUserArchive(ShearLedger ledger, Map<String, dynamic> archive) {
     destIndex: (archive['destIndex'] as num?)?.toInt(),
   );
   ledger.restoreDests(dests);
+  final g = archive['chainGenesis']?.toString() ?? '';
+  if (g.isNotEmpty) ledger.restoreChainGenesis(g);
   final sums = <String, double>{};
   for (final t in txs) {
     if (!t.confirmed || t.to.isEmpty) continue;

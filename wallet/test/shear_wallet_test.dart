@@ -3541,8 +3541,55 @@ void main() {
     String hdr(int b) => List.filled(128, b).map((x) => x.toRadixString(16).padLeft(2, '0')).join();
     final id = createIdentity();
     final dest = destForLogin(id.address, viewKey: id.viewKey, height: 1)!;
-    final oldG = hdr(0xaa);
     final newG = hdr(0xbb);
+    final leftover = {
+      'dests': [dest],
+      'txs': [
+        {
+          'id': 'old-conf',
+          'from': 'coinbase',
+          'to': dest,
+          'amount': 9,
+          'kind': 'coinbase',
+          'height': 40,
+          'confirmed': true,
+        },
+        {
+          'id': 'old-pend',
+          'from': 'pending',
+          'to': dest,
+          'amount': 3,
+          'kind': 'receive',
+          'height': 0,
+          'confirmed': false,
+        },
+      ],
+    };
+
+    final emptyLive = _PoolLive(headerHex: newG, height: 3, owner: dest, history: []);
+    emptyLive.headerAtHeight[1] = newG;
+    emptyLive.destBalances[dest] = 0;
+    final emptyServer = await _fakePool(live: emptyLive);
+    addTearDown(() => emptyServer.close(force: true));
+    final emptyLedger = ShearLedger(
+      pool: ShearPoolClient(
+        baseUrl: 'http://127.0.0.1:${emptyServer.port}',
+        http: _realHttp(),
+      ),
+    )..viewSecret = id.viewKey;
+    applyUserArchive(emptyLedger, leftover);
+    emptyLedger.rememberSpendable(dest, 9);
+    expect(emptyLedger.transactions.any((t) => t.id == 'old-conf'), isTrue);
+    expect(emptyLedger.transactions.any((t) => t.id == 'old-pend'), isTrue);
+    await emptyLedger.syncCredits(dest, paymentCode: id.paymentCode);
+    expect(emptyLedger.chainGenesis, newG);
+    expect(emptyLedger.transactions.any((t) => t.id == 'old-conf'), isFalse);
+    expect(emptyLedger.transactions.any((t) => t.id == 'old-pend'), isFalse);
+    expect(emptyLedger.pendingTxs(dest).any((t) => t.id == 'old-pend'), isFalse);
+    expect(emptyLedger.ownerHistory(dest), isEmpty);
+    expect(emptyLedger.shearviewTxs(dest), isEmpty);
+    expect(emptyLedger.spendable(dest), 0);
+
     final live = _PoolLive(
       headerHex: newG,
       height: 4,
@@ -3569,33 +3616,8 @@ void main() {
         http: _realHttp(),
       ),
     )..viewSecret = id.viewKey;
-    applyUserArchive(ledger, {
-      'dests': [dest],
-      'txs': [
-        {
-          'id': 'old-conf',
-          'from': 'coinbase',
-          'to': dest,
-          'amount': 9,
-          'kind': 'coinbase',
-          'height': 40,
-          'confirmed': true,
-        },
-        {
-          'id': 'old-pend',
-          'from': 'pending',
-          'to': dest,
-          'amount': 3,
-          'kind': 'receive',
-          'height': 0,
-          'confirmed': false,
-        },
-      ],
-    });
+    applyUserArchive(ledger, leftover);
     ledger.rememberSpendable(dest, 9);
-    ledger.restoreChainGenesis(oldG);
-    expect(ledger.transactions.any((t) => t.id == 'old-conf'), isTrue);
-    expect(ledger.transactions.any((t) => t.id == 'old-pend'), isTrue);
     await ledger.syncCredits(dest, paymentCode: id.paymentCode);
     expect(ledger.chainGenesis, newG);
     expect(ledger.transactions.any((t) => t.id == 'old-conf'), isFalse);
@@ -3627,7 +3649,6 @@ void main() {
     final curUrl = 'http://127.0.0.1:${curServer.port}';
     final sync = ShearReadSync(
       seeds: [staleUrl, curUrl],
-      userUrl: curUrl,
       http: _realHttp(),
       jitter: Duration.zero,
     );
@@ -3640,7 +3661,15 @@ void main() {
     final headerAfter = cur.headerHits + cur.headersBatchHits;
     expect(headerAfter, lessThan(20));
     await sync.followTip();
-    expect(cur.headerHits + cur.headersBatchHits, headerAfter);
+    expect(cur.headerHits + cur.headersBatchHits, lessThan(headerAfter + 4));
+    final resetG = hdr(0x33);
+    cur.headerHex = resetG;
+    cur.headerAtHeight[1] = resetG;
+    cur.height = 6;
+    await sync.followTip();
+    expect(sync.genesisHex, resetG);
+    expect(sync.wantedHeaders, flyclientSampleHeights(6).length);
+    expect(sync.provenHeaders, flyclientSampleHeights(6).length);
     expect(flyclientSampleHeights(64).length, lessThan(64));
     expect(flyclientSampleHeights(64), containsAll([1, 2, 4, 8, 16, 32, 64]));
   });

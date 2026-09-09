@@ -339,12 +339,13 @@ class ShearLedger {
 
   /// Bind to the live book's genesis. A different genesis (testnet reset or
   /// testnet→mainnet) drops leftover txs/credits so Continuum cannot keep
-  /// painting the prior chain.
+  /// painting the prior chain. An old session archive has no genesis: the
+  /// first live bind still wipes leftover rows.
   void bindChainGenesis(String genesis) {
     final g = genesis.trim().toLowerCase();
     if (g.isEmpty) return;
     if (_chainGenesis == g) return;
-    if (_chainGenesis != null) {
+    if (_chainGenesis != null || _txs.isNotEmpty) {
       _resetChainBook();
     }
     _chainGenesis = g;

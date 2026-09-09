@@ -141,17 +141,14 @@ class ShearReadSync {
     }
     final tip = (stats['height'] as num?)?.toInt() ?? 0;
     if (tip < 1) return;
-    final chainMovedBack = sampledTip > 0 && tip < sampledTip;
-    if (genesisHex == null || chainMovedBack || !_proven.contains(1)) {
-      final genesis = await _genesisOf(base);
-      if (genesis.isNotEmpty && genesisHex != null && genesis != genesisHex) {
-        _proven.clear();
-        sampledTip = 0;
-      }
-      if (genesis.isNotEmpty) genesisHex = genesis;
+    final genesis = await _genesisOf(base);
+    if (genesis.isNotEmpty && genesisHex != null && genesis != genesisHex) {
+      _proven.clear();
+      sampledTip = 0;
     }
+    if (genesis.isNotEmpty) genesisHex = genesis;
     sampledTip = tip;
-    if (honest && tip <= sampledTip && _proven.contains(1)) {
+    if (honest && flyclientSampleHeights(tip).every(_proven.contains)) {
       return;
     }
     await _proveSamples(base, tip);
@@ -182,10 +179,21 @@ class ShearReadSync {
     }
 
     // Canonical public/user seed wins over a taller leftover local book.
-    final want = genesisOf(userUrl) ??
+    // Seed list is local-first, public last — last reachable seed is the book
+    // when userUrl / default HTTPS is not in this probe set (tests).
+    String? want = genesisOf(userUrl) ??
         genesisOf(kWalletDefaultSeed) ??
         genesisOf(kLocalPoolHttp) ??
         genesisHex;
+    if (want == null || want.isEmpty) {
+      for (var i = seeds.length - 1; i >= 0; i--) {
+        final g = probes[seeds[i]]?.genesis;
+        if (g != null && g.isNotEmpty) {
+          want = g;
+          break;
+        }
+      }
+    }
     String? best;
     var bestH = -1;
     for (final e in probes.entries) {
@@ -195,7 +203,13 @@ class ShearReadSync {
         best = e.key;
       }
     }
-    best ??= probes.entries.reduce((a, b) => a.value.height >= b.value.height ? a : b).key;
+    if (best == null) {
+      _failures++;
+      final shift = (_failures - 1).clamp(0, 6);
+      _backoffUntil = DateTime.now().add(Duration(milliseconds: 1000 * (1 << shift)));
+      liveBase = null;
+      return null;
+    }
     final gotGenesis = want ?? probes[best]!.genesis;
     if (genesisHex != null && gotGenesis.isNotEmpty && gotGenesis != genesisHex) {
       _proven.clear();

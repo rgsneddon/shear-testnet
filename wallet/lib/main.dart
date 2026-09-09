@@ -432,6 +432,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         'destCount': session.rememberedDestCount,
         'destIndex': session.rememberedDestIndex,
         'sealedHeight': session.rememberedSealedHeight,
+        if (session.rememberedChainGenesis != null)
+          'chainGenesis': session.rememberedChainGenesis,
         'txs': session.rememberedTxs,
       });
     }
@@ -859,6 +861,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     session.rememberedDestCount = ledger.destCount;
     session.rememberedDestIndex = ledger.destIndex;
     session.rememberedSealedHeight = ledger.sealedHeight;
+    session.rememberedChainGenesis = ledger.chainGenesis;
     session.rememberedTxs = [
       for (final t in ledger.transactions)
         if (t.kind != 'sample') t.toJson(),
