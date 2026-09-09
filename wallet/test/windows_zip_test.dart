@@ -29,8 +29,8 @@ List<String> _zipNames(File zip) {
 }
 
 void main() {
-  test('kWalletVersion public pin is two-part 0.4 (not 0.14.0)', () {
-    expect(kWalletVersion, '0.4');
+  test('kWalletVersion public pin is two-part 0.28 (not 0.14.0)', () {
+    expect(kWalletVersion, '0.28');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
