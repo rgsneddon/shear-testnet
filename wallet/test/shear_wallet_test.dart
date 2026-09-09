@@ -3579,6 +3579,8 @@ void main() {
     )..viewSecret = id.viewKey;
     applyUserArchive(emptyLedger, leftover);
     emptyLedger.rememberSpendable(dest, 9);
+    expect(emptyLedger.chainGenesis, isNull,
+        reason: 'old session has no genesis; unlock must not pre-bind before syncCredits');
     expect(emptyLedger.transactions.any((t) => t.id == 'old-conf'), isTrue);
     expect(emptyLedger.transactions.any((t) => t.id == 'old-pend'), isTrue);
     await emptyLedger.syncCredits(dest, paymentCode: id.paymentCode);
@@ -3589,6 +3591,23 @@ void main() {
     expect(emptyLedger.ownerHistory(dest), isEmpty);
     expect(emptyLedger.shearviewTxs(dest), isEmpty);
     expect(emptyLedger.spendable(dest), 0);
+
+    final oldG = hdr(0xaa);
+    final leftoverBound = Map<String, dynamic>.from(leftover)..['chainGenesis'] = oldG;
+    final boundLedger = ShearLedger(
+      pool: ShearPoolClient(
+        baseUrl: 'http://127.0.0.1:${emptyServer.port}',
+        http: _realHttp(),
+      ),
+    )..viewSecret = id.viewKey;
+    applyUserArchive(boundLedger, leftoverBound);
+    expect(boundLedger.chainGenesis, oldG);
+    expect(boundLedger.transactions.any((t) => t.id == 'old-pend'), isTrue);
+    await boundLedger.syncCredits(dest, paymentCode: id.paymentCode);
+    expect(boundLedger.chainGenesis, newG);
+    expect(boundLedger.transactions.any((t) => t.id == 'old-conf'), isFalse);
+    expect(boundLedger.transactions.any((t) => t.id == 'old-pend'), isFalse);
+    expect(boundLedger.pendingTxs(dest).any((t) => t.id == 'old-pend'), isFalse);
 
     final live = _PoolLive(
       headerHex: newG,
@@ -3617,6 +3636,7 @@ void main() {
       ),
     )..viewSecret = id.viewKey;
     applyUserArchive(ledger, leftover);
+    expect(ledger.chainGenesis, isNull);
     ledger.rememberSpendable(dest, 9);
     await ledger.syncCredits(dest, paymentCode: id.paymentCode);
     expect(ledger.chainGenesis, newG);
@@ -3652,8 +3672,11 @@ void main() {
       http: _realHttp(),
       jitter: Duration.zero,
     );
-    expect(await sync.findLiveNode(), curUrl);
+    expect(sync.userUrl, isNull);
+    expect(await sync.findLiveNode(), curUrl,
+        reason: 'without userUrl, last reachable seed genesis wins over a taller stale probe');
     expect(sync.genesisHex, newG);
+    expect(sync.liveBase, isNot(staleUrl));
     await sync.followTip();
     expect(sync.wantedHeaders, flyclientSampleHeights(5).length);
     expect(sync.provenHeaders, flyclientSampleHeights(5).length);
@@ -3666,10 +3689,13 @@ void main() {
     cur.headerHex = resetG;
     cur.headerAtHeight[1] = resetG;
     cur.height = 6;
+    final hitsBeforeReset = cur.headerHits + cur.headersBatchHits;
     await sync.followTip();
     expect(sync.genesisHex, resetG);
     expect(sync.wantedHeaders, flyclientSampleHeights(6).length);
     expect(sync.provenHeaders, flyclientSampleHeights(6).length);
+    expect(cur.headerHits + cur.headersBatchHits, greaterThan(hitsBeforeReset),
+        reason: 'identity change must re-prove FlyClient locators, not skip');
     expect(flyclientSampleHeights(64).length, lessThan(64));
     expect(flyclientSampleHeights(64), containsAll([1, 2, 4, 8, 16, 32, 64]));
   });

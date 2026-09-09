@@ -1313,6 +1313,9 @@ class ShearLedger {
   }
 
   /// Live owner history is the book. Leftover ids from a prior genesis go.
+  /// Empty live is a no-op: same-chain mempool / confirmRound-stamped receives
+  /// are not yet in explorer history. Height < 1 always stays. First live
+  /// genesis bind already wiped leftover including never-confirmed old-pend.
   void adoptLiveHistory(String key, List<ShearTx> live) {
     if (live.isEmpty) return;
     final liveIds = <String>{for (final t in live) t.id};
