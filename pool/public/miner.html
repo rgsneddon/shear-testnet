@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <script src="/brand/theme.js?v=8"></script>
-  <title>Shear miner · ShearHash-v2</title>
+  <title>Shear miner · ShearHash-v3</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
   <link rel="stylesheet" href="/brand/theme.css?v=13"/>
@@ -142,7 +142,7 @@
       <article class="panel-card"><div class="label">Miner</div><div class="value" id="m-name">—</div></article>
       <article class="panel-card"><div class="label">Version</div><div class="value" id="m-version">—</div></article>
       <article class="panel-card"><div class="label">Client</div><div class="value" id="m-client">—</div></article>
-      <article class="panel-card"><div class="label">Algo</div><div class="value" id="m-algo">ShearHash-v2</div></article>
+      <article class="panel-card"><div class="label">Algo</div><div class="value" id="m-algo">ShearHash-v3</div></article>
       <article class="panel-card"><div class="label">Connected</div><div class="value" id="m-connected">—</div></article>
       <article class="panel-card"><div class="label">Hashrate</div><div class="value" id="m-hashrate">0 H/s</div></article>
       <article class="panel-card"><div class="label">Blocks found</div><div class="value" id="m-blocks">0</div></article>
@@ -213,7 +213,7 @@
       set('m-name', d.name || '—');
       set('m-version', d.version || '—');
       set('m-client', d.client || 'ShearHash');
-      set('m-algo', d.personalisation || 'ShearHash-v2');
+      set('m-algo', d.personalisation || 'ShearHash-v3');
       set('m-connected', d.connected ? 'yes' : 'no');
       set('m-hashrate', fmtRate(d.hashrate));
       set('m-blocks', String(d.blocks || 0));

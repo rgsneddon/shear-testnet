@@ -87,6 +87,8 @@ describe('ShearK-Miner', () => {
     assert.match(hashc, /randomx_calculate_hash_next/);
     assert.match(hashc, /RANDOMX_FLAG_FULL_MEM/);
     assert.match(hashc, /backend_matches_selftest_locked/);
+    assert.match(hashc, /if \(shear_bind\(header\) != 0\)/);
+    assert.match(hashc, /if \(!g_have \|\| memcmp\(g_k, k, 32\) != 0\)/);
     assert.match(hashc, /RANDOMX_FLAG_LARGE_PAGES/);
     assert.match(hashc, /RANDOMX_FLAG_HARD_AES/);
     assert.match(hashc, /flags_jit_light/);

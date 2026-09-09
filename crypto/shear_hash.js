@@ -55,7 +55,7 @@ export function shearHashV1(header) {
 
 function hashViaMiner(header) {
   const bin = minerBin();
-  if (!bin) throw new Error('ShearHash-v2 native addon missing and ShearK-Miner not built');
+  if (!bin) throw new Error('ShearHash-v3 native addon missing and ShearK-Miner not built');
   const hex = Buffer.from(header).toString('hex');
   const got = spawnSync(bin, ['--backend', 'interpreter', '--verify', hex], { encoding: 'utf8' });
   if (got.status !== 0) throw new Error(got.stderr || got.stdout || 'verify failed');
@@ -64,7 +64,7 @@ function hashViaMiner(header) {
   return Buffer.from(m[1], 'hex');
 }
 
-/** ShearHash-v2: RandomX light interpreter. Not a JS VM. */
+/** ShearHash-v3: RandomX light interpreter. Not a JS VM. */
 export function shearHash(header) {
   const h = Buffer.isBuffer(header) ? header : Buffer.from(header);
   if (h.length !== HEADER_LEN) {

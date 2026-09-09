@@ -157,7 +157,7 @@ describe('brand pages', () => {
       assert.match(page, /rgsneddon\/ShearK/);
       assert.match(page, /theme\.js\?v=12/);
     }
-    assert.match(poolHtml, /Shear pool · ShearHash-v2/);
+    assert.match(poolHtml, /Shear pool · ShearHash-v3/);
     assert.match(poolHtml, /Great Vibes/);
     assert.match(poolHtml, /grid-template-columns:\s*1fr 2fr/);
     assert.doesNotMatch(poolHtml, /grid-template-columns:\s*1fr 3fr/);
@@ -167,11 +167,11 @@ describe('brand pages', () => {
     assert.doesNotMatch(poolHtml, /Private by default/);
     assert.doesNotMatch(poolHtml, /Proof of work only/);
     assert.doesNotMatch(poolHtml, /shewall\.json/);
-    assert.match(explorerHtml, /Shear explorer · ShearHash-v2/);
+    assert.match(explorerHtml, /Shear explorer · ShearHash-v3/);
     assert.match(explorerHtml, /Great Vibes/);
     assert.match(explorerHtml, /class="she-private-lockup">She is Private</);
-    assert.match(read('pool/public/miner.html'), /Shear miner · ShearHash-v2/);
-    assert.match(siteHtml, /Algo: ShearHash-v2/);
+    assert.match(read('pool/public/miner.html'), /Shear miner · ShearHash-v3/);
+    assert.match(siteHtml, /Algo: ShearHash-v3/);
     assert.match(css, /\.top-banner\s*\{[\s\S]*?background:\s*var\(--banner\)/);
     assert.match(css, /grid-template-columns:\s*1fr auto 1fr/);
     assert.match(css, /header\.top-banner\s*\{\s*grid-template-columns:\s*1fr auto/);

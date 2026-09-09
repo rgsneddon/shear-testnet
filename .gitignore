@@ -9,6 +9,7 @@ sheark-miner/dist/
 crypto/native/shearhash.node
 crypto/randomx/build/
 crypto/randomx/build-win/
+crypto/randomx/build-mingw/
 reserve/history.jsonl
 __pycache__/
 *.pyc

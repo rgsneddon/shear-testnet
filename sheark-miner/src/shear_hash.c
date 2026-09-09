@@ -515,6 +515,12 @@ int shear_hash_first(const unsigned char header[SHEAR_HEADER_LEN]) {
 int shear_hash_next(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]) {
   RxTls *tls = tls_slot();
   if (!tls || !tls->primed) return -1;
+  unsigned char k[32];
+  shear_key(header, k);
+  if (!g_have || memcmp(g_k, k, 32) != 0) {
+    tls->primed = 0;
+    return -1;
+  }
   unsigned gen = 0;
   randomx_vm *vm = hot_vm(tls, &gen);
   if (!vm) {

@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <script src="/brand/theme.js?v=12"></script>
-  <title>Shear pool · ShearHash-v2</title>
+  <title>Shear pool · ShearHash-v3</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
@@ -307,7 +307,7 @@
         <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
         <p>Private dests, public amounts. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
         <p>Offer <code>she1</code> (silent ID). Chain dests are revolving <code>ssa1</code>. Never share rest-frame shear1.</p>
-        <p>Algo: ShearHash-v2 · Coin: SHE · Network: shear-testnet-v2</p>
+        <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v2</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
       </section>
       <section class="panel-card">
@@ -333,7 +333,7 @@
     <p id="fee-note">pool fee is 1% of the 1 SHE pot for development — your hashes pay in full and are not subject to pool fees.</p>
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
-      <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash-v2</div></article>
+      <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash-v3</div></article>
       <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v2</div></article>
       <article class="panel-card"><div class="label">Proof</div><div class="value" id="proof">PoW</div></article>
       <article class="panel-card"><div class="label">NODES ONLINE</div><div class="value" id="nodes-n">0</div></article>
@@ -430,7 +430,7 @@
       const ok = /^(she1|ssa1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(addr)
         && !/^shear1/i.test(addr);
       document.getElementById('cmd-hint').textContent = ok
-        ? 'Ready to copy · ShearHash-v2 · :1111'
+        ? 'Ready to copy · ShearHash-v3 · :1111'
         : 'Valid she1 required. she1 is the silent ID and the login. Never share shear1.';
     }
     document.getElementById('addr').addEventListener('input', renderCmd);
@@ -683,7 +683,7 @@
     }
     function paint(s) {
       document.getElementById('coin').textContent = s.coin || 'SHE';
-      document.getElementById('algo').textContent = s.personalisation || 'ShearHash-v2';
+      document.getElementById('algo').textContent = s.personalisation || 'ShearHash-v3';
       document.getElementById('miners-n').textContent = String(s.miners || 0);
       const workerN = (s.workers || []).reduce(function (n, w) {
         return n + (Number(w.sessions) || 1);

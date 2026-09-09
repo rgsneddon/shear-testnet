@@ -45,7 +45,7 @@ window.SHEAR_DOCS = {
       { id: 'node', title: 'Run a node' },
       { id: 'consensus', title: 'Consensus' },
       { id: 'header', title: 'Header' },
-      { id: 'shearhash', title: 'ShearHash-v2' },
+      { id: 'shearhash', title: 'ShearHash-v3' },
       { id: 'emissions', title: 'Emissions' },
       { id: 'confirms', title: 'Confirmations' },
       { id: 'pool', title: 'Public pool' },
@@ -64,7 +64,7 @@ window.SHEAR_DOCS = {
       '<p>Shear is a CPU-mined ledger. Coin is created when a block is found, not before. There is no premine and the developers do not sell SHE. You hash, or someone who already holds coin pays you.</p>' +
       '<p>Private dests, public amounts. Continuity-settled. PoW elects the tip. The live network today is <code>shear-testnet-v2</code>.</p>' +
       '<table><tr><th>Coin</th><td>SHE (11 protocol decimals; public pages show nine)</td></tr>' +
-      '<tr><th>Algo</th><td>ShearHash-v2 (RandomX light, CPU)</td></tr>' +
+      '<tr><th>Algo</th><td>ShearHash-v3 (RandomX light, CPU)</td></tr>' +
       '<tr><th>Block pot</th><td>Exactly 1 SHE</td></tr>' +
       '<tr><th>Target interval</th><td>90 seconds (ASERT)</td></tr>' +
       '<tr><th>Spendable</th><td>6 confirmations</td></tr>' +
@@ -88,7 +88,7 @@ window.SHEAR_DOCS = {
     title: 'Whitepaper',
     crumb: 'start / whitepaper',
     html:
-      '<p>The project note is a four-page preprint: goals, addresses, header, ShearHash-v2, emissions, Flow levy, wallet, Vortex / vort1, The Reserve, pool and node.</p>' +
+      '<p>The project note is a four-page preprint: goals, addresses, header, ShearHash-v3, emissions, Flow levy, wallet, Vortex / vort1, The Reserve, pool and node.</p>' +
       '<p><a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> presents it as a record with a PDF preview. Download <code>shear-whitepaper.pdf</code> from that page. There is no WHITEPAPER button in the site navbar.</p>'
   };
 
@@ -220,7 +220,7 @@ window.SHEAR_DOCS = {
     title: 'ShearK 1.6',
     crumb: 'mining / sheark',
     html:
-      '<p>ShearK-Miner is the official hasher. Pin <strong>1.6</strong>. Do not recut 1.1 or 1.0. Default <code>--backend jit</code> is ShearHash-v2 light JIT. Always run <code>--selftest</code> once on a new machine.</p>' +
+      '<p>ShearK-Miner is the official hasher. Pin <strong>1.6</strong>. Do not recut 1.1 or 1.0. Default <code>--backend jit</code> is ShearHash-v3 light JIT. Always run <code>--selftest</code> once on a new machine.</p>' +
       '<p>One login. No miner-fee dual-login. Keep any extra fee yourself if you run a private stratum.</p>'
   };
 
@@ -345,10 +345,10 @@ window.SHEAR_DOCS = {
   };
 
   P.shearhash = {
-    title: 'ShearHash-v2',
+    title: 'ShearHash-v3',
     crumb: 'network / shearhash',
     html:
-      '<p>RandomX v1.2.3 light mode: 128 MiB cache, no 2 GiB DRAM dataset. Salt <code>ShearHash-v2/rx</code>. Cache key is bound to previous hash, continuity root, merkle root, and bits — not miner identity. Verification is the light-mode interpreter. Mining may JIT if it matches the interpreter on the self-test vector. Wire name: ShearHash.</p>'
+      '<p>RandomX v1.2.3 light mode: 128 MiB cache, no 2 GiB DRAM dataset. Salt <code>ShearHash-v3/rx</code>. Cache key is bound to previous hash, continuity root, merkle root, and bits — not miner identity. Verification is the light-mode interpreter. Mining may JIT if it matches the interpreter on the self-test vector. Wire name: ShearHash.</p>'
   };
 
   P.emissions = {

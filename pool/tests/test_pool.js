@@ -409,7 +409,7 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.magic, MAGIC_TESTNET);
     assert.equal(stats.magic, 'shear-testnet-v2');
     assert.equal(stats.network, MAGIC_TESTNET);
-    assert.equal(stats.personalisation, 'ShearHash-v2');
+    assert.equal(stats.personalisation, 'ShearHash-v3');
     assert.equal(stats.rxMode, 'light');
     assert.equal(stats.blockSubsidyNanos, BLOCK_SUBSIDY_NANOS);
     assert.equal(stats.blockSubsidyNanos, 100_000_000_000);
@@ -420,7 +420,7 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.hashBonusNanos, 1);
     assert.equal(stats.hashTxLive, HASH_TX_LIVE);
     assert.equal(stats.hashTxLive, 1);
-    assert.match(stats.bookLawFingerprint, /HASH_FN=ShearHash-v2/);
+    assert.match(stats.bookLawFingerprint, /HASH_FN=ShearHash-v3/);
     assert.match(stats.bookLawFingerprint, /RX_MODE=light/);
     assert.equal(stats.targetBlockIntervalMs, TARGET_BLOCK_INTERVAL_MS);
     assert.equal(stats.targetBlockIntervalMs, 90_000);
@@ -649,8 +649,8 @@ describe('public miner listing', () => {
     assert.doesNotMatch(miner, /\.pull-form input[^}]*background:#fff/);
     assert.doesNotMatch(miner, />raskul</);
     assert.equal(/localStorage/.test(dash + miner), false);
-    assert.match(miner, /id="m-algo">ShearHash-v2</);
-    assert.match(miner, /d\.personalisation \|\| 'ShearHash-v2'/);
+    assert.match(miner, /id="m-algo">ShearHash-v3</);
+    assert.match(miner, /d\.personalisation \|\| 'ShearHash-v3'/);
   });
 
   it('dashboard last-10 table uses Status not Kind; TESTNET sits above the fee note', () => {
@@ -687,15 +687,15 @@ describe('public miner listing', () => {
     assert.match(dash, /your hashes pay in full and are not subject to pool fees/);
     assert.doesNotMatch(dash, /0\.1 SHE pot/);
     assert.equal(/feeless/i.test(dash), false);
-    assert.match(dash, /id="algo">ShearHash-v2</);
-    assert.match(dash, /s\.personalisation \|\| 'ShearHash-v2'/);
+    assert.match(dash, /id="algo">ShearHash-v3</);
+    assert.match(dash, /s\.personalisation \|\| 'ShearHash-v3'/);
     assert.doesNotMatch(dash, /class="repo-btn"/);
     assert.doesNotMatch(dash, /class="repo-btns"/);
     assert.match(dash, /grid-template-columns:\s*1fr 2fr/);
     assert.match(dash, /class="she-private-lockup">She is Private</);
     assert.match(dash, /Great Vibes/);
     assert.match(dash, /<h1>Shear<\/h1>/);
-    assert.match(dash, /Algo: ShearHash-v2 · Coin: SHE · Network: shear-testnet-v2/);
+    assert.match(dash, /Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v2/);
     assert.doesNotMatch(dash, /Pool: <a href="https:\/\/pool\.shear\.digital"/);
     assert.doesNotMatch(dash, /Explorer: <a href="https:\/\/explorer\.shear\.digital"/);
   });

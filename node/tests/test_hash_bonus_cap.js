@@ -67,7 +67,7 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
     assert.equal(got.reason, 'hash_bonus');
   });
 
-  it('accepts one valid ShearHash-v2 share on the parent job header', () => {
+  it('accepts one valid ShearHash-v3 share on the parent job header', () => {
     const dest = destMiner();
     const parentTpl = buildTemplate({
       prev: GENESIS_PREV,
