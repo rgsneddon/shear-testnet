@@ -4,7 +4,7 @@ Private dests, public amounts. PoW elects the tip. Continuity-settled.
 
 - Ticker: **SHE**
 - Algo: **ShearHash** (CPU)
-- Miner pin: **ShearK-Miner 1.6** (`[Testnet] ShearK`, ShearHash-v3). Wallet **0.28**. Product **0.4**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.6
+- Miner pin: **ShearK-Miner 1.6** (`[Testnet] ShearK`, ShearHash-v3). Wallet **0.29**. Product **0.4**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.6
 - Stratum: `pool.shear.digital:1111`
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital

@@ -144,7 +144,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-pack="miner-windows"/);
   });
 
-  it('WALLET nav on MAIN DAG MEMPOOL POOL EXPLORER pins 0.28 and refuses older tags', () => {
+  it('WALLET nav on MAIN DAG MEMPOOL POOL EXPLORER pins 0.29 and refuses older tags', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const pages = {
       main: html,
@@ -156,7 +156,7 @@ describe('shear.digital client buttons', () => {
       poolAdmin: fs.readFileSync(path.join(here, '../../pool/admin/index.html'), 'utf8'),
     };
     for (const [name, page] of Object.entries(pages)) {
-      assert.match(page, /releases\/tag\/0\.28/, `${name} WALLET must pin 0.28`);
+      assert.match(page, /releases\/tag\/0\.28/, `${name} WALLET must pin 0.29`);
       assert.doesNotMatch(page, /releases\/tag\/0\.26/, `${name} must not offer 0.26`);
       assert.doesNotMatch(page, /shear-wallet-0\.26-/);
       assert.doesNotMatch(page, /releases\/tag\/0\.24/, `${name} must not offer 0.24`);
