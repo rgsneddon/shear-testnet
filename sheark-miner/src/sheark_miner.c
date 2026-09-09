@@ -54,6 +54,7 @@
 
 static const char *g_user = NULL;
 static char g_login[200];
+static char g_dest[128];
 static char g_host_buf[256];
 static const char *g_host = DEFAULT_HOST;
 static int g_port = DEFAULT_PORT;
@@ -142,8 +143,9 @@ static void on_sig(int s) {
 static void usage(FILE *out) {
   fprintf(out,
           "ShearK-Miner %s (ShearHash-v2 light)\n"
-          "Hashes the 128-byte Shear header. 1 hash = 1 tx.\n\n"
+          "Hashes the 128-byte Shear header. One proven share-hash mints units.\n\n"
           "  --user she1…|ssa1….worker   required (not shear1)\n"
+          "  --dest ssa1…                owned payout dest (she1 login)\n"
           "  --pool host:port            default %s:%d\n"
           "  --threads N                 no 256 farm cap\n"
           "  --backend auto|interpreter|jit\n"
@@ -408,13 +410,23 @@ static void identity_json(char *out, size_t cap, const char *login, int threads)
   double elapsed = (double)(time(NULL) - (g_t0 ? g_t0 : time(NULL)));
   if (elapsed < 1) elapsed = 1;
   double hs = g_smooth_hs > 0 ? g_smooth_hs : (double)hashes / elapsed;
-  snprintf(out, cap,
-           "\"login\":\"%s\",\"threads\":%d,\"cpuCores\":%d,\"cpuThreads\":%d,"
-           "\"name\":\"%s\",\"client\":\"%s\",\"version\":\"%s\",\"algorithm\":\"%s\","
-           "\"hashes\":%llu,\"hashrate\":%.0f",
-           login, threads, g_cpu_cores, g_cpu_threads,
-           SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_VERSION, SHEAR_ALGO,
-           hashes, hs);
+  if (g_dest[0]) {
+    snprintf(out, cap,
+             "\"login\":\"%s\",\"dest\":\"%s\",\"threads\":%d,\"cpuCores\":%d,\"cpuThreads\":%d,"
+             "\"name\":\"%s\",\"client\":\"%s\",\"version\":\"%s\",\"algorithm\":\"%s\","
+             "\"hashes\":%llu,\"hashrate\":%.0f",
+             login, g_dest, threads, g_cpu_cores, g_cpu_threads,
+             SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_VERSION, SHEAR_ALGO,
+             hashes, hs);
+  } else {
+    snprintf(out, cap,
+             "\"login\":\"%s\",\"threads\":%d,\"cpuCores\":%d,\"cpuThreads\":%d,"
+             "\"name\":\"%s\",\"client\":\"%s\",\"version\":\"%s\",\"algorithm\":\"%s\","
+             "\"hashes\":%llu,\"hashrate\":%.0f",
+             login, threads, g_cpu_cores, g_cpu_threads,
+             SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_VERSION, SHEAR_ALGO,
+             hashes, hs);
+  }
 }
 
 static int send_login(Conn *c, const char *login, int threads) {
@@ -984,6 +996,8 @@ int main(int argc, char **argv) {
       g_host = g_host_buf;
     } else if (strcmp(argv[i], "--user") == 0 && i + 1 < argc) {
       g_user = argv[++i];
+    } else if (strcmp(argv[i], "--dest") == 0 && i + 1 < argc) {
+      snprintf(g_dest, sizeof(g_dest), "%s", argv[++i]);
     } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
       g_threads = atoi(argv[++i]);
       if (g_threads < 1) g_threads = 1;

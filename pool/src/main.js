@@ -40,6 +40,13 @@ if (p2pPort > 0) {
   const bound = await p2p.listen();
   pool.setP2p(p2p);
   p2pBound = bound.port;
+  const seeds = (process.env.SHEAR_SEEDS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  for (const seed of seeds) {
+    const cut = seed.lastIndexOf(':');
+    const host = cut > 0 ? seed.slice(0, cut) : seed;
+    const port = cut > 0 ? Number(seed.slice(cut + 1)) : P2P_PORT;
+    try { await p2p.connect(host, port); } catch { /* seed down */ }
+  }
 }
 console.log(JSON.stringify({
   ok: true,
