@@ -15,7 +15,14 @@ describe('forbid privacy regressions', () => {
     assert.doesNotMatch(src, /return encodeDest\(pay\.hash20\)/);
     const hasher = read('crypto/flow_sheet.js');
     assert.match(hasher, /aliasDestOfSilentId/);
-    assert.doesNotMatch(hasher, /Never encodeDest\(she1\.hash20\)[\s\S]*destAtIndex\(id/);
+    assert.match(hasher, /Never destCommit\(spendPub\)/);
+    assert.doesNotMatch(hasher, /if \(parsed\?\.spendPub\) return spendDestOf/);
+    const pool = read('pool/src/pool.js');
+    assert.doesNotMatch(pool, /CMINER_FEE_DEST/);
+    assert.doesNotMatch(pool, /CMINER_FEE_SHE/);
+    const send = read('pool/src/wallet_api.js');
+    assert.match(send, /need_dest/);
+    assert.doesNotMatch(send, /silentPay\(rawTo/);
   });
 
   it('memoKey is not dest-only', () => {

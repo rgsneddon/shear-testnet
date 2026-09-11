@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'path';
 import { fileURLToPath } from 'node:url';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
 import { PI_SHE_NANOS } from '../../crypto/asert.js';
 import { explorerRecentTxs, orderExplorerRecent, publicPayloadLeaksIdentity, publicSurfaceRow } from '../../pool/src/wallet_api.js';
@@ -49,7 +49,7 @@ describe('explorer pending paint', () => {
 
   it('30 sealed blocks plus a mempool lock still paint (pending) first after the page transform', () => {
     const alice = newIdentity();
-    const from = destForLogin(alice.address, { spendPub: alice.spendPub });
+    const from = freshStealthDest(alice.paymentCode).dest;
     const to = vaultDest(alice.address, { viewKey: alice.viewKey });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pending-30-'));
     const store = createStore(dir);

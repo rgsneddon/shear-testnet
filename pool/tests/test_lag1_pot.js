@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { createPool, scoreShare } from '../src/pool.js';
 import { coinbaseSplit } from '../../crypto/mint.js';
@@ -94,8 +94,8 @@ describe('lag-1 PROP pot', { timeout: 1_200_000 }, () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-seal-'));
     const alice = newIdentity();
     const bob = newIdentity();
-    const destA = destForLogin(alice.address, { spendPub: alice.spendPub });
-    const destB = destForLogin(bob.address, { spendPub: bob.spendPub });
+    const destA = freshStealthDest(alice.paymentCode).dest;
+    const destB = freshStealthDest(bob.paymentCode).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,

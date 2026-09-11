@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { encodeDest, newIdentity } from '../../crypto/address.js';
+import { encodeDest, newIdentity, freshStealthDest } from '../../crypto/address.js';
+import { spendBox } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
@@ -261,7 +262,8 @@ describe('p2p gossip', () => {
 
   it('lock and vote still paint (pending) after fluff', async () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1, spendPub: id.spendPub });
+    const box = spendBox(id);
+    const dest = box.dest;
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-b-'));
     const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-c-'));
@@ -282,7 +284,7 @@ describe('p2p gossip', () => {
         nanos: lockNanos,
         fee: levyNanos(lockNanos, { depth: 1e9 }),
         vout: [{ address: dest, nanos: lockNanos, kind: 'lock' }],
-      }, id.privateKey);
+      }, box.key);
       const vote = signSpendTx({
         id: 'vote-fluff',
         kind: 'vote',
@@ -292,7 +294,7 @@ describe('p2p gossip', () => {
         payer: dest,
         fee: levyNanos(0, { depth: 1e9 }),
         vout: [{ address: dest, nanos: 0, kind: 'vote' }],
-      }, id.privateKey);
+      }, box.key);
       const qLock = a.store.queueTx(lock);
       const qVote = a.store.queueTx(vote);
       assert.equal(qLock.ok, true, qLock.reason);

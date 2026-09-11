@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { poolFeeDest } from '../../crypto/levy.js';
@@ -19,7 +19,7 @@ import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { coinbaseSplit as mintSplit } from '../../crypto/mint.js';
 
 function destOf(id) {
-  return destForLogin(id.address, { spendPub: id.spendPub });
+  return freshStealthDest(id.paymentCode).dest;
 }
 
 function mine(tpl) {

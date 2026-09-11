@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'os';
 import path from 'node:path';
 import net from 'node:net';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   createPool,
@@ -21,7 +21,7 @@ import { decodeHeader, encodeHeader, headerFromHex } from '../../crypto/header.j
 
 function tmpPool(shareBits = 8) {
   const id = newIdentity();
-  const dest = destForLogin(id.address, { spendPub: id.spendPub });
+  const dest = freshStealthDest(id.paymentCode).dest;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stale-'));
   const pool = createPool({
     dataDir: dir,

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, isDestAddress, isShearAddress, encodeHrp } from '../../crypto/address.js';
+import { newIdentity, isDestAddress, isShearAddress, encodeHrp, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { EMPTY_ROOT } from '../../crypto/merkle.js';
 import { buildTemplate, GENESIS_PREV, coinbaseTx, verifyBlock, mineTemplate } from '../src/chain.js';
@@ -8,7 +8,7 @@ import { buildTemplate, GENESIS_PREV, coinbaseTx, verifyBlock, mineTemplate } fr
 describe('flow dest coinbase', () => {
   it('pays miner login as dest; shear1 never on coinbase', () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { spendPub: id.spendPub });
+    const dest = freshStealthDest(id.paymentCode).dest;
     assert.equal(isDestAddress(dest), true);
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
@@ -35,7 +35,7 @@ describe('flow dest coinbase', () => {
 
   it('verifyBlock rejects rest-frame shear1 on vout', () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { spendPub: id.spendPub });
+    const dest = freshStealthDest(id.paymentCode).dest;
     const tpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: dest, bits: 8, now: Date.now() });
     const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
     assert.ok(found && found.block, 'need pow');

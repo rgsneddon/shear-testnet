@@ -74,6 +74,14 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(deny.status, 400);
     assert.equal(deny.json.reason, 'insufficient');
 
+    const pasted = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      from: silent,
+      to: alice.paymentCode,
+      amount: 0.4,
+    }, { store, miners: new Map(), queueSend: () => ({ id: 'nope' }) });
+    assert.equal(pasted.status, 400);
+    assert.equal(pasted.json.reason, 'need_dest');
+
     const unsigned = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from: silent,
       to: bob,

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity } from '../crypto/address.js';
-import { destForLogin, destAtIndex, hasherPayoutDest } from '../crypto/flow_sheet.js';
+import { newIdentity, freshStealthDest } from '../crypto/address.js';
+import { destAtIndex, hasherPayoutDest } from '../crypto/flow_sheet.js';
 import {
   BLOCK_SUBSIDY_NANOS,
   HASH_BONUS_NANOS,
@@ -17,7 +17,7 @@ import { encodeHeader, setNonce } from '../crypto/header.js';
 import { provenLag1Shares } from '../pool/src/pool.js';
 
 function bindable(id) {
-  return destForLogin(id.address, { spendPub: id.spendPub });
+  return freshStealthDest(id.paymentCode).dest;
 }
 
 function share(dest, nonce) {
@@ -25,7 +25,7 @@ function share(dest, nonce) {
 }
 
 describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
-  it('two destCommit dests with one share each get two kind:hash vouts; she1 mints nothing; dest-index is not the pay dest', () => {
+  it('two one-time dests with one share each get two kind:hash vouts; she1 mints nothing; dest-index is not the pay dest', () => {
     const alice = newIdentity();
     const bob = newIdentity();
     const a = bindable(alice);
@@ -33,7 +33,7 @@ describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
     const indexed = destAtIndex(alice.address, { index: 0, viewKey: alice.viewKey });
     assert.notEqual(a, b);
     assert.notEqual(a, indexed);
-    assert.equal(hasherPayoutDest(alice.paymentCode), a);
+    assert.equal(hasherPayoutDest(alice.paymentCode), null);
     assert.equal(hasherPayoutDest(a), a);
     assert.equal(hasherPayoutDest(alice.paymentCode, { dest: a }), a);
 

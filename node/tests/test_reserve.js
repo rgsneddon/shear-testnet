@@ -32,10 +32,18 @@ import { explorerRecentTxs, reconstructOwner } from '../../pool/src/wallet_api.j
 import { roundActualHashes } from '../../pool/src/hash_credit.js';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { newIdentity, destOpeningFromView, hash20FromAddress, payoutDest } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, hash20FromAddress, payoutDest, freshStealthDest, ed25519SeedOf } from '../../crypto/address.js';
 import { vaultDest, destForLogin, destAtIndex } from '../../crypto/flow_sheet.js';
 import { matureSpendableNanos, signSpendTx } from '../../crypto/spend.js';
 import { levyNanos } from '../../crypto/levy.js';
+
+function spendBox(id) {
+  const pay = freshStealthDest(id.paymentCode);
+  return {
+    dest: pay.dest,
+    key: { type: 'ed25519-stealth', seed: ed25519SeedOf(id.privateKey), shared: pay.shared },
+  };
+}
 
 async function mineOne(store, dest, { bits = 4, now } = {}) {
   const parent = store.tip();
@@ -89,7 +97,8 @@ describe('node Reserve vault', () => {
 
   it('lock spends mature Continuum, refuses when spendable is short, withdraw returns principal + staked interest', { timeout: 600_000 }, async () => {
     const alice = newIdentity();
-    const continuum = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1, spendPub: alice.spendPub });
+    const aliceBox = spendBox(alice);
+    const continuum = aliceBox.dest;
     const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
     const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reserve-append-'));
@@ -102,7 +111,7 @@ describe('node Reserve vault', () => {
     lock.open = open;
     lock.fee = lockL;
     lock.maxLevy = lockL;
-    signSpendTx(lock, alice.privateKey);
+    signSpendTx(lock, aliceBox.key);
 
     const unfunded = store.queueTx(lock);
     assert.equal(unfunded.ok, false);
@@ -135,7 +144,7 @@ describe('node Reserve vault', () => {
     tooMuch.open = open;
     tooMuch.fee = levyNanos(tooMuch.nanos);
     tooMuch.maxLevy = tooMuch.fee;
-    signSpendTx(tooMuch, alice.privateKey);
+    signSpendTx(tooMuch, aliceBox.key);
     const refused = store.queueTx(tooMuch);
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'insufficient');
@@ -199,7 +208,7 @@ describe('node Reserve vault', () => {
 
   it('GATE still accepts a reused dest', () => {
     const alice = newIdentity();
-    const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1, spendPub: alice.spendPub });
+    const dest = freshStealthDest(alice.paymentCode).dest;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reuse-dest-'));
     const store = createStore(dir);
     const mk = (id) => ({
@@ -220,7 +229,8 @@ describe('node Reserve vault', () => {
 
   it('Reserve lock then vote in mempool paint (pending) before the next block', { timeout: 600_000 }, async () => {
     const alice = newIdentity();
-    const continuum = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1, spendPub: alice.spendPub });
+    const aliceBox = spendBox(alice);
+    const continuum = aliceBox.dest;
     const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
     const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reserve-pending-'));
@@ -234,7 +244,7 @@ describe('node Reserve vault', () => {
     lock.open = open;
     lock.fee = lockL;
     lock.maxLevy = lockL;
-    signSpendTx(lock, alice.privateKey);
+    signSpendTx(lock, aliceBox.key);
     const q = store.queueTx(lock);
     assert.equal(q.ok, true, q.reason);
     const painted = explorerRecentTxs(store);
@@ -256,7 +266,7 @@ describe('node Reserve vault', () => {
     vt.fee = voteL;
     vt.maxLevy = voteL;
     vt.payer = continuum;
-    signSpendTx(vt, alice.privateKey);
+    signSpendTx(vt, aliceBox.key);
     const qv = store.queueTx(vt);
     assert.equal(qv.ok, true, qv.reason);
     const afterVote = explorerRecentTxs(store);
@@ -291,10 +301,11 @@ describe('node Reserve vault', () => {
     const alice = newIdentity();
     const bob = newIdentity();
     const minerId = newIdentity();
-    const destA = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1, spendPub: alice.spendPub });
+    const aliceBox = spendBox(alice);
+    const destA = aliceBox.dest;
     const destC = destAtIndex(alice.address, { index: 1, viewKey: alice.viewKey });
-    const destB = destForLogin(bob.address, { viewKey: bob.viewKey, height: 1, spendPub: bob.spendPub });
-    const minerDest = destForLogin(minerId.address, { viewKey: minerId.viewKey, height: 1, spendPub: minerId.spendPub });
+    const destB = freshStealthDest(bob.paymentCode).dest;
+    const minerDest = freshStealthDest(minerId.paymentCode).dest;
     const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     assert.ok(destA.startsWith('ssa1'));
     assert.ok(destC.startsWith('ssa1'));
@@ -331,7 +342,7 @@ describe('node Reserve vault', () => {
         { address: destB, nanos: pay, kind: 'send' },
         { address: destC, nanos: leftover, kind: 'send' },
       ],
-    }, alice.privateKey));
+    }, aliceBox.key));
     assert.equal(queued.ok, true, queued.reason);
 
     await mineOne(store, minerDest, {

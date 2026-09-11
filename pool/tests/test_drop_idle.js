@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   createPool,
@@ -19,7 +19,7 @@ import {
 
 function newDest() {
   const id = newIdentity();
-  return destForLogin(id.address, { spendPub: id.spendPub });
+  return freshStealthDest(id.paymentCode).dest;
 }
 
 function tmpPool(shareBits = 8, extra = {}) {

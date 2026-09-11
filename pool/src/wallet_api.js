@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import { generateKeyPairSync } from 'node:crypto';
-import { isDestAddress, isPaymentCode, isShearAddress, payoutDest, isFullPaymentCode, silentPay, checkAddressField } from '../../crypto/address.js';
+import { isDestAddress, isPaymentCode, isShearAddress, payoutDest, isFullPaymentCode, checkAddressField } from '../../crypto/address.js';
 import { walletSubmitLog, newConnId, lineJoinsIpToIdentity } from '../../crypto/privacy_net.js';
 import {
   HASH_BONUS_NANOS,
@@ -946,10 +945,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (isDestAddress(rawTo)) {
       to = rawTo;
     } else if (isFullPaymentCode(rawTo)) {
-      const { privateKey } = generateKeyPairSync('x25519');
-      const pay = silentPay(rawTo, privateKey);
-      to = pay?.dest || '';
-      ephPub = pay?.ephPub?.toString('hex') || ephPub;
+      return { status: 400, json: { ok: false, reason: 'need_dest' } };
     }
     const amount = Number(body.amount);
     const kindIn = String(body.kind || 'send');

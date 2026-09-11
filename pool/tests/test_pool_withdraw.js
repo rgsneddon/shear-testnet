@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, payoutDest, encodeDest, hash20FromAddress, destOpeningFromView, aliasDestOfSilentId } from '../../crypto/address.js';
+import { newIdentity, payoutDest, encodeDest, hash20FromAddress, destOpeningFromView, aliasDestOfSilentId, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin, hasherPayoutDest, destAtIndex } from '../../crypto/flow_sheet.js';
 import { NANOS_PER_SHE } from '../../crypto/asert.js';
 import { verifyPoolWithdrawOffchain } from '../../crypto/levy.js';
@@ -133,19 +133,16 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
     pool.close();
   });
 
-  it('she1 hasher dest is destCommit(spendPub), never destAtIndex or encodeDest(hash20)', () => {
+  it('she1 hasher dest is unpaid without an owned one-time dest; destCommit is not a mailbox', () => {
     const id = newIdentity();
     const she = id.paymentCode;
     const degenerate = aliasDestOfSilentId(she);
-    const owned = destForLogin(id.address, { spendPub: id.spendPub });
-    assert.equal(hasherPayoutDest(she, { height: 1 }), owned);
+    assert.equal(destForLogin(id.address, { spendPub: id.spendPub }), null);
+    assert.equal(hasherPayoutDest(she, { height: 1 }), null);
     const indexed = destAtIndex(id.address, { index: 0, viewKey: id.viewKey });
-    assert.notEqual(owned, indexed);
-    assert.equal(hasherPayoutDest(owned), owned);
-    assert.equal(hasherPayoutDest(owned, { dest: owned }), owned);
-    assert.equal(hasherPayoutDest(she, { dest: owned }), owned);
+    assert.equal(hasherPayoutDest(indexed), indexed);
+    assert.equal(hasherPayoutDest(she, { dest: indexed }), indexed);
     assert.equal(hasherPayoutDest(she, { dest: degenerate }), null);
-    assert.notEqual(owned, degenerate);
     assert.equal(ownerPubFromOpening(destOpeningFromView(id.viewKey, id.spendPub, 0)).length, 33);
   });
 

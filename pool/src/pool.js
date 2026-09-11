@@ -313,23 +313,9 @@ export function workerKey(login) {
   return raw || parseLogin(login);
 }
 
-/**
- * Operator dual-login fee route. Payout dest is an owned ssa1, never
- * encodeDest(she1.hash20). Not the 1% pool tax.
- */
-export const CMINER_FEE_DEST = 'ssa1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7mhq4z';
-export const CMINER_FEE_SHE = 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj';
-
-/** Dual-login fee socket: `<dest>.fee`, threads=1. */
-export function isCminerFeeLogin(login) {
-  const raw = String(login || '').trim();
-  const dest = parseLogin(raw);
-  const worker = raw.split('.').slice(1).filter(Boolean).join('.') || '';
-  // Only the dual-login `.fee` socket is hidden. Mining to the same she1
-  // as a real worker (e.g. `.raskul`) is a public hasher row.
-  if (worker.toLowerCase() !== 'fee') return false;
-  // Any mineable .fee still uses the hasher's job and is not a public worker.
-  return isMineLogin(dest);
+/** Dual-login fee identity is deleted. Every hasher row is public. */
+export function isCminerFeeLogin() {
+  return false;
 }
 
 export const SHEARK_MINER_NAME = 'ShearK-Miner';
@@ -354,7 +340,7 @@ export function admitClient(params) {
       ramAlias: true,
     };
   }
-  return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payout || dest };
+  return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payout || (isDestAddress(dest) ? dest : '') };
 }
 
 /** Wrong-algo login or a submit that is not a ShearHash-v3 digest. */

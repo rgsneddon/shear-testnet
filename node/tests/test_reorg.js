@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { encodeDest, newIdentity, destOpeningFromView } from '../../crypto/address.js';
+import { encodeDest, newIdentity, destOpeningFromView, freshStealthDest } from '../../crypto/address.js';
+import { spendBox } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
@@ -47,7 +48,8 @@ function tmpStore() {
 describe('most-work adopt', () => {
   it('heavier valid fork replaces the local tip; equal work keeps first-seen; invalid rest-frame is refused', async () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1, spendPub: id.spendPub });
+    const box = spendBox(id);
+    const dest = box.dest;
     const local = tmpStore();
     const first = await Promise.resolve(mineOne(local, dest));
     assert.equal(first.ok, true, first.reason);
@@ -76,7 +78,7 @@ describe('most-work adopt', () => {
       vin: [{ address: dest }],
       vout: [{ address: dest, nanos: 1 }],
     };
-    signSpendTx(bounce, id.privateKey);
+    signSpendTx(bounce, box.key);
     assert.equal(local.queueTx(bounce).ok, true, 'bounce must enter mempool');
     const heavier = tmpStore();
     const heavierNeed = local.tip().height + 1;

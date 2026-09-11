@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   admitClient,
@@ -23,7 +23,7 @@ import {
   rememberShare,
   shareFingerprint,
   submittedShareDigest,
-  CMINER_FEE_SHE,
+  isCminerFeeLogin,
   HASHRATE_WINDOW_MS,
   HASHRATE_EMA_TAU_S,
   HASHRATE_STALL_HOLD_MS,
@@ -124,7 +124,7 @@ describe('duplicate shares cannot inflate round work', () => {
 
   it('old-miner hash counter without a valid share mints nothing; a scored share still pays', () => {
     const idIdle = newIdentity();
-    const dest = destForLogin(idIdle.address, { spendPub: idIdle.spendPub });
+    const dest = freshStealthDest(idIdle.paymentCode).dest;
     const idle = {
       login: dest,
       accepted: 0,
@@ -182,7 +182,7 @@ describe('duplicate shares cannot inflate round work', () => {
 
   it('nonce-only submits (old miner) are refused without hashing and cannot stall stats', async () => {
     const idNeed = newIdentity();
-    const dest = destForLogin(idNeed.address, { spendPub: idNeed.spendPub });
+    const dest = freshStealthDest(idNeed.paymentCode).dest;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-need-hash-'));
     const pool = createPool({
       dataDir: dir,
@@ -357,12 +357,10 @@ describe('folded-row inventory', () => {
     assert.equal(ranked[0], high);
   });
 
-  it('does not take hashes/hashrate from the dual-login .fee socket', () => {
-    const fee = { workerKey: `${CMINER_FEE_SHE}.fee`, login: CMINER_FEE_SHE };
-    applyMinerSelfRate(fee, { hashes: 16_590_151_266_784, hashrate: 1_000_000_000 });
-    assert.equal(fee.clientHs, undefined);
-    assert.equal(fee.clientHashes, undefined);
-    assert.equal(reportedHashrate(fee), 0);
+  it('does not take hashes/hashrate from a dual-login .fee socket (fee identity deleted)', () => {
+    assert.equal(isCminerFeeLogin('anything.fee'), false);
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.equal(/CMINER_FEE_DEST|CMINER_FEE_SHE/.test(src), false);
   });
 
   it('does not ship thread honesty checks', () => {
@@ -411,7 +409,7 @@ describe('folded-row inventory', () => {
 
   it('keys the book by dest.worker, not dest-only', () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { spendPub: id.spendPub });
+    const dest = freshStealthDest(id.paymentCode).dest;
     assert.equal(workerKey(`${dest}.alpha`), `${dest}.alpha`);
     assert.notEqual(workerKey(`${dest}.alpha`), workerKey(`${dest}.beta`));
     assert.equal(admitClient({ login: `${dest}.alpha`, client: 'ShearHash' }).workerKey, `${dest}.alpha`);
@@ -421,7 +419,7 @@ describe('folded-row inventory', () => {
   it('two sockets on one worker sum; dest.other is a separate row', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hon-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { spendPub: id.spendPub });
+    const dest = freshStealthDest(id.paymentCode).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -478,7 +476,7 @@ describe('folded-row inventory', () => {
   it('createPool 32/32 + 230/256 still folds without an honesty verdict', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ep01-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { spendPub: id.spendPub });
+    const dest = freshStealthDest(id.paymentCode).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,

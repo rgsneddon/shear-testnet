@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, destOpeningFromView } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, freshStealthDest } from '../../crypto/address.js';
+import { spendBox } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
@@ -35,8 +36,9 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
   it('collates hashes, prunes sample bodies, keeps sealed txs for explorer', async () => {
     const alice = newIdentity();
     const bob = newIdentity();
-    const destA = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1, spendPub: alice.spendPub });
-    const destB = destForLogin(bob.address, { viewKey: bob.viewKey, height: 1, spendPub: bob.spendPub });
+    const aliceBox = spendBox(alice);
+    const destA = aliceBox.dest;
+    const destB = freshStealthDest(bob.paymentCode).dest;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-prune-'));
     const store = createStore(dir, { pruneAfter: 2 });
     const fat = Array.from({ length: 250 }, (_, i) => ({
@@ -86,7 +88,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
       vin: [{ address: destA }],
       vout: [{ address: destB, nanos: 3 }],
     };
-    signSpendTx(send, alice.privateKey);
+    signSpendTx(send, aliceBox.key);
     const parentSend = store.tip();
     const parentSendH = decodeHeader(Buffer.from(parentSend.header));
     const sendBlock = mine(buildTemplate({

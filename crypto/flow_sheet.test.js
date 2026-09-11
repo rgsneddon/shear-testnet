@@ -68,17 +68,14 @@ describe('flow sheets', () => {
     assert.equal(destForLogin(alice.paymentCode, { closureCommit: C, height: 3 }), null);
     assert.equal(payoutDest(alice.paymentCode), null);
     assert.equal(isDestAddress(encodeAddress(spendHashFromAddress(alice.address))), false);
-    const owned = destForLogin(alice.address, { spendPub: alice.spendPub });
-    assert.equal(hasherPayoutDest(alice.paymentCode, { height: 1 }), owned);
-    assert.equal(hasherPayoutDest(alice.paymentCode, { height: 1, viewKey: alice.viewKey }), owned);
+    assert.equal(destForLogin(alice.address, { spendPub: alice.spendPub }), null);
+    assert.equal(hasherPayoutDest(alice.paymentCode, { height: 1 }), null);
+    assert.equal(hasherPayoutDest(alice.paymentCode, { height: 1, viewKey: alice.viewKey }), null);
     const indexed = destAtIndex(alice.address, { index: 1, viewKey: alice.viewKey });
-    assert.notEqual(owned, indexed);
-    assert.equal(hasherPayoutDest(owned), owned);
-    assert.equal(hasherPayoutDest(owned, { dest: owned }), owned);
+    assert.equal(hasherPayoutDest(indexed), indexed);
+    assert.equal(hasherPayoutDest(alice.paymentCode, { dest: indexed }), indexed);
     assert.equal(hasherPayoutDest(alice.address, { height: 1, viewKey: alice.viewKey }), null);
-    assert.equal(hasherPayoutDest(alice.paymentCode, { dest: owned }), owned);
     assert.equal(hasherPayoutDest(alice.paymentCode, { dest: aliasDestOfSilentId(alice.paymentCode) }), null);
-    assert.notEqual(owned, aliasDestOfSilentId(alice.paymentCode));
   });
 
   it('indexed she1 dests are unlimited, regenerable, and tied to shear1 + C', () => {

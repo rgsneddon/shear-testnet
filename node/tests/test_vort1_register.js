@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, destOpeningFromView } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, freshStealthDest, ed25519SeedOf } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, containsShe1 } from '../../crypto/levy.js';
 import { gateVorticeRegister, vorticeRegisterTx } from '../../crypto/vortex.js';
@@ -37,7 +37,11 @@ function mine(tpl) {
 describe('vort1 register consensus tx', () => {
   it('bad ticker or mint-not-Reserve fails with no id; passing register pays L; mined fields have no she1', async () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1, spendPub: id.spendPub });
+    const box = (() => {
+      const pay = freshStealthDest(id.paymentCode);
+      return { dest: pay.dest, key: { type: 'ed25519-stealth', seed: ed25519SeedOf(id.privateKey), shared: pay.shared } };
+    })();
+    const dest = box.dest;
     const bytesHash = 'ab'.repeat(32);
     const L = levyNanos(0);
     const she = vorticeRegisterTx({
@@ -81,12 +85,12 @@ describe('vort1 register consensus tx', () => {
     assert.equal(failOk.ok, false);
     assert.equal(failOk.reason, 'ticker');
 
-    const pay = destForLogin(id.address, { viewKey: id.viewKey, height: 1, spendPub: id.spendPub });
+    const pay = dest;
     const fundedTx = vorticeRegisterTx({
       from: pay, bytesHash, vort1: 'vort1.ok-dapp', ticker: 'ABC', fee: L,
     });
     fundedTx.open = destOpeningFromView(id.viewKey, id.spendPub, 0);
-    signSpendTx(fundedTx, id.privateKey);
+    signSpendTx(fundedTx, box.key);
     const body = JSON.stringify(fundedTx);
     assert.equal(body.includes('she1'), false);
     const goodOk = verifyBlock(mine(buildTemplate({

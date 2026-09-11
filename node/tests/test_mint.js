@@ -4,7 +4,7 @@ import { HEADER_LEN } from '../../crypto/shear_hash.js';
 import { encodeHeader } from '../../crypto/header.js';
 import { EMPTY_ROOT } from '../../crypto/merkle.js';
 import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, RESERVE_PROGRAM } from '../../crypto/asert.js';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { extraMintAllowed, extraMint, coinbaseSplit, coinbaseTx } from '../../crypto/mint.js';
 
@@ -27,8 +27,8 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
   it('pays each hasher, not only the finder', () => {
     const alice = newIdentity();
     const bob = newIdentity();
-    const destA = destForLogin(alice.address, { spendPub: alice.spendPub });
-    const destB = destForLogin(bob.address, { spendPub: bob.spendPub });
+    const destA = freshStealthDest(alice.paymentCode).dest;
+    const destB = freshStealthDest(bob.paymentCode).dest;
     const unit = 2 ** 8;
     const nA = 16;
     const nB = 4;
@@ -56,7 +56,7 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
 
   it('counts each meeting share as floor units; HUD samples mint nothing', () => {
     const alice = newIdentity();
-    const dest = destForLogin(alice.address, { spendPub: alice.spendPub });
+    const dest = freshStealthDest(alice.paymentCode).dest;
     const n = 7;
     const unit = 2 ** 8;
     const batch = [];

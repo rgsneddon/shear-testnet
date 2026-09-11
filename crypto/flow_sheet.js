@@ -1,5 +1,6 @@
-import { createHash, pbkdf2Sync, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { encodeDest, encodeHrp, isShearAddress, isDestAddress, isPaymentCode, hash20FromAddress, payoutDest, identityOfLogin, aliasDestOfSilentId, destCommitFromSpendPub, decodePaymentCode, spendDestOf } from './address.js';
+import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { encodeDest, encodeHrp, isShearAddress, isDestAddress, isPaymentCode, hash20FromAddress, payoutDest, identityOfLogin, aliasDestOfSilentId } from './address.js';
+import { argon2id } from '@noble/hashes/argon2.js';
 import { EMPTY_ROOT } from './merkle.js';
 
 /** continuity-tethered Flow (CTF). Paid dests need independent Closure C, not C-from-S. */
@@ -20,10 +21,12 @@ export function asBuf(x, n) {
   return createHash('sha256').update(b).digest().subarray(0, n);
 }
 
-/** Password → view secret V. Same KDF as shewall (PBKDF2-SHA256-100000). */
+/** Password → view secret V. Same Argon2id family as shewall.bin (64 MiB, t=3, p=1). */
 export function viewSecretFromPassword(password, salt) {
   const s = Buffer.isBuffer(salt) ? salt : Buffer.from(String(salt || ''), 'utf8');
-  const k = pbkdf2Sync(String(password || ''), s, 100000, 32, 'sha256');
+  const k = Buffer.from(argon2id(String(password || ''), s, {
+    t: 3, m: 65536, p: 1, dkLen: 32,
+  }));
   return createHash('sha256').update(VIEW_KDF_INFO).update(k).digest();
 }
 
@@ -98,9 +101,9 @@ export function spendHashFromAddress(address) {
 }
 
 /**
- * Paid dest. Login already ssa1 → that dest (miner chose an owned dest).
- * she1 login may pass dest= an owned rotating ssa1. Never encodeDest(she1.hash20).
- * Full payment code (scan||spend) pays destCommit(spendPub) — the wallet mailbox.
+ * Paid dest. Login already ssa1 → that dest (miner chose an owned mailbox).
+ * she1 / payment-code login is RAM-only: unpaid unless dest= an owned one-time
+ * ssa1 the wallet exported. Never destCommit(spendPub). Never encodeDest(she1.hash20).
  * Fingerprint-only she1 and destAtIndex are not money paths.
  */
 export function hasherPayoutDest(login, { dest } = {}) {
@@ -114,18 +117,12 @@ export function hasherPayoutDest(login, { dest } = {}) {
     return offered;
   }
   if (isDestAddress(id)) return id;
-  const parsed = decodePaymentCode(id);
-  if (parsed?.spendPub) return spendDestOf(parsed.spendPub);
   return null;
 }
 
-export function destForLogin(login, { continuityRoot, height, viewKey, closureCommit: C, spendPub } = {}) {
+export function destForLogin(login, { continuityRoot, height, viewKey, closureCommit: C } = {}) {
   const id = String(login || '').trim().split('.')[0];
   if (isDestAddress(id)) return id;
-  if (spendPub && Buffer.from(spendPub).length === 32) {
-    const c = destCommitFromSpendPub(spendPub);
-    return c ? encodeDest(c) : null;
-  }
   const s = spendHashFromAddress(id);
   if (!s) return null;
   const commit = C ? asBuf(C, 32) : (viewKey ? closureCommit(viewKey) : null);

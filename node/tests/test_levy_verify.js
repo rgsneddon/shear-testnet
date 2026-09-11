@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, destOpeningFromView } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, freshStealthDest } from '../../crypto/address.js';
+import { spendBox } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { splitLevy, levyNanos } from '../../crypto/levy.js';
 import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
@@ -38,7 +39,7 @@ describe('verifyBlock Phase B Flow levy', () => {
     assert.equal(levyNanos(1), 100);
     assert.equal(levyNanos(NANOS_PER_SHE), 20_000_000);
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1, spendPub: id.spendPub });
+    const dest = freshStealthDest(id.paymentCode).dest;
     const other = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey, height: 1 });
     const base = {
       prev: GENESIS_PREV,
@@ -142,7 +143,8 @@ describe('verifyBlock Phase B Flow levy', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-levy-path-'));
     const store = createStore(dir);
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1, spendPub: id.spendPub });
+    const box = spendBox(id);
+    const dest = box.dest;
     const t0 = 1_700_000_000_000;
     for (let i = 0; i < SPENDABLE_CONFIRMATIONS + 1; i += 1) {
       const parent = store.tip();
@@ -180,7 +182,7 @@ describe('verifyBlock Phase B Flow levy', () => {
       vin: [{ address: dest }],
       vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
     };
-    signSpendTx(sendTx, id.privateKey);
+    signSpendTx(sendTx, box.key);
     const queued = store.queueTx(sendTx);
     assert.equal(queued.ok, true, queued.reason);
     const parent = store.tip();

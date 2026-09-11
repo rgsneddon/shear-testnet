@@ -1,6 +1,6 @@
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { encodeDest, newIdentity } from '../../crypto/address.js';
+import { encodeDest, newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   BLOCK_SUBSIDY_NANOS,
@@ -26,7 +26,7 @@ import { applyMinerSelfRate } from '../../pool/src/pool.js';
 
 function destMiner() {
   const id = newIdentity();
-  return destForLogin(id.address, { spendPub: id.spendPub });
+  return freshStealthDest(id.paymentCode).dest;
 }
 
 function mine(tpl) {

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { hashesCreditedForShare } from '../src/share_vardiff.js';
 import { createPool, scoreShare, provenLag1Shares } from '../src/pool.js';
@@ -111,8 +111,8 @@ describe('round hash bonuses', { timeout: 1_200_000 }, () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pay-'));
     const alice = newIdentity();
     const bob = newIdentity();
-    const destA = destForLogin(alice.address, { spendPub: alice.spendPub });
-    const destB = destForLogin(bob.address, { spendPub: bob.spendPub });
+    const destA = freshStealthDest(alice.paymentCode).dest;
+    const destB = freshStealthDest(bob.paymentCode).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -206,7 +206,7 @@ describe('round hash bonuses', { timeout: 1_200_000 }, () => {
   it('provenLag1Shares drops a parent-header miss so the next job stays sealable', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-lag1-'));
     const alice = newIdentity();
-    const destA = destForLogin(alice.address, { spendPub: alice.spendPub });
+    const destA = freshStealthDest(alice.paymentCode).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -230,7 +230,7 @@ describe('round hash bonuses', { timeout: 1_200_000 }, () => {
       verifiedHeader: sealed.toString('hex'),
     };
     const bob = newIdentity();
-    const destB = destForLogin(bob.address, { spendPub: bob.spendPub });
+    const destB = freshStealthDest(bob.paymentCode).dest;
     const bobShare = {
       dest: destB,
       nonce: 12n,

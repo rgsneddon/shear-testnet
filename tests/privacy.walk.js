@@ -236,8 +236,8 @@ describe('privacy.walk', () => {
     const alice = newIdentity();
     const owned = freshStealthDest(alice.paymentCode).dest;
     const sheOnly = admitClient({ login: alice.paymentCode, client: 'ShearHash' });
-    assert.equal(sheOnly.payoutDest, destForLogin(alice.address, { spendPub: alice.spendPub }));
-    assert.equal(sheOnly.login.startsWith('ssa1'), true);
+    assert.equal(sheOnly.payoutDest, '');
+    assert.equal(sheOnly.ramAlias, true);
     const sheOwned = admitClient({ login: `${alice.paymentCode}.worker`, dest: owned, client: 'ShearHash' });
     assert.equal(sheOwned.payoutDest, owned);
     assert.equal(sheOwned.login.startsWith('ssa1'), true);
@@ -302,7 +302,9 @@ describe('privacy.walk', () => {
     assert.notEqual(changeA, changeB);
     const idx0 = destAtIndex(alice.address, { index: 0, viewKey: alice.viewKey });
     assert.notEqual(changeA, idx0);
-    assert.equal(hasherPayoutDest(alice.paymentCode), destForLogin(alice.address, { spendPub: alice.spendPub }));
+    assert.equal(hasherPayoutDest(alice.paymentCode), null);
+    const mailbox = freshStealthDest(alice.paymentCode).dest;
+    assert.equal(hasherPayoutDest(alice.paymentCode, { dest: mailbox }), mailbox);
   });
 
   it('shewall.bin is Argon2id; PBKDF2 envelopes re-seal; JSON refused', () => {

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { createPool, scoreShare } from '../src/pool.js';
 import {
@@ -124,7 +124,7 @@ describe('share vardiff', () => {
     assert.match(src, /conn\.shareBits = next/);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-var-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { spendPub: id.spendPub });
+    const dest = freshStealthDest(id.paymentCode).dest;
     const openBits = 4;
     const pool = createPool({
       dataDir: dir,
