@@ -114,7 +114,7 @@ window.SHEAR_DOCS = {
     title: 'Wallet overview',
     crumb: 'wallet / overview',
     html:
-      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.30</strong> (macOS, Android, leftover Windows / Linux / Arch).</p>' +
+      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.30</strong> (macOS, Android, Linux, Arch).</p>' +
       '<table><tr><th>Continuum</th><td>Spendable balance, <code>she1</code>, six-slice pending pie</td></tr>' +
       '<tr><th>Flow</th><td>Send and receive</td></tr>' +
       '<tr><th>Resistance</th><td>Public CTF CLI</td></tr>' +

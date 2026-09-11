@@ -77,7 +77,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /justify-content:center/);
     assert.match(html, /text-indent:\.12em/);
     assert.match(html, /shear-wallet-0\.30-macos\.dmg/);
-    assert.match(html, /shear-wallet-0\.30-windows\.zip/);
+    assert.doesNotMatch(html, /shear-wallet-0\.30-windows\.zip/);
     assert.match(html, /shear-wallet-0\.30-android\.apk/);
     assert.match(html, /shear-wallet-0\.30-linux\.zip/);
     assert.match(html, /shear-wallet-0\.30-archlinux\.zip/);
@@ -105,7 +105,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /shear-wallet-0\.11-/);
     assert.doesNotMatch(html, /shear-wallet-0\.9-/);
     assert.match(html, /data-pack="wallet-macos"/);
-    assert.match(html, /data-pack="wallet-windows"/);
+    assert.doesNotMatch(html, /data-pack="wallet-windows"/);
     assert.match(html, /data-pack="wallet-android"/);
     assert.match(html, /data-pack="wallet-linux"/);
     assert.match(html, /data-pack="wallet-archlinux"/);
@@ -117,7 +117,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /miner <strong>1\.6<\/strong>/);
     assert.doesNotMatch(html, /sha256/);
     assert.match(html, /rgsneddon\/ShearK/);
-    assert.match(html, /ShearK-Miner-1\.6-macos\.zip/);
+    assert.doesNotMatch(html, /ShearK-Miner-1\.6-macos\.zip/);
     assert.match(html, /ShearK-Miner-1\.6-windows\.zip/);
     assert.match(html, /ShearK-Miner-1\.6-linux\.zip/);
     assert.match(html, /SmartScreen/);
@@ -273,6 +273,7 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /pool\.shear\.digital:1111/);
     assert.match(admin, /ShearK-Miner 1\.6/);
     assert.match(admin, /shear-wallet-0\.30-/);
+    assert.doesNotMatch(admin, /shear-wallet-0\.30-windows\.zip/);
     assert.match(admin, /Mainnet shear-v1 is not scheduled/);
     assert.match(admin, /Do not launch until P0 1–14/);
     assert.doesNotMatch(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);

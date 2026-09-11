@@ -61,8 +61,10 @@ describe('ShearK-Miner', () => {
     assert.match(help.stdout, /huge pages/);
     const srcEx = fs.readFileSync(path.join(root, 'example.sh'), 'utf8');
     const bat = fs.readFileSync(path.join(root, 'example.bat'), 'utf8');
+    assert.match(srcEx, /--user YOUR_SSA1\.worker/);
     assert.match(srcEx, /--dest YOUR_SSA1/);
     assert.match(srcEx, /--backend jit/);
+    assert.match(bat, /--user YOUR_SSA1\.worker/);
     assert.match(bat, /--dest YOUR_SSA1/);
     assert.match(bat, /--backend jit/);
     assert.match(bat, /ShearK-Miner-1\.6-windows\.zip/);

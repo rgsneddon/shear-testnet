@@ -275,7 +275,6 @@
         <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.30">WALLET</a>
         <div class="client-menu" id="menu-wallet">
           <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-macos.dmg">macOS</a>
-          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-windows.zip">Windows</a>
           <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-android.apk">Android</a>
           <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-linux.zip">Linux</a>
           <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-archlinux.zip">Arch</a>
@@ -284,7 +283,6 @@
       <div class="client-dd">
         <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.6">MINER</a>
         <div class="client-menu" id="menu-miner">
-          <a data-pack="miner-macos" href="https://github.com/rgsneddon/ShearK/releases/download/1.6/ShearK-Miner-1.6-macos.zip">macOS</a>
           <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/download/1.6/ShearK-Miner-1.6-windows.zip">Windows</a>
           <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/download/1.6/ShearK-Miner-1.6-linux.zip">Linux</a>
         </div>
@@ -436,18 +434,18 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
         macos: BASE + '/0.30/shear-wallet-0.30-macos.dmg',
-        windows: BASE + '/0.30/shear-wallet-0.30-windows.zip',
+        windows: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.30',
         android: BASE + '/0.30/shear-wallet-0.30-android.apk',
         linux: BASE + '/0.30/shear-wallet-0.30-linux.zip',
         ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.30'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
-        macos: SHEARK + '/download/1.6/ShearK-Miner-1.6-macos.zip',
+        macos: SHEARK + '/tag/1.6',
         windows: SHEARK + '/download/1.6/ShearK-Miner-1.6-windows.zip',
         linux: SHEARK + '/download/1.6/ShearK-Miner-1.6-linux.zip',
-        android: SHEARK + '/download/1.6/ShearK-Miner-1.6-macos.zip',
-        ios: SHEARK + '/download/1.6/ShearK-Miner-1.6-macos.zip'
+        android: SHEARK + '/tag/1.6',
+        ios: SHEARK + '/tag/1.6'
       };
       var node = 'https://github.com/rgsneddon/shear-testnet/tree/main/node';
       function bind(id, href) {

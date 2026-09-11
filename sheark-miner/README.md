@@ -8,15 +8,19 @@ Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache).
 - Pool: `pool.shear.digital:1111`
 - Header: 128 bytes. Light mode only. Do not recut Shear-Miner **1.1** / **1.0**. Submit includes the ShearHash-v3 digest.
 
+Paid login is an owned `ssa1` dest (wallet **Copy dest**):
+
 ```
 ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit --threads 8
 ```
+
+`she1` login is RAM-only and unpaid unless you also pass `--dest YOUR_SSA1`. Never use `shear1`.
 
 Default `--backend jit` is ShearHash-v3 light JIT + HARD_AES + huge pages (fallback to 4K if huge pages fail). Do not use `jit-full` against this pool: FULL_MEM hashes fail light verify.
 
 `--print-config` includes `rxMode=light`, `rxCacheMiB=128`, `feePct=0`. `--selftest` must print digest `64d41fa97f5ebea8a7e2a2625b1824467ce9d081bf29b0b2ae0a7fe617599895` and must not match the v1 vector `5d00a242…`.
 
-Windows zip root: `ShearK-Miner.exe` + `example.bat`. macOS zip root: `ShearK-Miner` + `example.sh`.
+Windows zip root: `ShearK-Miner.exe` + `example.bat`. Linux zip root: `ShearK-Miner` + `example.sh`. How-to: the `[Testnet] ShearK` README.
 
 Build (from this tree, with `crypto/randomx` already vendored in the parent Shear repo):
 
