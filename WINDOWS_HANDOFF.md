@@ -1,14 +1,18 @@
 # Windows pointer — Shear
 
-**Do not use this file.** The only leftover / pin list the Windows laptop should read is:
+**Do not use this file as a pin list.** The only leftover / pin list the Windows box should read is:
 
 **https://github.com/rgsneddon/handoff/blob/main/HANDOFF.md**
 
+The Windows machine was **formatted**. There is no local repo. Clone from GitHub:
+
 ```
-git clone https://github.com/rgsneddon/handoff.git ~/handoff
-# or: git -C ~/handoff pull
+gh auth login
+git clone https://github.com/rgsneddon/handoff.git %USERPROFILE%\handoff
+git clone https://github.com/rgsneddon/shear-testnet.git %USERPROFILE%\shear-testnet
+git clone https://github.com/rgsneddon/ShearK.git %USERPROFILE%\ShearK
 ```
 
-Then read `HANDOFF.md` (section **Shear**). Do not keep a second Shear leftover in this tree.
+Then read `HANDOFF.md` (top **Updated: 2026-09-11** block + section **Shear**).
 
-Current pin leftover is in `HANDOFF.md` only: wallet **0.29** on `rgsneddon/shear-testnet`, miner **ShearK 1.6** on `rgsneddon/ShearK`. Do **not** recut **0.29**. Do **not** recut **0.28**. Do **not** attach leftover zips from the dead Windows laptop. Do **not** attach a Darwin binary as `*-linux.zip`.
+Current pin: wallet **0.30** on `rgsneddon/shear-testnet`, miner **ShearK 1.6** on `rgsneddon/ShearK`. Leftover on this box: pack **`shear-wallet-0.30-windows.zip`** onto tag **0.30**. Linux/Arch 0.30 already on the tag. Miner 1.6 Windows zip already on the tag (`example.bat` is `YOUR_SSA1.worker`). Do **not** recut **0.29**. Do **not** recut **0.28**. Do **not** attach zips from the dead disk. Do **not** attach a Darwin binary as `*-linux.zip`.
