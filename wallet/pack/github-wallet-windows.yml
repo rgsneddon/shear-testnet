@@ -8,7 +8,7 @@ on:
       pin:
         description: Public two-part wallet pin (release tag)
         required: true
-        default: '0.29'
+        default: '0.30'
       build_number:
         description: Flutter build-number
         required: true

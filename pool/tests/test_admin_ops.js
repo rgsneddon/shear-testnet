@@ -98,7 +98,7 @@ describe('kyrusfables operator desk', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admin-ops-'));
     const admin = createAdmin(dir);
     const calls = { pause: [], restart: 0, hasher: 0, kick: [], stale: 0 };
-    const miners = [{ tag: 'she1abcd1234', worker: 'rig', accepted: 4, stale: 9, hashrate: 12 }];
+    const miners = [{ tag: 'mabcd1234', worker: 'rig', accepted: 4, stale: 9, hashrate: 12 }];
     const ops = {
       health: () => ({ paused: false, height: 9, accepted: 4, stale: 9 }),
       miners: () => miners,
@@ -134,7 +134,7 @@ describe('kyrusfables operator desk', () => {
 
     const list = run('/api/admin/miners', 'GET', {}, cookie);
     assert.equal(list.json.n, 1);
-    assert.equal(list.json.miners[0].tag, 'she1abcd1234');
+    assert.equal(list.json.miners[0].tag, 'mabcd1234');
 
     assert.equal(run('/api/admin/pause', 'POST', {}, cookie).json.paused, true);
     assert.equal(run('/api/admin/resume', 'POST', {}, cookie).json.paused, false);
@@ -147,8 +147,8 @@ describe('kyrusfables operator desk', () => {
 
     assert.equal(run('/api/admin/rebroadcast', 'POST', {}, cookie).json.n, 2);
     assert.equal(run('/api/admin/disconnect-all', 'POST', {}, cookie).json.dropped, 3);
-    assert.equal(run('/api/admin/kick', 'POST', { miner: 'she1abcd1234' }, cookie).json.dropped, 1);
-    assert.equal(calls.kick[0], 'she1abcd1234');
+    assert.equal(run('/api/admin/kick', 'POST', { miner: 'mabcd1234' }, cookie).json.dropped, 1);
+    assert.equal(calls.kick[0], 'mabcd1234');
     assert.equal(run('/api/admin/clear-stale', 'POST', {}, cookie).json.stale, 0);
     assert.equal(calls.stale, 1);
     assert.equal(run('/api/admin/ban', 'POST', {}, cookie).status, 400);
@@ -188,7 +188,7 @@ describe('kyrusfables operator desk', () => {
     assert.equal(view.accepted, 7);
     assert.equal(view.stale, 4);
     assert.equal(view.connected, true);
-    assert.ok(view.tag.startsWith('she1'));
+    assert.ok(view.tag.startsWith('m'));
 
     const paused = handleAdminApi(url('/api/admin/pause'), 'POST', { pause: true }, {
       admin, ops: pool.adminOps, cookie,

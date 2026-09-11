@@ -27,46 +27,57 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
   it('pays each hasher, not only the finder', () => {
     const alice = newIdentity();
     const bob = newIdentity();
-    const destA = destForLogin(alice.address, { viewKey: alice.viewKey, height: 3 });
-    const destB = destForLogin(bob.address, { viewKey: bob.viewKey, height: 3 });
-    const samples = [
-      { miner: destA, nonce: '1', tag: 'shear-a', count: 4000 },
-      { miner: destB, nonce: '2', tag: 'shear-b', count: 1000 },
+    const destA = destForLogin(alice.address, { spendPub: alice.spendPub });
+    const destB = destForLogin(bob.address, { spendPub: bob.spendPub });
+    const unit = 2 ** 8;
+    const nA = 16;
+    const nB = 4;
+    const batch = [
+      ...Array.from({ length: nA }, (_, i) => ({ dest: destA, nonce: BigInt(i + 1), lz: 8 })),
+      ...Array.from({ length: nB }, (_, i) => ({ dest: destB, nonce: BigInt(100 + i), lz: 8 })),
     ];
-    const cb = coinbaseTx({ height: 3, miner: destA, samples });
+    const cb = coinbaseTx({ height: 3, miner: destA, shareBatch: batch });
     const split = coinbaseSplit(cb);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
     assert.equal(split.potNanos, 100_000_000_000);
-    assert.equal(split.hashByMiner[destA], 4000 * HASH_BONUS_NANOS);
-    assert.equal(split.hashByMiner[destB], 1000 * HASH_BONUS_NANOS);
-    assert.equal(split.hashNanos, 5000 * HASH_BONUS_NANOS);
+    assert.equal(split.hashByMiner[destA], nA * unit * HASH_BONUS_NANOS);
+    assert.equal(split.hashByMiner[destB], nB * unit * HASH_BONUS_NANOS);
+    assert.equal(split.hashNanos, (nA + nB) * unit * HASH_BONUS_NANOS);
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.notEqual(alice.address, bob.address);
+    const hud = coinbaseTx({
+      height: 3,
+      miner: destA,
+      shareBatch: [],
+      samples: [{ miner: destA, count: 4000 }, { miner: destB, count: 1000 }],
+    });
+    assert.equal(coinbaseSplit(hud).hashNanos, 0);
   });
 
-  it('counts each meeting hash as its own bonus unit (1 hash = 1 tx)', () => {
+  it('counts each meeting share as floor units; HUD samples mint nothing', () => {
     const alice = newIdentity();
-    const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 3 });
+    const dest = destForLogin(alice.address, { spendPub: alice.spendPub });
     const n = 7;
-    const hashes = [];
+    const unit = 2 ** 8;
+    const batch = [];
     for (let i = 0; i < n; i += 1) {
-      hashes.push({ miner: dest, nonce: String(i + 1), tag: `h${i}`, count: 1 });
+      batch.push({ dest, nonce: BigInt(i + 1), lz: 8 });
     }
-    const cb = coinbaseTx({ height: 3, miner: dest, samples: hashes });
+    const cb = coinbaseTx({ height: 3, miner: dest, shareBatch: batch });
     const split = coinbaseSplit(cb);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
     assert.equal(split.potNanos, 100_000_000_000);
     assert.equal(HASH_BONUS_NANOS, 1);
-    assert.equal(split.hashByMiner[dest], n * HASH_BONUS_NANOS);
-    assert.equal(split.hashNanos, n * HASH_BONUS_NANOS);
+    assert.equal(split.hashByMiner[dest], n * unit * HASH_BONUS_NANOS);
+    assert.equal(split.hashNanos, n * unit * HASH_BONUS_NANOS);
     const folded = coinbaseTx({
       height: 3,
       miner: dest,
       samples: [{ miner: dest, nonce: 'batch', tag: 'fold', count: n }],
     });
     const foldedSplit = coinbaseSplit(folded);
-    assert.equal(foldedSplit.hashNanos, n * HASH_BONUS_NANOS);
-    assert.notEqual(hashes.length, 1);
+    assert.equal(foldedSplit.hashNanos, 0);
+    assert.notEqual(batch.length, 1);
   });
 });
 

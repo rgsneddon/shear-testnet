@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, destOpeningFromView, payoutDest } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, containsShe1 } from '../../crypto/levy.js';
 import { gateVorticeRegister, vorticeRegisterTx } from '../../crypto/vortex.js';
@@ -37,7 +37,7 @@ function mine(tpl) {
 describe('vort1 register consensus tx', () => {
   it('bad ticker or mint-not-Reserve fails with no id; passing register pays L; mined fields have no she1', async () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1, spendPub: id.spendPub });
     const bytesHash = 'ab'.repeat(32);
     const L = levyNanos(0);
     const she = vorticeRegisterTx({
@@ -81,7 +81,7 @@ describe('vort1 register consensus tx', () => {
     assert.equal(failOk.ok, false);
     assert.equal(failOk.reason, 'ticker');
 
-    const pay = payoutDest(id.paymentCode);
+    const pay = destForLogin(id.address, { viewKey: id.viewKey, height: 1, spendPub: id.spendPub });
     const fundedTx = vorticeRegisterTx({
       from: pay, bytesHash, vort1: 'vort1.ok-dapp', ticker: 'ABC', fee: L,
     });

@@ -3,6 +3,8 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
+import 'shear_identity.dart';
+
 /// Same bytes as crypto/pack.js shear-enc-v1.
 const encMagic = 'shear-enc-v1';
 const encA = 1;
@@ -88,4 +90,51 @@ Uint8List packDigest(Uint8List packed) {
 
 String packDigestHex(Uint8List packed) {
   return packDigest(packed).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+}
+
+int _kindByte(String? kind) {
+  switch (kind) {
+    case 'hash':
+      return 1;
+    case 'pot':
+      return 2;
+    case 'finder-fee':
+      return 3;
+    case 'reserve-fee':
+      return 4;
+    default:
+      return 0;
+  }
+}
+
+Uint8List spendPackDigest({
+  required String from,
+  required List<Map<String, dynamic>> vout,
+  int height = 0,
+  String? kind,
+}) {
+  final from20 = hash20FromAddress(from) ?? Uint8List(20);
+  final vins = [
+    {'prev': Uint8List(32), 'index': height, 'dest20': from20},
+  ];
+  final vouts = <Map<String, dynamic>>[];
+  for (final o in vout) {
+    final addr = (o['address'] as String?) ?? '';
+    vouts.add({
+      'dest20': hash20FromAddress(addr) ?? Uint8List(20),
+      'nanos': (o['nanos'] as int?) ?? 0,
+      'kind': _kindByte((o['kind'] as String?) ?? kind),
+    });
+  }
+  return packDigest(packTx(vins: vins, vouts: vouts));
+}
+
+Uint8List spendMessage({
+  required String from,
+  required List<Map<String, dynamic>> vout,
+  int height = 0,
+  String? kind,
+}) {
+  final digest = spendPackDigest(from: from, vout: vout, height: height, kind: kind);
+  return Uint8List.fromList(sha256.convert([...utf8.encode('shear-spend-v1'), ...digest]).bytes);
 }

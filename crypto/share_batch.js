@@ -83,7 +83,7 @@ export function verifyShareBatch({
   shares = [],
   floorBits = SHARE_FLOOR_BITS,
 } = {}) {
-  const list = unpackShareBatch(shares);
+  const list = sortShares(unpackShareBatch(shares));
   if (list.length > MAX_SHARES_PER_BLOCK) {
     return { ok: false, reason: 'share_cap' };
   }
@@ -115,16 +115,6 @@ export function verifyShareBatch({
       lz: leadingZeroBits(hash) & 0xff,
       units: unitsForShare(),
     });
-  }
-  const sortedWant = sortShares(proven);
-  for (let i = 0; i < proven.length; i += 1) {
-    const a = dest20OfShare(proven[i]).toString('hex') + ':' + BigInt(proven[i].nonce).toString();
-    const b = dest20OfShare(sortedWant[i]).toString('hex') + ':' + BigInt(sortedWant[i].nonce).toString();
-    if (i > 0) {
-      const prev = dest20OfShare(proven[i - 1]).toString('hex') + ':' + BigInt(proven[i - 1].nonce).toString();
-      if (a < prev) return { ok: false, reason: 'share_order' };
-    }
-    void b;
   }
   const units = proven.reduce((n, s) => n + s.units, 0);
   if (units > MAX_HASH_UNITS_PER_BLOCK) {

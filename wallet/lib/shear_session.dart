@@ -257,6 +257,8 @@ Uint8List exportShewall({
 ShearIdentity importShewall(Uint8List packed, ShearLedger ledger, {ShearReserve? reserve}) {
   final u = unpackShewall(packed);
   final id = createIdentity(u['seed32']!);
+  ledger.viewSecret = id.viewKey;
+  ledger.spendPub = decodePaymentCode(id.paymentCode)?['spendPub'];
   final spend = shewallU64(u['spendableNanos']!) / kUnitsPerShe;
   final pend = shewallU64(u['pendingNanos']!) / kUnitsPerShe;
   final archive = unpackShewallArchive(packed);

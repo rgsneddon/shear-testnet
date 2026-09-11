@@ -7,7 +7,11 @@ import 'package:cryptography/cryptography.dart';
 import 'shear_pack.dart';
 
 const shewallName = 'shewall.bin';
-const shewallEncKind = 'shear-shewall-bin-v1-enc';
+const shewallEncKindV1 = 'shear-shewall-bin-v1-enc';
+const shewallEncKind = 'shear-shewall-bin-v2-enc';
+const shewallArgonMemoryKib = 65536;
+const shewallArgonIters = 3;
+const shewallArgonParallel = 1;
 /// Trailer after the v1 identity head: this user's dests + txs (wallet.dat analog).
 const shewallArchiveTag = 0x02;
 const shewallHeadLen = 13 + 32 + 20 + 16;
@@ -81,11 +85,30 @@ int shewallU64(Uint8List le) {
   return n;
 }
 
+Argon2id _argon() => Argon2id(
+      parallelism: shewallArgonParallel,
+      memory: shewallArgonMemoryKib,
+      iterations: shewallArgonIters,
+      hashLength: 32,
+    );
+
+Future<SecretKey> _argonKey(String password, Uint8List salt) {
+  return _argon().deriveKeyFromPassword(password: password, nonce: salt);
+}
+
+bool shewallNeedsMigrate(Uint8List env) {
+  final v1 = utf8.encode(shewallEncKindV1);
+  if (env.length < v1.length) return false;
+  for (var i = 0; i < v1.length; i++) {
+    if (env[i] != v1[i]) return false;
+  }
+  return true;
+}
+
 Future<Uint8List> sealShewallBin(Uint8List packed, String password) async {
   final salt = _rand(16);
   final nonce = _rand(12);
-  final kdf = Pbkdf2(macAlgorithm: Hmac.sha256(), iterations: 100000, bits: 256);
-  final key = await kdf.deriveKeyFromPassword(password: password, nonce: salt);
+  final key = await _argonKey(password, salt);
   final box = await AesGcm.with256bits().encrypt(packed, secretKey: key, nonce: nonce);
   return Uint8List.fromList([
     ...utf8.encode(shewallEncKind),
@@ -96,14 +119,38 @@ Future<Uint8List> sealShewallBin(Uint8List packed, String password) async {
   ]);
 }
 
+Future<Uint8List> sealShewallBinPbkdf2(Uint8List packed, String password) async {
+  final salt = _rand(16);
+  final nonce = _rand(12);
+  final kdf = Pbkdf2(macAlgorithm: Hmac.sha256(), iterations: 100000, bits: 256);
+  final key = await kdf.deriveKeyFromPassword(password: password, nonce: salt);
+  final box = await AesGcm.with256bits().encrypt(packed, secretKey: key, nonce: nonce);
+  return Uint8List.fromList([
+    ...utf8.encode(shewallEncKindV1),
+    ...salt,
+    ...nonce,
+    ...box.mac.bytes,
+    ...box.cipherText,
+  ]);
+}
+
 Future<Uint8List> openShewallBin(Uint8List env, String password) async {
   if (env.isNotEmpty && env[0] == 0x7b) throw const FormatException('json_refused');
-  final prefix = utf8.encode(shewallEncKind);
-  if (env.length < prefix.length + 16 + 12 + 16) {
+  final v2 = utf8.encode(shewallEncKind);
+  final v1 = utf8.encode(shewallEncKindV1);
+  late final List<int> prefix;
+  late final bool argon;
+  if (_startsWith(env, v2)) {
+    prefix = v2;
+    argon = true;
+  } else if (_startsWith(env, v1)) {
+    prefix = v1;
+    argon = false;
+  } else {
     throw const FormatException('not_shewall_bin');
   }
-  for (var i = 0; i < prefix.length; i++) {
-    if (env[i] != prefix[i]) throw const FormatException('not_shewall_bin');
+  if (env.length < prefix.length + 16 + 12 + 16) {
+    throw const FormatException('not_shewall_bin');
   }
   var o = prefix.length;
   final salt = env.sublist(o, o + 16);
@@ -113,13 +160,29 @@ Future<Uint8List> openShewallBin(Uint8List env, String password) async {
   final mac = Mac(env.sublist(o, o + 16));
   o += 16;
   final ct = env.sublist(o);
-  final kdf = Pbkdf2(macAlgorithm: Hmac.sha256(), iterations: 100000, bits: 256);
-  final key = await kdf.deriveKeyFromPassword(password: password, nonce: salt);
+  final key = argon
+      ? await _argonKey(password, salt)
+      : await Pbkdf2(macAlgorithm: Hmac.sha256(), iterations: 100000, bits: 256)
+          .deriveKeyFromPassword(password: password, nonce: salt);
   final clear = await AesGcm.with256bits().decrypt(
     SecretBox(ct, nonce: nonce, mac: mac),
     secretKey: key,
   );
   return Uint8List.fromList(clear);
+}
+
+Future<Uint8List> openAndResealShewallBin(Uint8List env, String password) async {
+  final packed = await openShewallBin(env, password);
+  if (shewallNeedsMigrate(env)) return sealShewallBin(packed, password);
+  return env;
+}
+
+bool _startsWith(Uint8List env, List<int> prefix) {
+  if (env.length < prefix.length) return false;
+  for (var i = 0; i < prefix.length; i++) {
+    if (env[i] != prefix[i]) return false;
+  }
+  return true;
 }
 
 Uint8List _u64(int n) {

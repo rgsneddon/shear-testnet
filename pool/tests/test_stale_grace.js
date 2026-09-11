@@ -19,8 +19,9 @@ import {
 } from '../src/pool.js';
 import { decodeHeader, encodeHeader, headerFromHex } from '../../crypto/header.js';
 
-function tmpPool(shareBits = 1) {
-  const dest = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey, height: 1 });
+function tmpPool(shareBits = 8) {
+  const id = newIdentity();
+  const dest = destForLogin(id.address, { spendPub: id.spendPub });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stale-'));
   const pool = createPool({
     dataDir: dir,
@@ -33,7 +34,7 @@ function tmpPool(shareBits = 1) {
   return { pool, dest };
 }
 
-function findShare(job, max = 64n) {
+function findShare(job, max = 6_000n) {
   for (let nonce = 0n; nonce < max; nonce += 1n) {
     const s = scoreShare({ job, nonce });
     if (s.ok) return { nonce, s };
@@ -134,7 +135,7 @@ describe('stale classification and restamp/grace accept', () => {
   });
 
   it('a share on the pre-restamp header of the same jobId is accepted', async () => {
-    const { pool, dest } = tmpPool(1);
+    const { pool, dest } = tmpPool(8);
     const job = pool.issueJob();
     const hit = findShare(job);
     const beforeHeader = job.header;
@@ -174,11 +175,11 @@ describe('stale classification and restamp/grace accept', () => {
   });
 
   it('previous-job share after a new round is not stale and does not add roundHashes', async () => {
-    const { pool, dest } = tmpPool(1);
+    const { pool, dest } = tmpPool(8);
     const job = pool.issueJob();
     const a = findShare(job);
     let b;
-    for (let nonce = a.nonce + 1n; nonce < a.nonce + 64n; nonce += 1n) {
+    for (let nonce = a.nonce + 1n; nonce < a.nonce + 2000n; nonce += 1n) {
       const s = scoreShare({ job, nonce });
       if (s.ok) { b = { nonce, s }; break; }
     }
@@ -209,7 +210,7 @@ describe('stale classification and restamp/grace accept', () => {
   });
 
   it('bad_hash, duplicate_share, and low_diff do not increment stale; accepted survives a round roll', async () => {
-    const { pool, dest } = tmpPool(1);
+    const { pool, dest } = tmpPool(8);
     const job = pool.issueJob();
     const hit = findShare(job);
     const port = await listen(pool);
@@ -243,7 +244,7 @@ describe('stale classification and restamp/grace accept', () => {
     assert.equal(Number(miner2.stale) || 0, 0);
     pool2.close();
 
-    const { pool: pool3, dest: dest3 } = tmpPool(1);
+    const { pool: pool3, dest: dest3 } = tmpPool(8);
     const job3 = pool3.issueJob();
     const hit3 = findShare(job3);
     const port3 = await listen(pool3);

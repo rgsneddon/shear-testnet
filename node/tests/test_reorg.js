@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { encodeDest, newIdentity, destOpeningFromView, payoutDest } from '../../crypto/address.js';
+import { encodeDest, newIdentity, destOpeningFromView } from '../../crypto/address.js';
+import { destForLogin } from '../../crypto/flow_sheet.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
@@ -46,7 +47,7 @@ function tmpStore() {
 describe('most-work adopt', () => {
   it('heavier valid fork replaces the local tip; equal work keeps first-seen; invalid rest-frame is refused', async () => {
     const id = newIdentity();
-    const dest = payoutDest(id.paymentCode);
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1, spendPub: id.spendPub });
     const local = tmpStore();
     const first = await Promise.resolve(mineOne(local, dest));
     assert.equal(first.ok, true, first.reason);
@@ -131,7 +132,7 @@ describe('most-work adopt', () => {
     assert.equal(Buffer.from(store.tip().hash).equals(before), true);
   });
 
-  it('heavier rest-frame fork is refused with miner_addr and the old tip remains', () => {
+  it('heavier rest-frame fork is refused with rest_frame_on_chain and the old tip remains', () => {
     const dest = destMiner();
     const local = tmpStore();
     assert.equal(mineOne(local, dest).ok, true);
@@ -168,7 +169,7 @@ describe('most-work adopt', () => {
     const before = Buffer.from(local.tip().hash);
     const refused = local.ingest(poisoned);
     assert.equal(refused.ok, false);
-    assert.equal(refused.reason, 'miner_addr');
+    assert.equal(refused.reason, 'rest_frame_on_chain');
     assert.equal(local.tip().height, 1);
     assert.equal(Buffer.from(local.tip().hash).equals(before), true);
   });

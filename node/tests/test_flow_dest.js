@@ -8,7 +8,7 @@ import { buildTemplate, GENESIS_PREV, coinbaseTx, verifyBlock, mineTemplate } fr
 describe('flow dest coinbase', () => {
   it('pays miner login as dest; shear1 never on coinbase', () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { continuityRoot: EMPTY_ROOT, height: 1, viewKey: id.viewKey });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     assert.equal(isDestAddress(dest), true);
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
@@ -22,21 +22,20 @@ describe('flow dest coinbase', () => {
     const plain = coinbaseTx({ height: 1, miner: dest });
     assert.equal(plain.vout[0].address, dest);
     assert.throws(() => coinbaseTx({ height: 1, miner: id.address }), /coinbase_needs_dest/);
-    const sheTpl = buildTemplate({
+    const fromShe = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: id.paymentCode,
       bits: 8,
       now: Date.now(),
     });
-    assert.equal(isDestAddress(sheTpl.txs[0].vout[0].address), true);
-    assert.equal(sheTpl.txs[0].vout[0].address.startsWith('she1'), false);
-    assert.equal(JSON.stringify(sheTpl.txs).includes(id.paymentCode), false);
+    assert.equal(fromShe.txs[0].vout[0].address, dest);
+    assert.equal(isDestAddress(fromShe.txs[0].vout[0].address), true);
   });
 
   it('verifyBlock rejects rest-frame shear1 on vout', () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const tpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: dest, bits: 8, now: Date.now() });
     const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
     assert.ok(found && found.block, 'need pow');

@@ -2,8 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { levyNanos } from './levy.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx } from './spend.js';
-import { newIdentity, destOpeningFromView, hash20FromAddress, payoutDest } from './address.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig } from './spend.js';
+import { newIdentity, destOpeningFromView, hash20FromAddress, silentPay, ed25519SeedOf, stealthSpendPrivate, recognizeSilentDest } from './address.js';
+import { generateKeyPairSync } from 'node:crypto';
 import { destAtIndex, closureCommit } from './flow_sheet.js';
 
 const dest = 'ssa1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
@@ -63,13 +64,17 @@ describe('funded spend / no double-spend', () => {
 
   it('rejects two spends of the same mature coins in one body', () => {
     const id = newIdentity();
-    const from = payoutDest(id.paymentCode);
+    const { privateKey: eph } = generateKeyPairSync('x25519');
+    const pay = silentPay(id.paymentCode, eph);
+    const from = pay.dest;
     const to = from;
-    const open = destOpeningFromView(id.viewKey, id.spendPub, 0);
     const nanos = NANOS_PER_SHE;
     const fee = levyNanos(nanos);
     const spendableOf = (addr) => (addr === from ? 2 * NANOS_PER_SHE : 0);
-    const key = id.privateKey;
+    const rec = recognizeSilentDest({
+      viewKey: id.viewKey, spendPub: id.spendPub, dest: from, ephPub: pay.ephPub,
+    });
+    const key = stealthSpendPrivate(rec.shared, ed25519SeedOf(id.privateKey));
     const tx = (txid, amount) => signSpendTx({
       id: txid,
       kind: 'send',
@@ -77,7 +82,6 @@ describe('funded spend / no double-spend', () => {
       to,
       nanos: amount,
       fee,
-      open,
       vin: [{ address: from }],
       vout: [{ address: to, nanos: amount }],
     }, key);
@@ -107,14 +111,14 @@ describe('funded spend / no double-spend', () => {
     assert.equal(fundedDebit({ mint: true, kind: 'reserve', nanos: 1 }), null);
   });
 
-  it('dest opening is required for Flow send; knowing ssa1 is not enough', () => {
+  it('spend sig is required for Flow send; opening is not authority', () => {
     const id = newIdentity();
-    const from = payoutDest(id.paymentCode);
+    const { privateKey: eph } = generateKeyPairSync('x25519');
+    const pay = silentPay(id.paymentCode, eph);
+    const from = pay.dest;
     const spendH = hash20FromAddress(id.address);
     const open = destOpeningFromView(id.viewKey, id.spendPub, 0);
-    assert.equal(verifyDestOpening(from, open), true);
-    assert.equal(verifyDestOpening(from, ''), false);
-    assert.equal(verifyDestOpening(from, 'ab'.repeat(64)), false);
+    assert.equal(verifyDestOpening(from, open), false);
     const tx = {
       kind: 'send', from, to: from, nanos: 1, fee: 100,
       vin: [{ address: from }],
@@ -122,9 +126,18 @@ describe('funded spend / no double-spend', () => {
     assert.equal(flowSendNeedsOpen(tx), true);
     assert.equal(flowSendNeedsOpen({ kind: 'pool-withdraw', from, vin: [{ address: from }], nanos: 1, fee: 100 }), false);
 
+    const rec = recognizeSilentDest({
+      viewKey: id.viewKey, spendPub: id.spendPub, dest: from, ephPub: pay.ephPub,
+    });
+    const key = stealthSpendPrivate(rec.shared, ed25519SeedOf(id.privateKey));
+    const signed = signSpendTx({ ...tx, vout: [{ address: from, nanos: 1 }] }, key);
+    assert.equal(verifySpendSig(signed), true);
+    const foreign = generateKeyPairSync('ed25519');
+    const stolen = signSpendTx({ ...signed, sig: undefined, spendPub: undefined }, foreign.privateKey);
+    assert.equal(verifySpendSig(stolen), false);
+
     const heightDest = destAtIndex(id.address, { index: 0, viewKey: id.viewKey });
     const idxOpen = indexedDestOpening(spendH, closureCommit(id.viewKey), 0);
     assert.equal(verifyDestOpening(heightDest, idxOpen), true);
-    assert.equal(verifyDestOpening(from, idxOpen), false);
   });
 });

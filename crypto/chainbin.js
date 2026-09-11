@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import { encodeHeader, decodeHeader } from './header.js';
 import { shareRowJson } from './pack.js';
+import { compactTx } from './chronoflux.js';
 
 const MAGIC = Buffer.from('shear-chn-v1\0\0\0');
 
@@ -35,7 +36,7 @@ export function packEpochBlock(block) {
   const rootB = Buffer.from(block.rootB || Buffer.alloc(32));
   const aJson = Buffer.from(JSON.stringify((block.aLeaves || []).map(leafWire)));
   const bJson = Buffer.from(JSON.stringify((block.bLeaves || []).map(leafWire)));
-  const txs = Buffer.from(JSON.stringify(block.txs || []));
+  const txs = Buffer.from(JSON.stringify((block.txs || []).map(compactTx)));
   const sJson = Buffer.from(JSON.stringify((block.shareBatch || []).map(shareRowJson)));
   const parts = [header, rootA, rootB];
   const lens = Buffer.alloc(12);

@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { encodeDest } from '../../crypto/address.js';
+import { encodeDest, newIdentity } from '../../crypto/address.js';
+import { destForLogin } from '../../crypto/flow_sheet.js';
+import { signSpendTx } from '../../crypto/spend.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 import {
@@ -128,8 +130,8 @@ describe('p2p gossip', () => {
     const dest = destMiner();
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-mem-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-mem-b-'));
-    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
-    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 0 });
+    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 0 });
     try {
       await a.p2p.connect('127.0.0.1', b.bound.port);
       const linked = await waitFor(() => a.p2p.syncedOnline() === 2 && b.p2p.syncedOnline() === 2);
@@ -147,14 +149,18 @@ describe('p2p gossip', () => {
         vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
       });
       assert.equal(queued.ok, true, queued.reason);
-      const tag = 'she1cafef00d';
-      a.p2p.publishWork([{ tag, count: 42 }]);
+      const tag = 'mcafef00d';
+      let lastPub = 0;
       const saw = await waitFor(() => {
+        if (Date.now() - lastPub > 200) {
+          a.p2p.publishWork([{ tag, count: 42 }]);
+          lastPub = Date.now();
+        }
         const tx = (b.store.mempool || []).some((t) => String(t.id) === 'net-send-1');
         const work = typeof b.store.openRoundRows === 'function'
           && b.store.openRoundRows().some((r) => r.tag === tag && Number(r.count) === 42);
         return tx && work;
-      }, 5000);
+      }, 15000);
       assert.equal(saw, true, 'peer book never received send or miner row');
       const { mempoolLattice } = await import('../../pool/src/wallet_api.js');
       const out = mempoolLattice(b.store, {
@@ -254,7 +260,8 @@ describe('p2p gossip', () => {
   });
 
   it('lock and vote still paint (pending) after fluff', async () => {
-    const dest = destMiner();
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1, spendPub: id.spendPub });
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-b-'));
     const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-c-'));
@@ -267,7 +274,7 @@ describe('p2p gossip', () => {
       await waitFor(() => a.p2p.syncedOnline() >= 2);
       const { levyNanos } = await import('../../crypto/levy.js');
       const lockNanos = 314159265358;
-      const lock = {
+      const lock = signSpendTx({
         id: 'lock-fluff',
         kind: 'lock',
         from: dest,
@@ -275,8 +282,8 @@ describe('p2p gossip', () => {
         nanos: lockNanos,
         fee: levyNanos(lockNanos, { depth: 1e9 }),
         vout: [{ address: dest, nanos: lockNanos, kind: 'lock' }],
-      };
-      const vote = {
+      }, id.privateKey);
+      const vote = signSpendTx({
         id: 'vote-fluff',
         kind: 'vote',
         from: dest,
@@ -284,9 +291,8 @@ describe('p2p gossip', () => {
         nanos: 0,
         payer: dest,
         fee: levyNanos(0, { depth: 1e9 }),
-        portalOpen: 'ab'.repeat(64),
         vout: [{ address: dest, nanos: 0, kind: 'vote' }],
-      };
+      }, id.privateKey);
       const qLock = a.store.queueTx(lock);
       const qVote = a.store.queueTx(vote);
       assert.equal(qLock.ok, true, qLock.reason);

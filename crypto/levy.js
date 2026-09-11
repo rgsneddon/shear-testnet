@@ -5,7 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import { createPublicKey, verify } from 'node:crypto';
-import { encodeDest, payoutDest, isDestAddress, hash20FromAddress, paymentIdHash, ED25519_SPKI_PREFIX } from './address.js';
+import { encodeDest, payoutDest, isDestAddress, hash20FromAddress, paymentIdHash, ED25519_SPKI_PREFIX, aliasDestOfSilentId } from './address.js';
 import { NANOS_PER_SHE, MAGIC_TESTNET } from './asert.js';
 import {
   verifyPoolWithdrawSig,
@@ -247,7 +247,7 @@ export function verifyPoolWithdrawOffchain({
   const payout = String(payoutSsa1 || dest || '').trim();
   if (!payout || containsShe1(payout) || /^she1/i.test(payout)) return { ok: false, reason: 'she1' };
   if (!isDestAddress(payout)) return { ok: false, reason: 'she1' };
-  const sheDest = payoutDest(she);
+  const sheDest = aliasDestOfSilentId(she);
   if (sheDest && payout === sheDest) return { ok: false, reason: 'not_indexed' };
   const n = Math.floor(Number(nanos) || 0);
   if (n < WITHDRAW_MIN_NANOS) return { ok: false, reason: 'min' };
@@ -284,7 +284,7 @@ export function verifyPoolWithdrawOffchain({
     const hex = String(open || '').replace(/^0x/i, '');
     if (!/^[0-9a-f]{128}$/i.test(hex) || !spendSig) return { ok: false, reason: 'not_owner' };
     const buf = Buffer.from(hex, 'hex');
-    const sheDest = payoutDest(she);
+    const sheDest = aliasDestOfSilentId(she);
     const want20 = sheDest && hash20FromAddress(sheDest);
     const got20 = paymentIdHash(buf.subarray(0, 32), buf.subarray(32, 64));
     if (!want20 || !Buffer.from(got20).equals(Buffer.from(want20))) return { ok: false, reason: 'not_owner' };

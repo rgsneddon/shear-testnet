@@ -21,7 +21,7 @@ import {
 } from './chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { compactChainBlock } from '../../crypto/chronoflux.js';
+import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
 import { emptyVault, applyReserveBlock, verifyReservePayout } from '../../crypto/reserve_vault.js';
@@ -582,7 +582,7 @@ export function createStore(dir, {
         return { ok: false, reason: 'insufficient', need: debit.nanos, have };
       }
       if (flowSendNeedsOpen(tx)) {
-        if (!verifyDestOpening(debit.from, tx.open) || !verifySpendSig(tx)) {
+        if (!verifySpendSig(tx)) {
           return { ok: false, reason: 'unsigned' };
         }
         const digest = spendPackDigest(tx).toString('hex');
@@ -602,8 +602,15 @@ export function createStore(dir, {
     }
     const pay = verifyReservePayout(reserveVault, tx);
     if (!pay.ok) return pay;
-    const got = admitMempool(book, tx, { baseFee: base });
-    if (got.ok && got.tx && !got.duplicate) emit('tx', got.tx);
+    const sealed = compactTx(tx);
+    const got = admitMempool(book, sealed, { baseFee: base });
+    if (got.ok && got.tx && !got.duplicate) {
+      const persist = compactTx(got.tx);
+      const idx = mempool.lastIndexOf(got.tx);
+      if (idx >= 0) mempool[idx] = persist;
+      emit('tx', persist);
+      return { ...got, tx: persist };
+    }
     return got;
   }
 
@@ -793,7 +800,7 @@ export function createStore(dir, {
     const now = Date.now();
     for (const r of rows || []) {
       const tag = String(r.tag || '').trim().toLowerCase();
-      if (!/^she1[0-9a-f]{8}$/.test(tag)) continue;
+      if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
       const count = Math.floor(Number(r.count) || 0);
       if (count < 1) continue;
       const prev = openRound.get(tag);

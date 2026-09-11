@@ -19,7 +19,7 @@ import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { coinbaseSplit as mintSplit } from '../../crypto/mint.js';
 
 function destOf(id) {
-  return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+  return destForLogin(id.address, { spendPub: id.spendPub });
 }
 
 function mine(tpl) {

@@ -71,7 +71,7 @@ Work of a block: `blockWorkBig(bits) => 1n << BigInt(bits)`. Heaviest valid chai
 
 `verifyDestOpening` is not authority. Spend is Ed25519 on the existing spend seed over `SHA256("shear-spend-v1" || packDigest(tx without sig/open))`. Missing/bad sig = `unsigned`. `claim` stays unfunded-off. Backup name is `shewall.bin`.
 
-Miner login may be `she1` or `ssa1`. Payout dest is a fresh indexed `ssa1`, not `encodeDest(she1.hash20)`. Amounts stay public. Private dests, public amounts.
+Miner login is `ssa1.worker`. `she1` login is RAM-only and must resolve to an owned rotating `ssa1`. Payout dest is never `encodeDest(she1.hash20)`. Spend authority is Ed25519 over `shear-spend-v1 || packDigest`; openings are local-only and stripped before chain.bin / P2P / public RPC. Memo is not dest-keyed. Amounts stay public. Dest HRP on chain is `ssa` only (`she` → `silent_id_on_chain`, `shear` → `rest_frame_on_chain`).
 
 ## Reserve
 

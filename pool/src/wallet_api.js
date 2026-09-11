@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
-import { isDestAddress, isPaymentCode, isShearAddress, payoutDest } from '../../crypto/address.js';
+import { generateKeyPairSync } from 'node:crypto';
+import { isDestAddress, isPaymentCode, isShearAddress, payoutDest, isFullPaymentCode, silentPay, checkAddressField } from '../../crypto/address.js';
+import { walletSubmitLog, newConnId, lineJoinsIpToIdentity } from '../../crypto/privacy_net.js';
 import {
   HASH_BONUS_NANOS,
   NANOS_PER_SHE,
@@ -40,6 +42,8 @@ function publicTxView(t) {
     id: t.id,
     kind: t.kind,
     amount: t.amount,
+    from: t.from,
+    to: t.to,
     height: t.height,
     confirmed: t.confirmed !== false,
     memo: t.memo === true,
@@ -133,7 +137,6 @@ function rowsToHistory(rows, addresses, tipHeight = 0) {
       confirmations: flowConfirmations(r.height, tip),
       spendableAfter: SPENDABLE_CONFIRMATIONS,
       memo: pub.memo === true,
-      memoCt: r.memoCt || undefined,
     });
   }
   if (spendableNanos < 0) spendableNanos = 0;
@@ -153,9 +156,7 @@ export function headerBlockAt(store, height) {
 export function ownerDests(address) {
   const addr = String(address || '').trim();
   const out = new Set();
-  if (addr) out.add(addr);
-  const paid = payoutDest(addr);
-  if (paid) out.add(paid);
+  if (isDestAddress(addr)) out.add(addr);
   return [...out];
 }
 
@@ -251,7 +252,7 @@ function confirmedBlockRow(b, tipH) {
     ? b.hash.toString('hex')
     : String(b?.hash || b?.height || '');
   const rawTo = String(b?.miner || rows.find((r) => r.to)?.to || '');
-  const dest = isShearAddress(rawTo) ? '' : (payoutDest(rawTo) || (isDestAddress(rawTo) ? rawTo : ''));
+  const dest = isShearAddress(rawTo) ? '' : (isDestAddress(rawTo) ? rawTo : '');
   const height = Number(b?.height || 0);
   const confs = flowConfirmations(height, tipH);
   const pending = !isSpendableHeight(height, tipH, SPENDABLE_CONFIRMATIONS);
@@ -290,7 +291,7 @@ function publicPaintDest(a) {
   const s = String(a || '');
   if (!s || /^shear1/i.test(s) || /^she1/i.test(s)) return '';
   if (s === 'coinbase') return 'coinbase';
-  return payoutDest(s) || (isDestAddress(s) ? s : '');
+  return isDestAddress(s) ? s : '';
 }
 
 /** Mempool Reserve lock/vote for explorer. Dest ssa1, amount, kind, (pending). No she1. */
@@ -436,7 +437,7 @@ function publicDest(a) {
   const s = String(a || '');
   if (s === 'coinbase') return 'coinbase';
   if (isShearAddress(s)) return '';
-  return payoutDest(s) || (isDestAddress(s) ? s : '');
+  return isDestAddress(s) ? s : '';
 }
 
 function hex32(buf) {
@@ -648,7 +649,12 @@ function memoTxWeight(m) {
 
 function publicHashTag(login) {
   const dest = String(login || '').trim().split('.')[0];
-  return `she1${createHash('sha256').update('shear-miner-tag-v1').update(dest).digest('hex').slice(0, 8)}`;
+  const hex = createHash('sha256')
+    .update('shear-miner-tag-v1')
+    .update(dest)
+    .digest('hex')
+    .slice(0, 8);
+  return `m${hex}`;
 }
 
 export function openRoundHashRows(miners, hashBonusNanos) {
@@ -726,7 +732,7 @@ export function mempoolLattice(store, limitOrOpts = 24) {
   const netRows = typeof store.openRoundRows === 'function' ? store.openRoundRows() : [];
   for (const r of netRows) {
     const tag = String(r.tag || '').toLowerCase();
-    if (!/^she1[0-9a-f]{8}$/.test(tag)) continue;
+    if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
     const count = Math.floor(Number(r.count) || 0);
     if (count < 1) continue;
     const prev = byTag.get(tag);
@@ -933,8 +939,18 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (isShearAddress(body.from) || isShearAddress(body.to)) {
       return { status: 400, json: { ok: false, reason: 'rest_frame' } };
     }
-    const from = payoutDest(String(body.from || '')) || '';
-    const to = payoutDest(String(body.to || '')) || (isDestAddress(String(body.to || '')) ? String(body.to) : '');
+    const from = isDestAddress(String(body.from || '')) ? String(body.from).trim() : '';
+    const rawTo = String(body.to || '').trim();
+    let to = '';
+    let ephPub = body.ephPub || null;
+    if (isDestAddress(rawTo)) {
+      to = rawTo;
+    } else if (isFullPaymentCode(rawTo)) {
+      const { privateKey } = generateKeyPairSync('x25519');
+      const pay = silentPay(rawTo, privateKey);
+      to = pay?.dest || '';
+      ephPub = pay?.ephPub?.toString('hex') || ephPub;
+    }
     const amount = Number(body.amount);
     const kindIn = String(body.kind || 'send');
     const programIn = String(body.programId || '');
@@ -946,7 +962,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (!(amount > 0) && !isVote) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
-    const poolPay = payoutDest(String(poolDest || '')) || '';
+    const poolPay = isDestAddress(String(poolDest || '')) ? String(poolDest) : '';
     if (poolPay && from === poolPay) {
       return { status: 403, json: { ok: false, reason: 'pool_dest' } };
     }
@@ -969,8 +985,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     const rawChange = String(body.change || '').trim();
     const changeDest = !isLock && !isVote
-      ? (payoutDest(rawChange) || (isDestAddress(rawChange) ? rawChange : ''))
+      ? (isDestAddress(rawChange) ? rawChange : '')
       : '';
+    if (changeDest && changeDest === from) {
+      return { status: 400, json: { ok: false, reason: 'same_dest' } };
+    }
     const leftover = rec.spendableNanos - nanos - fee;
     const vout = [{ address: to, nanos, kind }];
     if (kind === 'send' && changeDest && leftover > 0) {
@@ -978,16 +997,16 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     const parked = kind === 'send' && changeDest && leftover > 0;
     const draft = isLock
-      ? { ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }), fee, memoCt, open: body.open, sig: body.sig || body.signature, portalOpen: body.portalOpen, amount }
+      ? { ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }), fee, memoCt, sig: body.sig || body.signature, spendPub: body.spendPub, amount }
       : isVote
-        ? { ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }), fee, maxLevy: fee, open: body.open, sig: body.sig || body.signature, portalOpen: body.portalOpen, payer: from }
+        ? { ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }), fee, maxLevy: fee, sig: body.sig || body.signature, spendPub: body.spendPub, payer: from }
         : {
-          kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, open: body.open, sig: body.sig || body.signature,
+          kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, sig: body.sig || body.signature, spendPub: body.spendPub, ephPub,
           vin: [{ address: from }],
           vout,
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
-    if (flowSendNeedsOpen(draft) && (!verifyDestOpening(from, body.open) || !verifySpendSig(draft))) {
+    if (flowSendNeedsOpen(draft) && !verifySpendSig(draft)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
     if (reserveNeedsPortalOpen(draft) && !verifyReservePortalOpen(draft)) {
@@ -996,6 +1015,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const tx = queueSend(draft);
     if (tx && typeof tx === 'object' && tx.ok === false) {
       return { status: 400, json: { ok: false, reason: tx.reason || 'queue_failed' } };
+    }
+    const submitLine = walletSubmitLog({ connId: newConnId(), ok: true });
+    if (lineJoinsIpToIdentity(submitLine)) {
+      return { status: 500, json: { ok: false, reason: 'log' } };
     }
     return {
       status: 200,
@@ -1007,6 +1030,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         },
         fromBalance: parked ? 0 : nanosToShe(rec.spendableNanos - nanos - fee),
         ...(parked ? { changeBalance: nanosToShe(leftover) } : {}),
+        log: submitLine,
       },
     };
   }
@@ -1105,7 +1129,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         vin: [{ address: from }],
         vout: [{ address: off.dest, nanos: off.nanos, kind: 'send' }],
       };
-      if (flowSendNeedsOpen(draft) && !verifyDestOpening(from, open)) {
+      if (flowSendNeedsOpen(draft) && !verifySpendSig(draft)) {
         return { status: 400, json: { ok: false, reason: 'unsigned', public: false } };
       }
       tx = draft;

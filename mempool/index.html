@@ -161,7 +161,7 @@
       <a class="nav-btn is-on" href="/">MEMPOOL</a>
       <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.6" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.29" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.30" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -509,7 +509,7 @@
       });
       const hashTxs = Array.from({ length: 4 }, (_, i) => ({
         id: 'hash-demo-' + i, kind: 'hash', count: 12 + i * 9, weight: 12 + i * 9,
-        fee: 0, amount: 0.00000000001 * (12 + i * 9), included: true, prime: false, tag: 'she1' + String(i).padStart(8, 'a'),
+        fee: 0, amount: 0.00000000001 * (12 + i * 9), included: true, prime: false, tag: 'm' + String(i).padStart(8, 'a'),
       }));
       const generations = Array.from({ length: 16 }, (_, gi) => {
         const height = tip - gi;

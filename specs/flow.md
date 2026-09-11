@@ -9,27 +9,28 @@ Paid dests need an **independent Closure `C`** from the wallet password (view se
 | | Form | Share? | On chain? |
 |--|------|--------|-----------|
 | Rest-frame `S` | `shear1` | Never | Never (`verifyBlock` rejects) |
-| Silent ID | `she1` payment code (index 0, 1, 2, …) | Yes | Never (`she1` string never in vout/samples) |
-| Issued dest | `ssa1` (round dest + index 0, 1, 2, …) | No | Yes |
-| Reserve vault | `ssa1` stable (`shear-reserve-v1` root, height 0) | Collator sees dest | Yes |
+| Silent ID | `she1` full payment code (version \|\| X25519 scanPub \|\| Ed25519 spendPub) | Yes — copy this | Never on chain |
+| Fingerprint | short 20-byte `she1` display | Display only; not sufficient to pay | Never |
+| Issued dest | one-time `ssa1` from ECDH (`shear-silent-v1`) | No | Yes |
+| Reserve vault | `ssa1` stable (`shear-reserve-v1` root, height 0) | Clustering beacon | Yes; not a Flow or mining dest |
 
 ```
-V = password / view secret
-C = SHA256(chronoflux-G-v1 || V)
-t = SHA256(chronoflux-J-v1 || C || continuity_{h-1} || height)
-round dest = ssa1(SHA256(chronoflux-J-v1 || S || t)[0:20])
-t_n = SHA256(chronoflux-J-n-v1 || C || index u64le)
-dest_n = ssa1(SHA256(chronoflux-J-v1 || S || t_n)[0:20])
-she1_n = she1(SHA256(shear-she1-v2 || scanPub_n || spendPub_n)[0:20])  // short public ID, unlimited
+V = password / view secret (never on the book)
+full she1 = she1(version || scanPub || spendPub)
+short she1 = she1(SHA256(shear-she1-v2 || scanPub || spendPub)[0:20])  // display only
+sender eph = fresh X25519
+shared = X25519(eph, scanPub)
+dest20 = SHA256(shear-silent-v1 || shared || spendMix)[0:20]
+vout dest = ssa1(dest20)
 ```
 
-Same `(S, C, index)` always regenerates the same `ssa1`. Same `(V, S, n)` regenerates `she1`. No cap on index. Miner `--user` is `she1` or `ssa1`. A `she1` login pays `ssa1` of the same 20-byte payload; the `she1` string never goes on chain. Pool pays dest as-is. Public explorer stays amounts-only. Rest-frame `shear1` is never a dest login. she is private.
+Two pays to one published code produce two dests. An observer with only the short fingerprint cannot compute either dest. `payoutDest(she1)` is not payable. Miner login is `ssa1.worker` (a dest the wallet exported). `she1` login is an in-memory alias that must resolve to an owned rotating `ssa1` and is never written to disk. The public pool learns whatever you type into stratum; a solo node is the anonymity path for miners. Amounts stay public. Rest-frame `shear1` is never a dest login. she is private.
 
 Password = view key = `shewall.bin` seal. Never POST `V`/`C`/`shear1`.
 
 ## Memo
 
-Optional on Flow send. Ciphertext opaque on the wire. Public explorer: **memo yes/no only**. Plaintext only in sender and recipient **wallet explorer** tabs. Continuum: **you have a new memo** until opened.
+Optional on Flow send. Key is `SHA256(shear-memo-v1 || ECDH shared secret)` for that dest. No dest-only fallback; no memo without a shared secret. Public explorer: amounts, dests, **memo yes/no only**. No memoCt, no memoPlain. Owner wallets decrypt locally after scan.
 
 ## Vortex
 

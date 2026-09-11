@@ -40,10 +40,10 @@ import {
   blockNeedsEvm,
   executeBlockEvm,
 } from '../../crypto/reserve_evm.js';
-import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp } from '../../crypto/address.js';
+import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from '../../crypto/address.js';
 import { collateSamples, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { verifyFundedBody } from '../../crypto/spend.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
+import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import { packTx, packDigest } from '../../crypto/pack.js';
 import { buildDualTree, spendB } from '../../crypto/clearing.js';
 import {
@@ -157,16 +157,11 @@ export function hashBonusByMiner(samples = [], unit = HASH_BONUS_NANOS, shareBat
   const u = Number(unit);
   const bonus = Number.isFinite(u) && u >= HASH_BONUS_NANOS_FLOOR ? u : HASH_BONUS_NANOS;
   const by = new Map();
+  void samples;
   if (shareBatch != null) {
     for (const [addr, units] of collateShareUnits(shareBatch)) {
       by.set(addr, units * bonus);
     }
-    return by;
-  }
-  for (const s of collateSamples(samples)) {
-    const addr = String(s.miner || s.address || s.dest || '');
-    if (!isDestAddress(addr) && !isShearAddress(addr)) continue;
-    by.set(addr, (by.get(addr) || 0) + s.count * bonus);
   }
   return by;
 }
@@ -275,10 +270,7 @@ export function buildTemplate({
     : [];
   // Tree A is shareBatch units only. Typed sample counts are not money.
   const collated = fromBatch;
-  const continuityLag1 = lag1Continuity(prevHeader);
-  const pay = destOf || ((login) => (isDestAddress(login)
-    ? login
-    : destForLogin(login, { continuityRoot: continuityLag1, height })));
+  const pay = destOf || ((login) => hasherPayoutDest(login) || '');
   const cb = coinbaseTx({
     height, miner, samples: collated, potShares, destOf: pay, hashBonusNanos, shareBatch: batch, poolDest,
   });
@@ -512,7 +504,23 @@ function verifyBlockConsensus(block, prev, {
     if (!dual.continuityRoot.equals(decoded.continuityRoot)) return { ok: false, reason: 'continuity' };
   }
   for (const o of txs[0].vout) {
-    if (!ssaOk(o.address)) return { ok: false, reason: 'miner_addr' };
+    const r = checkAddressField(o.address, { allowEmpty: false });
+    if (!r.ok) {
+      if (r.reason === 'silent_id_on_chain') return { ok: false, reason: 'silent_id_on_chain' };
+      if (r.reason === 'rest_frame_on_chain') return { ok: false, reason: 'rest_frame_on_chain' };
+      return { ok: false, reason: r.reason === 'dest' ? 'miner_addr' : r.reason };
+    }
+  }
+  if (block.miner) {
+    const minerHrp = checkAddressField(block.miner, { allowEmpty: true });
+    if (!minerHrp.ok) return { ok: false, reason: minerHrp.reason };
+  }
+  for (const s of samples) {
+    for (const a of [s?.miner, s?.address, s?.dest]) {
+      if (!a) continue;
+      const sr = checkAddressField(a, { allowEmpty: true });
+      if (!sr.ok) return { ok: false, reason: sr.reason };
+    }
   }
   const base = Number(decoded.baseFee || 1n);
   let fees = 0;
@@ -521,14 +529,24 @@ function verifyBlockConsensus(block, prev, {
   for (let i = 0; i < body.length; i += 1) {
     const tx = body[i];
     const outs = Array.isArray(tx.vout) ? tx.vout : [];
+    const fields = checkTxAddressFields(tx, { coinbase: false });
+    if (!fields.ok) {
+      if (fields.reason === 'silent_id_on_chain') return { ok: false, reason: 'silent_id_on_chain' };
+      if (fields.reason === 'rest_frame_on_chain') return { ok: false, reason: 'rest_frame_on_chain' };
+      return { ok: false, reason: fields.reason };
+    }
     for (const o of outs) {
-      if (o?.address && !ssaOk(o.address)) {
-        return { ok: false, reason: 'rest_frame_on_chain' };
+      if (o?.address) {
+        const r = checkAddressField(o.address, { allowEmpty: String(tx.kind || o.kind || '') === 'burn' });
+        if (!r.ok) return { ok: false, reason: r.reason };
       }
     }
     const ins = Array.isArray(tx.vin) ? tx.vin : [];
     for (const i of ins) {
-      if (i?.address && isShearAddress(i.address)) return { ok: false, reason: 'rest_frame_on_chain' };
+      if (i?.address) {
+        const r = checkAddressField(i.address, { allowEmpty: false });
+        if (!r.ok) return { ok: false, reason: r.reason };
+      }
     }
     const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint;
     if (wrapMintForbidden(tx)) {

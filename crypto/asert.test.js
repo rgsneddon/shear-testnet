@@ -156,6 +156,11 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /SHARE_FLOOR_BITS=8/);
     assert.match(fp, /MAX_SHARES_PER_BLOCK=8192/);
     assert.match(fp, /SPEND_SIG=ed25519-shear-spend-v1/);
+    assert.match(fp, /DEST_HRP_SSA_ONLY=1/);
+    assert.match(fp, /SPEND_SIG_ONLY=1/);
+    assert.match(fp, /MEMO_NOT_DEST_KEYED=1/);
+    assert.equal(HASH_TX_LIVE, 1);
+    assert.match(fp, /:1:/); // HASH_TX_LIVE pin stays 1
     assert.match(fp, /INTEREST=400d-bps-floor/);
     assert.match(fp, /ORACLE=basket-mean-14/);
     assert.match(fp, /HASH_UNIT_FLOOR=1/);

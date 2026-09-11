@@ -7,6 +7,8 @@ import 'shear_identity.dart';
 import 'shear_eip712.dart';
 import 'shear_levy.dart';
 import 'shear_read_sync.dart';
+import 'shear_ed25519.dart';
+import 'shear_pack.dart';
 
 const kSheDecimals = 11;
 const kShePublicDigits = 9;
@@ -18,6 +20,9 @@ const kTargetBlockIntervalMs = 90000;
 /// 0.00000000001 SHE per valid hash.
 const kHashBonusShe = 0.00000000001;
 const kHashBonusVoteDeltaShe = 0.00000000001;
+
+String _bytesHex(Uint8List b) =>
+    b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
 
 String formatShe(num she) {
   if (!she.isFinite) return '0.000000000';
@@ -309,6 +314,7 @@ class ShearLedger {
   final Map<String, double> _pending = {};
   final List<ShearTx> _txs = [];
   final Set<String> _dests = {};
+  final Map<String, Uint8List> _stealthShared = {};
   final Set<String> _vaultDests = {};
   final Set<String> _spentHistory = {};
   /// Next dest height (tip sealed height + 1).
@@ -484,15 +490,13 @@ class ShearLedger {
 
   String payKey(String address) {
     if (isDestAddress(address)) return address;
-    final silent = payoutDest(address);
-    if (silent != null) return silent;
     return currentDest(address);
   }
 
   bool _isProgramVaultDest(String address) {
     if (address.isEmpty) return false;
     if (_vaultDests.contains(address)) return true;
-    final key = isDestAddress(address) ? address : (payoutDest(address) ?? '');
+    final key = isDestAddress(address) ? address : '';
     if (key.isNotEmpty && _vaultDests.contains(key)) return true;
     final vk = viewSecret;
     if (vk == null || vk.isEmpty) return false;
@@ -552,7 +556,24 @@ class ShearLedger {
     if (_isProgramVaultDest(address) || _isProgramVaultDest(payKey(address))) return 0;
     return _spendable[payKey(address)] ?? _spendable[address] ?? 0;
   }
-  double pending(String address) => _pending[payKey(address)] ?? _pending[address] ?? 0;
+
+  /// Per-dest pending, or the wallet total when [address] is a rest-frame / she1.
+  /// Money dests are destCommit(spendPub) and stealth dests in [_stealthShared].
+  double pending(String address, {String? paymentCode}) {
+    if (isDestAddress(address)) return _pending[address] ?? 0;
+    var n = 0.0;
+    final seen = <String>{};
+    void add(String k) {
+      if (k.isEmpty || !seen.add(k)) return;
+      n += _pending[k] ?? 0;
+    }
+    add(address);
+    add(currentDest(address, paymentCode: paymentCode));
+    for (final d in moneyDests(address, paymentCode: paymentCode)) {
+      add(d);
+    }
+    return n;
+  }
 
   /// Accrue 0.00000000001 SHE per hash this open round. Live pending row (lean: one
   /// row per dest, count in [ShearTx.amount]), not spendable, not an explorer row.
@@ -596,9 +617,28 @@ class ShearLedger {
     required double amount,
     String? from,
     String? id,
+    Uint8List? ephPub,
+    String? paymentCode,
   }) {
     if (amount <= 0) throw ArgumentError('amount');
-    final key = payKey(to);
+    var dest = to;
+    if (ephPub != null && paymentCode != null && (viewSecret ?? '').isNotEmpty) {
+      final parsed = decodePaymentCode(paymentCode);
+      final spend = parsed?['spendPub'];
+      if (spend != null) {
+      final rec = recognizeSilentDest(
+        viewKey: viewSecret!,
+        spendPub: spend,
+        dest: to,
+        ephPub: ephPub,
+      );
+      if (rec != null) {
+        dest = rec['dest'] as String;
+        _stealthShared[dest] = rec['shared'] as Uint8List;
+      }
+      }
+    }
+    final key = payKey(dest);
     _pending[key] = (_pending[key] ?? 0) + amount;
     _dests.add(key);
     final tx = ShearTx(
@@ -918,6 +958,7 @@ class ShearLedger {
   }
 
   double spendableOwned(String restFrame, {String? paymentCode}) {
+    spendPub ??= decodePaymentCode(paymentCode ?? '')?['spendPub'];
     _dropProgramVaults();
     var n = 0.0;
     for (final d in ownedAddresses(restFrame, paymentCode: paymentCode)) {
@@ -928,52 +969,21 @@ class ShearLedger {
   }
 
   /// Dest that actually holds reconstructed credits for a spend.
-  /// Silent mining dest first when it can cover [amount]; then minted dests;
-  /// then the current Flow dest. Does not walk 1..tipHeight.
+  /// Only dests [isBindable] accepts for the signing key. destAtIndex is not a money path.
   String spendFrom(String restFrame, {String? paymentCode, required double amount}) {
-    final dests = <String>[];
-    void add(String? a) {
-      if (a == null || a.isEmpty) return;
-      final k = isDestAddress(a) ? a : (payoutDest(a) ?? '');
-      if (k.isEmpty || !isDestAddress(k)) return;
-      if (!dests.contains(k)) dests.add(k);
-    }
-
-    add(payoutDest(paymentCode ?? ''));
-    add(payoutDest(restFrame));
-    for (final d in listedDests(restFrame)) {
-      add(d);
-    }
-    for (final d in _dests) {
-      add(d);
-    }
-    add(currentDest(restFrame));
+    final dests = moneyDests(restFrame, paymentCode: paymentCode).toList();
     for (final d in dests) {
       if (spendable(d) >= amount) return d;
     }
-    return dests.isNotEmpty ? dests.first : currentDest(restFrame);
+    return dests.isNotEmpty ? dests.first : currentDest(restFrame, paymentCode: paymentCode);
   }
 
-  /// Light dests for a pool pull. Silent mining dest + current Flow dest +
-  /// minted dests. Does not walk 1..tipHeight (that hung first unlock).
+  /// Light dests for a pool pull. Bindable money dests only.
+  /// she1 / shear1 / destAtIndex are never queried as pay dests.
   Set<String> syncDests(String restFrame, {String? paymentCode}) {
-    final keys = <String>{};
-    void add(String? a) {
-      if (a == null || a.isEmpty) return;
-      if (_isProgramVaultDest(a)) return;
-      if (isDestAddress(a) || isPaymentCode(a)) keys.add(a);
-    }
-
-    add(homeDest(restFrame, paymentCode: paymentCode));
-    add(currentDest(restFrame));
-    add(paymentCode);
-    add(payoutDest(paymentCode ?? ''));
-    add(payoutDest(restFrame));
-    for (final d in listedDests(restFrame)) {
-      add(d);
-    }
-    for (final d in _dests) {
-      add(d);
+    final keys = moneyDests(restFrame, paymentCode: paymentCode);
+    if (isDestAddress(restFrame) && isBindable(restFrame, restFrame: restFrame, paymentCode: paymentCode)) {
+      keys.add(restFrame);
     }
     return keys;
   }
@@ -990,6 +1000,7 @@ class ShearLedger {
     required int tipSealed,
   }) {
     _ingestIncoming(json);
+    if (!isDestAddress(address)) return;
     _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
     if (beforeHeight > 0 && tipSealed > beforeHeight) {
       confirmRound(address: address, pot: 0, height: beforeHeight + 1);
@@ -1001,7 +1012,7 @@ class ShearLedger {
     }
     final live = (json['balance'] as num?)?.toDouble();
     if (live != null && live >= 0) {
-      final key = payKey(address);
+      final key = address;
       if (_isProgramVaultDest(key)) {
         _dropProgramVaults();
         return;
@@ -1022,6 +1033,7 @@ class ShearLedger {
     } catch (_) {}
     final dests = syncDests(restFrame, paymentCode: paymentCode);
     for (final d in dests) {
+      if (!isDestAddress(d)) continue;
       try {
         final json = await pool!.balance(d);
         applyPoolSnapshot(d, json, beforeHeight: before, tipSealed: _sealedHeight);
@@ -1111,16 +1123,11 @@ class ShearLedger {
     }
   }
 
-  /// Drop dests that are not this wallet's silent dest or indexed dests.
+  /// Drop dests that are not bindable money dests for this wallet.
   void keepOwnedDests(String restFrame, {String? paymentCode}) {
-    final allow = <String>{
-      ...listedDests(restFrame),
-      if (homeDest(restFrame, paymentCode: paymentCode) != restFrame)
-        homeDest(restFrame, paymentCode: paymentCode),
-      if (payoutDest(paymentCode ?? '') != null) payoutDest(paymentCode ?? '')!,
-      if (payoutDest(restFrame) != null) payoutDest(restFrame)!,
-    };
-    final drop = _dests.where((d) => !allow.contains(d) && d != restFrame).toList();
+    final allow = moneyDests(restFrame, paymentCode: paymentCode);
+    if (isDestAddress(restFrame)) allow.add(restFrame);
+    final drop = _dests.where((d) => !allow.contains(d) && d != restFrame && !_stealthShared.containsKey(d)).toList();
     for (final d in drop) {
       _dests.remove(d);
       _spendable.remove(d);
@@ -1128,17 +1135,11 @@ class ShearLedger {
     }
   }
 
-  /// Stable ssa1 mailbox for this shear1 wallet (indexed dest 0).
-  /// Chain dests stay ssa1 — shear1 never goes on the book.
+  /// Stable ssa1 mailbox: destCommit(spendPub) when the spend pub is known.
+  /// destAtIndex is not a money dest — destMatchesSpendPub fails for it.
   String homeDest(String restFrame, {String? paymentCode}) {
     if (isDestAddress(restFrame)) return restFrame;
-    final indexed = destAt(restFrame, 0);
-    if (indexed != null && isDestAddress(indexed) && !_isProgramVaultDest(indexed)) {
-      return indexed;
-    }
-    final silent = payoutDest(paymentCode ?? '');
-    if (silent != null && isDestAddress(silent)) return silent;
-    return currentDest(restFrame);
+    return currentDest(restFrame, paymentCode: paymentCode);
   }
 
   final Map<int, Uint8List> _continuityAt = {};
@@ -1196,6 +1197,114 @@ class ShearLedger {
   }
 
   String? viewSecret;
+  /// Long-term Ed25519 spend pub. currentDest is destCommit(spendPub).
+  Uint8List? spendPub;
+
+  Uint8List? _spendPubOf(String? paymentCode) =>
+      spendPub ?? decodePaymentCode(paymentCode ?? '')?['spendPub'];
+
+  String? _ownPaymentCode(String restFrame, {String? paymentCode}) {
+    if (paymentCode != null && isFullPaymentCode(paymentCode)) return paymentCode;
+    final pub = spendPub;
+    final v = viewSecret;
+    if (pub != null && pub.length == 32 && v != null && v.isNotEmpty) {
+      return paymentCodeAtIndex(v, pub, 0);
+    }
+    return null;
+  }
+
+  /// True when [dest] can be signed with the long-term spend key or a stealth tweak.
+  bool isBindable(String dest, {String? restFrame, String? paymentCode}) {
+    if (!isDestAddress(dest) || _isProgramVaultDest(dest)) return false;
+    if (_stealthShared.containsKey(dest)) return true;
+    final pub = _spendPubOf(paymentCode);
+    if (pub != null && pub.length == 32) return destMatchesSpendPub(dest, pub);
+    if (restFrame != null) {
+      return dest == currentDest(restFrame, paymentCode: paymentCode);
+    }
+    return false;
+  }
+
+  /// Spendable dests for this wallet. destAtIndex / destForLogin-without-spendPub
+  /// are not money dests — consensus destMatchesSpendPub rejects them.
+  Set<String> moneyDests(String restFrame, {String? paymentCode}) {
+    spendPub ??= decodePaymentCode(paymentCode ?? '')?['spendPub'];
+    _foldFlowDest(restFrame, paymentCode: paymentCode);
+    final pub = _spendPubOf(paymentCode);
+    final keys = <String>{};
+    void add(String? a) {
+      if (a == null || a.isEmpty || !isDestAddress(a) || _isProgramVaultDest(a)) return;
+      if (_isIndexedDest(a, restFrame)) return;
+      if (pub != null && pub.length == 32) {
+        if (isBindable(a, restFrame: restFrame, paymentCode: paymentCode)) keys.add(a);
+      } else {
+        keys.add(a);
+      }
+    }
+
+    add(currentDest(restFrame, paymentCode: paymentCode));
+    for (final d in _stealthShared.keys) {
+      add(d);
+    }
+    for (final d in _dests) {
+      add(d);
+    }
+    return keys;
+  }
+
+  bool _isIndexedDest(String dest, String restFrame) {
+    if (viewSecret == null || viewSecret!.isEmpty) return false;
+    for (var i = 0; i < destCount; i++) {
+      if (destAt(restFrame, i) == dest) return true;
+    }
+    return false;
+  }
+
+  /// Local rest-frame credits were stored on destForLogin before spendPub was
+  /// known. Fold them onto destCommit so the signed dest matches the key.
+  void _foldFlowDest(String restFrame, {String? paymentCode}) {
+    final pub = _spendPubOf(paymentCode);
+    if (pub == null || pub.length != 32) return;
+    final bound = encodeDestAddress(destCommitFromSpendPub(pub));
+    final flow = destForLogin(
+      restFrame,
+      height: tipHeight,
+      continuityRoot: lag1Root,
+      viewKey: viewSecret,
+    );
+    if (flow == null || flow == bound || _stealthShared.containsKey(flow)) return;
+    if (destMatchesSpendPub(flow, pub)) return;
+    final s = _spendable.remove(flow) ?? 0;
+    final p = _pending.remove(flow) ?? 0;
+    var moved = s != 0 || p != 0;
+    for (var i = 0; i < _txs.length; i++) {
+      final t = _txs[i];
+      if (t.to != flow && t.from != flow) continue;
+      _txs[i] = ShearTx(
+        id: t.id,
+        from: t.from == flow ? bound : t.from,
+        to: t.to == flow ? bound : t.to,
+        amount: t.amount,
+        kind: t.kind,
+        height: t.height,
+        confirmed: t.confirmed,
+        memo: t.memo,
+        memoPlain: t.memoPlain,
+        memoCt: t.memoCt,
+        rounds: t.rounds,
+        hashAmount: t.hashAmount,
+        threads: t.threads,
+        pot: t.pot,
+        change: t.change,
+      );
+      moved = true;
+    }
+    if (!moved) return;
+    if (s != 0) _spendable[bound] = (_spendable[bound] ?? 0) + s;
+    if (p != 0) _pending[bound] = (_pending[bound] ?? 0) + p;
+    _dests.remove(flow);
+    _dests.add(bound);
+  }
 
   String? destAt(String restFrame, int index) {
     final v = viewSecret;
@@ -1220,31 +1329,54 @@ class ShearLedger {
     return out;
   }
 
-  String currentDest(String restFrame) {
+  String currentDest(String restFrame, {String? paymentCode}) {
     if (isDestAddress(restFrame)) return restFrame;
+    final pub = spendPub ?? decodePaymentCode(paymentCode ?? '')?['spendPub'];
+    if (pub != null && pub.length == 32) {
+      return encodeDestAddress(destCommitFromSpendPub(pub));
+    }
     return destForLogin(restFrame, height: tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ??
         restFrame;
   }
 
-  /// Mint the next she1 dest. Same (shear1, password, index) always regenerates it.
-  String newDest(String restFrame) {
+  /// Fresh stealth dest of this wallet's payment code. destAtIndex is not a money dest.
+  String newDest(String restFrame, {String? paymentCode}) {
     destCount += 1;
     destIndex = destCount - 1;
-    final d = destAt(restFrame, destIndex) ?? currentDest(restFrame);
+    final d = _freshStealthDest(restFrame, paymentCode: paymentCode);
     _dests.add(d);
     return d;
   }
 
-  /// Continuum receive: always a newly derived ssa1. Two receives → two dests.
-  String allocateReceiveDest(String restFrame) => newDest(restFrame);
+  String _freshStealthDest(String restFrame, {String? paymentCode, String? from, String? portalDest}) {
+    final code = _ownPaymentCode(restFrame, paymentCode: paymentCode);
+    if (code != null) {
+      for (var i = 0; i < 24; i++) {
+        final pay = silentPay(code);
+        if (pay == null) continue;
+        if (pay.dest == from || pay.dest == portalDest || _isProgramVaultDest(pay.dest)) continue;
+        _stealthShared[pay.dest] = pay.shared;
+        _dests.add(pay.dest);
+        return pay.dest;
+      }
+    }
+    return currentDest(restFrame, paymentCode: paymentCode);
+  }
 
-  /// Send change to a newly derived dest. Never [from] and never the Reserve portal.
-  String allocateChangeDest(String restFrame, {String? from, String? portalDest}) {
+  /// Continuum receive: always a newly derived ssa1. Two receives → two dests.
+  String allocateReceiveDest(String restFrame, {String? paymentCode}) =>
+      newDest(restFrame, paymentCode: paymentCode);
+
+  /// Send change to a newly derived stealth dest. Never [from] and never the Reserve portal.
+  String allocateChangeDest(String restFrame, {String? from, String? portalDest, String? paymentCode}) {
+    if (_ownPaymentCode(restFrame, paymentCode: paymentCode) == null) {
+      throw ArgumentError('same_dest');
+    }
     for (var i = 0; i < 24; i++) {
-      final d = newDest(restFrame);
+      final d = _freshStealthDest(restFrame, paymentCode: paymentCode, from: from, portalDest: portalDest);
       if (d != from && d != portalDest && !_isProgramVaultDest(d)) return d;
     }
-    throw StateError('change_dest');
+    throw ArgumentError('same_dest');
   }
 
   void rememberSpentDest(String dest) {
@@ -1282,14 +1414,10 @@ class ShearLedger {
 
   Set<String> ownedAddresses(String restFrame, {String? paymentCode}) {
     _dropProgramVaults();
-    final keys = <String>{restFrame, ..._dests, currentDest(restFrame)};
-    final silent = payoutDest(paymentCode ?? restFrame);
-    if (silent != null) keys.add(silent);
-    for (final d in listedDests(restFrame)) {
-      keys.add(d);
-      final h = hash20FromAddress(d);
-      if (h != null) keys.addAll(destEncodings(h));
-    }
+    final keys = <String>{
+      restFrame,
+      ...moneyDests(restFrame, paymentCode: paymentCode),
+    };
     keys.removeWhere(_isProgramVaultDest);
     return keys;
   }
@@ -1414,13 +1542,46 @@ class ShearLedger {
     int? currentEpoch,
     int? epochStartMs,
     String? change,
+    Uint8List? spendSeed,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
     if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
     if (isShearAddress(from) || isShearAddress(to)) {
       throw ArgumentError('rest_frame');
     }
+    var destTo = to;
+    SilentPay? pay;
+    if (isFullPaymentCode(to)) {
+      pay = silentPay(to);
+      if (pay == null) throw ArgumentError('bad_send');
+      destTo = pay.dest;
+    } else if (!isDestAddress(to) && sendKind == 'send') {
+      throw ArgumentError('bad_send');
+    }
+    if (sendKind == 'send' && destTo == from) {
+      throw ArgumentError('same_dest');
+    }
+    if (sendKind == 'send' && change != null && change == from) {
+      throw ArgumentError('same_dest');
+    }
+    if (sendKind == 'send' && restFrame != null && (viewSecret ?? '').isNotEmpty) {
+      final portal = vaultDest(restFrame, viewKey: viewSecret!);
+      if (portal != null && (destTo == portal || change == portal)) {
+        throw ArgumentError('portal_change');
+      }
+    }
     var src = from;
+    if (spendSeed != null && spendSeed.length == 32) {
+      spendPub ??= ed25519PublicFromSeed(spendSeed);
+    }
+    if (paymentCode != null) {
+      spendPub ??= decodePaymentCode(paymentCode)?['spendPub'];
+    }
+    if (spendPub != null && spendPub!.length == 32) {
+      if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
+        src = encodeDestAddress(destCommitFromSpendPub(spendPub!));
+      }
+    }
     var depth = 0;
     if (pool != null && !local) {
       try {
@@ -1447,56 +1608,75 @@ class ShearLedger {
       final leftover = spendable(src) - needShe;
       if (leftover > 1e-18) {
         final derive = restFrame ?? src;
-        if ((viewSecret ?? '').isNotEmpty) {
-          changeDest ??= allocateChangeDest(derive, from: src, portalDest: portal);
+        if (paymentCode != null && isFullPaymentCode(paymentCode)) {
+          final payChange = silentPay(paymentCode);
+          changeDest ??= payChange?.dest;
+          if (payChange != null) _stealthShared[payChange.dest] = payChange.shared;
+          if (changeDest == src || changeDest == portal) {
+            final again = silentPay(paymentCode);
+            changeDest = again?.dest;
+            if (again != null) _stealthShared[again.dest] = again.shared;
+          }
+        } else if ((viewSecret ?? '').isNotEmpty) {
+          changeDest ??= allocateChangeDest(derive, from: src, portalDest: portal, paymentCode: paymentCode);
         } else {
           throw ArgumentError('same_dest');
         }
       }
-      refuseSheetChange(from: src, to: to, change: changeDest, portalDest: portal);
+      refuseSheetChange(from: src, to: destTo, change: changeDest, portalDest: portal);
       rememberSpentDest(src);
-      rememberSpentDest(to);
+      rememberSpentDest(destTo);
       if (changeDest != null) rememberSpentDest(changeDest);
     }
     Map<String, dynamic>? memoCt;
     if (memo != null && memo.isNotEmpty) {
-      memoCt = await memoSeal(to, memo);
+      if (pay?.shared == null) throw ArgumentError('no_shared');
+      memoCt = await memoSeal(destTo, memo, pay!.shared);
     }
-    if (pool != null && !local) {
-      String? open;
-      final vk = viewSecret;
-      final rest = restFrame ?? '';
-      String? portalOpen;
-      if (vk != null && vk.isNotEmpty && rest.isNotEmpty) {
-        open = openingForDest(
-          from: src,
-          restFrame: rest,
-          viewKey: vk,
-          destCount: destCount,
-        );
-        if (sendKind == 'vote') {
-          portalOpen = openingForDest(
-            from: to,
-            restFrame: rest,
-            viewKey: vk,
-            destCount: destCount,
-          );
+    String? sigHex;
+    String? spendPubHex;
+    if (spendSeed != null && spendSeed.length == 32 && sendKind != 'vote') {
+      if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
+        throw StateError('unspendable_dest');
+      }
+      final vouts = <Map<String, dynamic>>[
+        {'address': destTo, 'nanos': nanos, 'kind': sendKind},
+      ];
+      if (sendKind == 'send' && changeDest != null) {
+        final leftoverNanos = ((spendable(src) - needShe) * kUnitsPerShe).round();
+        if (leftoverNanos > 0) {
+          vouts.add({'address': changeDest, 'nanos': leftoverNanos, 'kind': 'send'});
         }
       }
+      final msg = spendMessage(from: src, vout: vouts, kind: sendKind);
+      final shared = _stealthShared[src];
+      late Uint8List sig;
+      late Uint8List pub;
+      if (shared != null) {
+        sig = stealthSign(spendSeed, shared, msg);
+        pub = stealthTweakPub(ed25519PublicFromSeed(spendSeed), shared);
+      } else {
+        sig = ed25519Sign(spendSeed, msg);
+        pub = ed25519PublicFromSeed(spendSeed);
+      }
+      sigHex = _bytesHex(sig);
+      spendPubHex = _bytesHex(pub);
+    }
+    if (pool != null && !local) {
       final json = await pool!.send(
         from: src,
-        to: to,
+        to: destTo,
         amount: sendKind == 'vote' ? 0 : amount,
         memoCt: memoCt,
-        open: open,
-        sig: null,
-        portalOpen: portalOpen,
         kind: sendKind,
         programId: programId,
         choice: choice,
         currentEpoch: currentEpoch,
         epochStartMs: epochStartMs,
         change: sendKind == 'send' ? changeDest : null,
+        sig: sigHex,
+        spendPub: spendPubHex,
+        ephPub: pay?.ephPub != null ? _bytesHex(pay!.ephPub) : null,
       );
       if (json['ok'] != true || json['tx'] is! Map) {
         throw StateError('${json['reason'] ?? 'send failed'}');
@@ -1515,7 +1695,7 @@ class ShearLedger {
       final tx = ShearTx(
         id: raw.id,
         from: raw.from,
-        to: raw.to,
+        to: destTo,
         amount: raw.amount,
         kind: raw.kind,
         height: raw.height,
@@ -1533,7 +1713,7 @@ class ShearLedger {
     final tx = ShearTx(
       id: 'send-${DateTime.now().millisecondsSinceEpoch}',
       from: src,
-      to: to,
+      to: destTo,
       amount: amount,
       kind: kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send'),
       confirmed: false,
@@ -1810,6 +1990,8 @@ class ShearPoolClient {
     int? currentEpoch,
     int? epochStartMs,
     String? change,
+    String? spendPub,
+    String? ephPub,
   }) =>
       _post('/api/wallet/send', {
         'from': from,
@@ -1818,6 +2000,8 @@ class ShearPoolClient {
         if (memoCt != null) 'memoCt': memoCt,
         if (open != null && open.isNotEmpty) 'open': open,
         if (sig != null && sig.isNotEmpty) 'sig': sig,
+        if (spendPub != null && spendPub.isNotEmpty) 'spendPub': spendPub,
+        if (ephPub != null && ephPub.isNotEmpty) 'ephPub': ephPub,
         if (portalOpen != null && portalOpen.isNotEmpty) 'portalOpen': portalOpen,
         if (kind != null && kind.isNotEmpty) 'kind': kind,
         if (programId != null && programId.isNotEmpty) 'programId': programId,

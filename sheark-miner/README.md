@@ -9,7 +9,7 @@ Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache).
 - Header: 128 bytes. Light mode only. Do not recut Shear-Miner **1.1** / **1.0**. Submit includes the ShearHash-v3 digest.
 
 ```
-ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --dest YOUR_SSA1 --backend jit --threads 8
+ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit --threads 8
 ```
 
 Default `--backend jit` is ShearHash-v3 light JIT + HARD_AES + huge pages (fallback to 4K if huge pages fail). Do not use `jit-full` against this pool: FULL_MEM hashes fail light verify.

@@ -123,7 +123,8 @@ describe('duplicate shares cannot inflate round work', () => {
   });
 
   it('old-miner hash counter without a valid share mints nothing; a scored share still pays', () => {
-    const dest = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey, height: 1 });
+    const idIdle = newIdentity();
+    const dest = destForLogin(idIdle.address, { spendPub: idIdle.spendPub });
     const idle = {
       login: dest,
       accepted: 0,
@@ -180,7 +181,8 @@ describe('duplicate shares cannot inflate round work', () => {
   });
 
   it('nonce-only submits (old miner) are refused without hashing and cannot stall stats', async () => {
-    const dest = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey, height: 1 });
+    const idNeed = newIdentity();
+    const dest = destForLogin(idNeed.address, { spendPub: idNeed.spendPub });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-need-hash-'));
     const pool = createPool({
       dataDir: dir,
@@ -409,7 +411,7 @@ describe('folded-row inventory', () => {
 
   it('keys the book by dest.worker, not dest-only', () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     assert.equal(workerKey(`${dest}.alpha`), `${dest}.alpha`);
     assert.notEqual(workerKey(`${dest}.alpha`), workerKey(`${dest}.beta`));
     assert.equal(admitClient({ login: `${dest}.alpha`, client: 'ShearHash' }).workerKey, `${dest}.alpha`);
@@ -419,14 +421,14 @@ describe('folded-row inventory', () => {
   it('two sockets on one worker sum; dest.other is a separate row', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hon-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
       httpPort: 0,
       miner: dest,
-      shareBits: 4,
-      bits: 8,
+      shareBits: 8,
+      bits: 10,
     });
     await new Promise((resolve, reject) => {
       pool.stratum.listen(0, '127.0.0.1', () => {
@@ -476,7 +478,7 @@ describe('folded-row inventory', () => {
   it('createPool 32/32 + 230/256 still folds without an honesty verdict', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ep01-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,

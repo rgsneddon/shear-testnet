@@ -47,4 +47,4 @@ Consensus spendable is **6 confirmations** (the minimum; ~9 min at 90 s). That d
 
 ## Addresses
 
-Rest-frame HRP `shear` (`shear1`). Silent ID `she1`. On-chain dest **`ssa1`**. Never put `shear1` in vouts.
+Rest-frame HRP `shear` (`shear1`) — never a login, never a vout. Silent ID `she1` is a versioned payment code (scan+spend pubs); the short 20-byte fingerprint is display-only and is not sufficient to pay. On-chain dest **`ssa1` only**. `verifyBlock` / `admitMempool` check typed HRP on every address field (vin/vout/from/to/miner/sample). HRP `she` → `silent_id_on_chain`. HRP `shear` → `rest_frame_on_chain`. `containsShe1` on JSON is not the consensus check. Spend sig is Ed25519 over the compact body; openings are not persisted. Memo is keyed by the stealth shared secret, not dest20. Fingerprint pins: `DEST_HRP_SSA_ONLY=1`, `SPEND_SIG_ONLY=1`, `MEMO_NOT_DEST_KEYED=1`, `HASH_TX_LIVE=1`.

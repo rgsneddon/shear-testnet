@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:cryptography/cryptography.dart';
 
 import 'shear_identity.dart';
+import 'shear_ed25519.dart';
 
 /// continuity-tethered Flow (CTF). Same domain separators as crypto/flow_sheet.js.
 const ctfFlowPersonal = 'chronoflux-J-v1';
@@ -108,7 +109,7 @@ String? openingForDest({
   final n = destCount < 0 ? 0 : destCount;
   for (var i = 0; i <= n; i++) {
     final she = paymentCodeAtIndex(viewKey, spendH, i);
-    if (she != null && payoutDest(she) == from) {
+    if (she != null && (payoutDest(she) == from || she == from)) {
       return destOpeningFromView(viewKey, spendH, i);
     }
   }
@@ -141,9 +142,12 @@ String? destForLogin(
   Uint8List? continuityRoot,
   int height = 0,
   String? viewKey,
+  Uint8List? spendPub,
 }) {
-  final paid = payoutDest(login);
-  if (paid != null) return paid;
+  if (isDestAddress(identityOfLogin(login))) return identityOfLogin(login);
+  if (spendPub != null && spendPub.length == 32) {
+    return encodeDestAddress(destCommitFromSpendPub(spendPub));
+  }
   final s = spendHashFromAddress(identityOfLogin(login));
   if (s == null) return null;
   if (viewKey == null || viewKey.isEmpty) return null;
@@ -209,16 +213,20 @@ bool reserveRejectsDest(String restFrame, String maybeDest, {int height = 1, req
   return maybeDest == dest && vault != null && maybeDest != vault;
 }
 
-Uint8List memoKey(String dest) {
-  final d = hash20FromAddress(dest) ?? Uint8List(20);
-  return _sha(utf8.encode(ctfFlowPersonal), d);
+const memoDomain = 'shear-memo-v1';
+
+Uint8List? memoKey(String dest, [List<int>? shared]) {
+  if (shared == null || shared.isEmpty) return null;
+  return _sha(utf8.encode(memoDomain), Uint8List.fromList(shared));
 }
 
-Future<Map<String, dynamic>> memoSeal(String dest, String plaintext) async {
+Future<Map<String, dynamic>> memoSeal(String dest, String plaintext, [List<int>? shared]) async {
+  final key = memoKey(dest, shared);
+  if (key == null) throw ArgumentError('no_shared');
   final nonce = Uint8List.fromList(List<int>.generate(12, (_) => Random.secure().nextInt(256)));
   final box = await AesGcm.with256bits().encrypt(
     utf8.encode(plaintext),
-    secretKey: SecretKey(memoKey(dest)),
+    secretKey: SecretKey(key),
     nonce: nonce,
   );
   return {
@@ -229,15 +237,28 @@ Future<Map<String, dynamic>> memoSeal(String dest, String plaintext) async {
   };
 }
 
-Future<String?> memoOpen(String dest, Map<String, dynamic>? env) async {
+Map<String, dynamic> explorerRowPublic(Map<String, dynamic> row) {
+  return {
+    'id': row['id'],
+    'amount': row['amount'] ?? row['nanos'],
+    'from': row['from'],
+    'to': row['to'],
+    'height': row['height'],
+    'memo': row['memoCt'] != null || row['memo'] == true,
+  };
+}
+
+Future<String?> memoOpen(String dest, Map<String, dynamic>? env, [List<int>? shared]) async {
   if (env == null || env['v'] != 1) return null;
+  final key = memoKey(dest, shared);
+  if (key == null) return null;
   try {
     final nonce = base64Decode(env['nonce'] as String);
     final mac = Mac(base64Decode(env['mac'] as String));
     final ct = base64Decode(env['ct'] as String);
     final clear = await AesGcm.with256bits().decrypt(
       SecretBox(ct, nonce: nonce, mac: mac),
-      secretKey: SecretKey(memoKey(dest)),
+      secretKey: SecretKey(key),
     );
     return utf8.decode(clear);
   } catch (_) {

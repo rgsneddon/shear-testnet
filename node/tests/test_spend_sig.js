@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { newIdentity, destOpeningFromView, payoutDest } from '../../crypto/address.js';
+import { generateKeyPairSync } from 'node:crypto';
+import { newIdentity, destOpeningFromView, silentPay, recognizeSilentDest, stealthSpendPrivate, ed25519SeedOf } from '../../crypto/address.js';
+import { destForLogin } from '../../crypto/flow_sheet.js';
 import { NANOS_PER_SHE } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
 import {
@@ -17,7 +19,12 @@ import { handleWalletApi } from '../../pool/src/wallet_api.js';
 import { SHEWALL_FILE } from '../../crypto/shewall_bin.js';
 
 function signedSend(id, { nanos, to, fee } = {}) {
-  const from = payoutDest(id.paymentCode);
+  const { privateKey: eph } = generateKeyPairSync('x25519');
+  const pay = silentPay(id.paymentCode, eph);
+  const rec = recognizeSilentDest({
+    viewKey: id.viewKey, spendPub: id.spendPub, dest: pay.dest, ephPub: pay.ephPub,
+  });
+  const from = pay.dest;
   const open = destOpeningFromView(id.viewKey, id.spendPub, 0);
   const amount = nanos ?? NANOS_PER_SHE;
   const paid = fee ?? levyNanos(amount);
@@ -31,8 +38,9 @@ function signedSend(id, { nanos, to, fee } = {}) {
     open,
     vin: [{ address: from }],
     vout: [{ address: dest, nanos: amount, kind: 'send' }],
+    ephPub: pay.ephPub.toString('hex'),
   };
-  signSpendTx(tx, id.privateKey);
+  signSpendTx(tx, stealthSpendPrivate(rec.shared, ed25519SeedOf(id.privateKey)));
   return { tx, from, open };
 }
 
@@ -81,7 +89,9 @@ describe('Flow spend is an Ed25519 signature', () => {
     const id = newIdentity();
     const other = newIdentity();
     const { tx, from } = signedSend(id);
+    const origPub = tx.spendPub;
     signSpendTx(tx, other.privateKey);
+    tx.spendPub = origPub;
     assert.equal(verifySpendSig(tx), false);
     const got = verifyFundedBody([tx], (addr) => (addr === from ? 2 * NANOS_PER_SHE : 0));
     assert.equal(got.ok, false);
@@ -124,7 +134,7 @@ describe('wallet send path', () => {
     assert.equal(unsigned.status, 403);
     assert.equal(unsigned.json.reason, 'unsigned');
 
-    const ok = run({ from, to: from, amount: 0.4, open, sig: tx.sig });
+    const ok = run({ from, to: from, amount: 0.4, sig: tx.sig, spendPub: tx.spendPub });
     assert.equal(ok.status, 200, ok.json.reason);
     assert.equal(ok.json.ok, true);
   });

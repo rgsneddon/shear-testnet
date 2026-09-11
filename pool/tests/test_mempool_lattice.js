@@ -25,6 +25,8 @@ describe('mempool lattice pending rings', () => {
     assert.equal(out.pendingBlock.hashes, 40);
     assert.equal(out.pendingBlock.txs[0].kind, 'hash');
     assert.equal(out.pendingBlock.txs[0].count, 40);
+    assert.match(out.pendingBlock.txs[0].tag, /^m[0-9a-f]{8}$/);
+    assert.doesNotMatch(out.pendingBlock.txs[0].tag, /^she1/);
     assert.ok(out.pending.length >= 2);
     assert.equal(out.pending[0].id, 'tx-hi');
     assert.ok(out.pending[0].priority > out.pending[1].priority);
@@ -43,7 +45,7 @@ describe('mempool lattice pending rings', () => {
       jobs: new Map(),
       reserveVault: { liveHashBonusNanos: 1 },
       openRoundRows() {
-        return [{ tag: 'she1cafef00d', count: 77, source: 'peer' }];
+        return [{ tag: 'mcafef00d', count: 77, source: 'peer' }];
       },
     };
     const out = mempoolLattice(store, {
@@ -55,7 +57,7 @@ describe('mempool lattice pending rings', () => {
     assert.equal(out.scope, 'network');
     assert.equal(out.nodesOnline, 3);
     assert.equal(out.pending.some((t) => t.id === 'peer-send'), true);
-    const row = out.pendingBlock.txs.find((t) => t.tag === 'she1cafef00d');
+    const row = out.pendingBlock.txs.find((t) => t.tag === 'mcafef00d');
     assert.ok(row, 'peer miner row missing from forming hoop');
     assert.equal(row.kind, 'hash');
     assert.equal(row.count, 77);

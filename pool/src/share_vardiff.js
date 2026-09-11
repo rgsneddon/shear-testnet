@@ -21,6 +21,11 @@ export const SHARE_BELOW_BLOCK = 0;
  */
 export const SHARE_BITS_V2_START = 8;
 
+/** Consensus mint floor. Vardiff must not sit below this or accepted HUD shares mint 0. */
+export function mintShareMinBits() {
+  return Math.max(SHARE_FLOOR_BITS, SHARE_BITS_V2_START);
+}
+
 export function hashesProvenByShare(shareBits) {
   const b = Math.floor(Number(shareBits) || 0);
   if (b <= 0) return 1;

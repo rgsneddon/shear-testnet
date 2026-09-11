@@ -1,14 +1,21 @@
 /**
  * Packed shewall.bin (not JSON, not wallet.dat).
  * Body is shear-enc-v1 style records; encryption wraps the packed bytes.
+ * Product seal is Argon2id (64 MiB, t=3, p=1) + AES-256-GCM. Old PBKDF2
+ * envelopes are detected and re-sealed on successful password open.
  */
 import { createHash, randomBytes, pbkdf2Sync, createCipheriv, createDecipheriv } from 'node:crypto';
+import { argon2id } from '@noble/hashes/argon2.js';
 import { ENC_MAGIC } from './pack.js';
 import { u64le } from './pack.js';
 
 export const SHEWALL_KIND = 'shear-shewall-bin-v1';
 export const SHEWALL_FILE = 'shewall.bin';
-export const SHEWALL_ENC_KIND = 'shear-shewall-bin-v1-enc';
+export const SHEWALL_ENC_KIND_V1 = 'shear-shewall-bin-v1-enc';
+export const SHEWALL_ENC_KIND = 'shear-shewall-bin-v2-enc';
+export const SHEWALL_ARGON_MEMORY_KIB = 65536;
+export const SHEWALL_ARGON_ITERS = 3;
+export const SHEWALL_ARGON_PARALLEL = 1;
 
 export function packShewall({ seed32, dest20, spendableNanos = 0, pendingNanos = 0 } = {}) {
   const seed = Buffer.from(seed32);
@@ -39,10 +46,32 @@ export function unpackShewall(buf) {
   };
 }
 
+function argonKey(password, salt) {
+  return Buffer.from(argon2id(String(password), salt, {
+    t: SHEWALL_ARGON_ITERS,
+    m: SHEWALL_ARGON_MEMORY_KIB,
+    p: SHEWALL_ARGON_PARALLEL,
+    dkLen: 32,
+    maxmem: SHEWALL_ARGON_MEMORY_KIB * 1024 * 4,
+  }));
+}
+
+function aesOpen(key, nonce, mac, ct) {
+  const dec = createDecipheriv('aes-256-gcm', key, nonce);
+  dec.setAuthTag(mac);
+  return Buffer.concat([dec.update(ct), dec.final()]);
+}
+
+export function shewallNeedsMigrate(env) {
+  const b = Buffer.from(env || []);
+  const v1 = Buffer.from(SHEWALL_ENC_KIND_V1);
+  return b.length >= v1.length && b.subarray(0, v1.length).equals(v1);
+}
+
 export function sealShewallBin(packed, password) {
   const salt = randomBytes(16);
   const nonce = randomBytes(12);
-  const key = pbkdf2Sync(String(password), salt, 100000, 32, 'sha256');
+  const key = argonKey(password, salt);
   const cipher = createCipheriv('aes-256-gcm', key, nonce);
   const ct = Buffer.concat([cipher.update(Buffer.from(packed)), cipher.final()]);
   const mac = cipher.getAuthTag();
@@ -55,23 +84,55 @@ export function sealShewallBin(packed, password) {
   ]);
 }
 
+/** Old PBKDF2 envelope. Used only to detect + migrate. Not the product path. */
+export function sealShewallBinPbkdf2(packed, password) {
+  const salt = randomBytes(16);
+  const nonce = randomBytes(12);
+  const key = pbkdf2Sync(String(password), salt, 100000, 32, 'sha256');
+  const cipher = createCipheriv('aes-256-gcm', key, nonce);
+  const ct = Buffer.concat([cipher.update(Buffer.from(packed)), cipher.final()]);
+  const mac = cipher.getAuthTag();
+  return Buffer.concat([
+    Buffer.from(SHEWALL_ENC_KIND_V1),
+    salt,
+    nonce,
+    mac,
+    ct,
+  ]);
+}
+
 export function openShewallBin(env, password) {
   const b = Buffer.from(env);
-  const prefix = Buffer.from(SHEWALL_ENC_KIND);
-  if (b.length < prefix.length + 16 + 12 + 16) throw new Error('not_shewall_bin');
-  if (!b.subarray(0, prefix.length).equals(prefix)) {
-    if (b.subarray(0, 1).toString() === '{') throw new Error('json_refused');
+  if (b.subarray(0, 1).toString() === '{') throw new Error('json_refused');
+  const v2 = Buffer.from(SHEWALL_ENC_KIND);
+  const v1 = Buffer.from(SHEWALL_ENC_KIND_V1);
+  let prefix;
+  let kdf;
+  if (b.length >= v2.length && b.subarray(0, v2.length).equals(v2)) {
+    prefix = v2;
+    kdf = 'argon2id';
+  } else if (b.length >= v1.length && b.subarray(0, v1.length).equals(v1)) {
+    prefix = v1;
+    kdf = 'pbkdf2';
+  } else {
     throw new Error('not_shewall_bin');
   }
+  if (b.length < prefix.length + 16 + 12 + 16) throw new Error('not_shewall_bin');
   let o = prefix.length;
   const salt = b.subarray(o, o + 16); o += 16;
   const nonce = b.subarray(o, o + 12); o += 12;
   const mac = b.subarray(o, o + 16); o += 16;
   const ct = b.subarray(o);
-  const key = pbkdf2Sync(String(password), salt, 100000, 32, 'sha256');
-  const dec = createDecipheriv('aes-256-gcm', key, nonce);
-  dec.setAuthTag(mac);
-  return Buffer.concat([dec.update(ct), dec.final()]);
+  const key = kdf === 'argon2id'
+    ? argonKey(password, salt)
+    : pbkdf2Sync(String(password), salt, 100000, 32, 'sha256');
+  return aesOpen(key, nonce, mac, ct);
+}
+
+export function openAndResealShewallBin(env, password) {
+  const packed = openShewallBin(env, password);
+  if (shewallNeedsMigrate(env)) return sealShewallBin(packed, password);
+  return Buffer.from(env);
 }
 
 export function shewallDigest(packed) {

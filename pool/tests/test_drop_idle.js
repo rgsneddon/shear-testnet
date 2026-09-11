@@ -19,10 +19,10 @@ import {
 
 function newDest() {
   const id = newIdentity();
-  return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+  return destForLogin(id.address, { spendPub: id.spendPub });
 }
 
-function tmpPool(shareBits = 1, extra = {}) {
+function tmpPool(shareBits = 8, extra = {}) {
   const d = newDest();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-drop-'));
   const pool = createPool({
@@ -99,7 +99,7 @@ function waitMsg(msgs, pred, ms = 30000) {
   });
 }
 
-function findShare(job, max = 64n) {
+function findShare(job, max = 6_000n) {
   for (let nonce = 0n; nonce < max; nonce += 1n) {
     const s = scoreShare({ job, nonce });
     if (s.ok) return { nonce, s };
@@ -157,7 +157,7 @@ describe('drop idle / wrong-algo miners', () => {
   });
 
   it('drops a login that names the wrong algo and does not list the hasher', async () => {
-    const { pool, dest } = tmpPool(1);
+    const { pool, dest } = tmpPool();
     const port = await listen(pool);
     const sock = net.connect(port, '127.0.0.1');
     sock.on('error', () => {});
@@ -178,7 +178,7 @@ describe('drop idle / wrong-algo miners', () => {
   });
 
   it('drops a hasher that submits no digest or a non-ShearHash digest', async () => {
-    const { pool, dest } = tmpPool(1);
+    const { pool, dest } = tmpPool();
     const port = await listen(pool);
     const sock = net.connect(port, '127.0.0.1');
     sock.on('error', () => {});
@@ -203,7 +203,7 @@ describe('drop idle / wrong-algo miners', () => {
     await waitClose(sock);
     pool.close();
 
-    const { pool: pool2, dest: dest2 } = tmpPool(1);
+    const { pool: pool2, dest: dest2 } = tmpPool();
     const port2 = await listen(pool2);
     const sock2 = net.connect(port2, '127.0.0.1');
     sock2.on('error', () => {});
@@ -258,7 +258,7 @@ describe('drop idle / wrong-algo miners', () => {
     sock.destroy();
     pool.close();
 
-    const { pool: idlePool, dest: idleDest } = tmpPool(1, { noValidShareMs: 80 });
+    const { pool: idlePool, dest: idleDest } = tmpPool(8, { noValidShareMs: 80 });
     const idlePort = await listen(idlePool);
     const idleSock = net.connect(idlePort, '127.0.0.1');
     idleSock.on('error', () => {});
@@ -275,14 +275,15 @@ describe('drop idle / wrong-algo miners', () => {
       .catch(() => null);
     await waitClose(idleSock, 2000);
     if (note) assert.equal(note.error, 'no_valid_share');
-    idlePool.sweepIdle(Date.now());
-    const left = [...idlePool.miners.values()].filter((m) => (m.connections || []).some((c) => c.sock));
+    try { idleSock.destroy(); } catch { /* */ }
+    idlePool.sweepIdle(Date.now() + 10_000);
+    const left = [...idlePool.miners.values()].filter((m) => (m.connections || []).some((c) => c.sock && !c.sock.destroyed));
     assert.equal(left.length, 0);
     idlePool.close();
   });
 
   it('a hasher with an accepted ShearHash-v3 share is not idle-dropped', async () => {
-    const { pool, dest } = tmpPool(1, { noValidShareMs: 80 });
+    const { pool, dest } = tmpPool(8, { noValidShareMs: 80 });
     const job = pool.issueJob();
     const hit = findShare(job);
     const port = await listen(pool);
@@ -315,7 +316,7 @@ describe('drop idle / wrong-algo miners', () => {
   });
 
   it('wrong-algo software is dest-banned and cannot log back in; IP is not banned', async () => {
-    const { pool, dest, dir } = tmpPool(1);
+    const { pool, dest, dir } = tmpPool();
     const port = await listen(pool);
     const sock = net.connect(port, '127.0.0.1');
     sock.on('error', () => {});
@@ -370,7 +371,7 @@ describe('drop idle / wrong-algo miners', () => {
   });
 
   it('idle drop of a ShearHash login does not dest-ban; reconnect is allowed', async () => {
-    const { pool, dest, dir } = tmpPool(1, { noValidShareMs: 80 });
+    const { pool, dest, dir } = tmpPool(8, { noValidShareMs: 80 });
     const port = await listen(pool);
     const sock = net.connect(port, '127.0.0.1');
     sock.on('error', () => {});

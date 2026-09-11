@@ -13,8 +13,7 @@ import {
   HASH_TX_LIVE,
 } from '../../crypto/asert.js';
 import { requiredJobFields, encodeHeader, decodeHeader, headerFromHex } from '../../crypto/header.js';
-import { payoutDest } from '../../crypto/address.js';
-import { newIdentity, encodeHrp } from '../../crypto/address.js';
+import { payoutDest, newIdentity, encodeHrp, aliasDestOfSilentId } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, CMINER_FEE_SHE, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, JOB_RESTAMP_MS, STATS_REFRESH_MS, wireJob } from '../src/pool.js';
 import { hasherHasValidRoundShare, roundActualHashes } from '../src/hash_credit.js';
@@ -89,12 +88,14 @@ describe('observed interval', () => {
     assert.equal(/avgBlockTimeMs: avgBlockIntervalMs/.test(src), false);
   });
 
-  it('pool restamps live jobs so header time tracks wall clock', () => {
+  it('live timer does not timestamp-restamp; bits-ease still rebuilds', () => {
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     assert.match(src, /JOB_RESTAMP_MS/);
     assert.match(src, /maybeRestampJob/);
     assert.match(src, /setInterval\(maybeRestampJob/);
     assert.match(src, /wantBits !== Number\(decoded\.bits\)/);
+    assert.match(src, /restampJob: restampLiveHeader/);
+    assert.equal(/broadcastJob\(job\);\s*return job;/.test(src.slice(src.indexOf('function maybeRestampJob'), src.indexOf('function resolveSubmitJob'))), false);
     assert.equal(/if \(hashWait\.size > 0\) return lastJob/.test(src), false);
     assert.match(src, /stats\.lastFoundAt = Date\.now\(\)/);
     assert.equal(/stats\.lastFoundAt = sealed\?\.header/.test(src), false);
@@ -106,7 +107,7 @@ describe('observed interval', () => {
   it('issued job header timestamp is never after wall and never parent+90s', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stamp-wall-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -131,7 +132,7 @@ describe('observed interval', () => {
   it('restamp patches timestamp only; merkle/bits/jobId stay so RandomX K does not rebuild', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-restamp-k-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -173,7 +174,7 @@ describe('observed interval', () => {
   it('restamp refuses to rewind a future header stamp', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-restamp-ahead-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -225,7 +226,7 @@ describe('HTTP stats cannot stall', () => {
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pool-stats-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -267,22 +268,22 @@ describe('job gate', () => {
 describe('admit', () => {
   it('admits ssa1 dest and she1 silent ID, refuses rest-frame shear1 and wrong client', () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     assert.equal(admitClient({ login: dest, client: 'ShearHash' }).ok, true);
     const sheOnly = admitClient({ login: id.paymentCode, client: 'ShearHash', name: 'Shear-Miner' });
     assert.equal(sheOnly.ok, true);
-    assert.equal(sheOnly.payoutDest, '');
+    assert.equal(sheOnly.payoutDest, dest);
+    assert.equal(sheOnly.login, dest);
     const sheOwned = admitClient({ login: id.paymentCode, dest, client: 'ShearHash' });
     assert.equal(sheOwned.payoutDest, dest);
-    assert.equal(admitClient({ login: id.paymentCode, dest: payoutDest(id.paymentCode), client: 'ShearHash' }).payoutDest, '');
+    assert.equal(admitClient({ login: id.paymentCode, dest: aliasDestOfSilentId(id.paymentCode), client: 'ShearHash' }).payoutDest, '');
     assert.equal(admitClient({ login: dest, client: 'ShearHash', name: 'ShearK-Miner' }).ok, true);
     assert.equal(admitClient({ login: id.address, client: 'ShearHash' }).ok, false);
     assert.equal(admitClient({ login: dest, client: 'other' }).ok, false);
     assert.equal(publicMinerLabel(id.paymentCode), publicMinerTag(id.paymentCode));
-    assert.match(publicMinerLabel(id.paymentCode), /^she1[0-9a-f]{8}$/);
+    assert.match(publicMinerLabel(id.paymentCode), /^m[0-9a-f]{8}$/);
     assert.equal(publicMinerLabel(id.paymentCode).includes(id.paymentCode.slice(4)), false);
-    const silent = payoutDest(id.paymentCode);
-    assert.ok(silent);
+    const silent = dest;
     assert.equal(splitPot([{ miner: id.paymentCode, count: 99 }], silent).length, 0);
     const shares = splitPot([{ miner: dest, count: 99 }], silent);
     assert.equal(shares.some((s) => s.address === dest && s.nanos === Math.floor(BLOCK_SUBSIDY_NANOS * 0.99) && s.kind === 'pot'), true);
@@ -290,8 +291,10 @@ describe('admit', () => {
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
     assert.equal(POOL_FEE_BPS, 100);
     const hashes = 1_000_000;
-    const bonuses = hashBonusByMiner([{ miner: dest, count: hashes }]);
-    assert.equal(bonuses.get(dest), hashes * HASH_BONUS_NANOS);
+    const hud = hashBonusByMiner([{ miner: dest, count: hashes }]);
+    assert.equal(hud.size, 0);
+    const bonuses = hashBonusByMiner([], HASH_BONUS_NANOS, [{ dest, nonce: 1n, lz: 8 }]);
+    assert.equal(bonuses.get(dest), 2 ** 8 * HASH_BONUS_NANOS);
     assert.notEqual(bonuses.get(dest), Math.floor(hashes * HASH_BONUS_NANOS * (10000 - POOL_FEE_BPS) / 10000));
   });
 });
@@ -305,8 +308,8 @@ describe('she1 login jobs', () => {
       stratumPort: 0,
       httpPort: 0,
       miner: id.address,
-      shareBits: 4,
-      bits: 8,
+      shareBits: 8,
+      bits: 16,
     });
     await new Promise((resolve, reject) => {
       pool.stratum.listen(0, '127.0.0.1', resolve);
@@ -345,14 +348,14 @@ describe('pool dashboard + stratum', () => {
   it('serves light SHE page and accepts a header share on 1111', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pool-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
       httpPort: 0,
       miner: dest,
-      shareBits: 4,
-      bits: 8,
+      shareBits: 8,
+      bits: 16,
     });
     await new Promise((resolve, reject) => {
       pool.stratum.listen(0, '127.0.0.1', () => {
@@ -375,7 +378,7 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /Authenticode/);
     assert.match(html, /win-smartscreen/);
     assert.match(html, /ssa1/);
-    assert.match(html, /YOUR_SHE1/);
+    assert.match(html, /YOUR_SSA1/);
     assert.equal(/--user shear1/.test(html), false);
     assert.equal(html.includes('YOUR_SHEAR1'), false);
     assert.match(html, /shear-testnet-v2/);
@@ -438,6 +441,7 @@ describe('pool dashboard + stratum', () => {
     const job = pool.issueJob();
     assert.equal(gateJob(job).ok, true);
     assert.equal(job.header.length, 256);
+    const hit = findOkShare(job);
 
     const scored = await new Promise((resolve, reject) => {
       const sock = net.connect(stratumPort, '127.0.0.1', () => {
@@ -450,25 +454,13 @@ describe('pool dashboard + stratum', () => {
       let buf = '';
       sock.on('data', (c) => {
         buf += c.toString();
-        if (buf.includes('\n') && buf.includes('job')) {
+        if (buf.includes('\n') && buf.includes('job') && !buf.includes('"hash"')) {
           const first = JSON.parse(buf.split('\n')[0]);
-          const j = first.job || first.params;
-          let nonce = 0n;
-          let hit = null;
-          while (nonce < 200000n) {
-            const s = scoreShare({ job: j || job, nonce });
-            if (s.ok) { hit = { nonce, s }; break; }
-            nonce += 1n;
-          }
-          if (!hit) {
-            sock.destroy();
-            reject(new Error('no_share'));
-            return;
-          }
+          const j = first.job || first.params || job;
           sock.write(JSON.stringify({
             id: 2,
             method: 'submit',
-            params: { jobId: (j || job).jobId, nonce: String(hit.nonce), hash: hit.s.hash },
+            params: { jobId: j.jobId || job.jobId, nonce: String(hit.nonce), hash: hit.s.hash },
           }) + '\n');
         }
         if (buf.includes('"status":"OK"') && buf.includes('"hash"')) {
@@ -477,7 +469,6 @@ describe('pool dashboard + stratum', () => {
         }
       });
       sock.on('error', reject);
-      setTimeout(() => reject(new Error('timeout')), 120000);
     });
     assert.match(scored, /OK/);
     const named = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
@@ -489,14 +480,14 @@ describe('pool dashboard + stratum', () => {
   it('two sockets on one login sum thread inventory instead of last-write', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pool-sess-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
       httpPort: 0,
       miner: dest,
-      shareBits: 4,
-      bits: 8,
+      shareBits: 8,
+      bits: 16,
     });
     await new Promise((resolve, reject) => {
       pool.stratum.listen(0, '127.0.0.1', () => {
@@ -555,7 +546,25 @@ describe('session inventory fold', () => {
   });
 });
 
-function loginAndShare(port, login, extra = {}) {
+function findOkShare(job, max = 1200n) {
+  for (let nonce = 0n; nonce < max; nonce += 1n) {
+    const s = scoreShare({ job, nonce });
+    if (s.ok) return { nonce, s };
+  }
+  throw new Error('no_share');
+}
+
+function findOkShares(job, n, max = 1200n) {
+  const out = [];
+  for (let nonce = 0n; nonce < max && out.length < n; nonce += 1n) {
+    const s = scoreShare({ job, nonce });
+    if (s.ok) out.push({ nonce, s });
+  }
+  if (out.length < n) throw new Error('no_share');
+  return out;
+}
+
+function loginAndShare(port, login, extra = {}, hit = null) {
   return new Promise((resolve, reject) => {
     const sock = net.connect(port, '127.0.0.1', () => {
       sock.write(JSON.stringify({
@@ -565,46 +574,38 @@ function loginAndShare(port, login, extra = {}) {
       }) + '\n');
     });
     let buf = '';
-    let nonce = 0n;
     let job = null;
-    const submitNext = () => {
-      if (!job) return;
-      while (nonce < 400000n) {
-        const s = scoreShare({ job, nonce });
-        const n = nonce;
-        nonce += 1n;
-        // A share that also meets header bits seals the round and zeros
-        // roundHashes. Tests that read proven work need a non-sealing share.
-        if (s.ok && !s.block) {
-          sock.write(JSON.stringify({
-            id: 2,
-            method: 'submit',
-            params: { jobId: job.jobId, nonce: String(n), hash: s.hash },
-          }) + '\n');
-          return;
-        }
-      }
-      sock.destroy();
-      reject(new Error('no_share'));
-    };
+    let submitted = false;
     sock.on('data', (c) => {
       buf += c.toString();
       if (!job && buf.includes('\n') && buf.includes('job')) {
         const first = JSON.parse(buf.split('\n')[0]);
         job = first.job || first.result?.job || first.params;
-        if (job && job.header) submitNext();
       }
-      if (buf.includes('duplicate_share') || buf.includes('"busy"') || buf.includes('low_diff') || buf.includes('hash_failed')) {
-        buf = '';
-        submitNext();
-        return;
+      if (job && job.header && !submitted) {
+        submitted = true;
+        job.shareBits = Number(job.shareBits);
+        if (!Number.isFinite(job.shareBits) || job.shareBits < 1) job.shareBits = 8;
+        job.bits = Number(job.bits || job.blockBits || 16);
+        job.blockBits = Number(job.blockBits || job.bits || 16);
+        if (!hit) {
+          try { hit = findOkShare(job); } catch (e) {
+            sock.destroy();
+            reject(e);
+            return;
+          }
+        }
+        sock.write(JSON.stringify({
+          id: 2,
+          method: 'submit',
+          params: { jobId: job.jobId, nonce: String(hit.nonce), hash: hit.s.hash },
+        }) + '\n');
       }
       if (buf.includes('"status":"OK"') && buf.includes('"hash"')) {
         resolve(sock);
       }
     });
     sock.on('error', reject);
-    setTimeout(() => reject(new Error('share_timeout')), 120000);
   });
 }
 
@@ -709,8 +710,8 @@ describe('public miner listing', () => {
     assert.equal(uniquePublicLabels(['0.1.7', '0.1.7']), '0.1.7');
     assert.equal(uniquePublicLabels(['a', 'b', 'a']), 'a, b');
     const folded = foldPublicMinerViews([
-      { miner: 'she1aaaaaaaa', name: 'Shear-Miner', version: '1.1', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
-      { miner: 'she1aaaaaaaa', name: 'Shear-Miner', version: '1.1', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
+      { miner: 'maaaaaaaa', name: 'Shear-Miner', version: '1.1', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
+      { miner: 'maaaaaaaa', name: 'Shear-Miner', version: '1.1', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
     ]);
     assert.equal(folded[0].name, 'Shear-Miner');
     assert.equal(folded[0].version, '1.1');
@@ -768,15 +769,15 @@ describe('public miner listing', () => {
   it('publicStats lists a connected hasher with accepted=0 and records miner hashes without minting them', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-list-on-login-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const tag = publicMinerTag(dest);
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
       httpPort: 0,
       miner: dest,
-      shareBits: 4,
-      bits: 8,
+      shareBits: 8,
+      bits: 16,
     });
     await new Promise((resolve, reject) => {
       pool.stratum.listen(0, '127.0.0.1', () => {
@@ -822,14 +823,14 @@ describe('public miner listing', () => {
     pool.close();
   });
 
-  it('foldPublicMinerViews keeps one row per she1 tag and sums device stats', () => {
+  it('foldPublicMinerViews keeps one row per opaque miner tag and sums device stats', () => {
     const folded = foldPublicMinerViews([
-      { miner: 'she1aaaaaaaa', worker: 'rig', name: 'a', version: '1.0', hashrate: 10, accepted: 2, stale: 1, blocks: 0, threads: 4, sessions: 1, roundHashes: 8, connected: true, lastSeen: 20, firstSeen: 1 },
-      { miner: 'she1aaaaaaaa', worker: 'box', name: 'b', version: '1.0', hashrate: 5, accepted: 3, stale: 0, blocks: 1, threads: 2, sessions: 1, roundHashes: 4, connected: false, lastSeen: 30, firstSeen: 2 },
-      { miner: 'she1bbbbbbbb', worker: 'solo', hashrate: 1, accepted: 1, stale: 0, blocks: 0, threads: 1, sessions: 1, roundHashes: 1, connected: true, lastSeen: 9, firstSeen: 9 },
+      { miner: 'maaaaaaaa', worker: 'rig', name: 'a', version: '1.0', hashrate: 10, accepted: 2, stale: 1, blocks: 0, threads: 4, sessions: 1, roundHashes: 8, connected: true, lastSeen: 20, firstSeen: 1 },
+      { miner: 'maaaaaaaa', worker: 'box', name: 'b', version: '1.0', hashrate: 5, accepted: 3, stale: 0, blocks: 1, threads: 2, sessions: 1, roundHashes: 4, connected: false, lastSeen: 30, firstSeen: 2 },
+      { miner: 'mbbbbbbbb', worker: 'solo', hashrate: 1, accepted: 1, stale: 0, blocks: 0, threads: 1, sessions: 1, roundHashes: 1, connected: true, lastSeen: 9, firstSeen: 9 },
     ]);
     assert.equal(folded.length, 2);
-    const a = folded.find((w) => w.miner === 'she1aaaaaaaa');
+    const a = folded.find((w) => w.miner === 'maaaaaaaa');
     assert.equal(a.hashrate, 15);
     assert.equal(a.accepted, 5);
     assert.equal(a.threads, 6);
@@ -841,18 +842,18 @@ describe('public miner listing', () => {
     assert.equal(a.firstSeen, 1);
   });
 
-  it('dashboard lists one she1 row for two device logins; 12s after full disconnect ghosts drop', async () => {
+  it('dashboard lists one miner-tag row for two device logins; 12s after full disconnect ghosts drop', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-miner-ui-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const tag = publicMinerTag(dest);
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
       httpPort: 0,
       miner: dest,
-      shareBits: 4,
-      bits: 8,
+      shareBits: 8,
+      bits: 16,
     });
     await new Promise((resolve, reject) => {
       pool.stratum.listen(0, '127.0.0.1', () => {
@@ -862,8 +863,10 @@ describe('public miner listing', () => {
     });
     const httpPort = pool.httpServer.address().port;
     const stratumPort = pool.stratum.address().port;
-    const a = await loginAndShare(stratumPort, `${dest}.alpha`);
-    const b = await loginAndShare(stratumPort, `${dest}.beta`);
+    const job = pool.issueJob();
+    const hits = findOkShares(job, 2);
+    const a = await loginAndShare(stratumPort, `${dest}.alpha`, {}, hits[0]);
+    const b = await loginAndShare(stratumPort, `${dest}.beta`, {}, hits[1]);
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     const rows = (stats.workers || []).filter((w) => w.miner === tag);
     assert.equal(rows.length, 1, JSON.stringify(stats.workers));
@@ -907,15 +910,15 @@ describe('public miner listing', () => {
   it('hashes this round is own count after a valid share; zero with no share', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-round-h-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const tag = publicMinerTag(dest);
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
       httpPort: 0,
       miner: dest,
-      shareBits: 4,
-      bits: 8,
+      shareBits: 8,
+      bits: 16,
     });
     await new Promise((resolve, reject) => {
       pool.stratum.listen(0, '127.0.0.1', () => {
@@ -924,10 +927,12 @@ describe('public miner listing', () => {
       pool.stratum.on('error', reject);
     });
     const httpPort = pool.httpServer.address().port;
+    const job = pool.issueJob();
+    const hit = findOkShare(job);
     const sock = await loginAndShare(pool.stratum.address().port, `${dest}.rig`, {
       hashes: 16_590_151_266_784,
       hashrate: 1_062_582_824,
-    });
+    }, hit);
     const row = [...pool.miners.values()].find((m) => !String(m.workerKey || '').endsWith('.fee'));
     assert.ok(row);
     const proven = Number(row.roundHashes) || 0;
@@ -967,7 +972,7 @@ describe('public miner listing', () => {
     assert.equal(isCminerFeeLogin(`${CMINER_FEE_SHE}.raskul`), false);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fee-hs-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const hasherTag = publicMinerTag(dest);
     const feeTag = publicMinerTag(CMINER_FEE_SHE);
     const pool = createPool({
@@ -975,8 +980,8 @@ describe('public miner listing', () => {
       stratumPort: 0,
       httpPort: 0,
       miner: dest,
-      shareBits: 4,
-      bits: 8,
+      shareBits: 8,
+      bits: 16,
     });
     await new Promise((resolve, reject) => {
       pool.stratum.listen(0, '127.0.0.1', () => {
@@ -986,15 +991,17 @@ describe('public miner listing', () => {
     });
     const httpPort = pool.httpServer.address().port;
     const stratumPort = pool.stratum.address().port;
+    const job = pool.issueJob();
+    const hits = findOkShares(job, 2);
     let main;
     let fee;
     try {
-      main = await loginAndShare(stratumPort, `${dest}.rig`, { hashes: 1000 });
+      main = await loginAndShare(stratumPort, `${dest}.rig`, { hashes: 1000 }, hits[0]);
       fee = await loginAndShare(stratumPort, `${CMINER_FEE_SHE}.fee`, {
         hashes: 16_590_151_266_784,
         hashrate: 1_062_582_824,
         threads: 1,
-      });
+      }, hits[1]);
       let hasher;
       for (let i = 0; i < 20; i += 1) {
         const stats = pool.publicStats();
@@ -1021,15 +1028,15 @@ describe('public miner listing', () => {
   it('miner pull stub/empty sig is unsigned; EIP-712 she1+ssa1 is ok; she1 dest fails', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pull-http-'));
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = destForLogin(id.address, { spendPub: id.spendPub });
     const tag = publicMinerTag(id.paymentCode);
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
       httpPort: 0,
       miner: dest,
-      shareBits: 4,
-      bits: 8,
+      shareBits: 8,
+      bits: 16,
     });
     await new Promise((resolve, reject) => {
       pool.httpServer.listen(0, '127.0.0.1', resolve);

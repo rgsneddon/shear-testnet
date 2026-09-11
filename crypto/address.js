@@ -7,6 +7,15 @@ import {
   createPublicKey,
   diffieHellman,
 } from 'node:crypto';
+import {
+  destCommitFromSpendPub,
+  stealthSpendPubFrom,
+  stealthKey,
+  isStealthKey,
+  stealthSign,
+} from './stealth_ed25519.js';
+
+export { destCommitFromSpendPub, stealthSpendPubFrom, isStealthKey, stealthSign };
 
 export const HRP = 'shear';
 export const HRP_DEST = 'ssa';
@@ -102,7 +111,17 @@ export function paymentIdHash(scanPub, spendPub) {
     .subarray(0, 20);
 }
 
+/** Product payment code: version || X25519 scanPub || Ed25519 spendPub. Not a 20-byte hash. */
+export const PAYMENT_CODE_VERSION = 1;
+
 export function encodePaymentCode({ scanPub, spendPub }) {
+  const scan = Buffer.from(scanPub);
+  const spend = Buffer.from(spendPub);
+  if (scan.length !== 32 || spend.length !== 32) throw new Error('silent code keys must be 32 bytes');
+  return encodeHrp(HRP_PAY, Buffer.concat([Buffer.from([PAYMENT_CODE_VERSION]), scan, spend]));
+}
+
+export function encodePaymentFingerprint(scanPub, spendPub) {
   return encodeHrp(HRP_PAY, paymentIdHash(scanPub, spendPub));
 }
 
@@ -133,15 +152,20 @@ export function isMineLogin(s) {
 }
 
 /**
- * On-chain payout dest. ssa1 pays as-is. she1 pays ssa1 of the same
- * 20-byte payload so the silent ID never appears on chain. shear1 is not a dest.
+ * Payable dest of a login. ssa1 pays as-is. Payment codes are not payable —
+ * construct a stealth dest with silentDestFromCode. Never encodeDest(she1.hash20).
  */
 export function payoutDest(login) {
   const id = identityOfLogin(login);
   if (isDestAddress(id)) return id;
-  const pay = decodePaymentCode(id);
-  if (!pay) return null;
-  return encodeDest(pay.hash20);
+  return null;
+}
+
+/** The dead alias dest20 = she1.hash20. Hasher/send/coinbase must refuse this. */
+export function aliasDestOfSilentId(login) {
+  const d = decodePaymentCode(identityOfLogin(login));
+  if (!d?.hash20) return null;
+  return encodeDest(d.hash20);
 }
 
 export function decodeBech32Payload(address) {
@@ -171,8 +195,29 @@ export function decodePaymentCode(s) {
   const t = String(s || '').trim();
   if (isShearAddress(t) || bech32Hrp(t) !== 'she' || !bech32BodyOk(t)) return null;
   const p = decodeBech32Payload(t);
-  if (!p || p.length !== 20) return null;
-  return { hash20: Buffer.from(p) };
+  if (!p) return null;
+  if (p.length === 65 && p[0] === PAYMENT_CODE_VERSION) {
+    const scanPub = Buffer.from(p.subarray(1, 33));
+    const spendPub = Buffer.from(p.subarray(33, 65));
+    return {
+      version: PAYMENT_CODE_VERSION,
+      scanPub,
+      spendPub,
+      hash20: paymentIdHash(scanPub, spendPub),
+    };
+  }
+  if (p.length === 20) return { hash20: Buffer.from(p) };
+  return null;
+}
+
+export function isFullPaymentCode(s) {
+  const d = decodePaymentCode(s);
+  return !!(d && d.scanPub && d.spendPub);
+}
+
+export function isPaymentFingerprint(s) {
+  const d = decodePaymentCode(s);
+  return !!(d && d.hash20 && !d.scanPub);
 }
 
 const X25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
@@ -206,6 +251,7 @@ export function scanSeedFromView(viewKey, index = 0) {
 }
 
 export const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+const ED25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
 
 /** Raw 32-byte Ed25519 public key. This is the spend pub in dest openings. */
 export function ed25519RawPub(key) {
@@ -259,29 +305,177 @@ function spendMixAtIndex(spendHash20, index) {
     .digest();
 }
 
+export function spendDestOf(spendPub) {
+  const c = destCommitFromSpendPub(spendPub);
+  return c ? encodeDest(c) : null;
+}
+
+/** dest20 = SHA256(shear-silent-v1 || oneTimeSpendPub)[0:20]. */
+export function destMatchesSpendPub(dest, spendPub) {
+  const want = hash20FromAddress(dest);
+  const got = destCommitFromSpendPub(spendPub);
+  if (!want || !got) return false;
+  return Buffer.from(want).equals(got);
+}
+
 /** One-time dest from view-key scan/spend (she1 string no longer carries the 64-byte keys). */
-export function silentDestFromView(viewKey, spendHash20, ephPrivate, index = 0) {
+export function silentDestFromView(viewKey, spendPub32, ephPrivate, index = 0) {
   const n = Number(index);
   if (!Number.isInteger(n) || n < 0) return null;
   const scanPriv = x25519PrivateFromSeed(scanSeedFromView(viewKey, n));
-  const spend = spendMixAtIndex(spendHash20, n);
   const shared = diffieHellman({ privateKey: ephPrivate, publicKey: createPublicKey(scanPriv) });
-  const tweak = createHash('sha256')
-    .update(Buffer.from('shear-silent-v1'))
-    .update(shared)
-    .update(spend)
-    .digest()
-    .subarray(0, 20);
-  return encodeDest(tweak);
+  const oneTime = stealthSpendPubFrom(needSpendPub32(spendPub32), shared);
+  const commit = destCommitFromSpendPub(oneTime);
+  return commit ? encodeDest(commit) : null;
 }
 
-/** @deprecated she1 is a 20-byte id; ECDH needs the view key. */
-export function silentDestFromCode() {
+export function silentSharedFromCode(fullCode, ephPrivate) {
+  const parsed = decodePaymentCode(fullCode);
+  if (!parsed?.scanPub || !parsed?.spendPub) return null;
+  try {
+    return diffieHellman({
+      privateKey: ephPrivate,
+      publicKey: x25519PublicFromRaw(parsed.scanPub),
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** One-time dest from a published full payment code + sender ephemeral. Fingerprint-only fails closed. */
+export function silentDestFromCode(fullCode, ephPrivate) {
+  const parsed = decodePaymentCode(fullCode);
+  if (!parsed?.scanPub || !parsed?.spendPub) return null;
+  const shared = silentSharedFromCode(fullCode, ephPrivate);
+  if (!shared) return null;
+  const oneTime = stealthSpendPubFrom(parsed.spendPub, shared);
+  const commit = destCommitFromSpendPub(oneTime);
+  return commit ? encodeDest(commit) : null;
+}
+
+export function silentPay(fullCode, ephPrivate) {
+  const dest = silentDestFromCode(fullCode, ephPrivate);
+  if (!dest) return null;
+  const shared = silentSharedFromCode(fullCode, ephPrivate);
+  return {
+    dest,
+    shared,
+    ephPub: x25519PublicRaw(ephPrivate),
+  };
+}
+
+export function silentDestFromEphPub(fullCode, ephPubRaw, scanPriv) {
+  const parsed = decodePaymentCode(fullCode);
+  if (!parsed?.scanPub || !parsed?.spendPub) return null;
+  try {
+    const shared = diffieHellman({
+      privateKey: scanPriv,
+      publicKey: x25519PublicFromRaw(ephPubRaw),
+    });
+    const oneTime = stealthSpendPubFrom(parsed.spendPub, shared);
+    const commit = destCommitFromSpendPub(oneTime);
+    if (!commit) return null;
+    return { dest: encodeDest(commit), shared };
+  } catch {
+    return null;
+  }
+}
+
+/** Recipient: view key + incoming dest + eph pub. Never POST V/C/shear1. */
+export function recognizeSilentDest({ viewKey, spendPub, dest, ephPub, maxIndex = 16 } = {}) {
+  const want = String(dest || '');
+  if (!want || !viewKey || !spendPub || !ephPub) return null;
+  let ephKey;
+  try {
+    ephKey = x25519PublicFromRaw(ephPub);
+  } catch {
+    return null;
+  }
+  const spend = Buffer.from(spendPub);
+  const max = Math.max(0, Math.floor(Number(maxIndex) || 0));
+  for (let i = 0; i <= max; i += 1) {
+    try {
+      const scanPriv = x25519PrivateFromSeed(scanSeedFromView(viewKey, i));
+      const shared = diffieHellman({ privateKey: scanPriv, publicKey: ephKey });
+      const oneTime = stealthSpendPubFrom(spend, shared);
+      const commit = destCommitFromSpendPub(oneTime);
+      if (!commit) continue;
+      const got = encodeDest(commit);
+      if (got === want) return { dest: got, shared, index: i, spendPub: oneTime };
+    } catch {
+      continue;
+    }
+  }
   return null;
 }
 
-export function silentDestFromEphPub() {
-  return null;
+export function freshStealthDest(paymentCode) {
+  const { privateKey } = generateKeyPairSync('x25519');
+  return silentPay(paymentCode, privateKey);
+}
+
+export function ed25519PrivateFromSeed(seed32) {
+  const seed = Buffer.from(seed32);
+  if (seed.length !== 32) throw new Error('ed25519 seed must be 32 bytes');
+  return createPrivateKey({ key: Buffer.concat([ED25519_PKCS8_PREFIX, seed]), format: 'der', type: 'pkcs8' });
+}
+
+export function ed25519SeedOf(privateKey) {
+  return privateKey.export({ type: 'pkcs8', format: 'der' }).subarray(-32);
+}
+
+export function stealthSpendPrivate(shared, spendSeed32) {
+  return stealthKey(shared, spendSeed32);
+}
+
+/**
+ * Typed HRP on one address field. Empty allowed for burn/coinbase marker only.
+ * HRP she → silent_id_on_chain. HRP shear → rest_frame_on_chain. On-chain dest is ssa.
+ */
+export function checkAddressField(addr, { allowEmpty = false } = {}) {
+  const s = String(addr || '').trim();
+  if (!s) return allowEmpty ? { ok: true } : { ok: false, reason: 'dest' };
+  const hrp = bech32Hrp(s);
+  if (hrp === 'she') return { ok: false, reason: 'silent_id_on_chain' };
+  if (hrp === 'shear') return { ok: false, reason: 'rest_frame_on_chain' };
+  if (hrp !== 'ssa' || !isDestAddress(s)) return { ok: false, reason: 'dest' };
+  return { ok: true };
+}
+
+export function checkTxAddressFields(tx, { coinbase = false } = {}) {
+  const kind = String(tx?.kind || '');
+  const emptyOk = coinbase || kind === 'burn' || kind === 'levy' || kind === 'coinbase';
+  const fields = [];
+  const push = (a) => { if (a != null && a !== '') fields.push(a); };
+  push(tx?.from);
+  push(tx?.to);
+  push(tx?.miner);
+  push(tx?.payer);
+  for (const v of tx?.vin || []) {
+    push(v?.address);
+    push(v?.miner);
+  }
+  for (const o of tx?.vout || []) {
+    push(o?.address);
+    push(o?.miner);
+  }
+  for (const s of tx?.samples || []) {
+    push(s?.address);
+    push(s?.miner);
+    push(s?.dest);
+  }
+  for (const a of fields) {
+    const r = checkAddressField(a, { allowEmpty: emptyOk && !String(a || '').trim() });
+    if (!r.ok) return r;
+  }
+  return { ok: true };
+}
+
+export function resolvePayTo(paste, ephPrivate) {
+  const s = String(paste || '').trim();
+  if (isDestAddress(s)) return { dest: s, ephPub: null, shared: null };
+  if (!ephPrivate) return null;
+  return silentPay(s, ephPrivate);
 }
 
 export function newIdentity() {
@@ -294,8 +488,20 @@ export function newIdentity() {
     Buffer.from('shear-view-v1'),
     privateKey.export({ type: 'pkcs8', format: 'der' }),
   ])).digest().toString('hex');
-  const paymentCode = paymentCodeFromViewKey(viewKey, spendPub);
-  return { address, viewKey, publicKey, privateKey, paymentCode, spendPub };
+  const scanPriv = x25519PrivateFromSeed(scanSeedFromView(viewKey, 0));
+  const scanPub = x25519PublicRaw(scanPriv);
+  const paymentCode = encodePaymentCode({ scanPub, spendPub });
+  const paymentFingerprint = encodePaymentFingerprint(scanPub, spendPub);
+  return {
+    address,
+    viewKey,
+    publicKey,
+    privateKey,
+    paymentCode,
+    paymentFingerprint,
+    spendPub,
+    scanPub,
+  };
 }
 
 export function signSpend(privateKey, msg) {

@@ -144,7 +144,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-pack="miner-windows"/);
   });
 
-  it('WALLET nav on MAIN DAG MEMPOOL POOL EXPLORER pins 0.29 and refuses older tags', () => {
+  it('WALLET nav on MAIN DAG MEMPOOL POOL EXPLORER pins 0.30 and refuses older tags', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const pages = {
       main: html,
@@ -156,7 +156,8 @@ describe('shear.digital client buttons', () => {
       poolAdmin: fs.readFileSync(path.join(here, '../../pool/admin/index.html'), 'utf8'),
     };
     for (const [name, page] of Object.entries(pages)) {
-      assert.match(page, /releases\/tag\/0\.29/, `${name} WALLET must pin 0.29`);
+      assert.match(page, /releases\/tag\/0\.30/, `${name} WALLET must pin 0.30`);
+      assert.doesNotMatch(page, /releases\/tag\/0\.29/, `${name} must not offer 0.29`);
       assert.doesNotMatch(page, /releases\/tag\/0\.26/, `${name} must not offer 0.26`);
       assert.doesNotMatch(page, /shear-wallet-0\.26-/);
       assert.doesNotMatch(page, /releases\/tag\/0\.24/, `${name} must not offer 0.24`);
@@ -253,7 +254,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /Solo mine/);
     assert.match(html, /127\.0\.0\.1:1111/);
     assert.match(html, /npm run pool/);
-    assert.match(html, /YOUR_SHE1\.solo/);
+    assert.match(html, /YOUR_SSA1\.solo/);
     assert.match(html, /data-copy="solo-unix"/);
     assert.match(html, /guide-grid/);
     assert.match(html, /guide-wide/);

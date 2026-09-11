@@ -4,7 +4,7 @@ Private dests, public amounts. PoW elects the tip. Continuity-settled.
 
 - Ticker: **SHE**
 - Algo: **ShearHash** (CPU)
-- Miner pin: **ShearK-Miner 1.6** (`[Testnet] ShearK`, ShearHash-v3). Wallet **0.29**. Product **0.4**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.6
+- Miner pin: **ShearK-Miner 1.6** (`[Testnet] ShearK`, ShearHash-v3). Wallet **0.30**. Product **0.4**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.6
 - Stratum: `pool.shear.digital:1111`
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital
@@ -28,9 +28,9 @@ The public pool is an equal node with a stratum, not a master book.
 ## Mine (testnet)
 
 ```
-ShearK-Miner --pool pool.shear.digital:1111 --user she1YOURID.worker --threads 4
+ShearK-Miner --pool pool.shear.digital:1111 --user ssa1YOURDEST.worker --threads 4
 ```
-Offer `she1` (silent ID). Miner login is `she1` or a revolving `ssa1` dest. Payouts are `ssa1` on chain — `she1` never appears there. Rest-frame `shear1` is never a login.
+Default miner login is `ssa1.worker` (a dest the wallet exported for this worker). `she1` login is an in-memory alias only — it must resolve to an owned rotating dest and is never written to pool disk. Payouts are one-time `ssa1` on chain. Rest-frame `shear1` is never a login. Amounts stay public; dests are stealth. The public pool learns whatever you type into stratum; a solo node is the anonymity path for miners.
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shear, Reserve, Closure.
 Backup: encrypted `shewall.bin`. Node and wallet are lean: hash samples collate per miner and prune after 1000 confirmations; sealed transfers stay forever for the explorer.

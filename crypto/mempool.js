@@ -3,8 +3,8 @@
  * Paid ≥ current base; bounded; requote/drop after retarget.
  * Shares are not in the mempool.
  */
-import { isDestAddress, isShearAddress, bech32Hrp } from './address.js';
-import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes, containsShe1 } from './levy.js';
+import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
+import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } from './levy.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
@@ -33,16 +33,23 @@ export function admitMempool(pool, tx, { baseFee } = {}) {
   if (!allowed.has(kind)) {
     return { ok: false, reason: 'kind' };
   }
+  const fields = checkTxAddressFields(tx, { coinbase: false });
+  if (!fields.ok) return { ok: false, reason: fields.reason };
   const dests = [];
   if (tx.to) dests.push(tx.to);
+  if (tx.from) dests.push(tx.from);
   for (const o of tx.vout || []) {
     if (o?.address) dests.push(o.address);
   }
+  for (const v of tx.vin || []) {
+    if (v?.address) dests.push(v.address);
+  }
   for (const d of dests) {
+    const r = checkAddressField(d, { allowEmpty: false });
+    if (!r.ok) return { ok: false, reason: r.reason === 'rest_frame_on_chain' ? 'shear1' : r.reason };
     if (isShearAddress(d)) return { ok: false, reason: 'shear1' };
     if (!isDestAddress(d) || bech32Hrp(d) !== 'ssa') return { ok: false, reason: 'dest' };
   }
-  if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
   const depth = mempoolDepthBytes(book.txs);
   const need = levyTaxed({ ...tx, kind }) ? levyNanos(txAmountNanos(tx), { depth }) : 0;
   const paid = Math.floor(Number(tx.fee || tx.paid || 0));

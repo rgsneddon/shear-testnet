@@ -190,9 +190,11 @@ export function explorerSpendable(rows, address) {
 /** Persist live samples once on the block, not again inside coinbase JSON. */
 export function leanBlock(block) {
   const txs = (block.txs || []).map((tx) => {
-    if (!tx?.coinbase) return tx;
-    const { samples, ...rest } = tx;
-    return rest;
+    if (tx?.coinbase) {
+      const { samples, ...rest } = tx;
+      return compactTx({ ...rest, coinbase: true });
+    }
+    return compactTx(tx);
   });
   return {
     ...block,
@@ -205,7 +207,54 @@ export function leanBlock(block) {
   };
 }
 
-/** Strip a tx down to the sealed fields. No sample bodies, no leftover template junk. */
+const SEALED_SECRET_KEYS = new Set([
+  'open',
+  'portalOpen',
+  'viewKey',
+  'view',
+  'V',
+  'C',
+  'closure',
+  'closureCommit',
+  'paymentCode',
+  'scanPub',
+  'spendHash20',
+  'seed',
+  'seedHex',
+  'privateKey',
+  'ip',
+  'remoteAddress',
+  'peerIp',
+  'userAgent',
+  'user-agent',
+  'ua',
+  'memoPlain',
+  'login',
+]);
+
+function compactValue(v) {
+  if (v == null || typeof v !== 'object' || Buffer.isBuffer(v)) return v;
+  if (Array.isArray(v)) return v.map(compactValue);
+  const out = {};
+  for (const [k, val] of Object.entries(v)) {
+    if (SEALED_SECRET_KEYS.has(k)) continue;
+    out[k] = compactValue(val);
+  }
+  return out;
+}
+
+function compactVout(o) {
+  if (!o) return o;
+  const row = {
+    address: o.address,
+    nanos: Number(o.nanos || 0),
+    kind: o.kind || 'pot',
+  };
+  if (o.memo) row.memo = true;
+  return row;
+}
+
+/** Strip a tx down to the sealed fields. No openings, view material, IP, or memo plaintext. */
 export function compactTx(tx) {
   if (!tx) return tx;
   if (tx.coinbase) {
@@ -213,27 +262,24 @@ export function compactTx(tx) {
       coinbase: true,
       height: tx.height,
       vin: [{ coinbase: true, height: tx.height }],
-      vout: (tx.vout || []).map((o) => ({
-        address: o.address,
-        nanos: Number(o.nanos || 0),
-        kind: o.kind || 'pot',
-      })),
+      vout: (tx.vout || []).map(compactVout),
     };
   }
-  const out = {};
-  if (tx.id) out.id = tx.id;
-  if (tx.from) out.from = tx.from;
-  if (tx.to) out.to = tx.to;
-  if (tx.nanos != null) out.nanos = tx.nanos;
-  if (tx.kind) out.kind = tx.kind;
-  if (tx.programId) out.programId = tx.programId;
-  if (tx.mint) out.mint = true;
-  if (tx.key) out.key = tx.key;
-  if (tx.root) out.root = tx.root;
-  if (tx.commit) out.commit = tx.commit;
-  if (tx.vin) out.vin = tx.vin;
-  if (tx.vout) out.vout = tx.vout;
-  if (tx.memoCt) out.memoCt = tx.memoCt;
+  const out = compactValue(tx);
+  delete out.samples;
+  if (tx.vin) {
+    out.vin = (tx.vin || []).map((v) => compactValue({
+      address: v.address,
+      prev: v.prev,
+      index: v.index,
+      coinbase: v.coinbase,
+      height: v.height,
+    }));
+  }
+  if (tx.vout) out.vout = (tx.vout || []).map(compactVout);
+  if (tx.sig) out.sig = tx.sig;
+  if (tx.signature && !out.sig) out.sig = tx.signature;
+  if (tx.memoCt || tx.memo) out.memo = true;
   return out;
 }
 

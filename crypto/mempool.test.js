@@ -15,7 +15,10 @@ describe('policy mempool', () => {
     assert.equal(share.reason, 'share_not_mempool');
     const rest = admitMempool(book, { kind: 'send', to: encodeAddress(Buffer.alloc(20, 1)), fee: 10 }, { baseFee: 1 });
     assert.equal(rest.ok, false);
-    assert.equal(rest.reason, 'shear1');
+    assert.equal(rest.reason, 'rest_frame_on_chain');
+    const she = admitMempool(book, { kind: 'send', to: 'she1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', fee: 10 }, { baseFee: 1 });
+    assert.equal(she.ok, false);
+    assert.equal(she.reason, 'silent_id_on_chain');
     const bsp = admitMempool(book, { kind: 'b-spend', to: dest, fee: 2, bFlag: 1 }, { baseFee: 1 });
     assert.equal(bsp.ok, true);
     const claim = admitMempool(book, {

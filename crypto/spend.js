@@ -9,7 +9,7 @@ import { createHash, createPublicKey, sign, verify } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN } from './asert.js';
 import { levyTaxed, txAmountNanos } from './levy.js';
 import { isSpendableHeight } from './chronoflux.js';
-import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX } from './address.js';
+import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 
@@ -55,21 +55,37 @@ export function spendMessage(tx) {
     .digest();
 }
 
+export function spendPubFromTx(tx) {
+  const hex = String(tx?.spendPub || '').replace(/^0x/i, '');
+  if (/^[0-9a-f]{64}$/i.test(hex)) return Buffer.from(hex, 'hex');
+  return null;
+}
+
 export function signSpendTx(tx, privateKey) {
-  const sig = sign(null, spendMessage(tx), privateKey);
+  const msg = spendMessage(tx);
+  if (isStealthKey(privateKey)) {
+    const longPub = ed25519RawPub(ed25519PrivateFromSeed(privateKey.seed));
+    tx.spendPub = stealthSpendPubFrom(longPub, privateKey.shared).toString('hex');
+    tx.sig = stealthSign(privateKey.seed, privateKey.shared, msg).toString('hex');
+    return tx;
+  }
+  tx.spendPub = ed25519RawPub(privateKey).toString('hex');
+  const sig = sign(null, msg, privateKey);
   tx.sig = Buffer.from(sig).toString('hex');
   return tx;
 }
 
-/** Recover spend pub from the 64-byte dest opening and verify Ed25519. */
+/** Spend authority is Ed25519 over shear-spend-v1 || packDigest. spendPub must commit to dest20. */
 export function verifySpendSig(tx) {
-  const o = parseDestOpening(tx?.open);
-  if (!o) return false;
+  const pubRaw = spendPubFromTx(tx);
+  if (!pubRaw) return false;
+  const from = String(tx?.from || tx?.vin?.[0]?.address || '');
+  if (from && !destMatchesSpendPub(from, pubRaw)) return false;
   const sigHex = String(tx?.sig || tx?.signature || '').replace(/^0x/i, '');
   if (!/^[0-9a-f]{128}$/i.test(sigHex)) return false;
   try {
     const pub = createPublicKey({
-      key: Buffer.concat([ED25519_SPKI_PREFIX, o.spendPub]),
+      key: Buffer.concat([ED25519_SPKI_PREFIX, pubRaw]),
       format: 'der',
       type: 'spki',
     });
@@ -184,29 +200,13 @@ function destOpeningShape(open) {
 }
 
 /**
- * Vote/withdraw must carry a dest-opening for the portal dest.
- * Lock may omit portalOpen (wallet 0.27 lock only signs Continuum `from`).
- * 0.27 vote portalOpen is indexed dest-0, which may not equal vaultDest hash20;
- * a well-formed opening still proves ownership. Prefer verifyDestOpening when it matches.
+ * Vote/lock/withdraw prove the vault dest by spend sig. Opening is local-only.
  */
 export function verifyReservePortalOpen(tx) {
-  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (!reserveNeedsPortalOpen(tx)) return true;
   const dest = reservePortalDest(tx);
   if (!dest) return false;
-  if (kind === 'lock') {
-    if (!tx?.portalOpen) return true;
-    return destOpeningShape(tx.portalOpen);
-  }
-  if (kind === 'withdraw') {
-    const open = tx?.portalOpen || tx?.open;
-    if (!open) return true;
-    if (verifyDestOpening(dest, open)) return true;
-    return destOpeningShape(open);
-  }
-  const open = tx?.portalOpen || tx?.open;
-  if (verifyDestOpening(dest, open)) return true;
-  return destOpeningShape(open);
+  return verifySpendSig(tx);
 }
 
 export function fundedDebit(tx) {
@@ -275,7 +275,7 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null } = {})
     const d = fundedDebit(tx);
     if (!d) continue;
     if (flowSendNeedsOpen(tx)) {
-      if (!verifyDestOpening(d.from, tx.open) || !verifySpendSig(tx)) {
+      if (!verifySpendSig(tx)) {
         return { ok: false, reason: 'unsigned', from: d.from };
       }
       const digest = spendPackDigest(tx).toString('hex');

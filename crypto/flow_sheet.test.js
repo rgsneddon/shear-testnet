@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import {
   newIdentity, isShearAddress, isDestAddress, isPaymentCode, encodeHrp, encodeAddress,
-  paymentCodeAtIndex, silentDestFromView, payoutDest,
+  paymentCodeAtIndex, silentDestFromView, payoutDest, aliasDestOfSilentId, silentPay, isFullPaymentCode,
 } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
 import {
@@ -65,22 +65,20 @@ describe('flow sheets', () => {
     assert.equal(isDestAddress(she), false);
     assert.equal(isPaymentCode(alice.paymentCode), true);
     assert.equal(isDestAddress(alice.paymentCode), false);
-    const shePay = destForLogin(alice.paymentCode, { closureCommit: C, height: 3 });
-    assert.equal(isDestAddress(shePay), true);
-    assert.equal(shePay.startsWith('ssa1'), true);
-    assert.equal(shePay.startsWith('she1'), false);
-    assert.notEqual(shePay, alice.paymentCode);
+    assert.equal(destForLogin(alice.paymentCode, { closureCommit: C, height: 3 }), null);
+    assert.equal(payoutDest(alice.paymentCode), null);
     assert.equal(isDestAddress(encodeAddress(spendHashFromAddress(alice.address))), false);
-    assert.equal(hasherPayoutDest(alice.paymentCode, { height: 1 }), null);
-    assert.equal(hasherPayoutDest(alice.paymentCode, { height: 1, viewKey: alice.viewKey }), null);
-    const owned = destAtIndex(alice.address, { index: 1, viewKey: alice.viewKey });
+    const owned = destForLogin(alice.address, { spendPub: alice.spendPub });
+    assert.equal(hasherPayoutDest(alice.paymentCode, { height: 1 }), owned);
+    assert.equal(hasherPayoutDest(alice.paymentCode, { height: 1, viewKey: alice.viewKey }), owned);
+    const indexed = destAtIndex(alice.address, { index: 1, viewKey: alice.viewKey });
+    assert.notEqual(owned, indexed);
     assert.equal(hasherPayoutDest(owned), owned);
     assert.equal(hasherPayoutDest(owned, { dest: owned }), owned);
-    assert.equal(hasherPayoutDest(alice.address, { height: 1, viewKey: alice.viewKey }), owned);
+    assert.equal(hasherPayoutDest(alice.address, { height: 1, viewKey: alice.viewKey }), null);
     assert.equal(hasherPayoutDest(alice.paymentCode, { dest: owned }), owned);
-    assert.equal(hasherPayoutDest(alice.paymentCode, { dest: payoutDest(alice.paymentCode) }), null);
-    assert.notEqual(owned, payoutDest(alice.paymentCode));
-    assert.notEqual(hasherPayoutDest(alice.address, { height: 2, viewKey: alice.viewKey }), owned);
+    assert.equal(hasherPayoutDest(alice.paymentCode, { dest: aliasDestOfSilentId(alice.paymentCode) }), null);
+    assert.notEqual(owned, aliasDestOfSilentId(alice.paymentCode));
   });
 
   it('indexed she1 dests are unlimited, regenerable, and tied to shear1 + C', () => {
@@ -115,11 +113,15 @@ describe('flow sheets', () => {
     assert.notEqual(p1, p2);
     assert.equal(paymentCodeAtIndex(alice.viewKey, alice.spendPub, 1), p1);
     const { privateKey: eph } = generateKeyPairSync('x25519');
-    const silent = silentDestFromView(alice.viewKey, s, eph, 0);
+    const silent = silentDestFromView(alice.viewKey, alice.spendPub, eph, 0);
     assert.equal(isDestAddress(silent), true);
     assert.equal(silent.startsWith('ssa1'), true);
-    assert.ok(p0.length < 50, p0);
+    assert.equal(isFullPaymentCode(p0), true);
+    assert.ok(alice.paymentFingerprint.length < 50, alice.paymentFingerprint);
     assert.notEqual(p0.slice(4), encodeAddress(s).slice(6));
+    const pay = silentPay(alice.paymentCode, eph);
+    assert.ok(pay);
+    assert.notEqual(pay.dest, aliasDestOfSilentId(alice.paymentCode));
   });
 
   it('view key opens only that user’s dests', () => {
@@ -153,17 +155,19 @@ describe('flow sheets', () => {
     assert.equal(spendHashFromAddress(id.address).length, 20);
   });
 
-  it('memo seals to dest; public explorer row is boolean only', () => {
+  it('memo seals with shared secret; dest-only open is null; public row is amounts+dests+memo boolean', () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
-    const env = memoSeal(dest, 'hello flow');
-    assert.equal(memoOpen(dest, env), 'hello flow');
+    const shared = Buffer.alloc(32, 9);
+    const env = memoSeal(dest, 'hello flow', shared);
+    assert.equal(memoOpen(dest, env, shared), 'hello flow');
+    assert.equal(memoOpen(dest, env), null);
     const other = destForLogin(id.address, { viewKey: id.viewKey, height: 2 });
-    assert.notEqual(memoOpen(other, env), 'hello flow');
-    const pub = explorerRowPublic({ to: dest, amount: 1, height: 1, id: 'x', memoCt: env, memoPlain: 'hello flow' });
+    assert.equal(memoOpen(other, env, shared), 'hello flow');
+    const pub = explorerRowPublic({ to: dest, from: dest, amount: 1, height: 1, id: 'x', memoCt: env, memoPlain: 'hello flow' });
     assert.equal(pub.memo, true);
-    assert.equal(pub.to, undefined);
-    assert.equal(pub.from, undefined);
+    assert.equal(pub.to, dest);
+    assert.equal(pub.from, dest);
     assert.equal(pub.memoCt, undefined);
     assert.equal(pub.memoPlain, undefined);
     assert.equal(pub.amount, 1);

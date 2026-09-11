@@ -28,7 +28,7 @@ import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_read_sync.dart';
 
-const kWalletVersion = '0.29';
+const kWalletVersion = '0.30';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
@@ -45,8 +45,8 @@ const kSymbols = ['∇·J = 0', 'J^μ', 'η', 'Ω^{μν}', 'S_{μν}', 'G_{μν}
 /// Continuum side-by-side spendable | stats at this width and above.
 const kContinuumSplitWidth = 720.0;
 const kExplains = [
-  'Your spendable balance and she1 address.',
-  'Send SHEAR to anyone with a she1 address.',
+  'Your spendable balance and payment code.',
+  'Send SHEAR to a published payment code or an ssa1 dest.',
   'Transactional data in a CLI output.',
   'Contracts which are deployed into your wallet.',
   'Your personal transaction explorer.',
@@ -404,6 +404,39 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   @visibleForTesting
   Future<void> unlockBiometricsNow() => _unlockBiometric();
 
+  /// Same path as the lock-gate and Closure Import buttons.
+  @visibleForTesting
+  Future<void> importShewallNow() => _importShewall();
+
+  /// Same path as the Closure Export button. Argon2id cannot complete in FakeAsync.
+  @visibleForTesting
+  Future<void> exportShewallNow() async {
+    final ident = id ?? session.identity;
+    final pw = session.password ?? password;
+    void snack(String msg) => _snack.currentState?.showSnackBar(SnackBar(content: Text(msg)));
+    if (ident == null || pw.isEmpty) {
+      snack('Unlock with your password first.');
+      return;
+    }
+    try {
+      _rememberLedger();
+      final packed = exportShewall(
+        identity: ident,
+        ledger: ledger,
+        reserveSnapshot: session.rememberedReserve,
+      );
+      final sealed = await sealShewallBin(packed, pw);
+      final path = await saveShewallBytes(
+        sealed,
+        dest: widget.exportDest?.call(),
+        picker: widget.savePicker,
+      );
+      snack('Wrote encrypted $shewallName to $path');
+    } catch (e) {
+      snack('Export failed: $e');
+    }
+  }
+
   Future<void> _unlockBiometric() async {
     if (!_bioReady || !(_bioStored || session.biometricsEnabled)) return;
     final ok = await biometrics.authenticate();
@@ -424,6 +457,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     id = session.identity;
     password = pw;
     ledger.viewSecret = id!.viewKey;
+    ledger.spendPub = decodePaymentCode(id!.paymentCode)?['spendPub'];
     ledger.bindVaultDest(restFrame: id!.address, viewKey: id!.viewKey);
     ledger.restoreDests(session.rememberedDests);
     if (session.rememberedTxs.isNotEmpty) {
@@ -641,7 +675,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     if (!mounted || !unlocked) return;
     try {
       ledger.viewSecret = ident.viewKey;
-      final pay = ledger.currentDest(ident.address);
+      ledger.spendPub = decodePaymentCode(ident.paymentCode)?['spendPub'];
+      final pay = ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
       if (ledger.pendingTxs(ident.address).isEmpty && ledger.spendable(pay) > 0.25) {
         final peer = createIdentity();
         final to = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
@@ -664,6 +699,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     final ident = id;
     if (ident == null) return;
     ledger.viewSecret = ident.viewKey;
+    ledger.spendPub = decodePaymentCode(ident.paymentCode)?['spendPub'];
     final minted = ledger.confirmRound(
       address: ident.address,
       pot: 1,
@@ -1063,7 +1099,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
 
   String _offerReceiveDest(ShearIdentity ident) {
     ledger.viewSecret = ident.viewKey;
-    _flowReceiveDest ??= ledger.allocateReceiveDest(ident.address);
+    ledger.spendPub = decodePaymentCode(ident.paymentCode)?['spendPub'];
+    _flowReceiveDest ??= ledger.allocateReceiveDest(ident.address, paymentCode: ident.paymentCode);
     return _flowReceiveDest!;
   }
 
@@ -1477,20 +1514,20 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   Widget _flow(BuildContext context, ShearIdentity ident) {
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('ssa1 dest this round (pay). Offer she1, never shear1.'),
+      const Text('Copy the full she1 payment code. Short fingerprint cannot be paid. Never shear1.'),
       SelectableText(_offerReceiveDest(ident), key: const Key('flow-receive-dest')),
       const SizedBox(height: 8),
       OutlinedButton(
         key: const Key('flow-new-dest'),
         onPressed: () => setState(() {
-          _flowReceiveDest = ledger.allocateReceiveDest(ident.address);
+          _flowReceiveDest = ledger.allocateReceiveDest(ident.address, paymentCode: ident.paymentCode);
         }),
         child: const Text('New dest'),
       ),
       const SizedBox(height: 8),
       TextField(
         controller: flowTo,
-        decoration: const InputDecoration(labelText: 'To (she1 or ssa1)'),
+        decoration: const InputDecoration(labelText: 'To (full she1 payment code or ssa1)'),
         onChanged: (v) => setState(() => _noteFlowTo(v)),
       ),
       if (_spentDestWarn != null) ...[
@@ -1516,12 +1553,13 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         onPressed: () async {
           try {
             final tx = await ledger.send(
-              from: ledger.currentDest(ident.address),
+              from: ledger.currentDest(ident.address, paymentCode: ident.paymentCode),
               to: flowTo.text.trim(),
               amount: double.parse(flowAmt.text),
               memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
               restFrame: ident.address,
               paymentCode: ident.paymentCode,
+              spendSeed: hexToBytes(ident.seedHex),
             );
             _ingestTx(ident, tx);
             _focusedTxId = tx.id;
@@ -1555,7 +1593,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         return Text('Flow levy (empty mempool) ${formatShe(L / kUnitsPerShe)} SHE. Hash bonuses stay on the found block.');
       }),
       const Text(
-        'Receive: offer she1 (silent ID). Chain dests are ssa1. Never share shear1. Memo text is only in Shearview and theirs. Miner pulls sign in a popup (EIP-712 PoolWithdraw, chainId 2701); she1 never goes on the book.',
+        'Receive: copy the full she1 payment code. Short fingerprint cannot be paid. Chain dests are one-time ssa1. Never share shear1. Memo plaintext opens only with the stealth shared secret.',
       ),
     ]);
   }
@@ -1689,6 +1727,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         programId: kReserveProgram,
         restFrame: ident.address,
         paymentCode: ident.paymentCode,
+        spendSeed: hexToBytes(ident.seedHex),
       );
     } catch (e) {
       if (context.mounted) {
@@ -1722,7 +1761,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   Future<void> _reserveWithdraw(BuildContext context, ShearIdentity ident) async {
     final dest = _reserveDestOf(ident);
     if (dest == null) return;
-    final to = ledger.currentDest(ident.address);
+    final to = ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
     final now = DateTime.now().millisecondsSinceEpoch;
     final p0 = dest.isNotEmpty ? reserve.portal(dest) : null;
     final canPrev = (p0?.claimableRewards ?? 0) > 0;
@@ -2398,90 +2437,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       ),
       const SizedBox(height: 8),
       FilledButton(
-        onPressed: () async {
-          final pw = session.password ?? password;
-          if (pw.isEmpty) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Unlock with your password first.')),
-              );
-            }
-            return;
-          }
-          try {
-            _rememberLedger();
-            final packed = exportShewall(
-              identity: ident,
-              ledger: ledger,
-              reserveSnapshot: session.rememberedReserve,
-            );
-            final sealed = await sealShewallBin(packed, pw);
-            final path = await saveShewallBytes(
-              sealed,
-              dest: widget.exportDest?.call(),
-              picker: widget.savePicker,
-            );
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Wrote encrypted $shewallName to $path')),
-              );
-            }
-          } catch (e) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Export failed: $e')),
-              );
-            }
-          }
-        },
+        onPressed: exportShewallNow,
         child: const Text('Export shewall.bin'),
       ),
       const SizedBox(height: 8),
       OutlinedButton(
-        onPressed: () async {
-          final pw = session.password ?? password;
-          if (pw.isEmpty) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Unlock with your password first.')),
-              );
-            }
-            return;
-          }
-          try {
-            final src = widget.importSrc?.call() ?? await pickShewallImportFile();
-            if (src == null) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('No shewall.bin selected.')),
-                );
-              }
-              return;
-            }
-            final imported = await importEncryptedShewall(
-              src: src,
-              password: pw,
-              ledger: ledger,
-              reserve: reserve,
-            );
-            session.identity = imported;
-            await session.setPassword(pw);
-            id = imported;
-            ledger.viewSecret = imported.viewKey;
-            if (mounted) {
-              setState(() {});
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Imported shewall.bin')),
-              );
-            }
-          } catch (e) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Import failed: $e')),
-              );
-            }
-          }
-        },
+        onPressed: importShewallNow,
         child: const Text('Import shewall.bin'),
       ),
     ]);

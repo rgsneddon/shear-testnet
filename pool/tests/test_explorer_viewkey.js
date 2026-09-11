@@ -40,7 +40,7 @@ describe('explorer dests', () => {
     const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ex-'));
     const store = createStore(dir);
-    const env = memoSeal(dest, 'secret-memo');
+    const env = memoSeal(dest, 'secret-memo', Buffer.alloc(32, 7));
     void env;
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
@@ -85,7 +85,7 @@ describe('explorer dests', () => {
     const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-exs-'));
     const store = createStore(dir);
-    const env = memoSeal(dest, 'do-not-leak');
+    const env = memoSeal(dest, 'do-not-leak', Buffer.alloc(32, 7));
     void env;
     const b1 = buildTemplate({
       prev: GENESIS_PREV,

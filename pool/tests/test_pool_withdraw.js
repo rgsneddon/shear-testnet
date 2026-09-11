@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, payoutDest, encodeDest, hash20FromAddress, destOpeningFromView } from '../../crypto/address.js';
-import { destForLogin, hasherPayoutDest } from '../../crypto/flow_sheet.js';
+import { newIdentity, payoutDest, encodeDest, hash20FromAddress, destOpeningFromView, aliasDestOfSilentId } from '../../crypto/address.js';
+import { destForLogin, hasherPayoutDest, destAtIndex } from '../../crypto/flow_sheet.js';
 import { NANOS_PER_SHE } from '../../crypto/asert.js';
 import { verifyPoolWithdrawOffchain } from '../../crypto/levy.js';
 import { signPoolWithdraw, ownerSecpPubFromSeed, ownerPubFromOpening, evmPrivFromSeed } from '../../crypto/eip712.js';
@@ -24,7 +24,7 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
     withdrawDigests.clear();
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
-    const sheDest = payoutDest(id.paymentCode);
+    const sheDest = aliasDestOfSilentId(id.paymentCode);
     const ownerSeed = Buffer.from(id.privateKey.export({ type: 'pkcs8', format: 'der' }).subarray(-32));
     const nanos = Math.floor(0.05 * NANOS_PER_SHE);
     const now = Date.now();
@@ -113,7 +113,7 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
     const tag = publicMinerTag(id.paymentCode);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-wd-http-'));
     const pool = createPool({
-      dataDir: dir, stratumPort: 0, httpPort: 0, miner: dest, shareBits: 4, bits: 8,
+      dataDir: dir, stratumPort: 0, httpPort: 0, miner: dest, shareBits: 8, bits: 10,
     });
     await new Promise((resolve, reject) => {
       pool.httpServer.listen(0, '127.0.0.1', resolve);
@@ -133,12 +133,14 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
     pool.close();
   });
 
-  it('she1 hasher dest is destAtIndex from spend seed, never encodeDest(hash20) or C-from-S', () => {
+  it('she1 hasher dest is destCommit(spendPub), never destAtIndex or encodeDest(hash20)', () => {
     const id = newIdentity();
     const she = id.paymentCode;
-    const degenerate = payoutDest(she);
-    assert.equal(hasherPayoutDest(she, { height: 1 }), null);
-    const owned = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const degenerate = aliasDestOfSilentId(she);
+    const owned = destForLogin(id.address, { spendPub: id.spendPub });
+    assert.equal(hasherPayoutDest(she, { height: 1 }), owned);
+    const indexed = destAtIndex(id.address, { index: 0, viewKey: id.viewKey });
+    assert.notEqual(owned, indexed);
     assert.equal(hasherPayoutDest(owned), owned);
     assert.equal(hasherPayoutDest(owned, { dest: owned }), owned);
     assert.equal(hasherPayoutDest(she, { dest: owned }), owned);
@@ -159,15 +161,15 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
       open: 'leak',
     }));
     assert.equal(poolIdentLeaked(JSON.parse(fs.readFileSync(file, 'utf8'))), true);
-    const dest = payoutDest(id.paymentCode);
-    writePoolIdent(file, { dest20: hash20FromAddress(dest), paymentCode: id.paymentCode });
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    writePoolIdent(file, { dest20: hash20FromAddress(dest) });
     const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
     assert.equal(disk.viewKey, undefined);
     assert.equal(disk.paymentCode, undefined);
     assert.equal(disk.spend, undefined);
     assert.equal(disk.open, undefined);
     assert.ok(disk.dest20);
-    assert.ok(disk.enc);
+    assert.equal(disk.enc, undefined);
     const loaded = readPoolIdent(file);
     assert.equal(loaded.leaked, false);
     void encodeDest;

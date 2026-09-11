@@ -70,7 +70,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Spendable</th><td>6 confirmations</td></tr>' +
       '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
-      '<tr><th>Wallet pin</th><td>0.29</td></tr>' +
+      '<tr><th>Wallet pin</th><td>0.30</td></tr>' +
       '<tr><th>Miner pin</th><td>ShearK 1.6</td></tr></table>' +
       '<p>How-to lives in this tree. The architecture note is a PDF at <a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> — that URL is not in the navbar on purpose.</p>'
   };
@@ -99,22 +99,22 @@ window.SHEAR_DOCS = {
       '<table><tr><th>Rest-frame</th><td><code>shear1…</code> — never share, never on chain</td></tr>' +
       '<tr><th>Silent ID</th><td><code>she1…</code> — offer this; never written as a vout</td></tr>' +
       '<tr><th>Dest</th><td><code>ssa1…</code> — revolving mailbox the book actually writes</td></tr></table>' +
-      '<p>The wallet password is the view secret. Same rest-frame, view secret and index always regenerate the same dest. Miner login is <code>she1</code> or <code>ssa1</code>. A <code>she1</code> login pays the matching dest; the <code>she1</code> string never goes on the book. Nodes reject a block that puts <code>shear1</code> in a vout.</p>'
+      '<p>The wallet password is the view secret. Copy ID is the full <code>she1</code> payment code (scan + spend pubs). The short fingerprint is display-only and cannot be paid. Two pays to one published code produce two <code>ssa1</code> dests. Miner login is <code>ssa1.worker</code>. A <code>she1</code> login is RAM-only and must resolve to an owned dest — it never pays <code>encodeDest(she1.hash20)</code>. Nodes reject a block that puts <code>she1</code> or <code>shear1</code> in an address field.</p>'
   };
 
   P.privacy = {
     title: 'She is private',
     crumb: 'addresses / privacy',
     html:
-      '<p>The public explorer reports amounts, dests, and whether a memo exists. It does not show ciphertext and it does not show rest-frame strings. Memo plaintext stays in the two wallets that already know the dest.</p>' +
-      '<p>Never POST a view secret, a rest-frame, or a password. Never put those in a vortice body you host.</p>'
+      '<p>The public explorer reports amounts, dests, and whether a memo exists. It does not show ciphertext and it does not show rest-frame strings. Memo plaintext opens only with the stealth shared secret in the two wallets that scanned that dest.</p>' +
+      '<p>Amounts are public. Dests are stealth. The public pool learns whatever you type into stratum. A solo node is the anonymity path for miners. Never POST a view secret, a rest-frame, a seed, or a password. Never put those in a vortice body you host. There is no telemetry.</p>'
   };
 
   P.wallet = {
     title: 'Wallet overview',
     crumb: 'wallet / overview',
     html:
-      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.29</strong> (macOS, Android, leftover Windows / Linux / Arch).</p>' +
+      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.30</strong> (macOS, Android, leftover Windows / Linux / Arch).</p>' +
       '<table><tr><th>Continuum</th><td>Spendable balance, <code>she1</code>, six-slice pending pie</td></tr>' +
       '<tr><th>Flow</th><td>Send and receive</td></tr>' +
       '<tr><th>Resistance</th><td>Public CTF CLI</td></tr>' +
@@ -133,7 +133,7 @@ window.SHEAR_DOCS = {
       '<li>You will enter that password each time. If it is lost, the wallet cannot be opened. Fingerprint or face unlock, where the device offers it, only works on this device.</li>' +
       '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
       '<li>Open Closure and export <code>shewall.bin</code>. Keep that file with the password.</li></ol>' +
-      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.29">shear-testnet 0.29</a>.</p>'
+      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.30">shear-testnet 0.30</a>.</p>'
   };
 
   P.continuum = {
@@ -197,9 +197,9 @@ window.SHEAR_DOCS = {
     title: 'How to mine',
     crumb: 'mining / how-to',
     html:
-      '<p>Official miner is <strong>ShearK-Miner 1.6</strong>, CPU only. Log in with your wallet <code>she1</code> (never <code>shear1</code>).</p>' +
+      '<p>Official miner is <strong>ShearK-Miner 1.6</strong>, CPU only. Default login is <code>ssa1.worker</code> (never <code>shear1</code>). The public pool learns whatever you type into stratum.</p>' +
       '<pre>./ShearK-Miner --selftest\n' +
-      './ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --dest YOUR_SSA1 --backend jit --threads 8</pre>' +
+      './ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit --threads 8</pre>' +
       '<p>Windows: <code>ShearK-Miner.exe</code> with the same flags. <code>.worker</code> is only a name. Downloads: <a href="https://github.com/rgsneddon/ShearK/releases/tag/1.6">ShearK 1.6</a>.</p>' +
       '<p>The public pool takes 1% of the 1 SHE pot. Hash bonuses are paid in full to the hasher who produced them.</p>'
   };
@@ -212,7 +212,7 @@ window.SHEAR_DOCS = {
       '<pre>git clone --depth 1 https://github.com/rgsneddon/shear-testnet.git\n' +
       'cd shear-testnet\nnpm install\nnpm run pool</pre>' +
       '<p>Then point ShearK at localhost:</p>' +
-      '<pre>./ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SHE1.solo --threads 8</pre>' +
+      '<pre>./ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>' +
       '<p>You still need the RandomX native addon on that box or shares come back <code>hash_failed</code>.</p>'
   };
 

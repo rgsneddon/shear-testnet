@@ -81,7 +81,7 @@ describe('dest HRP pin', () => {
     assert.match(html, /she1/);
     assert.equal(/--user shear1/.test(html), false);
     const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
-    assert.match(readme, /--user she1/);
+    assert.match(readme, /--user ssa1/);
     assert.equal(/--user shear1/.test(readme), false);
     const wallet = fs.readFileSync(path.join(root, 'wallet/lib/main.dart'), 'utf8');
     assert.match(wallet, /ssa1/);

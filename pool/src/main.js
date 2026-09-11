@@ -17,7 +17,6 @@ let miner = process.env.SHEAR_POOL_MINER;
 if (!miner) {
   const ident = loadOrCreatePoolIdent(identPath);
   miner = ident.miner
-    || destForLogin(ident.paymentCode || '', { viewKey: '', height: 1 })
     || (ident.miner && !isShearAddress(ident.miner) ? ident.miner : '');
 }
 const pool = createPool({

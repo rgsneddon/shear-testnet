@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { encodeDest, newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
@@ -26,7 +26,7 @@ import { applyMinerSelfRate } from '../../pool/src/pool.js';
 
 function destMiner() {
   const id = newIdentity();
-  return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+  return destForLogin(id.address, { spendPub: id.spendPub });
 }
 
 function mine(tpl) {
@@ -45,8 +45,31 @@ function mine(tpl) {
 }
 
 describe('proven hash bonus cap', { timeout: 600_000 }, () => {
+  let dest;
+  let parent;
+  let okP;
+  let share;
+
+  // One real parent + one real floor share. Three independent findShare
+  // walks at SHARE_FLOOR_BITS blow the 600s file budget under load.
+  before(() => {
+    dest = destMiner();
+    const parentTpl = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: dest,
+      bits: 4,
+      now: 1_700_000_000_000,
+      samples: [],
+    });
+    parent = mine(parentTpl);
+    okP = verifyBlock(parent, null);
+    assert.equal(okP.ok, true, okP.reason);
+    share = findShare(parent.header, { dest, floorBits: SHARE_FLOOR_BITS, maxTries: 2_000_000 });
+    assert.ok(share, 'need a floor share');
+  });
+
   it('rejects count: 1e12 with no shareBatch', () => {
-    const dest = destMiner();
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -69,20 +92,6 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
   });
 
   it('accepts one valid ShearHash-v3 share on the parent job header', () => {
-    const dest = destMiner();
-    const parentTpl = buildTemplate({
-      prev: GENESIS_PREV,
-      height: 1,
-      miner: dest,
-      bits: 4,
-      now: 1_700_000_000_000,
-      samples: [],
-    });
-    const parent = mine(parentTpl);
-    const okP = verifyBlock(parent, null);
-    assert.equal(okP.ok, true, okP.reason);
-    const share = findShare(parent.header, { dest, floorBits: SHARE_FLOOR_BITS, maxTries: 2_000_000 });
-    assert.ok(share, 'need a floor share');
     const units = unitsForShare();
     const childTpl = buildTemplate({
       prev: okP.hash,
@@ -105,17 +114,6 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
   });
 
   it('rejects a share that misses SHARE_FLOOR_BITS', () => {
-    const dest = destMiner();
-    const parentTpl = buildTemplate({
-      prev: GENESIS_PREV,
-      height: 1,
-      miner: dest,
-      bits: 4,
-      now: 1_700_000_000_000,
-    });
-    const parent = mine(parentTpl);
-    const okP = verifyBlock(parent, null);
-    assert.equal(okP.ok, true, okP.reason);
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -137,19 +135,6 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
   });
 
   it('rejects duplicate nonce as dup_share', () => {
-    const dest = destMiner();
-    const parentTpl = buildTemplate({
-      prev: GENESIS_PREV,
-      height: 1,
-      miner: dest,
-      bits: 4,
-      now: 1_700_000_000_000,
-    });
-    const parent = mine(parentTpl);
-    const okP = verifyBlock(parent, null);
-    assert.equal(okP.ok, true, okP.reason);
-    const share = findShare(parent.header, { dest, maxTries: 2_000_000 });
-    assert.ok(share, 'need share');
     const row = { dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz };
     const childTpl = buildTemplate({
       prev: okP.hash,
@@ -167,19 +152,7 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
   });
 
   it('rejects a hash dest that is not in the shareBatch', () => {
-    const dest = destMiner();
     const other = encodeDest(Buffer.alloc(20, 9));
-    const parentTpl = buildTemplate({
-      prev: GENESIS_PREV,
-      height: 1,
-      miner: dest,
-      bits: 4,
-      now: 1_700_000_000_000,
-    });
-    const parent = mine(parentTpl);
-    const okP = verifyBlock(parent, null);
-    const share = findShare(parent.header, { dest, maxTries: 2_000_000 });
-    assert.ok(share, 'need share');
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -204,20 +177,6 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
   });
 
   it('samplesPruned does not skip shareBatch until 1000 confirms vs tip', async () => {
-    const dest = destMiner();
-    const parentTpl = buildTemplate({
-      prev: GENESIS_PREV,
-      height: 1,
-      miner: dest,
-      bits: 4,
-      now: 1_700_000_000_000,
-      samples: [],
-    });
-    const parent = mine(parentTpl);
-    const okP = verifyBlock(parent, null);
-    assert.equal(okP.ok, true, okP.reason);
-    const share = findShare(parent.header, { dest, floorBits: SHARE_FLOOR_BITS, maxTries: 2_000_000 });
-    assert.ok(share, 'need a floor share');
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,

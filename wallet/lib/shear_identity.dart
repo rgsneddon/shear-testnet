@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import 'shear_x25519.dart';
+import 'shear_ed25519.dart';
 
 const shearHrp = 'shear';
 const destHrp = 'ssa';
@@ -23,8 +24,16 @@ class ShearIdentity {
   final String seedHex;
   final String address;
   final String viewKey;
-  /// Public-facing silent ID (she1). Never a dest, never rest-frame.
+  /// Public-facing silent ID (she1). Full payment code (keys). Never a dest.
   final String paymentCode;
+
+  String get paymentFingerprint {
+    final d = decodePaymentCode(paymentCode);
+    if (d != null && d['scanPub'] != null && d['spendPub'] != null) {
+      return encodePaymentFingerprint(scanPub: d['scanPub']!, spendPub: d['spendPub']!);
+    }
+    return paymentCode;
+  }
 
   Map<String, String> toJson() => {
         'seedHex': seedHex,
@@ -42,8 +51,15 @@ class ShearIdentity {
     // she1 is perpetual. Never rotate a stored ID — even if derivation
     // changed. Only mint idx0 when this wallet has never had a she1.
     var code = stored;
-    if (!isPaymentCode(code) && stored.isEmpty && hash20 != null) {
-      code = paymentCodeAtIndex(viewKey, hash20, 0) ?? '';
+    if (!isPaymentCode(code)) {
+      final seedHex = j['seedHex'] as String?;
+      if (seedHex != null && seedHex.length >= 64) {
+        final seed = Uint8List.fromList([
+          for (var i = 0; i < 32; i++)
+            int.parse(seedHex.substring(i * 2, i * 2 + 2), radix: 16),
+        ]);
+        code = paymentCodeAtIndex(viewKey, ed25519PublicFromSeed(seed), 0) ?? '';
+      }
     }
     return ShearIdentity(
       seedHex: j['seedHex'] as String,
@@ -91,13 +107,17 @@ bool isMineLogin(String s) {
   return isDestAddress(id) || isPaymentCode(id);
 }
 
-/// On-chain dest for a miner login. she1 pays ssa1 of the same 20 bytes.
+/// Payable dest of a login. Payment codes are not payable.
 String? payoutDest(String login) {
   final id = identityOfLogin(login);
   if (isDestAddress(id)) return id;
-  final pay = decodePaymentCode(id);
-  if (pay == null) return null;
-  return encodeDestAddress(pay['hash20']!);
+  return null;
+}
+
+String? aliasDestOfSilentId(String login) {
+  final d = decodePaymentCode(identityOfLogin(login));
+  if (d == null || d['hash20'] == null) return null;
+  return encodeDestAddress(d['hash20']!);
 }
 
 Uint8List? decodeBech32Payload(String address) {
@@ -118,12 +138,34 @@ Uint8List? decodeBech32Payload(String address) {
   return Uint8List.fromList(bytes);
 }
 
+const paymentCodeVersion = 1;
+
 Map<String, Uint8List>? decodePaymentCode(String s) {
   final t = s.trim();
   if (isShearAddress(t) || bech32Hrp(t) != 'she' || !_bech32BodyOk(t)) return null;
   final p = decodeBech32Payload(t);
-  if (p == null || p.length != 20) return null;
-  return {'hash20': p.sublist(0, 20)};
+  if (p == null) return null;
+  if (p.length == 65 && p[0] == paymentCodeVersion) {
+    final scan = p.sublist(1, 33);
+    final spend = p.sublist(33, 65);
+    return {
+      'scanPub': scan,
+      'spendPub': spend,
+      'hash20': paymentIdHash(scan, spend),
+    };
+  }
+  if (p.length == 20) return {'hash20': p.sublist(0, 20)};
+  return null;
+}
+
+bool isFullPaymentCode(String s) {
+  final d = decodePaymentCode(s);
+  return d != null && d['scanPub'] != null && d['spendPub'] != null;
+}
+
+bool isPaymentFingerprint(String s) {
+  final d = decodePaymentCode(s);
+  return d != null && d['hash20'] != null && d['scanPub'] == null;
 }
 
 Uint8List paymentIdHash(Uint8List scanPub, Uint8List spendPub) {
@@ -136,6 +178,13 @@ Uint8List paymentIdHash(Uint8List scanPub, Uint8List spendPub) {
 }
 
 String encodePaymentCode({required Uint8List scanPub, required Uint8List spendPub}) {
+  if (scanPub.length != 32 || spendPub.length != 32) {
+    throw ArgumentError('silent code keys must be 32 bytes');
+  }
+  return encodeHrp(payHrp, Uint8List.fromList([paymentCodeVersion, ...scanPub, ...spendPub]));
+}
+
+String encodePaymentFingerprint({required Uint8List scanPub, required Uint8List spendPub}) {
   return encodeHrp(payHrp, paymentIdHash(scanPub, spendPub));
 }
 
@@ -154,22 +203,90 @@ Uint8List _asSpend(Uint8List h) {
   return Uint8List.fromList(sha256.convert(h).bytes);
 }
 
-String? paymentCodeAtIndex(String viewKey, Uint8List spendHash20, int index) {
+String? paymentCodeAtIndex(String viewKey, Uint8List spendPub, int index) {
   if (index < 0) return null;
+  final pub = spendPub.length == 32
+      ? spendPub
+      : Uint8List.fromList(sha256.convert(spendPub).bytes);
+  if (pub.length != 32) return null;
   final scanPub = x25519PublicFromSeed(scanSeedFromView(viewKey, index));
-  final idx = Uint8List(8);
-  var x = index;
-  for (var i = 0; i < 8; i++) {
-    idx[i] = x & 0xff;
-    x >>= 8;
-  }
-  final spend = Uint8List.fromList(sha256.convert(utf8.encode('shear-spend-v1') + _asSpend(spendHash20) + idx).bytes);
-  return encodePaymentCode(scanPub: scanPub, spendPub: spend);
+  return encodePaymentCode(scanPub: scanPub, spendPub: pub);
 }
 
 String _hexOf(Uint8List b) => b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
 
 /// 64-byte scan||spend hex. Proves dest hash20; she1 never on chain.
+Uint8List spendMixAtIndex(Uint8List spendPub, int index) {
+  return Uint8List.fromList(
+    sha256.convert(utf8.encode('shear-spend-v1') + _asSpend(spendPub) + _u64leOpen(index)).bytes,
+  );
+}
+
+String? silentDestFromCode(String fullCode, Uint8List ephSeed) {
+  final parsed = decodePaymentCode(fullCode);
+  if (parsed == null || parsed['scanPub'] == null || parsed['spendPub'] == null) return null;
+  final shared = x25519Shared(ephSeed, parsed['scanPub']!);
+  final oneTime = stealthTweakPub(parsed['spendPub']!, shared);
+  return encodeDestAddress(destCommitFromSpendPub(oneTime));
+}
+
+Uint8List? silentSharedFromCode(String fullCode, Uint8List ephSeed) {
+  final parsed = decodePaymentCode(fullCode);
+  if (parsed == null || parsed['scanPub'] == null) return null;
+  return x25519Shared(ephSeed, parsed['scanPub']!);
+}
+
+Map<String, dynamic>? recognizeSilentDest({
+  required String viewKey,
+  required Uint8List spendPub,
+  required String dest,
+  required Uint8List ephPub,
+  int maxIndex = 16,
+}) {
+  for (var i = 0; i <= maxIndex; i++) {
+    final shared = x25519Shared(scanSeedFromView(viewKey, i), ephPub);
+    final oneTime = stealthTweakPub(spendPub, shared);
+    final got = encodeDestAddress(destCommitFromSpendPub(oneTime));
+    if (got == dest) {
+      return {'dest': got, 'shared': shared, 'index': i, 'spendPub': oneTime};
+    }
+  }
+  return null;
+}
+
+bool destMatchesSpendPub(String dest, Uint8List spendPub) {
+  final want = hash20FromAddress(dest);
+  if (want == null || want.length != 20) return false;
+  final got = destCommitFromSpendPub(spendPub);
+  for (var i = 0; i < 20; i++) {
+    if (want[i] != got[i]) return false;
+  }
+  return true;
+}
+
+class SilentPay {
+  SilentPay({required this.dest, required this.shared, required this.ephPub, required this.ephSeed});
+  final String dest;
+  final Uint8List shared;
+  final Uint8List ephPub;
+  final Uint8List ephSeed;
+}
+
+SilentPay? silentPay(String fullCode, [Uint8List? ephSeed]) {
+  final seed = ephSeed ?? _randomBytes(32);
+  final dest = silentDestFromCode(fullCode, seed);
+  final shared = silentSharedFromCode(fullCode, seed);
+  if (dest == null || shared == null) return null;
+  return SilentPay(
+    dest: dest,
+    shared: shared,
+    ephPub: x25519PublicFromSeed(seed),
+    ephSeed: seed,
+  );
+}
+
+String? freshStealthDest(String paymentCode) => silentPay(paymentCode)?.dest;
+
 String destOpeningFromView(String viewKey, Uint8List spendHash20, [int index = 0]) {
   if (index < 0) return '';
   final scanPub = x25519PublicFromSeed(scanSeedFromView(viewKey, index));
@@ -200,14 +317,23 @@ Uint8List _u64leOpen(int n) {
   return o;
 }
 
+final _ed25519SpkiPrefix = Uint8List.fromList([
+  0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+]);
+final _ed25519Pkcs8Prefix = Uint8List.fromList([
+  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+]);
+
 ShearIdentity createIdentity([Uint8List? seed]) {
   final s = seed ?? _randomBytes(32);
   final seedHex = _hex(s);
-  final hash20 = Uint8List.fromList(sha256.convert(s).bytes.sublist(0, 20));
+  final spendPub = ed25519PublicFromSeed(s);
+  final spki = Uint8List.fromList([..._ed25519SpkiPrefix, ...spendPub]);
+  final hash20 = Uint8List.fromList(sha256.convert(spki).bytes.sublist(0, 20));
   final address = encodeShearAddress(hash20);
-  final view = sha256.convert(utf8.encode('shear-view-v1') + s);
+  final view = sha256.convert(utf8.encode('shear-view-v1') + _ed25519Pkcs8Prefix + s);
   final viewKey = _hex(view.bytes);
-  final paymentCode = paymentCodeAtIndex(viewKey, hash20, 0)!;
+  final paymentCode = paymentCodeAtIndex(viewKey, spendPub, 0)!;
   return ShearIdentity(seedHex: seedHex, address: address, viewKey: viewKey, paymentCode: paymentCode);
 }
 

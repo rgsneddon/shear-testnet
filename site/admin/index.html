@@ -56,14 +56,14 @@
     </section>
     <section class="panel-card" id="wallet">
       <h2>Install the wallet</h2>
-      <p>Current pin is <strong>0.29</strong>. This app does not mine. Install only from the official tag.</p>
-      <p><a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.29">github.com/rgsneddon/shear-testnet/releases/tag/0.29</a></p>
+      <p>Current pin is <strong>0.30</strong>. This app does not mine. Install only from the official tag.</p>
+      <p><a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.30">github.com/rgsneddon/shear-testnet/releases/tag/0.30</a></p>
       <ul>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.29/shear-wallet-0.29-macos.dmg">macOS</a></li>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.29/shear-wallet-0.29-windows.zip">Windows</a></li>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.29/shear-wallet-0.29-android.apk">Android</a></li>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.29/shear-wallet-0.29-linux.zip">Linux</a></li>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.29/shear-wallet-0.29-archlinux.zip">Arch</a></li>
+        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-macos.dmg">macOS</a></li>
+        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-windows.zip">Windows</a></li>
+        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-android.apk">Android</a></li>
+        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-linux.zip">Linux</a></li>
+        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-archlinux.zip">Arch</a></li>
       </ul>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject, then launch from Applications. Do not keep running it from the image, a zip, or Downloads.</li>
@@ -81,8 +81,8 @@
         <li>Download the zip for your system (macOS, Windows, or Linux).</li>
         <li>Unzip. Run a self-test: <code>./ShearK-Miner --selftest</code></li>
         <li>Start hashing:
-          <br/><code>./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SHE1.worker --dest YOUR_SSA1 --backend jit --threads 8</code></li>
-        <li><code>--user</code> is one string: your <code>she1</code>, a dot, then a worker name for this machine.</li>
+          <br/><code>./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit --threads 8</code></li>
+        <li><code>--user</code> is one string: an <code>ssa1</code> dest the wallet exported, a dot, then a worker name for this machine.</li>
       </ol>
       <p>Each found block mints <strong>1 SHE</strong> (the pot), split by proven work on the public pool. Each accepted hash also mints <strong>0.00000000001 SHE</strong> to the miner who produced it. The public pool may take 1% of the pot only. Hash bonuses are not fee'd.</p>
     </section>

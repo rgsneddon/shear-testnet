@@ -43,6 +43,7 @@ import {
   nextShareBits,
   shouldRetargetShare,
   SHARE_BITS_V2_START,
+  mintShareMinBits,
 } from './share_vardiff.js';
 
 export { hasherHasValidRoundShare, roundActualHashes };
@@ -184,12 +185,13 @@ export function provenLag1Shares(parentHeader, shares) {
     else unknown.push(s);
   }
   if (!unknown.length) return sortShares(trusted);
+  const ordered = sortShares(unknown);
   const all = verifyShareBatch({
     parentHeader,
-    shares: unknown,
+    shares: ordered,
     floorBits: SHARE_FLOOR_BITS,
   });
-  if (all.ok) return sortShares(trusted.concat(unknown));
+  if (all.ok) return sortShares(trusted.concat(ordered));
   // Do not RandomX each leftover row. That stalled stratum/HTTP/UI on blockfound.
   return sortShares(trusted);
 }
@@ -200,7 +202,7 @@ export function parseLogin(login) {
   return raw.split('.')[0];
 }
 
-/** Pool page / stats: she1 + 8 hex. Never the silent ID, dest, or worker name. */
+/** Pool page / stats: opaque tag. Never she1, dest, IP, or worker personal data. */
 export function publicMinerTag(login) {
   const dest = parseLogin(login);
   const hex = createHash('sha256')
@@ -208,7 +210,18 @@ export function publicMinerTag(login) {
     .update(dest)
     .digest('hex')
     .slice(0, 8);
-  return `she1${hex}`;
+  return `m${hex}`;
+}
+
+/** Serialized miner row for disk/dashboard. dest20-derived tag + hashrate only. */
+export function serializeMinerRow(m) {
+  const pay = String(m?.payoutDest || '');
+  const login = String(m?.login || m?.workerKey || '');
+  const dest = pay || (login.startsWith('ssa1') ? login.split('.')[0] : '');
+  return {
+    tag: publicMinerTag(dest || login),
+    hashrate: Number(m?.hashrate || 0),
+  };
 }
 
 export function publicWorkerTag(login) {
@@ -285,8 +298,8 @@ export function workerKey(login) {
 }
 
 /**
- * Operator dual-login fee route (she1 silent ID). Payout dest is the
- * matching ssa1 of the same 20-byte payload. Not the 1% pool tax.
+ * Operator dual-login fee route. Payout dest is an owned ssa1, never
+ * encodeDest(she1.hash20). Not the 1% pool tax.
  */
 export const CMINER_FEE_DEST = 'ssa1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7mhq4z';
 export const CMINER_FEE_SHE = 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj';
@@ -314,7 +327,18 @@ export function admitClient(params) {
   const dest = parseLogin(raw);
   if (!isMineLogin(dest)) return { ok: false, reason: 'bad_login' };
   const payout = hasherPayoutDest(dest, { dest: params?.dest || params?.payout });
-  return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payout || '' };
+  const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
+  if (isPaymentCode(dest)) {
+    if (!payout) return { ok: true, login: dest, workerKey: raw || dest, payoutDest: '', ramAlias: true };
+    return {
+      ok: true,
+      login: payout,
+      workerKey: `${payout}.${worker}`,
+      payoutDest: payout,
+      ramAlias: true,
+    };
+  }
+  return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payout || dest };
 }
 
 /** Wrong-algo login or a submit that is not a ShearHash-v3 digest. */
@@ -558,7 +582,7 @@ export function isPublicMinerRow(m, now = Date.now()) {
   return (Number(now) - gone) < HASH_PRESENCE_MS;
 }
 
-/** One dashboard row per public she1 tag. Device sessions combine. */
+/** One dashboard row per public miner tag. Device sessions combine. */
 export function foldPublicMinerViews(views) {
   const byTag = new Map();
   for (const v of views || []) {
@@ -791,6 +815,7 @@ export function createPool({
   miner,
   shareBits = SHARE_BITS_V2_START,
   bits = GENESIS_BITS,
+  lockBits = false,
   p2p = null,
   onRestart = null,
   onRestartHasher = null,
@@ -843,6 +868,7 @@ export function createPool({
         hashWait.delete(id);
         reject(new Error('hash_timeout'));
       }, HASH_WORKER_TIMEOUT_MS);
+      timer.unref?.();
       hashWait.set(id, { resolve, reject, timer, conn });
       try {
         bootHashWorker().postMessage({ id, header: copy });
@@ -885,7 +911,7 @@ export function createPool({
     return Number.isFinite(v) && v >= 0 ? v : 1;
   }
   function liveShareMin() {
-    return Number(shareBits) >= SHARE_BITS_V2_START ? SHARE_BITS_V2_START : 1;
+    return mintShareMinBits();
   }
   let lastJob = null;
   let prevJob = null;
@@ -991,7 +1017,7 @@ export function createPool({
         return {
           miner: dest,
           nonce: String(m.hashes || 0),
-          tag: isPaymentCode(parseLogin(m.login)) ? 'she1' : (m.tag || m.login.slice(0, 12)),
+          tag: publicMinerTag(m.login || dest),
           count: roundActualHashes(m),
           proven: Number(m.roundHashes) || 0,
         };
@@ -1088,7 +1114,7 @@ export function createPool({
       shareBits: sb,
       shareBatch: lag1Shares,
       poolDest: poolPay,
-      ...(chainLen >= 1 ? {} : { bits }),
+      ...(chainLen >= 1 && !lockBits ? {} : { bits }),
       wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
     });
     const gate = gateJob(job);
@@ -1146,11 +1172,10 @@ export function createPool({
   }
 
   /**
-   * Re-stamp header time from wall clock so sealed times match find time.
-   * Never write a stamp after wall. Never rewind (that would be a negative
-   * interval). Do not rebuild merkle/continuity/bits on a same-bits tick —
-   * those are in RandomX K. If ASERT would move bits, maybeRestampJob cuts a
-   * new wall-stamped template so a long round can ease.
+   * Timestamp restamp is available for tests. The live timer must not tick
+   * it: a new header drops every floor share that is not on the sealed
+   * parent, so hashbonus collapses to the finder. Bits-ease still cuts a
+   * new template when ASERT would move.
    */
   let lastEaseAt = Date.now();
   let restampTimer = null;
@@ -1203,19 +1228,10 @@ export function createPool({
     if (paused) return lastJob;
     if (!lastJob) return lastJob;
     const now = Date.now();
-    const jobTs = Number(lastJob.timestamp) || 0;
-    if (jobTs > 0 && (now - jobTs) < JOB_RESTAMP_MS && (now - lastEaseAt) < JOB_RESTAMP_MS) {
-      return lastJob;
-    }
+    if ((now - lastEaseAt) < JOB_RESTAMP_MS) return lastJob;
     lastEaseAt = now;
-    const before = lastJob.header;
-    const job = restampLiveHeader(now);
-    if (job && job.header !== before) {
-      broadcastJob(job);
-      return job;
-    }
     const tip = store.tip();
-    if (job && tip?.header) {
+    if (tip?.header) {
       try {
         const parent = decodeHeader(Buffer.from(tip.header));
         const decoded = decodeHeader(headerFromHex(lastJob.header));
@@ -1228,7 +1244,7 @@ export function createPool({
         }
       } catch { /* keep live job */ }
     }
-    return job;
+    return lastJob;
   }
 
   function resolveSubmitJob(params, conn) {
@@ -1372,7 +1388,7 @@ export function createPool({
       if (got?.ok) {
         sealedBlock = true;
         stats.blocks += 1;
-        lag1Shares = openShares.slice();
+        lag1Shares = sortShares(openShares.slice());
         openShares = [];
         try {
           const sealed = store.tip();
@@ -1601,8 +1617,8 @@ export function createPool({
       client: String(m.client || CLIENT),
       algo: ALGO,
       hashrate: reportedHashrate(m, now),
-      hashes: liveRoundHashes(m) || roundActualHashes(m),
-      roundHashes: liveRoundHashes(m) || roundActualHashes(m),
+      hashes: roundActualHashes(m),
+      roundHashes: roundActualHashes(m),
       provenHashes: roundActualHashes(m),
       accepted: m.accepted || 0,
       stale: m.stale || 0,
@@ -1687,7 +1703,7 @@ export function createPool({
 
   function minerByTag(tag, now = Date.now()) {
     const want = String(tag || '').trim().toLowerCase();
-    if (!/^she1[0-9a-f]{8}$/.test(want)) return [];
+    if (!/^m[0-9a-f]{8}$/.test(want)) return [];
     return [...miners.values()].filter((m) => (
       publicMinerTag(m.login || m.workerKey) === want
       && isPublicMinerRow(m, now)
@@ -2150,13 +2166,22 @@ export function createPool({
       clearInterval(dropTimer);
       dropTimer = null;
     }
+    for (const [, p] of hashWait) {
+      clearTimeout(p.timer);
+      try { p.reject(new Error('closed')); } catch { /* ignore */ }
+    }
+    hashWait.clear();
     if (hashWorker) {
+      try { hashWorker.unref?.(); } catch { /* ignore */ }
       try { hashWorker.terminate(); } catch { /* ignore */ }
       hashWorker = null;
     }
     for (const s of sockets) try { s.destroy(); } catch { /* ignore */ }
-    stratum.close();
-    httpServer.close();
+    sockets.clear();
+    try { stratum.close(); } catch { /* ignore */ }
+    try { httpServer.close(); } catch { /* ignore */ }
+    try { stratum.unref(); } catch { /* ignore */ }
+    try { httpServer.unref(); } catch { /* ignore */ }
   }
 
   return {
@@ -2172,7 +2197,7 @@ export function createPool({
     httpServer,
     snapshotRound,
     setP2p,
-    restampJob: maybeRestampJob,
+    restampJob: restampLiveHeader,
     sweepIdle: sweepIdleMiners,
     get pendingPayout() { return pendingPayout; },
     get prevJob() { return prevJob; },

@@ -89,7 +89,7 @@ describe('node Reserve vault', () => {
 
   it('lock spends mature Continuum, refuses when spendable is short, withdraw returns principal + staked interest', { timeout: 600_000 }, async () => {
     const alice = newIdentity();
-    const continuum = payoutDest(alice.paymentCode);
+    const continuum = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1, spendPub: alice.spendPub });
     const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
     const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reserve-append-'));
@@ -199,7 +199,7 @@ describe('node Reserve vault', () => {
 
   it('GATE still accepts a reused dest', () => {
     const alice = newIdentity();
-    const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1, spendPub: alice.spendPub });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reuse-dest-'));
     const store = createStore(dir);
     const mk = (id) => ({
@@ -220,7 +220,7 @@ describe('node Reserve vault', () => {
 
   it('Reserve lock then vote in mempool paint (pending) before the next block', { timeout: 600_000 }, async () => {
     const alice = newIdentity();
-    const continuum = payoutDest(alice.paymentCode);
+    const continuum = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1, spendPub: alice.spendPub });
     const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
     const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reserve-pending-'));
@@ -291,10 +291,10 @@ describe('node Reserve vault', () => {
     const alice = newIdentity();
     const bob = newIdentity();
     const minerId = newIdentity();
-    const destA = payoutDest(alice.paymentCode);
+    const destA = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1, spendPub: alice.spendPub });
     const destC = destAtIndex(alice.address, { index: 1, viewKey: alice.viewKey });
-    const destB = destForLogin(bob.address, { viewKey: bob.viewKey, height: 1 });
-    const minerDest = destForLogin(minerId.address, { viewKey: minerId.viewKey, height: 1 });
+    const destB = destForLogin(bob.address, { viewKey: bob.viewKey, height: 1, spendPub: bob.spendPub });
+    const minerDest = destForLogin(minerId.address, { viewKey: minerId.viewKey, height: 1, spendPub: minerId.spendPub });
     const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     assert.ok(destA.startsWith('ssa1'));
     assert.ok(destC.startsWith('ssa1'));

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, destOpeningFromView, payoutDest } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, spendDestOf } from '../../crypto/address.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
@@ -30,12 +30,11 @@ function spendSig({ from, to, amount, open, identity, kind = 'send' }) {
     to,
     nanos,
     fee,
-    open,
     vin: [{ address: from }],
     vout: [{ address: to, nanos, kind }],
   };
   signSpendTx(tx, identity.privateKey);
-  return tx.sig;
+  return { sig: tx.sig, spendPub: tx.spendPub };
 }
 
 function storeWith({ rows = [], reserveVault, issued } = {}) {
@@ -52,9 +51,9 @@ function storeWith({ rows = [], reserveVault, issued } = {}) {
 describe('pool send reconstruct and Join vault', () => {
   it('refuses send when reconstructed spendable is below amount and accepts when dest holds credits', () => {
     const alice = newIdentity();
-    const silent = payoutDest(alice.paymentCode);
+    const silent = spendDestOf(alice.spendPub);
     const bobId = newIdentity();
-    const bob = destForLogin(bobId.address, { viewKey: bobId.viewKey, height: 1 });
+    const bob = spendDestOf(bobId.spendPub);
     const rows = [{
       id: 'cb-1',
       from: 'coinbase',
@@ -83,12 +82,13 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(unsigned.status, 403);
     assert.equal(unsigned.json.reason, 'unsigned');
 
+    const signed = spendSig({ from: silent, to: bob, amount: 0.4, identity: alice });
     const ok = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from: silent,
       to: bob,
       amount: 0.4,
-      open,
-      sig: spendSig({ from: silent, to: bob, amount: 0.4, open, identity: alice }),
+      sig: signed.sig,
+      spendPub: signed.spendPub,
     }, { store, miners: new Map(), queueSend: (t) => {
       const tx = { id: 'send-1', ...t };
       posted.push(tx);
@@ -103,7 +103,7 @@ describe('pool send reconstruct and Join vault', () => {
 
   it('Reserve lock spends spendable Continuum and refuses when spendable is short', () => {
     const alice = newIdentity();
-    const silent = payoutDest(alice.paymentCode);
+    const silent = spendDestOf(alice.spendPub);
     const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
     const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     const she = PI_SHE_NANOS / NANOS_PER_SHE;
@@ -129,14 +129,15 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(deny.json.reason, 'insufficient');
     assert.equal(posted.length, 0);
 
+    const signedLock = spendSig({ from: silent, to: vault, amount: she, identity: alice, kind: 'lock' });
     const ok = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from: silent,
       to: vault,
       amount: she,
       kind: 'lock',
       programId: RESERVE_PROGRAM,
-      open,
-      sig: spendSig({ from: silent, to: vault, amount: she, open, identity: alice, kind: 'lock' }),
+      sig: signedLock.sig,
+      spendPub: signedLock.spendPub,
     }, { store, miners: new Map(), queueSend: (t) => {
       const tx = { id: 'lock-1', ...t };
       posted.push(tx);

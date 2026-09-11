@@ -1,6 +1,7 @@
 import net from 'node:net';
 import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { shareRowJson } from '../../crypto/pack.js';
+import { compactTx } from '../../crypto/chronoflux.js';
 
 export const P2P_PORT = 30303;
 export const P2P_MAX_FRAME = 1024 * 1024;
@@ -120,7 +121,7 @@ export function encodeWireBlock(b) {
     header: Buffer.from(b.header).toString('hex'),
     hash: Buffer.from(b.hash).toString('hex'),
     height: b.height,
-    txs: b.txs,
+    txs: (b.txs || []).map(compactTx),
     samples: b.samples,
     miner: b.miner,
     shareBatch: Array.isArray(b.shareBatch) ? b.shareBatch.map(shareRowJson) : [],

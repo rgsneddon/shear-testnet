@@ -2,8 +2,22 @@ import 'dart:typed_data';
 
 /// RFC 7748 X25519 base-point public key from a 32-byte seed (matches Node crypto).
 Uint8List x25519PublicFromSeed(Uint8List secret32) {
+  return x25519Shared(secret32, _nine());
+}
+
+Uint8List _nine() {
+  final u = Uint8List(32);
+  u[0] = 9;
+  return u;
+}
+
+/// RFC 7748 X25519(k, u).
+Uint8List x25519Shared(Uint8List secret32, Uint8List peerPub32) {
   if (secret32.length != 32) {
     throw ArgumentError('x25519 seed must be 32 bytes');
+  }
+  if (peerPub32.length != 32) {
+    throw ArgumentError('x25519 pub must be 32 bytes');
   }
   final e = Uint8List.fromList(secret32);
   e[0] &= 248;
@@ -16,7 +30,11 @@ Uint8List x25519PublicFromSeed(Uint8List secret32) {
     return x;
   }
 
-  BigInt x1 = BigInt.from(9);
+  var x1 = BigInt.zero;
+  for (var i = 0; i < 32; i++) {
+    x1 |= BigInt.from(peerPub32[i]) << (8 * i);
+  }
+  x1 = x1 & ((BigInt.one << 255) - BigInt.one);
   BigInt x2 = BigInt.one;
   BigInt z2 = BigInt.zero;
   BigInt x3 = x1;
