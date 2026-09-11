@@ -9,7 +9,8 @@ import {
   NANOS_PER_SHE,
   SHARE_FLOOR_BITS,
 } from '../crypto/asert.js';
-import { dest20OfShare, unitsForShare, collateShareUnits } from '../crypto/share_batch.js';
+import { dest20OfShare, unitsForShare, collateShareUnits, noteCommitOfShare } from '../crypto/share_batch.js';
+import { verifySealedNote, noteCommitOfDest20 } from '../crypto/note.js';
 import { poolFeeDest } from '../crypto/levy.js';
 import { coinbaseTx, hashBonusByMiner, buildTemplate, GENESIS_PREV } from '../node/src/chain.js';
 import { mintShareMinBits, SHARE_BITS_V2_START } from '../pool/src/share_vardiff.js';
@@ -57,20 +58,31 @@ describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
     });
     const pots = cb.vout.filter((o) => o.kind === 'pot');
     const hashes = cb.vout.filter((o) => o.kind === 'hash');
-    const potNanos = pots.reduce((n, o) => n + o.nanos, 0);
-    assert.equal(potNanos, BLOCK_SUBSIDY_NANOS);
-    assert.equal(BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE);
+    const nca = noteCommitOfShare({ dest: a });
+    const ncb = noteCommitOfShare({ dest: b });
+    const ncp = noteCommitOfDest20(dest20OfShare({ dest: pool }));
     assert.equal(hashes.length, 2);
-    const ha = hashes.find((o) => o.address === a);
-    const hb = hashes.find((o) => o.address === b);
-    assert.ok(ha, 'alice hash vout');
-    assert.ok(hb, 'bob hash vout');
-    assert.equal(ha.nanos, units * HASH_BONUS_NANOS);
-    assert.equal(hb.nanos, units * HASH_BONUS_NANOS);
-    assert.equal(hashes.some((o) => o.address === pool), false);
-    assert.equal(hashes.some((o) => o.address === indexed), false);
+    const ha = hashes.find((o) => Buffer.from(o.noteCommit).equals(nca));
+    const hb = hashes.find((o) => Buffer.from(o.noteCommit).equals(ncb));
+    assert.ok(ha, 'alice hash note');
+    assert.ok(hb, 'bob hash note');
+    assert.equal(ha.nanos, undefined);
+    assert.equal(hb.nanos, undefined);
+    assert.equal(verifySealedNote(ha, units * HASH_BONUS_NANOS), true);
+    assert.equal(verifySealedNote(hb, units * HASH_BONUS_NANOS), true);
+    assert.equal(hashes.some((o) => Buffer.from(o.noteCommit).equals(ncp)), false);
+    const nci = noteCommitOfDest20(dest20OfShare({ dest: indexed }));
+    assert.equal(hashes.some((o) => Buffer.from(o.noteCommit).equals(nci)), false);
     const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
-    assert.equal(pots.find((o) => o.address === pool)?.nanos, fee);
+    const rest = BLOCK_SUBSIDY_NANOS - fee;
+    const poolPot = pots.find((o) => Buffer.from(o.noteCommit).equals(ncp));
+    assert.equal(verifySealedNote(poolPot, fee), true);
+    const hasherPot = pots.filter((o) => !Buffer.from(o.noteCommit).equals(ncp));
+    assert.equal(hasherPot.length, 2);
+    for (const o of hasherPot) {
+      assert.equal(o.nanos, undefined);
+      assert.equal(verifySealedNote(o, rest / 2), true);
+    }
 
     const she1 = coinbaseTx({
       height: 2,
@@ -94,8 +106,8 @@ describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
     });
     const tplHash = tpl.txs[0].vout.filter((o) => o.kind === 'hash');
     assert.equal(tplHash.length, 2);
-    assert.equal(tplHash.find((o) => o.address === a).nanos, units * HASH_BONUS_NANOS);
-    assert.equal(tplHash.find((o) => o.address === b).nanos, units * HASH_BONUS_NANOS);
+    assert.equal(verifySealedNote(tplHash.find((o) => Buffer.from(o.noteCommit).equals(nca)), units * HASH_BONUS_NANOS), true);
+    assert.equal(verifySealedNote(tplHash.find((o) => Buffer.from(o.noteCommit).equals(ncb)), units * HASH_BONUS_NANOS), true);
     assert.equal(hashBonusByMiner([{ miner: alice.paymentCode, count: 99 }], HASH_BONUS_NANOS, null).size, 0);
     assert.equal(mintShareMinBits(), SHARE_FLOOR_BITS);
     assert.ok(mintShareMinBits() >= SHARE_BITS_V2_START);
@@ -147,7 +159,9 @@ describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
     const hashes = cb.vout.filter((o) => o.kind === 'hash');
     const unit = unitsForShare();
     assert.equal(hashes.length, 2);
-    assert.equal(hashes.find((o) => o.address === a).nanos, 2 * unit * HASH_BONUS_NANOS);
-    assert.equal(hashes.find((o) => o.address === b).nanos, 1 * unit * HASH_BONUS_NANOS);
+    const nca2 = noteCommitOfShare({ dest: a });
+    const ncb2 = noteCommitOfShare({ dest: b });
+    assert.equal(verifySealedNote(hashes.find((o) => Buffer.from(o.noteCommit).equals(nca2)), 2 * unit * HASH_BONUS_NANOS), true);
+    assert.equal(verifySealedNote(hashes.find((o) => Buffer.from(o.noteCommit).equals(ncb2)), 1 * unit * HASH_BONUS_NANOS), true);
   });
 });

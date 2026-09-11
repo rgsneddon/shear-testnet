@@ -32,6 +32,7 @@ import {
   unitsForShare,
   destOfShare,
   dest20OfShare,
+  noteCommitOfShare,
   sortShares,
 } from '../../crypto/share_batch.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
@@ -44,6 +45,13 @@ import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp, checkAddre
 import { collateSamples, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { verifyFundedBody } from '../../crypto/spend.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
+import {
+  sealCoinbaseNote,
+  verifySealedNote,
+  verifyMintSum,
+  excessOf,
+  noteCommitOfDest20,
+} from '../../crypto/note.js';
 import { packTx, packDigest } from '../../crypto/pack.js';
 import { buildDualTree, spendB } from '../../crypto/clearing.js';
 import {
@@ -95,8 +103,10 @@ export function digestTx(tx) {
     dest20: dest20Of(v.address || ''),
   }));
   const vouts = (tx.vout || []).map((o) => ({
-    dest20: dest20Of(o.address || ''),
-    nanos: Number(o.nanos || 0),
+    dest20: o.noteCommit && Buffer.from(o.noteCommit).length === 32
+      ? Buffer.from(o.noteCommit).subarray(0, 20)
+      : dest20Of(o.address || ''),
+    nanos: o.commit ? 0 : Number(o.nanos || 0),
     kind: kindByte(o.kind),
   }));
   return packDigest(packTx({
@@ -109,10 +119,16 @@ export function digestTx(tx) {
 }
 
 function aLeavesOf(collated, pay) {
-  return collated.map((s) => ({
-    dest20: dest20Of(pay(s.miner || s.address || s.dest || '')),
-    count: Number(s.count) > 0 ? Number(s.count) : unitsForShare(),
-  }));
+  return collated.map((s) => {
+    const d20 = dest20Of(pay(s.miner || s.address || s.dest || ''));
+    return {
+      dest20: d20,
+      noteCommit: s.noteCommit && Buffer.from(s.noteCommit).length === 32
+        ? Buffer.from(s.noteCommit)
+        : noteCommitOfDest20(d20),
+      count: Number(s.count) > 0 ? Number(s.count) : unitsForShare(),
+    };
+  });
 }
 
 function bLeavesOf(txs, pay) {
@@ -222,12 +238,14 @@ export function coinbaseTx({
   for (const s of shares) {
     const pay = destOf(s.address);
     if (!isDestAddress(pay) || !s.nanos) continue;
-    vout.push({ address: pay, nanos: s.nanos, kind: s.kind || 'pot' });
+    const d20 = hash20FromAddress(pay);
+    vout.push(sealCoinbaseNote(s.nanos, { dest20: d20, kind: s.kind || 'pot' }));
   }
   for (const [address, nanos] of bonuses) {
     const pay = destOf(address);
     if (!isDestAddress(pay)) continue;
-    vout.push({ address: pay, nanos, kind: 'hash' });
+    const d20 = hash20FromAddress(pay);
+    vout.push(sealCoinbaseNote(nanos, { dest20: d20, kind: 'hash' }));
   }
   if (!vout.length) {
     throw new Error('coinbase_needs_dest');
@@ -237,6 +255,7 @@ export function coinbaseTx({
     height,
     vin: [{ coinbase: true, height }],
     vout,
+    excess: excessOf(vout),
   };
 }
 
@@ -423,10 +442,12 @@ function verifyBlockConsensus(block, prev, {
   if (!block.samplesPruned && !shareBatchEarly.length && sampleCapExceeded(samples, decoded.bits)) {
     return { ok: false, reason: 'sample_cap' };
   }
-  const potVouts = txs[0].vout.filter((o) => o.kind !== 'hash' && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
-  const potNanos = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
-  if (potNanos !== BLOCK_SUBSIDY_NANOS) return { ok: false, reason: 'pot' };
-  const bonusNanos = txs[0].vout.filter((o) => o.kind === 'hash').reduce((a, o) => a + Number(o.nanos || 0), 0);
+  const cbVouts = txs[0].vout || [];
+  const confidential = cbVouts.some((o) => o.commit);
+  const potVouts = cbVouts.filter((o) => o.kind !== 'hash' && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
+  const hashVouts = cbVouts.filter((o) => o.kind === 'hash');
+  let potNanos = 0;
+  let bonusNanos = 0;
   const height = Number(block.height || (prev?.height || 0) + 1);
   const tip = Number(tipHeight || height);
   const buriedDeep = shouldPruneSamples(height, tip);
@@ -454,28 +475,57 @@ function verifyBlockConsensus(block, prev, {
     } else if (shareBatch.length) {
       return { ok: false, reason: 'share_batch' };
     }
-    if (bonusNanos !== provenUnits * liveUnit) return { ok: false, reason: 'hash_bonus' };
-    const hashVouts = txs[0].vout.filter((o) => o.kind === 'hash');
-    const paid = new Map();
-    for (const o of hashVouts) {
-      paid.set(o.address, (paid.get(o.address) || 0) + Number(o.nanos || 0));
-    }
-    for (const [dest, units] of provenByDest) {
-      if ((paid.get(dest) || 0) !== units * liveUnit) return { ok: false, reason: 'hash_bonus' };
-    }
-    for (const dest of paid.keys()) {
-      if (!provenByDest.has(dest)) return { ok: false, reason: 'hash_bonus' };
-    }
-    const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
-    const hasherSet = new Set(provenByDest.keys());
-    const poolPay = poolDest && isDestAddress(poolDest) ? poolDest : '';
-    if (hasherSet.size) {
-      const extra = potVouts.filter((o) => !hasherSet.has(o.address));
-      const extraNanos = extra.reduce((a, o) => a + Number(o.nanos || 0), 0);
-      if (extraNanos > fee) return { ok: false, reason: 'pot_prop' };
-      if (extraNanos === BLOCK_SUBSIDY_NANOS) return { ok: false, reason: 'pot_prop' };
-      if (poolPay && extra.some((o) => o.address === poolPay) && extraNanos > fee) {
-        return { ok: false, reason: 'pot_prop' };
+    if (confidential) {
+      const wantBonus = provenUnits * liveUnit;
+      const paid = new Map();
+      for (const o of hashVouts) {
+        const key = Buffer.from(o.noteCommit || []).toString('hex');
+        paid.set(key, (paid.get(key) || 0) + 1);
+      }
+      for (const [dest, units] of provenByDest) {
+        const nc = noteCommitOfDest20(hash20FromAddress(dest) || Buffer.alloc(20)).toString('hex');
+        const hit = hashVouts.find((o) => Buffer.from(o.noteCommit || []).toString('hex') === nc);
+        if (!hit || !verifySealedNote(hit, units * liveUnit)) return { ok: false, reason: 'hash_bonus' };
+      }
+      for (const o of hashVouts) {
+        const nc = Buffer.from(o.noteCommit || []).toString('hex');
+        const destHit = [...provenByDest.keys()].some((d) => (
+          noteCommitOfDest20(hash20FromAddress(d) || Buffer.alloc(20)).toString('hex') === nc
+        ));
+        if (!destHit) return { ok: false, reason: 'hash_bonus' };
+      }
+      bonusNanos = wantBonus;
+      const T = BLOCK_SUBSIDY_NANOS + wantBonus;
+      const money = cbVouts.filter((o) => o.commit);
+      if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
+      potNanos = BLOCK_SUBSIDY_NANOS;
+      void paid;
+    } else {
+      potNanos = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
+      bonusNanos = hashVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
+      if (potNanos !== BLOCK_SUBSIDY_NANOS) return { ok: false, reason: 'pot' };
+      if (bonusNanos !== provenUnits * liveUnit) return { ok: false, reason: 'hash_bonus' };
+      const paid = new Map();
+      for (const o of hashVouts) {
+        paid.set(o.address, (paid.get(o.address) || 0) + Number(o.nanos || 0));
+      }
+      for (const [dest, units] of provenByDest) {
+        if ((paid.get(dest) || 0) !== units * liveUnit) return { ok: false, reason: 'hash_bonus' };
+      }
+      for (const dest of paid.keys()) {
+        if (!provenByDest.has(dest)) return { ok: false, reason: 'hash_bonus' };
+      }
+      const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
+      const hasherSet = new Set(provenByDest.keys());
+      const poolPay = poolDest && isDestAddress(poolDest) ? poolDest : '';
+      if (hasherSet.size) {
+        const extra = potVouts.filter((o) => !hasherSet.has(o.address));
+        const extraNanos = extra.reduce((a, o) => a + Number(o.nanos || 0), 0);
+        if (extraNanos > fee) return { ok: false, reason: 'pot_prop' };
+        if (extraNanos === BLOCK_SUBSIDY_NANOS) return { ok: false, reason: 'pot_prop' };
+        if (poolPay && extra.some((o) => o.address === poolPay) && extraNanos > fee) {
+          return { ok: false, reason: 'pot_prop' };
+        }
       }
     }
   }
@@ -484,9 +534,12 @@ function verifyBlockConsensus(block, prev, {
       ? block.aLeaves.map((l) => ({ dest20: Buffer.from(l.dest20), count: Number(l.count) || 1 }))
       : (shareLeaves || []));
   if (!skipFlow && Array.isArray(shareLeaves)) {
-    const have = new Map(aLeaves.map((l) => [Buffer.from(l.dest20).toString('hex'), Number(l.count)]));
+    const have = new Map(aLeaves.map((l) => [
+      Buffer.from(l.noteCommit || l.dest20).toString('hex'),
+      Number(l.count),
+    ]));
     for (const leaf of shareLeaves) {
-      const key = Buffer.from(leaf.dest20).toString('hex');
+      const key = Buffer.from(leaf.noteCommit || leaf.dest20).toString('hex');
       if (have.get(key) !== leaf.count) return { ok: false, reason: 'hash_bonus' };
     }
   }
@@ -504,6 +557,7 @@ function verifyBlockConsensus(block, prev, {
     if (!dual.continuityRoot.equals(decoded.continuityRoot)) return { ok: false, reason: 'continuity' };
   }
   for (const o of txs[0].vout) {
+    if (o.commit && o.noteCommit) continue;
     const r = checkAddressField(o.address, { allowEmpty: false });
     if (!r.ok) {
       if (r.reason === 'silent_id_on_chain') return { ok: false, reason: 'silent_id_on_chain' };

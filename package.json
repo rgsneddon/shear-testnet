@@ -23,5 +23,8 @@
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^2.4.0",
     "solc": "^0.8.36"
+  },
+  "overrides": {
+    "tmp": "0.2.7"
   }
 }

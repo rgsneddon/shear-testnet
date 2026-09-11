@@ -5,12 +5,16 @@
  */
 import { sha256 } from './shear_hash.js';
 import { merkleRoot, merkleProof, merkleVerify } from './merkle.js';
-import { packALeaf, packBLeaf, packDigest } from './pack.js';
+import { packALeafV5, packBLeaf, packDigest } from './pack.js';
+import { noteCommitOfDest20 } from './note.js';
 import { decodeHeader } from './header.js';
 import { SPENDABLE_CONFIRMATIONS } from './asert.js';
 
-export function aLeafBytes({ dest20, count }) {
-  return packDigest(packALeaf({ dest20, count }));
+export function aLeafBytes(leaf) {
+  const noteCommit = leaf.noteCommit && Buffer.from(leaf.noteCommit).length === 32
+    ? Buffer.from(leaf.noteCommit)
+    : noteCommitOfDest20(Buffer.from(leaf.dest20));
+  return packDigest(packALeafV5({ noteCommit, count: leaf.count }));
 }
 
 export function bLeafBytes({ dest20, unit, nonce, memoH, tag }) {

@@ -245,6 +245,17 @@ function compactValue(v) {
 
 function compactVout(o) {
   if (!o) return o;
+  if (o.commit) {
+    const row = {
+      kind: o.kind || 'pot',
+      noteCommit: o.noteCommit,
+      commit: o.commit,
+      valueProof: o.valueProof,
+    };
+    if (o.rangeProof) row.rangeProof = o.rangeProof;
+    if (o.memo) row.memo = true;
+    return row;
+  }
   const row = {
     address: o.address,
     nanos: Number(o.nanos || 0),
@@ -258,12 +269,14 @@ function compactVout(o) {
 export function compactTx(tx) {
   if (!tx) return tx;
   if (tx.coinbase) {
-    return {
+    const row = {
       coinbase: true,
       height: tx.height,
       vin: [{ coinbase: true, height: tx.height }],
       vout: (tx.vout || []).map(compactVout),
     };
+    if (tx.excess) row.excess = tx.excess;
+    return row;
   }
   const out = compactValue(tx);
   delete out.samples;

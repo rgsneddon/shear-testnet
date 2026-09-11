@@ -14,6 +14,7 @@ import { shearHash, meetsTarget, leadingZeroBits } from './shear_hash.js';
 import { setNonce } from './header.js';
 import { packShare, unpackShareBatch } from './pack.js';
 import { isDestAddress, bech32Hrp, encodeDest, hash20FromAddress } from './address.js';
+import { noteCommitOfDest20 } from './note.js';
 
 export function unitsForShare(shareBits = SHARE_FLOOR_BITS) {
   const b = Math.max(SHARE_FLOOR_BITS, Math.floor(Number(shareBits) || 0));
@@ -30,6 +31,13 @@ export function dest20OfShare(share) {
   return h ? Buffer.from(h) : Buffer.alloc(20);
 }
 
+export function noteCommitOfShare(share) {
+  if (share?.noteCommit && Buffer.from(share.noteCommit).length === 32) {
+    return Buffer.from(share.noteCommit);
+  }
+  return noteCommitOfDest20(dest20OfShare(share));
+}
+
 export function destOfShare(share) {
   const addr = String(share?.dest || share?.address || share?.miner || '');
   if (isDestAddress(addr) && bech32Hrp(addr) === DEST_HRP) return addr;
@@ -40,8 +48,8 @@ export function destOfShare(share) {
 
 export function sortShares(shares = []) {
   return [...shares].sort((a, b) => {
-    const da = dest20OfShare(a);
-    const db = dest20OfShare(b);
+    const da = noteCommitOfShare(a);
+    const db = noteCommitOfShare(b);
     const c = da.compare(db);
     if (c !== 0) return c;
     const na = BigInt(a.nonce || 0);
@@ -65,13 +73,13 @@ export function collateShareUnits(shares = []) {
 export function aLeavesFromShares(shares = []) {
   const by = new Map();
   for (const s of shares) {
-    const d20 = dest20OfShare(s);
-    const key = d20.toString('hex');
+    const nc = noteCommitOfShare(s);
+    const key = nc.toString('hex');
     by.set(key, (by.get(key) || 0) + unitsForShare());
   }
   return [...by.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([hex, count]) => ({ dest20: Buffer.from(hex, 'hex'), count }));
+    .map(([hex, count]) => ({ noteCommit: Buffer.from(hex, 'hex'), count }));
 }
 
 /**
@@ -111,6 +119,7 @@ export function verifyShareBatch({
     proven.push({
       dest20: dest20OfShare({ ...s, dest }),
       dest,
+      noteCommit: noteCommitOfShare({ ...s, dest }),
       nonce,
       lz: leadingZeroBits(hash) & 0xff,
       units: unitsForShare(),

@@ -11,6 +11,7 @@ export const ENC_B = 2;
 export const ENC_TX = 3;
 export const ENC_SHARE = 4;
 export const ENC_SHARE_V5 = 5;
+export const ENC_A_V5 = 6;
 export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_A_LAYOUT_V5 = 'note_commit+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
@@ -40,6 +41,13 @@ export function need32(buf, name = 'hash32') {
 export function packALeaf({ dest20, count }) {
   const body = Buffer.concat([need20(dest20), u64le(count || 0)]);
   return Buffer.concat([ENC_MAGIC, Buffer.from([ENC_A]), body]);
+}
+
+export function packALeafV5({ noteCommit, count }) {
+  const nc = Buffer.from(noteCommit);
+  if (nc.length !== 32) throw new Error('note_commit must be 32 bytes');
+  const body = Buffer.concat([nc, u64le(count || 0)]);
+  return Buffer.concat([ENC_MAGIC, Buffer.from([ENC_A_V5]), body]);
 }
 
 export function packBLeaf({ dest20, unit, nonce, memoH, tag }) {
