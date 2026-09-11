@@ -220,6 +220,28 @@ describe('round hash bonuses', { timeout: 1_200_000 }, () => {
     const bad = { dest: destA, nonce: 0n, lz: 8 };
     const kept = provenLag1Shares(parent, [bad]);
     assert.equal(kept.length, 0);
+
+    const sealed = Buffer.from(job.header, 'hex');
+    const restamp = Buffer.from(job.header, 'hex');
+    restamp.writeBigUInt64LE(restamp.readBigUInt64LE(100) + 10_000n, 100);
+    const aliceShare = {
+      dest: destA,
+      nonce: 11n,
+      verifiedHeader: sealed.toString('hex'),
+    };
+    const bob = newIdentity();
+    const destB = destForLogin(bob.address, { spendPub: bob.spendPub });
+    const bobShare = {
+      dest: destB,
+      nonce: 12n,
+      verifiedHeader: sealed.toString('hex'),
+    };
+    const stale = { dest: destB, nonce: 13n, verifiedHeader: restamp.toString('hex') };
+    const mixed = provenLag1Shares(sealed, [aliceShare, bobShare, stale]);
+    assert.equal(mixed.length, 2);
+    assert.equal(mixed.some((s) => s.dest === destA), true);
+    assert.equal(mixed.some((s) => s.dest === destB && String(s.nonce) === '12'), true);
+    assert.equal(mixed.some((s) => String(s.nonce) === '13'), false);
     pool.close();
   });
 });

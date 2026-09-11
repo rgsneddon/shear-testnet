@@ -167,6 +167,24 @@ export function splitPot(round, poolDest) {
 }
 
 /**
+ * Job identity for lag-1 trust: every field except nonce. Shares found on
+ * the sealed parent (any nonce) are the same job; a restamp is not.
+ * Exact-header compare kept only the finder's winning nonce, so every other
+ * hasher dest was dropped when one stale row poisoned verifyShareBatch.
+ */
+export function shareJobId(header) {
+  if (!header) return '';
+  try {
+    const buf = Buffer.isBuffer(header)
+      ? Buffer.from(header)
+      : headerFromHex(String(header));
+    return setNonce(buf, 0n).toString('hex').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Lag-1 shares must verify against the sealed parent. A restamped share or a
  * bech32-as-dest20 row that fails share_pow/miner_addr must not freeze the
  * next template. Drop the bad rows; an empty batch is still sealable.
@@ -174,14 +192,12 @@ export function splitPot(round, poolDest) {
 export function provenLag1Shares(parentHeader, shares) {
   const list = Array.isArray(shares) ? shares : [];
   if (!list.length || !parentHeader) return [];
-  const parentHex = (Buffer.isBuffer(parentHeader)
-    ? parentHeader.toString('hex')
-    : String(parentHeader || '')).toLowerCase();
+  const parentId = shareJobId(parentHeader);
   const trusted = [];
   const unknown = [];
   for (const s of list) {
-    const v = String(s?.verifiedHeader || '').toLowerCase();
-    if (v && parentHex && v === parentHex) trusted.push(s);
+    const id = shareJobId(s?.verifiedHeader);
+    if (id && parentId && id === parentId) trusted.push(s);
     else unknown.push(s);
   }
   if (!unknown.length) return sortShares(trusted);

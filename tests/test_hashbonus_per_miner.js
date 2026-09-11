@@ -13,6 +13,8 @@ import { dest20OfShare, unitsForShare, collateShareUnits } from '../crypto/share
 import { poolFeeDest } from '../crypto/levy.js';
 import { coinbaseTx, hashBonusByMiner, buildTemplate, GENESIS_PREV } from '../node/src/chain.js';
 import { mintShareMinBits, SHARE_BITS_V2_START } from '../pool/src/share_vardiff.js';
+import { encodeHeader, setNonce } from '../crypto/header.js';
+import { provenLag1Shares } from '../pool/src/pool.js';
 
 function bindable(id) {
   return destForLogin(id.address, { spendPub: id.spendPub });
@@ -97,5 +99,55 @@ describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
     assert.equal(hashBonusByMiner([{ miner: alice.paymentCode, count: 99 }], HASH_BONUS_NANOS, null).size, 0);
     assert.equal(mintShareMinBits(), SHARE_FLOOR_BITS);
     assert.ok(mintShareMinBits() >= SHARE_BITS_V2_START);
+  });
+
+  it('provenLag1Shares keeps every same-job hasher dest; a restamp row cannot collapse the batch to the finder', () => {
+    const alice = newIdentity();
+    const bob = newIdentity();
+    const a = bindable(alice);
+    const b = bindable(bob);
+    const job = encodeHeader({
+      prevBlockHash: Buffer.alloc(32, 1),
+      merkleRoot: Buffer.alloc(32, 2),
+      continuityRoot: Buffer.alloc(32, 3),
+      timestamp: 1_700_000_000_000n,
+      bits: 12,
+      nonce: 0n,
+      baseFee: 1n,
+    });
+    const sealed = setNonce(job, 99n);
+    const restamp = encodeHeader({
+      prevBlockHash: Buffer.alloc(32, 1),
+      merkleRoot: Buffer.alloc(32, 2),
+      continuityRoot: Buffer.alloc(32, 3),
+      timestamp: 1_700_000_010_000n,
+      bits: 12,
+      nonce: 13n,
+      baseFee: 1n,
+    });
+    const row = (dest, nonce, header) => ({
+      dest,
+      dest20: dest20OfShare({ dest }),
+      nonce,
+      lz: 8,
+      verifiedHeader: Buffer.from(header).toString('hex'),
+    });
+    const kept = provenLag1Shares(sealed, [
+      row(a, 11n, setNonce(job, 11n)),
+      row(b, 12n, setNonce(job, 12n)),
+      row(a, 99n, sealed),
+      row(b, 13n, restamp),
+    ]);
+    assert.equal(kept.length, 3, JSON.stringify(kept.map((s) => [s.dest === a ? 'a' : 'b', String(s.nonce)])));
+    assert.equal(kept.filter((s) => s.dest === a).length, 2);
+    assert.equal(kept.filter((s) => s.dest === b).length, 1);
+    assert.equal(kept.some((s) => String(s.nonce) === '13'), false);
+
+    const cb = coinbaseTx({ height: 2, miner: a, shareBatch: kept, poolDest: poolFeeDest() });
+    const hashes = cb.vout.filter((o) => o.kind === 'hash');
+    const unit = unitsForShare();
+    assert.equal(hashes.length, 2);
+    assert.equal(hashes.find((o) => o.address === a).nanos, 2 * unit * HASH_BONUS_NANOS);
+    assert.equal(hashes.find((o) => o.address === b).nanos, 1 * unit * HASH_BONUS_NANOS);
   });
 });
