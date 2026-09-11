@@ -10,11 +10,14 @@ export const ENC_A = 1;
 export const ENC_B = 2;
 export const ENC_TX = 3;
 export const ENC_SHARE = 4;
+export const ENC_SHARE_V5 = 5;
 export const LEAF_A_LAYOUT = 'dest20+u64count';
+export const LEAF_A_LAYOUT_V5 = 'note_commit+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
 export const A_BODY_LEN = 28;
 export const B_BODY_LEN = 76;
 export const SHARE_BODY_LEN = 29;
+export const SHARE_V5_BODY_MIN = 41;
 
 export function u64le(n) {
   const b = Buffer.alloc(8);
@@ -120,6 +123,29 @@ export function unpackShare(packed) {
     dest20: Buffer.from(body.subarray(0, 20)),
     nonce: body.readBigUInt64LE(20),
     lz: body[28],
+  };
+}
+
+/** note_commit32 || nonce_u64le || lz_u8 || view_tag? */
+export function packShareV5({ noteCommit, nonce, lz = 0, viewTag } = {}) {
+  const commit = Buffer.isBuffer(noteCommit) ? noteCommit : Buffer.from(noteCommit);
+  if (commit.length !== 32) throw new Error('note_commit must be 32 bytes');
+  const parts = [commit, u64le(nonce || 0), Buffer.from([Number(lz) & 0xff])];
+  if (viewTag != null && viewTag !== '') {
+    const tag = Buffer.isBuffer(viewTag) ? viewTag : Buffer.from([Number(viewTag) & 0xff]);
+    parts.push(tag.subarray(0, 1));
+  }
+  return Buffer.concat([ENC_MAGIC, Buffer.from([ENC_SHARE_V5]), Buffer.concat(parts)]);
+}
+
+export function unpackShareV5(packed) {
+  const { type, body } = unpackType(packed);
+  if (type !== ENC_SHARE_V5 || body.length < SHARE_V5_BODY_MIN) throw new Error('bad_share_v5');
+  return {
+    noteCommit: Buffer.from(body.subarray(0, 32)),
+    nonce: body.readBigUInt64LE(32),
+    lz: body[40],
+    viewTag: body.length > 41 ? Buffer.from(body.subarray(41, 42)) : null,
   };
 }
 
