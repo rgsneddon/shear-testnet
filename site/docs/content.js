@@ -62,7 +62,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / overview',
     html:
       '<p>Shear is a CPU-mined ledger. Coin is created when a block is found, not before. There is no premine and the developers do not sell SHE. You hash, or someone who already holds coin pays you.</p>' +
-      '<p>Private dests, public amounts. Continuity-settled. PoW elects the tip. The live network today is <code>shear-testnet-v2</code>.</p>' +
+      '<p>Private dests, public amounts. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. Each hasher dest that produced proven work in a round receives its own hash bonus on the next sealed block. The live network today is <code>shear-testnet-v2</code>.</p>' +
       '<table><tr><th>Coin</th><td>SHE (11 protocol decimals; public pages show nine)</td></tr>' +
       '<tr><th>Algo</th><td>ShearHash-v3 (RandomX light, CPU)</td></tr>' +
       '<tr><th>Block pot</th><td>Exactly 1 SHE</td></tr>' +
@@ -99,15 +99,15 @@ window.SHEAR_DOCS = {
       '<table><tr><th>Rest-frame</th><td><code>shear1…</code> — never share, never on chain</td></tr>' +
       '<tr><th>Silent ID</th><td><code>she1…</code> — offer this; never written as a vout</td></tr>' +
       '<tr><th>Dest</th><td><code>ssa1…</code> — revolving mailbox the book actually writes</td></tr></table>' +
-      '<p>The wallet password is the view secret. Copy ID is the full <code>she1</code> payment code (scan + spend pubs). The short fingerprint is display-only and cannot be paid. Two pays to one published code produce two <code>ssa1</code> dests. Miner login is <code>ssa1.worker</code>. A <code>she1</code> login is RAM-only and must resolve to an owned dest — it never pays <code>encodeDest(she1.hash20)</code>. Nodes reject a block that puts <code>she1</code> or <code>shear1</code> in an address field.</p>'
+      '<p>The wallet password is the view secret. Copy ID is the full <code>she1</code> payment code (scan + spend pubs). Copy dest is the <code>ssa1</code> mailbox you mine to. Two pays to one published code produce two <code>ssa1</code> dests. Miner login is Copy dest as <code>ssa1.worker</code>. Nodes keep <code>she1</code> and <code>shear1</code> off address fields on the book.</p>'
   };
 
   P.privacy = {
     title: 'She is private',
     crumb: 'addresses / privacy',
     html:
-      '<p>The public explorer reports amounts, dests, and whether a memo exists. It does not show ciphertext and it does not show rest-frame strings. Memo plaintext opens only with the stealth shared secret in the two wallets that scanned that dest.</p>' +
-      '<p>Amounts are public. Dests are stealth. The public pool learns whatever you type into stratum. A solo node is the anonymity path for miners. Never POST a view secret, a rest-frame, a seed, or a password. Never put those in a vortice body you host. There is no telemetry.</p>'
+      '<p>The public explorer reports amounts, dests, and whether a memo exists. Ciphertext and rest-frame strings stay off that page. Memo plaintext opens only with the stealth shared secret in the two wallets that scanned that dest.</p>' +
+      '<p>Amounts are public. Dests are stealth. Stratum login is Copy dest (<code>ssa1.worker</code>). Hash bonuses land on that dest. Keep view secrets, rest-frame, seeds, and passwords off POST bodies and vortice hosts. There is no telemetry.</p>'
   };
 
   P.wallet = {
@@ -197,11 +197,11 @@ window.SHEAR_DOCS = {
     title: 'How to mine',
     crumb: 'mining / how-to',
     html:
-      '<p>Official miner is <strong>ShearK-Miner 1.6</strong>, CPU only. Default login is <code>ssa1.worker</code> (never <code>shear1</code>). The public pool learns whatever you type into stratum.</p>' +
+      '<p>Official miner is <strong>ShearK-Miner 1.6</strong>, CPU only. Login is wallet Copy dest as <code>ssa1.worker</code>.</p>' +
       '<pre>./ShearK-Miner --selftest\n' +
       './ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit --threads 8</pre>' +
       '<p>Windows: <code>ShearK-Miner.exe</code> with the same flags. <code>.worker</code> is only a name. Downloads: <a href="https://github.com/rgsneddon/ShearK/releases/tag/1.6">ShearK 1.6</a>.</p>' +
-      '<p>The public pool takes 1% of the 1 SHE pot. Hash bonuses are paid in full to the hasher who produced them.</p>'
+      '<p>The public pool takes 1% of the 1 SHE pot. Each hasher dest that produced proven work receives its own hash bonus in full on the next sealed block.</p>'
   };
 
   P.solo = {
@@ -229,14 +229,14 @@ window.SHEAR_DOCS = {
     crumb: 'mining / shares',
     html:
       '<p>Every stratum job is a full 128-byte header template. A share that is not a valid header hash mints nothing. Vardiff moves share bits with accepted-share rate and never exceeds current block bits.</p>' +
-      '<p>When a block is found, the 1 SHE pot is split by proven work in that round (PROP). Proven hashes are <code>2^shareBits</code> per accepted share, not the client counter. Hash bonuses are not PROP-split.</p>'
+      '<p>When a block is found, the 1 SHE pot is split by proven work in that round (PROP) among hasher dests. Proven hashes are floor-share units, not the client counter. Hash bonuses pay separately to each of those dests.</p>'
   };
 
   P['hash-bonus'] = {
     title: 'Hash bonus',
     crumb: 'mining / hash bonus',
     html:
-      '<p>Each accepted hash mints <strong>1 unit = 10<sup>−11</sup> SHE</strong> to the miner who produced it. The block finder does not scoop anyone else’s bonus. Public pages show nine fractional digits, so a single hash looks like dust; the unit is still written into the payout.</p>' +
+      '<p>Each proven floor share mints <strong>1 unit = 10<sup>−11</sup> SHE</strong> (256 units per floor share at eight bits) onto the hasher dest that produced it, on the next sealed block. The block finder receives that dest’s own bonus and leaves every other dest’s bonus untouched. Public pages show nine fractional digits, so a single hash looks like dust; the unit is still written into the payout.</p>' +
       '<p>The Reserve vote may raise or lower that unit by one, or leave it. The 1 SHE pot is not on the ballot.</p>'
   };
 
@@ -334,7 +334,7 @@ window.SHEAR_DOCS = {
     title: 'Consensus',
     crumb: 'network / consensus',
     html:
-      '<p>Heaviest valid chain wins. Equal work keeps first-seen. Magic <code>shear-testnet-v2</code>. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: 1 hash = 1 bonus unit, collated per miner, never one JSON object per hash.</p>'
+      '<p>Heaviest valid chain wins. Equal work keeps first-seen. Magic <code>shear-testnet-v2</code>. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
   };
 
   P.header = {
@@ -356,7 +356,7 @@ window.SHEAR_DOCS = {
     crumb: 'network / emissions',
     html:
       '<table><tr><th>Block pot</th><td>1 SHE, every found block</td></tr>' +
-      '<tr><th>Hash bonus</th><td>10<sup>−11</sup> SHE per accepted hash, to that hasher</td></tr>' +
+      '<tr><th>Hash bonus</th><td>10<sup>−11</sup> SHE per proven floor share, paid to that hasher dest on the next sealed block</td></tr>' +
       '<tr><th>The Reserve</th><td>Oracle interest on staked SHE — the only dapp mint</td></tr></table>' +
       '<p>Third-party vortices must top up rewards from coin already in circulation.</p>'
   };

@@ -306,7 +306,8 @@
         <h1>Shear</h1>
         <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
         <p>Private dests, public amounts. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
-        <p>Offer <code>she1</code> (silent ID). Chain dests are revolving <code>ssa1</code>. Never share rest-frame shear1.</p>
+        <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Amounts stay public. Rest-frame <code>shear1</code> stays in Closure.</p>
+        <p>Mine with Copy dest: <code>ssa1.worker</code>. Each hasher dest that produced proven work receives its own hash bonus on the next sealed block. The 1 SHE pot is split among those dests.</p>
         <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v2</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
       </section>
@@ -325,12 +326,12 @@
           <pre id="mine-cmd">ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --threads 4</pre>
           <button type="button" id="copy-cmd">Copy</button>
         </div>
-        <p class="label" id="cmd-hint">Default login is ssa1.worker (a dest the wallet exported). she1 login is RAM-only. Never share shear1.</p>
+        <p class="label" id="cmd-hint">Default login is Copy dest as ssa1.worker. Paste the dest the wallet exported. Rest-frame shear1 stays off stratum.</p>
         <p class="label" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
       </section>
     </div>
     <div id="testnet-banner" role="status">TESTNET</div>
-    <p id="fee-note">pool fee is 1% of the 1 SHE pot for development — your hashes pay in full and are not subject to pool fees.</p>
+    <p id="fee-note">Pool fee is 1% of the 1 SHE pot. Hash bonuses pay in full to each hasher dest.</p>
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
       <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash-v3</div></article>
@@ -431,7 +432,7 @@
         && !/^shear1/i.test(addr);
       document.getElementById('cmd-hint').textContent = ok
         ? 'Ready to copy · ShearHash-v3 · :1111'
-        : 'Valid ssa1 dest required. Default login is ssa1.worker. she1 login is RAM-only. Never share shear1.';
+        : 'Paste Copy dest (ssa1). Default login is ssa1.worker.';
     }
     document.getElementById('addr').addEventListener('input', renderCmd);
     document.getElementById('threads').addEventListener('input', renderCmd);

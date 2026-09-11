@@ -44,7 +44,7 @@ describe('Shear DAG instrument', () => {
     assert.doesNotMatch(html, /GNFP/);
     assert.doesNotMatch(html, /uncle/i);
     assert.doesNotMatch(html, /releases\/tag\/0\.17/);
-    assert.match(html, /releases\/tag\/0\.18/);
+    assert.match(html, /releases\/tag\/0\.30/);
     assert.match(html, /liveFromBook/);
     assert.match(html, /roundHashes/);
     assert.doesNotMatch(html, /clientHashes/);

@@ -1,4 +1,4 @@
-# Deploy shear-testnet-v2 (worthy-coin book)
+# Deploy shear-testnet-v2
 
 Stay on **shear-testnet-v2**. Do not cut **shear-v1**. Do not invent a genesis time. Do not publish “run this now” clients. Mainnet is not scheduled until P0 1–14 on a public testnet book are green.
 

@@ -51,7 +51,8 @@
       <h1>Shear</h1>
       <p>Private dests, public amounts. PoW elects the tip. Continuity-settled. Coin <strong>SHE</strong>. Algo <strong>ShearHash-v3</strong> (RandomX light, CPU). Network today is <code>shear-testnet-v2</code>.</p>
       <p>No premine, no ICO. SHE is created when blocks are found. You hash, or you are paid by someone who already holds coin.</p>
-      <p>Offer <code>she1</code> (silent ID). Chain dests are revolving <code>ssa1</code>. Never share rest-frame <code>shear1</code>.</p>
+      <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Amounts stay public. Rest-frame <code>shear1</code> stays in Closure.</p>
+      <p>Each found block mints 1 SHE among hasher dests that produced proven work. Each of those dests receives its own hash bonus on the next sealed block. Mine with Copy dest (<code>ssa1.worker</code>).</p>
       <p>Site <a href="https://shear.digital">shear.digital</a> · Pool <a href="https://pool.shear.digital">pool.shear.digital</a> · Explorer <a href="https://explorer.shear.digital">explorer.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
     </section>
     <section class="panel-card" id="wallet">
@@ -83,7 +84,7 @@
           <br/><code>./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit --threads 8</code></li>
         <li><code>--user</code> is one string: the <code>ssa1</code> dest the wallet exported (Copy dest), a dot, then a worker name for this machine. <code>she1</code> without <code>--dest</code> is unpaid.</li>
       </ol>
-      <p>Each found block mints <strong>1 SHE</strong> (the pot), split by proven work on the public pool. Each accepted hash also mints <strong>0.00000000001 SHE</strong> to the miner who produced it. The public pool may take 1% of the pot only. Hash bonuses are not fee'd.</p>
+      <p>Each found block mints <strong>1 SHE</strong> (the pot), split by proven work among hasher dests. Each dest that hashed that round receives <strong>0.00000000001 SHE</strong> per proven floor share on the next sealed block. The public pool may take 1% of the pot only. Hash bonuses pay in full to those dests.</p>
     </section>
     <section class="panel-card" id="reserve">
       <h2>Community governance — The Reserve</h2>

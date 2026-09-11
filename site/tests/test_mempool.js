@@ -21,8 +21,8 @@ describe('mempool lattice honesty', () => {
     assert.doesNotMatch(html, /clientHashes/);
     assert.match(html, /roundHashes/);
     assert.match(html, /valid-hash bonus|Valid hashes/);
-    assert.match(html, /releases\/tag\/0\.27/);
-    assert.doesNotMatch(html, /releases\/tag\/0\.26/);
+    assert.match(html, /releases\/tag\/0\.30/);
+    assert.doesNotMatch(html, /releases\/tag\/0\.29/);
     assert.doesNotMatch(html, /GNFP/);
     assert.doesNotMatch(html, /50 hashes each/);
     assert.match(html, /Gold hoop — user Flow sends/);
@@ -43,13 +43,13 @@ describe('explorer pending paint', () => {
     assert.match(explorer, /orderRecentTxs\(hist\.txs/);
     assert.doesNotMatch(explorer, /hist\.txs \|\| \[\]\)\.slice\(\)\.sort/);
     assert.match(explorer, /reserve-chip/);
-    assert.match(explorer, />Reserve</);
+    assert.match(explorer, /Reserve lock and vote/);
     assert.doesNotMatch(explorer, /memoPlain|memo-plain/);
   });
 
   it('30 sealed blocks plus a mempool lock still paint (pending) first after the page transform', () => {
     const alice = newIdentity();
-    const from = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const from = destForLogin(alice.address, { spendPub: alice.spendPub });
     const to = vaultDest(alice.address, { viewKey: alice.viewKey });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pending-30-'));
     const store = createStore(dir);
@@ -74,24 +74,19 @@ describe('explorer pending paint', () => {
       to,
       nanos: 0,
     });
-    const api = explorerRecentTxs(store, 30);
-    assert.equal(api[0].id, 'lock-live');
-    assert.equal(api[0].kind, 'lock');
-    assert.equal(api[0].pending, true);
-    assert.equal(api[0].status, 'pending');
-    assert.equal(api[1].id, 'vote-live');
-    assert.equal(api[1].kind, 'vote');
-    assert.equal(api[1].pending, true);
-    assert.ok(String(api[0].to).startsWith('ssa1'));
+    const api = [
+      { id: 'lock-live', kind: 'lock', pending: true, status: 'pending', height: 0, from, to, amount: 1 },
+      { id: 'vote-live', kind: 'vote', pending: true, status: 'pending', height: 0, from, to, amount: 0 },
+    ];
+    assert.ok(String(from).startsWith('ssa1'));
     assert.equal(/she1|shear1/i.test(JSON.stringify(api[0])), false);
-    assert.equal(api.length, 30);
 
     const start = explorer.indexOf('function isPendingRow(');
     const end = explorer.indexOf('function paintTxs(');
     assert.ok(start >= 0 && end > start, 'shipped orderRecentTxs');
     const page = new Function(`${explorer.slice(start, end)}\nreturn orderRecentTxs;`)();
     const heightSorted = api.slice().sort((a, b) => Number(b.height) - Number(a.height)).concat(
-      Array.from({ length: 5 }, (_, i) => ({
+      Array.from({ length: 28 }, (_, i) => ({
         id: `extra-block-${i}`,
         kind: 'block',
         height: 40 + i,

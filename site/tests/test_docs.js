@@ -32,6 +32,9 @@ describe('docs.shear.digital', () => {
     assert.match(content, /id: 'reserve'/);
     assert.match(content, /vort1\./);
     assert.match(content, /ShearK-Miner 1\.6/);
+    assert.match(content, /Copy dest/);
+    assert.match(content, /hasher dest/);
+    assert.match(content, /ShearHash-v3/);
     assert.match(content, /shewall\.bin/);
     assert.match(content, /Continuum/);
     assert.match(content, /0\.001 SHE/);
@@ -59,7 +62,7 @@ describe('docs.shear.digital', () => {
     assert.match(docs, /border-bottom:1px solid rgba\(26,111,181,\.25\)/);
     assert.match(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
     assert.match(docs, /\.banner-wordmark \{ height:36px; width:auto; max-width:none/);
-    assert.match(docs, /content\.js\?v=6/);
+    assert.match(docs, /content\.js\?v=7/);
     assert.match(content, /Remove vortice/);
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);

@@ -8,13 +8,13 @@ Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache).
 - Pool: `pool.shear.digital:1111`
 - Header: 128 bytes. Light mode only. Do not recut Shear-Miner **1.1** / **1.0**. Submit includes the ShearHash-v3 digest.
 
-Paid login is an owned `ssa1` dest (wallet **Copy dest**):
+Paid login is an owned `ssa1` dest (wallet **Copy dest**). Each hasher dest that produced proven work receives its own hash bonus on the next sealed block.
 
 ```
 ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit --threads 8
 ```
 
-`she1` login is RAM-only and unpaid unless you also pass `--dest YOUR_SSA1`. Never use `shear1`.
+A `she1` login needs `--dest YOUR_SSA1` so the bonus can land on Copy dest. Rest-frame `shear1` stays off stratum.
 
 Default `--backend jit` is ShearHash-v3 light JIT + HARD_AES + huge pages (fallback to 4K if huge pages fail). Do not use `jit-full` against this pool: FULL_MEM hashes fail light verify.
 

@@ -305,7 +305,8 @@
         <h1>Shear</h1>
         <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
         <p>Private dests, public amounts. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
-        <p>Offer <code>she1</code> (silent ID). Chain dests are revolving <code>ssa1</code>. Never share rest-frame shear1.</p>
+        <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>) that the book writes. Amounts stay public. Rest-frame <code>shear1</code> stays in Closure.</p>
+        <p>Each found block mints 1 SHE, split among hasher dests that produced proven work. Each of those dests receives its own hash bonus on the next sealed block.</p>
         <p>Pool: <a href="https://pool.shear.digital">pool.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
         <p>Explorer: <a href="https://explorer.shear.digital">explorer.shear.digital</a></p>
         <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v2</p>
@@ -342,13 +343,13 @@
         <p>No premine, no ICO. SHE is created via CPU-only proof-of-work on a Nakamoto consensus using ShearHash-v3 (a variant of RandomX). There is no snapshot, no inherited allocation, and no claim window. The first coins exist when the first blocks are found.</p>
         <table class="sched">
           <tr><th>Block pot</th><td>Exactly 1 SHE, every found block</td></tr>
-          <tr><th>Hash bonus</th><td>0.00000000001 SHE for each accepted hash, paid to the miner who produced it</td></tr>
+          <tr><th>Hash bonus</th><td>0.00000000001 SHE for each accepted hash, paid to the hasher dest that produced it</td></tr>
           <tr><th>Staked SHE</th><td>Staking may occur in The Reserve vortice at a variable rate to reward participants in Shear's community governance model</td></tr>
         </table>
         <h3>The pot</h3>
-        <p>A found block creates 1 SHE. The 1 SHE pot is split proportionally to each miner's proven work in that round (PROP, minus any pool fee). Solo miners receive that full pot plus their own hash bonuses. Hash bonuses are always paid in full to the miner who produced them; they are not PROP-split.</p>
+        <p>A found block creates 1 SHE. The 1 SHE pot is split proportionally to each miner's proven work in that round (PROP, minus any pool fee). Solo miners receive that full pot plus their own hash bonuses. Hash bonuses are always paid in full to the miner who produced them; they are not PROP-split. Each hasher dest that hashed that round receives its own <code>kind:hash</code> payout on the next sealed block.</p>
         <h3>Each hash</h3>
-        <p>Your accepted hashes are yours. Finding the block does not let anyone take another person’s bonus. Public pages show eight decimal places, so a single hash looks like dust; the extra unit is still written into the payout.</p>
+        <p>Your accepted hashes are yours. Finding the block does not let anyone take another person’s bonus. Each hasher dest is paid separately. Public pages show eight decimal places, so a single hash looks like dust; the extra unit is still written into the payout.</p>
         <p>Shear developers do not sell SHE. You hash, or you are paid by someone who already holds coin. Testnet balances can vanish; treat them as a practice run before mainnet.</p>
       </section>
       <section class="panel-card" id="governance">
@@ -384,13 +385,13 @@
         <li>You will enter that password each time you open the app. If it is lost, the wallet cannot be opened. Where the phone or computer offers a fingerprint or face unlock, that only works on this device.</li>
         <li>Continuum shows your spendable balance and your <code>she1</code>. Copy that <code>she1</code> when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code> dest that you do not hand out. Never share a <code>shear1</code> string.</li>
         <li>Open Closure and tap <strong>Export shewall.bin</strong>. Keep that file with the password. Together they restore the same wallet on another machine.</li>
-        <li>This app does not mine. To hash, run the miner against <code>pool.shear.digital:1111</code> and log in with your <code>she1</code>.</li>
+        <li>This app does not mine. To hash, run ShearK-Miner against <code>pool.shear.digital:1111</code> and log in with Copy dest (<code>ssa1.worker</code>).</li>
       </ol>
       <p>This is testnet. Install only from the buttons on this page or the official release tag.</p>
     </section>
     <section class="panel-card guide-wide" id="solo-mine">
       <h2>Solo mine</h2>
-      <p>ShearK-Miner <strong>1.6</strong>, CPU only. Log in with your wallet <code>she1</code> (never <code>shear1</code>). Solo means <em>your</em> node finds the block: you keep the whole <strong>1 SHE</strong> pot plus the hash bonus. The public pool takes 1% of the pot only.</p>
+      <p>ShearK-Miner <strong>1.6</strong>, CPU only. Log in with wallet Copy dest (<code>ssa1.worker</code>). Solo means <em>your</em> node finds the block: you keep the whole <strong>1 SHE</strong> pot plus the hash bonus on that dest. The public pool takes 1% of the pot only.</p>
       <h3>1. Local node + stratum</h3>
       <p>Node source is the NODE button above. This starts an in-process node with stratum on <code>127.0.0.1:1111</code>.</p>
       <div class="copy-row">
@@ -413,7 +414,7 @@ npm run pool</pre>
 ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
         <button type="button" data-copy="solo-win">Copy</button>
       </div>
-      <p>Replace <code>YOUR_SSA1</code> with a dest the wallet exported for this worker. <code>.solo</code> is only a worker name. Hash bonus is 10<sup>−11</sup> SHE per accepted hash, paid onto that <code>ssa1</code>, immature until 6 confirms. Amounts stay public. A solo node is the anonymity path.</p>
+      <p>Replace <code>YOUR_SSA1</code> with Copy dest from the wallet. <code>.solo</code> is only a worker name. Hash bonus is 10<sup>−11</sup> SHE per accepted hash, paid onto that dest on the next sealed block, spendable after 6 confirms. Amounts stay public.</p>
       <h3>Public pool instead</h3>
       <p>Skip the local node and hash on the official stratum:</p>
       <div class="copy-row">

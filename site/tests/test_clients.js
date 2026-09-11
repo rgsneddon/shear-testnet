@@ -216,6 +216,8 @@ describe('shear.digital client buttons', () => {
     assert.match(potChunk, /not PROP-split/);
     assert.doesNotMatch(potChunk, /it is split between miners who hashed during the round/);
     assert.match(html, /Hash bonuses are always paid in full to the miner who produced them/);
+    assert.match(html, /Each hasher dest that hashed that round receives its own/);
+    assert.match(html, /Copy dest/);
     assert.match(html, /Staked SHE/);
     assert.match(html, /Staking may occur in The Reserve vortice at a variable rate to reward participants in Shear's community governance model/);
     assert.match(html, /0\.00000000001 SHE for each accepted hash/);
