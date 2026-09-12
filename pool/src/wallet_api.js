@@ -11,7 +11,7 @@ import {
   RESERVE_PROGRAM,
   extraMintAllowed,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyTaxed,
@@ -28,7 +28,7 @@ import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves } from '../../crypto/coinbase_notes.js';
-import { noteCommitOfDest20 } from '../../crypto/note.js';
+import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -164,6 +164,7 @@ export function ownerDests(address) {
 
 export function reconstructOwner(store, address) {
   const dests = ownerDests(address);
+  const destSet = new Set(dests);
   const rows = [];
   const seen = new Set();
   const push = (r) => {
@@ -199,6 +200,33 @@ export function reconstructOwner(store, address) {
   for (const d of dests) {
     nanos += matureSpendableNanos(rows, d, tipH);
     nanos -= mempoolDebitNanos(mempool, d);
+  }
+  if (nanos <= 0) {
+    const wants = dests.map((d) => {
+      const h = hash20FromAddress(d);
+      return h ? noteCommitOfDest20(h) : null;
+    }).filter(Boolean);
+    const bonus = Number(store?.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS);
+    for (const b of store.blocks || []) {
+      const pays = [
+        ...expectedCoinbasePays(b.shareBatch || [], {
+          miner: b.miner,
+          hashBonusNanos: bonus,
+        }),
+        ...paysFromALeaves(b.aLeaves || [], { hashBonusNanos: bonus }),
+      ];
+      for (const tx of b.txs || []) {
+        for (const o of tx.vout || []) {
+          if (!o?.noteCommit || !wants.length) continue;
+          const nc = Buffer.from(asU8(o.noteCommit));
+          if (!wants.some((w) => w.equals(nc))) continue;
+          let n = Number(o.nanos || 0);
+          if (tx.coinbase) n = matchSealedCoinbaseVout(o, pays).nanos || n;
+          if (isSpendableHeight(b.height, tipH) && n > 0) nanos += n;
+        }
+      }
+    }
+    nanos -= dests.reduce((a, d) => a + mempoolDebitNanos(mempool, d), 0);
   }
   if (nanos < 0) nanos = 0;
   return { ...rec, spendableNanos: nanos, spendable: nanosToShe(nanos) };
@@ -1067,6 +1095,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const programIn = String(body.programId || '');
     const isLock = kindIn === 'lock' && programIn === RESERVE_PROGRAM;
     const isVote = kindIn === 'vote' && programIn === RESERVE_PROGRAM;
+    const isWithdraw = kindIn === 'withdraw' && programIn === RESERVE_PROGRAM;
     if (!isDestAddress(from) || !isDestAddress(to)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
@@ -1085,23 +1114,23 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && Array.isArray(body.vout) && body.vout.length
       && (body.sig || body.signature)
       && body.spendPub;
-    if (!isVote && !sealedSend && rec.spendableNanos < nanos) {
+    if (!isVote && !isWithdraw && !sealedSend && rec.spendableNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const memoCt = body.memoCt || null;
-    if (kindIn !== 'send' && !isLock && !isVote) {
+    if (kindIn !== 'send' && !isLock && !isVote && !isWithdraw) {
       return { status: 400, json: { ok: false, reason: 'bad_kind' } };
     }
-    const kind = isLock ? 'lock' : isVote ? 'vote' : 'send';
-    const programId = (isLock || isVote) ? RESERVE_PROGRAM : '';
+    const kind = isLock ? 'lock' : isVote ? 'vote' : isWithdraw ? 'withdraw' : 'send';
+    const programId = (isLock || isVote || isWithdraw) ? RESERVE_PROGRAM : '';
     const taxed = levyTaxed({ kind, programId });
     const depth = mempoolDepthBytes(store?.mempool || []);
     const fee = taxed ? levyNanos(nanos, { depth }) : 0;
-    if (!sealedSend && rec.spendableNanos < nanos + fee) {
+    if (!isVote && !isWithdraw && !sealedSend && rec.spendableNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const rawChange = String(body.change || '').trim();
-    const changeDest = !isLock && !isVote
+    const changeDest = !isLock && !isVote && !isWithdraw
       ? (isDestAddress(rawChange) ? rawChange : '')
       : '';
     if (changeDest && changeDest === from) {
@@ -1128,7 +1157,24 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         ...(vout.length ? { vout } : {}),
       }
       : isVote
-        ? { ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }), fee, maxLevy: fee, sig: body.sig || body.signature, spendPub: body.spendPub, payer: from }
+        ? {
+          ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }),
+          fee,
+          maxLevy: fee,
+          sig: body.sig || body.signature,
+          spendPub: body.spendPub,
+          payer: from,
+          ...(vout.length ? { vout } : {}),
+        }
+        : isWithdraw
+        ? {
+          ...withdrawTx({ from, to, nanos, id: `withdraw-${Date.now()}` }),
+          fee,
+          sig: body.sig || body.signature,
+          spendPub: body.spendPub,
+          amount,
+          ...(vout.length ? { vout } : {}),
+        }
         : {
           kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, sig: body.sig || body.signature, spendPub: body.spendPub, ephPub,
           vin: Array.isArray(body.vin) && body.vin.length ? body.vin : [{ address: from }],

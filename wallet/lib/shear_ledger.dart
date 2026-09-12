@@ -2012,7 +2012,7 @@ class ShearLedger {
       admitProof = Map<String, dynamic>.from(body['admit_proof'] as Map);
       spent['spent'] = true;
     }
-    if (spendSeed != null && spendSeed.length == 32 && sendKind != 'vote') {
+    if (spendSeed != null && spendSeed.length == 32) {
       if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
         throw StateError('unspendable_dest');
       }

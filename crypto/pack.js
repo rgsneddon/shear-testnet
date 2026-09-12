@@ -213,7 +213,6 @@ export function shareRowJson(s) {
     : null;
   return {
     noteCommit: nc ? nc.toString('hex') : '',
-    ...(dest20 && !dest20.equals(Buffer.alloc(20)) ? { dest20: dest20.toString('hex') } : {}),
     nonce: String(s?.nonce ?? 0),
     lz: Number(s?.lz || 0) & 0xff,
     ...(tag ? { viewTag: tag.subarray(0, 1).toString('hex') } : {}),

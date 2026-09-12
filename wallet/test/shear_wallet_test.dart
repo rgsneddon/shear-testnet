@@ -349,6 +349,56 @@ void main() {
     );
   });
 
+  test('compactSealedVout keeps lock dest and nanos for spend sig', () {
+    final row = compactSealedVout({
+      'kind': 'lock',
+      'address': 'ssa1q9llema98canw38hqn3793xtn8zm6nk0n6a2cup',
+      'nanos': 5,
+    });
+    expect(row['kind'], 'lock');
+    expect(row['address'], isNotEmpty);
+    expect(row['nanos'], 5);
+    expect(row.containsKey('commit'), isFalse);
+  });
+
+  test('vote send with spendSeed posts sig spendPub and vault dest', () async {
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final posted = <Map<String, dynamic>>[];
+    final live = _PoolLive(
+      headerHex: Uint8List(128).map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
+      height: 12,
+      balance: 10,
+    );
+    final server = await _fakePool(live: live, posted: posted);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final vault = vaultDest(id.address, viewKey: id.viewKey)!;
+    ledger.confirmRound(address: from, pot: 1, height: 1);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    await ledger.send(
+      from: from,
+      to: vault,
+      amount: 0,
+      kind: 'vote',
+      programId: kReserveProgram,
+      choice: 'hold',
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: seed,
+    );
+    expect(posted.single['kind'], 'vote');
+    expect(posted.single['choice'], 'hold');
+    expect(posted.single['sig'], isNotEmpty);
+    expect(posted.single['spendPub'], isNotEmpty);
+    final v0 = (posted.single['vout'] as List).first as Map;
+    expect(v0['kind'], 'vote');
+    expect(v0['address'], vault);
+    expect(v0['nanos'], 0);
+  });
+
   test('send skips notes whose spendTag is already in the live fluxset', () async {
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);

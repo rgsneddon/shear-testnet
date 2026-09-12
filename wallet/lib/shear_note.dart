@@ -166,7 +166,16 @@ Map<String, dynamic> wrapNoteBlind(Map<String, dynamic> vout, Element admitBase)
 /// Compact a sealed vout the way chain persist does: drop r, keep rEph/rCt.
 Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
   final kind = (o['kind'] as String?) ?? 'pot';
-  if (o['commit'] is! Uint8List) return {'kind': kind};
+  if (o['commit'] is! Uint8List) {
+    if (kind == 'lock' || kind == 'vote' || kind == 'withdraw' || kind == 'vortice-register') {
+      return {
+        'kind': kind,
+        if (o['address'] != null) 'address': o['address'],
+        if (o['nanos'] != null) 'nanos': o['nanos'],
+      };
+    }
+    return {'kind': kind};
+  }
   final row = <String, dynamic>{
     'kind': kind,
     'noteCommit': o['noteCommit'],

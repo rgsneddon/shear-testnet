@@ -665,7 +665,8 @@ export function createStore(dir, {
     }
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
     const debit = fundedDebit(tx);
-    if (debit && !noteBound) {
+    const reserveTyped = ['lock', 'vote', 'withdraw'].includes(String(tx.kind || tx.vout?.[0]?.kind || ''));
+    if (debit && !noteBound && !reserveTyped) {
       const tipH = Number(t?.height || 0);
       const have = matureSpendableNanos(explorer, debit.from, tipH) - mempoolDebitNanos(mempool, debit.from);
       if (have < debit.nanos) {

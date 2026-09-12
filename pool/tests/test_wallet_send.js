@@ -6,7 +6,7 @@ import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
-import { lockTx } from '../../crypto/reserve_vault.js';
+import { lockTx, voteTx } from '../../crypto/reserve_vault.js';
 import {
   extraMintAllowed,
   RESERVE_PROGRAM,
@@ -18,14 +18,14 @@ import {
 } from '../../crypto/asert.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { isPinnedProgram, listPublicVortices, mintVorticeDeployKey } from '../../crypto/vortex.js';
-import { handleWalletApi } from '../src/wallet_api.js';
+import { handleWalletApi, reconstructOwner } from '../src/wallet_api.js';
 
 function url(path) {
   return new URL(`http://127.0.0.1${path}`);
 }
 
-function spendSig({ from, to, amount, open, identity, kind = 'send' }) {
-  const nanos = Math.round(amount * NANOS_PER_SHE);
+function spendSig({ from, to, amount, open, identity, kind = 'send', choice = 'hold' }) {
+  const nanos = kind === 'vote' ? 0 : Math.round(amount * NANOS_PER_SHE);
   const fee = levyNanos(nanos, { depth: 0 });
   let tx = {
     kind,
@@ -38,6 +38,7 @@ function spendSig({ from, to, amount, open, identity, kind = 'send' }) {
   };
   if (kind === 'send') tx = attachDummyOuts(tx);
   if (kind === 'lock') tx = { ...lockTx({ from, to, nanos, id: 'lock-sig' }), fee, amount };
+  if (kind === 'vote') tx = { ...voteTx({ from, dest: to, choice, id: 'vote-sig' }), fee, amount: 0, payer: from };
   if (kind === 'send') {
     tx.admit_proof = {
       admit_proof: true,
@@ -128,6 +129,25 @@ describe('wallet fluxset RPC', () => {
     assert.equal(got.json.notes[0].prev, Buffer.alloc(32, 3).toString('hex'));
     assert.equal(got.json.notes[0].r, undefined);
     assert.equal(JSON.stringify(got.json).includes('viewKey'), false);
+  });
+
+  it('reconstructOwner recovers dest spendable from noteCommit when explorer to is empty', () => {
+    const alice = newIdentity();
+    const dest = spendDestOf(alice.spendPub);
+    const want = noteCommitOfDest20(hash20FromAddress(dest));
+    const store = storeWith({
+      rows: [{ id: 'x', to: '', from: 'coinbase', nanos: 0, height: 2, kind: 'coinbase' }],
+    });
+    store.blocks = [{
+      height: 2,
+      hash: Buffer.alloc(32, 1),
+      txs: [{
+        coinbase: true,
+        vout: [{ kind: 'pot', noteCommit: want, nanos: 2 * NANOS_PER_SHE }],
+      }],
+    }];
+    const rec = reconstructOwner(store, dest);
+    assert.ok(rec.spendableNanos >= 2 * NANOS_PER_SHE, JSON.stringify(rec));
   });
 });
 
@@ -273,6 +293,57 @@ describe('pool send reconstruct and Join vault', () => {
     }, { store, miners: new Map(), queueSend: (t) => posted.push(t) && t });
     assert.equal(skipLevy.status, 400);
     assert.equal(skipLevy.json.reason, 'bad_kind');
+  });
+
+  it('Reserve vote accepts a signed hold and refuses unsigned', () => {
+    const alice = newIdentity();
+    const silent = spendDestOf(alice.spendPub);
+    const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
+    const rows = [{
+      id: 'cb-1',
+      from: 'coinbase',
+      to: silent,
+      nanos: 10 * NANOS_PER_SHE,
+      height: 10,
+      kind: 'coinbase',
+    }];
+    const store = storeWith({ rows });
+    const posted = [];
+    const unsigned = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      from: silent,
+      to: vault,
+      amount: 0,
+      kind: 'vote',
+      programId: RESERVE_PROGRAM,
+      choice: 'hold',
+    }, { store, miners: new Map(), queueSend: (t) => posted.push(t) && t });
+    assert.equal(unsigned.status, 403);
+    assert.equal(unsigned.json.reason, 'unsigned');
+    assert.equal(posted.length, 0);
+
+    const signedVote = spendSig({ from: silent, to: vault, amount: 0, identity: alice, kind: 'vote', choice: 'hold' });
+    const ok = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      from: silent,
+      to: vault,
+      amount: 0,
+      kind: 'vote',
+      programId: RESERVE_PROGRAM,
+      choice: 'hold',
+      sig: signedVote.sig,
+      spendPub: signedVote.spendPub,
+      vout: signedVote.vout,
+    }, { store, miners: new Map(), queueSend: (t) => {
+      const tx = { id: 'vote-1', ...t };
+      posted.push(tx);
+      return tx;
+    } });
+    assert.equal(ok.status, 200, ok.json.reason);
+    assert.equal(ok.json.ok, true);
+    assert.equal(ok.json.tx.kind, 'vote');
+    assert.equal(posted[0].kind, 'vote');
+    assert.equal(posted[0].choice, 'hold');
+    assert.ok(posted[0].sig);
+    assert.ok(posted[0].vout?.[0]?.address);
   });
 
   it('Join HTTP is gone; extra-mint of join-genesis is refused', () => {
