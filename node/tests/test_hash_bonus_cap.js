@@ -1,7 +1,9 @@
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { encodeDest, newIdentity, freshStealthDest } from '../../crypto/address.js';
+import { encodeDest, newIdentity, freshStealthDest, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
+import { noteCommitOfDest20, verifySealedNote } from '../../crypto/note.js';
+import { coinbaseSplit } from '../../crypto/mint.js';
 import {
   BLOCK_SUBSIDY_NANOS,
   HASH_BONUS_NANOS,
@@ -108,8 +110,16 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
     assert.equal(got.ok, true, got.reason);
     const hashV = child.txs[0].vout.filter((o) => o.kind === 'hash');
     assert.equal(hashV.length, 1);
-    assert.equal(hashV[0].nanos, units * HASH_BONUS_NANOS);
-    assert.equal(hashV[0].address, dest);
+    assert.equal(!!hashV[0].commit, true);
+    const want = units * HASH_BONUS_NANOS;
+    assert.equal(verifySealedNote(hashV[0], want), true);
+    assert.equal(
+      Buffer.from(hashV[0].noteCommit).equals(noteCommitOfDest20(hash20FromAddress(dest))),
+      true,
+    );
+    const split = coinbaseSplit(child.txs[0], { shareBatch: child.shareBatch, miner: dest });
+    assert.equal(split.hashNanos, want);
+    assert.equal(split.hashByMiner[dest], want);
     assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
   });
 
@@ -164,7 +174,8 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
     });
     const hashV = childTpl.txs[0].vout.find((o) => o.kind === 'hash');
     assert.ok(hashV);
-    hashV.address = other;
+    hashV.noteCommit = noteCommitOfDest20(hash20FromAddress(other));
+    delete hashV.address;
     const decoded = decodeHeader(childTpl.header);
     childTpl.header = encodeHeader({
       ...decoded,
@@ -220,14 +231,16 @@ describe('pool honesty: clientHashes cannot inflate units', () => {
     session.clientHashes = 9e12;
     assert.equal(roundActualHashes(session), 256);
     assert.equal(hashesCreditedForShare({ shareBits: 4 }), 2 ** SHARE_FLOOR_BITS);
+    const potMiner = destMiner();
     const cb = coinbaseTx({
       height: 2,
-      miner: destMiner(),
+      miner: potMiner,
       samples: [{ miner: destMiner(), count: 1e12 }],
       shareBatch: [],
     });
-    const hashNanos = cb.vout.filter((o) => o.kind === 'hash').reduce((a, o) => a + o.nanos, 0);
-    assert.equal(hashNanos, 0);
-    assert.equal(cb.vout.filter((o) => o.kind === 'pot').reduce((a, o) => a + o.nanos, 0), BLOCK_SUBSIDY_NANOS);
+    const split = coinbaseSplit(cb, { shareBatch: [], miner: potMiner });
+    assert.equal(split.hashNanos, 0);
+    assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
+    assert.equal(cb.vout.some((o) => o.kind === 'hash'), false);
   });
 });

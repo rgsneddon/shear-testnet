@@ -130,7 +130,7 @@ describe('most-work adopt', () => {
     const height = store.tip().height;
     const refused = store.ingest([poisoned]);
     assert.equal(refused.ok, false);
-    assert.equal(refused.reason, 'merkle');
+    assert.equal(refused.reason, 'rest_frame_on_chain');
     assert.equal(store.tip().height, height);
     assert.equal(Buffer.from(store.tip().hash).equals(before), true);
   });

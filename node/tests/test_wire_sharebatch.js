@@ -11,6 +11,7 @@ import { compactChainBlock } from '../../crypto/chronoflux.js';
 import { encodeWireBlock, decodeWireBlock } from '../src/p2p.js';
 import { createStore } from '../src/store.js';
 import { mineTemplate } from '../src/chain.js';
+import { coinbaseSplit } from '../../crypto/mint.js';
 
 function destOf(byte) {
   return encodeDest(Buffer.alloc(20, byte));
@@ -92,8 +93,13 @@ describe('shareBatch on disk and p2p wire', () => {
     });
     assert.equal(second.ok, true, second.reason);
     assert.ok((second.block.shareBatch || []).length >= 1, 'sealed block keeps shareBatch');
-    const hashV = (second.block.txs[0].vout || []).some((o) => o.kind === 'hash' && Number(o.nanos) > 0);
-    assert.equal(hashV, true);
+    const split = coinbaseSplit(second.block.txs[0], {
+      shareBatch: second.block.shareBatch,
+      miner: hasher,
+    });
+    assert.ok(split.hashNanos > 0, 'lag-1 hash bonus is a sealed note, not public nanos');
+    assert.equal(split.hashByMiner[hasher] > 0, true);
+    assert.ok((second.block.txs[0].vout || []).some((o) => o.kind === 'hash' && o.commit));
 
     const compact = compactChainBlock(second.block);
     assert.ok(Array.isArray(compact.shareBatch) && compact.shareBatch.length >= 1);
