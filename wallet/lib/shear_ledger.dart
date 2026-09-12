@@ -1722,6 +1722,22 @@ class ShearLedger {
     return tx;
   }
 
+  Future<List<Uint8List>> _fluxsetPubs() async {
+    if (pool == null) return const [];
+    try {
+      final live = await pool!.fluxset();
+      final raw = live['pubs'];
+      if (raw is! List) return const [];
+      return raw
+          .map((p) => _noteBytes(p))
+          .whereType<Uint8List>()
+          .where((p) => p.length == 32)
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
   Future<ShearTx> send({
     required String from,
     required String to,
@@ -1887,19 +1903,6 @@ class ShearLedger {
         'noteCommit': _noteBytes(spent['noteCommit'])!,
         'r': _noteBytes(spent['r'])!,
       };
-      List<Uint8List> pubs = const [];
-      try {
-        final live = await pool!.fluxset();
-        final raw = live['pubs'];
-        if (raw is List) {
-          pubs = raw
-              .map((p) => _noteBytes(p))
-              .whereType<Uint8List>()
-              .where((p) => p.length == 32)
-              .toList();
-        }
-      } catch (_) {}
-      if (pubs.isEmpty) throw StateError('fluxset');
       final sealed = <Map<String, dynamic>>[];
       for (final o in vouts) {
         final kind = (o['kind'] as String?) ?? 'send';
@@ -1959,6 +1962,8 @@ class ShearLedger {
         }
       ];
       excess = kernelExcess(vouts, vin);
+      final pubs = await _fluxsetPubs();
+      if (pubs.isEmpty) throw StateError('fluxset');
       final body = <String, dynamic>{'vin': vin, 'vout': vouts};
       proveFlowSpend(body, spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
       admitProof = Map<String, dynamic>.from(body['admit_proof'] as Map);
@@ -1983,32 +1988,56 @@ class ShearLedger {
       spendPubHex = _bytesHex(pub);
     }
     if (pool != null && !local) {
-      final json = await pool!.send(
-        from: src,
-        to: destTo,
-        amount: sendKind == 'vote' ? 0 : amount,
-        memoCt: memoCt,
-        kind: sendKind,
-        programId: programId,
-        choice: choice,
-        currentEpoch: currentEpoch,
-        epochStartMs: epochStartMs,
-        change: sendKind == 'send' ? changeDest : null,
-        sig: sigHex,
-        spendPub: spendPubHex,
-        ephPub: pay?.ephPub != null ? _bytesHex(pay!.ephPub) : null,
-        vin: List<dynamic>.from(_hexify(_postedVin(vin)) as List),
-        vout: List<dynamic>.from(_hexify(_postedVout(vouts)) as List),
-        excess: excess is Uint8List ? _bytesHex(excess) : excess,
-        admitProof: admitProof != null
-            ? Map<String, dynamic>.from(_hexify(admitProof) as Map)
-            : null,
-        spendTag: admitProof?['spendTag'] is Uint8List
-            ? _bytesHex(admitProof!['spendTag'] as Uint8List)
-            : admitProof?['spendTag']?.toString(),
-      );
-      if (json['ok'] != true || json['tx'] is! Map) {
-        throw StateError('${json['reason'] ?? 'send failed'}');
+      Future<Map<String, dynamic>> postOnce() {
+        return pool!.send(
+          from: src,
+          to: destTo,
+          amount: sendKind == 'vote' ? 0 : amount,
+          memoCt: memoCt,
+          kind: sendKind,
+          programId: programId,
+          choice: choice,
+          currentEpoch: currentEpoch,
+          epochStartMs: epochStartMs,
+          change: sendKind == 'send' ? changeDest : null,
+          sig: sigHex,
+          spendPub: spendPubHex,
+          ephPub: pay?.ephPub != null ? _bytesHex(pay!.ephPub) : null,
+          vin: List<dynamic>.from(_hexify(_postedVin(vin)) as List),
+          vout: List<dynamic>.from(_hexify(_postedVout(vouts)) as List),
+          excess: excess is Uint8List ? _bytesHex(excess) : excess,
+          admitProof: admitProof != null
+              ? Map<String, dynamic>.from(_hexify(admitProof) as Map)
+              : null,
+          spendTag: admitProof?['spendTag'] is Uint8List
+              ? _bytesHex(admitProof!['spendTag'] as Uint8List)
+              : admitProof?['spendTag']?.toString(),
+        );
+      }
+
+      Map<String, dynamic>? json;
+      Object? lastErr;
+      for (var attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0 && sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && spent != null) {
+          final pubs = await _fluxsetPubs();
+          if (pubs.isEmpty) throw StateError('fluxset');
+          final spentNote = {
+            'kind': (spent['kind'] as String?) ?? 'pot',
+            'commit': _noteBytes(spent['commit'])!,
+            'noteCommit': _noteBytes(spent['noteCommit'])!,
+            'r': _noteBytes(spent['r'])!,
+          };
+          final body = <String, dynamic>{'vin': vin, 'vout': vouts};
+          proveFlowSpend(body, spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
+          admitProof = Map<String, dynamic>.from(body['admit_proof'] as Map);
+        }
+        json = await postOnce();
+        if (json['ok'] == true && json['tx'] is Map) break;
+        lastErr = StateError('${json['reason'] ?? 'send failed'}');
+        if (json['reason'] != 'admit') break;
+      }
+      if (json == null || json['ok'] != true || json['tx'] is! Map) {
+        throw lastErr ?? StateError('send failed');
       }
       final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
       _spendable[src] = (json['fromBalance'] as num?)?.toDouble()

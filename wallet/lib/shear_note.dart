@@ -114,6 +114,7 @@ Map<String, dynamic> sealNote(int v, {Uint8List? dest20, Uint8List? noteCommit, 
     'noteCommit': nc,
     'commit': value['C'],
     'valueProof': {'R': value['R'], 'z': value['z']},
+    'rangeProof': proveRange(v, r),
     'r': scalarBytes(r),
     'nanos': v,
   };

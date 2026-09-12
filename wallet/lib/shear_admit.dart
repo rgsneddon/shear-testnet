@@ -100,20 +100,21 @@ Map<String, dynamic> admitProve({required Scalar x, required int index, required
   final n = pubs.length;
   if (n == 0) throw StateError('empty_fluxset');
   if (index < 0 || index >= n) throw StateError('index');
-  final ring = pubs.map(pointFrom).toList();
+  final ring = List<Element>.generate(n, (i) => pointFrom(pubs[i]));
+  final hpRing = List<Element>.generate(n, (i) => hp(ring[i]));
   final P = ring[index];
-  final I = spendTagPoint(x, P);
+  final I = mulEl(hpRing[index], x);
   final Ibytes = pointBytes(I);
   final c = List<Scalar?>.filled(n, null);
   final r = List<Scalar?>.filled(n, null);
   final alpha = randomScalar();
   final Lj = mulG(alpha);
-  final Rj = mulEl(hp(P), alpha);
+  final Rj = mulEl(hpRing[index], alpha);
   c[(index + 1) % n] = hashToScalar([Ibytes, pointBytes(Lj), pointBytes(Rj), admitDst]);
   for (var i = (index + 1) % n; i != index; i = (i + 1) % n) {
     r[i] = randomScalar();
-    final L = addEl(mulG(r[i]!), mulEl(ring[i], c[i]!));
-    final Rpt = addEl(mulEl(hp(ring[i]), r[i]!), mulEl(I, c[i]!));
+    final L = varTimeDoubleBase(c[i]!, ring[i], r[i]!);
+    final Rpt = varTimeMsm2(r[i]!, hpRing[i], c[i]!, I);
     c[(i + 1) % n] = hashToScalar([Ibytes, pointBytes(L), pointBytes(Rpt), admitDst]);
   }
   r[index] = scalarSub(alpha, scalarMul(c[index]!, x));

@@ -107,6 +107,20 @@ Element mulG(Scalar s) {
   return o;
 }
 
+/// a·A + b·G. Prove-only (verify stays constant-time).
+Element varTimeDoubleBase(Scalar a, Element A, Scalar b) {
+  final o = Element.newElement();
+  o.varTimeDoubleScalarBaseMult(a, A, b);
+  return o;
+}
+
+/// s0·P0 + s1·P1. Prove-only.
+Element varTimeMsm2(Scalar s0, Element p0, Scalar s1, Element p1) {
+  final o = Element.newElement();
+  o.varTimeMultiScalarMult([s0, s1], [p0, p1]);
+  return o;
+}
+
 Uint8List pointBytes(Element p) => Uint8List.fromList(p.encode());
 
 Element pointFrom(Uint8List buf) {

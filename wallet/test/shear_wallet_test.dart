@@ -254,7 +254,20 @@ void main() {
     final pool = _RecordingPool(posts, pubs: pubs);
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.confirmRound(address: dest, pot: 1, height: 2);
+    expect(ledger.notes, isEmpty, reason: 'confirmRound does not rememberNote');
     ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    await expectLater(
+      ledger.send(
+        from: dest,
+        to: bob,
+        amount: 0.25,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        spendSeed: seed,
+      ),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', contains('no_note'))),
+    );
     ledger.ingestSealedVouts(
       [compacted],
       spendSeed: seed,
@@ -270,7 +283,6 @@ void main() {
           n['prev'] != null),
       isTrue,
     );
-    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
     await ledger.send(
       from: dest,
       to: bob,
@@ -290,6 +302,7 @@ void main() {
     expect(proof['spendTag'], isNotNull);
     final vout = body['vout'] as List;
     expect(vout.any((o) => o is Map && o['kind'] == 'dummy' && o['commit'] != null), isTrue);
+    expect(vout.every((o) => o is! Map || o['rangeProof'] != null), isTrue);
     expect(vout.every((o) => o is! Map || o['r'] == null), isTrue);
     expect(vout.any((o) => o is Map && o['rEph'] != null && o['rCt'] != null), isTrue);
     expect((body['vin'] as List).first['commit'], isNotNull);
@@ -310,6 +323,11 @@ void main() {
     };
     expect(admitVerify(liveProof, pubs), isTrue);
     expect(admitVerify({'admit_proof': true, 'spendTag': Uint8List(32)}, pubs), isFalse);
+    expect(
+      ledger.notes.any((n) => n['commit'] != null && n['r'] != null && n['prev'] != null),
+      isTrue,
+      reason: 'scan/ingest binds commit/r/prev; confirmRound does not inject notes',
+    );
   });
 
   test('sealed send change is the spent note leftover, not dest-balance of extra notes', () async {
