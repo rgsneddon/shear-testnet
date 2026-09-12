@@ -270,6 +270,7 @@ function compactVout(o) {
       valueProof: o.valueProof,
     };
     if (o.rangeProof) row.rangeProof = o.rangeProof;
+    if (o.viewTag) row.viewTag = o.viewTag;
     if (o.memo) row.memo = true;
     // Vault dest is the one allowed stable mailbox; keep it on Reserve kinds.
     if (RESERVE_VOUT_KINDS.has(String(o.kind || '')) && o.address) row.address = o.address;

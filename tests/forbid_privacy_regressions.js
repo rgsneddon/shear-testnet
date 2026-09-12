@@ -55,6 +55,20 @@ describe('forbid privacy regressions', () => {
     assert.match(pool, /return `m\$\{hex\}`/);
   });
 
+  it('Flow dummy outs are required; Dandelion++ is not on the pool frontend', () => {
+    const chain = read('node/src/chain.js');
+    assert.match(chain, /dummy_outs/);
+    assert.match(read('crypto/mempool.js'), /dummy_outs/);
+    const p2p = read('node/src/p2p.js');
+    assert.match(p2p, /STEM_MAX_HOPS = 3/);
+    assert.match(p2p, /FLUFF_MIN_MS = 1000/);
+    assert.match(p2p, /FLUFF_MAX_MS = 3000/);
+    for (const rel of ['pool/public/index.html', 'pool/public/explorer.html', 'pool/public/miner.html']) {
+      const html = read(rel);
+      assert.doesNotMatch(html, /stem\s*:\s*true/);
+    }
+  });
+
   it('verifyBlock typed HRP is the she/shear check, not containsShe1(JSON) alone', () => {
     const src = read('node/src/chain.js');
     assert.match(src, /checkAddressField|checkTxAddressFields/);

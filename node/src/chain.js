@@ -65,6 +65,7 @@ import {
   levyNeed,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
+import { dummyCount, flowNeedsDummy } from '../../crypto/dummy.js';
 
 export { blockWeight, nextBaseFee } from '../../crypto/levy.js';
 
@@ -93,6 +94,7 @@ function kindByte(kind) {
   if (k === 'pot') return 2;
   if (k === 'finder-fee') return 3;
   if (k === 'reserve-fee') return 4;
+  if (k === 'dummy') return 5;
   return 0;
 }
 
@@ -603,6 +605,9 @@ function verifyBlockConsensus(block, prev, {
       }
     }
     const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint;
+    if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
+      return { ok: false, reason: 'dummy_outs' };
+    }
     if (wrapMintForbidden(tx)) {
       return { ok: false, reason: 'mint_forbidden' };
     }

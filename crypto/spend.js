@@ -24,6 +24,7 @@ function kindByte(kind) {
   if (k === 'pot') return 2;
   if (k === 'finder-fee') return 3;
   if (k === 'reserve-fee') return 4;
+  if (k === 'dummy') return 5;
   return 0;
 }
 

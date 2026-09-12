@@ -140,7 +140,8 @@ describe('p2p gossip', () => {
       const { levyNanos } = await import('../../crypto/levy.js');
       const sendNanos = 2;
       const fee = levyNanos(sendNanos);
-      const queued = a.store.queueTx({
+      const { attachDummyOuts } = await import('../../crypto/dummy.js');
+      const queued = a.store.queueTx(attachDummyOuts({
         id: 'net-send-1',
         kind: 'send',
         from: dest,
@@ -148,7 +149,7 @@ describe('p2p gossip', () => {
         nanos: sendNanos,
         fee,
         vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
-      });
+      }));
       assert.equal(queued.ok, true, queued.reason);
       const tag = 'mcafef00d';
       let lastPub = 0;
@@ -235,7 +236,8 @@ describe('p2p gossip', () => {
       const { levyNanos } = await import('../../crypto/levy.js');
       const sendNanos = 2;
       const fee = levyNanos(sendNanos);
-      const queued = a.store.queueTx({
+      const { attachDummyOuts } = await import('../../crypto/dummy.js');
+      const queued = a.store.queueTx(attachDummyOuts({
         id: 'stem-send-1',
         kind: 'send',
         from: dest,
@@ -243,7 +245,7 @@ describe('p2p gossip', () => {
         nanos: sendNanos,
         fee,
         vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
-      });
+      }));
       assert.equal(queued.ok, true, queued.reason);
       assert.equal(JSON.stringify(queued.tx || queued).includes('remoteAddress'), false);
       assert.equal(a.p2p.originInvSetSize('stem-send-1'), 1);

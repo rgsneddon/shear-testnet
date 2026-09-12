@@ -23,6 +23,7 @@ import {
   containsShe1,
 } from '../../crypto/levy.js';
 import { reconstructOwner } from './wallet_api.js';
+import { attachDummyOuts } from '../../crypto/dummy.js';
 
 export const ADMIN_HOST = 'kyrusfables.shear.digital';
 export const ADMIN_ISSUER = 'shear';
@@ -379,7 +380,7 @@ export function handleAdminApi(url, method, body, {
     if (hist.spendableNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
-    const tx = {
+    const tx = attachDummyOuts({
       kind: 'send',
       from,
       to,
@@ -389,7 +390,7 @@ export function handleAdminApi(url, method, body, {
       maxLevy: fee,
       vin: [{ address: from }],
       vout: [{ address: to, nanos, kind: 'send' }],
-    };
+    });
     if (containsShe1(tx)) return { status: 400, json: { ok: false, reason: 'she1_on_chain' } };
     let queued = { ok: true, tx };
     if (typeof queueSend === 'function') queued = queueSend(tx);

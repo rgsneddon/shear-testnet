@@ -24,6 +24,7 @@ import {
   containsShe1,
 } from '../../crypto/levy.js';
 import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, matureSpendableNanos, mempoolDebitNanos } from '../../crypto/spend.js';
+import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
@@ -991,6 +992,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (kind === 'send' && changeDest && leftover > 0) {
       vout.push({ address: changeDest, nanos: leftover, kind: 'send' });
     }
+    if (Array.isArray(body.vout) && body.vout.length) {
+      vout.length = 0;
+      for (const o of body.vout) vout.push(o);
+    }
     const parked = kind === 'send' && changeDest && leftover > 0;
     const draft = isLock
       ? { ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }), fee, memoCt, sig: body.sig || body.signature, spendPub: body.spendPub, amount }
@@ -1002,6 +1007,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           vout,
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
+    if (kind === 'send' && dummyCount(draft) < 1) {
+      return { status: 400, json: { ok: false, reason: 'dummy_outs' } };
+    }
     if (flowSendNeedsOpen(draft) && !verifySpendSig(draft)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
@@ -1113,7 +1121,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     let tx;
     if (pending && pending.kind === 'admin-spendable') {
       const open = openingForSpentDest(poolIdentity, from) || String(poolOpen || '');
-      const draft = {
+      const draft = attachDummyOuts({
         kind: 'send',
         from,
         to: off.dest,
@@ -1124,7 +1132,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         open,
         vin: [{ address: from }],
         vout: [{ address: off.dest, nanos: off.nanos, kind: 'send' }],
-      };
+      });
       if (flowSendNeedsOpen(draft) && !verifySpendSig(draft)) {
         return { status: 400, json: { ok: false, reason: 'unsigned', public: false } };
       }

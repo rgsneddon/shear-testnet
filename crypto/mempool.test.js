@@ -2,13 +2,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { admitMempool, emptyMempool, retargetMempool } from './mempool.js';
 import { encodeDest, encodeAddress } from './address.js';
+import { attachDummyOuts } from './dummy.js';
 
 const dest = encodeDest(Buffer.alloc(20, 3));
 
 describe('policy mempool', () => {
   it('admits ssa1 sends and B-spends; refuses shares and shear1', () => {
     const book = emptyMempool();
-    const send = admitMempool(book, { kind: 'send', to: dest, fee: 100, vout: [{ address: dest }] }, { baseFee: 1 });
+    const send = admitMempool(book, attachDummyOuts({ kind: 'send', to: dest, fee: 100, vout: [{ address: dest }] }), { baseFee: 1 });
     assert.equal(send.ok, true);
     const share = admitMempool(book, { share: true, to: dest, fee: 10 }, { baseFee: 1 });
     assert.equal(share.ok, false);

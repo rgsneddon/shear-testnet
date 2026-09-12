@@ -36,6 +36,7 @@ import {
 } from '../crypto/flow_sheet.js';
 import { compactTx, compactChainBlock } from '../crypto/chronoflux.js';
 import { signSpendTx, verifySpendSig, verifyFundedBody } from '../crypto/spend.js';
+import { attachDummyOuts } from '../crypto/dummy.js';
 import { admitMempool, emptyMempool } from '../crypto/mempool.js';
 import { levyNanos } from '../crypto/levy.js';
 import { NANOS_PER_SHE, HASH_TX_LIVE, SPENDABLE_CONFIRMATIONS, consensusFingerprint } from '../crypto/asert.js';
@@ -98,7 +99,7 @@ describe('privacy.walk', () => {
     const change = freshStealthDest(alice.paymentCode);
     assert.ok(change);
     assert.notEqual(change.dest, bobPay.dest);
-    const tx = signSpendTx({
+    const tx = signSpendTx(attachDummyOuts({
       kind: 'send',
       from: bobPay.dest,
       to: carolPay.dest,
@@ -110,7 +111,7 @@ describe('privacy.walk', () => {
         { address: change.dest, nanos: NANOS_PER_SHE, kind: 'send' },
       ],
       ephPub: carolPay.ephPub.toString('hex'),
-    }, spendKey);
+    }), spendKey);
     assert.equal(verifySpendSig(tx), true);
     assert.equal(SPENDABLE_CONFIRMATIONS, 6);
     const funded = verifyFundedBody([tx], (addr) => (addr === bobPay.dest ? 3 * NANOS_PER_SHE : 0));
@@ -134,7 +135,7 @@ describe('privacy.walk', () => {
     const spendKey = stealthSpendPrivate(rec.shared, ed25519SeedOf(alice.privateKey));
     const nanos = NANOS_PER_SHE;
     const fee = levyNanos(nanos);
-    const fat = signSpendTx({
+    const fat = signSpendTx(attachDummyOuts({
       kind: 'send',
       from: pay.dest,
       to: pay.dest,
@@ -152,7 +153,7 @@ describe('privacy.walk', () => {
       vin: [{ address: pay.dest, open: 'aa'.repeat(64) }],
       vout: [{ address: pay.dest, nanos, kind: 'send' }],
       ephPub: pay.ephPub.toString('hex'),
-    }, spendKey);
+    }), spendKey);
     const sealed = compactTx(fat);
     const blob = JSON.stringify(sealed);
     assert.equal(sealed.open, undefined);
