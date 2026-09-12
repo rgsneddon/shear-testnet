@@ -2,10 +2,10 @@
  * Recover dest + nanos for confidential coinbase vouts from shareBatch + proofs.
  * Public dest20+nanos stay off the sealed vout; Tree-A units still imply values.
  */
-import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, POOL_FEE_BPS } from './asert.js';
+import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { isDestAddress, hash20FromAddress } from './address.js';
 import { aLeavesFromShares, destOfShare, noteCommitOfShare } from './share_batch.js';
-import { noteCommitOfDest20, verifySealedNote } from './note.js';
+import { noteCommitOfDest20, verifySealedNote, asU8 } from './note.js';
 
 function ncHex(buf) {
   try {
@@ -142,4 +142,53 @@ export function matchSealedCoinbaseVout(o, pays) {
     }
   }
   return { address: '', nanos: 0, kind };
+}
+
+function noteCommitEq(a, b) {
+  try {
+    const x = Buffer.from(asU8(a));
+    const y = Buffer.from(asU8(b));
+    return x.length === 32 && y.length === 32 && x.equals(y);
+  } catch {
+    return false;
+  }
+}
+
+/** Mature coinbase/hash nanos owned by dest when compact explorer `to` is empty. */
+export function noteCommitSpendableNanos(blocks, address, tipHeight, {
+  hashBonusNanos = HASH_BONUS_NANOS,
+  need = SPENDABLE_CONFIRMATIONS,
+} = {}) {
+  const dest20 = hash20FromAddress(address);
+  if (!dest20) return 0;
+  const want = noteCommitOfDest20(dest20);
+  const tip = Number(tipHeight) || 0;
+  let nanos = 0;
+  for (const b of blocks || []) {
+    const h = Number(b?.height) || 0;
+    if (!(h > 0 && (tip - h + 1) >= need)) continue;
+    const pays = [
+      ...expectedCoinbasePays(b.shareBatch || [], {
+        miner: b.miner,
+        hashBonusNanos,
+      }),
+      ...paysFromALeaves(b.aLeaves || [], { hashBonusNanos }),
+    ];
+    for (const tx of b.txs || []) {
+      for (const o of tx.vout || []) {
+        if (!o?.noteCommit || !noteCommitEq(o.noteCommit, want)) continue;
+        let n = Number(o.nanos || 0);
+        if (tx.coinbase) {
+          const matched = matchSealedCoinbaseVout(o, pays);
+          if (matched.nanos) n = matched.nanos;
+          else {
+            const hit = pays.find((p) => p.noteCommit && noteCommitEq(p.noteCommit, o.noteCommit));
+            if (hit) n = Number(hit.nanos || 0);
+          }
+        }
+        if (n > 0) nanos += n;
+      }
+    }
+  }
+  return nanos;
 }

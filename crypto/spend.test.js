@@ -186,4 +186,28 @@ describe('funded spend / no double-spend', () => {
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'insufficient');
   });
+
+  it('signed vote with recovered dest notes is funded; empty dest is insufficient', () => {
+    const seed = Buffer.from('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex');
+    const key = ed25519PrivateFromSeed(seed);
+    const from = encodeDest(destCommitFromSpendPub(ed25519RawPub(key)));
+    const fee = levyNanos(0);
+    const tx = {
+      kind: 'vote',
+      from,
+      to: from,
+      payer: from,
+      choice: 'hold',
+      nanos: 0,
+      fee,
+      vin: [{ address: from }],
+      vout: [{ address: from, nanos: 0, kind: 'vote' }],
+    };
+    signSpendTx(tx, key);
+    const empty = verifyFundedBody([tx], () => 0);
+    assert.equal(empty.ok, false);
+    assert.equal(empty.reason, 'insufficient');
+    const funded = verifyFundedBody([tx], (addr) => (addr === from ? fee : 0));
+    assert.equal(funded.ok, true, funded.reason);
+  });
 });

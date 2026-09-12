@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS } from '../../crypto/asert.js';
 import { hashHex } from '../../crypto/shear_hash.js';
 import {
   buildTemplate,
@@ -23,6 +23,7 @@ import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
 import { reviveBytes, reviveTx, noteCommitOfDest20 } from '../../crypto/note.js';
+import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { hash20FromAddress } from '../../crypto/address.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
@@ -264,6 +265,14 @@ export function createStore(dir, {
 
   bootVault();
 
+  function destSpendableNanos(addr, tipH, chain = blocks, rows = explorer) {
+    const fromExplorer = matureSpendableNanos(rows, addr, tipH);
+    if (fromExplorer > 0) return fromExplorer;
+    return noteCommitSpendableNanos(chain, addr, tipH, {
+      hashBonusNanos: Number(reserveVault.liveHashBonusNanos || HASH_BONUS_NANOS),
+    });
+  }
+
   const vortice = createVorticeCatalog(dir);
 
   function persist(_block) {
@@ -364,7 +373,7 @@ export function createStore(dir, {
         hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
         committedBps: Number(reserveVault.epochBps ?? 264),
         reserveState: reserveVault,
-        spendableOf: (addr) => Math.max(0, matureSpendableNanos(explorer, addr, prev ? prev.height : 0)),
+        spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, prev ? prev.height : 0)),
       });
       if (spentCheck && typeof spentCheck.then === 'function') {
         return spentCheck.then(step);
@@ -522,7 +531,7 @@ export function createStore(dir, {
       hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
       evmSession,
       evmHistory: blocks,
-      spendableOf: (addr) => Math.max(0, matureSpendableNanos(explorer, addr, parentH)),
+      spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, parentH)),
       committedBps: Number(reserveVault.epochBps ?? 264),
       reserveState: reserveVault,
       seenDigests: sealedSpendDigests(),
@@ -665,10 +674,9 @@ export function createStore(dir, {
     }
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
     const debit = fundedDebit(tx);
-    const reserveTyped = ['lock', 'vote', 'withdraw'].includes(String(tx.kind || tx.vout?.[0]?.kind || ''));
-    if (debit && !noteBound && !reserveTyped) {
+    if (debit && !noteBound) {
       const tipH = Number(t?.height || 0);
-      const have = matureSpendableNanos(explorer, debit.from, tipH) - mempoolDebitNanos(mempool, debit.from);
+      const have = destSpendableNanos(debit.from, tipH) - mempoolDebitNanos(mempool, debit.from);
       if (have < debit.nanos) {
         return { ok: false, reason: 'insufficient', need: debit.nanos, have };
       }
@@ -725,7 +733,7 @@ export function createStore(dir, {
       hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
       evmSession: trialSession,
       evmHistory: trialSession ? [] : accepted,
-      spendableOf: (addr) => Math.max(0, matureSpendableNanos(rows, addr, parentH)),
+      spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, parentH, accepted, rows)),
       committedBps: Number(reserveVault.epochBps ?? 264),
       reserveState: reserveVault,
     });
