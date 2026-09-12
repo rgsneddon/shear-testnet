@@ -37,7 +37,7 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
       ...Array.from({ length: nB }, (_, i) => ({ dest: destB, nonce: BigInt(100 + i), lz: 8 })),
     ];
     const cb = coinbaseTx({ height: 3, miner: destA, shareBatch: batch });
-    const split = coinbaseSplit(cb);
+    const split = coinbaseSplit(cb, { shareBatch: batch, miner: destA });
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
     assert.equal(split.potNanos, 100_000_000_000);
     assert.equal(split.hashByMiner[destA], nA * unit * HASH_BONUS_NANOS);
@@ -51,7 +51,7 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
       shareBatch: [],
       samples: [{ miner: destA, count: 4000 }, { miner: destB, count: 1000 }],
     });
-    assert.equal(coinbaseSplit(hud).hashNanos, 0);
+    assert.equal(coinbaseSplit(hud, { miner: destA }).hashNanos, 0);
   });
 
   it('counts each meeting share as floor units; HUD samples mint nothing', () => {
@@ -64,7 +64,7 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
       batch.push({ dest, nonce: BigInt(i + 1), lz: 8 });
     }
     const cb = coinbaseTx({ height: 3, miner: dest, shareBatch: batch });
-    const split = coinbaseSplit(cb);
+    const split = coinbaseSplit(cb, { shareBatch: batch, miner: dest });
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
     assert.equal(split.potNanos, 100_000_000_000);
     assert.equal(HASH_BONUS_NANOS, 1);
@@ -75,7 +75,7 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
       miner: dest,
       samples: [{ miner: dest, nonce: 'batch', tag: 'fold', count: n }],
     });
-    const foldedSplit = coinbaseSplit(folded);
+    const foldedSplit = coinbaseSplit(folded, { miner: dest });
     assert.equal(foldedSplit.hashNanos, 0);
     assert.notEqual(batch.length, 1);
   });

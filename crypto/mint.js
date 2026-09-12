@@ -7,6 +7,7 @@ import {
 } from './asert.js';
 import { isDestAddress, isShearAddress } from './address.js';
 import { hashBonusByMiner, coinbaseTx } from '../node/src/chain.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout } from './coinbase_notes.js';
 
 export {
   RESERVE_PROGRAM,
@@ -33,13 +34,26 @@ export function extraMint({ programId, to, nanos, kind }) {
   return { ok: true, programId, to, nanos: n, kind: k, mint: true };
 }
 
-export function coinbaseSplit(cb) {
+export function coinbaseSplit(cb, { shareBatch, miner } = {}) {
   const vout = Array.isArray(cb?.vout) ? cb.vout : [];
-  const pot = vout.filter((o) => o.kind !== 'hash' && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
-  const hash = vout.filter((o) => o.kind === 'hash');
-  return {
-    potNanos: pot.reduce((a, o) => a + Number(o.nanos || 0), 0),
-    hashNanos: hash.reduce((a, o) => a + Number(o.nanos || 0), 0),
-    hashByMiner: Object.fromEntries(hash.map((o) => [o.address, Number(o.nanos || 0)])),
-  };
+  const pays = expectedCoinbasePays(shareBatch || [], { miner: miner || cb?.miner });
+  const hashByMiner = {};
+  let potNanos = 0;
+  let hashNanos = 0;
+  for (const o of vout) {
+    const kind = String(o.kind || '');
+    if (kind === 'finder-fee' || kind === 'reserve-fee') continue;
+    const hit = o.commit ? matchSealedCoinbaseVout(o, pays) : {
+      address: o.address || '',
+      nanos: Number(o.nanos || 0),
+    };
+    const n = Number(hit.nanos || o.nanos || 0);
+    if (kind === 'hash') {
+      hashNanos += n;
+      if (hit.address) hashByMiner[hit.address] = n;
+    } else {
+      potNanos += n;
+    }
+  }
+  return { potNanos, hashNanos, hashByMiner };
 }

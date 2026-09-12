@@ -27,6 +27,7 @@ import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, open
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout } from '../../crypto/coinbase_notes.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -574,12 +575,17 @@ export function networkSupply(store) {
     const txs = Array.isArray(b?.txs) ? b.txs : [];
     const cb = txs[0];
     if (cb?.coinbase && Array.isArray(cb.vout)) {
+      const pays = expectedCoinbasePays(b.shareBatch || [], {
+        miner: b.miner,
+        hashBonusNanos: HASH_BONUS_NANOS,
+      });
       for (const o of cb.vout) {
-        const n = Math.max(0, Math.floor(Number(o.nanos || 0)));
-        if (!n) continue;
         const kind = String(o.kind || '');
+        if (kind === 'finder-fee' || kind === 'reserve-fee') continue;
+        const hit = o.commit ? matchSealedCoinbaseVout(o, pays) : { nanos: Number(o.nanos || 0) };
+        const n = Math.max(0, Math.floor(Number(hit.nanos || o.nanos || 0)));
+        if (!n) continue;
         if (kind === 'hash') hashNanos += n;
-        else if (kind === 'finder-fee' || kind === 'reserve-fee') continue;
         else potNanos += n;
       }
     }
