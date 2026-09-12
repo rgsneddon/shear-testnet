@@ -1433,6 +1433,7 @@ export function createPool({
         console.error(JSON.stringify({
           event: 'seal_failed',
           reason: String(got?.reason || 'append'),
+          error: got?.error,
           jobId: jid,
           height: Number(store.tip()?.height || 0) + 1,
         }));
