@@ -163,7 +163,9 @@ Uint8List spendPackDigest({
       final addr = (o['address'] as String?) ?? '';
       dest20 = hash20FromAddress(addr) ?? Uint8List(20);
     }
-    final sealed = o['commit'] != null;
+    final k = (o['kind'] as String?) ?? kind ?? '';
+    final publicNanos = k == 'lock' || k == 'vote' || k == 'withdraw' || k == 'vortice-register';
+    final sealed = o['commit'] != null && !publicNanos;
     vouts.add({
       'dest20': dest20,
       'nanos': sealed ? 0 : ((o['nanos'] as int?) ?? 0),

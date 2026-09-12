@@ -185,7 +185,7 @@ describe('chronoflux prune + collate', () => {
     assert.equal(sealed.to, vault);
     assert.equal(sealed.vout[0].address, vault);
     assert.equal(sealed.nanos, undefined);
-    assert.equal(sealed.vout[0].nanos, undefined);
+    assert.equal(sealed.vout[0].nanos, PI_SHE_NANOS);
     const wire = JSON.parse(JSON.stringify(sealed), reviveBytes);
     assert.equal(Buffer.isBuffer(wire.vout[0].commit), true);
     assert.equal(verifySealedNote(wire.vout[0], PI_SHE_NANOS), true);

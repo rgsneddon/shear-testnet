@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { levyNanos } from './levy.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig } from './spend.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest } from './spend.js';
 import { newIdentity, destOpeningFromView, hash20FromAddress, silentPay, ed25519SeedOf, stealthSpendPrivate, recognizeSilentDest, ed25519PrivateFromSeed, ed25519RawPub, encodeDest } from './address.js';
 import { destCommitFromSpendPub } from './stealth_ed25519.js';
 import { generateKeyPairSync, createPublicKey, verify } from 'node:crypto';
@@ -209,5 +209,26 @@ describe('funded spend / no double-spend', () => {
     assert.equal(empty.reason, 'insufficient');
     const funded = verifyFundedBody([tx], (addr) => (addr === from ? fee : 0));
     assert.equal(funded.ok, true, funded.reason);
+  });
+
+  it('lock and vote spend digests differ when dest is the same', () => {
+    const seed = Buffer.from('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex');
+    const key = ed25519PrivateFromSeed(seed);
+    const from = encodeDest(destCommitFromSpendPub(ed25519RawPub(key)));
+    const lock = {
+      kind: 'lock',
+      from,
+      to: from,
+      vin: [{ address: from }],
+      vout: [{ address: from, nanos: 5_000_000_000, kind: 'lock' }],
+    };
+    const vote = {
+      kind: 'vote',
+      from,
+      to: from,
+      vin: [{ address: from }],
+      vout: [{ address: from, nanos: 0, kind: 'vote' }],
+    };
+    assert.equal(spendPackDigest(lock).equals(spendPackDigest(vote)), false);
   });
 });

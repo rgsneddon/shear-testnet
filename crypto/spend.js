@@ -43,9 +43,11 @@ export function spendPackDigest(tx) {
   });
   const vouts = (tx?.vout || []).map((o) => {
     const nc = asU8(o.noteCommit);
+    const k = String(o.kind || tx?.kind || '');
+    const publicNanos = k === 'lock' || k === 'vote' || k === 'withdraw' || k === 'vortice-register';
     return {
       dest20: nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : dest20Of(o.address || ''),
-      nanos: o.commit ? 0 : Number(o.nanos || 0),
+      nanos: o.commit && !publicNanos ? 0 : Number(o.nanos || 0),
       kind: kindByte(o.kind || tx?.kind),
     };
   });

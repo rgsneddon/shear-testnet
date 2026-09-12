@@ -299,10 +299,12 @@ function compactVout(o) {
     if (o.rCt) row.rCt = o.rCt;
     if (o.memo) row.memo = true;
     if (keepDest && o.address) row.address = o.address;
+    if (keepDest) row.nanos = Number(o.nanos || 0);
     return row;
   }
   const row = { kind };
   if (keepDest && o.address) row.address = o.address;
+  if (keepDest) row.nanos = Number(o.nanos || 0);
   if (o.memo) row.memo = true;
   return row;
 }
@@ -347,6 +349,9 @@ export function compactTx(tx) {
     });
   }
   if (tx.vout) out.vout = (tx.vout || []).map(compactVout);
+  if (keepDest && out.vout?.[0] && !(Number(out.vout[0].nanos) > 0) && Number(tx.nanos) > 0) {
+    out.vout[0].nanos = Math.floor(Number(tx.nanos));
+  }
   if (tx.sig) out.sig = tx.sig;
   if (tx.signature && !out.sig) out.sig = tx.signature;
   if (tx.spendPub) out.spendPub = tx.spendPub;
