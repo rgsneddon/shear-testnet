@@ -38,7 +38,7 @@ function spendSig({ from, to, amount, open, identity, kind = 'send' }) {
   if (kind === 'send') tx = attachDummyOuts(tx);
   if (kind === 'lock') tx = { ...lockTx({ from, to, nanos, id: 'lock-sig' }), fee, amount };
   signSpendTx(tx, identity.privateKey);
-  return { sig: tx.sig, spendPub: tx.spendPub, vout: tx.vout, nanos: tx.nanos };
+  return { sig: tx.sig, spendPub: tx.spendPub, vout: tx.vout, vin: tx.vin, excess: tx.excess, nanos: tx.nanos };
 }
 
 function storeWith({ rows = [], reserveVault, issued } = {}) {
@@ -111,6 +111,8 @@ describe('pool send reconstruct and Join vault', () => {
       sig: signed.sig,
       spendPub: signed.spendPub,
       vout: signed.vout,
+      vin: signed.vin,
+      excess: signed.excess,
     }, { store, miners: new Map(), queueSend: (t) => {
       const tx = { id: 'send-1', ...t };
       posted.push(tx);

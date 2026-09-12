@@ -136,7 +136,7 @@ describe('wallet send path', () => {
     assert.equal(unsigned.status, 400);
     assert.equal(unsigned.json.reason, 'dummy_outs');
 
-    const ok = run({ from, to: from, amount: 0.4, sig: tx.sig, spendPub: tx.spendPub, vout: tx.vout });
+    const ok = run({ from, to: from, amount: 0.4, sig: tx.sig, spendPub: tx.spendPub, vout: tx.vout, vin: tx.vin, excess: tx.excess });
     assert.equal(ok.status, 200, ok.json.reason);
     assert.equal(ok.json.ok, true);
   });

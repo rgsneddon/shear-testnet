@@ -1013,8 +1013,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         ? { ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }), fee, maxLevy: fee, sig: body.sig || body.signature, spendPub: body.spendPub, payer: from }
         : {
           kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, sig: body.sig || body.signature, spendPub: body.spendPub, ephPub,
-          vin: [{ address: from }],
+          vin: Array.isArray(body.vin) && body.vin.length ? body.vin : [{ address: from }],
           vout,
+          ...(body.excess ? { excess: body.excess } : {}),
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
     if (kind === 'send' && dummyCount(draft) < 1) {
