@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 
 import 'shear_x25519.dart';
 import 'shear_ed25519.dart';
+import 'shear_admit.dart';
 
 const shearHrp = 'shear';
 const destHrp = 'ssa';
@@ -145,14 +146,16 @@ Map<String, Uint8List>? decodePaymentCode(String s) {
   if (isShearAddress(t) || bech32Hrp(t) != 'she' || !_bech32BodyOk(t)) return null;
   final p = decodeBech32Payload(t);
   if (p == null) return null;
-  if (p.length == 65 && p[0] == paymentCodeVersion) {
+  if (p.length >= 65 && p[0] == paymentCodeVersion) {
     final scan = p.sublist(1, 33);
     final spend = p.sublist(33, 65);
-    return {
+    final out = <String, Uint8List>{
       'scanPub': scan,
       'spendPub': spend,
       'hash20': paymentIdHash(scan, spend),
     };
+    if (p.length >= 97) out['admitBase'] = p.sublist(65, 97);
+    return out;
   }
   if (p.length == 20) return {'hash20': p.sublist(0, 20)};
   return null;
@@ -177,11 +180,13 @@ Uint8List paymentIdHash(Uint8List scanPub, Uint8List spendPub) {
   );
 }
 
-String encodePaymentCode({required Uint8List scanPub, required Uint8List spendPub}) {
+String encodePaymentCode({required Uint8List scanPub, required Uint8List spendPub, Uint8List? admitBase}) {
   if (scanPub.length != 32 || spendPub.length != 32) {
     throw ArgumentError('silent code keys must be 32 bytes');
   }
-  return encodeHrp(payHrp, Uint8List.fromList([paymentCodeVersion, ...scanPub, ...spendPub]));
+  final payload = <int>[paymentCodeVersion, ...scanPub, ...spendPub];
+  if (admitBase != null && admitBase.length == 32) payload.addAll(admitBase);
+  return encodeHrp(payHrp, Uint8List.fromList(payload));
 }
 
 String encodePaymentFingerprint({required Uint8List scanPub, required Uint8List spendPub}) {
@@ -203,14 +208,14 @@ Uint8List _asSpend(Uint8List h) {
   return Uint8List.fromList(sha256.convert(h).bytes);
 }
 
-String? paymentCodeAtIndex(String viewKey, Uint8List spendPub, int index) {
+String? paymentCodeAtIndex(String viewKey, Uint8List spendPub, int index, [Uint8List? admitBase]) {
   if (index < 0) return null;
   final pub = spendPub.length == 32
       ? spendPub
       : Uint8List.fromList(sha256.convert(spendPub).bytes);
   if (pub.length != 32) return null;
   final scanPub = x25519PublicFromSeed(scanSeedFromView(viewKey, index));
-  return encodePaymentCode(scanPub: scanPub, spendPub: pub);
+  return encodePaymentCode(scanPub: scanPub, spendPub: pub, admitBase: admitBase);
 }
 
 String _hexOf(Uint8List b) => b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
@@ -227,7 +232,7 @@ String? silentDestFromCode(String fullCode, Uint8List ephSeed) {
   if (parsed == null || parsed['scanPub'] == null || parsed['spendPub'] == null) return null;
   final shared = x25519Shared(ephSeed, parsed['scanPub']!);
   final oneTime = stealthTweakPub(parsed['spendPub']!, shared);
-  return encodeDestAddress(destCommitFromSpendPub(oneTime));
+  return encodeDestAddress(destCommitFromSpendPub(oneTime), parsed['admitBase']);
 }
 
 Uint8List? silentSharedFromCode(String fullCode, Uint8List ephSeed) {
@@ -247,7 +252,7 @@ Map<String, dynamic>? recognizeSilentDest({
     final shared = x25519Shared(scanSeedFromView(viewKey, i), ephPub);
     final oneTime = stealthTweakPub(spendPub, shared);
     final got = encodeDestAddress(destCommitFromSpendPub(oneTime));
-    if (got == dest) {
+    if (got == dest || destMatchesSpendPub(dest, oneTime)) {
       return {'dest': got, 'shared': shared, 'index': i, 'spendPub': oneTime};
     }
   }
@@ -333,7 +338,7 @@ ShearIdentity createIdentity([Uint8List? seed]) {
   final address = encodeShearAddress(hash20);
   final view = sha256.convert(utf8.encode('shear-view-v1') + _ed25519Pkcs8Prefix + s);
   final viewKey = _hex(view.bytes);
-  final paymentCode = paymentCodeAtIndex(viewKey, spendPub, 0)!;
+  final paymentCode = paymentCodeAtIndex(viewKey, spendPub, 0, admitBaseBytes(s))!;
   return ShearIdentity(seedHex: seedHex, address: address, viewKey: viewKey, paymentCode: paymentCode);
 }
 

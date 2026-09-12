@@ -12,7 +12,7 @@
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
-import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8 } from './note.js';
+import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind } from './note.js';
 import { merkleRoot } from './merkle.js';
 
 const Point = RistrettoPoint;
@@ -164,16 +164,20 @@ export function admitPubFromBase(admitBase, note) {
 /** Attach ristretto P to a sealed vout. Prefer dest admit-base; else spend seed; else a dropped random x (dummies). */
 export function attachAdmitPub(vout, { admitBase, spendSeed } = {}) {
   if (!vout?.commit) return vout;
-  if (vout.admitPub && Buffer.from(asU8(vout.admitPub)).length === 32) return vout;
-  if (spendSeed) {
-    const x = admitScalarFromSeed(spendSeed, vout);
-    return { ...vout, admitPub: pointBytes(admitPub(x)) };
+  let out = vout;
+  if (!(vout.admitPub && Buffer.from(asU8(vout.admitPub)).length === 32)) {
+    if (spendSeed) {
+      const x = admitScalarFromSeed(spendSeed, vout);
+      out = { ...vout, admitPub: pointBytes(admitPub(x)) };
+    } else if (admitBase) {
+      out = { ...vout, admitPub: pointBytes(admitPubFromBase(admitBase, vout)) };
+    } else {
+      const x = randomScalar();
+      out = { ...vout, admitPub: pointBytes(admitPub(x)) };
+    }
   }
-  if (admitBase) {
-    return { ...vout, admitPub: pointBytes(admitPubFromBase(admitBase, vout)) };
-  }
-  const x = randomScalar();
-  return { ...vout, admitPub: pointBytes(admitPub(x)) };
+  if (admitBase) out = wrapNoteBlind(out, admitBase);
+  return out;
 }
 
 export function pubFromAdmit(buf) {

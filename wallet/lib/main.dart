@@ -456,8 +456,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     if (session.identity == null) return;
     id = session.identity;
     password = pw;
-    ledger.viewSecret = id!.viewKey;
-    ledger.spendPub = decodePaymentCode(id!.paymentCode)?['spendPub'];
+    ledger.bindIdentity(id!);
     ledger.bindVaultDest(restFrame: id!.address, viewKey: id!.viewKey);
     ledger.restoreDests(session.rememberedDests);
     if (session.rememberedTxs.isNotEmpty) {
@@ -674,8 +673,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     await Future<void>.delayed(const Duration(seconds: 2));
     if (!mounted || !unlocked) return;
     try {
-      ledger.viewSecret = ident.viewKey;
-      ledger.spendPub = decodePaymentCode(ident.paymentCode)?['spendPub'];
+      ledger.bindIdentity(ident);
       final pay = ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
       if (ledger.pendingTxs(ident.address).isEmpty && ledger.spendable(pay) > 0.25) {
         final peer = createIdentity();
@@ -698,8 +696,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   void _findBlock() {
     final ident = id;
     if (ident == null) return;
-    ledger.viewSecret = ident.viewKey;
-    ledger.spendPub = decodePaymentCode(ident.paymentCode)?['spendPub'];
+    ledger.bindIdentity(ident);
     final minted = ledger.confirmRound(
       address: ident.address,
       pot: 1,
@@ -1098,8 +1095,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   String _offerReceiveDest(ShearIdentity ident) {
-    ledger.viewSecret = ident.viewKey;
-    ledger.spendPub = decodePaymentCode(ident.paymentCode)?['spendPub'];
+    ledger.bindIdentity(ident);
     _flowReceiveDest ??= ledger.allocateReceiveDest(ident.address, paymentCode: ident.paymentCode);
     return _flowReceiveDest!;
   }

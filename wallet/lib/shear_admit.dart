@@ -55,27 +55,27 @@ Element admitPubFromBase(Element B, Map<String, dynamic> note) {
   return addEl(B, mulG(admitDelta(note)));
 }
 
+Uint8List admitBaseBytes(Uint8List spendSeed) =>
+    pointBytes(admitPub(admitBaseScalar(spendSeed)));
+
 Map<String, dynamic> attachAdmitPub(
   Map<String, dynamic> vout, {
   Uint8List? spendSeed,
   Element? admitBase,
 }) {
   if (vout['commit'] is! Uint8List) return vout;
-  if (vout['admitPub'] is Uint8List && (vout['admitPub'] as Uint8List).length == 32) {
-    return vout;
+  var out = Map<String, dynamic>.from(vout);
+  if (out['admitPub'] is! Uint8List || (out['admitPub'] as Uint8List).length != 32) {
+    if (spendSeed != null) {
+      final x = admitScalarFromSeed(spendSeed, out);
+      out['admitPub'] = pointBytes(admitPub(x));
+    } else if (admitBase != null) {
+      out['admitPub'] = pointBytes(admitPubFromBase(admitBase, out));
+    } else {
+      out['admitPub'] = pointBytes(admitPub(randomScalar()));
+    }
   }
-  final out = Map<String, dynamic>.from(vout);
-  if (spendSeed != null) {
-    final x = admitScalarFromSeed(spendSeed, vout);
-    out['admitPub'] = pointBytes(admitPub(x));
-    return out;
-  }
-  if (admitBase != null) {
-    out['admitPub'] = pointBytes(admitPubFromBase(admitBase, vout));
-    return out;
-  }
-  final x = randomScalar();
-  out['admitPub'] = pointBytes(admitPub(x));
+  if (admitBase != null) out = wrapNoteBlind(out, admitBase);
   return out;
 }
 

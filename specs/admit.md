@@ -39,6 +39,8 @@ P      = B + delta·G = x · G
 
 `B` travels in the payable dest: `ssa` payload is `dest20 || B` (52 bytes). `hash20FromAddress` still reads the first 20 bytes. Wallet Copy dest exports this dest so mining income enters J and is later spendable under Admit. Dummy outs pick a fresh `x`, publish `P`, and drop `x` (value 0).
 
+Pedersen `r` is a sealed secret (`compactTx` drops it). Coinbase and Flow seals wrap `r` to dest `B` as `rEph = e·G`, `rCt = r + H("shear-r-wrap-v1" || e·B || noteCommit || C)`. Compact vouts keep `rEph`/`rCt`. The owner unwraps with `x_base` and binds `commit`/`prev`/`index` by scanning sealed vouts (match `noteCommit` to dest20). Outputs this wallet seals (change) keep `r` locally.
+
 `verifyBlock` and mempool `queueTx` call `admit_verify` against the **complete** live fluxset (every `admitPub` in appearance order on the sealed chain). A sampled subset is the wrong ring (`r.length !== |J|`). Missing `admit_proof` fails. A repeated `spendTag` fails. Fail reason is `admit` (or `confidential` when the Pedersen kernel fails).
 
 J is append-only: spent notes stay in J because Admit does not reveal which flowline moved. Double-spend is a repeated `spendTag`. Reorgs rebuild J and spent tags from the sealed chain. `jroot` is committed on the coinbase (`txs[0].jroot`), not the 128-byte header (ShearK 1.6 job template stays 128 bytes).

@@ -4,7 +4,11 @@ import {
   commit, proveValue, verifyValue, proveRange, verifyRange,
   sealNote, sealCoinbaseNote, verifySealedNote, verifyMintSum, excessOf, randomScalar,
   noteCommitOfDest20, reviveBytes, G, H,
+  wrapNoteBlind, unwrapBlind,
 } from './note.js';
+import { newIdentity, encodeDest, hash20FromAddress } from './address.js';
+import { attachAdmitPub, admitBaseScalar } from './admit.js';
+import { compactTx } from './chronoflux.js';
 
 describe('Pedersen notes', () => {
   it('opens an exact public value and rejects a wrong value', () => {
@@ -43,5 +47,28 @@ describe('Pedersen notes', () => {
     assert.equal(verifySealedNote(wire, 1), false);
     const raw = JSON.parse(JSON.stringify(sealed));
     assert.equal(verifySealedNote(raw, 314159265358), true);
+  });
+
+  it('wraps r to dest B; compactTx keeps rEph/rCt and drops r; owner unwraps', () => {
+    const id = newIdentity();
+    const dest = encodeDest(Buffer.alloc(20, 7), id.admitBase);
+    const d20 = hash20FromAddress(dest);
+    const note = attachAdmitPub(sealCoinbaseNote(256, { dest20: d20, kind: 'pot' }), {
+      admitBase: id.admitBase,
+    });
+    assert.ok(note.rEph);
+    assert.ok(note.rCt);
+    assert.ok(note.r);
+    const extra = Buffer.concat([Buffer.from(note.noteCommit), Buffer.from(note.commit)]);
+    const opened = unwrapBlind(note.rEph, note.rCt, admitBaseScalar(id.spendSeed), extra);
+    assert.equal(Buffer.from(opened).equals(Buffer.from(note.r)), true);
+    const sealed = compactTx({ coinbase: true, height: 1, vout: [note] });
+    assert.equal(sealed.vout[0].r, undefined);
+    assert.ok(sealed.vout[0].rEph);
+    assert.ok(sealed.vout[0].rCt);
+    const again = unwrapBlind(sealed.vout[0].rEph, sealed.vout[0].rCt, admitBaseScalar(id.spendSeed), extra);
+    assert.equal(Buffer.from(again).equals(Buffer.from(note.r)), true);
+    const foreign = wrapNoteBlind(sealCoinbaseNote(1, { dest20: d20, kind: 'hash' }), id.admitBase);
+    assert.ok(foreign.rEph);
   });
 });

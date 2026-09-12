@@ -119,6 +119,54 @@ Map<String, dynamic> sealNote(int v, {Uint8List? dest20, Uint8List? noteCommit, 
   };
 }
 
+final rwrapDst = utf8Bytes('shear-r-wrap-v1');
+
+Map<String, Uint8List> wrapBlind(Uint8List r, Element admitBase, Uint8List extra) {
+  final e = randomScalar();
+  final rEph = mulG(e);
+  final shared = mulEl(admitBase, e);
+  final mask = hashToScalar([rwrapDst, pointBytes(shared), extra]);
+  return {
+    'rEph': pointBytes(rEph),
+    'rCt': scalarBytes(scalarAdd(scalarFromBytes(r), mask)),
+  };
+}
+
+Uint8List unwrapBlind(Uint8List rEph, Uint8List rCt, Scalar xBase, Uint8List extra) {
+  final shared = mulEl(pointFrom(rEph), xBase);
+  final mask = hashToScalar([rwrapDst, pointBytes(shared), extra]);
+  return scalarBytes(scalarSub(scalarFromBytes(rCt), mask));
+}
+
+Map<String, dynamic> wrapNoteBlind(Map<String, dynamic> vout, Element admitBase) {
+  final r = vout['r'];
+  if (r is! Uint8List) return vout;
+  if (vout['rEph'] is Uint8List && vout['rCt'] is Uint8List) return vout;
+  final nc = vout['noteCommit'];
+  final c = vout['commit'];
+  if (nc is! Uint8List || c is! Uint8List) return vout;
+  final wrap = wrapBlind(r, admitBase, concatBytes([nc, c]));
+  return {...vout, 'rEph': wrap['rEph']!, 'rCt': wrap['rCt']!};
+}
+
+/// Compact a sealed vout the way chain persist does: drop r, keep rEph/rCt.
+Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
+  final kind = (o['kind'] as String?) ?? 'pot';
+  if (o['commit'] is! Uint8List) return {'kind': kind};
+  final row = <String, dynamic>{
+    'kind': kind,
+    'noteCommit': o['noteCommit'],
+    'commit': o['commit'],
+    'valueProof': o['valueProof'],
+  };
+  if (o['rangeProof'] != null) row['rangeProof'] = o['rangeProof'];
+  if (o['viewTag'] != null) row['viewTag'] = o['viewTag'];
+  if (o['admitPub'] != null) row['admitPub'] = o['admitPub'];
+  if (o['rEph'] != null) row['rEph'] = o['rEph'];
+  if (o['rCt'] != null) row['rCt'] = o['rCt'];
+  return row;
+}
+
 Uint8List kernelExcess(List<Map<String, dynamic>> vouts, List<Map<String, dynamic>> vins) {
   var s = scalarZero();
   for (final o in vouts) {

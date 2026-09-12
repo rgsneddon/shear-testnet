@@ -201,31 +201,41 @@ void main() {
     expect(kTabs, ['Continuum', 'Flow', 'Resistance', 'Vortex', 'Shearview', 'Closure']);
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
-    final probe = ShearLedger()..viewSecret = id.viewKey;
+    final probe = ShearLedger()..bindIdentity(id);
     final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
+    expect(admitBaseFromAddress(dest), isNotNull);
     final d20 = hash20FromAddress(dest)!;
-    final spent = sealNote(kUnitsPerShe, dest20: d20, kind: 'pot');
+    var spent = sealNote(kUnitsPerShe, dest20: d20, kind: 'pot');
     spent['address'] = dest;
+    spent = attachAdmitPub(spent, admitBase: pointFrom(admitBaseFromAddress(dest)!));
+    final compacted = compactSealedVout(spent);
+    expect(compacted.containsKey('r'), isFalse);
+    expect(compacted['rEph'], isNotNull);
+    expect(compacted['rCt'], isNotNull);
     final x = admitScalarFromSeed(seed, spent);
     final P = pointBytes(admitPub(x));
     final decoy = pointBytes(admitPub(randomScalar()));
     final pubs = [P, decoy];
     final posts = <Map<String, dynamic>>[];
     final pool = _RecordingPool(posts, pubs: pubs);
-    final ledger = ShearLedger(pool: pool)..viewSecret = id.viewKey;
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.confirmRound(address: dest, pot: 1, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
-    expect(ledger.notes.any((n) => n['address'] == dest || n['dest'] == dest), isTrue);
-    ledger.rememberNote({
-      'address': dest,
-      'dest': dest,
-      'kind': 'pot',
-      'commit': spent['commit'],
-      'noteCommit': spent['noteCommit'],
-      'r': spent['r'],
-      'prev': Uint8List(32),
-      'index': 0,
-    });
+    ledger.ingestSealedVouts(
+      [compacted],
+      spendSeed: seed,
+      dest: dest,
+      prev: Uint8List(32),
+      startIndex: 0,
+    );
+    expect(
+      ledger.notes.any((n) =>
+          (n['address'] == dest || n['dest'] == dest) &&
+          n['commit'] != null &&
+          n['r'] != null &&
+          n['prev'] != null),
+      isTrue,
+    );
     final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
     await ledger.send(
       from: dest,
@@ -246,9 +256,17 @@ void main() {
     expect(proof['spendTag'], isNotNull);
     final vout = body['vout'] as List;
     expect(vout.any((o) => o is Map && o['kind'] == 'dummy' && o['commit'] != null), isTrue);
+    expect(vout.every((o) => o is! Map || o['r'] == null), isTrue);
+    expect(vout.any((o) => o is Map && o['rEph'] != null && o['rCt'] != null), isTrue);
     expect((body['vin'] as List).first['commit'], isNotNull);
+    expect((body['vin'] as List).first['r'], isNull);
     expect(body['sig'], isNotEmpty);
     expect(body['spendPub'], isNotEmpty);
+    expect(
+      ledger.notes.any((n) => n['kind'] == 'send' && n['r'] != null && n['spent'] != true),
+      isTrue,
+      reason: 'wallet-sealed change keeps r locally',
+    );
     Uint8List b(dynamic v) => v is Uint8List ? v : hexToBytes(v.toString());
     final liveProof = {
       'admit_proof': true,

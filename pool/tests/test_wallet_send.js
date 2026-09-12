@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, destOpeningFromView, spendDestOf } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, spendDestOf, hash20FromAddress } from '../../crypto/address.js';
+import { noteCommitOfDest20 } from '../../crypto/note.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
@@ -91,6 +92,42 @@ describe('wallet fluxset RPC', () => {
     const jr = handleWalletApi(url('/api/wallet/jroot'), 'GET', {}, { store });
     assert.equal(jr.status, 200);
     assert.equal(jr.json.jroot, got.json.jroot);
+  });
+
+  it('serves compacted notes matching dest noteCommit without viewKey', () => {
+    const alice = newIdentity();
+    const dest = spendDestOf(alice.spendPub);
+    const nc = Buffer.alloc(32, 9);
+    const want = noteCommitOfDest20(hash20FromAddress(dest));
+    const store = storeWith();
+    store.blocks = [{
+      height: 2,
+      hash: Buffer.alloc(32, 3),
+      txs: [{
+        coinbase: true,
+        vout: [{
+          kind: 'pot',
+          noteCommit: want,
+          commit: Buffer.alloc(32, 4),
+          rEph: Buffer.alloc(32, 5),
+          rCt: Buffer.alloc(32, 6),
+          admitPub: Buffer.alloc(32, 7),
+        }, {
+          kind: 'hash',
+          noteCommit: nc,
+          commit: Buffer.alloc(32, 8),
+        }],
+      }],
+    }];
+    const got = handleWalletApi(url(`/api/wallet/notes?address=${dest}`), 'GET', {}, { store });
+    assert.equal(got.status, 200);
+    assert.equal(got.json.ok, true);
+    assert.equal(got.json.notes.length, 1);
+    assert.equal(got.json.notes[0].rEph, Buffer.alloc(32, 5).toString('hex'));
+    assert.equal(got.json.notes[0].index, 0);
+    assert.equal(got.json.notes[0].prev, Buffer.alloc(32, 3).toString('hex'));
+    assert.equal(got.json.notes[0].r, undefined);
+    assert.equal(JSON.stringify(got.json).includes('viewKey'), false);
   });
 });
 

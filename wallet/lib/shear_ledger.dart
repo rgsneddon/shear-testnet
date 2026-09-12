@@ -48,6 +48,19 @@ dynamic _hexify(dynamic v) {
   return v;
 }
 
+List<Map<String, dynamic>> _postedVin(List<Map<String, dynamic>> vin) {
+  return vin.map((v) {
+    final row = Map<String, dynamic>.from(v);
+    row.remove('r');
+    row.remove('address');
+    return row;
+  }).toList();
+}
+
+List<Map<String, dynamic>> _postedVout(List<Map<String, dynamic>> vouts) {
+  return vouts.map(compactSealedVout).toList();
+}
+
 String formatShe(num she) {
   if (!she.isFinite) return '0.000000000';
   final trunc = (she * 1e9).truncateToDouble() / 1e9;
@@ -339,7 +352,112 @@ class ShearLedger {
   final List<Map<String, dynamic>> _notes = [];
   List<Map<String, dynamic>> get notes => List.unmodifiable(_notes);
   void rememberNote(Map<String, dynamic> note) {
-    _notes.add(Map<String, dynamic>.from(note));
+    final incoming = Map<String, dynamic>.from(note);
+    final commit = _noteBytes(incoming['commit']);
+    if (commit != null) {
+      for (var i = 0; i < _notes.length; i++) {
+        final have = _noteBytes(_notes[i]['commit']);
+        if (have != null && _bytesEq(have, commit)) {
+          _notes[i] = {..._notes[i], ...incoming};
+          return;
+        }
+      }
+    }
+    _notes.add(incoming);
+  }
+
+  bool _bytesEq(Uint8List a, Uint8List b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  /// Bind spend seed so Copy dest carries B and sealed vouts can be unwrapped.
+  void bindIdentity(ShearIdentity ident) {
+    viewSecret = ident.viewKey;
+    spendPub = decodePaymentCode(ident.paymentCode)?['spendPub'];
+    admitBase = decodePaymentCode(ident.paymentCode)?['admitBase'];
+    final seed = hexToBytes(ident.seedHex);
+    if (seed.length == 32) {
+      spendSeed = seed;
+      admitBase ??= admitBaseBytes(seed);
+    }
+  }
+
+  /// Scan compacted vouts (chain persist drops r). Match noteCommit to dest20, unwrap rEph/rCt.
+  void ingestSealedVouts(
+    List<dynamic> vouts, {
+    required Uint8List spendSeed,
+    String? dest,
+    Uint8List? prev,
+    int startIndex = 0,
+  }) {
+    final dests = <String>{
+      if (dest != null && dest.isNotEmpty) dest,
+      ..._dests,
+    };
+    final xBase = admitBaseScalar(spendSeed);
+    for (var i = 0; i < vouts.length; i++) {
+      final raw = vouts[i];
+      if (raw is! Map) continue;
+      final o = Map<String, dynamic>.from(raw);
+      final nc = _noteBytes(o['noteCommit']);
+      final commit = _noteBytes(o['commit']);
+      if (nc == null || commit == null) continue;
+      String? matched;
+      for (final d in dests) {
+        final d20 = hash20FromAddress(d);
+        if (d20 != null && _bytesEq(nc, noteCommitOfDest20(d20))) {
+          matched = d;
+          break;
+        }
+      }
+      if (matched == null && dest != null) {
+        final d20 = hash20FromAddress(dest);
+        if (d20 != null && _bytesEq(nc, noteCommitOfDest20(d20))) matched = dest;
+      }
+      if (matched == null) continue;
+      Uint8List? r = _noteBytes(o['r']);
+      final rEph = _noteBytes(o['rEph']);
+      final rCt = _noteBytes(o['rCt']);
+      if (r == null && rEph != null && rCt != null) {
+        try {
+          r = unwrapBlind(rEph, rCt, xBase, concatBytes([nc, commit]));
+        } catch (_) {
+          continue;
+        }
+      }
+      if (r == null) continue;
+      final admit = _noteBytes(o['admitPub']);
+      if (admit != null) {
+        try {
+          final want = pointBytes(admitPub(admitScalarFromSeed(spendSeed, {
+            'kind': (o['kind'] as String?) ?? 'pot',
+            'noteCommit': nc,
+            'commit': commit,
+          })));
+          if (!_bytesEq(want, admit)) continue;
+        } catch (_) {
+          continue;
+        }
+      }
+      rememberNote({
+        'address': matched,
+        'dest': matched,
+        'kind': (o['kind'] as String?) ?? 'pot',
+        'commit': commit,
+        'noteCommit': nc,
+        'r': r,
+        'rEph': rEph,
+        'rCt': rCt,
+        'admitPub': admit,
+        'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
+        'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
+        if (o['height'] != null) 'height': o['height'],
+      });
+    }
   }
   final Map<String, double> _pending = {};
   final List<ShearTx> _txs = [];
@@ -809,18 +927,6 @@ class ShearLedger {
       pot: pot > 0 ? pot : null,
     );
     if ((coinbaseAmt > 0 ? coinbaseAmt : total) > 0) _txs.add(tx);
-    final d20 = hash20FromAddress(dest);
-    if (d20 != null && total > 0) {
-      rememberNote({
-        'address': dest,
-        'dest': dest,
-        'kind': pot > 0 ? 'pot' : 'hash',
-        'amount': total,
-        'height': height,
-        'noteCommit': _bytesHex(noteCommitOfDest20(d20)),
-        'index': 0,
-      });
-    }
     if (height > _sealedHeight) _sealedHeight = height;
     for (var i = 0; i < _txs.length; i++) {
       if (_txs[i].confirmed) continue;
@@ -1090,6 +1196,16 @@ class ShearLedger {
       try {
         await syncHistory(key);
       } catch (_) {}
+      final seed = spendSeed;
+      if (seed != null && seed.length == 32 && pool != null) {
+        try {
+          final json = await pool!.notes(key);
+          final rows = json['notes'];
+          if (rows is List) {
+            ingestSealedVouts(rows, spendSeed: seed, dest: key);
+          }
+        } catch (_) {}
+      }
     }
     return spendableOwned(restFrame, paymentCode: paymentCode);
   }
@@ -1242,9 +1358,17 @@ class ShearLedger {
   String? viewSecret;
   /// Long-term Ed25519 spend pub. currentDest is destCommit(spendPub).
   Uint8List? spendPub;
+  /// ristretto B = x_base·G. Copy dest payload dest20||B so mining notes wrap r.
+  Uint8List? admitBase;
+  /// Spend seed for Admit x and rEph unwrap. In-memory after unlock.
+  Uint8List? spendSeed;
 
-  Uint8List? _spendPubOf(String? paymentCode) =>
-      spendPub ?? decodePaymentCode(paymentCode ?? '')?['spendPub'];
+  Uint8List? _spendPubOf(String? paymentCode) {
+    final parsed = decodePaymentCode(paymentCode ?? '');
+    spendPub ??= parsed?['spendPub'];
+    admitBase ??= parsed?['admitBase'];
+    return spendPub;
+  }
 
   String? _ownPaymentCode(String restFrame, {String? paymentCode}) {
     if (paymentCode != null && isFullPaymentCode(paymentCode)) return paymentCode;
@@ -1308,7 +1432,7 @@ class ShearLedger {
   void _foldFlowDest(String restFrame, {String? paymentCode}) {
     final pub = _spendPubOf(paymentCode);
     if (pub == null || pub.length != 32) return;
-    final bound = encodeDestAddress(destCommitFromSpendPub(pub));
+    final bound = encodeDestAddress(destCommitFromSpendPub(pub), _admitBaseOf(paymentCode));
     final flow = destForLogin(
       restFrame,
       height: tipHeight,
@@ -1372,11 +1496,19 @@ class ShearLedger {
     return out;
   }
 
+  Uint8List? _admitBaseOf(String? paymentCode) {
+    admitBase ??= decodePaymentCode(paymentCode ?? '')?['admitBase'];
+    if (admitBase == null && spendSeed != null && spendSeed!.length == 32) {
+      admitBase = admitBaseBytes(spendSeed!);
+    }
+    return admitBase;
+  }
+
   String currentDest(String restFrame, {String? paymentCode}) {
     if (isDestAddress(restFrame)) return restFrame;
     final pub = spendPub ?? decodePaymentCode(paymentCode ?? '')?['spendPub'];
     if (pub != null && pub.length == 32) {
-      return encodeDestAddress(destCommitFromSpendPub(pub));
+      return encodeDestAddress(destCommitFromSpendPub(pub), _admitBaseOf(paymentCode));
     }
     return destForLogin(restFrame, height: tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ??
         restFrame;
@@ -1622,7 +1754,7 @@ class ShearLedger {
     }
     if (spendPub != null && spendPub!.length == 32) {
       if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
-        src = encodeDestAddress(destCommitFromSpendPub(spendPub!));
+        src = encodeDestAddress(destCommitFromSpendPub(spendPub!), admitBase ?? _admitBaseOf(paymentCode));
       }
     }
     var depth = 0;
@@ -1698,6 +1830,7 @@ class ShearLedger {
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local) {
       Map<String, dynamic>? spent;
       for (final n in _notes) {
+        if (n['spent'] == true) continue;
         if ((n['address'] == src || n['dest'] == src) &&
             _noteBytes(n['commit']) != null &&
             _noteBytes(n['r']) != null) {
@@ -1739,7 +1872,8 @@ class ShearLedger {
         final d20 = hash20FromAddress(addr);
         var note = sealNote(n, dest20: d20, kind: kind);
         if (addr.isNotEmpty) note['address'] = addr;
-        final B = admitBaseFromAddress(addr);
+        final B = admitBaseFromAddress(addr) ??
+            ((addr == src || addr == changeDest) ? (admitBase ?? _admitBaseOf(paymentCode)) : null);
         note = attachAdmitPub(
           note,
           admitBase: B != null ? pointFrom(B) : null,
@@ -1750,6 +1884,27 @@ class ShearLedger {
       vouts
         ..clear()
         ..addAll(sealed);
+      for (var i = 0; i < vouts.length; i++) {
+        final o = vouts[i];
+        if ((o['kind'] as String?) == 'dummy') continue;
+        final addr = o['address'] as String?;
+        if (addr == null || addr.isEmpty) continue;
+        if (addr == src || addr == changeDest) {
+          rememberNote({
+            'address': addr,
+            'dest': addr,
+            'kind': o['kind'] ?? 'send',
+            'commit': o['commit'],
+            'noteCommit': o['noteCommit'],
+            'r': o['r'],
+            'rEph': o['rEph'],
+            'rCt': o['rCt'],
+            'admitPub': o['admitPub'],
+            'index': i,
+            'prev': Uint8List(32),
+          });
+        }
+      }
       vin = [
         {
           'prev': _noteBytes(spent['prev']) ?? Uint8List(32),
@@ -1763,6 +1918,7 @@ class ShearLedger {
       final body = <String, dynamic>{'vin': vin, 'vout': vouts};
       proveFlowSpend(body, spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
       admitProof = Map<String, dynamic>.from(body['admit_proof'] as Map);
+      spent['spent'] = true;
     }
     if (spendSeed != null && spendSeed.length == 32 && sendKind != 'vote') {
       if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
@@ -1797,8 +1953,8 @@ class ShearLedger {
         sig: sigHex,
         spendPub: spendPubHex,
         ephPub: pay?.ephPub != null ? _bytesHex(pay!.ephPub) : null,
-        vin: List<dynamic>.from(_hexify(vin) as List),
-        vout: List<dynamic>.from(_hexify(vouts) as List),
+        vin: List<dynamic>.from(_hexify(_postedVin(vin)) as List),
+        vout: List<dynamic>.from(_hexify(_postedVout(vouts)) as List),
         excess: excess is Uint8List ? _bytesHex(excess) : excess,
         admitProof: admitProof != null
             ? Map<String, dynamic>.from(_hexify(admitProof) as Map)
@@ -2151,6 +2307,9 @@ class ShearPoolClient {
       });
 
   Future<Map<String, dynamic>> fluxset() => _get('/api/wallet/fluxset');
+
+  Future<Map<String, dynamic>> notes(String address) =>
+      _get('/api/wallet/notes?address=${Uri.encodeQueryComponent(address)}');
 
   Future<Map<String, dynamic>> mempoolPressure() => _get('/api/mempoolPressure');
 

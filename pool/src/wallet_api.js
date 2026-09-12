@@ -838,6 +838,46 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       },
     };
   }
+  if (path === '/api/wallet/notes' && verb === 'GET') {
+    const address = url.searchParams.get('address') || '';
+    if (!isDestAddress(address)) {
+      return { status: 400, json: { ok: false, reason: 'bad_address' } };
+    }
+    const d20 = hash20FromAddress(address);
+    const want = d20 ? noteCommitOfDest20(d20) : null;
+    const hex = (x) => {
+      try {
+        if (x == null) return undefined;
+        return Buffer.from(typeof x?.toBytes === 'function' ? x.toBytes() : x).toString('hex');
+      } catch {
+        return undefined;
+      }
+    };
+    const notes = [];
+    for (const b of store?.blocks || []) {
+      const prev = hex(b.hash) || hex(b.header && b.header.length >= 32 ? b.hash : null);
+      for (const tx of b.txs || []) {
+        (tx.vout || []).forEach((o, index) => {
+          if (!o?.commit || !o?.noteCommit || !want) return;
+          if (!Buffer.from(o.noteCommit).equals(want)) return;
+          notes.push({
+            kind: o.kind || (tx.coinbase ? 'pot' : 'send'),
+            noteCommit: hex(o.noteCommit),
+            commit: hex(o.commit),
+            rEph: hex(o.rEph),
+            rCt: hex(o.rCt),
+            admitPub: hex(o.admitPub),
+            viewTag: hex(o.viewTag),
+            prev,
+            index,
+            height: b.height,
+            coinbase: !!tx.coinbase,
+          });
+        });
+      }
+    }
+    return { status: 200, json: { ok: true, notes } };
+  }
   if (path === '/api/wallet/balance' && verb === 'GET') {
     const address = url.searchParams.get('address') || '';
     if (!isDestAddress(address) && !isPaymentCode(address)) {

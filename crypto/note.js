@@ -243,6 +243,39 @@ export function sealNote(v, { dest20, noteCommit, kind } = {}) {
   return sealed;
 }
 
+/** ECDH wrap of Pedersen r to dest admit-base B = x_base·G. compactTx keeps rEph/rCt and drops r. */
+export const RWRAP_DST = Buffer.from('shear-r-wrap-v1');
+
+export function wrapBlind(r, admitBase, extra) {
+  const e = randomScalar();
+  const B = typeof admitBase?.toBytes === 'function' ? admitBase : pointFrom(asU8(admitBase));
+  const rEphP = G.multiply(e);
+  const shared = B.multiply(e);
+  const mask = hashToScalar(RWRAP_DST, pointBytes(shared), extra || Buffer.alloc(0));
+  const rs = typeof r === 'bigint' ? r : scalarFrom(r);
+  return { rEph: pointBytes(rEphP), rCt: scalarBytes(Fn.add(rs, mask)) };
+}
+
+export function unwrapBlind(rEph, rCt, xBase, extra) {
+  const x = typeof xBase === 'bigint' ? xBase : scalarFrom(xBase);
+  const shared = pointFrom(asU8(rEph)).multiply(x);
+  const mask = hashToScalar(RWRAP_DST, pointBytes(shared), extra || Buffer.alloc(0));
+  return scalarBytes(Fn.sub(scalarFrom(rCt), mask));
+}
+
+/** Attach rEph/rCt so a compacted mining/Flow note is spendable by the dest owner. */
+export function wrapNoteBlind(vout, admitBase) {
+  if (!vout?.r || !admitBase) return vout;
+  if (vout.rEph && vout.rCt) return vout;
+  try {
+    const extra = concat(asU8(vout.noteCommit), asU8(vout.commit));
+    const wrap = wrapBlind(vout.r, admitBase, extra);
+    return { ...vout, rEph: wrap.rEph, rCt: wrap.rCt };
+  } catch {
+    return vout;
+  }
+}
+
 export function verifySealedNote(vout, v) {
   if (!vout?.commit || !vout.valueProof) return false;
   if (v < 0 || v >= 2 ** NOTE_BITS) return false;

@@ -278,6 +278,8 @@ function compactVout(o) {
     if (o.rangeProof) row.rangeProof = o.rangeProof;
     if (o.viewTag) row.viewTag = o.viewTag;
     if (o.admitPub) row.admitPub = o.admitPub;
+    if (o.rEph) row.rEph = o.rEph;
+    if (o.rCt) row.rCt = o.rCt;
     if (o.memo) row.memo = true;
     if (keepDest && o.address) row.address = o.address;
     return row;
