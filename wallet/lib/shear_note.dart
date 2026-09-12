@@ -12,6 +12,14 @@ final bitExtra = utf8Bytes('shear-note-bit-v1');
 final consExtra = utf8Bytes('shear-note-cons-v1');
 
 final Element noteH = hashToRistretto(utf8Bytes('shear-note-H-v1'), noteDst);
+final Uint8List noteHBytes = pointBytes(noteH);
+final Uint8List ristrettoGBytes = pointBytes(ristrettoG());
+final Uint8List ristrettoIdBytes = Uint8List(32);
+
+Uint8List commitBytes(int v, Uint8List r) {
+  final vg = v == 0 ? Uint8List(32) : mulGBytes(scalarBytes(scalarFromInt(v)));
+  return addBytes(vg, mulBytes(noteHBytes, r));
+}
 
 Uint8List noteCommitOfDest20(Uint8List dest20) {
   if (dest20.length != 20) throw ArgumentError('dest20');
@@ -24,11 +32,15 @@ Element commit(int v, Scalar r) {
 }
 
 Map<String, Uint8List> schnorrProveH(Element p, Scalar r, Uint8List extra) {
-  final k = randomScalar();
-  final R = mulEl(noteH, k);
-  final e = hashToScalar([pointBytes(p), pointBytes(R), extra]);
-  final z = scalarAdd(k, scalarMul(e, r));
-  return {'R': pointBytes(R), 'z': scalarBytes(z)};
+  return schnorrProveHBytes(pointBytes(p), scalarBytes(r), extra);
+}
+
+Map<String, Uint8List> schnorrProveHBytes(Uint8List p, Uint8List r, Uint8List extra) {
+  final k = scalarBytes(randomScalar());
+  final R = mulBytes(noteHBytes, k);
+  final e = hashToScalar([p, R, extra]);
+  final z = scalarAdd(scalarFromBytes(k), scalarMul(e, scalarFromBytes(r)));
+  return {'R': R, 'z': scalarBytes(z)};
 }
 
 bool schnorrVerifyH(Element p, Map<String, Uint8List> proof, Uint8List extra) {
@@ -43,64 +55,65 @@ bool schnorrVerifyH(Element p, Map<String, Uint8List> proof, Uint8List extra) {
 }
 
 Map<String, Uint8List> proveValue(int v, Scalar r) {
-  final C = commit(v, r);
-  final vg = v == 0 ? ristrettoZero() : mulG(scalarFromInt(v));
-  final P = subEl(C, vg);
-  final sch = schnorrProveH(P, r, valExtra);
-  return {'C': pointBytes(C), 'R': sch['R']!, 'z': sch['z']!};
+  final rb = scalarBytes(r);
+  final C = commitBytes(v, rb);
+  final vg = v == 0 ? ristrettoIdBytes : mulGBytes(scalarBytes(scalarFromInt(v)));
+  final P = subBytes(C, vg);
+  final sch = schnorrProveHBytes(P, rb, valExtra);
+  return {'C': C, 'R': sch['R']!, 'z': sch['z']!};
 }
 
-Map<String, Uint8List> bitOrProve(Element B, int b, Scalar s) {
-  final P0 = cloneElement(B);
-  final P1 = subEl(B, ristrettoG());
+Map<String, Uint8List> bitOrProveBytes(Uint8List B, int b, Uint8List s) {
+  final P0 = B;
+  final P1 = subBytes(B, ristrettoGBytes);
   final real = b != 0 ? P1 : P0;
   final fake = b != 0 ? P0 : P1;
-  final eFake = randomScalar();
-  final zFake = randomScalar();
-  final RFake = subEl(mulEl(noteH, zFake), mulEl(fake, eFake));
-  final k = randomScalar();
-  final RReal = mulEl(noteH, k);
+  final eFake = scalarBytes(randomScalar());
+  final zFake = scalarBytes(randomScalar());
+  final RFake = subBytes(mulBytes(noteHBytes, zFake), mulBytes(fake, eFake));
+  final k = scalarBytes(randomScalar());
+  final RReal = mulBytes(noteHBytes, k);
   final R0 = b != 0 ? RFake : RReal;
   final R1 = b != 0 ? RReal : RFake;
-  final e = hashToScalar([pointBytes(B), pointBytes(R0), pointBytes(R1), bitExtra]);
-  final eReal = scalarSub(e, eFake);
-  final zReal = scalarAdd(k, scalarMul(eReal, s));
+  final e = hashToScalar([B, R0, R1, bitExtra]);
+  final eReal = scalarSub(e, scalarFromBytes(eFake));
+  final zReal = scalarAdd(scalarFromBytes(k), scalarMul(eReal, scalarFromBytes(s)));
   return {
-    'R0': pointBytes(R0),
-    'R1': pointBytes(R1),
-    'e0': scalarBytes(b != 0 ? eFake : eReal),
-    'e1': scalarBytes(b != 0 ? eReal : eFake),
-    'z0': scalarBytes(b != 0 ? zFake : zReal),
-    'z1': scalarBytes(b != 0 ? zReal : zFake),
+    'R0': R0,
+    'R1': R1,
+    'e0': b != 0 ? eFake : scalarBytes(eReal),
+    'e1': b != 0 ? scalarBytes(eReal) : eFake,
+    'z0': b != 0 ? zFake : scalarBytes(zReal),
+    'z1': b != 0 ? scalarBytes(zReal) : zFake,
   };
 }
 
 Map<String, dynamic> proveRange(int v, Scalar r) {
   final bits = <Map<String, Uint8List>>[];
-  final Bpts = <Element>[];
+  final Bpts = <Uint8List>[];
   var n = v;
   var sSum = scalarZero();
   for (var i = 0; i < noteBits; i++) {
     final b = n & 1;
     n >>= 1;
     final si = randomScalar();
-    final Bi = commit(b, si);
+    final sib = scalarBytes(si);
+    final Bi = commitBytes(b, sib);
     Bpts.add(Bi);
-    bits.add(bitOrProve(Bi, b, si));
-    final w = scalarFromBigShift(i);
-    sSum = scalarAdd(sSum, scalarMul(w, si));
+    bits.add(bitOrProveBytes(Bi, b, sib));
+    sSum = scalarAdd(sSum, scalarMul(scalarFromBigShift(i), si));
   }
   final rDelta = scalarSub(r, sSum);
-  final C = commit(v, r);
-  var acc = ristrettoZero();
+  final C = commitBytes(v, scalarBytes(r));
+  var acc = Uint8List(32);
   for (var i = 0; i < noteBits; i++) {
-    acc = addEl(acc, mulEl(Bpts[i], scalarFromBigShift(i)));
+    acc = addBytes(acc, mulBytes(Bpts[i], scalarBytes(scalarFromBigShift(i))));
   }
-  final P = subEl(C, acc);
+  final P = subBytes(C, acc);
   return {
     'bits': bits,
-    'B': Bpts.map(pointBytes).toList(),
-    'cons': schnorrProveH(P, rDelta, consExtra),
+    'B': Bpts,
+    'cons': schnorrProveHBytes(P, scalarBytes(rDelta), consExtra),
   };
 }
 

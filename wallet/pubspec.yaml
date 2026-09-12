@@ -17,7 +17,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
 # Store/file version is x.y.z+build (Flutter/Android). Public pin is two-part 0.30.
-version: 0.31.0+43
+version: 0.31.0+45
 
 environment:
   sdk: ^3.12.2
@@ -36,6 +36,7 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   crypto: ^3.0.6
+  ffi: ^2.1.4
   path_provider: ^2.1.5
   path: ^1.9.0
   cryptography: ^2.7.0

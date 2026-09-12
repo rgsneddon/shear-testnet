@@ -5,7 +5,21 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:ristretto255/ristretto255.dart';
 
+import 'shear_sodium.dart';
+
 export 'package:ristretto255/ristretto255.dart' show Element, Scalar;
+
+ShearSodium? _sodium;
+bool _sodiumTried = false;
+ShearSodium? _native() {
+  if (_sodiumTried) return _sodium;
+  _sodiumTried = true;
+  _sodium = ShearSodium.tryLoad();
+  return _sodium;
+}
+
+/// True when prove uses libsodium ristretto (not the Dart BigInt field).
+bool ristrettoNativeLoaded() => _native() != null;
 
 final _rng = Random.secure();
 
@@ -62,6 +76,8 @@ Uint8List expandMessageXmd(Uint8List msg, List<int> dst, int lenInBytes) {
 
 Element hashToRistretto(Uint8List msg, List<int> dst) {
   final xmd = expandMessageXmd(msg, dst, 64);
+  final n = _native();
+  if (n != null) return pointFrom(n.fromHash(xmd));
   final p = Element.newElement();
   p.fromUniformBytes(xmd);
   return p;
@@ -78,12 +94,16 @@ Element cloneElement(Element p) {
 }
 
 Element addEl(Element a, Element b) {
+  final n = _native();
+  if (n != null) return pointFrom(n.add(pointBytes(a), pointBytes(b)));
   final o = Element.newElement();
   o.add(a, b);
   return o;
 }
 
 Element subEl(Element a, Element b) {
+  final n = _native();
+  if (n != null) return pointFrom(n.sub(pointBytes(a), pointBytes(b)));
   final o = Element.newElement();
   o.subtract(a, b);
   return o;
@@ -96,12 +116,16 @@ Element negEl(Element a) {
 }
 
 Element mulEl(Element p, Scalar s) {
+  final n = _native();
+  if (n != null) return pointFrom(n.scalarmult(scalarBytes(s), pointBytes(p)));
   final o = Element.newElement();
   o.scalarMult(s, p);
   return o;
 }
 
 Element mulG(Scalar s) {
+  final n = _native();
+  if (n != null) return pointFrom(n.scalarmultBase(scalarBytes(s)));
   final o = Element.newElement();
   o.scalarBaseMult(s);
   return o;
@@ -109,6 +133,10 @@ Element mulG(Scalar s) {
 
 /// a·A + b·G. Prove-only (verify stays constant-time).
 Element varTimeDoubleBase(Scalar a, Element A, Scalar b) {
+  final n = _native();
+  if (n != null) {
+    return pointFrom(n.add(n.scalarmult(scalarBytes(a), pointBytes(A)), n.scalarmultBase(scalarBytes(b))));
+  }
   final o = Element.newElement();
   o.varTimeDoubleScalarBaseMult(a, A, b);
   return o;
@@ -116,12 +144,52 @@ Element varTimeDoubleBase(Scalar a, Element A, Scalar b) {
 
 /// s0·P0 + s1·P1. Prove-only.
 Element varTimeMsm2(Scalar s0, Element p0, Scalar s1, Element p1) {
+  final n = _native();
+  if (n != null) {
+    return pointFrom(n.add(
+      n.scalarmult(scalarBytes(s0), pointBytes(p0)),
+      n.scalarmult(scalarBytes(s1), pointBytes(p1)),
+    ));
+  }
   final o = Element.newElement();
   o.varTimeMultiScalarMult([s0, s1], [p0, p1]);
   return o;
 }
 
 Uint8List pointBytes(Element p) => Uint8List.fromList(p.encode());
+
+/// Byte-in/byte-out group ops. Prefer libsodium; Dart Element is the fallback.
+Uint8List mulBytes(Uint8List p, Uint8List s) {
+  final n = _native();
+  if (n != null) return n.scalarmult(s, p);
+  return pointBytes(mulEl(pointFrom(p), scalarFromBytes(s)));
+}
+
+Uint8List mulGBytes(Uint8List s) {
+  final n = _native();
+  if (n != null) return n.scalarmultBase(s);
+  return pointBytes(mulG(scalarFromBytes(s)));
+}
+
+Uint8List addBytes(Uint8List a, Uint8List b) {
+  final n = _native();
+  if (n != null) return n.add(a, b);
+  return pointBytes(addEl(pointFrom(a), pointFrom(b)));
+}
+
+Uint8List subBytes(Uint8List a, Uint8List b) {
+  final n = _native();
+  if (n != null) return n.sub(a, b);
+  return pointBytes(subEl(pointFrom(a), pointFrom(b)));
+}
+
+Uint8List fromHashBytes(Uint8List h64) {
+  final n = _native();
+  if (n != null) return n.fromHash(h64);
+  final p = Element.newElement();
+  p.fromUniformBytes(h64);
+  return pointBytes(p);
+}
 
 Element pointFrom(Uint8List buf) {
   final p = Element.newElement();

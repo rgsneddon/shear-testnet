@@ -26,6 +26,8 @@ int kindByte(String? kind) {
 
 Element hp(Element p) => hashToRistretto(pointBytes(p), admitHpDst);
 
+Uint8List hpBytes(Uint8List p) => fromHashBytes(expandMessageXmd(p, admitHpDst, 64));
+
 Element admitPub(Scalar x) => mulG(x);
 
 Element spendTagPoint(Scalar x, Element p) => mulEl(hp(p), x);
@@ -100,29 +102,27 @@ Map<String, dynamic> admitProve({required Scalar x, required int index, required
   final n = pubs.length;
   if (n == 0) throw StateError('empty_fluxset');
   if (index < 0 || index >= n) throw StateError('index');
-  final ring = List<Element>.generate(n, (i) => pointFrom(pubs[i]));
-  final hpRing = List<Element>.generate(n, (i) => hp(ring[i]));
-  final P = ring[index];
-  final I = mulEl(hpRing[index], x);
-  final Ibytes = pointBytes(I);
-  final c = List<Scalar?>.filled(n, null);
-  final r = List<Scalar?>.filled(n, null);
-  final alpha = randomScalar();
-  final Lj = mulG(alpha);
-  final Rj = mulEl(hpRing[index], alpha);
-  c[(index + 1) % n] = hashToScalar([Ibytes, pointBytes(Lj), pointBytes(Rj), admitDst]);
+  final hpRing = List<Uint8List>.generate(n, (i) => hpBytes(pubs[i]));
+  final xb = scalarBytes(x);
+  final Ibytes = mulBytes(hpRing[index], xb);
+  final c = List<Uint8List?>.filled(n, null);
+  final r = List<Uint8List?>.filled(n, null);
+  final alpha = scalarBytes(randomScalar());
+  final Lj = mulGBytes(alpha);
+  final Rj = mulBytes(hpRing[index], alpha);
+  c[(index + 1) % n] = scalarBytes(hashToScalar([Ibytes, Lj, Rj, admitDst]));
   for (var i = (index + 1) % n; i != index; i = (i + 1) % n) {
-    r[i] = randomScalar();
-    final L = varTimeDoubleBase(c[i]!, ring[i], r[i]!);
-    final Rpt = varTimeMsm2(r[i]!, hpRing[i], c[i]!, I);
-    c[(i + 1) % n] = hashToScalar([Ibytes, pointBytes(L), pointBytes(Rpt), admitDst]);
+    r[i] = scalarBytes(randomScalar());
+    final L = addBytes(mulGBytes(r[i]!), mulBytes(pubs[i], c[i]!));
+    final Rpt = addBytes(mulBytes(hpRing[i], r[i]!), mulBytes(Ibytes, c[i]!));
+    c[(i + 1) % n] = scalarBytes(hashToScalar([Ibytes, L, Rpt, admitDst]));
   }
-  r[index] = scalarSub(alpha, scalarMul(c[index]!, x));
+  r[index] = scalarBytes(scalarSub(scalarFromBytes(alpha), scalarMul(scalarFromBytes(c[index]!), x)));
   return {
     'admit_proof': true,
     'spendTag': Ibytes,
-    'c0': scalarBytes(c[0]!),
-    'r': r.map((s) => scalarBytes(s!)).toList(),
+    'c0': c[0]!,
+    'r': r.map((s) => s!).toList(),
   };
 }
 
@@ -131,19 +131,24 @@ bool admitVerify(Map<String, dynamic> proof, List<Uint8List> pubs) {
     final n = pubs.length;
     final rs = proof['r'];
     if (n == 0 || rs is! List || rs.length != n) return false;
-    final ring = pubs.map(pointFrom).toList();
     final tag = proof['spendTag'];
-    if (tag is! Uint8List) return false;
-    final I = pointFrom(tag);
-    if (elementEq(I, ristrettoZero())) return false;
-    var c = scalarFromBytes(proof['c0'] as Uint8List);
-    for (var i = 0; i < n; i++) {
-      final ri = scalarFromBytes(rs[i] as Uint8List);
-      final L = addEl(mulG(ri), mulEl(ring[i], c));
-      final R = addEl(mulEl(hp(ring[i]), ri), mulEl(I, c));
-      c = hashToScalar([tag, pointBytes(L), pointBytes(R), admitDst]);
+    if (tag is! Uint8List || tag.length != 32) return false;
+    var acc = 0;
+    for (final b in tag) {
+      acc |= b;
     }
-    return scalarEq(c, scalarFromBytes(proof['c0'] as Uint8List));
+    if (acc == 0) return false;
+    final c0 = proof['c0'];
+    if (c0 is! Uint8List) return false;
+    var c = c0;
+    for (var i = 0; i < n; i++) {
+      final ri = rs[i];
+      if (ri is! Uint8List) return false;
+      final L = addBytes(mulGBytes(ri), mulBytes(pubs[i], c));
+      final R = addBytes(mulBytes(hpBytes(pubs[i]), ri), mulBytes(tag, c));
+      c = scalarBytes(hashToScalar([tag, L, R, admitDst]));
+    }
+    return _eq(c, c0);
   } catch (_) {
     return false;
   }

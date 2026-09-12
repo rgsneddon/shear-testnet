@@ -4,7 +4,7 @@ set -euo pipefail
 WALLET="${SHEAR_WALLET:-/opt/shear-v2/wallet}"
 FLUTTER_ROOT="${FLUTTER_ROOT:-/opt/flutter}"
 VER="$(sed -n "s/^const kWalletVersion = '\\(.*\\)';/\\1/p" "$WALLET/lib/main.dart" | head -1)"
-BUILD_NUMBER="${BUILD_NUMBER:-20}"
+BUILD_NUMBER="${BUILD_NUMBER:-45}"
 # Flutter file version is x.y.z+N. Public zip pin stays two-part $VER.
 FLUTTER_NAME="$VER"
 case "$FLUTTER_NAME" in
@@ -24,6 +24,16 @@ flutter pub get
 flutter build linux --release --build-name="$FLUTTER_NAME" --build-number="$BUILD_NUMBER"
 BUNDLE="$WALLET/build/linux/x64/release/bundle"
 test -x "$BUNDLE/shear_wallet"
+# Bundle libsodium for native AdmitV1 prove.
+mkdir -p "$BUNDLE/lib"
+for p in /usr/lib/x86_64-linux-gnu/libsodium.so.26 /usr/lib/x86_64-linux-gnu/libsodium.so.23 /usr/local/lib/libsodium.so.26 /usr/local/lib/libsodium.so.23; do
+  if [ -f "$p" ]; then
+    cp -L "$p" "$BUNDLE/lib/$(basename "$p")"
+    ln -sfn "$(basename "$p")" "$BUNDLE/lib/libsodium.so" || true
+    break
+  fi
+done
+test -e "$BUNDLE/lib/libsodium.so.26" || test -e "$BUNDLE/lib/libsodium.so.23"
 DIST="$WALLET/dist"
 mkdir -p "$DIST"
 PKGBUILD="$WALLET/pack/archlinux/PKGBUILD"

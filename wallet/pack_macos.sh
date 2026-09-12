@@ -15,9 +15,18 @@ APP="$WALLET/build/macos/Build/Products/Release/$APPNAME.app"
 
 cd "$WALLET"
 if [ "${PACK_REBUILD:-}" = "1" ] || [ ! -d "$APP" ]; then
-  flutter build macos --release --build-name=$VER --build-number=42
+  flutter build macos --release --build-name=$VER --build-number=45
 fi
 test -d "$APP"
+# Bundle libsodium so AdmitV1 prove is native (Dart BigInt field is minutes at live n).
+SODIUM_DYLIB=""
+for p in /opt/homebrew/opt/libsodium/lib/libsodium.26.dylib /usr/local/opt/libsodium/lib/libsodium.26.dylib /opt/homebrew/lib/libsodium.26.dylib; do
+  if [ -f "$p" ]; then SODIUM_DYLIB=$p; break; fi
+done
+test -n "$SODIUM_DYLIB"
+mkdir -p "$APP/Contents/Frameworks"
+cp -L "$SODIUM_DYLIB" "$APP/Contents/Frameworks/libsodium.26.dylib"
+install_name_tool -id @rpath/libsodium.26.dylib "$APP/Contents/Frameworks/libsodium.26.dylib" 2>/dev/null || true
 # Wallet does not bundle the official miner. Official miner is a separate release.
 if [ -e "$APP/Contents/MacOS/shear-miner" ] || [ -e "$APP/Contents/MacOS/Shear-Miner" ]; then
   echo "wallet app must not include Shear-Miner" >&2

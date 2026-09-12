@@ -28,6 +28,7 @@ import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_admit.dart';
 import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
+import 'package:ristretto255/ristretto255.dart' as r255;
 import 'package:shear_wallet/shear_ed25519.dart';
 import 'package:crypto/crypto.dart';
 
@@ -229,6 +230,24 @@ void main() {
       'sent',
     );
     expect(ledger.sealedHeight, 3 + ShearLedger.continuumConfirmations - 1);
+  });
+
+  test('libsodium ristretto matches dart Element and node-compatible AdmitV1', () {
+    final s = randomScalar();
+    final dartG = r255.Element.newElement()..scalarBaseMult(s);
+    expect(pointBytes(mulG(s)), pointBytes(dartG));
+    final dartMul = r255.Element.newElement()..scalarMult(s, dartG);
+    expect(pointBytes(mulEl(dartG, s)), pointBytes(dartMul));
+    final msg = utf8Bytes('shear-admit-hp-probe');
+    final dartH = r255.Element.newElement()..fromUniformBytes(expandMessageXmd(msg, admitHpDst, 64));
+    expect(pointBytes(hashToRistretto(msg, admitHpDst)), pointBytes(dartH));
+    final x = randomScalar();
+    final pubs = List<Uint8List>.generate(24, (_) => pointBytes(admitPub(randomScalar())));
+    pubs[5] = pointBytes(admitPub(x));
+    final proof = admitProve(x: x, index: 5, pubs: pubs);
+    expect(admitVerify(proof, pubs), isTrue);
+    expect((proof['r'] as List).length, 24);
+    expect(admitVerify({'admit_proof': true, 'spendTag': Uint8List(32), 'c0': Uint8List(32), 'r': List.filled(24, Uint8List(32))}, pubs), isFalse);
   });
 
   test('tracks owned notes and POSTs a sealed Flow body (vin, vout, admit_proof, sig, spendPub)', () async {
