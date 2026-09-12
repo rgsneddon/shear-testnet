@@ -295,7 +295,8 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null } = {})
     if (reserveNeedsPortalOpen(tx) && !verifyReservePortalOpen(tx)) {
       return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
     }
-    if (have(d.from) < d.nanos) {
+    const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
+    if (!noteBound && have(d.from) < d.nanos) {
       return { ok: false, reason: 'insufficient', from: d.from, need: d.nanos, have: have(d.from) };
     }
     spent.set(d.from, (spent.get(d.from) || 0) + d.nanos);

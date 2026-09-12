@@ -11,6 +11,7 @@ import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { admitProve, admitScalarFromSeed, fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
 import { signSpendTx } from '../../crypto/spend.js';
+import { decodeHeader } from '../../crypto/header.js';
 import { createStore } from '../src/store.js';
 import {
   buildTemplate,
@@ -290,5 +291,104 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const sampQ = store.queueTx(sampled);
     assert.equal(sampQ.ok, false);
     assert.equal(sampQ.reason, 'admit');
+  });
+
+  it('hex-posted Flow send is in the next template and mined header with admit_proof', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admit-job-'));
+    const store = createStore(dir);
+    const { dest, spendSeed, key } = identityDest();
+    let now = 1_700_002_000_000;
+    const parent = mine(buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: dest,
+      bits: 4,
+      now,
+    }));
+    let appended = store.append({
+      header: parent.header,
+      txs: parent.txs,
+      samples: parent.samples,
+      miner: dest,
+    });
+    assert.equal(appended.ok, true, appended.reason);
+    const genesisHash = appended.block.hash;
+    const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
+    const idx = parent.txs[0].vout.indexOf(spent);
+    for (let h = 2; h <= 6; h += 1) {
+      now += 90_000;
+      const { tpl } = store.template({ miner: dest, bits: 4, now });
+      const found = mine(tpl);
+      appended = store.append({
+        header: found.header,
+        txs: tpl.txs,
+        samples: tpl.samples,
+        shareBatch: tpl.shareBatch || [],
+        miner: dest,
+        aLeaves: tpl.aLeaves,
+        bLeaves: tpl.bLeaves,
+        rootA: tpl.rootA,
+        rootB: tpl.rootB,
+      });
+      assert.equal(appended.ok, true, appended.reason);
+    }
+    const live = store.fluxset();
+    const fee = levyNanos(2);
+    const change = BLOCK_SUBSIDY_NANOS - 2 - fee;
+    const honest = attachDummyOuts({
+      id: 'job-send',
+      kind: 'send',
+      from: dest,
+      to: dest,
+      nanos: 2,
+      fee,
+      changeNanos: change,
+      vin: [{
+        prev: genesisHash,
+        index: idx,
+        commit: spent.commit,
+        noteCommit: spent.noteCommit,
+        r: spent.r,
+        address: dest,
+      }],
+      vout: [
+        { address: dest, nanos: 2, kind: 'send' },
+        { address: dest, nanos: change, kind: 'send' },
+      ],
+    }, { spent });
+    proveFlowSpend(honest, { spendSeed, spentNote: spent, pubs: live.pubs });
+    signSpendTx(honest, key);
+    const hexed = JSON.parse(JSON.stringify(honest, (_, v) => (
+      Buffer.isBuffer(v) || v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v
+    )));
+    const queued = store.queueTx(hexed);
+    assert.equal(queued.ok, true, queued.reason);
+    const parentH = decodeHeader(Buffer.from(store.tip().header));
+    const { tpl } = store.template({
+      miner: dest,
+      bits: 4,
+      now: Number(parentH.timestamp) + 90_000,
+    });
+    const user = (tpl.txs || []).slice(1);
+    assert.equal(user.length, 1, 'mempool send must be in the next job');
+    assert.equal(user[0].id, 'job-send');
+    assert.ok(user[0].admit_proof);
+    const found = mine(tpl);
+    const got = store.append({
+      header: found.header,
+      txs: tpl.txs,
+      samples: tpl.samples,
+      shareBatch: tpl.shareBatch || [],
+      miner: dest,
+      aLeaves: tpl.aLeaves,
+      bLeaves: tpl.bLeaves,
+      rootA: tpl.rootA,
+      rootB: tpl.rootB,
+    });
+    assert.equal(got.ok, true, got.reason);
+    const onchain = store.blocks.at(-1).txs.find((t) => !t.coinbase);
+    assert.ok(onchain, 'user send on chain');
+    assert.ok(onchain.admit_proof, 'admit_proof persisted');
+    assert.equal(store.mempool.length, 0);
   });
 });

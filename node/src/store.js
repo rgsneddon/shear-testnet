@@ -22,7 +22,7 @@ import {
 import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
-import { reviveBytes, noteCommitOfDest20 } from '../../crypto/note.js';
+import { reviveBytes, reviveTx, noteCommitOfDest20 } from '../../crypto/note.js';
 import { hash20FromAddress } from '../../crypto/address.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
@@ -597,6 +597,7 @@ export function createStore(dir, {
   }
 
   function queueTx(tx) {
+    tx = reviveTx(tx);
     if (pause.reserveInterest && tx?.mint && String(tx.kind || '') !== 'lock' && String(tx.kind || '') !== 'vote') {
       return { ok: false, reason: 'paused' };
     }
@@ -913,7 +914,8 @@ export function createStore(dir, {
     book.baseFee = baseFeeNow;
     const pendingTxs = [];
     const keep = [];
-    for (const m of mempool) {
+    for (const raw of mempool) {
+      const m = reviveTx(raw);
       const dest = destForLogin(m.to, { continuityRoot: lag1, height }) || m.to;
       const tx = {
         ...m,
@@ -933,8 +935,9 @@ export function createStore(dir, {
       if (got.ok) {
         pendingTxs.push(got.tx);
         keep.push(m);
-      } else if (got.reason !== 'admit') {
-        keep.push(m);
+      } else {
+        console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: got.reason }));
+        if (got.reason !== 'admit') keep.push(m);
       }
     }
     mempool.length = 0;

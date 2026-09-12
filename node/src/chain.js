@@ -151,20 +151,23 @@ function lookupSpentVout(vin, block, prev, bodyIndex, history) {
 }
 
 export function digestTx(tx) {
-  const vins = (tx.vin || []).map((v, i) => ({
-    prev: v.prev ? Buffer.from(v.prev) : Buffer.alloc(32),
-    index: Number(v.index || i),
-    dest20: v.noteCommit && Buffer.from(v.noteCommit).length === 32
-      ? Buffer.from(v.noteCommit).subarray(0, 20)
-      : Buffer.alloc(20),
-  }));
-  const vouts = (tx.vout || []).map((o) => ({
-    dest20: o.noteCommit && Buffer.from(o.noteCommit).length === 32
-      ? Buffer.from(o.noteCommit).subarray(0, 20)
-      : dest20Of(o.address || ''),
-    nanos: o.commit ? 0 : Number(o.nanos || 0),
-    kind: kindByte(o.kind),
-  }));
+  const vins = (tx.vin || []).map((v, i) => {
+    const prev = ref32(v.prev) || Buffer.alloc(32);
+    const nc = ref32(v.noteCommit);
+    return {
+      prev,
+      index: Number(v.index || i),
+      dest20: nc ? nc.subarray(0, 20) : Buffer.alloc(20),
+    };
+  });
+  const vouts = (tx.vout || []).map((o) => {
+    const nc = ref32(o.noteCommit);
+    return {
+      dest20: nc ? nc.subarray(0, 20) : dest20Of(o.address || ''),
+      nanos: o.commit ? 0 : Number(o.nanos || 0),
+      kind: kindByte(o.kind),
+    };
+  });
   return packDigest(packTx({
     version: 1,
     vins: vins.length ? vins : [{ prev: Buffer.alloc(32), index: Number(tx.height || 0), dest20: Buffer.alloc(20) }],

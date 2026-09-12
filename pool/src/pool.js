@@ -1100,7 +1100,7 @@ export function createPool({
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     const chainLen = (store.blocks || []).length;
-    const { job } = store.template({
+    const { job, tpl } = store.template({
       miner: payout,
       samples,
       potShares,
@@ -1112,6 +1112,12 @@ export function createPool({
     });
     const gate = gateJob(job);
     if (!gate.ok) return null;
+    console.error(JSON.stringify({
+      event: 'issue_job',
+      jobId: job.jobId,
+      userTxs: (tpl?.txs || []).slice(1).length,
+      mempool: (store.mempool || []).length,
+    }));
     if (lastJob && String(lastJob.jobId) !== String(job.jobId)) {
       prevJob = lastJob;
       prevJobAt = now;

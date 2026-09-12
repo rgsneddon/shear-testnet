@@ -40,6 +40,46 @@ export function reviveBytes(_key, v) {
   return v;
 }
 
+const TX_BYTE_KEYS = new Set([
+  'prev', 'commit', 'noteCommit', 'rEph', 'rCt', 'admitPub', 'viewTag',
+  'excess', 'c0', 'spendTag',
+]);
+
+function reviveField(v) {
+  if (v == null) return v;
+  const b = Buffer.from(asU8(v));
+  return b.length ? b : v;
+}
+
+function reviveRow(o) {
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return o;
+  const row = { ...o };
+  for (const k of TX_BYTE_KEYS) {
+    if (row[k] != null && !Array.isArray(row[k])) row[k] = reviveField(row[k]);
+  }
+  if (row.r != null && !Array.isArray(row.r)) row.r = reviveField(row.r);
+  return row;
+}
+
+/** HTTP JSON posts byte fields as hex. Template/verify need Buffers. */
+export function reviveTx(tx) {
+  if (!tx || typeof tx !== 'object') return tx;
+  const out = { ...tx };
+  if (Array.isArray(out.vin)) out.vin = out.vin.map(reviveRow);
+  if (Array.isArray(out.vout)) out.vout = out.vout.map(reviveRow);
+  if (out.admit_proof && typeof out.admit_proof === 'object') {
+    const p = { ...out.admit_proof };
+    if (p.c0 != null) p.c0 = reviveField(p.c0);
+    if (p.spendTag != null) p.spendTag = reviveField(p.spendTag);
+    if (Array.isArray(p.r)) p.r = p.r.map(reviveField);
+    out.admit_proof = p;
+    if (out.spendTag == null) out.spendTag = p.spendTag;
+  }
+  if (out.spendTag != null && !Buffer.isBuffer(out.spendTag)) out.spendTag = reviveField(out.spendTag);
+  if (out.excess != null) out.excess = reviveField(out.excess);
+  return out;
+}
+
 function concat(...parts) {
   return Buffer.concat(parts.map((p) => Buffer.from(asU8(p))));
 }

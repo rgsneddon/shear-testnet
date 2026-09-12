@@ -164,4 +164,26 @@ describe('funded spend / no double-spend', () => {
     signSpendTx(tx, key);
     assert.equal(verifySpendSig(tx), true);
   });
+
+  it('note-bound Flow send is not dest-balance insufficient', () => {
+    const seed = Buffer.from('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex');
+    const key = ed25519PrivateFromSeed(seed);
+    const from = encodeDest(destCommitFromSpendPub(ed25519RawPub(key)));
+    const tx = {
+      kind: 'send',
+      from,
+      nanos: 50,
+      fee: 1,
+      vin: [{ prev: Buffer.alloc(32, 1), index: 0, commit: Buffer.alloc(32, 2) }],
+      vout: [{ address: from, nanos: 50, kind: 'send' }],
+    };
+    signSpendTx(tx, key);
+    const destMap = verifyFundedBody([tx], () => 0);
+    assert.equal(destMap.ok, true, destMap.reason);
+    const unbound = { ...tx, vin: [{ address: from }] };
+    signSpendTx(unbound, key);
+    const refused = verifyFundedBody([unbound], () => 0);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'insufficient');
+  });
 });
