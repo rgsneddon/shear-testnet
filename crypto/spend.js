@@ -35,8 +35,10 @@ export function spendPackDigest(tx) {
     dest20: dest20Of(v.address || tx?.from || ''),
   }));
   const vouts = (tx?.vout || []).map((o) => ({
-    dest20: dest20Of(o.address || ''),
-    nanos: Number(o.nanos || 0),
+    dest20: o.noteCommit && Buffer.from(o.noteCommit).length === 32
+      ? Buffer.from(o.noteCommit).subarray(0, 20)
+      : dest20Of(o.address || ''),
+    nanos: o.commit ? 0 : Number(o.nanos || 0),
     kind: kindByte(o.kind || tx?.kind),
   }));
   return packDigest(packTx({

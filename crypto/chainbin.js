@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { encodeHeader, decodeHeader } from './header.js';
 import { shareRowJson } from './pack.js';
 import { compactTx } from './chronoflux.js';
+import { reviveBytes } from './note.js';
 
 const MAGIC = Buffer.from('shear-chn-v1\0\0\0');
 
@@ -72,7 +73,7 @@ export function unpackEpochBlock(buf) {
   o += aLen;
   const bLeaves = JSON.parse(b.subarray(o, o + bLen).toString() || '[]').map(leafRead);
   o += bLen;
-  const txs = JSON.parse(b.subarray(o, o + tLen).toString() || '[]');
+  const txs = JSON.parse(b.subarray(o, o + tLen).toString() || '[]', reviveBytes);
   o += tLen;
   let shareBatch = [];
   if (o + 4 <= b.length) {

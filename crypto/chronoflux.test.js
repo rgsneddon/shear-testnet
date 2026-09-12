@@ -13,6 +13,11 @@ import {
   compactChainBlock,
   compactTx,
 } from './chronoflux.js';
+import { lockTx } from './reserve_vault.js';
+import { newIdentity } from './address.js';
+import { vaultDest, destForLogin } from './flow_sheet.js';
+import { verifySealedNote, reviveBytes } from './note.js';
+import { PI_SHE_NANOS } from './asert.js';
 
 describe('chronoflux prune + collate', () => {
   it('collates thousands of hashes into one sample per miner', () => {
@@ -166,5 +171,23 @@ describe('chronoflux prune + collate', () => {
     assert.equal(levy.kind, 'levy');
     assert.equal(levy.from, from);
     assert.equal(levy.nanos, 5);
+  });
+
+  it('compact lock drops the opening and still proves the amount after JSON', () => {
+    const id = newIdentity();
+    const continuum = destForLogin(id.address, { viewKey: id.viewKey });
+    const vault = vaultDest(id.address, { viewKey: id.viewKey });
+    const tx = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-json' });
+    assert.equal(verifySealedNote(tx.vout[0], PI_SHE_NANOS), true);
+    const sealed = compactTx(tx);
+    assert.equal(sealed.vout[0].r, undefined);
+    assert.equal(sealed.kind, 'lock');
+    assert.equal(sealed.to, vault);
+    assert.equal(sealed.vout[0].address, vault);
+    assert.equal(sealed.nanos, PI_SHE_NANOS);
+    const wire = JSON.parse(JSON.stringify(sealed), reviveBytes);
+    assert.equal(Buffer.isBuffer(wire.vout[0].commit), true);
+    assert.equal(verifySealedNote(wire.vout[0], PI_SHE_NANOS), true);
+    assert.equal(wire.vout[0].r, undefined);
   });
 });

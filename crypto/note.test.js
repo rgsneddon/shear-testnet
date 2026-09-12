@@ -2,8 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   commit, proveValue, verifyValue, proveRange, verifyRange,
-  sealNote, verifySealedNote, verifyMintSum, excessOf, randomScalar,
-  noteCommitOfDest20, G, H,
+  sealNote, sealCoinbaseNote, verifySealedNote, verifyMintSum, excessOf, randomScalar,
+  noteCommitOfDest20, reviveBytes, G, H,
 } from './note.js';
 
 describe('Pedersen notes', () => {
@@ -32,5 +32,16 @@ describe('Pedersen notes', () => {
     const excess = excessOf([a, b]);
     assert.equal(verifyMintSum([a, b], 512, excess), true);
     assert.equal(verifyMintSum([a, b], 256, excess), false);
+  });
+
+  it('verifies a note after JSON.stringify of Buffer fields (chain.bin path)', () => {
+    const d20 = Buffer.alloc(20, 9);
+    const sealed = sealCoinbaseNote(314159265358, { dest20: d20, kind: 'lock' });
+    const wire = JSON.parse(JSON.stringify(sealed), reviveBytes);
+    assert.equal(Buffer.isBuffer(wire.commit), true);
+    assert.equal(verifySealedNote(wire, 314159265358), true);
+    assert.equal(verifySealedNote(wire, 1), false);
+    const raw = JSON.parse(JSON.stringify(sealed));
+    assert.equal(verifySealedNote(raw, 314159265358), true);
   });
 });

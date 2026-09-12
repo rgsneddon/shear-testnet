@@ -22,6 +22,7 @@ import {
 import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
+import { reviveBytes } from '../../crypto/note.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
 import { emptyVault, applyReserveBlock, verifyReservePayout } from '../../crypto/reserve_vault.js';
@@ -117,7 +118,7 @@ export function createStore(dir, {
   } else if (fs.existsSync(file)) {
     for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
       if (!line.trim()) continue;
-      const b = JSON.parse(line);
+      const b = JSON.parse(line, reviveBytes);
       b.header = Buffer.from(b.header, 'hex');
       b.hash = Buffer.from(b.hash, 'hex');
       blocks.push(b);

@@ -16,8 +16,11 @@
  * Pruned after 1000 confirmations: per-round hash-sample bodies and B leaves.
  * Never prune vouts. continuity_root in the header remains the 32-byte seal.
  */
-import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS } from './asert.js';
+import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS } from './asert.js';
 import { shareRowJson } from './pack.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout } from './coinbase_notes.js';
+import { poolFeeDest } from './levy.js';
+import { verifySealedNote } from './note.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
 
@@ -108,13 +111,21 @@ export function sealedExplorerRows(block) {
   const txs = Array.isArray(block?.txs) ? block.txs : [];
   const cb = txs[0];
   if (cb?.coinbase && Array.isArray(cb.vout)) {
+    const pays = expectedCoinbasePays(block.shareBatch || [], {
+      miner: block.miner,
+      poolDest: poolFeeDest(),
+      hashBonusNanos: HASH_BONUS_NANOS,
+    });
     for (const o of cb.vout) {
+      const hit = matchSealedCoinbaseVout(o, pays);
+      const to = hit.address || o.address || '';
+      const nanos = hit.nanos || Number(o.nanos || 0);
       rows.push({
         id: `${hid}-${o.kind || 'cb'}`,
-        kind: o.kind === 'hash' ? 'hash' : 'coinbase',
+        kind: o.kind === 'hash' ? 'hash' : (o.kind === 'lock' || o.kind === 'vote' || o.kind === 'withdraw' ? o.kind : 'coinbase'),
         from: 'coinbase',
-        to: o.address,
-        nanos: Number(o.nanos || 0),
+        to,
+        nanos,
         height,
         confirmed: true,
       });
@@ -135,7 +146,10 @@ export function sealedExplorerRows(block) {
       const o = vouts[i];
       const kind = o.kind || tx.kind || (tx.mint ? 'reserve' : 'transfer');
       const to = o.address || (i === 0 ? tx.to : '');
-      const nanos = Number(o.nanos != null ? o.nanos : (i === 0 ? tx.nanos || 0 : 0));
+      const claimed = Number(o.nanos != null ? o.nanos : (i === 0 ? tx.nanos || 0 : 0));
+      const nanos = o.commit
+        ? (claimed && verifySealedNote(o, claimed) ? claimed : 0)
+        : claimed;
       rows.push({
         id: `${txId}-vout-${i}`,
         kind,
@@ -230,6 +244,7 @@ const SEALED_SECRET_KEYS = new Set([
   'ua',
   'memoPlain',
   'login',
+  'r',
 ]);
 
 function compactValue(v) {
@@ -243,6 +258,8 @@ function compactValue(v) {
   return out;
 }
 
+const RESERVE_VOUT_KINDS = new Set(['lock', 'vote', 'withdraw', 'reserve-fee']);
+
 function compactVout(o) {
   if (!o) return o;
   if (o.commit) {
@@ -254,6 +271,8 @@ function compactVout(o) {
     };
     if (o.rangeProof) row.rangeProof = o.rangeProof;
     if (o.memo) row.memo = true;
+    // Vault dest is the one allowed stable mailbox; keep it on Reserve kinds.
+    if (RESERVE_VOUT_KINDS.has(String(o.kind || '')) && o.address) row.address = o.address;
     return row;
   }
   const row = {

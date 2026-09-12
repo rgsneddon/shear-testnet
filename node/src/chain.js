@@ -622,7 +622,10 @@ function verifyBlockConsensus(block, prev, {
       const idle = Number(tx.idleNanos ?? portal?.idle ?? 0);
       const principal = Number(tx.principalNanos ?? (staked + idle));
       const want = principal + interestNanos(staked, bps);
-      const got = Number(tx.vout?.[0]?.nanos ?? tx.nanos ?? 0);
+      const o = tx.vout?.[0];
+      const got = o?.commit
+        ? (verifySealedNote(o, want) ? want : -1)
+        : Number(o?.nanos ?? tx.nanos ?? 0);
       if (!evmSession && got !== want) return { ok: false, reason: 'mint_amount' };
     }
     if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };

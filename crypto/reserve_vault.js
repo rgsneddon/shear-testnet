@@ -8,7 +8,8 @@ import {
   NANOS_PER_SHE,
   HASH_BONUS_NANOS_FLOOR,
 } from './asert.js';
-import { isDestAddress, isShearAddress } from './address.js';
+import { isDestAddress, isShearAddress, hash20FromAddress } from './address.js';
+import { sealCoinbaseNote, verifySealedNote } from './note.js';
 import {
   emptyOracle,
   interestNanos,
@@ -334,6 +335,13 @@ export function previewWithdraw(state, dest) {
   };
 }
 
+function sealedReserveVout(to, n, kind) {
+  const d20 = hash20FromAddress(to);
+  if (!d20) return { address: to, nanos: n, kind };
+  const note = sealCoinbaseNote(n, { dest20: d20, kind });
+  return { ...note, address: to };
+}
+
 export function lockTx({ from, to, nanos, id }) {
   const n = Math.floor(Number(nanos));
   return {
@@ -344,7 +352,7 @@ export function lockTx({ from, to, nanos, id }) {
     to,
     nanos: n,
     vin: [{ address: from }],
-    vout: [{ address: to, nanos: n, kind: KIND_LOCK }],
+    vout: [sealedReserveVout(to, n, KIND_LOCK)],
   };
 }
 
@@ -359,7 +367,7 @@ export function withdrawTx({ from, to, nanos, id }) {
     to,
     nanos: n,
     vin: [],
-    vout: [{ address: to, nanos: n, kind: KIND_WITHDRAW }],
+    vout: [sealedReserveVout(to, n, KIND_WITHDRAW)],
   };
 }
 
@@ -385,7 +393,12 @@ function txFrom(tx) {
 }
 
 function txNanos(tx) {
-  return Math.floor(Number(tx?.nanos || tx?.vout?.[0]?.nanos || 0));
+  const claimed = Math.floor(Number(tx?.nanos || tx?.vout?.[0]?.nanos || 0));
+  const o = tx?.vout?.[0];
+  if (o?.commit && o?.valueProof) {
+    return verifySealedNote(o, claimed) ? claimed : 0;
+  }
+  return claimed;
 }
 
 function txKind(tx) {

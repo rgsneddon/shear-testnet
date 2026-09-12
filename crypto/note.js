@@ -17,11 +17,27 @@ export const NOTE_COMMIT_PERSONAL = Buffer.from('shear-note-commit-v1');
 export const G = Point.BASE;
 export const H = ristretto255_hasher.hashToCurve(Buffer.from('shear-note-H-v1'), { DST: NOTE_DST });
 
-function asU8(x) {
+/** Accept Buffer, hex, or JSON `{type:'Buffer', data}` from chain.bin / jsonl. */
+export function asU8(x) {
+  if (x == null) return new Uint8Array();
   if (Buffer.isBuffer(x) || x instanceof Uint8Array) return Uint8Array.from(x);
-  if (typeof x === 'string') return Buffer.from(x, 'hex');
+  if (typeof x === 'string') return Uint8Array.from(Buffer.from(x, 'hex'));
   if (typeof x?.toBytes === 'function') return x.toBytes();
+  if (x && typeof x === 'object') {
+    if (x.type === 'Buffer' && Array.isArray(x.data)) return Uint8Array.from(x.data);
+    if (typeof x.$hex === 'string') return Uint8Array.from(Buffer.from(x.$hex, 'hex'));
+  }
+  if (Array.isArray(x)) return Uint8Array.from(x);
   return Uint8Array.from(x);
+}
+
+/** JSON.parse reviver so Pedersen fields survive chain.bin / jsonl. */
+export function reviveBytes(_key, v) {
+  if (v && typeof v === 'object' && !Array.isArray(v) && v.type === 'Buffer' && Array.isArray(v.data)) {
+    return Buffer.from(v.data);
+  }
+  if (v && typeof v === 'object' && typeof v.$hex === 'string') return Buffer.from(v.$hex, 'hex');
+  return v;
 }
 
 function concat(...parts) {
