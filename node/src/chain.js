@@ -512,6 +512,7 @@ function verifyBlockConsensus(block, prev, {
   evmSession = null,
   evmHistory = null,
   trustedPowHash = null,
+  skipSharePow = false,
 } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
@@ -600,6 +601,7 @@ function verifyBlockConsensus(block, prev, {
         parentHeader: prev.header,
         shares: shareBatch,
         floorBits: SHARE_FLOOR_BITS,
+        skipPow: !!skipSharePow,
       });
       if (!proved.ok) return proved;
       provenUnits = proved.units;

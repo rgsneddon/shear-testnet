@@ -531,6 +531,7 @@ export function createStore(dir, {
       }),
       nowMs: Date.now(),
       trustedPowHash: verifyOpts.trustedPowHash || null,
+      skipSharePow: !!verifyOpts.skipSharePow,
     });
     for (const tx of (block.txs || []).slice(1)) {
       const pay = verifyReservePayout(reserveVault, tx);
@@ -970,7 +971,8 @@ export function createStore(dir, {
       rootB: rec.tpl.rootB,
     };
     const trustedPowHash = powHash ? Buffer.from(String(powHash), 'hex') : null;
-    return append(block, { trustedPowHash: trustedPowHash && trustedPowHash.length === 32 ? trustedPowHash : null });
+    const okHash = trustedPowHash && trustedPowHash.length === 32 ? trustedPowHash : null;
+    return append(block, { trustedPowHash: okHash, skipSharePow: !!okHash });
   }
 
   return {

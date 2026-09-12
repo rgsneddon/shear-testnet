@@ -218,6 +218,8 @@ describe('HTTP stats cannot stall', () => {
     assert.match(src, /rememberLiveSharePow/);
     assert.match(src, /powHash: scored\.hash/);
     assert.equal(/verifyShareBatch\s*\(/.test(src), false);
+    const storeSrc = fs.readFileSync(new URL('../../node/src/store.js', import.meta.url), 'utf8');
+    assert.match(storeSrc, /skipSharePow: !!okHash/);
     const start = src.indexOf("url.pathname === '/api/stats'");
     assert.ok(start >= 0);
     const slice = src.slice(start, start + 420);

@@ -84,9 +84,18 @@ export function aLeavesFromShares(shares = []) {
     .map(([hex, count]) => ({ noteCommit: Buffer.from(hex, 'hex'), count }));
 }
 
+function asHeaderBuf(header) {
+  if (Buffer.isBuffer(header)) return Buffer.from(header);
+  if (header instanceof Uint8Array) return Buffer.from(header);
+  const s = String(header || '');
+  if (/^[0-9a-fA-F]+$/.test(s) && s.length % 2 === 0) return Buffer.from(s, 'hex');
+  return null;
+}
+
 function shareJobKey(header) {
   try {
-    const buf = Buffer.isBuffer(header) ? Buffer.from(header) : Buffer.from(String(header), 'hex');
+    const buf = asHeaderBuf(header);
+    if (!buf || buf.length !== 128) return '';
     return setNonce(buf, 0n).toString('hex').toLowerCase();
   } catch {
     return '';
@@ -113,6 +122,7 @@ export function verifyShareBatch({
   parentHeader,
   shares = [],
   floorBits = SHARE_FLOOR_BITS,
+  skipPow = false,
 } = {}) {
   const list = sortShares(unpackShareBatch(shares));
   if (list.length > MAX_SHARES_PER_BLOCK) {
@@ -146,7 +156,7 @@ export function verifyShareBatch({
       if (!Buffer.from(nc).equals(expect)) return { ok: false, reason: 'hash_bonus' };
     }
     const header = setNonce(job, nonce);
-    const cached = jobKey && liveSharePow.has(`${jobKey}:${nk}`);
+    const cached = skipPow || (jobKey && liveSharePow.has(`${jobKey}:${nk}`));
     let lz = Number(s.lz) & 0xff;
     if (!cached) {
       const hash = shearHash(header);
