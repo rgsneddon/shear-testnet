@@ -16,6 +16,7 @@ import {
   NANOS_PER_SHE,
   HASH_BONUS_NANOS,
   INTEREST_DENOM_DAYS,
+  BLOCK_SUBSIDY_NANOS,
 } from '../../crypto/asert.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, interestNanos } from '../../crypto/reserve_oracle.js';
 import {
@@ -317,7 +318,29 @@ describe('node Reserve vault', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-change-vout-'));
     const store = createStore(dir);
     const t0 = 1_700_000_000_000;
-    await mineOne(store, destA, { bits: LIVE_MIN_BITS, now: t0 });
+    const { tpl: fundTpl } = store.template({ miner: destA, bits: LIVE_MIN_BITS, shareBits: LIVE_MIN_BITS, now: t0 });
+    const foundFund = mineTemplate(fundTpl, { maxTries: 3_000_000, shareBits: LIVE_MIN_BITS });
+    assert.ok(foundFund && foundFund.block, 'need pow');
+    const pot = (fundTpl.txs[0].vout || []).find((o) => o.kind === 'pot');
+    const lastPot = {
+      commit: pot.commit,
+      noteCommit: pot.noteCommit,
+      r: pot.r,
+      index: fundTpl.txs[0].vout.indexOf(pot),
+    };
+    const funded = await store.append({
+      header: foundFund.header,
+      txs: fundTpl.txs,
+      samples: fundTpl.samples,
+      shareBatch: fundTpl.shareBatch || [],
+      miner: destA,
+      aLeaves: fundTpl.aLeaves,
+      bLeaves: fundTpl.bLeaves,
+      rootA: fundTpl.rootA,
+      rootB: fundTpl.rootB,
+      weight: fundTpl.weight,
+    });
+    assert.equal(funded.ok, true, funded.reason);
     for (let i = 1; i < SPENDABLE_CONFIRMATIONS; i += 1) {
       await mineOne(store, minerDest, { bits: LIVE_MIN_BITS, now: t0 + i * 90_000 });
     }
@@ -327,7 +350,7 @@ describe('node Reserve vault', () => {
 
     const pay = Math.floor(0.1 * NANOS_PER_SHE);
     const fee = levyNanos(pay);
-    const leftover = before - pay - fee;
+    const leftover = BLOCK_SUBSIDY_NANOS - pay - fee;
     assert.ok(leftover > 0, `leftover ${leftover}`);
     const queued = store.queueTx(signSpendTx(attachDummyOuts({
       id: 'flow-change-1',
@@ -337,13 +360,21 @@ describe('node Reserve vault', () => {
       nanos: pay,
       fee,
       maxLevy: fee,
+      changeNanos: leftover,
       open,
-      vin: [{ address: destA }],
+      vin: [{
+        prev: store.blocks[0].hash,
+        index: lastPot.index,
+        commit: lastPot.commit,
+        noteCommit: lastPot.noteCommit,
+        r: lastPot.r,
+        address: destA,
+      }],
       vout: [
         { address: destB, nanos: pay, kind: 'send' },
         { address: destC, nanos: leftover, kind: 'send' },
       ],
-    }), aliceBox.key));
+    }, { spent: lastPot }), aliceBox.key));
     assert.equal(queued.ok, true, queued.reason);
 
     await mineOne(store, minerDest, {

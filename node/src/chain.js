@@ -111,7 +111,7 @@ function ref32(x) {
   }
 }
 
-function lookupSpentVout(vin, block, prev, bodyIndex) {
+function lookupSpentVout(vin, block, prev, bodyIndex, history) {
   const idx = Number(vin?.index || 0);
   const want = ref32(vin?.prev);
   const tryTx = (tx, blockHash) => {
@@ -131,9 +131,12 @@ function lookupSpentVout(vin, block, prev, bodyIndex) {
     const hit = tryTx(txs[j], block.hash);
     if (hit) return hit;
   }
-  if (prev) {
-    for (const tx of prev.txs || []) {
-      const hit = tryTx(tx, prev.hash);
+  const chain = [];
+  if (Array.isArray(history) && history.length) chain.push(...history);
+  else if (prev) chain.push(prev);
+  for (const b of chain) {
+    for (const tx of b.txs || []) {
+      const hit = tryTx(tx, b.hash);
       if (hit) return hit;
     }
   }
@@ -475,6 +478,7 @@ function verifyBlockConsensus(block, prev, {
   poolDest = null,
   seenDigests = null,
   evmSession = null,
+  evmHistory = null,
 } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
@@ -745,7 +749,7 @@ function verifyBlockConsensus(block, prev, {
       }
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
-      const spentOf = (vin) => lookupSpentVout(vin, block, prev, i);
+      const spentOf = (vin) => lookupSpentVout(vin, block, prev, i, evmHistory);
       if (!verifyFlowConservation(tx, spentOf)) return { ok: false, reason: 'confidential' };
     }
     if ((unfunded || tx.mint) && String(tx.programId || '') === RESERVE_PROGRAM && String(tx.kind || '') === 'withdraw') {
