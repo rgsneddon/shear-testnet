@@ -70,7 +70,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Spendable</th><td>6 confirmations</td></tr>' +
       '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
-      '<tr><th>Wallet pin</th><td>0.30</td></tr>' +
+      '<tr><th>Wallet pin</th><td>0.31</td></tr>' +
       '<tr><th>Miner pin</th><td>ShearK 1.6</td></tr></table>' +
       '<p>How-to lives in this tree. The architecture note is a PDF at <a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> — that URL is not in the navbar on purpose.</p>'
   };
@@ -80,7 +80,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / testnet',
     html:
       '<p>This is testnet. Balances can vanish. Treat them as a practice run before mainnet.</p>' +
-      '<p>Mainnet <code>shear-v1</code> is not scheduled. Do not launch until P0 1–14 on a public testnet book are green. Until then the magic stays <code>shear-testnet-v2</code>. Do not flip it early. Do not cut a mainnet genesis zip from these pages.</p>' +
+      '<p>This public testnet is the privacy-class book (<code>shear-testnet-v3</code>). Mainnet <code>shear-v1</code> starts 18 Sep 2026 21:00 UK (<code>2026-09-18T21:00:00+01:00</code>). Clients refuse to emit before that instant. Do not cut a mainnet genesis zip from these pages early.</p>' +
       '<p>Install clients only from the buttons on <a href="https://shear.digital">shear.digital</a> or the official GitHub tags. Windows SmartScreen may warn that ShearK-Miner.exe is unrecognized; this testnet build is not Authenticode-signed.</p>'
   };
 
@@ -114,7 +114,7 @@ window.SHEAR_DOCS = {
     title: 'Wallet overview',
     crumb: 'wallet / overview',
     html:
-      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.30</strong> (macOS, Android, Linux, Arch).</p>' +
+      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.31</strong> (macOS, Android, Linux, Arch).</p>' +
       '<table><tr><th>Continuum</th><td>Spendable balance, <code>she1</code>, six-slice pending pie</td></tr>' +
       '<tr><th>Flow</th><td>Send and receive</td></tr>' +
       '<tr><th>Resistance</th><td>Public CTF CLI</td></tr>' +
@@ -133,7 +133,7 @@ window.SHEAR_DOCS = {
       '<li>You will enter that password each time. If it is lost, the wallet cannot be opened. Fingerprint or face unlock, where the device offers it, only works on this device.</li>' +
       '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
       '<li>Open Closure and export <code>shewall.bin</code>. Keep that file with the password.</li></ol>' +
-      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.30">shear-testnet 0.30</a>.</p>'
+      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.31">shear-testnet 0.31</a>.</p>'
   };
 
   P.continuum = {

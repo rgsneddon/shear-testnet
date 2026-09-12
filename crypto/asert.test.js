@@ -38,6 +38,9 @@ import {
   SHEARK_MINER_VERSION,
   consensusFingerprint,
   consensusLaw,
+  mainnetFingerprint,
+  GENESIS_MAINNET,
+  mainnetMayEmit,
 } from './asert.js';
 
 describe('ASERT 90s block retarget', () => {
@@ -188,6 +191,12 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /ADMIT=AdmitV1/);
     assert.equal(/fcmp/i.test(fp), false);
     assert.equal(/2026-\d{2}-\d{2}T/.test(fp), false);
+    const mfp = mainnetFingerprint();
+    assert.match(mfp, /NETWORK=shear-v1/);
+    assert.match(mfp, /GENESIS=2026-09-18T21:00:00\+01:00/);
+    assert.equal(GENESIS_MAINNET, '2026-09-18T21:00:00+01:00');
+    assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET) - 1), false);
+    assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET)), true);
     assert.equal(HASH_FN, 'ShearHash-v3');
     assert.equal(fp.includes('HASH_FN=ShearHash-v3'), true);
     assert.equal(fp.includes('HASH_FN=ShearHash-v2'), false);

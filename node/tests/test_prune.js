@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { newIdentity, destOpeningFromView, freshStealthDest } from '../../crypto/address.js';
-import { spendBox } from '../../tests/spend_box.js';
+import { spendBox, admitSend } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
@@ -109,12 +109,15 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
         { address: destA, nanos: change, kind: 'send' },
       ],
     }, { spent: lastPot });
+    admitSend(send, { id: alice, spent: { ...lastPot, kind: 'pot' }, blocks: store.blocks });
     signSpendTx(send, aliceBox.key);
     const parentSend = store.tip();
     const parentSendH = decodeHeader(Buffer.from(parentSend.header));
     const sendBlock = mine(buildTemplate({
       prev: parentSend.hash,
       prevHeader: parentSend.header,
+      prevBlock: parentSend,
+      parentBlocks: store.blocks,
       height: parentSend.height + 1,
       miner: destA,
       bits: 4,

@@ -103,6 +103,7 @@ describe('explorer dests', () => {
     const b2 = buildTemplate({
       prev: parent.hash,
       prevHeader: parent.header,
+      prevBlock: parent,
       height: 2,
       miner: dest,
       bits: bits2,

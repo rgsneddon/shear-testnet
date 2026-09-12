@@ -1,11 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, freshStealthDest } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest, ed25519SeedOf } from '../../crypto/address.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { sealNote } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
+import { fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -32,7 +33,9 @@ function mine(tpl) {
 
 describe('Flow conservation binds vin.commit to spent vout', () => {
   it('compact send whose vin.commit is the parent coinbase is ok; a self-minted C_in is confidential', () => {
-    const dest = freshStealthDest(newIdentity().paymentCode).dest;
+    const id = newIdentity();
+    const dest = freshStealthDest(id.paymentCode).dest;
+    const spendSeed = id.spendSeed || ed25519SeedOf(id.privateKey);
     const parent = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -69,6 +72,11 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
+    proveFlowSpend(honest, {
+      spendSeed,
+      spentNote: spent,
+      pubs: fluxsetFromBlocks([parent]).pubs,
+    });
     const honestTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -77,6 +85,8 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       bits: 4,
       now: 1_700_000_090_000,
       txs: [compactTx(honest)],
+      prevBlock: parent,
+      parentFluxset: fluxsetFromBlocks([parent]).pubs,
     });
     const honestBlock = mine(honestTpl);
     const gotOk = verifyBlock(honestBlock, {

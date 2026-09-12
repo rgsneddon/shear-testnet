@@ -6,6 +6,8 @@
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } from './levy.js';
 import { dummyCount, flowNeedsDummy } from './dummy.js';
+import { admit_verify } from './admit.js';
+import { asU8 } from './note.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
@@ -15,7 +17,8 @@ export function emptyMempool() {
   return { txs: [], baseFee: 1, max: MEMPOOL_MAX };
 }
 
-export function admitMempool(pool, tx, { baseFee } = {}) {
+export function admitMempool(pool, tx, opts = {}) {
+  const { baseFee } = opts;
   const book = pool || emptyMempool();
   const base = Math.max(1, Math.floor(Number(baseFee != null ? baseFee : book.baseFee) || 1));
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
@@ -56,6 +59,20 @@ export function admitMempool(pool, tx, { baseFee } = {}) {
   }
   if (flowNeedsDummy(tx) && (tx.vout || []).some((o) => !o?.commit)) {
     return { ok: false, reason: 'confidential' };
+  }
+  if (flowNeedsDummy(tx)) {
+    const pubs = opts.fluxset || opts.pubs;
+    if (Array.isArray(pubs)) {
+      const proof = tx.admit_proof;
+      if (!proof) return { ok: false, reason: 'admit' };
+      if (!admit_verify(proof, pubs)) return { ok: false, reason: 'admit' };
+      const tag = proof.spendTag || tx.spendTag;
+      if (!tag) return { ok: false, reason: 'admit' };
+      const spent = opts.spendTags;
+      if (spent && spent.has(Buffer.from(asU8(tag)).toString('hex'))) {
+        return { ok: false, reason: 'admit' };
+      }
+    }
   }
   const depth = mempoolDepthBytes(book.txs);
   const need = levyTaxed({ ...tx, kind }) ? levyNanos(txAmountNanos(tx), { depth }) : 0;

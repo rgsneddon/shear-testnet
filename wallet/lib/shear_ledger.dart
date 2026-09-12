@@ -311,6 +311,12 @@ class ShearLedger {
 
   final ShearPoolClient? pool;
   final Map<String, double> _spendable = {};
+  /// Owned sealed notes (commit, noteCommit, r, prev, index, admit x). Reserve vault excepted.
+  final List<Map<String, dynamic>> _notes = [];
+  List<Map<String, dynamic>> get notes => List.unmodifiable(_notes);
+  void rememberNote(Map<String, dynamic> note) {
+    _notes.add(Map<String, dynamic>.from(note));
+  }
   final Map<String, double> _pending = {};
   final List<ShearTx> _txs = [];
   final Set<String> _dests = {};
@@ -360,6 +366,7 @@ class ShearLedger {
   void _resetChainBook() {
     _txs.clear();
     _spendable.clear();
+    _notes.clear();
     _pending.clear();
     _immature.clear();
     _historyAt.clear();
@@ -1635,18 +1642,21 @@ class ShearLedger {
     }
     String? sigHex;
     String? spendPubHex;
+    final vouts = <Map<String, dynamic>>[
+      {'address': destTo, 'nanos': nanos, 'kind': sendKind},
+    ];
+    if (sendKind == 'send' && changeDest != null) {
+      final leftoverNanos = ((spendable(src) - needShe) * kUnitsPerShe).round();
+      if (leftoverNanos > 0) {
+        vouts.add({'address': changeDest, 'nanos': leftoverNanos, 'kind': 'send'});
+      }
+    }
+    if (sendKind == 'send' && !vouts.any((o) => o['kind'] == 'dummy')) {
+      vouts.add({'kind': 'dummy', 'nanos': 0});
+    }
     if (spendSeed != null && spendSeed.length == 32 && sendKind != 'vote') {
       if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
         throw StateError('unspendable_dest');
-      }
-      final vouts = <Map<String, dynamic>>[
-        {'address': destTo, 'nanos': nanos, 'kind': sendKind},
-      ];
-      if (sendKind == 'send' && changeDest != null) {
-        final leftoverNanos = ((spendable(src) - needShe) * kUnitsPerShe).round();
-        if (leftoverNanos > 0) {
-          vouts.add({'address': changeDest, 'nanos': leftoverNanos, 'kind': 'send'});
-        }
       }
       final msg = spendMessage(from: src, vout: vouts, kind: sendKind);
       final shared = _stealthShared[src];
@@ -1662,6 +1672,31 @@ class ShearLedger {
       sigHex = _bytesHex(sig);
       spendPubHex = _bytesHex(pub);
     }
+    Map<String, dynamic>? spentNote;
+    for (final n in _notes) {
+      if (n['address'] == src || n['dest'] == src) {
+        spentNote = n;
+        break;
+      }
+    }
+    final vin = spentNote != null
+        ? [
+            {
+              'prev': spentNote['prev'],
+              'index': spentNote['index'],
+              'commit': spentNote['commit'],
+              'noteCommit': spentNote['noteCommit'],
+              if (spentNote['r'] != null) 'r': spentNote['r'],
+            }
+          ]
+        : [
+            {'address': src}
+          ];
+    Map<String, dynamic>? admitProof = spentNote?['admit_proof'] is Map
+        ? Map<String, dynamic>.from(spentNote!['admit_proof'] as Map)
+        : (sendKind == 'send'
+            ? <String, dynamic>{'admit_proof': true, 'spendTag': spentNote?['spendTag']}
+            : null);
     if (pool != null && !local) {
       final json = await pool!.send(
         from: src,
@@ -1677,6 +1712,10 @@ class ShearLedger {
         sig: sigHex,
         spendPub: spendPubHex,
         ephPub: pay?.ephPub != null ? _bytesHex(pay!.ephPub) : null,
+        vin: vin,
+        vout: vouts,
+        admitProof: admitProof,
+        spendTag: spentNote?['spendTag']?.toString(),
       );
       if (json['ok'] != true || json['tx'] is! Map) {
         throw StateError('${json['reason'] ?? 'send failed'}');
@@ -1992,6 +2031,11 @@ class ShearPoolClient {
     String? change,
     String? spendPub,
     String? ephPub,
+    List<dynamic>? vin,
+    List<dynamic>? vout,
+    dynamic excess,
+    Map<String, dynamic>? admitProof,
+    String? spendTag,
   }) =>
       _post('/api/wallet/send', {
         'from': from,
@@ -2009,6 +2053,11 @@ class ShearPoolClient {
         if (currentEpoch != null) 'currentEpoch': currentEpoch,
         if (epochStartMs != null) 'epochStartMs': epochStartMs,
         if (change != null && change.isNotEmpty) 'change': change,
+        if (vin != null) 'vin': vin,
+        if (vout != null) 'vout': vout,
+        if (excess != null) 'excess': excess,
+        if (admitProof != null) 'admit_proof': admitProof,
+        if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
       });
 
   Future<Map<String, dynamic>> mempoolPressure() => _get('/api/mempoolPressure');

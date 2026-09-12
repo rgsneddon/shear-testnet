@@ -1,11 +1,11 @@
 [Unit]
-Description=Shear testnet pool (stratum 1111)
+Description=Shear testnet-v3 pool (stratum 1111)
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/shear-v2
-Environment=SHEAR_DATA=/var/lib/shear/testnet-v2
+WorkingDirectory=/opt/shear-v3
+Environment=SHEAR_DATA=/var/lib/shear/testnet-v3
 Environment=SHEAR_STRATUM=1111
 Environment=SHEAR_HTTP=8088
 Environment=SHEAR_SHARE_BITS=8

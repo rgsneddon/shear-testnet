@@ -12,7 +12,7 @@
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
-import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G } from './note.js';
+import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8 } from './note.js';
 import { merkleRoot } from './merkle.js';
 
 const Point = RistrettoPoint;
@@ -98,3 +98,147 @@ export function admitVerify(proof, pubs) {
 
 export const admit_prove = admitProve;
 export const admit_verify = admitVerify;
+
+const XDST = Buffer.from('shear-admit-x-v1');
+
+function kindByte(kind) {
+  const k = String(kind || '');
+  if (k === 'hash') return 1;
+  if (k === 'pot') return 2;
+  if (k === 'finder-fee') return 3;
+  if (k === 'reserve-fee') return 4;
+  if (k === 'dummy') return 5;
+  return 0;
+}
+
+function hexTag(tag) {
+  try {
+    return Buffer.from(asU8(tag)).toString('hex');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Note → P = x·G (frozen; coinbase and Flow both use this).
+ *
+ * Spend seed is the 32-byte Ed25519 seed.
+ *   x_base = hashToScalar("shear-admit-x-v1" || "base" || spend_seed)
+ *   B      = x_base · G
+ * For a sealed note (C, noteCommit, kind):
+ *   delta  = hashToScalar("shear-admit-x-v1" || "note" || noteCommit || C || kind)
+ *   x      = x_base + delta
+ *   P      = B + delta·G = x · G
+ *
+ * Wallet derives x from the spend seed + sealed note fields.
+ * Output creator places P on the vout (`admitPub`) using B from the dest
+ * (ssa dest payload dest20 || B). Dummy outs pick a fresh x and drop it.
+ */
+export function admitBaseScalar(spendSeed) {
+  return hashToScalar(XDST, Buffer.from('base'), asU8(spendSeed));
+}
+
+export function admitBasePub(spendSeed) {
+  return admitPub(admitBaseScalar(spendSeed));
+}
+
+export function admitDelta(note) {
+  return hashToScalar(
+    XDST,
+    Buffer.from('note'),
+    asU8(note?.noteCommit),
+    asU8(note?.commit),
+    Buffer.from([kindByte(note?.kind)]),
+  );
+}
+
+export function admitScalarFromSeed(spendSeed, note) {
+  return Fn.add(admitBaseScalar(spendSeed), admitDelta(note));
+}
+
+export function admitPubFromBase(admitBase, note) {
+  const B = typeof admitBase?.toBytes === 'function' ? admitBase : pointFrom(admitBase);
+  return B.add(G.multiply(admitDelta(note)));
+}
+
+/** Attach ristretto P to a sealed vout. Prefer dest admit-base; else spend seed; else a dropped random x (dummies). */
+export function attachAdmitPub(vout, { admitBase, spendSeed } = {}) {
+  if (!vout?.commit) return vout;
+  if (vout.admitPub && Buffer.from(asU8(vout.admitPub)).length === 32) return vout;
+  if (spendSeed) {
+    const x = admitScalarFromSeed(spendSeed, vout);
+    return { ...vout, admitPub: pointBytes(admitPub(x)) };
+  }
+  if (admitBase) {
+    return { ...vout, admitPub: pointBytes(admitPubFromBase(admitBase, vout)) };
+  }
+  const x = randomScalar();
+  return { ...vout, admitPub: pointBytes(admitPub(x)) };
+}
+
+export function pubFromAdmit(buf) {
+  const p = typeof buf?.toBytes === 'function' ? buf : pointFrom(buf);
+  return p;
+}
+
+/**
+ * Live fluxset J: every sealed note's P in appearance order (coinbase then body).
+ * Spent notes stay in J (Admit does not reveal which flowline moved).
+ * Double-spend is a repeated spendTag.
+ */
+export function fluxsetFromBlocks(blocks) {
+  const pubs = [];
+  const spendTags = new Set();
+  for (const b of blocks || []) {
+    for (const tx of b.txs || []) {
+      const proof = tx.admit_proof;
+      const tag = proof?.spendTag || tx.spendTag;
+      if (tag) {
+        const h = hexTag(tag);
+        if (h) spendTags.add(h);
+      }
+      for (const o of tx.vout || []) {
+        if (!o?.admitPub) continue;
+        try {
+          pubs.push(pubFromAdmit(o.admitPub));
+        } catch {
+          /* skip unreadable */
+        }
+      }
+    }
+  }
+  return { pubs, spendTags, jroot: jroot(pubs) };
+}
+
+export function compactAdmitProof(proof) {
+  if (!proof) return proof;
+  return {
+    admit_proof: true,
+    spendTag: proof.spendTag,
+    c0: proof.c0,
+    r: proof.r,
+  };
+}
+
+export function fluxsetIndexOf(pubs, spendSeed, note) {
+  const P = admitPub(admitScalarFromSeed(spendSeed, note));
+  const want = Buffer.from(pointBytes(P));
+  return (pubs || []).findIndex((p) => {
+    try {
+      const got = Buffer.from(pointBytes(typeof p?.toBytes === 'function' ? p : pointFrom(p)));
+      return got.equals(want);
+    } catch {
+      return false;
+    }
+  });
+}
+
+export function proveFlowSpend(tx, { spendSeed, spentNote, pubs }) {
+  const x = admitScalarFromSeed(spendSeed, spentNote);
+  const index = fluxsetIndexOf(pubs, spendSeed, spentNote);
+  if (index < 0) throw new Error('not_in_fluxset');
+  const proof = admitProve({ x, index, pubs });
+  tx.admit_proof = proof;
+  tx.spendTag = proof.spendTag;
+  return tx;
+}

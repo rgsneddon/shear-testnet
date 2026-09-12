@@ -277,6 +277,7 @@ function compactVout(o) {
     };
     if (o.rangeProof) row.rangeProof = o.rangeProof;
     if (o.viewTag) row.viewTag = o.viewTag;
+    if (o.admitPub) row.admitPub = o.admitPub;
     if (o.memo) row.memo = true;
     if (keepDest && o.address) row.address = o.address;
     return row;
@@ -298,6 +299,7 @@ export function compactTx(tx) {
       vout: (tx.vout || []).map(compactVout),
     };
     if (tx.excess) row.excess = tx.excess;
+    if (tx.jroot) row.jroot = tx.jroot;
     return row;
   }
   const out = compactValue(tx);
@@ -330,6 +332,17 @@ export function compactTx(tx) {
   if (tx.signature && !out.sig) out.sig = tx.signature;
   if (tx.spendPub) out.spendPub = tx.spendPub;
   if (tx.memoCt || tx.memo) out.memo = true;
+  if (tx.admit_proof) {
+    out.admit_proof = {
+      admit_proof: true,
+      spendTag: tx.admit_proof.spendTag,
+      c0: tx.admit_proof.c0,
+      r: tx.admit_proof.r,
+    };
+  }
+  if (tx.spendTag) out.spendTag = tx.spendTag;
+  if (tx.jroot) out.jroot = tx.jroot;
+  if (tx.excess) out.excess = tx.excess;
   return out;
 }
 

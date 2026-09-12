@@ -247,7 +247,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.6" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.30" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.31" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -267,17 +267,17 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.30</strong> · miner <strong>1.6</strong>
+      wallet <strong>0.31</strong> · miner <strong>1.6</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.30">WALLET</a>
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.31">WALLET</a>
         <div class="client-menu" id="menu-wallet">
-          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-macos.dmg">macOS</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-android.apk">Android</a>
-          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-linux.zip">Linux</a>
-          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.30/shear-wallet-0.30-archlinux.zip">Arch</a>
+          <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.31/shear-wallet-0.31-macos.dmg">macOS</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.31/shear-wallet-0.31-android.apk">Android</a>
+          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.31/shear-wallet-0.31-linux.zip">Linux</a>
+          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.31/shear-wallet-0.31-archlinux.zip">Arch</a>
         </div>
       </div>
       <div class="client-dd">
@@ -297,8 +297,8 @@
     </nav>
     <div id="testnet-banner" role="status">
       <div class="tn-word">TESTNET</div>
-      <div class="tn-launch">Mainnet shear-v1 is not scheduled. Do not launch until P0 1–14 on a public testnet book are green.</div>
-      <div class="tn-count" id="mainnet-countdown">not scheduled</div>
+      <div class="tn-launch">Testnet is the privacy-class book. Mainnet shear-v1 starts 18 Sep 2026 21:00 UK.</div>
+      <div class="tn-count" id="mainnet-countdown">18 Sep 2026 21:00 UK</div>
     </div>
     <div class="intro-split" id="intro-split">
       <section class="panel-card">
@@ -378,7 +378,7 @@
     </div>
     <section class="panel-card guide-wide" id="wallet-start">
       <h2>Start a wallet from scratch</h2>
-      <p>Current pin is <strong>0.30</strong>. Use the WALLET button above and pick your system.</p>
+      <p>Current pin is <strong>0.31</strong>. Use the WALLET button above and pick your system.</p>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
         <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
@@ -434,11 +434,11 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
       else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
-        macos: BASE + '/0.30/shear-wallet-0.30-macos.dmg',
-        windows: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.30',
-        android: BASE + '/0.30/shear-wallet-0.30-android.apk',
-        linux: BASE + '/0.30/shear-wallet-0.30-linux.zip',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.30'
+        macos: BASE + '/0.31/shear-wallet-0.31-macos.dmg',
+        windows: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.31',
+        android: BASE + '/0.31/shear-wallet-0.31-android.apk',
+        linux: BASE + '/0.31/shear-wallet-0.31-linux.zip',
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.31'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
@@ -465,7 +465,7 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
       (function countdown() {
         var el = document.getElementById('mainnet-countdown');
         if (!el) return;
-        el.textContent = 'not scheduled';
+        el.textContent = '18 Sep 2026 21:00 UK';
       })();
       (function networkContinuity() {
         function setText(id, text) {

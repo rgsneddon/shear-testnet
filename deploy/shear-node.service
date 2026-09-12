@@ -1,11 +1,11 @@
 [Unit]
-Description=Shear testnet node (P2P 30303)
+Description=Shear testnet-v3 node (P2P 30303)
 After=network.target shear-pool.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/shear-v2
-Environment=SHEAR_DATA=/var/lib/shear/node-v2
+WorkingDirectory=/opt/shear-v3
+Environment=SHEAR_DATA=/var/lib/shear/testnet-v3
 Environment=SHEAR_P2P_PORT=30304
 Environment=SHEAR_P2P_BIND=0.0.0.0
 Environment=SHEAR_RPC_PORT=18332

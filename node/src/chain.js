@@ -41,7 +41,13 @@ import {
   blockNeedsEvm,
   executeBlockEvm,
 } from '../../crypto/reserve_evm.js';
-import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from '../../crypto/address.js';
+import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp, checkAddressField, checkTxAddressFields, admitBaseFromAddress } from '../../crypto/address.js';
+import {
+  admit_verify,
+  attachAdmitPub,
+  fluxsetFromBlocks,
+  jroot as jrootOf,
+} from '../../crypto/admit.js';
 import { collateSamples, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { verifyFundedBody } from '../../crypto/spend.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
@@ -54,6 +60,7 @@ import {
   verifyFlowConservation,
   noteCommitOfDest20,
   asU8,
+  pointFrom,
 } from '../../crypto/note.js';
 import { packTx, packDigest } from '../../crypto/pack.js';
 import { buildDualTree, spendB } from '../../crypto/clearing.js';
@@ -316,13 +323,17 @@ export function coinbaseTx({
     const pay = destOf(s.address);
     if (!isDestAddress(pay) || !s.nanos) continue;
     const d20 = hash20FromAddress(pay);
-    vout.push(sealCoinbaseNote(s.nanos, { dest20: d20, kind: s.kind || 'pot' }));
+    vout.push(attachAdmitPub(sealCoinbaseNote(s.nanos, { dest20: d20, kind: s.kind || 'pot' }), {
+      admitBase: admitBaseFromAddress(pay),
+    }));
   }
   for (const [address, nanos] of bonuses) {
     const pay = destOf(address);
     if (!isDestAddress(pay)) continue;
     const d20 = hash20FromAddress(pay);
-    vout.push(sealCoinbaseNote(nanos, { dest20: d20, kind: 'hash' }));
+    vout.push(attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind: 'hash' }), {
+      admitBase: admitBaseFromAddress(pay),
+    }));
   }
   if (!vout.length) {
     throw new Error('coinbase_needs_dest');
@@ -353,6 +364,8 @@ export function buildTemplate({
   hashBonusNanos = HASH_BONUS_NANOS,
   shareBatch = null,
   poolDest = null,
+  parentFluxset = null,
+  parentBlocks = null,
 }) {
   const batch = Array.isArray(shareBatch) ? sortShares(shareBatch) : [];
   const fromBatch = batch.length
@@ -376,15 +389,34 @@ export function buildTemplate({
     const dest = pay(miner);
     const d20 = hash20FromAddress(dest);
     cb.vout.push(d20
-      ? sealCoinbaseNote(split.finder, { dest20: d20, kind: 'finder-fee' })
+      ? attachAdmitPub(sealCoinbaseNote(split.finder, { dest20: d20, kind: 'finder-fee' }), {
+        admitBase: admitBaseFromAddress(dest),
+      })
       : { address: dest, nanos: split.finder, kind: 'finder-fee' });
   }
   if (split.reserve) {
     const dest = reserveFeeDest();
     const d20 = hash20FromAddress(dest);
     cb.vout.push(d20
-      ? sealCoinbaseNote(split.reserve, { dest20: d20, kind: 'reserve-fee' })
+      ? attachAdmitPub(sealCoinbaseNote(split.reserve, { dest20: d20, kind: 'reserve-fee' }), {
+        admitBase: admitBaseFromAddress(dest),
+      })
       : { address: dest, nanos: split.reserve, kind: 'reserve-fee' });
+  }
+  const parentPubs = Array.isArray(parentFluxset)
+    ? parentFluxset
+    : fluxsetFromBlocks(parentBlocks || (prevBlock ? [prevBlock] : [])).pubs;
+  const newPubs = [...parentPubs];
+  for (const o of cb.vout || []) {
+    if (o?.admitPub) newPubs.push(o.admitPub);
+  }
+  for (const tx of txs || []) {
+    for (const o of tx.vout || []) {
+      if (o?.admitPub) newPubs.push(o.admitPub);
+    }
+  }
+  if (Number(height) === 1 || parentPubs.length || prevBlock || parentBlocks) {
+    cb.jroot = jrootOf(newPubs.map((p) => (typeof p?.toBytes === 'function' ? p : p)));
   }
   const bodyTxs = [cb, ...txs];
   const merkle = merkleRoot(bodyTxs.map(digestTx));
@@ -704,6 +736,16 @@ function verifyBlockConsensus(block, prev, {
   const base = Number(decoded.baseFee || 1n);
   let fees = 0;
   const spent = spentB instanceof Set ? spentB : new Set(spentB || []);
+  const history = Array.isArray(evmHistory) && evmHistory.length ? evmHistory : (prev ? [prev] : []);
+  const live = fluxsetFromBlocks(history);
+  const pubs = live.pubs.slice();
+  const spentTags = new Set(live.spendTags);
+  const pushPub = (o) => {
+    if (!o?.admitPub) return;
+    try {
+      pubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
+    } catch { /* skip */ }
+  };
   const body = txs.slice(1);
   for (let i = 0; i < body.length; i += 1) {
     const tx = body[i];
@@ -751,7 +793,16 @@ function verifyBlockConsensus(block, prev, {
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
       const spentOf = (vin) => lookupSpentVout(vin, block, prev, i, evmHistory);
       if (!verifyFlowConservation(tx, spentOf)) return { ok: false, reason: 'confidential' };
+      const proof = tx.admit_proof;
+      if (!proof) return { ok: false, reason: 'admit' };
+      if (!admit_verify(proof, pubs)) return { ok: false, reason: 'admit' };
+      const tag = proof.spendTag || tx.spendTag;
+      if (!tag) return { ok: false, reason: 'admit' };
+      const th = Buffer.from(asU8(tag)).toString('hex');
+      if (spentTags.has(th)) return { ok: false, reason: 'admit' };
+      spentTags.add(th);
     }
+    for (const o of outs) pushPub(o);
     if ((unfunded || tx.mint) && String(tx.programId || '') === RESERVE_PROGRAM && String(tx.kind || '') === 'withdraw') {
       const bps = Number(committedBps ?? reserveState?.epochBps ?? GENESIS_BPS);
       const dest = String(tx.from || tx.vin?.[0]?.address || '');
@@ -825,7 +876,21 @@ function verifyBlockConsensus(block, prev, {
   const finderPaid = levyNote('finder-fee', split.finder);
   const reservePaid = levyNote('reserve-fee', split.reserve);
   if (finderPaid !== split.finder || reservePaid !== split.reserve) return { ok: false, reason: 'levy_split' };
-  return { ok: true, hash, decoded, aLeaves, bLeaves };
+  const finalPubs = live.pubs.slice();
+  for (const tx of txs) {
+    for (const o of tx.vout || []) {
+      if (!o?.admitPub) continue;
+      try {
+        finalPubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
+      } catch { /* skip */ }
+    }
+  }
+  const wantRoot = Buffer.from(jrootOf(finalPubs));
+  const gotRoot = txs[0].jroot;
+  if (gotRoot && !Buffer.from(asU8(gotRoot)).equals(wantRoot)) {
+    return { ok: false, reason: 'admit' };
+  }
+  return { ok: true, hash, decoded, aLeaves, bLeaves, jroot: wantRoot };
 }
 
 function headerTimeMs(block) {

@@ -41,6 +41,12 @@ function signedSend(id, { nanos, to, fee } = {}) {
     vout: [{ address: dest, nanos: amount, kind: 'send' }],
     ephPub: pay.ephPub.toString('hex'),
   });
+  tx.admit_proof = {
+    admit_proof: true,
+    spendTag: Buffer.alloc(32, 7),
+    c0: Buffer.alloc(32, 8),
+    r: [Buffer.alloc(32, 9)],
+  };
   signSpendTx(tx, stealthSpendPrivate(rec.shared, ed25519SeedOf(id.privateKey)));
   return { tx, from, open };
 }
@@ -136,7 +142,10 @@ describe('wallet send path', () => {
     assert.equal(unsigned.status, 400);
     assert.equal(unsigned.json.reason, 'dummy_outs');
 
-    const ok = run({ from, to: from, amount: 0.4, sig: tx.sig, spendPub: tx.spendPub, vout: tx.vout, vin: tx.vin, excess: tx.excess });
+    const ok = run({
+      from, to: from, amount: 0.4, sig: tx.sig, spendPub: tx.spendPub,
+      vout: tx.vout, vin: tx.vin, excess: tx.excess, admit_proof: tx.admit_proof,
+    });
     assert.equal(ok.status, 200, ok.json.reason);
     assert.equal(ok.json.ok, true);
   });

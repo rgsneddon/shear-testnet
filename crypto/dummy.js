@@ -3,7 +3,8 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { sealNote, verifySealedNote, kernelExcess, bindVinToSpent } from './note.js';
-import { hash20FromAddress } from './address.js';
+import { hash20FromAddress, admitBaseFromAddress } from './address.js';
+import { attachAdmitPub } from './admit.js';
 
 export const DUMMY_KIND = 'dummy';
 export const DUMMY_FANOUT = 1;
@@ -45,9 +46,10 @@ export function sealFlowVout(o) {
   const n = Math.floor(Number(o.nanos || 0));
   const d20 = hash20FromAddress(o.address);
   if (!d20) return o;
-  const note = sealNote(n, { dest20: d20, kind: o.kind || 'send' });
+  let note = sealNote(n, { dest20: d20, kind: o.kind || 'send' });
   note.viewTag = viewTagOf(note.noteCommit);
   if (o.address) note.address = o.address;
+  note = attachAdmitPub(note, { admitBase: admitBaseFromAddress(o.address) });
   return note;
 }
 
@@ -62,8 +64,9 @@ export function attachDummyOuts(tx, { fanout = DUMMY_FANOUT, spent } = {}) {
   let n = dummyCount(out);
   const want = Math.max(1, Math.floor(Number(fanout) || DUMMY_FANOUT));
   while (n < want) {
-    const note = sealNote(0, { dest20: randomBytes(20), kind: DUMMY_KIND });
+    let note = sealNote(0, { dest20: randomBytes(20), kind: DUMMY_KIND });
     note.viewTag = viewTagOf(note.noteCommit);
+    note = attachAdmitPub(note);
     out.vout.push(note);
     n += 1;
   }

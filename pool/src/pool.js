@@ -1667,6 +1667,7 @@ export function createPool({
       blockSubsidyNanos: BLOCK_SUBSIDY_NANOS,
       hashBonusNanos: store.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS,
       hashTxLive: HASH_TX_LIVE,
+      admit: 'AdmitV1',
       bookLawFingerprint: consensusFingerprint(),
       ...consensusLaw(),
       policy: typeof store.getpolicy === 'function' ? store.getpolicy() : undefined,

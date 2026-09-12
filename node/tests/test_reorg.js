@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeDest, newIdentity, destOpeningFromView, freshStealthDest } from '../../crypto/address.js';
-import { spendBox } from '../../tests/spend_box.js';
+import { spendBox, admitSend } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
@@ -68,6 +68,8 @@ describe('most-work adopt', () => {
     for (let i = 0; i < SPENDABLE_CONFIRMATIONS; i += 1) {
       assert.equal((await Promise.resolve(mineOne(local, dest))).ok, true);
     }
+    const tip = local.tip();
+    const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
     const bounce = attachDummyOuts({
       id: 'bounce-1',
       kind: 'send',
@@ -76,9 +78,16 @@ describe('most-work adopt', () => {
       nanos: 1,
       fee: levyNanos(1),
       open: destOpeningFromView(id.viewKey, id.spendPub, 0),
-      vin: [{ address: dest }],
+      vin: [{
+        prev: tip.hash,
+        index: tip.txs[0].vout.indexOf(spent),
+        commit: spent.commit,
+        noteCommit: spent.noteCommit,
+        address: dest,
+      }],
       vout: [{ address: dest, nanos: 1 }],
-    });
+    }, { spent });
+    admitSend(bounce, { id, spent, blocks: local.blocks });
     signSpendTx(bounce, box.key);
     assert.equal(local.queueTx(bounce).ok, true, 'bounce must enter mempool');
     const heavier = tmpStore();

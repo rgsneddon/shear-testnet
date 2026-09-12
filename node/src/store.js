@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { MAGIC_TESTNET, templateStampMs } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint } from '../../crypto/asert.js';
 import { hashHex } from '../../crypto/shear_hash.js';
 import {
   buildTemplate,
@@ -34,6 +34,9 @@ import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
 import { blockWeight } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
+import { admit_verify, fluxsetFromBlocks } from '../../crypto/admit.js';
+import { flowNeedsDummy } from '../../crypto/dummy.js';
+import { asU8 } from '../../crypto/note.js';
 import { blockWork } from '../../crypto/asert.js';
 import {
   emptyPolicyState,
@@ -601,25 +604,42 @@ export function createStore(dir, {
     if (id && mempool.some((m) => String(m.id) === id)) {
       return { ok: true, tx, duplicate: true };
     }
+    if (flowNeedsDummy(tx)) {
+      const proof = tx.admit_proof;
+      if (!proof) return { ok: false, reason: 'admit' };
+      const live = fluxsetFromBlocks(blocks);
+      if (!admit_verify(proof, live.pubs)) return { ok: false, reason: 'admit' };
+      const tag = proof.spendTag || tx.spendTag;
+      if (!tag) return { ok: false, reason: 'admit' };
+      const th = Buffer.from(asU8(tag)).toString('hex');
+      if (live.spendTags.has(th)) return { ok: false, reason: 'admit' };
+      for (const m of mempool) {
+        const mt = m.admit_proof?.spendTag || m.spendTag;
+        if (mt && Buffer.from(asU8(mt)).toString('hex') === th) {
+          return { ok: false, reason: 'admit' };
+        }
+      }
+    }
+    const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
     const debit = fundedDebit(tx);
-    if (debit) {
+    if (debit && !noteBound) {
       const tipH = Number(t?.height || 0);
       const have = matureSpendableNanos(explorer, debit.from, tipH) - mempoolDebitNanos(mempool, debit.from);
       if (have < debit.nanos) {
         return { ok: false, reason: 'insufficient', need: debit.nanos, have };
       }
-      if (flowSendNeedsOpen(tx)) {
-        if (!verifySpendSig(tx)) {
-          return { ok: false, reason: 'unsigned' };
-        }
-        const digest = spendPackDigest(tx).toString('hex');
-        const inMem = mempool.some((m) => flowSendNeedsOpen(m) && spendPackDigest(m).toString('hex') === digest);
-        if (inMem) return { ok: false, reason: 'replay' };
-        for (const b of blocks) {
-          for (const sealed of (b.txs || []).slice(1)) {
-            if (flowSendNeedsOpen(sealed) && spendPackDigest(sealed).toString('hex') === digest) {
-              return { ok: false, reason: 'replay' };
-            }
+    }
+    if (debit && flowSendNeedsOpen(tx)) {
+      if (!verifySpendSig(tx)) {
+        return { ok: false, reason: 'unsigned' };
+      }
+      const digest = spendPackDigest(tx).toString('hex');
+      const inMem = mempool.some((m) => flowSendNeedsOpen(m) && spendPackDigest(m).toString('hex') === digest);
+      if (inMem) return { ok: false, reason: 'replay' };
+      for (const b of blocks) {
+        for (const sealed of (b.txs || []).slice(1)) {
+          if (flowSendNeedsOpen(sealed) && spendPackDigest(sealed).toString('hex') === digest) {
+            return { ok: false, reason: 'replay' };
           }
         }
       }
@@ -629,7 +649,12 @@ export function createStore(dir, {
     }
     const pay = verifyReservePayout(reserveVault, tx);
     if (!pay.ok) return pay;
-    const got = admitMempool(book, tx, { baseFee: base });
+    const live = fluxsetFromBlocks(blocks);
+    const got = admitMempool(book, tx, {
+      baseFee: base,
+      fluxset: live.pubs,
+      spendTags: live.spendTags,
+    });
     if (got.ok && got.tx && !got.duplicate) {
       emit('tx', got.tx);
     }
@@ -887,7 +912,12 @@ export function createStore(dir, {
       };
       if (pause.reserveInterest && tx.mint) continue;
       if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
-      const got = admitMempool(book, tx, { baseFee: baseFeeNow });
+      const live = fluxsetFromBlocks(blocks);
+      const got = admitMempool(book, tx, {
+        baseFee: baseFeeNow,
+        fluxset: live.pubs,
+        spendTags: live.spendTags,
+      });
       if (got.ok) pendingTxs.push(got.tx);
     }
     const tpl = buildTemplate({
@@ -905,6 +935,8 @@ export function createStore(dir, {
       hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
       shareBatch: Array.isArray(shareBatch) ? shareBatch : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch : []),
       poolDest,
+      parentBlocks: blocks,
+      parentFluxset: fluxsetFromBlocks(blocks).pubs,
     });
     const jobId = `shear-${height}-${jobSeq++}`;
     const job = publicJob(tpl, { jobId, shareBits });
@@ -970,6 +1002,10 @@ export function createStore(dir, {
     getpolicy: () => policyView(policyState),
     getchaintips,
     getreorgs: () => reorgs.slice(),
+    fluxset: () => fluxsetFromBlocks(blocks),
+    jroot: () => fluxsetFromBlocks(blocks).jroot,
+    hashTxLive: HASH_TX_LIVE,
+    consensusFingerprint,
     pause,
     reorgHaltDepth: haltDepth,
     headers,

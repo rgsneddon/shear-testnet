@@ -264,7 +264,7 @@ describe('privacy.walk', () => {
     const disk = fs.readFileSync(file, 'utf8');
     assert.equal(/she1|shear1|viewKey|paymentCode|"ip"|userAgent/.test(disk), false);
     const got = readPoolIdent(file);
-    assert.equal(got.miner, owned);
+    assert.ok(hash20FromAddress(got.miner).equals(hash20FromAddress(owned)));
   });
 
   it('11: typed HRP on every address field; she/shear are silent_id_on_chain / rest_frame_on_chain', () => {

@@ -375,9 +375,15 @@ String encodeHrp(String hrp, Uint8List bytes) {
 
 String encodeShearAddress(Uint8List pubkeyHash20) => encodeHrp(shearHrp, pubkeyHash20);
 
-String encodeDestAddress(Uint8List pubkeyHash20) {
+String encodeDestAddress(Uint8List pubkeyHash20, [Uint8List? admitBase]) {
   if (pubkeyHash20.length != 20) {
     throw ArgumentError('spend hash must be 20 bytes');
+  }
+  if (admitBase != null) {
+    if (admitBase.length != 32) {
+      throw ArgumentError('admit base must be 32 bytes');
+    }
+    return encodeHrp(destHrp, Uint8List.fromList([...pubkeyHash20, ...admitBase]));
   }
   return encodeHrp(destHrp, pubkeyHash20);
 }

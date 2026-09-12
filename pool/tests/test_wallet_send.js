@@ -37,8 +37,24 @@ function spendSig({ from, to, amount, open, identity, kind = 'send' }) {
   };
   if (kind === 'send') tx = attachDummyOuts(tx);
   if (kind === 'lock') tx = { ...lockTx({ from, to, nanos, id: 'lock-sig' }), fee, amount };
+  if (kind === 'send') {
+    tx.admit_proof = {
+      admit_proof: true,
+      spendTag: Buffer.alloc(32, 7),
+      c0: Buffer.alloc(32, 8),
+      r: [Buffer.alloc(32, 9)],
+    };
+  }
   signSpendTx(tx, identity.privateKey);
-  return { sig: tx.sig, spendPub: tx.spendPub, vout: tx.vout, vin: tx.vin, excess: tx.excess, nanos: tx.nanos };
+  return {
+    sig: tx.sig,
+    spendPub: tx.spendPub,
+    vout: tx.vout,
+    vin: tx.vin,
+    excess: tx.excess,
+    nanos: tx.nanos,
+    admit_proof: tx.admit_proof,
+  };
 }
 
 function storeWith({ rows = [], reserveVault, issued } = {}) {
@@ -99,6 +115,13 @@ describe('pool send reconstruct and Join vault', () => {
       to: bob,
       amount: 0.4,
       vout: unsignedDraft.vout,
+      vin: unsignedDraft.vin,
+      admit_proof: {
+        admit_proof: true,
+        spendTag: Buffer.alloc(32, 1),
+        c0: Buffer.alloc(32, 2),
+        r: [Buffer.alloc(32, 3)],
+      },
     }, { store, miners: new Map(), queueSend: () => ({ id: 'nope' }) });
     assert.equal(unsigned.status, 403);
     assert.equal(unsigned.json.reason, 'unsigned');
@@ -113,6 +136,7 @@ describe('pool send reconstruct and Join vault', () => {
       vout: signed.vout,
       vin: signed.vin,
       excess: signed.excess,
+      admit_proof: signed.admit_proof,
     }, { store, miners: new Map(), queueSend: (t) => {
       const tx = { id: 'send-1', ...t };
       posted.push(tx);

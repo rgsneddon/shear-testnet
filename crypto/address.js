@@ -14,8 +14,10 @@ import {
   isStealthKey,
   stealthSign,
 } from './stealth_ed25519.js';
+import { admitBasePub } from './admit.js';
+import { pointBytes } from './note.js';
 
-export { destCommitFromSpendPub, stealthSpendPubFrom, isStealthKey, stealthSign };
+export { destCommitFromSpendPub, stealthSpendPubFrom, isStealthKey, stealthSign, stealthKey };
 
 export const HRP = 'shear';
 export const HRP_DEST = 'ssa';
@@ -92,10 +94,22 @@ export function encodeAddress(pubkeyHash20) {
   return encodeHrp(HRP, pubkeyHash20);
 }
 
-export function encodeDest(pubkeyHash20) {
+export function encodeDest(pubkeyHash20, admitBase = null) {
   const data = Buffer.from(pubkeyHash20);
   if (data.length !== 20) throw new Error('spend hash must be 20 bytes');
+  if (admitBase) {
+    const B = Buffer.from(admitBase);
+    if (B.length !== 32) throw new Error('admit base must be 32 bytes');
+    return encodeHrp(HRP_DEST, Buffer.concat([data, B]));
+  }
   return encodeHrp(HRP_DEST, data);
+}
+
+/** 32-byte ristretto B from a dest payload dest20||B. 20-byte dests have no base. */
+export function admitBaseFromAddress(address) {
+  const bytes = decodeBech32Payload(address);
+  if (!bytes || bytes.length < 52) return null;
+  return Buffer.from(bytes.subarray(20, 52));
 }
 
 /** 20-byte she1 payload: SHA256(shear-she1-v2 || scanPub || spendPub)[0:20]. Not rest-frame S. */
@@ -114,11 +128,17 @@ export function paymentIdHash(scanPub, spendPub) {
 /** Product payment code: version || X25519 scanPub || Ed25519 spendPub. Not a 20-byte hash. */
 export const PAYMENT_CODE_VERSION = 1;
 
-export function encodePaymentCode({ scanPub, spendPub }) {
+export function encodePaymentCode({ scanPub, spendPub, admitBase = null }) {
   const scan = Buffer.from(scanPub);
   const spend = Buffer.from(spendPub);
   if (scan.length !== 32 || spend.length !== 32) throw new Error('silent code keys must be 32 bytes');
-  return encodeHrp(HRP_PAY, Buffer.concat([Buffer.from([PAYMENT_CODE_VERSION]), scan, spend]));
+  const parts = [Buffer.from([PAYMENT_CODE_VERSION]), scan, spend];
+  if (admitBase) {
+    const B = Buffer.from(admitBase);
+    if (B.length !== 32) throw new Error('admit base must be 32 bytes');
+    parts.push(B);
+  }
+  return encodeHrp(HRP_PAY, Buffer.concat(parts));
 }
 
 export function encodePaymentFingerprint(scanPub, spendPub) {
@@ -196,13 +216,15 @@ export function decodePaymentCode(s) {
   if (isShearAddress(t) || bech32Hrp(t) !== 'she' || !bech32BodyOk(t)) return null;
   const p = decodeBech32Payload(t);
   if (!p) return null;
-  if (p.length === 65 && p[0] === PAYMENT_CODE_VERSION) {
+  if (p.length >= 65 && p[0] === PAYMENT_CODE_VERSION) {
     const scanPub = Buffer.from(p.subarray(1, 33));
     const spendPub = Buffer.from(p.subarray(33, 65));
+    const admitBase = p.length >= 97 ? Buffer.from(p.subarray(65, 97)) : null;
     return {
       version: PAYMENT_CODE_VERSION,
       scanPub,
       spendPub,
+      admitBase,
       hash20: paymentIdHash(scanPub, spendPub),
     };
   }
@@ -265,12 +287,12 @@ function needSpendPub32(spendPub32) {
   return b;
 }
 
-export function paymentCodeAtIndex(viewKey, spendPub32, index = 0) {
+export function paymentCodeAtIndex(viewKey, spendPub32, index = 0, admitBase = null) {
   const n = Number(index);
   if (!Number.isInteger(n) || n < 0) return null;
   const scanPriv = x25519PrivateFromSeed(scanSeedFromView(viewKey, n));
   const scanPub = x25519PublicRaw(scanPriv);
-  return encodePaymentCode({ scanPub, spendPub: needSpendPub32(spendPub32) });
+  return encodePaymentCode({ scanPub, spendPub: needSpendPub32(spendPub32), admitBase });
 }
 
 export function paymentCodeFromViewKey(viewKey, spendPub32) {
@@ -350,7 +372,7 @@ export function silentDestFromCode(fullCode, ephPrivate) {
   if (!shared) return null;
   const oneTime = stealthSpendPubFrom(parsed.spendPub, shared);
   const commit = destCommitFromSpendPub(oneTime);
-  return commit ? encodeDest(commit) : null;
+  return commit ? encodeDest(commit, parsed.admitBase) : null;
 }
 
 export function silentPay(fullCode, ephPrivate) {
@@ -375,7 +397,7 @@ export function silentDestFromEphPub(fullCode, ephPubRaw, scanPriv) {
     const oneTime = stealthSpendPubFrom(parsed.spendPub, shared);
     const commit = destCommitFromSpendPub(oneTime);
     if (!commit) return null;
-    return { dest: encodeDest(commit), shared };
+    return { dest: encodeDest(commit, parsed.admitBase), shared };
   } catch {
     return null;
   }
@@ -400,8 +422,10 @@ export function recognizeSilentDest({ viewKey, spendPub, dest, ephPub, maxIndex 
       const oneTime = stealthSpendPubFrom(spend, shared);
       const commit = destCommitFromSpendPub(oneTime);
       if (!commit) continue;
-      const got = encodeDest(commit);
-      if (got === want) return { dest: got, shared, index: i, spendPub: oneTime };
+      const want20 = hash20FromAddress(want);
+      if (want20 && Buffer.from(want20).equals(commit)) {
+        return { dest: want, shared, index: i, spendPub: oneTime };
+      }
     } catch {
       continue;
     }
@@ -490,7 +514,9 @@ export function newIdentity() {
   ])).digest().toString('hex');
   const scanPriv = x25519PrivateFromSeed(scanSeedFromView(viewKey, 0));
   const scanPub = x25519PublicRaw(scanPriv);
-  const paymentCode = encodePaymentCode({ scanPub, spendPub });
+  const spendSeed = ed25519SeedOf(privateKey);
+  const admitBase = pointBytes(admitBasePub(spendSeed));
+  const paymentCode = encodePaymentCode({ scanPub, spendPub, admitBase });
   const paymentFingerprint = encodePaymentFingerprint(scanPub, spendPub);
   return {
     address,
@@ -501,6 +527,8 @@ export function newIdentity() {
     paymentFingerprint,
     spendPub,
     scanPub,
+    spendSeed,
+    admitBase,
   };
 }
 

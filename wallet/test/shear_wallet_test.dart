@@ -73,18 +73,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.30"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.31"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.30"'), isTrue);
+    expect(winMain.contains('L"Shear 0.31"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.30"'), isTrue);
+    expect(winRc.contains('"Shear 0.31"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.30"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.31"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -192,6 +192,46 @@ void main() {
       'sent',
     );
     expect(ledger.sealedHeight, 3 + ShearLedger.continuumConfirmations - 1);
+  });
+
+  test('tracks owned notes and POSTs a sealed Flow body (vin, vout, admit_proof, sig, spendPub)', () async {
+    expect(kTabs, ['Continuum', 'Flow', 'Resistance', 'Vortex', 'Shearview', 'Closure']);
+    final id = createIdentity();
+    final posts = <Map<String, dynamic>>[];
+    final pool = _RecordingPool(posts);
+    final ledger = ShearLedger(pool: pool)..viewSecret = id.viewKey;
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.confirmRound(address: dest, pot: 1, height: 2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    ledger.rememberNote({
+      'address': dest,
+      'commit': 'aa' * 32,
+      'noteCommit': 'bb' * 32,
+      'r': 'cc' * 32,
+      'prev': 'dd' * 32,
+      'index': 0,
+      'x': 'ee' * 32,
+      'admit_proof': {'admit_proof': true, 'spendTag': 'ff' * 32},
+    });
+    expect(ledger.notes, isNotEmpty);
+    expect(ledger.notes.first['commit'], 'aa' * 32);
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    await ledger.send(
+      from: dest,
+      to: bob,
+      amount: 0.25,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: hexToBytes(id.seedHex),
+    );
+    expect(posts, isNotEmpty);
+    final body = posts.last;
+    expect(body.containsKey('vin'), isTrue);
+    expect(body.containsKey('vout'), isTrue);
+    expect(body.containsKey('admit_proof'), isTrue);
+    expect(body['admit_proof'], isA<Map>());
+    expect((body['vout'] as List).any((o) => o is Map && o['kind'] == 'dummy'), isTrue);
+    expect((body['vin'] as List).first['commit'], 'aa' * 32);
   });
 
   test('live pending hashes and receives become spendable on block-found', () {
@@ -807,7 +847,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.30');
+    expect(kWalletVersion, '0.31');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -1263,8 +1303,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.30');
-    expect(kWalletVersion, '0.30');
+    expect(app.title, 'Shear 0.31');
+    expect(kWalletVersion, '0.31');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -3475,8 +3515,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.30 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.30');
+  test('kWalletVersion == 0.31 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.31');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -4284,6 +4324,56 @@ Future<void> _waitKey(WidgetTester tester, Key key) async {
     if (find.byKey(key).evaluate().isNotEmpty) return;
   }
   fail('missing $key');
+}
+
+class _RecordingPool extends ShearPoolClient {
+  _RecordingPool(this.posts) : super(baseUrl: 'http://127.0.0.1:9');
+  final List<Map<String, dynamic>> posts;
+
+  @override
+  Future<Map<String, dynamic>> send({
+    required String from,
+    required String to,
+    required double amount,
+    Map<String, dynamic>? memoCt,
+    String? open,
+    String? sig,
+    String? portalOpen,
+    String? kind,
+    String? programId,
+    String? choice,
+    int? currentEpoch,
+    int? epochStartMs,
+    String? change,
+    String? spendPub,
+    String? ephPub,
+    List<dynamic>? vin,
+    List<dynamic>? vout,
+    dynamic excess,
+    Map<String, dynamic>? admitProof,
+    String? spendTag,
+  }) async {
+    posts.add({
+      'from': from,
+      'to': to,
+      'amount': amount,
+      'vin': vin,
+      'vout': vout,
+      'admit_proof': admitProof,
+      'sig': sig,
+      'spendPub': spendPub,
+    });
+    return {
+      'ok': true,
+      'tx': {
+        'id': 'note-send-1',
+        'from': from,
+        'to': to,
+        'amount': amount,
+        'kind': kind ?? 'send',
+      },
+    };
+  }
 }
 
 class _MemPullPool extends ShearPoolClient {

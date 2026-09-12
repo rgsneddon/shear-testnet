@@ -3,10 +3,11 @@ import 'dart:io';
 import 'dart:math';
 
 /// FlyClient locators: O(log tip) header samples, not a 1…tip flood.
-const kWalletDefaultSeed = 'https://pool.shear.digital';
-/// Prefer a local node/pool when one is running (0.28 / kit source).
+/// Wallet default is the local node. Public pool URL is an operator-metadata toggle.
+const kWalletDefaultSeed = 'http://127.0.0.1:18332';
 const kLocalPoolHttp = 'http://127.0.0.1:8088';
 const kLocalNodeRpc = 'http://127.0.0.1:18332';
+const kPublicPoolHttp = 'https://pool.shear.digital';
 
 /// Logarithmic header heights: 1, 2, 4, … tip (genesis + tip always).
 List<int> flyclientSampleHeights(int tip) {
@@ -58,7 +59,7 @@ class ShearReadSync {
     Random? random,
   })  : seeds = List<String>.unmodifiable(_dedupe([
           if (userUrl != null && userUrl.trim().isNotEmpty) userUrl,
-          if (seeds == null) ...[kLocalPoolHttp, kLocalNodeRpc, kWalletDefaultSeed] else ...seeds,
+          if (seeds == null) ...[kLocalNodeRpc, kLocalPoolHttp] else ...seeds,
         ])),
         _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8)),
         _rng = random ?? Random();

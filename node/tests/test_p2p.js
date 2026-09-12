@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { encodeDest, newIdentity, freshStealthDest } from '../../crypto/address.js';
-import { spendBox } from '../../tests/spend_box.js';
+import { spendBox, admitSend } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
@@ -138,18 +138,30 @@ describe('p2p gossip', () => {
       const linked = await waitFor(() => a.p2p.syncedOnline() === 2 && b.p2p.syncedOnline() === 2);
       assert.equal(linked, true);
       const { levyNanos } = await import('../../crypto/levy.js');
+      const { attachDummyOuts } = await import('../../crypto/dummy.js');
+      const id = newIdentity();
+      const box = spendBox(id);
+      const payDest = box.dest;
+      assert.equal((await Promise.resolve(mineOne(a.store, payDest, 4))).ok, true);
+      const synced = await waitFor(() => Number(b.store.tip()?.height || 0) >= 1, 15000);
+      assert.equal(synced, true, 'peer did not sync mined block');
+      const tip = a.store.tip();
+      const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
       const sendNanos = 2;
       const fee = levyNanos(sendNanos);
-      const { attachDummyOuts } = await import('../../crypto/dummy.js');
-      const queued = a.store.queueTx(attachDummyOuts({
+      const tx = attachDummyOuts({
         id: 'net-send-1',
         kind: 'send',
-        from: dest,
-        to: dest,
+        from: payDest,
+        to: payDest,
         nanos: sendNanos,
         fee,
-        vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
-      }));
+        vin: [{ prev: tip.hash, index: tip.txs[0].vout.indexOf(spent), commit: spent.commit, noteCommit: spent.noteCommit, address: payDest }],
+        vout: [{ address: payDest, nanos: sendNanos, kind: 'send' }],
+      }, { spent });
+      admitSend(tx, { id, spent, blocks: a.store.blocks });
+      signSpendTx(tx, box.key);
+      const queued = a.store.queueTx(tx);
       assert.equal(queued.ok, true, queued.reason);
       const tag = 'mcafef00d';
       let lastPub = 0;
@@ -234,18 +246,30 @@ describe('p2p gossip', () => {
       const linked = await waitFor(() => a.p2p.syncedOnline() >= 2);
       assert.equal(linked, true);
       const { levyNanos } = await import('../../crypto/levy.js');
+      const { attachDummyOuts } = await import('../../crypto/dummy.js');
+      const id = newIdentity();
+      const box = spendBox(id);
+      const payDest = box.dest;
+      assert.equal((await Promise.resolve(mineOne(a.store, payDest, 4))).ok, true);
+      const synced = await waitFor(() => Number(b.store.tip()?.height || 0) >= 1 && Number(c.store.tip()?.height || 0) >= 1, 15000);
+      assert.equal(synced, true, 'peer did not sync mined block');
+      const tip = a.store.tip();
+      const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
       const sendNanos = 2;
       const fee = levyNanos(sendNanos);
-      const { attachDummyOuts } = await import('../../crypto/dummy.js');
-      const queued = a.store.queueTx(attachDummyOuts({
+      const tx = attachDummyOuts({
         id: 'stem-send-1',
         kind: 'send',
-        from: dest,
-        to: dest,
+        from: payDest,
+        to: payDest,
         nanos: sendNanos,
         fee,
-        vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
-      }));
+        vin: [{ prev: tip.hash, index: tip.txs[0].vout.indexOf(spent), commit: spent.commit, noteCommit: spent.noteCommit, address: payDest }],
+        vout: [{ address: payDest, nanos: sendNanos, kind: 'send' }],
+      }, { spent });
+      admitSend(tx, { id, spent, blocks: a.store.blocks });
+      signSpendTx(tx, box.key);
+      const queued = a.store.queueTx(tx);
       assert.equal(queued.ok, true, queued.reason);
       assert.equal(JSON.stringify(queued.tx || queued).includes('remoteAddress'), false);
       assert.equal(a.p2p.originInvSetSize('stem-send-1'), 1);

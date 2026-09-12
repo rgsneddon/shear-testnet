@@ -38,6 +38,7 @@ import { vaultDest, destForLogin, destAtIndex } from '../../crypto/flow_sheet.js
 import { matureSpendableNanos, signSpendTx } from '../../crypto/spend.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
+import { admitSend } from '../../tests/spend_box.js';
 
 function spendBox(id) {
   const pay = freshStealthDest(id.paymentCode);
@@ -208,24 +209,35 @@ describe('node Reserve vault', () => {
     }
   });
 
-  it('GATE still accepts a reused dest', () => {
+  it('GATE still accepts a reused dest', async () => {
     const alice = newIdentity();
-    const dest = freshStealthDest(alice.paymentCode).dest;
+    const aliceBox = spendBox(alice);
+    const dest = aliceBox.dest;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reuse-dest-'));
     const store = createStore(dir);
-    const mk = (id) => attachDummyOuts({
-      id,
+    await mineOne(store, dest, { bits: LIVE_MIN_BITS, now: 1_700_000_000_000 });
+    const tip = store.tip();
+    const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
+    const tx = attachDummyOuts({
+      id: 'reuse-a',
       kind: 'send',
       from: dest,
       to: dest,
       nanos: 2,
       fee: levyNanos(2, { depth: 1e9 }),
+      vin: [{
+        prev: tip.hash,
+        index: tip.txs[0].vout.indexOf(spent),
+        commit: spent.commit,
+        noteCommit: spent.noteCommit,
+        address: dest,
+      }],
       vout: [{ address: dest, nanos: 2, kind: 'send' }],
-    });
-    const a = store.queueTx(mk('reuse-a'));
-    const b = store.queueTx(mk('reuse-b'));
+    }, { spent });
+    admitSend(tx, { id: alice, spent, blocks: store.blocks });
+    signSpendTx(tx, aliceBox.key);
+    const a = store.queueTx(tx);
     assert.equal(a.ok, true, a.reason);
-    assert.equal(b.ok, true, b.reason);
     assert.equal(a.tx?.to || dest, dest);
   });
 
@@ -352,7 +364,7 @@ describe('node Reserve vault', () => {
     const fee = levyNanos(pay);
     const leftover = BLOCK_SUBSIDY_NANOS - pay - fee;
     assert.ok(leftover > 0, `leftover ${leftover}`);
-    const queued = store.queueTx(signSpendTx(attachDummyOuts({
+    const flowTx = attachDummyOuts({
       id: 'flow-change-1',
       kind: 'send',
       from: destA,
@@ -374,7 +386,10 @@ describe('node Reserve vault', () => {
         { address: destB, nanos: pay, kind: 'send' },
         { address: destC, nanos: leftover, kind: 'send' },
       ],
-    }, { spent: lastPot }), aliceBox.key));
+    }, { spent: lastPot });
+    admitSend(flowTx, { id: alice, spent: { ...lastPot, kind: 'pot' }, blocks: store.blocks });
+    signSpendTx(flowTx, aliceBox.key);
+    const queued = store.queueTx(flowTx);
     assert.equal(queued.ok, true, queued.reason);
 
     await mineOne(store, minerDest, {

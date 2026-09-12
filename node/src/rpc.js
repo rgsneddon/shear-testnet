@@ -83,6 +83,32 @@ export function createRpc({
     if (m === 'setTip' || m === 'settip') {
       return { ok: false, reason: 'setTip_forbidden' };
     }
+    if (m === 'getfluxset' || m === 'fluxset') {
+      const live = typeof store.fluxset === 'function' ? store.fluxset() : { pubs: [], spendTags: new Set(), jroot: null };
+      return {
+        ok: true,
+        jroot: live.jroot ? Buffer.from(live.jroot).toString('hex') : '',
+        fluxset: (live.pubs || []).map((p) => Buffer.from(typeof p.toBytes === 'function' ? p.toBytes() : p).toString('hex')),
+        spendTags: [...(live.spendTags || [])],
+        admit: 'AdmitV1',
+        hashTxLive: store.hashTxLive,
+      };
+    }
+    if (m === 'getjroot' || m === 'jroot') {
+      const root = typeof store.jroot === 'function' ? store.jroot() : null;
+      return { ok: true, jroot: root ? Buffer.from(root).toString('hex') : '', admit: 'AdmitV1' };
+    }
+    if (m === 'getfingerprint' || m === 'fingerprint') {
+      const fp = typeof store.consensusFingerprint === 'function'
+        ? store.consensusFingerprint()
+        : '';
+      return { ok: true, fingerprint: fp, admit: 'AdmitV1', hashTxLive: store.hashTxLive };
+    }
+    if (m === 'queuetx' || m === 'queueTx') {
+      const tx = params.tx || params;
+      if (typeof store.queueTx !== 'function') return { ok: false, reason: 'no_store' };
+      return store.queueTx(tx);
+    }
     if (m === 'mempoolPressure' || m === 'mempoolpressure') {
       return mempoolPressure(store?.mempool || []);
     }
@@ -116,6 +142,18 @@ export function createRpc({
     }
     if (req.method === 'GET' && (url.pathname === '/mempoolPressure' || url.pathname === '/mempoolpressure')) {
       json(res, 200, dispatch('mempoolPressure'));
+      return;
+    }
+    if (req.method === 'GET' && (url.pathname === '/fluxset' || url.pathname === '/getfluxset')) {
+      json(res, 200, dispatch('getfluxset'));
+      return;
+    }
+    if (req.method === 'GET' && (url.pathname === '/jroot' || url.pathname === '/getjroot')) {
+      json(res, 200, dispatch('getjroot'));
+      return;
+    }
+    if (req.method === 'GET' && (url.pathname === '/fingerprint' || url.pathname === '/getfingerprint')) {
+      json(res, 200, dispatch('getfingerprint'));
       return;
     }
     let body = {};

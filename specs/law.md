@@ -2,7 +2,7 @@
 
 Frozen numbers. `consensusFingerprint()` pins every line. A later flip is a new book.
 
-Network: `shear-testnet-v3` (privacy-class). Frozen `shear-testnet-v2` is a different book. Mainnet `shear-v1` is a later genesis. Do not invent a genesis datetime.
+Network: `shear-testnet-v3` (privacy-class). Frozen `shear-testnet-v2` is a different book. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant.
 
 ## Numbers
 
@@ -67,6 +67,8 @@ MAX_SHARES_PER_BLOCK=8192
 SPEND_SIG=ed25519-shear-spend-v1
 POOL_WITHDRAW=eip712-spend-bound
 ```
+
+Mainnet `shear-v1` uses the same privacy-class law with `NETWORK=shear-v1` and `GENESIS=2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). `HASH_TX_LIVE=1`. `HASH_BONUS_NANOS=1`. Votes cannot zero the unit or move the 1 SHE pot. Clients refuse to emit before that instant.
 
 ## Hash unit (proven)
 

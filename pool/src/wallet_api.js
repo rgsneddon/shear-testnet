@@ -967,7 +967,13 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     const rec = reconstructOwner(store, from);
     const nanos = isVote ? 0 : Math.round(amount * NANOS_PER_SHE);
-    if (!isVote && rec.spendableNanos < nanos) {
+    const sealedSend = kindIn === 'send'
+      && body.admit_proof
+      && Array.isArray(body.vin) && body.vin.length
+      && Array.isArray(body.vout) && body.vout.length
+      && (body.sig || body.signature)
+      && body.spendPub;
+    if (!isVote && !sealedSend && rec.spendableNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const memoCt = body.memoCt || null;
@@ -979,7 +985,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const taxed = levyTaxed({ kind, programId });
     const depth = mempoolDepthBytes(store?.mempool || []);
     const fee = taxed ? levyNanos(nanos, { depth }) : 0;
-    if (rec.spendableNanos < nanos + fee) {
+    if (!sealedSend && rec.spendableNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const rawChange = String(body.change || '').trim();
@@ -1016,10 +1022,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           vin: Array.isArray(body.vin) && body.vin.length ? body.vin : [{ address: from }],
           vout,
           ...(body.excess ? { excess: body.excess } : {}),
+          ...(body.admit_proof ? { admit_proof: body.admit_proof, spendTag: body.spendTag || body.admit_proof.spendTag } : {}),
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
     if (kind === 'send' && dummyCount(draft) < 1) {
       return { status: 400, json: { ok: false, reason: 'dummy_outs' } };
+    }
+    if (kind === 'send' && !draft.admit_proof) {
+      return { status: 400, json: { ok: false, reason: 'admit' } };
     }
     if (flowSendNeedsOpen(draft) && !verifySpendSig(draft)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };

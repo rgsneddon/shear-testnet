@@ -23,6 +23,28 @@ Spend is admissible in J = rho * u over the fluxset.
 - **admit_proof** — opaque proof blob (length from input count + tree depth)
 - **admit_prove** / **admit_verify** — construct and verify
 
+## Note → P = x·G (coinbase and Flow)
+
+Every sealed output (coinbase hash/pot/levy notes, Flow pays, dummy value-0 notes) carries a ristretto point `P` on the vout as `admitPub`. Notes stay Pedersen `C = v·G + r·H` plus Ed25519 spend sig; Admit rings `P`, not `C`.
+
+Wallet spend seed is the 32-byte Ed25519 seed. Coinbase and Flow use the same map — not a test-only function.
+
+```
+x_base = hashToScalar("shear-admit-x-v1" || "base" || spend_seed)
+B      = x_base · G
+delta  = hashToScalar("shear-admit-x-v1" || "note" || noteCommit || C || kind)
+x      = x_base + delta
+P      = B + delta·G = x · G
+```
+
+`B` travels in the payable dest: `ssa` payload is `dest20 || B` (52 bytes). `hash20FromAddress` still reads the first 20 bytes. Wallet Copy dest exports this dest so mining income enters J and is later spendable under Admit. Dummy outs pick a fresh `x`, publish `P`, and drop `x` (value 0).
+
+`verifyBlock` and mempool `queueTx` call `admit_verify` against the **complete** live fluxset (every `admitPub` in appearance order on the sealed chain). A sampled subset is the wrong ring (`r.length !== |J|`). Missing `admit_proof` fails. A repeated `spendTag` fails. Fail reason is `admit` (or `confidential` when the Pedersen kernel fails).
+
+J is append-only: spent notes stay in J because Admit does not reveal which flowline moved. Double-spend is a repeated `spendTag`. Reorgs rebuild J and spent tags from the sealed chain. `jroot` is committed on the coinbase (`txs[0].jroot`), not the 128-byte header (ShearK 1.6 job template stays 128 bytes).
+
+Reserve lock / vote / withdraw stay typed. Vault dest stays. Admit is not required to delete the vault. Dummy outs enter J as value-0 notes. Curve Trees (Campanelli, Hall-Andersen, Kamp, USENIX Security 23 / ePrint 2022/756) remain the named later accumulator; AdmitV2 is a breaking statement change.
+
 ## Auth
 
 Shear spend-key / EIP-712 intent. Do not write "SA+L" unless that composition is actually used.

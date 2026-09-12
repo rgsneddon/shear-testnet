@@ -3,7 +3,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { MAGIC_TESTNET, GENESIS_BITS, PRODUCT_VERSION, HASH_BONUS_NANOS, INTEREST_DENOM_DAYS } from '../../crypto/asert.js';
+import {
+  MAGIC_TESTNET,
+  MAGIC_MAINNET,
+  GENESIS_BITS,
+  PRODUCT_VERSION,
+  HASH_BONUS_NANOS,
+  INTEREST_DENOM_DAYS,
+  HASH_TX_LIVE,
+  GENESIS_MAINNET,
+  GENESIS_MAINNET_MS,
+  mainnetMayEmit,
+  mainnetFingerprint,
+  consensusFingerprint,
+} from '../../crypto/asert.js';
 import { CLIENT, ALGO, HEADER_LEN } from '../../crypto/shear_hash.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_DAYS, RESERVE_JOIN_CUTOFF_DAYS } from '../../crypto/asert.js';
 import { extraMintAllowed } from '../../crypto/mint.js';
@@ -43,6 +56,11 @@ export function printConfig() {
     vorticeCreatorsHostOwnDapps: true,
     extraMintThirdParty: extraMintAllowed('third-party-vortice'),
     mainnet: false,
+    hashTxLive: HASH_TX_LIVE,
+    admit: 'AdmitV1',
+    genesisMainnet: GENESIS_MAINNET,
+    mainnetFingerprint: mainnetFingerprint(),
+    bookLawFingerprint: consensusFingerprint(),
   };
 }
 
@@ -51,14 +69,29 @@ export { createP2p, P2P_PORT, createStore, createRpc, RPC_PORT, mintVorticeDeplo
 export const DEFAULT_SEEDS = ['p2p.shear.digital:30303', '46.224.132.83:30303'];
 
 export async function startNode({
-  dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v2'),
+  dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v3'),
   p2pPort = Number(process.env.SHEAR_P2P_PORT || P2P_PORT),
   p2pBind = process.env.SHEAR_P2P_BIND || '0.0.0.0',
   rpcPort = Number(process.env.SHEAR_RPC_PORT || RPC_PORT),
   rpcBind = process.env.SHEAR_RPC_BIND || '127.0.0.1',
   seeds = (process.env.SHEAR_SEEDS || '').split(',').map((s) => s.trim()).filter(Boolean),
   fluffDelayMs = null,
+  network = process.env.SHEAR_NETWORK || MAGIC_TESTNET,
 } = {}) {
+  const mainnet = String(network) === MAGIC_MAINNET;
+  if (mainnet && !mainnetMayEmit()) {
+    return {
+      store: null,
+      p2p: null,
+      rpc: null,
+      magic: MAGIC_MAINNET,
+      mainnet: true,
+      emit: false,
+      genesis: GENESIS_MAINNET,
+      phaseBGate: PHASE_B_GATE,
+      hashTxLive: HASH_TX_LIVE,
+    };
+  }
   fs.mkdirSync(dataDir, { recursive: true });
   const store = createStore(dataDir);
   store.reserveVault = store.reserveVault || emptyVault();
@@ -77,7 +110,14 @@ export async function startNode({
     clearInterval(seedTimer);
     origClose();
   };
-  return { store, p2p, rpc, bound, rpcBound, magic: MAGIC_TESTNET, mainnet: false, phaseBGate: PHASE_B_GATE };
+  return {
+    store, p2p, rpc, bound, rpcBound,
+    magic: MAGIC_TESTNET,
+    mainnet: false,
+    emit: true,
+    phaseBGate: PHASE_B_GATE,
+    hashTxLive: HASH_TX_LIVE,
+  };
 }
 
 async function main() {
@@ -88,7 +128,21 @@ async function main() {
   const started = await startNode({
     seeds: (process.env.SHEAR_SEEDS || DEFAULT_SEEDS.join(',')).split(',').map((s) => s.trim()).filter(Boolean),
   });
+  if (started.emit === false) {
+    console.log(JSON.stringify({
+      ok: true,
+      magic: started.magic,
+      emit: false,
+      reason: 'clock_wait',
+      genesis: started.genesis,
+      hashTxLive: HASH_TX_LIVE,
+      admit: 'AdmitV1',
+      mainnet: true,
+    }));
+    return;
+  }
   const tip = started.store.tip();
+  const live = typeof started.store.fluxset === 'function' ? started.store.fluxset() : null;
   console.log(JSON.stringify({
     ok: true,
     p2p: started.bound.port,
@@ -99,6 +153,10 @@ async function main() {
     height: tip?.height || 0,
     hash: tip ? Buffer.from(tip.hash).toString('hex') : '',
     mainnet: false,
+    emit: true,
+    hashTxLive: HASH_TX_LIVE,
+    admit: 'AdmitV1',
+    jroot: live?.jroot ? Buffer.from(live.jroot).toString('hex') : '',
   }));
 }
 

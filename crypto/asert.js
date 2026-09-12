@@ -48,6 +48,9 @@ export const MAGIC_TESTNET_V3 = 'shear-testnet-v3';
 /** Privacy-class book on this branch. v2 stays frozen off this tree. */
 export const MAGIC_TESTNET = MAGIC_TESTNET_V3;
 export const MAGIC_MAINNET = 'shear-v1';
+/** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
+export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
+export const GENESIS_MAINNET_MS = Date.parse(GENESIS_MAINNET);
 export const HASH_FN = 'ShearHash-v3';
 export const RX_SALT = 'ShearHash-v3/rx';
 export const RX_ARGON_MEMORY = 131072;
@@ -176,6 +179,15 @@ export function consensusFingerprint() {
   ].join(':');
 }
 
+/** Mainnet book: same privacy-class law, NETWORK=shear-v1 + frozen genesis. */
+export function mainnetFingerprint() {
+  return `${consensusFingerprint().replace(`NETWORK=${MAGIC_TESTNET}`, `NETWORK=${MAGIC_MAINNET}`)}:GENESIS=${GENESIS_MAINNET}`;
+}
+
+export function mainnetMayEmit(nowMs = Date.now()) {
+  return Number(nowMs) >= GENESIS_MAINNET_MS;
+}
+
 export function consensusLaw() {
   return {
     bookLawId: BOOK_LAW_ID,
@@ -207,6 +219,8 @@ export function consensusLaw() {
     shearkMinerVersion: SHEARK_MINER_VERSION,
     magicTestnet: MAGIC_TESTNET,
     magicTestnetV1: MAGIC_TESTNET_V1,
+    genesisMainnet: GENESIS_MAINNET,
+    mainnetFingerprint: mainnetFingerprint(),
   };
 }
 /** Reserve may mint interest. Extra mint is Reserve-only. */

@@ -35,6 +35,8 @@
     .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; margin:0; }
     .value { font-size:.9rem; font-weight:650; margin:0; color:var(--cyan); }
     h1, h2 { margin: 0 0 8px; }
+    .mine-steps { margin: 0 0 10px; padding-left: 1.2rem; color: var(--ink); }
+    .mine-steps li { margin: 0 0 4px; }
     #stat-grid .panel-card {
       display: flex;
       flex-direction: column;
@@ -289,7 +291,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.6" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.30" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.31" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -312,11 +314,20 @@
         <p class="pulse" id="live-pulse">live · testnet</p>
       </section>
       <section class="panel-card">
-        <h2>GET YOUR MINER COMMAND LINE</h2>
-        <p>Mine at <code style="display:inline">pool.shear.digital:1111</code>.</p>
+        <h2>Start mining</h2>
+        <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v3</code> · ShearHash-v3.</p>
+        <ol class="mine-steps">
+          <li>Wallet → <strong>Copy dest</strong> (<code>ssa1</code> mailbox).</li>
+          <li>Paste dest and a worker name. Pick CPU threads.</li>
+          <li>Copy the command. Hash bonuses land on that dest next block. No withdraw for units.</li>
+        </ol>
         <p>
-          <label class="label" for="addr">To (ssa1 dest)</label><br/>
+          <label class="label" for="addr">Copy dest (<code>ssa1</code>)</label><br/>
           <input id="addr" type="text" placeholder="ssa1…" autocomplete="off" spellcheck="false"/>
+        </p>
+        <p>
+          <label class="label" for="worker">Worker name</label><br/>
+          <input id="worker" type="text" placeholder="rig1" autocomplete="off" spellcheck="false"/>
         </p>
         <p>
           <label class="label" for="threads">CPU threads</label><br/>
@@ -324,9 +335,9 @@
         </p>
         <div class="cmd-row">
           <pre id="mine-cmd">ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --threads 4</pre>
-          <button type="button" id="copy-cmd">Copy</button>
+          <button type="button" id="copy-cmd">Copy command</button>
         </div>
-        <p class="label" id="cmd-hint">Default login is Copy dest as ssa1.worker. Paste the dest the wallet exported. Rest-frame shear1 stays off stratum.</p>
+        <p class="label" id="cmd-hint">Login is the dest the wallet exported as <code>ssa1.worker</code>. <code>she1</code> without dest is unpaid. Never <code>shear1</code>.</p>
         <p class="label" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
       </section>
     </div>
@@ -424,17 +435,23 @@
   <script>
     function renderCmd() {
       const addr = (document.getElementById('addr').value || '').trim();
+      const worker = (document.getElementById('worker').value || '').trim() || 'worker';
       const t = Math.max(1, Number(document.getElementById('threads').value) || 4);
-      const user = addr ? (addr.indexOf('.') >= 0 ? addr : addr + '.worker') : 'YOUR_SSA1.worker';
+      let user = 'YOUR_SSA1.worker';
+      if (addr) {
+        const w = worker.replace(/[^a-zA-Z0-9_-]/g, '') || 'worker';
+        user = addr.indexOf('.') >= 0 ? addr : addr + '.' + w;
+      }
       document.getElementById('mine-cmd').textContent =
         'ShearK-Miner --pool pool.shear.digital:1111 --user ' + user + ' --threads ' + t;
-      const ok = /^(she1|ssa1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,80}$/i.test(addr)
-        && !/^shear1/i.test(addr);
+      const ok = /^ssa1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,200}$/i.test(addr)
+        && !/^shear1/i.test(addr) && !/^she1/i.test(addr);
       document.getElementById('cmd-hint').textContent = ok
-        ? 'Ready to copy · ShearHash-v3 · :1111'
-        : 'Paste Copy dest (ssa1). Default login is ssa1.worker.';
+        ? 'Ready to copy · ShearHash-v3 · shear-testnet-v3 · :1111'
+        : 'Paste Copy dest (ssa1). Login is ssa1.worker.';
     }
     document.getElementById('addr').addEventListener('input', renderCmd);
+    document.getElementById('worker').addEventListener('input', renderCmd);
     document.getElementById('threads').addEventListener('input', renderCmd);
     document.getElementById('copy-cmd').addEventListener('click', function () {
       navigator.clipboard.writeText(document.getElementById('mine-cmd').textContent);
