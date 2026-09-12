@@ -35,7 +35,9 @@ export function noteCommitOfShare(share) {
   if (share?.noteCommit && Buffer.from(share.noteCommit).length === 32) {
     return Buffer.from(share.noteCommit);
   }
-  return noteCommitOfDest20(dest20OfShare(share));
+  const d20 = dest20OfShare(share);
+  if (!d20 || d20.equals(Buffer.alloc(20))) return Buffer.alloc(0);
+  return noteCommitOfDest20(d20);
 }
 
 export function destOfShare(share) {
@@ -108,8 +110,18 @@ export function verifyShareBatch({
     if (seenNonce.has(nk)) return { ok: false, reason: 'dup_share' };
     seenNonce.add(nk);
     const dest = destOfShare(s);
-    if (!isDestAddress(dest) || bech32Hrp(dest) !== DEST_HRP) {
+    if (dest) {
+      if (!isDestAddress(dest) || bech32Hrp(dest) !== DEST_HRP) {
+        return { ok: false, reason: 'miner_addr' };
+      }
+    }
+    const nc = noteCommitOfShare(s);
+    if (!nc || Buffer.from(nc).length !== 32 || Buffer.from(nc).equals(Buffer.alloc(32))) {
       return { ok: false, reason: 'miner_addr' };
+    }
+    if (dest) {
+      const expect = noteCommitOfDest20(dest20OfShare({ ...s, dest }));
+      if (!Buffer.from(nc).equals(expect)) return { ok: false, reason: 'hash_bonus' };
     }
     const header = setNonce(job, nonce);
     const hash = shearHash(header);
@@ -117,9 +129,9 @@ export function verifyShareBatch({
       return { ok: false, reason: 'share_pow' };
     }
     proven.push({
-      dest20: dest20OfShare({ ...s, dest }),
-      dest,
-      noteCommit: noteCommitOfShare({ ...s, dest }),
+      dest20: dest ? dest20OfShare({ ...s, dest }) : Buffer.alloc(20),
+      dest: dest || '',
+      noteCommit: Buffer.from(nc),
       nonce,
       lz: leadingZeroBits(hash) & 0xff,
       units: unitsForShare(),

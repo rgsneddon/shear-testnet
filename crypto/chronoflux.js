@@ -163,6 +163,7 @@ export function sealedExplorerRows(block) {
         confirmed: true,
         memo: !!(tx.memoCt || o.memoCt),
         memoCt: tx.memoCt || o.memoCt,
+        noteCommit: o.noteCommit,
       });
     }
     const fee = Math.floor(Number(tx.fee || 0));
@@ -265,9 +266,11 @@ const RESERVE_VOUT_KINDS = new Set(['lock', 'vote', 'withdraw', 'reserve-fee']);
 
 function compactVout(o) {
   if (!o) return o;
+  const kind = o.kind || 'pot';
+  const keepDest = kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'vortice-register';
   if (o.commit) {
     const row = {
-      kind: o.kind || 'pot',
+      kind,
       noteCommit: o.noteCommit,
       commit: o.commit,
       valueProof: o.valueProof,
@@ -275,15 +278,11 @@ function compactVout(o) {
     if (o.rangeProof) row.rangeProof = o.rangeProof;
     if (o.viewTag) row.viewTag = o.viewTag;
     if (o.memo) row.memo = true;
-    // One-time dest / vault dest stays as the note mailbox; nanos stay off the row.
-    if (o.address) row.address = o.address;
+    if (keepDest && o.address) row.address = o.address;
     return row;
   }
-  const row = {
-    address: o.address,
-    nanos: Number(o.nanos || 0),
-    kind: o.kind || 'pot',
-  };
+  const row = { kind };
+  if (keepDest && o.address) row.address = o.address;
   if (o.memo) row.memo = true;
   return row;
 }
@@ -303,18 +302,33 @@ export function compactTx(tx) {
   }
   const out = compactValue(tx);
   delete out.samples;
+  const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+  const keepDest = kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'vortice-register';
+  if (!keepDest) {
+    delete out.nanos;
+    delete out.changeNanos;
+    delete out.amount;
+    delete out.from;
+    delete out.to;
+  }
   if (tx.vin) {
-    out.vin = (tx.vin || []).map((v) => compactValue({
-      address: v.address,
-      prev: v.prev,
-      index: v.index,
-      coinbase: v.coinbase,
-      height: v.height,
-    }));
+    out.vin = (tx.vin || []).map((v) => {
+      const row = compactValue({
+        prev: v.prev,
+        index: v.index,
+        coinbase: v.coinbase,
+        height: v.height,
+        commit: v.commit,
+        noteCommit: v.noteCommit,
+      });
+      if (keepDest && v.address) row.address = v.address;
+      return row;
+    });
   }
   if (tx.vout) out.vout = (tx.vout || []).map(compactVout);
   if (tx.sig) out.sig = tx.sig;
   if (tx.signature && !out.sig) out.sig = tx.signature;
+  if (tx.spendPub) out.spendPub = tx.spendPub;
   if (tx.memoCt || tx.memo) out.memo = true;
   return out;
 }
@@ -333,7 +347,10 @@ export function compactChainBlock(block) {
     samplesPruned,
     bLeavesPruned,
     samples: samplesPruned ? [] : collateSamples(block.samples || []),
-    aLeaves: Array.isArray(block.aLeaves) ? block.aLeaves : [],
+    aLeaves: (Array.isArray(block.aLeaves) ? block.aLeaves : []).map((l) => ({
+      noteCommit: l.noteCommit,
+      count: Number(l.count) || 0,
+    })),
     bLeaves: bLeavesPruned ? [] : (Array.isArray(block.bLeaves) ? block.bLeaves : []),
     rootA: block.rootA,
     rootB: block.rootB,

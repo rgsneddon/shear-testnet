@@ -49,6 +49,7 @@ import {
   sealCoinbaseNote,
   verifySealedNote,
   verifyMintSum,
+  verifyRange,
   excessOf,
   noteCommitOfDest20,
 } from '../../crypto/note.js';
@@ -102,7 +103,9 @@ export function digestTx(tx) {
   const vins = (tx.vin || []).map((v, i) => ({
     prev: v.prev ? Buffer.from(v.prev) : Buffer.alloc(32),
     index: Number(v.index || i),
-    dest20: dest20Of(v.address || ''),
+    dest20: v.noteCommit && Buffer.from(v.noteCommit).length === 32
+      ? Buffer.from(v.noteCommit).subarray(0, 20)
+      : Buffer.alloc(20),
   }));
   const vouts = (tx.vout || []).map((o) => ({
     dest20: o.noteCommit && Buffer.from(o.noteCommit).length === 32
@@ -184,33 +187,61 @@ export function hashBonusByMiner(samples = [], unit = HASH_BONUS_NANOS, shareBat
   return by;
 }
 
-/** PROP of (pot - pool fee) across dest20 in shareBatch. Pool dest gets only the fee. */
-export function potSharesFromBatch(shareBatch = [], poolDest = null) {
+function ncHex(buf) {
+  try {
+    return Buffer.from(buf || []).toString('hex');
+  } catch {
+    return '';
+  }
+}
+
+/** PROP of (pot − pool fee) across Tree-A note_commits. Pool note gets only the fee. */
+export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null) {
   const pool = poolDest && isDestAddress(poolDest) ? poolDest : '';
-  const fee = pool ? Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000) : 0;
+  const poolNc = pool ? noteCommitOfDest20(hash20FromAddress(pool)).toString('hex') : '';
+  const fee = feeNanos != null
+    ? Math.max(0, Math.floor(Number(feeNanos) || 0))
+    : (poolNc ? Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000) : 0);
   const rest = BLOCK_SUBSIDY_NANOS - fee;
-  const units = collateShareUnits(shareBatch);
-  const total = [...units.values()].reduce((a, n) => a + n, 0);
+  const list = (leaves || []).map((l) => ({
+    noteCommit: Buffer.from(l.noteCommit || []),
+    count: Number(l.count) || 0,
+  })).filter((l) => l.noteCommit.length === 32 && l.count > 0);
+  const total = list.reduce((a, l) => a + l.count, 0);
   const out = [];
-  if (!total) {
-    return out;
-  }
+  if (!total) return out;
   let paid = 0;
-  const dests = [...units.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  for (let i = 0; i < dests.length; i += 1) {
-    const [addr, n] = dests[i];
-    let nanos;
-    if (i === dests.length - 1) nanos = rest - paid;
-    else nanos = Math.floor(rest * n / total);
+  const sorted = [...list].sort((a, b) => ncHex(a.noteCommit).localeCompare(ncHex(b.noteCommit)));
+  for (let i = 0; i < sorted.length; i += 1) {
+    const nanos = i === sorted.length - 1 ? rest - paid : Math.floor(rest * sorted[i].count / total);
     paid += nanos;
-    if (nanos > 0) out.push({ address: addr, nanos, kind: 'pot' });
+    if (nanos > 0) out.push({ noteCommit: sorted[i].noteCommit, nanos, kind: 'pot' });
   }
-  if (pool && fee > 0) {
-    const existing = out.find((s) => s.address === pool);
+  if (poolNc && fee > 0) {
+    const existing = out.find((s) => ncHex(s.noteCommit) === poolNc);
     if (existing) existing.nanos += fee;
-    else out.push({ address: pool, nanos: fee, kind: 'pot' });
+    else out.push({ noteCommit: noteCommitOfDest20(hash20FromAddress(pool)), nanos: fee, kind: 'pot' });
   }
   return out.filter((s) => s.nanos > 0);
+}
+
+/** PROP of (pot - pool fee) across dest20 in shareBatch. Pool dest gets only the fee. */
+export function potSharesFromBatch(shareBatch = [], poolDest = null) {
+  const leaves = aLeavesFromShares(shareBatch);
+  const pays = potPaysFromLeaves(leaves, poolDest);
+  const destByNc = new Map();
+  for (const s of shareBatch || []) {
+    const dest = destOfShare(s);
+    const nc = ncHex(noteCommitOfShare(s));
+    if (dest && nc) destByNc.set(nc, dest);
+  }
+  if (poolDest && isDestAddress(poolDest)) {
+    destByNc.set(noteCommitOfDest20(hash20FromAddress(poolDest)).toString('hex'), poolDest);
+  }
+  return pays.map((p) => ({
+    ...p,
+    address: destByNc.get(ncHex(p.noteCommit)) || '',
+  })).filter((s) => s.nanos > 0);
 }
 
 export function lag1Continuity(prevHeader) {
@@ -491,29 +522,64 @@ function verifyBlockConsensus(block, prev, {
     }
     if (confidential) {
       const wantBonus = provenUnits * liveUnit;
-      const paid = new Map();
-      for (const o of hashVouts) {
-        const key = Buffer.from(o.noteCommit || []).toString('hex');
-        paid.set(key, (paid.get(key) || 0) + 1);
+      const leaves = shareLeaves || aLeavesFromShares(shareBatch);
+      const hasherNcs = new Set(leaves.map((l) => ncHex(l.noteCommit)));
+      for (const leaf of leaves) {
+        const nc = ncHex(leaf.noteCommit);
+        const hit = hashVouts.find((o) => ncHex(o.noteCommit) === nc);
+        if (!hit || !verifySealedNote(hit, leaf.count * liveUnit)) {
+          return { ok: false, reason: 'hash_bonus' };
+        }
       }
-      for (const [dest, units] of provenByDest) {
-        const nc = noteCommitOfDest20(hash20FromAddress(dest) || Buffer.alloc(20)).toString('hex');
-        const hit = hashVouts.find((o) => Buffer.from(o.noteCommit || []).toString('hex') === nc);
-        if (!hit || !verifySealedNote(hit, units * liveUnit)) return { ok: false, reason: 'hash_bonus' };
-      }
       for (const o of hashVouts) {
-        const nc = Buffer.from(o.noteCommit || []).toString('hex');
-        const destHit = [...provenByDest.keys()].some((d) => (
-          noteCommitOfDest20(hash20FromAddress(d) || Buffer.alloc(20)).toString('hex') === nc
-        ));
-        if (!destHit) return { ok: false, reason: 'hash_bonus' };
+        if (!hasherNcs.has(ncHex(o.noteCommit))) return { ok: false, reason: 'hash_bonus' };
       }
       bonusNanos = wantBonus;
+      const feeAmt = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
+      const poolPay = poolDest && isDestAddress(poolDest) ? poolDest : '';
+      if (hasherNcs.size) {
+        const extra = potVouts.filter((o) => !hasherNcs.has(ncHex(o.noteCommit)));
+        for (const o of extra) {
+          if (verifySealedNote(o, BLOCK_SUBSIDY_NANOS)) {
+            return { ok: false, reason: 'pot_prop' };
+          }
+        }
+        const candidates = [];
+        if (poolPay) candidates.push(potPaysFromLeaves(leaves, poolPay));
+        candidates.push(potPaysFromLeaves(leaves, null, extra.length ? feeAmt : 0));
+        if (extra.length) candidates.push(potPaysFromLeaves(leaves, null, 0));
+        if (!extra.length && feeAmt > 0) {
+          const base = potPaysFromLeaves(leaves, null, feeAmt);
+          for (let i = 0; i < base.length; i += 1) {
+            candidates.push(base.map((p, j) => (j === i ? { ...p, nanos: p.nanos + feeAmt } : p)));
+          }
+        }
+        let matched = false;
+        for (const pays of candidates) {
+          let okTry = true;
+          for (const pay of pays) {
+            const hit = potVouts.find((o) => ncHex(o.noteCommit) === ncHex(pay.noteCommit));
+            if (!hit || !verifySealedNote(hit, pay.nanos)) {
+              okTry = false;
+              break;
+            }
+          }
+          if (!okTry) continue;
+          const extraOk = extra.length === 0
+            || (extra.length === 1 && verifySealedNote(extra[0], feeAmt));
+          if (!extraOk) continue;
+          const covered = new Set(pays.map((p) => ncHex(p.noteCommit)));
+          if (extra.length === 1) covered.add(ncHex(extra[0].noteCommit));
+          if (potVouts.some((o) => !covered.has(ncHex(o.noteCommit)))) continue;
+          matched = true;
+          break;
+        }
+        if (!matched) return { ok: false, reason: 'pot_prop' };
+      }
       const T = BLOCK_SUBSIDY_NANOS + wantBonus;
       const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
       if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       potNanos = BLOCK_SUBSIDY_NANOS;
-      void paid;
     } else {
       potNanos = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
       bonusNanos = hashVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
@@ -629,8 +695,23 @@ function verifyBlockConsensus(block, prev, {
     if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
       return { ok: false, reason: 'dummy_outs' };
     }
-    if (flowNeedsDummy(tx) && (tx.vout || []).some((o) => !o?.commit)) {
-      return { ok: false, reason: 'confidential' };
+    if (flowNeedsDummy(tx)) {
+      for (const o of (tx.vout || [])) {
+        if (!o?.commit) return { ok: false, reason: 'confidential' };
+        if (!o.rangeProof || !verifyRange(o.commit, o.rangeProof)) {
+          return { ok: false, reason: 'confidential' };
+        }
+      }
+      const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
+      if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
+      const excess = tx.excess || excessOf(tx.vout);
+      if (!excess) return { ok: false, reason: 'confidential' };
+      const claimed = Math.floor(Number(tx.nanos || 0));
+      const change = Math.floor(Number(tx.changeNanos || 0));
+      const total = claimed + change;
+      if (total > 0 && !verifyMintSum(tx.vout, total, excess)) {
+        return { ok: false, reason: 'confidential' };
+      }
     }
     if ((unfunded || tx.mint) && String(tx.programId || '') === RESERVE_PROGRAM && String(tx.kind || '') === 'withdraw') {
       const bps = Number(committedBps ?? reserveState?.epochBps ?? GENESIS_BPS);

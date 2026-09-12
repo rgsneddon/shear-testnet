@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { newIdentity } from './address.js';
 import { destForLogin, vaultDest } from './flow_sheet.js';
 import { lockTx, voteTx } from './reserve_vault.js';
-import { verifySealedNote } from './note.js';
+import { verifySealedNote, verifyRange, verifyMintSum } from './note.js';
 import {
   DUMMY_KIND,
   attachDummyOuts,
@@ -12,6 +12,7 @@ import {
   publicExplorerRow,
   viewTagOf,
 } from './dummy.js';
+import { compactTx } from './chronoflux.js';
 import { PI_SHE_NANOS } from './asert.js';
 
 describe('Flow dummy outs', () => {
@@ -24,6 +25,7 @@ describe('Flow dummy outs', () => {
       from,
       to,
       nanos: 10,
+      vin: [{ address: from }],
       vout: [{ address: to, nanos: 10, kind: 'send' }],
     });
     assert.equal(flowNeedsDummy(send), true);
@@ -31,9 +33,15 @@ describe('Flow dummy outs', () => {
     assert.ok(send.vout[0].commit);
     assert.equal(send.vout[0].nanos, undefined);
     assert.equal(verifySealedNote(send.vout[0], 10), true);
+    assert.ok(send.vout[0].rangeProof);
+    assert.equal(verifyRange(send.vout[0].commit, send.vout[0].rangeProof), true);
     const dummy = send.vout.find((o) => o.kind === DUMMY_KIND);
     assert.ok(dummy.commit);
     assert.equal(verifySealedNote(dummy, 0), true);
+    assert.ok(dummy.rangeProof);
+    assert.equal(verifyRange(dummy.commit, dummy.rangeProof), true);
+    const stripped = { ...send.vout[0], rangeProof: { bits: [], B: [] } };
+    assert.equal(verifyRange(stripped.commit, stripped.rangeProof), false);
     assert.equal(dummy.viewTag[0], viewTagOf(dummy.noteCommit)[0]);
     assert.equal(dummy.address, undefined);
 
@@ -44,6 +52,18 @@ describe('Flow dummy outs', () => {
     const vote = voteTx({ from, dest: vault, choice: 'hold', id: 'vote-d' });
     assert.equal(flowNeedsDummy(vote), false);
     assert.equal(dummyCount(attachDummyOuts(vote)), 0);
+
+    assert.ok(send.excess);
+    assert.equal(verifyMintSum(send.vout, 10, send.excess), true);
+    const compact = compactTx(send);
+    assert.equal(compact.nanos, undefined);
+    assert.equal(compact.from, undefined);
+    assert.equal(compact.to, undefined);
+    assert.equal(compact.vout[0].address, undefined);
+    assert.equal(compact.vin[0].address, undefined);
+    assert.ok(compact.vout[0].commit);
+    assert.ok(compact.vout[0].rangeProof);
+    assert.ok(compact.excess);
   });
 
   it('public explorer row hides amounts and keeps Reserve kind + dest', () => {

@@ -2,7 +2,7 @@
  * Flow dummy outs + view tags. Reserve kinds stay typed; vault is not dummy-deleted.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { sealNote, verifySealedNote } from './note.js';
+import { sealNote, verifySealedNote, excessOf } from './note.js';
 import { hash20FromAddress } from './address.js';
 
 export const DUMMY_KIND = 'dummy';
@@ -70,6 +70,8 @@ export function attachDummyOuts(tx, { fanout = DUMMY_FANOUT } = {}) {
   for (const o of out.vout) {
     if (o?.noteCommit && !o.viewTag) o.viewTag = viewTagOf(o.noteCommit);
   }
+  const excess = excessOf(out.vout);
+  if (excess) out.excess = excess;
   return out;
 }
 

@@ -218,4 +218,30 @@ describe('verifyBlock Phase B Flow levy', () => {
     const fork = await store.verifyFork(store.blocks);
     assert.equal(fork.ok, true, fork.reason);
   });
+
+  it('Flow send without a range proof is confidential', () => {
+    const dest = freshStealthDest(newIdentity().paymentCode).dest;
+    const send = attachDummyOuts({
+      id: 'no-range',
+      kind: 'send',
+      from: dest,
+      to: dest,
+      nanos: 2,
+      fee: levyNanos(2),
+      vin: [{ address: dest }],
+      vout: [{ address: dest, nanos: 2, kind: 'send' }],
+    });
+    for (const o of send.vout) delete o.rangeProof;
+    const block = mine(buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: dest,
+      bits: 4,
+      now: Date.now(),
+      txs: [send],
+    }));
+    const got = verifyBlock(block, null);
+    assert.equal(got.ok, false);
+    assert.equal(got.reason, 'confidential');
+  });
 });

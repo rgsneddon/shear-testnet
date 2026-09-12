@@ -22,7 +22,8 @@ import {
 import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
-import { reviveBytes } from '../../crypto/note.js';
+import { reviveBytes, noteCommitOfDest20 } from '../../crypto/note.js';
+import { hash20FromAddress } from '../../crypto/address.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
 import { emptyVault, applyReserveBlock, verifyReservePayout } from '../../crypto/reserve_vault.js';
@@ -518,16 +519,17 @@ export function createStore(dir, {
   function completeAppend(check, block) {
     if (!check.ok) return check;
     const prev = tip();
-    const stored = leanBlock({
+    const full = {
       ...block,
       magic: MAGIC_TESTNET,
       hash: check.hash,
       height: prev ? prev.height + 1 : 1,
       weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
-    });
+    };
+    indexSealed(full);
+    const stored = leanBlock(full);
     blocks.push(stored);
     persist(stored);
-    indexSealed(stored);
     rememberHeaders([stored], 'active');
     {
       const sealedIds = new Set((stored.txs || []).map((t) => String(t.id || '')));
@@ -613,14 +615,9 @@ export function createStore(dir, {
     }
     const pay = verifyReservePayout(reserveVault, tx);
     if (!pay.ok) return pay;
-    const sealed = compactTx(tx);
-    const got = admitMempool(book, sealed, { baseFee: base });
+    const got = admitMempool(book, tx, { baseFee: base });
     if (got.ok && got.tx && !got.duplicate) {
-      const persist = compactTx(got.tx);
-      const idx = mempool.lastIndexOf(got.tx);
-      if (idx >= 0) mempool[idx] = persist;
-      emit('tx', persist);
-      return { ...got, tx: persist };
+      emit('tx', got.tx);
     }
     return got;
   }
@@ -777,7 +774,18 @@ export function createStore(dir, {
 
   function historyFor(address) {
     const addr = String(address || '').trim();
-    return explorer.filter((r) => r.to === addr || r.from === addr);
+    const h20 = hash20FromAddress(addr);
+    const wantNc = h20 ? noteCommitOfDest20(h20) : null;
+    return explorer.filter((r) => {
+      if (r.to === addr || r.from === addr) return true;
+      if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc)) return true;
+      return false;
+    }).map((r) => {
+      if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc) && !r.to) {
+        return { ...r, to: addr };
+      }
+      return r;
+    });
   }
 
   function spendableNanos(address) {

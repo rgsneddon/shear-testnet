@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { isDestAddress, isPaymentCode, isShearAddress, payoutDest, isFullPaymentCode, checkAddressField } from '../../crypto/address.js';
+import { isDestAddress, isPaymentCode, isShearAddress, payoutDest, isFullPaymentCode, checkAddressField, hash20FromAddress } from '../../crypto/address.js';
 import { walletSubmitLog, newConnId, lineJoinsIpToIdentity } from '../../crypto/privacy_net.js';
 import {
   HASH_BONUS_NANOS,
@@ -28,6 +28,7 @@ import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout } from '../../crypto/coinbase_notes.js';
+import { noteCommitOfDest20 } from '../../crypto/note.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -177,7 +178,18 @@ export function reconstructOwner(store, address) {
     }
   } else {
     for (const b of store.blocks || []) {
-      for (const r of sealedExplorerRows(b)) push(r);
+      for (const r of sealedExplorerRows(b)) {
+        if (!r.to && r.noteCommit) {
+          for (const d of dests) {
+            const h = hash20FromAddress(d);
+            if (h && Buffer.from(r.noteCommit).equals(noteCommitOfDest20(h))) {
+              r.to = d;
+              break;
+            }
+          }
+        }
+        push(r);
+      }
     }
   }
   const tipH = Number(store?.tip?.()?.height || (store.blocks || []).at(-1)?.height || 0);
@@ -245,15 +257,9 @@ function blockAtMs(block) {
 
 /** One row per sealed block. Pending until consensus_spendable (6), not ui_seen. */
 function confirmedBlockRow(b, tipH) {
-  const rows = sealedExplorerRows(b);
-  const nanos = rows
-    .filter((r) => r.from === 'coinbase' || r.kind === 'coinbase' || r.kind === 'hash')
-    .reduce((a, r) => a + Number(r.nanos || 0), 0);
   const hid = Buffer.isBuffer(b?.hash)
     ? b.hash.toString('hex')
     : String(b?.hash || b?.height || '');
-  const rawTo = String(b?.miner || rows.find((r) => r.to)?.to || '');
-  const dest = isShearAddress(rawTo) ? '' : (isDestAddress(rawTo) ? rawTo : '');
   const height = Number(b?.height || 0);
   const confs = flowConfirmations(height, tipH);
   const pending = !isSpendableHeight(height, tipH, SPENDABLE_CONFIRMATIONS);
@@ -261,8 +267,8 @@ function confirmedBlockRow(b, tipH) {
     id: hid,
     kind: 'block',
     from: 'coinbase',
-    to: dest,
-    amount: nanosToShe(nanos),
+    to: '',
+    amountHidden: true,
     asset: 'SHE',
     height,
     confirmations: confs,
@@ -355,22 +361,19 @@ export function sealedReservePaint(store) {
 /** Public explorer/stats row: kind + dest + amount + status. No she1, memo-plain, IP. */
 export function publicSurfaceRow(t) {
   const kind = String(t?.kind || 'send');
-  const to = publicPaintDest(t?.to);
-  const from = String(t?.from || '') === 'coinbase' ? 'coinbase' : publicPaintDest(t?.from);
-  const amount = t?.amount != null ? t.amount : nanosToShe(t?.nanos);
+  const keepDest = kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'vortice-register';
   const pending = t?.pending === true || t?.status === 'pending' || t?.status === '(pending)';
   const row = {
     id: String(t?.id || ''),
     kind,
-    from,
-    to,
-    amount,
+    from: String(t?.from || '') === 'coinbase' ? 'coinbase' : (keepDest ? publicPaintDest(t?.from) : ''),
+    to: keepDest ? publicPaintDest(t?.to) : '',
+    amountHidden: true,
     height: Number(t?.height || 0),
     confirmations: Number(t?.confirmations || 0),
     pending,
     status: pending ? 'pending' : String(t?.status || 'confirmed'),
   };
-  if (t?.nanos != null) row.nanos = Math.floor(Number(t.nanos) || 0);
   if (t?.confirmations != null) row.confirmations = Number(t.confirmations) || 0;
   if (t?.at != null) row.at = t.at;
   return row;
@@ -481,13 +484,17 @@ export function publicBlockDetail(store, id) {
     bits: hdr.bits,
     nonce: String(hdr.nonce),
   } : null;
-  const outputs = sealedExplorerRows(b).map((r) => ({
-    kind: r.kind || 'block',
-    from: r.from === 'coinbase' ? 'coinbase' : publicDest(r.from),
-    to: publicDest(r.to),
-    amount: nanosToShe(r.nanos),
-    memo: r.memo === true,
-  }));
+  const outputs = sealedExplorerRows(b).map((r) => {
+    const kind = r.kind || 'block';
+    const keepDest = kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'vortice-register';
+    return {
+      kind,
+      from: r.from === 'coinbase' ? 'coinbase' : '',
+      to: keepDest ? publicDest(r.to) : '',
+      amountHidden: true,
+      memo: r.memo === true,
+    };
+  });
   const pruned = !!b.samplesPruned;
   const samples = pruned ? [] : collateSamples(b.samples || []).map((s) => ({
     dest: publicDest(s.miner),
@@ -496,7 +503,7 @@ export function publicBlockDetail(store, id) {
   const lines = [];
   lines.push(`======== SHEAR CTF  tx=${row.id}  ========`);
   lines.push(`kind        ${row.kind}`);
-  lines.push(`amount      ${row.amount} SHE`);
+  lines.push('amount      hidden');
   lines.push(`asset       ${row.asset}`);
   lines.push(`height      ${row.height}`);
   lines.push(`from        ${row.from}`);
@@ -882,7 +889,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     return { status: 200, json: { ok: true, asset: 'SHE', ...got } };
   }
   if (path === '/api/explorer/history' && verb === 'GET') {
-    const txs = confirmedBlockTxs(store, 30);
+    const txs = confirmedBlockTxs(store, 30).map((t) => explorerRowPublic({
+      ...t,
+      kind: t.kind || 'block',
+      memo: false,
+    }));
     return { status: 200, json: { ok: true, txs, asset: 'SHE' } };
   }
   if (path === '/api/explorer/search' && verb === 'GET') {
@@ -908,14 +919,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       return { status: 400, json: { ok: false, reason: 'bad_address' } };
     }
     const rec = reconstructOwner(store, address);
-    // she1 is offered publicly — amounts only. Full from/to stays on a dest
-    // the receiving wallet derived locally and never published.
-    const owner = isDestAddress(address);
+    const destOwner = isDestAddress(address)
+      && verifyDestOpening(address, url.searchParams.get('open') || url.searchParams.get('destOpen') || '');
+    const owner = destOwner;
     const rolled = rollupDestTxs(rec.txs, { revealDest: owner });
-    const txs = owner ? rolled : rolled.map(publicTxView);
+    const txs = owner ? rolled : rolled.map((t) => explorerRowPublic({ ...t, kind: t.kind || 'block' }));
     return {
       status: 200,
-      json: { ok: true, coin: 'SHE', txs, amountsOnly: !owner, rolled: true },
+      json: { ok: true, coin: 'SHE', txs, amountsOnly: !owner, destProof: !!owner, rolled: true },
     };
   }
   if (path === '/api/vortex/mint' && verb === 'POST') {

@@ -4,6 +4,7 @@
  */
 import { sha256 } from './shear_hash.js';
 import { hash20FromAddress } from './address.js';
+import { noteCommitOfDest20 } from './note.js';
 
 export const ENC_MAGIC = Buffer.from('shear-enc-v1');
 export const ENC_A = 1;
@@ -195,15 +196,20 @@ export function shareRowJson(s) {
   }
   const dest = String(s?.dest || s?.address || s?.miner || '');
   const dest20 = coerceDest20(s?.dest20, dest);
-  const nc = s?.noteCommit && Buffer.from(s.noteCommit).length === 32
+  let nc = s?.noteCommit && Buffer.from(s.noteCommit).length === 32
     ? Buffer.from(s.noteCommit)
     : null;
+  if (!nc && dest20 && !dest20.equals(Buffer.alloc(20))) {
+    nc = noteCommitOfDest20(dest20);
+  }
+  const tag = s?.viewTag != null && s.viewTag !== ''
+    ? (Buffer.isBuffer(s.viewTag) ? s.viewTag : Buffer.from([Number(s.viewTag) & 0xff]))
+    : null;
   return {
-    dest,
-    dest20: dest20.toString('hex'),
+    noteCommit: nc ? nc.toString('hex') : '',
     nonce: String(s?.nonce ?? 0),
     lz: Number(s?.lz || 0) & 0xff,
-    ...(nc ? { noteCommit: nc.toString('hex') } : {}),
+    ...(tag ? { viewTag: tag.subarray(0, 1).toString('hex') } : {}),
   };
 }
 
@@ -216,10 +222,16 @@ export function unpackShareBatch(rows = []) {
       return unpackShare(buf);
     }
     const dest = String(s.dest || s.address || s.miner || '');
+    let nc;
+    if (s.noteCommit) {
+      nc = typeof s.noteCommit === 'string'
+        ? Buffer.from(s.noteCommit, /^[0-9a-fA-F]+$/.test(s.noteCommit) ? 'hex' : 'utf8')
+        : Buffer.from(s.noteCommit);
+    }
     return {
       dest20: coerceDest20(s.dest20, dest),
       dest,
-      noteCommit: s.noteCommit ? Buffer.from(s.noteCommit) : undefined,
+      noteCommit: nc && nc.length === 32 ? nc : undefined,
       nonce: typeof s.nonce === 'bigint' ? s.nonce : BigInt(s.nonce || 0),
       lz: Number(s.lz || 0) & 0xff,
       viewTag: s.viewTag || null,

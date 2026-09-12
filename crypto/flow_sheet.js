@@ -232,15 +232,19 @@ export function memoOpen(dest, env, shared) {
 }
 
 export function explorerRowPublic(row) {
-  const { memoCt, memoPlain, open, portalOpen, viewKey, ...rest } = row || {};
-  return {
-    id: rest.id,
-    amount: rest.amount != null ? rest.amount : rest.nanos,
-    from: rest.from,
-    to: rest.to,
-    height: rest.height,
-    memo: !!(memoCt || row?.memo),
+  const kind = String(row?.kind || '');
+  const out = {
+    id: row?.id,
+    kind,
+    height: row?.height,
+    memo: !!(row?.memoCt || row?.memo),
+    amountHidden: true,
+    asset: 'SHE',
   };
+  if (kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'vortice-register') {
+    out.to = row?.to || '';
+  }
+  return out;
 }
 
 export { EMPTY_ROOT, isDestAddress, isShearAddress, payoutDest };

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, freshStealthDest } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { poolFeeDest } from '../../crypto/levy.js';
@@ -17,6 +17,7 @@ import {
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { coinbaseSplit as mintSplit } from '../../crypto/mint.js';
+import { sealCoinbaseNote, excessOf } from '../../crypto/note.js';
 
 function destOf(id) {
   return freshStealthDest(id.paymentCode).dest;
@@ -93,8 +94,13 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       poolDest: pool,
     });
     const cb = childTpl.txs[0];
-    cb.vout = cb.vout.filter((o) => o.kind !== 'pot' && o.kind !== 'pool-fee');
-    cb.vout.unshift({ address: pool, nanos: BLOCK_SUBSIDY_NANOS, kind: 'pot' });
+    const keep = (cb.vout || []).filter((o) => o.kind !== 'pot' && o.kind !== 'pool-fee');
+    const whole = sealCoinbaseNote(BLOCK_SUBSIDY_NANOS, {
+      dest20: hash20FromAddress(pool),
+      kind: 'pot',
+    });
+    cb.vout = [whole, ...keep];
+    cb.excess = excessOf(cb.vout);
     const decoded = decodeHeader(childTpl.header);
     childTpl.header = encodeHeader({
       ...decoded,
@@ -103,6 +109,6 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const child = mine(childTpl);
     const got = verifyBlock(child, { ...parent, hash: okP.hash, header: parent.header, height: 1 }, { poolDest: pool });
     assert.equal(got.ok, false);
-    assert.ok(['pot_prop', 'pot'].includes(got.reason), got.reason);
+    assert.equal(got.reason, 'pot_prop');
   });
 });

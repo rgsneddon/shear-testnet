@@ -46,10 +46,10 @@ describe('shareBatch on disk and p2p wire', () => {
     const dest = destOf(7);
     const d20 = dest20OfShare({ dest });
     const row = shareRowJson({ dest, dest20: d20, nonce: 99n, lz: 8 });
-    assert.equal(row.dest20.length, 40);
+    assert.equal(String(row.noteCommit).length, 64);
+    assert.equal(row.dest20, undefined);
     const [got] = unpackShareBatch([row]);
-    assert.equal(got.dest20.length, 20);
-    assert.equal(got.dest20.toString('hex'), d20.toString('hex'));
+    assert.equal(got.noteCommit.length, 32);
     assert.equal(got.nonce, 99n);
   });
 
@@ -103,7 +103,9 @@ describe('shareBatch on disk and p2p wire', () => {
 
     const compact = compactChainBlock(second.block);
     assert.ok(Array.isArray(compact.shareBatch) && compact.shareBatch.length >= 1);
-    assert.equal(compact.shareBatch[0].dest20.length, 40);
+    assert.equal(String(compact.shareBatch[0].noteCommit || '').length, 64);
+    assert.equal(compact.shareBatch[0].dest20, undefined);
+    assert.equal(compact.shareBatch[0].dest, undefined);
 
     const wire = encodeWireBlock(second.block);
     assert.ok(Array.isArray(wire.shareBatch) && wire.shareBatch.length >= 1, 'wire carries shareBatch');

@@ -51,31 +51,33 @@ and each `C_j` has a valid range proof. Wrong `T` fails. Finder-only remains ill
 
 Lag-1 coinbase emits confidential notes whose committed values sum to (hash-bonus units + PROP pot − pool fee) for those `note_commit`s. Finder-only is illegal.
 
-## Graph privacy — options (dummy outs, ring-sigs, FCMP++)
+## Graph privacy — options (dummy outs, ring-sigs, Admit)
 
 Amount hiding (Pedersen + range proof) does not hide **which note is spent**. Three options for spend-set privacy:
 
-| Option | What a spend proves | Anonymity set | Size / verify (order of mag.) | Status for this book |
+| Option | What a spend proves | Set | Size / verify (order of mag.) | Status for this book |
 | --- | --- | --- | --- | --- |
 | **Dummy outs** | Output graph: every Flow spend adds ≥1 dummy note + fresh change | Breaks change-amount heuristics | Cheap | **Day-one** (`DUMMY_OUTS=1`) |
 | **Sampled CLSAG (n=16)** | One of *n* listed notes | Fixed 16 | ~1.5 KB | Not v3 — set too small |
-| **FCMP++** | One of every eligible note on the chain (linkable key image, no trusted setup) | Full eligible set | LSAG now; curve-tree later | **Day-one** (`SPEND_MEMBERSHIP=fcmp++`) |
+| **Admit (AdmitV1)** | Spend is an admissible extraction from committed J (the fluxset) without naming which flowline | Full fluxset | LSAG now; Curve Trees later | **Day-one** (`ADMIT=AdmitV1`) |
 
 ### Ring signatures (CLSAG)
 
-A linkable ring signature proves one-of-*n* ownership and binds a key image so the same note cannot be spent twice. Decoys are sampled from the chain (gamma distribution in Monero). Strength is bounded by *n* and by decoy-selection analysis: an observer always knows the real spend is among *n* listed notes. Raising *n* grows signature size linearly. CLSAG is the current compact form (smaller than MLSAG). Shear would reuse the same Pedersen notes; the ring is extra on the spend, not a replacement for confidential amounts.
+A linkable ring signature proves one-of-*n* ownership and binds a spend-tag so the same note cannot be spent twice. Decoys are sampled from the chain (gamma distribution in Monero). Strength is bounded by *n* and by decoy-selection analysis: an observer always knows the real spend is among *n* listed notes. Raising *n* grows signature size linearly. CLSAG is the current compact form (smaller than MLSAG). Shear would reuse the same Pedersen notes; the ring is extra on the spend, not a replacement for confidential amounts.
 
-### FCMP++
+### Admit (Shear Admittance)
 
-FCMP++ (Monero Research Lab / Cypher Stack / kayabaNerve; curve trees) replaces the fixed ring with a membership proof against an authenticated set of eligible outputs. The spend proves the input is **some** note in that set without naming a decoy list. Anonymity set is the whole eligible pool and grows with the chain. Plumbing is a Bulletproofs-based circuit over a curve tree (not a pairing SNARK, not a trusted setup). 2026 integration work increased proof size ~17% after a generator-sampling fix (Cypher Stack); a 1-in/2-out tx is on the order of 7–8 KB with ~30–40 ms verify on a fast CPU.
+Admittance proves a spend is an admissible extraction from the committed current J without revealing which flowline carried it. User copy: **Admittance hides which output moved.**
 
-FCMP++ does not replace stealth dests, Pedersen amounts, or Dandelion++. It replaces **input linking**. It is the stronger spend-set option. It is also more code and audit surface than dummy outs or CLSAG.
+Admit instantiates Curve Trees (Campanelli, Hall-Andersen, Kamp, USENIX Security 23 / ePrint 2022/756) as the named accumulator. It is not Monero FCMP++ unless the relation and gadgets match. Day-one `crypto/admit.js` is a full-fluxset linkable ring; AdmitV2 may replace the ring with that accumulator without changing the fluxset. No pairing SNARK. No trusted setup.
+
+Admit does not replace stealth dests, Pedersen amounts, or Dandelion++. It replaces **input linking**. The fluxset is every eligible note, not a sampled ring of 16. `jroot` commits to J as of a reference height. `admit_proof` is the opaque blob.
 
 ### Choice for shear-testnet-v3 day one
 
-Confidential amounts + dummy outs + Dandelion++ + **FCMP++ full-chain membership** on spends. The membership set is every eligible note, not a sampled ring of 16. Linkable key image prevents double-spend. Linear LSAG is the first implementation; a curve-tree proof can replace it without changing the eligible set. Reserve kinds stay typed; the vault note is not dummy-deleted.
+Confidential amounts + dummy outs + Dandelion++ + **AdmitV1** on spends. Reserve kinds stay typed; the vault note is not dummy-deleted.
 
-Fingerprint: `SPEND_MEMBERSHIP=fcmp++`. Dummy outs stay (`DUMMY_OUTS=1`). No pairing SNARK.
+Fingerprint: `ADMIT=AdmitV1`. Dummy outs stay (`DUMMY_OUTS=1`). Spec: `specs/admit.md`.
 
 ## Dummy outs (day one)
 

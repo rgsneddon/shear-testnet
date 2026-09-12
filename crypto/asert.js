@@ -170,7 +170,7 @@ export function consensusFingerprint() {
     'VORTICE_NO_MINT=1',
     'LEVY_CAP=0.001-SHE',
     'LEVY_SPLIT=50-50-finder-reserve',
-    'SPEND_MEMBERSHIP=fcmp++',
+    'ADMIT=AdmitV1',
     'LAG1_SHAREBATCH=1',
     `POOL_FEE_BPS=${POOL_FEE_BPS}`,
   ].join(':');

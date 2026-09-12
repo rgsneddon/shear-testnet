@@ -185,7 +185,8 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /VORTICE_NO_MINT=1/);
     assert.match(fp, /LEVY_CAP=0.001-SHE/);
     assert.match(fp, /LEVY_SPLIT=50-50-finder-reserve/);
-    assert.match(fp, /SPEND_MEMBERSHIP=fcmp\+\+/);
+    assert.match(fp, /ADMIT=AdmitV1/);
+    assert.equal(/fcmp/i.test(fp), false);
     assert.equal(/2026-\d{2}-\d{2}T/.test(fp), false);
     assert.equal(HASH_FN, 'ShearHash-v3');
     assert.equal(fp.includes('HASH_FN=ShearHash-v3'), true);

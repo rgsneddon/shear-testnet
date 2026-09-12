@@ -163,11 +163,12 @@ describe('flow sheets', () => {
     assert.equal(memoOpen(other, env, shared), 'hello flow');
     const pub = explorerRowPublic({ to: dest, from: dest, amount: 1, height: 1, id: 'x', memoCt: env, memoPlain: 'hello flow' });
     assert.equal(pub.memo, true);
-    assert.equal(pub.to, dest);
-    assert.equal(pub.from, dest);
+    assert.equal(pub.amountHidden, true);
+    assert.equal(pub.to, undefined);
+    assert.equal(pub.from, undefined);
     assert.equal(pub.memoCt, undefined);
     assert.equal(pub.memoPlain, undefined);
-    assert.equal(pub.amount, 1);
+    assert.equal(pub.amount, undefined);
     assert.equal(pub.id, 'x');
     assert.equal(explorerRowPublic({ to: dest, amount: 1 }).memo, false);
   });
