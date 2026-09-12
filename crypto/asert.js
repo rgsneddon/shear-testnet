@@ -156,6 +156,7 @@ export function consensusFingerprint() {
     `POT_PROP=${POT_PROP}`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
     `NETWORK=${MAGIC_TESTNET}`,
+    `HASH_TX_LIVE=${HASH_TX_LIVE}`,
     'AMOUNT=confidential',
     'DUMMY_OUTS=1',
     'ENC_SHARE=v5',

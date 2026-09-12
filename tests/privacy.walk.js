@@ -284,6 +284,12 @@ describe('privacy.walk', () => {
     assert.match(fp, /SPEND_SIG_ONLY=1/);
     assert.match(fp, /MEMO_NOT_DEST_KEYED=1/);
     assert.match(fp, /NETWORK=shear-testnet-v3/);
+    assert.match(fp, /HASH_FN=ShearHash-v3/);
+    assert.match(fp, /HASH_TX_LIVE=1/);
+    assert.match(fp, /HASH_UNIT_FLOOR=1/);
+    assert.match(fp, /LAG1_SHAREBATCH=1/);
+    assert.match(fp, /POT_PROP=shareBatch/);
+    assert.match(fp, /POOL_FEE_BPS=100/);
     assert.match(fp, /AMOUNT=confidential/);
     assert.match(fp, /DUMMY_OUTS=1/);
     assert.match(fp, /ENC_SHARE=v5/);
@@ -291,9 +297,15 @@ describe('privacy.walk', () => {
     assert.match(fp, /VIEW_TAG=1/);
     assert.match(fp, /KDF=argon2id-shewall/);
     assert.match(fp, /RESERVE=shear-reserve-v1/);
+    assert.match(fp, /RESERVE_EVM=1/);
+    assert.match(fp, /RESERVE_INTEREST=400d-bps-floor/);
+    assert.match(fp, /ORACLE=basket-mean-14/);
     assert.match(fp, /VORTEX=vort1-pin/);
     assert.match(fp, /VORTICE_NO_MINT=1/);
+    assert.match(fp, /LEVY_CAP=0.001-SHE/);
+    assert.match(fp, /LEVY_SPLIT=50-50-finder-reserve/);
     assert.match(fp, /SPEND_MEMBERSHIP=fcmp\+\+/);
+    assert.equal(/2026-\d{2}-\d{2}T/.test(fp), false);
   });
 
   it('12: RPC default bind is 127.0.0.1; submit log does not join IP to dest/login', () => {
