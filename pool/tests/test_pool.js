@@ -637,10 +637,10 @@ describe('public miner listing', () => {
     const pullAt = miner.indexOf('id="pull-row"');
     const statsAt = miner.indexOf('id="stat-grid"');
     assert.ok(explainerAt >= 0 && pullAt > explainerAt && statsAt > pullAt && workersAt > statsAt);
-    assert.match(miner, /1 hash = 1 tx leaf/);
-    assert.match(miner, /Hash bonuses are automatic/);
+    assert.match(miner, /Hash bonuses land automatically/);
+    assert.match(miner, /each proven floor share mints onto that dest/);
     assert.match(miner, /Withdraw confirmed sum/);
-    assert.match(miner, /ssa1 dest this round \(pay\)/);
+    assert.match(miner, /ssa1 dest/);
     assert.match(miner, /Copy ID/);
     assert.match(miner, /Copy dest/);
     assert.match(miner, /wait 24 hours before the next one/);

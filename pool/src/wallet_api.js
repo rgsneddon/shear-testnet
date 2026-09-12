@@ -1004,7 +1004,15 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     const parked = kind === 'send' && changeDest && leftover > 0;
     const draft = isLock
-      ? { ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }), fee, memoCt, sig: body.sig || body.signature, spendPub: body.spendPub, amount }
+      ? {
+        ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }),
+        fee,
+        memoCt,
+        sig: body.sig || body.signature,
+        spendPub: body.spendPub,
+        amount,
+        ...(vout.length ? { vout } : {}),
+      }
       : isVote
         ? { ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }), fee, maxLevy: fee, sig: body.sig || body.signature, spendPub: body.spendPub, payer: from }
         : {

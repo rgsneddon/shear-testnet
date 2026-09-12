@@ -62,7 +62,7 @@ export function sortShares(shares = []) {
 
 export function collateShareUnits(shares = []) {
   const by = new Map();
-  for (const s of shares) {
+  for (const s of unpackShareBatch(shares)) {
     const dest = destOfShare(s);
     if (!dest) continue;
     by.set(dest, (by.get(dest) || 0) + unitsForShare());
@@ -72,7 +72,7 @@ export function collateShareUnits(shares = []) {
 
 export function aLeavesFromShares(shares = []) {
   const by = new Map();
-  for (const s of shares) {
+  for (const s of unpackShareBatch(shares)) {
     const nc = noteCommitOfShare(s);
     const key = nc.toString('hex');
     by.set(key, (by.get(key) || 0) + unitsForShare());

@@ -4,6 +4,8 @@ import { newIdentity, destOpeningFromView, spendDestOf } from '../../crypto/addr
 import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
+import { attachDummyOuts } from '../../crypto/dummy.js';
+import { lockTx } from '../../crypto/reserve_vault.js';
 import {
   extraMintAllowed,
   RESERVE_PROGRAM,
@@ -24,7 +26,7 @@ function url(path) {
 function spendSig({ from, to, amount, open, identity, kind = 'send' }) {
   const nanos = Math.round(amount * NANOS_PER_SHE);
   const fee = levyNanos(nanos, { depth: 0 });
-  const tx = {
+  let tx = {
     kind,
     from,
     to,
@@ -33,8 +35,10 @@ function spendSig({ from, to, amount, open, identity, kind = 'send' }) {
     vin: [{ address: from }],
     vout: [{ address: to, nanos, kind }],
   };
+  if (kind === 'send') tx = attachDummyOuts(tx);
+  if (kind === 'lock') tx = { ...lockTx({ from, to, nanos, id: 'lock-sig' }), fee, amount };
   signSpendTx(tx, identity.privateKey);
-  return { sig: tx.sig, spendPub: tx.spendPub };
+  return { sig: tx.sig, spendPub: tx.spendPub, vout: tx.vout, nanos: tx.nanos };
 }
 
 function storeWith({ rows = [], reserveVault, issued } = {}) {
@@ -82,10 +86,19 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(pasted.status, 400);
     assert.equal(pasted.json.reason, 'need_dest');
 
+    const unsignedDraft = attachDummyOuts({
+      kind: 'send',
+      from: silent,
+      to: bob,
+      nanos: Math.round(0.4 * NANOS_PER_SHE),
+      vin: [{ address: silent }],
+      vout: [{ address: bob, nanos: Math.round(0.4 * NANOS_PER_SHE) }],
+    });
     const unsigned = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from: silent,
       to: bob,
       amount: 0.4,
+      vout: unsignedDraft.vout,
     }, { store, miners: new Map(), queueSend: () => ({ id: 'nope' }) });
     assert.equal(unsigned.status, 403);
     assert.equal(unsigned.json.reason, 'unsigned');
@@ -97,6 +110,7 @@ describe('pool send reconstruct and Join vault', () => {
       amount: 0.4,
       sig: signed.sig,
       spendPub: signed.spendPub,
+      vout: signed.vout,
     }, { store, miners: new Map(), queueSend: (t) => {
       const tx = { id: 'send-1', ...t };
       posted.push(tx);
@@ -146,6 +160,7 @@ describe('pool send reconstruct and Join vault', () => {
       programId: RESERVE_PROGRAM,
       sig: signedLock.sig,
       spendPub: signedLock.spendPub,
+      vout: signedLock.vout,
     }, { store, miners: new Map(), queueSend: (t) => {
       const tx = { id: 'lock-1', ...t };
       posted.push(tx);

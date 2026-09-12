@@ -8,6 +8,7 @@ import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { createPool, scoreShare } from '../src/pool.js';
 import { coinbaseSplit } from '../../crypto/mint.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout } from '../../crypto/coinbase_notes.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 
 function send(sock, obj) {
@@ -177,10 +178,12 @@ describe('lag-1 PROP pot', { timeout: 1_200_000 }, () => {
       assert.equal(sealed2.result?.block, true, JSON.stringify(sealed2));
       assert.equal(pool.store.tip()?.height, 2);
       const paid = pool.store.tip();
-      const split = coinbaseSplit(paid.txs[0]);
+      const split = coinbaseSplit(paid.txs[0], { shareBatch: paid.shareBatch, miner: paid.miner });
       assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
+      const pays = expectedCoinbasePays(paid.shareBatch || [], { miner: paid.miner });
       const hasherPot = (paid.txs[0].vout || [])
-        .filter((o) => o.kind === 'pot' || o.kind === 'pool-fee');
+        .filter((o) => o.kind === 'pot' || o.kind === 'pool-fee')
+        .map((o) => matchSealedCoinbaseVout(o, pays));
       assert.ok(hasherPot.some((o) => o.address === destA), 'lag-1 dest keeps the PROP pot');
       const toB = hasherPot.filter((o) => o.address === destB).reduce((n, o) => n + Number(o.nanos || 0), 0);
       assert.ok(toB < BLOCK_SUBSIDY_NANOS * 0.5, 'live hasher dest must not take the whole pot');

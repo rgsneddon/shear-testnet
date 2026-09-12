@@ -189,13 +189,21 @@ function coerceDest20(raw, dest) {
 }
 
 export function shareRowJson(s) {
+  if (Buffer.isBuffer(s) || (typeof s === 'string' && s.length > 8)) {
+    const u = unpackShareBatch([s])[0];
+    if (u && u !== s) return shareRowJson(u);
+  }
   const dest = String(s?.dest || s?.address || s?.miner || '');
   const dest20 = coerceDest20(s?.dest20, dest);
+  const nc = s?.noteCommit && Buffer.from(s.noteCommit).length === 32
+    ? Buffer.from(s.noteCommit)
+    : null;
   return {
     dest,
     dest20: dest20.toString('hex'),
     nonce: String(s?.nonce ?? 0),
     lz: Number(s?.lz || 0) & 0xff,
+    ...(nc ? { noteCommit: nc.toString('hex') } : {}),
   };
 }
 
