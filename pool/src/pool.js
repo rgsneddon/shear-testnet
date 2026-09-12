@@ -1445,7 +1445,6 @@ export function createPool({
         result: { status: 'OK', hash: scored.hash, block: sealedBlock },
       }));
     } catch { /* ignore */ }
-    paintStatsSnap();
     if (!paused && !nextJob && !closedRound && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login)) {
       conn.varShares = (Number(conn.varShares) || 0) + 1;
       const now = Date.now();

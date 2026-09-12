@@ -532,6 +532,8 @@ export function createStore(dir, {
       nowMs: Date.now(),
       trustedPowHash: verifyOpts.trustedPowHash || null,
       skipSharePow: !!verifyOpts.skipSharePow,
+      parentFluxset: liveFlux.pubs,
+      parentSpendTags: liveFlux.spendTags,
     });
     for (const tx of (block.txs || []).slice(1)) {
       const pay = verifyReservePayout(reserveVault, tx);

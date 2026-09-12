@@ -513,6 +513,8 @@ function verifyBlockConsensus(block, prev, {
   evmHistory = null,
   trustedPowHash = null,
   skipSharePow = false,
+  parentFluxset = null,
+  parentSpendTags = null,
 } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
@@ -750,7 +752,9 @@ function verifyBlockConsensus(block, prev, {
   let fees = 0;
   const spent = spentB instanceof Set ? spentB : new Set(spentB || []);
   const history = Array.isArray(evmHistory) && evmHistory.length ? evmHistory : (prev ? [prev] : []);
-  const live = fluxsetFromBlocks(history);
+  const live = Array.isArray(parentFluxset)
+    ? { pubs: parentFluxset, spendTags: parentSpendTags instanceof Set ? parentSpendTags : new Set(parentSpendTags || []) }
+    : fluxsetFromBlocks(history);
   const pubs = live.pubs.slice();
   const spentTags = new Set(live.spendTags);
   const pushPub = (o) => {
