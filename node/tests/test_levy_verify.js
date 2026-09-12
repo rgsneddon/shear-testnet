@@ -64,55 +64,67 @@ describe('verifyBlock Phase B Flow levy', () => {
     const sendNanos = 2;
     const need = levyNanos(sendNanos);
     assert.equal(need, 100);
-    const unpaid = mine(buildTemplate({
+    const parent = mine(buildTemplate(base));
+    const okP = verifyBlock(parent, null);
+    assert.equal(okP.ok, true, okP.reason);
+    parent.hash = okP.hash;
+    const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
+    const spentIdx = parent.txs[0].vout.indexOf(spent);
+    const childBase = {
       ...base,
-      txs: [attachDummyOuts({
-        id: 'u1',
+      prev: okP.hash,
+      prevHeader: parent.header,
+      height: 2,
+      now: Date.now() + 90_000,
+    };
+    function potSend({ id, fee, maxLevy }) {
+      const change = BLOCK_SUBSIDY_NANOS - sendNanos - fee;
+      return attachDummyOuts({
+        id,
         kind: 'send',
         from: dest,
         to: dest,
         nanos: sendNanos,
-        fee: 0,
-        vin: [{ address: dest }],
-        vout: [{ address: dest, nanos: sendNanos }],
-      })],
+        fee,
+        ...(maxLevy != null ? { maxLevy } : {}),
+        changeNanos: change,
+        vin: [{
+          prev: parent.hash,
+          index: spentIdx,
+          commit: spent.commit,
+          noteCommit: spent.noteCommit,
+          r: spent.r,
+          address: dest,
+        }],
+        vout: [
+          { address: dest, nanos: sendNanos, kind: 'send' },
+          { address: dest, nanos: change, kind: 'send' },
+        ],
+      }, { spent });
+    }
+    const unpaid = mine(buildTemplate({
+      ...childBase,
+      txs: [potSend({ id: 'u1', fee: 0 })],
     }));
-    const denied = verifyBlock(unpaid, null);
+    const denied = verifyBlock(unpaid, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'levy');
 
     const capped = mine(buildTemplate({
-      ...base,
-      txs: [attachDummyOuts({
-        id: 'cap',
-        kind: 'send',
-        from: dest,
-        to: dest,
-        nanos: sendNanos,
-        fee: need,
-        maxLevy: need - 1,
-        vin: [{ address: dest }],
-        vout: [{ address: dest, nanos: sendNanos }],
-      })],
+      ...childBase,
+      now: Date.now() + 180_000,
+      txs: [potSend({ id: 'cap', fee: need, maxLevy: need - 1 })],
     }));
-    const capDenied = verifyBlock(capped, null);
+    const capDenied = verifyBlock(capped, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
     assert.equal(capDenied.ok, false);
     assert.equal(capDenied.reason, 'max_levy');
 
     const paid = mine(buildTemplate({
-      ...base,
-      txs: [attachDummyOuts({
-        id: 'u2',
-        kind: 'send',
-        from: dest,
-        to: dest,
-        nanos: sendNanos,
-        fee: need,
-        vin: [{ address: dest }],
-        vout: [{ address: dest, nanos: sendNanos }],
-      })],
+      ...childBase,
+      now: Date.now() + 270_000,
+      txs: [potSend({ id: 'u2', fee: need })],
     }));
-    const allowed = verifyBlock(paid, null);
+    const allowed = verifyBlock(paid, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
     assert.equal(allowed.ok, true, allowed.reason);
     const split = splitLevy(need);
     const finderO = paid.txs[0].vout.find((o) => o.kind === 'finder-fee');
@@ -151,6 +163,7 @@ describe('verifyBlock Phase B Flow levy', () => {
     const box = spendBox(id);
     const dest = box.dest;
     const t0 = 1_700_000_000_000;
+    let lastPot = null;
     for (let i = 0; i < SPENDABLE_CONFIRMATIONS + 1; i += 1) {
       const parent = store.tip();
       const { tpl: fund } = store.template({
@@ -160,6 +173,14 @@ describe('verifyBlock Phase B Flow levy', () => {
       });
       const foundFund = mineTemplate(fund, { maxTries: 3_000_000, shareBits: 4 });
       assert.ok(foundFund && foundFund.block, 'fund pow');
+      const pot = (fund.txs[0].vout || []).find((o) => o.kind === 'pot');
+      lastPot = {
+        commit: pot.commit,
+        noteCommit: pot.noteCommit,
+        r: pot.r,
+        index: fund.txs[0].vout.indexOf(pot),
+        change: BLOCK_SUBSIDY_NANOS - 2 - levyNanos(2),
+      };
       const funded = await store.append({
         header: foundFund.header,
         txs: fund.txs,
@@ -174,8 +195,13 @@ describe('verifyBlock Phase B Flow levy', () => {
       });
       assert.equal(funded.ok, true, funded.reason);
     }
+    assert.ok(lastPot?.r && lastPot.commit);
     const sendNanos = 2;
     const fee = levyNanos(sendNanos);
+    const tip = store.tip();
+    const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
+    assert.ok(spent?.commit, 'need pot note');
+    // r was stripped on persist; re-bind from the last funded template copy kept above.
     const sendTx = attachDummyOuts({
       id: 'q-send',
       kind: 'send',
@@ -183,10 +209,21 @@ describe('verifyBlock Phase B Flow levy', () => {
       to: dest,
       nanos: sendNanos,
       fee,
+      changeNanos: lastPot.change,
       open: destOpeningFromView(id.viewKey, id.spendPub, 0),
-      vin: [{ address: dest }],
-      vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
-    });
+      vin: [{
+        prev: tip.hash,
+        index: lastPot.index,
+        commit: lastPot.commit,
+        noteCommit: lastPot.noteCommit,
+        r: lastPot.r,
+        address: dest,
+      }],
+      vout: [
+        { address: dest, nanos: sendNanos, kind: 'send' },
+        { address: dest, nanos: lastPot.change, kind: 'send' },
+      ],
+    }, { spent: lastPot });
     signSpendTx(sendTx, box.key);
     const queued = store.queueTx(sendTx);
     assert.equal(queued.ok, true, queued.reason);

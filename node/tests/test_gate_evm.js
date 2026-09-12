@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, levyNeed, mempoolDepthBytes } from '../../crypto/levy.js';
-import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS } from '../../crypto/asert.js';
+import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS, BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { lockTx, withdrawTx } from '../../crypto/reserve_vault.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import {
@@ -40,16 +40,42 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const sendNanos = 2;
     const lockNanos = 1000;
     const valueNanos = 77;
+    const parent = mine(buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: destA,
+      bits: 4,
+      now: Date.now(),
+      samples: [{ miner: destA, nonce: '1', tag: 'a', count: 1 }],
+    }));
+    const okP = verifyBlock(parent, null);
+    assert.equal(okP.ok, true, okP.reason);
+    parent.hash = okP.hash;
+    const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
+    const spentIdx = parent.txs[0].vout.indexOf(spent);
+    const fee = levyNanos(sendNanos);
+    const change = BLOCK_SUBSIDY_NANOS - sendNanos - fee;
     const sendTx = attachDummyOuts({
       id: 'flow-send',
       kind: 'send',
       from: destA,
       to: destB,
       nanos: sendNanos,
-      fee: levyNanos(sendNanos),
-      vin: [{ address: destA }],
-      vout: [{ address: destB, nanos: sendNanos }],
-    });
+      fee,
+      changeNanos: change,
+      vin: [{
+        prev: parent.hash,
+        index: spentIdx,
+        commit: spent.commit,
+        noteCommit: spent.noteCommit,
+        r: spent.r,
+        address: destA,
+      }],
+      vout: [
+        { address: destB, nanos: sendNanos, kind: 'send' },
+        { address: destA, nanos: change, kind: 'send' },
+      ],
+    }, { spent });
     const lock = {
       id: 'reserve-lock',
       programId: RESERVE_PROGRAM,
@@ -72,18 +98,19 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     };
     evmTx.fee = levyNeed(evmTx, [sendTx, lock]);
     const base = {
-      prev: GENESIS_PREV,
-      height: 1,
+      prev: okP.hash,
+      prevHeader: parent.header,
+      height: 2,
       miner: destA,
       bits: 4,
-      now: Date.now(),
+      now: Date.now() + 90_000,
       samples: [{ miner: destA, nonce: '1', tag: 'a', count: 1 }],
     };
     const block = mine(buildTemplate({
       ...base,
       txs: [sendTx, lock, evmTx],
     }));
-    const got = await verifyBlock(block, null);
+    const got = await verifyBlock(block, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
     assert.equal(got.ok, true, got.reason || got.error);
     assert.equal(got.evmRan, true);
     assert.ok(got.evm);

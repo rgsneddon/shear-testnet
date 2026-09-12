@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { newIdentity } from './address.js';
 import { destForLogin, vaultDest } from './flow_sheet.js';
 import { lockTx, voteTx } from './reserve_vault.js';
-import { verifySealedNote, verifyRange, verifyFlowConservation } from './note.js';
+import { verifySealedNote, verifyRange, verifyFlowConservation, sealNote, spentCommitEquals } from './note.js';
 import {
   DUMMY_KIND,
   attachDummyOuts,
@@ -57,22 +57,44 @@ describe('Flow dummy outs', () => {
     assert.equal(flowNeedsDummy(vote), false);
     assert.equal(dummyCount(attachDummyOuts(vote)), 0);
 
-    assert.ok(send.excess);
-    assert.ok(send.vin[0].commit);
-    assert.equal(verifyFlowConservation(send), true);
+    assert.equal(send.vin[0].commit, undefined);
+    assert.equal(verifyFlowConservation(send), false);
+    const compactBare = compactTx(send);
+    assert.equal(compactBare.nanos, undefined);
+    assert.equal(compactBare.from, undefined);
+    assert.equal(compactBare.to, undefined);
+    assert.equal(compactBare.vout[0].address, undefined);
+    assert.equal(compactBare.vin[0].address, undefined);
+    assert.equal(compactBare.vin[0].commit, undefined);
+    assert.ok(compactBare.vout[0].commit);
+    assert.ok(compactBare.vout[0].rangeProof);
+  });
+
+  it('does not mint C_in; conservation binds vin.commit to the spent vout', () => {
+    const id = newIdentity();
+    const from = destForLogin(id.address, { viewKey: id.viewKey });
+    const to = destForLogin(id.address, { viewKey: id.viewKey });
+    const spent = sealNote(10, { dest20: Buffer.alloc(20, 7), kind: 'pot' });
+    const fake = sealNote(10, { dest20: Buffer.alloc(20, 8), kind: 'spend-in' });
+    const send = attachDummyOuts({
+      kind: 'send',
+      from,
+      to,
+      nanos: 10,
+      vin: [{ prev: Buffer.alloc(32, 1), index: 0, address: from }],
+      vout: [{ address: to, nanos: 10, kind: 'send' }],
+    }, { spent });
+    assert.equal(spentCommitEquals(send.vin[0], spent), true);
+    assert.equal(spentCommitEquals(send.vin[0], fake), false);
+    const spentOf = (vin) => (spentCommitEquals(vin, spent) ? spent : null);
+    assert.equal(verifyFlowConservation(send, spentOf), true);
+    assert.equal(verifyFlowConservation(send), false);
+    assert.equal(verifyFlowConservation(send, () => fake), false);
     const compact = compactTx(send);
-    assert.equal(compact.nanos, undefined);
-    assert.equal(compact.from, undefined);
-    assert.equal(compact.to, undefined);
-    assert.equal(compact.vout[0].address, undefined);
-    assert.equal(compact.vin[0].address, undefined);
-    assert.ok(compact.vout[0].commit);
     assert.ok(compact.vin[0].commit);
-    assert.ok(compact.vout[0].rangeProof);
-    assert.ok(compact.excess);
-    assert.equal(verifyFlowConservation(compact), true);
-    assert.equal(verifyFlowConservation({ ...compact, excess: Buffer.alloc(32) }), false);
-    assert.equal(verifyFlowConservation({ ...compact, vin: [{ index: 0 }] }), false);
+    assert.equal(compact.vin[0].r, undefined);
+    assert.equal(verifyFlowConservation(compact, spentOf), true);
+    assert.equal(verifyFlowConservation(compact, () => fake), false);
   });
 
   it('public explorer row hides amounts and keeps Reserve kind + dest', () => {

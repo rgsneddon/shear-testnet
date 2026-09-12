@@ -294,12 +294,37 @@ export function kernelExcess(vouts = [], vins = []) {
   return scalarBytes(s);
 }
 
-/** Pedersen conservation without painted output amounts. */
-export function verifyFlowConservation(tx) {
+/** Copy spent vout commit onto vin. Never sealNote a new C_in. */
+export function bindVinToSpent(vin, spentVout) {
+  if (!vin || !spentVout?.commit) return vin;
+  const row = { ...vin, commit: spentVout.commit };
+  if (spentVout.noteCommit) row.noteCommit = spentVout.noteCommit;
+  if (spentVout.r) row.r = spentVout.r;
+  return row;
+}
+
+export function spentCommitEquals(vin, spentVout) {
+  if (!vin?.commit || !spentVout?.commit) return false;
+  const a = Buffer.from(asU8(vin.commit));
+  const b = Buffer.from(asU8(spentVout.commit));
+  return a.length === b.length && a.equals(b);
+}
+
+/**
+ * Pedersen conservation + UTXO bind.
+ * spentOf(vin) must return the prev vout; vin.commit must equal that commit.
+ * Missing spentOf or a self-minted C_in is false.
+ */
+export function verifyFlowConservation(tx, spentOf) {
   try {
+    if (typeof spentOf !== 'function') return false;
     const vouts = tx?.vout || [];
-    const vins = (tx?.vin || []).filter((v) => v?.commit);
+    const vins = tx?.vin || [];
     if (!vouts.length || !vins.length) return false;
+    for (const v of vins) {
+      const spent = spentOf(v);
+      if (!spent || !spentCommitEquals(v, spent)) return false;
+    }
     const outC = mintTotal(vouts);
     const inC = mintTotal(vins.map((v) => ({ commit: v.commit })));
     if (!outC || !inC) return false;

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { newIdentity, destOpeningFromView, freshStealthDest } from '../../crypto/address.js';
 import { spendBox } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { signSpendTx } from '../../crypto/spend.js';
@@ -64,6 +64,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
     assert.equal(store.blocks[0].samples[0].count, 250);
     assert.equal(store.blocks[0].txs[0].samples, undefined);
 
+    let lastPot = null;
     for (let i = 1; i < SPENDABLE_CONFIRMATIONS + 1; i += 1) {
       const parent = store.tip();
       const parentH = decodeHeader(Buffer.from(parent.header));
@@ -75,20 +76,39 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
         bits: 4,
         now: Number(parentH.timestamp) + 90_000,
       }));
+      const pot = (nxt.txs[0].vout || []).find((o) => o.kind === 'pot');
+      lastPot = {
+        commit: pot.commit,
+        noteCommit: pot.noteCommit,
+        r: pot.r,
+        index: nxt.txs[0].vout.indexOf(pot),
+      };
       assert.equal((await Promise.resolve(store.append(nxt))).ok, true);
     }
-
+    const fee = levyNanos(3);
+    const change = BLOCK_SUBSIDY_NANOS - 3 - fee;
     const send = attachDummyOuts({
       id: 'send-forever',
       kind: 'send',
       from: destA,
       to: destB,
       nanos: 3,
-      fee: levyNanos(3),
+      fee,
+      changeNanos: change,
       open: destOpeningFromView(alice.viewKey, alice.spendPub, 0),
-      vin: [{ address: destA }],
-      vout: [{ address: destB, nanos: 3 }],
-    });
+      vin: [{
+        prev: store.tip().hash,
+        index: lastPot.index,
+        commit: lastPot.commit,
+        noteCommit: lastPot.noteCommit,
+        r: lastPot.r,
+        address: destA,
+      }],
+      vout: [
+        { address: destB, nanos: 3, kind: 'send' },
+        { address: destA, nanos: change, kind: 'send' },
+      ],
+    }, { spent: lastPot });
     signSpendTx(send, aliceBox.key);
     const parentSend = store.tip();
     const parentSendH = decodeHeader(Buffer.from(parentSend.header));

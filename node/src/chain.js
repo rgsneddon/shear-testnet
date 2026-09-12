@@ -53,6 +53,7 @@ import {
   excessOf,
   verifyFlowConservation,
   noteCommitOfDest20,
+  asU8,
 } from '../../crypto/note.js';
 import { packTx, packDigest } from '../../crypto/pack.js';
 import { buildDualTree, spendB } from '../../crypto/clearing.js';
@@ -98,6 +99,45 @@ function kindByte(kind) {
   if (k === 'reserve-fee') return 4;
   if (k === 'dummy') return 5;
   return 0;
+}
+
+function ref32(x) {
+  if (x == null || x === '') return null;
+  try {
+    const b = Buffer.from(asU8(x));
+    return b.length === 32 ? b : null;
+  } catch {
+    return null;
+  }
+}
+
+function lookupSpentVout(vin, block, prev, bodyIndex) {
+  const idx = Number(vin?.index || 0);
+  const want = ref32(vin?.prev);
+  const tryTx = (tx, blockHash) => {
+    const vout = (tx?.vout || [])[idx];
+    if (!vout?.commit) return null;
+    if (!want) return null;
+    const dig = digestTx(tx);
+    if (dig.equals(want)) return vout;
+    const bh = ref32(blockHash);
+    if (bh && bh.equals(want)) return vout;
+    if (tx?.id && String(tx.id) === String(vin.prev)) return vout;
+    return null;
+  };
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  const last = Math.min(txs.length, 1 + Number(bodyIndex || 0));
+  for (let j = 0; j < last; j += 1) {
+    const hit = tryTx(txs[j], block.hash);
+    if (hit) return hit;
+  }
+  if (prev) {
+    for (const tx of prev.txs || []) {
+      const hit = tryTx(tx, prev.hash);
+      if (hit) return hit;
+    }
+  }
+  return null;
 }
 
 export function digestTx(tx) {
@@ -705,7 +745,8 @@ function verifyBlockConsensus(block, prev, {
       }
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
-      if (!verifyFlowConservation(tx)) return { ok: false, reason: 'confidential' };
+      const spentOf = (vin) => lookupSpentVout(vin, block, prev, i);
+      if (!verifyFlowConservation(tx, spentOf)) return { ok: false, reason: 'confidential' };
     }
     if ((unfunded || tx.mint) && String(tx.programId || '') === RESERVE_PROGRAM && String(tx.kind || '') === 'withdraw') {
       const bps = Number(committedBps ?? reserveState?.epochBps ?? GENESIS_BPS);
