@@ -28,6 +28,7 @@ import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_admit.dart';
 import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
+import 'package:shear_wallet/shear_ed25519.dart';
 import 'package:crypto/crypto.dart';
 
 const kGatePassword = 'correct-horse';
@@ -119,6 +120,39 @@ void main() {
     expect(b.address, a.address);
     expect(b.viewKey, a.viewKey);
     expect(b.paymentCode, a.paymentCode);
+  });
+
+  test('Ed25519 public-from-seed and spend-sig match RFC 8032 (node verifySpendSig)', () {
+    // RFC 8032 test 1: empty message.
+    final seed = hexToBytes('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60');
+    final wantPub = hexToBytes('d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a');
+    final wantSig = hexToBytes(
+      'e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b',
+    );
+    final pub = ed25519PublicFromSeed(seed);
+    expect(pub, wantPub);
+    final sig = ed25519Sign(seed, Uint8List(0));
+    expect(sig, wantSig);
+    expect(ed25519Verify(pub, Uint8List(0), sig), isTrue);
+    // RFC 8032 test 2: message 0x72.
+    final seed2 = hexToBytes('4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb');
+    final pub2 = ed25519PublicFromSeed(seed2);
+    expect(pub2, hexToBytes('3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c'));
+    final msg2 = Uint8List.fromList([0x72]);
+    expect(
+      ed25519Sign(seed2, msg2),
+      hexToBytes(
+        '92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00',
+      ),
+    );
+    final id = createIdentity(seed);
+    final dest = (ShearLedger()..bindIdentity(id)).homeDest(id.address, paymentCode: id.paymentCode);
+    expect(destMatchesSpendPub(dest, pub), isTrue);
+    final packed = spendMessage(from: dest, vout: [
+      {'address': dest, 'nanos': 1, 'kind': 'send'}
+    ], kind: 'send');
+    final spendSig = ed25519Sign(seed, packed);
+    expect(ed25519Verify(pub, packed, spendSig), isTrue);
   });
 
   test('wallet stays lean: thousands of hashes never become thousands of txs', () {
@@ -276,6 +310,60 @@ void main() {
     };
     expect(admitVerify(liveProof, pubs), isTrue);
     expect(admitVerify({'admit_proof': true, 'spendTag': Uint8List(32)}, pubs), isFalse);
+  });
+
+  test('sealed send change is the spent note leftover, not dest-balance of extra notes', () async {
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final probe = ShearLedger()..bindIdentity(id);
+    final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
+    final d20 = hash20FromAddress(dest)!;
+    var pot = sealNote(kUnitsPerShe, dest20: d20, kind: 'pot');
+    pot['address'] = dest;
+    pot = attachAdmitPub(pot, admitBase: pointFrom(admitBaseFromAddress(dest)!));
+    final potRow = compactSealedVout(pot)..['nanos'] = kUnitsPerShe;
+    var hash = sealNote(512, dest20: d20, kind: 'hash');
+    hash['address'] = dest;
+    hash = attachAdmitPub(hash, admitBase: pointFrom(admitBaseFromAddress(dest)!));
+    final hashRow = compactSealedVout(hash)..['nanos'] = 512;
+    final x = admitScalarFromSeed(seed, pot);
+    final pubs = [pointBytes(admitPub(x)), pointBytes(admitPub(randomScalar()))];
+    final posts = <Map<String, dynamic>>[];
+    final pool = _RecordingPool(posts, pubs: pubs);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    ledger.confirmRound(address: dest, pot: 1, height: 2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    ledger.applyPoolSnapshot(
+      dest,
+      {'balance': 1 + 512 / kUnitsPerShe, 'pending': 0, 'incoming': []},
+      beforeHeight: 1,
+      tipSealed: 2 + ShearLedger.spendableConfirmations - 1,
+    );
+    ledger.ingestSealedVouts(
+      [potRow, hashRow],
+      spendSeed: seed,
+      dest: dest,
+      prev: Uint8List(32),
+    );
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    const sendAmt = 0.25;
+    await ledger.send(
+      from: dest,
+      to: bob,
+      amount: sendAmt,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: seed,
+    );
+    final changeNote = ledger.notes.firstWhere(
+      (n) => n['kind'] == 'send' && n['r'] != null && n['spent'] != true,
+    );
+    final levy = levyNanos((sendAmt * kUnitsPerShe).round());
+    final wantNanos = ((1 - sendAmt) * kUnitsPerShe).round() - levy;
+    final gotNanos = changeNote['nanos'] as int? ??
+        ((changeNote['amount'] as num) * kUnitsPerShe).round();
+    expect(gotNanos, wantNanos);
+    expect(gotNanos, isNot(((1 + 512 / kUnitsPerShe - sendAmt) * kUnitsPerShe).round() - levy));
   });
 
   test('live pending hashes and receives become spendable on block-found', () {

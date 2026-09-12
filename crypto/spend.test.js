@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { levyNanos } from './levy.js';
 import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig } from './spend.js';
-import { newIdentity, destOpeningFromView, hash20FromAddress, silentPay, ed25519SeedOf, stealthSpendPrivate, recognizeSilentDest } from './address.js';
-import { generateKeyPairSync } from 'node:crypto';
+import { newIdentity, destOpeningFromView, hash20FromAddress, silentPay, ed25519SeedOf, stealthSpendPrivate, recognizeSilentDest, ed25519PrivateFromSeed, ed25519RawPub, encodeDest } from './address.js';
+import { destCommitFromSpendPub } from './stealth_ed25519.js';
+import { generateKeyPairSync, createPublicKey, verify } from 'node:crypto';
 import { destAtIndex, closureCommit } from './flow_sheet.js';
 
 const dest = 'ssa1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
@@ -139,5 +140,28 @@ describe('funded spend / no double-spend', () => {
     const heightDest = destAtIndex(id.address, { index: 0, viewKey: id.viewKey });
     const idxOpen = indexedDestOpening(spendH, closureCommit(id.viewKey), 0);
     assert.equal(verifyDestOpening(heightDest, idxOpen), true);
+  });
+
+  it('RFC 8032 seed pub and sig verify the same way as node verifySpendSig', () => {
+    const seed = Buffer.from('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex');
+    const key = ed25519PrivateFromSeed(seed);
+    const pub = ed25519RawPub(key);
+    assert.equal(pub.toString('hex'), 'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a');
+    const rfcSig = Buffer.from('e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b', 'hex');
+    const nodePub = createPublicKey({
+      key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), pub]),
+      format: 'der',
+      type: 'spki',
+    });
+    assert.equal(verify(null, Buffer.alloc(0), nodePub, rfcSig), true);
+    const from = encodeDest(destCommitFromSpendPub(pub));
+    const tx = {
+      kind: 'send',
+      from,
+      vin: [{ prev: Buffer.alloc(32), index: 0 }],
+      vout: [{ address: from, nanos: 1, kind: 'send' }],
+    };
+    signSpendTx(tx, key);
+    assert.equal(verifySpendSig(tx), true);
   });
 });

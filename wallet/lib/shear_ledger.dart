@@ -443,10 +443,28 @@ class ShearLedger {
           continue;
         }
       }
+      final kind = (o['kind'] as String?) ?? 'pot';
+      num? amt = o['amount'] as num?;
+      if (amt == null && o['nanos'] is num) {
+        amt = (o['nanos'] as num) / kUnitsPerShe;
+      }
+      if (amt == null) {
+        final h = (o['height'] as num?)?.toInt();
+        for (final t in _txs) {
+          if (h != null && t.height != h) continue;
+          if (t.to != matched) continue;
+          final same = t.kind == kind
+              || (kind == 'pot' && t.kind == 'coinbase')
+              || (kind == 'hash' && t.kind == 'hash');
+          if (!same) continue;
+          amt = t.amount;
+          break;
+        }
+      }
       rememberNote({
         'address': matched,
         'dest': matched,
-        'kind': (o['kind'] as String?) ?? 'pot',
+        'kind': kind,
         'commit': commit,
         'noteCommit': nc,
         'r': r,
@@ -456,8 +474,7 @@ class ShearLedger {
         'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
         'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
         if (o['height'] != null) 'height': o['height'],
-        if (o['nanos'] != null) 'amount': (o['nanos'] as num) / kUnitsPerShe,
-        if (o['amount'] != null) 'amount': o['amount'],
+        if (amt != null) 'amount': amt,
       });
     }
   }
@@ -1788,13 +1805,34 @@ class ShearLedger {
       }
     }
     if (spendable(src) < needShe) throw StateError('insufficient');
+    Map<String, dynamic>? spent;
+    var fundedShe = spendable(src);
+    if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local) {
+      for (final n in _notes) {
+        if (n['spent'] == true) continue;
+        if (n['address'] != src && n['dest'] != src) continue;
+        if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+        final h = (n['height'] as num?)?.toInt();
+        if (h != null && h > 0 && (_sealedHeight - h + 1) < spendableConfirmations) {
+          continue;
+        }
+        final amt = n['amount'];
+        final noteShe = amt is num ? amt.toDouble() : fundedShe;
+        if (noteShe + 1e-18 < needShe) continue;
+        final have = spent?['amount'];
+        final haveShe = have is num ? have.toDouble() : -1.0;
+        if (spent == null || noteShe > haveShe) spent = n;
+      }
+      if (spent == null) throw StateError('no_note');
+      if (spent['amount'] is num) fundedShe = (spent['amount'] as num).toDouble();
+    }
     String? changeDest = change;
     if (sendKind == 'send') {
       String? portal;
       if (restFrame != null && (viewSecret ?? '').isNotEmpty) {
         portal = vaultDest(restFrame, viewKey: viewSecret!);
       }
-      final leftover = spendable(src) - needShe;
+      final leftover = fundedShe - needShe;
       if (leftover > 1e-18) {
         final derive = restFrame ?? src;
         if (paymentCode != null && isFullPaymentCode(paymentCode)) {
@@ -1828,7 +1866,7 @@ class ShearLedger {
       {'address': destTo, 'nanos': nanos, 'kind': sendKind},
     ];
     if (sendKind == 'send' && changeDest != null) {
-      final leftoverNanos = ((spendable(src) - needShe) * kUnitsPerShe).round();
+      final leftoverNanos = ((fundedShe - needShe) * kUnitsPerShe).round();
       if (leftoverNanos > 0) {
         vouts.add({'address': changeDest, 'nanos': leftoverNanos, 'kind': 'send'});
       }
@@ -1842,16 +1880,6 @@ class ShearLedger {
     Map<String, dynamic>? admitProof;
     dynamic excess;
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local) {
-      Map<String, dynamic>? spent;
-      for (final n in _notes) {
-        if (n['spent'] == true) continue;
-        if ((n['address'] == src || n['dest'] == src) &&
-            _noteBytes(n['commit']) != null &&
-            _noteBytes(n['r']) != null) {
-          spent = n;
-          break;
-        }
-      }
       if (spent == null) throw StateError('no_note');
       final spentNote = {
         'kind': (spent['kind'] as String?) ?? 'pot',
@@ -1916,6 +1944,8 @@ class ShearLedger {
             'admitPub': o['admitPub'],
             'index': i,
             'prev': Uint8List(32),
+            if (o['nanos'] != null) 'nanos': o['nanos'],
+            if (o['nanos'] != null) 'amount': (o['nanos'] as num) / kUnitsPerShe,
           });
         }
       }
@@ -2258,6 +2288,10 @@ class ShearPoolClient {
       req.persistentConnection = false;
       req.headers.contentType = ContentType.json;
       final payload = utf8.encode(jsonEncode(body));
+      final dump = Platform.environment['SHEAR_DUMP_SEND'];
+      if (dump != null && dump.isNotEmpty && path.contains('send')) {
+        File(dump).writeAsBytesSync(payload);
+      }
       req.contentLength = payload.length;
       req.add(payload);
       final res = await req.close();

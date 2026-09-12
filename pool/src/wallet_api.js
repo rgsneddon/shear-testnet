@@ -27,7 +27,7 @@ import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, open
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout } from '../../crypto/coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves } from '../../crypto/coinbase_notes.js';
 import { noteCommitOfDest20 } from '../../crypto/note.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
@@ -893,11 +893,18 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           if (!Buffer.from(o.noteCommit).equals(want)) return;
           let nanos;
           if (tx.coinbase) {
+            const bonus = Number(store?.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS);
             const pays = expectedCoinbasePays(b.shareBatch || [], {
               miner: b.miner,
-              hashBonusNanos: Number(store?.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS),
+              poolDest,
+              hashBonusNanos: bonus,
             });
             nanos = matchSealedCoinbaseVout(o, pays).nanos || undefined;
+            if (nanos == null) {
+              nanos = matchSealedCoinbaseVout(o, paysFromALeaves(b.aLeaves || [], {
+                hashBonusNanos: bonus,
+              })).nanos || undefined;
+            }
           }
           notes.push({
             kind: o.kind || (tx.coinbase ? 'pot' : 'send'),

@@ -79,7 +79,8 @@ _Pt _add(_Pt a, _Pt b) {
   final E = _mod((a.x + a.y) * (b.x + b.y) - A - B);
   final F = _mod(D - C);
   final G = _mod(D + C);
-  final H = _mod(B - A);
+  // Ed25519 is twisted Edwards a = −1, so H = B − aA = B + A.
+  final H = _mod(B + A);
   return _Pt(_mod(E * F), _mod(G * H), _mod(F * G), _mod(E * H));
 }
 

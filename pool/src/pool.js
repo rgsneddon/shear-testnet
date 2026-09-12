@@ -1711,6 +1711,10 @@ export function createPool({
     if (typeof store.queueTx === 'function') {
       const got = store.queueTx(tx);
       if (!got.ok) return got;
+      try {
+        const next = issueJob(undefined, { force: true });
+        if (next) broadcastJob(next);
+      } catch { /* rebuild is best-effort so the next header can carry the send */ }
       return got.tx || tx;
     }
     store.mempool = store.mempool || [];
@@ -2069,40 +2073,64 @@ export function createPool({
     if (url.pathname === '/api/mempool' || url.pathname === '/api/mempoolPressure' || url.pathname === '/api/mempoolpressure' || url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/') || url.pathname.startsWith('/api/pool/') || url.pathname.startsWith('/api/vault/') || url.pathname.startsWith('/api/join/')) {
       let body = {};
       if (req.method === 'POST') {
-        body = JSON.parse(await new Promise((resolve, reject) => {
+        const raw = await new Promise((resolve, reject) => {
           const chunks = [];
           req.on('data', (c) => chunks.push(c));
           req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8') || '{}'));
           req.on('error', reject);
-        }));
+        });
+        try {
+          body = JSON.parse(raw);
+        } catch (err) {
+          res.statusCode = 400;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ ok: false, reason: 'bad_json', error: String(err && err.message || err) }));
+          return;
+        }
+        if (url.pathname === '/api/wallet/send') {
+          console.error(JSON.stringify({ walletSend: true, bytes: raw.length, hasAdmit: !!body.admit_proof, vin: Array.isArray(body.vin) && body.vin.length }));
+        }
       }
       const { handleWalletApi } = await import('./wallet_api.js');
-      const out = handleWalletApi(url, req.method, body, {
-        store,
-        miners,
-        lastJob,
-        nodesOnline: nodesOnline(),
-        poolDest: miner,
-        queueSend,
-        pendingPulls,
-        completeMinerPull: (login, dest, nanos) => {
-          const t = publicMinerTag(login);
-          const tipH = Number(store.tip?.()?.height || 0);
-          const confNeed = typeof store.getpolicy === 'function'
-            ? (store.getpolicy().operational?.pool_merchant || 30)
-            : 30;
-          const view = pullBook.view(t, { tipHeight: tipH, need: confNeed });
-          if (!(view.confirmedNanos > 0)) return { ok: false, reason: 'none_confirmed' };
-          if (Number(nanos) !== view.confirmedNanos) return { ok: false, reason: 'nanos' };
-          const taken = pullBook.takeConfirmed(t, { tipHeight: tipH, need: confNeed });
-          pendingPulls.delete(String(login || '').split('.')[0].toLowerCase());
-          return taken;
-        },
-      });
+      let out;
+      try {
+        out = handleWalletApi(url, req.method, body, {
+          store,
+          miners,
+          lastJob,
+          nodesOnline: nodesOnline(),
+          poolDest: miner,
+          queueSend,
+          pendingPulls,
+          completeMinerPull: (login, dest, nanos) => {
+            const t = publicMinerTag(login);
+            const tipH = Number(store.tip?.()?.height || 0);
+            const confNeed = typeof store.getpolicy === 'function'
+              ? (store.getpolicy().operational?.pool_merchant || 30)
+              : 30;
+            const view = pullBook.view(t, { tipHeight: tipH, need: confNeed });
+            if (!(view.confirmedNanos > 0)) return { ok: false, reason: 'none_confirmed' };
+            if (Number(nanos) !== view.confirmedNanos) return { ok: false, reason: 'nanos' };
+            const taken = pullBook.takeConfirmed(t, { tipHeight: tipH, need: confNeed });
+            pendingPulls.delete(String(login || '').split('.')[0].toLowerCase());
+            return taken;
+          },
+        });
+      } catch (err) {
+        res.statusCode = 500;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ ok: false, reason: 'send_error', error: String(err && err.message || err) }));
+        return;
+      }
       if (out) {
         res.statusCode = out.status;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify(out.json));
+        try {
+          res.end(JSON.stringify(out.json));
+        } catch (err) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ ok: false, reason: 'send_error', error: String(err && err.message || err) }));
+        }
         return;
       }
     }
@@ -2126,6 +2154,10 @@ export function createPool({
       res.end(data);
     });
   });
+  httpServer.timeout = 0;
+  httpServer.requestTimeout = 0;
+  httpServer.headersTimeout = 0;
+  httpServer.keepAliveTimeout = 5000;
   httpServer.on('listening', () => {
     paintStatsSnap();
     if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);

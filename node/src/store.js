@@ -912,6 +912,7 @@ export function createStore(dir, {
     const book = emptyMempool();
     book.baseFee = baseFeeNow;
     const pendingTxs = [];
+    const keep = [];
     for (const m of mempool) {
       const dest = destForLogin(m.to, { continuityRoot: lag1, height }) || m.to;
       const tx = {
@@ -929,8 +930,15 @@ export function createStore(dir, {
         fluxset: live.pubs,
         spendTags: live.spendTags,
       });
-      if (got.ok) pendingTxs.push(got.tx);
+      if (got.ok) {
+        pendingTxs.push(got.tx);
+        keep.push(m);
+      } else if (got.reason !== 'admit') {
+        keep.push(m);
+      }
     }
+    mempool.length = 0;
+    mempool.push(...keep);
     const tpl = buildTemplate({
       prev: t ? t.hash : GENESIS_PREV,
       prevHeader: t ? t.header : null,
