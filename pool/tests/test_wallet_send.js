@@ -68,6 +68,32 @@ function storeWith({ rows = [], reserveVault, issued } = {}) {
   };
 }
 
+describe('wallet fluxset RPC', () => {
+  it('serves current jroot and fluxset without viewKey or she1', () => {
+    const root = Buffer.alloc(32, 2);
+    const store = {
+      ...storeWith(),
+      fluxset: () => ({
+        pubs: [Buffer.alloc(32, 1)],
+        spendTags: new Set(['aa']),
+        jroot: root,
+      }),
+      jroot: () => root,
+    };
+    const got = handleWalletApi(url('/api/wallet/fluxset'), 'GET', {}, { store });
+    assert.equal(got.status, 200);
+    assert.equal(got.json.ok, true);
+    assert.equal(got.json.jroot, root.toString('hex'));
+    assert.equal(got.json.pubs.length, 1);
+    assert.deepEqual(got.json.spendTags, ['aa']);
+    assert.equal(JSON.stringify(got.json).includes('viewKey'), false);
+    assert.equal(JSON.stringify(got.json).includes('she1'), false);
+    const jr = handleWalletApi(url('/api/wallet/jroot'), 'GET', {}, { store });
+    assert.equal(jr.status, 200);
+    assert.equal(jr.json.jroot, got.json.jroot);
+  });
+});
+
 describe('pool send reconstruct and Join vault', () => {
   it('refuses send when reconstructed spendable is below amount and accepts when dest holds credits', () => {
     const alice = newIdentity();

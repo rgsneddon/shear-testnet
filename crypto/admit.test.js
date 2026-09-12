@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomScalar } from './note.js';
-import { admitPub, admitProve, admitVerify, spendTag, jroot } from './admit.js';
+import { admitPub, admitProve, admitVerify, spendTag, jroot, emptyFluxset, applyBlockToFluxset, fluxsetFromBlocks } from './admit.js';
 
 describe('Admit v1 fluxset membership', () => {
   it('proves a spend is admissible in the fluxset; a sampled subset is the wrong set', () => {
@@ -21,5 +21,16 @@ describe('Admit v1 fluxset membership', () => {
     const otherRoot = Buffer.from(jroot(fluxset.slice(0, 4)));
     assert.equal(root.length, 32);
     assert.equal(root.equals(otherRoot), false);
+  });
+
+  it('applyBlockToFluxset matches fluxsetFromBlocks and empty J has a 32-byte jroot', () => {
+    const x = randomScalar();
+    const P = admitPub(x);
+    const block = { txs: [{ vout: [{ admitPub: P.toBytes() }] }] };
+    const live = applyBlockToFluxset(emptyFluxset(), block);
+    const rebuilt = fluxsetFromBlocks([block]);
+    assert.equal(live.pubs.length, 1);
+    assert.equal(Buffer.from(live.jroot).equals(Buffer.from(rebuilt.jroot)), true);
+    assert.equal(Buffer.from(emptyFluxset().jroot).length, 32);
   });
 });

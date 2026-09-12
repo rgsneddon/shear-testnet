@@ -813,6 +813,31 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       }),
     };
   }
+  if ((path === '/api/wallet/fluxset' || path === '/api/wallet/jroot') && verb === 'GET') {
+    const live = typeof store?.fluxset === 'function'
+      ? store.fluxset()
+      : { pubs: [], spendTags: new Set(), jroot: Buffer.alloc(32) };
+    const root = Buffer.from(live.jroot || store?.jroot?.() || Buffer.alloc(32));
+    if (path === '/api/wallet/jroot') {
+      return { status: 200, json: { ok: true, jroot: root.toString('hex') } };
+    }
+    const pubs = (live.pubs || []).map((p) => {
+      try {
+        return Buffer.from(typeof p?.toBytes === 'function' ? p.toBytes() : p).toString('hex');
+      } catch {
+        return '';
+      }
+    }).filter(Boolean);
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        jroot: root.toString('hex'),
+        pubs,
+        spendTags: [...(live.spendTags || [])],
+      },
+    };
+  }
   if (path === '/api/wallet/balance' && verb === 'GET') {
     const address = url.searchParams.get('address') || '';
     if (!isDestAddress(address) && !isPaymentCode(address)) {

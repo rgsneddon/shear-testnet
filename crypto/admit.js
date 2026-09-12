@@ -186,28 +186,36 @@ export function pubFromAdmit(buf) {
  * Spent notes stay in J (Admit does not reveal which flowline moved).
  * Double-spend is a repeated spendTag.
  */
-export function fluxsetFromBlocks(blocks) {
-  const pubs = [];
-  const spendTags = new Set();
-  for (const b of blocks || []) {
-    for (const tx of b.txs || []) {
-      const proof = tx.admit_proof;
-      const tag = proof?.spendTag || tx.spendTag;
-      if (tag) {
-        const h = hexTag(tag);
-        if (h) spendTags.add(h);
-      }
-      for (const o of tx.vout || []) {
-        if (!o?.admitPub) continue;
-        try {
-          pubs.push(pubFromAdmit(o.admitPub));
-        } catch {
-          /* skip unreadable */
-        }
+export function emptyFluxset() {
+  return { pubs: [], spendTags: new Set(), jroot: jroot([]) };
+}
+
+/** Append one sealed block's notes and spend-tags onto a live J. */
+export function applyBlockToFluxset(live, block) {
+  const pubs = Array.isArray(live?.pubs) ? live.pubs.slice() : [];
+  const spendTags = new Set(live?.spendTags || []);
+  for (const tx of block?.txs || []) {
+    const tag = tx.admit_proof?.spendTag || tx.spendTag;
+    if (tag) {
+      const h = hexTag(tag);
+      if (h) spendTags.add(h);
+    }
+    for (const o of tx.vout || []) {
+      if (!o?.admitPub) continue;
+      try {
+        pubs.push(pubFromAdmit(o.admitPub));
+      } catch {
+        /* skip unreadable */
       }
     }
   }
   return { pubs, spendTags, jroot: jroot(pubs) };
+}
+
+export function fluxsetFromBlocks(blocks) {
+  let live = emptyFluxset();
+  for (const b of blocks || []) live = applyBlockToFluxset(live, b);
+  return live;
 }
 
 export function compactAdmitProof(proof) {

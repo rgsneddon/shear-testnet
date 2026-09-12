@@ -81,9 +81,15 @@
     code { background:var(--code); padding:.2em .45em; color:var(--green); }
     pre { background:var(--code); padding:.2em .45em; color:var(--green); white-space:pre-wrap; display:block; }
     input, select { width:100%; max-width:36rem; margin:.3rem 0 .6rem; padding:.4rem .5rem; background:var(--input); color:var(--ink); border:1px solid var(--blue); font-size:16px; font-family:"Segoe UI",system-ui,sans-serif; }
+    input:focus, select:focus { outline:2px solid var(--cyan); outline-offset:1px; }
+    input[aria-invalid="true"] { border-color:#b42318; }
+    input[aria-invalid="false"] { border-color:var(--green); }
+    .mine-dl { margin: 0 0 8px; }
     .cmd-row { display:flex; gap:8px; align-items:stretch; }
     .cmd-row pre { flex:1; margin:0; }
     .cmd-row button { padding:.4rem .7rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer; font-family:"Segoe UI",system-ui,sans-serif; font-size:.85rem; }
+    .cmd-row button:disabled { opacity:.55; cursor:not-allowed; }
+    .cmd-row button.is-copied { color:var(--green); }
     table { width:100%; max-width:100%; border-collapse:collapse; table-layout:fixed; }
     th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.88rem; overflow-wrap:anywhere; word-break:break-word; }
     .table-wrap { width:100%; max-width:100%; overflow-x:auto; }
@@ -313,7 +319,7 @@
         <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v3</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
       </section>
-      <section class="panel-card">
+      <section class="panel-card" id="start-mining">
         <h2>Start mining</h2>
         <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v3</code> · ShearHash-v3.</p>
         <ol class="mine-steps">
@@ -321,24 +327,31 @@
           <li>Paste dest and a worker name. Pick CPU threads.</li>
           <li>Copy the command. Hash bonuses land on that dest next block. No withdraw for units.</li>
         </ol>
+        <form id="mine-form" action="#" method="get" autocomplete="off">
         <p>
           <label class="label" for="addr">Copy dest (<code>ssa1</code>)</label><br/>
-          <input id="addr" type="text" placeholder="ssa1…" autocomplete="off" spellcheck="false"/>
+          <input id="addr" name="addr" type="text" placeholder="ssa1…" inputmode="text" autocapitalize="off" autocomplete="off" spellcheck="false" required aria-describedby="cmd-hint"/>
         </p>
         <p>
           <label class="label" for="worker">Worker name</label><br/>
-          <input id="worker" type="text" placeholder="rig1" autocomplete="off" spellcheck="false"/>
+          <input id="worker" name="worker" type="text" placeholder="rig1" autocomplete="off" spellcheck="false"/>
         </p>
         <p>
           <label class="label" for="threads">CPU threads</label><br/>
-          <input id="threads" type="number" min="1" value="4" step="1"/>
+          <input id="threads" name="threads" type="number" min="1" max="256" value="4" step="1"/>
+        </p>
+        <p class="mine-dl label">Miner 1.6:
+          <a href="https://github.com/rgsneddon/ShearK/releases/download/1.6/ShearK-Miner-1.6-linux.zip">Linux</a>
+          ·
+          <a href="https://github.com/rgsneddon/ShearK/releases/download/1.6/ShearK-Miner-1.6-windows.zip">Windows</a>
         </p>
         <div class="cmd-row">
           <pre id="mine-cmd">ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --threads 4</pre>
-          <button type="button" id="copy-cmd">Copy command</button>
+          <button type="submit" id="copy-cmd">Copy command</button>
         </div>
         <p class="label" id="cmd-hint">Login is the dest the wallet exported as <code>ssa1.worker</code>. <code>she1</code> without dest is unpaid. Never <code>shear1</code>.</p>
         <p class="label" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
+        </form>
       </section>
     </div>
     <div id="testnet-banner" role="status">TESTNET</div>
@@ -433,28 +446,73 @@
     </section>
   </div>
   <script>
+    function minerBin() {
+      const ua = navigator.userAgent || '';
+      if (/Windows/i.test(ua)) return 'ShearK-Miner.exe';
+      return 'ShearK-Miner';
+    }
+    function destOk(addr) {
+      return /^ssa1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,200}$/i.test(addr)
+        && !/^shear1/i.test(addr) && !/^she1/i.test(addr);
+    }
+    function loadMineForm() {
+      try {
+        const raw = localStorage.getItem('shear-mine-form');
+        if (!raw) return;
+        const s = JSON.parse(raw);
+        if (s.addr) document.getElementById('addr').value = s.addr;
+        if (s.worker) document.getElementById('worker').value = s.worker;
+        if (s.threads) document.getElementById('threads').value = String(s.threads);
+      } catch (e) { /* ignore */ }
+    }
+    function saveMineForm(addr, worker, t) {
+      try {
+        localStorage.setItem('shear-mine-form', JSON.stringify({ addr: addr, worker: worker, threads: t }));
+      } catch (e) { /* ignore */ }
+    }
     function renderCmd() {
       const addr = (document.getElementById('addr').value || '').trim();
       const worker = (document.getElementById('worker').value || '').trim() || 'worker';
-      const t = Math.max(1, Number(document.getElementById('threads').value) || 4);
+      const t = Math.max(1, Math.min(256, Number(document.getElementById('threads').value) || 4));
       let user = 'YOUR_SSA1.worker';
       if (addr) {
         const w = worker.replace(/[^a-zA-Z0-9_-]/g, '') || 'worker';
         user = addr.indexOf('.') >= 0 ? addr : addr + '.' + w;
       }
+      const bin = minerBin();
       document.getElementById('mine-cmd').textContent =
-        'ShearK-Miner --pool pool.shear.digital:1111 --user ' + user + ' --threads ' + t;
-      const ok = /^ssa1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,200}$/i.test(addr)
-        && !/^shear1/i.test(addr) && !/^she1/i.test(addr);
+        bin + ' --pool pool.shear.digital:1111 --user ' + user + ' --threads ' + t;
+      const ok = destOk(addr);
+      const addrEl = document.getElementById('addr');
+      if (addr) addrEl.setAttribute('aria-invalid', ok ? 'false' : 'true');
+      else addrEl.removeAttribute('aria-invalid');
+      document.getElementById('copy-cmd').disabled = !ok;
       document.getElementById('cmd-hint').textContent = ok
         ? 'Ready to copy · ShearHash-v3 · shear-testnet-v3 · :1111'
         : 'Paste Copy dest (ssa1). Login is ssa1.worker.';
+      saveMineForm(addr, (document.getElementById('worker').value || '').trim(), t);
     }
+    loadMineForm();
     document.getElementById('addr').addEventListener('input', renderCmd);
     document.getElementById('worker').addEventListener('input', renderCmd);
     document.getElementById('threads').addEventListener('input', renderCmd);
-    document.getElementById('copy-cmd').addEventListener('click', function () {
-      navigator.clipboard.writeText(document.getElementById('mine-cmd').textContent);
+    document.getElementById('mine-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      const cmd = document.getElementById('mine-cmd').textContent;
+      const btn = document.getElementById('copy-cmd');
+      const go = function () {
+        btn.classList.add('is-copied');
+        btn.textContent = 'Copied';
+        setTimeout(function () {
+          btn.classList.remove('is-copied');
+          btn.textContent = 'Copy command';
+        }, 1400);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(cmd).then(go).catch(go);
+      } else {
+        go();
+      }
     });
     function fmtRate(n) {
       const v = Number(n) || 0;

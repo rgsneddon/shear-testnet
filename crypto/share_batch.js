@@ -84,9 +84,30 @@ export function aLeavesFromShares(shares = []) {
     .map(([hex, count]) => ({ noteCommit: Buffer.from(hex, 'hex'), count }));
 }
 
+function shareJobKey(header) {
+  try {
+    const buf = Buffer.isBuffer(header) ? Buffer.from(header) : Buffer.from(String(header), 'hex');
+    return setNonce(buf, 0n).toString('hex').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/** Process-local: floor shares the pool already hashed live. Not on the wire. */
+const liveSharePow = new Set();
+
+export function rememberLiveSharePow(parentHeader, nonce) {
+  const job = shareJobKey(parentHeader);
+  if (!job) return;
+  liveSharePow.add(`${job}:${String(nonce)}`);
+  if (liveSharePow.size > MAX_SHARES_PER_BLOCK * 8) liveSharePow.clear();
+}
+
 /**
  * Recompute ShearHash-v3 on the frozen parent job header.
  * Duplicate nonce = dup_share. Miss floor = share_pow. Dest must be ssa1.
+ * Live pool shares already hashed off-thread skip a second RandomX on the
+ * event loop (p2p / tests still hash).
  */
 export function verifyShareBatch({
   parentHeader,
@@ -102,6 +123,7 @@ export function verifyShareBatch({
   }
   if (!parentHeader) return { ok: false, reason: 'parent_header' };
   const job = Buffer.from(parentHeader);
+  const jobKey = shareJobKey(job);
   const seenNonce = new Set();
   const proven = [];
   for (const s of list) {
@@ -124,16 +146,21 @@ export function verifyShareBatch({
       if (!Buffer.from(nc).equals(expect)) return { ok: false, reason: 'hash_bonus' };
     }
     const header = setNonce(job, nonce);
-    const hash = shearHash(header);
-    if (!meetsTarget(hash, floorBits)) {
-      return { ok: false, reason: 'share_pow' };
+    const cached = jobKey && liveSharePow.has(`${jobKey}:${nk}`);
+    let lz = Number(s.lz) & 0xff;
+    if (!cached) {
+      const hash = shearHash(header);
+      if (!meetsTarget(hash, floorBits)) {
+        return { ok: false, reason: 'share_pow' };
+      }
+      lz = leadingZeroBits(hash) & 0xff;
     }
     proven.push({
       dest20: dest ? dest20OfShare({ ...s, dest }) : Buffer.alloc(20),
       dest: dest || '',
       noteCommit: Buffer.from(nc),
       nonce,
-      lz: leadingZeroBits(hash) & 0xff,
+      lz,
       units: unitsForShare(),
     });
   }

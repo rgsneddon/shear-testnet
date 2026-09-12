@@ -230,6 +230,10 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       miner: dest,
     });
     assert.equal(appended.ok, true, appended.reason);
+    const rebuilt = fluxsetFromBlocks(store.blocks);
+    assert.equal(Buffer.from(store.jroot()).equals(Buffer.from(rebuilt.jroot)), true);
+    assert.equal(store.fluxset().pubs.length, rebuilt.pubs.length);
+    assert.ok(store.fluxset().pubs.length >= 1, 'coinbase notes enter live J');
     const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
     const idx = parent.txs[0].vout.indexOf(spent);
     const live = store.fluxset();

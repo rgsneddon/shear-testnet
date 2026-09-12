@@ -33,7 +33,7 @@ import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
 import { createPullBook, PULL_COOLDOWN_MS } from './pull_book.js';
 import { createStore } from '../../node/src/store.js';
 import { potSharesFromBatch } from '../../node/src/chain.js';
-import { verifyShareBatch, sortShares } from '../../crypto/share_batch.js';
+import { sortShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
 import { explorerRecentTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
@@ -194,21 +194,12 @@ export function provenLag1Shares(parentHeader, shares) {
   if (!list.length || !parentHeader) return [];
   const parentId = shareJobId(parentHeader);
   const trusted = [];
-  const unknown = [];
   for (const s of list) {
     const id = shareJobId(s?.verifiedHeader);
     if (id && parentId && id === parentId) trusted.push(s);
-    else unknown.push(s);
   }
-  if (!unknown.length) return sortShares(trusted);
-  const ordered = sortShares(unknown);
-  const all = verifyShareBatch({
-    parentHeader,
-    shares: ordered,
-    floorBits: SHARE_FLOOR_BITS,
-  });
-  if (all.ok) return sortShares(trusted.concat(ordered));
-  // Do not RandomX each leftover row. That stalled stratum/HTTP/UI on blockfound.
+  // Never RandomX leftovers on the event loop. A restamp / missing
+  // verifiedHeader cannot freeze the next job; drop it.
   return sortShares(trusted);
 }
 
@@ -1340,6 +1331,7 @@ export function createPool({
               ? scored.header.toString('hex').toLowerCase()
               : String(job?.header || '').toLowerCase(),
           });
+          rememberLiveSharePow(scored.header || job?.header, params.nonce);
         }
       }
       const proven = hashesProvenByShare(Number(scored.creditedShareBits || job?.shareBits) || 0);
@@ -1385,6 +1377,7 @@ export function createPool({
           dest: session?.payoutDest,
           height: Number(store.tip()?.height || 0) + 1,
         }),
+        powHash: scored.hash,
       }));
       sealing = false;
       if (got?.ok) {

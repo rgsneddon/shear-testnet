@@ -165,6 +165,11 @@ describe('brand pages', () => {
     assert.match(poolHtml, /class="she-private-lockup">She is Private</);
     assert.match(poolHtml, /Private dests, public amounts/);
     assert.match(poolHtml, /PoW elects the tip/);
+    assert.match(poolHtml, /id="mine-form"/);
+    assert.match(poolHtml, /id="addr"/);
+    assert.match(poolHtml, /id="copy-cmd"/);
+    assert.match(poolHtml, /ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker/);
+    assert.match(poolHtml, /ShearK-Miner-1\.6-linux\.zip/);
     assert.doesNotMatch(poolHtml, /Private by default/);
     assert.doesNotMatch(poolHtml, /Proof of work only/);
     assert.doesNotMatch(poolHtml, /shewall\.json/);

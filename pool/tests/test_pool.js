@@ -215,6 +215,9 @@ describe('HTTP stats cannot stall', () => {
     assert.match(src, /STATS_REFRESH_MS/);
     assert.match(src, /scoreShareLive/);
     assert.match(src, /hashOffThread/);
+    assert.match(src, /rememberLiveSharePow/);
+    assert.match(src, /powHash: scored\.hash/);
+    assert.equal(/verifyShareBatch\s*\(/.test(src), false);
     const start = src.indexOf("url.pathname === '/api/stats'");
     assert.ok(start >= 0);
     const slice = src.slice(start, start + 420);
@@ -651,7 +654,9 @@ describe('public miner listing', () => {
     assert.match(miner, /input::placeholder \{ color:var\(--muted\)/);
     assert.doesNotMatch(miner, /\.pull-form input[^}]*background:#fff/);
     assert.doesNotMatch(miner, />raskul</);
-    assert.equal(/localStorage/.test(dash + miner), false);
+    assert.equal(/localStorage/.test(miner), false);
+    assert.match(dash, /localStorage.getItem\('shear-mine-form'\)/);
+    assert.doesNotMatch(dash, /localStorage\.[gs]etItem\(['"]workers/);
     assert.match(miner, /id="m-algo">ShearHash-v3</);
     assert.match(miner, /d\.personalisation \|\| 'ShearHash-v3'/);
   });

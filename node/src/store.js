@@ -34,7 +34,7 @@ import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
 import { blockWeight } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
-import { admit_verify, fluxsetFromBlocks } from '../../crypto/admit.js';
+import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset } from '../../crypto/admit.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { asU8 } from '../../crypto/note.js';
 import { blockWork } from '../../crypto/asert.js';
@@ -199,6 +199,11 @@ export function createStore(dir, {
 
   rebuildExplorer();
   rememberHeaders(blocks, 'active');
+
+  let liveFlux = fluxsetFromBlocks(blocks);
+  function refreshFlux() {
+    liveFlux = fluxsetFromBlocks(blocks);
+  }
 
   const reserveVault = emptyVault();
   const loadedOracle = (() => {
@@ -499,7 +504,7 @@ export function createStore(dir, {
     return onOk(check);
   }
 
-  function append(block) {
+  function append(block, verifyOpts = {}) {
     const prev = tip();
     const parentH = prev ? prev.height : 0;
     const check = verifyBlock(block, prev ? {
@@ -525,6 +530,7 @@ export function createStore(dir, {
         try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
       }),
       nowMs: Date.now(),
+      trustedPowHash: verifyOpts.trustedPowHash || null,
     });
     for (const tx of (block.txs || []).slice(1)) {
       const pay = verifyReservePayout(reserveVault, tx);
@@ -547,6 +553,7 @@ export function createStore(dir, {
     applyReserve(full);
     const stored = leanBlock(full);
     blocks.push(stored);
+    liveFlux = applyBlockToFluxset(liveFlux, stored);
     persist(stored);
     rememberHeaders([stored], 'active');
     {
@@ -607,7 +614,7 @@ export function createStore(dir, {
     if (flowNeedsDummy(tx)) {
       const proof = tx.admit_proof;
       if (!proof) return { ok: false, reason: 'admit' };
-      const live = fluxsetFromBlocks(blocks);
+      const live = liveFlux;
       if (!admit_verify(proof, live.pubs)) return { ok: false, reason: 'admit' };
       const tag = proof.spendTag || tx.spendTag;
       if (!tag) return { ok: false, reason: 'admit' };
@@ -649,7 +656,7 @@ export function createStore(dir, {
     }
     const pay = verifyReservePayout(reserveVault, tx);
     if (!pay.ok) return pay;
-    const live = fluxsetFromBlocks(blocks);
+    const live = liveFlux;
     const got = admitMempool(book, tx, {
       baseFee: base,
       fluxset: live.pubs,
@@ -759,6 +766,7 @@ export function createStore(dir, {
     rememberHeaders(accepted, 'active');
     rewriteChain();
     rebuildExplorer();
+    refreshFlux();
     replayVault();
     const afterSpent = () => {
       bounceMempool(disconnected, connected);
@@ -912,7 +920,7 @@ export function createStore(dir, {
       };
       if (pause.reserveInterest && tx.mint) continue;
       if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
-      const live = fluxsetFromBlocks(blocks);
+      const live = liveFlux;
       const got = admitMempool(book, tx, {
         baseFee: baseFeeNow,
         fluxset: live.pubs,
@@ -936,7 +944,7 @@ export function createStore(dir, {
       shareBatch: Array.isArray(shareBatch) ? shareBatch : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch : []),
       poolDest,
       parentBlocks: blocks,
-      parentFluxset: fluxsetFromBlocks(blocks).pubs,
+      parentFluxset: liveFlux.pubs,
     });
     const jobId = `shear-${height}-${jobSeq++}`;
     const job = publicJob(tpl, { jobId, shareBits });
@@ -946,7 +954,7 @@ export function createStore(dir, {
     return { tpl, job };
   }
 
-  function submitHeader({ jobId, nonce, miner }) {
+  function submitHeader({ jobId, nonce, miner, powHash } = {}) {
     const rec = jobs.get(String(jobId));
     if (!rec) return { ok: false, reason: 'stale_job' };
     const header = setNonce(rec.tpl.header, BigInt(nonce));
@@ -961,7 +969,8 @@ export function createStore(dir, {
       rootA: rec.tpl.rootA,
       rootB: rec.tpl.rootB,
     };
-    return append(block);
+    const trustedPowHash = powHash ? Buffer.from(String(powHash), 'hex') : null;
+    return append(block, { trustedPowHash: trustedPowHash && trustedPowHash.length === 32 ? trustedPowHash : null });
   }
 
   return {
@@ -1002,8 +1011,12 @@ export function createStore(dir, {
     getpolicy: () => policyView(policyState),
     getchaintips,
     getreorgs: () => reorgs.slice(),
-    fluxset: () => fluxsetFromBlocks(blocks),
-    jroot: () => fluxsetFromBlocks(blocks).jroot,
+    fluxset: () => ({
+      pubs: liveFlux.pubs.slice(),
+      spendTags: new Set(liveFlux.spendTags),
+      jroot: liveFlux.jroot,
+    }),
+    jroot: () => liveFlux.jroot,
     hashTxLive: HASH_TX_LIVE,
     consensusFingerprint,
     pause,

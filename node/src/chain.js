@@ -511,6 +511,7 @@ function verifyBlockConsensus(block, prev, {
   seenDigests = null,
   evmSession = null,
   evmHistory = null,
+  trustedPowHash = null,
 } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
@@ -523,8 +524,18 @@ function verifyBlockConsensus(block, prev, {
   if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
   const wantPrev = prev?.hash ? Buffer.from(prev.hash) : GENESIS_PREV;
   if (!decoded.prevBlockHash.equals(wantPrev)) return { ok: false, reason: 'prev' };
-  const hash = shearHash(h);
-  if (!meetsTarget(hash, decoded.bits)) return { ok: false, reason: 'pow' };
+  // Local pool already hashed this header off-thread. Re-running RandomX
+  // on the event loop stalls HTTP/stratum. P2P and tests omit this and hash.
+  let hash;
+  if (trustedPowHash) {
+    hash = Buffer.from(trustedPowHash);
+    if (hash.length !== 32 || !meetsTarget(hash, decoded.bits)) {
+      return { ok: false, reason: 'pow' };
+    }
+  } else {
+    hash = shearHash(h);
+    if (!meetsTarget(hash, decoded.bits)) return { ok: false, reason: 'pow' };
+  }
   const txs = Array.isArray(block.txs) ? block.txs : [];
   if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
   const merkle = merkleRoot(txs.map(digestTx));
