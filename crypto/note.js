@@ -279,3 +279,36 @@ export function excessOf(vouts) {
   }
   return scalarBytes(s);
 }
+
+/** Kernel k = Σ r_out − Σ r_in so sum(C_out) + fee·G = sum(C_in) + k·H. */
+export function kernelExcess(vouts = [], vins = []) {
+  let s = Fn.ZERO;
+  for (const o of vouts) {
+    if (!o?.r) return null;
+    s = Fn.add(s, scalarFrom(o.r));
+  }
+  for (const v of vins) {
+    if (!v?.r) return null;
+    s = Fn.sub(s, scalarFrom(v.r));
+  }
+  return scalarBytes(s);
+}
+
+/** Pedersen conservation without painted output amounts. */
+export function verifyFlowConservation(tx) {
+  try {
+    const vouts = tx?.vout || [];
+    const vins = (tx?.vin || []).filter((v) => v?.commit);
+    if (!vouts.length || !vins.length) return false;
+    const outC = mintTotal(vouts);
+    const inC = mintTotal(vins.map((v) => ({ commit: v.commit })));
+    if (!outC || !inC) return false;
+    if (!tx.excess) return false;
+    const fee = Math.max(0, Math.floor(Number(tx.fee || 0)));
+    const lhs = fee ? outC.add(mulG(fee)) : outC;
+    const rhs = inC.add(H.multiply(scalarFrom(tx.excess)));
+    return lhs.equals(rhs);
+  } catch {
+    return false;
+  }
+}

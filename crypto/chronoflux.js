@@ -304,10 +304,10 @@ export function compactTx(tx) {
   delete out.samples;
   const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
   const keepDest = kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'vortice-register';
+  delete out.nanos;
+  delete out.changeNanos;
+  delete out.amount;
   if (!keepDest) {
-    delete out.nanos;
-    delete out.changeNanos;
-    delete out.amount;
     delete out.from;
     delete out.to;
   }

@@ -208,15 +208,8 @@
       <div class="grid">
         <article class="panel-card"><div class="label">Coins in circulation</div><div class="value" id="ex-circulating">—</div></article>
         <article class="panel-card"><div class="label">Emitted</div><div class="value" id="ex-emitted">—</div></article>
-        <article class="panel-card"><div class="label">Holders</div><div class="value" id="ex-holder-count">—</div></article>
+        <article class="panel-card"><div class="label">Sealed notes</div><div class="value" id="ex-note-count">—</div></article>
       </div>
-      <h2>Top holders</h2>
-      <table id="ex-holders">
-        <thead>
-          <tr><th>#</th><th>Dest</th><th>Amount</th><th>Share</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
     </section>
   </div>
   <script>
@@ -383,15 +376,9 @@
       return q.has('height') || q.has('id') || q.has('from') || q.has('to');
     }
     function paintHolders(circ) {
-      setText('ex-circulating', fmtShe(circ.circulating) + ' SHE');
-      setText('ex-emitted', fmtShe(circ.emitted) + ' SHE');
-      setText('ex-holder-count', circ.holderCount ?? 0);
-      const body = document.querySelector('#ex-holders tbody');
-      if (!body) return;
-      const holders = Array.isArray(circ.holders) ? circ.holders : [];
-      body.innerHTML = holders.length
-        ? holders.map((h) => '<tr><td>'+esc(h.rank)+'</td><td class="mono">'+esc(shortDest(h.dest))+'</td><td>'+esc(fmtShe(h.amount))+'</td><td>'+((Number(h.share)||0)*100).toFixed(2)+'%</td></tr>').join('')
-        : '<tr><td colspan="4">No holders yet.</td></tr>';
+      setText('ex-circulating', (circ.proofs ? 'proofs' : fmtShe(circ.circulating) + ' SHE'));
+      setText('ex-emitted', (circ.amountHidden ? 'hidden' : fmtShe(circ.emitted) + ' SHE'));
+      setText('ex-note-count', circ.noteCount ?? 0);
     }
     async function loadRecent() {
       const stats = await fetchJson('/stats');

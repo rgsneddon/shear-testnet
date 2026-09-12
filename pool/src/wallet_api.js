@@ -617,39 +617,24 @@ export function networkSupply(store) {
 }
 
 export function explorerCirculation(store) {
-  const rows = [];
-  for (const b of store.blocks || []) rows.push(...sealedExplorerRows(b));
-  const bal = new Map();
-  let emitted = 0;
-  for (const r of rows) {
-    if (!isPublicParty(r.to) || !isPublicParty(r.from)) continue;
-    const amt = nanosToShe(r.nanos);
-    if (r.from === 'coinbase') {
-      emitted += amt;
-      if (isDestAddress(r.to)) bal.set(r.to, (bal.get(r.to) || 0) + amt);
-    } else {
-      if (isDestAddress(r.from)) bal.set(r.from, (bal.get(r.from) || 0) - amt);
-      if (isDestAddress(r.to)) bal.set(r.to, (bal.get(r.to) || 0) + amt);
+  const supply = networkSupply(store);
+  let noteCount = 0;
+  for (const b of store.blocks || []) {
+    for (const tx of b.txs || []) {
+      for (const o of tx.vout || []) {
+        if (o?.commit || o?.noteCommit || o?.valueProof) noteCount += 1;
+      }
     }
   }
-  for (const [k, v] of [...bal.entries()]) {
-    if (!(v > 0) || !isDestAddress(k)) bal.delete(k);
-  }
-  const circulating = [...bal.values()].reduce((a, b) => a + b, 0);
-  const holders = [...bal.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
-    .map(([dest, amount], i) => ({
-      rank: i + 1,
-      dest: publicPaintDest(dest),
-      amount,
-      share: circulating ? amount / circulating : 0,
-    }));
   return {
-    circulating,
-    emitted,
-    holderCount: bal.size,
-    holders,
+    proofs: true,
+    amountHidden: true,
+    noteCount,
+    circulatingNanos: supply.circulatingNanos,
+    circulating: nanosToShe(supply.circulatingNanos),
+    emitted: nanosToShe(supply.potNanos + supply.hashNanos + supply.extraMintNanos),
+    holderCount: 0,
+    holders: [],
   };
 }
 

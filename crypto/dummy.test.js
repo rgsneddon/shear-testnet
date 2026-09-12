@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { newIdentity } from './address.js';
 import { destForLogin, vaultDest } from './flow_sheet.js';
 import { lockTx, voteTx } from './reserve_vault.js';
-import { verifySealedNote, verifyRange, verifyMintSum } from './note.js';
+import { verifySealedNote, verifyRange, verifyFlowConservation } from './note.js';
 import {
   DUMMY_KIND,
   attachDummyOuts,
@@ -49,12 +49,17 @@ describe('Flow dummy outs', () => {
     const lock = lockTx({ from, to: vault, nanos: PI_SHE_NANOS, id: 'lock-d' });
     assert.equal(flowNeedsDummy(lock), false);
     assert.equal(dummyCount(attachDummyOuts(lock)), 0);
+    const sealedLock = compactTx(lock);
+    assert.equal(sealedLock.nanos, undefined);
+    assert.equal(sealedLock.to, vault);
+    assert.equal(sealedLock.vout[0].address, vault);
     const vote = voteTx({ from, dest: vault, choice: 'hold', id: 'vote-d' });
     assert.equal(flowNeedsDummy(vote), false);
     assert.equal(dummyCount(attachDummyOuts(vote)), 0);
 
     assert.ok(send.excess);
-    assert.equal(verifyMintSum(send.vout, 10, send.excess), true);
+    assert.ok(send.vin[0].commit);
+    assert.equal(verifyFlowConservation(send), true);
     const compact = compactTx(send);
     assert.equal(compact.nanos, undefined);
     assert.equal(compact.from, undefined);
@@ -62,8 +67,12 @@ describe('Flow dummy outs', () => {
     assert.equal(compact.vout[0].address, undefined);
     assert.equal(compact.vin[0].address, undefined);
     assert.ok(compact.vout[0].commit);
+    assert.ok(compact.vin[0].commit);
     assert.ok(compact.vout[0].rangeProof);
     assert.ok(compact.excess);
+    assert.equal(verifyFlowConservation(compact), true);
+    assert.equal(verifyFlowConservation({ ...compact, excess: Buffer.alloc(32) }), false);
+    assert.equal(verifyFlowConservation({ ...compact, vin: [{ index: 0 }] }), false);
   });
 
   it('public explorer row hides amounts and keeps Reserve kind + dest', () => {

@@ -2,7 +2,7 @@
  * Flow dummy outs + view tags. Reserve kinds stay typed; vault is not dummy-deleted.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { sealNote, verifySealedNote, excessOf } from './note.js';
+import { sealNote, verifySealedNote, kernelExcess } from './note.js';
 import { hash20FromAddress } from './address.js';
 
 export const DUMMY_KIND = 'dummy';
@@ -57,6 +57,7 @@ export function attachDummyOuts(tx, { fanout = DUMMY_FANOUT } = {}) {
   const payN = Math.floor(Number(tx.nanos != null ? tx.nanos : raw[0]?.nanos || 0));
   const changeRaw = raw.find((o, i) => i > 0 && String(o.kind) !== DUMMY_KIND);
   const changeN = Math.floor(Number(tx.changeNanos != null ? tx.changeNanos : changeRaw?.nanos || 0));
+  const fee = Math.max(0, Math.floor(Number(tx.fee || 0)));
   const out = { ...tx, nanos: payN, vout: raw.map(sealFlowVout) };
   if (changeN) out.changeNanos = changeN;
   let n = dummyCount(out);
@@ -70,8 +71,19 @@ export function attachDummyOuts(tx, { fanout = DUMMY_FANOUT } = {}) {
   for (const o of out.vout) {
     if (o?.noteCommit && !o.viewTag) o.viewTag = viewTagOf(o.noteCommit);
   }
-  const excess = excessOf(out.vout);
-  if (excess) out.excess = excess;
+  if (Array.isArray(tx.vin) && tx.vin.length) {
+    const vin = tx.vin.map((v) => ({ ...v }));
+    if (!vin[0].commit) {
+      const d20 = hash20FromAddress(tx.from || vin[0].address) || randomBytes(20);
+      const inputNote = sealNote(payN + changeN + fee, { dest20: d20, kind: 'spend-in' });
+      vin[0].commit = inputNote.commit;
+      vin[0].noteCommit = inputNote.noteCommit;
+      vin[0].r = inputNote.r;
+    }
+    out.vin = vin;
+    const excess = kernelExcess(out.vout, out.vin);
+    if (excess) out.excess = excess;
+  }
   return out;
 }
 

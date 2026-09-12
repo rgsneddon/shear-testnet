@@ -240,7 +240,21 @@ export function createStore(dir, {
     saveReserve();
   }
 
-  replayVault();
+  function bootVault() {
+    if (fs.existsSync(vaultFile)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
+        if (raw && typeof raw === 'object' && raw.portals) {
+          Object.assign(reserveVault, raw);
+          if (!reserveVault.oracle) reserveVault.oracle = loadedOracle;
+          return;
+        }
+      } catch { /* rebuild from chain */ }
+    }
+    replayVault();
+  }
+
+  bootVault();
 
   const vortice = createVorticeCatalog(dir);
 
@@ -527,6 +541,7 @@ export function createStore(dir, {
       weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
     };
     indexSealed(full);
+    applyReserve(full);
     const stored = leanBlock(full);
     blocks.push(stored);
     persist(stored);
@@ -537,7 +552,6 @@ export function createStore(dir, {
         if (sealedIds.has(String(mempool[i].id))) mempool.splice(i, 1);
       }
     }
-    applyReserve(stored);
     for (const tx of (stored.txs || []).slice(1)) {
       if (String(tx.kind || '') === 'vortice-register' && typeof vortice.registerFromTx === 'function') {
         vortice.registerFromTx(tx);

@@ -51,6 +51,7 @@ import {
   verifyMintSum,
   verifyRange,
   excessOf,
+  verifyFlowConservation,
   noteCommitOfDest20,
 } from '../../crypto/note.js';
 import { packTx, packDigest } from '../../crypto/pack.js';
@@ -704,14 +705,7 @@ function verifyBlockConsensus(block, prev, {
       }
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
-      const excess = tx.excess || excessOf(tx.vout);
-      if (!excess) return { ok: false, reason: 'confidential' };
-      const claimed = Math.floor(Number(tx.nanos || 0));
-      const change = Math.floor(Number(tx.changeNanos || 0));
-      const total = claimed + change;
-      if (total > 0 && !verifyMintSum(tx.vout, total, excess)) {
-        return { ok: false, reason: 'confidential' };
-      }
+      if (!verifyFlowConservation(tx)) return { ok: false, reason: 'confidential' };
     }
     if ((unfunded || tx.mint) && String(tx.programId || '') === RESERVE_PROGRAM && String(tx.kind || '') === 'withdraw') {
       const bps = Number(committedBps ?? reserveState?.epochBps ?? GENESIS_BPS);
