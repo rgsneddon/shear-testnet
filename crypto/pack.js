@@ -159,7 +159,18 @@ export function unpackShareV5(packed) {
 
 export function packShareBatch(shares = []) {
   const list = Array.isArray(shares) ? shares : [];
-  return list.map((s) => (Buffer.isBuffer(s) ? s : packShare(s)));
+  return list.map((s) => {
+    if (Buffer.isBuffer(s)) return s;
+    if (s?.noteCommit && Buffer.from(s.noteCommit).length === 32) {
+      return packShareV5({
+        noteCommit: s.noteCommit,
+        nonce: s.nonce,
+        lz: s.lz,
+        viewTag: s.viewTag,
+      });
+    }
+    return packShare(s);
+  });
 }
 
 function coerceDest20(raw, dest) {
@@ -190,13 +201,20 @@ export function shareRowJson(s) {
 
 export function unpackShareBatch(rows = []) {
   return (Array.isArray(rows) ? rows : []).map((s) => {
-    if (Buffer.isBuffer(s) || typeof s === 'string') return unpackShare(s);
+    if (Buffer.isBuffer(s) || typeof s === 'string') {
+      const buf = Buffer.from(s);
+      const type = buf[ENC_MAGIC.length];
+      if (type === ENC_SHARE_V5) return unpackShareV5(buf);
+      return unpackShare(buf);
+    }
     const dest = String(s.dest || s.address || s.miner || '');
     return {
       dest20: coerceDest20(s.dest20, dest),
       dest,
+      noteCommit: s.noteCommit ? Buffer.from(s.noteCommit) : undefined,
       nonce: typeof s.nonce === 'bigint' ? s.nonce : BigInt(s.nonce || 0),
       lz: Number(s.lz || 0) & 0xff,
+      viewTag: s.viewTag || null,
     };
   });
 }

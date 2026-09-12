@@ -2,7 +2,7 @@
 
 Frozen numbers. `consensusFingerprint()` pins every line. A later flip is a new book.
 
-Network: `shear-testnet-v2` until this fingerprint is green. Mainnet `shear-v1` is a later genesis.
+Network: `shear-testnet-v3` (privacy-class). Frozen `shear-testnet-v2` is a different book. Mainnet `shear-v1` is a later genesis. Do not invent a genesis datetime.
 
 ## Numbers
 
@@ -37,13 +37,34 @@ Network: `shear-testnet-v2` until this fingerprint is green. Mainnet `shear-v1` 
 Fingerprint also pins:
 
 ```
+NETWORK=shear-testnet-v3
+HASH_FN=ShearHash-v3
+HASH_TX_LIVE=1
+HASH_UNIT_FLOOR=1
+LAG1_SHAREBATCH=1
+POT_PROP=shareBatch
+POOL_FEE_BPS=100
+DEST_HRP_SSA_ONLY=1
+SPEND_SIG_ONLY=1
+MEMO_NOT_DEST_KEYED=1
+AMOUNT=confidential
+DUMMY_OUTS=1
+ENC_SHARE=v5
+DANDELIONPP=1
+VIEW_TAG=1
+KDF=argon2id-shewall
+RESERVE=shear-reserve-v1
+RESERVE_EVM=1
+RESERVE_INTEREST=400d-bps-floor
+ORACLE=basket-mean-14
+VORTEX=vort1-pin
+VORTICE_NO_MINT=1
+LEVY_CAP=0.001-SHE
+LEVY_SPLIT=50-50-finder-reserve
+SPEND_MEMBERSHIP=fcmp++
 SHARE_FLOOR_BITS=8
 MAX_SHARES_PER_BLOCK=8192
 SPEND_SIG=ed25519-shear-spend-v1
-INTEREST=400d-bps-floor
-ORACLE=basket-mean-14
-HASH_UNIT_FLOOR=1
-POT_PROP=shareBatch
 POOL_WITHDRAW=eip712-spend-bound
 ```
 

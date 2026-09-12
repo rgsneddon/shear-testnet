@@ -5,6 +5,7 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, levyNeed, mempoolDepthBytes } from '../../crypto/levy.js';
 import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS } from '../../crypto/asert.js';
 import { lockTx, withdrawTx } from '../../crypto/reserve_vault.js';
+import { attachDummyOuts } from '../../crypto/dummy.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -39,7 +40,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const sendNanos = 2;
     const lockNanos = 1000;
     const valueNanos = 77;
-    const sendTx = {
+    const sendTx = attachDummyOuts({
       id: 'flow-send',
       kind: 'send',
       from: destA,
@@ -48,7 +49,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
       fee: levyNanos(sendNanos),
       vin: [{ address: destA }],
       vout: [{ address: destB, nanos: sendNanos }],
-    };
+    });
     const lock = {
       id: 'reserve-lock',
       programId: RESERVE_PROGRAM,

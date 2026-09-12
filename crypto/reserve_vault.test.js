@@ -257,6 +257,7 @@ describe('Reserve Solidity is Shear-only copy', () => {
   it('names Shear magics, π, 400 days, 99-day join, and refuses foreign chain ids', () => {
     const src = readFileSync(join(root, 'contracts/Reserve.sol'), 'utf8');
     assert.match(src, /shear-testnet-v2/);
+    assert.match(src, /shear-testnet-v3/);
     assert.match(src, /shear-testnet-v1/);
     assert.match(src, /shear-v1/);
     assert.match(src, /shear-reserve-v1/);

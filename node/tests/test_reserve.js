@@ -36,6 +36,7 @@ import { newIdentity, destOpeningFromView, hash20FromAddress, payoutDest, freshS
 import { vaultDest, destForLogin, destAtIndex } from '../../crypto/flow_sheet.js';
 import { matureSpendableNanos, signSpendTx } from '../../crypto/spend.js';
 import { levyNanos } from '../../crypto/levy.js';
+import { attachDummyOuts } from '../../crypto/dummy.js';
 
 function spendBox(id) {
   const pay = freshStealthDest(id.paymentCode);
@@ -92,7 +93,7 @@ describe('node Reserve vault', () => {
     assert.equal(c.hashBonusNanos, HASH_BONUS_NANOS);
     assert.equal(c.hashBonusNanos, 1);
     assert.equal(c.mainnet, false);
-    assert.equal(c.magic, 'shear-testnet-v2');
+    assert.equal(c.magic, 'shear-testnet-v3');
   });
 
   it('lock spends mature Continuum, refuses when spendable is short, withdraw returns principal + staked interest', { timeout: 600_000 }, async () => {
@@ -211,7 +212,7 @@ describe('node Reserve vault', () => {
     const dest = freshStealthDest(alice.paymentCode).dest;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reuse-dest-'));
     const store = createStore(dir);
-    const mk = (id) => ({
+    const mk = (id) => attachDummyOuts({
       id,
       kind: 'send',
       from: dest,
@@ -328,7 +329,7 @@ describe('node Reserve vault', () => {
     const fee = levyNanos(pay);
     const leftover = before - pay - fee;
     assert.ok(leftover > 0, `leftover ${leftover}`);
-    const queued = store.queueTx(signSpendTx({
+    const queued = store.queueTx(signSpendTx(attachDummyOuts({
       id: 'flow-change-1',
       kind: 'send',
       from: destA,
@@ -342,7 +343,7 @@ describe('node Reserve vault', () => {
         { address: destB, nanos: pay, kind: 'send' },
         { address: destC, nanos: leftover, kind: 'send' },
       ],
-    }, aliceBox.key));
+    }), aliceBox.key));
     assert.equal(queued.ok, true, queued.reason);
 
     await mineOne(store, minerDest, {

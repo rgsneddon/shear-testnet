@@ -272,8 +272,8 @@ describe('admit', () => {
     assert.equal(admitClient({ login: dest, client: 'ShearHash' }).ok, true);
     const sheOnly = admitClient({ login: id.paymentCode, client: 'ShearHash', name: 'Shear-Miner' });
     assert.equal(sheOnly.ok, true);
-    assert.equal(sheOnly.payoutDest, dest);
-    assert.equal(sheOnly.login, dest);
+    assert.equal(sheOnly.payoutDest, '');
+    assert.equal(sheOnly.login, id.paymentCode);
     const sheOwned = admitClient({ login: id.paymentCode, dest, client: 'ShearHash' });
     assert.equal(sheOwned.payoutDest, dest);
     assert.equal(admitClient({ login: id.paymentCode, dest: aliasDestOfSilentId(id.paymentCode), client: 'ShearHash' }).payoutDest, '');
@@ -381,7 +381,7 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /YOUR_SSA1/);
     assert.equal(/--user shear1/.test(html), false);
     assert.equal(html.includes('YOUR_SHEAR1'), false);
-    assert.match(html, /shear-testnet-v2/);
+    assert.match(html, /shear-testnet-v3/);
     assert.match(html, /Pool explorer · last 10 transactions/);
     assert.match(html, />Id</);
     assert.match(html, />Time</);
@@ -410,7 +410,7 @@ describe('pool dashboard + stratum', () => {
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     assert.equal(stats.nodesOnline, 1);
     assert.equal(stats.magic, MAGIC_TESTNET);
-    assert.equal(stats.magic, 'shear-testnet-v2');
+    assert.equal(stats.magic, 'shear-testnet-v3');
     assert.equal(stats.network, MAGIC_TESTNET);
     assert.equal(stats.personalisation, 'ShearHash-v3');
     assert.equal(stats.rxMode, 'light');
@@ -688,8 +688,8 @@ describe('public miner listing', () => {
       'Coin', 'Algo', 'Network', 'Proof', 'NODES ONLINE', 'Height',
       'Pool hashrate', 'Resistance', 'Miners', 'Workers', 'AVG BLOCK TIME', 'Uptime', 'Last block',
     ]);
-    assert.match(dash, /pool fee is 1% of the 1 SHE pot for development/);
-    assert.match(dash, /your hashes pay in full and are not subject to pool fees/);
+    assert.match(dash, /Pool fee is 1% of the 1 SHE pot/);
+    assert.match(dash, /Hash bonuses pay in full/);
     assert.doesNotMatch(dash, /0\.1 SHE pot/);
     assert.equal(/feeless/i.test(dash), false);
     assert.match(dash, /id="algo">ShearHash-v3</);
@@ -700,7 +700,7 @@ describe('public miner listing', () => {
     assert.match(dash, /class="she-private-lockup">She is Private</);
     assert.match(dash, /Great Vibes/);
     assert.match(dash, /<h1>Shear<\/h1>/);
-    assert.match(dash, /Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v2/);
+    assert.match(dash, /Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v3/);
     assert.doesNotMatch(dash, /Pool: <a href="https:\/\/pool\.shear\.digital"/);
     assert.doesNotMatch(dash, /Explorer: <a href="https:\/\/explorer\.shear\.digital"/);
   });
@@ -758,12 +758,8 @@ describe('public miner listing', () => {
     }, now), true);
     assert.equal(lastValidWorkAt({ lastShareAt: 10, acceptAt: [5, 12] }), 12);
     const fee = { accepted: 9, lastShareAt: now, workerKey: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.fee' };
-    assert.equal(isPublicMinerRow(fee, now), false);
-    assert.equal(isPublicMinerRow({
-      accepted: 0,
-      connections: [{ sock: {} }],
-      workerKey: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.fee',
-    }, now), false);
+    assert.equal(isCminerFeeLogin(fee.workerKey), false);
+    assert.equal(isPublicMinerRow(fee, now), true);
   });
 
   it('publicStats lists a connected hasher with accepted=0 and records miner hashes without minting them', async () => {

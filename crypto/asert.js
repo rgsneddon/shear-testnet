@@ -44,8 +44,9 @@ export const POT_PROP = 'shareBatch';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
 export const MAGIC_TESTNET_V1 = 'shear-testnet-v1';
 export const MAGIC_TESTNET_V2 = 'shear-testnet-v2';
-/** Live testnet book for ShearHash-v3. v1 remains readable but is not mined. */
-export const MAGIC_TESTNET = MAGIC_TESTNET_V2;
+export const MAGIC_TESTNET_V3 = 'shear-testnet-v3';
+/** Privacy-class book on this branch. v2 stays frozen off this tree. */
+export const MAGIC_TESTNET = MAGIC_TESTNET_V3;
 export const MAGIC_MAINNET = 'shear-v1';
 export const HASH_FN = 'ShearHash-v3';
 export const RX_SALT = 'ShearHash-v3/rx';
@@ -154,6 +155,23 @@ export function consensusFingerprint() {
     `HASH_UNIT_FLOOR=${HASH_BONUS_NANOS_FLOOR}`,
     `POT_PROP=${POT_PROP}`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
+    `NETWORK=${MAGIC_TESTNET}`,
+    'AMOUNT=confidential',
+    'DUMMY_OUTS=1',
+    'ENC_SHARE=v5',
+    'DANDELIONPP=1',
+    'VIEW_TAG=1',
+    'KDF=argon2id-shewall',
+    `RESERVE=${RESERVE_PROGRAM}`,
+    'RESERVE_EVM=1',
+    'RESERVE_INTEREST=400d-bps-floor',
+    'VORTEX=vort1-pin',
+    'VORTICE_NO_MINT=1',
+    'LEVY_CAP=0.001-SHE',
+    'LEVY_SPLIT=50-50-finder-reserve',
+    'SPEND_MEMBERSHIP=fcmp++',
+    'LAG1_SHAREBATCH=1',
+    `POOL_FEE_BPS=${POOL_FEE_BPS}`,
   ].join(':');
 }
 

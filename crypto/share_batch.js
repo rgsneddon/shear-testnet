@@ -12,7 +12,7 @@ import {
 } from './asert.js';
 import { shearHash, meetsTarget, leadingZeroBits } from './shear_hash.js';
 import { setNonce } from './header.js';
-import { packShare, unpackShareBatch } from './pack.js';
+import { packShareV5, unpackShareBatch } from './pack.js';
 import { isDestAddress, bech32Hrp, encodeDest, hash20FromAddress } from './address.js';
 import { noteCommitOfDest20 } from './note.js';
 
@@ -158,7 +158,17 @@ export function findShare(header, {
         nonce: n,
         lz: leadingZeroBits(hash) & 0xff,
       };
-      return { ...share, packed: packShare(share), header: h, hash };
+      return {
+        ...share,
+        noteCommit: noteCommitOfShare(share),
+        packed: packShareV5({
+          noteCommit: noteCommitOfShare(share),
+          nonce: n,
+          lz: leadingZeroBits(hash) & 0xff,
+        }),
+        header: h,
+        hash,
+      };
     }
   }
   return null;

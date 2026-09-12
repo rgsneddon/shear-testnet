@@ -19,6 +19,7 @@ import {
   GENESIS_BPS,
 } from './reserve_oracle.js';
 import { extraMint } from './mint.js';
+import { splitLevy } from './levy.js';
 
 export const VOTE_INCREASE = 'increase bonus';
 export const VOTE_DECREASE = 'decrease bonus';
@@ -424,8 +425,10 @@ export function applyReserveBlock({ state, block, nowMs }) {
     results.push({ action: 'enact', ...enact({ state, nowMs }) });
   }
   const cb = txs.find((t) => t?.coinbase) || txs[0];
-  for (const o of cb?.vout || []) {
-    if (o?.kind === 'reserve-fee') creditFeeBank(state, o.nanos);
+  const userFees = txs.filter((t) => t && !t.coinbase)
+    .reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
+  if ((cb?.vout || []).some((o) => o?.kind === 'reserve-fee')) {
+    creditFeeBank(state, splitLevy(userFees).reserve);
   }
   for (const tx of txs) {
     if (!tx || tx.coinbase) continue;

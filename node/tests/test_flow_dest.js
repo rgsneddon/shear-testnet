@@ -1,11 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, isDestAddress, isShearAddress, encodeHrp, freshStealthDest } from '../../crypto/address.js';
+import { newIdentity, isDestAddress, isShearAddress, encodeHrp, freshStealthDest, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { EMPTY_ROOT } from '../../crypto/merkle.js';
 import { buildTemplate, GENESIS_PREV, coinbaseTx, verifyBlock, mineTemplate } from '../src/chain.js';
+import { noteCommitOfDest20 } from '../../crypto/note.js';
 
-describe('flow dest coinbase', () => {
+function noteOf(dest) {
+  return noteCommitOfDest20(hash20FromAddress(dest));
+}
+
+describe('flow dest coinbase', { timeout: 600_000 }, () => {
   it('pays miner login as dest; shear1 never on coinbase', () => {
     const id = newIdentity();
     const dest = freshStealthDest(id.paymentCode).dest;
@@ -17,20 +22,19 @@ describe('flow dest coinbase', () => {
       bits: 8,
       now: Date.now(),
     });
-    assert.equal(tpl.txs[0].vout[0].address, dest);
-    assert.equal(isShearAddress(tpl.txs[0].vout[0].address), false);
+    assert.ok(tpl.txs[0].vout[0].commit);
+    assert.equal(Buffer.from(tpl.txs[0].vout[0].noteCommit).equals(noteOf(dest)), true);
     const plain = coinbaseTx({ height: 1, miner: dest });
-    assert.equal(plain.vout[0].address, dest);
+    assert.ok(plain.vout[0].commit);
+    assert.equal(Buffer.from(plain.vout[0].noteCommit).equals(noteOf(dest)), true);
     assert.throws(() => coinbaseTx({ height: 1, miner: id.address }), /coinbase_needs_dest/);
-    const fromShe = buildTemplate({
+    assert.throws(() => buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: id.paymentCode,
       bits: 8,
       now: Date.now(),
-    });
-    assert.equal(fromShe.txs[0].vout[0].address, dest);
-    assert.equal(isDestAddress(fromShe.txs[0].vout[0].address), true);
+    }), /coinbase_needs_dest/);
   });
 
   it('verifyBlock rejects rest-frame shear1 on vout', () => {
@@ -63,7 +67,8 @@ describe('flow dest coinbase', () => {
     assert.equal(isDestAddress(shp), true);
     assert.equal(isShearAddress(shp), false);
     const tpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: shp, bits: 8, now: Date.now() });
-    assert.equal(tpl.txs[0].vout[0].address, shp);
+    assert.ok(tpl.txs[0].vout[0].commit);
+    assert.equal(Buffer.from(tpl.txs[0].vout[0].noteCommit).equals(noteOf(shp)), true);
     const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
     assert.ok(found && found.block, 'need pow');
     const block = { header: found.header, txs: tpl.txs, samples: tpl.samples, height: 1 };

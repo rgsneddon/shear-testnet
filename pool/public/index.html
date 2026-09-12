@@ -308,7 +308,7 @@
         <p>Private dests, public amounts. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
         <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Amounts stay public. Rest-frame <code>shear1</code> stays in Closure.</p>
         <p>Mine with Copy dest: <code>ssa1.worker</code>. Each hasher dest that produced proven work receives its own hash bonus on the next sealed block. The 1 SHE pot is split among those dests.</p>
-        <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v2</p>
+        <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v3</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
       </section>
       <section class="panel-card">
@@ -335,7 +335,7 @@
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
       <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash-v3</div></article>
-      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v2</div></article>
+      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v3</div></article>
       <article class="panel-card"><div class="label">Proof</div><div class="value" id="proof">PoW</div></article>
       <article class="panel-card"><div class="label">NODES ONLINE</div><div class="value" id="nodes-n">0</div></article>
       <article class="panel-card"><div class="label">Height</div><div class="value" id="height">0</div></article>
@@ -696,7 +696,7 @@
       paintResistance(s);
       paintAvgBlock(s);
       const net = document.getElementById('network');
-      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v2';
+      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v3';
       document.getElementById('uptime').textContent = fmtUptime(s.uptimeMs);
       paintLastBlock(s);
       const tb = document.querySelector('#miners tbody');

@@ -2,7 +2,8 @@
  * Flow dummy outs + view tags. Reserve kinds stay typed; vault is not dummy-deleted.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { sealNote } from './note.js';
+import { sealNote, verifySealedNote } from './note.js';
+import { hash20FromAddress } from './address.js';
 
 export const DUMMY_KIND = 'dummy';
 export const DUMMY_FANOUT = 1;
@@ -27,9 +28,37 @@ export function dummyCount(tx) {
   return (tx?.vout || []).filter((o) => String(o.kind || '') === DUMMY_KIND).length;
 }
 
+export function claimedVoutNanos(tx, o, i) {
+  if (!o) return 0;
+  if (String(o.kind || '') === DUMMY_KIND) return 0;
+  if (o.commit) {
+    const claimed = i === 0
+      ? Math.floor(Number(tx?.nanos || o.nanos || 0))
+      : Math.floor(Number(o.nanos || tx?.changeNanos || 0));
+    return verifySealedNote(o, claimed) ? claimed : 0;
+  }
+  return Math.floor(Number(o.nanos || 0));
+}
+
+export function sealFlowVout(o) {
+  if (!o || o.commit) return o;
+  const n = Math.floor(Number(o.nanos || 0));
+  const d20 = hash20FromAddress(o.address);
+  if (!d20) return o;
+  const note = sealNote(n, { dest20: d20, kind: o.kind || 'send' });
+  note.viewTag = viewTagOf(note.noteCommit);
+  if (o.address) note.address = o.address;
+  return note;
+}
+
 export function attachDummyOuts(tx, { fanout = DUMMY_FANOUT } = {}) {
   if (!tx || !flowNeedsDummy(tx)) return tx;
-  const out = { ...tx, vout: [...(tx.vout || [])] };
+  const raw = [...(tx.vout || [])];
+  const payN = Math.floor(Number(tx.nanos != null ? tx.nanos : raw[0]?.nanos || 0));
+  const changeRaw = raw.find((o, i) => i > 0 && String(o.kind) !== DUMMY_KIND);
+  const changeN = Math.floor(Number(tx.changeNanos != null ? tx.changeNanos : changeRaw?.nanos || 0));
+  const out = { ...tx, nanos: payN, vout: raw.map(sealFlowVout) };
+  if (changeN) out.changeNanos = changeN;
   let n = dummyCount(out);
   const want = Math.max(1, Math.floor(Number(fanout) || DUMMY_FANOUT));
   while (n < want) {

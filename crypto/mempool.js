@@ -54,6 +54,9 @@ export function admitMempool(pool, tx, { baseFee } = {}) {
   if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
     return { ok: false, reason: 'dummy_outs' };
   }
+  if (flowNeedsDummy(tx) && (tx.vout || []).some((o) => !o?.commit)) {
+    return { ok: false, reason: 'confidential' };
+  }
   const depth = mempoolDepthBytes(book.txs);
   const need = levyTaxed({ ...tx, kind }) ? levyNanos(txAmountNanos(tx), { depth }) : 0;
   const paid = Math.floor(Number(tx.fee || tx.paid || 0));

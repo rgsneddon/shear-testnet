@@ -297,8 +297,20 @@ export function buildTemplate({
   });
   const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
   const split = splitLevy(fees);
-  if (split.finder) cb.vout.push({ address: pay(miner), nanos: split.finder, kind: 'finder-fee' });
-  if (split.reserve) cb.vout.push({ address: reserveFeeDest(), nanos: split.reserve, kind: 'reserve-fee' });
+  if (split.finder) {
+    const dest = pay(miner);
+    const d20 = hash20FromAddress(dest);
+    cb.vout.push(d20
+      ? sealCoinbaseNote(split.finder, { dest20: d20, kind: 'finder-fee' })
+      : { address: dest, nanos: split.finder, kind: 'finder-fee' });
+  }
+  if (split.reserve) {
+    const dest = reserveFeeDest();
+    const d20 = hash20FromAddress(dest);
+    cb.vout.push(d20
+      ? sealCoinbaseNote(split.reserve, { dest20: d20, kind: 'reserve-fee' })
+      : { address: dest, nanos: split.reserve, kind: 'reserve-fee' });
+  }
   const bodyTxs = [cb, ...txs];
   const merkle = merkleRoot(bodyTxs.map(digestTx));
   const aLeaves = aLeavesOf(collated, pay);
@@ -498,7 +510,7 @@ function verifyBlockConsensus(block, prev, {
       }
       bonusNanos = wantBonus;
       const T = BLOCK_SUBSIDY_NANOS + wantBonus;
-      const money = cbVouts.filter((o) => o.commit);
+      const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
       if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       potNanos = BLOCK_SUBSIDY_NANOS;
       void paid;
@@ -559,7 +571,7 @@ function verifyBlockConsensus(block, prev, {
     if (!dual.continuityRoot.equals(decoded.continuityRoot)) return { ok: false, reason: 'continuity' };
   }
   for (const o of txs[0].vout) {
-    if (o.commit && o.noteCommit) continue;
+    if (o.commit && o.noteCommit && !o.address) continue;
     const r = checkAddressField(o.address, { allowEmpty: false });
     if (!r.ok) {
       if (r.reason === 'silent_id_on_chain') return { ok: false, reason: 'silent_id_on_chain' };
@@ -605,9 +617,6 @@ function verifyBlockConsensus(block, prev, {
       }
     }
     const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint;
-    if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
-      return { ok: false, reason: 'dummy_outs' };
-    }
     if (wrapMintForbidden(tx)) {
       return { ok: false, reason: 'mint_forbidden' };
     }
@@ -616,6 +625,12 @@ function verifyBlockConsensus(block, prev, {
     }
     if ((unfunded || tx.mint) && !extraMintAllowed(tx.programId, { kind: tx.kind })) {
       return { ok: false, reason: 'mint_forbidden' };
+    }
+    if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
+      return { ok: false, reason: 'dummy_outs' };
+    }
+    if (flowNeedsDummy(tx) && (tx.vout || []).some((o) => !o?.commit)) {
+      return { ok: false, reason: 'confidential' };
     }
     if ((unfunded || tx.mint) && String(tx.programId || '') === RESERVE_PROGRAM && String(tx.kind || '') === 'withdraw') {
       const bps = Number(committedBps ?? reserveState?.epochBps ?? GENESIS_BPS);
@@ -680,8 +695,15 @@ function verifyBlockConsensus(block, prev, {
     if (!funded.ok) return funded;
   }
   const split = splitLevy(fees);
-  const finderPaid = txs[0].vout.filter((o) => o.kind === 'finder-fee').reduce((a, o) => a + Number(o.nanos || 0), 0);
-  const reservePaid = txs[0].vout.filter((o) => o.kind === 'reserve-fee').reduce((a, o) => a + Number(o.nanos || 0), 0);
+  const levyNote = (kind, want) => {
+    const o = txs[0].vout.find((v) => v.kind === kind);
+    if (want === 0 && !o) return 0;
+    if (!o) return -1;
+    if (o.commit) return verifySealedNote(o, want) ? want : -1;
+    return Number(o.nanos || 0);
+  };
+  const finderPaid = levyNote('finder-fee', split.finder);
+  const reservePaid = levyNote('reserve-fee', split.reserve);
   if (finderPaid !== split.finder || reservePaid !== split.reserve) return { ok: false, reason: 'levy_split' };
   return { ok: true, hash, decoded, aLeaves, bLeaves };
 }

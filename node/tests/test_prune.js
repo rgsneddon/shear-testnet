@@ -8,6 +8,7 @@ import { spendBox } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
+import { attachDummyOuts } from '../../crypto/dummy.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { buildTemplate, mineTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { createStore } from '../src/store.js';
@@ -77,7 +78,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
       assert.equal((await Promise.resolve(store.append(nxt))).ok, true);
     }
 
-    const send = {
+    const send = attachDummyOuts({
       id: 'send-forever',
       kind: 'send',
       from: destA,
@@ -87,7 +88,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
       open: destOpeningFromView(alice.viewKey, alice.spendPub, 0),
       vin: [{ address: destA }],
       vout: [{ address: destB, nanos: 3 }],
-    };
+    });
     signSpendTx(send, aliceBox.key);
     const parentSend = store.tip();
     const parentSendH = decodeHeader(Buffer.from(parentSend.header));

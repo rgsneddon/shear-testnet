@@ -42,7 +42,7 @@ describe('dual continuity_root', () => {
   it('is H(rootA||rootB) and B-spend waits for seal', () => {
     const dual = buildDualTree({ aLeaves: [{ dest20, count: 3 }], bLeaves: [] });
     assert.equal(dual.rootA.toString('hex'), aLeafBytes({ dest20, count: 3 }).toString('hex'));
-    assert.equal(dual.continuityRoot.toString('hex'), '1a3fa5248cce6f8e9fecb110e67610255a937041c73e58691159b19b571f2206');
+    assert.equal(dual.continuityRoot.toString('hex'), '515c3b6c83aa1a790ab627ef6eeb4737030b04fb5b787b6af860d76167fb8e54');
 
     const leaf = { dest20, unit: 9, nonce: 1, memoH: Buffer.alloc(32), tag: 'b' };
     const tree = buildDualTree({ aLeaves: [{ dest20, count: 1 }], bLeaves: [leaf] });

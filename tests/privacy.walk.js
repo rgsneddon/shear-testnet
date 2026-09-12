@@ -283,6 +283,17 @@ describe('privacy.walk', () => {
     assert.match(fp, /DEST_HRP_SSA_ONLY=1/);
     assert.match(fp, /SPEND_SIG_ONLY=1/);
     assert.match(fp, /MEMO_NOT_DEST_KEYED=1/);
+    assert.match(fp, /NETWORK=shear-testnet-v3/);
+    assert.match(fp, /AMOUNT=confidential/);
+    assert.match(fp, /DUMMY_OUTS=1/);
+    assert.match(fp, /ENC_SHARE=v5/);
+    assert.match(fp, /DANDELIONPP=1/);
+    assert.match(fp, /VIEW_TAG=1/);
+    assert.match(fp, /KDF=argon2id-shewall/);
+    assert.match(fp, /RESERVE=shear-reserve-v1/);
+    assert.match(fp, /VORTEX=vort1-pin/);
+    assert.match(fp, /VORTICE_NO_MINT=1/);
+    assert.match(fp, /SPEND_MEMBERSHIP=fcmp\+\+/);
   });
 
   it('12: RPC default bind is 127.0.0.1; submit log does not join IP to dest/login', () => {

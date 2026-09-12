@@ -205,7 +205,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /The Join/);
     assert.doesNotMatch(html, /join1\./);
     assert.match(html, /CPU-only proof-of-work/);
-    assert.match(html, /Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v2/);
+    assert.match(html, /Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v3/);
     assert.match(html, /ShearHash-v3 \(a variant of RandomX\)/);
     assert.doesNotMatch(html, /using the ShearK algorithm/);
     assert.match(html, /Exactly 1 SHE, every found block/);

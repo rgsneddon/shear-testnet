@@ -398,7 +398,7 @@
       const pulse = document.getElementById('live-pulse');
       if (pulse) {
         pulse.classList.remove('stale');
-        pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v2') + ' · height ' + (stats.height ?? 0);
+        pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v3') + ' · height ' + (stats.height ?? 0);
       }
       tipHeight = Number(stats.height) || 0;
       spendableNeed = Number(stats.spendableConfirmations)

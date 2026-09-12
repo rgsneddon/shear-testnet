@@ -12,6 +12,7 @@ import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
 import { LIVE_MIN_BITS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos } from '../../crypto/levy.js';
+import { attachDummyOuts } from '../../crypto/dummy.js';
 import { createStore } from '../src/store.js';
 import { mineTemplate, shouldAdopt, digestTx } from '../src/chain.js';
 
@@ -67,7 +68,7 @@ describe('most-work adopt', () => {
     for (let i = 0; i < SPENDABLE_CONFIRMATIONS; i += 1) {
       assert.equal((await Promise.resolve(mineOne(local, dest))).ok, true);
     }
-    const bounce = {
+    const bounce = attachDummyOuts({
       id: 'bounce-1',
       kind: 'send',
       from: dest,
@@ -77,7 +78,7 @@ describe('most-work adopt', () => {
       open: destOpeningFromView(id.viewKey, id.spendPub, 0),
       vin: [{ address: dest }],
       vout: [{ address: dest, nanos: 1 }],
-    };
+    });
     signSpendTx(bounce, box.key);
     assert.equal(local.queueTx(bounce).ok, true, 'bounce must enter mempool');
     const heavier = tmpStore();

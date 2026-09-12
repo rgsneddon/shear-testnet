@@ -146,9 +146,12 @@ export function sealedExplorerRows(block) {
       const o = vouts[i];
       const kind = o.kind || tx.kind || (tx.mint ? 'reserve' : 'transfer');
       const to = o.address || (i === 0 ? tx.to : '');
-      const claimed = Number(o.nanos != null ? o.nanos : (i === 0 ? tx.nanos || 0 : 0));
+      const claimed = Number(o.nanos != null ? o.nanos : (
+        String(o.kind || '') === 'dummy' ? 0
+          : (i === 0 ? tx.nanos || 0 : tx.changeNanos || 0)
+      ));
       const nanos = o.commit
-        ? (claimed && verifySealedNote(o, claimed) ? claimed : 0)
+        ? (verifySealedNote(o, claimed) ? claimed : 0)
         : claimed;
       rows.push({
         id: `${txId}-vout-${i}`,
@@ -272,8 +275,8 @@ function compactVout(o) {
     if (o.rangeProof) row.rangeProof = o.rangeProof;
     if (o.viewTag) row.viewTag = o.viewTag;
     if (o.memo) row.memo = true;
-    // Vault dest is the one allowed stable mailbox; keep it on Reserve kinds.
-    if (RESERVE_VOUT_KINDS.has(String(o.kind || '')) && o.address) row.address = o.address;
+    // One-time dest / vault dest stays as the note mailbox; nanos stay off the row.
+    if (o.address) row.address = o.address;
     return row;
   }
   const row = {

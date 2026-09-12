@@ -7,8 +7,10 @@ import { newIdentity, destOpeningFromView, freshStealthDest } from '../../crypto
 import { spendBox } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { splitLevy, levyNanos } from '../../crypto/levy.js';
+import { attachDummyOuts } from '../../crypto/dummy.js';
 import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { signSpendTx } from '../../crypto/spend.js';
+import { verifySealedNote } from '../../crypto/note.js';
 import { createStore } from '../src/store.js';
 import { decodeHeader } from '../../crypto/header.js';
 import {
@@ -52,8 +54,9 @@ describe('verifyBlock Phase B Flow levy', () => {
     const free = mine(buildTemplate(base));
     const ok0 = verifyBlock(free, null);
     assert.equal(ok0.ok, true, ok0.reason);
-    const pot = free.txs[0].vout.filter((o) => o.kind === 'pot').reduce((a, o) => a + o.nanos, 0);
-    assert.equal(pot, BLOCK_SUBSIDY_NANOS);
+    const potV = free.txs[0].vout.filter((o) => o.kind === 'pot');
+    assert.equal(potV.length, 1);
+    assert.equal(verifySealedNote(potV[0], BLOCK_SUBSIDY_NANOS), true);
     assert.equal(free.txs[0].vout.some((o) => o.kind === 'finder-fee'), false);
     assert.equal(free.txs[0].vout.some((o) => o.kind === 'reserve-fee'), false);
     assert.equal(free.txs[0].vout.filter((o) => o.kind === 'hash').every((o) => o.kind === 'hash'), true);
@@ -63,7 +66,7 @@ describe('verifyBlock Phase B Flow levy', () => {
     assert.equal(need, 100);
     const unpaid = mine(buildTemplate({
       ...base,
-      txs: [{
+      txs: [attachDummyOuts({
         id: 'u1',
         kind: 'send',
         from: dest,
@@ -72,7 +75,7 @@ describe('verifyBlock Phase B Flow levy', () => {
         fee: 0,
         vin: [{ address: dest }],
         vout: [{ address: dest, nanos: sendNanos }],
-      }],
+      })],
     }));
     const denied = verifyBlock(unpaid, null);
     assert.equal(denied.ok, false);
@@ -80,7 +83,7 @@ describe('verifyBlock Phase B Flow levy', () => {
 
     const capped = mine(buildTemplate({
       ...base,
-      txs: [{
+      txs: [attachDummyOuts({
         id: 'cap',
         kind: 'send',
         from: dest,
@@ -90,7 +93,7 @@ describe('verifyBlock Phase B Flow levy', () => {
         maxLevy: need - 1,
         vin: [{ address: dest }],
         vout: [{ address: dest, nanos: sendNanos }],
-      }],
+      })],
     }));
     const capDenied = verifyBlock(capped, null);
     assert.equal(capDenied.ok, false);
@@ -98,7 +101,7 @@ describe('verifyBlock Phase B Flow levy', () => {
 
     const paid = mine(buildTemplate({
       ...base,
-      txs: [{
+      txs: [attachDummyOuts({
         id: 'u2',
         kind: 'send',
         from: dest,
@@ -107,13 +110,15 @@ describe('verifyBlock Phase B Flow levy', () => {
         fee: need,
         vin: [{ address: dest }],
         vout: [{ address: dest, nanos: sendNanos }],
-      }],
+      })],
     }));
     const allowed = verifyBlock(paid, null);
     assert.equal(allowed.ok, true, allowed.reason);
     const split = splitLevy(need);
-    const finder = paid.txs[0].vout.filter((o) => o.kind === 'finder-fee').reduce((a, o) => a + Number(o.nanos || 0), 0);
-    const reserve = paid.txs[0].vout.filter((o) => o.kind === 'reserve-fee').reduce((a, o) => a + Number(o.nanos || 0), 0);
+    const finderO = paid.txs[0].vout.find((o) => o.kind === 'finder-fee');
+    const reserveO = paid.txs[0].vout.find((o) => o.kind === 'reserve-fee');
+    const finder = finderO?.commit ? (verifySealedNote(finderO, split.finder) ? split.finder : -1) : Number(finderO?.nanos || 0);
+    const reserve = reserveO?.commit ? (verifySealedNote(reserveO, split.reserve) ? split.reserve : -1) : Number(reserveO?.nanos || 0);
     assert.equal(finder, split.finder);
     assert.equal(reserve, split.reserve);
 
@@ -171,7 +176,7 @@ describe('verifyBlock Phase B Flow levy', () => {
     }
     const sendNanos = 2;
     const fee = levyNanos(sendNanos);
-    const sendTx = {
+    const sendTx = attachDummyOuts({
       id: 'q-send',
       kind: 'send',
       from: dest,
@@ -181,7 +186,7 @@ describe('verifyBlock Phase B Flow levy', () => {
       open: destOpeningFromView(id.viewKey, id.spendPub, 0),
       vin: [{ address: dest }],
       vout: [{ address: dest, nanos: sendNanos, kind: 'send' }],
-    };
+    });
     signSpendTx(sendTx, box.key);
     const queued = store.queueTx(sendTx);
     assert.equal(queued.ok, true, queued.reason);

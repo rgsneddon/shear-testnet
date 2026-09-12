@@ -11,7 +11,7 @@ export const EIP712_CHAIN_ID = 2701;
 export const EIP712_NAME = 'ShearPool';
 export const EIP712_VERSION = '1';
 export const EIP712_PRIMARY = 'PoolWithdraw';
-export const EIP712_CHAIN_MAGIC = 'shear-testnet-v2';
+export const EIP712_CHAIN_MAGIC = 'shear-testnet-v3';
 export const POOL_WITHDRAW_DEADLINE_MS = 2 * 3600_000;
 
 function keccak(data) {

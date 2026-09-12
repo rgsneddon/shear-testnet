@@ -28,6 +28,9 @@ describe('Flow dummy outs', () => {
     });
     assert.equal(flowNeedsDummy(send), true);
     assert.ok(dummyCount(send) >= 1);
+    assert.ok(send.vout[0].commit);
+    assert.equal(send.vout[0].nanos, undefined);
+    assert.equal(verifySealedNote(send.vout[0], 10), true);
     const dummy = send.vout.find((o) => o.kind === DUMMY_KIND);
     assert.ok(dummy.commit);
     assert.equal(verifySealedNote(dummy, 0), true);

@@ -17,6 +17,7 @@ import {
 } from '../../crypto/spend.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
 import { SHEWALL_FILE } from '../../crypto/shewall_bin.js';
+import { attachDummyOuts } from '../../crypto/dummy.js';
 
 function signedSend(id, { nanos, to, fee } = {}) {
   const { privateKey: eph } = generateKeyPairSync('x25519');
@@ -29,7 +30,7 @@ function signedSend(id, { nanos, to, fee } = {}) {
   const amount = nanos ?? NANOS_PER_SHE;
   const paid = fee ?? levyNanos(amount);
   const dest = to || from;
-  const tx = {
+  const tx = attachDummyOuts({
     kind: 'send',
     from,
     to: dest,
@@ -39,7 +40,7 @@ function signedSend(id, { nanos, to, fee } = {}) {
     vin: [{ address: from }],
     vout: [{ address: dest, nanos: amount, kind: 'send' }],
     ephPub: pay.ephPub.toString('hex'),
-  };
+  });
   signSpendTx(tx, stealthSpendPrivate(rec.shared, ed25519SeedOf(id.privateKey)));
   return { tx, from, open };
 }
@@ -67,8 +68,9 @@ describe('Flow spend is an Ed25519 signature', () => {
   it('fails if the amount is mutated after signing', () => {
     const id = newIdentity();
     const { tx, from } = signedSend(id);
-    tx.vout[0].nanos = tx.vout[0].nanos + 1;
-    tx.nanos = tx.vout[0].nanos;
+    const nc = Buffer.from(tx.vout[0].noteCommit);
+    nc[0] ^= 1;
+    tx.vout[0].noteCommit = nc;
     assert.equal(verifySpendSig(tx), false);
     const got = verifyFundedBody([tx], (addr) => (addr === from ? 2 * NANOS_PER_SHE : 0));
     assert.equal(got.ok, false);
@@ -131,10 +133,10 @@ describe('wallet send path', () => {
     assert.equal(leaked.json.reason, 'rest_frame');
 
     const unsigned = run({ from, to: from, amount: 0.4, open });
-    assert.equal(unsigned.status, 403);
-    assert.equal(unsigned.json.reason, 'unsigned');
+    assert.equal(unsigned.status, 400);
+    assert.equal(unsigned.json.reason, 'dummy_outs');
 
-    const ok = run({ from, to: from, amount: 0.4, sig: tx.sig, spendPub: tx.spendPub });
+    const ok = run({ from, to: from, amount: 0.4, sig: tx.sig, spendPub: tx.spendPub, vout: tx.vout });
     assert.equal(ok.status, 200, ok.json.reason);
     assert.equal(ok.json.ok, true);
   });

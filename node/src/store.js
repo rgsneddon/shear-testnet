@@ -99,6 +99,7 @@ export function createStore(dir, {
   const binFile = path.join(dir, 'chain.bin');
   const explorerFile = path.join(dir, 'explorer.jsonl');
   const vaultFile = path.join(dir, 'reserve.json');
+  const magicFile = path.join(dir, 'book.magic');
   const blocks = [];
   const explorer = [];
   const spentB = new Set();
@@ -122,6 +123,14 @@ export function createStore(dir, {
       b.header = Buffer.from(b.header, 'hex');
       b.hash = Buffer.from(b.hash, 'hex');
       blocks.push(b);
+    }
+  }
+  {
+    const diskMagic = fs.existsSync(magicFile)
+      ? fs.readFileSync(magicFile, 'utf8').trim()
+      : String(blocks[0]?.magic || '');
+    if (diskMagic && diskMagic !== MAGIC_TESTNET) {
+      throw new Error(`datadir_magic:${diskMagic}`);
     }
   }
 
@@ -239,6 +248,7 @@ export function createStore(dir, {
   }
 
   function rewriteChain() {
+    fs.writeFileSync(magicFile, MAGIC_TESTNET);
     writeChainBin(binFile, blocks);
     const body = blocks.map((b) => JSON.stringify(toRow(b))).join('\n');
     fs.writeFileSync(file, body ? `${body}\n` : '');

@@ -12,6 +12,7 @@ import { isSpendableHeight } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
+import { claimedVoutNanos } from './dummy.js';
 
 function dest20Of(addr) {
   const h = hash20FromAddress(addr);
@@ -226,7 +227,7 @@ export function fundedDebit(tx) {
   const amount = txAmountNanos(tx);
   const fee = Math.max(0, Math.floor(Number(tx.fee || 0)));
   const extra = Array.isArray(tx.vout) && tx.vout.length > 1
-    ? tx.vout.slice(1).reduce((a, o) => a + Math.max(0, Math.floor(Number(o?.nanos) || 0)), 0)
+    ? tx.vout.slice(1).reduce((a, o, i) => a + claimedVoutNanos(tx, o, i + 1), 0)
     : 0;
   const nanos = amount + extra + fee;
   if (!(nanos > 0)) return null;

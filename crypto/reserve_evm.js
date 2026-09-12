@@ -23,7 +23,7 @@ const PIN = JSON.parse(fs.readFileSync(
 export const RESERVE_ABI = PIN.abi;
 export const RESERVE_BYTECODE = PIN.bytecode.startsWith('0x') ? PIN.bytecode : `0x${PIN.bytecode}`;
 
-export function shearMagicBytes(network = 'shear-testnet-v2') {
+export function shearMagicBytes(network = 'shear-testnet-v3') {
   return keccak256(Buffer.from(String(network), 'utf8'));
 }
 
@@ -174,7 +174,7 @@ function shearCommon() {
 
 const SYSTEM = createAddressFromString('0x0000000000000000000000000000000000002701');
 
-export async function bootReserveEvm({ network = 'shear-testnet-v2' } = {}) {
+export async function bootReserveEvm({ network = 'shear-testnet-v3' } = {}) {
   const common = shearCommon();
   const evm = await createEVM({ common });
   const magic = shearMagicBytes(network);
