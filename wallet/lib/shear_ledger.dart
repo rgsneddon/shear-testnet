@@ -456,6 +456,8 @@ class ShearLedger {
         'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
         'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
         if (o['height'] != null) 'height': o['height'],
+        if (o['nanos'] != null) 'amount': (o['nanos'] as num) / kUnitsPerShe,
+        if (o['amount'] != null) 'amount': o['amount'],
       });
     }
   }
@@ -1773,6 +1775,18 @@ class ShearLedger {
         src = spendFrom(restFrame, paymentCode: paymentCode, amount: needShe);
       }
     }
+    if (spendable(src) < needShe) {
+      var fromNotes = 0.0;
+      for (final n in _notes) {
+        if (n['spent'] == true) continue;
+        if (n['address'] != src && n['dest'] != src) continue;
+        final amt = n['amount'];
+        if (amt is num) fromNotes += amt.toDouble();
+      }
+      if (fromNotes >= needShe) {
+        _spendable[src] = fromNotes;
+      }
+    }
     if (spendable(src) < needShe) throw StateError('insufficient');
     String? changeDest = change;
     if (sendKind == 'send') {
@@ -2125,7 +2139,9 @@ class ShearPoolClient {
     ShearReadSync? sync,
     String? userUrl,
   })  : _pinned = baseUrl,
-        _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8)) {
+        _http = http ?? (HttpClient()
+          ..connectionTimeout = const Duration(seconds: 8)
+          ..idleTimeout = const Duration(seconds: 1)) {
     _sync = sync ??
         (baseUrl == null
             ? ShearReadSync(http: _http, userUrl: userUrl)
@@ -2239,8 +2255,11 @@ class ShearPoolClient {
     await _ensureBase();
     try {
       final req = await _http.postUrl(Uri.parse('$baseUrl$path'));
+      req.persistentConnection = false;
       req.headers.contentType = ContentType.json;
-      req.add(utf8.encode(jsonEncode(body)));
+      final payload = utf8.encode(jsonEncode(body));
+      req.contentLength = payload.length;
+      req.add(payload);
       final res = await req.close();
       return jsonDecode(await utf8.decodeStream(res)) as Map<String, dynamic>;
     } catch (_) {

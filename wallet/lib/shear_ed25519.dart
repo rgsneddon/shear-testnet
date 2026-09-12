@@ -152,6 +152,28 @@ Uint8List ed25519Sign(Uint8List seed, Uint8List message) {
   return Uint8List.fromList([...rPoint, ..._bigToLe(s, 32)]);
 }
 
+bool ed25519Verify(Uint8List pub, Uint8List message, Uint8List sig) {
+  if (pub.length != 32 || sig.length != 64) return false;
+  try {
+    final R = _decompress(sig.sublist(0, 32));
+    final s = _leToBig(sig.sublist(32));
+    if (s >= _l) return false;
+    final A = _decompress(pub);
+    final kHash = sha512.convert([...sig.sublist(0, 32), ...pub, ...message]).bytes;
+    final k = _leToBig(Uint8List.fromList(kHash)) % _l;
+    final left = _mul(_b, s);
+    final right = _add(R, _mul(A, k));
+    final lc = _compress(left);
+    final rc = _compress(right);
+    for (var i = 0; i < 32; i++) {
+      if (lc[i] != rc[i]) return false;
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 Uint8List stealthSign(Uint8List seed, Uint8List shared, Uint8List message) {
   final h = sha512.convert(seed).bytes;
   var a = _leToBig(Uint8List.fromList(h.sublist(0, 32)));

@@ -13,6 +13,7 @@ import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PRE
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos } from './dummy.js';
+import { asU8 } from './note.js';
 
 function dest20Of(addr) {
   const h = hash20FromAddress(addr);
@@ -31,20 +32,23 @@ function kindByte(kind) {
 
 /** Pack digest of the spend body. sig and open are not hashed. */
 export function spendPackDigest(tx) {
-  const vins = (tx?.vin || []).map((v, i) => ({
-    prev: v.prev ? Buffer.from(v.prev) : Buffer.alloc(32),
-    index: Number(v.index || i),
-    dest20: v.noteCommit && Buffer.from(v.noteCommit).length === 32
-      ? Buffer.from(v.noteCommit).subarray(0, 20)
-      : Buffer.alloc(20),
-  }));
-  const vouts = (tx?.vout || []).map((o) => ({
-    dest20: o.noteCommit && Buffer.from(o.noteCommit).length === 32
-      ? Buffer.from(o.noteCommit).subarray(0, 20)
-      : dest20Of(o.address || ''),
-    nanos: o.commit ? 0 : Number(o.nanos || 0),
-    kind: kindByte(o.kind || tx?.kind),
-  }));
+  const vins = (tx?.vin || []).map((v, i) => {
+    const nc = asU8(v.noteCommit);
+    const prev = asU8(v.prev);
+    return {
+      prev: prev.length === 32 ? Buffer.from(prev) : Buffer.alloc(32),
+      index: Number(v.index || i),
+      dest20: nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : Buffer.alloc(20),
+    };
+  });
+  const vouts = (tx?.vout || []).map((o) => {
+    const nc = asU8(o.noteCommit);
+    return {
+      dest20: nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : dest20Of(o.address || ''),
+      nanos: o.commit ? 0 : Number(o.nanos || 0),
+      kind: kindByte(o.kind || tx?.kind),
+    };
+  });
   return packDigest(packTx({
     version: 1,
     vins: vins.length ? vins : [{ prev: Buffer.alloc(32), index: Number(tx?.height || 0), dest20: Buffer.alloc(20) }],

@@ -196,9 +196,15 @@ export function shareRowJson(s) {
   }
   const dest = String(s?.dest || s?.address || s?.miner || '');
   const dest20 = coerceDest20(s?.dest20, dest);
-  let nc = s?.noteCommit && Buffer.from(s.noteCommit).length === 32
-    ? Buffer.from(s.noteCommit)
-    : null;
+  let nc = null;
+  if (s?.noteCommit) {
+    if (typeof s.noteCommit === 'string' && /^[0-9a-fA-F]{64}$/.test(s.noteCommit)) {
+      nc = Buffer.from(s.noteCommit, 'hex');
+    } else {
+      const raw = Buffer.from(s.noteCommit);
+      if (raw.length === 32) nc = raw;
+    }
+  }
   if (!nc && dest20 && !dest20.equals(Buffer.alloc(20))) {
     nc = noteCommitOfDest20(dest20);
   }
@@ -207,6 +213,7 @@ export function shareRowJson(s) {
     : null;
   return {
     noteCommit: nc ? nc.toString('hex') : '',
+    ...(dest20 && !dest20.equals(Buffer.alloc(20)) ? { dest20: dest20.toString('hex') } : {}),
     nonce: String(s?.nonce ?? 0),
     lz: Number(s?.lz || 0) & 0xff,
     ...(tag ? { viewTag: tag.subarray(0, 1).toString('hex') } : {}),

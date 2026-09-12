@@ -18,7 +18,7 @@
  */
 import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS } from './asert.js';
 import { shareRowJson } from './pack.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout } from './coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote } from './note.js';
 
@@ -102,20 +102,35 @@ export function pruneSamples(block) {
  * Explorer rows from the sealed body. Independent of samples.
  * Safe after prune, forever: one row per real output, not per hash.
  */
+const _sealedRowCache = new Map();
+
 export function sealedExplorerRows(block) {
   const height = Number(block?.height || 0);
   const hid = Buffer.isBuffer(block?.hash)
     ? block.hash.toString('hex')
     : String(block?.hash || height);
+  const cached = hid && _sealedRowCache.get(hid);
+  if (cached) return cached;
   const rows = [];
   const txs = Array.isArray(block?.txs) ? block.txs : [];
   const cb = txs[0];
   if (cb?.coinbase && Array.isArray(cb.vout)) {
-    const pays = expectedCoinbasePays(block.shareBatch || [], {
+    let pays = expectedCoinbasePays(block.shareBatch || [], {
       miner: block.miner,
       poolDest: poolFeeDest(),
       hashBonusNanos: HASH_BONUS_NANOS,
     });
+    const paysBound = (pays || []).some((p) => {
+      try {
+        return p.nanos && p.noteCommit && Buffer.from(p.noteCommit).length === 32;
+      } catch {
+        return false;
+      }
+    });
+    if (!paysBound) {
+      const recovered = paysFromALeaves(block.aLeaves || [], { hashBonusNanos: HASH_BONUS_NANOS });
+      if (recovered.length) pays = [...pays, ...recovered];
+    }
     for (const o of cb.vout) {
       const hit = matchSealedCoinbaseVout(o, pays);
       const to = hit.address || o.address || '';
@@ -128,6 +143,7 @@ export function sealedExplorerRows(block) {
         nanos,
         height,
         confirmed: true,
+        noteCommit: o.noteCommit,
       });
     }
   }
@@ -185,6 +201,7 @@ export function sealedExplorerRows(block) {
       }
     }
   }
+  if (hid) _sealedRowCache.set(hid, rows);
   return rows;
 }
 

@@ -573,47 +573,78 @@ export function searchExplorerTxs(store, q = {}) {
 }
 
 /** All SHE in existence: block pots + hash bonuses + extra mints − burns. Staked coin stays in. */
+let _supplyAt = -1;
+let _supplyVal = null;
+let _supplyBusy = false;
+
 export function networkSupply(store) {
-  let potNanos = 0;
-  let hashNanos = 0;
-  let extraMintNanos = 0;
-  let burnedNanos = 0;
-  for (const b of store?.blocks || []) {
-    const txs = Array.isArray(b?.txs) ? b.txs : [];
-    const cb = txs[0];
-    if (cb?.coinbase && Array.isArray(cb.vout)) {
-      const pays = expectedCoinbasePays(b.shareBatch || [], {
-        miner: b.miner,
-        hashBonusNanos: HASH_BONUS_NANOS,
-      });
-      for (const o of cb.vout) {
-        const kind = String(o.kind || '');
-        if (kind === 'finder-fee' || kind === 'reserve-fee') continue;
-        const hit = o.commit ? matchSealedCoinbaseVout(o, pays) : { nanos: Number(o.nanos || 0) };
-        const n = Math.max(0, Math.floor(Number(hit.nanos || o.nanos || 0)));
+  const h = Number(store?.tip?.()?.height || store?.blocks?.length || 0);
+  if (h === _supplyAt && _supplyVal) return _supplyVal;
+  if (_supplyBusy) {
+    return _supplyVal || {
+      circulatingNanos: 0, potNanos: 0, hashNanos: 0, extraMintNanos: 0, burnedNanos: 0, lockedNanos: 0,
+    };
+  }
+  _supplyBusy = true;
+  try {
+    let potNanos = 0;
+    let hashNanos = 0;
+    let extraMintNanos = 0;
+    let burnedNanos = 0;
+    const rows = store?.explorer;
+    if (Array.isArray(rows) && rows.length) {
+      for (const r of rows) {
+        const kind = String(r.kind || '');
+        const n = Math.max(0, Math.floor(Number(r.nanos || 0)));
         if (!n) continue;
         if (kind === 'hash') hashNanos += n;
-        else potNanos += n;
+        else if (kind === 'burn') burnedNanos += n;
+        else if (kind === 'coinbase' || kind === 'pot' || kind === 'finder-fee') potNanos += n;
+        else if (r.mint === true) extraMintNanos += n;
+      }
+    } else {
+      for (const b of store?.blocks || []) {
+        const txs = Array.isArray(b?.txs) ? b.txs : [];
+        const cb = txs[0];
+        if (cb?.coinbase && Array.isArray(cb.vout)) {
+          const pays = expectedCoinbasePays(b.shareBatch || [], {
+            miner: b.miner,
+            hashBonusNanos: HASH_BONUS_NANOS,
+          });
+          for (const o of cb.vout) {
+            const kind = String(o.kind || '');
+            if (kind === 'finder-fee' || kind === 'reserve-fee') continue;
+            const hit = o.commit ? matchSealedCoinbaseVout(o, pays) : { nanos: Number(o.nanos || 0) };
+            const n = Math.max(0, Math.floor(Number(hit.nanos || o.nanos || 0)));
+            if (!n) continue;
+            if (kind === 'hash') hashNanos += n;
+            else potNanos += n;
+          }
+        }
+        for (const tx of txs) {
+          if (tx?.coinbase) continue;
+          const n = Math.max(0, Math.floor(Number(tx.nanos || tx.vout?.[0]?.nanos || 0)));
+          if (!n) continue;
+          if (tx.mint === true) extraMintNanos += n;
+          const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+          if (kind === 'burn') burnedNanos += n;
+        }
       }
     }
-    for (const tx of txs) {
-      if (tx?.coinbase) continue;
-      const n = Math.max(0, Math.floor(Number(tx.nanos || tx.vout?.[0]?.nanos || 0)));
-      if (!n) continue;
-      if (tx.mint === true) extraMintNanos += n;
-      const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
-      if (kind === 'burn') burnedNanos += n;
-    }
+    const circulatingNanos = potNanos + hashNanos + extraMintNanos - burnedNanos;
+    _supplyVal = {
+      circulatingNanos: circulatingNanos > 0 ? circulatingNanos : 0,
+      potNanos,
+      hashNanos,
+      extraMintNanos,
+      burnedNanos,
+      lockedNanos: Math.max(0, Math.floor(Number(store?.reserveVault?.totalLockedNanos || 0))),
+    };
+    _supplyAt = h;
+    return _supplyVal;
+  } finally {
+    _supplyBusy = false;
   }
-  const circulatingNanos = potNanos + hashNanos + extraMintNanos - burnedNanos;
-  return {
-    circulatingNanos: circulatingNanos > 0 ? circulatingNanos : 0,
-    potNanos,
-    hashNanos,
-    extraMintNanos,
-    burnedNanos,
-    lockedNanos: Math.max(0, Math.floor(Number(store?.reserveVault?.totalLockedNanos || 0))),
-  };
 }
 
 export function explorerCirculation(store) {
@@ -860,6 +891,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         (tx.vout || []).forEach((o, index) => {
           if (!o?.commit || !o?.noteCommit || !want) return;
           if (!Buffer.from(o.noteCommit).equals(want)) return;
+          let nanos;
+          if (tx.coinbase) {
+            const pays = expectedCoinbasePays(b.shareBatch || [], {
+              miner: b.miner,
+              hashBonusNanos: Number(store?.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS),
+            });
+            nanos = matchSealedCoinbaseVout(o, pays).nanos || undefined;
+          }
           notes.push({
             kind: o.kind || (tx.coinbase ? 'pot' : 'send'),
             noteCommit: hex(o.noteCommit),
@@ -872,6 +911,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
             index,
             height: b.height,
             coinbase: !!tx.coinbase,
+            ...(nanos != null ? { nanos } : {}),
           });
         });
       }
