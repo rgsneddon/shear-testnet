@@ -1722,10 +1722,38 @@ class ShearLedger {
     return tx;
   }
 
+  final Set<String> _spentTagHex = {};
+
+  String? _noteSpendTagHex(Uint8List spendSeed, Map<String, dynamic> note) {
+    try {
+      final spentNote = {
+        'kind': (note['kind'] as String?) ?? 'pot',
+        'commit': _noteBytes(note['commit'])!,
+        'noteCommit': _noteBytes(note['noteCommit'])!,
+      };
+      final x = admitScalarFromSeed(spendSeed, spentNote);
+      return _bytesHex(pointBytes(spendTagPoint(x, admitPub(x))));
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<List<Uint8List>> _fluxsetPubs() async {
     if (pool == null) return const [];
     try {
       final live = await pool!.fluxset();
+      _spentTagHex.clear();
+      final tags = live['spendTags'];
+      if (tags is List) {
+        for (final t in tags) {
+          if (t is String && t.isNotEmpty) {
+            _spentTagHex.add(t.toLowerCase());
+          } else {
+            final b = _noteBytes(t);
+            if (b != null && b.isNotEmpty) _spentTagHex.add(_bytesHex(b));
+          }
+        }
+      }
       final raw = live['pubs'];
       if (raw is! List) return const [];
       return raw
@@ -1823,13 +1851,20 @@ class ShearLedger {
     if (spendable(src) < needShe) throw StateError('insufficient');
     Map<String, dynamic>? spent;
     var fundedShe = spendable(src);
+    List<Uint8List> livePubs = const [];
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local) {
+      livePubs = await _fluxsetPubs();
       for (final n in _notes) {
         if (n['spent'] == true) continue;
         if (n['address'] != src && n['dest'] != src) continue;
         if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
         final h = (n['height'] as num?)?.toInt();
         if (h != null && h > 0 && (_sealedHeight - h + 1) < spendableConfirmations) {
+          continue;
+        }
+        final tag = _noteSpendTagHex(spendSeed, n);
+        if (tag != null && _spentTagHex.contains(tag)) {
+          n['spent'] = true;
           continue;
         }
         final amt = n['amount'];
@@ -1962,8 +1997,16 @@ class ShearLedger {
         }
       ];
       excess = kernelExcess(vouts, vin);
-      final pubs = await _fluxsetPubs();
+      var pubs = livePubs;
+      if (pubs.isEmpty) pubs = await _fluxsetPubs();
       if (pubs.isEmpty) throw StateError('fluxset');
+      final dumpPubs = Platform.environment['SHEAR_DUMP_PUBS'];
+      if (dumpPubs != null && dumpPubs.isNotEmpty) {
+        File(dumpPubs).writeAsStringSync(jsonEncode({
+          'n': pubs.length,
+          'pubs': pubs.map(_bytesHex).toList(),
+        }));
+      }
       final body = <String, dynamic>{'vin': vin, 'vout': vouts};
       proveFlowSpend(body, spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
       admitProof = Map<String, dynamic>.from(body['admit_proof'] as Map);

@@ -619,11 +619,43 @@ export function createStore(dir, {
       const proof = tx.admit_proof;
       if (!proof) return { ok: false, reason: 'admit' };
       const live = liveFlux;
-      if (!admit_verify(proof, live.pubs)) return { ok: false, reason: 'admit' };
+      const rlen = Array.isArray(proof.r) ? proof.r.length : -1;
+      const n = (live.pubs || []).length;
       const tag = proof.spendTag || tx.spendTag;
+      let th = '';
+      try { th = tag ? Buffer.from(asU8(tag)).toString('hex') : ''; } catch { th = ''; }
+      const spent = th ? live.spendTags.has(th) : false;
+      let verified = false;
+      let verifyErr = '';
+      try {
+        verified = !!admit_verify(proof, live.pubs);
+      } catch (e) {
+        verifyErr = String(e && e.message ? e.message : e);
+      }
+      if (!verified) {
+        let pub0 = '';
+        try {
+          const p0 = live.pubs[0];
+          pub0 = Buffer.from(asU8(typeof p0?.toBytes === 'function' ? p0.toBytes() : p0)).toString('hex');
+        } catch { /* ignore */ }
+        console.error(JSON.stringify({
+          event: 'admit_fail',
+          why: rlen !== n ? 'rlen' : (verifyErr || 'verify'),
+          n,
+          rlen,
+          jroot: Buffer.from(live.jroot || []).toString('hex'),
+          spendTag: th,
+          spent,
+          verifyErr,
+          pub0,
+        }));
+        return { ok: false, reason: 'admit' };
+      }
       if (!tag) return { ok: false, reason: 'admit' };
-      const th = Buffer.from(asU8(tag)).toString('hex');
-      if (live.spendTags.has(th)) return { ok: false, reason: 'admit' };
+      if (live.spendTags.has(th)) {
+        console.error(JSON.stringify({ event: 'admit_fail', why: 'spent_tag', n, rlen, spendTag: th }));
+        return { ok: false, reason: 'admit' };
+      }
       for (const m of mempool) {
         const mt = m.admit_proof?.spendTag || m.spendTag;
         if (mt && Buffer.from(asU8(mt)).toString('hex') === th) {

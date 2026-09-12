@@ -349,6 +349,46 @@ void main() {
     );
   });
 
+  test('send skips notes whose spendTag is already in the live fluxset', () async {
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final probe = ShearLedger()..bindIdentity(id);
+    final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
+    final d20 = hash20FromAddress(dest)!;
+    var spent = sealNote(kUnitsPerShe, dest20: d20, kind: 'pot');
+    spent['address'] = dest;
+    spent = attachAdmitPub(spent, admitBase: pointFrom(admitBaseFromAddress(dest)!));
+    final x = admitScalarFromSeed(seed, spent);
+    final tag = pointBytes(spendTagPoint(x, admitPub(x)));
+    final tagHex = tag.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+    final P = pointBytes(admitPub(x));
+    final pool = _RecordingPool([], pubs: [P], spendTags: [tagHex]);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    ledger.confirmRound(address: dest, pot: 1, height: 2);
+    expect(ledger.notes, isEmpty);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    ledger.ingestSealedVouts(
+      [compactSealedVout(spent)],
+      spendSeed: seed,
+      dest: dest,
+      prev: Uint8List(32),
+      startIndex: 0,
+    );
+    expect(ledger.notes, isNotEmpty);
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    await expectLater(
+      ledger.send(
+        from: dest,
+        to: bob,
+        amount: 0.25,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        spendSeed: seed,
+      ),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', contains('no_note'))),
+    );
+  });
+
   test('sealed send change is the spent note leftover, not dest-balance of extra notes', () async {
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
@@ -4496,15 +4536,18 @@ Future<void> _waitKey(WidgetTester tester, Key key) async {
 }
 
 class _RecordingPool extends ShearPoolClient {
-  _RecordingPool(this.posts, {this.pubs = const []}) : super(baseUrl: 'http://127.0.0.1:9');
+  _RecordingPool(this.posts, {this.pubs = const [], this.spendTags = const []})
+      : super(baseUrl: 'http://127.0.0.1:9');
   final List<Map<String, dynamic>> posts;
   final List<Uint8List> pubs;
+  final List<String> spendTags;
 
   @override
   Future<Map<String, dynamic>> fluxset() async {
     return {
       'ok': true,
       'pubs': pubs.map((p) => p.map((b) => b.toRadixString(16).padLeft(2, '0')).join()).toList(),
+      'spendTags': spendTags,
     };
   }
 
