@@ -25,8 +25,11 @@ for p in /opt/homebrew/opt/libsodium/lib/libsodium.26.dylib /usr/local/opt/libso
 done
 test -n "$SODIUM_DYLIB"
 mkdir -p "$APP/Contents/Frameworks"
-cp -L "$SODIUM_DYLIB" "$APP/Contents/Frameworks/libsodium.26.dylib"
-install_name_tool -id @rpath/libsodium.26.dylib "$APP/Contents/Frameworks/libsodium.26.dylib" 2>/dev/null || true
+if [ ! -f "$APP/Contents/Frameworks/libsodium.26.dylib" ]; then
+  cp -L "$SODIUM_DYLIB" "$APP/Contents/Frameworks/libsodium.26.dylib"
+  chmod u+w "$APP/Contents/Frameworks/libsodium.26.dylib"
+  install_name_tool -id @rpath/libsodium.26.dylib "$APP/Contents/Frameworks/libsodium.26.dylib" 2>/dev/null || true
+fi
 # Wallet does not bundle the official miner. Official miner is a separate release.
 if [ -e "$APP/Contents/MacOS/shear-miner" ] || [ -e "$APP/Contents/MacOS/Shear-Miner" ]; then
   echo "wallet app must not include Shear-Miner" >&2
