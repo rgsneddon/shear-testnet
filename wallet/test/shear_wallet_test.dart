@@ -25,6 +25,9 @@ import 'package:shear_wallet/shear_social.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_levy.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
+import 'package:shear_wallet/shear_admit.dart';
+import 'package:shear_wallet/shear_note.dart';
+import 'package:shear_wallet/shear_ristretto.dart';
 import 'package:crypto/crypto.dart';
 
 const kGatePassword = 'correct-horse';
@@ -197,24 +200,32 @@ void main() {
   test('tracks owned notes and POSTs a sealed Flow body (vin, vout, admit_proof, sig, spendPub)', () async {
     expect(kTabs, ['Continuum', 'Flow', 'Resistance', 'Vortex', 'Shearview', 'Closure']);
     final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final probe = ShearLedger()..viewSecret = id.viewKey;
+    final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
+    final d20 = hash20FromAddress(dest)!;
+    final spent = sealNote(kUnitsPerShe, dest20: d20, kind: 'pot');
+    spent['address'] = dest;
+    final x = admitScalarFromSeed(seed, spent);
+    final P = pointBytes(admitPub(x));
+    final decoy = pointBytes(admitPub(randomScalar()));
+    final pubs = [P, decoy];
     final posts = <Map<String, dynamic>>[];
-    final pool = _RecordingPool(posts);
+    final pool = _RecordingPool(posts, pubs: pubs);
     final ledger = ShearLedger(pool: pool)..viewSecret = id.viewKey;
-    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     ledger.confirmRound(address: dest, pot: 1, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    expect(ledger.notes.any((n) => n['address'] == dest || n['dest'] == dest), isTrue);
     ledger.rememberNote({
       'address': dest,
-      'commit': 'aa' * 32,
-      'noteCommit': 'bb' * 32,
-      'r': 'cc' * 32,
-      'prev': 'dd' * 32,
+      'dest': dest,
+      'kind': 'pot',
+      'commit': spent['commit'],
+      'noteCommit': spent['noteCommit'],
+      'r': spent['r'],
+      'prev': Uint8List(32),
       'index': 0,
-      'x': 'ee' * 32,
-      'admit_proof': {'admit_proof': true, 'spendTag': 'ff' * 32},
     });
-    expect(ledger.notes, isNotEmpty);
-    expect(ledger.notes.first['commit'], 'aa' * 32);
     final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
     await ledger.send(
       from: dest,
@@ -222,16 +233,31 @@ void main() {
       amount: 0.25,
       restFrame: id.address,
       paymentCode: id.paymentCode,
-      spendSeed: hexToBytes(id.seedHex),
+      spendSeed: seed,
     );
     expect(posts, isNotEmpty);
     final body = posts.last;
-    expect(body.containsKey('vin'), isTrue);
-    expect(body.containsKey('vout'), isTrue);
-    expect(body.containsKey('admit_proof'), isTrue);
     expect(body['admit_proof'], isA<Map>());
-    expect((body['vout'] as List).any((o) => o is Map && o['kind'] == 'dummy'), isTrue);
-    expect((body['vin'] as List).first['commit'], 'aa' * 32);
+    final proof = Map<String, dynamic>.from(body['admit_proof'] as Map);
+    expect(proof['admit_proof'], isTrue);
+    expect(proof['c0'], isNotNull);
+    expect(proof['r'], isA<List>());
+    expect((proof['r'] as List).length, pubs.length);
+    expect(proof['spendTag'], isNotNull);
+    final vout = body['vout'] as List;
+    expect(vout.any((o) => o is Map && o['kind'] == 'dummy' && o['commit'] != null), isTrue);
+    expect((body['vin'] as List).first['commit'], isNotNull);
+    expect(body['sig'], isNotEmpty);
+    expect(body['spendPub'], isNotEmpty);
+    Uint8List b(dynamic v) => v is Uint8List ? v : hexToBytes(v.toString());
+    final liveProof = {
+      'admit_proof': true,
+      'c0': b(proof['c0']),
+      'spendTag': b(proof['spendTag']),
+      'r': (proof['r'] as List).map(b).toList(),
+    };
+    expect(admitVerify(liveProof, pubs), isTrue);
+    expect(admitVerify({'admit_proof': true, 'spendTag': Uint8List(32)}, pubs), isFalse);
   });
 
   test('live pending hashes and receives become spendable on block-found', () {
@@ -4327,8 +4353,20 @@ Future<void> _waitKey(WidgetTester tester, Key key) async {
 }
 
 class _RecordingPool extends ShearPoolClient {
-  _RecordingPool(this.posts) : super(baseUrl: 'http://127.0.0.1:9');
+  _RecordingPool(this.posts, {this.pubs = const []}) : super(baseUrl: 'http://127.0.0.1:9');
   final List<Map<String, dynamic>> posts;
+  final List<Uint8List> pubs;
+
+  @override
+  Future<Map<String, dynamic>> fluxset() async {
+    return {
+      'ok': true,
+      'pubs': pubs.map((p) => p.map((b) => b.toRadixString(16).padLeft(2, '0')).join()).toList(),
+    };
+  }
+
+  @override
+  Future<Map<String, dynamic>> mempoolPressure() async => {'depth': 0};
 
   @override
   Future<Map<String, dynamic>> send({
@@ -4359,6 +4397,7 @@ class _RecordingPool extends ShearPoolClient {
       'amount': amount,
       'vin': vin,
       'vout': vout,
+      'excess': excess,
       'admit_proof': admitProof,
       'sig': sig,
       'spendPub': spendPub,

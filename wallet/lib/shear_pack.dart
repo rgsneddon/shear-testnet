@@ -102,9 +102,23 @@ int _kindByte(String? kind) {
       return 3;
     case 'reserve-fee':
       return 4;
+    case 'dummy':
+      return 5;
     default:
       return 0;
   }
+}
+
+Uint8List _as32(dynamic v) {
+  if (v is Uint8List && v.length == 32) return v;
+  if (v is String && v.length == 64) {
+    final out = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      out[i] = int.parse(v.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+    return out;
+  }
+  return Uint8List(32);
 }
 
 Uint8List spendPackDigest({
@@ -112,17 +126,47 @@ Uint8List spendPackDigest({
   required List<Map<String, dynamic>> vout,
   int height = 0,
   String? kind,
+  List<Map<String, dynamic>>? vin,
 }) {
   final from20 = hash20FromAddress(from) ?? Uint8List(20);
-  final vins = [
-    {'prev': Uint8List(32), 'index': height, 'dest20': from20},
-  ];
+  final vins = <Map<String, dynamic>>[];
+  if (vin != null && vin.isNotEmpty) {
+    for (var i = 0; i < vin.length; i++) {
+      final v = vin[i];
+      final nc = v['noteCommit'];
+      Uint8List dest20;
+      if (nc is Uint8List && nc.length == 32) {
+        dest20 = nc.sublist(0, 20);
+      } else if (nc is String && nc.length == 64) {
+        dest20 = _as32(nc).sublist(0, 20);
+      } else {
+        dest20 = Uint8List(20);
+      }
+      vins.add({
+        'prev': _as32(v['prev']),
+        'index': (v['index'] as int?) ?? i,
+        'dest20': dest20,
+      });
+    }
+  } else {
+    vins.add({'prev': Uint8List(32), 'index': height, 'dest20': from20});
+  }
   final vouts = <Map<String, dynamic>>[];
   for (final o in vout) {
-    final addr = (o['address'] as String?) ?? '';
+    final nc = o['noteCommit'];
+    Uint8List dest20;
+    if (nc is Uint8List && nc.length == 32) {
+      dest20 = nc.sublist(0, 20);
+    } else if (nc is String && nc.length >= 40) {
+      dest20 = _as32(nc).sublist(0, 20);
+    } else {
+      final addr = (o['address'] as String?) ?? '';
+      dest20 = hash20FromAddress(addr) ?? Uint8List(20);
+    }
+    final sealed = o['commit'] != null;
     vouts.add({
-      'dest20': hash20FromAddress(addr) ?? Uint8List(20),
-      'nanos': (o['nanos'] as int?) ?? 0,
+      'dest20': dest20,
+      'nanos': sealed ? 0 : ((o['nanos'] as int?) ?? 0),
       'kind': _kindByte((o['kind'] as String?) ?? kind),
     });
   }
@@ -134,7 +178,8 @@ Uint8List spendMessage({
   required List<Map<String, dynamic>> vout,
   int height = 0,
   String? kind,
+  List<Map<String, dynamic>>? vin,
 }) {
-  final digest = spendPackDigest(from: from, vout: vout, height: height, kind: kind);
+  final digest = spendPackDigest(from: from, vout: vout, height: height, kind: kind, vin: vin);
   return Uint8List.fromList(sha256.convert([...utf8.encode('shear-spend-v1'), ...digest]).bytes);
 }

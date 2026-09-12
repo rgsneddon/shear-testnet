@@ -375,6 +375,25 @@ String encodeHrp(String hrp, Uint8List bytes) {
 
 String encodeShearAddress(Uint8List pubkeyHash20) => encodeHrp(shearHrp, pubkeyHash20);
 
+/// 32-byte ristretto B from dest payload dest20||B. 20-byte dests have no base.
+Uint8List? admitBaseFromAddress(String address) {
+  final raw = address.trim();
+  final one = raw.lastIndexOf('1');
+  if (one < 1) return null;
+  final body = raw.substring(one + 1).toLowerCase();
+  final vals = <int>[];
+  for (final ch in body.split('')) {
+    final i = _charset.indexOf(ch);
+    if (i < 0) return null;
+    vals.add(i);
+  }
+  if (vals.length < 7) return null;
+  final data = vals.sublist(0, vals.length - 6);
+  final bytes = _convertBits(data.sublist(1), 5, 8, false);
+  if (bytes.length < 52) return null;
+  return Uint8List.fromList(bytes.sublist(20, 52));
+}
+
 String encodeDestAddress(Uint8List pubkeyHash20, [Uint8List? admitBase]) {
   if (pubkeyHash20.length != 20) {
     throw ArgumentError('spend hash must be 20 bytes');

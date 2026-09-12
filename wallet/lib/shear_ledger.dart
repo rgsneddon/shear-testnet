@@ -9,6 +9,9 @@ import 'shear_levy.dart';
 import 'shear_read_sync.dart';
 import 'shear_ed25519.dart';
 import 'shear_pack.dart';
+import 'shear_admit.dart';
+import 'shear_note.dart';
+import 'shear_ristretto.dart';
 
 const kSheDecimals = 11;
 const kShePublicDigits = 9;
@@ -23,6 +26,27 @@ const kHashBonusVoteDeltaShe = 0.00000000001;
 
 String _bytesHex(Uint8List b) =>
     b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+
+Uint8List? _noteBytes(dynamic v) {
+  if (v is Uint8List) return v;
+  if (v is String && v.length >= 2 && v.length % 2 == 0) {
+    try {
+      return hexToBytes(v);
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
+}
+
+dynamic _hexify(dynamic v) {
+  if (v is Uint8List) return _bytesHex(v);
+  if (v is List) return v.map(_hexify).toList();
+  if (v is Map) {
+    return v.map((k, val) => MapEntry(k, _hexify(val)));
+  }
+  return v;
+}
 
 String formatShe(num she) {
   if (!she.isFinite) return '0.000000000';
@@ -785,6 +809,18 @@ class ShearLedger {
       pot: pot > 0 ? pot : null,
     );
     if ((coinbaseAmt > 0 ? coinbaseAmt : total) > 0) _txs.add(tx);
+    final d20 = hash20FromAddress(dest);
+    if (d20 != null && total > 0) {
+      rememberNote({
+        'address': dest,
+        'dest': dest,
+        'kind': pot > 0 ? 'pot' : 'hash',
+        'amount': total,
+        'height': height,
+        'noteCommit': _bytesHex(noteCommitOfDest20(d20)),
+        'index': 0,
+      });
+    }
     if (height > _sealedHeight) _sealedHeight = height;
     for (var i = 0; i < _txs.length; i++) {
       if (_txs[i].confirmed) continue;
@@ -1654,11 +1690,85 @@ class ShearLedger {
     if (sendKind == 'send' && !vouts.any((o) => o['kind'] == 'dummy')) {
       vouts.add({'kind': 'dummy', 'nanos': 0});
     }
+    List<Map<String, dynamic>> vin = [
+      {'address': src}
+    ];
+    Map<String, dynamic>? admitProof;
+    dynamic excess;
+    if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local) {
+      Map<String, dynamic>? spent;
+      for (final n in _notes) {
+        if ((n['address'] == src || n['dest'] == src) &&
+            _noteBytes(n['commit']) != null &&
+            _noteBytes(n['r']) != null) {
+          spent = n;
+          break;
+        }
+      }
+      if (spent == null) throw StateError('no_note');
+      final spentNote = {
+        'kind': (spent['kind'] as String?) ?? 'pot',
+        'commit': _noteBytes(spent['commit'])!,
+        'noteCommit': _noteBytes(spent['noteCommit'])!,
+        'r': _noteBytes(spent['r'])!,
+      };
+      List<Uint8List> pubs = const [];
+      try {
+        final live = await pool!.fluxset();
+        final raw = live['pubs'];
+        if (raw is List) {
+          pubs = raw
+              .map((p) => _noteBytes(p))
+              .whereType<Uint8List>()
+              .where((p) => p.length == 32)
+              .toList();
+        }
+      } catch (_) {}
+      if (pubs.isEmpty) throw StateError('fluxset');
+      final sealed = <Map<String, dynamic>>[];
+      for (final o in vouts) {
+        final kind = (o['kind'] as String?) ?? 'send';
+        if (kind == 'dummy') {
+          var note = sealNote(0, dest20: randomBytes(20), kind: 'dummy');
+          note = attachAdmitPub(note);
+          sealed.add(note);
+          continue;
+        }
+        final addr = (o['address'] as String?) ?? destTo;
+        final n = (o['nanos'] as int?) ?? 0;
+        final d20 = hash20FromAddress(addr);
+        var note = sealNote(n, dest20: d20, kind: kind);
+        if (addr.isNotEmpty) note['address'] = addr;
+        final B = admitBaseFromAddress(addr);
+        note = attachAdmitPub(
+          note,
+          admitBase: B != null ? pointFrom(B) : null,
+          spendSeed: B == null ? spendSeed : null,
+        );
+        sealed.add(note);
+      }
+      vouts
+        ..clear()
+        ..addAll(sealed);
+      vin = [
+        {
+          'prev': _noteBytes(spent['prev']) ?? Uint8List(32),
+          'index': (spent['index'] as int?) ?? 0,
+          'commit': spentNote['commit'],
+          'noteCommit': spentNote['noteCommit'],
+          'r': spentNote['r'],
+        }
+      ];
+      excess = kernelExcess(vouts, vin);
+      final body = <String, dynamic>{'vin': vin, 'vout': vouts};
+      proveFlowSpend(body, spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
+      admitProof = Map<String, dynamic>.from(body['admit_proof'] as Map);
+    }
     if (spendSeed != null && spendSeed.length == 32 && sendKind != 'vote') {
       if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
         throw StateError('unspendable_dest');
       }
-      final msg = spendMessage(from: src, vout: vouts, kind: sendKind);
+      final msg = spendMessage(from: src, vout: vouts, kind: sendKind, vin: vin);
       final shared = _stealthShared[src];
       late Uint8List sig;
       late Uint8List pub;
@@ -1672,31 +1782,6 @@ class ShearLedger {
       sigHex = _bytesHex(sig);
       spendPubHex = _bytesHex(pub);
     }
-    Map<String, dynamic>? spentNote;
-    for (final n in _notes) {
-      if (n['address'] == src || n['dest'] == src) {
-        spentNote = n;
-        break;
-      }
-    }
-    final vin = spentNote != null
-        ? [
-            {
-              'prev': spentNote['prev'],
-              'index': spentNote['index'],
-              'commit': spentNote['commit'],
-              'noteCommit': spentNote['noteCommit'],
-              if (spentNote['r'] != null) 'r': spentNote['r'],
-            }
-          ]
-        : [
-            {'address': src}
-          ];
-    Map<String, dynamic>? admitProof = spentNote?['admit_proof'] is Map
-        ? Map<String, dynamic>.from(spentNote!['admit_proof'] as Map)
-        : (sendKind == 'send'
-            ? <String, dynamic>{'admit_proof': true, 'spendTag': spentNote?['spendTag']}
-            : null);
     if (pool != null && !local) {
       final json = await pool!.send(
         from: src,
@@ -1712,10 +1797,15 @@ class ShearLedger {
         sig: sigHex,
         spendPub: spendPubHex,
         ephPub: pay?.ephPub != null ? _bytesHex(pay!.ephPub) : null,
-        vin: vin,
-        vout: vouts,
-        admitProof: admitProof,
-        spendTag: spentNote?['spendTag']?.toString(),
+        vin: List<dynamic>.from(_hexify(vin) as List),
+        vout: List<dynamic>.from(_hexify(vouts) as List),
+        excess: excess is Uint8List ? _bytesHex(excess) : excess,
+        admitProof: admitProof != null
+            ? Map<String, dynamic>.from(_hexify(admitProof) as Map)
+            : null,
+        spendTag: admitProof?['spendTag'] is Uint8List
+            ? _bytesHex(admitProof!['spendTag'] as Uint8List)
+            : admitProof?['spendTag']?.toString(),
       );
       if (json['ok'] != true || json['tx'] is! Map) {
         throw StateError('${json['reason'] ?? 'send failed'}');
@@ -2059,6 +2149,8 @@ class ShearPoolClient {
         if (admitProof != null) 'admit_proof': admitProof,
         if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
       });
+
+  Future<Map<String, dynamic>> fluxset() => _get('/api/wallet/fluxset');
 
   Future<Map<String, dynamic>> mempoolPressure() => _get('/api/mempoolPressure');
 
