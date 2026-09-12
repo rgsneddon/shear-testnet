@@ -4,7 +4,7 @@ set -euo pipefail
 WALLET="${SHEAR_WALLET:-/opt/shear-v2/wallet}"
 FLUTTER_ROOT="${FLUTTER_ROOT:-/opt/flutter}"
 VER="$(sed -n "s/^const kWalletVersion = '\\(.*\\)';/\\1/p" "$WALLET/lib/main.dart" | head -1)"
-BUILD_NUMBER="${BUILD_NUMBER:-45}"
+BUILD_NUMBER="${BUILD_NUMBER:-46}"
 # Flutter file version is x.y.z+N. Public zip pin stays two-part $VER.
 FLUTTER_NAME="$VER"
 case "$FLUTTER_NAME" in
