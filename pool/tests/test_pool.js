@@ -882,10 +882,10 @@ describe('public miner listing', () => {
     });
     const httpPort = pool.httpServer.address().port;
     const stratumPort = pool.stratum.address().port;
-    pool.issueJob();
-    // Find shares on the job login returns. Precomputed hits go stale (JOB_RESTAMP_MS=10s).
-    const a = await loginAndShare(stratumPort, `${dest}.alpha`);
-    const b = await loginAndShare(stratumPort, `${dest}.beta`);
+    const job = pool.issueJob();
+    const hits = findOkShares(job, 2);
+    const a = await loginAndShare(stratumPort, `${dest}.alpha`, {}, hits[0]);
+    const b = await loginAndShare(stratumPort, `${dest}.beta`, {}, hits[1]);
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     const rows = (stats.workers || []).filter((w) => w.miner === tag);
     assert.equal(rows.length, 1, JSON.stringify(stats.workers));
