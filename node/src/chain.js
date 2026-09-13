@@ -162,9 +162,17 @@ export function digestTx(tx) {
   });
   const vouts = (tx.vout || []).map((o) => {
     const nc = ref32(o.noteCommit);
+    let d20 = nc ? nc.subarray(0, 20) : null;
+    if (!d20) {
+      try {
+        const owned = o.dest20 != null && o.dest20 !== '' ? Buffer.from(asU8(o.dest20)) : null;
+        if (owned && owned.length >= 20) d20 = owned.subarray(0, 20);
+      } catch { /* fall through to address */ }
+    }
+    const claimed = o.valueProof?.v != null ? Number(o.valueProof.v) : Number(o.nanos || 0);
     return {
-      dest20: nc ? nc.subarray(0, 20) : dest20Of(o.address || ''),
-      nanos: o.commit ? 0 : Number(o.nanos || 0),
+      dest20: d20 || dest20Of(o.address || ''),
+      nanos: o.commit ? 0 : claimed,
       kind: kindByte(o.kind),
     };
   });

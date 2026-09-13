@@ -40,6 +40,7 @@ import {
 } from './reserve_vault.js';
 import { compactTx } from './chronoflux.js';
 import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
+import { digestTx } from '../node/src/chain.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, interestNanos } from './reserve_oracle.js';
 
 const DAY = 86_400_000;
@@ -496,6 +497,59 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     });
     assert.equal(peer.some((r) => r.action === 'lock' && r.ok === true), true, JSON.stringify(peer));
     assert.equal(Number(wireState.totalLockedNanos), PI_SHE_NANOS);
+  });
+
+  it('compactTx of an address-only lock still credits applyReserveBlock from dest20 and valueProof.v', () => {
+    const alice = newIdentity();
+    const vault = destOf(alice);
+    const continuum = destForLogin(alice.address, { viewKey: alice.viewKey });
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    const pid = portalIdFromDest(vault);
+    const fat = {
+      id: 'lock-addr-only',
+      programId: RESERVE_PROGRAM,
+      kind: 'lock',
+      from: continuum,
+      to: vault,
+      nanos: PI_SHE_NANOS,
+      vin: [{ address: continuum }],
+      vout: [{ kind: 'lock', address: vault, nanos: PI_SHE_NANOS }],
+    };
+    const lock = compactTx(fat);
+    const blob = JSON.stringify(lock);
+    assert.doesNotMatch(blob, /ssa1/);
+    assert.doesNotMatch(blob, /she1/);
+    assert.doesNotMatch(blob, /"nanos"/);
+    assert.doesNotMatch(blob, /"address"/);
+    assert.equal(digestTx(lock).equals(digestTx(fat)), true);
+    const locked = applyReserveBlock({
+      state,
+      block: { txs: [{ coinbase: true, vout: [] }, lock] },
+      nowMs: t0,
+    });
+    assert.equal(locked.some((r) => r.action === 'lock' && r.ok === true), true, JSON.stringify(locked));
+    assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(state.portals[pid].staked), PI_SHE_NANOS);
+
+    const voteFat = {
+      id: 'vote-addr-only',
+      programId: RESERVE_PROGRAM,
+      kind: 'vote',
+      from: continuum,
+      to: vault,
+      choice: VOTE_HOLD,
+      vin: [{ address: continuum }],
+      vout: [{ kind: 'vote', address: vault, nanos: 0 }],
+    };
+    const voteSealed = compactTx(voteFat);
+    assert.equal(digestTx(voteSealed).equals(digestTx(voteFat)), true);
+    const voted = applyReserveBlock({
+      state,
+      block: { txs: [{ coinbase: true, vout: [] }, voteSealed] },
+      nowMs: t0 + 2,
+    });
+    assert.equal(voted.some((r) => r.action === 'vote' && r.ok === true), true, JSON.stringify(voted));
   });
 });
 

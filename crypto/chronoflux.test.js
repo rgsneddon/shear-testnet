@@ -13,11 +13,12 @@ import {
   compactChainBlock,
   compactTx,
 } from './chronoflux.js';
-import { lockTx } from './reserve_vault.js';
+import { lockTx, voteTx, portalIdFromDest } from './reserve_vault.js';
 import { newIdentity } from './address.js';
 import { vaultDest, destForLogin } from './flow_sheet.js';
 import { verifySealedNote, reviveBytes } from './note.js';
 import { PI_SHE_NANOS } from './asert.js';
+import { digestTx } from '../node/src/chain.js';
 
 describe('chronoflux prune + collate', () => {
   it('collates thousands of hashes into one sample per miner', () => {
@@ -194,5 +195,59 @@ describe('chronoflux prune + collate', () => {
     assert.equal(Buffer.isBuffer(wire.vout[0].commit), true);
     assert.equal(verifySealedNote(wire.vout[0], PI_SHE_NANOS), true);
     assert.equal(wire.vout[0].r, undefined);
+    assert.ok(sealed.vout[0].dest20);
+    assert.ok(sealed.vout[0].portalId);
+    assert.equal(digestTx(sealed).equals(digestTx(tx)), true);
+  });
+
+  it('compact address-only lock keeps dest20/portalId/valueProof.v so digestTx matches the fat body', () => {
+    const id = newIdentity();
+    const continuum = destForLogin(id.address, { viewKey: id.viewKey });
+    const vault = vaultDest(id.address, { viewKey: id.viewKey });
+    const fat = {
+      id: 'lock-addr',
+      programId: 'shear-reserve-v1',
+      kind: 'lock',
+      from: continuum,
+      to: vault,
+      nanos: PI_SHE_NANOS,
+      vin: [{ address: continuum }],
+      vout: [{ kind: 'lock', address: vault, nanos: PI_SHE_NANOS }],
+    };
+    const sealed = compactTx(fat);
+    const blob = JSON.stringify(sealed);
+    assert.doesNotMatch(blob, /ssa1/);
+    assert.doesNotMatch(blob, /she1/);
+    assert.doesNotMatch(blob, /"nanos"/);
+    assert.doesNotMatch(blob, /"address"/);
+    assert.equal(sealed.from, undefined);
+    assert.equal(sealed.to, undefined);
+    assert.equal(sealed.vout[0].address, undefined);
+    assert.equal(sealed.vout[0].nanos, undefined);
+    assert.ok(sealed.vout[0].dest20);
+    assert.equal(Buffer.from(sealed.vout[0].dest20).length, 20);
+    assert.equal(sealed.vout[0].portalId, portalIdFromDest(vault));
+    assert.equal(Number(sealed.vout[0].valueProof.v), PI_SHE_NANOS);
+    assert.equal(digestTx(sealed).equals(digestTx(fat)), true);
+    const wire = JSON.parse(JSON.stringify(sealed), reviveBytes);
+    assert.equal(digestTx(wire).equals(digestTx(fat)), true);
+
+    const voteFat = {
+      id: 'vote-addr',
+      programId: 'shear-reserve-v1',
+      kind: 'vote',
+      from: continuum,
+      to: vault,
+      payer: continuum,
+      choice: 'leave bonus as-is',
+      vin: [{ address: continuum }],
+      vout: [{ kind: 'vote', address: vault, nanos: 0 }],
+    };
+    const voteSealed = compactTx(voteFat);
+    assert.doesNotMatch(JSON.stringify(voteSealed), /ssa1/);
+    assert.doesNotMatch(JSON.stringify(voteSealed), /"nanos"/);
+    assert.equal(voteSealed.payer, undefined);
+    assert.ok(voteSealed.vout[0].dest20);
+    assert.equal(digestTx(voteSealed).equals(digestTx(voteFat)), true);
   });
 });

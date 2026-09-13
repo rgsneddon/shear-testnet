@@ -16,11 +16,13 @@
  * Pruned after 1000 confirmations: per-round hash-sample bodies and B leaves.
  * Never prune vouts. continuity_root in the header remains the 32-byte seal.
  */
+import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS } from './asert.js';
 import { shareRowJson } from './pack.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8 } from './note.js';
+import { hash20FromAddress } from './address.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
 
@@ -282,12 +284,55 @@ function compactValue(v) {
   return out;
 }
 
-const RESERVE_VOUT_KINDS = new Set(['lock', 'vote', 'withdraw', 'reserve-fee']);
+const RESERVE_TX_KINDS = new Set(['lock', 'vote', 'withdraw']);
+
+function dest20Buf(x) {
+  if (x == null || x === '') return null;
+  try {
+    const b = Buffer.from(asU8(x));
+    if (b.length >= 20) return Buffer.from(b.subarray(0, 20));
+  } catch { /* ignore */ }
+  return null;
+}
+
+function dest20FromOpen(o) {
+  const owned = dest20Buf(o?.dest20);
+  if (owned) return owned;
+  if (!o?.address) return null;
+  const h = hash20FromAddress(o.address);
+  return h ? Buffer.from(h) : null;
+}
+
+function portalIdFromOpen(o) {
+  if (o?.portalId) return o.portalId;
+  const dest = String(o?.address || '');
+  if (!dest) return '';
+  return createHash('sha256').update('shear-portal-v1').update(dest).digest('hex');
+}
+
+function claimedReserveV(o) {
+  if (o?.valueProof?.v != null) return Math.floor(Number(o.valueProof.v));
+  if (o?.nanos != null) return Math.floor(Number(o.nanos));
+  return 0;
+}
+
+function attachReserveSeal(row, o) {
+  const d20 = dest20FromOpen(o);
+  if (d20) row.dest20 = d20;
+  const portalId = portalIdFromOpen(o);
+  if (portalId) row.portalId = portalId;
+  const v = claimedReserveV(o);
+  if (o?.valueProof) row.valueProof = compactValue(o.valueProof);
+  if (Number.isFinite(v) && v !== 0) {
+    row.valueProof = { ...(row.valueProof || {}), v };
+  }
+}
 
 function compactVout(o) {
   if (!o) return o;
   const kind = o.kind || 'pot';
   const keepDest = kind === 'vortice-register';
+  const reserveKind = RESERVE_TX_KINDS.has(kind);
   if (o.commit) {
     const row = {
       kind,
@@ -302,11 +347,13 @@ function compactVout(o) {
     if (o.rCt) row.rCt = o.rCt;
     if (o.dest20) row.dest20 = o.dest20;
     if (o.portalId) row.portalId = o.portalId;
+    if (reserveKind) attachReserveSeal(row, o);
     if (o.memo) row.memo = true;
     if (keepDest && o.address) row.address = o.address;
     return row;
   }
   const row = { kind };
+  if (reserveKind) attachReserveSeal(row, o);
   if (keepDest && o.address) row.address = o.address;
   if (o.memo) row.memo = true;
   return row;
@@ -330,12 +377,14 @@ export function compactTx(tx) {
   delete out.samples;
   const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
   const keepDest = kind === 'vortice-register';
+  const reserveTx = RESERVE_TX_KINDS.has(kind);
   delete out.nanos;
   delete out.changeNanos;
   delete out.amount;
   if (!keepDest) {
     delete out.from;
     delete out.to;
+    delete out.payer;
   }
   if (tx.vin) {
     out.vin = (tx.vin || []).map((v) => {
@@ -348,6 +397,10 @@ export function compactTx(tx) {
         noteCommit: v.noteCommit,
         dest20: v.dest20,
       });
+      if (!row.dest20 && reserveTx && v.address) {
+        const h = hash20FromAddress(v.address);
+        if (h) row.dest20 = Buffer.from(h);
+      }
       if (keepDest && v.address) row.address = v.address;
       return row;
     });
