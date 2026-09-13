@@ -29,14 +29,24 @@ export function latestPaths(dir) {
   };
 }
 
-/** Pruned prefix only. Overwrites latest.json + latest.bin. */
+/** Wait this many new blocks after a prune before publishing latest. */
+export const BOOTSTRAP_LAG_BLOCKS = 5;
+
+/** Pruned prefix only. Overwrites latest.json + latest.bin. Lagged 5 blocks. */
 export function writeLatestBootstrap(dataDir, blocks, {
   magic = MAGIC_TESTNET,
   pruneDepth = SAMPLE_PRUNE_CONFIRMATIONS,
+  lag = BOOTSTRAP_LAG_BLOCKS,
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
-  const tipH = Number(list.at(-1)?.height || 0);
-  const pruned = list.filter((b) => shouldPruneSamples(b.height, tipH, pruneDepth) && b.samplesPruned);
+  const liveTip = Number(list.at(-1)?.height || 0);
+  const tipH = liveTip - Math.max(0, Number(lag) || 0);
+  if (tipH < pruneDepth + 1) return null;
+  const pruned = list.filter((b) => (
+    Number(b.height) <= tipH
+    && shouldPruneSamples(b.height, tipH, pruneDepth)
+    && b.samplesPruned
+  ));
   if (!pruned.length) return null;
   const last = pruned[pruned.length - 1];
   const first = pruned[0];

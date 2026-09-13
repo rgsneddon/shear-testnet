@@ -11,6 +11,7 @@ import path from 'node:path';
 import { SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { shouldPruneSamples, flowSkipAllowed } from '../../crypto/chronoflux.js';
 import { readChainBin } from '../../crypto/chainbin.js';
+import { writeLatestBootstrap, latestPaths, BOOTSTRAP_LAG_BLOCKS } from '../src/bootstrap.js';
 
 const dir = process.env.SHEAR_DATA || path.join(process.env.HOME || '/var/lib/shear', '.shear', 'testnet-v3');
 const bin = path.join(dir, 'chain.bin');
@@ -195,15 +196,33 @@ for (const b of blocks) {
     samplesPruned: !!b.samplesPruned,
   };
 }
+const slimHeight = {};
+for (const [k, v] of Object.entries(byHeight)) {
+  const n = Number(k);
+  if (n === 1 || n + 8 > tipH) slimHeight[k] = v;
+}
 try {
   fs.writeFileSync(stateFile, `${JSON.stringify({
     genesisHash,
     tip: tipH,
     n: blocks.length,
-    byHeight,
+    byHeight: slimHeight,
     updatedAt: Date.now(),
   })}\n`);
 } catch { /* observer must not take down the node */ }
+
+const paths = latestPaths(dir);
+const publishFrom = SAMPLE_PRUNE_CONFIRMATIONS + 1 + BOOTSTRAP_LAG_BLOCKS;
+if (tipH < publishFrom) {
+  try {
+    if (fs.existsSync(paths.json)) fs.unlinkSync(paths.json);
+    if (fs.existsSync(paths.bin)) fs.unlinkSync(paths.bin);
+  } catch { /* ignore */ }
+} else {
+  try { writeLatestBootstrap(dir, blocks); } catch (e) {
+    dangers.push({ height: tipH, reason: 'bootstrap_publish_failed', detail: String(e?.message || e).slice(0, 80) });
+  }
+}
 
 const report = {
   ok: dangers.length === 0,

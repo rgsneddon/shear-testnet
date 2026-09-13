@@ -29,7 +29,7 @@ describe('latest-only prune bootstrap', () => {
     const first = [];
     for (let h = 1; h <= 3; h += 1) first.push(prunedBlock(h, h));
     first.push({
-      height: 1003,
+      height: 1008,
       hash: Buffer.alloc(32, 9),
       header: Buffer.alloc(128, 9),
       rootA: Buffer.alloc(32, 1),
@@ -38,6 +38,7 @@ describe('latest-only prune bootstrap', () => {
       txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
       shareBatch: [{ nonce: '1' }],
     });
+    assert.equal(writeLatestBootstrap(src, first.slice(0, 3)), null);
     const m1 = writeLatestBootstrap(src, first);
     assert.equal(m1.latest, true);
     assert.equal(m1.magic, MAGIC_TESTNET);
@@ -49,10 +50,10 @@ describe('latest-only prune bootstrap', () => {
     const names = fs.readdirSync(p.dir).filter((n) => !n.endsWith('.tmp'));
     assert.deepEqual(names.sort(), ['latest.bin', 'latest.json']);
 
-    const second = first.filter((b) => Number(b.height) !== 1003);
+    const second = first.filter((b) => Number(b.height) !== 1008);
     second.push(prunedBlock(4, 4));
     second.push({
-      height: 1004,
+      height: 1009,
       hash: Buffer.alloc(32, 10),
       header: Buffer.alloc(128, 10),
       rootA: Buffer.alloc(32, 1),
