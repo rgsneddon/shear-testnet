@@ -6,6 +6,7 @@ import path from 'node:path';
 import { newIdentity, isDestAddress } from '../../crypto/address.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
 import { RESERVE_PROGRAM, wrapMintForbidden, extraMintAllowed } from '../../crypto/asert.js';
+import { withdrawTx } from '../../crypto/reserve_vault.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -58,12 +59,8 @@ describe('verifyBlock extra mint', () => {
     assert.equal(appended.reason, 'mint_forbidden');
 
     const reserveTx = {
-      programId: RESERVE_PROGRAM,
-      mint: true,
-      kind: 'withdraw',
+      ...withdrawTx({ from: dest, to: vault, nanos: 7, id: 'w-7' }),
       fee: 1,
-      vin: [],
-      vout: [{ address: vault, nanos: 7, kind: 'withdraw' }],
     };
     const reserved = mine(buildTemplate({ ...base, txs: [reserveTx] }));
     const allowed = await Promise.resolve(verifyBlock(reserved, null));

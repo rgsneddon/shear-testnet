@@ -381,7 +381,7 @@ export function voteTx({ from, dest, choice, id }) {
     to: dest,
     choice,
     vin: [{ address: from }],
-    vout: [{ address: dest, nanos: 0, kind: KIND_VOTE }],
+    vout: [sealedReserveVout(dest, 0, KIND_VOTE)],
   };
 }
 

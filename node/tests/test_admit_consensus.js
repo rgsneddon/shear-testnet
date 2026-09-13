@@ -498,4 +498,74 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     assert.equal(gotShe.ok, false);
     assert.equal(gotShe.reason, 'silent_id_on_chain');
   });
+
+  it('lock without C or stub range is range_proof; compact lock has no dest/nanos', async () => {
+    const { dest } = identityDest();
+    const id = newIdentity();
+    const { vaultDest } = await import('../../crypto/flow_sheet.js');
+    const { lockTx } = await import('../../crypto/reserve_vault.js');
+    const { PI_SHE_NANOS } = await import('../../crypto/asert.js');
+    const vault = vaultDest(id.address, { viewKey: id.viewKey });
+    const parent = mine(buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: dest,
+      bits: 4,
+      now: 1_700_004_000_000,
+    }));
+    const okP = verifyBlock(parent, null);
+    assert.equal(okP.ok, true, okP.reason);
+    parent.hash = okP.hash;
+
+    const plain = lockTx({ from: dest, to: vault, nanos: PI_SHE_NANOS, id: 'lock-no-c' });
+    delete plain.vout[0].commit;
+    delete plain.vout[0].rangeProof;
+    delete plain.vout[0].valueProof;
+    delete plain.vout[0].noteCommit;
+    plain.vout[0].address = vault;
+    plain.vout[0].nanos = PI_SHE_NANOS;
+    const plainTpl = buildTemplate({
+      prev: parent.hash,
+      prevHeader: parent.header,
+      height: 2,
+      miner: dest,
+      bits: 4,
+      now: 1_700_004_090_000,
+      txs: [plain],
+      prevBlock: parent,
+      parentBlocks: [parent],
+    });
+    const plainBlock = mine(plainTpl);
+    const gotPlain = verifyBlock(plainBlock, parent, { evmHistory: [parent] });
+    assert.equal(gotPlain.ok, false);
+    assert.equal(gotPlain.reason, 'range_proof');
+
+    const stub = lockTx({ from: dest, to: vault, nanos: PI_SHE_NANOS, id: 'lock-stub' });
+    stub.vout[0].rangeProof = true;
+    const stubTpl = buildTemplate({
+      prev: parent.hash,
+      prevHeader: parent.header,
+      height: 2,
+      miner: dest,
+      bits: 4,
+      now: 1_700_004_180_000,
+      txs: [stub],
+      prevBlock: parent,
+      parentBlocks: [parent],
+    });
+    const stubBlock = mine(stubTpl);
+    const gotStubLock = verifyBlock(stubBlock, parent, { evmHistory: [parent] });
+    assert.equal(gotStubLock.ok, false);
+    assert.equal(gotStubLock.reason, 'range_proof');
+
+    const honest = lockTx({ from: dest, to: vault, nanos: PI_SHE_NANOS, id: 'lock-sealed' });
+    const sealed = compactTx(honest);
+    assert.equal(sealed.to, undefined);
+    assert.equal(sealed.from, undefined);
+    assert.equal(sealed.vout[0].address, undefined);
+    assert.equal(sealed.vout[0].nanos, undefined);
+    assert.ok(sealed.vout[0].commit);
+    assert.notEqual(sealed.vout[0].rangeProof, true);
+    assert.equal(JSON.stringify(sealed).includes(vault), false);
+  });
 });

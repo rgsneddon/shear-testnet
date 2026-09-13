@@ -804,13 +804,12 @@ function verifyBlockConsensus(block, prev, {
     }
     if (moneyNeedsRange(tx)) {
       for (const o of (tx.vout || [])) {
-        if (o?.commit) {
-          if (!o.rangeProof || o.rangeProof === true || !verifyRange(o.commit, o.rangeProof)) {
-            return { ok: false, reason: 'range_proof' };
-          }
-        } else if (flowNeedsDummy(tx)) {
+        if (!o?.commit) return { ok: false, reason: 'range_proof' };
+        if (o.rangeProof === true) return { ok: false, reason: 'range_proof' };
+        if (o.rangeProof && !verifyRange(o.commit, o.rangeProof)) {
           return { ok: false, reason: 'range_proof' };
         }
+        if (flowNeedsDummy(tx) && !o.rangeProof) return { ok: false, reason: 'range_proof' };
       }
     }
     if (flowNeedsDummy(tx)) {

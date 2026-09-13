@@ -217,7 +217,10 @@ function destOpeningShape(open) {
 export function verifyReservePortalOpen(tx) {
   if (!reserveNeedsPortalOpen(tx)) return true;
   const dest = reservePortalDest(tx);
-  if (!dest) return false;
+  if (!dest) {
+    const o = tx?.vout?.[0];
+    return !!(o?.commit && o.rangeProof && o.rangeProof !== true);
+  }
   return verifySpendSig(tx);
 }
 

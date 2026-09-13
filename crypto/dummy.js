@@ -25,7 +25,7 @@ export function flowNeedsDummy(tx) {
   return k === 'send' || k === '' || k === 'transfer';
 }
 
-/** Money C on Flow and Reserve notes. Legacy lock/vote with public nanos and no commit still verify. */
+/** Money C on Flow and Reserve notes. Missing C is range_proof, including lock/vote/withdraw. */
 export function moneyNeedsRange(tx) {
   if (!tx || tx.coinbase) return false;
   const k = String(tx.kind || tx.vout?.[0]?.kind || '');

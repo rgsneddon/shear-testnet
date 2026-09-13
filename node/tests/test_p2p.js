@@ -302,6 +302,9 @@ describe('p2p gossip', () => {
       await waitFor(() => a.p2p.syncedOnline() >= 2);
       const { levyNanos } = await import('../../crypto/levy.js');
       const lockNanos = 314159265358;
+      const { sealNote } = await import('../../crypto/note.js');
+      const { hash20FromAddress } = await import('../../crypto/address.js');
+      const d20 = hash20FromAddress(dest);
       const lock = signSpendTx({
         id: 'lock-fluff',
         kind: 'lock',
@@ -309,7 +312,7 @@ describe('p2p gossip', () => {
         to: dest,
         nanos: lockNanos,
         fee: levyNanos(lockNanos, { depth: 1e9 }),
-        vout: [{ address: dest, nanos: lockNanos, kind: 'lock' }],
+        vout: [{ ...sealNote(lockNanos, { dest20: d20, kind: 'lock' }), address: dest }],
       }, box.key);
       const vote = signSpendTx({
         id: 'vote-fluff',
@@ -319,7 +322,7 @@ describe('p2p gossip', () => {
         nanos: 0,
         payer: dest,
         fee: levyNanos(0, { depth: 1e9 }),
-        vout: [{ address: dest, nanos: 0, kind: 'vote' }],
+        vout: [{ ...sealNote(0, { dest20: d20, kind: 'vote' }), address: dest }],
       }, box.key);
       const qLock = a.store.queueTx(lock);
       const qVote = a.store.queueTx(vote);

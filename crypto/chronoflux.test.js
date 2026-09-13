@@ -182,10 +182,14 @@ describe('chronoflux prune + collate', () => {
     const sealed = compactTx(tx);
     assert.equal(sealed.vout[0].r, undefined);
     assert.equal(sealed.kind, 'lock');
-    assert.equal(sealed.to, vault);
-    assert.equal(sealed.vout[0].address, vault);
+    assert.equal(sealed.to, undefined);
+    assert.equal(sealed.from, undefined);
+    assert.equal(sealed.vout[0].address, undefined);
     assert.equal(sealed.nanos, undefined);
-    assert.equal(sealed.vout[0].nanos, PI_SHE_NANOS);
+    assert.equal(sealed.vout[0].nanos, undefined);
+    assert.ok(sealed.vout[0].commit);
+    assert.ok(sealed.vout[0].rangeProof);
+    assert.equal(sealed.vout[0].rangeProof === true, false);
     const wire = JSON.parse(JSON.stringify(sealed), reviveBytes);
     assert.equal(Buffer.isBuffer(wire.vout[0].commit), true);
     assert.equal(verifySealedNote(wire.vout[0], PI_SHE_NANOS), true);

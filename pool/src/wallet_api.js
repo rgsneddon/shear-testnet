@@ -1134,9 +1134,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (kind === 'send' && changeDest && leftover > 0) {
       vout.push({ address: changeDest, nanos: leftover, kind: 'send' });
     }
-    if (Array.isArray(body.vout) && body.vout.length) {
+    const postedVout = Array.isArray(body.vout) ? body.vout.filter((o) => o && o.commit) : [];
+    if (postedVout.length) {
       vout.length = 0;
-      for (const o of body.vout) vout.push(o);
+      for (const o of postedVout) vout.push(o);
     }
     const parked = kind === 'send' && changeDest && leftover > 0;
     const draft = isLock
@@ -1147,7 +1148,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         sig: body.sig || body.signature,
         spendPub: body.spendPub,
         amount,
-        ...(vout.length ? { vout } : {}),
+        ...(postedVout.length ? { vout: postedVout } : {}),
       }
       : isVote
         ? {
@@ -1157,7 +1158,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           sig: body.sig || body.signature,
           spendPub: body.spendPub,
           payer: from,
-          ...(vout.length ? { vout } : {}),
+          ...(postedVout.length ? { vout: postedVout } : {}),
         }
         : isWithdraw
         ? {
@@ -1166,7 +1167,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           sig: body.sig || body.signature,
           spendPub: body.spendPub,
           amount,
-          ...(vout.length ? { vout } : {}),
+          ...(postedVout.length ? { vout: postedVout } : {}),
         }
         : {
           kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, sig: body.sig || body.signature, spendPub: body.spendPub, ephPub,

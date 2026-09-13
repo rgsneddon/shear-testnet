@@ -283,7 +283,7 @@ const RESERVE_VOUT_KINDS = new Set(['lock', 'vote', 'withdraw', 'reserve-fee']);
 function compactVout(o) {
   if (!o) return o;
   const kind = o.kind || 'pot';
-  const keepDest = kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'vortice-register';
+  const keepDest = kind === 'vortice-register';
   if (o.commit) {
     const row = {
       kind,
@@ -298,12 +298,10 @@ function compactVout(o) {
     if (o.rCt) row.rCt = o.rCt;
     if (o.memo) row.memo = true;
     if (keepDest && o.address) row.address = o.address;
-    if (keepDest) row.nanos = Number(o.nanos || 0);
     return row;
   }
   const row = { kind };
   if (keepDest && o.address) row.address = o.address;
-  if (keepDest) row.nanos = Number(o.nanos || 0);
   if (o.memo) row.memo = true;
   return row;
 }
@@ -325,7 +323,7 @@ export function compactTx(tx) {
   const out = compactValue(tx);
   delete out.samples;
   const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
-  const keepDest = kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'vortice-register';
+  const keepDest = kind === 'vortice-register';
   delete out.nanos;
   delete out.changeNanos;
   delete out.amount;
@@ -348,9 +346,6 @@ export function compactTx(tx) {
     });
   }
   if (tx.vout) out.vout = (tx.vout || []).map(compactVout);
-  if (keepDest && out.vout?.[0] && !(Number(out.vout[0].nanos) > 0) && Number(tx.nanos) > 0) {
-    out.vout[0].nanos = Math.floor(Number(tx.nanos));
-  }
   if (tx.sig) out.sig = tx.sig;
   if (tx.signature && !out.sig) out.sig = tx.signature;
   if (keepDest && tx.spendPub) out.spendPub = tx.spendPub;

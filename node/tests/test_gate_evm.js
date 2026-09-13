@@ -82,16 +82,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
       spentNote: spent,
       pubs: fluxsetFromBlocks([parent]).pubs,
     });
-    const lock = {
-      id: 'reserve-lock',
-      programId: RESERVE_PROGRAM,
-      kind: 'lock',
-      from: destA,
-      to: destA,
-      nanos: lockNanos,
-      vin: [{ address: destA }],
-      vout: [{ address: destA, nanos: lockNanos, kind: 'lock' }],
-    };
+    const lock = lockTx({ from: destA, to: destA, nanos: lockNanos, id: 'reserve-lock' });
     lock.fee = levyNeed(lock, [sendTx]);
     const evmTx = {
       id: 'evm-value',

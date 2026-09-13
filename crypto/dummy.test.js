@@ -57,9 +57,13 @@ describe('Flow dummy outs', () => {
     assert.equal(verifyRange(lock.vout[0].commit, lock.vout[0].rangeProof), true);
     const sealedLock = compactTx(lock);
     assert.equal(sealedLock.nanos, undefined);
-    assert.equal(sealedLock.to, vault);
-    assert.equal(sealedLock.vout[0].address, vault);
+    assert.equal(sealedLock.to, undefined);
+    assert.equal(sealedLock.from, undefined);
+    assert.equal(sealedLock.vout[0].address, undefined);
+    assert.equal(sealedLock.vout[0].nanos, undefined);
+    assert.ok(sealedLock.vout[0].commit);
     assert.ok(sealedLock.vout[0].rangeProof);
+    assert.equal(sealedLock.vout[0].rangeProof === true, false);
     const vote = voteTx({ from, dest: vault, choice: 'hold', id: 'vote-d' });
     assert.equal(flowNeedsDummy(vote), false);
     assert.equal(dummyCount(attachDummyOuts(vote)), 0);

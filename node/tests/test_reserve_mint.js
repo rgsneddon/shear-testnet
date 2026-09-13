@@ -15,7 +15,7 @@ import {
   GENESIS_BPS,
 } from '../../crypto/asert.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
-import { vote, deposit, emptyVault, VOTE_DECREASE, VOTE_HOLD } from '../../crypto/reserve_vault.js';
+import { vote, deposit, emptyVault, VOTE_DECREASE, VOTE_HOLD, withdrawTx } from '../../crypto/reserve_vault.js';
 import { PI_SHE_NANOS } from '../../crypto/asert.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
 import {
@@ -76,12 +76,7 @@ describe('Reserve mint is sealed-state pure', () => {
     const staked = NANOS_PER_SHE;
     const want = staked + interestNanos(staked, 425);
     const wrong = {
-      programId: RESERVE_PROGRAM,
-      mint: true,
-      kind: 'withdraw',
-      from: dest,
-      vin: [],
-      vout: [{ address: vault, nanos: want + 1, kind: 'withdraw' }],
+      ...withdrawTx({ from: dest, to: vault, nanos: want + 1, id: 'w-wrong' }),
       stakedNanos: staked,
       principalNanos: staked,
     };
@@ -91,12 +86,7 @@ describe('Reserve mint is sealed-state pure', () => {
 
     assert.equal(interestNanos(0, 425), 0);
     const idleTaxed = {
-      programId: RESERVE_PROGRAM,
-      mint: true,
-      kind: 'withdraw',
-      from: dest,
-      vin: [],
-      vout: [{ address: vault, nanos: staked + interestNanos(staked, 425), kind: 'withdraw' }],
+      ...withdrawTx({ from: dest, to: vault, nanos: staked + interestNanos(staked, 425), id: 'w-idle' }),
       stakedNanos: 0,
       principalNanos: staked,
     };
@@ -107,12 +97,7 @@ describe('Reserve mint is sealed-state pure', () => {
     assert.equal(idleDenied.reason, 'mint_amount');
 
     const as425 = {
-      programId: RESERVE_PROGRAM,
-      mint: true,
-      kind: 'withdraw',
-      from: dest,
-      vin: [],
-      vout: [{ address: vault, nanos: staked + interestNanos(staked, 425), kind: 'withdraw' }],
+      ...withdrawTx({ from: dest, to: vault, nanos: staked + interestNanos(staked, 425), id: 'w-425' }),
       stakedNanos: staked,
       principalNanos: staked,
     };
