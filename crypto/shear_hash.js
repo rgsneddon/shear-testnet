@@ -27,8 +27,15 @@ let native = null;
 try {
   native = createRequire(import.meta.url)('./native/shearhash.node');
   if (native?.backend) native.backend('interpreter');
-} catch {
+} catch (err) {
   native = null;
+  try {
+    console.error(JSON.stringify({
+      event: 'shearhash_native',
+      ok: false,
+      reason: String(err?.message || err).slice(0, 160),
+    }));
+  } catch { /* ignore */ }
 }
 
 function minerBin() {

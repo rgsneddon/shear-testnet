@@ -93,9 +93,12 @@ describe('p2p gossip', () => {
 
   it('retries prev misses and does not blacklist them as final', () => {
     assert.equal(isFinalIngestFail('prev'), false);
+    assert.equal(isFinalIngestFail('ShearHash-v3 native addon missing and ShearK-Miner not built'), false);
     assert.equal(isFinalIngestFail('merkle'), true);
     assert.equal(isFinalIngestFail('pow'), true);
     assert.equal(isFinalIngestFail(''), true);
+    const mk = fs.readFileSync(new URL('../../crypto/native/Makefile', import.meta.url), 'utf8');
+    assert.match(mk, /-z,noexecstack/);
   });
 
   it('counts currently seen synced remotes, not historical uniques', () => {

@@ -261,9 +261,13 @@ export function lineHasIpBesideIdentity(line) {
   return ip && id;
 }
 
-/** `prev` is a batch-order miss; retry on the next header page. Merkle/pow stay final. */
+/** `prev` is a batch-order miss; retry on the next header page. Merkle/pow stay final.
+ * A missing local hasher is not a bad block — do not poison genesis. */
 export function isFinalIngestFail(reason) {
-  return String(reason || '') !== 'prev';
+  const r = String(reason || '');
+  if (r === 'prev') return false;
+  if (r.includes('native addon missing')) return false;
+  return true;
 }
 
 export function countSyncedOnline({ localHash = '', peers = [], includeSelf = true } = {}) {

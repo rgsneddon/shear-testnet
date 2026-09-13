@@ -8,7 +8,7 @@ UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
   LINKFLAGS := -bundle -undefined dynamic_lookup
 else
-  LINKFLAGS := -shared
+  LINKFLAGS := -shared -Wl,-z,noexecstack
 endif
 
 .PHONY: all clean
