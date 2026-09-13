@@ -621,6 +621,14 @@ export function createP2p({
         } catch { /* ignore */ }
         return;
       }
+      const recNow = peers.get(sock);
+      const lastHash = last ? wireHash(last.hash) : '';
+      if (recNow) {
+        if (!recNow.pending) recNow.pending = new Set();
+        if (!recNow.failed) recNow.failed = new Set();
+        if (lastHash) recNow.pending.delete(lastHash);
+        pumpGetblocks(sock);
+      }
       const job = ingestChain.then(() => {
         const before = store.tip();
         return Promise.resolve(store.ingest(fork)).then((got) => ({ got, before }));
@@ -628,10 +636,8 @@ export function createP2p({
       ingestChain = job.then(() => {}, () => {});
       job.then(({ got, before }) => {
         const rec = peers.get(sock);
-        const lastHash = last ? wireHash(last.hash) : '';
         if (rec) {
           if (!rec.failed) rec.failed = new Set();
-          if (rec.pending && lastHash) rec.pending.delete(lastHash);
           if (!got?.ok && lastHash) {
             if (isFinalIngestFail(got?.reason)) rec.failed.add(lastHash);
             try {
