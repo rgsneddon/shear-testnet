@@ -48,7 +48,7 @@ import {
   fluxsetFromBlocks,
   jroot as jrootOf,
 } from '../../crypto/admit.js';
-import { collateSamples, shouldPruneSamples } from '../../crypto/chronoflux.js';
+import { collateSamples, shouldPruneSamples, flowSkipAllowed } from '../../crypto/chronoflux.js';
 import { verifyFundedBody } from '../../crypto/spend.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
@@ -599,7 +599,7 @@ function verifyBlockConsensus(block, prev, {
   const tip = Number(tipHeight || height);
   const buriedDeep = shouldPruneSamples(height, tip);
   void buried;
-  const skipFlow = buriedDeep && !!block.samplesPruned;
+  const skipFlow = flowSkipAllowed({ height, samplesPruned: block.samplesPruned }, tip);
   const shareBatch = Array.isArray(block.shareBatch) ? block.shareBatch : [];
   const payAddr = (a) => a;
   const unit = Number(hashBonusNanos);

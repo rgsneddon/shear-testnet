@@ -5,6 +5,7 @@ import {
   SPENDABLE_CONFIRMATIONS,
   isSpendableHeight,
   shouldPruneSamples,
+  flowSkipAllowed,
   collateSamples,
   rollHashBundle,
   leanBlock,
@@ -45,6 +46,10 @@ describe('chronoflux prune + collate', () => {
     assert.equal(shouldPruneSamples(1, 1001), true);
     assert.equal(shouldPruneSamples(2, 1001), false);
     assert.equal(shouldPruneSamples(1, 1000), false);
+    assert.equal(flowSkipAllowed({ height: 1, samplesPruned: true }, 1), false);
+    assert.equal(flowSkipAllowed({ height: 1, samplesPruned: true }, 1000), false);
+    assert.equal(flowSkipAllowed({ height: 1, samplesPruned: true }, 1001), true);
+    assert.equal(flowSkipAllowed({ height: 1, samplesPruned: false }, 1001), false);
     const send = {
       id: 'send-1',
       from: 'shear1from',
@@ -81,6 +86,25 @@ describe('chronoflux prune + collate', () => {
     assert.ok(rows.some((r) => r.kind === 'coinbase' && r.nanos === 100_000_000_000));
     assert.ok(rows.some((r) => r.id === 'send-1-vout-0'));
     assert.throws(() => pruneSamples({ height: 1, txs: [] }), /prune_refuses_empty_txs/);
+    assert.throws(() => pruneSamples({
+      height: 1,
+      txs: [{ coinbase: true, vout: [] }],
+    }), /prune_refuses_empty_coinbase/);
+    const dest20 = Buffer.alloc(20, 7);
+    const lockKept = pruneSamples({
+      height: 1,
+      samples: [{ miner: 'x', count: 9 }],
+      shareBatch: [{ nonce: '1' }],
+      txs: [
+        { coinbase: true, vout: [{ kind: 'pot', noteCommit: Buffer.alloc(32, 1) }] },
+        { id: 'lock-keep', kind: 'lock', vout: [{ kind: 'lock', dest20, valueProof: { v: 5 } }] },
+      ],
+    });
+    assert.equal(lockKept.samplesPruned, true);
+    assert.deepEqual(lockKept.shareBatch, []);
+    assert.equal(lockKept.txs[1].id, 'lock-keep');
+    assert.equal(Buffer.from(lockKept.txs[1].vout[0].dest20).equals(dest20), true);
+    assert.equal(lockKept.txs[1].vout[0].valueProof.v, 5);
   });
 
   it('compact chain row is header + sealed txs, not per-hash JSON', () => {

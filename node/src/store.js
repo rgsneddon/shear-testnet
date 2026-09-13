@@ -302,7 +302,12 @@ export function createStore(dir, {
       const b = blocks[i];
       if (b.samplesPruned) continue;
       if (!shouldPruneSamples(b.height, tipH, pruneAfter)) continue;
-      blocks[i] = pruneSamples(b);
+      const nTx = (b.txs || []).length;
+      const nVout = (b.txs?.[0]?.vout || []).length;
+      const next = pruneSamples(b);
+      if ((next.txs || []).length !== nTx) throw new Error('prune_dropped_txs');
+      if ((next.txs?.[0]?.vout || []).length !== nVout) throw new Error('prune_dropped_coinbase');
+      blocks[i] = next;
       dirty = true;
     }
     if (dirty) rewriteChain();

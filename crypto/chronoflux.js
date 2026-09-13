@@ -48,6 +48,12 @@ export function shouldPruneSamples(
   return Math.max(0, Number(tipHeight) - Number(blockHeight)) >= depth;
 }
 
+/** Share-batch RandomX may skip only after 1000 conf AND samplesPruned. A peer flag is not enough. */
+export function flowSkipAllowed(block, tipHeight) {
+  const h = Number(block?.height || 0);
+  return shouldPruneSamples(h, tipHeight) && !!block?.samplesPruned;
+}
+
 /** Collapse per-hash rows into one sample per miner. Idempotent. */
 export function collateSamples(samples = []) {
   const by = new Map();

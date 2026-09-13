@@ -26,6 +26,8 @@ export const HEADERS_PAGE = 2000;
 export const GETBLOCK_BATCH = 16;
 /** Seed redial so a dropped peer cannot leave a node stuck forever. */
 export const SEED_RETRY_MS = 15_000;
+/** Drop a hung getblock window so IBD cannot stall after a peer crash. */
+export const GETBLOCK_WAIT_MS = 20_000;
 
 function hexHash(h) {
   if (Buffer.isBuffer(h)) return h.toString('hex');
@@ -511,6 +513,7 @@ export function createP2p({
         return;
       }
       rec.pending = new Set(missing);
+      rec.pendingAt = Date.now();
       rec.syncing = true;
       try {
         console.error(JSON.stringify({
@@ -611,6 +614,18 @@ export function createP2p({
 
   function listen() {
     server = net.createServer(attach);
+    const pendingWatch = setInterval(() => {
+      const now = Date.now();
+      for (const [sock, rec] of peers) {
+        if (!rec?.syncing || !rec.pending || !rec.pending.size || !rec.pendingAt) continue;
+        if (now - rec.pendingAt < GETBLOCK_WAIT_MS) continue;
+        rec.pending = null;
+        rec.syncing = false;
+        rec.pendingAt = 0;
+        requestHeaders(sock);
+      }
+    }, 5_000);
+    if (typeof pendingWatch.unref === 'function') pendingWatch.unref();
     return new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(port, host, () => {
