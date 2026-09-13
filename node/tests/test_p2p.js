@@ -433,6 +433,9 @@ describe('p2p gossip', () => {
     assert.match(src, /requestHeaders/);
     assert.match(src, /dialSeeds/);
     assert.equal(src.includes('hdrs.slice(-2000)'), false);
+    assert.match(src, /function ibdBusy/);
+    assert.match(src, /if \(ibdBusy\(\)\) return;/);
+    assert.match(src, /String\(rec\.hash \|\| ''\) !== local/);
   });
 });
 

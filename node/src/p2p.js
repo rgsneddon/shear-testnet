@@ -304,6 +304,7 @@ export function createP2p({
   }
 
   function advertisedPeers(exceptSock) {
+    const local = localTipHash();
     const out = [];
     const seen = new Set();
     for (const [s, rec] of peers) {
@@ -312,12 +313,22 @@ export function createP2p({
       const p = Number(rec.listenPort) || 0;
       if (!host || !p) continue;
       if (host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') continue;
+      if (!local || String(rec.hash || '') !== local) continue;
       const key = `${host}:${p}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push({ host, port: p });
     }
     return out;
+  }
+
+  function ibdBusy() {
+    for (const rec of peers.values()) {
+      if (rec?.syncing) return true;
+      if (rec?.pending && rec.pending.size) return true;
+      if (Array.isArray(rec?.want) && rec.want.length) return true;
+    }
+    return false;
   }
 
   function alreadyLinked(host, p) {
@@ -523,6 +534,7 @@ export function createP2p({
       return;
     }
     if (msg.type === 'addr') {
+      if (ibdBusy()) return;
       for (const p of msg.peers || []) {
         const host = String(p.host || '').trim();
         const portN = Number(p.port);
