@@ -391,7 +391,6 @@ export function sealedReservePaint(store) {
 /** Public explorer/stats row: kind + dest + amount + status. No she1, memo-plain, IP. */
 export function publicSurfaceRow(t) {
   const kind = String(t?.kind || 'send');
-  const keepDest = kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'vortice-register';
   const pending = t?.pending === true || t?.status === 'pending' || t?.status === '(pending)';
   const row = {
     id: String(t?.id || ''),

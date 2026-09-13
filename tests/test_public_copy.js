@@ -72,5 +72,12 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     const readme = read('README.md');
     assert.match(readme, /Copy dest/);
     assert.match(readme, /own hash bonus on the next sealed block/);
+    assert.match(readme, /shear-testnet-v3/);
+    assert.doesNotMatch(readme, /Chain: `shear-testnet-v2`/);
+
+    assert.doesNotMatch(joined, /Private dests, public amounts/);
+    assert.doesNotMatch(joined, /amounts stay public/);
+    assert.match(joined, /confidential amounts/);
+    assert.match(joined, /ADMITV1/);
   });
 });

@@ -1,8 +1,8 @@
 # Shear consensus
 
-Network magic (testnet, ShearHash-v3 book): `shear-testnet-v2`  
-Frozen previous book: `shear-testnet-v1` (readable, not mined).  
-Mainnet magic (`shear-v1`) is a later genesis. Do not merge v2 into live v1 until the operator cuts over.
+Network magic (testnet, ShearHash-v3 book): `shear-testnet-v3`  
+Frozen previous book: `shear-testnet-v2` (readable, not mined).  
+Mainnet magic (`shear-v1`) genesis is `2026-09-18T21:00:00+01:00`. Do not merge v3 into frozen v2 or into v1 until the operator cuts over.
 
 PoW for this book is **ShearHash-v3** (RandomX light). See [shearhash-v3.md](shearhash-v3.md). Header size is still **128 bytes**.
 

@@ -101,7 +101,7 @@ def main() -> None:
     pdf.set_font("ShearSerif", "", 12)
     pdf.multi_cell(0, 6, "Shear project", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font("ShearSerif", "I", 11)
-    pdf.multi_cell(0, 6, "shear.digital  ·  Version 1.0 (testnet)  ·  Network magic shear-testnet-v2", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.multi_cell(0, 6, "shear.digital  ·  Version 1.0 (testnet)  ·  Network magic shear-testnet-v3", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(4)
 
     pdf.set_font("ShearSerif", "B", 11)
@@ -138,7 +138,7 @@ def main() -> None:
         [
             "PoW elects the tip. Coin comes from hashing, not from an allocation, an auction, or a snapshot of some other book.",
             "CPU only. ShearHash-v3 is RandomX light.",
-            "Private dests, public amounts. Rest-frame shear1 stays in Closure. Holders offer she1. Settled dests are ssa1.",
+            "Private dests, confidential amounts. ADMITV1 membership over this book’s notes. Rest-frame shear1 stays in Closure. Holders offer she1. Settled dests are ssa1.",
             "One coin per block. The pot is 1 SHE. Votes leave the pot in place. The Reserve oracle leaves the pot in place.",
             "Each hasher dest keeps its own bonus. Finding the block leaves every other dest’s hashes with that dest.",
             "Programmes may move coin you already have. They may not print SHE, other than The Reserve’s interest.",
@@ -148,8 +148,8 @@ def main() -> None:
     body(
         pdf,
         "The public sites — shear.digital, pool.shear.digital, explorer.shear.digital, mempool.shear.digital — "
-        "are the face of the testnet. Mainnet shear-v1 is not scheduled and must not launch until P0 1–14 "
-        "on a public testnet book are green. Until then the network magic stays shear-testnet-v2. "
+        "are the face of the testnet. Live magic is shear-testnet-v3. Mainnet shear-v1 genesis is "
+        "2026-09-18T21:00:00+01:00. Do not emit before that instant. "
         "Testnet balances can vanish. Treat them as a practice run.",
     )
 
@@ -253,7 +253,7 @@ def main() -> None:
         pdf,
         "The public pool is stratum in front of a validating node, not the ledger. Jobs are full 128-byte header "
         "templates. Shares that are not a valid header hash mint nothing. Stratum listens on pool.shear.digital:1111. "
-        "Login is Copy dest as ssa1.worker. The explorer paints confirmed blocks and public amounts. Ciphertext "
+        "Login is Copy dest as ssa1.worker. The explorer paints confirmed blocks, kinds, and proof-ok — no dest safari, no amount column. Ciphertext "
         "and rest-frame strings stay off that page. A node is the book: append, verify, P2P, and the GATE that lets "
         "native Flow and pinned Reserve bytecode land in the same block model.",
     )

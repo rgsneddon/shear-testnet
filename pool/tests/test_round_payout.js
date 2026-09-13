@@ -92,7 +92,7 @@ function findNonces(job, n, { block = false, skip = [], max = 2_500 } = {}) {
 }
 
 /** One RandomX pass: non-sealing shares then a block nonce. */
-function collectRoundNonces(job, shareCount, max = 2_500) {
+function collectRoundNonces(job, shareCount, max = 25_000) {
   const shares = [];
   const blocks = [];
   for (let nonce = 0n; nonce < BigInt(max); nonce += 1n) {
@@ -142,6 +142,8 @@ describe('round hash bonuses', { timeout: 1_200_000 }, () => {
     send(a.sock, { id: 2, method: 'submit', params: { jobId: job1.jobId, nonce: String(pin.nonce), hash: pin.hash } });
     assert.equal((await a.lines.readResult()).result?.status, 'OK');
     const found = collectRoundNonces(job1, nA + nB);
+    assert.ok(found.shares.length >= nA + nB, `need ${nA + nB} floor shares, got ${found.shares.length}`);
+    assert.ok(found.blocks.length >= 1, 'need a sealing nonce in the same hunt');
     const rest = found.shares.filter((s) => String(s.nonce) !== String(pin.nonce));
     const aliceShares = [pin, ...rest.slice(0, nA - 1)];
     const bobShares = rest.slice(nA - 1, nA - 1 + nB);

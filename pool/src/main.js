@@ -10,7 +10,7 @@ import { createP2p, P2P_PORT, SEED_RETRY_MS } from '../../node/src/p2p.js';
 import { MAGIC_TESTNET, GENESIS_BITS } from '../../crypto/asert.js';
 import { SHARE_BITS_V2_START } from './share_vardiff.js';
 
-const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v2');
+const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v3');
 fs.mkdirSync(dataDir, { recursive: true });
 const identPath = path.join(dataDir, 'pool-miner.json');
 let miner = process.env.SHEAR_POOL_MINER;

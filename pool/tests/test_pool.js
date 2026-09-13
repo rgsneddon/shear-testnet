@@ -368,6 +368,7 @@ describe('pool dashboard + stratum', () => {
       });
       pool.stratum.on('error', reject);
     });
+    try {
     const httpPort = pool.httpServer.address().port;
     const stratumPort = pool.stratum.address().port;
     const html = await fetch(`http://127.0.0.1:${httpPort}/`).then((r) => r.text());
@@ -391,16 +392,16 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, />Id</);
     assert.match(html, />Time</);
     assert.match(html, />Status</);
-    assert.doesNotMatch(html, />Kind</);
+    assert.match(html, />Kind</);
     assert.match(html, /confirmed/);
     assert.match(html, /pending/);
     assert.match(html, /function blockStatus/);
     assert.match(html, /slice\(0, 10\)/);
     assert.match(html, /s\.spendableConfirmations/);
     assert.doesNotMatch(html, /s\.confirmedNeed/);
-    assert.match(html, />From</);
-    assert.match(html, />To</);
-    assert.match(html, />Amount</);
+    assert.doesNotMatch(html, />From</);
+    assert.doesNotMatch(html, />To</);
+    assert.doesNotMatch(html, />Amount</);
     assert.doesNotMatch(html, />Asset</);
     assert.match(html, /function fmtLocalTs/);
     assert.match(html, /getDate\(\)/);
@@ -479,7 +480,9 @@ describe('pool dashboard + stratum', () => {
     const named = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     assert.ok((named.workers || []).some((w) => w.name === 'ShearK-Miner' && w.version === '1.2'));
     assert.match(html, /w\.name/);
-    pool.close();
+    } finally {
+      pool.close();
+    }
   });
 
   it('two sockets on one login sum thread inventory instead of last-write', async () => {
@@ -685,7 +688,9 @@ describe('public miner listing', () => {
     assert.doesNotMatch(dash, /Valid hashes \(round\)/);
     assert.match(dash, /Pool explorer · last 10 transactions/);
     assert.match(dash, />Status</);
-    assert.doesNotMatch(dash, />Kind</);
+    assert.match(dash, />Kind</);
+    assert.doesNotMatch(dash, />From</);
+    assert.doesNotMatch(dash, />Amount</);
     assert.match(dash, /function blockStatus/);
     assert.match(dash, /slice\(0, 10\)/);
     assert.match(dash, /s\.spendableConfirmations/);

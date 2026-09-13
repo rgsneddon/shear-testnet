@@ -267,7 +267,8 @@ describe('node Reserve vault', () => {
     assert.equal(lockRow.kind, 'lock');
     assert.equal(lockRow.status, 'pending');
     assert.equal(lockRow.pending, true);
-    assert.ok(String(lockRow.to).startsWith('ssa1'));
+    assert.equal(lockRow.to, '');
+    assert.equal(lockRow.amountHidden, true);
     assert.equal(/she1|shear1/i.test(JSON.stringify(lockRow)), false);
     await mineOne(store, continuum, {
       bits: LIVE_MIN_BITS,

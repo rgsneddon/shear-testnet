@@ -337,7 +337,7 @@ describe('p2p gossip', () => {
       assert.equal(painted, true);
       const rows = explorerRecentTxs(c.store, 30);
       const lockRow = rows.find((t) => t.id === 'lock-fluff');
-      assert.ok(String(lockRow.to).startsWith('ssa1'));
+      assert.equal(lockRow.to, '');
       assert.equal(publicPayloadLeaksIdentity(lockRow), false);
       assert.equal(lockRow.memoPlain, undefined);
     } finally {

@@ -12,7 +12,7 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Stratum: `pool.shear.digital:1111`
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital
-- Chain: `shear-testnet-v2`
+- Chain: `shear-testnet-v3`
 
 One proven floor share mints hash-bonus units onto the dest that hashed. User transfers are signed Flow. The header commits a continuity root. Full nodes validate shareBatch until prune-1000; money vouts remain. The public pool is an equal node with a stratum.
 

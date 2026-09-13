@@ -334,7 +334,7 @@ window.SHEAR_DOCS = {
     title: 'Consensus',
     crumb: 'network / consensus',
     html:
-      '<p>Heaviest valid chain wins. Equal work keeps first-seen. Magic <code>shear-testnet-v2</code>. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
+      '<p>Heaviest valid chain wins. Equal work keeps first-seen. Magic <code>shear-testnet-v3</code>. ADMITV1 membership over this book\'s notes, with confidential amounts. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
   };
 
   P.header = {

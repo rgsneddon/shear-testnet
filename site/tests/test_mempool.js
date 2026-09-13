@@ -21,7 +21,8 @@ describe('mempool lattice honesty', () => {
     assert.doesNotMatch(html, /clientHashes/);
     assert.match(html, /roundHashes/);
     assert.match(html, /valid-hash bonus|Valid hashes/);
-    assert.match(html, /releases\/tag\/0\.30/);
+    assert.match(html, /releases\/tag\/0\.31/);
+    assert.doesNotMatch(html, /releases\/tag\/0\.30/);
     assert.doesNotMatch(html, /releases\/tag\/0\.29/);
     assert.doesNotMatch(html, /GNFP/);
     assert.doesNotMatch(html, /50 hashes each/);
@@ -124,9 +125,10 @@ describe('explorer pending paint', () => {
       assert.ok(stats.recentTxs.length <= 10);
       assert.equal(publicPayloadLeaksIdentity(stats.recentTxs), false);
       const row = publicSurfaceRow(stats.recentTxs[0]);
-      assert.ok(String(row.to).startsWith('ssa1'));
+      assert.equal(row.to, '');
       assert.equal(row.kind, 'lock');
-      assert.ok(row.amount != null);
+      assert.equal(row.amountHidden, true);
+      assert.equal(row.amount, undefined);
       assert.equal(row.memoPlain, undefined);
     } finally {
       pool.close();
