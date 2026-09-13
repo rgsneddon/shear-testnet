@@ -4,7 +4,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
-import { writeLatestBootstrap, applyLatestBootstrap, latestPaths } from '../src/bootstrap.js';
+import {
+  writeLatestBootstrap,
+  applyLatestBootstrap,
+  latestPaths,
+  shouldPublishBootstrap,
+  bootstrapCheckpoint,
+} from '../src/bootstrap.js';
 
 function prunedBlock(height, hashByte) {
   return {
@@ -78,6 +84,20 @@ describe('latest-only prune bootstrap', () => {
     assert.throws(() => applyLatestBootstrap(dest, src), /bootstrap_datadir_not_empty/);
   });
 
+  it('publishes at 1000 then every 400 blocks, not every height', () => {
+    assert.equal(bootstrapCheckpoint(999), 0);
+    assert.equal(bootstrapCheckpoint(1000), 1000);
+    assert.equal(bootstrapCheckpoint(1008), 1000);
+    assert.equal(bootstrapCheckpoint(1399), 1000);
+    assert.equal(bootstrapCheckpoint(1400), 1400);
+    assert.equal(bootstrapCheckpoint(1800), 1800);
+    assert.equal(shouldPublishBootstrap(999, 0), false);
+    assert.equal(shouldPublishBootstrap(1000, 0), true);
+    assert.equal(shouldPublishBootstrap(1008, 1000), false);
+    assert.equal(shouldPublishBootstrap(1400, 1000), true);
+    assert.equal(shouldPublishBootstrap(1400, 1400), false);
+  });
+
   it('boot.shear.digital page offers only latest and documents apply', () => {
     const html = fs.readFileSync(new URL('../../site/boot/index.html', import.meta.url), 'utf8');
     assert.match(html, /boot\.shear\.digital/);
@@ -86,6 +106,7 @@ describe('latest-only prune bootstrap', () => {
     assert.match(html, /chain\.bin/);
     assert.match(html, /not a history/i);
     assert.match(html, /No node rewrite/);
+    assert.match(html, /400/);
     assert.equal(html.includes('FAST_SYNC=1'), false);
   });
 });

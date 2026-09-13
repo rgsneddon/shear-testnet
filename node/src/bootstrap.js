@@ -29,8 +29,23 @@ export function latestPaths(dir) {
   };
 }
 
-/** Wait this many new blocks after a prune before publishing latest. */
-export const BOOTSTRAP_LAG_BLOCKS = 5;
+/** First public snapshot at the 1000-conf prune, then every 400 blocks. */
+export const BOOTSTRAP_FIRST_HEIGHT = 1000;
+export const BOOTSTRAP_EVERY_BLOCKS = 400;
+/** @deprecated internal lag; public cadence is FIRST + EVERY */
+export const BOOTSTRAP_LAG_BLOCKS = 0;
+
+export function bootstrapCheckpoint(tipH) {
+  const tip = Number(tipH || 0);
+  if (tip < BOOTSTRAP_FIRST_HEIGHT) return 0;
+  return BOOTSTRAP_FIRST_HEIGHT
+    + Math.floor((tip - BOOTSTRAP_FIRST_HEIGHT) / BOOTSTRAP_EVERY_BLOCKS) * BOOTSTRAP_EVERY_BLOCKS;
+}
+
+export function shouldPublishBootstrap(tipH, lastCheckpoint) {
+  const c = bootstrapCheckpoint(tipH);
+  return c >= BOOTSTRAP_FIRST_HEIGHT && c > Number(lastCheckpoint || 0);
+}
 
 /** Pruned prefix only. Overwrites latest.json + latest.bin. Lagged 5 blocks. */
 export function writeLatestBootstrap(dataDir, blocks, {
@@ -61,6 +76,8 @@ export function writeLatestBootstrap(dataDir, blocks, {
     hash: hexHash(last.hash),
     genesisHash: hexHash(first.hash),
     n: pruned.length,
+    checkpoint: bootstrapCheckpoint(liveTip),
+    every: BOOTSTRAP_EVERY_BLOCKS,
     createdAt: Date.now(),
   };
   const tmp = `${paths.json}.tmp`;
