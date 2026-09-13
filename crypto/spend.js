@@ -12,7 +12,7 @@ import { isSpendableHeight } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
-import { claimedVoutNanos } from './dummy.js';
+import { claimedVoutNanos, reserveDest20Open } from './dummy.js';
 import { asU8 } from './note.js';
 
 function dest20Of(addr) {
@@ -219,7 +219,8 @@ export function verifyReservePortalOpen(tx) {
   const dest = reservePortalDest(tx);
   if (!dest) {
     const o = tx?.vout?.[0];
-    return !!(o?.commit && o.rangeProof && o.rangeProof !== true);
+    if (o?.commit && o.rangeProof && o.rangeProof !== true) return true;
+    return reserveDest20Open(o);
   }
   return verifySpendSig(tx);
 }

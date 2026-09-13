@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { levyNanos } from './levy.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest } from './spend.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, verifyReservePortalOpen } from './spend.js';
 import { newIdentity, destOpeningFromView, hash20FromAddress, silentPay, ed25519SeedOf, stealthSpendPrivate, recognizeSilentDest, ed25519PrivateFromSeed, ed25519RawPub, encodeDest } from './address.js';
 import { destCommitFromSpendPub } from './stealth_ed25519.js';
 import { generateKeyPairSync, createPublicKey, verify } from 'node:crypto';
@@ -12,6 +12,26 @@ const dest = 'ssa1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
 const other = 'ssa1qyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy';
 
 describe('funded spend / no double-spend', () => {
+  it('dest20-only compact vote/lock is a portal open without dest plaintext', () => {
+    const d20 = Buffer.alloc(20, 9);
+    assert.equal(verifyReservePortalOpen({
+      kind: 'vote',
+      payer: dest,
+      vin: [{}],
+      vout: [{ kind: 'vote', dest20: d20 }],
+    }), true);
+    assert.equal(verifyReservePortalOpen({
+      kind: 'vote',
+      vin: [{}],
+      vout: [{ kind: 'vote' }],
+    }), false);
+    assert.equal(verifyReservePortalOpen({
+      kind: 'lock',
+      vin: [{}],
+      vout: [{ kind: 'lock', dest20: d20, valueProof: { v: 1 } }],
+    }), true);
+  });
+
   it('debits amount plus levy from the sender', () => {
     const nanos = 4 * NANOS_PER_SHE;
     const fee = levyNanos(nanos);
