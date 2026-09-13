@@ -228,6 +228,9 @@ export function verifyReservePortalOpen(tx) {
 
 export function fundedDebit(tx) {
   if (!tx || tx.coinbase) return null;
+  if (reserveDest20Open(tx?.vout?.[0]) && !(tx.from || tx.vin?.[0]?.address)) {
+    return null;
+  }
   if (tx.mint && String(tx.kind || '') !== 'pool-withdraw') return null;
   const kind = String(tx.kind || tx.vout?.[0]?.kind || 'send');
   const from = kind === 'vote'

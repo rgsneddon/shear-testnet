@@ -39,7 +39,8 @@ describe('funded spend / no double-spend', () => {
       sig: '00',
     };
     assert.equal(flowSendNeedsOpen(vote), false);
-    const funded = verifyFundedBody([vote], () => 1e15);
+    assert.equal(fundedDebit(vote), null);
+    const funded = verifyFundedBody([vote], () => 0);
     assert.equal(funded.ok, true, funded.reason);
   });
 
