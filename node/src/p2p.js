@@ -19,7 +19,7 @@ function reviveDeep(v) {
 }
 
 export const P2P_PORT = 30303;
-export const P2P_MAX_FRAME = 1024 * 1024;
+export const P2P_MAX_FRAME = Math.max(1024 * 1024, Number(process.env.SHEAR_P2P_MAX_FRAME || 16 * 1024 * 1024) || 16 * 1024 * 1024);
 /** Headers served after a locator. A window, not the end of IBD. */
 export const HEADERS_PAGE = 2000;
 /** In-flight getblock window. Sync must continue after this many. */
