@@ -581,36 +581,52 @@ function loginAndShare(port, login, extra = {}, hit = null) {
     let buf = '';
     let job = null;
     let submitted = false;
+    const timer = setTimeout(() => {
+      sock.destroy();
+      reject(new Error('login_share_timeout'));
+    }, 180_000);
+    const done = (err) => {
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve(sock);
+    };
     sock.on('data', (c) => {
       buf += c.toString();
-      if (!job && buf.includes('\n') && buf.includes('job')) {
-        const first = JSON.parse(buf.split('\n')[0]);
-        job = first.job || first.result?.job || first.params;
-      }
-      if (job && job.header && !submitted) {
-        submitted = true;
-        job.shareBits = Number(job.shareBits);
-        if (!Number.isFinite(job.shareBits) || job.shareBits < 1) job.shareBits = 8;
-        job.bits = Number(job.bits || job.blockBits || 16);
-        job.blockBits = Number(job.blockBits || job.bits || 16);
-        if (!hit) {
-          try { hit = findOkShare(job); } catch (e) {
+      const parts = buf.split('\n');
+      buf = parts.pop() || '';
+      for (const line of parts) {
+        if (!line.trim()) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
+        const j = msg.job || msg.result?.job || (msg.method === 'job' ? msg.params : null);
+        if (j?.header) job = j;
+        if (job && job.header && !submitted) {
+          submitted = true;
+          job.shareBits = Number(job.shareBits);
+          if (!Number.isFinite(job.shareBits) || job.shareBits < 1) job.shareBits = 8;
+          job.bits = Number(job.bits || job.blockBits || 16);
+          job.blockBits = Number(job.blockBits || job.bits || 16);
+          try {
+            const use = hit || findOkShare(job);
+            sock.write(JSON.stringify({
+              id: 2,
+              method: 'submit',
+              params: { jobId: job.jobId, nonce: String(use.nonce), hash: use.s.hash },
+            }) + '\n');
+          } catch (e) {
             sock.destroy();
-            reject(e);
+            done(e);
             return;
           }
         }
-        sock.write(JSON.stringify({
-          id: 2,
-          method: 'submit',
-          params: { jobId: job.jobId, nonce: String(hit.nonce), hash: hit.s.hash },
-        }) + '\n');
-      }
-      if (buf.includes('"status":"OK"') && buf.includes('"hash"')) {
-        resolve(sock);
+        const ok = msg.result?.status === 'OK' || msg.status === 'OK' || msg.result === 'OK';
+        if (msg.id === 2 && ok) {
+          done();
+          return;
+        }
       }
     });
-    sock.on('error', reject);
+    sock.on('error', (e) => done(e));
   });
 }
 
