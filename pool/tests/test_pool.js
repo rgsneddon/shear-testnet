@@ -252,6 +252,16 @@ describe('HTTP stats cannot stall', () => {
     assert.ok(Date.now() - t0 < 500, 'stats handler must not wait on RandomX');
     assert.equal(stats.ok, true);
     assert.equal(stats.coin, 'SHE');
+    const fp = await fetch(`http://127.0.0.1:${httpPort}/fingerprint`).then((r) => r.json());
+    assert.equal(fp.ok, true);
+    assert.equal(fp.admit, 'AdmitV1');
+    assert.equal(fp.hashTxLive, 1);
+    assert.equal(fp.magic, 'shear-testnet-v3');
+    assert.ok(String(fp.fingerprint || '').length > 8);
+    const shePage = await fetch(`http://127.0.0.1:${httpPort}/miner/she1ccbe79d6`);
+    assert.equal(shePage.status, 404);
+    const sheApi = await fetch(`http://127.0.0.1:${httpPort}/api/miners/she1862e37`);
+    assert.equal(sheApi.status, 404);
     pool.close();
   });
 });

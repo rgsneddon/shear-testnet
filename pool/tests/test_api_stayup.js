@@ -29,5 +29,9 @@ describe('pool UI/API cannot vanish on restart', () => {
       assert.match(conf, /proxy_read_timeout 2s/, rel);
       assert.match(conf, /proxy_cache_use_stale/, rel);
     }
+    const poolNgx = fs.readFileSync(path.join(root, 'deploy/nginx-pool.shear.digital.conf'), 'utf8');
+    assert.match(poolNgx, /location ~\* \^\/miner\/\(she1\|shear1\)/);
+    assert.match(poolNgx, /access_log off;/);
+    assert.match(poolNgx, /location = \/fingerprint/);
   });
 });

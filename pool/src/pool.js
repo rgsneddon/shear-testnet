@@ -1900,6 +1900,30 @@ export function createPool({
       res.end(statsSnap.json);
       return;
     }
+    if (
+      url.pathname === '/fingerprint'
+      || url.pathname === '/getfingerprint'
+      || url.pathname === '/api/fingerprint'
+    ) {
+      res.setHeader('content-type', 'application/json');
+      res.setHeader('Cache-Control', 'no-store');
+      const fp = typeof store.consensusFingerprint === 'function'
+        ? store.consensusFingerprint()
+        : consensusFingerprint();
+      res.end(JSON.stringify({
+        ok: true,
+        fingerprint: fp,
+        admit: 'AdmitV1',
+        hashTxLive: Number(store.hashTxLive ?? HASH_TX_LIVE),
+        magic: MAGIC_TESTNET,
+      }));
+      return;
+    }
+    if (/^\/miner\/(she1|shear1)/i.test(url.pathname) || /^\/api\/miners\/(she1|shear1)/i.test(url.pathname)) {
+      res.statusCode = 404;
+      res.end('missing');
+      return;
+    }
     if (url.pathname === '/api/policy') {
       res.setHeader('content-type', 'application/json');
       res.setHeader('Cache-Control', 'no-store');
