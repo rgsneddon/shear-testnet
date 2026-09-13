@@ -23,7 +23,7 @@ export const P2P_MAX_FRAME = 1024 * 1024;
 /** Headers served after a locator. A window, not the end of IBD. */
 export const HEADERS_PAGE = 2000;
 /** In-flight getblock window. Sync must continue after this many. */
-export const GETBLOCK_BATCH = 16;
+export const GETBLOCK_BATCH = Math.max(1, Math.min(64, Number(process.env.SHEAR_GETBLOCK_BATCH || 1) || 1));
 /** Seed redial so a dropped peer cannot leave a node stuck forever. */
 export const SEED_RETRY_MS = 15_000;
 /** Drop a hung getblock window so IBD cannot stall after a peer crash. */
@@ -165,8 +165,26 @@ export function decodeWireBlock(w) {
   };
 }
 
+function hexify(v) {
+  if (v == null) return v;
+  if (Buffer.isBuffer(v) || v instanceof Uint8Array) {
+    return { $hex: Buffer.from(v).toString('hex') };
+  }
+  if (Array.isArray(v)) return v.map(hexify);
+  if (typeof v === 'object') {
+    const o = {};
+    for (const [k, val] of Object.entries(v)) o[k] = hexify(val);
+    return o;
+  }
+  return v;
+}
+
+export function jsonWire(obj) {
+  return JSON.stringify(hexify(obj));
+}
+
 function line(obj) {
-  return `${JSON.stringify(obj)}\n`;
+  return `${jsonWire(obj)}\n`;
 }
 
 /** Unique remote of a live socket. IPv4-mapped IPv6 collapses to IPv4. */

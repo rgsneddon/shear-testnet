@@ -24,6 +24,9 @@ import {
   createP2p,
   HEADERS_PAGE,
   GETBLOCK_BATCH,
+  encodeWireBlock,
+  decodeWireBlock,
+  jsonWire,
   selectHeadersAfterLocator,
   locatorHashes,
 } from '../src/p2p.js';
@@ -202,6 +205,23 @@ describe('p2p gossip', () => {
       await a.rpc?.close?.();
       await b.rpc?.close?.();
     }
+  });
+
+  it('default getblock batch is 1 so IBD cannot OOM a seed; wire bytes are hex', () => {
+    assert.equal(GETBLOCK_BATCH, 1);
+    const commit = Buffer.alloc(32, 9);
+    const wire = encodeWireBlock({
+      header: Buffer.alloc(128, 1),
+      hash: Buffer.alloc(32, 2),
+      height: 3,
+      txs: [{ coinbase: true, height: 3, vout: [{ kind: 'pot', commit }] }],
+      shareBatch: [],
+    });
+    const blob = jsonWire(wire);
+    assert.doesNotMatch(blob, /"type":"Buffer"/);
+    assert.match(blob, /\$hex/);
+    const back = decodeWireBlock(JSON.parse(blob));
+    assert.equal(Buffer.from(back.txs[0].vout[0].commit).equals(commit), true);
   });
 
   it('printConfig pins p2p 30303, testnet magic, not mainnet', () => {
