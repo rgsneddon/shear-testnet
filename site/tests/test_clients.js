@@ -94,8 +94,8 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /shear-wallet-0\.11-/);
     assert.doesNotMatch(html, /shear-wallet-0\.9-/);
     assert.match(html, /data-pack="wallet-macos"/);
-    assert.match(html, /data-pack="wallet-windows"/);
-    assert.match(html, /shear-wallet-0\.32-windows\.zip/);
+    assert.doesNotMatch(html, /data-pack="wallet-windows"/);
+    assert.doesNotMatch(html, /shear-wallet-0\.32-windows\.zip/);
     assert.match(html, /data-pack="wallet-android"/);
     assert.match(html, /data-pack="wallet-linux"/);
     assert.match(html, /data-pack="wallet-archlinux"/);
@@ -264,7 +264,7 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /pool\.shear\.digital:1111/);
     assert.match(admin, /ShearK-Miner 1\.6/);
     assert.match(admin, /shear-wallet-0\.32-/);
-    assert.match(admin, /shear-wallet-0\.32-windows\.zip/);
+    assert.doesNotMatch(admin, /shear-wallet-0\.32-windows\.zip/);
     assert.match(admin, /Mainnet shear-v1 starts 18 Sep 2026 21:00 UK/);
     assert.doesNotMatch(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
     assert.doesNotMatch(admin, /11th September 2026/);

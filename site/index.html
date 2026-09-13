@@ -275,7 +275,6 @@
         <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.32">WALLET</a>
         <div class="client-menu" id="menu-wallet">
           <a data-pack="wallet-macos" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.32/shear-wallet-0.32-macos.dmg">macOS</a>
-          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.32/shear-wallet-0.32-windows.zip">Windows</a>
           <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.32/shear-wallet-0.32-android.apk">Android</a>
           <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.32/shear-wallet-0.32-linux.zip">Linux</a>
           <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.32/shear-wallet-0.32-archlinux.zip">Arch</a>
@@ -436,7 +435,7 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
         macos: BASE + '/0.32/shear-wallet-0.32-macos.dmg',
-        windows: BASE + '/0.32/shear-wallet-0.32-windows.zip',
+        windows: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.32',
         android: BASE + '/0.32/shear-wallet-0.32-android.apk',
         linux: BASE + '/0.32/shear-wallet-0.32-linux.zip',
         ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.32'
