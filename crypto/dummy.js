@@ -2,7 +2,7 @@
  * Flow dummy outs + view tags. Reserve kinds stay typed; vault is not dummy-deleted.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { sealNote, verifySealedNote, kernelExcess, bindVinToSpent } from './note.js';
+import { sealNote, verifySealedNote, kernelExcess, bindVinToSpent, asU8 } from './note.js';
 import { hash20FromAddress, admitBaseFromAddress } from './address.js';
 import { attachAdmitPub } from './admit.js';
 
@@ -30,6 +30,22 @@ export function moneyNeedsRange(tx) {
   if (!tx || tx.coinbase) return false;
   const k = String(tx.kind || tx.vout?.[0]?.kind || '');
   return flowNeedsDummy(tx) || k === 'lock' || k === 'vote' || k === 'withdraw';
+}
+
+/**
+ * Historical Reserve compact: dest20 + valueProof.v, no Pedersen C.
+ * Live heights 188/198/199 were mined this way; new mempool locks still need C.
+ */
+export function reserveDest20Open(o) {
+  const k = String(o?.kind || '');
+  if (k !== 'lock' && k !== 'vote' && k !== 'withdraw') return false;
+  if (o?.commit) return false;
+  try {
+    const d = Buffer.from(asU8(o.dest20));
+    return d.length >= 20;
+  } catch {
+    return false;
+  }
 }
 
 export function dummyCount(tx) {

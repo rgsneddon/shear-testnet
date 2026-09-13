@@ -10,6 +10,7 @@ import {
   dummyCount,
   flowNeedsDummy,
   moneyNeedsRange,
+  reserveDest20Open,
   publicExplorerRow,
   viewTagOf,
 } from './dummy.js';
@@ -70,6 +71,9 @@ describe('Flow dummy outs', () => {
 
     assert.equal(send.vin[0].commit, undefined);
     assert.equal(verifyFlowConservation(send), false);
+    assert.equal(reserveDest20Open({ kind: 'lock' }), false);
+    assert.equal(reserveDest20Open({ kind: 'lock', dest20: Buffer.alloc(20, 3) }), true);
+    assert.equal(reserveDest20Open({ kind: 'lock', dest20: Buffer.alloc(20, 3), commit: Buffer.alloc(32, 1) }), false);
     const compactBare = compactTx(send);
     assert.equal(compactBare.nanos, undefined);
     assert.equal(compactBare.from, undefined);

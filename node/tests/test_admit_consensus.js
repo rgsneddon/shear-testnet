@@ -522,6 +522,8 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     delete plain.vout[0].rangeProof;
     delete plain.vout[0].valueProof;
     delete plain.vout[0].noteCommit;
+    delete plain.vout[0].dest20;
+    delete plain.vout[0].portalId;
     plain.vout[0].address = vault;
     plain.vout[0].nanos = PI_SHE_NANOS;
     const plainTpl = buildTemplate({
@@ -539,6 +541,36 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const gotPlain = verifyBlock(plainBlock, parent, { evmHistory: [parent] });
     assert.equal(gotPlain.ok, false);
     assert.equal(gotPlain.reason, 'range_proof');
+
+    const openFat = {
+      id: 'lock-dest20',
+      programId: 'shear-reserve-v1',
+      kind: 'lock',
+      from: dest,
+      to: vault,
+      nanos: PI_SHE_NANOS,
+      vin: [{ address: dest }],
+      vout: [{ kind: 'lock', address: vault, nanos: PI_SHE_NANOS }],
+    };
+    const openSealed = compactTx(openFat);
+    openSealed.fee = levyNanos(PI_SHE_NANOS);
+    assert.ok(openSealed.vout[0].dest20);
+    assert.equal(openSealed.vout[0].commit, undefined);
+    assert.doesNotMatch(JSON.stringify(openSealed), /ssa1/);
+    const openTpl = buildTemplate({
+      prev: parent.hash,
+      prevHeader: parent.header,
+      height: 2,
+      miner: dest,
+      bits: 4,
+      now: 1_700_004_135_000,
+      txs: [openSealed],
+      prevBlock: parent,
+      parentBlocks: [parent],
+    });
+    const openBlock = mine(openTpl);
+    const gotOpen = await Promise.resolve(verifyBlock(openBlock, parent, { evmHistory: [parent] }));
+    assert.equal(gotOpen.ok, true, gotOpen.reason);
 
     const stub = lockTx({ from: dest, to: vault, nanos: PI_SHE_NANOS, id: 'lock-stub' });
     stub.vout[0].rangeProof = true;

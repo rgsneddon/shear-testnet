@@ -75,7 +75,7 @@ import {
   levyNeed,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
-import { dummyCount, flowNeedsDummy, moneyNeedsRange } from '../../crypto/dummy.js';
+import { dummyCount, flowNeedsDummy, moneyNeedsRange, reserveDest20Open } from '../../crypto/dummy.js';
 
 export { blockWeight, nextBaseFee } from '../../crypto/levy.js';
 
@@ -828,6 +828,7 @@ function verifyBlockConsensus(block, prev, {
     }
     if (moneyNeedsRange(tx)) {
       for (const o of (tx.vout || [])) {
+        if (reserveDest20Open(o)) continue;
         if (!o?.commit) return { ok: false, reason: 'range_proof' };
         if (o.rangeProof === true) return { ok: false, reason: 'range_proof' };
         if (o.rangeProof && !verifyRange(o.commit, o.rangeProof)) {
