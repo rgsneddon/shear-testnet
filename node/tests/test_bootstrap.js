@@ -106,7 +106,10 @@ describe('latest-only prune bootstrap', () => {
     assert.match(html, /chain\.bin/);
     assert.match(html, /not a history/i);
     assert.match(html, /No node rewrite/);
-    assert.match(html, /400/);
+    assert.match(html, /first published at height <strong>1000<\/strong>/i);
+    assert.match(html, /overwritten every <strong>400<\/strong> blocks/i);
+    assert.match(html, /not on every prune/i);
+    assert.equal(/Overwritten at every prune/i.test(html), false);
     assert.equal(html.includes('FAST_SYNC=1'), false);
   });
 });
