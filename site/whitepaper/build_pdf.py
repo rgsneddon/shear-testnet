@@ -91,7 +91,7 @@ def main() -> None:
 
     pdf.set_font("ShearSerif", "", 10)
     pdf.set_text_color(80, 80, 80)
-    pdf.multi_cell(0, 6, "SHEAR PREPRINT  ·  TESTNET  ·  7 September 2026", align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.multi_cell(0, 6, "SHEAR PREPRINT  ·  TESTNET  ·  13 September 2026", align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(4)
     pdf.set_text_color(0, 0, 0)
 
@@ -101,7 +101,7 @@ def main() -> None:
     pdf.set_font("ShearSerif", "", 12)
     pdf.multi_cell(0, 6, "Shear project", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font("ShearSerif", "I", 11)
-    pdf.multi_cell(0, 6, "shear.digital  ·  Version 1.0 (testnet)  ·  Network magic shear-testnet-v3", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.multi_cell(0, 6, "shear.digital  ·  Version 2.0 (testnet)  ·  Network magic shear-testnet-v3", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(4)
 
     pdf.set_font("ShearSerif", "B", 11)
@@ -219,10 +219,11 @@ def main() -> None:
     h2(pdf, "2.6  Wallet")
     body(
         pdf,
-        "The wallet is a six-tab app. Continuum is spendable balance, silent ID, and the six-slice pending pie. "
+        "The wallet is a six-tab app, pin 0.32. Continuum is spendable balance, silent ID, and the six-slice pending pie. "
         "Flow is send and receive. Resistance is a public CTF CLI. Vortex is where programmes live. Shearview is "
         "the holder’s own explorer. Closure holds the rest-frame string and the shewall.bin export. The file plus "
-        "the password restore the same wallet. There is no paper seed. Lose the password and the file does not open.",
+        "the password restore the same wallet. There is no paper seed. Lose the password and the file does not open. "
+        "Sync is a local node at 127.0.0.1:18332: headers, compact blocks, and the tree root. The old height sampler is not the send, balance, or history path. Pool HTTP submit is an advanced toggle.",
     )
 
     h2(pdf, "2.7  Vortex, vortices, and vort1")
@@ -255,7 +256,9 @@ def main() -> None:
         "templates. Shares that are not a valid header hash mint nothing. Stratum listens on pool.shear.digital:1111. "
         "Login is Copy dest as ssa1.worker. The explorer paints confirmed blocks, kinds, and proof-ok — no dest safari, no amount column. Ciphertext "
         "and rest-frame strings stay off that page. A node is the book: append, verify, P2P, and the GATE that lets "
-        "native Flow and pinned Reserve bytecode land in the same block model.",
+        "native Flow and pinned Reserve bytecode land in the same block model. "
+        "Shipped P2P seed is shear.digital:30303, magic shear-testnet-v3. Wallet 0.32 reads a local node at 127.0.0.1:18332. "
+        "After 1000 confirmations, sample rows prune; sealed txs stay. An optional latest-only snapshot is published at height 1000, then every 400 blocks.",
     )
 
     h1(pdf, "3.  Publication")
@@ -282,7 +285,7 @@ def main() -> None:
         5,
         "Correspondence: shear.digital. Software under the MIT License, Copyright 2026 Shear. "
         "RandomX is vendored from tevador/RandomX v1.2.3 (BSD). Official miner ShearK-Miner 1.6. "
-        "Wallet pin at publication: 0.30.",
+        "Wallet pin at publication: 0.32.",
         new_x=XPos.LMARGIN,
         new_y=YPos.NEXT,
     )

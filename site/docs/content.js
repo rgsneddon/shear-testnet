@@ -7,11 +7,14 @@ window.SHEAR_DOCS = {
     ]},
     { title: 'Addresses', children: [
       { id: 'names', title: 'shear1, she1, ssa1' },
-      { id: 'privacy', title: 'She is private' }
+      { id: 'privacy', title: 'She is private' },
+      { id: 'admit', title: 'ADMITV1' }
     ]},
     { title: 'Wallet', children: [
       { id: 'wallet', title: 'Overview' },
       { id: 'install', title: 'Install' },
+      { id: 'android', title: 'Android APK' },
+      { id: 'node-sync', title: 'Node-sync' },
       { id: 'continuum', title: 'Continuum' },
       { id: 'flow', title: 'Flow' },
       { id: 'resistance', title: 'Resistance' },
@@ -43,6 +46,11 @@ window.SHEAR_DOCS = {
     ]},
     { title: 'Network', children: [
       { id: 'node', title: 'Run a node' },
+      { id: 'p2p', title: 'P2P' },
+      { id: 'rpc', title: 'RPC' },
+      { id: 'bootstrap', title: 'Bootstrap' },
+      { id: 'prune', title: 'Prune-1000' },
+      { id: 'ports', title: 'Ports' },
       { id: 'consensus', title: 'Consensus' },
       { id: 'header', title: 'Header' },
       { id: 'shearhash', title: 'ShearHash-v3' },
@@ -50,7 +58,10 @@ window.SHEAR_DOCS = {
       { id: 'confirms', title: 'Confirmations' },
       { id: 'pool', title: 'Public pool' },
       { id: 'explorer', title: 'Explorer' },
-      { id: 'mempool', title: 'Mempool' }
+      { id: 'mempool', title: 'Mempool' },
+      { id: 'stem', title: 'Stem then fluff' },
+      { id: 'compact', title: 'Compact txs' },
+      { id: 'gate', title: 'GATE' }
     ]}
   ],
   pages: {}
@@ -70,7 +81,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Spendable</th><td>6 confirmations</td></tr>' +
       '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
-      '<tr><th>Wallet pin</th><td>0.31</td></tr>' +
+      '<tr><th>Wallet pin</th><td>0.32</td></tr>' +
       '<tr><th>Miner pin</th><td>ShearK 1.6</td></tr></table>' +
       '<p>How-to lives in this tree. The architecture note is a PDF at <a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> — that URL is not in the navbar on purpose.</p>'
   };
@@ -88,7 +99,7 @@ window.SHEAR_DOCS = {
     title: 'Whitepaper',
     crumb: 'start / whitepaper',
     html:
-      '<p>The project note is a four-page preprint: goals, addresses, header, ShearHash-v3, emissions, Flow levy, wallet, Vortex / vort1, The Reserve, pool and node.</p>' +
+      '<p>Version 2.0 of the project note: ADMITV1, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve. Wallet pin 0.32. Live magic <code>shear-testnet-v3</code>.</p>' +
       '<p><a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> presents it as a record with a PDF preview. Download <code>shear-whitepaper.pdf</code> from that page. There is no WHITEPAPER button in the site navbar.</p>'
   };
 
@@ -114,7 +125,7 @@ window.SHEAR_DOCS = {
     title: 'Wallet overview',
     crumb: 'wallet / overview',
     html:
-      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.31</strong> (macOS, Android, Linux, Arch).</p>' +
+      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.32</strong> (macOS, Android, Linux, Arch). Sync is a local node at <code>127.0.0.1:18332</code> — not flyclient, not pool HTTP as the only path.</p>' +
       '<table><tr><th>Continuum</th><td>Spendable balance, <code>she1</code>, six-slice pending pie</td></tr>' +
       '<tr><th>Flow</th><td>Send and receive</td></tr>' +
       '<tr><th>Resistance</th><td>Public CTF CLI</td></tr>' +
@@ -133,7 +144,23 @@ window.SHEAR_DOCS = {
       '<li>You will enter that password each time. If it is lost, the wallet cannot be opened. Fingerprint or face unlock, where the device offers it, only works on this device.</li>' +
       '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
       '<li>Open Closure and export <code>shewall.bin</code>. Keep that file with the password.</li></ol>' +
-      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.31">shear-testnet 0.31</a>.</p>'
+      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.32">shear-testnet 0.32</a>. 0.31 is the last flyclient pin — do not recut it.</p>'
+  };
+
+  P.android = {
+    title: 'Android APK',
+    crumb: 'wallet / android',
+    html:
+      '<p>Install <code>shear-wallet-0.32-android.apk</code> from the official 0.32 tag only. Package id is <code>com.shear.shear_wallet</code>. Version code is 48 (greater than 0.31’s 47) so Android will install over or beside a stale 0.31. The APK is a single fat package (all ABIs), INTERNET granted on the released file, not a split APK.</p>' +
+      '<p>If a phone still says <strong>App not installed</strong>: uninstall the old 0.31 debug-signed build first, then sideload 0.32. Do not install a Darwin zip or an unsigned copy. Camera and biometrics need the permissions already in the manifest.</p>'
+  };
+
+  P['node-sync'] = {
+    title: 'Node-sync',
+    crumb: 'wallet / node-sync',
+    html:
+      '<p>0.32 talks to a stock local node. Default seed is <code>http://127.0.0.1:18332</code>. Headers, compact blocks, and the tree root / jroot come from that node. Flyclient height sampling is not the send, balance, or history path.</p>' +
+      '<p>Run <code>node node/src/node.js</code> on the same machine (or point the wallet at a node you trust). Public pool HTTP submit stays an advanced toggle with an IP warning. Do not use pool.shear.digital as the only sync path.</p>'
   };
 
   P.continuum = {
@@ -326,8 +353,13 @@ window.SHEAR_DOCS = {
     title: 'Run a node',
     crumb: 'network / node',
     html:
-      '<p>Node source is the NODE button on the main site. A node is the book: append, verify, P2P, and the GATE that lets native Flow and pinned Reserve bytecode land in the same block. Build RandomX on the box; never copy a macOS <code>shearhash.node</code> onto Linux.</p>' +
-      '<p>Default sync is full archival IBD. An opt-in prune snapshot (latest only) is at <a href="https://boot.shear.digital">boot.shear.digital</a> — apply with <code>node node/src/node.js --bootstrap=DIR</code> on an empty datadir, then IBD the last 1000 blocks from the live seed. Do not set <code>SHEAR_FAST_SYNC</code> on a mining node.</p>' +
+      '<p>A node is the book. It appends, verifies, speaks P2P, and runs the GATE that lets native Flow and pinned Reserve bytecode land in the same block. Wallet 0.32 reads this node, not flyclient.</p>' +
+      '<pre>git clone https://github.com/rgsneddon/shear-testnet.git\n' +
+      'cd shear-testnet\nnpm install\n' +
+      'export SHEAR_DATA="$HOME/.shear/testnet-v3"\n' +
+      'node node/src/node.js</pre>' +
+      '<p>Default seeds: <code>shear.digital:30303</code>. Magic <code>shear-testnet-v3</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine. Build RandomX on the box; never copy a macOS <code>shearhash.node</code> onto Linux.</p>' +
+      '<p>Default sync is full archival IBD. An opt-in prune snapshot (latest only) is at <a href="https://boot.shear.digital">boot.shear.digital</a> — first published at height 1000, then every 400 blocks. Copy <code>latest.bin</code> to <code>$SHEAR_DATA/chain.bin</code> on an empty datadir, or <code>node node/src/node.js --bootstrap=DIR</code>. Then IBD the last ~1000 unpruned blocks from the live seed. Do not set <code>SHEAR_FAST_SYNC</code> on a mining node.</p>' +
       '<p>Tree: <a href="https://github.com/rgsneddon/shear-testnet/tree/main/node">rgsneddon/shear-testnet/node</a>.</p>'
   };
 
@@ -388,5 +420,72 @@ window.SHEAR_DOCS = {
     crumb: 'network / mempool',
     html:
       '<p><a href="https://mempool.shear.digital">mempool.shear.digital</a> shows in-flight work. Levy surge is taken from waiting depth. Spendable policy on that page follows the API, not a hard-coded 6 in the HTML.</p>'
+  };
+
+  P.admit = {
+    title: 'ADMITV1',
+    crumb: 'addresses / admit',
+    html:
+      '<p>Membership is the full live fluxset of every <code>admitPub</code> on this book, in appearance order. A spend proves it belongs in that set. A sampled subset is the wrong set and fails <code>admit_membership</code>. A reused spend tag fails <code>admit_link_tag</code>. ADMITV1 is full-chain membership, not rings of N. While this book has fewer than 10,000 notes the set is thin.</p>'
+  };
+
+  P.p2p = {
+    title: 'P2P',
+    crumb: 'network / p2p',
+    html:
+      '<p>Port 30303. Magic <code>shear-testnet-v3</code>. A v3 node drops hello magic <code>shear-testnet-v2</code> or <code>shear-v1</code>. Shipped seed is <code>shear.digital:30303</code> (Dedicated-de). Frozen v2 at the old p2p IP is a different book — do not dual-magic. IBD is headers then one getblock at a time; merkle and light-interpreter PoW still run.</p>'
+  };
+
+  P.rpc = {
+    title: 'RPC',
+    crumb: 'network / rpc',
+    html:
+      '<p>Loopback only: <code>127.0.0.1:18332</code>. That is the wallet’s default. It serves headers, compact blocks, and jroot. HTTP 8088 is the pool dashboard, also loopback on the live box — never open 8088 on 0.0.0.0.</p>'
+  };
+
+  P.bootstrap = {
+    title: 'Bootstrap',
+    crumb: 'network / bootstrap',
+    html:
+      '<p>Optional. <a href="https://boot.shear.digital">boot.shear.digital</a> offers one file pair: <code>latest.json</code> + <code>latest.bin</code>. First published at height 1000, then overwritten every 400 blocks (1400, 1800, …). Not every prune. Copy <code>latest.bin</code> onto an empty datadir as <code>chain.bin</code>, then run the stock node. Empty datadir only. After apply, the node must still reach the live tip hash.</p>'
+  };
+
+  P.prune = {
+    title: 'Prune-1000',
+    crumb: 'network / prune',
+    html:
+      '<p>After 1000 confirmations a node drops Flow samples and share rows. Sealed transactions, coinbase vouts, headers, and merkle stay. First prune fires at tip 1001. Share-batch PoW may skip only where local depth is ≥ 1000 <em>and</em> <code>samplesPruned</code> — a peer flag alone is not enough.</p>'
+  };
+
+  P.ports = {
+    title: 'Ports',
+    crumb: 'network / ports',
+    html:
+      '<table><tr><th>P2P</th><td>30303 (public)</td></tr>' +
+      '<tr><th>Stratum</th><td>1111 (public pool)</td></tr>' +
+      '<tr><th>HTTP</th><td>8088 loopback (pool dashboard / explorer HTML)</td></tr>' +
+      '<tr><th>RPC</th><td>18332 loopback (wallet node-sync)</td></tr></table>' +
+      '<p>Defaults do not change. Combined pool/node on Dedicated-de is one process.</p>'
+  };
+
+  P.stem = {
+    title: 'Stem then fluff',
+    crumb: 'network / stem',
+    html:
+      '<p>User txs stem to one peer, then fluff. Stem logs do not join IP + dest + amount. Compact bodies still strip dest+nanos plaintext. This does not hide the pool’s IP.</p>'
+  };
+
+  P.compact = {
+    title: 'Compact txs',
+    crumb: 'network / compact',
+    html:
+      '<p>On disk and on the wire, Flow strips dest and nanos. Amounts stay as sealed commit C plus range. Reserve lock / vote / withdraw still carry portalId, dest20, and valueProof.v so the vault can credit without plaintext. Copy dest payload is dest20||B so mining notes can wrap r.</p>'
+  };
+
+  P.gate = {
+    title: 'GATE',
+    crumb: 'network / gate',
+    html:
+      '<p>The node GATE lets native Flow and pinned Reserve bytecode land in the same block. Extra mint is allowed only from programme id <code>shear-reserve-v1</code>. Third-party vortices cannot mint SHE.</p>'
   };
 })(window.SHEAR_DOCS.pages);

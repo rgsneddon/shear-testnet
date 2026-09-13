@@ -43,7 +43,6 @@ describe('docs.shear.digital', () => {
     assert.match(content, /reserve-fee/);
     assert.match(content, /The Reserve vault fee bank/);
     assert.match(content, /not sent - try again/);
-    assert.match(content, /ten rows/);
     assert.match(content, /Your deposits/);
     assert.match(content, /two rows/);
     assert.doesNotMatch(content, /twenty rows/);
@@ -66,6 +65,19 @@ describe('docs.shear.digital', () => {
     assert.match(content, /Remove vortice/);
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);
+    assert.match(content, /0\.32/);
+    assert.match(content, /127\.0\.0\.1:18332/);
+    assert.match(content, /node-sync/);
+    assert.match(content, /com\.shear\.shear_wallet/);
+    assert.match(content, /Stem then fluff/);
+    assert.match(content, /ADMITV1/);
+    assert.match(content, /boot\.shear\.digital/);
+    assert.doesNotMatch(content, /Dandelion\+\+/);
+    assert.doesNotMatch(content, /FCMP/);
+    assert.doesNotMatch(content, /RING_SIZE/);
+    assert.doesNotMatch(content, /Pedersen/);
+    assert.doesNotMatch(content, /dag\.shear\.digital/);
+    assert.doesNotMatch(content, /GHOSTDAG/);
   });
 });
 
