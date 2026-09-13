@@ -16,7 +16,7 @@ Remote: `github.com/rgsneddon/shear-testnet.git`. Do not force-push `main`.
 
 ## Deploy oracle
 
-Named host **46.224.132.83** (`p2p.shear.digital:30303`). If that host has no Shear process, it is `blocking: unverifiable` until a real deploy. Local `npm test` is not that host’s verdict. Do not SSH the live Germany pool.
+Frozen book. Live v3 P2P seed is **shear.digital:30303** (Dedicated-de). Do not list **46.224.132.83** / `p2p.shear.digital` as a v3 peer — that host still hellos `shear-testnet-v2`. Local `npm test` is not the live seed’s verdict.
 
 After a second real node is up, it must reject:
 

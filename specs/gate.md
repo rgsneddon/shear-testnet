@@ -1,6 +1,6 @@
 # Phase B GATE
 
-Network: `shear-testnet-v2`. Date: 2026-08-30.
+Network: `shear-testnet-v3`. Date: 2026-08-30.
 
 Phase B (Flow levy product, Reserve Book B, pool pull-withdraw, Closure, vort1) **does not start** until this GATE is true **and** Phase A accept boxes A1–A5 are green.
 

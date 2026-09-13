@@ -617,7 +617,16 @@ function verifyBlockConsensus(block, prev, {
     }
     if (confidential) {
       const wantBonus = provenUnits * liveUnit;
-      const leaves = shareLeaves || aLeavesFromShares(shareBatch);
+      const sealedLeaves = Array.isArray(block.aLeaves) ? block.aLeaves : [];
+      const fromSealed = sealedLeaves.map((l) => {
+        const d20 = l.dest20 ? Buffer.from(l.dest20) : Buffer.alloc(20);
+        let nc = l.noteCommit ? Buffer.from(l.noteCommit) : null;
+        if (!nc || nc.length !== 32) nc = noteCommitOfDest20(d20);
+        return { ...l, dest20: d20, noteCommit: nc, count: Number(l.count) || 1 };
+      });
+      const leaves = (shareLeaves && shareLeaves.length)
+        ? shareLeaves
+        : (shareBatch.length && fromSealed.length ? fromSealed : aLeavesFromShares(shareBatch));
       const hasherNcs = new Set(leaves.map((l) => ncHex(l.noteCommit)));
       for (const leaf of leaves) {
         const nc = ncHex(leaf.noteCommit);
@@ -704,9 +713,16 @@ function verifyBlockConsensus(block, prev, {
       }
     }
   }
-  const aLeaves = shareLeaves
-    || (Array.isArray(block.aLeaves) && block.aLeaves.length && !prev?.header
-      ? block.aLeaves.map((l) => ({ dest20: Buffer.from(l.dest20), count: Number(l.count) || 1 }))
+  const aLeaves = (shareLeaves && shareLeaves.length)
+    ? shareLeaves
+    : (shareBatch.length && Array.isArray(block.aLeaves) && block.aLeaves.length
+      ? block.aLeaves.map((l) => {
+        const d20 = Buffer.from(l.dest20);
+        const nc = l.noteCommit && Buffer.from(l.noteCommit).length === 32
+          ? Buffer.from(l.noteCommit)
+          : noteCommitOfDest20(d20);
+        return { dest20: d20, count: Number(l.count) || 1, noteCommit: nc };
+      })
       : (shareLeaves || []));
   if (!skipFlow && Array.isArray(shareLeaves)) {
     const have = new Map(aLeaves.map((l) => [

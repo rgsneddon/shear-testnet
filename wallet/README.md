@@ -8,4 +8,4 @@ Mine with **Copy dest**: log ShearK in as `ssa1.worker`. Each hasher dest that p
 
 Pool: `pool.shear.digital:1111`.
 
-Continuum is spendable, pending transfers until six confirmations, and Copy ID. Already-confirmed SHE loads from the pool on unlock. Open-round hashes stay pending until the next sealed block. Shearview is confirmed transfers; tap a tx for its CTF printout on Resistance. This wallet does not mine.
+Continuum is spendable, pending transfers until six confirmations, and Copy ID. Already-confirmed SHE loads from a local node (`127.0.0.1:18332`) on unlock. Open-round hashes stay pending until the next sealed block. Shearview is confirmed transfers; tap a tx for its CTF printout on Resistance. This wallet does not mine. Public pool HTTP submit is an advanced toggle.

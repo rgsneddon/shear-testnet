@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { packShareV5, unpackShareV5, shareRowJson, ENC_SHARE_V5, ENC_SHARE } from './pack.js';
 import { noteCommitOfDest20 } from './note.js';
 import { encodeDest } from './address.js';
+import { noteCommitOfShare, verifyShareBatch } from './share_batch.js';
 
 describe('ENC_SHARE v5', () => {
   it('round-trips note_commit || nonce || lz || view_tag; v4 type stays 4', () => {
@@ -29,5 +30,24 @@ describe('ENC_SHARE v5', () => {
     assert.equal(row.dest20, undefined);
     assert.equal(row.noteCommit, nc.toString('hex'));
     assert.equal(row.nonce, '7');
+    const wire = JSON.parse(JSON.stringify(row));
+    const got = noteCommitOfShare(wire);
+    assert.equal(got.length, 32);
+    assert.equal(got.equals(nc), true);
+    const v = verifyShareBatch({
+      parentHeader: Buffer.alloc(128),
+      shares: [wire],
+      skipPow: true,
+    });
+    assert.equal(v.ok, true, v.reason);
+    const historic = JSON.parse(JSON.stringify({ noteCommit: '', nonce: '7', lz: 8 }));
+    const old = verifyShareBatch({
+      parentHeader: Buffer.alloc(128),
+      shares: [historic],
+      skipPow: true,
+    });
+    assert.equal(old.ok, true, old.reason);
+    assert.equal(old.units > 0, true);
+    assert.equal(old.aLeaves.length, 0);
   });
 });

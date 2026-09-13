@@ -66,7 +66,8 @@ export function printConfig() {
 
 export { createP2p, P2P_PORT, createStore, createRpc, RPC_PORT, mintVorticeDeployKey, parseVorticeKey };
 
-export const DEFAULT_SEEDS = ['p2p.shear.digital:30303', '46.224.132.83:30303'];
+/** Live v3 listener on Dedicated-de. Frozen v2 p2p.shear.digital is not a v3 peer. */
+export const DEFAULT_SEEDS = ['shear.digital:30303'];
 
 export async function startNode({
   dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v3'),

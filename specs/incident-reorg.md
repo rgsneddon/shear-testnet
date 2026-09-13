@@ -1,6 +1,6 @@
 # Incident — reorg / hash attack
 
-Network: `shear-testnet-v2`. Policy, not a second fork-choice. No operator `setTip(height)`.
+Network: `shear-testnet-v3`. Policy, not a second fork-choice. No operator `setTip(height)`.
 
 ## Steps
 

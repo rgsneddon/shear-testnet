@@ -22,19 +22,29 @@ export function unitsForShare(shareBits = SHARE_FLOOR_BITS) {
   return 2 ** SHARE_FLOOR_BITS;
 }
 
-export function dest20OfShare(share) {
-  if (share?.dest20 && Buffer.from(share.dest20).length === 20) {
-    return Buffer.from(share.dest20);
+function asBuf(v, n) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'string' && /^[0-9a-fA-F]+$/.test(v) && v.length === n * 2) {
+    return Buffer.from(v, 'hex');
   }
+  try {
+    const b = Buffer.isBuffer(v) ? v : Buffer.from(v);
+    if (b.length === n) return b;
+  } catch { /* fall through */ }
+  return null;
+}
+
+export function dest20OfShare(share) {
+  const fromField = asBuf(share?.dest20, 20);
+  if (fromField) return fromField;
   const addr = String(share?.dest || share?.address || share?.miner || '');
   const h = hash20FromAddress(addr);
   return h ? Buffer.from(h) : Buffer.alloc(20);
 }
 
 export function noteCommitOfShare(share) {
-  if (share?.noteCommit && Buffer.from(share.noteCommit).length === 32) {
-    return Buffer.from(share.noteCommit);
-  }
+  const fromField = asBuf(share?.noteCommit, 32);
+  if (fromField) return fromField;
   const d20 = dest20OfShare(share);
   if (!d20 || d20.equals(Buffer.alloc(20))) return Buffer.alloc(0);
   return noteCommitOfDest20(d20);
@@ -147,13 +157,16 @@ export function verifyShareBatch({
         return { ok: false, reason: 'miner_addr' };
       }
     }
-    const nc = noteCommitOfShare(s);
-    if (!nc || Buffer.from(nc).length !== 32 || Buffer.from(nc).equals(Buffer.alloc(32))) {
-      return { ok: false, reason: 'miner_addr' };
+    let nc = noteCommitOfShare(s);
+    if (nc && (Buffer.from(nc).length !== 32 || Buffer.from(nc).equals(Buffer.alloc(32)))) {
+      nc = Buffer.alloc(0);
     }
-    if (dest) {
+    if (dest && nc && nc.length === 32) {
       const expect = noteCommitOfDest20(dest20OfShare({ ...s, dest }));
       if (!Buffer.from(nc).equals(expect)) return { ok: false, reason: 'hash_bonus' };
+    }
+    if (dest && (!nc || nc.length !== 32)) {
+      nc = noteCommitOfDest20(dest20OfShare({ ...s, dest }));
     }
     const header = setNonce(job, nonce);
     const cached = skipPow || (jobKey && liveSharePow.has(`${jobKey}:${nk}`));
@@ -165,25 +178,29 @@ export function verifyShareBatch({
       }
       lz = leadingZeroBits(hash) & 0xff;
     }
+    // Historical persist dropped dest/noteCommit and kept nonce+lz. POW still binds
+    // the share; hasher identity is the sealed aLeaf. New rows keep noteCommit.
     proven.push({
       dest20: dest ? dest20OfShare({ ...s, dest }) : Buffer.alloc(20),
       dest: dest || '',
-      noteCommit: Buffer.from(nc),
+      noteCommit: nc && nc.length === 32 ? Buffer.from(nc) : Buffer.alloc(32),
       nonce,
       lz,
       units: unitsForShare(),
+      bound: !!(nc && nc.length === 32),
     });
   }
   const units = proven.reduce((n, s) => n + s.units, 0);
   if (units > MAX_HASH_UNITS_PER_BLOCK) {
     return { ok: false, reason: 'hash_units' };
   }
+  const bound = proven.filter((s) => s.bound);
   return {
     ok: true,
     shares: proven,
     units,
-    byDest: collateShareUnits(proven),
-    aLeaves: aLeavesFromShares(proven),
+    byDest: collateShareUnits(bound),
+    aLeaves: aLeavesFromShares(bound),
   };
 }
 

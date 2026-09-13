@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../src/store.js';
-import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3 } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_MAINNET } from '../../crypto/asert.js';
+import { encodeDest } from '../../crypto/address.js';
+import { mineTemplate } from '../src/chain.js';
+import { decodeHeader } from '../../crypto/header.js';
 
 describe('v2 and v3 datadirs refuse each other', () => {
   it('createStore throws datadir_magic on a v2 book.magic file', () => {
@@ -69,6 +72,107 @@ describe('v2 and v3 datadirs refuse each other', () => {
       closed,
       new Promise((_, reject) => setTimeout(() => reject(new Error('v2 hello did not drop the socket')), 3000)),
     ]);
+    p2p.close();
+  });
+
+  it('P2P drops a hello whose magic is frozen v1 or shear-v1', async () => {
+    const { createP2p } = await import('../src/p2p.js');
+    const net = await import('node:net');
+    for (const bad of [MAGIC_TESTNET_V1, MAGIC_MAINNET]) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-p2p-v1-'));
+      const store = createStore(dir);
+      const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET });
+      const bound = await p2p.listen();
+      const sock = net.connect(bound.port, '127.0.0.1');
+      await new Promise((resolve, reject) => {
+        sock.once('connect', resolve);
+        sock.once('error', reject);
+      });
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('no inbound hello')), 2000);
+        let buf = '';
+        sock.on('data', (chunk) => {
+          buf += chunk.toString('utf8');
+          if (buf.split('\n').filter(Boolean).length >= 2) {
+            clearTimeout(t);
+            resolve();
+          }
+        });
+      });
+      const closed = new Promise((resolve) => sock.once('close', resolve));
+      sock.write(`${JSON.stringify({ type: 'hello', magic: bad, ua: 'old-peer', port: 1 })}\n`);
+      await Promise.race([
+        closed,
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`${bad} hello did not drop the socket`)), 3000)),
+      ]);
+      p2p.close();
+    }
+  });
+
+  it('P2P hellos, tips, and headers shear-testnet-v3', async () => {
+    const { createP2p } = await import('../src/p2p.js');
+    const net = await import('node:net');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-p2p-v3-'));
+    const store = createStore(dir);
+    const dest = encodeDest(Buffer.alloc(20, 7));
+    const { tpl } = store.template({ miner: dest, bits: 4, shareBits: 4, now: Date.now() });
+    const found = mineTemplate({ ...tpl, bits: 4 }, { maxTries: 3_000_000, shareBits: 4 });
+    assert.ok(found && found.block, 'need pow');
+    assert.equal(store.append({
+      header: found.header,
+      txs: tpl.txs,
+      samples: tpl.samples,
+      miner: dest,
+    }).ok, true);
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET });
+    const bound = await p2p.listen();
+    const sock = net.connect(bound.port, '127.0.0.1');
+    await new Promise((resolve, reject) => {
+      sock.once('connect', resolve);
+      sock.once('error', reject);
+    });
+    const inbound = [];
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('no inbound hello/tip')), 2000);
+      let buf = '';
+      sock.on('data', (chunk) => {
+        buf += chunk.toString('utf8');
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let msg;
+          try { msg = JSON.parse(line); } catch { continue; }
+          inbound.push(msg);
+        }
+        if (inbound.some((m) => m.type === 'hello') && inbound.some((m) => m.type === 'tip')) {
+          clearTimeout(t);
+          resolve();
+        }
+      });
+    });
+    const hello = inbound.find((m) => m.type === 'hello');
+    const tip = inbound.find((m) => m.type === 'tip');
+    assert.equal(hello.magic, MAGIC_TESTNET);
+    assert.equal(hello.magic, 'shear-testnet-v3');
+    assert.equal(tip.magic, 'shear-testnet-v3');
+    assert.equal(tip.height, 1);
+    sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, ua: 'v3-peer', port: 1 })}\n`);
+    sock.write(`${JSON.stringify({ type: 'getheaders', magic: MAGIC_TESTNET, locator: [], stopHash: '' })}\n`);
+    const t0 = Date.now();
+    let headers = inbound.find((m) => m.type === 'headers');
+    while (!headers && Date.now() - t0 < 3000) {
+      await new Promise((r) => setTimeout(r, 25));
+      headers = inbound.find((m) => m.type === 'headers');
+    }
+    assert.ok(headers, 'v3 peer must serve headers');
+    assert.equal(headers.magic, 'shear-testnet-v3');
+    assert.ok(Array.isArray(headers.headers));
+    assert.ok(headers.headers.length >= 1);
+    const hdr0 = headers.headers[0];
+    assert.ok(hdr0.header || hdr0.hash);
+    assert.equal(decodeHeader(Buffer.from(found.header)).version, 1);
+    sock.destroy();
     p2p.close();
   });
 });

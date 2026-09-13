@@ -1,6 +1,6 @@
 # Confirm policy
 
-Network: `shear-testnet-v2`. **Not** in `consensusFingerprint()`.
+Network: `shear-testnet-v3`. **Not** in `consensusFingerprint()`.
 
 Policy and book-keeping. Does not change which chain is canonical. Does not turn levy on. Consensus spendable floor stays **6** (`SPENDABLE_CONFIRMATIONS`, already in the fingerprint). Freeze is policy.
 

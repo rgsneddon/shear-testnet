@@ -1,6 +1,6 @@
 #!/bin/sh
 # ShearK-Miner 1.6 (ShearHash-v3 light)
-# Pool: pool.shear.digital:1111  (shear-testnet-v2)
+# Pool: pool.shear.digital:1111  (shear-testnet-v3)
 #
 # Paid login is an ssa1 dest the wallet exported (Copy dest), then .worker.
 # she1 without --dest is unpaid. Never use shear1.

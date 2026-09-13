@@ -88,4 +88,45 @@ describe('node RPC', () => {
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'rpc_token');
   });
+
+  it('serves stats, headers, compact blocks, and jroot for wallet node-sync', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-rpc-sync-'));
+    const store = createStore(dir);
+    const dest = destMiner();
+    assert.equal(mineOne(store, dest).ok, true);
+    const rpc = createRpc({ store, port: 0, host: '127.0.0.1' });
+    const bound = await rpc.listen();
+    const base = `http://127.0.0.1:${bound.port}`;
+    try {
+      const stats = await get(`${base}/stats`);
+      assert.equal(stats.status, 200);
+      assert.equal(stats.json.ok, true);
+      assert.equal(stats.json.magic, 'shear-testnet-v3');
+      assert.equal(stats.json.admit, 'AdmitV1');
+      assert.equal(stats.json.hashTxLive, 1);
+      assert.equal(stats.json.height, 1);
+      assert.ok(stats.json.header);
+      const alias = await get(`${base}/api/stats`);
+      assert.equal(alias.json.height, 1);
+      const hdrs = await get(`${base}/headers?from=1&to=1`);
+      assert.equal(hdrs.json.headers.length, 1);
+      assert.ok(hdrs.json.headers[0].header);
+      const expl = await get(`${base}/api/explorer/header?height=1`);
+      assert.equal(expl.json.ok, true);
+      assert.ok(expl.json.header);
+      const blk = await get(`${base}/block?height=1`);
+      assert.equal(blk.json.ok, true);
+      assert.ok(Array.isArray(blk.json.txs));
+      const sendTx = (blk.json.txs || []).find((t) => !t.coinbase);
+      if (sendTx) {
+        assert.equal(sendTx.to, undefined);
+        assert.equal(sendTx.nanos, undefined);
+      }
+      const jroot = await get(`${base}/jroot`);
+      assert.equal(jroot.json.admit, 'AdmitV1');
+      assert.equal(typeof jroot.json.jroot, 'string');
+    } finally {
+      await rpc.close();
+    }
+  });
 });

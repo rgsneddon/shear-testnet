@@ -2284,7 +2284,7 @@ class ShearPoolClient {
 
   int get provenHeaders => _sync?.provenHeaders ?? _pinnedProven.length;
   int get wantedHeaders =>
-      _sync?.wantedHeaders ?? (_pinnedTip < 1 ? 0 : flyclientSampleHeights(_pinnedTip).length);
+      _sync?.wantedHeaders ?? (_pinnedTip < 1 ? 0 : _pinnedTip);
   bool get nodeLive =>
       _sync != null ? _sync!.liveBase != null : _pinned != null && _pinnedTip > 0;
 
@@ -2305,16 +2305,22 @@ class ShearPoolClient {
 
   Future<String?> fetchGenesisHex() async {
     try {
-      final batch = await _getRaw('/api/explorer/headers?from=1&to=1');
-      final rows = batch['headers'];
+      final batch = await _getRawFirst(const [
+        '/headers?from=1&to=1',
+        '/api/explorer/headers?from=1&to=1',
+      ]);
+      final rows = batch?['headers'];
       if (rows is List && rows.isNotEmpty && rows.first is Map) {
         final hex = (rows.first as Map)['header']?.toString() ?? '';
         if (hex.isNotEmpty) return hex.toLowerCase();
       }
     } catch (_) {}
     try {
-      final hdr = await _getRaw('/api/explorer/header?height=1');
-      final hex = hdr['header']?.toString() ?? '';
+      final hdr = await _getRawFirst(const [
+        '/header?height=1',
+        '/api/explorer/header?height=1',
+      ]);
+      final hex = hdr?['header']?.toString() ?? '';
       if (hex.isNotEmpty) return hex.toLowerCase();
     } catch (_) {}
     return null;
@@ -2322,7 +2328,8 @@ class ShearPoolClient {
 
   Future<void> _provePinned() async {
     try {
-      final stats = await _getRaw('/api/stats');
+      final stats = await _getRawFirst(const ['/stats', '/api/stats']);
+      if (stats == null) return;
       final tip = (stats['height'] as num?)?.toInt() ?? 0;
       if (tip < 1) return;
       _pinnedTip = tip;
@@ -2334,12 +2341,42 @@ class ShearPoolClient {
         _pinnedProven.clear();
       }
       if (genesis != null && genesis.isNotEmpty) _pinnedGenesis = genesis;
-      for (final h in flyclientSampleHeights(tip)) {
-        if (_pinnedProven.contains(h)) continue;
+      const page = kNodeSyncHeaderPage;
+      for (var from = 1; from <= tip; from += page) {
+        final to = from + page - 1 > tip ? tip : from + page - 1;
+        var need = false;
+        for (var h = from; h <= to; h++) {
+          if (!_pinnedProven.contains(h)) {
+            need = true;
+            break;
+          }
+        }
+        if (!need) continue;
         try {
-          final hdr = await _getRaw('/api/explorer/header?height=$h');
-          if ((hdr['header']?.toString() ?? '').isNotEmpty) _pinnedProven.add(h);
+          final batch = await _getRawFirst([
+            '/headers?from=$from&to=$to',
+            '/api/explorer/headers?from=$from&to=$to',
+          ]);
+          final rows = batch?['headers'];
+          if (rows is List) {
+            for (final row in rows) {
+              if (row is! Map) continue;
+              final h = (row['height'] as num?)?.toInt() ?? 0;
+              final hex = row['header']?.toString() ?? '';
+              if (h >= 1 && hex.isNotEmpty) _pinnedProven.add(h);
+            }
+          }
         } catch (_) {}
+        for (var h = from; h <= to; h++) {
+          if (_pinnedProven.contains(h)) continue;
+          try {
+            final hdr = await _getRawFirst([
+              '/header?height=$h',
+              '/api/explorer/header?height=$h',
+            ]);
+            if ((hdr?['header']?.toString() ?? '').isNotEmpty) _pinnedProven.add(h);
+          } catch (_) {}
+        }
       }
     } catch (_) {}
   }
@@ -2352,7 +2389,19 @@ class ShearPoolClient {
     final req = await _http.getUrl(Uri.parse('$baseUrl$path'));
     final res = await req.close();
     final text = await utf8.decodeStream(res);
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw StateError('http_${res.statusCode}');
+    }
     return jsonDecode(text) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>?> _getRawFirst(List<String> paths) async {
+    for (final path in paths) {
+      try {
+        return await _getRaw(path);
+      } catch (_) {}
+    }
+    return null;
   }
 
   Future<void> _ensureBase() async {
@@ -2449,10 +2498,21 @@ class ShearPoolClient {
         if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
       });
 
-  Future<Map<String, dynamic>> fluxset() => _get('/api/wallet/fluxset');
+  Future<Map<String, dynamic>> fluxset() async {
+    final got = await _getRawFirst(const ['/fluxset', '/api/wallet/fluxset']);
+    if (got != null) return got;
+    return _get('/api/wallet/fluxset');
+  }
 
-  Future<Map<String, dynamic>> notes(String address) =>
-      _get('/api/wallet/notes?address=${Uri.encodeQueryComponent(address)}');
+  Future<Map<String, dynamic>> notes(String address) async {
+    final q = Uri.encodeQueryComponent(address);
+    final got = await _getRawFirst([
+      '/notes?address=$q',
+      '/api/wallet/notes?address=$q',
+    ]);
+    if (got != null) return got;
+    return _get('/api/wallet/notes?address=$q');
+  }
 
   Future<Map<String, dynamic>> mempoolPressure() => _get('/api/mempoolPressure');
 
@@ -2472,11 +2532,21 @@ class ShearPoolClient {
   Future<Map<String, dynamic>> pullPending(String login) =>
       _get('/api/pool/pullPending?login=${Uri.encodeQueryComponent(login)}');
 
-  Future<Map<String, dynamic>> stats() => _get('/api/stats');
+  Future<Map<String, dynamic>> stats() async {
+    final got = await _getRawFirst(const ['/stats', '/api/stats']);
+    if (got != null) return got;
+    return _get('/api/stats');
+  }
 
   /// Public header at height. No identity, view key, or shear1.
-  Future<Map<String, dynamic>> headerAt(int height) =>
-      _get('/api/explorer/header?height=$height');
+  Future<Map<String, dynamic>> headerAt(int height) async {
+    final got = await _getRawFirst([
+      '/header?height=$height',
+      '/api/explorer/header?height=$height',
+    ]);
+    if (got != null) return got;
+    return _get('/api/explorer/header?height=$height');
+  }
 
   /// Public HASH_TX DAG. Used only to read continuity at a claim height.
   Future<Map<String, dynamic>> explorerDag() => _get('/api/explorer/dag');

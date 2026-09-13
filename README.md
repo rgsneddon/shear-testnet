@@ -10,6 +10,7 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Algo: **ShearHash-v3** (CPU, RandomX light)
 - Miner pin: **ShearK-Miner 1.6** ([Testnet] ShearK). Wallet **0.31**. Product **0.4**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.6
 - Stratum: `pool.shear.digital:1111`
+- P2P: `shear.digital:30303` (`shear-testnet-v3`)
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital
 - Chain: `shear-testnet-v3`

@@ -74,6 +74,11 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(readme, /own hash bonus on the next sealed block/);
     assert.match(readme, /shear-testnet-v3/);
     assert.doesNotMatch(readme, /Chain: `shear-testnet-v2`/);
+    assert.match(readme, /shear\.digital:30303/);
+    assert.doesNotMatch(joined, /46\.224\.132\.83/);
+    const sheark = read('sheark-miner/README.md');
+    assert.match(sheark, /magic `shear-testnet-v3`/);
+    assert.doesNotMatch(sheark, /magic `shear-testnet-v2`/);
 
     assert.doesNotMatch(joined, /Private dests, public amounts/);
     assert.doesNotMatch(joined, /amounts stay public/);

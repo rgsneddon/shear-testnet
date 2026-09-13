@@ -3,7 +3,7 @@
 Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache).
 
 - Display repo: **[Testnet] ShearK** (`rgsneddon/ShearK`)
-- Wire algo: `ShearHash` · personalisation `ShearHash-v3` · magic `shear-testnet-v2`
+- Wire algo: `ShearHash` · personalisation `ShearHash-v3` · magic `shear-testnet-v3`
 - Banner: `ShearK-Miner 1.6 (ShearHash-v3 light)`
 - Pool: `pool.shear.digital:1111`
 - Header: 128 bytes. Light mode only. Do not recut Shear-Miner **1.1** / **1.0**. Submit includes the ShearHash-v3 digest.

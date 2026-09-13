@@ -206,6 +206,8 @@ describe('p2p gossip', () => {
     assert.equal(cfg.mainnet, false);
     assert.equal(cfg.phaseBGate, true);
     assert.equal(cfg.rpc, 18332);
+    assert.equal(cfg.admit, 'AdmitV1');
+    assert.equal(cfg.hashTxLive, 1);
   });
 
   it('pickStemSocket returns one peer; fluff delay is 1–3 s; no IP beside dest in logs', () => {
@@ -351,8 +353,9 @@ describe('p2p gossip', () => {
     assert.match(src, /getblocks/);
     assert.match(src, /sock\.destroy\(\)/);
     assert.equal(src.includes('seenTx.clear()'), false);
-    assert.ok(DEFAULT_SEEDS.includes('p2p.shear.digital:30303'));
-    assert.ok(DEFAULT_SEEDS.includes('46.224.132.83:30303'));
+    assert.ok(DEFAULT_SEEDS.includes('shear.digital:30303'));
+    assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('46.224.132.83')), false);
+    assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('p2p.shear.digital')), false);
     assert.equal(GETBLOCK_BATCH, 16);
     assert.equal(HEADERS_PAGE, 2000);
     assert.match(src, /requestHeaders/);

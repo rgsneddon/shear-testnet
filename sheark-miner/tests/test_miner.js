@@ -40,7 +40,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.version, '1.6');
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.headerBytes, 128);
-    assert.equal(j.magic, 'shear-testnet-v2');
+    assert.equal(j.magic, 'shear-testnet-v3');
     assert.equal(j.rxMode, 'light');
     assert.equal(j.rxCacheMiB, 128);
     assert.equal(j.feePct, 0);
@@ -61,6 +61,10 @@ describe('ShearK-Miner', () => {
     assert.match(help.stdout, /huge pages/);
     const srcEx = fs.readFileSync(path.join(root, 'example.sh'), 'utf8');
     const bat = fs.readFileSync(path.join(root, 'example.bat'), 'utf8');
+    assert.match(srcEx, /shear-testnet-v3/);
+    assert.equal(srcEx.includes('shear-testnet-v2'), false);
+    assert.match(bat, /shear-testnet-v3/);
+    assert.equal(bat.includes('shear-testnet-v2'), false);
     assert.match(srcEx, /--user YOUR_SSA1\.worker/);
     assert.match(srcEx, /--dest YOUR_SSA1/);
     assert.match(srcEx, /--backend jit/);

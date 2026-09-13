@@ -1064,8 +1064,17 @@ void main() {
   test('read-sync source defaults to 127.0.0.1 before the public seed', () {
     final sync = ShearReadSync(jitter: Duration.zero);
     expect(sync.seeds.first.contains('127.0.0.1'), isTrue);
-    expect(sync.seeds, contains(kLocalPoolHttp));
     expect(sync.seeds, contains(kLocalNodeRpc));
+    expect(sync.seeds.contains(kLocalPoolHttp), isFalse);
+    expect(sync.seeds.contains(kPublicPoolHttp), isFalse);
+    expect(kWalletDefaultSeed, contains('127.0.0.1'));
+    expect(kWalletDefaultSeed.contains('pool.shear.digital'), isFalse);
+    final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
+    final syncSrc = File('lib/shear_read_sync.dart').readAsStringSync();
+    expect(ledgerSrc.contains('flyclientSampleHeights'), isFalse,
+        reason: 'send/balance/history/tip-proof must not call the FlyClient sampler');
+    expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
+    expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
   });
 
   test('CTF dest is she1 with password C, not C-from-S', () {
@@ -3831,7 +3840,7 @@ void main() {
     }
   });
 
-  test('read-sync picks a live mock node and FlyClient-samples log n headers', () async {
+  test('read-sync picks a live mock node and node-syncs headers 1…tip', () async {
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     final live = _PoolLive(headerHex: hex, height: 16);
@@ -3860,11 +3869,12 @@ void main() {
     expect(walletHonestyText(live: true, proven: 5, wanted: 5), '100% synchronised');
     expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), 'no network');
     await sync.followTip();
-    final locators = flyclientSampleHeights(16);
-    expect(locators, [1, 2, 4, 8, 16]);
-    expect(sync.wantedHeaders, locators.length);
-    expect(sync.provenHeaders, locators.length);
+    expect(nodeSyncHeights(1, 16), hasLength(16));
+    expect(sync.wantedHeaders, 16);
+    expect(sync.provenHeaders, 16);
     expect(sync.honestyText(), '100% synchronised');
+    expect(flyclientSampleHeightsForTest(16), [1, 2, 4, 8, 16]);
+    expect(sync.wantedHeaders, isNot(flyclientSampleHeightsForTest(16).length));
     final pool = ShearPoolClient(sync: sync, http: http);
     await pool.followLive();
     expect(pool.baseUrl, liveUrl);
@@ -3987,7 +3997,7 @@ void main() {
     expect(ledger.spendable(dest), closeTo(1, 1e-12));
   });
 
-  test('FlyClient binds to canonical genesis, not a taller stale book, and does not rescan', () async {
+  test('node-sync binds to canonical genesis, not a taller stale book, and does not rescan', () async {
     String hdr(int b) => List.filled(128, b).map((x) => x.toRadixString(16).padLeft(2, '0')).join();
     final oldG = hdr(0x11);
     final newG = hdr(0x22);
@@ -4012,8 +4022,8 @@ void main() {
     expect(sync.genesisHex, newG);
     expect(sync.liveBase, isNot(staleUrl));
     await sync.followTip();
-    expect(sync.wantedHeaders, flyclientSampleHeights(5).length);
-    expect(sync.provenHeaders, flyclientSampleHeights(5).length);
+    expect(sync.wantedHeaders, 5);
+    expect(sync.provenHeaders, 5);
     expect(sync.honestyText(), '100% synchronised');
     final headerAfter = cur.headerHits + cur.headersBatchHits;
     expect(headerAfter, lessThan(20));
@@ -4026,12 +4036,12 @@ void main() {
     final hitsBeforeReset = cur.headerHits + cur.headersBatchHits;
     await sync.followTip();
     expect(sync.genesisHex, resetG);
-    expect(sync.wantedHeaders, flyclientSampleHeights(6).length);
-    expect(sync.provenHeaders, flyclientSampleHeights(6).length);
+    expect(sync.wantedHeaders, 6);
+    expect(sync.provenHeaders, 6);
     expect(cur.headerHits + cur.headersBatchHits, greaterThan(hitsBeforeReset),
-        reason: 'identity change must re-prove FlyClient locators, not skip');
-    expect(flyclientSampleHeights(64).length, lessThan(64));
-    expect(flyclientSampleHeights(64), containsAll([1, 2, 4, 8, 16, 32, 64]));
+        reason: 'identity change must re-prove node-sync headers, not skip');
+    expect(flyclientSampleHeightsForTest(64).length, lessThan(64));
+    expect(flyclientSampleHeightsForTest(64), containsAll([1, 2, 4, 8, 16, 32, 64]));
   });
 
   testWidgets('0.20 lock card still present after 6s; vote at π; no claim-hashes', (tester) async {
@@ -4777,7 +4787,7 @@ Future<HttpServer> _fakePool({
       body = Map<String, dynamic>.from(jsonDecode(utf8.decode(chunks)) as Map);
     }
     req.response.headers.contentType = ContentType.json;
-    if (req.uri.path == '/api/stats') {
+    if (req.uri.path == '/api/stats' || req.uri.path == '/stats') {
       state.statsHits += 1;
       final portal = state.reservePortal ?? {};
       req.response.write(jsonEncode({
@@ -4794,7 +4804,7 @@ Future<HttpServer> _fakePool({
         'votes': portal['votes'] ?? {'increase': 0, 'decrease': 0, 'hold': 0},
         'hashBonusNanos': portal['liveHashBonusNanos'] ?? 1,
       }));
-    } else if (req.uri.path == '/api/explorer/header') {
+    } else if (req.uri.path == '/api/explorer/header' || req.uri.path == '/header') {
       state.headerHits += 1;
       final h = int.tryParse(req.uri.queryParameters['height'] ?? '') ?? 0;
       final hex = state.headerAtHeight[h] ?? state.headerHex;
@@ -4804,7 +4814,7 @@ Future<HttpServer> _fakePool({
         'header': hex,
         'continuity': hex.length >= 200 ? hex.substring(136, 200) : '',
       }));
-    } else if (req.uri.path == '/api/explorer/headers') {
+    } else if (req.uri.path == '/api/explorer/headers' || req.uri.path == '/headers') {
       state.headersBatchHits += 1;
       final from = int.tryParse(req.uri.queryParameters['from'] ?? '') ?? 1;
       final toRaw = int.tryParse(req.uri.queryParameters['to'] ?? '') ?? from;
@@ -4817,6 +4827,34 @@ Future<HttpServer> _fakePool({
           },
       ];
       req.response.write(jsonEncode({'ok': true, 'from': from, 'to': to, 'headers': headers}));
+    } else if (req.uri.path == '/block' || req.uri.path == '/compactblock') {
+      final h = int.tryParse(req.uri.queryParameters['height'] ?? '') ?? 0;
+      final hex = state.headerAtHeight[h] ?? state.headerHex;
+      req.response.write(jsonEncode({
+        'ok': true,
+        'height': h,
+        'header': hex,
+        'txs': const [],
+      }));
+    } else if (req.uri.path == '/blocks' || req.uri.path == '/compactblocks') {
+      final from = int.tryParse(req.uri.queryParameters['from'] ?? '') ?? 1;
+      final toRaw = int.tryParse(req.uri.queryParameters['to'] ?? '') ?? from;
+      final to = toRaw < from ? from : (toRaw > from + 63 ? from + 63 : toRaw);
+      final blocks = <Map<String, dynamic>>[
+        for (var h = from; h <= to && h <= state.height; h++)
+          {
+            'height': h,
+            'header': state.headerAtHeight[h] ?? state.headerHex,
+            'txs': const [],
+          },
+      ];
+      req.response.write(jsonEncode({'ok': true, 'from': from, 'to': to, 'blocks': blocks}));
+    } else if (req.uri.path == '/jroot' || req.uri.path == '/api/wallet/jroot') {
+      req.response.write(jsonEncode({
+        'ok': true,
+        'jroot': List.filled(32, 0).map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
+        'admit': 'AdmitV1',
+      }));
     } else if (req.uri.path == '/api/wallet/balance') {
       state.balanceHits += 1;
       final addr = req.uri.queryParameters['address'] ?? '';
