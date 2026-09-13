@@ -1676,7 +1676,7 @@ void main() {
     expect(statsBox.left > spendBox.right, isTrue);
     expect(find.text('Pending'), findsNothing);
     expect(find.text('Copy dest'), findsOneWidget);
-    expect(find.text('ssa1 dest (from your shear1 — chain mailbox)'), findsOneWidget);
+    expect(find.text('ssa1 dest — mining mailbox'), findsOneWidget);
     expect(find.byKey(const Key('copy-id')), findsOneWidget);
     expect(find.byKey(const Key('copy-dest')), findsOneWidget);
     expect(find.byKey(const Key('continuum-ssa1')), findsOneWidget);
@@ -1816,6 +1816,12 @@ void main() {
     await _sealSession(tester, session);
     await tester.pumpWidget(ShearWalletApp(session: session, ledger: ShearLedger(), startUnlocked: true, skipPoolSync: true));
     await tester.pump();
+    await tester.pump();
+    await tester.scrollUntilVisible(
+      find.text('1 SHE per block continuity'),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.pump();
     final spend = tester.getTopLeft(find.text('Spendable'));
     final receive = tester.getTopLeft(find.text('Receive ID'));

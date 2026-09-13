@@ -85,8 +85,12 @@ void main() {
       ephPub: pay.ephPub,
     );
     expect(rec, isNotNull);
-    final oneTime = rec!['spendPub'] as Uint8List;
-    expect(encodeDestAddress(destCommitFromSpendPub(oneTime)), pay.dest);
+    expect(rec!['dest'], pay.dest);
+    final oneTime = rec['spendPub'] as Uint8List;
+    expect(
+      encodeDestAddress(destCommitFromSpendPub(oneTime), admitBaseFromAddress(pay.dest)),
+      pay.dest,
+    );
     final ledger = ShearLedger();
     ledger.viewSecret = alice.viewKey;
     ledger.creditReceive(

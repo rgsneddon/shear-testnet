@@ -247,11 +247,13 @@ Map<String, dynamic>? recognizeSilentDest({
   required String dest,
   required Uint8List ephPub,
   int maxIndex = 16,
+  Uint8List? admitBase,
 }) {
+  final base = admitBase ?? admitBaseFromAddress(dest);
   for (var i = 0; i <= maxIndex; i++) {
     final shared = x25519Shared(scanSeedFromView(viewKey, i), ephPub);
     final oneTime = stealthTweakPub(spendPub, shared);
-    final got = encodeDestAddress(destCommitFromSpendPub(oneTime));
+    final got = encodeDestAddress(destCommitFromSpendPub(oneTime), base);
     if (got == dest || destMatchesSpendPub(dest, oneTime)) {
       return {'dest': got, 'shared': shared, 'index': i, 'spendPub': oneTime};
     }
