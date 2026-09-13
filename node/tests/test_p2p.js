@@ -621,6 +621,46 @@ describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
     }
   });
 
+  it('one headers page queues every missing hash; IBD does not refetch headers each height', async () => {
+    const dest = destMiner();
+    const bits = 4;
+    const want = 6;
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hdrq-a-'));
+    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    try {
+      for (let i = 0; i < want; i += 1) mineChainOne(a.store, dest, bits);
+      assert.equal(a.store.tip().height, want);
+      const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hdrq-b-'));
+      const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+      const pages = [];
+      const orig = console.error;
+      console.error = (...args) => {
+        const s = String(args[0] || '');
+        try {
+          const ev = JSON.parse(s);
+          if (ev.event === 'p2p_headers') pages.push(ev);
+        } catch { /* ignore */ }
+        orig.apply(console, args);
+      };
+      try {
+        await b.p2p.connect('127.0.0.1', a.bound.port);
+        const ok = await waitFor(() => tipsEqual(a, b), 30_000);
+        assert.equal(ok, true, `queued IBD stuck at ${b.store.tip()?.height || 0}`);
+        assert.equal(b.store.tip().height, want);
+        assert.ok(pages.length >= 1, 'need a headers page');
+        assert.ok(pages.length <= 2, `refetched headers every block (${pages.length})`);
+        assert.equal(pages[0].missing, want);
+      } finally {
+        console.error = orig;
+        b.p2p.close();
+        await b.rpc?.close?.();
+      }
+    } finally {
+      a.p2p.close();
+      await a.rpc?.close?.();
+    }
+  });
+
   it('empty, lagging-prefix, and later third nodes fully catch up past one getblock batch', async () => {
     const dest = destMiner();
     const bits = 4;

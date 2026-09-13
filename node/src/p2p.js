@@ -457,9 +457,22 @@ export function createP2p({
     });
   }
 
-  function finishBatch(sock) {
+  function pumpGetblocks(sock) {
     const rec = peers.get(sock);
     if (!rec) return;
+    if (!Array.isArray(rec.want)) rec.want = [];
+    if (!rec.pending) rec.pending = new Set();
+    if (!rec.failed) rec.failed = new Set();
+    const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
+    while (rec.pending.size < GETBLOCK_BATCH && rec.want.length) {
+      const hash = rec.want.shift();
+      if (!hash || have.has(hash) || rec.failed.has(hash) || rec.pending.has(hash)) continue;
+      rec.pending.add(hash);
+      rec.pendingAt = Date.now();
+      rec.syncing = true;
+      send(sock, { type: 'getblock', magic, hash });
+    }
+    if (rec.pending.size) return;
     rec.syncing = false;
     rec.pending = null;
     requestHeaders(sock);
@@ -545,14 +558,18 @@ export function createP2p({
       if (!rec.failed) rec.failed = new Set();
       peers.set(sock, rec);
       const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
-      const missing = [];
+      if (!Array.isArray(rec.want)) rec.want = [];
+      const queued = new Set(rec.want);
+      if (rec.pending) for (const h of rec.pending) queued.add(h);
+      let added = 0;
       for (const h of msg.headers || []) {
         const hash = wireHash(h.hash);
-        if (!hash || have.has(hash) || rec.failed.has(hash)) continue;
-        missing.push(hash);
-        if (missing.length >= GETBLOCK_BATCH) break;
+        if (!hash || have.has(hash) || rec.failed.has(hash) || queued.has(hash)) continue;
+        rec.want.push(hash);
+        queued.add(hash);
+        added += 1;
       }
-      if (!missing.length) {
+      if (!added && !rec.want.length && !(rec.pending && rec.pending.size)) {
         rec.syncing = false;
         rec.pending = null;
         const lastHdr = (msg.headers || [])[(msg.headers || []).length - 1];
@@ -562,18 +579,15 @@ export function createP2p({
         }
         return;
       }
-      rec.pending = new Set(missing);
-      rec.pendingAt = Date.now();
-      rec.syncing = true;
       try {
         console.error(JSON.stringify({
           event: 'p2p_headers',
           n: (msg.headers || []).length,
-          missing: missing.length,
+          missing: rec.want.length + (rec.pending ? rec.pending.size : 0),
           local: store.tip()?.height || 0,
         }));
       } catch { /* ignore */ }
-      for (const hash of missing) send(sock, { type: 'getblock', magic, hash });
+      pumpGetblocks(sock);
       return;
     }
     if (msg.type === 'getblock') {
@@ -643,12 +657,7 @@ export function createP2p({
           ? !Buffer.from(before.hash).equals(Buffer.from(after.hash))
           : Boolean(after && !before);
         if (got?.ok && changed) broadcast(tipMsg(), sock);
-        if (rec?.pending && rec.pending.size === 0) {
-          finishBatch(sock);
-        } else if (!rec?.pending) {
-          if (rec) rec.syncing = false;
-          requestHeaders(sock);
-        }
+        if (rec) pumpGetblocks(sock);
       }).catch((err) => {
         const rec = peers.get(sock);
         if (rec) {
@@ -711,10 +720,12 @@ export function createP2p({
       for (const [sock, rec] of peers) {
         if (!rec?.syncing || !rec.pending || !rec.pending.size || !rec.pendingAt) continue;
         if (now - rec.pendingAt < GETBLOCK_WAIT_MS) continue;
-        rec.pending = null;
-        rec.syncing = false;
+        const stuck = [...rec.pending];
+        rec.pending = new Set();
         rec.pendingAt = 0;
-        requestHeaders(sock);
+        rec.want = [...stuck, ...(rec.want || [])];
+        rec.syncing = false;
+        pumpGetblocks(sock);
       }
     }, 5_000);
     if (typeof pendingWatch.unref === 'function') pendingWatch.unref();
