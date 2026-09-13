@@ -31,6 +31,7 @@ describe('Pedersen notes', () => {
     assert.equal(verifySealedNote(a, 256), true);
     assert.equal(verifySealedNote(b, 256), true);
     assert.equal(verifySealedNote(a, 512), false);
+    assert.equal(verifySealedNote(a, -1), false);
     assert.equal(a.noteCommit.equals(noteCommitOfDest20(dA)), true);
     assert.equal(a.noteCommit.equals(dA), false);
     const excess = excessOf([a, b]);
