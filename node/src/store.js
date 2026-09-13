@@ -32,7 +32,7 @@ import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
-import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
+import { writeChainBin, readChainBin, appendChainBin } from '../../crypto/chainbin.js';
 import { blockWeight } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
 import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset } from '../../crypto/admit.js';
@@ -98,6 +98,7 @@ function potIdsOf(block) {
 export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
   reorgHaltDepth = Number(process.env.SHEAR_REORG_HALT_DEPTH || 0),
+  fastSync = String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
 } = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
@@ -115,6 +116,7 @@ export function createStore(dir, {
   let policyState = emptyPolicyState();
   const pause = { reserveInterest: false, poolWithdraw: false };
   const haltDepth = Math.max(0, Math.floor(Number(reorgHaltDepth) || 0));
+  const archiveFast = !!fastSync;
   let evmSession = null;
 
   if (fs.existsSync(binFile)) {
@@ -275,8 +277,11 @@ export function createStore(dir, {
 
   const vortice = createVorticeCatalog(dir);
 
-  function persist(_block) {
-    rewriteChain();
+  function persist(block) {
+    fs.writeFileSync(magicFile, MAGIC_TESTNET);
+    const row = archiveFast ? pruneSamples(block) : block;
+    appendChainBin(binFile, row);
+    fs.appendFileSync(file, `${JSON.stringify(toRow(row))}\n`);
   }
 
   function rewriteChain() {
@@ -540,7 +545,7 @@ export function createStore(dir, {
       }),
       nowMs: Date.now(),
       trustedPowHash: verifyOpts.trustedPowHash || null,
-      skipSharePow: !!verifyOpts.skipSharePow,
+      skipSharePow: !!verifyOpts.skipSharePow || archiveFast,
       parentFluxset: liveFlux.pubs,
       parentSpendTags: liveFlux.spendTags,
     });
@@ -1065,6 +1070,8 @@ export function createStore(dir, {
     spendableNanos,
     pruneBuried,
     pruneAfter,
+    fastSync: archiveFast,
+    archival: !archiveFast,
     registerViewKey,
     addressForViewKey,
     viewKeyForAddress,

@@ -58,6 +58,8 @@ export function printConfig() {
     mainnet: false,
     hashTxLive: HASH_TX_LIVE,
     admit: 'AdmitV1',
+    archival: String(process.env.SHEAR_FAST_SYNC || '').trim() !== '1',
+    fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
     genesisMainnet: GENESIS_MAINNET,
     mainnetFingerprint: mainnetFingerprint(),
     bookLawFingerprint: consensusFingerprint(),
@@ -78,6 +80,8 @@ export async function startNode({
   seeds = (process.env.SHEAR_SEEDS || '').split(',').map((s) => s.trim()).filter(Boolean),
   fluffDelayMs = null,
   network = process.env.SHEAR_NETWORK || MAGIC_TESTNET,
+  fastSync = process.argv.includes('--fast-sync')
+    || String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
 } = {}) {
   const mainnet = String(network) === MAGIC_MAINNET;
   if (mainnet && !mainnetMayEmit()) {
@@ -94,7 +98,7 @@ export async function startNode({
     };
   }
   fs.mkdirSync(dataDir, { recursive: true });
-  const store = createStore(dataDir);
+  const store = createStore(dataDir, { fastSync: !!fastSync });
   store.reserveVault = store.reserveVault || emptyVault();
   const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET, fluffDelayMs });
   const bound = await p2p.listen();
@@ -118,6 +122,8 @@ export async function startNode({
     emit: true,
     phaseBGate: PHASE_B_GATE,
     hashTxLive: HASH_TX_LIVE,
+    archival: !fastSync,
+    fastSync: !!fastSync,
   };
 }
 

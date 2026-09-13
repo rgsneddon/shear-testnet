@@ -6,7 +6,7 @@ import path from 'node:path';
 import { encodeHeader } from './header.js';
 import { EMPTY_ROOT } from './merkle.js';
 import { packShewall, unpackShewall, sealShewallBin, openShewallBin } from './shewall_bin.js';
-import { writeChainBin, readChainBin } from './chainbin.js';
+import { writeChainBin, readChainBin, appendChainBin } from './chainbin.js';
 
 describe('chain.bin + shewall.bin', () => {
   it('round-trips packed epochs and refuses JSON shewall', () => {
@@ -39,6 +39,24 @@ describe('chain.bin + shewall.bin', () => {
     assert.equal(got[0].shareBatch.length, 1);
     assert.equal(String(got[0].shareBatch[0].nonce), '9');
     assert.equal(Number(got[0].shareBatch[0].lz), 8);
+
+    const second = {
+      header,
+      rootA: Buffer.alloc(32, 4),
+      rootB: Buffer.alloc(32, 5),
+      hash: Buffer.alloc(32, 6),
+      height: 5,
+      aLeaves: [],
+      bLeaves: [],
+      txs: [{ coinbase: true, height: 5, vout: [{ kind: 'pot' }] }],
+      shareBatch: [],
+    };
+    appendChainBin(p, second);
+    const both = readChainBin(p);
+    assert.equal(both.length, 2);
+    assert.equal(both[0].height, 4);
+    assert.equal(both[1].height, 5);
+    assert.equal(both[1].txs[0].vout[0].kind, 'pot');
 
     const packed = packShewall({
       seed32: Buffer.alloc(32, 9),

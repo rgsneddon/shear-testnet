@@ -29,7 +29,7 @@ import {
 } from '../src/p2p.js';
 import { DEFAULT_SEEDS } from '../src/node.js';
 import { mineTemplate } from '../src/chain.js';
-import { printConfig, startNode } from '../src/node.js';
+import { printConfig, startNode, createStore } from '../src/node.js';
 import { countSyncedOnline, isFinalIngestFail } from '../src/p2p.js';
 
 function destMiner() {
@@ -215,6 +215,19 @@ describe('p2p gossip', () => {
     assert.equal(cfg.rpc, 18332);
     assert.equal(cfg.admit, 'AdmitV1');
     assert.equal(cfg.hashTxLive, 1);
+    assert.equal(cfg.archival, true);
+    assert.equal(cfg.fastSync, false);
+  });
+
+  it('default datadir is archival; --fast-sync only skips share POW, not sealed txs', () => {
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-arch-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fast-'));
+    const a = createStore(dirA);
+    const b = createStore(dirB, { fastSync: true });
+    assert.equal(a.archival, true);
+    assert.equal(a.fastSync, false);
+    assert.equal(b.archival, false);
+    assert.equal(b.fastSync, true);
   });
 
   it('pickStemSocket returns one peer; fluff delay is 1–3 s; no IP beside dest in logs', () => {
