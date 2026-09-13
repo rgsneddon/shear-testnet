@@ -109,7 +109,8 @@ describe('shareBatch on disk and p2p wire', () => {
 
     const wire = encodeWireBlock(second.block);
     assert.ok(Array.isArray(wire.shareBatch) && wire.shareBatch.length >= 1, 'wire carries shareBatch');
-    const ingested = b.append(decodeWireBlock(wire));
+    const round = JSON.parse(JSON.stringify(wire));
+    const ingested = b.append(decodeWireBlock(round));
     assert.equal(ingested.ok, true, ingested.reason);
     assert.equal(b.tip().height, 2);
 

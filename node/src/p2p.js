@@ -2,6 +2,21 @@ import net from 'node:net';
 import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { shareRowJson } from '../../crypto/pack.js';
 import { compactTx } from '../../crypto/chronoflux.js';
+import { reviveTx, reviveBytes } from '../../crypto/note.js';
+
+function reviveDeep(v) {
+  if (v == null) return v;
+  if (Buffer.isBuffer(v) || v instanceof Uint8Array) return Buffer.from(v);
+  const one = reviveBytes('', v);
+  if (one !== v) return one;
+  if (Array.isArray(v)) return v.map(reviveDeep);
+  if (typeof v === 'object') {
+    const out = {};
+    for (const [k, val] of Object.entries(v)) out[k] = reviveDeep(val);
+    return out;
+  }
+  return v;
+}
 
 export const P2P_PORT = 30303;
 export const P2P_MAX_FRAME = 1024 * 1024;
@@ -137,14 +152,14 @@ export function decodeWireBlock(w) {
     header: Buffer.from(w.header, 'hex'),
     hash: w.hash ? Buffer.from(w.hash, 'hex') : undefined,
     height: w.height,
-    txs: w.txs,
-    samples: w.samples,
+    txs: (w.txs || []).map((tx) => reviveTx(reviveDeep(tx))),
+    samples: reviveDeep(w.samples),
     miner: w.miner,
     shareBatch: Array.isArray(w.shareBatch) ? w.shareBatch : [],
-    aLeaves: w.aLeaves,
-    bLeaves: w.bLeaves,
-    rootA: w.rootA,
-    rootB: w.rootB,
+    aLeaves: reviveDeep(w.aLeaves),
+    bLeaves: reviveDeep(w.bLeaves),
+    rootA: reviveDeep(w.rootA),
+    rootB: reviveDeep(w.rootB),
   };
 }
 
