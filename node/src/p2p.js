@@ -214,6 +214,11 @@ export function lineHasIpBesideIdentity(line) {
   return ip && id;
 }
 
+/** `prev` is a batch-order miss; retry on the next header page. Merkle/pow stay final. */
+export function isFinalIngestFail(reason) {
+  return String(reason || '') !== 'prev';
+}
+
 export function countSyncedOnline({ localHash = '', peers = [], includeSelf = true } = {}) {
   const want = String(localHash || '');
   const seen = new Set();
@@ -237,6 +242,7 @@ export function createP2p({
   const peers = new Map();
   const linking = new Set();
   const seenTx = new Set();
+  let ingestChain = Promise.resolve();
   const originInvSize = new Map();
   const fluffTimers = new Map();
   let server = null;
@@ -528,15 +534,19 @@ export function createP2p({
       if (list.length > 1 && msg.type === 'blocks') return;
       const last = list[list.length - 1];
       const fork = list.map(decodeWireBlock);
-      const before = store.tip();
-      Promise.resolve(store.ingest(fork)).then((got) => {
+      const job = ingestChain.then(() => {
+        const before = store.tip();
+        return Promise.resolve(store.ingest(fork)).then((got) => ({ got, before }));
+      });
+      ingestChain = job.then(() => {}, () => {});
+      job.then(({ got, before }) => {
         const rec = peers.get(sock);
         const lastHash = last ? String(last.hash || '') : '';
         if (rec) {
           if (!rec.failed) rec.failed = new Set();
           if (rec.pending && lastHash) rec.pending.delete(lastHash);
           if (!got?.ok && lastHash) {
-            rec.failed.add(lastHash);
+            if (isFinalIngestFail(got?.reason)) rec.failed.add(lastHash);
             try {
               console.error(JSON.stringify({
                 event: 'p2p_ingest',

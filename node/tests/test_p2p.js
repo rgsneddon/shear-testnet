@@ -30,7 +30,7 @@ import {
 import { DEFAULT_SEEDS } from '../src/node.js';
 import { mineTemplate } from '../src/chain.js';
 import { printConfig, startNode } from '../src/node.js';
-import { countSyncedOnline } from '../src/p2p.js';
+import { countSyncedOnline, isFinalIngestFail } from '../src/p2p.js';
 
 function destMiner() {
   return encodeDest(Buffer.alloc(20, 5));
@@ -85,6 +85,13 @@ describe('p2p gossip', () => {
       await a.rpc?.close?.();
       await b.rpc?.close?.();
     }
+  });
+
+  it('retries prev misses and does not blacklist them as final', () => {
+    assert.equal(isFinalIngestFail('prev'), false);
+    assert.equal(isFinalIngestFail('merkle'), true);
+    assert.equal(isFinalIngestFail('pow'), true);
+    assert.equal(isFinalIngestFail(''), true);
   });
 
   it('counts currently seen synced remotes, not historical uniques', () => {
