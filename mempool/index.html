@@ -503,20 +503,19 @@
         const weight = 1 + (i % 3);
         return {
           id: 'mem-' + (state.seq + i), kind: i % 4 === 0 ? 'b-spend' : 'send',
-          fee, weight, amount: 0.01 * (i + 1), prime: true, included: i < 3,
+          fee, weight, prime: true, included: i < 3,
           priority: (i < 3 ? 400 : 0) + weight * (1 + Math.log1p(fee)),
         };
       });
       const hashTxs = Array.from({ length: 4 }, (_, i) => ({
         id: 'hash-demo-' + i, kind: 'hash', count: 12 + i * 9, weight: 12 + i * 9,
-        fee: 0, amount: 0.00000000001 * (12 + i * 9), included: true, prime: false, tag: 'm' + String(i).padStart(8, 'a'),
+        fee: 0, included: true, prime: false, tag: 'm' + String(i).padStart(8, 'a'),
       }));
       const generations = Array.from({ length: 16 }, (_, gi) => {
         const height = tip - gi;
         const txs = Array.from({ length: 4 + (gi % 5) }, (_, i) => ({
           id: height + '-' + i,
           kind: i === 0 ? 'coinbase' : (i % 4 === 0 ? 'hash' : 'transfer'),
-          amount: i === 0 ? 1 : 0.0001 * (i + 1),
           prime: i === 0 || i % 4 !== 0,
         }));
         return { height, hash: '', confirmations: gi + 1, spendable: gi >= 0, txs };
@@ -910,7 +909,6 @@
           m.count != null ? 'hashes ' + m.count : '',
           m.weight != null ? 'weight ' + m.weight : '',
           m.fee != null ? 'levy ' + m.fee : '',
-          m.amount != null ? 'amount ' + m.amount : '',
           m.included === true ? 'in forming block' : '',
           m.source ? 'source ' + m.source : '',
           m.confirmations != null ? 'conf ' + m.confirmations : '',

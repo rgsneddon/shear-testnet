@@ -44,5 +44,9 @@ describe('pool pull book', () => {
     const later = book.takeConfirmed(tag, { tipHeight: 40, need: 30, now: 1_000 + PULL_COOLDOWN_MS });
     assert.equal(later.ok, true);
     assert.equal(later.nanos, half);
+    const disk = fs.readFileSync(path.join(dir, 'pull-book.json'), 'utf8');
+    assert.doesNotMatch(disk, /ssa1/);
+    assert.doesNotMatch(disk, /"dest"/);
+    assert.equal(JSON.parse(disk).credits.every((c) => c.dest == null), true);
   });
 });

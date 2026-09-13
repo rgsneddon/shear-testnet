@@ -194,6 +194,9 @@ describe('explorer dests', () => {
     assert.ok(detail && detail.cli);
     assert.match(detail.cli, /SHEAR CTF/);
     assert.match(detail.cli, /privacy audit/);
+    assert.match(detail.cli, /hidden/);
+    assert.doesNotMatch(detail.cli, /dest ssa1/);
+    assert.doesNotMatch(detail.cli, /  [0-9.]+ SHE/);
     assert.equal(detail.cli.includes('shear1'), false);
     assert.equal(/she1[^p]/i.test(detail.cli.replace(/ssa1/g, '')), false);
     assert.equal(detail.cli.includes('do-not-leak'), false);

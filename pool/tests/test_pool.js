@@ -554,7 +554,7 @@ describe('session inventory fold', () => {
   });
 });
 
-function findOkShare(job, max = 1200n) {
+function findOkShare(job, max = 25_000n) {
   for (let nonce = 0n; nonce < max; nonce += 1n) {
     const s = scoreShare({ job, nonce });
     if (s.ok) return { nonce, s };
@@ -562,7 +562,7 @@ function findOkShare(job, max = 1200n) {
   throw new Error('no_share');
 }
 
-function findOkShares(job, n, max = 1200n) {
+function findOkShares(job, n, max = 25_000n) {
   const out = [];
   for (let nonce = 0n; nonce < max && out.length < n; nonce += 1n) {
     const s = scoreShare({ job, nonce });
@@ -887,6 +887,7 @@ describe('public miner listing', () => {
     });
     const httpPort = pool.httpServer.address().port;
     const stratumPort = pool.stratum.address().port;
+    try {
     const job = pool.issueJob();
     const hits = findOkShares(job, 2);
     const a = await loginAndShare(stratumPort, `${dest}.alpha`, {}, hits[0]);
@@ -929,7 +930,9 @@ describe('public miner listing', () => {
     assert.equal((ghost.workers || []).some((w) => w.miner === tag), false);
     const detail = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${tag}`);
     assert.equal(detail.status, 404);
-    pool.close();
+    } finally {
+      pool.close();
+    }
   });
 
   it('hashes this round is own count after a valid share; zero with no share', async () => {

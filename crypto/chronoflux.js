@@ -133,14 +133,12 @@ export function sealedExplorerRows(block) {
     }
     for (const o of cb.vout) {
       const hit = matchSealedCoinbaseVout(o, pays);
-      const to = hit.address || o.address || '';
-      const nanos = hit.nanos || Number(o.nanos || 0);
       rows.push({
         id: `${hid}-${o.kind || 'cb'}`,
         kind: o.kind === 'hash' ? 'hash' : (o.kind === 'lock' || o.kind === 'vote' || o.kind === 'withdraw' ? o.kind : 'coinbase'),
         from: 'coinbase',
-        to,
-        nanos,
+        to: hit.address || o.address || '',
+        nanos: hit.nanos || Number(o.nanos || 0),
         height,
         confirmed: true,
         noteCommit: o.noteCommit,
@@ -265,6 +263,7 @@ const SEALED_SECRET_KEYS = new Set([
   'ua',
   'memoPlain',
   'login',
+  'spendPub',
   'r',
 ]);
 
@@ -354,7 +353,7 @@ export function compactTx(tx) {
   }
   if (tx.sig) out.sig = tx.sig;
   if (tx.signature && !out.sig) out.sig = tx.signature;
-  if (tx.spendPub) out.spendPub = tx.spendPub;
+  if (keepDest && tx.spendPub) out.spendPub = tx.spendPub;
   if (tx.memoCt || tx.memo) out.memo = true;
   if (tx.admit_proof) {
     out.admit_proof = {

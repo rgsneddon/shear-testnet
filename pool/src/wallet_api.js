@@ -516,20 +516,18 @@ export function publicBlockDetail(store, id) {
   } : null;
   const outputs = sealedExplorerRows(b).map((r) => {
     const kind = r.kind || 'block';
-    const keepDest = kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'vortice-register';
     return {
       kind,
       from: r.from === 'coinbase' ? 'coinbase' : '',
-      to: keepDest ? publicDest(r.to) : '',
+      to: '',
       amountHidden: true,
       memo: r.memo === true,
     };
   });
   const pruned = !!b.samplesPruned;
   const samples = pruned ? [] : collateSamples(b.samples || []).map((s) => ({
-    dest: publicDest(s.miner),
     count: Number(s.count) || 0,
-  })).filter((s) => s.dest && s.count > 0);
+  })).filter((s) => s.count > 0);
   const lines = [];
   lines.push(`======== SHEAR CTF  tx=${row.id}  ========`);
   lines.push(`kind        ${row.kind}`);
@@ -553,12 +551,12 @@ export function publicBlockDetail(store, id) {
   lines.push('-- sealed outputs --');
   if (!outputs.length) lines.push('(none)');
   for (const o of outputs) {
-    lines.push(`  ${o.kind.padEnd(10)} ${o.from} -> ${o.to || '(none)'}  ${o.amount} SHE  memo=${o.memo ? 'yes' : 'no'}`);
+    lines.push(`  ${o.kind.padEnd(10)} ${o.from || '(none)'}  hidden  memo=${o.memo ? 'yes' : 'no'}`);
   }
   lines.push('-- flow samples --');
   if (pruned) lines.push('samples     pruned (counts sealed in continuity root)');
   else if (!samples.length) lines.push('samples     (none)');
-  else for (const s of samples) lines.push(`  dest ${s.dest}  count ${s.count}`);
+  else for (const s of samples) lines.push(`  count ${s.count}`);
   lines.push('-- CTF domains (public constants) --');
   lines.push(`flow        ${FLOW_PERSONAL}`);
   lines.push(`closure     ${CLOSURE_PERSONAL}`);
@@ -569,7 +567,7 @@ export function publicBlockDetail(store, id) {
   lines.push('memo-plain  ABSENT');
   lines.push('memo-ct     ABSENT');
   lines.push('closure-G   ABSENT');
-  lines.push('conclusion  public explorer shows dest/amount/header only; identity stays in the wallet.');
+  lines.push('conclusion  public explorer shows kind/header only; dests and amounts stay in the wallet.');
   lines.push('========');
   return {
     tx: row,
@@ -720,7 +718,7 @@ export function openRoundHashRows(miners, hashBonusNanos) {
   const book = miners && typeof miners.values === 'function'
     ? [...miners.values()]
     : (Array.isArray(miners) ? miners : []);
-  const unit = Number(hashBonusNanos || HASH_BONUS_NANOS) / NANOS_PER_SHE;
+  void hashBonusNanos;
   const rows = [];
   for (const m of book) {
     const login = String(m?.login || m?.workerKey || '');
@@ -734,7 +732,6 @@ export function openRoundHashRows(miners, hashBonusNanos) {
       count,
       weight: count,
       fee: 0,
-      amount: count * unit,
       included: true,
       priority: 800 + count,
       prime: false,
@@ -776,14 +773,11 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       kind: m.kind || 'send',
       fee,
       weight,
-      amount: Number(m.amount) > 0 ? Number(m.amount) : nanosToShe(m.nanos),
-      to: publicDest(m.to),
       prime: m.kind === 'b-spend' || m.kind === 'send' || m.kind === 'claim',
       included,
       priority: (included ? 400 : 0) + mass,
     };
   }).filter((t) => t.id).sort((a, b) => b.priority - a.priority);
-  const unit = Number(opts.hashBonusNanos ?? HASH_BONUS_NANOS) / NANOS_PER_SHE;
   const byTag = new Map();
   for (const r of openRoundHashRows(opts.miners, opts.hashBonusNanos ?? HASH_BONUS_NANOS)) {
     byTag.set(r.tag, r);
@@ -802,7 +796,6 @@ export function mempoolLattice(store, limitOrOpts = 24) {
         count,
         weight: count,
         fee: 0,
-        amount: count * unit,
         included: true,
         priority: 800 + count,
         prime: false,
@@ -835,8 +828,6 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       txs: rows.map((r) => ({
         id: String(r.id || ''),
         kind: r.kind || 'vout',
-        amount: nanosToShe(r.nanos),
-        to: publicDest(r.to),
         prime: r.kind === 'transfer' || r.kind === 'b-spend' || r.kind === 'coinbase',
       })),
     });

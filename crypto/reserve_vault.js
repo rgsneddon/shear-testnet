@@ -9,7 +9,7 @@ import {
   HASH_BONUS_NANOS_FLOOR,
 } from './asert.js';
 import { isDestAddress, isShearAddress, hash20FromAddress } from './address.js';
-import { sealCoinbaseNote, verifySealedNote } from './note.js';
+import { sealNote, verifySealedNote } from './note.js';
 import {
   emptyOracle,
   interestNanos,
@@ -339,7 +339,7 @@ export function previewWithdraw(state, dest) {
 function sealedReserveVout(to, n, kind) {
   const d20 = hash20FromAddress(to);
   if (!d20) return { address: to, nanos: n, kind };
-  const note = sealCoinbaseNote(n, { dest20: d20, kind });
+  const note = sealNote(n, { dest20: d20, kind });
   return { ...note, address: to };
 }
 

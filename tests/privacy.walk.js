@@ -1,6 +1,6 @@
 /**
  * Walk-the-walk Shear privacy. Drives shipped dest, compact, spend-sig,
- * memo, HRP, pool-ident, and RPC-bind paths. Amounts stay public.
+ * memo, HRP, pool-ident, and RPC-bind paths. Amounts are confidential.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -168,7 +168,9 @@ describe('privacy.walk', () => {
     assert.equal(sealed.memoPlain, undefined);
     assert.equal(/she1|shear1/.test(blob.replace(/ssa1/gi, '')), false);
     assert.equal(/203\.0\.113\.9/.test(blob), false);
-    assert.equal(verifySpendSig(sealed), true);
+    assert.equal(sealed.spendPub, undefined);
+    assert.equal(/"spendPub"/.test(blob), false);
+    assert.equal(verifySpendSig(fat), true);
     assert.equal(destAtIndex(sealed.from, { index: 0 }), null);
     assert.equal(destAtIndex(sealed.from, { index: 0, viewKey: alice.viewKey }), null);
     const chain = compactChainBlock({

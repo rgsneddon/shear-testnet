@@ -17,22 +17,50 @@ export function potCreditNanos() {
 export function createPullBook(dir) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'pull-book.json');
+  const destByTag = new Map();
   let state = { credits: [], pulled: [], lastPullMs: {} };
+  let loaded = false;
   if (fs.existsSync(file)) {
     try {
       const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
       state = {
-        credits: Array.isArray(raw?.credits) ? raw.credits : [],
-        pulled: Array.isArray(raw?.pulled) ? raw.pulled : [],
+        credits: Array.isArray(raw?.credits) ? raw.credits.map((c) => ({
+          tag: c.tag,
+          nanos: c.nanos,
+          height: c.height,
+          ms: c.ms,
+        })) : [],
+        pulled: Array.isArray(raw?.pulled) ? raw.pulled.map((p) => ({
+          tag: p.tag,
+          nanos: p.nanos,
+          height: p.height,
+          ms: p.ms,
+        })) : [],
         lastPullMs: raw?.lastPullMs && typeof raw.lastPullMs === 'object' ? raw.lastPullMs : {},
       };
+      loaded = true;
     } catch {
       state = { credits: [], pulled: [], lastPullMs: {} };
     }
   }
 
   function save() {
-    fs.writeFileSync(file, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+    const disk = {
+      credits: state.credits.map((c) => ({
+        tag: c.tag,
+        nanos: c.nanos,
+        height: c.height,
+        ms: c.ms,
+      })),
+      pulled: state.pulled.map((p) => ({
+        tag: p.tag,
+        nanos: p.nanos,
+        height: p.height,
+        ms: p.ms,
+      })),
+      lastPullMs: state.lastPullMs,
+    };
+    fs.writeFileSync(file, `${JSON.stringify(disk)}\n`, { mode: 0o600 });
   }
 
   function creditRound(rows, { height, nanos = potCreditNanos(), now = Date.now() } = {}) {
@@ -47,9 +75,10 @@ export function createPullBook(dir) {
         : Math.floor(pot * (Number(list[i].count) || 0) / total);
       left -= share;
       if (share <= 0) continue;
+      const tag = String(list[i].tag).toLowerCase();
+      destByTag.set(tag, list[i].dest);
       state.credits.push({
-        tag: String(list[i].tag).toLowerCase(),
-        dest: list[i].dest,
+        tag,
         nanos: share,
         height,
         ms: now,
@@ -109,11 +138,9 @@ export function createPullBook(dir) {
 
   function destOf(tag) {
     const key = String(tag || '').trim().toLowerCase();
-    for (let i = state.credits.length - 1; i >= 0; i -= 1) {
-      if (state.credits[i].tag === key) return state.credits[i].dest;
-    }
-    return '';
+    return destByTag.get(key) || '';
   }
 
+  if (loaded) save();
   return { creditRound, view, takeConfirmed, destOf };
 }

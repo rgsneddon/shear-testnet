@@ -9,6 +9,7 @@ import {
   attachDummyOuts,
   dummyCount,
   flowNeedsDummy,
+  moneyNeedsRange,
   publicExplorerRow,
   viewTagOf,
 } from './dummy.js';
@@ -48,11 +49,17 @@ describe('Flow dummy outs', () => {
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
     const lock = lockTx({ from, to: vault, nanos: PI_SHE_NANOS, id: 'lock-d' });
     assert.equal(flowNeedsDummy(lock), false);
+    assert.equal(moneyNeedsRange(lock), true);
     assert.equal(dummyCount(attachDummyOuts(lock)), 0);
+    assert.ok(lock.vout[0].commit);
+    assert.ok(lock.vout[0].rangeProof);
+    assert.equal(lock.vout[0].rangeProof === true, false);
+    assert.equal(verifyRange(lock.vout[0].commit, lock.vout[0].rangeProof), true);
     const sealedLock = compactTx(lock);
     assert.equal(sealedLock.nanos, undefined);
     assert.equal(sealedLock.to, vault);
     assert.equal(sealedLock.vout[0].address, vault);
+    assert.ok(sealedLock.vout[0].rangeProof);
     const vote = voteTx({ from, dest: vault, choice: 'hold', id: 'vote-d' });
     assert.equal(flowNeedsDummy(vote), false);
     assert.equal(dummyCount(attachDummyOuts(vote)), 0);
@@ -68,6 +75,7 @@ describe('Flow dummy outs', () => {
     assert.equal(compactBare.vin[0].commit, undefined);
     assert.ok(compactBare.vout[0].commit);
     assert.ok(compactBare.vout[0].rangeProof);
+    assert.equal(compactBare.spendPub, undefined);
   });
 
   it('does not mint C_in; conservation binds vin.commit to the spent vout', () => {
@@ -97,7 +105,7 @@ describe('Flow dummy outs', () => {
     assert.equal(verifyFlowConservation(compact, () => fake), false);
   });
 
-  it('public explorer row hides amounts and keeps Reserve kind + dest', () => {
+  it('public explorer row hides amounts and dests, including Reserve kinds', () => {
     const hidden = publicExplorerRow({
       id: 'x-vout-0',
       kind: 'send',
@@ -122,7 +130,7 @@ describe('Flow dummy outs', () => {
       confirmed: true,
     });
     assert.equal(lock.kind, 'lock');
-    assert.equal(lock.to, 'ssa1vault');
+    assert.equal(lock.to, undefined);
     assert.equal(lock.nanos, undefined);
     assert.equal(lock.height, 9);
   });

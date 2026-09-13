@@ -34,6 +34,25 @@ describe('mempool lattice pending rings', () => {
     assert.equal(out.pending[0].fee, 8);
     assert.equal(out.targetBlockIntervalMs, 90_000);
     assert.equal(out.scope, 'network');
+    for (const row of out.pending) {
+      assert.equal(row.to, undefined);
+      assert.equal(row.amount, undefined);
+      assert.equal(row.nanos, undefined);
+    }
+    for (const g of out.generations) {
+      for (const tx of g.txs || []) {
+        assert.equal(tx.to, undefined);
+        assert.equal(tx.amount, undefined);
+        assert.equal(tx.nanos, undefined);
+        assert.ok(tx.kind);
+      }
+    }
+    for (const h of out.pendingBlock.txs) {
+      assert.equal(h.amount, undefined);
+      assert.equal(h.to, undefined);
+    }
+    const blob = JSON.stringify(out);
+    assert.doesNotMatch(blob, /ssa1/);
   });
 
   it('unions peer open-round rows into the lattice without a local stratum table', () => {
@@ -63,5 +82,9 @@ describe('mempool lattice pending rings', () => {
     assert.equal(row.count, 77);
     assert.equal(row.source, 'peer');
     assert.equal(out.pendingBlock.hashes, 77);
+    assert.equal(out.pending.find((t) => t.id === 'peer-send').to, undefined);
+    assert.equal(out.pending.find((t) => t.id === 'peer-send').amount, undefined);
+    assert.equal(row.amount, undefined);
+    assert.doesNotMatch(JSON.stringify(out), /ssa1/);
   });
 });

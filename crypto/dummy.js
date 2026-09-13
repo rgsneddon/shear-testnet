@@ -25,6 +25,13 @@ export function flowNeedsDummy(tx) {
   return k === 'send' || k === '' || k === 'transfer';
 }
 
+/** Money C on Flow and Reserve notes. Legacy lock/vote with public nanos and no commit still verify. */
+export function moneyNeedsRange(tx) {
+  if (!tx || tx.coinbase) return false;
+  const k = String(tx.kind || tx.vout?.[0]?.kind || '');
+  return flowNeedsDummy(tx) || k === 'lock' || k === 'vote' || k === 'withdraw';
+}
+
 export function dummyCount(tx) {
   return (tx?.vout || []).filter((o) => String(o.kind || '') === DUMMY_KIND).length;
 }
@@ -91,18 +98,14 @@ export function attachDummyOuts(tx, { fanout = DUMMY_FANOUT, spent } = {}) {
 }
 
 export function publicExplorerRow(row) {
-  const kind = String(row?.kind || '');
   const out = {
     id: row?.id,
-    kind,
+    kind: String(row?.kind || ''),
     height: row?.height,
     confirmed: !!row?.confirmed,
     memo: !!row?.memo,
     amountHidden: true,
   };
-  if (kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'vortice-register') {
-    out.to = row?.to || '';
-  }
   if (row?.noteCommit) out.note = Buffer.from(row.noteCommit).toString('hex');
   return out;
 }

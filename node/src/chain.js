@@ -75,7 +75,7 @@ import {
   levyNeed,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
-import { dummyCount, flowNeedsDummy } from '../../crypto/dummy.js';
+import { dummyCount, flowNeedsDummy, moneyNeedsRange } from '../../crypto/dummy.js';
 
 export { blockWeight, nextBaseFee } from '../../crypto/levy.js';
 
@@ -802,13 +802,18 @@ function verifyBlockConsensus(block, prev, {
     if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
       return { ok: false, reason: 'dummy_outs' };
     }
-    if (flowNeedsDummy(tx)) {
+    if (moneyNeedsRange(tx)) {
       for (const o of (tx.vout || [])) {
-        if (!o?.commit) return { ok: false, reason: 'range_proof' };
-        if (!o.rangeProof || o.rangeProof === true || !verifyRange(o.commit, o.rangeProof)) {
+        if (o?.commit) {
+          if (!o.rangeProof || o.rangeProof === true || !verifyRange(o.commit, o.rangeProof)) {
+            return { ok: false, reason: 'range_proof' };
+          }
+        } else if (flowNeedsDummy(tx)) {
           return { ok: false, reason: 'range_proof' };
         }
       }
+    }
+    if (flowNeedsDummy(tx)) {
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
       const spentOf = (vin) => lookupSpentVout(vin, block, prev, i, evmHistory);

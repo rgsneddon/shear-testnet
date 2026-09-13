@@ -5,9 +5,9 @@
  */
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } from './levy.js';
-import { dummyCount, flowNeedsDummy } from './dummy.js';
+import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
-import { asU8 } from './note.js';
+import { asU8, verifyRange } from './note.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
@@ -57,8 +57,16 @@ export function admitMempool(pool, tx, opts = {}) {
   if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
     return { ok: false, reason: 'dummy_outs' };
   }
-  if (flowNeedsDummy(tx) && (tx.vout || []).some((o) => !o?.commit)) {
-    return { ok: false, reason: 'range_proof' };
+  if (moneyNeedsRange(tx)) {
+    for (const o of (tx.vout || [])) {
+      if (o?.commit) {
+        if (!o.rangeProof || o.rangeProof === true || !verifyRange(o.commit, o.rangeProof)) {
+          return { ok: false, reason: 'range_proof' };
+        }
+      } else if (flowNeedsDummy(tx)) {
+        return { ok: false, reason: 'range_proof' };
+      }
+    }
   }
   if (flowNeedsDummy(tx)) {
     const pubs = opts.fluxset || opts.pubs;
