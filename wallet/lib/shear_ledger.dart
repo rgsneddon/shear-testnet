@@ -71,6 +71,23 @@ String formatShe(num she) {
 }
 
 /// Full nano SHE (`*.***********`). Do not use [formatShe] for the hashbonus banner.
+const kErrNoteSpent = 'that note was already spent';
+const kErrRangeProof = 'range proof failed';
+const kErrPublicHttp = 'node not running — sends would use the public node and show your IP';
+
+StateError _sendHumanError(String? reason, String? baseUrl) {
+  final why = reason ?? 'send failed';
+  if (why == 'admit_link_tag' || why == 'admit') {
+    return StateError(kErrNoteSpent);
+  }
+  if (why == 'range_proof' || why == 'commit_sum') return StateError(kErrRangeProof);
+  final url = baseUrl ?? '';
+  if (url.contains('pool.shear.digital')) {
+    return StateError(kErrPublicHttp);
+  }
+  return StateError(why);
+}
+
 String formatHashBonusShe(int nanos) {
   final n = nanos < 0 ? 0 : nanos;
   return (n / kUnitsPerShe).toStringAsFixed(11);
@@ -2076,8 +2093,9 @@ class ShearLedger {
         }
         json = await postOnce();
         if (json['ok'] == true && json['tx'] is Map) break;
-        lastErr = StateError('${json['reason'] ?? 'send failed'}');
-        if (json['reason'] != 'admit') break;
+        lastErr = _sendHumanError(json['reason']?.toString(), pool?.baseUrl);
+        final why = json['reason']?.toString() ?? '';
+        if (why != 'admit' && why != 'admit_membership') break;
       }
       if (json == null || json['ok'] != true || json['tx'] is! Map) {
         throw lastErr ?? StateError('send failed');

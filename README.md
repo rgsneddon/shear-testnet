@@ -1,8 +1,8 @@
 # Shear
 
-Private dests, public amounts. Proof of work elects the tip. Continuity-settled.
+ADMITV1 membership over this book's notes, with confidential amounts. Proof of work elects the tip. Continuity-settled.
 
-Offer a silent ID (`she1`) when someone pays you. Incoming coin lands on a revolving dest (`ssa1`) that the book writes. Rest-frame (`shear1`) stays in Closure. Amounts stay public.
+Offer a silent ID (`she1`) when someone pays you. Incoming coin lands on a revolving dest (`ssa1`) that the book writes. Rest-frame (`shear1`) stays in Closure. While this book has fewer than 10,000 notes the membership set is thin.
 
 Each found block mints **1 SHE**, split among hasher dests that produced proven work that round. Each of those dests receives its own hash bonus on the next sealed block.
 
@@ -35,7 +35,7 @@ Log in with wallet **Copy dest**:
 ShearK-Miner --pool pool.shear.digital:1111 --user ssa1YOURDEST.worker --threads 4
 ```
 
-`ssa1.worker` is the dest the wallet exported for this worker. Amounts stay public; dests are stealth.
+`ssa1.worker` is the dest the wallet exported for this worker. Amounts are confidential; dests are stealth. Reuse links your blocks; rotate dests.
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure.
 Backup: encrypted `shewall.bin`. Hash samples collate per hasher dest and prune after 1000 confirmations; sealed transfers stay for the explorer.

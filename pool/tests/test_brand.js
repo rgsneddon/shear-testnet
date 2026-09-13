@@ -163,7 +163,7 @@ describe('brand pages', () => {
     assert.match(poolHtml, /grid-template-columns:\s*1fr 2fr/);
     assert.doesNotMatch(poolHtml, /grid-template-columns:\s*1fr 3fr/);
     assert.match(poolHtml, /class="she-private-lockup">She is Private</);
-    assert.match(poolHtml, /Private dests, public amounts/);
+    assert.match(poolHtml, /ADMITV1 membership/);
     assert.match(poolHtml, /PoW elects the tip/);
     assert.match(poolHtml, /id="mine-form"/);
     assert.match(poolHtml, /id="addr"/);

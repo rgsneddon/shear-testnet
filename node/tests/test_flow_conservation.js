@@ -136,6 +136,6 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       height: 1,
     });
     assert.equal(gotBad.ok, false);
-    assert.equal(gotBad.reason, 'confidential');
+    assert.equal(gotBad.reason, 'commit_sum');
   });
 });

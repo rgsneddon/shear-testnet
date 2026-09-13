@@ -626,7 +626,7 @@ export function createStore(dir, {
     }
     if (flowNeedsDummy(tx)) {
       const proof = tx.admit_proof;
-      if (!proof) return { ok: false, reason: 'admit' };
+      if (!proof) return { ok: false, reason: 'admit_membership' };
       const live = liveFlux;
       const rlen = Array.isArray(proof.r) ? proof.r.length : -1;
       const n = (live.pubs || []).length;
@@ -658,17 +658,17 @@ export function createStore(dir, {
           verifyErr,
           pub0,
         }));
-        return { ok: false, reason: 'admit' };
+        return { ok: false, reason: 'admit_membership' };
       }
-      if (!tag) return { ok: false, reason: 'admit' };
+      if (!tag) return { ok: false, reason: 'admit_membership' };
       if (live.spendTags.has(th)) {
         console.error(JSON.stringify({ event: 'admit_fail', why: 'spent_tag', n, rlen, spendTag: th }));
-        return { ok: false, reason: 'admit' };
+        return { ok: false, reason: 'admit_link_tag' };
       }
       for (const m of mempool) {
         const mt = m.admit_proof?.spendTag || m.spendTag;
         if (mt && Buffer.from(asU8(mt)).toString('hex') === th) {
-          return { ok: false, reason: 'admit' };
+          return { ok: false, reason: 'admit_link_tag' };
         }
       }
     }

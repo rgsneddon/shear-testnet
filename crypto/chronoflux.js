@@ -363,6 +363,8 @@ export function compactTx(tx) {
       c0: tx.admit_proof.c0,
       r: tx.admit_proof.r,
     };
+    delete out.admit_proof.members;
+    delete out.members;
   }
   if (tx.spendTag) out.spendTag = tx.spendTag;
   if (tx.jroot) out.jroot = tx.jroot;

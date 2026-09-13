@@ -213,12 +213,12 @@ describe('explorer dests', () => {
     assert.match(page, /Last 30 blocks/);
     assert.match(page, />Time</);
     assert.match(page, />Status</);
-    assert.doesNotMatch(page, />Kind</);
+    assert.match(page, />Kind</);
     assert.match(page, /confirmed/);
     assert.match(page, /pending/);
-    assert.match(page, />From</);
-    assert.match(page, />To</);
-    assert.match(page, />Amount</);
+    assert.doesNotMatch(page, />From</);
+    assert.doesNotMatch(page, />To</);
+    assert.doesNotMatch(page, />Amount</);
     assert.doesNotMatch(page, />Asset</);
     assert.match(page, /function fmtLocalTs/);
     assert.match(page, /getSeconds\(\)/);

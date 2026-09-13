@@ -349,6 +349,21 @@ void main() {
     );
   });
 
+  test('Copy dest rotation yields two dests; human send errors', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final a = ledger.newDest(id.address, paymentCode: id.paymentCode);
+    final b = ledger.newDest(id.address, paymentCode: id.paymentCode);
+    expect(a.startsWith('ssa1'), isTrue);
+    expect(b.startsWith('ssa1'), isTrue);
+    expect(a, isNot(b));
+    expect(kErrNoteSpent, contains('already spent'));
+    expect(kErrRangeProof, contains('range proof'));
+    expect(kErrPublicHttp, contains('public node'));
+    expect(kWalletDefaultSeed, contains('127.0.0.1'));
+    expect(kWalletDefaultSeed.contains('pool.shear.digital'), isFalse);
+  });
+
   test('compactSealedVout keeps lock dest and nanos for spend sig', () {
     final row = compactSealedVout({
       'kind': 'lock',

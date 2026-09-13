@@ -1320,14 +1320,23 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         ),
       ],
       const SizedBox(height: 12),
-      Text('ssa1 dest (from your shear1 — chain mailbox)', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+      Text('ssa1 dest — mining mailbox', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
       const SizedBox(height: 6),
       SelectableText(ledger.homeDest(ident.address, paymentCode: ident.paymentCode), key: const Key('continuum-ssa1')),
       const SizedBox(height: 8),
       OutlinedButton(
         key: const Key('copy-dest'),
-        onPressed: () => Clipboard.setData(ClipboardData(text: ledger.homeDest(ident.address, paymentCode: ident.paymentCode))),
+        onPressed: () {
+          final fresh = ledger.newDest(ident.address, paymentCode: ident.paymentCode);
+          Clipboard.setData(ClipboardData(text: fresh));
+          setState(() {});
+        },
         child: const Text('Copy dest'),
+      ),
+      const SizedBox(height: 6),
+      Text(
+        'Reuse links your blocks; rotate dests. Each Copy dest mints a fresh mailbox. Parent-job dest stays valid through lag-1 mint.',
+        style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
       ),
     ];
     final statsPane = <Widget>[

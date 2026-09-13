@@ -62,7 +62,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / overview',
     html:
       '<p>Shear is a CPU-mined ledger. Coin is created when a block is found, not before. There is no premine and the developers do not sell SHE. You hash, or someone who already holds coin pays you.</p>' +
-      '<p>Private dests, public amounts. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. Each hasher dest that produced proven work in a round receives its own hash bonus on the next sealed block. The live network today is <code>shear-testnet-v2</code>.</p>' +
+      '<p>ADMITV1 membership over this book\'s notes, with confidential amounts. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. Each hasher dest that produced proven work in a round receives its own hash bonus on the next sealed block. The live network today is <code>shear-testnet-v3</code>. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
       '<table><tr><th>Coin</th><td>SHE (11 protocol decimals; public pages show nine)</td></tr>' +
       '<tr><th>Algo</th><td>ShearHash-v3 (RandomX light, CPU)</td></tr>' +
       '<tr><th>Block pot</th><td>Exactly 1 SHE</td></tr>' +
@@ -107,7 +107,7 @@ window.SHEAR_DOCS = {
     crumb: 'addresses / privacy',
     html:
       '<p>The public explorer reports amounts, dests, and whether a memo exists. Ciphertext and rest-frame strings stay off that page. Memo plaintext opens only with the stealth shared secret in the two wallets that scanned that dest.</p>' +
-      '<p>Amounts are public. Dests are stealth. Stratum login is Copy dest (<code>ssa1.worker</code>). Hash bonuses land on that dest. Keep view secrets, rest-frame, seeds, and passwords off POST bodies and vortice hosts. There is no telemetry.</p>'
+      '<p>Amounts are confidential. Dests are stealth. Stratum login is Copy dest (<code>ssa1.worker</code>). Hash bonuses land on that dest. Keep view secrets, rest-frame, seeds, and passwords off POST bodies and vortice hosts. There is no telemetry. While this book has fewer than 10,000 notes the membership set is thin.</p>'
   };
 
   P.wallet = {
@@ -379,7 +379,7 @@ window.SHEAR_DOCS = {
     title: 'Explorer',
     crumb: 'network / explorer',
     html:
-      '<p><a href="https://explorer.shear.digital">explorer.shear.digital</a> paints confirmed blocks, public amounts, dests, and Reserve vault stats. Last block is age of the tip. AVG BLOCK TIME is the mean interval of every sealed header since genesis. The block list is the whole chain, newest first, ten rows in view; scroll for the rest. Search is by height, id, from, to. The Resistance CLI on that page is public fields only.</p>'
+      '<p><a href="https://explorer.shear.digital">explorer.shear.digital</a> paints confirmed blocks — height, time, status, kind. No amount column, no from-dest column. Last block is age of the tip. AVG BLOCK TIME is the mean interval of every sealed header since genesis. Search is by height or id. The Resistance CLI on that page is public fields only (header, kind, proofs).</p>'
   };
 
   P.mempool = {

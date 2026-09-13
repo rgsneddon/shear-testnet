@@ -145,7 +145,7 @@
     <section class="panel-card">
       <h1>Shear explorer</h1>
       <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
-      <p>Continuity-settled PoW. Confirmed blocks only. Amounts are public. Dests are revolving <code>ssa1</code> mailboxes. Offer <code>she1</code> when someone pays you. Coinbase hash vouts pay each hasher dest that produced proven work that round.</p>
+      <p>Continuity-settled PoW. Confirmed blocks only. Height, time, status, kind — no dest safari, no amount column. ADMITV1 membership over this book's notes. While this book has fewer than 10,000 notes the membership set is thin. Offer <code>she1</code> when someone pays you.</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
     </section>
     <div class="grid" id="net-grid">
@@ -193,9 +193,7 @@
             <th>Id</th>
             <th>Time</th>
             <th>Status</th>
-            <th>From</th>
-            <th>To</th>
-            <th>Amount</th>
+            <th>Kind</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -353,11 +351,9 @@
             const pendingLabel = st === 'pending' || st === '(pending)' ? '(pending)' : 'confirmed';
             return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
               esc(fmtLocalTs(t.at)) + '</td><td>' +
-              esc(pendingLabel) + '</td><td class="mono">' + esc(t.from || 'coinbase') +
-              '</td><td class="mono">' + esc(shortDest(t.to)) + '</td><td>' +
-              esc(fmtShe(t.amount)) + '</td></tr>';
+              esc(pendingLabel) + '</td><td class="mono">' + esc(t.kind || 'block') + '</td></tr>';
           }).join('')
-        : '<tr><td colspan="6">No sealed blocks yet.</td></tr>';
+        : '<tr><td colspan="4">No sealed blocks yet.</td></tr>';
     }
     function queryFromForm() {
       const q = new URLSearchParams();

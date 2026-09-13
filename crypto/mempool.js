@@ -58,19 +58,19 @@ export function admitMempool(pool, tx, opts = {}) {
     return { ok: false, reason: 'dummy_outs' };
   }
   if (flowNeedsDummy(tx) && (tx.vout || []).some((o) => !o?.commit)) {
-    return { ok: false, reason: 'confidential' };
+    return { ok: false, reason: 'range_proof' };
   }
   if (flowNeedsDummy(tx)) {
     const pubs = opts.fluxset || opts.pubs;
     if (Array.isArray(pubs)) {
       const proof = tx.admit_proof;
-      if (!proof) return { ok: false, reason: 'admit' };
-      if (!admit_verify(proof, pubs)) return { ok: false, reason: 'admit' };
+      if (!proof) return { ok: false, reason: 'admit_membership' };
+      if (!admit_verify(proof, pubs)) return { ok: false, reason: 'admit_membership' };
       const tag = proof.spendTag || tx.spendTag;
-      if (!tag) return { ok: false, reason: 'admit' };
+      if (!tag) return { ok: false, reason: 'admit_membership' };
       const spent = opts.spendTags;
       if (spent && spent.has(Buffer.from(asU8(tag)).toString('hex'))) {
-        return { ok: false, reason: 'admit' };
+        return { ok: false, reason: 'admit_link_tag' };
       }
     }
   }

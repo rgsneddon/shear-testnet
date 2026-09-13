@@ -144,7 +144,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const missingBlock = mine(missingTpl);
     const gotMissing = verifyBlock(missingBlock, parent, { evmHistory: history });
     assert.equal(gotMissing.ok, false);
-    assert.equal(gotMissing.reason, 'admit');
+    assert.equal(gotMissing.reason, 'admit_membership');
 
     const sampled = mkSend({ id: 'sampled' });
     const subset = live.pubs.slice(0, 1);
@@ -169,7 +169,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const sampledBlock = mine(sampledTpl);
     const gotSampled = verifyBlock(sampledBlock, parent, { evmHistory: history });
     assert.equal(gotSampled.ok, false);
-    assert.equal(gotSampled.reason, 'admit');
+    assert.equal(gotSampled.reason, 'admit_membership');
 
     const fakeIn = sealNote(2 + change + fee, { dest20: Buffer.alloc(20, 9), kind: 'spend-in' });
     const attack = attachDummyOuts({
@@ -210,7 +210,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const attackBlock = mine(attackTpl);
     const gotBad = verifyBlock(attackBlock, parent, { evmHistory: history });
     assert.equal(gotBad.ok, false);
-    assert.equal(gotBad.reason, 'confidential');
+    assert.equal(gotBad.reason, 'commit_sum');
   });
 
   it('queueTx admits an honest spent-note send and rejects missing proof, sampled subset, and reused spendTag', () => {
@@ -265,7 +265,18 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const missing = signSpendTx(body(), key);
     const missQ = store.queueTx(missing);
     assert.equal(missQ.ok, false);
-    assert.equal(missQ.reason, 'admit');
+    assert.equal(missQ.reason, 'admit_membership');
+
+    const sampled = body();
+    sampled.admit_proof = admitProve({
+      x: admitScalarFromSeed(spendSeed, spent),
+      index: 0,
+      pubs: [live.pubs[0], live.pubs[0]],
+    });
+    signSpendTx(sampled, key);
+    const sampQ = store.queueTx(sampled);
+    assert.equal(sampQ.ok, false);
+    assert.equal(sampQ.reason, 'admit_membership');
 
     const honest = proveFlowSpend(body(), { spendSeed, spentNote: spent, pubs: live.pubs });
     signSpendTx(honest, key);
@@ -278,19 +289,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     signSpendTx(reuse, key);
     const reuseQ = store.queueTx(reuse);
     assert.equal(reuseQ.ok, false);
-    assert.equal(reuseQ.reason, 'admit');
-
-    const sampled = body();
-    const subset = live.pubs.slice(0, 1);
-    sampled.admit_proof = admitProve({
-      x: admitScalarFromSeed(spendSeed, spent),
-      index: 0,
-      pubs: subset,
-    });
-    signSpendTx(sampled, key);
-    const sampQ = store.queueTx(sampled);
-    assert.equal(sampQ.ok, false);
-    assert.equal(sampQ.reason, 'admit');
+    assert.equal(reuseQ.reason, 'admit_link_tag');
   });
 
   it('hex-posted Flow send is in the next template and mined header with admit_proof', () => {
@@ -390,5 +389,113 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     assert.ok(onchain, 'user send on chain');
     assert.ok(onchain.admit_proof, 'admit_proof persisted');
     assert.equal(store.mempool.length, 0);
+  });
+
+  it('named reject reasons: range stub, no members list, she1 silent_id', () => {
+    const { dest, spendSeed, key } = identityDest();
+    const parent = mine(buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: dest,
+      bits: 4,
+      now: 1_700_003_000_000,
+    }));
+    const okP = verifyBlock(parent, null);
+    assert.equal(okP.ok, true, okP.reason);
+    parent.hash = okP.hash;
+    const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
+    const idx = parent.txs[0].vout.indexOf(spent);
+    const live = fluxsetFromBlocks([parent]);
+    const fee = levyNanos(2);
+    const change = BLOCK_SUBSIDY_NANOS - 2 - fee;
+    const body = attachDummyOuts({
+      id: 'range-stub',
+      kind: 'send',
+      from: dest,
+      to: dest,
+      nanos: 2,
+      fee,
+      changeNanos: change,
+      vin: [{
+        prev: parent.hash,
+        index: idx,
+        commit: spent.commit,
+        noteCommit: spent.noteCommit,
+        r: spent.r,
+        address: dest,
+      }],
+      vout: [
+        { address: dest, nanos: 2, kind: 'send' },
+        { address: dest, nanos: change, kind: 'send' },
+      ],
+    }, { spent });
+    proveFlowSpend(body, { spendSeed, spentNote: spent, pubs: live.pubs });
+    for (const o of body.vout) o.rangeProof = true;
+    signSpendTx(body, key);
+    const stubTpl = buildTemplate({
+      prev: parent.hash,
+      prevHeader: parent.header,
+      height: 2,
+      miner: dest,
+      bits: 4,
+      now: 1_700_003_090_000,
+      txs: [compactTx(body)],
+      prevBlock: parent,
+      parentBlocks: [parent],
+      parentFluxset: live.pubs,
+    });
+    const stubBlock = mine(stubTpl);
+    const gotStub = verifyBlock(stubBlock, parent, { evmHistory: [parent] });
+    assert.equal(gotStub.ok, false);
+    assert.equal(gotStub.reason, 'range_proof');
+
+    const honest = attachDummyOuts({
+      id: 'sealed-ring',
+      kind: 'send',
+      from: dest,
+      to: dest,
+      nanos: 2,
+      fee,
+      changeNanos: change,
+      vin: [{
+        prev: parent.hash,
+        index: idx,
+        commit: spent.commit,
+        noteCommit: spent.noteCommit,
+        r: spent.r,
+        address: dest,
+      }],
+      vout: [
+        { address: dest, nanos: 2, kind: 'send' },
+        { address: dest, nanos: change, kind: 'send' },
+      ],
+    }, { spent });
+    proveFlowSpend(honest, { spendSeed, spentNote: spent, pubs: live.pubs });
+    honest.admit_proof.members = ['decoy-list'];
+    const sealed = compactTx(honest);
+    assert.equal(sealed.admit_proof.members, undefined);
+    assert.ok(sealed.admit_proof.spendTag);
+    assert.equal(JSON.stringify(sealed.admit_proof).includes('decoy-list'), false);
+
+    const she = {
+      kind: 'send',
+      from: dest,
+      to: 'she1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+      fee: 100,
+      vin: [{ address: dest }],
+      vout: [{ address: 'she1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', nanos: 1 }],
+    };
+    const sheTpl = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: dest,
+      bits: 4,
+      now: 1_700_003_180_000,
+      txs: [she],
+    });
+    const sheBlock = mine(sheTpl);
+    const gotShe = verifyBlock(sheBlock, null);
+    assert.equal(gotShe.ok, false);
+    assert.equal(gotShe.reason, 'silent_id_on_chain');
   });
 });

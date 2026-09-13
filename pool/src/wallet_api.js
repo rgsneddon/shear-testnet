@@ -396,9 +396,10 @@ export function publicSurfaceRow(t) {
   const row = {
     id: String(t?.id || ''),
     kind,
-    from: String(t?.from || '') === 'coinbase' ? 'coinbase' : (keepDest ? publicPaintDest(t?.from) : ''),
-    to: keepDest ? publicPaintDest(t?.to) : '',
+    from: String(t?.from || '') === 'coinbase' ? 'coinbase' : '',
+    to: '',
     amountHidden: true,
+    proofOk: !pending,
     height: Number(t?.height || 0),
     confirmations: Number(t?.confirmations || 0),
     pending,
@@ -1189,7 +1190,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       return { status: 400, json: { ok: false, reason: 'dummy_outs' } };
     }
     if (kind === 'send' && !draft.admit_proof) {
-      return { status: 400, json: { ok: false, reason: 'admit' } };
+      return { status: 400, json: { ok: false, reason: 'admit_membership' } };
     }
     if (flowSendNeedsOpen(draft) && !verifySpendSig(draft)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };

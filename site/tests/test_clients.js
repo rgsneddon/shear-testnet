@@ -36,7 +36,7 @@ describe('shear.digital client buttons', () => {
     const left = html.slice(html.indexOf('<h1>Shear</h1>'), html.indexOf('id="network-continuity"'));
     assert.match(left, /class="she-private"/);
     assert.match(left, /She is Private/);
-    assert.match(left, /Private dests, public amounts/);
+    assert.match(left, /ADMITV1 membership/);
     assert.match(left, /PoW elects the tip/);
     assert.doesNotMatch(left, /Private by default/);
     assert.doesNotMatch(left, /Proof of work only/);
@@ -280,7 +280,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
     assert.doesNotMatch(admin, /11th September 2026/);
     assert.doesNotMatch(admin, /9pm UK/);
-    assert.match(admin, /Private dests, public amounts/);
+    assert.match(admin, /ADMITV1 membership/);
     assert.match(admin, /PoW elects the tip/);
     assert.match(admin, /can still vote/);
     assert.match(admin, /Export shewall\.bin/);

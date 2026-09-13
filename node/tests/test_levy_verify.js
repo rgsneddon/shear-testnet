@@ -292,6 +292,6 @@ describe('verifyBlock Phase B Flow levy', () => {
     }));
     const got = verifyBlock(block, null);
     assert.equal(got.ok, false);
-    assert.equal(got.reason, 'confidential');
+    assert.equal(got.reason, 'range_proof');
   });
 });

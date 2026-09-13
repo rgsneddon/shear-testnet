@@ -43,6 +43,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
 
     const main = read('site/index.html');
     assert.match(main, /revolving dest/);
+    assert.match(main, /ADMITV1 membership/);
+    assert.match(main, /10,000 notes/);
     assert.match(main, /Copy dest \(<code>ssa1\.worker<\/code>\)/);
     assert.match(main, /own <code>kind:hash<\/code> payout/);
 
@@ -53,6 +55,15 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     const pool = read('pool/public/index.html');
     assert.match(pool, /Copy dest/);
     assert.match(pool, /Hash bonuses pay in full to each hasher dest/);
+    assert.doesNotMatch(pool, /<th>From<\/th>/);
+    assert.doesNotMatch(pool, /<th>Amount<\/th>/);
+    assert.doesNotMatch(pool, /stem:true/);
+    assert.doesNotMatch(joined, /RING_SIZE/);
+
+    const expl = read('pool/public/explorer.html');
+    assert.doesNotMatch(expl, /<th>From<\/th>/);
+    assert.doesNotMatch(expl, /<th>Amount<\/th>/);
+    assert.match(expl, /<th>Kind<\/th>/);
 
     const paper = read('site/whitepaper/index.html');
     assert.match(paper, /ShearHash-v3/);

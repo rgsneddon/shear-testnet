@@ -94,7 +94,7 @@ Work of a block: `blockWorkBig(bits) => 1n << BigInt(bits)`. Heaviest valid chai
 
 `verifyDestOpening` is not authority. Spend is Ed25519 on the existing spend seed over `SHA256("shear-spend-v1" || packDigest(tx without sig/open))`. Missing/bad sig = `unsigned`. `claim` stays unfunded-off. Backup name is `shewall.bin`.
 
-Miner login is `ssa1.worker`. `she1` login is RAM-only and must resolve to an owned rotating `ssa1`. Payout dest is never `encodeDest(she1.hash20)`. Spend authority is Ed25519 over `shear-spend-v1 || packDigest`; openings are local-only and stripped before chain.bin / P2P / public RPC. Memo is not dest-keyed. Amounts stay public. Dest HRP on chain is `ssa` only (`she` → `silent_id_on_chain`, `shear` → `rest_frame_on_chain`).
+Miner login is `ssa1.worker`. `she1` login is RAM-only and must resolve to an owned rotating `ssa1`. Payout dest is never `encodeDest(she1.hash20)`. Spend authority is Ed25519 over `shear-spend-v1 || packDigest`; openings are local-only and stripped before chain.bin / P2P / public RPC. Memo is not dest-keyed. Amounts are confidential (Pedersen C + range proof). Dest HRP on chain is `ssa` only (`she` → `silent_id_on_chain`, `shear` → `rest_frame_on_chain`).
 
 ## Reserve
 
@@ -112,7 +112,7 @@ Coinbase `kind:pot` is PROP across dest20 in `shareBatch`. Hasher dests receive 
 
 - One proven share-hash mints units; user txs are signed Flow.
 - Full nodes validate shareBatch until prune-1000; money vouts forever.
-- Private dests, public amounts.
+- Private dests, confidential amounts. ADMITV1 membership over this book's notes.
 - PoW elects the tip. Pot is 1 SHE PROP. Hash units are proven PoW. Reserve interest is the only other mint, amount-bound.
 - GPU/ASIC refuse is pool share-gate only, not consensus.
 - Admin is TOTP + password. Host header is not authorization.

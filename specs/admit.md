@@ -41,7 +41,7 @@ P      = B + delta·G = x · G
 
 Pedersen `r` is a sealed secret (`compactTx` drops it). Coinbase and Flow seals wrap `r` to dest `B` as `rEph = e·G`, `rCt = r + H("shear-r-wrap-v1" || e·B || noteCommit || C)`. Compact vouts keep `rEph`/`rCt`. The owner unwraps with `x_base` and binds `commit`/`prev`/`index` by scanning sealed vouts (match `noteCommit` to dest20). Outputs this wallet seals (change) keep `r` locally.
 
-`verifyBlock` and mempool `queueTx` call `admit_verify` against the **complete** live fluxset (every `admitPub` in appearance order on the sealed chain). A sampled subset is the wrong ring (`r.length !== |J|`). Missing `admit_proof` fails. A repeated `spendTag` fails. Fail reason is `admit` (or `confidential` when the Pedersen kernel fails).
+`verifyBlock` and mempool `queueTx` call `admit_verify` against the **complete** live fluxset (every `admitPub` in appearance order on the sealed chain). A sampled subset is the wrong ring (`r.length !== |J|`). Missing `admit_proof` fails (`admit_membership`). A repeated `spendTag` fails (`admit_link_tag`). Missing Pedersen `C` or a stub range proof fails (`range_proof`). A kernel that does not sum (`C_in` vs `C_out` + fee) fails (`commit_sum`). `she1` on chain fails (`silent_id_on_chain`).
 
 J is append-only: spent notes stay in J because Admit does not reveal which flowline moved. Double-spend is a repeated `spendTag`. Reorgs rebuild J and spent tags from the sealed chain. `jroot` is committed on the coinbase (`txs[0].jroot`), not the 128-byte header (ShearK 1.6 job template stays 128 bytes).
 

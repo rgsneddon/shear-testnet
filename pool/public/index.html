@@ -313,8 +313,8 @@
       <section class="panel-card">
         <h1>Shear</h1>
         <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
-        <p>Private dests, public amounts. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
-        <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Amounts stay public. Rest-frame <code>shear1</code> stays in Closure.</p>
+        <p>ADMITV1 membership over this book's notes, with confidential amounts. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
+        <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. While this book has fewer than 10,000 notes the membership set is thin.</p>
         <p>Mine with Copy dest: <code>ssa1.worker</code>. Each hasher dest that produced proven work receives its own hash bonus on the next sealed block. The 1 SHE pot is split among those dests.</p>
         <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v3</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
@@ -435,9 +435,7 @@
             <th>Id</th>
             <th>Time</th>
             <th>Status</th>
-            <th>From</th>
-            <th>To</th>
-            <th>Amount</th>
+            <th>Kind</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -865,11 +863,9 @@
               : esc(pendingLabel);
             return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
               esc(fmtLocalTs(t.at)) + '</td><td>' + statusCell + '</td><td class="mono">' +
-              esc(t.from || 'coinbase') +
-              '</td><td class="mono">' + esc(shortDest(t.to)) + '</td><td>' +
-              esc(t.amount) + '</td></tr>';
+              esc(kind) + '</td></tr>';
           }).join('')
-        : '<tr><td colspan="6">No sealed blocks yet.</td></tr>';
+        : '<tr><td colspan="4">No sealed blocks yet.</td></tr>';
       body.innerHTML = html;
       recentSig = sig;
     }

@@ -804,22 +804,22 @@ function verifyBlockConsensus(block, prev, {
     }
     if (flowNeedsDummy(tx)) {
       for (const o of (tx.vout || [])) {
-        if (!o?.commit) return { ok: false, reason: 'confidential' };
-        if (!o.rangeProof || !verifyRange(o.commit, o.rangeProof)) {
-          return { ok: false, reason: 'confidential' };
+        if (!o?.commit) return { ok: false, reason: 'range_proof' };
+        if (!o.rangeProof || o.rangeProof === true || !verifyRange(o.commit, o.rangeProof)) {
+          return { ok: false, reason: 'range_proof' };
         }
       }
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
       const spentOf = (vin) => lookupSpentVout(vin, block, prev, i, evmHistory);
-      if (!verifyFlowConservation(tx, spentOf)) return { ok: false, reason: 'confidential' };
+      if (!verifyFlowConservation(tx, spentOf)) return { ok: false, reason: 'commit_sum' };
       const proof = tx.admit_proof;
-      if (!proof) return { ok: false, reason: 'admit' };
-      if (!admit_verify(proof, pubs)) return { ok: false, reason: 'admit' };
+      if (!proof) return { ok: false, reason: 'admit_membership' };
+      if (!admit_verify(proof, pubs)) return { ok: false, reason: 'admit_membership' };
       const tag = proof.spendTag || tx.spendTag;
-      if (!tag) return { ok: false, reason: 'admit' };
+      if (!tag) return { ok: false, reason: 'admit_membership' };
       const th = Buffer.from(asU8(tag)).toString('hex');
-      if (spentTags.has(th)) return { ok: false, reason: 'admit' };
+      if (spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
       spentTags.add(th);
     }
     for (const o of outs) pushPub(o);
@@ -908,7 +908,7 @@ function verifyBlockConsensus(block, prev, {
   const wantRoot = Buffer.from(jrootOf(finalPubs));
   const gotRoot = txs[0].jroot;
   if (gotRoot && !Buffer.from(asU8(gotRoot)).equals(wantRoot)) {
-    return { ok: false, reason: 'admit' };
+    return { ok: false, reason: 'admit_membership' };
   }
   return { ok: true, hash, decoded, aLeaves, bLeaves, jroot: wantRoot };
 }

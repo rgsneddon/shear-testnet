@@ -24,7 +24,7 @@ dest20 = SHA256(shear-silent-v1 || shared || spendMix)[0:20]
 vout dest = ssa1(dest20)
 ```
 
-Two pays to one published code produce two dests. An observer with only the short fingerprint cannot compute either dest. `payoutDest(she1)` is not payable. Miner login is `ssa1.worker` (a dest the wallet exported). `she1` login is an in-memory alias that must resolve to an owned rotating `ssa1` and is never written to disk. The public pool learns whatever you type into stratum; a solo node is the anonymity path for miners. Amounts stay public. Rest-frame `shear1` is never a dest login. she is private.
+Two pays to one published code produce two dests. An observer with only the short fingerprint cannot compute either dest. `payoutDest(she1)` is not payable. Miner login is `ssa1.worker` (a dest the wallet exported). `she1` login is an in-memory alias that must resolve to an owned rotating `ssa1` and is never written to disk. The public pool learns whatever you type into stratum; a solo node is the anonymity path for miners. Amounts are confidential. Rest-frame `shear1` is never a dest login. she is private.
 
 Password = view key = `shewall.bin` seal. Never POST `V`/`C`/`shear1`.
 

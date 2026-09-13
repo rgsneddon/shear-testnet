@@ -45,6 +45,18 @@ Scale (90 s, opt-in B + prune): see [scale.md](scale.md). Tree A is O(miners) pe
 
 Consensus spendable is **6 confirmations** (the minimum; ~9 min at 90 s). That depth is in `consensusFingerprint()`. `min_confirms` default **12** is third-party/merchant policy only (~18 min), not a consensus floor. B-spends wait for the same 6-conf consensus depth. 0-conf is merchant policy.
 
+## ADMITV1 membership
+
+ADMITV1 is full-book membership, not a decoy ring of size k. There is no `RING_SIZE` in the fingerprint.
+
+Live verifier: complete fluxset `J` of ristretto `admitPub` points in appearance order on the sealed chain. Published root is coinbase `jroot` = merkle of those pubs. `admit_verify` against that complete `J`. A sampled subset fails (`admit_membership`). Reused `spendTag` fails (`admit_link_tag`).
+
+Notes that enter `J`: coinbase hash / pot / levy, Flow pays, dummy value-0 notes, and Reserve money notes that carry `admitPub`. Spent notes stay in `J`; double-spend is a repeated spend-tag.
+
+Thin set: while sealed note count is below **10,000**, public copy must say the membership set is thin. Mining (hash bonus) is how the set grows.
+
+Reject reasons on `verifyBlock` / mempool: `silent_id_on_chain`, `admit_membership`, `admit_link_tag`, `range_proof`, `commit_sum`.
+
 ## Addresses
 
 Rest-frame HRP `shear` (`shear1`) — never a login, never a vout. Silent ID `she1` is a versioned payment code (scan+spend pubs); the short 20-byte fingerprint is display-only and is not sufficient to pay. On-chain dest **`ssa1` only**. `verifyBlock` / `admitMempool` check typed HRP on every address field (vin/vout/from/to/miner/sample). HRP `she` → `silent_id_on_chain`. HRP `shear` → `rest_frame_on_chain`. `containsShe1` on JSON is not the consensus check. Spend sig is Ed25519 over the compact body; openings are not persisted. Memo is keyed by the stealth shared secret, not dest20. Fingerprint pins: `DEST_HRP_SSA_ONLY=1`, `SPEND_SIG_ONLY=1`, `MEMO_NOT_DEST_KEYED=1`, `HASH_TX_LIVE=1`.
