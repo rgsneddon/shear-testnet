@@ -327,6 +327,7 @@ window.SHEAR_DOCS = {
     crumb: 'network / node',
     html:
       '<p>Node source is the NODE button on the main site. A node is the book: append, verify, P2P, and the GATE that lets native Flow and pinned Reserve bytecode land in the same block. Build RandomX on the box; never copy a macOS <code>shearhash.node</code> onto Linux.</p>' +
+      '<p>Default sync is full archival IBD. An opt-in prune snapshot (latest only) is at <a href="https://boot.shear.digital">boot.shear.digital</a> — apply with <code>node node/src/node.js --bootstrap=DIR</code> on an empty datadir, then IBD the last 1000 blocks from the live seed. Do not set <code>SHEAR_FAST_SYNC</code> on a mining node.</p>' +
       '<p>Tree: <a href="https://github.com/rgsneddon/shear-testnet/tree/main/node">rgsneddon/shear-testnet/node</a>.</p>'
   };
 

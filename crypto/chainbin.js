@@ -109,7 +109,9 @@ export function writeChainBin(path, blocks) {
     len.writeUInt32LE(rec.length, 0);
     chunks.push(len, rec);
   }
-  fs.writeFileSync(path, Buffer.concat(chunks));
+  const tmp = `${path}.tmp`;
+  fs.writeFileSync(tmp, Buffer.concat(chunks));
+  fs.renameSync(tmp, path);
 }
 
 /** Append one packed epoch. Full archival: never drops txs. IBD must not rewrite the book. */

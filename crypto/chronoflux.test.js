@@ -1,5 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   SAMPLE_PRUNE_CONFIRMATIONS,
   SPENDABLE_CONFIRMATIONS,
@@ -20,6 +25,8 @@ import { vaultDest, destForLogin } from './flow_sheet.js';
 import { verifySealedNote, reviveBytes } from './note.js';
 import { PI_SHE_NANOS } from './asert.js';
 import { digestTx } from '../node/src/chain.js';
+
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 describe('chronoflux prune + collate', () => {
   it('collates thousands of hashes into one sample per miner', () => {
@@ -50,6 +57,26 @@ describe('chronoflux prune + collate', () => {
     assert.equal(flowSkipAllowed({ height: 1, samplesPruned: true }, 1000), false);
     assert.equal(flowSkipAllowed({ height: 1, samplesPruned: true }, 1001), true);
     assert.equal(flowSkipAllowed({ height: 1, samplesPruned: false }, 1001), false);
+    const watchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-prunewatch-'));
+    fs.writeFileSync(path.join(watchDir, 'chain.jsonl'), `${JSON.stringify({
+      height: 1,
+      hash: 'ab'.repeat(32),
+      samplesPruned: true,
+      samples: [],
+      shareBatch: [{ nonce: '1' }],
+      txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
+    })}\n`);
+    const watch = spawnSync(process.execPath, [path.join(root, 'node/scripts/watch_prune.mjs')], {
+      env: { ...process.env, SHEAR_DATA: watchDir },
+      encoding: 'utf8',
+    });
+    assert.notEqual(watch.status, 0);
+    const report = JSON.parse(watch.stdout.split('\n').filter(Boolean).at(-1));
+    assert.equal(report.ok, false);
+    const reasons = (report.dangers || []).map((d) => d.reason);
+    assert.ok(reasons.includes('pruned_too_early'), reasons.join(','));
+    assert.ok(reasons.includes('pruned_still_has_shares'), reasons.join(','));
+    assert.equal(report.skipPowPeerFlagAlone, true);
     const send = {
       id: 'send-1',
       from: 'shear1from',

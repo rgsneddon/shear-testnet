@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Shear bootstrap — latest prune snapshot</title>
+  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=26"/>
+  <style>
+    :root { --bg:#eef3f8; --card:#fff; --ink:#0d2137; --muted:#5a738c; --cyan:#0088a8; }
+    * { box-sizing: border-box; }
+    html, body { margin:0; font:15px/1.45 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { width:100%; max-width:44rem; margin:0 auto; padding:20px 14px 64px; }
+    h1 { font-size:1.35rem; font-weight:800; margin:0 0 8px; }
+    h2 { font-size:1.08rem; font-weight:800; margin:22px 0 8px; }
+    p, li { color:var(--ink); }
+    .muted { color:var(--muted); }
+    .card {
+      border:1px solid transparent; padding:14px 16px; margin:12px 0;
+      background: linear-gradient(165deg, var(--card) 0%, var(--bg) 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin: border-box; background-clip: padding-box, border-box;
+    }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }
+    pre { background:#0d2137; color:#e8f4ff; padding:12px 14px; overflow:auto; }
+    a { color:var(--cyan); }
+    .btn {
+      display:inline-block; margin:6px 8px 6px 0; padding:10px 14px; font-weight:700;
+      color:#fff; background:#0d2137; text-decoration:none;
+    }
+    .btn[aria-disabled="true"] { opacity:.45; pointer-events:none; }
+    .warn { color:#8a3b00; }
+    #status { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Latest bootstrap</h1>
+    <p class="muted">One file pair. Overwritten at every prune. Not a history. Magic <code>shear-testnet-v3</code>.</p>
+    <div class="card">
+      <p id="status">Checking latest.json…</p>
+      <p>
+        <a class="btn" id="dl-json" href="/latest.json" aria-disabled="true">latest.json</a>
+        <a class="btn" id="dl-bin" href="/latest.bin" aria-disabled="true">latest.bin</a>
+      </p>
+      <p class="muted">Default sync is still full archival IBD (headers + getblock + light-interpreter POW). Bootstrap is opt-in, for a quicker load of the already-pruned prefix. The last 1000 blocks still IBD from the live seed.</p>
+    </div>
+
+    <h2>What this is</h2>
+    <p>After 1000 confirmations the node drops Flow <em>samples</em> and share rows. Sealed transactions, coinbase vouts, headers, and merkle stay. Each prune overwrites <code>latest.json</code> + <code>latest.bin</code> on this host. Older snapshots are not kept.</p>
+    <p class="warn">Do not use a bootstrap from anywhere except this page. A fake snapshot is a different book. After apply, your node must still reach the live tip hash on <code>shear.digital:30303</code>.</p>
+
+    <h2>How to apply</h2>
+    <p>No node rewrite. A stock <code>node node/src/node.js</code> already loads <code>$SHEAR_DATA/chain.bin</code> and then IBDs from the seed. Bootstrap is that file. Empty datadir only — do not pour this onto a chain you already have.</p>
+    <pre>mkdir -p ~/shear-bootstrap
+cd ~/shear-bootstrap
+curl -fsSO https://boot.shear.digital/latest.json
+curl -fsSO https://boot.shear.digital/latest.bin
+python3 -m json.tool latest.json
+
+export SHEAR_DATA="$HOME/.shear/testnet-v3"
+rm -rf "$SHEAR_DATA"
+mkdir -p "$SHEAR_DATA"
+cp latest.bin "$SHEAR_DATA/chain.bin"
+cp latest.json "$SHEAR_DATA/bootstrap/latest.json" 2>/dev/null || mkdir -p "$SHEAR_DATA/bootstrap" && cp latest.json "$SHEAR_DATA/bootstrap/latest.json" && cp latest.bin "$SHEAR_DATA/bootstrap/latest.bin"
+
+node node/src/node.js</pre>
+    <p>Same binary, same ports (P2P 30303, RPC 18332 loopback), same magic <code>shear-testnet-v3</code>. It does not mine. It dials <code>shear.digital:30303</code> and IBDs only what is still unpruned (about the last 1000 blocks). Merkle still runs. Share-batch POW is skipped only where the local book already has 1000 confirmations <em>and</em> <code>samplesPruned</code> — a peer flag alone is not enough.</p>
+    <p class="muted">Current source also accepts <code>node node/src/node.js --bootstrap="$PWD"</code> as a one-line copy. You do not need that flag if you copy <code>latest.bin</code> yourself.</p>
+
+    <h2>If apply refuses</h2>
+    <ul>
+      <li><code>bootstrap_datadir_not_empty</code> — you still have a chain.jsonl/bin. Use a new directory.</li>
+      <li><code>bootstrap_magic</code> — not <code>shear-testnet-v3</code>. Wrong book.</li>
+      <li><code>bootstrap_dropped_txs</code> — snapshot lost sealed txs. Do not use it. Full IBD instead.</li>
+      <li>Tip hash never matches the seed — throw the datadir away and IBD from empty. Do not dual-magic.</li>
+    </ul>
+
+    <h2>Full IBD (default)</h2>
+    <pre>export SHEAR_DATA="$HOME/.shear/testnet-v3"
+node node/src/node.js</pre>
+    <p class="muted">No <code>--bootstrap</code>. No <code>SHEAR_FAST_SYNC</code>. That is the stock user node.</p>
+  </div>
+  <script>
+    async function load() {
+      const el = document.getElementById('status');
+      const j = document.getElementById('dl-json');
+      const b = document.getElementById('dl-bin');
+      try {
+        const r = await fetch('/latest.json', { cache: 'no-store' });
+        if (!r.ok) throw new Error('not yet');
+        const m = await r.json();
+        if (!m || m.latest !== true) throw new Error('not latest');
+        el.textContent = 'Height ' + m.height + ' · ' + m.n + ' pruned blocks · magic ' + m.magic
+          + ' · hash ' + String(m.hash || '').slice(0, 16) + '…';
+        j.removeAttribute('aria-disabled');
+        b.removeAttribute('aria-disabled');
+      } catch (e) {
+        el.textContent = 'Latest snapshot is not published yet. It appears when the live book first prunes (height 1001). Full IBD still works.';
+      }
+    }
+    load();
+    setInterval(load, 30000);
+  </script>
+</body>
+</html>

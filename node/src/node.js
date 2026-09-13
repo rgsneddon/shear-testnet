@@ -23,6 +23,7 @@ import { extraMintAllowed } from '../../crypto/mint.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS } from '../../crypto/reserve_oracle.js';
 import { createStore } from './store.js';
+import { applyLatestBootstrap } from './bootstrap.js';
 import { createP2p, P2P_PORT, SEED_RETRY_MS } from './p2p.js';
 import { PHASE_B_GATE } from './chain.js';
 import { createRpc, RPC_PORT } from './rpc.js';
@@ -131,6 +132,16 @@ async function main() {
   if (process.argv.includes('--print-config')) {
     console.log(JSON.stringify(printConfig()));
     return;
+  }
+  const bootArg = process.argv.find((a) => a.startsWith('--bootstrap='))
+    || (process.argv.includes('--bootstrap')
+      ? process.argv[process.argv.indexOf('--bootstrap') + 1]
+      : '');
+  const bootFrom = String(bootArg || '').replace(/^--bootstrap=/, '').trim();
+  if (bootFrom) {
+    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v3');
+    const manifest = applyLatestBootstrap(dataDir, bootFrom);
+    console.error(JSON.stringify({ event: 'bootstrap_applied', ...manifest }));
   }
   const started = await startNode({
     seeds: (process.env.SHEAR_SEEDS || DEFAULT_SEEDS.join(',')).split(',').map((s) => s.trim()).filter(Boolean),

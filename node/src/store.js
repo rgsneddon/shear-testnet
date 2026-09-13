@@ -33,6 +33,7 @@ import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin, appendChainBin } from '../../crypto/chainbin.js';
+import { writeLatestBootstrap } from './bootstrap.js';
 import { blockWeight } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
 import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset } from '../../crypto/admit.js';
@@ -287,8 +288,10 @@ export function createStore(dir, {
   function rewriteChain() {
     fs.writeFileSync(magicFile, MAGIC_TESTNET);
     writeChainBin(binFile, blocks);
+    const tmpJson = `${file}.tmp`;
     const body = blocks.map((b) => JSON.stringify(toRow(b))).join('\n');
-    fs.writeFileSync(file, body ? `${body}\n` : '');
+    fs.writeFileSync(tmpJson, body ? `${body}\n` : '');
+    fs.renameSync(tmpJson, file);
   }
 
   function tip() {
@@ -310,7 +313,10 @@ export function createStore(dir, {
       blocks[i] = next;
       dirty = true;
     }
-    if (dirty) rewriteChain();
+    if (dirty) {
+      rewriteChain();
+      try { writeLatestBootstrap(dir, blocks); } catch { /* observer/bootstrap must not halt append */ }
+    }
     return dirty;
   }
 

@@ -33,6 +33,12 @@ describe('chain.bin + shewall.bin', () => {
       shareBatch: [{ dest: 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq', dest20: Buffer.alloc(20, 7).toString('hex'), nonce: '9', lz: 8 }],
     }]);
     const got = readChainBin(p);
+    assert.equal(fs.existsSync(`${p}.tmp`), false);
+    const src = fs.readFileSync(new URL('./chainbin.js', import.meta.url), 'utf8');
+    assert.match(src, /renameSync/);
+    const storeSrc = fs.readFileSync(new URL('../node/src/store.js', import.meta.url), 'utf8');
+    assert.match(storeSrc, /\$\{file\}\.tmp/);
+    assert.match(storeSrc, /renameSync\(tmpJson, file\)/);
     assert.equal(got.length, 1);
     assert.equal(got[0].height, 4);
     assert.equal(Number(got[0].aLeaves[0].count), 3);
