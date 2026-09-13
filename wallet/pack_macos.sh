@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WALLET="$ROOT/wallet"
 DIST="$WALLET/dist"
 VER="$(sed -n "s/^const kWalletVersion = '\\(.*\\)';/\\1/p" "$WALLET/lib/main.dart" | head -1)"
-VER="${VER:-0.32}"
+VER="${VER:-0.33}"
 APPNAME="Shear"
 VOLNAME="Shear $VER"
 DMG="$DIST/shear-wallet-$VER-macos.dmg"
@@ -15,7 +15,7 @@ APP="$WALLET/build/macos/Build/Products/Release/$APPNAME.app"
 
 cd "$WALLET"
 if [ "${PACK_REBUILD:-}" = "1" ] || [ ! -d "$APP" ]; then
-  flutter build macos --release --build-name=$VER --build-number=48
+  flutter build macos --release --build-name=$VER --build-number=49
 fi
 test -d "$APP"
 # Bundle libsodium so AdmitV1 prove is native (Dart BigInt field is minutes at live n).

@@ -4,8 +4,8 @@
 set -euo pipefail
 WALLET="$(cd "$(dirname "$0")/.." && pwd)"
 VER="$(sed -n "s/^const kWalletVersion = '\\(.*\\)';/\\1/p" "$WALLET/lib/main.dart" | head -1)"
-VER="${VER:-0.32}"
-BUILD_NUMBER="${BUILD_NUMBER:-48}"
+VER="${VER:-0.33}"
+BUILD_NUMBER="${BUILD_NUMBER:-49}"
 FLUTTER_NAME="$VER"
 case "$FLUTTER_NAME" in
   *.*.*) ;;

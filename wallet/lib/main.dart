@@ -28,7 +28,7 @@ import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_read_sync.dart';
 
-const kWalletVersion = '0.32';
+const kWalletVersion = '0.33';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
@@ -134,6 +134,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   final Map<String, String> _cliById = {};
   String? _focusedTxId;
   Timer? _accrualTick;
+  Timer? _preloginTick;
   Map<String, dynamic>? _pullOffer;
   bool _pullPrompting = false;
   final Set<String> _handledPullIds = {};
@@ -173,6 +174,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     }
     _depositsScroll.dispose();
     _accrualTick?.cancel();
+    _preloginTick?.cancel();
     _reserveLockHold?.cancel();
     super.dispose();
   }
@@ -195,7 +197,28 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       await _enterWallet(session.password!);
       return;
     }
+    if (!widget.skipPoolSync) unawaited(_preloginSync());
     if (mounted) setState(() {});
+  }
+
+  /// Headers/tip from a v3 node before unlock. Spend keys stay sealed.
+  Future<void> _preloginSync() async {
+    Future<void> once() async {
+      try {
+        await ledger.syncTip();
+      } catch (_) {}
+      if (mounted && !unlocked) setState(() {});
+    }
+
+    await once();
+    _preloginTick?.cancel();
+    _preloginTick = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted || unlocked) {
+        _preloginTick?.cancel();
+        return;
+      }
+      unawaited(once());
+    });
   }
 
   void _syncJoinRoster() {
@@ -453,6 +476,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   Future<void> _enterWallet(String pw) async {
+    _preloginTick?.cancel();
     if (session.identity == null) return;
     id = session.identity;
     password = pw;
@@ -875,6 +899,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                       child: const Text('Unlock with biometrics'),
                     ),
                   ],
+                  const SizedBox(height: 16),
+                  _honestyBar(context),
                   const SizedBox(height: 8),
                   TextButton(
                     onPressed: _toggleTheme,
@@ -931,20 +957,23 @@ class ShearWalletAppState extends State<ShearWalletApp> {
 
   Widget _honestyBar(BuildContext context) {
     final label = _honestyText;
-    final offline = label == 'no network';
+    final waiting = label.startsWith('looking') || label.startsWith('connecting');
     const green = Color(0xFF1A9A4A);
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8),
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
       child: SizedBox(
         key: const Key('wallet-honesty-bar'),
+        width: double.infinity,
         child: Text(
           label,
           key: const Key('wallet-sync-percent'),
           textAlign: TextAlign.center,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: TextStyle(
-            fontSize: 12,
+            fontSize: 11,
             fontWeight: FontWeight.w700,
-            color: offline ? Theme.of(context).colorScheme.error : green,
+            color: waiting ? Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7) : green,
           ),
         ),
       ),
@@ -989,7 +1018,6 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             fit: BoxFit.scaleDown,
             child: Row(
               children: [
-                _honestyBar(context),
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: InkWell(
@@ -1012,6 +1040,10 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             ),
           ),
         ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(22),
+          child: _honestyBar(context),
+        ),
       ),
       body: Column(
         children: [

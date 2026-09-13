@@ -8,7 +8,7 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
-- Miner pin: **ShearK-Miner 1.6** ([Testnet] ShearK). Wallet **0.32**. Product **0.4**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.6
+- Miner pin: **ShearK-Miner 1.6** ([Testnet] ShearK). Wallet **0.33**. Product **0.4**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.6
 - Stratum: `pool.shear.digital:1111`
 - P2P: `shear.digital:30303` (`shear-testnet-v3`)
 - Site: https://shear.digital
@@ -38,7 +38,7 @@ ShearK-Miner --pool pool.shear.digital:1111 --user ssa1YOURDEST.worker --threads
 
 `ssa1.worker` is the dest the wallet exported for this worker. Amounts are confidential; dests are stealth. Reuse links your blocks; rotate dests.
 
-Wallet **0.32** syncs a local node at `127.0.0.1:18332` (headers + compact blocks). It does not use the old height sampler. Public pool HTTP submit is an advanced toggle.
+Wallet **0.33** syncs a local node at `127.0.0.1:18332` (headers + compact blocks). It does not use the old height sampler. Public pool HTTP submit is an advanced toggle.
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure.
 Backup: encrypted `shewall.bin`. Hash samples collate per hasher dest and prune after 1000 confirmations; sealed transfers stay for the explorer. Optional bootstrap: [boot.shear.digital](https://boot.shear.digital) at height 1000, then every 400 blocks.

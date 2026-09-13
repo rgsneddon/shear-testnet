@@ -2293,6 +2293,7 @@ class ShearPoolClient {
         proven: provenHeaders,
         wanted: wantedHeaders,
         failures: _sync?.failures ?? 0,
+        height: _sync?.sampledTip ?? _pinnedTip,
       );
 
   Future<void> followLive() async {

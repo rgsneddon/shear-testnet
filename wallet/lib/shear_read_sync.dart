@@ -3,11 +3,25 @@ import 'dart:io';
 import 'dart:math';
 
 /// Wallet default is the local node RPC. Public pool HTTP is an advanced toggle
-/// (`userUrl`) with the IP warning — never the stock path.
+/// (`userUrl`) with the IP warning — never the stock send path.
 const kWalletDefaultSeed = 'http://127.0.0.1:18332';
 const kLocalPoolHttp = 'http://127.0.0.1:8088';
 const kLocalNodeRpc = 'http://127.0.0.1:18332';
 const kPublicPoolHttp = 'https://pool.shear.digital';
+/// Live book. Frozen shear-testnet-v2 is a different book — never follow it.
+const kBookMagic = 'shear-testnet-v3';
+
+/// True only for the live v3 book. A taller leftover v2 node is dropped.
+bool isV3BookStats(Map<String, dynamic> stats) {
+  final blob = [
+    stats['magic'],
+    stats['network'],
+    stats['bookLawFingerprint'],
+  ].map((e) => '${e ?? ''}').join(' ');
+  if (blob.contains('shear-testnet-v2')) return false;
+  if (blob.contains('shear-testnet-v1')) return false;
+  return blob.contains(kBookMagic);
+}
 
 /// Header page size matching node `HEADERS_PAGE`.
 const kNodeSyncHeaderPage = 2000;
@@ -52,18 +66,21 @@ int walletSyncPercent({required int proven, required int wanted}) {
   return (walletSyncFill(proven: proven, wanted: wanted) * 100).floor().clamp(0, 100);
 }
 
-/// Sync label. Never paints HONEST. No fill bar.
+/// Sync label. Never paints HONEST. Never a stuck "no network".
 String walletHonestyText({
   required bool live,
   required int proven,
   required int wanted,
   int failures = 0,
+  int height = 0,
 }) {
-  if (!live && failures > 0) return 'no network';
-  if (!live && wanted <= 0) return 'no network';
+  if (!live && failures == 0 && wanted <= 0) return 'connecting…';
+  if (!live) return 'looking for a v3 node…';
   final pct = walletSyncPercent(proven: proven, wanted: wanted);
-  if (pct >= 100) return '100% synchronised';
-  return '$pct% synchronising...';
+  final h = height > 0 ? height : wanted;
+  if (pct >= 100) return h > 0 ? 'synchronised · $h' : 'synchronised';
+  if (h > 0) return '$pct% synchronising · $h';
+  return '$pct% synchronising…';
 }
 
 class ShearReadSync {
@@ -75,7 +92,7 @@ class ShearReadSync {
     Random? random,
   })  : seeds = List<String>.unmodifiable(_dedupe([
           if (userUrl != null && userUrl.trim().isNotEmpty) userUrl,
-          if (seeds == null) ...[kLocalNodeRpc] else ...seeds,
+          if (seeds == null) ...[kLocalNodeRpc, kLocalPoolHttp, kPublicPoolHttp] else ...seeds,
         ])),
         _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8)),
         _rng = random ?? Random();
@@ -117,6 +134,7 @@ class ShearReadSync {
         proven: provenHeaders,
         wanted: wantedHeaders,
         failures: _failures,
+        height: sampledTip,
       );
 
   static List<String> _dedupe(Iterable<String> raw) {
@@ -353,6 +371,7 @@ class ShearReadSync {
   Future<({int height, String genesis})?> _probe(String base) async {
     final stats = await _getFirst(base, const ['/stats', '/api/stats']);
     if (stats == null) return null;
+    if (!isV3BookStats(stats)) return null;
     final tip = (stats['height'] as num?)?.toInt() ?? 0;
     if (tip < 1) return null;
     var genesis = await _genesisOf(base);

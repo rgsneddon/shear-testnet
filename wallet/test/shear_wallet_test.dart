@@ -78,18 +78,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.32"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.33"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.32"'), isTrue);
+    expect(winMain.contains('L"Shear 0.33"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.32"'), isTrue);
+    expect(winRc.contains('"Shear 0.33"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.32"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.33"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -1065,8 +1065,8 @@ void main() {
     final sync = ShearReadSync(jitter: Duration.zero);
     expect(sync.seeds.first.contains('127.0.0.1'), isTrue);
     expect(sync.seeds, contains(kLocalNodeRpc));
-    expect(sync.seeds.contains(kLocalPoolHttp), isFalse);
-    expect(sync.seeds.contains(kPublicPoolHttp), isFalse);
+    expect(sync.seeds.contains(kPublicPoolHttp), isTrue);
+    expect(kBookMagic, 'shear-testnet-v3');
     expect(kWalletDefaultSeed, contains('127.0.0.1'));
     expect(kWalletDefaultSeed.contains('pool.shear.digital'), isFalse);
     final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
@@ -1130,7 +1130,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.32');
+    expect(kWalletVersion, '0.33');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -1422,6 +1422,9 @@ void main() {
     await tester.pump();
     expect(find.text('Set password'), findsOneWidget);
     expect(find.text('Import shewall.bin'), findsOneWidget);
+    expect(find.byKey(const Key('wallet-honesty-bar')), findsOneWidget);
+    expect(find.byKey(const Key('wallet-sync-percent')), findsOneWidget);
+    expect(find.text('no network'), findsNothing);
     expect(find.text('Unlock'), findsNothing);
     await tester.enterText(find.byType(TextField).at(0), 'correct-horse');
     await tester.enterText(find.byType(TextField).at(1), 'other-horse');
@@ -1586,8 +1589,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.32');
-    expect(kWalletVersion, '0.32');
+    expect(app.title, 'Shear 0.33');
+    expect(kWalletVersion, '0.33');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -3804,8 +3807,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.32 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.32');
+  test('kWalletVersion == 0.33 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.33');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -3870,21 +3873,43 @@ void main() {
     final got = await sync.findLiveNode();
     expect(got, liveUrl);
     expect(sync.liveBase, liveUrl);
-    expect(walletHonestyText(live: true, proven: 2, wanted: 5), '40% synchronising...');
+    expect(walletHonestyText(live: true, proven: 2, wanted: 5), '40% synchronising · 5');
     expect(walletSyncPercent(proven: 2, wanted: 5), 40);
-    expect(walletHonestyText(live: true, proven: 5, wanted: 5), '100% synchronised');
-    expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), 'no network');
+    expect(walletHonestyText(live: true, proven: 5, wanted: 5), 'synchronised · 5');
+    expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 0), 'connecting…');
+    expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), 'looking for a v3 node…');
+    expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), isNot('no network'));
     await sync.followTip();
     expect(nodeSyncHeights(1, 16), hasLength(16));
     expect(sync.wantedHeaders, 16);
     expect(sync.provenHeaders, 16);
-    expect(sync.honestyText(), '100% synchronised');
+    expect(sync.honestyText(), 'synchronised · 16');
     expect(flyclientSampleHeightsForTest(16), [1, 2, 4, 8, 16]);
     expect(sync.wantedHeaders, isNot(flyclientSampleHeightsForTest(16).length));
     final pool = ShearPoolClient(sync: sync, http: http);
     await pool.followLive();
     expect(pool.baseUrl, liveUrl);
-    expect(pool.honestyText(), '100% synchronised');
+    expect(pool.honestyText(), 'synchronised · 16');
+  });
+
+  test('read-sync drops a taller leftover v2 node for a v3 node', () async {
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final v2 = _PoolLive(headerHex: hex, height: 2306, magic: 'shear-testnet-v2');
+    final v3 = _PoolLive(headerHex: hex, height: 16, magic: 'shear-testnet-v3');
+    final v2s = await _fakePool(live: v2);
+    final v3s = await _fakePool(live: v3);
+    addTearDown(() => v2s.close(force: true));
+    addTearDown(() => v3s.close(force: true));
+    expect(isV3BookStats({'magic': 'shear-testnet-v2'}), isFalse);
+    expect(isV3BookStats({'magic': 'shear-testnet-v3'}), isTrue);
+    final sync = ShearReadSync(
+      seeds: ['http://127.0.0.1:${v2s.port}', 'http://127.0.0.1:${v3s.port}'],
+      http: _realHttp(),
+      jitter: Duration.zero,
+    );
+    expect(await sync.findLiveNode(), 'http://127.0.0.1:${v3s.port}');
+    expect(sync.liveBase, isNot('http://127.0.0.1:${v2s.port}'));
   });
 
   test('upgraded wallet drops leftover pre-reset txs; live history is the book', () async {
@@ -4030,7 +4055,7 @@ void main() {
     await sync.followTip();
     expect(sync.wantedHeaders, 5);
     expect(sync.provenHeaders, 5);
-    expect(sync.honestyText(), '100% synchronised');
+    expect(sync.honestyText(), 'synchronised · 5');
     final headerAfter = cur.headerHits + cur.headersBatchHits;
     expect(headerAfter, lessThan(20));
     await sync.followTip();
@@ -4732,6 +4757,7 @@ class _PoolLive {
     this.balance = 10,
     this.pending = 0,
     this.avgBlockTimeMs = 90000,
+    this.magic = 'shear-testnet-v3',
     this.owner,
     List<Map<String, dynamic>>? incoming,
     List<Map<String, dynamic>>? history,
@@ -4740,6 +4766,7 @@ class _PoolLive {
 
   String headerHex;
   int height;
+  String magic;
   double balance;
   double pending;
   int avgBlockTimeMs;
@@ -4800,6 +4827,8 @@ Future<HttpServer> _fakePool({
         'ok': true,
         'height': state.height,
         'header': state.headerHex,
+        'magic': state.magic,
+        'network': state.magic,
         'avgBlockTimeMs': state.avgBlockTimeMs,
         'networkAvgBlockTimeMs': state.avgBlockTimeMs,
         'lockedNanos': portal['totalLockedNanos'] ?? 0,
