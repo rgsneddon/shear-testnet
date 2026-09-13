@@ -23,7 +23,7 @@ import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
 import { reviveBytes, reviveTx, noteCommitOfDest20 } from '../../crypto/note.js';
-import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
+import { noteCommitSpendableNanos, spentNoteCommits } from '../../crypto/coinbase_notes.js';
 import { hash20FromAddress } from '../../crypto/address.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
@@ -868,9 +868,14 @@ export function createStore(dir, {
     const addr = String(address || '').trim();
     const h20 = hash20FromAddress(addr);
     const wantNc = h20 ? noteCommitOfDest20(h20) : null;
+    const spent = spentNoteCommits(blocks);
     return explorer.filter((r) => {
       if (r.to === addr || r.from === addr) return true;
-      if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc)) return true;
+      if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc)) {
+        const hex = Buffer.from(r.noteCommit).toString('hex');
+        if (spent.has(hex)) return false;
+        return true;
+      }
       return false;
     }).map((r) => {
       if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc) && !r.to) {

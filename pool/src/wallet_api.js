@@ -27,7 +27,7 @@ import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, open
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves } from '../../crypto/coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, spentNoteCommits } from '../../crypto/coinbase_notes.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
@@ -206,6 +206,7 @@ export function reconstructOwner(store, address) {
       const h = hash20FromAddress(d);
       return h ? noteCommitOfDest20(h) : null;
     }).filter(Boolean);
+    const spent = spentNoteCommits(store.blocks || []);
     const bonus = Number(store?.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS);
     for (const b of store.blocks || []) {
       const pays = [
@@ -219,6 +220,7 @@ export function reconstructOwner(store, address) {
         for (const o of tx.vout || []) {
           if (!o?.noteCommit || !wants.length) continue;
           const nc = Buffer.from(asU8(o.noteCommit));
+          if (nc.length === 32 && spent.has(nc.toString('hex'))) continue;
           if (!wants.some((w) => w.equals(nc))) continue;
           let n = Number(o.nanos || 0);
           if (tx.coinbase) n = matchSealedCoinbaseVout(o, pays).nanos || n;

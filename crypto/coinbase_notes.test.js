@@ -25,4 +25,29 @@ describe('noteCommitSpendableNanos', () => {
     const other = spendDestOf(newIdentity().spendPub);
     assert.equal(noteCommitSpendableNanos(blocks, other, matureTip), 0);
   });
+
+  it('does not credit a noteCommit after a later vin spends it', () => {
+    const alice = newIdentity();
+    const dest = spendDestOf(alice.spendPub);
+    const want = noteCommitOfDest20(hash20FromAddress(dest));
+    const matureTip = 2 + SPENDABLE_CONFIRMATIONS - 1;
+    const blocks = [
+      {
+        height: 2,
+        txs: [{
+          coinbase: true,
+          vout: [{ kind: 'pot', noteCommit: want, nanos: 2 * NANOS_PER_SHE }],
+        }],
+      },
+      {
+        height: 8,
+        txs: [{
+          kind: 'send',
+          vin: [{ noteCommit: want, index: 0 }],
+          vout: [{ kind: 'send', nanos: 1 }],
+        }],
+      },
+    ];
+    assert.equal(noteCommitSpendableNanos(blocks, dest, matureTip), 0);
+  });
 });

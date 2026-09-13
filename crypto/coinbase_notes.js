@@ -154,6 +154,30 @@ function noteCommitEq(a, b) {
   }
 }
 
+function noteCommitHex(v) {
+  try {
+    const b = Buffer.from(asU8(v));
+    return b.length === 32 ? b.toString('hex') : '';
+  } catch {
+    return '';
+  }
+}
+
+/** noteCommit hexes already bound in a later vin (spent). */
+export function spentNoteCommits(blocks) {
+  const spent = new Set();
+  for (const b of blocks || []) {
+    for (const tx of b.txs || []) {
+      if (tx?.coinbase) continue;
+      for (const v of tx.vin || []) {
+        const h = noteCommitHex(v?.noteCommit);
+        if (h) spent.add(h);
+      }
+    }
+  }
+  return spent;
+}
+
 /** Mature coinbase/hash nanos owned by dest when compact explorer `to` is empty. */
 export function noteCommitSpendableNanos(blocks, address, tipHeight, {
   hashBonusNanos = HASH_BONUS_NANOS,
@@ -162,6 +186,7 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
   const dest20 = hash20FromAddress(address);
   if (!dest20) return 0;
   const want = noteCommitOfDest20(dest20);
+  const spent = spentNoteCommits(blocks);
   const tip = Number(tipHeight) || 0;
   let nanos = 0;
   for (const b of blocks || []) {
@@ -177,6 +202,8 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
     for (const tx of b.txs || []) {
       for (const o of tx.vout || []) {
         if (!o?.noteCommit || !noteCommitEq(o.noteCommit, want)) continue;
+        const hex = noteCommitHex(o.noteCommit);
+        if (hex && spent.has(hex)) continue;
         let n = Number(o.nanos || 0);
         if (tx.coinbase) {
           const matched = matchSealedCoinbaseVout(o, pays);
