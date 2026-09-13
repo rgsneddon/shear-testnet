@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build + zip wallet linux/arch on Dedicated-de. Invoked on the server.
 set -euo pipefail
-WALLET="${SHEAR_WALLET:-/opt/shear-v2/wallet}"
+WALLET="${SHEAR_WALLET:-/opt/shear-v3/wallet}"
 FLUTTER_ROOT="${FLUTTER_ROOT:-/opt/flutter}"
 VER="$(sed -n "s/^const kWalletVersion = '\\(.*\\)';/\\1/p" "$WALLET/lib/main.dart" | head -1)"
 BUILD_NUMBER="${BUILD_NUMBER:-48}"

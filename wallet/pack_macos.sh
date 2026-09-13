@@ -102,7 +102,7 @@ ls -lh "$DMG"
 hdiutil imageinfo "$DMG" | head
 strings "$DMG" | grep -i "Applications" | head
 
-# Keep Dedicated-de /opt/shear-v2/wallet on this pin. Failures stay leftover.
+# Keep Dedicated-de /opt/shear-v3/wallet on this pin. Failures stay leftover.
 if [ "${SYNC_POOL_WALLET:-1}" = "1" ]; then
   "$WALLET/pack/sync_pool_wallet.sh" || echo "pool wallet sync leftover" >&2
 fi
