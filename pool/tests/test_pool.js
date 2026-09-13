@@ -886,6 +886,7 @@ describe('public miner listing', () => {
     const hits = findOkShares(job, 2);
     const a = await loginAndShare(stratumPort, `${dest}.alpha`, {}, hits[0]);
     const b = await loginAndShare(stratumPort, `${dest}.beta`, {}, hits[1]);
+    await new Promise((r) => setTimeout(r, STATS_REFRESH_MS + 100));
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     const rows = (stats.workers || []).filter((w) => w.miner === tag);
     assert.equal(rows.length, 1, JSON.stringify(stats.workers));
