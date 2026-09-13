@@ -185,8 +185,9 @@ export function indexedDestOpening(spendHash20, closure, index) {
 export function flowSendNeedsOpen(tx) {
   const d = fundedDebit(tx);
   if (!d) return false;
-  const k = String(tx.kind || '');
+  const k = String(tx.kind || tx.vout?.[0]?.kind || '');
   if (k === 'pool-withdraw' || k === 'claim') return false;
+  if (k === 'lock' || k === 'vote' || k === 'withdraw') return false;
   return true;
 }
 
