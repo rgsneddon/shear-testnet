@@ -5,8 +5,10 @@ import { createEVM } from '@ethereumjs/evm';
 import { createCustomCommon, Mainnet, Hardfork } from '@ethereumjs/common';
 import { hexToBytes, bytesToHex, createAddressFromString, createAccount } from '@ethereumjs/util';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { hash20FromAddress } from './address.js';
+import { hash20FromAddress, encodeDest } from './address.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_MS } from './asert.js';
+import { reserveAction } from './reserve_vault.js';
+import { asU8 } from './note.js';
 
 function keccak256(data) {
   const u8 = data instanceof Uint8Array ? data : Buffer.from(data);
@@ -305,18 +307,31 @@ const VOTE_NUM = {
   'leave bonus as-is': 3,
 };
 
+function destBytesForEvm(tx, act) {
+  const s = txDestOf(tx) || txFromOf(tx) || act?.dest || act?.payout || '';
+  if (s) return s;
+  const d20 = tx?.vout?.[0]?.dest20 || tx?.vin?.[0]?.dest20;
+  if (d20) {
+    try { return encodeDest(Buffer.from(asU8(d20))); } catch { return Buffer.from(asU8(d20)); }
+  }
+  return '';
+}
+
 export async function executeReserveTx(session, tx, nowMs) {
   const kind = txKindOf(tx);
-  const dest = txDestOf(tx) || txFromOf(tx);
-  const nanos = txNanosOf(tx);
+  const act = reserveAction(tx);
+  const dest = destBytesForEvm(tx, act);
+  const nanos = act ? act.nanos : txNanosOf(tx);
   if (kind === 'evm-value') {
     return transferEvmShe(session, { from: txFromOf(tx), to: dest, nanos });
   }
   if (kind === 'lock') {
+    if (!dest) return { ok: true };
     return callReserve(session, encodeDeposit(dest, nanos, nowMs));
   }
   if (kind === 'vote') {
-    const choice = VOTE_NUM[String(tx.choice || '').toLowerCase()] || Number(tx.choice) || 1;
+    const choice = VOTE_NUM[String(tx.choice || act?.choice || '').toLowerCase()] || Number(tx.choice) || 1;
+    if (!dest) return { ok: true };
     return callReserve(session, encodeVote(dest, choice, nowMs));
   }
   if (kind === 'withdraw') {
@@ -329,7 +344,9 @@ export async function executeReserveTx(session, tx, nowMs) {
         if (!en.ok) return en;
       }
     }
-    return callReserve(session, encodeWithdraw(txFromOf(tx) || dest, nowMs));
+    const from = txFromOf(tx) || dest;
+    if (!from) return { ok: true };
+    return callReserve(session, encodeWithdraw(from, nowMs));
   }
   return { ok: false, reason: 'evm_kind' };
 }

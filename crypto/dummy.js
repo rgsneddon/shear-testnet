@@ -40,9 +40,11 @@ export function claimedVoutNanos(tx, o, i) {
   if (!o) return 0;
   if (String(o.kind || '') === DUMMY_KIND) return 0;
   if (o.commit) {
-    const claimed = i === 0
-      ? Math.floor(Number(tx?.nanos || o.nanos || 0))
-      : Math.floor(Number(o.nanos || tx?.changeNanos || 0));
+    const claimed = o.valueProof?.v != null
+      ? Math.floor(Number(o.valueProof.v))
+      : (i === 0
+        ? Math.floor(Number(tx?.nanos || o.nanos || 0))
+        : Math.floor(Number(o.nanos || tx?.changeNanos || 0)));
     return verifySealedNote(o, claimed) ? claimed : 0;
   }
   return Math.floor(Number(o.nanos || 0));
@@ -55,6 +57,10 @@ export function sealFlowVout(o) {
   if (!d20) return o;
   let note = sealNote(n, { dest20: d20, kind: o.kind || 'send' });
   note.viewTag = viewTagOf(note.noteCommit);
+  note.dest20 = d20;
+  if (note.valueProof && typeof note.valueProof === 'object') {
+    note.valueProof = { ...note.valueProof, v: n };
+  }
   if (o.address) note.address = o.address;
   note = attachAdmitPub(note, { admitBase: admitBaseFromAddress(o.address) });
   return note;
@@ -83,9 +89,20 @@ export function attachDummyOuts(tx, { fanout = DUMMY_FANOUT, spent } = {}) {
   if (Array.isArray(tx.vin) && tx.vin.length) {
     const vin = tx.vin.map((v, i) => {
       const src = Array.isArray(spent) ? spent[i] : (i === 0 ? spent : null);
-      if (src?.commit) return bindVinToSpent({ ...v }, src);
+      if (src?.commit) {
+        const bound = bindVinToSpent({ ...v }, src);
+        if (!bound.dest20 && v.address) {
+          const d20 = hash20FromAddress(v.address);
+          if (d20) bound.dest20 = d20;
+        }
+        return bound;
+      }
       const row = { ...v };
       if (!row.commit) delete row.commit;
+      if (!row.dest20 && v.address) {
+        const d20 = hash20FromAddress(v.address);
+        if (d20) row.dest20 = d20;
+      }
       return row;
     });
     out.vin = vin;

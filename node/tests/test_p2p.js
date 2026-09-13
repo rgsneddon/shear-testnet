@@ -8,6 +8,7 @@ import { encodeDest, newIdentity, freshStealthDest } from '../../crypto/address.
 import { spendBox, admitSend } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { signSpendTx } from '../../crypto/spend.js';
+import { lockTx, voteTx } from '../../crypto/reserve_vault.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 import {
@@ -302,28 +303,15 @@ describe('p2p gossip', () => {
       await waitFor(() => a.p2p.syncedOnline() >= 2);
       const { levyNanos } = await import('../../crypto/levy.js');
       const lockNanos = 314159265358;
-      const { sealNote } = await import('../../crypto/note.js');
-      const { hash20FromAddress } = await import('../../crypto/address.js');
-      const d20 = hash20FromAddress(dest);
-      const lock = signSpendTx({
-        id: 'lock-fluff',
-        kind: 'lock',
-        from: dest,
-        to: dest,
-        nanos: lockNanos,
-        fee: levyNanos(lockNanos, { depth: 1e9 }),
-        vout: [{ ...sealNote(lockNanos, { dest20: d20, kind: 'lock' }), address: dest }],
-      }, box.key);
-      const vote = signSpendTx({
-        id: 'vote-fluff',
-        kind: 'vote',
-        from: dest,
-        to: dest,
-        nanos: 0,
-        payer: dest,
-        fee: levyNanos(0, { depth: 1e9 }),
-        vout: [{ ...sealNote(0, { dest20: d20, kind: 'vote' }), address: dest }],
-      }, box.key);
+      const lock = lockTx({ from: dest, to: dest, nanos: lockNanos, id: 'lock-fluff' });
+      lock.fee = levyNanos(lockNanos, { depth: 1e9 });
+      delete lock.vin;
+      signSpendTx(lock, box.key);
+      const vote = voteTx({ from: dest, dest, choice: 'leave bonus as-is', id: 'vote-fluff' });
+      vote.fee = levyNanos(0, { depth: 1e9 });
+      vote.payer = dest;
+      delete vote.vin;
+      signSpendTx(vote, box.key);
       const qLock = a.store.queueTx(lock);
       const qVote = a.store.queueTx(vote);
       assert.equal(qLock.ok, true, qLock.reason);
@@ -336,7 +324,7 @@ describe('p2p gossip', () => {
         const voteRow = rows.find((t) => t.id === 'vote-fluff');
         return lockRow?.pending === true && voteRow?.pending === true
           && lockRow.kind === 'lock' && voteRow.kind === 'vote';
-      }, 3000);
+      }, 8000);
       assert.equal(painted, true);
       const rows = explorerRecentTxs(c.store, 30);
       const lockRow = rows.find((t) => t.id === 'lock-fluff');

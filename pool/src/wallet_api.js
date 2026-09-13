@@ -198,7 +198,8 @@ export function reconstructOwner(store, address) {
   const mempool = store?.mempool || [];
   let nanos = 0;
   for (const d of dests) {
-    nanos += matureSpendableNanos(rows, d, tipH);
+    const destRows = typeof store?.historyFor === 'function' ? store.historyFor(d) : rows;
+    nanos += matureSpendableNanos(destRows, d, tipH);
     nanos -= mempoolDebitNanos(mempool, d);
   }
   if (nanos <= 0) {

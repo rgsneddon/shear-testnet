@@ -23,7 +23,7 @@ import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
 import { reviveBytes, reviveTx, noteCommitOfDest20 } from '../../crypto/note.js';
-import { noteCommitSpendableNanos, spentNoteCommits } from '../../crypto/coinbase_notes.js';
+import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { hash20FromAddress } from '../../crypto/address.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
@@ -561,9 +561,9 @@ export function createStore(dir, {
       height: prev ? prev.height + 1 : 1,
       weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
     };
-    indexSealed(full);
-    applyReserve(full);
     const stored = leanBlock(full);
+    indexSealed(stored);
+    applyReserve(stored);
     blocks.push(stored);
     liveFlux = applyBlockToFluxset(liveFlux, stored);
     persist(stored);
@@ -864,24 +864,32 @@ export function createStore(dir, {
     return adopt(fork);
   }
 
+  function dest20Equals(row20, want) {
+    if (!row20 || !want) return false;
+    try {
+      return Buffer.from(asU8(row20)).equals(Buffer.from(want));
+    } catch {
+      return false;
+    }
+  }
+
   function historyFor(address) {
     const addr = String(address || '').trim();
     const h20 = hash20FromAddress(addr);
     const wantNc = h20 ? noteCommitOfDest20(h20) : null;
-    const spent = spentNoteCommits(blocks);
     return explorer.filter((r) => {
       if (r.to === addr || r.from === addr) return true;
-      if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc)) {
-        const hex = Buffer.from(r.noteCommit).toString('hex');
-        if (spent.has(hex)) return false;
-        return true;
-      }
+      if (h20 && (dest20Equals(r.fromDest20, h20) || dest20Equals(r.toDest20, h20))) return true;
+      if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc)) return true;
       return false;
     }).map((r) => {
-      if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc) && !r.to) {
-        return { ...r, to: addr };
+      let row = r;
+      if (h20 && dest20Equals(r.fromDest20, h20) && !r.from) row = { ...row, from: addr };
+      if (h20 && dest20Equals(r.toDest20, h20) && !r.to) row = { ...row, to: addr };
+      if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc) && !row.to) {
+        row = { ...row, to: addr };
       }
-      return r;
+      return row;
     });
   }
 

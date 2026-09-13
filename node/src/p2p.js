@@ -307,12 +307,16 @@ export function createP2p({
     return fluffDelayMs(stemRng);
   }
 
+  function wireTx(tx) {
+    return compactTx(tx);
+  }
+
   function scheduleFluff(id, tx, except) {
     const key = String(id || '');
     if (!key || fluffTimers.has(key)) return;
     const t = setTimeout(() => {
       fluffTimers.delete(key);
-      broadcast({ type: 'tx', magic, tx, stem: false }, except);
+      broadcast({ type: 'tx', magic, tx: wireTx(tx), stem: false }, except);
     }, delayFluff());
     fluffTimers.set(key, t);
   }
@@ -320,7 +324,7 @@ export function createP2p({
   function stemRelay(tx, fromSock, hops) {
     const nextHop = (Number(hops) || 0) + 1;
     const next = pickStemSocket(sockets, fromSock, stemRng);
-    if (next) send(next, { type: 'tx', magic, tx, stem: true, hops: nextHop });
+    if (next) send(next, { type: 'tx', magic, tx: wireTx(tx), stem: true, hops: nextHop });
     return next ? 1 : 0;
   }
 
@@ -333,7 +337,7 @@ export function createP2p({
       seenTx.delete(id);
       return;
     }
-    const payload = got.tx || tx;
+    const payload = wireTx(got.tx || tx);
     if (stem && hops < STEM_MAX_HOPS) {
       stemRelay(payload, fromSock, hops);
       scheduleFluff(id, payload, fromSock);
@@ -347,9 +351,10 @@ export function createP2p({
       const id = String(tx?.id || '');
       if (!id) return;
       if (!rememberTxId(id)) return;
-      const n = stemRelay(tx, null, 0);
+      const sealed = wireTx(tx);
+      const n = stemRelay(sealed, null, 0);
       originInvSize.set(id, n);
-      scheduleFluff(id, tx, null);
+      scheduleFluff(id, sealed, null);
     });
   }
 
@@ -409,7 +414,7 @@ export function createP2p({
       send(sock, {
         type: 'mempool',
         magic,
-        txs: Array.isArray(store.mempool) ? store.mempool.slice(0, 4096) : [],
+        txs: Array.isArray(store.mempool) ? store.mempool.slice(0, 4096).map(compactTx) : [],
         work: typeof store.openRoundRows === 'function' ? store.openRoundRows() : [],
       });
       return;

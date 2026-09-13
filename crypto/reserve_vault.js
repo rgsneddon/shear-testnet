@@ -8,8 +8,8 @@ import {
   NANOS_PER_SHE,
   HASH_BONUS_NANOS_FLOOR,
 } from './asert.js';
-import { isDestAddress, isShearAddress, hash20FromAddress } from './address.js';
-import { sealNote, verifySealedNote } from './note.js';
+import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest } from './address.js';
+import { sealNote, verifySealedNote, asU8 } from './note.js';
 import {
   emptyOracle,
   interestNanos,
@@ -42,6 +42,17 @@ function asNum(n) {
 export function portalIdFromDest(dest) {
   const d = String(dest || '');
   return createHash('sha256').update('shear-portal-v1').update(d).digest('hex');
+}
+
+export function isPortalId(s) {
+  return /^[0-9a-f]{64}$/i.test(String(s || ''));
+}
+
+function portalKey(destOrId) {
+  const s = String(destOrId || '');
+  if (isPortalId(s)) return s.toLowerCase();
+  if (s && isDestAddress(s) && !isShearAddress(s)) return portalIdFromDest(s);
+  return '';
 }
 
 export function withdrawMintId(portalId, epoch) {
@@ -191,8 +202,11 @@ export function publicVaultView(state, nowMs) {
   };
 }
 
-function portalOf(state, dest) {
-  const id = portalIdFromDest(dest);
+function portalOf(state, destOrId) {
+  const id = portalKey(destOrId);
+  if (!id) {
+    return { id: '', staked: 0n, idle: 0n, vote: null, joined: false, voteEpoch: 0 };
+  }
   if (!state.portals[id]) {
     state.portals[id] = { id, staked: 0n, idle: 0n, vote: null, joined: false, voteEpoch: 0 };
   }
@@ -221,15 +235,21 @@ function portalPublic(p) {
   };
 }
 
-export function deposit({ state, dest, nanos, nowMs, payout } = {}) {
-  if (!isDestAddress(dest) || isShearAddress(dest)) {
+export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPortalId } = {}) {
+  const id = portalKey(portalId || dest);
+  if (!id) return { ok: false, reason: 'bad_dest' };
+  if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {
     return { ok: false, reason: 'bad_dest' };
   }
   const n = asBig(nanos);
   if (n <= 0n) return { ok: false, reason: 'bad_amount' };
-  const p = portalOf(state, dest);
+  const p = portalOf(state, id);
+  if (payoutPortalId && isPortalId(payoutPortalId) && !p.payoutPortalId) {
+    p.payoutPortalId = String(payoutPortalId).toLowerCase();
+  }
   if (payout && isDestAddress(payout) && !isShearAddress(payout)) {
     if (!p.payout) p.payout = payout;
+    if (!p.payoutPortalId) p.payoutPortalId = portalIdFromDest(payout);
   }
   if (state.epochStartMs && !state.bonusEnacted && remainingMs(state, nowMs) === 0) {
     return { ok: false, reason: 'need_enact' };
@@ -256,12 +276,14 @@ export function deposit({ state, dest, nanos, nowMs, payout } = {}) {
   };
 }
 
-export function vote({ state, dest, choice, nowMs }) {
+export function vote({ state, dest, portalId, choice, nowMs }) {
   nowMs;
-  if (!isDestAddress(dest) || isShearAddress(dest)) {
+  const id = portalKey(portalId || dest);
+  if (!id) return { ok: false, reason: 'bad_dest' };
+  if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {
     return { ok: false, reason: 'bad_dest' };
   }
-  const p = portalOf(state, dest);
+  const p = portalOf(state, id);
   if (!p.joined || !canVote(p.staked, p.idle)) return { ok: false, reason: 'not_voter' };
   if (!state.epochStartMs) return { ok: false, reason: 'not_voter' };
   if (state.bonusEnacted) return { ok: false, reason: 'epoch_closed' };
@@ -340,7 +362,17 @@ function sealedReserveVout(to, n, kind) {
   const d20 = hash20FromAddress(to);
   if (!d20) return { address: to, nanos: n, kind };
   const note = sealNote(n, { dest20: d20, kind });
+  if (note.valueProof && typeof note.valueProof === 'object') {
+    note.valueProof = { ...note.valueProof, v: n };
+  }
+  note.dest20 = d20;
+  note.portalId = portalIdFromDest(to);
   return { ...note, address: to };
+}
+
+function vinDest20(from) {
+  const d20 = hash20FromAddress(from);
+  return d20 ? { address: from, dest20: d20 } : { address: from };
 }
 
 export function lockTx({ from, to, nanos, id }) {
@@ -352,7 +384,9 @@ export function lockTx({ from, to, nanos, id }) {
     from,
     to,
     nanos: n,
-    vin: [{ address: from }],
+    portalId: portalIdFromDest(to),
+    payoutPortalId: portalIdFromDest(from),
+    vin: [vinDest20(from)],
     vout: [sealedReserveVout(to, n, KIND_LOCK)],
   };
 }
@@ -367,6 +401,8 @@ export function withdrawTx({ from, to, nanos, id }) {
     from,
     to,
     nanos: n,
+    portalId: portalIdFromDest(from),
+    payoutPortalId: portalIdFromDest(to),
     vin: [],
     vout: [sealedReserveVout(to, n, KIND_WITHDRAW)],
   };
@@ -380,38 +416,70 @@ export function voteTx({ from, dest, choice, id }) {
     from,
     to: dest,
     choice,
-    vin: [{ address: from }],
+    portalId: portalIdFromDest(dest),
+    payoutPortalId: portalIdFromDest(from),
+    vin: [vinDest20(from)],
     vout: [sealedReserveVout(dest, 0, KIND_VOTE)],
   };
 }
 
-function txDest(tx) {
-  return tx?.to || tx?.vout?.[0]?.address || '';
-}
-
-function txFrom(tx) {
-  return tx?.from || tx?.vin?.[0]?.address || '';
-}
-
-function txNanos(tx) {
-  const claimed = Math.floor(Number(tx?.nanos || tx?.vout?.[0]?.nanos || 0));
-  const o = tx?.vout?.[0];
-  if (o?.commit && o?.valueProof) {
-    return verifySealedNote(o, claimed) ? claimed : 0;
-  }
-  return claimed;
+function destFromDest20(d20) {
+  try {
+    const b = Buffer.from(asU8(d20));
+    if (b.length === 20) return encodeDest(b);
+  } catch { /* ignore */ }
+  return '';
 }
 
 function txKind(tx) {
   return String(tx?.kind || tx?.vout?.[0]?.kind || '');
 }
 
+/** Decode a Reserve action from the sealed (or legacy fat) body. */
+export function reserveAction(tx) {
+  const kind = txKind(tx);
+  if (kind !== KIND_LOCK && kind !== KIND_VOTE && kind !== KIND_WITHDRAW) return null;
+  const o = tx?.vout?.[0] || {};
+  const claimed = o?.valueProof?.v != null
+    ? Math.floor(Number(o.valueProof.v))
+    : Math.floor(Number(tx?.nanos || o?.nanos || 0));
+  let nanos = claimed;
+  if (o?.commit && o?.valueProof) {
+    nanos = verifySealedNote(o, claimed) ? claimed : 0;
+  }
+  const legacyTo = tx?.to || o?.address || destFromDest20(o?.dest20) || '';
+  const legacyFrom = tx?.from || tx?.vin?.[0]?.address || destFromDest20(tx?.vin?.[0]?.dest20) || '';
+  let portalId = String(tx?.portalId || o?.portalId || '').toLowerCase();
+  if (!isPortalId(portalId)) {
+    const dest = kind === KIND_WITHDRAW ? legacyFrom : legacyTo;
+    portalId = dest ? portalIdFromDest(dest) : '';
+  }
+  let payoutPortalId = String(tx?.payoutPortalId || '').toLowerCase();
+  if (!isPortalId(payoutPortalId)) {
+    const pay = kind === KIND_WITHDRAW ? legacyTo : legacyFrom;
+    payoutPortalId = pay ? portalIdFromDest(pay) : '';
+  }
+  return {
+    kind,
+    portalId,
+    payoutPortalId,
+    nanos,
+    choice: tx?.choice,
+    dest: kind === KIND_WITHDRAW ? legacyFrom : legacyTo,
+    payout: kind === KIND_WITHDRAW ? legacyTo : legacyFrom,
+  };
+}
+
 export function verifyReservePayout(state, tx) {
-  if (txKind(tx) !== KIND_WITHDRAW) return { ok: true };
-  const dest = txFrom(tx);
-  const to = txDest(tx);
-  const p = state?.portals?.[portalIdFromDest(dest)];
-  if (p?.payout && to && to !== p.payout) return { ok: false, reason: 'payout_mismatch' };
+  const act = reserveAction(tx);
+  if (!act || act.kind !== KIND_WITHDRAW) return { ok: true };
+  const p = act.portalId ? state?.portals?.[act.portalId] : null;
+  if (act.payoutPortalId && p?.payoutPortalId && act.payoutPortalId !== p.payoutPortalId) {
+    return { ok: false, reason: 'payout_mismatch' };
+  }
+  if (p?.payout && act.payout && isDestAddress(act.payout) && act.payout !== p.payout) {
+    return { ok: false, reason: 'payout_mismatch' };
+  }
   return { ok: true };
 }
 
@@ -433,35 +501,46 @@ export function applyReserveBlock({ state, block, nowMs }) {
   for (const tx of txs) {
     if (!tx || tx.coinbase) continue;
     if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
-    const kind = txKind(tx);
-    if (kind === KIND_LOCK) {
+    const act = reserveAction(tx);
+    if (!act) continue;
+    if (act.kind === KIND_LOCK) {
       results.push({
         action: KIND_LOCK,
         ...deposit({
           state,
-          dest: txDest(tx),
-          nanos: txNanos(tx),
+          portalId: act.portalId,
+          dest: act.dest,
+          nanos: act.nanos,
           nowMs,
-          payout: txFrom(tx),
+          payout: act.payout,
+          payoutPortalId: act.payoutPortalId,
         }),
       });
       continue;
     }
-    if (kind === KIND_VOTE) {
+    if (act.kind === KIND_VOTE) {
       results.push({
         action: KIND_VOTE,
-        ...vote({ state, dest: txDest(tx) || txFrom(tx), choice: tx.choice, nowMs }),
+        ...vote({
+          state,
+          portalId: act.portalId,
+          dest: act.dest,
+          choice: act.choice,
+          nowMs,
+        }),
       });
       continue;
     }
-    if (kind === KIND_WITHDRAW) {
+    if (act.kind === KIND_WITHDRAW) {
       results.push({
         action: KIND_WITHDRAW,
         ...withdraw({
           state,
-          dest: txFrom(tx),
+          portalId: act.portalId,
+          dest: act.dest,
           nowMs,
-          payout: txDest(tx),
+          payout: act.payout,
+          payoutPortalId: act.payoutPortalId,
         }),
       });
     }
@@ -511,8 +590,10 @@ export function enact({ state, nowMs } = {}) {
   };
 }
 
-export function withdraw({ state, dest, nowMs, payout } = {}) {
-  if (!isDestAddress(dest) || isShearAddress(dest)) {
+export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId } = {}) {
+  const id = portalKey(portalId || dest);
+  if (!id) return { ok: false, reason: 'bad_dest' };
+  if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {
     return { ok: false, reason: 'bad_dest' };
   }
   if (!state.epochStartMs || nowMs < state.epochStartMs + RESERVE_EPOCH_MS) {
@@ -522,15 +603,18 @@ export function withdraw({ state, dest, nowMs, payout } = {}) {
     const did = enact({ state, nowMs });
     if (!did.ok) return did;
   }
-  const p = portalOf(state, dest);
-  if (p.payout && payout && payout !== p.payout) {
+  const p = portalOf(state, id);
+  if (payoutPortalId && p.payoutPortalId && String(payoutPortalId).toLowerCase() !== p.payoutPortalId) {
+    return { ok: false, reason: 'payout_mismatch' };
+  }
+  if (p.payout && payout && isDestAddress(payout) && payout !== p.payout) {
     return { ok: false, reason: 'payout_mismatch' };
   }
   const staked = asNum(p.staked);
   const idle = asNum(p.idle);
   const principal = staked + idle;
   if (principal <= 0) return { ok: false, reason: 'empty' };
-  const to = continuumOf(p, payout, dest);
+  const to = continuumOf(p, payout, isDestAddress(dest) ? dest : '');
   const interest = reserveInterestNanos(p.staked, state.epochBps);
   let mint = null;
   if (interest > 0) {

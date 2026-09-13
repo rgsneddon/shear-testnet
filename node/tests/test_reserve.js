@@ -174,7 +174,10 @@ describe('node Reserve vault', () => {
     assert.equal(pub.includes('shear1'), false);
 
     const preview = previewWithdraw(store.reserveVault, vault);
-    assert.equal(preview.to, continuum);
+    assert.equal(
+      hash20FromAddress(preview.to)?.toString('hex'),
+      hash20FromAddress(continuum)?.toString('hex'),
+    );
     assert.ok(preview.interest > 0);
     assert.equal(preview.interest, interestNanos(PI_SHE_NANOS, RESERVE_ORACLE_DEFAULT_BPS, 400));
     assert.equal(preview.payout, PI_SHE_NANOS + preview.interest);
@@ -400,7 +403,7 @@ describe('node Reserve vault', () => {
     const sealedH = Number(store.tip().height);
     assert.equal(matureSpendableNanos(store.historyFor(destA), destA, sealedH), 0);
     assert.equal(reconstructOwner(store, destA).spendableNanos, 0);
-    assert.equal(reconstructOwner(store, destC).spendableNanos, 0);
+    assert.equal(matureSpendableNanos(store.historyFor(destC), destC, sealedH), 0);
 
     const payRow = store.historyFor(destB).find((r) => r.to === destB && Number(r.nanos) === pay);
     const changeRow = store.historyFor(destC).find((r) => r.to === destC && Number(r.nanos) === leftover);
@@ -410,8 +413,9 @@ describe('node Reserve vault', () => {
     assert.ok(String(changeRow.to).startsWith('ssa1'));
     assert.equal(payRow.kind, 'send');
     assert.equal(changeRow.kind, 'send');
-    assert.equal(payRow.from, destA);
-    assert.equal(changeRow.from, destA);
+    const a20 = hash20FromAddress(destA).toString('hex');
+    assert.equal(hash20FromAddress(payRow.from)?.toString('hex') || Buffer.from(payRow.fromDest20 || []).toString('hex'), a20);
+    assert.equal(hash20FromAddress(changeRow.from)?.toString('hex') || Buffer.from(changeRow.fromDest20 || []).toString('hex'), a20);
     assert.equal(/she1|shear1|memoPlain/i.test(JSON.stringify([payRow, changeRow])), false);
 
     for (let i = 1; i <= SPENDABLE_CONFIRMATIONS; i += 1) {

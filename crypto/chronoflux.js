@@ -20,7 +20,7 @@ import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS }
 import { shareRowJson } from './pack.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
-import { verifySealedNote } from './note.js';
+import { verifySealedNote, asU8 } from './note.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
 
@@ -146,7 +146,8 @@ export function sealedExplorerRows(block) {
     }
   }
   for (const tx of txs.slice(1)) {
-    const from = tx.from || tx.vin?.[0]?.address;
+    const from = tx.from || tx.vin?.[0]?.address || '';
+    const fromDest20 = tx.vin?.[0]?.dest20;
     const txId = tx.id || `${hid}-tx`;
     const vouts = Array.isArray(tx.vout) && tx.vout.length
       ? tx.vout
@@ -160,10 +161,10 @@ export function sealedExplorerRows(block) {
       const o = vouts[i];
       const kind = o.kind || tx.kind || (tx.mint ? 'reserve' : 'transfer');
       const to = o.address || (i === 0 ? tx.to : '');
-      const claimed = Number(o.nanos != null ? o.nanos : (
+      const claimed = Number(o.valueProof?.v != null ? o.valueProof.v : (o.nanos != null ? o.nanos : (
         String(o.kind || '') === 'dummy' ? 0
           : (i === 0 ? tx.nanos || 0 : tx.changeNanos || 0)
-      ));
+      )));
       const nanos = o.commit
         ? (verifySealedNote(o, claimed) ? claimed : 0)
         : claimed;
@@ -178,6 +179,8 @@ export function sealedExplorerRows(block) {
         memo: !!(tx.memoCt || o.memoCt),
         memoCt: tx.memoCt || o.memoCt,
         noteCommit: o.noteCommit,
+        fromDest20,
+        toDest20: o.dest20,
       });
     }
     const fee = Math.floor(Number(tx.fee || 0));
@@ -186,7 +189,7 @@ export function sealedExplorerRows(block) {
       const levyFrom = kind0 === 'vote'
         ? String(tx.payer || tx.vin?.[0]?.address || '')
         : String(from || '');
-      if (levyFrom) {
+      if (levyFrom || fromDest20) {
         rows.push({
           id: `${txId}-levy`,
           kind: 'levy',
@@ -195,6 +198,7 @@ export function sealedExplorerRows(block) {
           nanos: fee,
           height,
           confirmed: true,
+          fromDest20,
         });
       }
     }
@@ -296,6 +300,8 @@ function compactVout(o) {
     if (o.admitPub) row.admitPub = o.admitPub;
     if (o.rEph) row.rEph = o.rEph;
     if (o.rCt) row.rCt = o.rCt;
+    if (o.dest20) row.dest20 = o.dest20;
+    if (o.portalId) row.portalId = o.portalId;
     if (o.memo) row.memo = true;
     if (keepDest && o.address) row.address = o.address;
     return row;
@@ -340,6 +346,7 @@ export function compactTx(tx) {
         height: v.height,
         commit: v.commit,
         noteCommit: v.noteCommit,
+        dest20: v.dest20,
       });
       if (keepDest && v.address) row.address = v.address;
       return row;

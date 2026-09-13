@@ -31,10 +31,15 @@ import {
   observeRate,
   portalRewards,
   previewWithdraw,
+  lockTx,
+  voteTx,
+  withdrawTx,
   VOTE_INCREASE,
   VOTE_DECREASE,
   VOTE_HOLD,
 } from './reserve_vault.js';
+import { compactTx } from './chronoflux.js';
+import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, interestNanos } from './reserve_oracle.js';
 
 const DAY = 86_400_000;
@@ -433,6 +438,64 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(done.ok, true);
     assert.equal(Number(state.liveHashBonusNanos), 1);
     assert.equal(Number(state.liveHashBonusNanos) >= 1, true);
+  });
+
+  it('compactTx(lockTx) through applyReserveBlock credits the portal; vote and withdraw follow', () => {
+    const alice = newIdentity();
+    const vault = destOf(alice);
+    const continuum = destForLogin(alice.address, { viewKey: alice.viewKey });
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    const pid = portalIdFromDest(vault);
+    const lock = compactTx(lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-c' }));
+    const blob = JSON.stringify(lock);
+    assert.doesNotMatch(blob, /ssa1/);
+    assert.doesNotMatch(blob, /she1/);
+    assert.doesNotMatch(blob, /"nanos"/);
+    assert.doesNotMatch(blob, /"address"/);
+    const locked = applyReserveBlock({
+      state,
+      block: { txs: [{ coinbase: true, vout: [] }, lock] },
+      nowMs: t0,
+    });
+    assert.equal(locked.some((r) => r.action === 'lock' && r.ok === true), true, JSON.stringify(locked));
+    assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(state.portals[pid].staked), PI_SHE_NANOS);
+
+    const voteSealed = compactTx(voteTx({ from: continuum, dest: vault, choice: VOTE_HOLD, id: 'vote-c' }));
+    const voted = applyReserveBlock({
+      state,
+      block: { txs: [{ coinbase: true, vout: [] }, voteSealed] },
+      nowMs: t0 + 2,
+    });
+    assert.equal(voted.some((r) => r.action === 'vote' && r.ok === true), true, JSON.stringify(voted));
+
+    const wd = compactTx(withdrawTx({ from: vault, to: continuum, nanos: PI_SHE_NANOS, id: 'wd-c' }));
+    const withdrawn = applyReserveBlock({
+      state,
+      block: { txs: [{ coinbase: true, vout: [] }, wd] },
+      nowMs: t0 + RESERVE_EPOCH_MS,
+    });
+    assert.equal(withdrawn.some((r) => r.action === 'withdraw' && r.ok === true), true, JSON.stringify(withdrawn));
+    assert.equal(Number(state.totalLockedNanos), 0);
+
+    const wireState = emptyVault();
+    const wire = encodeWireBlock({
+      header: Buffer.alloc(128),
+      hash: Buffer.alloc(32),
+      height: 1,
+      txs: [{ coinbase: true, vout: [] }, lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-wire' })],
+    });
+    const wireBlob = JSON.stringify(wire.txs);
+    assert.doesNotMatch(wireBlob, /ssa1/);
+    assert.doesNotMatch(wireBlob, /"nanos"/);
+    const peer = applyReserveBlock({
+      state: wireState,
+      block: decodeWireBlock(wire),
+      nowMs: t0,
+    });
+    assert.equal(peer.some((r) => r.action === 'lock' && r.ok === true), true, JSON.stringify(peer));
+    assert.equal(Number(wireState.totalLockedNanos), PI_SHE_NANOS);
   });
 });
 
