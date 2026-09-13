@@ -39,8 +39,35 @@ function hexHeader(h) {
   return String(h || '');
 }
 
+/** Wire hash as lowercase hex. Accepts hex, Buffer, `$hex`, or Node Buffer JSON. */
+export function wireHash(h) {
+  if (h == null || h === '') return '';
+  if (Buffer.isBuffer(h) || h instanceof Uint8Array) return Buffer.from(h).toString('hex');
+  if (typeof h === 'string') {
+    const s = h.trim();
+    if (!s || s === '[object Object]') return '';
+    return s.toLowerCase();
+  }
+  if (typeof h === 'object') {
+    if (typeof h.$hex === 'string') return h.$hex.toLowerCase();
+    if (h.type === 'Buffer' && Array.isArray(h.data)) return Buffer.from(h.data).toString('hex');
+  }
+  return '';
+}
+
+function wireBytes(v) {
+  if (v == null || v === '') return undefined;
+  if (Buffer.isBuffer(v) || v instanceof Uint8Array) return Buffer.from(v);
+  if (typeof v === 'string') return Buffer.from(v, 'hex');
+  if (typeof v === 'object') {
+    if (typeof v.$hex === 'string') return Buffer.from(v.$hex, 'hex');
+    if (v.type === 'Buffer' && Array.isArray(v.data)) return Buffer.from(v.data);
+  }
+  return undefined;
+}
+
 export function headerIndexByHash(blocks, hash) {
-  const want = String(hash || '');
+  const want = wireHash(hash);
   if (!want) return -1;
   const list = Array.isArray(blocks) ? blocks : [];
   for (let i = list.length - 1; i >= 0; i -= 1) {
@@ -78,9 +105,9 @@ export function selectHeadersAfterLocator(blocks, {
   const list = Array.isArray(blocks) ? blocks : [];
   const hasLocatorField = Array.isArray(locator);
   const locators = hasLocatorField
-    ? locator.map((x) => String(x || '')).filter(Boolean)
+    ? locator.map((x) => wireHash(x)).filter(Boolean)
     : [];
-  const stop = String(stopHash || '');
+  const stop = wireHash(stopHash);
   if (!hasLocatorField && stop) locators.push(stop);
 
   let start = 0;
@@ -151,8 +178,8 @@ export function encodeWireBlock(b) {
 
 export function decodeWireBlock(w) {
   return {
-    header: Buffer.from(w.header, 'hex'),
-    hash: w.hash ? Buffer.from(w.hash, 'hex') : undefined,
+    header: wireBytes(w.header),
+    hash: w.hash != null ? wireBytes(w.hash) : undefined,
     height: w.height,
     txs: (w.txs || []).map((tx) => reviveTx(reviveDeep(tx))),
     samples: reviveDeep(w.samples),
@@ -293,6 +320,7 @@ export function createP2p({
     if (p === listenPortOf() && (host === '127.0.0.1' || host === '::1' || host === '0.0.0.0')) return true;
     for (const rec of peers.values()) {
       if (rec.remote === host && Number(rec.listenPort) === p) return true;
+      if (rec.dialHost && rec.dialHost === host) return true;
     }
     return false;
   }
@@ -315,7 +343,7 @@ export function createP2p({
   function notePeerTip(sock, msg) {
     const rec = peers.get(sock) || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
     rec.remote = peerRemoteKey(sock) || rec.remote;
-    if (msg && msg.hash != null) rec.hash = String(msg.hash);
+    if (msg && msg.hash != null) rec.hash = wireHash(msg.hash) || String(msg.hash);
     if (msg && Number.isFinite(Number(msg.height))) rec.height = Number(msg.height);
     peers.set(sock, rec);
   }
@@ -515,7 +543,7 @@ export function createP2p({
       const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
       const missing = [];
       for (const h of msg.headers || []) {
-        const hash = String(h.hash || '');
+        const hash = wireHash(h.hash);
         if (!hash || have.has(hash) || rec.failed.has(hash)) continue;
         missing.push(hash);
         if (missing.length >= GETBLOCK_BATCH) break;
@@ -524,7 +552,7 @@ export function createP2p({
         rec.syncing = false;
         rec.pending = null;
         const lastHdr = (msg.headers || [])[(msg.headers || []).length - 1];
-        const lastHash = lastHdr ? String(lastHdr.hash || '') : '';
+        const lastHash = lastHdr ? wireHash(lastHdr.hash) : '';
         if ((msg.headers || []).length >= HEADERS_PAGE && lastHash && have.has(lastHash)) {
           requestHeaders(sock);
         }
@@ -545,8 +573,15 @@ export function createP2p({
       return;
     }
     if (msg.type === 'getblock') {
-      const want = String(msg.hash || '');
-      const b = (store.blocks || []).find((x) => hexHash(x.hash) === want);
+      const want = wireHash(msg.hash);
+      const b = want ? (store.blocks || []).find((x) => hexHash(x.hash) === want) : null;
+      try {
+        console.error(JSON.stringify({
+          event: 'p2p_getblock',
+          found: Boolean(b),
+          height: b?.height || 0,
+        }));
+      } catch { /* ignore */ }
       if (b) send(sock, { type: 'block', magic, block: encodeWireBlock(b) });
       return;
     }
@@ -554,7 +589,20 @@ export function createP2p({
       const list = msg.block ? [msg.block] : (msg.blocks || []);
       if (list.length > 1 && msg.type === 'blocks') return;
       const last = list[list.length - 1];
-      const fork = list.map(decodeWireBlock);
+      let fork;
+      try {
+        fork = list.map(decodeWireBlock);
+      } catch (err) {
+        try {
+          console.error(JSON.stringify({
+            event: 'p2p_ingest',
+            ok: false,
+            reason: 'decode',
+            height: last?.height,
+          }));
+        } catch { /* ignore */ }
+        return;
+      }
       const job = ingestChain.then(() => {
         const before = store.tip();
         return Promise.resolve(store.ingest(fork)).then((got) => ({ got, before }));
@@ -562,7 +610,7 @@ export function createP2p({
       ingestChain = job.then(() => {}, () => {});
       job.then(({ got, before }) => {
         const rec = peers.get(sock);
-        const lastHash = last ? String(last.hash || '') : '';
+        const lastHash = last ? wireHash(last.hash) : '';
         if (rec) {
           if (!rec.failed) rec.failed = new Set();
           if (rec.pending && lastHash) rec.pending.delete(lastHash);
@@ -574,6 +622,14 @@ export function createP2p({
                 ok: false,
                 reason: got?.reason || 'fail',
                 height: last?.height,
+              }));
+            } catch { /* ignore */ }
+          } else if (got?.ok) {
+            try {
+              console.error(JSON.stringify({
+                event: 'p2p_ingest',
+                ok: true,
+                height: store.tip()?.height || last?.height,
               }));
             } catch { /* ignore */ }
           }
@@ -589,12 +645,20 @@ export function createP2p({
           if (rec) rec.syncing = false;
           requestHeaders(sock);
         }
-      }).catch(() => {
+      }).catch((err) => {
         const rec = peers.get(sock);
         if (rec) {
           rec.syncing = false;
           rec.pending = null;
         }
+        try {
+          console.error(JSON.stringify({
+            event: 'p2p_ingest',
+            ok: false,
+            reason: String(err?.message || err || 'throw').slice(0, 80),
+            height: last?.height,
+          }));
+        } catch { /* ignore */ }
       });
     }
   }
@@ -604,9 +668,15 @@ export function createP2p({
     peers.delete(sock);
   }
 
-  function attach(sock) {
+  function attach(sock, extra = {}) {
     sockets.add(sock);
-    peers.set(sock, { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 });
+    peers.set(sock, {
+      id: ++peerSeq,
+      remote: peerRemoteKey(sock),
+      hash: null,
+      height: 0,
+      dialHost: extra.dialHost || '',
+    });
     let buf = '';
     sock.on('data', (chunk) => {
       buf += chunk.toString('utf8');
@@ -658,7 +728,15 @@ export function createP2p({
     }
     return new Promise((resolve, reject) => {
       const sock = net.connect(peerPort, peerHost, () => {
-        attach(sock);
+        const remote = peerRemoteKey(sock);
+        let local = String(sock.localAddress || '');
+        if (local.startsWith('::ffff:')) local = local.slice(7);
+        if (remote && remote === local && Number(sock.remotePort) === listenPortOf()) {
+          try { sock.destroy(); } catch { /* ignore */ }
+          resolve(null);
+          return;
+        }
+        attach(sock, { dialHost: peerHost });
         resolve(sock);
       });
       sock.once('error', reject);
@@ -666,9 +744,12 @@ export function createP2p({
   }
 
   function linkedTo(host, p) {
-    if (alreadyLinked(host, p)) return true;
+    const want = String(host || '');
+    if (!want) return true;
+    if (alreadyLinked(want, p)) return true;
     for (const rec of peers.values()) {
-      if (rec.remote === host) return true;
+      if (rec.remote === want) return true;
+      if (rec.dialHost && rec.dialHost === want) return true;
     }
     return false;
   }

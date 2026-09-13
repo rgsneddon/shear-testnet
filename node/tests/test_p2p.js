@@ -27,6 +27,7 @@ import {
   encodeWireBlock,
   decodeWireBlock,
   jsonWire,
+  wireHash,
   selectHeadersAfterLocator,
   locatorHashes,
 } from '../src/p2p.js';
@@ -224,6 +225,34 @@ describe('p2p gossip', () => {
     assert.equal(Buffer.from(back.txs[0].vout[0].commit).equals(commit), true);
   });
 
+  it('wireHash and decodeWireBlock accept hex, $hex, and Buffer JSON so genesis getblock matches', () => {
+    const hex = `00${'ab'.repeat(31)}`;
+    assert.equal(wireHash(hex), hex);
+    assert.equal(wireHash({ $hex: hex }), hex);
+    assert.equal(wireHash({ type: 'Buffer', data: [...Buffer.from(hex, 'hex')] }), hex);
+    assert.equal(wireHash({}), '');
+    assert.equal(wireHash('[object Object]'), '');
+    const header = Buffer.alloc(128, 3);
+    const hash = Buffer.from(hex, 'hex');
+    const wrapped = decodeWireBlock({
+      header: { $hex: header.toString('hex') },
+      hash: { $hex: hex },
+      height: 1,
+      txs: [],
+      shareBatch: [],
+    });
+    assert.equal(Buffer.from(wrapped.header).equals(header), true);
+    assert.equal(Buffer.from(wrapped.hash).equals(hash), true);
+    const fromBuf = decodeWireBlock({
+      header: { type: 'Buffer', data: [...header] },
+      hash: { type: 'Buffer', data: [...hash] },
+      height: 1,
+      txs: [],
+    });
+    assert.equal(Buffer.from(fromBuf.header).equals(header), true);
+    assert.equal(Buffer.from(fromBuf.hash).equals(hash), true);
+  });
+
   it('printConfig pins p2p 30303, testnet magic, not mainnet', () => {
     const cfg = printConfig();
     assert.equal(cfg.p2p, P2P_PORT);
@@ -396,7 +425,7 @@ describe('p2p gossip', () => {
     assert.ok(DEFAULT_SEEDS.includes('shear.digital:30303'));
     assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('46.224.132.83')), false);
     assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('p2p.shear.digital')), false);
-    assert.equal(GETBLOCK_BATCH, 16);
+    assert.equal(GETBLOCK_BATCH, 1);
     assert.equal(HEADERS_PAGE, 2000);
     assert.match(src, /requestHeaders/);
     assert.match(src, /dialSeeds/);
@@ -571,6 +600,10 @@ describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
       await a.p2p.connect('127.0.0.1', b.bound.port);
       const linked = await waitFor(() => a.p2p.syncedOnline() === 2 && b.p2p.syncedOnline() === 2);
       assert.equal(linked, true);
+      const before = a.p2p.sockets.size;
+      await a.p2p.dialSeeds([`127.0.0.1:${b.bound.port}`]);
+      await a.p2p.dialSeeds([`127.0.0.1:${b.bound.port}`]);
+      assert.equal(a.p2p.sockets.size, before);
       for (const s of [...a.p2p.sockets]) s.destroy();
       const dropped = await waitFor(() => a.p2p.syncedOnline() === 1, 4000);
       assert.equal(dropped, true);
