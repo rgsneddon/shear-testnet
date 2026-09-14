@@ -3,17 +3,17 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
 
-/// Inspects the packed 0.33 fat APK when present.
+/// Inspects the packed 0.34 fat APK when present.
 File _apk() {
   for (final p in [
-    '../dist/shear-wallet-0.33-android.apk',
-    'dist/shear-wallet-0.33-android.apk',
-    '${Directory.current.path}/../dist/shear-wallet-0.33-android.apk',
+    '../dist/shear-wallet-0.34-android.apk',
+    'dist/shear-wallet-0.34-android.apk',
+    '${Directory.current.path}/../dist/shear-wallet-0.34-android.apk',
   ]) {
     final f = File(p);
     if (f.existsSync()) return f;
   }
-  return File('../dist/shear-wallet-0.33-android.apk');
+  return File('../dist/shear-wallet-0.34-android.apk');
 }
 
 String? _aapt() {
@@ -28,8 +28,8 @@ String? _aapt() {
 }
 
 void main() {
-  test('0.33 APK is a fat installable package (applicationId, versionCode > 48, INTERNET)', () {
-    expect(kWalletVersion, '0.33');
+  test('0.34 APK is a fat installable package (applicationId, versionCode > 48, INTERNET)', () {
+    expect(kWalletVersion, '0.34');
     final apk = _apk();
     if (!apk.existsSync()) return;
     expect(apk.lengthSync(), greaterThan(10 * 1024 * 1024));
@@ -42,7 +42,7 @@ void main() {
     expect(RegExp(r"versionName='0\.33(\.0)?'").hasMatch(out), isTrue);
     final code = RegExp(r"versionCode='(\d+)'").firstMatch(out);
     expect(code, isNotNull);
-    expect(int.parse(code!.group(1)!), greaterThan(48));
+    expect(int.parse(code!.group(1)!), greaterThan(49));
     expect(out, contains("uses-permission: name='android.permission.INTERNET'"));
     expect(out.contains("testOnly='true'"), isFalse);
     expect(File('android/app/src/main/AndroidManifest.xml').readAsStringSync(),

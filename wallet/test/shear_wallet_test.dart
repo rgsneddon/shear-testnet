@@ -78,18 +78,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.33"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.34"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.33"'), isTrue);
+    expect(winMain.contains('L"Shear 0.34"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.33"'), isTrue);
+    expect(winRc.contains('"Shear 0.34"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.33"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.34"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -180,6 +180,50 @@ void main() {
     ledger.prune();
     expect(ledger.transactions.length, 1);
     expect(ledger.shearviewTxs(id.address).length, 1);
+  });
+
+  test('receive stays on Continuum through 5 headers; pie wedges grow; 6 confs credits spendable', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..viewSecret = id.viewKey;
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.mergeChainTx(ShearTx(
+      id: 'recv-stable-1',
+      from: 'ssa1someone',
+      to: dest,
+      amount: 0.4,
+      kind: 'receive',
+      height: 10,
+      confirmed: false,
+    ));
+    ledger.applyTipHex(List.filled(256, '0').join(), sealedHeight: 10);
+    expect(ledger.pendingTxs(id.address).single.id, 'recv-stable-1');
+    expect(ledger.confirmationsOf(10), 1);
+    for (var h = 11; h <= 14; h++) {
+      ledger.applyTipHex(List.filled(256, '0').join(), sealedHeight: h);
+      final pending = ledger.pendingTxs(id.address).where((t) => t.id == 'recv-stable-1').toList();
+      expect(pending, hasLength(1), reason: 'receive vanished at height $h');
+      expect(ledger.confirmationsOf(10), h - 10 + 1);
+    }
+    ledger.applyTipHex(List.filled(256, '0').join(), sealedHeight: 15);
+    expect(ledger.pendingTxs(id.address).where((t) => t.id == 'recv-stable-1'), isEmpty);
+    expect(ledger.confirmationsOf(10), 6);
+  });
+
+  test('one missed /stats does not drop the live v3 node', () async {
+    final hex = List.filled(128, 1).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 16);
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final url = 'http://127.0.0.1:${server.port}';
+    final sync = ShearReadSync(seeds: [url], http: _realHttp(), jitter: Duration.zero);
+    expect(await sync.findLiveNode(), url);
+    expect(sync.liveBase, url);
+    sync.noteFailure();
+    expect(sync.liveBase, url);
+    sync.noteFailure();
+    expect(sync.liveBase, url);
+    sync.noteFailure();
+    expect(sync.liveBase, isNull);
   });
 
   test('pending hashes are not spendable until block found; explorer lists confirmed round', () {
@@ -1130,7 +1174,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.33');
+    expect(kWalletVersion, '0.34');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -1422,8 +1466,8 @@ void main() {
     await tester.pump();
     expect(find.text('Set password'), findsOneWidget);
     expect(find.text('Import shewall.bin'), findsOneWidget);
-    expect(find.byKey(const Key('wallet-honesty-bar')), findsOneWidget);
-    expect(find.byKey(const Key('wallet-sync-percent')), findsOneWidget);
+    expect(find.byKey(const Key('wallet-honesty-bar')), findsNothing);
+    expect(find.byKey(const Key('wallet-sync-percent')), findsNothing);
     expect(find.text('no network'), findsNothing);
     expect(find.text('Unlock'), findsNothing);
     await tester.enterText(find.byType(TextField).at(0), 'correct-horse');
@@ -1589,8 +1633,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.33');
-    expect(kWalletVersion, '0.33');
+    expect(app.title, 'Shear 0.34');
+    expect(kWalletVersion, '0.34');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -3807,8 +3851,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.33 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.33');
+  test('kWalletVersion == 0.34 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.34');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -4307,7 +4351,7 @@ void main() {
     expect(confirmSlicesFilled(ledger.confirmationsOf(10)), 6);
   });
 
-  testWidgets('AppBar honesty strip sits between equation and height; pies update on tip tick', (tester) async {
+  testWidgets('AppBar shows one block height and no honesty strip; pies update on tip tick', (tester) async {
     _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-honesty-bar-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -4344,8 +4388,11 @@ void main() {
     ));
     await tester.pump();
     await tester.pump();
-    expect(find.byKey(const Key('wallet-honesty-bar')), findsOneWidget);
+    expect(find.byKey(const Key('wallet-honesty-bar')), findsNothing);
+    expect(find.byKey(const Key('wallet-block-height')), findsOneWidget);
     expect(find.textContaining('block height:'), findsWidgets);
+    expect(find.textContaining('synchronised'), findsNothing);
+    expect(find.textContaining('looking for a v3'), findsNothing);
     expect(find.text('HONEST'), findsNothing);
     expect(find.byType(ConfirmPie), findsWidgets);
     final pie = tester.widget<ConfirmPie>(find.byType(ConfirmPie).first);

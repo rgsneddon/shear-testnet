@@ -574,6 +574,12 @@ class ShearLedger {
   /// Last found/sealed block height (Continuum header).
   int get sealedHeight => _sealedHeight;
 
+  /// One height for the user: live tip if the node is ahead of last paint.
+  int get displayHeight {
+    final live = pool?.liveTip ?? 0;
+    return live > _sealedHeight ? live : _sealedHeight;
+  }
+
   /// Display-only last sealed header dt (ms). Not a mint input.
   int? get lastSealedHeaderDtMs {
     final a = _prevHeaderTimestampMs;
@@ -650,23 +656,21 @@ class ShearLedger {
   }
 
   void _bundleOpenRounds({required int height}) {
-    final dests = <String>{..._pending.keys, ..._dests};
+    // Only the still-open hash round becomes a block. Height-stamped
+    // receive/send rows keep their id so the Continuum pie does not
+    // remount (flash) on every new header.
+    final dests = <String>{..._pending.keys};
     for (final t in _txs) {
       if (t.confirmed) continue;
-      if (t.to.isNotEmpty) dests.add(payKey(t.to));
+      if (t.kind == 'hash' && (t.height ?? 0) < 1 && t.to.isNotEmpty) {
+        dests.add(payKey(t.to));
+      }
     }
     for (final d in dests) {
       if (d.isEmpty) continue;
       final openAmt = _pending[d] ?? 0;
-      final openTx = _txs.any((t) =>
-          !t.confirmed &&
-          (t.kind == 'hash' ||
-              t.kind == 'receive' ||
-              t.kind == 'send' ||
-              t.kind == 'coinbase' ||
-              t.kind == 'pool-withdraw') &&
-          (t.to == d || t.from == d || t.id == _hashPendingId(d)));
-      if (openAmt <= 0 && !openTx) continue;
+      final openHash = hashPendingOf(d) > 0;
+      if (openAmt <= 0 && !openHash) continue;
       confirmRound(address: d, pot: 0, height: height);
     }
   }
@@ -974,8 +978,10 @@ class ShearLedger {
   }
 
   /// Confirmations of a sealed height, counting the including block as 1.
+  /// Uses [displayHeight] so a receive at the live tip is not hidden while
+  /// paint lags one block behind the node.
   int confirmationsOf(int height, [int? tip]) {
-    final t = tip ?? _sealedHeight;
+    final t = tip ?? displayHeight;
     if (height < 1 || t < height) return 0;
     return t - height + 1;
   }
@@ -1302,7 +1308,11 @@ class ShearLedger {
         }
         mergeChainTx(tx);
       }
-      _historyAt[key] = _sealedHeight;
+      // Empty live history with a known credit is a miss (node stall on a
+      // new block) — retry next poll instead of freezing Shearview.
+      if (parsed.isNotEmpty || spendable(key) <= 0) {
+        _historyAt[key] = _sealedHeight;
+      }
     } catch (_) {}
     prune();
     return ownerHistory(address);
@@ -2261,7 +2271,7 @@ class ShearPoolClient {
   })  : _pinned = baseUrl,
         _http = http ?? (HttpClient()
           ..connectionTimeout = const Duration(seconds: 8)
-          ..idleTimeout = const Duration(seconds: 1)) {
+          ..idleTimeout = const Duration(seconds: 30)) {
     _sync = sync ??
         (baseUrl == null
             ? ShearReadSync(http: _http, userUrl: userUrl)
@@ -2287,6 +2297,9 @@ class ShearPoolClient {
       _sync?.wantedHeaders ?? (_pinnedTip < 1 ? 0 : _pinnedTip);
   bool get nodeLive =>
       _sync != null ? _sync!.liveBase != null : _pinned != null && _pinnedTip > 0;
+
+  /// Live chain tip from the last successful /stats (0 if never seen).
+  int get liveTip => _sync?.sampledTip ?? _pinnedTip;
 
   String honestyText() => walletHonestyText(
         live: nodeLive,

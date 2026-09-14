@@ -1983,9 +1983,15 @@ export function createPool({
         const she = login.split('.')[0];
         const pay = payoutDest(she) || '';
         const postedDest = payoutDest(String(body.dest || '')) || String(body.dest || '').trim();
+        const minerDest = String(rows[0]?.payoutDest || rows[0]?.login || rows[0]?.workerKey || '')
+          .split('.')[0];
+        const posted20 = hash20FromAddress(postedDest);
+        const miner20 = hash20FromAddress(minerDest);
+        const dest20Match = !!(posted20 && miner20 && Buffer.from(posted20).equals(Buffer.from(miner20)));
         const tagMatch = publicMinerTag(she) === tag
           || (pay && publicMinerTag(pay) === tag)
-          || (postedDest && publicMinerTag(postedDest) === tag);
+          || (postedDest && publicMinerTag(postedDest) === tag)
+          || dest20Match;
         if (!tagMatch) {
           res.statusCode = 400;
           res.end(JSON.stringify({ ok: false, reason: 'auth' }));

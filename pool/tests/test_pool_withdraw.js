@@ -133,6 +133,43 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
     pool.close();
   });
 
+  it('miner page dest20-only dest matches dest20||B miner (unsigned, not auth)', async () => {
+    const id = newIdentity();
+    const dest20 = hash20FromAddress(destForLogin(id.address, { viewKey: id.viewKey, height: 1 }));
+    const dest = encodeDest(dest20, Buffer.alloc(32, 7));
+    const dest20Only = encodeDest(dest20);
+    assert.notEqual(dest, dest20Only);
+    const tag = publicMinerTag(dest);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-wd-d20-'));
+    const pool = createPool({
+      dataDir: dir, stratumPort: 0, httpPort: 0, miner: dest, shareBits: 8, bits: 10,
+    });
+    await new Promise((resolve, reject) => {
+      pool.httpServer.listen(0, '127.0.0.1', resolve);
+      pool.httpServer.on('error', reject);
+    });
+    pool.store.tip = () => ({ height: 40 });
+    pool.store.getpolicy = () => ({ operational: { pool_merchant: 6 } });
+    pool.miners.set(dest, {
+      login: dest + '.worker',
+      workerKey: dest + '.worker',
+      payoutDest: dest,
+      accepted: 1,
+      lastShareAt: Date.now(),
+    });
+    assert.equal(pool.pullBook.creditRound([{ tag, dest, count: 10 }], { height: 1 }).ok, true);
+    const r = await fetch(`http://127.0.0.1:${pool.httpServer.address().port}/api/miners/${encodeURIComponent(tag)}/withdraw`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ login: id.paymentCode, dest: dest20Only }),
+    });
+    const json = await r.json();
+    assert.notEqual(json.reason, 'auth', json);
+    assert.equal(json.ok, false);
+    assert.equal(json.reason, 'unsigned');
+    pool.close();
+  });
+
   it('she1 hasher dest is unpaid without an owned one-time dest; destCommit is not a mailbox', () => {
     const id = newIdentity();
     const she = id.paymentCode;

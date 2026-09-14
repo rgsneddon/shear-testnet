@@ -26,9 +26,8 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
-import 'shear_read_sync.dart';
 
-const kWalletVersion = '0.33';
+const kWalletVersion = '0.34';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
@@ -899,8 +898,6 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                       child: const Text('Unlock with biometrics'),
                     ),
                   ],
-                  const SizedBox(height: 16),
-                  _honestyBar(context),
                   const SizedBox(height: 8),
                   TextButton(
                     onPressed: _toggleTheme,
@@ -941,44 +938,11 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     }
   }
 
-  String get _honestyText {
-    final pool = ledger.pool;
-    if (pool == null) {
-      return walletHonestyText(live: false, proven: 0, wanted: 0);
-    }
-    return pool.honestyText();
-  }
-
   int get _continuumVaultNanos =>
       reserve.totalLockedNanos > 0 ? reserve.totalLockedNanos : (ledger.vaultLockedNanos ?? 0);
 
   int get _continuumExtraMintedNanos =>
       reserve.mintBankNanos > 0 ? reserve.mintBankNanos : (ledger.extraMintedNanos ?? 0);
-
-  Widget _honestyBar(BuildContext context) {
-    final label = _honestyText;
-    final waiting = label.startsWith('looking') || label.startsWith('connecting');
-    const green = Color(0xFF1A9A4A);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
-      child: SizedBox(
-        key: const Key('wallet-honesty-bar'),
-        width: double.infinity,
-        child: Text(
-          label,
-          key: const Key('wallet-sync-percent'),
-          textAlign: TextAlign.center,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            color: waiting ? Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7) : green,
-          ),
-        ),
-      ),
-    );
-  }
 
   Widget _shell(BuildContext context) {
     final ident = id;
@@ -1023,7 +987,8 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                   child: InkWell(
                     onTap: (kDebugMode || widget.demoTx) ? _findBlock : null,
                     child: Text(
-                      'block height: ${ledger.sealedHeight}',
+                      'block height: ${ledger.displayHeight}',
+                      key: const Key('wallet-block-height'),
                       style: TextStyle(
                         fontSize: 12,
                         color: Theme.of(context).colorScheme.onSurface,
@@ -1040,10 +1005,6 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             ),
           ),
         ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(22),
-          child: _honestyBar(context),
-        ),
       ),
       body: Column(
         children: [
@@ -1384,7 +1345,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         },
         defaultVerticalAlignment: TableCellVerticalAlignment.middle,
         children: [
-          _continuumStatRow(context, 'Height', '${ledger.sealedHeight}'),
+          _continuumStatRow(context, 'Height', '${ledger.displayHeight}'),
           _continuumStatRow(
             context,
             'Network hashrate',
@@ -1439,11 +1400,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     final pendingPane = <Widget>[
       Text('Pending', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
       Text(
-        'Each pending block fills a 6-slice pie (spendable at ${ShearLedger.spendableConfirmations}). Hash rewards are inside the block, not listed as their own txs.',
+        'Each pending transfer stays on this list. One pie wedge per confirmation; at ${ShearLedger.spendableConfirmations} confs the row drops and the coins are spendable. Hash rewards sit inside a found block, not as their own rows.',
         style: TextStyle(color: shearMutedOf(context), fontSize: 12),
       ),
       for (final t in pending)
         Padding(
+          key: ValueKey('pending-row-${t.id}'),
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,

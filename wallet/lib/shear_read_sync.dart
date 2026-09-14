@@ -162,26 +162,26 @@ class ShearReadSync {
     return findLiveNode();
   }
 
-  DateTime? _lastFindAt;
-  static const _refindEvery = Duration(seconds: 60);
+  /// Drop the live node only after this many consecutive RPC misses.
+  /// A new block can stall /stats for a beat; one miss must not paint
+  /// "looking for a v3 node" or drop Shearview history.
+  static const dropAfterFailures = 3;
 
   /// Headers 1…tip + compact blocks + jroot from the local (or configured) node.
+  /// Keeps [liveBase] across a new block. Does not re-probe seeds while live.
   Future<void> followTip() async {
-    final now = DateTime.now();
-    final staleFind = _lastFindAt == null || now.difference(_lastFindAt!) >= _refindEvery;
-    final String? base;
-    if (liveBase == null || staleFind) {
+    var base = liveBase;
+    if (base == null) {
       base = await findLiveNode();
-      _lastFindAt = now;
-    } else {
-      base = await ensureLive();
+      if (base == null) return;
     }
-    if (base == null) return;
     final stats = await _getFirst(base, const ['/stats', '/api/stats']);
     if (stats == null) {
       noteFailure();
       return;
     }
+    _failures = 0;
+    _backoffUntil = null;
     final tip = (stats['height'] as num?)?.toInt() ?? 0;
     if (tip < 1) return;
     final genesis = await _genesisOf(base);
@@ -265,8 +265,9 @@ class ShearReadSync {
   }
 
   void noteFailure() {
-    liveBase = null;
     _failures++;
+    if (_failures < dropAfterFailures && liveBase != null) return;
+    liveBase = null;
     final shift = (_failures - 1).clamp(0, 6);
     _backoffUntil = DateTime.now().add(Duration(milliseconds: 1000 * (1 << shift)));
   }

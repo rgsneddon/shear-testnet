@@ -53,6 +53,9 @@ describe('ASERT 90s block retarget', () => {
   it('raises bits when blocks arrive faster than 90s', () => {
     const next = nextBits(21, 45_000);
     assert.ok(next > 21, `expected harden from 21, got ${next}`);
+    // ~59s at 16 bits (live 1kH/s farm) used to round log2 to 0 and stick.
+    assert.equal(nextBits(16, 59_000), 17);
+    assert.equal(nextBits(16, 90_000), 16);
   });
 
   it('lowers bits when blocks arrive slower than 90s', () => {

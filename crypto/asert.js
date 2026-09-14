@@ -309,7 +309,14 @@ export function nextBits(previousBits, intervalMs) {
   const ratio = TARGET_BLOCK_INTERVAL_MS / seen;
   const lo = 2 ** -ASERT_EASE_MAX;
   const hi = 2 ** ASERT_HARDEN_MAX;
-  let delta = Math.round(Math.log2(Math.max(lo, Math.min(hi, ratio))));
+  const log = Math.log2(Math.max(lo, Math.min(hi, ratio)));
+  // Integer bits: Math.round(log2) was 0 for ~59–83s vs 90s, so farms
+  // stuck under target. Step at least 1 when more than ~15% off.
+  let delta = Math.round(log);
+  if (delta === 0) {
+    if (ratio >= 1.15) delta = 1;
+    else if (ratio <= 1 / 1.15) delta = -1;
+  }
   if (delta > ASERT_HARDEN_MAX) delta = ASERT_HARDEN_MAX;
   if (delta < -ASERT_EASE_MAX) delta = -ASERT_EASE_MAX;
   return clampBits(prev + delta);
