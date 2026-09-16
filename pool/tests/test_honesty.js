@@ -29,6 +29,7 @@ import {
   SELF_RATE_MIN_DT_S,
   HASHRATE_STALL_HOLD_MS,
   HASHRATE_HOLD_FRAC,
+  HASHRATE_RISE_FRAC,
   HASH_QUEUE_MAX,
   HASH_INFLIGHT_PER_CONN,
 } from '../src/pool.js';
@@ -288,10 +289,10 @@ describe('folded-row inventory', () => {
     const t0 = 1_700_000_000_000;
     const m = { connections: [{ sock: {} }], clientHs: 100 };
     assert.equal(reportedHashrate(m, t0), 100);
-    m.clientHs = 55;
+    m.clientHs = 96;
     const eased = reportedHashrate(m, t0 + 1000);
-    assert.ok(eased < 100 && eased > 55, `eased ${eased}`);
-    assert.equal(liveHashrate(m, t0 + 1000), 55);
+    assert.ok(eased < 100 && eased > 96, `eased ${eased}`);
+    assert.equal(liveHashrate(m, t0 + 1000), 96);
     const held = { connections: [{ sock: {} }], clientHs: 0, emaHs: 80, emaAt: t0 };
     assert.equal(reportedHashrate(held, t0 + 1000), 80);
   });
@@ -305,8 +306,10 @@ describe('folded-row inventory', () => {
       acceptWork: [55 * RATE_WIN_S],
     };
     assert.equal(Math.round(reportedHashrate(m, t0)), 55);
+    m.clientHs = 55;
     resetMinerRoundDisplay(m, t0 + 10_000);
-    assert.ok(reportedHashrate(m, t0 + 10_000) > 40, 'round reset must keep proven H/s');
+    assert.equal(m.clientHs, 55);
+    assert.ok(reportedHashrate(m, t0 + 10_000) > 40, 'round reset must keep eased H/s');
     applyMinerSelfRate(m, { hashes: 1000 + 550 + 50_000 }, t0 + 15_000);
     const hs = reportedHashrate(m, t0 + 15_000);
     assert.ok(hs < 200, `blockfound spike ${hs}`);
@@ -349,7 +352,9 @@ describe('folded-row inventory', () => {
     assert.ok(reportedHashrate(m, t0 + 10_000) < 200);
   });
 
-  it('K-pause hashes/dt is the dipped rate, not a held peak', () => {
+  it('K-pause / between-block dip holds the last rate, no spike on resume', () => {
+    assert.equal(HASHRATE_HOLD_FRAC, 0.9);
+    assert.equal(HASHRATE_RISE_FRAC, 1.15);
     const t0 = 1_700_000_000_000;
     const m = { connections: [{ sock: {} }], threads: 1 };
     applyMinerSelfRate(m, { hashes: 1_000 }, t0);
@@ -357,9 +362,12 @@ describe('folded-row inventory', () => {
     assert.equal(m.clientHs, 80);
     assert.equal(reportedHashrate(m, t0 + 10_000), 80);
     applyMinerSelfRate(m, { hashes: 1_000 + 80 * 10 + 400 }, t0 + 30_000);
-    assert.equal(m.clientHs, 20);
-    const eased = reportedHashrate(m, t0 + 30_000);
-    assert.ok(eased < 80 && eased > 20, `pause ease ${eased}`);
+    assert.equal(m.clientHs, 80);
+    assert.equal(reportedHashrate(m, t0 + 30_000), 80);
+    m.clientHs = 800;
+    const rose = reportedHashrate(m, t0 + 31_000);
+    assert.ok(rose <= 80 * HASHRATE_RISE_FRAC + 0.01, `spike ${rose}`);
+    assert.ok(rose >= 80, `rose ${rose}`);
   });
 
   it('connect hashrate ramps up from own hashes, never down from a session-average spike', () => {

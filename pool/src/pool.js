@@ -72,6 +72,8 @@ export const PREV_JOB_GRACE_MS = 3_000;
 export const HASHRATE_STALL_HOLD_MS = 90_000;
 /** Mixed hashing+K-pause windows often land at 50–90% of the true rate. */
 export const HASHRATE_HOLD_FRAC = 0.9;
+/** Cap a single HUD step-up so a blockfound / new-job burst cannot spike. */
+export const HASHRATE_RISE_FRAC = 1.15;
 /** Rebuild /api/stats JSON on this cadence. The HTTP handler never computes it. */
 export const STATS_REFRESH_MS = 400;
 const HASH_WORKER = fileURLToPath(new URL('./hash_worker.js', import.meta.url));
@@ -641,13 +643,11 @@ export function provenHashrate(miner, now = Date.now()) {
   return work / (HASHRATE_WINDOW_MS / 1000);
 }
 
-/** After a sealed header, rebase round counters. Keep eased H/s so the HUD does not drop to 0. */
+/** After a sealed header, rebase round counters only. Keep hashes/dt window and eased H/s. */
 export function resetMinerRoundDisplay(m, now = Date.now()) {
   if (!m || typeof m !== 'object') return m;
   m.roundHashes = 0;
   m.clientHashesRound0 = Number(m.clientHashes) || 0;
-  m.rateHashes0 = Number(m.clientHashes) || 0;
-  m.rateAt0 = now;
   return m;
 }
 
@@ -707,6 +707,9 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
           if (hs > cap || jumped) {
             session.rateHashes0 = hashes;
             session.rateAt0 = now;
+          } else if (prevHs > 0 && hs < prevHs * HASHRATE_HOLD_FRAC) {
+            session.rateHashes0 = hashes;
+            session.rateAt0 = now;
           } else {
             session.clientHs = hs;
             session.clientHsAt = now;
@@ -738,7 +741,8 @@ export function liveHashrate(miner, now = Date.now()) {
 
 /**
  * Public HUD H/s: EMA toward hashes/dt so miner and pool agree.
- * A stall holds the last ease. Round reset must not paint 0.
+ * Dips below HOLD_FRAC and stalls keep the last ease. Rises are stepped
+ * by RISE_FRAC so a new job cannot spike the paint.
  */
 export function reportedHashrate(miner, now = Date.now()) {
   const at = Number(now) || Date.now();
@@ -746,8 +750,12 @@ export function reportedHashrate(miner, now = Date.now()) {
   const t0 = Number(miner?.emaAt) || 0;
   const instant = liveHashrate(miner, at);
   const hold = held > 0 && t0 > 0 && (at - t0) < HASHRATE_STALL_HOLD_MS;
-  if (hold && (!(instant > 0) || instant < held * 0.25)) return held;
-  if (instant > 0) return easeHashrate(miner, instant, at);
+  if (hold && (!(instant > 0) || instant < held * HASHRATE_HOLD_FRAC)) return held;
+  if (instant > 0) {
+    const cap = held > 0 ? held * HASHRATE_RISE_FRAC : instant;
+    const target = instant > cap ? cap : instant;
+    return easeHashrate(miner, target, at);
+  }
   return hold ? held : 0;
 }
 
