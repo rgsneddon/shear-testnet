@@ -1,11 +1,11 @@
 #!/bin/sh
-# Copy this cut's wallet sources onto Dedicated-de (/opt/shear-v2/wallet).
+# Copy this cut's wallet sources onto Dedicated-de (/opt/shear-v3/wallet).
 # Run on every wallet pin so the pool tree is never left on an old cut.
 set -e
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WALLET="$ROOT/wallet"
 HOST="${SHEAR_POOL_HOST:-de}"
-DEST="${SHEAR_POOL_WALLET:-/opt/shear-v2/wallet}"
+DEST="${SHEAR_POOL_WALLET:-/opt/shear-v3/wallet}"
 VER="$(sed -n "s/^const kWalletVersion = '\\(.*\\)';/\\1/p" "$WALLET/lib/main.dart" | head -1)"
 test -n "$VER"
 test -f "$WALLET/lib/main.dart"

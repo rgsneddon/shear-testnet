@@ -66,6 +66,14 @@ describe('docs.shear.digital', () => {
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);
     assert.match(content, /0\.32/);
+    assert.match(content, /Wallet pin<\/th><td>0\.32/);
+    assert.match(content, /Current pin is <strong>0\.32<\/strong>/);
+    assert.match(content, /releases\/tag\/0\.32/);
+    assert.doesNotMatch(content, /Current pin is <strong>0\.33<\/strong>/);
+    assert.doesNotMatch(content, /Wallet pin<\/th><td>0\.33/);
+    const readme = fs.readFileSync(path.join(here, '../../README.md'), 'utf8');
+    assert.match(readme, /Wallet \*\*0\.32\*\*/);
+    assert.doesNotMatch(readme, /Wallet \*\*0\.33\*\*/);
     assert.match(content, /127\.0\.0\.1:18332/);
     assert.match(content, /node-sync/);
     assert.match(content, /com\.shear\.shear_wallet/);
@@ -89,6 +97,8 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /min-width:0/);
     assert.match(paper, /\.banner-wordmark \{ height:36px; width:auto; max-width:none/);
     assert.match(paper, /Continuity-settled Proof of Work/);
+    assert.match(paper, /releases\/tag\/0\.32/);
+    assert.doesNotMatch(paper, /releases\/tag\/0\.33/);
     assert.match(paper, /Publication/);
     assert.match(paper, /Preprint/);
     assert.equal(pdf.subarray(0, 5).toString(), '%PDF-');
