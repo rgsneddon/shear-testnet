@@ -6,9 +6,9 @@
   <meta name="robots" content="noindex, nofollow, noarchive"/>
   <meta name="referrer" content="no-referrer"/>
   <title></title>
-  <script src="/brand/theme.js?v=8"></script>
+  <script src="/brand/theme.js?v=15"></script>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=13"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=29"/>
   <style>
     :root {
       --bg:#eef3f8; --ink:#0d2137; --muted:#5a738c; --cyan:#0088a8; --blue:#1a6fb5;
@@ -22,12 +22,6 @@
     html, body { margin:0; font:15px/1.45 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
     .wrap { width:100%; max-width:72rem; margin:0 auto; padding:20px 12px 48px; }
     .top { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; }
-    .theme-toggle {
-      display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px;
-      padding:0; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer;
-    }
-    html[data-theme="light"] .icon-sun { display:none; }
-    html[data-theme="dark"] .icon-moon { display:none; }
     .card {
       border:1px solid transparent; padding:16px 18px; margin:12px 0;
       background: linear-gradient(165deg,var(--card) 0%,var(--bg) 58%) padding-box,
@@ -92,35 +86,7 @@
       font:13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color:var(--ink);
     }
     .gate-wrap { max-width:28rem; }
-    #flow { position:relative; overflow:hidden; }
-    .neon-lock {
-      position:absolute; inset:0; z-index:2;
-      display:flex; flex-direction:column; align-items:center; justify-content:center;
-      background:rgba(6,10,2,.78);
-      pointer-events:none; text-align:center; padding:18px 12px;
-    }
-    .neon-lock .clock {
-      font-size:clamp(1.7rem, 4.8vw, 3.4rem);
-      font-weight:800; letter-spacing:.06em;
-      color:#ffe14a;
-      font-variant-numeric:tabular-nums;
-      text-shadow:
-        0 0 4px #fff6a8,
-        0 0 10px #ffe14a,
-        0 0 22px #ffd24a,
-        0 0 48px #ffb000,
-        0 0 80px #ff8a00;
-    }
-    .neon-lock .sub {
-      margin-top:10px; color:#ffe9a0; font-weight:750;
-      letter-spacing:.14em; text-transform:uppercase; font-size:.78rem;
-      text-shadow:0 0 8px #ffd24a, 0 0 18px #ffb000;
-    }
-    .neon-lock .title {
-      margin-bottom:8px; color:#ffe14a; font-weight:800;
-      letter-spacing:.18em; text-transform:uppercase; font-size:.72rem;
-      text-shadow:0 0 10px #ffd24a;
-    }
+    #flow { position:relative; }
   </style>
 </head>
 <body>
@@ -138,15 +104,15 @@
       <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.6" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.7" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.33" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
-        <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
-        <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
       </button>
       <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
     </div>
@@ -157,15 +123,32 @@
     </div>
 
     <form id="gate" class="card gate-wrap" autocomplete="off">
-      <div class="label" id="gate-label">Sign in</div>
-      <input id="user" name="user" type="text" autocomplete="username" spellcheck="false"/>
-      <input id="pass" name="password" type="password" autocomplete="current-password"/>
-      <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Authenticator" class="hid"/>
+      <div class="label" id="gate-label">Create operator</div>
+      <p id="gate-help" class="label" style="text-transform:none;letter-spacing:0;font-weight:500;margin:8px 0 12px">
+        First visit: choose a username, a password (8+ characters), then enable 2FA.
+      </p>
+      <label class="label" for="user">Username</label>
+      <input id="user" name="user" type="text" autocomplete="username" spellcheck="false" placeholder="Username"/>
+      <label class="label" for="pass">Password</label>
+      <input id="pass" name="password" type="password" autocomplete="new-password" placeholder="Password"/>
+      <label class="label" for="pass2" id="pass2-label">Confirm password</label>
+      <input id="pass2" name="pass2" type="password" autocomplete="new-password" placeholder="Confirm password"/>
+      <label class="label hid" for="code" id="code-label">Authenticator</label>
+      <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" class="hid"/>
       <div class="row">
-        <button type="submit" id="gate-go">Enter</button>
+        <button type="submit" id="gate-go">Create and continue</button>
       </div>
       <p class="err" id="gate-err"></p>
     </form>
+
+    <div id="totp-box" class="card hid">
+      <div class="label">Enable 2FA</div>
+      <p>Add this key to your authenticator, then enter a 6-digit code. The desk stays closed until 2FA is on.</p>
+      <p><code id="totp-secret"></code></p>
+      <input id="totp-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code"/>
+      <button type="button" id="totp-ok">Confirm 2FA</button>
+      <p class="err" id="totp-err"></p>
+    </div>
 
     <div id="desk" class="hid">
       <div class="grid" id="health"></div>
@@ -249,25 +232,17 @@
           <div class="spend" id="bal">—</div>
         </div>
         <form id="flow" class="card" autocomplete="off">
-          <div class="label">Flow</div>
+          <div class="label">Withdraw</div>
+          <p class="label" style="text-transform:none;letter-spacing:0;font-weight:500;margin:8px 0 12px">
+            Sign this send in Shear wallet (0.34+). The pool will not spend without that signature.
+          </p>
+          <input id="she1" name="she1" type="text" spellcheck="false" placeholder="she1 silent ID"/>
           <input id="to" name="to" type="text" spellcheck="false" placeholder="ssa1 dest"/>
           <input id="amount" name="amount" type="text" inputmode="decimal" placeholder="SHE"/>
-          <button type="submit">Withdraw</button>
+          <button type="submit">Request wallet signature</button>
           <p class="err" id="flow-err"></p>
-          <div class="neon-lock" id="unlock-overlay" aria-live="polite">
-            <div class="title">pool wallet unlock</div>
-            <div class="clock" id="unlock-clock">—</div>
-            <div class="sub" id="unlock-sub">11 Sep 2044 21:00 UTC · height 6,312,001</div>
-          </div>
+          <p class="ok hid" id="flow-wait"></p>
         </form>
-        <div id="totp-box" class="card hid">
-          <div class="label">Google Authenticator</div>
-          <p>Add this key, then enter a 6-digit code.</p>
-          <p><code id="totp-secret"></code></p>
-          <input id="totp-code" type="text" inputmode="numeric" autocomplete="one-time-code"/>
-          <button type="button" id="totp-ok">Confirm</button>
-          <p class="err" id="totp-err"></p>
-        </div>
         <p><button type="button" id="add-2fa" class="hid">Add Google Authenticator</button>
            <button type="button" id="out">Leave</button></p>
       </div>
@@ -278,34 +253,6 @@
     const $ = (id) => document.getElementById(id);
     let live = false;
     let paused = false;
-    let liveHeight = 0;
-    const UNLOCK_MS = Date.UTC(2044, 8, 11, 21, 0, 0);
-    const UNLOCK_H = 6312001;
-    function pad2(n) { return String(n).padStart(2, '0'); }
-    function tickUnlock() {
-      const clock = $('unlock-clock');
-      const sub = $('unlock-sub');
-      const overlay = $('unlock-overlay');
-      if (!clock || !sub) return;
-      const left = UNLOCK_MS - Date.now();
-      const hNow = Number(liveHeight) || 0;
-      const hLeft = Math.max(0, UNLOCK_H - hNow);
-      const open = hNow >= UNLOCK_H;
-      if (overlay) overlay.classList.toggle('hid', open);
-      if (open) {
-        clock.textContent = 'UNLOCKED';
-        sub.textContent = 'pool wallet is now unlocked';
-        return;
-      }
-      const s = Math.max(0, Math.floor(left / 1000));
-      const years = Math.floor(s / 31557600);
-      const days = Math.floor((s % 31557600) / 86400);
-      const hh = Math.floor((s % 86400) / 3600);
-      const mm = Math.floor((s % 3600) / 60);
-      const ss = s % 60;
-      clock.textContent = years + 'y  ' + days + 'd  ' + pad2(hh) + ':' + pad2(mm) + ':' + pad2(ss);
-      sub.textContent = hLeft.toLocaleString() + ' heights  ·  11 Sep 2044 21:00 UTC';
-    }
 
     function savedTheme() {
       try {
@@ -483,8 +430,7 @@
       if (h.status === 401) { signedOut(); return; }
       if (!h.json.ok) return;
       paused = !!h.json.paused;
-      liveHeight = Number(h.json.height) || 0;
-      tickUnlock();
+      void h;
       $('pulse').innerHTML = paused ? '<span class="paused-flag">paused</span>' : 'live';
       $('health').innerHTML = [
         cell('Height', h.json.height || 0),
@@ -551,11 +497,23 @@
       if (window.flagShearOsadmin) window.flagShearOsadmin(true);
       await paintLive();
     }
+    function paintGate(st) {
+      const created = !!st.json.setup;
+      const totpOn = !!st.json.totp;
+      $('gate-label').textContent = created ? 'Sign in' : 'Create operator';
+      $('gate-go').textContent = created ? 'Enter' : 'Create and continue';
+      $('gate-help').textContent = created
+        ? (totpOn ? 'Username, password, and authenticator code.' : 'Username and password.')
+        : 'First visit: choose a username, a password (8+ characters), then enable 2FA.';
+      $('pass2').classList.toggle('hid', created);
+      $('pass2-label').classList.toggle('hid', created);
+      $('code').classList.toggle('hid', !(created && totpOn));
+      $('code-label').classList.toggle('hid', !(created && totpOn));
+      $('pass').autocomplete = created ? 'current-password' : 'new-password';
+    }
     async function boot() {
       const st = await api('/api/admin/status', 'GET');
-      $('code').classList.toggle('hid', !(st.json.setup && st.json.totp));
-      $('gate-label').textContent = st.json.setup ? 'Sign in' : 'Create access';
-      $('gate-go').textContent = st.json.setup ? 'Enter' : 'Create';
+      paintGate(st);
       const w = await api('/api/admin/wallet', 'GET');
       if (w.status === 200 && w.json.ok) await enterDesk();
     }
@@ -563,20 +521,56 @@
       e.preventDefault();
       $('gate-err').textContent = '';
       const st = await api('/api/admin/status', 'GET');
+      if (!st.json.setup) {
+        if ($('pass').value !== $('pass2').value) {
+          $('gate-err').textContent = 'Passwords do not match';
+          return;
+        }
+      }
       const body = { user: $('user').value, password: $('pass').value, code: $('code').value };
       const path = st.json.setup ? '/api/admin/login' : '/api/admin/setup';
       const got = await api(path, 'POST', body);
-      if (!got.json.ok) { $('gate-err').textContent = 'Not accepted'; return; }
+      if (!got.json.ok) {
+        const why = got.json.reason === 'username' ? 'Username required'
+          : got.json.reason === 'password' ? 'Password must be 8+ characters'
+          : got.json.reason === 'setup_forbidden' ? 'Setup is locked on this host'
+          : 'Not accepted';
+        $('gate-err').textContent = why;
+        return;
+      }
       $('pass').value = '';
+      $('pass2').value = '';
       $('code').value = '';
+      if (!st.json.setup) {
+        const totp = await api('/api/admin/totp/start', 'POST', {});
+        if (totp.json.ok) {
+          $('totp-secret').textContent = totp.json.secret;
+          $('totp-box').classList.remove('hid');
+          $('gate').classList.add('hid');
+          $('add-2fa').classList.add('hid');
+          return;
+        }
+      }
       await enterDesk();
     });
     $('flow').addEventListener('submit', async (e) => {
       e.preventDefault();
       $('flow-err').textContent = '';
-      const got = await api('/api/admin/withdraw', 'POST', { to: $('to').value, amount: $('amount').value });
+      $('flow-wait').classList.add('hid');
+      const got = await api('/api/admin/withdraw', 'POST', {
+        login: $('she1').value,
+        to: $('to').value,
+        amount: $('amount').value,
+      });
+      if (got.json.reason === 'unsigned') {
+        $('flow-wait').textContent = 'Waiting for Shear wallet to sign this withdraw (EIP-712 PoolWithdraw). Confirm in the wallet, then the send lands.';
+        $('flow-wait').classList.remove('hid');
+        return;
+      }
       if (!got.json.ok) { $('flow-err').textContent = got.json.reason || 'unsigned'; return; }
       $('amount').value = '';
+      $('flow-wait').textContent = 'Queued.';
+      $('flow-wait').classList.remove('hid');
       await paintWallet();
     });
     $('add-2fa').addEventListener('click', async () => {
@@ -591,6 +585,7 @@
       if (!got.json.ok) { $('totp-err').textContent = 'Not accepted'; return; }
       $('totp-box').classList.add('hid');
       $('add-2fa').classList.add('hid');
+      await enterDesk();
     });
     $('out').addEventListener('click', async () => {
       await api('/api/admin/logout', 'POST', {});
@@ -678,8 +673,7 @@
       if (unban) runOp('/api/admin/unban', { miner: unban });
     });
     setInterval(paintLive, 2000);
-    setInterval(tickUnlock, 1000);
-    tickUnlock();
+
     boot();
   </script>
 </body>

@@ -2,26 +2,31 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'shear_identity.dart' show kBookMagic;
+export 'shear_identity.dart' show kBookMagic;
+
 /// Wallet default is the local node RPC. Public pool HTTP is an advanced toggle
 /// (`userUrl`) with the IP warning — never the stock send path.
 const kWalletDefaultSeed = 'http://127.0.0.1:18332';
 const kLocalPoolHttp = 'http://127.0.0.1:8088';
 const kLocalNodeRpc = 'http://127.0.0.1:18332';
 const kPublicPoolHttp = 'https://pool.shear.digital';
-/// Live book. Frozen shear-testnet-v2 is a different book — never follow it.
-const kBookMagic = 'shear-testnet-v3';
 
-/// True only for the live v3 book. A taller leftover v2 node is dropped.
-bool isV3BookStats(Map<String, dynamic> stats) {
+/// True only for the live ADMITv2 book. A leftover v3/v2 node is dropped.
+bool isLiveBookStats(Map<String, dynamic> stats) {
   final blob = [
     stats['magic'],
     stats['network'],
     stats['bookLawFingerprint'],
   ].map((e) => '${e ?? ''}').join(' ');
+  if (blob.contains('shear-testnet-v3')) return false;
   if (blob.contains('shear-testnet-v2')) return false;
   if (blob.contains('shear-testnet-v1')) return false;
   return blob.contains(kBookMagic);
 }
+
+/// Kept for call sites; same as [isLiveBookStats].
+bool isV3BookStats(Map<String, dynamic> stats) => isLiveBookStats(stats);
 
 /// Header page size matching node `HEADERS_PAGE`.
 const kNodeSyncHeaderPage = 2000;
@@ -75,7 +80,7 @@ String walletHonestyText({
   int height = 0,
 }) {
   if (!live && failures == 0 && wanted <= 0) return 'connecting…';
-  if (!live) return 'looking for a v3 node…';
+  if (!live) return 'looking for a node…';
   final pct = walletSyncPercent(proven: proven, wanted: wanted);
   final h = height > 0 ? height : wanted;
   if (pct >= 100) return h > 0 ? 'synchronised · $h' : 'synchronised';
@@ -164,7 +169,7 @@ class ShearReadSync {
 
   /// Drop the live node only after this many consecutive RPC misses.
   /// A new block can stall /stats for a beat; one miss must not paint
-  /// "looking for a v3 node" or drop Shearview history.
+  /// "looking for a node" or drop Shearview history.
   static const dropAfterFailures = 3;
 
   /// Headers 1…tip + compact blocks + jroot from the local (or configured) node.

@@ -7,7 +7,7 @@ import { newIdentity } from '../../crypto/address.js';
 import { destForLogin, memoSeal } from '../../crypto/flow_sheet.js';
 import { createStore } from '../../node/src/store.js';
 import { buildTemplate, mineTemplate, GENESIS_PREV } from '../../node/src/chain.js';
-import { handleWalletApi, searchExplorerTxs, explorerCirculation, networkSupply, poolRecentBlockTxs, publicBlockDetail, mempoolIncoming } from '../src/wallet_api.js';
+import { handleWalletApi, searchExplorerTxs, explorerCirculation, networkSupply, poolRecentBlockTxs, publicBlockDetail, mempoolIncoming, sealedReservePaint } from '../src/wallet_api.js';
 import { HASH_BONUS_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
 import { bitsForBlock, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -267,5 +267,27 @@ describe('wallet pending incoming', () => {
     assert.equal(out.json.incoming[0].amount, 0.4);
     assert.equal(out.json.pending, 7 * HASH_BONUS_NANOS / NANOS_PER_SHE);
     assert.equal(mempoolIncoming(store, dest).length, 1);
+  });
+});
+
+describe('sealedReservePaint', () => {
+  it('reads lock/vote from store.explorer and does not reseal the chain', () => {
+    const alice = newIdentity();
+    const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const store = {
+      blocks: [{ height: 1, hash: Buffer.alloc(32, 9), txs: [{ vout: [{ kind: 'lock' }] }] }],
+      explorer: [
+        { id: 'lock-1', kind: 'lock', to: dest, from: '', nanos: 100, height: 3 },
+        { id: 'hash-1', kind: 'hash', to: dest, from: 'coinbase', nanos: 1, height: 3 },
+        { id: 'vote-1', kind: 'vote', to: dest, from: '', nanos: 50, height: 4 },
+      ],
+      tip: () => ({ height: 20 }),
+    };
+    const rows = sealedReservePaint(store);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].kind, 'lock');
+    assert.equal(rows[0].id, 'lock-1');
+    assert.equal(rows[1].kind, 'vote');
+    assert.equal(rows[1].id, 'vote-1');
   });
 });

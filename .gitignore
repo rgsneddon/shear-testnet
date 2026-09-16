@@ -7,6 +7,8 @@ sheark-miner/ShearK-Miner.exe
 sheark-miner/ShearK-Miner-mainnet
 sheark-miner/dist/
 crypto/native/shearhash.node
+crypto/native/shearadmit.node
+crypto/native/*.node
 crypto/randomx/build/
 crypto/randomx/build-win/
 crypto/randomx/build-mingw/
@@ -29,3 +31,4 @@ dist/
 wallet/**/local.properties
 wallet/**/Flutter/ephemeral/
 wallet/**/ephemeral/
+crypto/native/admit/target/

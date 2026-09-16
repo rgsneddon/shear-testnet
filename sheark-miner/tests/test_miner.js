@@ -37,10 +37,10 @@ describe('ShearK-Miner', () => {
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
     assert.equal(j.personalisation, 'ShearHash-v3');
-    assert.equal(j.version, '1.6');
+    assert.equal(j.version, '1.7');
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.headerBytes, 128);
-    assert.equal(j.magic, 'shear-testnet-v3');
+    assert.equal(j.magic, 'shear-testnet-v4');
     assert.equal(j.rxMode, 'light');
     assert.equal(j.rxCacheMiB, 128);
     assert.equal(j.feePct, 0);
@@ -55,7 +55,7 @@ describe('ShearK-Miner', () => {
     if (process.platform === 'linux') assert.equal(j.backend, 'jit');
     assert.equal(typeof j.hugePages, 'boolean');
     const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
-    assert.match(help.stdout, /ShearK-Miner 1\.6 \(ShearHash-v3 light\)/);
+    assert.match(help.stdout, /ShearK-Miner 1\.7 \(ShearHash-v3 light\)/);
     assert.match(help.stdout, /ShearHash-v3 light/);
     assert.match(help.stdout, /--backend jit/);
     assert.match(help.stdout, /huge pages/);
@@ -107,6 +107,8 @@ describe('ShearK-Miner', () => {
     assert.match(src, /s\.gen != live_gen/);
     assert.match(src, /enqueue_share\(job\.jobId, n, hash, job\.gen\)/);
     assert.match(src, /enqueue_share\(job\.jobId, primed_n, hash, job\.gen\)/);
+    assert.match(src, /g_stamp_seq/);
+    assert.match(src, /stamp != last_stamp/);
     assert.match(src, /#define IN_FLIGHT_MAX 1/);
     assert.match(src, /strstr\(low, "busy"\)/);
     assert.match(src, /memcmp\(g_main_job\.header, job\.header, 100\)/);
@@ -219,12 +221,12 @@ describe('ShearK-Miner', () => {
     await new Promise((r) => child.once('close', r));
     server.close();
     assert.match(loginLine, /"name":"ShearK-Miner"/);
-    assert.match(loginLine, /"version":"1\.6"/);
+    assert.match(loginLine, /"version":"1\.7"/);
     assert.match(loginLine, /"client":"ShearHash"/);
     assert.match(loginLine, /"algorithm":"ShearHash"/);
     assert.equal(/"dest"/.test(loginLine), false, loginLine);
     assert.equal(/"version":"1\.[01]"/.test(loginLine), false, loginLine);
-    assert.match(out, /ShearK-Miner 1\.6 \(ShearHash-v3 light\)/);
+    assert.match(out, /ShearK-Miner 1\.7 \(ShearHash-v3 light\)/);
     assert.match(out, /hashes=(?:\x1b\[(?:32m|1;92m))?\d+/);
     assert.match(out, /accepted=(?:\x1b\[(?:33m|1;93m))?0/);
     assert.match(out, /rejected=(?:\x1b\[(?:31m|1;91m))?0/);
@@ -278,7 +280,7 @@ describe('ShearK-Miner', () => {
     child.kill('SIGTERM');
     await new Promise((r) => child.once('close', r));
     server.close();
-    assert.match(loginLine, /"version":"1\.6"/);
+    assert.match(loginLine, /"version":"1\.7"/);
     assert.match(loginLine, new RegExp(`"dest":"${dest}"`));
     assert.match(out, /job=dest-job/);
     assert.match(out, /hashes=(?:\x1b\[(?:32m|1;92m))?\d+/);

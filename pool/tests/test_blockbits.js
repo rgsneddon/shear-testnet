@@ -6,7 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { GENESIS_BITS, LIVE_MIN_BITS, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
+import { GENESIS_BITS, GENESIS_BITS_PACKED, LIVE_MIN_BITS, TARGET_BLOCK_INTERVAL_MS, unpackBits } from '../../crypto/asert.js';
 import { createPool } from '../src/pool.js';
 import { SHARE_BITS_V2_START } from '../src/share_vardiff.js';
 
@@ -61,9 +61,10 @@ describe('testnet blockBits', () => {
       const blockBits = Number(job.blockBits || job.bits);
       const shareBits = Number(job.shareBits);
       assert.ok(Number.isFinite(blockBits) && blockBits > 0);
-      assert.ok(blockBits < 21, `login blockBits ${blockBits} is still the too-hard default`);
-      assert.equal(blockBits, GENESIS_BITS);
-      assert.ok(shareBits <= blockBits);
+      assert.equal(blockBits, GENESIS_BITS_PACKED);
+      assert.equal(unpackBits(blockBits), GENESIS_BITS);
+      assert.ok(unpackBits(blockBits) < 21, `login blockBits ${blockBits} is still the too-hard default`);
+      assert.ok(shareBits <= unpackBits(blockBits));
       assert.equal(shareBits, SHARE_BITS_V2_START);
     } finally {
       sock.end();

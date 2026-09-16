@@ -101,8 +101,8 @@ describe('node RPC', () => {
       const stats = await get(`${base}/stats`);
       assert.equal(stats.status, 200);
       assert.equal(stats.json.ok, true);
-      assert.equal(stats.json.magic, 'shear-testnet-v3');
-      assert.equal(stats.json.admit, 'AdmitV1');
+      assert.equal(stats.json.magic, 'shear-testnet-v4');
+      assert.equal(stats.json.admit, 'ADMITv2');
       assert.equal(stats.json.hashTxLive, 1);
       assert.equal(stats.json.height, 1);
       assert.ok(stats.json.header);
@@ -123,10 +123,40 @@ describe('node RPC', () => {
         assert.equal(sendTx.nanos, undefined);
       }
       const jroot = await get(`${base}/jroot`);
-      assert.equal(jroot.json.admit, 'AdmitV1');
+      assert.equal(jroot.json.admit, 'ADMITv2');
       assert.equal(typeof jroot.json.jroot, 'string');
+      const explDisk = fs.readFileSync(path.join(dir, 'explorer.jsonl'), 'utf8');
+      assert.equal(/"nanos"\s*:/.test(explDisk), false);
+      assert.equal(/"amount"\s*:/.test(explDisk), false);
+      const flux = await get(`${base}/fluxset`);
+      assert.equal(flux.json.admit, 'ADMITv2');
+      assert.ok(Array.isArray(flux.json.commits));
+      assert.equal(flux.json.commits.length, flux.json.pubs.length);
+      const tpl = await post(base, { method: 'gettemplate', params: { miner: dest } });
+      assert.equal(tpl.json.ok, true);
+      assert.equal(tpl.json.admit, 'ADMITv2');
+      assert.equal(tpl.json.magic, 'shear-testnet-v4');
+      assert.ok(tpl.json.jobId);
+      assert.ok(tpl.json.header);
     } finally {
       await rpc.close();
     }
   });
 });
+
+function post(url, body) {
+  return new Promise((resolve, reject) => {
+    const data = Buffer.from(JSON.stringify(body));
+    const req = http.request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': data.length },
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, json: JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }));
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}

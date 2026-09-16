@@ -100,17 +100,24 @@ describe('Flow dummy outs', () => {
       vin: [{ prev: Buffer.alloc(32, 1), index: 0, address: from }],
       vout: [{ address: to, nanos: 10, kind: 'send' }],
     }, { spent });
-    assert.equal(spentCommitEquals(send.vin[0], spent), true);
-    assert.equal(spentCommitEquals(send.vin[0], fake), false);
-    const spentOf = (vin) => (spentCommitEquals(vin, spent) ? spent : null);
-    assert.equal(verifyFlowConservation(send, spentOf), true);
-    assert.equal(verifyFlowConservation(send), false);
-    assert.equal(verifyFlowConservation(send, () => fake), false);
+    assert.equal(spentCommitEquals(send.vin[0], spent), false);
+    assert.ok(send.vin[0].commit);
+    assert.equal(send.vin[0].prev, undefined);
+    assert.equal(send.vin[0].address, undefined);
+    assert.equal(verifyFlowConservation(send), true);
+    const attack = { ...send, vin: [{ commit: fake.commit, r: fake.r }] };
+    assert.equal(verifyFlowConservation(attack), false);
     const compact = compactTx(send);
     assert.ok(compact.vin[0].commit);
     assert.equal(compact.vin[0].r, undefined);
-    assert.equal(verifyFlowConservation(compact, spentOf), true);
-    assert.equal(verifyFlowConservation(compact, () => fake), false);
+    assert.equal(compact.vin[0].prev, undefined);
+    assert.equal(compact.vin[0].index, undefined);
+    assert.equal(compact.vin[0].address, undefined);
+    assert.equal(compact.vin[0].noteCommit, undefined);
+    assert.equal(verifyFlowConservation(compact), true);
+    assert.equal(compact.vout[0].nanos, undefined);
+    assert.equal(compact.vout[0].valueProof?.v, undefined);
+    assert.equal(compact.nanos, undefined);
   });
 
   it('public explorer row hides amounts and dests, including Reserve kinds', () => {

@@ -1,0 +1,16 @@
+[Unit]
+Description=Shear ADMITv2 soak miner (loopback RPC)
+After=shear-ibd-v4.service
+Wants=shear-ibd-v4.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/shear-v4
+Environment=SHEAR_RPC=http://127.0.0.1:18332
+ExecStart=/usr/bin/node node/mine_loop.js
+Restart=on-failure
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

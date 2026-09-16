@@ -7,7 +7,7 @@ import { newIdentity, destOpeningFromView, freshStealthDest, ed25519SeedOf } fro
 import { fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
 import { spendBox } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { splitLevy, levyNanos } from '../../crypto/levy.js';
+import { splitLevy, levyNanos, bindWeightFee, levyNeed } from '../../crypto/levy.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { signSpendTx } from '../../crypto/spend.js';
@@ -40,7 +40,7 @@ function mine(tpl) {
 describe('verifyBlock Phase B Flow levy', () => {
   it('dust empty L=100; 1 SHE empty 0.0002 SHE; pot/hash pay 0; underpay levy; EVM value same L; maxLevy refuse', async () => {
     assert.equal(levyNanos(1), 100);
-    assert.equal(levyNanos(NANOS_PER_SHE), 20_000_000);
+    assert.equal(levyNanos(NANOS_PER_SHE), 100);
     const id = newIdentity();
     const dest = freshStealthDest(id.paymentCode).dest;
     const other = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey, height: 1 });
@@ -104,10 +104,12 @@ describe('verifyBlock Phase B Flow levy', () => {
           { address: dest, nanos: change, kind: 'send' },
         ],
       }, { spent });
+      const live = fluxsetFromBlocks([parent]);
       return proveFlowSpend(tx, {
         spendSeed: id.spendSeed || ed25519SeedOf(id.privateKey),
         spentNote: spent,
-        pubs: fluxsetFromBlocks([parent]).pubs,
+        pubs: live.pubs,
+        commits: live.commits,
       });
     }
     const unpaid = mine(buildTemplate({
@@ -236,7 +238,9 @@ describe('verifyBlock Phase B Flow levy', () => {
       spendSeed: id.spendSeed || ed25519SeedOf(id.privateKey),
       spentNote: { ...spent, r: lastPot.r, kind: spent.kind || 'pot' },
       pubs: store.fluxset().pubs,
+      commits: store.fluxset().commits,
     });
+    bindWeightFee(sendTx);
     signSpendTx(sendTx, box.key);
     const queued = store.queueTx(sendTx);
     assert.equal(queued.ok, true, queued.reason);

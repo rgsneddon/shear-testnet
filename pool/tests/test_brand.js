@@ -116,6 +116,11 @@ describe('brand pages', () => {
     assert.match(theme, /cookieGet/);
     assert.match(theme, /cookieSet/);
     assert.match(theme, /onShearHost/);
+    assert.match(theme, /flagShearOsadmin/);
+    assert.match(theme, /paintShearOsadmin/);
+    assert.match(theme, /textContent = 'OSAdmin'/);
+    assert.match(theme, /nav-osadmin/);
+    assert.doesNotMatch(theme, /textContent = 'OSadmin'/);
     const siteTheme = read('site/brand/theme.js');
     assert.equal(siteTheme, theme);
     const pool = read('pool/public/index.html');
@@ -135,6 +140,8 @@ describe('brand pages', () => {
     assert.deepEqual(light, { w: 1500, h: 500 });
     assert.deepEqual(dark, { w: 1500, h: 500 });
     const css = read('pool/public/brand/theme.css');
+    assert.match(css, /grid-auto-columns:\s*1fr/);
+    assert.match(css, /grid-auto-flow:\s*column/);
     assert.match(css, /html\[data-theme="dark"\]/);
     assert.match(css, /--banner:\s*#06141f/);
     assert.match(css, /--gold:\s*#c48a00/);
@@ -156,20 +163,20 @@ describe('brand pages', () => {
       assert.match(page, /releases\/tag\/0\.33|shear-wallet-0\.33/);
       assert.doesNotMatch(page, /releases\/tag\/0\.28|shear-wallet-0\.28/);
       assert.match(page, /rgsneddon\/ShearK/);
-      assert.match(page, /theme\.js\?v=12/);
+      assert.match(page, /theme\.js\?v=15/);
     }
     assert.match(poolHtml, /Shear pool · ShearHash-v3/);
     assert.match(poolHtml, /Great Vibes/);
     assert.match(poolHtml, /grid-template-columns:\s*1fr 2fr/);
     assert.doesNotMatch(poolHtml, /grid-template-columns:\s*1fr 3fr/);
     assert.match(poolHtml, /class="she-private-lockup">She is Private</);
-    assert.match(poolHtml, /ADMITV1 membership/);
+    assert.match(poolHtml, /ADMITv2 membership/);
     assert.match(poolHtml, /PoW elects the tip/);
     assert.match(poolHtml, /id="mine-form"/);
     assert.match(poolHtml, /id="addr"/);
     assert.match(poolHtml, /id="copy-cmd"/);
     assert.match(poolHtml, /ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker/);
-    assert.match(poolHtml, /ShearK-Miner-1\.6-linux\.zip/);
+    assert.match(poolHtml, /ShearK-Miner-1\.7-linux\.zip/);
     assert.doesNotMatch(poolHtml, /Private by default/);
     assert.doesNotMatch(poolHtml, /Proof of work only/);
     assert.doesNotMatch(poolHtml, /shewall\.json/);
@@ -330,6 +337,35 @@ describe('mempool pulse', () => {
 });
 
 describe('sticky public navbar', () => {
+  it('matches explorer.shear.digital equal-column nav boxes across site and pool', () => {
+    const siteCss = read('site/brand/theme.css');
+    const poolCss = read('pool/public/brand/theme.css');
+    const brandCss = read('brand/theme.css');
+    assert.equal(poolCss, siteCss, 'pool theme.css must match main shear.digital chrome');
+    assert.equal(brandCss, siteCss, 'root brand/theme.css must match main shear.digital chrome');
+    assert.match(siteCss, /\.nav \{\n  display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr;/);
+    assert.match(siteCss, /grid-auto-columns:\s*1fr/);
+    assert.match(siteCss, /\.top-banner > \.nav \{\n  display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr;/);
+    assert.doesNotMatch(siteCss, /flex: 0 0 auto; width: auto;/);
+    assert.match(siteCss, /\.top-banner\.nav-open \.nav \{ display: flex; \}/);
+    assert.match(siteCss, /min-width: 12\.5rem/);
+    assert.match(siteCss, /height: 36px; justify-content: center; padding: 0 10px/);
+    const poolHtml = read('pool/public/index.html');
+    assert.doesNotMatch(poolHtml, /\.reserve-chip \{[\s\S]*?\n    \}\n    \}\n/);
+    for (const rel of [
+      'site/index.html',
+      'pool/public/index.html',
+      'pool/public/explorer.html',
+      'pool/public/miner.html',
+      'site/docs/index.html',
+      'site/whitepaper/index.html',
+    ]) {
+      const page = read(rel);
+      assert.match(page, /class="nav-btn/, `${rel} must ship nav-btn`);
+      assert.match(page, /grid-auto-columns:\s*1fr/, `${rel} nav must match explorer equal-column boxes`);
+    }
+  });
+
   it('pins .top-banner on every public Shear page', () => {
     const pages = [
       'site/index.html',

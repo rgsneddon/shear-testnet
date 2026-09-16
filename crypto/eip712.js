@@ -6,12 +6,13 @@
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { MAGIC_TESTNET } from './asert.js';
 
 export const EIP712_CHAIN_ID = 2701;
 export const EIP712_NAME = 'ShearPool';
 export const EIP712_VERSION = '1';
 export const EIP712_PRIMARY = 'PoolWithdraw';
-export const EIP712_CHAIN_MAGIC = 'shear-testnet-v3';
+export const EIP712_CHAIN_MAGIC = MAGIC_TESTNET;
 export const POOL_WITHDRAW_DEADLINE_MS = 2 * 3600_000;
 
 function keccak(data) {

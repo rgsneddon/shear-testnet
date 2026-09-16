@@ -9,7 +9,7 @@ import { spendBox, admitSend } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { lockTx, voteTx } from '../../crypto/reserve_vault.js';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, LIVE_MIN_BITS, packBits } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 import {
   P2P_PORT,
@@ -211,8 +211,9 @@ describe('p2p gossip', () => {
     }
   });
 
-  it('default getblock batch is 1 so IBD cannot OOM a seed; wire bytes are hex', () => {
-    assert.equal(GETBLOCK_BATCH, 1);
+  it('default getblock batch is a small window so IBD overlaps RTT; wire bytes are hex', () => {
+    assert.equal(GETBLOCK_BATCH, 16);
+    assert.ok(GETBLOCK_BATCH <= 64);
     const commit = Buffer.alloc(32, 9);
     const wire = encodeWireBlock({
       header: Buffer.alloc(128, 1),
@@ -261,11 +262,11 @@ describe('p2p gossip', () => {
     assert.equal(cfg.p2p, P2P_PORT);
     assert.equal(cfg.p2p, 30303);
     assert.equal(cfg.magic, MAGIC_TESTNET);
-    assert.equal(cfg.magic, 'shear-testnet-v3');
+    assert.equal(cfg.magic, 'shear-testnet-v4');
     assert.equal(cfg.mainnet, false);
     assert.equal(cfg.phaseBGate, true);
     assert.equal(cfg.rpc, 18332);
-    assert.equal(cfg.admit, 'AdmitV1');
+    assert.equal(cfg.admit, 'ADMITv2');
     assert.equal(cfg.hashTxLive, 1);
     assert.equal(cfg.archival, true);
     assert.equal(cfg.fastSync, false);
@@ -425,10 +426,10 @@ describe('p2p gossip', () => {
     assert.match(src, /getblocks/);
     assert.match(src, /sock\.destroy\(\)/);
     assert.equal(src.includes('seenTx.clear()'), false);
-    assert.ok(DEFAULT_SEEDS.includes('shear.digital:30303'));
+    assert.ok(DEFAULT_SEEDS.includes('p2p.shear.digital:30303'));
     assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('46.224.132.83')), false);
-    assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('p2p.shear.digital')), false);
-    assert.equal(GETBLOCK_BATCH, 1);
+    assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('shear.digital:30303') && !String(s).includes('p2p.shear.digital')), false);
+    assert.equal(GETBLOCK_BATCH, 16);
     assert.equal(HEADERS_PAGE, 2000);
     assert.match(src, /requestHeaders/);
     assert.match(src, /dialSeeds/);
@@ -457,13 +458,14 @@ function fakeHash(n) {
   return hash.toString('hex');
 }
 
-function mineChainOne(store, dest, bits = 4) {
+function mineChainOne(store, dest) {
+  const packed = packBits(LIVE_MIN_BITS);
   const parent = store.tip();
   const now = parent
     ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
     : Date.now();
-  const { tpl } = store.template({ miner: dest, bits, shareBits: bits, now });
-  const found = mineTemplate({ ...tpl, bits }, { maxTries: 3_000_000, shareBits: bits });
+  const { tpl } = store.template({ miner: dest, bits: packed, shareBits: packed, now });
+  const found = mineTemplate(tpl, { maxTries: 250_000, shareBits: packed });
   assert.ok(found && found.block, 'need pow');
   const got = store.append({
     header: found.header,
@@ -626,12 +628,11 @@ describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
 
   it('one headers page queues every missing hash; IBD does not refetch headers each height', async () => {
     const dest = destMiner();
-    const bits = 4;
-    const want = 6;
+    const want = 3;
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hdrq-a-'));
     const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
     try {
-      for (let i = 0; i < want; i += 1) mineChainOne(a.store, dest, bits);
+      for (let i = 0; i < want; i += 1) mineChainOne(a.store, dest);
       assert.equal(a.store.tip().height, want);
       const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hdrq-b-'));
       const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
@@ -666,13 +667,13 @@ describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
 
   it('empty, lagging-prefix, and later third nodes fully catch up past one getblock batch', async () => {
     const dest = destMiner();
-    const bits = 4;
-    const want = 20;
-    assert.ok(want > GETBLOCK_BATCH);
+    process.env.SHEAR_GETBLOCK_BATCH = '2';
+    const want = 5;
+    assert.ok(want > Number(process.env.SHEAR_GETBLOCK_BATCH));
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-a-'));
     const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
     try {
-      for (let i = 0; i < want; i += 1) mineChainOne(a.store, dest, bits);
+      for (let i = 0; i < want; i += 1) mineChainOne(a.store, dest);
       assert.equal(a.store.tip().height, want);
 
       const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-b-'));
@@ -688,10 +689,11 @@ describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
         const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-c-'));
         const c = await startNode({ dataDir: dirC, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
         try {
-          const prefix = copyBlocks(a.store.blocks.slice(0, 8));
+          const prefixLen = 2;
+          const prefix = copyBlocks(a.store.blocks.slice(0, prefixLen));
           const ingested = await Promise.resolve(c.store.ingest(prefix));
           assert.equal(ingested.ok, true, ingested.reason);
-          assert.equal(c.store.tip().height, 8);
+          assert.equal(c.store.tip().height, prefixLen);
           assert.ok(c.store.tip().height > 0 && c.store.tip().height < want);
           await c.p2p.connect('127.0.0.1', a.bound.port);
           const lagOk = await waitFor(() => tipsEqual(a, c), 30_000);

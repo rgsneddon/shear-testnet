@@ -2,7 +2,7 @@ import http from 'node:http';
 import { mempoolPressure } from '../../crypto/levy.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
 import { MAGIC_TESTNET, HASH_TX_LIVE, NANOS_PER_SHE } from '../../crypto/asert.js';
-import { hash20FromAddress, isDestAddress, isPaymentCode } from '../../crypto/address.js';
+import { hash20FromAddress, isDestAddress, isPaymentCode, encodeDest } from '../../crypto/address.js';
 import { noteCommitOfDest20 } from '../../crypto/note.js';
 
 export const RPC_PORT = 18332;
@@ -93,7 +93,7 @@ function statsJson(store) {
     header: raw.toString('hex'),
     hash: t?.hash ? Buffer.from(t.hash).toString('hex') : '',
     magic: MAGIC_TESTNET,
-    admit: 'AdmitV1',
+    admit: 'ADMITv2',
     hashTxLive: HASH_TX_LIVE,
     jroot: live.jroot ? Buffer.from(live.jroot).toString('hex') : '',
   };
@@ -179,32 +179,59 @@ export function createRpc({
       return { ok: false, reason: 'setTip_forbidden' };
     }
     if (m === 'getfluxset' || m === 'fluxset') {
-      const live = typeof store.fluxset === 'function' ? store.fluxset() : { pubs: [], spendTags: new Set(), jroot: null };
+      const live = typeof store.fluxset === 'function' ? store.fluxset() : { pubs: [], spendTags: new Set(), jroot: null, commits: [] };
       const pubs = (live.pubs || []).map((p) => Buffer.from(typeof p.toBytes === 'function' ? p.toBytes() : p).toString('hex'));
+      const commits = (live.commits || []).map((c) => Buffer.from(c).toString('hex'));
       return {
         ok: true,
         jroot: live.jroot ? Buffer.from(live.jroot).toString('hex') : '',
         pubs,
+        commits,
         fluxset: pubs,
         spendTags: [...(live.spendTags || [])],
-        admit: 'AdmitV1',
+        admit: 'ADMITv2',
         hashTxLive: store.hashTxLive,
       };
     }
     if (m === 'getjroot' || m === 'jroot') {
       const root = typeof store.jroot === 'function' ? store.jroot() : null;
-      return { ok: true, jroot: root ? Buffer.from(root).toString('hex') : '', admit: 'AdmitV1' };
+      return { ok: true, jroot: root ? Buffer.from(root).toString('hex') : '', admit: 'ADMITv2' };
     }
     if (m === 'getfingerprint' || m === 'fingerprint') {
       const fp = typeof store.consensusFingerprint === 'function'
         ? store.consensusFingerprint()
         : '';
-      return { ok: true, fingerprint: fp, admit: 'AdmitV1', hashTxLive: store.hashTxLive };
+      return { ok: true, fingerprint: fp, admit: 'ADMITv2', hashTxLive: store.hashTxLive };
     }
     if (m === 'queuetx' || m === 'queueTx') {
       const tx = params.tx || params;
       if (typeof store.queueTx !== 'function') return { ok: false, reason: 'no_store' };
       return store.queueTx(tx);
+    }
+    if (m === 'gettemplate' || m === 'template') {
+      if (typeof store.template !== 'function') return { ok: false, reason: 'no_store' };
+      const miner = String(params.miner || params[0] || encodeDest(Buffer.alloc(20, 9)));
+      if (!isDestAddress(miner)) return { ok: false, reason: 'coinbase_needs_dest' };
+      const { tpl, job } = store.template({ miner });
+      return {
+        ok: true,
+        jobId: job.jobId,
+        header: Buffer.from(tpl.header).toString('hex'),
+        bits: tpl.bits,
+        height: tpl.height,
+        miner,
+        admit: 'ADMITv2',
+        magic: MAGIC_TESTNET,
+      };
+    }
+    if (m === 'submitblock' || m === 'submitHeader') {
+      if (typeof store.submitHeader !== 'function') return { ok: false, reason: 'no_store' };
+      return store.submitHeader({
+        jobId: params.jobId || params[0],
+        nonce: params.nonce || params[1],
+        miner: params.miner,
+        powHash: params.powHash,
+      });
     }
     if (m === 'mempoolPressure' || m === 'mempoolpressure') {
       return mempoolPressure(store?.mempool || []);

@@ -4,7 +4,7 @@ import { HEADER_LEN, shearHash, meetsTarget } from './shear_hash.js';
 import { encodeHeader, decodeHeader, setNonce, requiredJobFields } from './header.js';
 import { merkleRoot, EMPTY_ROOT, sampleLeaf } from './merkle.js';
 import { encodeAddress, isShearAddress, newIdentity } from './address.js';
-import { nextBits, GENESIS_BITS, LIVE_MIN_BITS } from './asert.js';
+import { nextBits, GENESIS_BITS, LIVE_MIN_BITS, unpackBits } from './asert.js';
 
 const z32 = Buffer.alloc(32);
 
@@ -87,7 +87,7 @@ describe('merkle + address + asert', () => {
   });
 
   it('ASERT eases when blocks are slow', () => {
-    const next = nextBits(LIVE_MIN_BITS, 180_000);
+    const next = unpackBits(nextBits(LIVE_MIN_BITS, 180_000));
     assert.ok(next <= LIVE_MIN_BITS);
   });
 });

@@ -25,6 +25,7 @@ import {
   NANOS_PER_SHE,
   SPENDABLE_CONFIRMATIONS,
   GENESIS_BITS,
+  GENESIS_BITS_PACKED,
   SHARE_FLOOR_BITS,
 } from '../../crypto/asert.js';
 import { poolFeeDest, levyNanos, mempoolDepthBytes, poolWithdrawTx, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
@@ -637,16 +638,13 @@ export function provenHashrate(miner, now = Date.now()) {
   return work / (HASHRATE_WINDOW_MS / 1000);
 }
 
-/** After a sealed header, rebase the display counter so the next job cannot paint a spike. */
+/** After a sealed header, rebase round counters. Keep eased H/s so the HUD does not drop to 0. */
 export function resetMinerRoundDisplay(m, now = Date.now()) {
   if (!m || typeof m !== 'object') return m;
   m.roundHashes = 0;
   m.clientHashesRound0 = Number(m.clientHashes) || 0;
   m.rateHashes0 = Number(m.clientHashes) || 0;
   m.rateAt0 = now;
-  m.lastHashrate = 0;
-  m.clientHs = 0;
-  m.clientHsAt = 0;
   return m;
 }
 
@@ -723,8 +721,7 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
 }
 
 /**
- * Public H/s: connected hasher's own hashes/elapsed. ShareBits work mints
- * and is the fallback when no counter has arrived yet. No EMA, no hold.
+ * Instant H/s from the hasher's own counter, else proven share work.
  */
 export function liveHashrate(miner, now = Date.now()) {
   if (minerConnected(miner)) {
@@ -734,8 +731,18 @@ export function liveHashrate(miner, now = Date.now()) {
   return provenHashrate(miner, now);
 }
 
+/**
+ * Public HUD H/s: EMA toward the hasher's verified self-rate (60s tau).
+ * A round reset must not paint 0. A stall holds the last ease for HASHRATE_STALL_HOLD_MS.
+ */
 export function reportedHashrate(miner, now = Date.now()) {
-  return liveHashrate(miner, now);
+  const at = Number(now) || Date.now();
+  const instant = liveHashrate(miner, at);
+  if (instant > 0) return easeHashrate(miner, instant, at);
+  const held = Number(miner?.emaHs) || 0;
+  const t0 = Number(miner?.emaAt) || 0;
+  if (held > 0 && t0 > 0 && (at - t0) < HASHRATE_STALL_HOLD_MS) return held;
+  return 0;
 }
 
 /** HUD: miner's own hash counter this round. Never a mint path. */
@@ -765,7 +772,7 @@ export function refreshMinerRow(miner, now = Date.now()) {
   return miner;
 }
 
-/** Operator table on kyrusfables. Dest + workerKey stay off the public pool page. */
+/** Operator table on the admin desk. Dest + workerKey stay off the public pool page. */
 export function adminMinerView(m, now = Date.now()) {
   const connected = minerConnected(m);
   const bits = [];
@@ -807,7 +814,7 @@ export function createPool({
   httpPort = 8088,
   miner,
   shareBits = SHARE_BITS_V2_START,
-  bits = GENESIS_BITS,
+  bits = GENESIS_BITS_PACKED,
   lockBits = false,
   p2p = null,
   onRestart = null,
@@ -1666,7 +1673,7 @@ export function createPool({
       blockSubsidyNanos: BLOCK_SUBSIDY_NANOS,
       hashBonusNanos: store.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS,
       hashTxLive: HASH_TX_LIVE,
-      admit: 'AdmitV1',
+      admit: 'ADMITv2',
       bookLawFingerprint: consensusFingerprint(),
       ...consensusLaw(),
       policy: typeof store.getpolicy === 'function' ? store.getpolicy() : undefined,
@@ -1710,6 +1717,51 @@ export function createPool({
       publicMinerTag(m.login || m.workerKey) === want
       && isPublicMinerRow(m, now)
     ));
+  }
+
+  function minerPublicJson(tag, now = Date.now()) {
+    const rows = minerByTag(tag, now);
+    const tipH = Number(store.tip?.()?.height || 0);
+    const need = typeof store.getpolicy === 'function'
+      ? (store.getpolicy().operational?.pool_merchant || 30)
+      : 30;
+    const pull = pullBook.view(tag, { tipHeight: tipH, need });
+    if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs) {
+      return { ok: false, reason: 'unknown_miner', tag };
+    }
+    const views = rows.length
+      ? rows.map((m) => publicMinerView(m, now)).sort((a, b) => (b.hashrate || 0) - (a.hashrate || 0))
+      : [];
+    const roll = views.reduce((a, v) => ({
+      hashrate: a.hashrate + v.hashrate,
+      roundHashes: a.roundHashes + v.roundHashes,
+      accepted: a.accepted + v.accepted,
+      stale: a.stale + v.stale,
+      blocks: a.blocks + v.blocks,
+      threads: a.threads + v.threads,
+    }), { hashrate: 0, roundHashes: 0, accepted: 0, stale: 0, blocks: 0, threads: 0 });
+    return {
+      ok: true,
+      tag,
+      name: uniquePublicLabels(views.map((v) => v.name)),
+      version: uniquePublicLabels(views.map((v) => v.version)),
+      client: views[0]?.client || CLIENT,
+      algo: ALGO,
+      personalisation: PERSONAL,
+      connected: views.some((v) => v.connected),
+      lastSeen: views.length ? Math.max(...views.map((v) => v.lastSeen)) : 0,
+      firstSeen: views.length ? Math.min(...views.map((v) => v.firstSeen || now)) : 0,
+      ...roll,
+      workers: views,
+      pendingShe: pull.pendingNanos / NANOS_PER_SHE,
+      confirmedShe: pull.confirmedNanos / NANOS_PER_SHE,
+      unconfirmedShe: pull.unconfirmedNanos / NANOS_PER_SHE,
+      pendingDisplay: formatShe(pull.pendingNanos / NANOS_PER_SHE),
+      confirmedDisplay: formatShe(pull.confirmedNanos / NANOS_PER_SHE),
+      lastPullMs: pull.lastPullMs,
+      nextPullMs: pull.nextPullMs,
+      cooldownMs: PULL_COOLDOWN_MS,
+    };
   }
 
   function queueSend(t) {
@@ -1884,14 +1936,14 @@ export function createPool({
 
   const httpServer = http.createServer(async (req, res) => {
     const host = String(req.headers.host || '').split(':')[0].toLowerCase();
-    if (isAdminHost(host)) {
-      await handleAdminHttp(req, res, { store, admin, queueSend, ops: adminOps });
-      return;
-    }
     const url = new URL(req.url, 'http://127.0.0.1');
-    if (url.pathname.startsWith('/api/admin')) {
-      res.statusCode = 404;
-      res.end('missing');
+    if (
+      isAdminHost(host)
+      || url.pathname === '/admin'
+      || url.pathname.startsWith('/admin/')
+      || url.pathname.startsWith('/api/admin')
+    ) {
+      await handleAdminHttp(req, res, { store, admin, queueSend, ops: adminOps, pendingPulls });
       return;
     }
     if (url.pathname === '/api/stats') {
@@ -1913,7 +1965,7 @@ export function createPool({
       res.end(JSON.stringify({
         ok: true,
         fingerprint: fp,
-        admit: 'AdmitV1',
+        admit: 'ADMITv2',
         hashTxLive: Number(store.hashTxLive ?? HASH_TX_LIVE),
         magic: MAGIC_TESTNET,
       }));
@@ -1959,6 +2011,7 @@ export function createPool({
       const tag = decodeURIComponent(parts[0] || '');
       const rows = minerByTag(tag);
       res.setHeader('content-type', 'application/json');
+      res.setHeader('Cache-Control', 'no-store');
       const tipH = Number(store.tip?.()?.height || 0);
       const need = typeof store.getpolicy === 'function'
         ? (store.getpolicy().operational?.pool_merchant || 30)
@@ -1979,24 +2032,15 @@ export function createPool({
             req.on('error', reject);
           }));
         } catch { body = {}; }
-        const login = String(body.login || '').trim();
+        const login = String(body.login || body.she1 || '').trim();
         const she = login.split('.')[0];
-        const pay = payoutDest(she) || '';
-        const postedDest = payoutDest(String(body.dest || '')) || String(body.dest || '').trim();
-        const minerDest = String(rows[0]?.payoutDest || rows[0]?.login || rows[0]?.workerKey || '')
-          .split('.')[0];
-        const posted20 = hash20FromAddress(postedDest);
-        const miner20 = hash20FromAddress(minerDest);
-        const dest20Match = !!(posted20 && miner20 && Buffer.from(posted20).equals(Buffer.from(miner20)));
-        const tagMatch = publicMinerTag(she) === tag
-          || (pay && publicMinerTag(pay) === tag)
-          || (postedDest && publicMinerTag(postedDest) === tag)
-          || dest20Match;
-        if (!tagMatch) {
+        const rawDest = String(body.dest || '').trim();
+        if (containsShe1(rawDest) || /^she1/i.test(rawDest)) {
           res.statusCode = 400;
-          res.end(JSON.stringify({ ok: false, reason: 'auth' }));
+          res.end(JSON.stringify({ ok: false, reason: 'she1' }));
           return;
         }
+        const dest = payoutDest(rawDest) || '';
         if (pull.lastPullMs && Date.now() < pull.nextPullMs) {
           res.statusCode = 400;
           res.end(JSON.stringify({ ok: false, reason: 'cooldown', nextPullMs: pull.nextPullMs }));
@@ -2007,13 +2051,26 @@ export function createPool({
           res.end(JSON.stringify({ ok: false, reason: 'none_confirmed' }));
           return;
         }
-        const rawDest = String(body.dest || '').trim();
-        if (!rawDest || containsShe1(rawDest) || /^she1/i.test(rawDest)) {
+        const sig = body.sig || body.signature;
+        if (!sig) {
+          const pending = {
+            id: `pull-${tag}-${pull.confirmedNanos}`,
+            nanos: pull.confirmedNanos,
+            chainId: 2701,
+            tag,
+            at: Date.now(),
+          };
+          pendingPulls.set(`tag:${tag}`, pending);
           res.statusCode = 400;
-          res.end(JSON.stringify({ ok: false, reason: 'she1' }));
+          res.end(JSON.stringify({ ok: false, reason: 'unsigned', pending }));
           return;
         }
-        const dest = payoutDest(rawDest) || '';
+        const destTag = dest ? publicMinerTag(dest) : '';
+        if (!dest || destTag !== tag) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, reason: dest ? 'dest' : 'auth' }));
+          return;
+        }
         const off = verifyPoolWithdrawOffchain({
           login,
           dest,
@@ -2035,19 +2092,18 @@ export function createPool({
         if (!off.ok) {
           const pending = {
             id: `pull-${tag}-${pull.confirmedNanos}`,
-            login: she,
-            dest,
             nanos: pull.confirmedNanos,
             chainId: 2701,
             tag,
             at: Date.now(),
           };
-          if (off.reason === 'unsigned') pendingPulls.set(she.toLowerCase(), pending);
+          if (off.reason === 'unsigned') pendingPulls.set(`tag:${tag}`, pending);
           res.statusCode = 400;
           res.end(JSON.stringify({ ok: false, reason: off.reason, pending: off.reason === 'unsigned' ? pending : undefined }));
           return;
         }
-        pendingPulls.delete(she.toLowerCase());
+        pendingPulls.delete(`tag:${tag}`);
+        if (she) pendingPulls.delete(she.toLowerCase());
         const from = payoutDest(miner) || poolFeeDest();
         const fee = levyNanos(pull.confirmedNanos, { depth: mempoolDepthBytes(store.mempool || []) });
         const tx = poolWithdrawTx({ from, to: dest, nanos: pull.confirmedNanos, fee });
@@ -2072,39 +2128,7 @@ export function createPool({
         }));
         return;
       }
-      const now = Date.now();
-      const views = rows.length
-        ? rows.map((m) => publicMinerView(m, now)).sort((a, b) => (b.hashrate || 0) - (a.hashrate || 0))
-        : [];
-      const roll = views.reduce((a, v) => ({
-        hashrate: a.hashrate + v.hashrate,
-        roundHashes: a.roundHashes + v.roundHashes,
-        accepted: a.accepted + v.accepted,
-        stale: a.stale + v.stale,
-        blocks: a.blocks + v.blocks,
-        threads: a.threads + v.threads,
-      }), { hashrate: 0, roundHashes: 0, accepted: 0, stale: 0, blocks: 0, threads: 0 });
-      res.end(JSON.stringify({
-        ok: true,
-        tag,
-        name: uniquePublicLabels(views.map((v) => v.name)),
-        version: uniquePublicLabels(views.map((v) => v.version)),
-        client: views[0]?.client || CLIENT,
-        algo: ALGO,
-        personalisation: PERSONAL,
-        connected: views.some((v) => v.connected),
-        lastSeen: views.length ? Math.max(...views.map((v) => v.lastSeen)) : 0,
-        firstSeen: views.length ? Math.min(...views.map((v) => v.firstSeen || now)) : 0,
-        ...roll,
-        workers: views,
-        pendingShe: pull.pendingNanos / NANOS_PER_SHE,
-        confirmedShe: pull.confirmedNanos / NANOS_PER_SHE,
-        unconfirmedShe: pull.unconfirmedNanos / NANOS_PER_SHE,
-        pendingDisplay: formatShe(pull.pendingNanos / NANOS_PER_SHE),
-        confirmedDisplay: formatShe(pull.confirmedNanos / NANOS_PER_SHE),
-        nextPullMs: pull.nextPullMs,
-        cooldownMs: PULL_COOLDOWN_MS,
-      }));
+      res.end(JSON.stringify(minerPublicJson(tag)));
       return;
     }
     if (url.pathname === '/api/mempool' || url.pathname === '/api/mempoolPressure' || url.pathname === '/api/mempoolpressure' || url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/') || url.pathname.startsWith('/api/pool/') || url.pathname.startsWith('/api/vault/') || url.pathname.startsWith('/api/join/')) {
@@ -2188,6 +2212,14 @@ export function createPool({
       }
       const ext = path.extname(full);
       res.setHeader('content-type', ext === '.css' ? 'text/css' : 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      if (file === '/miner.html') {
+        const minerTag = decodeURIComponent(url.pathname.split('/')[2] || '');
+        const boot = minerPublicJson(minerTag);
+        const html = data.toString('utf8').replace('/*MINER_BOOT*/null', JSON.stringify(boot));
+        res.end(html);
+        return;
+      }
       res.end(data);
     });
   });
@@ -2196,8 +2228,10 @@ export function createPool({
   httpServer.headersTimeout = 0;
   httpServer.keepAliveTimeout = 5000;
   httpServer.on('listening', () => {
-    paintStatsSnap();
-    if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);
+    setImmediate(() => {
+      paintStatsSnap();
+      if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);
+    });
   });
 
   function listen() {
@@ -2205,11 +2239,13 @@ export function createPool({
       stratum.listen(stratumPort, '0.0.0.0', () => {
         httpServer.listen(httpPort, '127.0.0.1', () => {
           if (!restampTimer) restampTimer = setInterval(maybeRestampJob, JOB_RESTAMP_MS);
-          paintStatsSnap();
-          if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);
           resolve({
             stratumPort,
             httpPort,
+          });
+          setImmediate(() => {
+            paintStatsSnap();
+            if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);
           });
         });
       });

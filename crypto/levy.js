@@ -1,7 +1,7 @@
 /**
- * Phase B Flow levy. L = min(cap, ceil(L_base * (1 + surge))).
- * L_base = max(100 units, ceil(A * 2 bps)). Surge from mempool depth.
- * Cap is 0.001 SHE. Coinbase pot/hash: 0. Split half finder, half Book B.
+ * ADMITv2 Flow levy (LEVY=weight). fee = max(FLOOR, ceil(weight × RATE)).
+ * Amount is not an input. Cap 0.001 SHE is a hard ceiling, not the price.
+ * Split half finder, half Reserve vault.
  */
 import { createHash } from 'node:crypto';
 import { createPublicKey, verify } from 'node:crypto';
@@ -21,8 +21,11 @@ export const FEE_TARGET_WEIGHT = 8;
 export const FEE_SPLIT_FINDER_BPS = 5000;
 export const FEE_SPLIT_RESERVE_BPS = 5000;
 export const LEVY_FLOOR_UNITS = 100;
-export const LEVY_BPS = 2;
-/** Hard ceiling: 0.001 SHE. Never quote or require more. */
+export const LEVY_BPS = 0;
+export const LEVY_WEIGHT_RATE_NUM = 1;
+/** JSON-sealed ADMITv2 + range + dummy is tens of KB; DEN keeps a normal send on FLOOR. */
+export const LEVY_WEIGHT_RATE_DEN = 2048;
+/** Hard ceiling: 0.001 SHE. Emergency brake, not the advertised price. */
 export const LEVY_CAP_NANOS = Math.floor(0.001 * NANOS_PER_SHE);
 export const SURGE_MAX = 3;
 /** Waiting-bytes scale. Full surge at 3 * SURGE_REF. */
@@ -69,10 +72,22 @@ export function txWeight({ vouts = 0, memoChunks = 0, bFlag = 0 } = {}) {
     + (bFlag ? 1 : 0);
 }
 
-export function levyBase(amountNanos) {
-  const A = Math.max(0, Math.floor(Number(amountNanos) || 0));
-  const bps = Math.ceil((A * LEVY_BPS) / 10000);
-  return Math.max(LEVY_FLOOR_UNITS, bps);
+export function levyBase(_amountIgnored) {
+  return LEVY_FLOOR_UNITS;
+}
+
+export function flowWeight(tx) {
+  try {
+    return Buffer.byteLength(JSON.stringify(tx || {}));
+  } catch {
+    return 0;
+  }
+}
+
+export function levyFromWeight(weight) {
+  const w = Math.max(0, Math.floor(Number(weight) || 0));
+  const raw = Math.ceil((w * LEVY_WEIGHT_RATE_NUM) / LEVY_WEIGHT_RATE_DEN);
+  return Math.max(LEVY_FLOOR_UNITS, raw);
 }
 
 export function levySurge(depth, ref = SURGE_REF) {
@@ -91,31 +106,33 @@ export function txAmountNanos(tx) {
 }
 
 /**
- * Phase B L in protocol units.
- * levyNanos(amount) or levyNanos(amount, { depth }).
- * A numeric second arg is treated as depth (not the old weight product).
+ * Weight levy in protocol units. amountNanos is ignored.
+ * levyNanos(_, { weight }) or levyNanos() → FLOOR (wallet default / relay min).
  */
 export function levyNanos(amountNanos, opts = 0) {
-  const depth = typeof opts === 'number' ? opts : Number(opts?.depth || 0);
-  const ref = typeof opts === 'object' && opts && opts.surgeRef != null ? opts.surgeRef : SURGE_REF;
-  const base = levyBase(amountNanos);
-  const surge = levySurge(depth, ref);
-  return Math.min(LEVY_CAP_NANOS, Math.ceil(base * (1 + surge)));
+  if (typeof opts === 'object' && opts && opts.weight != null) {
+    return levyFromWeight(opts.weight);
+  }
+  if (typeof opts === 'object' && opts && opts.tx) {
+    return levyFromWeight(flowWeight(opts.tx));
+  }
+  return LEVY_FLOOR_UNITS;
 }
 
 export function quoteLevy(amountNanos, pressure = {}) {
-  const depth = Number(pressure.depth || 0);
-  const L = levyNanos(amountNanos, { depth, surgeRef: pressure.surgeRef });
+  const weight = Number(pressure.weight || 0);
+  const L = weight > 0 ? levyFromWeight(weight) : levyNanos(amountNanos, pressure);
   const split = splitLevy(L);
   return {
     amount: Math.max(0, Math.floor(Number(amountNanos) || 0)),
     levy: L,
     L,
-    L_base: levyBase(amountNanos),
-    surge: levySurge(depth, pressure.surgeRef),
+    L_base: LEVY_FLOOR_UNITS,
+    weight,
+    surge: 0,
     finder: split.finder,
     reserve: split.reserve,
-    depth,
+    spaceNotPercent: true,
   };
 }
 
@@ -161,10 +178,20 @@ export function mempoolDepthBytes(txs = []) {
   return n;
 }
 
-/** Consensus L for tx given the taxed txs already waiting (not including tx). */
+/** Consensus L for tx: weight of the sealed body, not amount. prefix unused for the rate. */
 export function levyNeed(tx, prefix = []) {
   if (!levyTaxed(tx)) return 0;
-  return levyNanos(txAmountNanos(tx), { depth: mempoolDepthBytes(prefix) });
+  void prefix;
+  return levyFromWeight(flowWeight(tx));
+}
+
+/** Set fee (and maxLevy if present) from sealed weight. Call after proofs are attached. */
+export function bindWeightFee(tx) {
+  if (!tx || !levyTaxed(tx)) return tx;
+  const L = levyNeed(tx);
+  tx.fee = L;
+  if (tx.maxLevy != null) tx.maxLevy = L;
+  return tx;
 }
 
 export function mempoolPressure(txs = []) {

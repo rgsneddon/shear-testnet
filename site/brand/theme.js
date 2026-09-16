@@ -97,10 +97,15 @@
     }
     return '';
   }
+  function osadminHref() {
+    var path = String(location.pathname || '');
+    if (path === '/admin' || path.indexOf('/admin/') === 0) return String(location.origin || '') + '/admin';
+    return String(location.origin || '') + '/';
+  }
   window.flagShearOsadmin = function (on) {
     var bits;
     if (on) {
-      bits = OSADMIN_KEY + '=' + encodeURIComponent(location.origin) + '; Path=/; Max-Age=43200; SameSite=Lax';
+      bits = OSADMIN_KEY + '=' + encodeURIComponent(osadminHref()) + '; Path=/; Max-Age=43200; SameSite=Lax';
     } else {
       bits = OSADMIN_KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
     }
@@ -112,9 +117,9 @@
   window.paintShearOsadmin = function () {
     var nav = document.getElementById('shear-nav');
     if (!nav) return;
-    var origin = cookieRead(OSADMIN_KEY).replace(/\/$/, '');
+    var href = cookieRead(OSADMIN_KEY).replace(/\/$/, '');
     var el = document.getElementById('nav-osadmin');
-    if (!origin) {
+    if (!href) {
       if (el && el.parentNode) el.parentNode.removeChild(el);
       return;
     }
@@ -122,13 +127,13 @@
       el = document.createElement('a');
       el.id = 'nav-osadmin';
       el.className = 'nav-btn';
-      el.textContent = 'OSadmin';
+      el.textContent = 'OSAdmin';
       nav.appendChild(el);
       el.addEventListener('click', function () { setNav(false); });
     }
-    el.href = origin + '/';
-    var here = String(location.origin || '').replace(/\/$/, '');
-    if (here === origin) el.classList.add('is-on');
+    el.href = href;
+    var here = String(location.origin + location.pathname).replace(/\/$/, '');
+    if (here === href || here.indexOf(href + '/') === 0) el.classList.add('is-on');
     else el.classList.remove('is-on');
   };
   function bindNav() {

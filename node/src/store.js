@@ -22,6 +22,7 @@ import {
 import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
+import { publicExplorerRow } from '../../crypto/dummy.js';
 import { reviveBytes, reviveTx, noteCommitOfDest20 } from '../../crypto/note.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { hash20FromAddress } from '../../crypto/address.js';
@@ -33,7 +34,7 @@ import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin, appendChainBin } from '../../crypto/chainbin.js';
-import { writeLatestBootstrap } from './bootstrap.js';
+import { writeLatestBootstrap, reorgBreaksCheckpoint } from './bootstrap.js';
 import { blockWeight } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
 import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset } from '../../crypto/admit.js';
@@ -182,7 +183,7 @@ export function createStore(dir, {
   }
 
   function writeExplorer() {
-    const body = explorer.map((r) => JSON.stringify(r)).join('\n');
+    const body = explorer.map((r) => JSON.stringify(publicExplorerRow(r))).join('\n');
     fs.writeFileSync(explorerFile, body ? `${body}\n` : '');
   }
 
@@ -196,12 +197,26 @@ export function createStore(dir, {
     const rows = sealedExplorerRows(block);
     explorer.push(...rows);
     if (rows.length) {
-      fs.appendFileSync(explorerFile, `${rows.map((r) => JSON.stringify(r)).join('\n')}\n`);
+      fs.appendFileSync(explorerFile, `${rows.map((r) => JSON.stringify(publicExplorerRow(r))).join('\n')}\n`);
     }
     return rows;
   }
 
-  rebuildExplorer();
+  function loadExplorer() {
+    if (fs.existsSync(explorerFile)) {
+      try {
+        for (const line of fs.readFileSync(explorerFile, 'utf8').split('\n')) {
+          if (!line.trim()) continue;
+          explorer.push(JSON.parse(line, reviveBytes));
+        }
+        if (explorer.length) return;
+      } catch {
+        explorer.length = 0;
+      }
+    }
+    rebuildExplorer();
+  }
+  loadExplorer();
   rememberHeaders(blocks, 'active');
 
   let liveFlux = fluxsetFromBlocks(blocks);
@@ -406,6 +421,8 @@ export function createStore(dir, {
       for (const tx of (b.txs || []).slice(1)) {
         const id = txIdOf(tx);
         if (id) winnerIds.add(id);
+        const tag = tx.admit_proof?.spendTag || tx.spendTag;
+        if (tag) winnerInputs.add(Buffer.from(asU8(tag)).toString('hex'));
         for (const vin of tx.vin || []) {
           winnerInputs.add(`${vin.prev || ''}:${vin.index}`);
         }
@@ -557,7 +574,7 @@ export function createStore(dir, {
       nowMs: Date.now(),
       trustedPowHash: verifyOpts.trustedPowHash || null,
       skipSharePow: !!verifyOpts.skipSharePow || archiveFast,
-      parentFluxset: liveFlux.pubs,
+      parentFluxset: liveFlux,
       parentSpendTags: liveFlux.spendTags,
     });
     for (const tx of (block.txs || []).slice(1)) {
@@ -653,7 +670,8 @@ export function createStore(dir, {
       let verified = false;
       let verifyErr = '';
       try {
-        verified = !!admit_verify(proof, live.pubs);
+        const cTilde = proof.cTilde || tx.vin?.[0]?.commit;
+        verified = !!admit_verify(proof, live, { cTilde, spendTag: tag, jroot: live.jroot });
       } catch (e) {
         verifyErr = String(e && e.message ? e.message : e);
       }
@@ -665,7 +683,7 @@ export function createStore(dir, {
         } catch { /* ignore */ }
         console.error(JSON.stringify({
           event: 'admit_fail',
-          why: rlen !== n ? 'rlen' : (verifyErr || 'verify'),
+          why: verifyErr || 'verify',
           n,
           rlen,
           jroot: Buffer.from(live.jroot || []).toString('hex'),
@@ -720,8 +738,9 @@ export function createStore(dir, {
     const live = liveFlux;
     const got = admitMempool(book, tx, {
       baseFee: base,
-      fluxset: live.pubs,
+      fluxset: live,
       spendTags: live.spendTags,
+      commits: live.commits,
     });
     if (got.ok && got.tx && !got.duplicate) {
       emit('tx', got.tx);
@@ -812,6 +831,16 @@ export function createStore(dir, {
       return { ok: false, reason: 'not_heavier', tip: tip() };
     }
     const fromBlocks = blocks.slice();
+    const broken = reorgBreaksCheckpoint(fromBlocks, accepted);
+    if (broken) {
+      return {
+        ok: false,
+        reason: 'reorg_checkpoint',
+        height: broken.height,
+        hash: broken.hash,
+        tip: tip(),
+      };
+    }
     const lca = commonPrefixLen(fromBlocks, accepted);
     const depth = fromBlocks.length - lca;
     if (haltDepth > 0 && depth >= haltDepth) {
@@ -999,8 +1028,9 @@ export function createStore(dir, {
       const live = liveFlux;
       const got = admitMempool(book, tx, {
         baseFee: baseFeeNow,
-        fluxset: live.pubs,
+        fluxset: live,
         spendTags: live.spendTags,
+        commits: live.commits,
       });
       if (got.ok) {
         pendingTxs.push(got.tx);
@@ -1028,7 +1058,7 @@ export function createStore(dir, {
       shareBatch: Array.isArray(shareBatch) ? shareBatch : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch : []),
       poolDest,
       parentBlocks: blocks,
-      parentFluxset: liveFlux.pubs,
+      parentFluxset: liveFlux,
     });
     const jobId = `shear-${height}-${jobSeq++}`;
     const job = publicJob(tpl, { jobId, shareBits });
@@ -1100,6 +1130,7 @@ export function createStore(dir, {
     getreorgs: () => reorgs.slice(),
     fluxset: () => ({
       pubs: liveFlux.pubs.slice(),
+      commits: (liveFlux.commits || []).slice(),
       spendTags: new Set(liveFlux.spendTags),
       jroot: liveFlux.jroot,
     }),

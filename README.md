@@ -1,6 +1,6 @@
 # Shear
 
-ADMITV1 membership over this book's notes, with confidential amounts. Proof of work elects the tip. Continuity-settled.
+ADMITv2 membership over this book's notes, with confidential amounts. Proof of work elects the tip. Continuity-settled.
 
 Offer a silent ID (`she1`) when someone pays you. Incoming coin lands on a revolving dest (`ssa1`) that the book writes. Rest-frame (`shear1`) stays in Closure. While this book has fewer than 10,000 notes the membership set is thin.
 
@@ -8,12 +8,12 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
-- Miner pin: **ShearK-Miner 1.6** ([Testnet] ShearK). Wallet **0.33**. Product **0.4**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.6
+- Miner pin: **ShearK-Miner 1.7** ([Testnet] ShearK). Wallet **0.33**. Product **0.4**. Official miner: https://github.com/rgsneddon/ShearK/releases/tag/1.7
 - Stratum: `pool.shear.digital:1111`
-- P2P: `shear.digital:30303` (`shear-testnet-v3`)
+- P2P: `p2p.shear.digital:30303` (`shear-testnet-v4`)
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital
-- Chain: `shear-testnet-v3`
+- Chain: `shear-testnet-v4`
 
 One proven floor share mints hash-bonus units onto the dest that hashed. User transfers are signed Flow. The header commits a continuity root. Full nodes validate shareBatch until prune-1000; money vouts remain. The public pool is an equal node with a stratum.
 

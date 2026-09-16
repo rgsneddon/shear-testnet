@@ -16,6 +16,17 @@ export const GENESIS_BITS = 12;
 /** Per-block ASERT step caps. log2 clamp 1/4…4 → ±2. Not an 8-bit jump. */
 export const ASERT_HARDEN_MAX = 2;
 export const ASERT_EASE_MAX = 2;
+/**
+ * Header `bits` is Q16.16 packed work (integer LZ + 16-bit fraction).
+ * Integer rungs (16 vs 17) could not represent the 1.09× target that 90 s
+ * needs when hashrate sits between powers of two; 82 s sat in the old
+ * ±15 % dead band forever. 288-block half-life matches BCH aserti3 in
+ * block-count terms at T=90 s. Share vardiff stays integer LZ.
+ */
+export const BITS_FP_SCALE = 65536;
+export const ASERT_HALFLIFE_BLOCKS = 288;
+export const ASERT_HALFLIFE_MS = ASERT_HALFLIFE_BLOCKS * TARGET_BLOCK_INTERVAL_MS;
+export const GENESIS_BITS_PACKED = (GENESIS_BITS * BITS_FP_SCALE) >>> 0;
 /** Protocol unit is 10⁻¹¹ SHE (11 decimals). Vote steps are integers of this unit. Public amounts show eight fractional digits. */
 export const SHE_DECIMALS = 11;
 export const SHE_PUBLIC_DIGITS = 8;
@@ -45,8 +56,9 @@ export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
 export const MAGIC_TESTNET_V1 = 'shear-testnet-v1';
 export const MAGIC_TESTNET_V2 = 'shear-testnet-v2';
 export const MAGIC_TESTNET_V3 = 'shear-testnet-v3';
-/** Privacy-class book on this branch. v2 stays frozen off this tree. */
-export const MAGIC_TESTNET = MAGIC_TESTNET_V3;
+export const MAGIC_TESTNET_V4 = 'shear-testnet-v4';
+/** ADMITv2 privacy-class book. v3 is frozen off this tree. */
+export const MAGIC_TESTNET = MAGIC_TESTNET_V4;
 export const MAGIC_MAINNET = 'shear-v1';
 /** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
 export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
@@ -63,9 +75,9 @@ export const RX_SCRATCHPAD_L3 = 2097152;
 export const RX_MODE = 'light';
 export const RX_KEY = 'ShearHash-v3/key';
 export const SHEARK_MINER_NAME = 'ShearK-Miner';
-export const SHEARK_MINER_VERSION = '1.6';
+export const SHEARK_MINER_VERSION = '1.7';
 /** Frozen consensus identity. A different fingerprint is a different law. */
-export const BOOK_LAW_ID = 'shear-book-law-1';
+export const BOOK_LAW_ID = 'shear-book-law-2';
 /** Display/tag version for wallet, node, and pool. Two-part only (`*.*`, never `0.1.0`). Start 0.1; later 0.10+ legal. Never 1.* unless the operator says so. */
 export const PRODUCT_VERSION = '0.4';
 /** Official C miner display/tag version. Two-part only (`*.*`). Operator set Shear-Miner to 1.1 (fee-free). 1.0 keeps the built-in fee. */
@@ -173,9 +185,17 @@ export function consensusFingerprint() {
     'VORTICE_NO_MINT=1',
     'LEVY_CAP=0.001-SHE',
     'LEVY_SPLIT=50-50-finder-reserve',
-    'ADMIT=AdmitV1',
+    'LEVY=weight',
+    'ADMIT=ADMITv2',
+    'RANGE=bpplus',
+    'ADMIT_CYCLE=pallas-vesta-pasta',
+    'ADMIT_ARITY=32',
+    'ADMIT_K=1',
+    'ADMIT_LEAF=shear-admit-leaf-v2',
     'LAG1_SHAREBATCH=1',
     `POOL_FEE_BPS=${POOL_FEE_BPS}`,
+    'BITS=q16.16',
+    `ASERT_TAU_MS=${ASERT_HALFLIFE_MS}`,
   ].join(':');
 }
 
@@ -290,36 +310,50 @@ export function extraMintAllowed(programId, opts = {}) {
   return false;
 }
 
-export function clampBits(bits) {
-  const n = Math.floor(Number(bits) || 0);
-  if (Number(bits) === Infinity) return MAX_BITS;
+export function packBits(bitsFp) {
+  const n = Number(bitsFp);
+  if (!Number.isFinite(n)) return GENESIS_BITS_PACKED;
+  const fp = Math.max(LIVE_MIN_BITS, Math.min(MAX_BITS, n));
+  return Math.round(fp * BITS_FP_SCALE) >>> 0;
+}
+
+export function unpackBits(packed) {
+  const n = Number(packed);
   if (!Number.isFinite(n) || n <= 0) return GENESIS_BITS;
-  return Math.max(LIVE_MIN_BITS, Math.min(MAX_BITS, n));
+  if (n <= MAX_BITS) return Math.max(LIVE_MIN_BITS, Math.min(MAX_BITS, n));
+  if (n < BITS_FP_SCALE) return MAX_BITS;
+  return Math.max(LIVE_MIN_BITS, Math.min(MAX_BITS, n / BITS_FP_SCALE));
+}
+
+export function isPackedBits(bits) {
+  return Number(bits) >= BITS_FP_SCALE;
+}
+
+export function clampBits(bits) {
+  const n = Number(bits);
+  if (n === Infinity) return packBits(MAX_BITS);
+  if (!Number.isFinite(n) || n <= 0) return GENESIS_BITS_PACKED;
+  if (n <= MAX_BITS) return packBits(Math.max(LIVE_MIN_BITS, Math.min(MAX_BITS, n)));
+  if (n < BITS_FP_SCALE) return packBits(MAX_BITS);
+  return packBits(unpackBits(n));
 }
 
 /**
- * Per-block ASERT toward 90s. Pure function of the header timestamp
- * delta — verifiers must not use wall clock. Same-tick (≤0) is treated
- * as 1ms so it still climbs, but the step is capped at ±2 (not ±8).
+ * Per-block ASERT toward 90s on Q16.16 packed work.
+ * Pure function of the header timestamp delta — verifiers must not use
+ * wall clock. Same-tick (≤0) is treated as 1ms so it still climbs.
+ * Step is (T − seen) / tau in log2-work, capped at ±2 bits.
  */
 export function nextBits(previousBits, intervalMs) {
-  const prev = clampBits(previousBits);
+  const prev = unpackBits(clampBits(previousBits));
   let seen = Number(intervalMs);
   if (!Number.isFinite(seen) || seen < 1) seen = 1;
-  const ratio = TARGET_BLOCK_INTERVAL_MS / seen;
-  const lo = 2 ** -ASERT_EASE_MAX;
-  const hi = 2 ** ASERT_HARDEN_MAX;
-  const log = Math.log2(Math.max(lo, Math.min(hi, ratio)));
-  // Integer bits: Math.round(log2) was 0 for ~59–83s vs 90s, so farms
-  // stuck under target. Step at least 1 when more than ~15% off.
-  let delta = Math.round(log);
-  if (delta === 0) {
-    if (ratio >= 1.15) delta = 1;
-    else if (ratio <= 1 / 1.15) delta = -1;
-  }
+  const cap = ASERT_HALFLIFE_MS * 8;
+  if (seen > cap) seen = cap;
+  let delta = (TARGET_BLOCK_INTERVAL_MS - seen) / ASERT_HALFLIFE_MS;
   if (delta > ASERT_HARDEN_MAX) delta = ASERT_HARDEN_MAX;
   if (delta < -ASERT_EASE_MAX) delta = -ASERT_EASE_MAX;
-  return clampBits(prev + delta);
+  return packBits(prev + delta);
 }
 
 /** Bits for this block from parent bits and the two header timestamps. */
@@ -348,13 +382,17 @@ export function templateStampMs(parentTimestamp, now = Date.now(), wallIntervalM
 }
 
 export function blockWork(bits) {
-  const n = clampBits(bits);
-  return 2 ** n;
+  const fp = unpackBits(clampBits(bits));
+  return 2 ** fp;
 }
 
-/** Consensus chain work. 2^bits as bigint. Spec 2^256/(target+1) is not used. */
+/** Consensus chain work. 2^{bits_fp} as bigint. */
 export function blockWorkBig(bits) {
-  return 1n << BigInt(clampBits(bits));
+  const fp = unpackBits(clampBits(bits));
+  const i = Math.floor(fp);
+  const f = fp - i;
+  const num = BigInt(Math.round((2 ** f) * 2 ** 48));
+  return (1n << BigInt(i)) * num / (1n << 48n);
 }
 
 /** Median of timestamps (MTP window). */

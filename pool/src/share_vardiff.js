@@ -54,7 +54,8 @@ export function clampShareBits(bits, { blockBits, minBits = 1, maxBits = MAX_BIT
   let n = Math.round(Number(bits));
   if (!Number.isFinite(n)) n = Math.max(1, minBits);
   n = Math.max(minBits, Math.min(maxBits, n));
-  const cap = Math.floor(Number(blockBits));
+  const rawCap = Number(blockBits);
+  const cap = rawCap > 256 ? Math.floor(rawCap / 65536) : Math.floor(rawCap);
   if (Number.isFinite(cap) && cap >= 1) {
     const easy = Math.max(minBits, cap - SHARE_BELOW_BLOCK);
     n = Math.min(n, easy);

@@ -1,0 +1,21 @@
+[Unit]
+Description=Shear ADMITv2 soak pool/explorer (loopback HTTP)
+After=shear-ibd-v4.service
+Wants=shear-ibd-v4.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/shear-v4
+Environment=SHEAR_DATA=/var/lib/shear/testnet-v4-pool
+Environment=SHEAR_SEEDS=127.0.0.1:30303
+Environment=SHEAR_P2P_BIND=127.0.0.1
+Environment=SHEAR_P2P_PORT=30305
+Environment=SHEAR_STRATUM=1111
+Environment=SHEAR_HTTP=8088
+Environment=SHEAR_SHARE_BITS=8
+ExecStart=/usr/bin/node pool/src/main.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

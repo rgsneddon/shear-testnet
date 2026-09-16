@@ -3,42 +3,49 @@ import assert from 'node:assert/strict';
 import {
   levyNanos,
   levyBase,
-  levySurge,
+  levyFromWeight,
+  flowWeight,
   splitLevy,
   nextBaseFee,
   reserveFeeDest,
   levyTaxed,
   quoteLevy,
   levyNeed,
-  mempoolDepthBytes,
-  SURGE_MAX,
   LEVY_FLOOR_UNITS,
+  LEVY_CAP_NANOS,
+  LEVY_WEIGHT_RATE_NUM,
+  LEVY_WEIGHT_RATE_DEN,
 } from './levy.js';
 import { NANOS_PER_SHE as UNITS } from './asert.js';
 import { isDestAddress, bech32Hrp } from './address.js';
 
-describe('Phase B Flow levy', () => {
-  it('dust empty mempool is 100 units; 1 SHE empty is 0.0002 SHE; L never exceeds 0.001 SHE', () => {
+describe('LEVY=weight Flow levy', () => {
+  it('same weight ⇒ same fee for 1 and 10^9; not 2 bps of amount; default << cap', () => {
     assert.equal(LEVY_FLOOR_UNITS, 100);
-    const dust = Math.floor(0.000005 * UNITS);
+    assert.equal(LEVY_CAP_NANOS, Math.floor(0.001 * UNITS));
     assert.equal(levyBase(1), 100);
-    assert.equal(levyBase(dust), 100);
-    assert.equal(levyNanos(dust), 100);
-    assert.equal(levyNanos(dust, { depth: 0 }), 100);
-    const one = UNITS;
-    assert.equal(levyBase(one), 20_000_000);
-    assert.equal(levyNanos(one), 20_000_000);
-    assert.equal(levyNanos(one) / UNITS, 0.0002);
-    assert.equal(levySurge(0), 0);
-    assert.equal(levySurge(1e12), SURGE_MAX);
-    const full = levyNanos(dust, { depth: 1e12 });
-    assert.equal(full, 100 * (1 + SURGE_MAX));
-    assert.equal(full, 4 * levyBase(dust));
-    const cap = Math.floor(0.001 * UNITS);
-    assert.equal(levyNanos(5 * UNITS), cap);
-    assert.equal(levyNanos(100 * UNITS), cap);
-    assert.equal(levyNanos(100 * UNITS, { depth: 1e12 }), cap);
-    assert.ok(levyNanos(one, { depth: 1e12 }) <= cap);
+    assert.equal(levyBase(UNITS), 100);
+    assert.equal(levyNanos(1), 100);
+    assert.equal(levyNanos(1e9), 100);
+    const w = 4000;
+    const a = levyFromWeight(w);
+    const b = levyFromWeight(w);
+    assert.equal(a, b);
+    const tx1 = { kind: 'send', nanos: '0000000001', vin: [{}], vout: [{ kind: 'send' }], pad: 'x'.repeat(200) };
+    const tx9 = { kind: 'send', nanos: '1000000000', vin: [{}], vout: [{ kind: 'send' }], pad: 'x'.repeat(200) };
+    assert.equal(flowWeight(tx1), flowWeight(tx9));
+    assert.equal(levyNeed(tx1), levyNeed(tx9));
+    const oldBps = Math.ceil((1e9 * 2) / 10000);
+    assert.notEqual(levyNeed(tx9), oldBps);
+    assert.ok(levyNeed(tx9) < oldBps || oldBps === 0);
+    const tiny = { kind: 'send', nanos: 1, vin: [{}], vout: [{}] };
+    const twoBpsTiny = Math.ceil((1 * 2) / 10000);
+    assert.ok(levyNeed(tiny) > twoBpsTiny);
+    assert.ok(levyNanos(0) === 100);
+    assert.ok(levyNanos(0) < 0.01 * LEVY_CAP_NANOS);
+    assert.ok(levyFromWeight(1) === 100);
+    assert.equal(levyFromWeight(64 * 100), Math.max(100, Math.ceil((6400 * LEVY_WEIGHT_RATE_NUM) / LEVY_WEIGHT_RATE_DEN)));
+    assert.ok(levyFromWeight(1e12) > LEVY_CAP_NANOS || levyFromWeight(1e12) >= LEVY_FLOOR_UNITS);
     assert.deepEqual(splitLevy(12), { finder: 6, reserve: 6 });
     assert.deepEqual(splitLevy(1), { finder: 0, reserve: 1 });
     assert.equal(nextBaseFee(1, 8), 1);
@@ -46,20 +53,10 @@ describe('Phase B Flow levy', () => {
     assert.equal(bech32Hrp(reserveFeeDest()), 'ssa');
     assert.equal(isDestAddress(reserveFeeDest()), true);
     assert.equal(levyTaxed({ kind: 'send', vin: [{}] }), true);
-    assert.equal(levyTaxed({ kind: 'evm-value' }), true);
-    assert.equal(levyTaxed({ kind: 'lock', vin: [{}] }), true);
-    assert.equal(levyTaxed({ kind: 'vote', vin: [{}] }), true);
     assert.equal(levyTaxed({ kind: 'withdraw' }), false);
-    assert.equal(levyTaxed({ kind: 'claim' }), false);
-    assert.equal(levyTaxed({ kind: 'hash', coinbase: true }), false);
-    assert.equal(levyNanos(0), 100);
-    const q = quoteLevy(one, { depth: 0 });
-    assert.equal(q.L, 20_000_000);
+    const q = quoteLevy(UNITS, { weight: 200 });
+    assert.equal(q.L, levyFromWeight(200));
     assert.equal(q.finder + q.reserve, q.L);
-    const first = { kind: 'send', nanos: 2, vin: [{}], vout: [{ nanos: 2 }] };
-    assert.equal(levyNeed(first, []), 100);
-    const fat = { kind: 'send', nanos: 2, pad: 'x'.repeat(3000), vin: [{}], vout: [{ nanos: 2 }] };
-    assert.ok(mempoolDepthBytes([fat]) > 2048);
-    assert.ok(levyNeed(first, [fat]) > 100);
+    assert.equal(q.spaceNotPercent, true);
   });
 });

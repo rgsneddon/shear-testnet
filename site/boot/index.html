@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Shear bootstrap — latest prune snapshot</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=26"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=28"/>
   <style>
     :root { --bg:#eef3f8; --card:#fff; --ink:#0d2137; --muted:#5a738c; --cyan:#0088a8; }
     * { box-sizing: border-box; }
@@ -36,7 +36,7 @@
 <body>
   <div class="wrap">
     <h1>Latest bootstrap</h1>
-    <p class="muted">One file pair. First published at height 1000, then overwritten every 400 blocks. Not a history. Magic <code>shear-testnet-v3</code>.</p>
+    <p class="muted">One file pair. First published at height 1000, then overwritten every 400 blocks. Not a history. Magic <code>shear-testnet-v4</code>.</p>
     <div class="card">
       <p id="status">Checking latest.json…</p>
       <p>
@@ -66,13 +66,13 @@ cp latest.bin "$SHEAR_DATA/bootstrap/latest.bin"
 cp latest.json "$SHEAR_DATA/bootstrap/latest.json"
 
 node node/src/node.js</pre>
-    <p>Same binary, same ports (P2P 30303, RPC 18332 loopback), same magic <code>shear-testnet-v3</code>. It does not mine. It dials <code>shear.digital:30303</code> and IBDs only what is still unpruned (about the last 1000 blocks). Merkle still runs. Share-batch POW is skipped only where the local book already has 1000 confirmations <em>and</em> <code>samplesPruned</code> — a peer flag alone is not enough.</p>
+    <p>Same binary, same ports (P2P 30303, RPC 18332 loopback), same magic <code>shear-testnet-v4</code>. It does not mine. It dials <code>shear.digital:30303</code> and IBDs only what is still unpruned (about the last 1000 blocks). Merkle still runs. Share-batch POW is skipped only where the local book already has 1000 confirmations <em>and</em> <code>samplesPruned</code> — a peer flag alone is not enough.</p>
     <p class="muted">Current source also accepts <code>node node/src/node.js --bootstrap="$PWD"</code> as a one-line copy. You do not need that flag if you copy <code>latest.bin</code> yourself.</p>
 
     <h2>If apply refuses</h2>
     <ul>
       <li><code>bootstrap_datadir_not_empty</code> — you still have a chain.jsonl/bin. Use a new directory.</li>
-      <li><code>bootstrap_magic</code> — not <code>shear-testnet-v3</code>. Wrong book.</li>
+      <li><code>bootstrap_magic</code> — not <code>shear-testnet-v4</code>. Wrong book.</li>
       <li><code>bootstrap_dropped_txs</code> — snapshot lost sealed txs. Do not use it. Full IBD instead.</li>
       <li>Tip hash never matches the seed — throw the datadir away and IBD from empty. Do not dual-magic.</li>
     </ul>

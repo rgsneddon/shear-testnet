@@ -81,6 +81,9 @@ static int g_have_main = 0;
 static int g_job_gen = 0;
 static atomic_int g_job_seq;
 static atomic_int g_share_bits_live;
+/* Bumped only when the live header restamps. Workers copy under the mutex
+ * on that change, not on every nonce. */
+static atomic_uint g_stamp_seq;
 
 typedef struct {
   char jobId[80];
@@ -504,6 +507,7 @@ static void apply_job(const char *line) {
     if (job.height > 0) g_main_job.height = job.height;
     if (job.jobId[0]) snprintf(g_main_job.jobId, sizeof(g_main_job.jobId), "%s", job.jobId);
     atomic_store_explicit(&g_share_bits_live, job.share_bits, memory_order_release);
+    atomic_fetch_add_explicit(&g_stamp_seq, 1, memory_order_release);
     pthread_mutex_unlock(&g_job_mu);
     return;
   }
@@ -710,12 +714,14 @@ static void *hash_worker(void *arg) {
   JobSnap job;
   memset(&job, 0, sizeof(job));
   int last_gen = -1;
+  unsigned last_stamp = 0;
   unsigned char header[SHEAR_HEADER_LEN];
   unsigned char primed_hdr[SHEAR_HEADER_LEN];
   int primed = 0;
   uint64_t primed_n = 0;
   while (!g_stop) {
     int seq = atomic_load_explicit(&g_job_seq, memory_order_acquire);
+    unsigned stamp = atomic_load_explicit(&g_stamp_seq, memory_order_acquire);
     if (seq != last_gen || !job.have) {
       primed = 0;
       if (!copy_main_job(&job)) {
@@ -723,10 +729,11 @@ static void *hash_worker(void *arg) {
         continue;
       }
       last_gen = job.gen;
+      last_stamp = atomic_load_explicit(&g_stamp_seq, memory_order_acquire);
       memcpy(header, job.header, SHEAR_HEADER_LEN);
       shear_bind(header);
       n = g_origin + (uint64_t)tid;
-    } else {
+    } else if (stamp != last_stamp) {
       unsigned char live[SHEAR_HEADER_LEN];
       pthread_mutex_lock(&g_job_mu);
       int have_live = g_have_main && g_main_job.have;
@@ -736,6 +743,7 @@ static void *hash_worker(void *arg) {
         usleep(10000);
         continue;
       }
+      last_stamp = stamp;
       /* Restamp keeps RandomX K (bytes 0-99 and bits) but changes time.
        * hash_next returns the digest of the previous input. Feeding a new
        * timestamp there submits a digest the pool's current header will not

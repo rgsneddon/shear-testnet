@@ -4,15 +4,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../src/store.js';
-import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_MAINNET } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_TESTNET_V4, MAGIC_MAINNET } from '../../crypto/asert.js';
 import { encodeDest } from '../../crypto/address.js';
 import { mineTemplate } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 
-describe('v2 and v3 datadirs refuse each other', () => {
+describe('v3 and v4 datadirs refuse each other', () => {
   it('createStore throws datadir_magic on a v2 book.magic file', () => {
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v3');
-    assert.equal(MAGIC_TESTNET_V3, 'shear-testnet-v3');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v4');
+    assert.equal(MAGIC_TESTNET_V4, 'shear-testnet-v4');
     assert.notEqual(MAGIC_TESTNET_V2, MAGIC_TESTNET);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-v2-'));
     fs.writeFileSync(path.join(dir, 'book.magic'), MAGIC_TESTNET_V2);
@@ -25,9 +25,15 @@ describe('v2 and v3 datadirs refuse each other', () => {
     assert.throws(() => createStore(dir), /datadir_magic:shear-testnet-v1/);
   });
 
-  it('matching v3 book.magic loads; rewrite keeps v3', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-v3-ok-'));
+  it('createStore throws datadir_magic on a v3 book.magic file', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-v3-'));
     fs.writeFileSync(path.join(dir, 'book.magic'), MAGIC_TESTNET_V3);
+    assert.throws(() => createStore(dir), /datadir_magic:shear-testnet-v3/);
+  });
+
+  it('matching v4 book.magic loads; rewrite keeps v4', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-v4-ok-'));
+    fs.writeFileSync(path.join(dir, 'book.magic'), MAGIC_TESTNET_V4);
     const store = createStore(dir);
     assert.equal(store.tip(), null);
     const again = createStore(dir);
@@ -109,7 +115,7 @@ describe('v2 and v3 datadirs refuse each other', () => {
     }
   });
 
-  it('P2P hellos, tips, and headers shear-testnet-v3', async () => {
+  it('P2P hellos, tips, and headers shear-testnet-v4', async () => {
     const { createP2p } = await import('../src/p2p.js');
     const net = await import('node:net');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-p2p-v3-'));
@@ -154,10 +160,10 @@ describe('v2 and v3 datadirs refuse each other', () => {
     const hello = inbound.find((m) => m.type === 'hello');
     const tip = inbound.find((m) => m.type === 'tip');
     assert.equal(hello.magic, MAGIC_TESTNET);
-    assert.equal(hello.magic, 'shear-testnet-v3');
-    assert.equal(tip.magic, 'shear-testnet-v3');
+    assert.equal(hello.magic, 'shear-testnet-v4');
+    assert.equal(tip.magic, 'shear-testnet-v4');
     assert.equal(tip.height, 1);
-    sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, ua: 'v3-peer', port: 1 })}\n`);
+    sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, ua: 'v4-peer', port: 1 })}\n`);
     sock.write(`${JSON.stringify({ type: 'getheaders', magic: MAGIC_TESTNET, locator: [], stopHash: '' })}\n`);
     const t0 = Date.now();
     let headers = inbound.find((m) => m.type === 'headers');
@@ -165,8 +171,8 @@ describe('v2 and v3 datadirs refuse each other', () => {
       await new Promise((r) => setTimeout(r, 25));
       headers = inbound.find((m) => m.type === 'headers');
     }
-    assert.ok(headers, 'v3 peer must serve headers');
-    assert.equal(headers.magic, 'shear-testnet-v3');
+    assert.ok(headers, 'v4 peer must serve headers');
+    assert.equal(headers.magic, 'shear-testnet-v4');
     assert.ok(Array.isArray(headers.headers));
     assert.ok(headers.headers.length >= 1);
     const hdr0 = headers.headers[0];

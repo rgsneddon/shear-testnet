@@ -1,0 +1,27 @@
+[Unit]
+Description=Shear pool (stratum 1111, ADMITv2 / shear-testnet-v4)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/shear-pool
+Environment=SHEAR_DATA=/var/lib/shear/testnet-v4
+Environment=SHEAR_NETWORK=shear-testnet-v4
+Environment=SHEAR_STRATUM=1111
+Environment=SHEAR_HTTP=8088
+Environment=SHEAR_SHARE_BITS=8
+Environment=SHEAR_P2P_PORT=30303
+Environment=SHEAR_P2P_BIND=0.0.0.0
+Environment=SHEAR_RPC_BIND=127.0.0.1
+# Optional dedicated admin hostname. Leave unset to use https://mypool.site/admin
+# Environment=SHEAR_ADMIN_HOST=admin.mypool.site
+ExecStart=/usr/bin/node pool/src/main.js
+Restart=always
+RestartSec=2
+MemoryAccounting=yes
+MemoryHigh=1024M
+MemoryMax=1536M
+OOMPolicy=kill
+
+[Install]
+WantedBy=multi-user.target

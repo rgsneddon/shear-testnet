@@ -123,11 +123,32 @@ export function leadingZeroBits(hash) {
   return n;
 }
 
+function hashToBig(hash) {
+  const h = Buffer.isBuffer(hash) ? hash : Buffer.from(hash);
+  let n = 0n;
+  for (const b of h) n = (n << 8n) | BigInt(b);
+  return n;
+}
+
+function targetFromBitsFp(bitsFp) {
+  const exp = 256 - Number(bitsFp);
+  if (!Number.isFinite(exp) || exp >= 256) return (1n << 256n) - 1n;
+  if (exp <= 0) return 1n;
+  const i = Math.floor(exp);
+  const f = exp - i;
+  const num = BigInt(Math.round((2 ** f) * (2 ** 48)));
+  return ((1n << BigInt(i)) * num) / (1n << 48n);
+}
+
 export function meetsTarget(hash, bits) {
-  const n = Math.max(0, Math.min(256, Number(bits) || 0));
-  if (n <= 0) return true;
-  const full = Math.floor(n / 8);
-  const rem = n % 8;
+  const n = Number(bits) || 0;
+  if (n >= 65536) {
+    return hashToBig(hash) < targetFromBitsFp(n / 65536);
+  }
+  const k = Math.max(0, Math.min(256, n));
+  if (k <= 0) return true;
+  const full = Math.floor(k / 8);
+  const rem = k % 8;
   for (let i = 0; i < full; i += 1) {
     if (hash[i] !== 0) return false;
   }

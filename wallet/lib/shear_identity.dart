@@ -12,6 +12,8 @@ const shearHrp = 'shear';
 const destHrp = 'ssa';
 /// Public-facing silent ID is she1 (HRP she). Never a dest.
 const payHrp = 'she';
+/// ADMITv2 book. A v3 shewall against this magic needs an explicit reset.
+const kBookMagic = 'shear-testnet-v4';
 const _charset = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
 class ShearIdentity {
@@ -41,10 +43,14 @@ class ShearIdentity {
         'address': address,
         'viewKey': viewKey,
         'paymentCode': paymentCode,
-        'network': 'shear-testnet-v3',
+        'network': kBookMagic,
       };
 
-  static ShearIdentity fromJson(Map<String, dynamic> j) {
+  static ShearIdentity fromJson(Map<String, dynamic> j, {bool reset = false}) {
+    final net = (j['network'] as String?)?.trim() ?? '';
+    if (!reset && net != kBookMagic) {
+      throw FormatException('shewall_reset_required:${net.isEmpty ? 'unknown' : net}');
+    }
     final address = j['address'] as String;
     final viewKey = j['viewKey'] as String;
     final hash20 = spendHashFromAddress(address);

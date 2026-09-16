@@ -43,7 +43,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
 
     const main = read('site/index.html');
     assert.match(main, /revolving dest/);
-    assert.match(main, /ADMITV1 membership/);
+    assert.match(main, /ADMITv2 membership/);
     assert.match(main, /10,000 notes/);
     assert.match(main, /Copy dest \(<code>ssa1\.worker<\/code>\)/);
     assert.match(main, /own <code>kind:hash<\/code> payout/);
@@ -56,14 +56,18 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(pool, /Copy dest/);
     assert.match(pool, /Hash bonuses pay in full to each hasher dest/);
     assert.doesNotMatch(pool, /<th>From<\/th>/);
+    assert.doesNotMatch(pool, /<th>To<\/th>/);
     assert.doesNotMatch(pool, /<th>Amount<\/th>/);
+    assert.match(pool, /<th>Type<\/th>/);
     assert.doesNotMatch(pool, /stem:true/);
     assert.doesNotMatch(joined, /RING_SIZE/);
 
     const expl = read('pool/public/explorer.html');
     assert.doesNotMatch(expl, /<th>From<\/th>/);
     assert.doesNotMatch(expl, /<th>Amount<\/th>/);
-    assert.match(expl, /<th>Kind<\/th>/);
+    assert.match(expl, /<th>Type<\/th>/);
+    assert.doesNotMatch(expl, /<th>To<\/th>/);
+    assert.doesNotMatch(expl, /<th>Kind<\/th>/);
 
     const paper = read('site/whitepaper/index.html');
     assert.match(paper, /ShearHash-v3/);
@@ -72,17 +76,17 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     const readme = read('README.md');
     assert.match(readme, /Copy dest/);
     assert.match(readme, /own hash bonus on the next sealed block/);
-    assert.match(readme, /shear-testnet-v3/);
+    assert.match(readme, /shear-testnet-v4/);
     assert.doesNotMatch(readme, /Chain: `shear-testnet-v2`/);
     assert.match(readme, /shear\.digital:30303/);
     assert.doesNotMatch(joined, /46\.224\.132\.83/);
     const sheark = read('sheark-miner/README.md');
-    assert.match(sheark, /magic `shear-testnet-v3`/);
+    assert.match(sheark, /magic `shear-testnet-v4`/);
     assert.doesNotMatch(sheark, /magic `shear-testnet-v2`/);
 
     assert.doesNotMatch(joined, /Private dests, public amounts/);
     assert.doesNotMatch(joined, /amounts stay public/);
     assert.match(joined, /confidential amounts/);
-    assert.match(joined, /ADMITV1/);
+    assert.match(joined, /ADMITv2/);
   });
 });

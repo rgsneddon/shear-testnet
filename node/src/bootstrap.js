@@ -42,6 +42,31 @@ export function bootstrapCheckpoint(tipH) {
     + Math.floor((tip - BOOTSTRAP_FIRST_HEIGHT) / BOOTSTRAP_EVERY_BLOCKS) * BOOTSTRAP_EVERY_BLOCKS;
 }
 
+function hexOf(h) {
+  if (h == null || h === '') return '';
+  if (Buffer.isBuffer(h) || h instanceof Uint8Array) return Buffer.from(h).toString('hex');
+  return String(h);
+}
+
+/**
+ * Reorg floor: first frozen hash at height 1000, then every 400.
+ * A heavier fork that replaces that block is refused (samples are pruned there).
+ */
+export function reorgBreaksCheckpoint(fromBlocks, toBlocks) {
+  const from = Array.isArray(fromBlocks) ? fromBlocks : [];
+  const to = Array.isArray(toBlocks) ? toBlocks : [];
+  const tipH = Number(from.at(-1)?.height || 0);
+  const cpH = bootstrapCheckpoint(tipH);
+  if (cpH < BOOTSTRAP_FIRST_HEIGHT) return null;
+  const old = from.find((b) => Number(b.height) === cpH);
+  if (!old) return null;
+  const neu = to.find((b) => Number(b.height) === cpH);
+  const want = hexOf(old.hash);
+  const got = neu ? hexOf(neu.hash) : '';
+  if (want && want !== got) return { height: cpH, hash: want };
+  return null;
+}
+
 export function shouldPublishBootstrap(tipH, lastCheckpoint) {
   const c = bootstrapCheckpoint(tipH);
   return c >= BOOTSTRAP_FIRST_HEIGHT && c > Number(lastCheckpoint || 0);

@@ -1,12 +1,13 @@
 /**
  * Pedersen notes on ristretto255. C = v·G + r·H.
- * Range: 64-bit bit-OR Schnorr (transparent, no ceremony).
+ * Range: native Bulletproofs+ (RANGE=bpplus). v3 bit-OR fails.
  * Coinbase exact-value: Schnorr that C − vG ∈ ⟨H⟩ for v from Tree-A.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
 import { bytesToNumberLE } from '@noble/curves/utils.js';
+import { nativeLoaded, noteH, nativeProveRange, nativeVerifyRange } from './native_admit.js';
 
 const Point = RistrettoPoint;
 const Fn = Point.Fn;
@@ -15,7 +16,14 @@ export const NOTE_DST = Buffer.from('shear-note-v1');
 export const NOTE_COMMIT_PERSONAL = Buffer.from('shear-note-commit-v1');
 
 export const G = Point.BASE;
-export const H = ristretto255_hasher.hashToCurve(Buffer.from('shear-note-H-v1'), { DST: NOTE_DST });
+function loadH() {
+  if (nativeLoaded()) {
+    const b = noteH();
+    if (b && b.length === 32) return Point.fromBytes(b);
+  }
+  return ristretto255_hasher.hashToCurve(Buffer.from('shear-note-H-v1'), { DST: NOTE_DST });
+}
+export const H = loadH();
 
 /** Accept Buffer, hex, or JSON `{type:'Buffer', data}` from chain.bin / jsonl. */
 export function asU8(x) {
@@ -213,49 +221,17 @@ function bitOrVerify(B, proof) {
 }
 
 export function proveRange(v, r) {
-  const bits = [];
-  const s = [];
-  const Bpts = [];
-  let n = BigInt(v);
-  let sSum = Fn.ZERO;
-  for (let i = 0; i < NOTE_BITS; i += 1) {
-    const b = Number(n & 1n);
-    n >>= 1n;
-    const si = randomScalar();
-    s.push(si);
-    const Bi = commit(b, si);
-    Bpts.push(Bi);
-    bits.push(bitOrProve(Bi, b, si));
-    const w = Fn.create(1n << BigInt(i));
-    sSum = Fn.add(sSum, Fn.mul(w, si));
-  }
-  const rDelta = Fn.sub(r, sSum);
-  const C = commit(v, r);
-  let acc = Point.ZERO;
-  for (let i = 0; i < NOTE_BITS; i += 1) {
-    const w = Fn.create(1n << BigInt(i));
-    acc = acc.add(Bpts[i].multiply(w));
-  }
-  const P = C.subtract(acc);
-  return {
-    bits,
-    B: Bpts.map(pointBytes),
-    cons: schnorrProveH(P, rDelta, Buffer.from('shear-note-cons-v1')),
-  };
+  const rb = Buffer.from(asU8(typeof r === 'bigint' ? scalarBytes(r) : r));
+  if (rb.length !== 32) return Buffer.alloc(0);
+  return nativeProveRange(Number(v), rb) || Buffer.alloc(0);
 }
 
 export function verifyRange(Cbytes, proof) {
   try {
-    if (!proof?.bits || proof.bits.length !== NOTE_BITS || proof.B?.length !== NOTE_BITS) return false;
-    const C = pointFrom(Cbytes);
-    let acc = Point.ZERO;
-    for (let i = 0; i < NOTE_BITS; i += 1) {
-      const Bi = pointFrom(proof.B[i]);
-      if (!bitOrVerify(Bi, proof.bits[i])) return false;
-      acc = acc.add(Bi.multiply(Fn.create(1n << BigInt(i))));
-    }
-    const P = C.subtract(acc);
-    return schnorrVerifyH(P, proof.cons, Buffer.from('shear-note-cons-v1'));
+    if (proof && typeof proof === 'object' && !Buffer.isBuffer(proof) && proof.bits) return false;
+    const c = Buffer.from(asU8(Cbytes));
+    const pr = Buffer.isBuffer(proof) ? proof : Buffer.from(asU8(proof));
+    return nativeVerifyRange(c, pr);
   } catch {
     return false;
   }
@@ -353,7 +329,7 @@ export function excessOf(vouts) {
   return scalarBytes(s);
 }
 
-/** Kernel k = Σ r_out − Σ r_in so sum(C_out) + fee·G = sum(C_in) + k·H. */
+/** Kernel k = Σ r_out − Σ (r_in + t) so sum(C_out) + fee·G = sum(C̃_in) + k·H. */
 export function kernelExcess(vouts = [], vins = []) {
   let s = Fn.ZERO;
   for (const o of vouts) {
@@ -363,17 +339,28 @@ export function kernelExcess(vouts = [], vins = []) {
   for (const v of vins) {
     if (!v?.r) return null;
     s = Fn.sub(s, scalarFrom(v.r));
+    if (v?.t) s = Fn.sub(s, scalarFrom(v.t));
   }
   return scalarBytes(s);
 }
 
-/** Copy spent vout commit onto vin. Never sealNote a new C_in. */
-export function bindVinToSpent(vin, spentVout) {
+/** Rerandomize spent C onto vin as C̃. Original C / dest stay off the sealed body. */
+export function hideVin(vin, spentVout, tOpt) {
   if (!vin || !spentVout?.commit) return vin;
-  const row = { ...vin, commit: spentVout.commit };
-  if (spentVout.noteCommit) row.noteCommit = spentVout.noteCommit;
+  const t = tOpt != null ? (typeof tOpt === 'bigint' ? tOpt : scalarFrom(tOpt)) : randomScalar();
+  if (Fn.eql(t, Fn.ZERO)) return vin;
+  const Ctilde = pointFrom(spentVout.commit).add(H.multiply(t));
+  const row = {
+    commit: pointBytes(Ctilde),
+    t: scalarBytes(t),
+  };
   if (spentVout.r) row.r = spentVout.r;
   return row;
+}
+
+/** Copy spent vout commit onto vin as a rerandomized C̃. Never sealNote a new C_in. */
+export function bindVinToSpent(vin, spentVout) {
+  return hideVin(vin, spentVout);
 }
 
 export function spentCommitEquals(vin, spentVout) {
@@ -384,19 +371,28 @@ export function spentCommitEquals(vin, spentVout) {
 }
 
 /**
- * Pedersen conservation + UTXO bind.
- * spentOf(vin) must return the prev vout; vin.commit must equal that commit.
- * Missing spentOf or a self-minted C_in is false.
+ * Pedersen conservation on rerandomized C̃. Sealed vin must not name the spent note.
+ * Identifying prev/index/noteCommit/dest20/address fail. spentOf is ignored.
  */
-export function verifyFlowConservation(tx, spentOf) {
+export function vinIdentifiesSpent(v) {
+  if (!v) return false;
+  if (v.prev != null && v.prev !== '' && !v.coinbase) return true;
+  if (v.index != null && v.index !== '' && !v.coinbase) return true;
+  if (v.noteCommit != null) return true;
+  if (v.dest20 != null) return true;
+  if (v.address != null && v.address !== '') return true;
+  return false;
+}
+
+export function verifyFlowConservation(tx, _spentOf) {
   try {
-    if (typeof spentOf !== 'function') return false;
     const vouts = tx?.vout || [];
     const vins = tx?.vin || [];
     if (!vouts.length || !vins.length) return false;
     for (const v of vins) {
-      const spent = spentOf(v);
-      if (!spent || !spentCommitEquals(v, spent)) return false;
+      if (v?.coinbase) continue;
+      if (vinIdentifiesSpent(v)) return false;
+      if (!v?.commit) return false;
     }
     const outC = mintTotal(vouts);
     const inC = mintTotal(vins.map((v) => ({ commit: v.commit })));

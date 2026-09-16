@@ -58,7 +58,7 @@ export function printConfig() {
     extraMintThirdParty: extraMintAllowed('third-party-vortice'),
     mainnet: false,
     hashTxLive: HASH_TX_LIVE,
-    admit: 'AdmitV1',
+    admit: 'ADMITv2',
     archival: String(process.env.SHEAR_FAST_SYNC || '').trim() !== '1',
     fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
     genesisMainnet: GENESIS_MAINNET,
@@ -69,11 +69,11 @@ export function printConfig() {
 
 export { createP2p, P2P_PORT, createStore, createRpc, RPC_PORT, mintVorticeDeployKey, parseVorticeKey };
 
-/** Live v3 listener on Dedicated-de. Frozen v2 p2p.shear.digital is not a v3 peer. */
-export const DEFAULT_SEEDS = ['shear.digital:30303'];
+/** ADMITv2 soak tip. Hostname only — never a raw IP. */
+export const DEFAULT_SEEDS = ['p2p.shear.digital:30303'];
 
 export async function startNode({
-  dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v3'),
+  dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4'),
   p2pPort = Number(process.env.SHEAR_P2P_PORT || P2P_PORT),
   p2pBind = process.env.SHEAR_P2P_BIND || '0.0.0.0',
   rpcPort = Number(process.env.SHEAR_RPC_PORT || RPC_PORT),
@@ -139,7 +139,7 @@ async function main() {
       : '');
   const bootFrom = String(bootArg || '').replace(/^--bootstrap=/, '').trim();
   if (bootFrom) {
-    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v3');
+    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4');
     const manifest = applyLatestBootstrap(dataDir, bootFrom);
     console.error(JSON.stringify({ event: 'bootstrap_applied', ...manifest }));
   }
@@ -154,7 +154,7 @@ async function main() {
       reason: 'clock_wait',
       genesis: started.genesis,
       hashTxLive: HASH_TX_LIVE,
-      admit: 'AdmitV1',
+      admit: 'ADMITv2',
       mainnet: true,
     }));
     return;
@@ -173,7 +173,7 @@ async function main() {
     mainnet: false,
     emit: true,
     hashTxLive: HASH_TX_LIVE,
-    admit: 'AdmitV1',
+    admit: 'ADMITv2',
     jroot: live?.jroot ? Buffer.from(live.jroot).toString('hex') : '',
   }));
 }

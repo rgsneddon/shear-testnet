@@ -7,9 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { NANOS_PER_SHE } from '../../crypto/asert.js';
+import { destOpeningFromView } from '../../crypto/address.js';
 import { levyNanos, poolFeeDest, containsShe1 } from '../../crypto/levy.js';
+import { signPoolWithdraw, poolWithdrawDigest } from '../../crypto/eip712.js';
+import { sign } from 'node:crypto';
+import { withdrawNonces, withdrawDigests } from '../src/withdraw_state.js';
 import {
-  ADMIN_HOST,
+  ADMIN_HOST_EXAMPLE,
   ADMIN_USER,
   ADMIN_DIR,
   createAdmin,
@@ -19,6 +23,7 @@ import {
 } from '../src/admin.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const ADMIN_HOST = 'admin.mypool.site';
 
 function url(p) {
   return new URL(`https://${ADMIN_HOST}${p}`);
@@ -34,16 +39,38 @@ function tokenOf(cookie) {
   return String(cookie || '').replace(/^shear_admin=/, '');
 }
 
-describe('kyrusfables admin fee wallet', () => {
+describe('operator admin fee wallet', () => {
   it('is host-gated, not in the public site tree, and robots-disallowed', () => {
-    assert.equal(isAdminHost(ADMIN_HOST), true);
-    assert.equal(isAdminHost('pool.shear.digital'), false);
-    assert.equal(isAdminHost('shear.digital'), false);
+    const prev = process.env.SHEAR_ADMIN_HOST;
+    process.env.SHEAR_ADMIN_HOST = ADMIN_HOST;
+    try {
+      assert.equal(isAdminHost(ADMIN_HOST), true);
+      assert.equal(isAdminHost('pool.shear.digital'), false);
+      assert.equal(isAdminHost('shear.digital'), false);
+      assert.equal(isAdminHost(ADMIN_HOST_EXAMPLE), false);
+    } finally {
+      if (prev == null) delete process.env.SHEAR_ADMIN_HOST;
+      else process.env.SHEAR_ADMIN_HOST = prev;
+    }
     const html = fs.readFileSync(path.join(ADMIN_DIR, 'index.html'), 'utf8');
+    const nav = html.match(/id="shear-nav"[\s\S]*?<\/nav>/);
+    assert.ok(nav, 'admin must ship the site navbar');
+    const labels = [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
+    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'MINER', 'NODE', 'WALLET', 'DOCS']);
+    assert.equal(labels.includes('OSAdmin'), false);
+    assert.match(html, /theme\.js\?v=15/);
+    assert.match(html, /flagShearOsadmin\(true\)/);
+    assert.match(html, /flagShearOsadmin\(false\)/);
     assert.match(html, /noindex/);
     assert.doesNotMatch(html, /raskul/);
     assert.match(html, /Spendable/);
-    assert.match(html, /Flow/);
+    assert.match(html, /Withdraw/);
+    assert.match(html, /Username/);
+    assert.match(html, /Confirm password/);
+    assert.match(html, /Enable 2FA/);
+    assert.doesNotMatch(html, /2044/);
+    assert.doesNotMatch(html, /neon-lock/);
+    assert.match(html, /Request wallet signature/);
     assert.match(html, /theme-toggle/);
     assert.match(html, /data-theme/);
     assert.match(html, /setInterval\(paintLive/);
@@ -56,11 +83,14 @@ describe('kyrusfables admin fee wallet', () => {
     assert.doesNotMatch(html, /\/api\/mempool/i);
     const robots = fs.readFileSync(path.join(ADMIN_DIR, 'robots.txt'), 'utf8');
     assert.match(robots, /Disallow: \//);
-    const nginx = fs.readFileSync(path.join(root, 'deploy/nginx-kyrusfables.shear.digital.conf'), 'utf8');
-    assert.match(nginx, /server_name kyrusfables\.shear\.digital/);
+    const nginx = fs.readFileSync(path.join(root, 'pool/deploy/nginx-mypool.site.conf'), 'utf8');
+    assert.match(nginx, /server_name mypool\.site/);
+    assert.match(nginx, /location = \/admin/);
     assert.match(nginx, /X-Robots-Tag/);
     assert.doesNotMatch(nginx, /\/api\/stats/);
-    for (const rel of ['site/index.html', 'pool/public/index.html', 'pool/public/miner.html', 'pool/public/explorer.html']) {
+    const adminSrc = fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(adminSrc, /kyrusfables/);
+    for (const rel of ['site/index.html', 'pool/public/index.html', 'pool/public/miner.html', 'pool/public/explorer.html', 'pool/src/admin.js', 'pool/src/pool.js']) {
       const pub = fs.readFileSync(path.join(root, rel), 'utf8');
       assert.doesNotMatch(pub, /kyrusfables/);
     }
@@ -91,8 +121,10 @@ describe('kyrusfables admin fee wallet', () => {
       ...extra,
     });
 
+    const prevHost = process.env.SHEAR_ADMIN_HOST;
+    process.env.SHEAR_ADMIN_HOST = ADMIN_HOST;
     assert.equal(admin.status().setup, false);
-    const stranger = run('/api/admin/setup', 'POST', { user: 'not-it', password: 'aaaaaaaa' });
+    const stranger = run('/api/admin/setup', 'POST', { user: 'not-it', password: 'aaaaaaaa' }, '', { host: 'pool.shear.digital' });
     assert.equal(stranger.json.ok, false);
     assert.equal(stranger.json.reason, 'setup_forbidden');
     assert.equal(admin.status().setup, false);
@@ -115,8 +147,37 @@ describe('kyrusfables admin fee wallet', () => {
 
     const leak = run('/api/admin/withdraw', 'POST', { to: id.paymentCode, amount }, cookie);
     assert.equal(leak.json.ok, false);
+    assert.equal(leak.json.reason === 'she1_on_chain' || leak.json.reason === 'she1', true);
 
-    const sent = run('/api/admin/withdraw', 'POST', { to: dest, amount }, cookie);
+    const unsigned = run('/api/admin/withdraw', 'POST', {
+      to: dest, amount, login: id.paymentCode,
+    }, cookie);
+    assert.equal(unsigned.json.ok, false);
+    assert.equal(unsigned.json.reason, 'unsigned');
+    assert.equal(unsigned.json.pending.kind, 'admin-spendable');
+    assert.equal(posted.length, 0);
+
+    withdrawNonces.clear();
+    withdrawDigests.clear();
+    const sig = signPoolWithdraw({
+      seed: id.spendPub,
+      login: id.paymentCode,
+      dest,
+      nanos,
+    });
+    const open = destOpeningFromView(id.viewKey, id.spendPub, 0);
+    const digest = poolWithdrawDigest({
+      login: id.paymentCode, dest, minerShe1: id.paymentCode, payoutSsa1: dest, nanos,
+    });
+    const spendSig = sign(null, digest, id.privateKey).toString('hex');
+    const sent = run('/api/admin/withdraw', 'POST', {
+      to: dest,
+      amount,
+      login: id.paymentCode,
+      sig,
+      open,
+      spendSig,
+    }, cookie);
     assert.equal(sent.json.ok, true, sent.json.reason);
     assert.equal(sent.json.levy, fee);
     assert.equal(posted[0].fee, fee);
@@ -133,11 +194,17 @@ describe('kyrusfables admin fee wallet', () => {
     assert.equal(admin.status().closed, true);
     assert.equal(admin.status().totp, true);
 
-    const noCode = run('/api/admin/login', 'POST', { user: ADMIN_USER, password: 'aaaaaaaa' });
+    const noCode = run('/api/admin/login', 'POST', { user: 'operator', password: 'aaaaaaaa' });
     assert.equal(noCode.json.ok, false);
+    const wrongUser = run('/api/admin/login', 'POST', {
+      user: 'not-the-op', password: 'aaaaaaaa', code: totpCode(pending),
+    });
+    assert.equal(wrongUser.json.ok, false);
     const withCode = run('/api/admin/login', 'POST', {
-      user: ADMIN_USER, password: 'aaaaaaaa', code: totpCode(pending),
+      user: 'operator', password: 'aaaaaaaa', code: totpCode(pending),
     });
     assert.equal(withCode.json.ok, true);
+    if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
+    else process.env.SHEAR_ADMIN_HOST = prevHost;
   });
 });

@@ -131,6 +131,7 @@ class ShearSession {
       sealed = true;
       return identity!;
     } catch (e) {
+      if (e is FormatException && e.message.startsWith('shewall_reset_required')) rethrow;
       if (e is FormatException && e.message == 'password_not_set') rethrow;
       throw const FormatException('wrong_password');
     }
@@ -158,6 +159,26 @@ class ShearSession {
         if (rememberedReserve != null) 'reserve': rememberedReserve,
         'vortices': deployedVortices.map((v) => v.toJson()).toList(),
       };
+
+  /// Explicit reset: drop a v3 shewall and mint a new identity on this book.
+  Future<ShearIdentity> resetForNewBook({String? password}) async {
+    identity = createIdentity();
+    rememberedDests = const [];
+    rememberedTxs = const [];
+    rememberedDestCount = 1;
+    rememberedDestIndex = 0;
+    rememberedSealedHeight = 0;
+    rememberedChainGenesis = null;
+    rememberedReserve = null;
+    deployedVortices = const [];
+    final pw = password ?? _password;
+    if (pw != null && pw.isNotEmpty) {
+      _password = pw;
+      sealed = true;
+      await persist();
+    }
+    return identity!;
+  }
 
   void _applyPlain(Map<String, dynamic> j) {
     identity = ShearIdentity.fromJson(j);

@@ -277,6 +277,9 @@ const SEALED_SECRET_KEYS = new Set([
   'login',
   'spendPub',
   'r',
+  't',
+  '_origCommit',
+  '_origNoteCommit',
 ]);
 
 function compactValue(v) {
@@ -354,6 +357,10 @@ function compactVout(o) {
     if (o.dest20) row.dest20 = o.dest20;
     if (o.portalId) row.portalId = o.portalId;
     if (reserveKind) attachReserveSeal(row, o);
+    else if (row.valueProof && typeof row.valueProof === 'object') {
+      const { v: _v, ...vp } = row.valueProof;
+      row.valueProof = vp;
+    }
     if (o.memo) row.memo = true;
     if (keepDest && o.address) row.address = o.address;
     return row;
@@ -394,20 +401,18 @@ export function compactTx(tx) {
   }
   if (tx.vin) {
     out.vin = (tx.vin || []).map((v) => {
+      if (v?.coinbase) return compactValue({ coinbase: true, height: v.height });
       const row = compactValue({
-        prev: v.prev,
-        index: v.index,
-        coinbase: v.coinbase,
-        height: v.height,
-        commit: v.commit,
-        noteCommit: v.noteCommit,
-        dest20: v.dest20,
+        commit: v.pseudo || v.cTilde || v.commit,
       });
-      if (!row.dest20 && reserveTx && v.address) {
-        const h = hash20FromAddress(v.address);
-        if (h) row.dest20 = Buffer.from(h);
-      }
       if (keepDest && v.address) row.address = v.address;
+      if (reserveTx) {
+        if (v.dest20) row.dest20 = v.dest20;
+        else if (v.address) {
+          const h = hash20FromAddress(v.address);
+          if (h) row.dest20 = Buffer.from(h);
+        }
+      }
       return row;
     });
   }
@@ -417,12 +422,22 @@ export function compactTx(tx) {
   if (keepDest && tx.spendPub) out.spendPub = tx.spendPub;
   if (tx.memoCt || tx.memo) out.memo = true;
   if (tx.admit_proof) {
-    out.admit_proof = {
-      admit_proof: true,
-      spendTag: tx.admit_proof.spendTag,
-      c0: tx.admit_proof.c0,
-      r: tx.admit_proof.r,
-    };
+    if (tx.admit_proof.blob || tx.admit_proof.v === 2) {
+      out.admit_proof = {
+        admit_proof: true,
+        v: 2,
+        spendTag: tx.admit_proof.spendTag,
+        blob: tx.admit_proof.blob,
+        cTilde: tx.admit_proof.cTilde,
+      };
+    } else {
+      out.admit_proof = {
+        admit_proof: true,
+        spendTag: tx.admit_proof.spendTag,
+        c0: tx.admit_proof.c0,
+        r: tx.admit_proof.r,
+      };
+    }
     delete out.admit_proof.members;
     delete out.members;
   }

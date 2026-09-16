@@ -2,7 +2,7 @@
 
 Frozen numbers. `consensusFingerprint()` pins every line. A later flip is a new book.
 
-Network: `shear-testnet-v3` (privacy-class). Frozen `shear-testnet-v2` is a different book. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant.
+Network: `shear-testnet-v4` (privacy-class). Frozen `shear-testnet-v2` is a different book. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant.
 
 ## Numbers
 
@@ -16,6 +16,7 @@ Network: `shear-testnet-v3` (privacy-class). Frozen `shear-testnet-v2` is a diff
 | `SHE_PUBLIC_DIGITS` | `8` (sealed book still holds 11) |
 | `SPENDABLE_CONFIRMATIONS` | `6` |
 | `SAMPLE_PRUNE_CONFIRMATIONS` | `1000` |
+| Reorg checkpoints | First frozen hash at height **1000** (prune floor), then every **400** blocks (bootstrap cadence). A heavier fork that replaces that hash is `reorg_checkpoint`. |
 | `GENESIS_BITS` | `12` (match asert.js) |
 | `LIVE_MIN_BITS` | `4` |
 | `MAX_BITS` | `256` |
@@ -37,7 +38,7 @@ Network: `shear-testnet-v3` (privacy-class). Frozen `shear-testnet-v2` is a diff
 Fingerprint also pins:
 
 ```
-NETWORK=shear-testnet-v3
+NETWORK=shear-testnet-v4
 HASH_FN=ShearHash-v3
 HASH_TX_LIVE=1
 HASH_UNIT_FLOOR=1
@@ -61,7 +62,9 @@ VORTEX=vort1-pin
 VORTICE_NO_MINT=1
 LEVY_CAP=0.001-SHE
 LEVY_SPLIT=50-50-finder-reserve
-ADMIT=AdmitV1
+ADMIT=ADMITv2
+BITS=q16.16
+ASERT_TAU_MS=25920000
 SHARE_FLOOR_BITS=8
 MAX_SHARES_PER_BLOCK=8192
 SPEND_SIG=ed25519-shear-spend-v1
@@ -88,7 +91,7 @@ Body encoding `ENC_SHARE = 4` = `dest20 || nonce_u64le || lz_u8`. `shareBatch` m
 
 `skipFlow` when buried && samplesPruned may skip `shareBatch` bodies. It may not skip hash vouts / `ssa1` checks. IBD of a pruned height is assume-valid after 1000. Full nodes validate `shareBatch` until prune-1000; money vouts forever.
 
-Work of a block: `blockWorkBig(bits) => 1n << BigInt(bits)`. Heaviest valid chain wins. Spec `2^256/(target+1)` is not used.
+Work of a block: `blockWorkBig(bits) => 2^{bits_fp}` (Q16.16 packed header bits). Heaviest valid chain wins.
 
 ## Spend
 
@@ -112,7 +115,7 @@ Coinbase `kind:pot` is PROP across dest20 in `shareBatch`. Hasher dests receive 
 
 - One proven share-hash mints units; user txs are signed Flow.
 - Full nodes validate shareBatch until prune-1000; money vouts forever.
-- Private dests, confidential amounts. ADMITV1 membership over this book's notes.
+- Private dests, confidential amounts. ADMITv2 membership over this book's notes.
 - PoW elects the tip. Pot is 1 SHE PROP. Hash units are proven PoW. Reserve interest is the only other mint, amount-bound.
 - GPU/ASIC refuse is pool share-gate only, not consensus.
 - Admin is TOTP + password. Host header is not authorization.

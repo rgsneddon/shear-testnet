@@ -11,7 +11,7 @@ import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
 import { LIVE_MIN_BITS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { signSpendTx } from '../../crypto/spend.js';
-import { levyNanos } from '../../crypto/levy.js';
+import { levyNanos, bindWeightFee } from '../../crypto/levy.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { createStore } from '../src/store.js';
 import { mineTemplate, shouldAdopt, digestTx } from '../src/chain.js';
@@ -88,6 +88,7 @@ describe('most-work adopt', () => {
       vout: [{ address: dest, nanos: 1 }],
     }, { spent });
     admitSend(bounce, { id, spent, blocks: local.blocks });
+    bindWeightFee(bounce);
     signSpendTx(bounce, box.key);
     assert.equal(local.queueTx(bounce).ok, true, 'bounce must enter mempool');
     const heavier = tmpStore();

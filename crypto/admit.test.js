@@ -1,24 +1,40 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { randomScalar } from './note.js';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { randomScalar, commit, scalarBytes, pointBytes } from './note.js';
 import { admitPub, admitProve, admitVerify, spendTag, jroot, emptyFluxset, applyBlockToFluxset, fluxsetFromBlocks } from './admit.js';
+import { nativeLoaded, nativeMaxProof, nativeArity } from './native_admit.js';
 
-describe('Admit v1 fluxset membership', () => {
+describe('ADMITv2 fluxset membership', () => {
   it('proves a spend is admissible in the fluxset; a sampled subset is the wrong set', () => {
     const n = 8;
     const xs = Array.from({ length: n }, () => randomScalar());
-    const fluxset = xs.map(admitPub);
+    const pubs = xs.map(admitPub);
+    const commits = xs.map((_, i) => pointBytes(commit(i + 1, randomScalar())));
     const index = 3;
-    const admit_proof = admitProve({ x: xs[index], index, pubs: fluxset });
+    let admit_proof;
+    try {
+      admit_proof = admitProve({ x: xs[index], index, pubs, commits, c: commits[index] });
+    } catch (e) {
+      assert.fail(String(e && e.stack || e));
+    }
+    assert.ok(admit_proof, `prove failed n=${n} dest=${pubs.length} c=${commits.length} idx=${index} c0=${commits[0] && commits[0].length}`);
     assert.equal(admit_proof.admit_proof, true);
-    assert.equal(admitVerify(admit_proof, fluxset), true);
-    assert.equal(admitVerify(admit_proof, fluxset.slice(0, 4)), false);
-    const other = admitProve({ x: xs[0], index: 0, pubs: fluxset });
+    assert.equal(admit_proof.v, 2);
+    assert.ok(admit_proof.blob[0] === 2);
+    assert.equal(admitVerify(admit_proof, { pubs, commits }, { cTilde: admit_proof.cTilde, spendTag: admit_proof.spendTag }), true);
+    const jr = jroot({ pubs, commits });
+    assert.equal(admitVerify(admit_proof, { pubs: [], commits: [] }, { jroot: jr, cTilde: admit_proof.cTilde, spendTag: admit_proof.spendTag }), true);
+    assert.equal(admitVerify(admit_proof, { pubs: pubs.slice(0, 4), commits: commits.slice(0, 4) }, { cTilde: admit_proof.cTilde, spendTag: admit_proof.spendTag }), false);
+    const other = admitProve({ x: xs[0], index: 0, pubs, commits, c: commits[0] });
+    assert.ok(other);
     assert.equal(Buffer.from(admit_proof.spendTag).equals(Buffer.from(other.spendTag)), false);
-    const tag = spendTag(xs[index], fluxset[index]);
-    assert.equal(Buffer.from(admit_proof.spendTag).equals(Buffer.from(tag.toBytes())), true);
-    const root = Buffer.from(jroot(fluxset));
-    const otherRoot = Buffer.from(jroot(fluxset.slice(0, 4)));
+    const v1 = { admit_proof: true, spendTag: admit_proof.spendTag, c0: Buffer.alloc(32), r: pubs.map(() => Buffer.alloc(32)) };
+    assert.equal(admitVerify(v1, { pubs, commits }, { cTilde: admit_proof.cTilde }), false);
+    const root = Buffer.from(jr);
+    const otherRoot = Buffer.from(jroot({ pubs: pubs.slice(0, 4), commits: commits.slice(0, 4) }));
     assert.equal(root.length, 32);
     assert.equal(root.equals(otherRoot), false);
   });
@@ -26,11 +42,54 @@ describe('Admit v1 fluxset membership', () => {
   it('applyBlockToFluxset matches fluxsetFromBlocks and empty J has a 32-byte jroot', () => {
     const x = randomScalar();
     const P = admitPub(x);
-    const block = { txs: [{ vout: [{ admitPub: P.toBytes() }] }] };
+    const block = { txs: [{ vout: [{ admitPub: P.toBytes(), commit: Buffer.alloc(32, 3) }] }] };
     const live = applyBlockToFluxset(emptyFluxset(), block);
     const rebuilt = fluxsetFromBlocks([block]);
     assert.equal(live.pubs.length, 1);
+    assert.equal(live.commits.length, 1);
     assert.equal(Buffer.from(live.jroot).equals(Buffer.from(rebuilt.jroot)), true);
     assert.equal(Buffer.from(emptyFluxset().jroot).length, 32);
+    const more = [
+      block,
+      { txs: [{ vout: [{ admitPub: admitPub(randomScalar()).toBytes(), commit: Buffer.alloc(32, 4) }] }] },
+      { txs: [{ vout: [{ admitPub: admitPub(randomScalar()).toBytes(), commit: Buffer.alloc(32, 5) }] }] },
+    ];
+    let folded = emptyFluxset();
+    for (const b of more) folded = applyBlockToFluxset(folded, b);
+    const fromBlocks = fluxsetFromBlocks(more);
+    assert.equal(folded.pubs.length, 3);
+    assert.equal(fromBlocks.pubs.length, 3);
+    assert.equal(Buffer.from(folded.jroot).equals(Buffer.from(fromBlocks.jroot)), true);
+    const src = fs.readFileSync(fileURLToPath(new URL('./admit.js', import.meta.url)), 'utf8');
+    const fn = src.slice(src.indexOf('export function fluxsetFromBlocks'), src.indexOf('export function compactAdmitProof'));
+    assert.match(fn, /jroot\(\{ pubs, commits \}\)/);
+    assert.equal(fn.includes('applyBlockToFluxset'), false);
+  });
+});
+
+describe('specs/admit-v2.md pins the shipped native book', () => {
+  it('Pasta arity-32 pad_to_arity, leaf DST, Forests, batch, max proof, reject names match native', () => {
+    const specPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'specs', 'admit-v2.md');
+    const spec = fs.readFileSync(specPath, 'utf8');
+    assert.match(spec, /Anonymous Destination Membership Integer Transactions/);
+    assert.match(spec, /ADMITv2/);
+    assert.match(spec, /Do not write AdmitV2, ADMITV2/);
+    assert.match(spec, /Pallas–Vesta|pallas-vesta-pasta/);
+    assert.match(spec, /Arity `D` \| \*\*32\*\*/);
+    assert.match(spec, /pad_to_arity/);
+    assert.match(spec, /shear-admit-leaf-v2/);
+    assert.match(spec, /Curve Forests/);
+    assert.match(spec, /admit_verify_batch/);
+    assert.match(spec, /\*\*16384\*\*/);
+    assert.match(spec, /admit_membership/);
+    assert.match(spec, /admit_link_tag/);
+    assert.match(spec, /range_proof/);
+    assert.match(spec, /commit_sum/);
+    assert.match(spec, /silent_id_on_chain/);
+    assert.match(spec, /not a tower over Ed25519/);
+    assert.match(spec, /Helios\/Selene \| \*\*not used\*\*/);
+    assert.ok(nativeLoaded(), 'shearadmit.node must load');
+    assert.equal(nativeMaxProof(), 16384);
+    assert.equal(nativeArity(), 32);
   });
 });

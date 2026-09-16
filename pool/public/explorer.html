@@ -4,14 +4,14 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta http-equiv="Cache-Control" content="no-store"/>
-  <script src="/brand/theme.js?v=12"></script>
+  <script src="/brand/theme.js?v=15"></script>
   <title>Shear explorer · ShearHash-v3</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=26"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=29"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
@@ -86,7 +86,8 @@
       position:sticky; top:0; z-index:40;
     }
     .wordmark { font-weight:800; letter-spacing:.12em; color:var(--blue); font-size:.85rem; }
-    .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
+    .nav { display:inline-grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:6px; overflow-x:auto; }
+    .top-banner > .nav { display:inline-grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:6px; overflow-x:auto; }
     a.nav-btn {
       display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
       font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
@@ -128,7 +129,7 @@
       <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
       <a class="nav-btn is-on" href="/">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.6" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.7" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.33" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
@@ -145,7 +146,7 @@
     <section class="panel-card">
       <h1>Shear explorer</h1>
       <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
-      <p>Continuity-settled PoW. Confirmed blocks only. Height, time, status, kind — no dest safari, no amount column. ADMITV1 membership over this book's notes. While this book has fewer than 10,000 notes the membership set is thin. Offer <code>she1</code> when someone pays you.</p>
+      <p>Continuity-settled PoW. Confirmed blocks only. Height, time, status, type — no dest, no amount. ADMITv2 membership over this book's notes. While this book has fewer than 10,000 notes the membership set is thin. Offer <code>she1</code> when someone pays you.</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
     </section>
     <div class="grid" id="net-grid">
@@ -193,7 +194,7 @@
             <th>Id</th>
             <th>Time</th>
             <th>Status</th>
-            <th>Kind</th>
+            <th>Type</th>
           </tr>
         </thead>
         <tbody></tbody>

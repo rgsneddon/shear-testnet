@@ -25,18 +25,20 @@ function cookieOf(headers) {
   return m ? `shear_admin=${m[1]}` : '';
 }
 
-describe('kyrusfables operator desk', () => {
-  it('non-loopback POST allowSetup:true is setup_forbidden', async () => {
+describe('operator desk', () => {
+  it('non-admin-host POST is setup_forbidden when SHEAR_ADMIN_HOST is set', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admin-remote-'));
     const admin = createAdmin(dir);
     const prev = process.env.SHEAR_ADMIN_SETUP;
+    const prevHost = process.env.SHEAR_ADMIN_HOST;
     delete process.env.SHEAR_ADMIN_SETUP;
+    process.env.SHEAR_ADMIN_HOST = 'admin.mypool.site';
     const req = Readable.from([Buffer.from(JSON.stringify({
       user: 'operator', password: 'aaaaaaaa', allowSetup: true,
     }))]);
     req.method = 'POST';
     req.url = '/api/admin/setup';
-    req.headers = { host: ADMIN_HOST, 'content-type': 'application/json' };
+    req.headers = { host: 'pool.shear.digital', 'content-type': 'application/json' };
     req.socket = { remoteAddress: '203.0.113.9' };
     let raw = '';
     const res = {
@@ -51,13 +53,17 @@ describe('kyrusfables operator desk', () => {
     assert.equal(admin.status().setup, false);
     if (prev == null) delete process.env.SHEAR_ADMIN_SETUP;
     else process.env.SHEAR_ADMIN_SETUP = prev;
+    if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
+    else process.env.SHEAR_ADMIN_HOST = prevHost;
   });
 
   it('SHEAR_ADMIN_SETUP=1 without loopback is setup_forbidden; loopback+env is first-run only', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admin-env-'));
     const admin = createAdmin(dir);
     const prev = process.env.SHEAR_ADMIN_SETUP;
+    const prevHost = process.env.SHEAR_ADMIN_HOST;
     process.env.SHEAR_ADMIN_SETUP = '1';
+    process.env.SHEAR_ADMIN_HOST = 'admin.mypool.site';
     try {
       assert.equal(admin.setup({ user: 'operator', password: 'aaaaaaaa' }).reason, 'setup_forbidden');
       const remoteReq = Readable.from([Buffer.from(JSON.stringify({
@@ -65,7 +71,7 @@ describe('kyrusfables operator desk', () => {
       }))]);
       remoteReq.method = 'POST';
       remoteReq.url = '/api/admin/setup';
-      remoteReq.headers = { host: ADMIN_HOST, 'content-type': 'application/json' };
+      remoteReq.headers = { host: 'pool.shear.digital', 'content-type': 'application/json' };
       remoteReq.socket = { remoteAddress: '198.51.100.9' };
       let remoteRaw = '';
       const remoteRes = { statusCode: 0, setHeader() {}, end(s) { remoteRaw = String(s || ''); } };
@@ -80,7 +86,7 @@ describe('kyrusfables operator desk', () => {
       }))]);
       localReq.method = 'POST';
       localReq.url = '/api/admin/setup';
-      localReq.headers = { host: ADMIN_HOST, 'content-type': 'application/json' };
+      localReq.headers = { host: 'admin.mypool.site', 'content-type': 'application/json' };
       localReq.socket = { remoteAddress: '127.0.0.1' };
       let localRaw = '';
       const localRes = { statusCode: 0, setHeader() {}, end(s) { localRaw = String(s || ''); } };
@@ -91,6 +97,8 @@ describe('kyrusfables operator desk', () => {
     } finally {
       if (prev == null) delete process.env.SHEAR_ADMIN_SETUP;
       else process.env.SHEAR_ADMIN_SETUP = prev;
+      if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
+      else process.env.SHEAR_ADMIN_HOST = prevHost;
     }
   });
 
@@ -112,12 +120,14 @@ describe('kyrusfables operator desk', () => {
       unban: () => ({ banned: false }),
       clearStale: () => { calls.stale += 1; return { stale: 0 }; },
     };
+    const prevHost = process.env.SHEAR_ADMIN_HOST;
+    process.env.SHEAR_ADMIN_HOST = 'admin.mypool.site';
     const run = (p, method, body, cookie, extra = {}) => handleAdminApi(url(p), method, body, { admin, ops, cookie, ...extra });
 
     assert.equal(run('/api/admin/health', 'GET').status, 401);
     assert.equal(run('/api/admin/restart', 'POST').status, 401);
 
-    const remote = run('/api/admin/setup', 'POST', { user: 'operator', password: 'aaaaaaaa', allowSetup: true });
+    const remote = run('/api/admin/setup', 'POST', { user: 'operator', password: 'aaaaaaaa', allowSetup: true }, '', { host: 'pool.shear.digital' });
     assert.equal(remote.json.ok, false);
     assert.equal(remote.json.reason, 'setup_forbidden');
     assert.equal(admin.status().setup, false);
@@ -152,6 +162,8 @@ describe('kyrusfables operator desk', () => {
     assert.equal(run('/api/admin/clear-stale', 'POST', {}, cookie).json.stale, 0);
     assert.equal(calls.stale, 1);
     assert.equal(run('/api/admin/ban', 'POST', {}, cookie).status, 400);
+    if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
+    else process.env.SHEAR_ADMIN_HOST = prevHost;
   });
 
   it('paused pool rejects shares without counting stale; restart hook fires; accepted is kept', async () => {

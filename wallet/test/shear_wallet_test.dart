@@ -209,7 +209,7 @@ void main() {
     expect(ledger.confirmationsOf(10), 6);
   });
 
-  test('one missed /stats does not drop the live v3 node', () async {
+  test('one missed /stats does not drop the live node', () async {
     final hex = List.filled(128, 1).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     final live = _PoolLive(headerHex: hex, height: 16);
     final server = await _fakePool(live: live);
@@ -1110,7 +1110,7 @@ void main() {
     expect(sync.seeds.first.contains('127.0.0.1'), isTrue);
     expect(sync.seeds, contains(kLocalNodeRpc));
     expect(sync.seeds.contains(kPublicPoolHttp), isTrue);
-    expect(kBookMagic, 'shear-testnet-v3');
+    expect(kBookMagic, 'shear-testnet-v4');
     expect(kWalletDefaultSeed, contains('127.0.0.1'));
     expect(kWalletDefaultSeed.contains('pool.shear.digital'), isFalse);
     final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
@@ -3921,7 +3921,7 @@ void main() {
     expect(walletSyncPercent(proven: 2, wanted: 5), 40);
     expect(walletHonestyText(live: true, proven: 5, wanted: 5), 'synchronised · 5');
     expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 0), 'connecting…');
-    expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), 'looking for a v3 node…');
+    expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), 'looking for a node…');
     expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), isNot('no network'));
     await sync.followTip();
     expect(nodeSyncHeights(1, 16), hasLength(16));
@@ -3936,24 +3936,36 @@ void main() {
     expect(pool.honestyText(), 'synchronised · 16');
   });
 
-  test('read-sync drops a taller leftover v2 node for a v3 node', () async {
+  test('read-sync drops a taller leftover v3 node for a v4 node', () async {
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-    final v2 = _PoolLive(headerHex: hex, height: 2306, magic: 'shear-testnet-v2');
-    final v3 = _PoolLive(headerHex: hex, height: 16, magic: 'shear-testnet-v3');
-    final v2s = await _fakePool(live: v2);
+    final v3 = _PoolLive(headerHex: hex, height: 2306, magic: 'shear-testnet-v3');
+    final v4 = _PoolLive(headerHex: hex, height: 16, magic: 'shear-testnet-v4');
     final v3s = await _fakePool(live: v3);
-    addTearDown(() => v2s.close(force: true));
+    final v4s = await _fakePool(live: v4);
     addTearDown(() => v3s.close(force: true));
-    expect(isV3BookStats({'magic': 'shear-testnet-v2'}), isFalse);
-    expect(isV3BookStats({'magic': 'shear-testnet-v3'}), isTrue);
+    addTearDown(() => v4s.close(force: true));
+    expect(isLiveBookStats({'magic': 'shear-testnet-v3'}), isFalse);
+    expect(isLiveBookStats({'magic': 'shear-testnet-v4'}), isTrue);
     final sync = ShearReadSync(
-      seeds: ['http://127.0.0.1:${v2s.port}', 'http://127.0.0.1:${v3s.port}'],
+      seeds: ['http://127.0.0.1:${v3s.port}', 'http://127.0.0.1:${v4s.port}'],
       http: _realHttp(),
       jitter: Duration.zero,
     );
-    expect(await sync.findLiveNode(), 'http://127.0.0.1:${v3s.port}');
-    expect(sync.liveBase, isNot('http://127.0.0.1:${v2s.port}'));
+    expect(await sync.findLiveNode(), 'http://127.0.0.1:${v4s.port}');
+    expect(sync.liveBase, isNot('http://127.0.0.1:${v3s.port}'));
+  });
+
+  test('v3 shewall refuses without explicit reset; reset mints a v4 identity', () {
+    final id = createIdentity();
+    final v3 = {...id.toJson(), 'network': 'shear-testnet-v3'};
+    expect(
+      () => ShearIdentity.fromJson(v3),
+      throwsA(isA<FormatException>().having((e) => e.message, 'message', contains('shewall_reset_required'))),
+    );
+    final reset = ShearIdentity.fromJson(v3, reset: true);
+    expect(reset.address, id.address);
+    expect(id.toJson()['network'], 'shear-testnet-v4');
   });
 
   test('upgraded wallet drops leftover pre-reset txs; live history is the book', () async {
@@ -4804,7 +4816,7 @@ class _PoolLive {
     this.balance = 10,
     this.pending = 0,
     this.avgBlockTimeMs = 90000,
-    this.magic = 'shear-testnet-v3',
+    this.magic = 'shear-testnet-v4',
     this.owner,
     List<Map<String, dynamic>>? incoming,
     List<Map<String, dynamic>>? history,

@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <script src="/brand/theme.js?v=8"></script>
+  <script src="/brand/theme.js?v=15"></script>
   <title>Shear miner · ShearHash-v3</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=13"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=29"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
@@ -64,7 +64,8 @@
       border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
       position:sticky; top:0; z-index:40;
     }
-    .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
+    .nav { display:inline-grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:6px; overflow-x:auto; }
+    .top-banner > .nav { display:inline-grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:6px; overflow-x:auto; }
     a.nav-btn {
       display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
       font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
@@ -100,7 +101,7 @@
       <a class="nav-btn" href="/">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.6" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/1.7" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.33" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
@@ -117,7 +118,7 @@
     <section class="panel-card">
       <p><a href="/">Back to pool</a></p>
       <h1>Miner stats · <span class="mono" id="miner-tag">—</span></h1>
-      <p>Hash bonuses land automatically on the dest you hashed with: each proven floor share mints onto that dest on the next sealed block, with no withdraw. To pull your share of the 1 SHE pot, use wallet Flow → Pull from pool (EIP-712). Continuum Copy ID is <code>she1</code>; Copy dest is the <code>ssa1</code> mailbox you mine to. The public tag on this page is opaque. This page cannot sign; a stub or empty sig is unsigned. After a withdraw, wait 24 hours before the next one.</p>
+      <p>Hash bonuses land automatically on the dest you hashed with. To pull your share of the 1 SHE pot, confirm in Shear wallet (Flow → Pull from pool). This page never asks for <code>she1</code> or <code>ssa1</code> — the wallet proves you own the dest that hashed to this tag. After a withdraw, wait 24 hours before the next one.</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
     </section>
     <div class="pull-row" id="pull-row">
@@ -129,11 +130,6 @@
         <div class="label">Confirmed pull</div>
         <div class="value yellow" id="m-confirmed">0 SHE</div>
         <button type="button" class="withdraw-btn" id="m-withdraw">Withdraw confirmed sum</button>
-        <form class="pull-form hid" id="pull-form" autocomplete="off">
-          <input id="pull-login" name="login" type="text" spellcheck="false" placeholder="she1 login"/>
-          <input id="pull-dest" name="dest" type="text" spellcheck="false" placeholder="ssa1 dest"/>
-          <button type="submit" class="withdraw-btn">Send confirmed sum</button>
-        </form>
         <p class="err" id="pull-err"></p>
       </article>
     </div>
@@ -178,6 +174,7 @@
   </div>
   <script>
     const tag = decodeURIComponent((location.pathname.split('/miner/')[1] || '').split('/')[0] || '');
+    const BOOT = /*MINER_BOOT*/null;
     function fmtRate(n) {
       const v = Number(n) || 0;
       if (!Number.isFinite(v) || v <= 0) return '0.0 H/s';
@@ -199,6 +196,12 @@
     function set(id, v) {
       const el = document.getElementById(id);
       if (el) el.textContent = v;
+    }
+    function fmtPullShe(display, num) {
+      if (display != null && display !== '') return String(display) + ' SHE';
+      const n = Number(num);
+      if (Number.isFinite(n) && n > 0) return n.toFixed(8).replace(/0+$/, '').replace(/\.$/, '') + ' SHE';
+      return '0 SHE';
     }
     let pullWatching = false;
     let lastPullSeen = 0;
@@ -222,20 +225,20 @@
       set('m-orphans', String(d.orphans || 0));
       set('m-threads', String(d.threads || 0));
       set('m-round', String(d.hashes || d.roundHashes || 0));
-      set('m-pending', (d.pendingDisplay || '0') + ' SHE');
-      set('m-confirmed', (d.confirmedDisplay || '0') + ' SHE');
+      set('m-pending', fmtPullShe(d.pendingDisplay, d.pendingShe));
+      set('m-confirmed', fmtPullShe(d.confirmedDisplay, d.confirmedShe));
       set('m-first', ago(d.firstSeen));
       set('m-last', ago(d.lastSeen));
       const pulled = Number(d.lastPullMs) || 0;
       paintedPullMs = pulled;
       if (pullWatching && pulled > lastPullSeen) {
         const err = document.getElementById('pull-err');
-        document.getElementById('pull-form').classList.add('hid');
         if (err) { err.className = 'err sent'; err.textContent = 'sent'; }
         pullWatching = false;
       }
       document.title = d.tag + ' · Shear miner';
       const tb = document.querySelector('#workers tbody');
+      if (!tb) return;
       tb.innerHTML = (d.workers || []).slice().sort(function (a, b) {
         return (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0);
       }).map(function (w) {
@@ -255,33 +258,27 @@
       fetch('/api/miners/' + encodeURIComponent(tag) + '?_=' + Date.now(), { cache: 'no-store' })
         .then(function (r) { return r.json(); })
         .then(paint)
-        .catch(function () {});
+        .catch(function () { set('live-pulse', 'retrying miner stats'); });
     }
     document.getElementById('m-withdraw').addEventListener('click', function () {
-      document.getElementById('pull-form').classList.remove('hid');
-    });
-    document.getElementById('pull-form').addEventListener('submit', function (e) {
-      e.preventDefault();
       const err = document.getElementById('pull-err');
       err.className = 'err';
       err.textContent = '';
-      const login = document.getElementById('pull-login').value.trim();
-      const dest = document.getElementById('pull-dest').value.trim();
       fetch('/api/miners/' + encodeURIComponent(tag) + '/withdraw', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ login: login, dest: dest }),
+        cache: 'no-store',
+        body: '{}',
       }).then(function (r) { return r.json(); }).then(function (j) {
         if (j && j.ok) {
-          document.getElementById('pull-form').classList.add('hid');
           err.className = 'err sent';
           err.textContent = 'sent';
           tick();
           return;
         }
         if (j && j.reason === 'unsigned') {
-          err.className = 'err';
-          err.textContent = 'Waiting for wallet to sign';
+          err.className = 'err sent';
+          err.textContent = 'Confirm in Shear wallet (Pull from pool). she1 and dest stay in the wallet.';
           lastPullSeen = paintedPullMs;
           pullWatching = true;
           return;
@@ -290,6 +287,7 @@
         err.textContent = (j && j.reason) || 'unsigned';
       }).catch(function () { err.textContent = 'unsigned'; });
     });
+    if (BOOT && BOOT.ok) paint(BOOT);
     setInterval(tick, 1000);
     tick();
   </script>

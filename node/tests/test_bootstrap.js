@@ -10,6 +10,7 @@ import {
   latestPaths,
   shouldPublishBootstrap,
   bootstrapCheckpoint,
+  reorgBreaksCheckpoint,
 } from '../src/bootstrap.js';
 
 function prunedBlock(height, hashByte) {
@@ -96,6 +97,22 @@ describe('latest-only prune bootstrap', () => {
     assert.equal(shouldPublishBootstrap(1008, 1000), false);
     assert.equal(shouldPublishBootstrap(1400, 1000), true);
     assert.equal(shouldPublishBootstrap(1400, 1400), false);
+  });
+
+  it('refuses a reorg that replaces the 1000-then-400 checkpoint hash', () => {
+    const h = (n) => Buffer.alloc(32, n);
+    const from = Array.from({ length: 1008 }, (_, i) => ({ height: i + 1, hash: h((i + 1) % 255) }));
+    const shallow = from.map((b) => (b.height >= 1005 ? { ...b, hash: h(9) } : b));
+    assert.equal(reorgBreaksCheckpoint(from, shallow), null);
+    const deep = from.map((b) => (b.height >= 1000 ? { ...b, hash: h(9) } : b));
+    const hit = reorgBreaksCheckpoint(from, deep);
+    assert.equal(hit.height, 1000);
+    assert.equal(hit.hash, h(1000 % 255).toString('hex'));
+    const at1400 = Array.from({ length: 1400 }, (_, i) => ({ height: i + 1, hash: h((i + 1) % 255) }));
+    const replace1400 = at1400.map((b) => (b.height >= 1400 ? { ...b, hash: h(3) } : b));
+    assert.equal(reorgBreaksCheckpoint(at1400, replace1400).height, 1400);
+    const replace1399 = at1400.map((b) => (b.height === 1399 ? { ...b, hash: h(3) } : b));
+    assert.equal(reorgBreaksCheckpoint(at1400, replace1399), null);
   });
 
   it('boot.shear.digital page offers only latest and documents apply', () => {

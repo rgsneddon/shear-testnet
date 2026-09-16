@@ -362,6 +362,35 @@ export function sealedReservePaint(store) {
   const list = Array.isArray(store?.blocks) ? store.blocks : [];
   const tipH = Number((typeof store?.tip === 'function' ? store.tip()?.height : 0) || list[list.length - 1]?.height || 0);
   const rows = [];
+  const sealed = Array.isArray(store?.explorer) && store.explorer.length
+    ? store.explorer
+    : null;
+  if (sealed) {
+    for (const r of sealed) {
+      const kind = String(r.kind || '');
+      if (kind !== 'lock' && kind !== 'vote') continue;
+      const to = publicPaintDest(r.to);
+      const from = publicPaintDest(r.from);
+      if (/she1|shear1/i.test(`${to}${from}`)) continue;
+      const height = Number(r.height || 0);
+      const confs = flowConfirmations(height, tipH);
+      const pending = confs < SPENDABLE_CONFIRMATIONS;
+      rows.push({
+        id: String(r.id || ''),
+        kind,
+        from,
+        to,
+        amount: nanosToShe(r.nanos),
+        nanos: Number(r.nanos || 0),
+        height,
+        confirmations: confs,
+        pending,
+        status: pending ? 'pending' : 'confirmed',
+        at: r.at || 0,
+      });
+    }
+    return rows;
+  }
   for (const b of list) {
     for (const r of sealedExplorerRows(b) || []) {
       const kind = String(r.kind || '');
@@ -1238,12 +1267,15 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
   }
   if ((path === '/api/pool/pullPending' || path === '/api/pool/pullpending') && verb === 'GET') {
     const login = String(url.searchParams.get('login') || url.searchParams.get('she1') || '').trim().split('.')[0];
-    if (!login.startsWith('she1')) {
+    const tag = String(url.searchParams.get('tag') || '').trim().toLowerCase();
+    let rec = null;
+    if (pendingPulls && typeof pendingPulls.get === 'function') {
+      if (/^m[0-9a-f]{8}$/.test(tag)) rec = pendingPulls.get(`tag:${tag}`) || null;
+      else if (login.startsWith('she1')) rec = pendingPulls.get(login.toLowerCase()) || null;
+    }
+    if (!rec && !login.startsWith('she1') && !/^m[0-9a-f]{8}$/.test(tag)) {
       return { status: 400, json: { ok: false, reason: 'need_she1', public: false } };
     }
-    const rec = pendingPulls && typeof pendingPulls.get === 'function'
-      ? pendingPulls.get(login.toLowerCase())
-      : null;
     return {
       status: 200,
       json: {

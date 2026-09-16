@@ -22,10 +22,13 @@ export const P2P_PORT = 30303;
 export const P2P_MAX_FRAME = Math.max(1024 * 1024, Number(process.env.SHEAR_P2P_MAX_FRAME || 16 * 1024 * 1024) || 16 * 1024 * 1024);
 /** Headers served after a locator. A window, not the end of IBD. */
 export const HEADERS_PAGE = 2000;
-/** In-flight getblock window. Sync must continue after this many. */
-export const GETBLOCK_BATCH = Math.max(1, Math.min(64, Number(process.env.SHEAR_GETBLOCK_BATCH || 1) || 1));
+/** Documented default in-flight getblock window. Tests may set SHEAR_GETBLOCK_BATCH. */
+export const GETBLOCK_BATCH = 16;
+export function getblockBatch() {
+  return Math.max(1, Math.min(64, Number(process.env.SHEAR_GETBLOCK_BATCH || GETBLOCK_BATCH) || GETBLOCK_BATCH));
+}
 /** Seed redial so a dropped peer cannot leave a node stuck forever. */
-export const SEED_RETRY_MS = 15_000;
+export const SEED_RETRY_MS = 3_000;
 /** Drop a hung getblock window so IBD cannot stall after a peer crash. */
 export const GETBLOCK_WAIT_MS = 20_000;
 
@@ -475,7 +478,7 @@ export function createP2p({
     if (!rec.pending) rec.pending = new Set();
     if (!rec.failed) rec.failed = new Set();
     const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
-    while (rec.pending.size < GETBLOCK_BATCH && rec.want.length) {
+    while (rec.pending.size < getblockBatch() && rec.want.length) {
       const hash = rec.want.shift();
       if (!hash || have.has(hash) || rec.failed.has(hash) || rec.pending.has(hash)) continue;
       rec.pending.add(hash);
@@ -604,7 +607,8 @@ export function createP2p({
     }
     if (msg.type === 'getblock') {
       const want = wireHash(msg.hash);
-      const b = want ? (store.blocks || []).find((x) => hexHash(x.hash) === want) : null;
+      const idx = want ? headerIndexByHash(store.blocks, want) : -1;
+      const b = idx >= 0 ? store.blocks[idx] : null;
       try {
         console.error(JSON.stringify({
           event: 'p2p_getblock',

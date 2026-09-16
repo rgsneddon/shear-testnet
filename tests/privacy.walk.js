@@ -157,6 +157,10 @@ describe('privacy.walk', () => {
     const sealed = compactTx(fat);
     const blob = JSON.stringify(sealed);
     assert.equal(sealed.vin[0].address, undefined);
+    assert.equal(sealed.vin[0].prev, undefined);
+    assert.equal(sealed.vin[0].index, undefined);
+    assert.equal(sealed.vin[0].noteCommit, undefined);
+    assert.equal(sealed.vin[0].dest20, undefined);
     assert.equal(sealed.open, undefined);
     assert.equal(sealed.portalOpen, undefined);
     assert.equal(sealed.viewKey, undefined);
@@ -287,7 +291,7 @@ describe('privacy.walk', () => {
     assert.match(fp, /DEST_HRP_SSA_ONLY=1/);
     assert.match(fp, /SPEND_SIG_ONLY=1/);
     assert.match(fp, /MEMO_NOT_DEST_KEYED=1/);
-    assert.match(fp, /NETWORK=shear-testnet-v3/);
+    assert.match(fp, /NETWORK=shear-testnet-v4/);
     assert.match(fp, /HASH_FN=ShearHash-v3/);
     assert.match(fp, /HASH_TX_LIVE=1/);
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
@@ -308,7 +312,10 @@ describe('privacy.walk', () => {
     assert.match(fp, /VORTICE_NO_MINT=1/);
     assert.match(fp, /LEVY_CAP=0.001-SHE/);
     assert.match(fp, /LEVY_SPLIT=50-50-finder-reserve/);
-    assert.match(fp, /ADMIT=AdmitV1/);
+    assert.match(fp, /ADMIT=ADMITv2/);
+    assert.match(fp, /RANGE=bpplus/);
+    assert.match(fp, /LEVY=weight/);
+    assert.doesNotMatch(fp, /NETWORK=shear-testnet-v3/);
     assert.equal(/fcmp/i.test(fp), false);
     assert.equal(/2026-\d{2}-\d{2}T/.test(fp), false);
   });

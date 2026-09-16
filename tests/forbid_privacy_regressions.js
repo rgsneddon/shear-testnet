@@ -33,6 +33,15 @@ describe('forbid privacy regressions', () => {
     assert.doesNotMatch(src, /function memoKey\(dest\) \{\s*const d = hash20FromAddress/);
   });
 
+  it('sealed compact vin does not name the spent note', () => {
+    const src = read('crypto/chronoflux.js');
+    const vin = src.split('if (tx.vin)')[1] || src;
+    assert.match(src, /export function compactTx/);
+    assert.doesNotMatch(vin.slice(0, 800), /prev:\s*v\.prev/);
+    assert.doesNotMatch(vin.slice(0, 800), /index:\s*v\.index/);
+    assert.doesNotMatch(vin.slice(0, 900), /noteCommit:\s*v\.noteCommit/);
+  });
+
   it('spendPub is bound to dest20; compactTx is on persist paths', () => {
     const spend = read('crypto/spend.js');
     assert.match(spend, /destMatchesSpendPub/);

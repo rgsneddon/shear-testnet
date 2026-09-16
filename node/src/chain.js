@@ -2,7 +2,7 @@ import { shearHash, meetsTarget, hashHex } from '../../crypto/shear_hash.js';
 import { encodeHeader, decodeHeader, setNonce, VERSION } from '../../crypto/header.js';
 import { merkleRoot, EMPTY_ROOT } from '../../crypto/merkle.js';
 import {
-  GENESIS_BITS,
+  GENESIS_BITS_PACKED,
   nextBits,
   bitsForBlock,
   blockWork,
@@ -73,6 +73,7 @@ import {
   levyTaxed,
   containsShe1,
   levyNeed,
+  LEVY_CAP_NANOS,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange, reserveDest20Open } from '../../crypto/dummy.js';
@@ -454,13 +455,13 @@ export function buildTemplate({
     merkleRoot: merkle,
     continuityRoot: dual.continuityRoot,
     timestamp: BigInt(now),
-    bits: bits ?? GENESIS_BITS,
+    bits: bits ?? GENESIS_BITS_PACKED,
     nonce: 0n,
     baseFee: BigInt(baseFee),
   });
   return {
     height,
-    bits: bits ?? GENESIS_BITS,
+    bits: bits ?? GENESIS_BITS_PACKED,
     header,
     merkleRoot: merkle,
     continuityRoot: dual.continuityRoot,
@@ -779,15 +780,23 @@ function verifyBlockConsensus(block, prev, {
   let fees = 0;
   const spent = spentB instanceof Set ? spentB : new Set(spentB || []);
   const history = Array.isArray(evmHistory) && evmHistory.length ? evmHistory : (prev ? [prev] : []);
+  const rebuilt = fluxsetFromBlocks(history);
   const live = Array.isArray(parentFluxset)
-    ? { pubs: parentFluxset, spendTags: parentSpendTags instanceof Set ? parentSpendTags : new Set(parentSpendTags || []) }
-    : fluxsetFromBlocks(history);
-  const pubs = live.pubs.slice();
-  const spentTags = new Set(live.spendTags);
+    ? {
+        pubs: parentFluxset,
+        commits: rebuilt.commits,
+        spendTags: parentSpendTags instanceof Set ? parentSpendTags : new Set(parentSpendTags || rebuilt.spendTags || []),
+        jroot: rebuilt.jroot,
+      }
+    : (parentFluxset?.pubs ? parentFluxset : rebuilt);
+  const pubs = (live.pubs || []).slice();
+  const commits = (live.commits || []).slice();
+  const spentTags = new Set(live.spendTags || []);
   const pushPub = (o) => {
-    if (!o?.admitPub) return;
+    if (!o?.admitPub || !o?.commit) return;
     try {
       pubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
+      commits.push(Buffer.from(asU8(o.commit)));
     } catch { /* skip */ }
   };
   const body = txs.slice(1);
@@ -840,13 +849,16 @@ function verifyBlockConsensus(block, prev, {
     if (flowNeedsDummy(tx)) {
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
-      const spentOf = (vin) => lookupSpentVout(vin, block, prev, i, evmHistory);
-      if (!verifyFlowConservation(tx, spentOf)) return { ok: false, reason: 'commit_sum' };
+      if (!verifyFlowConservation(tx)) return { ok: false, reason: 'commit_sum' };
       const proof = tx.admit_proof;
       if (!proof) return { ok: false, reason: 'admit_membership' };
-      if (!admit_verify(proof, pubs)) return { ok: false, reason: 'admit_membership' };
       const tag = proof.spendTag || tx.spendTag;
       if (!tag) return { ok: false, reason: 'admit_membership' };
+      const cTilde = proof.cTilde || tx.vin?.[0]?.commit;
+      const liveJ = { pubs, commits, jroot: live.jroot };
+      if (!admit_verify(proof, liveJ, { cTilde, spendTag: tag, jroot: live.jroot })) {
+        return { ok: false, reason: 'admit_membership' };
+      }
       const th = Buffer.from(asU8(tag)).toString('hex');
       if (spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
       spentTags.add(th);
@@ -873,6 +885,7 @@ function verifyBlockConsensus(block, prev, {
     const need = levyNeed(tx, body.slice(0, i));
     const paid = Math.floor(Number(tx.fee || 0));
     if (paid < need) return { ok: false, reason: 'levy' };
+    if (taxed && paid > LEVY_CAP_NANOS) return { ok: false, reason: 'levy' };
     if (taxed && tx.maxLevy != null && need > Number(tx.maxLevy)) {
       return { ok: false, reason: 'max_levy' };
     }
@@ -1011,7 +1024,7 @@ export function shouldAdopt(local, remote) {
 }
 
 export function retarget(chain, candidateTimestamp) {
-  if (!chain.length) return GENESIS_BITS;
+  if (!chain.length) return GENESIS_BITS_PACKED;
   const last = decodeHeader(Buffer.from(chain[chain.length - 1].header));
   if (candidateTimestamp != null) {
     return bitsForBlock(last.bits, last.timestamp, candidateTimestamp);
@@ -1029,13 +1042,13 @@ export function genesisBlock({ miner, now = Date.now() }) {
     samples: [],
     txs: [],
     now,
-    bits: GENESIS_BITS,
+    bits: GENESIS_BITS_PACKED,
   });
   let found = null;
   for (let n = 0n; n < 5_000_000n; n += 1n) {
     const header = setNonce(tpl.header, n);
     const hash = shearHash(header);
-    if (meetsTarget(hash, GENESIS_BITS)) {
+    if (meetsTarget(hash, GENESIS_BITS_PACKED)) {
       found = { header, hash, nonce: n };
       break;
     }

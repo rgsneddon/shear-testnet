@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <script src="/brand/theme.js?v=12"></script>
+  <script src="/brand/theme.js?v=15"></script>
   <title>Shear — testnet</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=26"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=28"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
@@ -75,7 +75,8 @@
       border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
       position:sticky; top:0; z-index:40;
     }
-    .nav { display:flex; flex-wrap:nowrap; gap:6px; overflow-x:auto; }
+    .nav { display:inline-grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:6px; overflow-x:auto; }
+    .top-banner > .nav { display:inline-grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:6px; overflow-x:auto; }
     a.nav-btn {
       display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
       font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
@@ -245,7 +246,7 @@
       <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.6" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.7" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.33" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
@@ -267,7 +268,7 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.33</strong> · miner <strong>1.6</strong>
+      wallet <strong>0.33</strong> · miner <strong>1.7</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
@@ -282,10 +283,10 @@
         </div>
       </div>
       <div class="client-dd">
-        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.6">MINER</a>
+        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/1.7">MINER</a>
         <div class="client-menu" id="menu-miner">
-          <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/download/1.6/ShearK-Miner-1.6-windows.zip">Windows</a>
-          <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/download/1.6/ShearK-Miner-1.6-linux.zip">Linux</a>
+          <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/download/1.7/ShearK-Miner-1.7-windows.zip">Windows</a>
+          <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/download/1.7/ShearK-Miner-1.7-linux.zip">Linux</a>
         </div>
       </div>
       <div class="client-dd">
@@ -305,12 +306,12 @@
       <section class="panel-card">
         <h1>Shear</h1>
         <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
-        <p>ADMITV1 membership over this book's notes, with confidential amounts. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
+        <p>ADMITv2 membership over this book's notes, with confidential amounts. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
         <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>) that the book writes. Rest-frame <code>shear1</code> stays in Closure. While this book has fewer than 10,000 notes the membership set is thin.</p>
         <p>Each found block mints 1 SHE, split among hasher dests that produced proven work. Each of those dests receives its own hash bonus on the next sealed block.</p>
         <p>Pool: <a href="https://pool.shear.digital">pool.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
         <p>Explorer: <a href="https://explorer.shear.digital">explorer.shear.digital</a></p>
-        <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v3</p>
+        <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v4</p>
         <p class="pulse">live · testnet</p>
       </section>
       <section class="panel-card" id="network-continuity">
@@ -392,7 +393,7 @@
     </section>
     <section class="panel-card guide-wide" id="solo-mine">
       <h2>Solo mine</h2>
-      <p>ShearK-Miner <strong>1.6</strong>, CPU only. Log in with wallet Copy dest (<code>ssa1.worker</code>). Solo means <em>your</em> node finds the block: you keep the whole <strong>1 SHE</strong> pot plus the hash bonus on that dest. The public pool takes 1% of the pot only.</p>
+      <p>ShearK-Miner <strong>1.7</strong>, CPU only. Log in with wallet Copy dest (<code>ssa1.worker</code>). Solo means <em>your</em> node finds the block: you keep the whole <strong>1 SHE</strong> pot plus the hash bonus on that dest. The public pool takes 1% of the pot only.</p>
       <h3>1. Local node + stratum</h3>
       <p>Node source is the NODE button above. This starts an in-process node with stratum on <code>127.0.0.1:1111</code>.</p>
       <div class="copy-row">
@@ -403,7 +404,7 @@ npm run pool</pre>
         <button type="button" data-copy="solo-node">Copy</button>
       </div>
       <h3>2. Point ShearK at localhost</h3>
-      <p>Download miner <strong>1.6</strong>, unzip, then (macOS / Linux):</p>
+      <p>Download miner <strong>1.7</strong>, unzip, then (macOS / Linux):</p>
       <div class="copy-row">
         <pre id="solo-unix">./ShearK-Miner --selftest
 ./ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
@@ -443,11 +444,11 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
-        macos: SHEARK + '/tag/1.6',
-        windows: SHEARK + '/download/1.6/ShearK-Miner-1.6-windows.zip',
-        linux: SHEARK + '/download/1.6/ShearK-Miner-1.6-linux.zip',
-        android: SHEARK + '/tag/1.6',
-        ios: SHEARK + '/tag/1.6'
+        macos: SHEARK + '/tag/1.7',
+        windows: SHEARK + '/download/1.6/ShearK-Miner-1.7-windows.zip',
+        linux: SHEARK + '/download/1.6/ShearK-Miner-1.7-linux.zip',
+        android: SHEARK + '/tag/1.7',
+        ios: SHEARK + '/tag/1.7'
       };
       var node = 'https://github.com/rgsneddon/shear-testnet/tree/main/node';
       function bind(id, href) {

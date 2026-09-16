@@ -200,7 +200,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     if (mounted) setState(() {});
   }
 
-  /// Headers/tip from a v3 node before unlock. Spend keys stay sealed.
+  /// Headers/tip from the local node before unlock. Spend keys stay sealed.
   Future<void> _preloginSync() async {
     Future<void> once() async {
       try {
@@ -339,7 +339,13 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     }
     try {
       id = await session.unlock(pw);
-    } catch (_) {
+    } catch (e) {
+      final msg = e is FormatException ? e.message : '';
+      if (msg.startsWith('shewall_reset_required')) {
+        setState(() => _lockError =
+            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v4).');
+        return;
+      }
       setState(() => _lockError = 'Wrong password.');
       return;
     }

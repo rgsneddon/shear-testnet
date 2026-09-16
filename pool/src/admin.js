@@ -1,6 +1,7 @@
 /**
- * kyrusfables.shear.digital — operator fee wallet.
- * Host is display/routing only, not authorization. TOTP + password after setup.
+ * Operator desk. Host is display/routing only, not authorization.
+ * Dedicated admin host comes from SHEAR_ADMIN_HOST (never a baked-in name).
+ * Generic deploy serves the same desk at /admin (example: https://mypool.site/admin).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,23 +22,45 @@ import {
   mempoolDepthBytes,
   poolFeeDest,
   containsShe1,
+  verifyPoolWithdrawOffchain,
 } from '../../crypto/levy.js';
+import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { reconstructOwner } from './wallet_api.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
+import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 
-export const ADMIN_HOST = 'kyrusfables.shear.digital';
 export const ADMIN_ISSUER = 'shear';
-/** Display host only. Not authorization. */
+/** Display-only. Authorization is password + TOTP after setup. */
 export const ADMIN_USER = '';
 const COOKIE = 'shear_admin';
 const SCRYPT = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const ADMIN_DIR = path.join(__dirname, '../admin');
+const PUBLIC_BRAND = path.join(__dirname, '../public/brand');
+/** Documented generic example. Override with SHEAR_ADMIN_HOST. */
+export const ADMIN_HOST_EXAMPLE = 'mypool.site';
+
+export function configuredAdminHosts() {
+  return String(process.env.SHEAR_ADMIN_HOST || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/** First configured host, else the generic example used in docs and tests. */
+export const ADMIN_HOST = configuredAdminHosts()[0] || ADMIN_HOST_EXAMPLE;
 
 export function isAdminHost(host) {
   const h = String(host || '').split(':')[0].toLowerCase();
-  return h === ADMIN_HOST;
+  const hosts = configuredAdminHosts();
+  if (!hosts.length) return false;
+  return hosts.includes(h);
+}
+
+export function isAdminPath(pathname) {
+  const p = String(pathname || '');
+  return p === '/admin' || p.startsWith('/admin/') || p.startsWith('/api/admin');
 }
 
 function toBase32(buf) {
@@ -204,18 +227,31 @@ export function createAdmin(dir) {
     return rec;
   }
 
-  function setup({ user, password, setupToken: tokenIn, loopback = false } = {}) {
-    if (fs.existsSync(encPath)) return { ok: false, reason: 'closed' };
+  function mayFirstRun({ setupToken: tokenIn, loopback = false, host = '', pathname = '' } = {}) {
+    const s = load();
+    if (s.pass || s.closed || fs.existsSync(encPath)) return false;
+    if (tokenIn && same(tokenIn, setupToken)) return true;
+    const envOk = String(process.env.SHEAR_ADMIN_SETUP || '') === '1';
+    if (loopback === true && envOk) return true;
+    const hosts = configuredAdminHosts();
+    if (hosts.length) return isAdminHost(host);
+    return true;
+  }
+
+  function setup({
+    user, password, setupToken: tokenIn, loopback = false, host = '', pathname = '',
+  } = {}) {
     const s = load();
     if (s.pass || s.closed) return { ok: false, reason: 'closed' };
-    const envOk = String(process.env.SHEAR_ADMIN_SETUP || '') === '1';
-    const tokOk = tokenIn && same(tokenIn, setupToken);
-    const loopEnv = loopback === true && envOk;
-    if (!tokOk && !loopEnv) return { ok: false, reason: 'setup_forbidden' };
+    if (!mayFirstRun({ setupToken: tokenIn, loopback, host, pathname })) {
+      return { ok: false, reason: 'setup_forbidden' };
+    }
+    const name = String(user || '').trim().slice(0, 64);
+    if (name.length < 1) return { ok: false, reason: 'username' };
     const pw = String(password || '');
     if (pw.length < 8) return { ok: false, reason: 'password' };
     const salt = randomBytes(16);
-    s.user = String(user || 'operator').slice(0, 64) || 'operator';
+    s.user = name;
     s.pass = { salt: salt.toString('hex'), hash: passHash(pw, salt).toString('hex') };
     s.totp = null;
     s.closed = false;
@@ -227,7 +263,9 @@ export function createAdmin(dir) {
   function login({ user, password, code } = {}) {
     const s = load();
     if (!s.pass) return { ok: false, reason: 'auth' };
-    void user;
+    if (!same(String(user || '').trim(), String(s.user || ''))) {
+      return { ok: false, reason: 'auth' };
+    }
     const salt = Buffer.from(s.pass.salt, 'hex');
     const want = Buffer.from(s.pass.hash, 'hex');
     const got = passHash(password, salt);
@@ -302,7 +340,7 @@ function needOps(ops, name) {
 }
 
 export function handleAdminApi(url, method, body, {
-  store, queueSend, cookie, admin, ops, loopback = false,
+  store, queueSend, cookie, admin, ops, loopback = false, host = '', pendingPulls,
 } = {}) {
   const pathName = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
@@ -316,6 +354,8 @@ export function handleAdminApi(url, method, body, {
       password: body.password,
       loopback: loopback === true,
       setupToken: body.setupToken,
+      host,
+      pathname: pathName,
     });
     if (!got.ok) return { status: 400, json: got };
     return {
@@ -365,11 +405,12 @@ export function handleAdminApi(url, method, body, {
   }
   if (pathName === '/api/admin/withdraw' && verb === 'POST') {
     const from = poolFeeDest();
-    if (containsShe1(body)) {
+    if (containsShe1(body.to) || containsShe1(body.dest)) {
       return { status: 400, json: { ok: false, reason: 'she1_on_chain' } };
     }
     const to = payoutDest(String(body.to || body.dest || '')) || '';
     const amount = Number(body.amount);
+    const she = String(body.login || body.she1 || '').trim().split('.')[0];
     if (!isDestAddress(to) || !(amount > 0)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
@@ -380,6 +421,41 @@ export function handleAdminApi(url, method, body, {
     if (hist.spendableNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
+    const pending = {
+      id: `admin-spend-${nanos}`,
+      kind: 'admin-spendable',
+      login: she,
+      dest: to,
+      nanos,
+      fee,
+      chainId: 2701,
+      at: Date.now(),
+    };
+    const sig = body.sig || body.signature;
+    if (!sig) {
+      if (she.startsWith('she1') && pendingPulls && typeof pendingPulls.set === 'function') {
+        pendingPulls.set(she.toLowerCase(), pending);
+      }
+      return { status: 400, json: { ok: false, reason: she.startsWith('she1') ? 'unsigned' : 'need_she1', pending: she.startsWith('she1') ? pending : undefined } };
+    }
+    const off = verifyPoolWithdrawOffchain({
+      login: she,
+      dest: to,
+      nanos,
+      sig,
+      minerShe1: she,
+      payoutSsa1: to,
+      height: body.height,
+      nonce: body.nonce,
+      deadline: body.deadline,
+      nonceStore: withdrawNonces,
+      seenDigests: withdrawDigests,
+      open: body.open,
+      spendSig: body.spendSig,
+      ownerPub: ownerPubFromOpening(body.open),
+      requireOwner: true,
+    });
+    if (!off.ok) return { status: 400, json: { ok: false, ...off } };
     const tx = attachDummyOuts({
       kind: 'send',
       from,
@@ -388,6 +464,8 @@ export function handleAdminApi(url, method, body, {
       amount,
       fee,
       maxLevy: fee,
+      open: body.open,
+      spendSig: body.spendSig,
       vin: [{ address: from }],
       vout: [{ address: to, nanos, kind: 'send' }],
     });
@@ -396,6 +474,9 @@ export function handleAdminApi(url, method, body, {
     if (typeof queueSend === 'function') queued = queueSend(tx);
     if (queued && typeof queued === 'object' && queued.ok === false) {
       return { status: 400, json: { ok: false, reason: queued.reason || 'queue_failed' } };
+    }
+    if (pendingPulls && typeof pendingPulls.delete === 'function' && she) {
+      pendingPulls.delete(she.toLowerCase());
     }
     return {
       status: 200,
@@ -491,15 +572,17 @@ export async function handleAdminHttp(req, res, opts) {
   const host = String(req.headers.host || '').split(':')[0].toLowerCase();
   const remote = String(opts.remoteAddress || req.socket?.remoteAddress || '');
   const loopback = remote === '127.0.0.1' || remote === '::1' || remote.endsWith('127.0.0.1');
-  void host;
   for (const [k, v] of Object.entries(PRIVACY)) res.setHeader(k, v);
   const url = new URL(req.url, `https://${ADMIN_HOST}`);
-  if (url.pathname === '/robots.txt') {
+  if (url.pathname === '/robots.txt' || url.pathname === '/admin/robots.txt') {
     res.setHeader('content-type', 'text/plain; charset=utf-8');
     res.end(ROBOTS);
     return;
   }
-  if (url.pathname.startsWith('/api/admin')) {
+  const apiPath = url.pathname.startsWith('/admin/api/admin')
+    ? url.pathname.slice('/admin'.length)
+    : url.pathname;
+  if (apiPath.startsWith('/api/admin')) {
     let body = {};
     if (req.method === 'POST') {
       const raw = await new Promise((resolve, reject) => {
@@ -510,10 +593,12 @@ export async function handleAdminHttp(req, res, opts) {
       });
       try { body = JSON.parse(raw); } catch { body = {}; }
     }
-    const out = handleAdminApi(url, req.method, body, {
+    const apiUrl = new URL(apiPath + (url.search || ''), `https://${ADMIN_HOST}`);
+    const out = handleAdminApi(apiUrl, req.method, body, {
       ...opts,
       cookie: req.headers.cookie,
       loopback,
+      host,
     });
     res.statusCode = out.status;
     res.setHeader('content-type', 'application/json');
@@ -523,9 +608,15 @@ export async function handleAdminHttp(req, res, opts) {
     res.end(JSON.stringify(out.json));
     return;
   }
-  let file = url.pathname === '/' ? '/index.html' : url.pathname;
-  const full = path.join(ADMIN_DIR, path.normalize(file).replace(/^(\.\.[/\\])+/, ''));
-  if (!full.startsWith(ADMIN_DIR)) {
+  let file = url.pathname;
+  if (file === '/admin') file = '/index.html';
+  else if (file.startsWith('/admin/')) file = file.slice('/admin'.length) || '/index.html';
+  else if (file === '/') file = '/index.html';
+  const brand = file.startsWith('/brand/');
+  const root = brand ? PUBLIC_BRAND : ADMIN_DIR;
+  const rel = brand ? file.slice('/brand'.length) : file;
+  const full = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
+  if (!full.startsWith(root)) {
     res.statusCode = 403;
     res.end('no');
     return;
@@ -537,7 +628,16 @@ export async function handleAdminHttp(req, res, opts) {
       return;
     }
     const ext = path.extname(full);
-    res.setHeader('content-type', ext === '.txt' ? 'text/plain; charset=utf-8' : 'text/html; charset=utf-8');
+    const types = {
+      '.html': 'text/html; charset=utf-8',
+      '.txt': 'text/plain; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.png': 'image/png',
+      '.ico': 'image/x-icon',
+      '.woff2': 'font/woff2',
+    };
+    res.setHeader('content-type', types[ext] || 'application/octet-stream');
     res.end(data);
   });
 }

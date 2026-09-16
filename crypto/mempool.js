@@ -68,11 +68,16 @@ export function admitMempool(pool, tx, opts = {}) {
     }
   }
   if (flowNeedsDummy(tx)) {
-    const pubs = opts.fluxset || opts.pubs;
-    if (Array.isArray(pubs)) {
+    const live = opts.fluxset && !Array.isArray(opts.fluxset)
+      ? opts.fluxset
+      : { pubs: opts.fluxset || opts.pubs || [], commits: opts.commits || [] };
+    if (Array.isArray(live.pubs) && live.pubs.length) {
       const proof = tx.admit_proof;
       if (!proof) return { ok: false, reason: 'admit_membership' };
-      if (!admit_verify(proof, pubs)) return { ok: false, reason: 'admit_membership' };
+      const cTilde = proof.cTilde || tx.vin?.[0]?.commit;
+      if (!admit_verify(proof, live, { cTilde, spendTag: proof.spendTag || tx.spendTag, jroot: live.jroot })) {
+        return { ok: false, reason: 'admit_membership' };
+      }
       const tag = proof.spendTag || tx.spendTag;
       if (!tag) return { ok: false, reason: 'admit_membership' };
       const spent = opts.spendTags;
@@ -82,7 +87,7 @@ export function admitMempool(pool, tx, opts = {}) {
     }
   }
   const depth = mempoolDepthBytes(book.txs);
-  const need = levyTaxed({ ...tx, kind }) ? levyNanos(txAmountNanos(tx), { depth }) : 0;
+  const need = levyTaxed({ ...tx, kind }) ? levyNanos(0, { tx }) : 0;
   const paid = Math.floor(Number(tx.fee || tx.paid || 0));
   if (paid < need) return { ok: false, reason: 'levy', need, paid };
   if (levyTaxed({ ...tx, kind }) && tx.maxLevy != null && need > Number(tx.maxLevy)) {

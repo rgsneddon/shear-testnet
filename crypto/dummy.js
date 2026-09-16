@@ -74,9 +74,6 @@ export function sealFlowVout(o) {
   let note = sealNote(n, { dest20: d20, kind: o.kind || 'send' });
   note.viewTag = viewTagOf(note.noteCommit);
   note.dest20 = d20;
-  if (note.valueProof && typeof note.valueProof === 'object') {
-    note.valueProof = { ...note.valueProof, v: n };
-  }
   if (o.address) note.address = o.address;
   note = attachAdmitPub(note, { admitBase: admitBaseFromAddress(o.address) });
   return note;
@@ -106,12 +103,7 @@ export function attachDummyOuts(tx, { fanout = DUMMY_FANOUT, spent } = {}) {
     const vin = tx.vin.map((v, i) => {
       const src = Array.isArray(spent) ? spent[i] : (i === 0 ? spent : null);
       if (src?.commit) {
-        const bound = bindVinToSpent({ ...v }, src);
-        if (!bound.dest20 && v.address) {
-          const d20 = hash20FromAddress(v.address);
-          if (d20) bound.dest20 = d20;
-        }
-        return bound;
+        return bindVinToSpent({ ...v }, src);
       }
       const row = { ...v };
       if (!row.commit) delete row.commit;

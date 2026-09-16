@@ -539,7 +539,7 @@ int shear_hash_next(const unsigned char header[SHEAR_HEADER_LEN], unsigned char 
   return 0;
 }
 
-int shear_meets_target(const unsigned char hash[32], int bits) {
+static int shear_meets_lz(const unsigned char hash[32], int bits) {
   if (bits <= 0) return 1;
   if (bits > 256) bits = 256;
   int full = bits / 8;
@@ -549,6 +549,17 @@ int shear_meets_target(const unsigned char hash[32], int bits) {
   }
   if (!rem) return 1;
   return hash[full] < (1 << (8 - rem));
+}
+
+int shear_meets_target(const unsigned char hash[32], int bits) {
+  /* Q16.16 packed work on the header after v4. Share bits stay 8–256.
+   * The miner submits every shareBits hit; the node applies the fractional
+   * target. Local packed check uses floor(LZ) so a share is never dropped. */
+  if (bits >= 65536) {
+    int lz = (int)((unsigned)bits / 65536u);
+    return shear_meets_lz(hash, lz);
+  }
+  return shear_meets_lz(hash, bits);
 }
 
 static int parse_header_hex(const char *hex, unsigned char out[SHEAR_HEADER_LEN]) {

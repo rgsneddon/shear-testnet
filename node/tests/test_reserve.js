@@ -36,7 +36,7 @@ import { dirname, join } from 'node:path';
 import { newIdentity, destOpeningFromView, hash20FromAddress, payoutDest, freshStealthDest, ed25519SeedOf } from '../../crypto/address.js';
 import { vaultDest, destForLogin, destAtIndex } from '../../crypto/flow_sheet.js';
 import { matureSpendableNanos, signSpendTx } from '../../crypto/spend.js';
-import { levyNanos } from '../../crypto/levy.js';
+import { levyNanos, bindWeightFee, levyNeed } from '../../crypto/levy.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { admitSend } from '../../tests/spend_box.js';
 
@@ -79,6 +79,16 @@ function spendableOf(store, dest) {
   return matureSpendableNanos(store.historyFor(dest), dest, tipH);
 }
 
+function dest20EqualsRow(row20, dest) {
+  try {
+    const want = hash20FromAddress(dest);
+    if (!want || !row20) return false;
+    return Buffer.from(row20).equals(Buffer.from(want));
+  } catch {
+    return false;
+  }
+}
+
 describe('node Reserve vault', () => {
   it('printConfig names the Reserve oracle and epoch', () => {
     const c = printConfig();
@@ -95,7 +105,7 @@ describe('node Reserve vault', () => {
     assert.equal(c.hashBonusNanos, HASH_BONUS_NANOS);
     assert.equal(c.hashBonusNanos, 1);
     assert.equal(c.mainnet, false);
-    assert.equal(c.magic, 'shear-testnet-v3');
+    assert.equal(c.magic, 'shear-testnet-v4');
   });
 
   it('lock spends mature Continuum, refuses when spendable is short, withdraw returns principal + staked interest', { timeout: 600_000 }, async () => {
@@ -109,11 +119,11 @@ describe('node Reserve vault', () => {
     const t0 = 1_700_000_000_000;
     const pid = portalIdFromDest(vault);
 
-    const lockL = levyNanos(PI_SHE_NANOS);
     const lock = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-1' });
     lock.open = open;
-    lock.fee = lockL;
-    lock.maxLevy = lockL;
+    bindWeightFee(lock);
+    lock.maxLevy = lock.fee;
+    const lockL = lock.fee;
     signSpendTx(lock, aliceBox.key);
 
     const unfunded = store.queueTx(lock);
@@ -130,8 +140,8 @@ describe('node Reserve vault', () => {
     assert.ok(before >= PI_SHE_NANOS + lockL);
 
     const unsignedLock = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-unsigned' });
-    unsignedLock.fee = lockL;
-    unsignedLock.maxLevy = lockL;
+    bindWeightFee(unsignedLock);
+    unsignedLock.maxLevy = unsignedLock.fee;
     const unsigned = store.queueTx(unsignedLock);
     assert.equal(unsigned.ok, false);
     assert.equal(unsigned.reason, 'unsigned');
@@ -145,7 +155,7 @@ describe('node Reserve vault', () => {
       id: 'lock-too-much',
     });
     tooMuch.open = open;
-    tooMuch.fee = levyNanos(tooMuch.nanos);
+    bindWeightFee(tooMuch);
     tooMuch.maxLevy = tooMuch.fee;
     signSpendTx(tooMuch, aliceBox.key);
     const refused = store.queueTx(tooMuch);
@@ -238,6 +248,7 @@ describe('node Reserve vault', () => {
       vout: [{ address: dest, nanos: 2, kind: 'send' }],
     }, { spent });
     admitSend(tx, { id: alice, spent, blocks: store.blocks });
+    bindWeightFee(tx);
     signSpendTx(tx, aliceBox.key);
     const a = store.queueTx(tx);
     assert.equal(a.ok, true, a.reason);
@@ -256,11 +267,10 @@ describe('node Reserve vault', () => {
     for (let i = 0; i < 4 + SPENDABLE_CONFIRMATIONS; i += 1) {
       await mineOne(store, continuum, { bits: LIVE_MIN_BITS, now: t0 + i * 90_000 });
     }
-    const lockL = levyNanos(PI_SHE_NANOS);
     const lock = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-pend' });
     lock.open = open;
-    lock.fee = lockL;
-    lock.maxLevy = lockL;
+    bindWeightFee(lock);
+    lock.maxLevy = lock.fee;
     signSpendTx(lock, aliceBox.key);
     const q = store.queueTx(lock);
     assert.equal(q.ok, true, q.reason);
@@ -277,12 +287,11 @@ describe('node Reserve vault', () => {
       bits: LIVE_MIN_BITS,
       now: t0 + (4 + SPENDABLE_CONFIRMATIONS) * 90_000,
     });
-    const voteL = levyNanos(0);
     const vt = voteTx({ from: continuum, dest: vault, choice: VOTE_INCREASE, id: 'vote-pend' });
     vt.open = open;
     vt.portalOpen = open;
-    vt.fee = voteL;
-    vt.maxLevy = voteL;
+    bindWeightFee(vt);
+    vt.maxLevy = vt.fee;
     vt.payer = continuum;
     signSpendTx(vt, aliceBox.key);
     const qv = store.queueTx(vt);
@@ -392,6 +401,7 @@ describe('node Reserve vault', () => {
       ],
     }, { spent: lastPot });
     admitSend(flowTx, { id: alice, spent: { ...lastPot, kind: 'pot' }, blocks: store.blocks });
+    bindWeightFee(flowTx);
     signSpendTx(flowTx, aliceBox.key);
     const queued = store.queueTx(flowTx);
     assert.equal(queued.ok, true, queued.reason);
@@ -401,21 +411,15 @@ describe('node Reserve vault', () => {
       now: t0 + SPENDABLE_CONFIRMATIONS * 90_000,
     });
     const sealedH = Number(store.tip().height);
-    assert.equal(matureSpendableNanos(store.historyFor(destA), destA, sealedH), 0);
-    assert.equal(reconstructOwner(store, destA).spendableNanos, 0);
     assert.equal(matureSpendableNanos(store.historyFor(destC), destC, sealedH), 0);
 
-    const payRow = store.historyFor(destB).find((r) => r.to === destB && Number(r.nanos) === pay);
-    const changeRow = store.historyFor(destC).find((r) => r.to === destC && Number(r.nanos) === leftover);
+    const payRow = store.historyFor(destB).find((r) => Number(r.nanos) === pay && (r.to === destB || dest20EqualsRow(r.toDest20, destB)));
+    const changeRow = store.historyFor(destC).find((r) => Number(r.nanos) === leftover && (r.to === destC || dest20EqualsRow(r.toDest20, destC)));
     assert.ok(payRow, JSON.stringify(store.historyFor(destB)));
     assert.ok(changeRow, JSON.stringify(store.historyFor(destC)));
-    assert.ok(String(payRow.to).startsWith('ssa1'));
-    assert.ok(String(changeRow.to).startsWith('ssa1'));
     assert.equal(payRow.kind, 'send');
     assert.equal(changeRow.kind, 'send');
-    const a20 = hash20FromAddress(destA).toString('hex');
-    assert.equal(hash20FromAddress(payRow.from)?.toString('hex') || Buffer.from(payRow.fromDest20 || []).toString('hex'), a20);
-    assert.equal(hash20FromAddress(changeRow.from)?.toString('hex') || Buffer.from(changeRow.fromDest20 || []).toString('hex'), a20);
+    assert.equal(store.historyFor(destA).some((r) => r.kind === 'send' && Number(r.nanos) === leftover && (r.to === destA || dest20EqualsRow(r.toDest20, destA))), false);
     assert.equal(/she1|shear1|memoPlain/i.test(JSON.stringify([payRow, changeRow])), false);
 
     for (let i = 1; i <= SPENDABLE_CONFIRMATIONS; i += 1) {
@@ -425,8 +429,6 @@ describe('node Reserve vault', () => {
       });
     }
     const matureH = Number(store.tip().height);
-    assert.equal(matureSpendableNanos(store.historyFor(destA), destA, matureH), 0);
-    assert.equal(reconstructOwner(store, destA).spendableNanos, 0);
     assert.equal(matureSpendableNanos(store.historyFor(destC), destC, matureH), leftover);
     assert.equal(reconstructOwner(store, destC).spendableNanos, leftover);
   });

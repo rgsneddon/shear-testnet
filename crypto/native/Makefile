@@ -11,9 +11,18 @@ else
   LINKFLAGS := -shared -Wl,-z,noexecstack
 endif
 
-.PHONY: all clean
+ADMIT_DIR := $(abspath admit)
+ifeq ($(UNAME_S),Darwin)
+  ADMITLIB := $(ADMIT_DIR)/target/release/libshear_admit.a
+  ADMITSYS := -lpthread
+else
+  ADMITLIB := $(ADMIT_DIR)/target/release/libshear_admit.a
+  ADMITSYS := -lpthread -ldl -lm
+endif
 
-all: shearhash.node
+.PHONY: all clean admitlib
+
+all: shearhash.node shearadmit.node
 
 # C sources. Do not link with g++ — stdatomic.h is not C++ on this box.
 shearhash.node: shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(RXLIB)
@@ -22,5 +31,14 @@ shearhash.node: shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(RX
 	  -o $@ shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(RXLIB) \
 	  -pthread
 
+admitlib:
+	cargo build --release --manifest-path $(ADMIT_DIR)/Cargo.toml
+
+shearadmit.node: admit_napi.c admitlib
+	$(CC) $(CFLAGS) $(LINKFLAGS) \
+	  -I$(NODE_INC) \
+	  -o $@ admit_napi.c $(ADMITLIB) $(ADMITSYS)
+
 clean:
-	rm -f shearhash.node
+	rm -f shearhash.node shearadmit.node
+	cargo clean --manifest-path $(ADMIT_DIR)/Cargo.toml

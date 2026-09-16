@@ -11,8 +11,13 @@ export function spendBox(id) {
   };
 }
 
-export function admitSend(tx, { id, spent, blocks }) {
+export function admitSend(tx, { id, spent, blocks, fluxset }) {
   const spendSeed = id.spendSeed || ed25519SeedOf(id.privateKey);
-  const pubs = fluxsetFromBlocks(blocks || []).pubs;
-  return proveFlowSpend(tx, { spendSeed, spentNote: spent, pubs });
+  const live = fluxset || fluxsetFromBlocks(blocks || []);
+  return proveFlowSpend(tx, {
+    spendSeed,
+    spentNote: spent,
+    pubs: live.pubs,
+    commits: live.commits,
+  });
 }
