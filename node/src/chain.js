@@ -3,8 +3,12 @@ import { encodeHeader, decodeHeader, setNonce, VERSION } from '../../crypto/head
 import { merkleRoot, EMPTY_ROOT } from '../../crypto/merkle.js';
 import {
   GENESIS_BITS_PACKED,
+  LIVE_MIN_BITS,
+  MAX_BITS,
   nextBits,
   bitsForBlock,
+  isPackedBits,
+  unpackBits,
   blockWork,
   blockWorkBig,
   BLOCK_SUBSIDY_NANOS,
@@ -564,6 +568,9 @@ function verifyBlockConsensus(block, prev, {
     }
     const want = bitsForBlock(parent.bits, parent.timestamp, decoded.timestamp);
     if (decoded.bits !== want) return { ok: false, reason: 'bits' };
+    if (!isPackedBits(decoded.bits) || !isPackedBits(want)) return { ok: false, reason: 'bits' };
+    const fp = unpackBits(decoded.bits);
+    if (fp < LIVE_MIN_BITS || fp > MAX_BITS) return { ok: false, reason: 'bits' };
     const pWeight = Number(prev.weight != null
       ? prev.weight
       : blockWeight(prev.txs || [], prev.bLeaves || []));
@@ -580,8 +587,11 @@ function verifyBlockConsensus(block, prev, {
     if (nowMs != null && Number.isFinite(Number(nowMs)) && ts > Number(nowMs) + MTP_FUTURE_MS) {
       return { ok: false, reason: 'timestamp' };
     }
-  } else if (Number(decoded.baseFee) < 1) {
-    return { ok: false, reason: 'base_fee' };
+  } else {
+    if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) {
+      return { ok: false, reason: 'bits' };
+    }
+    if (Number(decoded.baseFee) < 1) return { ok: false, reason: 'base_fee' };
   }
   const samples = collateSamples(
     Array.isArray(block.samples) ? block.samples : (txs[0].samples || []),

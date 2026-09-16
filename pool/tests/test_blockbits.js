@@ -11,19 +11,16 @@ import { createPool } from '../src/pool.js';
 import { SHARE_BITS_V2_START } from '../src/share_vardiff.js';
 
 describe('testnet blockBits', () => {
-  it('genesis and live floor are easier than the old 21-bit hours-per-block default', () => {
-    assert.ok(GENESIS_BITS < 21, `GENESIS_BITS ${GENESIS_BITS} is still 21`);
-    assert.ok(LIVE_MIN_BITS <= GENESIS_BITS, `floor ${LIVE_MIN_BITS} above genesis ${GENESIS_BITS}`);
-    const hashes = 2 ** GENESIS_BITS;
-    const secondsAt50 = hashes / 50;
-    assert.ok(secondsAt50 < 3600, `~50 H/s would take ${secondsAt50}s at genesis bits ${GENESIS_BITS}`);
-    assert.ok(secondsAt50 < 15 * 60, `expected minutes not hours, got ${secondsAt50}s`);
-    const targetHashes = 50 * (TARGET_BLOCK_INTERVAL_MS / 1000);
-    assert.ok(hashes <= targetHashes * 4, `genesis work ${hashes} is far above 90s at 50 H/s (${targetHashes})`);
+  it('genesis is 21 packed; floor 4 ceiling 256; HUD never paints packed Q16.16', () => {
+    assert.equal(GENESIS_BITS, 21);
+    assert.ok(LIVE_MIN_BITS <= GENESIS_BITS);
+    assert.equal(unpackBits(GENESIS_BITS_PACKED), 21);
+    assert.equal(GENESIS_BITS_PACKED, 21 * 65536);
+    assert.ok(GENESIS_BITS_PACKED > 256, 'wire bits are packed, not the 256 ceiling');
     assert.ok(SHARE_BITS_V2_START <= GENESIS_BITS);
   });
 
-  it('createPool login job serves blockBits easier than 21', async () => {
+  it('createPool login job serves packed genesis 21', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bits-'));
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
@@ -62,8 +59,7 @@ describe('testnet blockBits', () => {
       const shareBits = Number(job.shareBits);
       assert.ok(Number.isFinite(blockBits) && blockBits > 0);
       assert.equal(blockBits, GENESIS_BITS_PACKED);
-      assert.equal(unpackBits(blockBits), GENESIS_BITS);
-      assert.ok(unpackBits(blockBits) < 21, `login blockBits ${blockBits} is still the too-hard default`);
+      assert.equal(unpackBits(blockBits), 21);
       assert.ok(shareBits <= unpackBits(blockBits));
       assert.equal(shareBits, SHARE_BITS_V2_START);
     } finally {

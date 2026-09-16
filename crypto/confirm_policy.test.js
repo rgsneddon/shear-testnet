@@ -24,7 +24,7 @@ describe('confirm policy is not consensus', () => {
     const fp = consensusFingerprint();
     assert.match(fp, /:6:1:1000:/);
     assert.match(fp, /HASH_FN=ShearHash-v3/);
-    assert.match(fp, /:4:12:1:/); // LIVE_MIN_BITS, GENESIS_BITS — policy 12 is not this pin
+    assert.match(fp, /:4:21:1:/); // LIVE_MIN_BITS, GENESIS_BITS — policy 12 is not this pin
     assert.equal(fp.includes(':30:'), false);
     assert.equal(fp.includes(':200:'), false);
   });

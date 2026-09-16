@@ -7,11 +7,15 @@ import {
   templateStampMs,
   TARGET_BLOCK_INTERVAL_MS,
   GENESIS_BITS,
+  GENESIS_BITS_PACKED,
   LIVE_MIN_BITS,
   MAX_BITS,
   clampBits,
   packBits,
   unpackBits,
+  displayBits,
+  ASERT_HARDEN_MAX,
+  ASERT_EASE_MAX,
   ASERT_HALFLIFE_MS,
   SHE_DECIMALS,
   SHE_PUBLIC_DIGITS,
@@ -57,12 +61,47 @@ describe('ASERT 90s block retarget', () => {
   it('raises packed bits when blocks arrive faster than 90s, without a full integer jump', () => {
     const next = unpackBits(nextBits(packBits(21), 45_000));
     assert.ok(next > 21, `expected harden from 21, got ${next}`);
+    assert.ok(next <= 23, `45s harden is +1 log2, got ${next}`);
     const from16 = unpackBits(nextBits(packBits(16), 59_000));
     assert.ok(from16 > 16, `59s must climb off 16, got ${from16}`);
     assert.ok(from16 < 17, `59s must not double work, got ${from16}`);
     assert.equal(nextBits(packBits(16), 90_000), packBits(16));
     const stuck = unpackBits(nextBits(packBits(16), 82_000));
     assert.ok(stuck > 16, `82s must not sit in a dead band, got ${stuck}`);
+  });
+
+  it('4 GH/s at 12 bits is ~1µs; log2 step catches 90s in tens of blocks, not hours', () => {
+    const farmHs = 4e9;
+    const t12 = (2 ** 12) / farmHs;
+    assert.ok(t12 < 2e-6 && t12 > 5e-7, `12-bit @ 4GH/s ${t12}s`);
+    let packed = packBits(21);
+    let t = (2 ** 21) / farmHs;
+    let n = 0;
+    while (t < 80 && n < 40) {
+      packed = nextBits(packed, Math.max(1, t * 1000));
+      t = (2 ** unpackBits(packed)) / farmHs;
+      n += 1;
+    }
+    assert.ok(n <= 20, `4GH/s from genesis 21 reached ~90s in ${n} blocks (t=${t}s)`);
+    assert.ok(t >= 80 && t <= 200, `settled interval ${t}s`);
+  });
+
+  it('a 3s farm hardens +2 bits per block, not 0.003; HUD bits stay ≤ 256', () => {
+    assert.equal(ASERT_HARDEN_MAX, 2);
+    assert.equal(ASERT_EASE_MAX, 1);
+    const jumped = unpackBits(nextBits(packBits(21), 3_500));
+    assert.ok(jumped >= 23, `3.5s must +2, got ${jumped}`);
+    assert.ok(jumped <= 23.01, `3.5s must cap at +2, got ${jumped}`);
+    const packedPaint = 731501;
+    assert.ok(packedPaint > 256);
+    assert.ok(displayBits(packedPaint) < 12);
+    assert.ok(displayBits(packedPaint) > 11);
+    assert.ok(displayBits(GENESIS_BITS_PACKED) <= MAX_BITS);
+    assert.equal(displayBits(GENESIS_BITS_PACKED), GENESIS_BITS);
+    const fp = consensusFingerprint();
+    assert.match(fp, /ASERT_STEP=log2/);
+    assert.match(fp, /ASERT_HARDEN=2/);
+    assert.match(fp, /ASERT_EASE=1/);
   });
 
   it('lowers packed bits when blocks arrive slower than 90s', () => {

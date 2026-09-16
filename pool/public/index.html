@@ -708,9 +708,15 @@
       }
       if (at) lastSeenFoundAt = Number(at);
     }
+    function unpackedBits(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v) || v <= 0) return NaN;
+      return v >= 65536 ? v / 65536 : v;
+    }
     function bitsWord(n) {
-      const v = Math.floor(Number(n));
-      if (!Number.isFinite(v) || v <= 0) return '—';
+      const raw = unpackedBits(n);
+      if (!Number.isFinite(raw) || raw <= 0) return '—';
+      const v = Math.floor(raw);
       const ones = ['zero','one','two','three','four','five','six','seven','eight','nine',
         'ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen'];
       const tens = ['','','twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'];
@@ -729,13 +735,13 @@
     function resistFillPct(bits, minBits, maxBits) {
       const lo = Number(minBits);
       const hi = Number(maxBits);
-      const b = Number(bits);
+      const b = unpackedBits(bits);
       if (!Number.isFinite(b) || !Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return 0;
       return Math.max(0, Math.min(100, ((b - lo) / (hi - lo)) * 100));
     }
     function paintResistance(s) {
-      const bits = Number(s && s.bits);
-      const lo = Number(s && s.liveMinBits) || 14;
+      const bits = unpackedBits(s && (s.bits != null ? s.bits : s.bitsPacked));
+      const lo = Number(s && s.liveMinBits) || 4;
       const hi = Number(s && s.maxBits) || 256;
       const wordEl = document.getElementById('resist-word');
       const fillEl = document.getElementById('resist-fill');

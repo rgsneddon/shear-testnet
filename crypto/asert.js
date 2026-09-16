@@ -12,10 +12,15 @@ export const MAX_BITS = 256;
  * Share vardiff opens at 8 and must be able to sit under header bits.
  */
 export const LIVE_MIN_BITS = 4;
-export const GENESIS_BITS = 12;
-/** Per-block ASERT step caps. log2 clamp 1/4…4 → ±2. Not an 8-bit jump. */
+/** Prefer hard. 12 let a small farm spew. 256 is the digest ceiling, not a start. ASERT eases if the first blocks are long. */
+export const GENESIS_BITS = 21;
+/**
+ * Per-block ASERT caps on log2(target/seen). Harden is stricter than ease:
+ * a farm must not spew; a quiet chain may go slow. Hashrate-agnostic — do
+ * not pin these to a live pool.
+ */
 export const ASERT_HARDEN_MAX = 2;
-export const ASERT_EASE_MAX = 2;
+export const ASERT_EASE_MAX = 1;
 /**
  * Header `bits` is Q16.16 packed work (integer LZ + 16-bit fraction).
  * Integer rungs (16 vs 17) could not represent the 1.09× target that 90 s
@@ -44,9 +49,9 @@ export const POOL_FEE_BPS = 100;
 export const SHARE_FLOOR_BITS = 8;
 export const MAX_SHARES_PER_BLOCK = 8192;
 export const MAX_HASH_UNITS_PER_BLOCK = MAX_SHARES_PER_BLOCK * (2 ** SHARE_FLOOR_BITS);
-/** Median of last 11 header timestamps. Future skew 2 hours. */
+/** Median of last 11 header timestamps. Future skew 15 min (not 2h). */
 export const MTP_WINDOW = 11;
-export const MTP_FUTURE_MS = 2 * 3600_000;
+export const MTP_FUTURE_MS = 15 * 60_000;
 export const SPEND_SIG_DOMAIN = 'shear-spend-v1';
 export const SPEND_SIG = 'ed25519-shear-spend-v1';
 export const INTEREST_LAW = '400d-bps-floor';
@@ -196,6 +201,10 @@ export function consensusFingerprint() {
     `POOL_FEE_BPS=${POOL_FEE_BPS}`,
     'BITS=q16.16',
     `ASERT_TAU_MS=${ASERT_HALFLIFE_MS}`,
+    'ASERT_STEP=log2',
+    `ASERT_HARDEN=${ASERT_HARDEN_MAX}`,
+    `ASERT_EASE=${ASERT_EASE_MAX}`,
+    `MTP_FUTURE_MS=${MTP_FUTURE_MS}`,
   ].join(':');
 }
 
@@ -320,6 +329,7 @@ export function packBits(bitsFp) {
 export function unpackBits(packed) {
   const n = Number(packed);
   if (!Number.isFinite(n) || n <= 0) return GENESIS_BITS;
+  // Packed Q16.16 is always ≥ 2^16. Integer 4…256 is the live floor/ceiling.
   if (n <= MAX_BITS) return Math.max(LIVE_MIN_BITS, Math.min(MAX_BITS, n));
   if (n < BITS_FP_SCALE) return MAX_BITS;
   return Math.max(LIVE_MIN_BITS, Math.min(MAX_BITS, n / BITS_FP_SCALE));
@@ -342,7 +352,8 @@ export function clampBits(bits) {
  * Per-block ASERT toward 90s on Q16.16 packed work.
  * Pure function of the header timestamp delta — verifiers must not use
  * wall clock. Same-tick (≤0) is treated as 1ms so it still climbs.
- * Step is (T − seen) / tau in log2-work, capped at ±2 bits.
+ * Step is log2(T / seen), harden-capped at +2, ease-capped at −1.
+ * A 3s farm jumps +2 bits/block; a stall does not dump the floor.
  */
 export function nextBits(previousBits, intervalMs) {
   const prev = unpackBits(clampBits(previousBits));
@@ -350,10 +361,15 @@ export function nextBits(previousBits, intervalMs) {
   if (!Number.isFinite(seen) || seen < 1) seen = 1;
   const cap = ASERT_HALFLIFE_MS * 8;
   if (seen > cap) seen = cap;
-  let delta = (TARGET_BLOCK_INTERVAL_MS - seen) / ASERT_HALFLIFE_MS;
+  let delta = Math.log2(TARGET_BLOCK_INTERVAL_MS / seen);
   if (delta > ASERT_HARDEN_MAX) delta = ASERT_HARDEN_MAX;
   if (delta < -ASERT_EASE_MAX) delta = -ASERT_EASE_MAX;
   return packBits(prev + delta);
+}
+
+/** Unpacked work bits in [LIVE_MIN_BITS, MAX_BITS] for HUD and clamps. */
+export function displayBits(packed) {
+  return unpackBits(clampBits(packed));
 }
 
 /** Bits for this block from parent bits and the two header timestamps. */

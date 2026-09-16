@@ -26,7 +26,10 @@ import {
   SPENDABLE_CONFIRMATIONS,
   GENESIS_BITS,
   GENESIS_BITS_PACKED,
+  LIVE_MIN_BITS,
+  MAX_BITS,
   SHARE_FLOOR_BITS,
+  displayBits,
 } from '../../crypto/asert.js';
 import { poolFeeDest, levyNanos, mempoolDepthBytes, poolWithdrawTx, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
@@ -734,15 +737,18 @@ export function liveHashrate(miner, now = Date.now()) {
 /**
  * Public HUD H/s: EMA toward the hasher's verified self-rate (60s tau).
  * A round reset must not paint 0. A stall holds the last ease for HASHRATE_STALL_HOLD_MS.
+ * Never ease toward 0 (or a tiny new-round proven rate) while the hasher is live.
  */
 export function reportedHashrate(miner, now = Date.now()) {
   const at = Number(now) || Date.now();
-  const instant = liveHashrate(miner, at);
-  if (instant > 0) return easeHashrate(miner, instant, at);
   const held = Number(miner?.emaHs) || 0;
   const t0 = Number(miner?.emaAt) || 0;
-  if (held > 0 && t0 > 0 && (at - t0) < HASHRATE_STALL_HOLD_MS) return held;
-  return 0;
+  const instant = liveHashrate(miner, at);
+  const hold = held > 0 && t0 > 0 && (at - t0) < HASHRATE_STALL_HOLD_MS;
+  // New round proven work starts near 0. Do not ease the HUD down between headers.
+  if (hold && (!(instant > 0) || instant < held * 0.25)) return held;
+  if (instant > 0) return easeHashrate(miner, instant, at);
+  return hold ? held : 0;
 }
 
 /** HUD: miner's own hash counter this round. Never a mint path. */
@@ -1696,7 +1702,10 @@ export function createPool({
       burnedNanos: supply.burnedNanos,
       height: tip?.height || 0,
       header: tip?.header ? Buffer.from(tip.header).toString('hex') : '',
-      bits: lastJob?.blockBits || lastJob?.bits || bits,
+      bits: displayBits(lastJob?.blockBits || lastJob?.bits || bits),
+      bitsPacked: Number(lastJob?.blockBits || lastJob?.bits || bits),
+      liveMinBits: LIVE_MIN_BITS,
+      maxBits: MAX_BITS,
       blockBits: Number(lastJob?.blockBits || lastJob?.bits || bits),
       shareBits: Number(lastJob?.shareBits || shareBits),
       lastFoundAt: stats.lastFoundAt || 0,

@@ -17,7 +17,7 @@ Network: `shear-testnet-v4` (privacy-class). Frozen `shear-testnet-v2` is a diff
 | `SPENDABLE_CONFIRMATIONS` | `6` |
 | `SAMPLE_PRUNE_CONFIRMATIONS` | `1000` |
 | Reorg checkpoints | First frozen hash at height **1000** (prune floor), then every **400** blocks (bootstrap cadence). A heavier fork that replaces that hash is `reorg_checkpoint`. |
-| `GENESIS_BITS` | `12` (match asert.js) |
+| `GENESIS_BITS` | `21` (match asert.js). Packed Q16.16 on the wire. Floor 4, ceiling 256. |
 | `LIVE_MIN_BITS` | `4` |
 | `MAX_BITS` | `256` |
 | `SHARE_FLOOR_BITS` | `8` |
