@@ -1,0 +1,123 @@
+# Every wallet tag ships GUI + CLI executables for each platform.
+# Dispatch after tagging the pin on rgsneddon/shear-wallet (preferred)
+# or this monorepo. Do not attach these zips to 0.33 / 0.32.
+name: wallet-release
+on:
+  workflow_dispatch:
+    inputs:
+      pin:
+        description: Public two-part wallet pin (release tag)
+        required: true
+        default: '0.34'
+      build_number:
+        description: Flutter build-number
+        required: true
+        default: '50'
+      repo:
+        description: GitHub repo that owns the release
+        required: true
+        default: 'rgsneddon/shear-wallet'
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      - name: Build Windows GUI + CLI
+        working-directory: wallet
+        run: |
+          flutter config --enable-windows-desktop
+          flutter pub get
+          flutter build windows --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }}
+          dart compile exe bin/shear.dart -o dist-cli/shear.exe
+      - name: Zip GUI
+        run: python wallet/pack/zip_windows.py
+      - name: Attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-windows.zip --repo ${{ inputs.repo }} --clobber
+          gh release upload ${{ inputs.pin }} wallet/dist-cli/shear.exe --repo ${{ inputs.repo }} --clobber
+
+  linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      - name: Build Linux GUI + CLI + APK
+        working-directory: wallet
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
+          flutter config --enable-linux-desktop
+          flutter pub get
+          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+          flutter build apk --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+          dart compile exe bin/shear.dart -o dist-cli/shear
+      - name: Zip
+        run: |
+          python3 - <<'PY'
+          import os, zipfile, shutil
+          pin = os.environ["PIN"]
+          bundle = "wallet/build/linux/x64/release/bundle"
+          dist = "dist"
+          os.makedirs(dist, exist_ok=True)
+          def add_tree(z, root):
+              for dp, _, fns in os.walk(root):
+                  for fn in fns:
+                      p = os.path.join(dp, fn)
+                      z.write(p, os.path.relpath(p, root))
+          linux = os.path.join(dist, f"shear-wallet-{pin}-linux.zip")
+          with zipfile.ZipFile(linux, "w", zipfile.ZIP_DEFLATED) as z:
+              add_tree(z, bundle)
+          arch = os.path.join(dist, f"shear-wallet-{pin}-archlinux.zip")
+          with zipfile.ZipFile(arch, "w", zipfile.ZIP_DEFLATED) as z:
+              z.write("wallet/pack/archlinux/PKGBUILD", "PKGBUILD")
+              add_tree(z, bundle)
+          apk = "wallet/build/app/outputs/flutter-apk/app-release.apk"
+          shutil.copy(apk, os.path.join(dist, f"shear-wallet-{pin}-android.apk"))
+          PY
+        env:
+          PIN: ${{ inputs.pin }}
+      - name: Attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-linux.zip dist/shear-wallet-${{ inputs.pin }}-archlinux.zip dist/shear-wallet-${{ inputs.pin }}-android.apk wallet/dist-cli/shear --repo ${{ inputs.repo }} --clobber
+
+  macos:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      - name: Build macOS GUI zip + CLI
+        working-directory: wallet
+        run: |
+          flutter config --enable-macos-desktop
+          flutter pub get
+          flutter build macos --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }}
+          dart compile exe bin/shear.dart -o dist-cli/shear
+          mkdir -p ../dist
+          ditto -c -k --keepParent build/macos/Build/Products/Release/Shear.app ../dist/shear-wallet-${{ inputs.pin }}-macos.zip
+      - name: Attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-macos.zip wallet/dist-cli/shear --repo ${{ inputs.repo }} --clobber
+          echo "Notarized DMG is still a Mac-cut (Developer ID). This job attaches the unsigned-to-GHA .app zip + CLI."

@@ -369,7 +369,12 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         setState(() => _lockError = 'No shewall.bin selected.');
         return;
       }
-      final imported = await importEncryptedShewall(src: src, password: pw, ledger: ledger);
+      final imported = await importEncryptedShewall(
+        src: src,
+        password: pw,
+        ledger: ledger,
+        onVortices: (v) => session.deployedVortices = v,
+      );
       session.identity = imported;
       await session.setPassword(pw);
       await _enterWallet(pw);
@@ -452,6 +457,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         identity: ident,
         ledger: ledger,
         reserveSnapshot: session.rememberedReserve,
+        vortices: session.deployedVortices,
       );
       final sealed = await sealShewallBin(packed, pw);
       final path = await saveShewallBytes(

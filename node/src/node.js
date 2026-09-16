@@ -128,7 +128,38 @@ export async function startNode({
   };
 }
 
+export function printHelp() {
+  return [
+    'shear-node — validating full node (ADMITv2)',
+    '',
+    'Usage:',
+    '  node node/src/node.js',
+    '  node node/src/node.js --print-config',
+    '  node node/src/node.js --fast-sync',
+    '  node node/src/node.js --bootstrap=/path/or/url',
+    '  node node/src/node.js --help',
+    '',
+    'Env:',
+    '  SHEAR_DATA         datadir (default ~/.shear/testnet-v4)',
+    '  SHEAR_NETWORK      shear-testnet-v4 (this book). shear-v1 waits for genesis.',
+    '  SHEAR_P2P_PORT     default 30303',
+    '  SHEAR_P2P_BIND     default 0.0.0.0',
+    '  SHEAR_RPC_PORT     default 18332',
+    '  SHEAR_RPC_BIND     default 127.0.0.1 (loopback)',
+    '  SHEAR_SEEDS        comma host:port (default p2p.shear.digital:30303)',
+    '  SHEAR_FAST_SYNC    1 = skip archival bodies',
+    '',
+    'RPC is loopback. Do not bind RPC to the public internet.',
+    'Mainnet shear-v1 is not live. SHEAR_NETWORK=shear-v1 prints clock_wait until genesis.',
+    'Build native addons on this box: make -C crypto/native',
+  ].join('\n');
+}
+
 async function main() {
+  if (process.argv.includes('--help') || process.argv.includes('-h')) {
+    console.log(printHelp());
+    return;
+  }
   if (process.argv.includes('--print-config')) {
     console.log(JSON.stringify(printConfig()));
     return;

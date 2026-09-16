@@ -261,11 +261,15 @@ Uint8List exportShewall({
   required ShearIdentity identity,
   required ShearLedger ledger,
   Map<String, dynamic>? reserveSnapshot,
+  List<Vortice>? vortices,
 }) {
   ledger.prune();
   final dest20 = hash20FromAddress(identity.address) ?? Uint8List(20);
   final archive = ledgerUserArchive(ledger);
   if (reserveSnapshot != null) archive['reserve'] = reserveSnapshot;
+  if (vortices != null && vortices.isNotEmpty) {
+    archive['vortices'] = vortices.map((v) => v.toJson()).toList();
+  }
   return packShewall(
     seed32: _hexBytes(identity.seedHex),
     dest20: dest20,
@@ -275,7 +279,12 @@ Uint8List exportShewall({
   );
 }
 
-ShearIdentity importShewall(Uint8List packed, ShearLedger ledger, {ShearReserve? reserve}) {
+ShearIdentity importShewall(
+  Uint8List packed,
+  ShearLedger ledger, {
+  ShearReserve? reserve,
+  void Function(List<Vortice>)? onVortices,
+}) {
   final u = unpackShewall(packed);
   final id = createIdentity(u['seed32']!);
   ledger.viewSecret = id.viewKey;
@@ -288,6 +297,13 @@ ShearIdentity importShewall(Uint8List packed, ShearLedger ledger, {ShearReserve?
     final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     if (spend > ledger.spendableOwned(id.address, paymentCode: id.paymentCode)) {
       ledger.rememberSpendable(home, spend);
+    }
+    final vortRaw = archive['vortices'];
+    if (onVortices != null && vortRaw is List) {
+      onVortices([
+        for (final row in vortRaw)
+          if (row is Map) Vortice.fromJson(Map<String, dynamic>.from(row)),
+      ]);
     }
     final snap = archive['reserve'];
     if (reserve != null && snap is Map) {
@@ -327,9 +343,15 @@ Future<File> exportEncryptedShewall({
   required String password,
   required File dest,
   Map<String, dynamic>? reserveSnapshot,
+  List<Vortice>? vortices,
 }) async {
   if (password.isEmpty) throw const FormatException('empty');
-  final packed = exportShewall(identity: identity, ledger: ledger, reserveSnapshot: reserveSnapshot);
+  final packed = exportShewall(
+    identity: identity,
+    ledger: ledger,
+    reserveSnapshot: reserveSnapshot,
+    vortices: vortices,
+  );
   final sealed = await sealShewallBin(packed, password);
   return writeShewallFile(dest, sealed);
 }
@@ -339,7 +361,8 @@ Future<ShearIdentity> importEncryptedShewall({
   required String password,
   required ShearLedger ledger,
   ShearReserve? reserve,
+  void Function(List<Vortice>)? onVortices,
 }) async {
   final opened = await openShewallBin(readShewallFile(src), password);
-  return importShewall(opened, ledger, reserve: reserve);
+  return importShewall(opened, ledger, reserve: reserve, onVortices: onVortices);
 }

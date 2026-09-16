@@ -9,9 +9,19 @@ import os
 import sys
 import zipfile
 
-REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-BUNDLE = os.path.join(REPO, "wallet", "build", "windows", "x64", "runner", "Release")
-DIST = os.path.join(REPO, "dist")
+_PACK = os.path.abspath(os.path.dirname(__file__))
+_WALLET_ROOT = os.path.abspath(os.path.join(_PACK, ".."))
+# Monorepo (shear/wallet/pack) vs release repo (shear-wallet/pack).
+if os.path.isfile(os.path.join(_WALLET_ROOT, "lib", "main.dart")):
+    REPO = _WALLET_ROOT
+    BUNDLE = os.path.join(REPO, "build", "windows", "x64", "runner", "Release")
+    DIST = os.path.join(REPO, "dist")
+    MAIN_DART = os.path.join(REPO, "lib", "main.dart")
+else:
+    REPO = os.path.abspath(os.path.join(_PACK, "..", ".."))
+    BUNDLE = os.path.join(REPO, "wallet", "build", "windows", "x64", "runner", "Release")
+    DIST = os.path.join(REPO, "dist")
+    MAIN_DART = os.path.join(REPO, "wallet", "lib", "main.dart")
 EXE_NAME = "shear_wallet.exe"
 MINER_BASENAMES = {
     "shear-miner.exe",
@@ -22,8 +32,7 @@ MINER_BASENAMES = {
 }
 
 def public_pin() -> str:
-    main_dart = os.path.join(REPO, "wallet", "lib", "main.dart")
-    with open(main_dart, encoding="utf-8") as f:
+    with open(MAIN_DART, encoding="utf-8") as f:
         for line in f:
             if "kWalletVersion" in line and "=" in line:
                 return line.split("'")[1]
