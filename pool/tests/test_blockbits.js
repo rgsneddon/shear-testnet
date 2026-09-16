@@ -11,16 +11,16 @@ import { createPool } from '../src/pool.js';
 import { SHARE_BITS_V2_START } from '../src/share_vardiff.js';
 
 describe('testnet blockBits', () => {
-  it('genesis is 21 packed; floor 4 ceiling 256; HUD never paints packed Q16.16', () => {
-    assert.equal(GENESIS_BITS, 21);
+  it('genesis is 12 packed; floor 4 ceiling 256; HUD never paints packed Q16.16', () => {
+    assert.equal(GENESIS_BITS, 12);
     assert.ok(LIVE_MIN_BITS <= GENESIS_BITS);
-    assert.equal(unpackBits(GENESIS_BITS_PACKED), 21);
-    assert.equal(GENESIS_BITS_PACKED, 21 * 65536);
+    assert.equal(unpackBits(GENESIS_BITS_PACKED), 12);
+    assert.equal(GENESIS_BITS_PACKED, 12 * 65536);
     assert.ok(GENESIS_BITS_PACKED > 256, 'wire bits are packed, not the 256 ceiling');
     assert.ok(SHARE_BITS_V2_START <= GENESIS_BITS);
   });
 
-  it('createPool login job serves packed genesis 21', async () => {
+  it('createPool login job serves packed genesis 12', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bits-'));
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
@@ -59,7 +59,7 @@ describe('testnet blockBits', () => {
       const shareBits = Number(job.shareBits);
       assert.ok(Number.isFinite(blockBits) && blockBits > 0);
       assert.equal(blockBits, GENESIS_BITS_PACKED);
-      assert.equal(unpackBits(blockBits), 21);
+      assert.equal(unpackBits(blockBits), 12);
       assert.ok(shareBits <= unpackBits(blockBits));
       assert.equal(shareBits, SHARE_BITS_V2_START);
     } finally {

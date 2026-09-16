@@ -12,8 +12,8 @@ export const MAX_BITS = 256;
  * Share vardiff opens at 8 and must be able to sit under header bits.
  */
 export const LIVE_MIN_BITS = 4;
-/** Prefer hard. 12 let a small farm spew. 256 is the digest ceiling, not a start. ASERT eases if the first blocks are long. */
-export const GENESIS_BITS = 21;
+/** Empty-chain start. 256 is the digest ceiling, not a start. Fast blocks harden +2/block so a farm cannot spew. */
+export const GENESIS_BITS = 12;
 /**
  * Per-block ASERT caps on log2(target/seen). Harden is stricter than ease:
  * a farm must not spew; a quiet chain may go slow. Hashrate-agnostic — do

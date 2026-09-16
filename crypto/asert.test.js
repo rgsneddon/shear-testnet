@@ -74,15 +74,15 @@ describe('ASERT 90s block retarget', () => {
     const farmHs = 4e9;
     const t12 = (2 ** 12) / farmHs;
     assert.ok(t12 < 2e-6 && t12 > 5e-7, `12-bit @ 4GH/s ${t12}s`);
-    let packed = packBits(21);
-    let t = (2 ** 21) / farmHs;
+    let packed = packBits(12);
+    let t = (2 ** 12) / farmHs;
     let n = 0;
     while (t < 80 && n < 40) {
       packed = nextBits(packed, Math.max(1, t * 1000));
       t = (2 ** unpackBits(packed)) / farmHs;
       n += 1;
     }
-    assert.ok(n <= 20, `4GH/s from genesis 21 reached ~90s in ${n} blocks (t=${t}s)`);
+    assert.ok(n <= 20, `4GH/s from genesis 12 reached ~90s in ${n} blocks (t=${t}s)`);
     assert.ok(t >= 80 && t <= 200, `settled interval ${t}s`);
   });
 

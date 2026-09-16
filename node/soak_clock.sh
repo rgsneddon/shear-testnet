@@ -32,6 +32,11 @@ row = {
     "bits": a.get("bits"),
 }
 print(json.dumps(row), flush=True)
+h1 = int(a.get("height") or 0)
+h2 = int(b.get("height") or 0)
+# Empty genesis: both tips at 0 with the same empty jroot is healthy, not a fail.
+if h1 == 0 and h2 == 0 and row["same"]:
+    raise SystemExit(0)
 if not row["same"]:
     raise SystemExit(2)
 PY
