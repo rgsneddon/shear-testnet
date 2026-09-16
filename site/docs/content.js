@@ -26,7 +26,7 @@ window.SHEAR_DOCS = {
     { title: 'Mining', children: [
       { id: 'mine', title: 'How to mine' },
       { id: 'solo', title: 'Solo mine' },
-      { id: 'sheark', title: 'ShearK 1.8' },
+      { id: 'sheark', title: 'ShearK 1.9' },
       { id: 'shares', title: 'Shares and PROP' },
       { id: 'hash-bonus', title: 'Hash bonus' }
     ]},
@@ -82,7 +82,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
       '<tr><th>Wallet pin</th><td>0.34</td></tr>' +
-      '<tr><th>Miner pin</th><td>ShearK 1.8</td></tr></table>' +
+      '<tr><th>Miner pin</th><td>ShearK 1.9</td></tr></table>' +
       '<p>How-to lives in this tree. The architecture note is a PDF at <a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> — that URL is not in the navbar on purpose.</p>'
   };
 
@@ -224,10 +224,10 @@ window.SHEAR_DOCS = {
     title: 'How to mine',
     crumb: 'mining / how-to',
     html:
-      '<p>Official miner is <strong>ShearK-Miner 1.8</strong>, CPU only. Login is wallet Copy dest as <code>ssa1.worker</code>.</p>' +
+      '<p>Official miner is <strong>ShearK-Miner 1.9</strong>, CPU only. Login is wallet Copy dest as <code>ssa1.worker</code>.</p>' +
       '<pre>./ShearK-Miner --selftest\n' +
-      './ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit --threads 8</pre>' +
-      '<p>Windows: <code>ShearK-Miner.exe</code> with the same flags. <code>.worker</code> is only a name. Downloads: <a href="https://github.com/rgsneddon/ShearK/releases/tag/1.8">ShearK 1.8</a>.</p>' +
+      './ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit-full --threads 8</pre>' +
+      '<p>Windows: <code>ShearK-Miner.exe</code> with the same flags. <code>.worker</code> is only a name. Downloads: <a href="https://github.com/rgsneddon/ShearK/releases/tag/1.9">ShearK 1.9</a>.</p>' +
       '<p>The public pool takes 1% of the 1 SHE pot. Each hasher dest that produced proven work receives its own hash bonus in full on the next sealed block.</p>'
   };
 
@@ -244,10 +244,10 @@ window.SHEAR_DOCS = {
   };
 
   P.sheark = {
-    title: 'ShearK 1.8',
+    title: 'ShearK 1.9',
     crumb: 'mining / sheark',
     html:
-      '<p>ShearK-Miner is the official hasher. Pin <strong>1.8</strong>. Do not recut 1.1 or 1.0. Default <code>--backend jit</code> is ShearHash-v3 light JIT. Always run <code>--selftest</code> once on a new machine.</p>' +
+      '<p>ShearK-Miner is the official hasher. Pin <strong>1.9</strong>. Do not recut 1.1 or 1.0. Default <code>--backend jit-full</code> is the 2 GiB dataset (same digest as light). Always run <code>--selftest</code> once on a new machine.</p>' +
       '<p>One login. No miner-fee dual-login. Keep any extra fee yourself if you run a private stratum.</p>'
   };
 

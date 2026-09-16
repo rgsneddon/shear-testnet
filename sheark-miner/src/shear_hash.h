@@ -11,7 +11,7 @@
 #define SHEAR_ALGO "ShearHash"
 #define SHEAR_CLIENT "ShearHash"
 #define SHEAR_MINER_NAME "ShearK-Miner"
-#define SHEAR_VERSION "1.8"
+#define SHEAR_VERSION "1.9"
 #define SHEAR_MAGIC "shear-testnet-v4"
 #define SHEAR_RX_CACHE_MIB 128
 
@@ -24,6 +24,9 @@ void shear_set_nonce(unsigned char header[SHEAR_HEADER_LEN], uint64_t nonce);
 void shear_key(const unsigned char header[SHEAR_HEADER_LEN], unsigned char k[32]);
 void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]);
 int shear_bind(const unsigned char header[SHEAR_HEADER_LEN]);
+int shear_prepare(const unsigned char header[SHEAR_HEADER_LEN]);
+int shear_epoch_ready(const unsigned char header[SHEAR_HEADER_LEN]);
+int shear_commit_epoch(void);
 int shear_hash_first(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_hash_next(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]);
 int shear_meets_target(const unsigned char hash[32], int bits);

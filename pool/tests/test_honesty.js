@@ -26,6 +26,7 @@ import {
   isCminerFeeLogin,
   HASHRATE_WINDOW_MS,
   HASHRATE_EMA_TAU_S,
+  SELF_RATE_MIN_DT_S,
   HASHRATE_STALL_HOLD_MS,
   HASHRATE_HOLD_FRAC,
   HASH_QUEUE_MAX,
@@ -71,7 +72,7 @@ describe('duplicate shares cannot inflate round work', () => {
     }));
   });
 
-  it('connected hasher paints miner hashrate before a share; that rate does not mint', () => {
+  it('hashes/dt paints on miner and pool alike; that rate does not mint', () => {
     const miner = {
       accepted: 0,
       roundHashes: 0,
@@ -79,8 +80,8 @@ describe('duplicate shares cannot inflate round work', () => {
       clientHashes: 4200,
       clientHs: 55,
     };
-    const hs = reportedHashrate(miner);
-    assert.ok(hs > 0 && hs < 1000, `display hs ${hs}`);
+    assert.equal(liveHashrate(miner), 55);
+    assert.equal(Math.round(reportedHashrate(miner)), 55);
     assert.equal(miner.roundHashes, 0);
     assert.equal(provenHashrate(miner), 0);
   });
@@ -264,23 +265,24 @@ describe('folded-row inventory', () => {
     assert.equal(Math.round(provenHashrate(ten, now)), 256);
     assert.equal(Math.round(reportedHashrate(ten, now)), 256);
     applyMinerSelfRate(ten, { hashrate: 2_000_000_000, hashes: 1_000_000 }, now);
-    assert.equal(ten.clientHs, undefined);
+    assert.equal(Math.round(provenHashrate(ten, now)), 256);
     applyMinerSelfRate(ten, { hashrate: 2_000_000_000, hashes: 1_000_000 + 400 }, now + 1000);
-    assert.equal(ten.clientHs, undefined);
+    assert.equal(Math.round(reportedHashrate(ten, now)), 256);
     applyMinerSelfRate(ten, { hashrate: 2_000_000_000, hashes: 1_000_000 + 400 * 10 }, now + 10_000);
-    assert.equal(ten.clientHs, 400);
     assert.equal(Math.round(provenHashrate(ten, now + 10_000)), 256);
+    assert.equal(ten.clientHs, 400);
     const eased = reportedHashrate(ten, now + 10_000);
-    assert.ok(eased > 256 && eased < 400, `round ease ${eased}`);
-    assert.equal(reportedHashrate(one, now), 80);
+    assert.ok(eased > 256 && eased <= 400, `hashes/dt HUD ${eased}`);
+    assert.equal(Math.round(reportedHashrate(one, now)), 80);
     applyMinerSelfRate(ten, { hashes: 1_000_000 + 400 * 10 + 225_000_000 }, now + 20_000);
     assert.equal(ten.clientHs, 400);
     assert.equal(reportedHashrate(one, now), 80);
   });
 
-  it('connected hasher eases toward hashes/dt; round reset does not drop to 0', () => {
+  it('connected hasher eases toward hashes/dt; stall hold does not drop to 0', () => {
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     assert.equal(/lastPositiveHs/.test(src), false);
+    assert.match(src, /const client = Number\(miner\?\.clientHs\)/);
     assert.equal(HASH_QUEUE_MAX, 16);
     assert.equal(HASH_INFLIGHT_PER_CONN, 2);
     const t0 = 1_700_000_000_000;
@@ -296,18 +298,18 @@ describe('folded-row inventory', () => {
 
   it('blockfound does not paint a kH/s spike on a 1-thread hasher', () => {
     const t0 = 1_700_000_000_000;
-    const m = { connections: [{ sock: {} }], threads: 1 };
-    applyMinerSelfRate(m, { hashes: 1000 }, t0);
-    applyMinerSelfRate(m, { hashes: 1000 + 55 * 10 }, t0 + 10_000);
-    assert.equal(m.clientHs, 55);
+    const m = {
+      connections: [{ sock: {} }],
+      threads: 1,
+      acceptAt: [t0 - 1000],
+      acceptWork: [55 * RATE_WIN_S],
+    };
+    assert.equal(Math.round(reportedHashrate(m, t0)), 55);
     resetMinerRoundDisplay(m, t0 + 10_000);
-    assert.equal(m.clientHs, 55);
-    assert.ok(reportedHashrate(m, t0 + 10_000) > 40, 'round reset must keep eased H/s');
+    assert.ok(reportedHashrate(m, t0 + 10_000) > 40, 'round reset must keep proven H/s');
     applyMinerSelfRate(m, { hashes: 1000 + 550 + 50_000 }, t0 + 15_000);
     const hs = reportedHashrate(m, t0 + 15_000);
     assert.ok(hs < 200, `blockfound spike ${hs}`);
-    applyMinerSelfRate(m, { hashes: 1000 + 550 + 50_000 + 55 * 10 }, t0 + 25_000);
-    assert.equal(reportedHashrate(m, t0 + 25_000), 55);
   });
 
   it('HUD hashes follow the miner counter; bonus stays proven 2^shareBits units', () => {
@@ -323,9 +325,22 @@ describe('folded-row inventory', () => {
     assert.equal(clientHashCreditForbidden(), true);
   });
 
+  it('pool HUD hashes/dt matches the miner hashrate formula; mint stays proven', () => {
+    assert.equal(SELF_RATE_MIN_DT_S, 2);
+    assert.equal(HASHRATE_EMA_TAU_S, 8);
+    const t0 = 1_700_000_000_000;
+    const m = { connections: [{ sock: {} }], threads: 2 };
+    applyMinerSelfRate(m, { hashes: 10_000 }, t0);
+    applyMinerSelfRate(m, { hashes: 10_000 + 970 * 10 }, t0 + 10_000);
+    assert.equal(m.clientHs, 970);
+    assert.equal(Math.round(reportedHashrate(m, t0 + 10_000)), 970);
+    assert.equal(provenHashrate(m, t0 + 10_000), 0);
+    assert.equal(Number(m.roundHashes) || 0, 0);
+  });
+
   it('1-thread ~55 H/s hashes/dt paints ~55, not kH/s', () => {
     const t0 = 1_700_000_000_000;
-    const m = { connections: [{ sock: {} }] };
+    const m = { connections: [{ sock: {} }], threads: 1 };
     applyMinerSelfRate(m, { hashes: 0 }, t0);
     applyMinerSelfRate(m, { hashes: 55 * 10 }, t0 + 10_000);
     assert.equal(m.clientHs, 55);

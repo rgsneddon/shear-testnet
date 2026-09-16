@@ -154,4 +154,12 @@ describe('vort1 register consensus tx', () => {
     assert.equal(issued.author, pay);
     assert.equal(JSON.stringify(issued).includes('she1'), false);
   });
+
+  it('soak_vps mines genesis at packed GENESIS_BITS, not unpacked 4', () => {
+    const src = fs.readFileSync(new URL('../soak_vps.js', import.meta.url), 'utf8');
+    assert.match(src, /GENESIS_BITS_PACKED/);
+    assert.match(src, /bitsForBlock/);
+    assert.equal(/packBits\(4\)/.test(src), false);
+    assert.equal(/shareBits: 4/.test(src), false);
+  });
 });

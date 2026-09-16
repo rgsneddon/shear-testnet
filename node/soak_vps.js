@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { createStore } from './src/store.js';
 import { mineTemplate, shouldAdopt, verifyBlock, buildTemplate, GENESIS_PREV } from './src/chain.js';
 import { decodeHeader } from '../crypto/header.js';
-import { LIVE_MIN_BITS, packBits, SPENDABLE_CONFIRMATIONS, PI_SHE_NANOS, MAGIC_TESTNET } from '../crypto/asert.js';
+import { GENESIS_BITS_PACKED, bitsForBlock, SPENDABLE_CONFIRMATIONS, PI_SHE_NANOS, MAGIC_TESTNET } from '../crypto/asert.js';
 import { newIdentity, destOpeningFromView, freshStealthDest, encodeDest, ed25519SeedOf } from '../crypto/address.js';
 import { vaultDest } from '../crypto/flow_sheet.js';
 import { lockTx, voteTx, VOTE_INCREASE } from '../crypto/reserve_vault.js';
@@ -26,15 +26,19 @@ async function getJson(p) {
   return res.json();
 }
 
-function mineOne(store, dest, bits = LIVE_MIN_BITS, now) {
+function mineOne(store, dest, _bits, now) {
   const parent = store.tip();
   const stamp = now != null
     ? now
     : (parent ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000 : Date.now());
-  const packed = Number(bits) > 256 ? Number(bits) : packBits(bits);
-  const share = Number(bits) > 256 ? Math.max(4, Math.floor(Number(bits) / 65536)) : Number(bits);
+  let packed = GENESIS_BITS_PACKED;
+  if (parent) {
+    const ph = decodeHeader(Buffer.from(parent.header));
+    packed = bitsForBlock(ph.bits, ph.timestamp, stamp);
+  }
+  const share = Math.max(4, Math.floor(Number(packed) / 65536));
   const { tpl } = store.template({ miner: dest, bits: packed, shareBits: share, now: stamp });
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: bits });
+  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: share });
   assert.ok(found && found.block, 'pow');
   return store.append({
     header: found.header,
@@ -137,12 +141,12 @@ async function vort1() {
   assert.equal(gateVorticeRegister(bad).ok, false);
   const okTx = vorticeRegisterTx({ from: dest, bytesHash: 'cd'.repeat(32), vort1: 'vort1.ok-dapp', ticker: 'ABC', fee: L });
   assert.equal(gateVorticeRegister(okTx).ok, true);
-  const failTpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: dest, bits: packBits(4), now: Date.now(), txs: [bad] });
-  const failFound = mineTemplate(failTpl, { maxTries: 3_000_000, shareBits: 4 });
+  const failTpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: dest, bits: GENESIS_BITS_PACKED, now: Date.now(), txs: [bad] });
+  const failFound = mineTemplate(failTpl, { maxTries: 3_000_000, shareBits: 12 });
   const failOk = verifyBlock({ header: failFound.header, txs: failTpl.txs, samples: failTpl.samples, height: 1 }, null);
   assert.equal(failOk.ok, false);
-  const goodTpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: dest, bits: packBits(4), now: Date.now(), txs: [okTx] });
-  const goodFound = mineTemplate(goodTpl, { maxTries: 3_000_000, shareBits: 4 });
+  const goodTpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: dest, bits: GENESIS_BITS_PACKED, now: Date.now(), txs: [okTx] });
+  const goodFound = mineTemplate(goodTpl, { maxTries: 3_000_000, shareBits: 12 });
   const goodOk = verifyBlock({ header: goodFound.header, txs: goodTpl.txs, samples: goodTpl.samples, height: 1 }, null);
   assert.equal(goodOk.ok, true, goodOk.reason);
   console.log(JSON.stringify({ step: 'vort1', reject: failOk.reason, accept: true, ok: true }));

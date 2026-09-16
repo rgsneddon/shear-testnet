@@ -45,9 +45,22 @@ static atomic_int g_tid_n;
 typedef struct {
   randomx_vm *vm;
   unsigned gen;
+  unsigned epoch;
   int tid;
   int primed;
 } RxTls;
+
+static atomic_uint g_epoch;
+static pthread_mutex_t g_prep_mu = PTHREAD_MUTEX_INITIALIZER;
+static atomic_int g_prep_state; /* 0 idle, 1 running, 2 ready */
+static pthread_t g_prep_th;
+static int g_prep_join;
+static unsigned char g_prep_want_k[32];
+static unsigned char g_prep_k[32];
+static randomx_cache *g_prep_cache;
+static randomx_dataset *g_prep_dataset;
+static randomx_cache *g_stale_cache;
+static randomx_dataset *g_stale_dataset;
 
 static void rx_lock_init(void) {
 #if defined(__linux__)
@@ -179,8 +192,21 @@ static void destroy_all_vms_locked(void) {
   }
 }
 
+static void release_rx_pair(randomx_cache **c, randomx_dataset **d);
+
 static void drop_cache_locked(void) {
   destroy_all_vms_locked();
+  pthread_mutex_lock(&g_prep_mu);
+  if (g_prep_join) {
+    pthread_mutex_unlock(&g_prep_mu);
+    pthread_join(g_prep_th, NULL);
+    pthread_mutex_lock(&g_prep_mu);
+    g_prep_join = 0;
+  }
+  release_rx_pair(&g_prep_cache, &g_prep_dataset);
+  release_rx_pair(&g_stale_cache, &g_stale_dataset);
+  atomic_store_explicit(&g_prep_state, 0, memory_order_release);
+  pthread_mutex_unlock(&g_prep_mu);
   if (g_dataset) {
     randomx_release_dataset(g_dataset);
     g_dataset = NULL;
@@ -202,9 +228,9 @@ static randomx_flags flags_interpreter(void) {
 }
 
 /* Fastest path this book will accept: compiled light VM + AES-NI + 2 MiB
- * pages over the 128 MiB cache. FULL_MEM is a different digest (dataset
- * path) and the pool light-verifies, so jit-full shares are rejected.
- * Keep RANDOMX_FLAG_SECURE when get_flags set it (Apple aarch64 W^X). */
+ * pages over the 128 MiB cache. jit-full is the 2 GiB dataset; RandomX
+ * light-verify is the same digest (selftest matches). Keep
+ * RANDOMX_FLAG_SECURE when get_flags set it (Apple aarch64 W^X). */
 static randomx_flags flags_jit_light(void) {
   randomx_flags f = randomx_get_flags();
   f = (randomx_flags)(f & ~RANDOMX_FLAG_FULL_MEM);
@@ -235,19 +261,24 @@ static void *dataset_slice(void *arg) {
   return NULL;
 }
 
-static int init_dataset_locked(void) {
-  if (!(g_flags & RANDOMX_FLAG_FULL_MEM)) return 0;
-  if (!g_cache) return -1;
-  if (!g_dataset) {
-    g_dataset = randomx_alloc_dataset(g_flags);
-    if (!g_dataset && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
-      g_dataset = randomx_alloc_dataset((randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES));
+static int init_dataset_on(randomx_cache *cache, randomx_dataset **ds_out) {
+  if (!(g_flags & RANDOMX_FLAG_FULL_MEM)) {
+    if (ds_out) *ds_out = NULL;
+    return 0;
+  }
+  if (!cache || !ds_out) return -1;
+  randomx_dataset *ds = *ds_out;
+  if (!ds) {
+    ds = randomx_alloc_dataset(g_flags);
+    if (!ds && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+      ds = randomx_alloc_dataset((randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES));
     }
   }
-  if (!g_dataset) {
+  if (!ds) {
     fprintf(stderr, "ShearK-Miner: dataset alloc failed\n");
     return -1;
   }
+  *ds_out = ds;
   unsigned long n = randomx_dataset_item_count();
   int t = 4;
 #if !defined(_WIN32)
@@ -256,7 +287,7 @@ static int init_dataset_locked(void) {
 #endif
   if (t < 1) t = 1;
   if (t == 1) {
-    randomx_init_dataset(g_dataset, g_cache, 0, n);
+    randomx_init_dataset(ds, cache, 0, n);
     return 0;
   }
   pthread_t th[8];
@@ -269,15 +300,30 @@ static int init_dataset_locked(void) {
     if (start >= n) break;
     unsigned long count = chunk;
     if (start + count > n) count = n - start;
-    sl[i].ds = g_dataset;
-    sl[i].cache = g_cache;
+    sl[i].ds = ds;
+    sl[i].cache = cache;
     sl[i].start = start;
     sl[i].count = count;
     if (pthread_create(&th[launched], NULL, dataset_slice, &sl[i]) == 0) launched++;
-    else randomx_init_dataset(g_dataset, g_cache, start, count);
+    else randomx_init_dataset(ds, cache, start, count);
   }
   for (int i = 0; i < launched; i++) pthread_join(th[i], NULL);
   return 0;
+}
+
+static int init_dataset_locked(void) {
+  return init_dataset_on(g_cache, &g_dataset);
+}
+
+static void release_rx_pair(randomx_cache **c, randomx_dataset **d) {
+  if (d && *d) {
+    randomx_release_dataset(*d);
+    *d = NULL;
+  }
+  if (c && *c) {
+    randomx_release_cache(*c);
+    *c = NULL;
+  }
 }
 
 static randomx_vm *create_vm_locked(void) {
@@ -304,7 +350,7 @@ int shear_hash_set_backend(const char *name) {
     next = flags_jit_full();
     label = "jit-full";
     want_full = 1;
-    fprintf(stderr, "ShearK-Miner: jit-full is FULL_MEM; this pool light-verifies and will reject those shares\n");
+    fprintf(stderr, "ShearK-Miner: jit-full uses the 2 GiB dataset; pool/node still light-verify (same digest)\n");
   } else if (name && strcmp(name, "interpreter") == 0) {
     next = flags_interpreter();
     label = "interpreter";
@@ -454,15 +500,134 @@ static int backend_matches_selftest_locked(void) {
   return 1;
 }
 
+static void prep_join_locked(void) {
+  if (g_prep_join) {
+    pthread_mutex_unlock(&g_prep_mu);
+    pthread_join(g_prep_th, NULL);
+    pthread_mutex_lock(&g_prep_mu);
+    g_prep_join = 0;
+  }
+}
+
+static void *prep_thread(void *arg) {
+  (void)arg;
+  unsigned char k[32];
+  pthread_mutex_lock(&g_prep_mu);
+  memcpy(k, g_prep_want_k, 32);
+  pthread_mutex_unlock(&g_prep_mu);
+  randomx_cache *cache = alloc_cache(g_flags);
+  if (!cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+    cache = alloc_cache((randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES));
+  }
+  if (!cache) {
+    atomic_store_explicit(&g_prep_state, 0, memory_order_release);
+    return NULL;
+  }
+  randomx_init_cache(cache, k, 32);
+  randomx_dataset *ds = NULL;
+  if (init_dataset_on(cache, &ds) != 0) {
+    randomx_release_cache(cache);
+    atomic_store_explicit(&g_prep_state, 0, memory_order_release);
+    return NULL;
+  }
+  pthread_mutex_lock(&g_prep_mu);
+  if (memcmp(k, g_prep_want_k, 32) != 0) {
+    pthread_mutex_unlock(&g_prep_mu);
+    release_rx_pair(&cache, &ds);
+    atomic_store_explicit(&g_prep_state, 0, memory_order_release);
+    return NULL;
+  }
+  release_rx_pair(&g_prep_cache, &g_prep_dataset);
+  g_prep_cache = cache;
+  g_prep_dataset = ds;
+  memcpy(g_prep_k, k, 32);
+  atomic_store_explicit(&g_prep_state, 2, memory_order_release);
+  pthread_mutex_unlock(&g_prep_mu);
+  return NULL;
+}
+
+int shear_prepare(const unsigned char header[SHEAR_HEADER_LEN]) {
+  unsigned char k[32];
+  shear_key(header, k);
+  if (g_have && memcmp(g_k, k, 32) == 0) return 0;
+  pthread_mutex_lock(&g_prep_mu);
+  int st = atomic_load_explicit(&g_prep_state, memory_order_acquire);
+  if (st == 2 && memcmp(g_prep_k, k, 32) == 0) {
+    pthread_mutex_unlock(&g_prep_mu);
+    return 0;
+  }
+  if (st == 1 && memcmp(g_prep_want_k, k, 32) == 0) {
+    pthread_mutex_unlock(&g_prep_mu);
+    return 1;
+  }
+  memcpy(g_prep_want_k, k, 32);
+  if (st == 1 || g_prep_join) prep_join_locked();
+  release_rx_pair(&g_stale_cache, &g_stale_dataset);
+  atomic_store_explicit(&g_prep_state, 1, memory_order_release);
+  if (pthread_create(&g_prep_th, NULL, prep_thread, NULL) != 0) {
+    atomic_store_explicit(&g_prep_state, 0, memory_order_release);
+    pthread_mutex_unlock(&g_prep_mu);
+    return -1;
+  }
+  g_prep_join = 1;
+  pthread_mutex_unlock(&g_prep_mu);
+  return 1;
+}
+
+int shear_epoch_ready(const unsigned char header[SHEAR_HEADER_LEN]) {
+  unsigned char k[32];
+  shear_key(header, k);
+  if (g_have && memcmp(g_k, k, 32) == 0) return 1;
+  if (atomic_load_explicit(&g_prep_state, memory_order_acquire) == 2 && memcmp(g_prep_k, k, 32) == 0) return 1;
+  return 0;
+}
+
+int shear_commit_epoch(void) {
+  pthread_mutex_lock(&g_prep_mu);
+  if (atomic_load_explicit(&g_prep_state, memory_order_acquire) != 2 || !g_prep_cache) {
+    pthread_mutex_unlock(&g_prep_mu);
+    return -1;
+  }
+  if (g_have && memcmp(g_k, g_prep_k, 32) == 0) {
+    release_rx_pair(&g_prep_cache, &g_prep_dataset);
+    atomic_store_explicit(&g_prep_state, 0, memory_order_release);
+    pthread_mutex_unlock(&g_prep_mu);
+    return 0;
+  }
+  release_rx_pair(&g_stale_cache, &g_stale_dataset);
+  g_stale_cache = g_cache;
+  g_stale_dataset = g_dataset;
+  g_cache = g_prep_cache;
+  g_dataset = g_prep_dataset;
+  g_prep_cache = NULL;
+  g_prep_dataset = NULL;
+  memcpy(g_k, g_prep_k, 32);
+  g_have = 1;
+  atomic_store_explicit(&g_prep_state, 0, memory_order_release);
+  atomic_fetch_add_explicit(&g_epoch, 1, memory_order_release);
+  pthread_mutex_unlock(&g_prep_mu);
+  return 0;
+}
+
 int shear_bind(const unsigned char header[SHEAR_HEADER_LEN]) {
   unsigned char k[32];
   RxTls *tls = tls_slot();
   if (!tls) return -1;
   shear_key(header, k);
   unsigned gen = atomic_load_explicit(&g_gen, memory_order_acquire);
+  unsigned epoch = atomic_load_explicit(&g_epoch, memory_order_acquire);
   int tid = tls->tid;
-  if (g_vms[tid] && g_have && tls->gen == gen && memcmp(g_k, k, 32) == 0) {
+  if (g_vms[tid] && g_have && tls->gen == gen && tls->epoch == epoch && memcmp(g_k, k, 32) == 0) {
     tls->vm = g_vms[tid];
+    tls->primed = 0;
+    return 0;
+  }
+  if (g_vms[tid] && g_have && memcmp(g_k, k, 32) == 0) {
+    if (g_flags & RANDOMX_FLAG_FULL_MEM) randomx_vm_set_dataset(g_vms[tid], g_dataset);
+    else randomx_vm_set_cache(g_vms[tid], g_cache);
+    tls->vm = g_vms[tid];
+    tls->gen = gen;
+    tls->epoch = epoch;
     tls->primed = 0;
     return 0;
   }

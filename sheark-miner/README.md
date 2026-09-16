@@ -1,22 +1,22 @@
-# ShearK-Miner 1.8
+# ShearK-Miner 1.9
 
 Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache).
 
 - Display repo: **[Testnet] ShearK** (`rgsneddon/ShearK`)
 - Wire algo: `ShearHash` · personalisation `ShearHash-v3` · magic `shear-testnet-v4`
-- Banner: `ShearK-Miner 1.8 (ShearHash-v3 light)`
+- Banner: `ShearK-Miner 1.9 (ShearHash-v3 light)`
 - Pool: `pool.shear.digital:1111`
 - Header: 128 bytes. Light mode only. Do not recut Shear-Miner **1.1** / **1.0**. Submit includes the ShearHash-v3 digest.
 
 Paid login is an owned `ssa1` dest (wallet **Copy dest**). Each hasher dest that produced proven work receives its own hash bonus on the next sealed block.
 
 ```
-ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit --threads 8
+ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit-full --threads 8
 ```
 
 A `she1` login needs `--dest YOUR_SSA1` so the bonus can land on Copy dest. Rest-frame `shear1` stays off stratum.
 
-Default `--backend jit` is ShearHash-v3 light JIT + HARD_AES + huge pages (fallback to 4K if huge pages fail). Do not use `jit-full` against this pool: FULL_MEM hashes fail light verify.
+Default `--backend jit-full` is the 2 GiB RandomX dataset (same ShearHash-v3 digest as light). Pool/node still light-verify. `--backend jit` is the 128 MiB cache path. Huge pages fall back to 4K if unavailable.
 
 `--print-config` includes `rxMode=light`, `rxCacheMiB=128`, `feePct=0`. `--selftest` must print digest `98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b` and must not match the v1 vector `5d00a242…`.
 

@@ -30,7 +30,7 @@ Lite means no 2080 MiB DRAM dataset. Do not cut the Grover tax.
 
 ## Mode
 
-Light only (`RANDOMX_FLAG_FULL_MEM` off). `jit-full` is a different digest and is not ShearHash-v3. If implementations disagree, the **light interpreter** wins. JIT mining is allowed iff it matches the interpreter on the selftest vector **and** on the submitted header. Pool/node verify light interpreter. `clientHashes` is not a digest.
+Verify is light (`RANDOMX_FLAG_FULL_MEM` off on the node/pool). A miner may use the 2 GiB dataset (`jit-full`) iff that digest matches the light interpreter on the selftest vector **and** on the submitted header. If implementations disagree, the **light interpreter** wins. `clientHashes` is not a digest.
 
 ## Key and input
 
@@ -88,4 +88,4 @@ v3 nodes must not load a v2 or v1 book. Reset `SHEAR_DATA` on cutover.
 
 ## Official miner
 
-ShearK implements ShearHash-v3 light. Banner `ShearK-Miner 1.6 (ShearHash-v3 light)`. `--print-config` `personalisation=ShearHash-v3`, `rxMode=light`. Default `--backend jit` is light JIT + HARD_AES + huge pages. Never `jit-full` against this book.
+ShearK implements ShearHash-v3. Banner `ShearK-Miner 1.9 (ShearHash-v3 light)`. `--print-config` `personalisation=ShearHash-v3`, `rxMode=light`. Default `--backend jit-full` (2 GiB dataset). Pool/node verify light.

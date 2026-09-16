@@ -77,7 +77,9 @@ typedef struct {
 
 static pthread_mutex_t g_job_mu = PTHREAD_MUTEX_INITIALIZER;
 static JobSnap g_main_job;
+static JobSnap g_pending_job;
 static int g_have_main = 0;
+static int g_have_pending = 0;
 static int g_job_gen = 0;
 static atomic_int g_job_seq;
 static atomic_int g_share_bits_live;
@@ -151,7 +153,8 @@ static void usage(FILE *out) {
           "  --dest ssa1…                owned payout dest (she1 login)\n"
           "  --pool host:port            default %s:%d\n"
           "  --threads N                 no 256 farm cap\n"
-          "  --backend jit                default: light JIT + HARD_AES + huge pages\n"
+          "  --backend jit-full            default: 2 GiB dataset JIT (same digest as light)\n"
+          "  --backend jit                light 128 MiB cache JIT\n"
           "  --backend interpreter\n"
           "  --notls                     plaintext (default on this pool)\n"
           "  --bench [SECONDS]\n"
@@ -460,6 +463,8 @@ static int send_submit(Conn *c, const char *login, int threads, const char *jobI
   return conn_write(c, line, n);
 }
 
+static void promote_pending_job(void);
+
 static void apply_job(const char *line) {
   char method[32] = "";
   json_token(line, "method", method, sizeof(method));
@@ -511,6 +516,25 @@ static void apply_job(const char *line) {
     pthread_mutex_unlock(&g_job_mu);
     return;
   }
+  if (g_have_pending
+      && memcmp(g_pending_job.header, job.header, 100) == 0
+      && memcmp(g_pending_job.header + 108, job.header + 108, 4) == 0) {
+    memcpy(g_pending_job.header, job.header, SHEAR_HEADER_LEN);
+    g_pending_job.share_bits = job.share_bits;
+    g_pending_job.block_bits = job.block_bits;
+    if (job.height > 0) g_pending_job.height = job.height;
+    if (job.jobId[0]) snprintf(g_pending_job.jobId, sizeof(g_pending_job.jobId), "%s", job.jobId);
+    pthread_mutex_unlock(&g_job_mu);
+    return;
+  }
+  /* New RandomX K: keep hashing the live job while the next epoch inits. */
+  g_pending_job = job;
+  g_have_pending = 1;
+  pthread_mutex_unlock(&g_job_mu);
+  if (shear_prepare(job.header) == 0) promote_pending_job();
+}
+
+static void install_live_job_locked(JobSnap job) {
   g_job_gen++;
   job.gen = g_job_gen;
   job.have = 1;
@@ -518,10 +542,27 @@ static void apply_job(const char *line) {
   g_have_main = 1;
   atomic_store_explicit(&g_share_bits_live, job.share_bits, memory_order_release);
   atomic_store_explicit(&g_job_seq, g_job_gen, memory_order_release);
+}
+
+static void promote_pending_job(void) {
+  pthread_mutex_lock(&g_job_mu);
+  if (!g_have_pending) {
+    pthread_mutex_unlock(&g_job_mu);
+    return;
+  }
+  JobSnap job = g_pending_job;
   pthread_mutex_unlock(&g_job_mu);
-  /* New RandomX K — freeze the rate window so rebuild time is not a dip. */
-  g_rate_h0 = (uint64_t)atomic_load_explicit(&g_hashes, memory_order_relaxed);
-  g_rate_t0 = time(NULL);
+  if (!shear_epoch_ready(job.header)) return;
+  if (shear_commit_epoch() != 0 && !shear_epoch_ready(job.header)) return;
+  pthread_mutex_lock(&g_job_mu);
+  if (!g_have_pending) {
+    pthread_mutex_unlock(&g_job_mu);
+    return;
+  }
+  job = g_pending_job;
+  g_have_pending = 0;
+  install_live_job_locked(job);
+  pthread_mutex_unlock(&g_job_mu);
   printf("job %s height=%d shareBits=%d blockBits=%d algo=%s workers=%d backend=%s cpuCores=%d cpuThreads=%d\n",
          job.jobId, job.height, job.share_bits, job.block_bits, SHEAR_ALGO, g_threads,
          shear_hash_backend(), g_cpu_cores, g_cpu_threads);
@@ -805,6 +846,7 @@ static void seed_origin(void) {
 static void clear_jobs(void) {
   pthread_mutex_lock(&g_job_mu);
   g_have_main = 0;
+  g_have_pending = 0;
   atomic_store_explicit(&g_job_seq, 0, memory_order_release);
   pthread_mutex_unlock(&g_job_mu);
   pthread_mutex_lock(&g_q_mu);
@@ -911,6 +953,7 @@ static int mine_once(void) {
       }
       if (r > 0) drain_lines(&mainc);
     }
+    promote_pending_job();
     flush_shares(&mainc);
     time_t now = time(NULL);
     if (now != last_stats) {
@@ -990,21 +1033,23 @@ int main(int argc, char **argv) {
   int do_selftest = 0;
   int do_cfg = 0;
   int bench_secs = 0;
-  const char *backend_arg = "jit";
+  const char *backend_arg = "jit-full";
   const char *verify_hex = NULL;
+  int want_help = 0;
   device_inventory();
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) backend_arg = argv[++i];
+    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) want_help = 1;
+  }
+  if (want_help) {
+    usage(stdout);
+    return 0;
   }
   if (shear_hash_set_backend(backend_arg) != 0) {
     fprintf(stderr, "unknown or unavailable --backend %s; using %s\n", backend_arg,
             shear_hash_backend());
   }
   for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-      usage(stdout);
-      return 0;
-    }
     if (strcmp(argv[i], "--selftest") == 0) do_selftest = 1;
     else if (strcmp(argv[i], "--print-config") == 0) do_cfg = 1;
     else if (strcmp(argv[i], "--verify") == 0 && i + 1 < argc) verify_hex = argv[++i];

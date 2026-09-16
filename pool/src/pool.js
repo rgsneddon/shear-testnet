@@ -56,8 +56,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
 /** Public H/s is proven hashes in this window, not lifetime hashes / first-seen. */
 export const HASHRATE_WINDOW_MS = 180_000;
-/** Display H/s eases toward the hasher's own rate. 60s tau: ~63% at 1 min, ~95% at 3 min. */
-export const HASHRATE_EMA_TAU_S = 60;
+/** Display H/s eases toward hashes/dt. 8s tau matches ShearK RATE_TAU so miner and pool agree. */
+export const HASHRATE_EMA_TAU_S = 8;
 /** After the last socket closes, keep the row this long. Still-connected hashers with proven shares stay listed (header bits can put shares >12s apart). */
 export const HASH_PRESENCE_MS = 12_000;
 /** Default is every sealed header. Pass a finite window to clip a test. */
@@ -675,7 +675,8 @@ function easeHashrate(miner, instant, now, tauS = HASHRATE_EMA_TAU_S) {
  * Same quantity the miner paints. Ignore login `hashrate` (first-second
  * spike). Do not hold a past spike across a stall. Share work still mints.
  */
-export const SELF_RATE_MIN_DT_S = 5;
+/** Same window as ShearK `RATE_MIN_DT` so miner and pool paint hashes/dt alike. */
+export const SELF_RATE_MIN_DT_S = 2;
 
 export function applyMinerSelfRate(session, params, now = Date.now()) {
   if (!session || !params) return session;
@@ -699,10 +700,10 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
           const hs = delta / dt;
           const threads = Math.max(1, Number(session.threads) || Number(session.claimedThreads) || 1);
           const prevHs = Number(session.clientHs) || 0;
-          // ShearHash-v3 light is tens–hundreds H/s/thread. After blockfound
-          // a counter discontinuity used to paint ~kH/s on a 1-thread box.
-          const cap = threads * 500;
-          const jumped = prevHs > 1 && hs > prevHs * 4 && hs > threads * 200;
+          // Same quantity ShearK paints: hashes/dt. Mint stays proven 2^shareBits.
+          // jit-full is ~400–500 H/s/thread; a blockfound counter jump is kH/s.
+          const cap = threads * 2500;
+          const jumped = prevHs > 1 && hs > prevHs * 8 && hs > threads * 800;
           if (hs > cap || jumped) {
             session.rateHashes0 = hashes;
             session.rateAt0 = now;
@@ -724,7 +725,8 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
 }
 
 /**
- * Instant H/s from the hasher's own counter, else proven share work.
+ * Instant H/s is the hasher's hashes/dt (same formula ShearK paints).
+ * Bonus mint is still proven 2^shareBits, never this number.
  */
 export function liveHashrate(miner, now = Date.now()) {
   if (minerConnected(miner)) {
@@ -735,9 +737,8 @@ export function liveHashrate(miner, now = Date.now()) {
 }
 
 /**
- * Public HUD H/s: EMA toward the hasher's verified self-rate (60s tau).
- * A round reset must not paint 0. A stall holds the last ease for HASHRATE_STALL_HOLD_MS.
- * Never ease toward 0 (or a tiny new-round proven rate) while the hasher is live.
+ * Public HUD H/s: EMA toward hashes/dt so miner and pool agree.
+ * A stall holds the last ease. Round reset must not paint 0.
  */
 export function reportedHashrate(miner, now = Date.now()) {
   const at = Number(now) || Date.now();
@@ -745,7 +746,6 @@ export function reportedHashrate(miner, now = Date.now()) {
   const t0 = Number(miner?.emaAt) || 0;
   const instant = liveHashrate(miner, at);
   const hold = held > 0 && t0 > 0 && (at - t0) < HASHRATE_STALL_HOLD_MS;
-  // New round proven work starts near 0. Do not ease the HUD down between headers.
   if (hold && (!(instant > 0) || instant < held * 0.25)) return held;
   if (instant > 0) return easeHashrate(miner, instant, at);
   return hold ? held : 0;
