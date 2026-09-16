@@ -37,7 +37,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
     assert.equal(j.personalisation, 'ShearHash-v3');
-    assert.equal(j.version, '1.9');
+    assert.equal(j.version, '2.2');
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.headerBytes, 128);
     assert.equal(j.magic, 'shear-testnet-v4');
@@ -46,6 +46,16 @@ describe('ShearK-Miner', () => {
     assert.equal(j.feePct, 0);
     assert.equal(j.clientLogin, 'direct');
     assert.equal(j.pool, 'pool.shear.digital:1111');
+    const longDest = 'ssa1qsj3qt0mcuznqv6r5370d58tw32gz3yhjychuu0sljyw5zmw9pmwc47d9vnwagjafs3ywjz7udh7suc7e3qsshw25ze';
+    const longCfg = spawnSync(bin, [
+      '--backend', 'interpreter', '--print-config',
+      '--user', `${longDest}.P7`,
+    ], { encoding: 'utf8' });
+    assert.equal(longCfg.status, 0, longCfg.stderr);
+    const lj = JSON.parse(longCfg.stdout);
+    assert.equal(lj.destBound, true, longCfg.stdout);
+    assert.equal(lj.dest20, '84a205bf78e0a60668748f9eda1d6e8a902892f2');
+    assert.equal(lj.dest20.length, 40);
     assert.equal(j.feeDest, undefined);
     const src = fs.readFileSync(path.join(root, 'src/sheark_miner.c'), 'utf8');
     assert.equal(src.toLowerCase().includes('feeless'), false);
@@ -54,7 +64,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.backend, 'interpreter');
     assert.equal(typeof j.hugePages, 'boolean');
     const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
-    assert.match(help.stdout, /ShearK-Miner 1\.9 \(ShearHash-v3 light\)/);
+    assert.match(help.stdout, /ShearK-Miner 2\.2 \(ShearHash-v3 light\)/);
     assert.match(help.stdout, /ShearHash-v3 light/);
     assert.match(help.stdout, /--backend jit-full/);
     assert.match(help.stdout, /--backend jit/);
@@ -72,11 +82,19 @@ describe('ShearK-Miner', () => {
     assert.match(bat, /--user YOUR_SSA1\.worker/);
     assert.match(bat, /--dest YOUR_SSA1/);
     assert.match(bat, /--backend jit-full/);
-    assert.match(bat, /ShearK-Miner-1\.9-windows\.zip/);
+    assert.match(bat, /ShearK-Miner-2\.0-windows\.zip/);
     assert.equal(help.stdout.toLowerCase().includes('feeless'), false);
     assert.match(src, /hashes=%llu round=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu blocks=%d dropped=%llu/);
     assert.match(src, /cpuCores=%d cpuThreads=%d/);
     assert.match(src, /BLOCKFOUND!!!/);
+    assert.match(src, /init_note_commit/);
+    assert.match(src, /share_or_block_hit/);
+    assert.match(src, /shareBind/);
+    assert.match(src, /blen > 160/);
+    assert.match(src, /Copy dest is dest20/);
+    const hashSrc = fs.readFileSync(path.join(root, 'src/shear_hash.c'), 'utf8');
+    assert.match(hashSrc, /shear-share-dest-v1/);
+    assert.match(hashSrc, /shear-note-commit-v1/);
     assert.match(src, /\\033\[1;91m\\033\[1;93m\\033\[1;92m/);
     assert.match(src, /msgid == 1 && inflight <= 0/);
     assert.match(src, /\\033\[1;92m/);
@@ -237,12 +255,12 @@ describe('ShearK-Miner', () => {
     await new Promise((r) => child.once('close', r));
     server.close();
     assert.match(loginLine, /"name":"ShearK-Miner"/);
-    assert.match(loginLine, /"version":"1\.9"/);
+    assert.match(loginLine, /"version":"2\.2"/);
     assert.match(loginLine, /"client":"ShearHash"/);
     assert.match(loginLine, /"algorithm":"ShearHash"/);
     assert.equal(/"dest"/.test(loginLine), false, loginLine);
-    assert.equal(/"version":"1\.[01]"/.test(loginLine), false, loginLine);
-    assert.match(out, /ShearK-Miner 1\.9 \(ShearHash-v3 light\)/);
+    assert.equal(/"version":"1\.[019]"/.test(loginLine), false, loginLine);
+    assert.match(out, /ShearK-Miner 2\.2 \(ShearHash-v3 light\)/);
     assert.match(out, /hashes=(?:\x1b\[(?:32m|1;92m))?\d+/);
     assert.match(out, /accepted=(?:\x1b\[(?:33m|1;93m))?0/);
     assert.match(out, /rejected=(?:\x1b\[(?:31m|1;91m))?0/);
@@ -296,7 +314,7 @@ describe('ShearK-Miner', () => {
     child.kill('SIGTERM');
     await new Promise((r) => child.once('close', r));
     server.close();
-    assert.match(loginLine, /"version":"1\.9"/);
+    assert.match(loginLine, /"version":"2\.2"/);
     assert.match(loginLine, new RegExp(`"dest":"${dest}"`));
     assert.match(out, /job=dest-job/);
     assert.match(out, /hashes=(?:\x1b\[(?:32m|1;92m))?\d+/);

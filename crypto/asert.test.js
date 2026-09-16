@@ -235,10 +235,12 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /NETWORK=shear-testnet-v4/);
     assert.match(fp, /HASH_TX_LIVE=1/);
     assert.match(fp, /LAG1_SHAREBATCH=1/);
+    assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
     assert.match(fp, /POOL_FEE_BPS=100/);
     assert.match(fp, /AMOUNT=confidential/);
     assert.match(fp, /DUMMY_OUTS=1/);
     assert.match(fp, /ENC_SHARE=v5/);
+    assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
     assert.match(fp, /DANDELIONPP=1/);
     assert.match(fp, /VIEW_TAG=1/);
     assert.match(fp, /KDF=argon2id-shewall/);
@@ -268,7 +270,7 @@ describe('hash-tx consensus law', () => {
     const law = consensusLaw();
     assert.equal(PRODUCT_VERSION, '0.4');
     assert.equal(MINER_VERSION, '1.1');
-    assert.equal(SHEARK_MINER_VERSION, '1.9');
+    assert.equal(SHEARK_MINER_VERSION, '2.2');
     assert.equal(PRODUCT_VERSION.split('.').length, 2);
     assert.equal(MINER_VERSION.split('.').length, 2);
     assert.equal(SHEARK_MINER_VERSION.split('.').length, 2);
@@ -280,7 +282,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(/^\d+\.\d+$/.test('0.1.0'), false);
     assert.equal(law.productVersion, '0.4');
     assert.equal(law.minerVersion, '1.1');
-    assert.equal(law.shearkMinerVersion, '1.9');
+    assert.equal(law.shearkMinerVersion, '2.2');
     assert.equal(fp.includes(SHEARK_MINER_VERSION), false);
     assert.equal(fp.includes('shearkMinerVersion'), false);
     assert.equal(law.hashTxLive, 1);

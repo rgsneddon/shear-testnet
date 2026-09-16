@@ -1,4 +1,4 @@
-VERSION ?= 1.9
+VERSION ?= 2.2
 CC ?= cc
 # GNU Make defaults CXX to g++ even when g++ is absent (WSL clang-only).
 ifeq ($(origin CXX),default)
@@ -27,7 +27,7 @@ else
   CMAKE_GEN ?=
 endif
 
-OBJS := src/sheark_miner.o src/shear_hash.o src/sha512.o
+OBJS := src/sheark_miner.o src/shear_hash.o src/sha256.o src/sha512.o
 
 .PHONY: all clean selftest randomx
 

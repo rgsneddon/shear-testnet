@@ -53,8 +53,8 @@
 #define DEFAULT_WORKER "worker"
 
 static const char *g_user = NULL;
-static char g_login[200];
-static char g_dest[128];
+static char g_login[320];
+static char g_dest[256];
 static char g_host_buf[256];
 static const char *g_host = DEFAULT_HOST;
 static int g_port = DEFAULT_PORT;
@@ -83,6 +83,12 @@ static int g_have_pending = 0;
 static int g_job_gen = 0;
 static atomic_int g_job_seq;
 static atomic_int g_share_bits_live;
+static atomic_int g_block_bits_live;
+static atomic_int g_share_bind_dest;
+static unsigned char g_note_commit[32];
+static unsigned char g_dest20[20];
+static char g_dest20_hex[41];
+static int g_have_note = 0;
 /* Bumped only when the live header restamps. Workers copy under the mutex
  * on that change, not on every nonce. */
 static atomic_uint g_stamp_seq;
@@ -215,6 +221,92 @@ static int build_login(const char *user) {
   snprintf(g_login, sizeof(g_login), "%.*s.%s", (int)alen, user, worker);
   g_user = g_login;
   return 1;
+}
+
+static const char BECH32_CS[] = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+static uint32_t bech32_polymod(const unsigned char *v, size_t n) {
+  static const uint32_t gens[5] = { 0x3b6a57b2u, 0x26508e6du, 0x1ea119fau, 0x3d4233ddu, 0x2a1462b3u };
+  uint32_t chk = 1;
+  for (size_t i = 0; i < n; i++) {
+    uint32_t b = chk >> 25;
+    chk = ((chk & 0x1ffffffu) << 5) ^ v[i];
+    for (int j = 0; j < 5; j++) if ((b >> j) & 1) chk ^= gens[j];
+  }
+  return chk;
+}
+
+/* ssa1 dest20. Copy dest is dest20||B (body ~91). Take first 20 payload bytes. */
+static int dest20_from_ssa1(const char *addr, unsigned char out[20]) {
+  if (!addr || strncmp(addr, "ssa1", 4) != 0) return -1;
+  const char *body = addr + 4;
+  size_t blen = strlen(body);
+  if (blen < 7 || blen > 160) return -1;
+  unsigned char vals[168];
+  for (size_t i = 0; i < blen; i++) {
+    const char *p = strchr(BECH32_CS, body[i]);
+    if (!p) return -1;
+    vals[i] = (unsigned char)(p - BECH32_CS);
+  }
+  unsigned char chkbuf[8 + 168];
+  size_t n = 0;
+  const char *hrp = "ssa";
+  for (size_t i = 0; hrp[i]; i++) chkbuf[n++] = (unsigned char)(hrp[i] >> 5);
+  chkbuf[n++] = 0;
+  for (size_t i = 0; hrp[i]; i++) chkbuf[n++] = (unsigned char)(hrp[i] & 31);
+  memcpy(chkbuf + n, vals, blen);
+  n += blen;
+  if (bech32_polymod(chkbuf, n) != 1) return -1;
+  size_t data_n = blen - 6;
+  if (data_n < 2) return -1;
+  unsigned acc = 0, bits = 0, got = 0;
+  for (size_t i = 1; i < data_n; i++) {
+    acc = (acc << 5) | vals[i];
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      if (got < 20) out[got++] = (unsigned char)((acc >> bits) & 0xff);
+    }
+  }
+  if (got != 20) return -1;
+  return 0;
+}
+
+static void init_note_commit(void) {
+  char addr[320];
+  const char *src = g_dest[0] ? g_dest : g_login;
+  snprintf(addr, sizeof(addr), "%s", src ? src : "");
+  char *dot = strchr(addr, '.');
+  if (dot) *dot = 0;
+  unsigned char d20[20];
+  if (dest20_from_ssa1(addr, d20) != 0) {
+    g_have_note = 0;
+    g_dest20_hex[0] = 0;
+    return;
+  }
+  memcpy(g_dest20, d20, 20);
+  static const char *hx = "0123456789abcdef";
+  for (int i = 0; i < 20; i++) {
+    g_dest20_hex[i * 2] = hx[d20[i] >> 4];
+    g_dest20_hex[i * 2 + 1] = hx[d20[i] & 0xf];
+  }
+  g_dest20_hex[40] = 0;
+  shear_note_commit(d20, g_note_commit);
+  g_have_note = 1;
+}
+
+static int share_or_block_hit(const unsigned char hash[32]) {
+  int sb = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
+  int bb = atomic_load_explicit(&g_block_bits_live, memory_order_relaxed);
+  if (bb > 0 && shear_meets_target(hash, bb)) return 1;
+  /* dest-bound submit only when the job says shareBind=dest. Live rx-floor
+   * pools reject dest-only hits as low_diff. */
+  if (atomic_load_explicit(&g_share_bind_dest, memory_order_relaxed) && g_have_note) {
+    unsigned char bound[32];
+    shear_share_bind(hash, g_note_commit, bound);
+    return shear_meets_target(bound, sb);
+  }
+  return shear_meets_target(hash, sb);
 }
 
 static void device_inventory(void) {
@@ -437,7 +529,7 @@ static void identity_json(char *out, size_t cap, const char *login, int threads)
 }
 
 static int send_login(Conn *c, const char *login, int threads) {
-  char ident[640], line[1200];
+  char ident[1400], line[3200];
   identity_json(ident, sizeof(ident), login, threads);
   int n = snprintf(line, sizeof(line),
                    "{\"id\":1,\"method\":\"login\",\"params\":{%s},%s}\n", ident, ident);
@@ -445,7 +537,7 @@ static int send_login(Conn *c, const char *login, int threads) {
 }
 
 static int send_stats(Conn *c, const char *login, int threads) {
-  char ident[640], line[1200];
+  char ident[1400], line[3200];
   identity_json(ident, sizeof(ident), login, threads);
   int n = snprintf(line, sizeof(line),
                    "{\"id\":3,\"method\":\"stats\",\"params\":{%s},%s}\n", ident, ident);
@@ -453,7 +545,7 @@ static int send_stats(Conn *c, const char *login, int threads) {
 }
 
 static int send_submit(Conn *c, const char *login, int threads, const char *jobId, uint64_t nonce, const char *hash) {
-  char ident[640], line[1600];
+  char ident[1400], line[3600];
   identity_json(ident, sizeof(ident), login, threads);
   int n = snprintf(line, sizeof(line),
                    "{\"id\":2,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"},"
@@ -485,6 +577,11 @@ static void apply_job(const char *line) {
   json_int(line, "height", &job.height);
   job.share_bits = sb > 0 ? sb : 8;
   job.block_bits = bb > 0 ? bb : (bits > 0 ? bits : 16);
+  {
+    char bind[16] = "";
+    json_token(line, "shareBind", bind, sizeof(bind));
+    atomic_store_explicit(&g_share_bind_dest, strcmp(bind, "dest") == 0, memory_order_release);
+  }
   if (!job.jobId[0]) snprintf(job.jobId, sizeof(job.jobId), "job");
   if (job.height > g_height) {
     g_height = job.height;
@@ -498,6 +595,7 @@ static void apply_job(const char *line) {
     if (job.height > 0) g_main_job.height = job.height;
     if (job.jobId[0]) snprintf(g_main_job.jobId, sizeof(g_main_job.jobId), "%s", job.jobId);
     atomic_store_explicit(&g_share_bits_live, job.share_bits, memory_order_release);
+    atomic_store_explicit(&g_block_bits_live, job.block_bits, memory_order_release);
     pthread_mutex_unlock(&g_job_mu);
     return;
   }
@@ -512,6 +610,7 @@ static void apply_job(const char *line) {
     if (job.height > 0) g_main_job.height = job.height;
     if (job.jobId[0]) snprintf(g_main_job.jobId, sizeof(g_main_job.jobId), "%s", job.jobId);
     atomic_store_explicit(&g_share_bits_live, job.share_bits, memory_order_release);
+    atomic_store_explicit(&g_block_bits_live, job.block_bits, memory_order_release);
     atomic_fetch_add_explicit(&g_stamp_seq, 1, memory_order_release);
     pthread_mutex_unlock(&g_job_mu);
     return;
@@ -541,6 +640,7 @@ static void install_live_job_locked(JobSnap job) {
   g_main_job = job;
   g_have_main = 1;
   atomic_store_explicit(&g_share_bits_live, job.share_bits, memory_order_release);
+  atomic_store_explicit(&g_block_bits_live, job.block_bits, memory_order_release);
   atomic_store_explicit(&g_job_seq, g_job_gen, memory_order_release);
 }
 
@@ -598,7 +698,7 @@ static void apply_ack(const char *line) {
         double elapsed = (double)(time(NULL) - (g_t0 ? g_t0 : time(NULL)));
         if (elapsed < 1) elapsed = 1;
         char rate[32];
-        fmt_hashrate((double)h / elapsed, rate, sizeof(rate));
+        fmt_hashrate(g_smooth_hs > 0 ? g_smooth_hs : (double)h / elapsed, rate, sizeof(rate));
         int height = g_height, sb = 0, bb = 0;
         char jobId[80];
         snprintf(jobId, sizeof(jobId), "%s", g_last_job[0] ? g_last_job : "-");
@@ -802,7 +902,7 @@ static void *hash_worker(void *arg) {
         shear_hash(header, hash);
         atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
         if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
-            && shear_meets_target(hash, atomic_load_explicit(&g_share_bits_live, memory_order_relaxed))) {
+            && share_or_block_hit(hash)) {
           enqueue_share(job.jobId, n, hash, job.gen);
         }
         n += (uint64_t)g_threads;
@@ -821,7 +921,7 @@ static void *hash_worker(void *arg) {
     }
     atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
     if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
-        && shear_meets_target(hash, atomic_load_explicit(&g_share_bits_live, memory_order_relaxed))) {
+        && share_or_block_hit(hash)) {
       enqueue_share(job.jobId, primed_n, hash, job.gen);
     }
     primed_n = n;
@@ -907,11 +1007,13 @@ static void print_config(void) {
          "\"version\":\"%s\",\"clientLogin\":\"direct\",\"feePct\":0,"
          "\"pool\":\"%s:%d\",\"headerBytes\":%d,\"magic\":\"%s\","
          "\"rxMode\":\"light\",\"rxCacheMiB\":%d,\"hugePages\":%s,"
-         "\"threads\":%d,\"backend\":\"%s\"}\n",
+         "\"threads\":%d,\"backend\":\"%s\",\"destBound\":%s,\"dest20\":\"%s\"}\n",
          SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_ALGO, SHEAR_PERSONAL,
          SHEAR_VERSION, g_host, g_port, SHEAR_HEADER_LEN, SHEAR_MAGIC,
          SHEAR_RX_CACHE_MIB, shear_hash_huge_pages() ? "true" : "false",
-         g_threads, shear_hash_backend());
+         g_threads, shear_hash_backend(),
+         g_have_note ? "true" : "false",
+         g_have_note ? g_dest20_hex : "");
 }
 
 static int mine_once(void) {
@@ -969,7 +1071,7 @@ static int mine_once(void) {
         if (h > g_rate_h0) {
           double inst = (double)(h - g_rate_h0) / dt;
           if (g_smooth_hs > 0 && inst < g_smooth_hs * RATE_HOLD_FRAC) {
-            /* Blockfound RandomX K pause — hold the last linear rate. */
+            /* Blockfound RandomX K pause / between-block quiet — hold paint. */
             g_rate_h0 = h;
             g_rate_t0 = now;
           } else {
@@ -981,9 +1083,8 @@ static int mine_once(void) {
             g_rate_h0 = h;
             g_rate_t0 = now;
           }
-        } else {
-          g_rate_t0 = now;
         }
+        /* No hashes this tick: do not reset t0 (that makes the next 2s a burst). */
       }
       char rate[32];
       fmt_hashrate(g_smooth_hs, rate, sizeof(rate));
@@ -1112,6 +1213,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   if (do_cfg) {
+    if (g_user && build_login(g_user)) init_note_commit();
     print_config();
     return 0;
   }
@@ -1156,6 +1258,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "user must be she1... or ssa1... (not shear1)\n");
     return 2;
   }
+  init_note_commit();
 #if defined(_WIN32)
   {
     WSADATA wsa;

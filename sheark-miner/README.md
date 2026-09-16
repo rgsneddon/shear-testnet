@@ -1,14 +1,14 @@
-# ShearK-Miner 1.9
+# ShearK-Miner 2.2
 
 Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache).
 
 - Display repo: **[Testnet] ShearK** (`rgsneddon/ShearK`)
 - Wire algo: `ShearHash` · personalisation `ShearHash-v3` · magic `shear-testnet-v4`
-- Banner: `ShearK-Miner 1.9 (ShearHash-v3 light)`
+- Banner: `ShearK-Miner 2.2 (ShearHash-v3 light)`
 - Pool: `pool.shear.digital:1111`
 - Header: 128 bytes. Light mode only. Do not recut Shear-Miner **1.1** / **1.0**. Submit includes the ShearHash-v3 digest.
 
-Paid login is an owned `ssa1` dest (wallet **Copy dest**). Each hasher dest that produced proven work receives its own hash bonus on the next sealed block.
+Paid login is an owned `ssa1` dest (wallet **Copy dest**). Copy dest may be short (`dest20`, ~43 chars) or long (`dest20||B`, ~95 chars). 2.2 dest-binds both; 2.1 fails the long form (`low_diff`). Each hasher dest that produced proven work receives its own hash bonus on the next sealed block. Share floor is dest-bound (`sha256("shear-share-dest-v1" || rx || noteCommit)`), so a pool cannot restamp dest on a stolen nonce. The 128-byte job is unchanged.
 
 ```
 ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit-full --threads 8

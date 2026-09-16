@@ -4,6 +4,7 @@
 #endif
 #endif
 #include "shear_hash.h"
+#include "sha256.h"
 #include "sha512.h"
 #include "randomx.h"
 
@@ -740,6 +741,23 @@ static int shear_meets_lz(const unsigned char hash[32], int bits) {
   }
   if (!rem) return 1;
   return hash[full] < (1 << (8 - rem));
+}
+
+void shear_note_commit(const unsigned char dest20[20], unsigned char out[32]) {
+  static const char dst[] = "shear-note-commit-v1";
+  unsigned char msg[sizeof(dst) - 1 + 20];
+  memcpy(msg, dst, sizeof(dst) - 1);
+  memcpy(msg + sizeof(dst) - 1, dest20, 20);
+  shear_sha256(msg, sizeof(msg), out);
+}
+
+void shear_share_bind(const unsigned char rx[32], const unsigned char note_commit[32], unsigned char out[32]) {
+  static const char dst[] = "shear-share-dest-v1";
+  unsigned char msg[sizeof(dst) - 1 + 32 + 32];
+  memcpy(msg, dst, sizeof(dst) - 1);
+  memcpy(msg + sizeof(dst) - 1, rx, 32);
+  memcpy(msg + sizeof(dst) - 1 + 32, note_commit, 32);
+  shear_sha256(msg, sizeof(msg), out);
 }
 
 int shear_meets_target(const unsigned char hash[32], int bits) {
