@@ -1077,9 +1077,24 @@ int main(int argc, char **argv) {
     header[0] = 1;
     time_t t0 = time(NULL);
     uint64_t n = 0, h = 0;
+    int primed = 0;
     while (time(NULL) - t0 < bench_secs) {
       shear_set_nonce(header, n);
-      shear_hash(header, hash);
+      if (!primed) {
+        if (shear_hash_first(header) != 0) {
+          shear_hash(header, hash);
+          h += 1;
+          n += 1;
+          continue;
+        }
+        primed = 1;
+        n += 1;
+        continue;
+      }
+      if (shear_hash_next(header, hash) != 0) {
+        primed = 0;
+        continue;
+      }
       h += 1;
       n += 1;
     }

@@ -26,7 +26,6 @@ const char SHEAR_SELFTEST_HASH[] =
 
 #define SHEAR_MAX_VM 256
 
-static pthread_mutex_t g_bind = PTHREAD_MUTEX_INITIALIZER;
 static pthread_rwlock_t g_rx;
 static pthread_once_t g_rx_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_key_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -62,9 +61,14 @@ static void rx_lock_init(void) {
 #endif
 }
 
-static void rx_rd(void) {
-  pthread_once(&g_rx_once, rx_lock_init);
-  pthread_rwlock_rdlock(&g_rx);
+static void cpu_relax(void) {
+#if defined(_MSC_VER)
+  _mm_pause();
+#elif defined(__x86_64__) || defined(__i386__)
+  __asm__ __volatile__("pause");
+#elif defined(__aarch64__)
+  __asm__ __volatile__("yield");
+#endif
 }
 
 static void rx_wr(void) {
@@ -74,6 +78,34 @@ static void rx_wr(void) {
 
 static void rx_un(void) {
   pthread_rwlock_unlock(&g_rx);
+}
+
+/* Invalidate VMs, then wait for in-flight calculate_hash* to finish before
+ * the writer mutates cache/VMs. Hashers bump g_in_hash instead of rdlock. */
+static void wait_hash_idle(void) {
+  while (atomic_load_explicit(&g_in_hash, memory_order_acquire) != 0) {
+    cpu_relax();
+  }
+}
+
+static void exclusive_begin(void) {
+  rx_wr();
+  atomic_fetch_add_explicit(&g_gen, 1, memory_order_release);
+  wait_hash_idle();
+}
+
+static int hash_enter(unsigned gen, randomx_vm *vm, int tid) {
+  atomic_fetch_add_explicit(&g_in_hash, 1, memory_order_acq_rel);
+  if (atomic_load_explicit(&g_gen, memory_order_acquire) != gen ||
+      tid < 0 || tid >= SHEAR_MAX_VM || g_vms[tid] != vm) {
+    atomic_fetch_sub_explicit(&g_in_hash, 1, memory_order_release);
+    return -1;
+  }
+  return 0;
+}
+
+static void hash_leave(void) {
+  atomic_fetch_sub_explicit(&g_in_hash, 1, memory_order_release);
 }
 
 void shear_hash_hex(const unsigned char hash[32], char hex[65]) {
@@ -277,7 +309,7 @@ int shear_hash_set_backend(const char *name) {
     next = flags_interpreter();
     label = "interpreter";
   }
-  rx_wr();
+  exclusive_begin();
   if (next != g_flags) {
     drop_cache_locked();
     g_flags = next;
@@ -437,6 +469,8 @@ int shear_bind(const unsigned char header[SHEAR_HEADER_LEN]) {
 
   rx_wr();
   if (!g_have || memcmp(g_k, k, 32) != 0) {
+    atomic_fetch_add_explicit(&g_gen, 1, memory_order_release);
+    wait_hash_idle();
     if (init_cache_locked(k) != 0) {
       rx_un();
       return -1;
@@ -481,13 +515,9 @@ void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[
     unsigned gen = 0;
     randomx_vm *vm = hot_vm(tls, &gen);
     if (!vm) continue;
-    rx_rd();
-    if (atomic_load_explicit(&g_gen, memory_order_acquire) != gen || g_vms[tls->tid] != vm) {
-      rx_un();
-      continue;
-    }
+    if (hash_enter(gen, vm, tls->tid) != 0) continue;
     randomx_calculate_hash(vm, header, SHEAR_HEADER_LEN, out);
-    rx_un();
+    hash_leave();
     tls->primed = 0;
     return;
   }
@@ -500,14 +530,12 @@ int shear_hash_first(const unsigned char header[SHEAR_HEADER_LEN]) {
   unsigned gen = 0;
   randomx_vm *vm = hot_vm(tls, &gen);
   if (!vm) return -1;
-  rx_rd();
-  if (atomic_load_explicit(&g_gen, memory_order_acquire) != gen || g_vms[tls->tid] != vm) {
-    rx_un();
+  if (hash_enter(gen, vm, tls->tid) != 0) {
     tls->primed = 0;
     return -1;
   }
   randomx_calculate_hash_first(vm, header, SHEAR_HEADER_LEN);
-  rx_un();
+  hash_leave();
   tls->primed = 1;
   return 0;
 }
@@ -527,14 +555,12 @@ int shear_hash_next(const unsigned char header[SHEAR_HEADER_LEN], unsigned char 
     tls->primed = 0;
     return -1;
   }
-  rx_rd();
-  if (atomic_load_explicit(&g_gen, memory_order_acquire) != gen || g_vms[tls->tid] != vm) {
-    rx_un();
+  if (hash_enter(gen, vm, tls->tid) != 0) {
     tls->primed = 0;
     return -1;
   }
   randomx_calculate_hash_next(vm, header, SHEAR_HEADER_LEN, out);
-  rx_un();
+  hash_leave();
   tls->primed = 1;
   return 0;
 }

@@ -1,10 +1,10 @@
-# ShearK-Miner 1.7
+# ShearK-Miner 1.8
 
 Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache).
 
 - Display repo: **[Testnet] ShearK** (`rgsneddon/ShearK`)
 - Wire algo: `ShearHash` · personalisation `ShearHash-v3` · magic `shear-testnet-v4`
-- Banner: `ShearK-Miner 1.7 (ShearHash-v3 light)`
+- Banner: `ShearK-Miner 1.8 (ShearHash-v3 light)`
 - Pool: `pool.shear.digital:1111`
 - Header: 128 bytes. Light mode only. Do not recut Shear-Miner **1.1** / **1.0**. Submit includes the ShearHash-v3 digest.
 
@@ -18,7 +18,7 @@ A `she1` login needs `--dest YOUR_SSA1` so the bonus can land on Copy dest. Rest
 
 Default `--backend jit` is ShearHash-v3 light JIT + HARD_AES + huge pages (fallback to 4K if huge pages fail). Do not use `jit-full` against this pool: FULL_MEM hashes fail light verify.
 
-`--print-config` includes `rxMode=light`, `rxCacheMiB=128`, `feePct=0`. `--selftest` must print digest `64d41fa97f5ebea8a7e2a2625b1824467ce9d081bf29b0b2ae0a7fe617599895` and must not match the v1 vector `5d00a242…`.
+`--print-config` includes `rxMode=light`, `rxCacheMiB=128`, `feePct=0`. `--selftest` must print digest `98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b` and must not match the v1 vector `5d00a242…`.
 
 Windows zip root: `ShearK-Miner.exe` + `example.bat`. Linux zip root: `ShearK-Miner` + `example.sh`. How-to: the `[Testnet] ShearK` README.
 

@@ -23,7 +23,7 @@ Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) at
 
 ## 0.34 (current)
 
-ADMITv2 book `shear-testnet-v4`. GUI + CLI. Sign Flow / pool-pull / Reserve vote / lock. vort1 create + register + call. Reserve staked rewards + claim. Closure backup/restore (v1 migrate). Magic pin `kBookMagic = shear-testnet-v4`. ShearK **1.7**. Mainnet `shear-v1` refused (`clock_wait`).
+ADMITv2 book `shear-testnet-v4`. GUI + CLI. Sign Flow / pool-pull / Reserve vote / lock. vort1 create + register + call. Reserve staked rewards + claim. Closure backup/restore (v1 migrate). Magic pin `kBookMagic = shear-testnet-v4`. ShearK **1.8**. Mainnet `shear-v1` refused (`clock_wait`).
 
 ## 0.33 — 2026-09-13
 
