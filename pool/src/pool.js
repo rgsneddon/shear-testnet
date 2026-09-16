@@ -10,6 +10,7 @@ import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce 
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, hash20FromAddress } from '../../crypto/address.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
+import { destBoundShareHash, noteCommitOfShare, shareMeetsFloor } from '../../crypto/share_batch.js';
 import {
   BLOCK_SUBSIDY_NANOS,
   POOL_FEE_BPS,
@@ -30,6 +31,7 @@ import {
   MAX_BITS,
   SHARE_FLOOR_BITS,
   displayBits,
+  SHEARK_MINER_VERSION,
 } from '../../crypto/asert.js';
 import { poolFeeDest, levyNanos, mempoolDepthBytes, poolWithdrawTx, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
@@ -72,8 +74,6 @@ export const PREV_JOB_GRACE_MS = 3_000;
 export const HASHRATE_STALL_HOLD_MS = 90_000;
 /** Mixed hashing+K-pause windows often land at 50–90% of the true rate. */
 export const HASHRATE_HOLD_FRAC = 0.9;
-/** Cap a single HUD step-up so a blockfound / new-job burst cannot spike. */
-export const HASHRATE_RISE_FRAC = 1.15;
 /** Rebuild /api/stats JSON on this cadence. The HTTP handler never computes it. */
 export const STATS_REFRESH_MS = 400;
 const HASH_WORKER = fileURLToPath(new URL('./hash_worker.js', import.meta.url));
@@ -316,11 +316,29 @@ export function isCminerFeeLogin() {
 }
 
 export const SHEARK_MINER_NAME = 'ShearK-Miner';
+export { SHEARK_MINER_VERSION };
+
+/** Major.minor compare. Pre-2.0 ShearK is refused. */
+export function minerVersionAtLeast(version, min = '2.0') {
+  const parse = (s) => {
+    const m = String(s || '').trim().match(/^(\d+)\.(\d+)/);
+    if (!m) return null;
+    return { major: Number(m[1]), minor: Number(m[2]) };
+  };
+  const got = parse(version);
+  const need = parse(min);
+  if (!got || !need) return false;
+  if (got.major !== need.major) return got.major > need.major;
+  return got.minor >= need.minor;
+}
 
 export function admitClient(params) {
   const client = String(params?.client || params?.algo || '');
   if (client !== CLIENT && client !== ALGO) {
     return { ok: false, reason: 'client_refused' };
+  }
+  if (!minerVersionAtLeast(params?.version)) {
+    return { ok: false, reason: 'miner_version' };
   }
   const raw = String(params?.login || params?.user || '').trim();
   const dest = parseLogin(raw);
@@ -353,7 +371,7 @@ export function isWrongAlgoReject(reason) {
  */
 export function shouldDropOnReject(session, reason) {
   const r = String(reason || '');
-  if (r === 'client_refused' || r === 'need_hash') return true;
+  if (r === 'client_refused' || r === 'need_hash' || r === 'miner_version') return true;
   if (r === 'bad_hash') return !(Number(session?.accepted) || 0);
   return false;
 }
@@ -389,10 +407,12 @@ export function gateJob(job) {
  *  blew up the miner recv line so ShearK never submitted after restamp. */
 export function wireJob(job, shareBits) {
   if (!job || typeof job !== 'object') return job;
-  const { headerHistory, ...rest } = job;
+  const { headerHistory, shareBitsHist, ...rest } = job;
   void headerHistory;
+  void shareBitsHist;
   const out = { ...rest };
   if (shareBits != null) out.shareBits = shareBits;
+  out.shareBind = 'dest';
   return out;
 }
 
@@ -446,31 +466,61 @@ export function jobWithinGrace(job, prevJob, prevJobAt, now = Date.now()) {
   return at > 0 && (Number(now) - at) < PREV_JOB_GRACE_MS;
 }
 
-export function judgeShare({ job, header, hash }) {
+export function judgeShare({ job, header, hash, dest } = {}) {
   const current = Number(job.shareBits);
   const prev = Number(job.shareBitsPrev);
   const prevAt = Number(job.shareBitsAt) || 0;
   const now = Date.now();
   const blockOk = meetsTarget(hash, Number(job.blockBits || job.bits));
-  let creditedShareBits = 0;
-  if (meetsTarget(hash, current)) creditedShareBits = current;
-  else if (Number.isFinite(prev) && prev > 0 && now - prevAt < 8000 && meetsTarget(hash, prev)) {
-    creditedShareBits = prev;
-  } else {
-    return { ok: false, reason: 'low_diff', hash: hash.toString('hex') };
+  const pay = String(dest || job?.dest || '').trim();
+  let shareHash = hash;
+  if (pay) {
+    const nc = noteCommitOfShare({ dest: pay });
+    if (!nc || nc.length !== 32) {
+      return { ok: false, reason: 'miner_addr', hash: hash.toString('hex') };
+    }
+    shareHash = destBoundShareHash(hash, nc);
   }
-  return {
-    ok: true,
-    hash: hash.toString('hex'),
-    block: blockOk,
-    header,
-    bitsMet: leadingZeroBits(hash),
-    creditedShareBits,
-  };
+  let creditedShareBits = 0;
+  if (meetsTarget(shareHash, current)) creditedShareBits = current;
+  const hist = [
+    ...(Number.isFinite(prev) && prev > 0 ? [{ bits: prev, at: prevAt }] : []),
+    ...(Array.isArray(job.shareBitsHist) ? job.shareBitsHist : []),
+  ];
+  for (const row of hist) {
+    const b = Number(row?.bits);
+    const at = Number(row?.at) || 0;
+    if (!(b > 0) || b === current) continue;
+    if (now - at >= 12_000) continue;
+    if (meetsTarget(shareHash, b) && b > creditedShareBits) creditedShareBits = b;
+  }
+  /* Dest-bound miners still submit RandomX block hits (shareBits often
+   * equals unpacked header bits). Those are blocks, not low_diff. */
+  if (creditedShareBits > 0) {
+    return {
+      ok: true,
+      hash: hash.toString('hex'),
+      block: blockOk,
+      header,
+      bitsMet: leadingZeroBits(shareHash),
+      creditedShareBits,
+    };
+  }
+  if (blockOk) {
+    return {
+      ok: true,
+      hash: hash.toString('hex'),
+      block: true,
+      header,
+      bitsMet: leadingZeroBits(hash),
+      creditedShareBits: 0,
+    };
+  }
+  return { ok: false, reason: 'low_diff', hash: hash.toString('hex') };
 }
 
 /** Sync path for tests. Live submits use the RandomX worker so HTTP cannot stall. */
-export function scoreShare({ job, nonce, claimed } = {}) {
+export function scoreShare({ job, nonce, claimed, dest } = {}) {
   const want = claimed ? String(claimed).toLowerCase() : '';
   const headers = candidateShareHeaders(job);
   const list = headers.length ? headers : [job?.header];
@@ -487,7 +537,7 @@ export function scoreShare({ job, nonce, claimed } = {}) {
       last = { ok: false, reason: 'bad_hash', hash: hex };
       continue;
     }
-    const judged = judgeShare({ job, header: prep.header, hash });
+    const judged = judgeShare({ job, header: prep.header, hash, dest });
     if (judged.ok) return judged;
     last = judged;
   }
@@ -671,12 +721,10 @@ function easeHashrate(miner, instant, now, tauS = HASHRATE_EMA_TAU_S) {
 }
 
 /**
- * Display H/s is hashes delta / wall time the pool actually received.
- * Same quantity the miner paints. Ignore login `hashrate` (first-second
- * spike). Do not hold a past spike across a stall. Share work still mints.
+ * Display H/s is hashes/dt over SELF_RATE_MIN_DT_S (ShearK g_smooth_hs tau).
+ * Ignore login `hashrate` (first-second and 2s restamp spikes). Mint stays proven.
  */
-/** Same window as ShearK `RATE_MIN_DT` so miner and pool paint hashes/dt alike. */
-export const SELF_RATE_MIN_DT_S = 2;
+export const SELF_RATE_MIN_DT_S = 8;
 
 export function applyMinerSelfRate(session, params, now = Date.now()) {
   if (!session || !params) return session;
@@ -687,42 +735,42 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
     session.clientHashesAt = now;
     if (!Number.isFinite(Number(session.clientHashesRound0))) session.clientHashesRound0 = hashes;
     if (hashes < Number(session.clientHashesRound0)) session.clientHashesRound0 = hashes;
-    const prev = Number(session.rateHashes0);
-    const t0 = Number(session.rateAt0);
-    if (!Number.isFinite(prev) || !(t0 > 0) || hashes < prev) {
+  }
+  if (!Number.isFinite(hashes) || hashes < 0) return session;
+  const threads = Math.max(1, Number(session.threads) || Number(session.claimedThreads) || Number(params.threads) || 1);
+  const cap = threads * 2500;
+  const prev = Number(session.rateHashes0);
+  const t0 = Number(session.rateAt0);
+  if (!Number.isFinite(prev) || !(t0 > 0) || hashes < prev) {
+    session.rateHashes0 = hashes;
+    session.rateAt0 = now;
+    return session;
+  }
+  const dt = (now - t0) / 1000;
+  if (dt >= SELF_RATE_MIN_DT_S) {
+    const delta = hashes - prev;
+    if (delta > 0) {
+      const inst = delta / dt;
+      const prevHs = Number(session.clientHs) || 0;
+      const jumped = prevHs > 1 && inst > prevHs * 8 && inst > threads * 800;
+      if (inst > cap || jumped) {
+        session.rateHashes0 = hashes;
+        session.rateAt0 = now;
+      } else if (prevHs > 0 && inst < prevHs * HASHRATE_HOLD_FRAC) {
+        session.rateHashes0 = hashes;
+        session.rateAt0 = now;
+      } else {
+        const tau = Math.max(1, HASHRATE_EMA_TAU_S);
+        const alpha = 1 - Math.exp(-dt / tau);
+        session.clientHs = prevHs > 0 ? prevHs + alpha * (inst - prevHs) : inst;
+        session.clientHsAt = now;
+        session.rateHashes0 = hashes;
+        session.rateAt0 = now;
+      }
+    } else {
       session.rateHashes0 = hashes;
       session.rateAt0 = now;
-    } else {
-      const dt = (now - t0) / 1000;
-      if (dt >= SELF_RATE_MIN_DT_S) {
-        const delta = hashes - prev;
-        if (delta > 0) {
-          const hs = delta / dt;
-          const threads = Math.max(1, Number(session.threads) || Number(session.claimedThreads) || 1);
-          const prevHs = Number(session.clientHs) || 0;
-          // Same quantity ShearK paints: hashes/dt. Mint stays proven 2^shareBits.
-          // jit-full is ~400–500 H/s/thread; a blockfound counter jump is kH/s.
-          const cap = threads * 2500;
-          const jumped = prevHs > 1 && hs > prevHs * 8 && hs > threads * 800;
-          if (hs > cap || jumped) {
-            session.rateHashes0 = hashes;
-            session.rateAt0 = now;
-          } else if (prevHs > 0 && hs < prevHs * HASHRATE_HOLD_FRAC) {
-            session.rateHashes0 = hashes;
-            session.rateAt0 = now;
-          } else {
-            session.clientHs = hs;
-            session.clientHsAt = now;
-            session.rateHashes0 = hashes;
-            session.rateAt0 = now;
-          }
-        } else if (dt >= 8) {
-          session.rateHashes0 = hashes;
-          session.rateAt0 = now;
-        }
-      }
     }
-    return session;
   }
   return session;
 }
@@ -741,22 +789,17 @@ export function liveHashrate(miner, now = Date.now()) {
 
 /**
  * Public HUD H/s: EMA toward hashes/dt so miner and pool agree.
- * Dips below HOLD_FRAC and stalls keep the last ease. Rises are stepped
- * by RISE_FRAC so a new job cannot spike the paint.
+ * Dips below HOLD_FRAC and stalls keep the last ease. Do not cap a
+ * hasher's real rate — only ignore junk discontinuities in applyMinerSelfRate.
  */
 export function reportedHashrate(miner, now = Date.now()) {
   const at = Number(now) || Date.now();
-  const held = Number(miner?.emaHs) || 0;
-  const t0 = Number(miner?.emaAt) || 0;
-  const instant = liveHashrate(miner, at);
+  const hs = liveHashrate(miner, at);
+  const held = Number(miner?.clientHs) || 0;
+  const t0 = Number(miner?.clientHsAt) || 0;
   const hold = held > 0 && t0 > 0 && (at - t0) < HASHRATE_STALL_HOLD_MS;
-  if (hold && (!(instant > 0) || instant < held * HASHRATE_HOLD_FRAC)) return held;
-  if (instant > 0) {
-    const cap = held > 0 ? held * HASHRATE_RISE_FRAC : instant;
-    const target = instant > cap ? cap : instant;
-    return easeHashrate(miner, target, at);
-  }
-  return hold ? held : 0;
+  if (hold && (!(hs > 0) || hs < held * HASHRATE_HOLD_FRAC)) return held;
+  return hs > 0 ? hs : (hold ? held : 0);
 }
 
 /** HUD: miner's own hash counter this round. Never a mint path. */
@@ -895,7 +938,7 @@ export function createPool({
       if (conn) conn.hashInflight = Math.max(0, (Number(conn.hashInflight) || 1) - 1);
     });
   }
-  async function scoreShareLive({ job, nonce, claimed, conn } = {}) {
+  async function scoreShareLive({ job, nonce, claimed, conn, dest } = {}) {
     const want = claimed ? String(claimed).toLowerCase() : '';
     const headers = candidateShareHeaders(job);
     const list = headers.length ? headers : [job?.header];
@@ -912,7 +955,7 @@ export function createPool({
         last = { ok: false, reason: 'bad_hash', hash: hex };
         continue;
       }
-      const judged = judgeShare({ job, header: prep.header, hash });
+      const judged = judgeShare({ job, header: prep.header, hash, dest });
       if (judged.ok) return judged;
       last = judged;
     }
@@ -1087,12 +1130,19 @@ export function createPool({
     if (!force && lastJob && parentOk && Number(lastJob.blockBits || lastJob.bits) === liveBits) {
       lastIssueAt = now;
       if (Number(lastJob.shareBits) === sb) return lastJob;
+      const hist = [...(lastJob.shareBitsHist || []), { bits: Number(lastJob.shareBits), at: now }]
+        .filter((r) => now - Number(r.at || 0) < 12_000)
+        .slice(-8);
       const job = {
         ...lastJob,
         shareBitsPrev: Number(lastJob.shareBits),
         shareBitsAt: now,
         shareBits: sb,
+        shareBitsHist: hist,
       };
+      lastJob = job;
+      const rec = job.jobId ? store.jobs?.get?.(String(job.jobId)) : null;
+      if (rec && rec.job) rec.job = job;
       return job;
     }
     const hasherRow = [...miners.values()].find((m) => !isCminerFeeLogin(m.workerKey || m.login))
@@ -1313,9 +1363,13 @@ export function createPool({
       return;
     }
     const closedRound = !!resolved.closedRound;
+    const destPay = hasherPayoutDest(session?.login, {
+      dest: session?.payoutDest,
+      height: Number(store.tip()?.height || 0) + 1,
+    });
     let scored;
     try {
-      scored = await scoreShareLive({ job, nonce: params.nonce, claimed, conn });
+      scored = await scoreShareLive({ job, nonce: params.nonce, claimed, conn, dest: destPay });
     } catch (e) {
       const reason = String(e?.message || e) === 'hash_busy' ? 'busy' : 'hash_failed';
       replyLine(sock, { id: msg.id, error: reason });
@@ -1341,12 +1395,8 @@ export function createPool({
     stats.accepted += 1;
     if (session) {
       session.accepted += 1;
-      const destPay = hasherPayoutDest(session.login, {
-        dest: session.payoutDest,
-        height: Number(store.tip()?.height || 0) + 1,
-      });
       const hashBuf = Buffer.from(String(scored.hash || ''), 'hex');
-      if (isDestAddress(destPay) && hashBuf.length === 32 && meetsTarget(hashBuf, SHARE_FLOOR_BITS)) {
+      if (isDestAddress(destPay) && hashBuf.length === 32 && shareMeetsFloor(hashBuf, { dest: destPay }, SHARE_FLOOR_BITS)) {
         const nk = String(params.nonce);
         if (!openShares.some((s) => String(s.nonce) === nk)) {
           openShares.push({
@@ -1361,14 +1411,15 @@ export function createPool({
           rememberLiveSharePow(scored.header || job?.header, params.nonce);
         }
       }
-      const proven = hashesProvenByShare(Number(scored.creditedShareBits || job?.shareBits) || 0);
-      if (!closedRound) {
+      const credited = Number(scored.creditedShareBits || 0);
+      const proven = credited > 0 ? hashesProvenByShare(credited) : 0;
+      if (!closedRound && proven > 0) {
         session.roundHashes += proven;
         session.hashes += proven;
       }
       session.seen = Date.now();
       session.lastShareAt = session.seen;
-      if (!closedRound) {
+      if (!closedRound && proven > 0) {
         const work = proven;
         if (!Array.isArray(session.acceptAt)) session.acceptAt = [];
         if (!Array.isArray(session.acceptWork)) session.acceptWork = [];
@@ -1473,7 +1524,7 @@ export function createPool({
         result: { status: 'OK', hash: scored.hash, block: sealedBlock },
       }));
     } catch { /* ignore */ }
-    if (!paused && !nextJob && !closedRound && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login)) {
+    if (!paused && !nextJob && !closedRound && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login) && Number(scored.creditedShareBits) > 0) {
       conn.varShares = (Number(conn.varShares) || 0) + 1;
       const now = Date.now();
       const elapsed = now - (Number(conn.varWindowAt) || now);
