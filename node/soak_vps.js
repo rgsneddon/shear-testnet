@@ -9,6 +9,8 @@ import assert from 'node:assert/strict';
 import { createStore } from './src/store.js';
 import { mineTemplate, shouldAdopt, verifyBlock, buildTemplate, GENESIS_PREV } from './src/chain.js';
 import { decodeHeader } from '../crypto/header.js';
+import { setHashBackend } from '../crypto/shear_hash.js';
+try { setHashBackend('jit'); } catch { /* interpreter */ }
 import { GENESIS_BITS_PACKED, bitsForBlock, SPENDABLE_CONFIRMATIONS, PI_SHE_NANOS, MAGIC_TESTNET } from '../crypto/asert.js';
 import { newIdentity, destOpeningFromView, freshStealthDest, encodeDest, ed25519SeedOf } from '../crypto/address.js';
 import { vaultDest } from '../crypto/flow_sheet.js';
@@ -63,6 +65,7 @@ async function live() {
   assert.match(String(fp.fingerprint || ''), /ADMIT=ADMITv2/);
   assert.match(String(fp.fingerprint || ''), /RANGE=bpplus/);
   assert.match(String(fp.fingerprint || ''), /LEVY=weight/);
+  assert.match(String(fp.fingerprint || ''), /SHARE_BIND=rx\+noteCommit/);
   console.log(JSON.stringify({ step: 'live', stats, jroot: jr.jroot, fingerprint: fp.fingerprint }));
   return stats;
 }
@@ -104,7 +107,7 @@ async function reserveLockVote() {
   const store = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-soak-reserve-')));
   const t0 = 1_700_000_000_000;
   for (let i = 0; i < 4 + SPENDABLE_CONFIRMATIONS; i += 1) {
-    await mineOne(store, dest, LIVE_MIN_BITS, t0 + i * 90_000);
+    await mineOne(store, dest, undefined, t0 + i * 90_000);
   }
   const lock = lockTx({ from: dest, to: vault, nanos: PI_SHE_NANOS, id: 'soak-lock' });
   lock.open = open;
@@ -113,7 +116,7 @@ async function reserveLockVote() {
   signSpendTx(lock, box.key);
   const q = store.queueTx(lock);
   assert.equal(q.ok, true, q.reason);
-  await mineOne(store, dest, LIVE_MIN_BITS, t0 + (4 + SPENDABLE_CONFIRMATIONS) * 90_000);
+  await mineOne(store, dest, undefined, t0 + (4 + SPENDABLE_CONFIRMATIONS) * 90_000);
   assert.ok(Number(store.reserveVault.totalLockedNanos) >= PI_SHE_NANOS);
   const vt = voteTx({ from: dest, dest: vault, choice: VOTE_INCREASE, id: 'soak-vote' });
   vt.open = open;
@@ -124,7 +127,7 @@ async function reserveLockVote() {
   signSpendTx(vt, box.key);
   const qv = store.queueTx(vt);
   assert.equal(qv.ok, true, qv.reason);
-  await mineOne(store, dest, LIVE_MIN_BITS, t0 + (5 + SPENDABLE_CONFIRMATIONS) * 90_000);
+  await mineOne(store, dest, undefined, t0 + (5 + SPENDABLE_CONFIRMATIONS) * 90_000);
   assert.equal(store.reserveVault.votes.increase, 1);
   console.log(JSON.stringify({
     step: 'reserve',

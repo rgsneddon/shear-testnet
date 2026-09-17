@@ -9,11 +9,13 @@ import { spendBox } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { splitLevy, levyNanos, bindWeightFee, levyNeed } from '../../crypto/levy.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
-import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { verifySealedNote } from '../../crypto/note.js';
 import { createStore } from '../src/store.js';
 import { decodeHeader } from '../../crypto/header.js';
+import { setHashBackend } from '../../crypto/shear_hash.js';
+try { setHashBackend('jit'); } catch { /* interpreter */ }
 import {
   buildTemplate,
   mineTemplate,
@@ -21,8 +23,19 @@ import {
   GENESIS_PREV,
 } from '../src/chain.js';
 
+function shareBitsOf(bits) {
+  const n = Number(bits) || 0;
+  return n >= 65536 ? Math.max(4, Math.floor(n / 65536)) : Math.max(4, n);
+}
+
+let clock = 1_700_000_000_000;
+function nextNow() {
+  clock += 90_000;
+  return clock;
+}
+
 function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
+  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: shareBitsOf(tpl.bits) });
   assert.ok(found && found.block, 'pow');
   return {
     header: found.header,
@@ -48,8 +61,8 @@ describe('verifyBlock Phase B Flow levy', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
-      now: Date.now(),
+      bits: GENESIS_BITS_PACKED,
+      now: nextNow(),
       samples: [{ miner: dest, nonce: '1', tag: 'a', count: 3 }],
     };
     const free = mine(buildTemplate(base));
@@ -178,7 +191,7 @@ describe('verifyBlock Phase B Flow levy', () => {
       const parent = store.tip();
       const { tpl: fund } = store.template({
         miner: dest,
-        bits: 4,
+        bits: GENESIS_BITS_PACKED,
         now: t0 + i * 90_000,
       });
       const foundFund = mineTemplate(fund, { maxTries: 3_000_000, shareBits: 4 });
@@ -249,11 +262,11 @@ describe('verifyBlock Phase B Flow levy', () => {
     const nowSend = Number(parentH.timestamp) + 90_000;
     const { tpl } = store.template({
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: nowSend,
     });
     assert.equal(tpl.txs.slice(1).some((t) => t.id === 'q-send'), true);
-    const found = mineTemplate({ ...tpl, bits: 4 }, { maxTries: 3_000_000, shareBits: 4 });
+    const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: shareBitsOf(tpl.bits) });
     assert.ok(found && found.block, 'pow');
     const block = {
       header: found.header,
@@ -290,8 +303,8 @@ describe('verifyBlock Phase B Flow levy', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
-      now: Date.now(),
+      bits: GENESIS_BITS_PACKED,
+      now: nextNow(),
       txs: [send],
     }));
     const got = verifyBlock(block, null);
