@@ -7,9 +7,35 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const dist = path.join(root, '..', 'dist');
 const bin = process.platform === 'win32'
   ? path.join(root, 'ShearK-Miner.exe')
   : path.join(root, 'ShearK-Miner');
+
+function pythonBin() {
+  const candidates = process.platform === 'win32' ? ['python', 'python3'] : ['python3', 'python'];
+  for (const c of candidates) {
+    const r = spawnSync(c, ['-c', 'import zipfile,sys; sys.stdout.write("ok")'], { encoding: 'utf8' });
+    if (r.status === 0 && r.stdout.includes('ok')) return c;
+  }
+  throw new Error('python with zipfile not found');
+}
+
+function zipNamelist(zipPath) {
+  const py = spawnSync(pythonBin(), ['-c',
+    'import zipfile,sys; print("\\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))', zipPath],
+    { encoding: 'utf8' });
+  assert.equal(py.status, 0, py.stderr);
+  return py.stdout.split(/\r?\n/).map((s) => s.replace(/\\/g, '/').trim()).filter(Boolean);
+}
+
+function zipMemberHead(zipPath, member, n) {
+  const py = spawnSync(pythonBin(), ['-c',
+    'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2])[:int(sys.argv[3])].hex())',
+    zipPath, member, String(n)], { encoding: 'utf8' });
+  assert.equal(py.status, 0, py.stderr);
+  return py.stdout.trim();
+}
 
 describe('ShearK-Miner', () => {
   it('selftest and print-config are ShearHash-v3 light', () => {
@@ -82,7 +108,7 @@ describe('ShearK-Miner', () => {
     assert.match(bat, /--user YOUR_SSA1\.worker/);
     assert.match(bat, /--dest YOUR_SSA1/);
     assert.match(bat, /--backend jit-full/);
-    assert.match(bat, /ShearK-Miner-2\.0-windows\.zip/);
+    assert.match(bat, /ShearK-Miner-2\.2-windows\.zip/);
     assert.equal(help.stdout.toLowerCase().includes('feeless'), false);
     assert.match(src, /hashes=%llu round=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu blocks=%d dropped=%llu/);
     assert.match(src, /cpuCores=%d cpuThreads=%d/);
@@ -157,32 +183,20 @@ describe('ShearK-Miner', () => {
     }
   });
 
-  it('leftover windows zip is only ShearK-Miner.exe + example.bat', () => {
-    const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.6-windows.zip');
+  it('2.2 windows zip is only ShearK-Miner.exe + example.bat (MZ)', () => {
+    const zip = path.join(dist, 'ShearK-Miner-2.2-windows.zip');
     assert.equal(fs.existsSync(zip), true, `missing ${zip}`);
-    const listed = spawnSync('tar', ['-tf', zip], { encoding: 'utf8' });
-    const names = (listed.status === 0 ? listed.stdout : '')
-      .split(/\r?\n/).map((s) => s.replace(/\\/g, '/').trim()).filter(Boolean);
-    let zipNames = names;
-    if (zipNames.length === 0) {
-      const py = spawnSync('python3', ['-c',
-        'import zipfile,sys; print("\\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))', zip],
-        { encoding: 'utf8' });
-      assert.equal(py.status, 0, py.stderr);
-      zipNames = py.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-    }
-    assert.deepEqual(zipNames.sort(), ['ShearK-Miner.exe', 'example.bat'].sort());
-    const mz = spawnSync('python3', ['-c',
-      'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read("ShearK-Miner.exe")[:2].hex())',
-      zip], { encoding: 'utf8' });
-    assert.equal(mz.status, 0, mz.stderr);
-    assert.equal(mz.stdout.trim(), '4d5a');
+    assert.deepEqual(zipNamelist(zip).sort(), ['ShearK-Miner.exe', 'example.bat'].sort());
+    assert.equal(zipMemberHead(zip, 'ShearK-Miner.exe', 2), '4d5a');
   });
 
-  it('1.6 linux zip is ELF, never Darwin Mach-O', () => {
-    const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.6-linux.zip');
-    assert.equal(fs.existsSync(zip), true, `missing ${zip}`);
-    const py = spawnSync('python3', ['-c',
+  it('2.2 linux zip is ELF, never Darwin Mach-O', (t) => {
+    const zip = path.join(dist, 'ShearK-Miner-2.2-linux.zip');
+    if (!fs.existsSync(zip)) {
+      t.skip('2.2 linux zip is packed on the linux box, not this Windows cut');
+      return;
+    }
+    const py = spawnSync(pythonBin(), ['-c',
       'import zipfile,sys\n'
       + 'z=zipfile.ZipFile(sys.argv[1])\n'
       + 'print("\\n".join(z.namelist()))\n'
@@ -196,21 +210,7 @@ describe('ShearK-Miner', () => {
     assert.match(out, /example\.sh/);
     assert.match(out, /MAGIC 7f454c46/);
     assert.equal(/MAGIC cffaedfe/.test(out), false);
-  });
-
-  it('leftover linux zip is ShearK-Miner + example.sh', () => {
-    const zip = path.join(root, '..', 'dist', 'ShearK-Miner-1.6-linux.zip');
-    assert.equal(fs.existsSync(zip), true, `missing ${zip}`);
-    const py = spawnSync('python3', ['-c',
-      'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]);\n'
-      + 'print("\\n".join(i.filename for i in z.infolist()));\n'
-      + 'print("MODE", oct((z.getinfo("ShearK-Miner").external_attr >> 16) & 0o777))',
-      zip], { encoding: 'utf8' });
-    assert.equal(py.status, 0, py.stderr);
-    const lines = py.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-    assert.ok(lines.includes('ShearK-Miner'));
-    assert.ok(lines.includes('example.sh'));
-    assert.ok(lines.includes('MODE 0o755') || lines.includes('MODE 0755'));
+    assert.ok(/MODE 0o755/.test(out) || /MODE 0755/.test(out), out);
   });
 
   it('login status=OK does not bump accepted; status line prints hashes and job bits', async () => {
@@ -368,21 +368,19 @@ describe('ShearK-Miner', () => {
     assert.ok(two > one, `1-thread hashes=${one} 2-thread hashes=${two}`);
   });
 
-  it('1.6 windows zip is PE + example.bat; linux zip is ELF + example.sh', () => {
-    const dist = path.join(root, '..', 'dist');
-    const win = path.join(dist, 'ShearK-Miner-1.6-windows.zip');
-    const lin = path.join(dist, 'ShearK-Miner-1.6-linux.zip');
+  it('2.2 windows zip root is PE + example.bat', () => {
+    const win = path.join(dist, 'ShearK-Miner-2.2-windows.zip');
     assert.equal(fs.existsSync(win), true, win);
-    assert.equal(fs.existsSync(lin), true, lin);
-    const winNames = spawnSync('unzip', ['-Z1', win], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
-    const linNames = spawnSync('unzip', ['-Z1', lin], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
-    assert.deepEqual(winNames, ['ShearK-Miner.exe', 'example.bat']);
-    assert.deepEqual(linNames, ['ShearK-Miner', 'example.sh']);
-    const exe = spawnSync('unzip', ['-p', win, 'ShearK-Miner.exe']).stdout;
-    assert.equal(exe.subarray(0, 2).toString('latin1'), 'MZ');
-    const elf = spawnSync('unzip', ['-p', lin, 'ShearK-Miner']).stdout;
-    assert.equal(elf.subarray(0, 4).toString('hex'), '7f454c46');
-    const fileLin = spawnSync('file', ['-'], { input: elf, encoding: 'utf8' }).stdout;
-    assert.equal(/Mach-O/.test(fileLin), false, fileLin);
+    const names = zipNamelist(win);
+    assert.deepEqual(names.sort(), ['ShearK-Miner.exe', 'example.bat'].sort());
+    assert.equal(zipMemberHead(win, 'ShearK-Miner.exe', 2), '4d5a');
+    const bat = spawnSync(pythonBin(), ['-c',
+      'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read("example.bat").decode("utf-8"))',
+      win], { encoding: 'utf8' });
+    assert.equal(bat.status, 0, bat.stderr);
+    assert.match(bat.stdout, /ShearK-Miner-2\.2-windows\.zip/);
+    assert.match(bat.stdout, /shear-testnet-v4/);
+    assert.match(bat.stdout, /--user YOUR_SSA1\.worker/);
+    assert.match(bat.stdout, /--backend jit-full/);
   });
 });
