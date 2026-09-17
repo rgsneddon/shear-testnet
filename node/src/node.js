@@ -150,7 +150,7 @@ export function printHelp() {
     '  SHEAR_P2P_BIND     default 0.0.0.0',
     '  SHEAR_RPC_PORT     default 18332',
     '  SHEAR_RPC_BIND     default 127.0.0.1 (loopback)',
-    '  SHEAR_SEEDS        comma host:port (default p2p/r2r/b2b.shear.digital:30303)',
+    '  SHEAR_SEEDS        comma host:port (default p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303)',
     '  SHEAR_P2P_MAX_FRAME  P2P JSON line cap (default 2 MiB)',
     '  SHEAR_FAST_SYNC    1 = skip archival bodies (not share PoW; peers always verify)',
     '',

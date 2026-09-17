@@ -467,7 +467,8 @@ describe('p2p gossip', () => {
     assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('2.28.8.89')), false);
     assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('178.105.187.178')), false);
     assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('178.156.222.223')), false);
-    assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('shear.digital:30303') && !String(s).includes('p2p.shear.digital')), false);
+    assert.equal(DEFAULT_SEEDS.includes('shear.digital:30303'), false);
+    assert.equal(DEFAULT_SEEDS.some((s) => /^shear\.digital:/.test(s)), false);
     assert.equal(GETBLOCK_BATCH, 16);
     assert.equal(HEADERS_PAGE, 2000);
     assert.match(src, /requestHeaders/);
