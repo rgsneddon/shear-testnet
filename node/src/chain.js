@@ -482,14 +482,21 @@ export function buildTemplate({
   };
 }
 
-export function mineTemplate(tpl, { maxTries = 1_000_000, shareBits = 8 } = {}) {
-  for (let n = 0n; n < BigInt(maxTries); n += 1n) {
+export function mineTemplate(tpl, {
+  maxTries = 1_000_000,
+  shareBits = 8,
+  nonceStart = 0n,
+  blockOnly = false,
+} = {}) {
+  const start = BigInt(nonceStart);
+  for (let i = 0n; i < BigInt(maxTries); i += 1n) {
+    const n = start + i;
     const header = setNonce(tpl.header, n);
     const hash = shearHash(header);
     if (meetsTarget(hash, tpl.bits)) {
       return { header, hash, nonce: n, block: true };
     }
-    if (meetsTarget(hash, shareBits)) {
+    if (!blockOnly && meetsTarget(hash, shareBits)) {
       return { header, hash, nonce: n, block: false };
     }
   }

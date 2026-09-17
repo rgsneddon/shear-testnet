@@ -166,31 +166,34 @@ for (;;) {
     }
     const found = mineTemplate(
       { header: Buffer.from(tpl.header, 'hex'), bits: tpl.bits },
-      { maxTries: 250_000, shareBits: tpl.bits },
+      {
+        maxTries: Number(process.env.SOAK_MINE_TRIES || 40_000),
+        shareBits: tpl.bits,
+        blockOnly: true,
+        nonceStart: BigInt(Math.floor(Math.random() * 1e9)),
+      },
     );
     if (!found || !found.block) {
-      console.error(JSON.stringify({ event: 'pow_miss', height: tpl.height, bits: tpl.bits }));
-      continue;
+      console.log(JSON.stringify({ event: 'pow_miss', height: tpl.height, bits: tpl.bits }));
+    } else {
+      const got = await rpcCall('submitblock', {
+        jobId: tpl.jobId,
+        nonce: found.nonce.toString(),
+        miner: dest,
+        powHash: found.hash ? Buffer.from(found.hash).toString('hex') : undefined,
+      });
+      n += 1;
+      console.log(JSON.stringify({
+        event: 'mined',
+        n,
+        height: tpl.height,
+        ok: !!got?.ok,
+        reason: got?.reason || null,
+        at: new Date().toISOString(),
+      }));
     }
-    const got = await rpcCall('submitblock', {
-      jobId: tpl.jobId,
-      nonce: found.nonce.toString(),
-      miner: dest,
-      powHash: found.hash ? Buffer.from(found.hash).toString('hex') : undefined,
-    });
-    n += 1;
-    console.log(JSON.stringify({
-      event: 'mined',
-      n,
-      height: tpl.height,
-      ok: !!got?.ok,
-      reason: got?.reason || null,
-      at: new Date().toISOString(),
-    }));
-    if (got?.ok) {
-      try { await trySoakFlow(Number(tpl.height) || 0); } catch (e) {
-        console.error(JSON.stringify({ event: 'soak_flow_err', err: String(e && e.message ? e.message : e) }));
-      }
+    try { await trySoakFlow(Number(tpl.height) || 0); } catch (e) {
+      console.error(JSON.stringify({ event: 'soak_flow_err', err: String(e && e.message ? e.message : e) }));
     }
   } catch (e) {
     console.error(JSON.stringify({ event: 'mine_err', err: String(e && e.message ? e.message : e) }));
