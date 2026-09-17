@@ -217,6 +217,7 @@ export function mainnetFingerprint() {
 }
 
 export function mainnetMayEmit(nowMs = Date.now()) {
+  if (String(process.env.SHEAR_MAINNET_EMIT || '').trim() !== '1') return false;
   return Number(nowMs) >= GENESIS_MAINNET_MS;
 }
 

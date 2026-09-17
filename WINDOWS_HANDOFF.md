@@ -1,6 +1,8 @@
 # Windows pointer — Shear
 
-**Do not use this file as a pin list.** The formatted Windows box has **no local repo**. Start here:
+**Start here in this repo:** [`HANDOFF_OPS.md`](HANDOFF_OPS.md)
+
+The formatted Windows box has **no local repo**. Clone `rgsneddon/shear-testnet` and read `HANDOFF_OPS.md`. Historical pointer:
 
 **https://github.com/rgsneddon/handoff/blob/main/WINDOWS.md**
 

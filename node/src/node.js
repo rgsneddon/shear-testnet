@@ -150,7 +150,7 @@ export function printHelp() {
     '  SHEAR_FAST_SYNC    1 = skip archival bodies',
     '',
     'RPC is loopback. Do not bind RPC to the public internet.',
-    'Mainnet shear-v1 is not live. SHEAR_NETWORK=shear-v1 prints clock_wait until genesis.',
+    'Mainnet shear-v1 is not live. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 after genesis.',
     'Build native addons on this box: make -C crypto/native',
   ].join('\n');
 }

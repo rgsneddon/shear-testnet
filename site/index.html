@@ -299,8 +299,8 @@
     </nav>
     <div id="testnet-banner" role="status">
       <div class="tn-word">TESTNET</div>
-      <div class="tn-launch">Testnet is the privacy-class book. Mainnet shear-v1 starts 18 Sep 2026 21:00 UK.</div>
-      <div class="tn-count" id="mainnet-countdown">18 Sep 2026 21:00 UK</div>
+      <div class="tn-launch">Testnet is the privacy-class book. Mainnet shear-v1 is not live. Operator has not cut over.</div>
+      <div class="tn-count" id="mainnet-countdown">not live</div>
     </div>
     <div class="intro-split" id="intro-split">
       <section class="panel-card">
@@ -467,7 +467,7 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
       (function countdown() {
         var el = document.getElementById('mainnet-countdown');
         if (!el) return;
-        el.textContent = '18 Sep 2026 21:00 UK';
+        el.textContent = 'not live';
       })();
       (function networkContinuity() {
         function setText(id, text) {

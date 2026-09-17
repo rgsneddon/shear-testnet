@@ -291,7 +291,13 @@ describe('hash-tx consensus law', () => {
     assert.match(mfp, /GENESIS=2026-09-18T21:00:00\+01:00/);
     assert.equal(GENESIS_MAINNET, '2026-09-18T21:00:00+01:00');
     assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET) - 1), false);
+    assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET)), false);
+    const prevEmit = process.env.SHEAR_MAINNET_EMIT;
+    process.env.SHEAR_MAINNET_EMIT = '1';
+    assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET) - 1), false);
     assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET)), true);
+    if (prevEmit === undefined) delete process.env.SHEAR_MAINNET_EMIT;
+    else process.env.SHEAR_MAINNET_EMIT = prevEmit;
     assert.equal(HASH_FN, 'ShearHash-v3');
     assert.equal(fp.includes('HASH_FN=ShearHash-v3'), true);
     assert.equal(fp.includes('HASH_FN=ShearHash-v2'), false);

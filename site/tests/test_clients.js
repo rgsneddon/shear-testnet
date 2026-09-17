@@ -53,7 +53,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /\/api\/stats/);
     assert.doesNotMatch(html, /Spendable|Copy ID|paymentCode/);
     assert.match(html, /TESTNET/);
-    assert.match(html, /Mainnet shear-v1 starts 18 Sep 2026 21:00 UK/);
+    assert.match(html, /Mainnet shear-v1 is not live/);
     assert.match(html, /Testnet is the privacy-class book/);
     assert.match(html, /id="mainnet-countdown"/);
     assert.doesNotMatch(html, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
@@ -173,7 +173,7 @@ describe('shear.digital client buttons', () => {
       assert.doesNotMatch(page, /shear-wallet-0\.13-/);
       assert.doesNotMatch(page, /shear-wallet-0\.12-/);
       assert.doesNotMatch(page, /shear-wallet-0\.11-/);
-      assert.match(page, /ShearK\/releases\/tag\/2\.0/, `${name} MINER must pin 2.0`);
+      assert.match(page, /ShearK\/releases\/tag\/2\.2/, `${name} MINER must pin 2.2`);
       assert.doesNotMatch(page, /ShearK\/releases\/tag\/1\.1/, `${name} must not offer miner 1.1`);
       assert.doesNotMatch(page, /ShearK\/releases\/tag\/1\.4/, `${name} must not offer miner 1.4`);
     }
@@ -262,10 +262,10 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /How to mine/);
     assert.match(admin, /The Reserve/);
     assert.match(admin, /pool\.shear\.digital:1111/);
-    assert.match(admin, /ShearK-Miner 2\.0/);
+    assert.match(admin, /ShearK-Miner 2\.2/);
     assert.match(admin, /shear-wallet-0\.34-/);
     assert.match(admin, /shear-wallet-0\.34-windows\.zip/);
-    assert.match(admin, /Mainnet shear-v1 starts 18 Sep 2026 21:00 UK/);
+    assert.match(admin, /Mainnet shear-v1 is not live/);
     assert.doesNotMatch(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
     assert.doesNotMatch(admin, /11th September 2026/);
     assert.doesNotMatch(admin, /9pm UK/);

@@ -2,15 +2,14 @@
 
 **She is Private.** ADMITv2 membership over this book's notes, with confidential amounts. Proof of work elects the tip. Continuity-settled.
 
-This is the **main Shear tree**: node, crypto, specs, wallet source, pool source, ShearK source, site, tests. Sibling release repos:
+This is the **main Shear tree** (`rgsneddon/shear-testnet`): node, crypto, specs, wallet source, pool source, site, tests. Official miner pin lives in a **separate** repo:
 
 | Repo | What |
 |------|------|
-| [rgsneddon/shear](https://github.com/rgsneddon/shear) | This tree (build-your-own node + full project) |
-| [rgsneddon/shear-wallet](https://github.com/rgsneddon/shear-wallet) | GUI + CLI wallet **releases** (every pin is an executable per platform) |
-| [rgsneddon/ShearK](https://github.com/rgsneddon/ShearK) | Official miner pin + how-to |
-| [rgsneddon/shear-pool](https://github.com/rgsneddon/shear-pool) | Open-source pool + deploy how-to |
-| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **shear-testnet-v4** working tree (ADMITv2 soak / public testnet) |
+| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv2 (`shear-testnet-v4`) |
+| [rgsneddon/ShearK](https://github.com/rgsneddon/ShearK) | Official miner pin + how-to (keep this repo) |
+
+Windows ops start: [`HANDOFF_OPS.md`](HANDOFF_OPS.md).
 
 Offer a silent ID (`she1`) when someone pays you. Incoming coin lands on a revolving dest (`ssa1`) that the book writes. Rest-frame (`shear1`) stays in Closure. While this book has fewer than 10,000 notes the membership set is thin.
 
@@ -19,14 +18,14 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
 - Miner pin: **ShearK-Miner 2.2** — https://github.com/rgsneddon/ShearK/releases/tag/2.2
-- Wallet pin: **0.34** (GUI + CLI). Releases: https://github.com/rgsneddon/shear-wallet
+- Wallet pin: **0.34** (GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.34
 - Stratum: `pool.shear.digital:1111`
 - P2P: `p2p.shear.digital:30303` (`shear-testnet-v4`)
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital
 - Chain: `shear-testnet-v4`
 
-Mainnet `shear-v1` is **not live**. Clients refuse to emit before the in-tree genesis instant. Do not invent a different datetime.
+Mainnet `shear-v1` is **not live**. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` after the in-tree genesis instant. Do not invent a different datetime. Do not set that env.
 
 One proven floor share mints hash-bonus units onto the dest that hashed. User transfers are signed Flow. The header commits a continuity root. Full nodes validate shareBatch until prune-1000; money vouts remain. The public pool is an equal node with a stratum.
 
@@ -56,8 +55,9 @@ sudo apt-get install -y nodejs
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"
 
-git clone https://github.com/rgsneddon/shear.git
-cd shear
+git clone https://github.com/rgsneddon/shear-testnet.git
+cd shear-testnet
+git checkout feat/admit-v2
 npm ci
 cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
 cmake --build crypto/randomx/build -j"$(nproc)"
@@ -91,7 +91,7 @@ IBD: headers then a window of getblocks (default 16 in flight). First checkpoint
 
 ### Mainnet later
 
-Do **not** set `SHEAR_NETWORK=shear-v1` today. The process prints `clock_wait` until the frozen genesis instant. When mainnet is cut, the same tree and this how-to apply with `SHEAR_NETWORK=shear-v1` and a new datadir. Testnet v4 stays in [shear-testnet](https://github.com/rgsneddon/shear-testnet).
+Do **not** set `SHEAR_NETWORK=shear-v1` or `SHEAR_MAINNET_EMIT=1`. The process prints `clock_wait`. When mainnet is cut, use a **new** datadir.
 
 ## Mine
 

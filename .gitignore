@@ -19,7 +19,7 @@ __pycache__/
 .DS_Store
 node_modules/
 .shear/
-scratch/snapshots-worthy-coin/
+scratch/
 *.log
 wallet/build/
 wallet/.dart_tool/
