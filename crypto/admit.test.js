@@ -8,7 +8,7 @@ import { admitPub, admitProve, admitVerify, jroot, emptyFluxset, applyBlockToFlu
 import { nativeLoaded, nativeMaxProof, nativeArity } from './native_admit.js';
 
 const SIB = 32 * 32;
-const LEAF_PAIRED = 32 * 2 + 64 + 32 * 32 * 4;
+const LEAF_PAIRED = 32 * 2 + 64 + 32 * 32 * 5;
 
 describe('ADMITv2 fluxset membership', () => {
   it('proves a spend is admissible in the fluxset; a sampled subset is the wrong set', () => {
@@ -53,7 +53,8 @@ describe('ADMITv2 fluxset membership', () => {
     const extra = (p) => ({ cTilde: p.cTilde, spendTag: p.spendTag });
     assert.equal(admitVerify(victim, { pubs, commits }, extra(victim)), true);
     const pAtt = pointBytes(pubs[7]);
-    assert.equal(Buffer.from(victim.blob).includes(pAtt), false);
+    const hdr = Buffer.from(victim.blob).subarray(1, 1 + 32 * 8 + 1);
+    assert.equal(hdr.includes(pAtt), false);
     const ax = randomScalar();
     const aPub = admitPub(ax);
     const aC = pointBytes(commit(99, randomScalar()));
@@ -61,6 +62,9 @@ describe('ADMITv2 fluxset membership', () => {
     const aCommits = [aC, ...commits.slice(1)];
     const attackerOwn = admitProve({ x: ax, index: 0, pubs: aPubs, commits: aCommits, c: aC });
     assert.ok(attackerOwn);
+    const forged = admitProve({ x: ax, index: 7, pubs, commits, c: commits[7] });
+    assert.ok(forged);
+    assert.equal(admitVerify(forged, { pubs, commits }, extra(forged)), false);
     const jr = jroot({ pubs, commits });
     assert.equal(admitVerify(attackerOwn, { pubs: [], commits: [] }, { jroot: jr, cTilde: attackerOwn.cTilde, spendTag: attackerOwn.spendTag }), false);
     const minted = Buffer.from(victim.blob);

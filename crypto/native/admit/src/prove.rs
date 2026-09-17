@@ -1,16 +1,18 @@
 //! ADMITv2 prove / verify. Version byte 2. ADMITv1 (linear r) fails.
 //! Membership is D-ary CDS select-and-rerandomize. No d0 / nonce / XOR path
 //! / dest_leaf of the spent note on the wire. C-tree leaves are ristretto C;
-//! C̃ is a 1-of-D rerandomization of a tree C.
+//! C̃ is a 1-of-D rerandomization of a tree C. Dest admitPub P is 1-of-D as
+//! p_com = P_j + w U at the same hidden slot (32-anonymity sibling bucket).
 
 use crate::leaf::{jroot_hash, sha512_64};
 use crate::select::{
     leaf_prove, leaf_qd, leaf_verify, paired_prove, paired_qc_opens, paired_qd_opens, paired_verify,
     rs_rand, vs_rand, LEAF_PAIRED_LEN, PAIRED_LEN,
 };
+use crate::leaf::dest_leaf_fp;
 use crate::tree::{
-    commit_ristretto_encodings, commit_vesta, note_u, path_from_levels, rerand_c, root_of_levels,
-    trees, ARITY,
+    commit_ristretto_encodings, commit_vesta, leaf_p_siblings, note_u, path_from_levels, rerand_c,
+    root_of_levels, trees, ARITY,
 };
 use ff::PrimeField;
 use pasta_curves::vesta;
@@ -145,16 +147,32 @@ pub fn admit_prove_in(
         mem.extend_from_slice(&parent_c);
         mem.extend_from_slice(&t_c_prev?.to_bytes());
     }
+    let p_sib = leaf_p_siblings(dest_leaves, n, index)?;
+    if p_sib[slots[0]] != *p {
+        return None;
+    }
+    for x in &p_sib {
+        mem.extend_from_slice(x);
+    }
     for x in &cpath[0] {
         mem.extend_from_slice(x);
     }
-    let td_leaf = vs_rand();
-    let leaf = leaf_prove(&dpath[0], &cpath[0], slots[0], &td_leaf, &ts, &ct_pt)?;
-    mem.extend_from_slice(&leaf);
-
     let u = note_u();
     let w = chal(&[b"w", x, p]);
     let p_com = p_pt + u * w;
+    let td_leaf = vs_rand();
+    let leaf = leaf_prove(
+        &dpath[0],
+        &cpath[0],
+        &p_sib,
+        slots[0],
+        &td_leaf,
+        &ts,
+        &w,
+        &ct_pt,
+        &p_com,
+    )?;
+    mem.extend_from_slice(&leaf);
     let k = chal(&[b"k", x, t]);
     let a_w = chal(&[b"aw", x, t]);
     let r_x = G * k + u * a_w;
@@ -372,6 +390,22 @@ pub fn admit_verify_in(
         dest_parent = pd;
         c_parent = pc;
     }
+    let (p_sib, off_p) = match parse_c_siblings(proof, off) {
+        Some(v) => v,
+        None => return false,
+    };
+    off = off_p;
+    let mut dest_from_p = [[0u8; 32]; ARITY];
+    for j in 0..ARITY {
+        dest_from_p[j] = if p_sib[j] == [0u8; 32] {
+            [0u8; 32]
+        } else {
+            dest_leaf_fp(&p_sib[j])
+        };
+    }
+    if commit_vesta(&dest_from_p) != dest_parent {
+        return false;
+    }
     let (siblings, off2) = match parse_c_siblings(proof, off) {
         Some(v) => v,
         None => return false,
@@ -388,7 +422,11 @@ pub fn admit_verify_in(
         Some(p) => p,
         None => return false,
     };
-    if !leaf_verify(&dest_parent, &siblings, &ct, leaf) {
+    let p_com = match decompress(&p_com_b) {
+        Some(p) => p,
+        None => return false,
+    };
+    if !leaf_verify(&dest_parent, &siblings, &p_sib, &ct, &p_com, leaf) {
         return false;
     }
     let dest_q = match leaf_qd(leaf) {
@@ -396,10 +434,6 @@ pub fn admit_verify_in(
         None => return false,
     };
     let u = note_u();
-    let p_com = match decompress(&p_com_b) {
-        Some(p) => p,
-        None => return false,
-    };
     let r_x = match decompress(&r_x_b) {
         Some(p) => p,
         None => return false,

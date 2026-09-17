@@ -4,6 +4,7 @@
 //! `W = Σ_{j≠i} x_j G_j` is the other-slot remainder (hiding).
 //! Dest (Vesta) and C (ristretto) share one wrap-around so mixed indices fail.
 //! C-tree leaves are ristretto C; C̃ = C_i + t H is a 1-of-D at the leaf.
+//! Dest admitPub P_i is 1-of-D as p_com = P_i + w U at the same slot.
 
 use crate::leaf::sha512_64;
 use crate::tree::{
@@ -20,7 +21,7 @@ use rand_core::{OsRng, RngCore};
 
 pub const CDS_LEN: usize = 32 + 32 + 32 + ARITY * 32 * 3; // W, Q, c0, z_x/z_r/z_t
 pub const PAIRED_LEN: usize = 32 * 4 + 64 + ARITY * 32 * 6; // Wd Qd Wc Qc hv0 + 6 z per slot
-pub const LEAF_PAIRED_LEN: usize = 32 * 2 + 64 + ARITY * 32 * 4; // Wd Qd hv0 + dest z*3 + c z_t
+pub const LEAF_PAIRED_LEN: usize = 32 * 2 + 64 + ARITY * 32 * 5; // Wd Qd hv0 + dest z*3 + c z_t + p z_w
 
 pub(crate) fn vs_rand() -> vesta::Scalar {
     let mut w = [0u8; 64];
@@ -805,23 +806,43 @@ fn leaf_chal(
     rpd: &[u8; 32],
     rqd: &[u8; 32],
     rc: &[u8; 32],
+    rp: &[u8; 32],
     pd: &[u8; 32],
     wd: &[u8; 32],
     qd: &[u8; 32],
     ct: &[u8; 32],
-    siblings: &[u8],
+    pcom: &[u8; 32],
+    siblings_c: &[u8],
+    siblings_p: &[u8],
 ) -> [u8; 64] {
-    sha512_64(&[rpd, rqd, rc, pd, wd, qd, ct, siblings, b"cds-leaf"])
+    sha512_64(&[
+        rpd,
+        rqd,
+        rc,
+        rp,
+        pd,
+        wd,
+        qd,
+        ct,
+        pcom,
+        siblings_c,
+        siblings_p,
+        b"cds-leaf",
+    ])
 }
 
-/// Leaf: dest CDS + C̃ = C_j + t H, same hidden slot. `c_ch` are compressed C.
+/// Leaf: dest CDS + C̃ = C_j + t H + P̃ = P_j + w U, same hidden slot.
+/// `c_ch` are compressed C; `p_ch` are compressed dest P (admitPub).
 pub fn leaf_prove(
     dest_ch: &[[u8; 32]; ARITY],
     c_ch: &[[u8; 32]; ARITY],
+    p_ch: &[[u8; 32]; ARITY],
     index: usize,
     t_d: &vesta::Scalar,
     t_note: &RScalar,
+    w_p: &RScalar,
     c_tilde: &RistrettoPoint,
+    p_com: &RistrettoPoint,
 ) -> Option<Vec<u8>> {
     if index >= ARITY {
         return None;
@@ -831,8 +852,16 @@ pub fn leaf_prove(
         return None;
     }
     let ci = dec_r(&c_ch[index])?;
+    let pj = dec_r(&p_ch[index])?;
+    if bool::from(pj.is_identity()) {
+        return None;
+    }
     let h = ristretto_h_note();
+    let (u_r, _, _) = ristretto_gens();
     if *c_tilde != ci + h * t_note {
+        return None;
+    }
+    if *p_com != pj + *u_r * w_p {
         return None;
     }
     let (ud, gd) = vesta_gens();
@@ -852,31 +881,42 @@ pub fn leaf_prove(
     let wd_b = enc_v(&wd);
     let qd_b = enc_v(&qd);
     let ct_b = enc_r(c_tilde);
-    let mut sib = Vec::with_capacity(ARITY * 32);
+    let pcom_b = enc_r(p_com);
+    let mut sib_c = Vec::with_capacity(ARITY * 32);
+    let mut sib_p = Vec::with_capacity(ARITY * 32);
     for c in c_ch {
-        sib.extend_from_slice(c);
+        sib_c.extend_from_slice(c);
+    }
+    for p in p_ch {
+        sib_p.extend_from_slice(p);
     }
 
     let mut zxd = [[0u8; 32]; ARITY];
     let mut zrd = [[0u8; 32]; ARITY];
     let mut ztd = [[0u8; 32]; ARITY];
     let mut zct = [[0u8; 32]; ARITY];
+    let mut zpt = [[0u8; 32]; ARITY];
     let kxd = vs_rand();
     let krd = vs_rand();
     let ktd = vs_rand();
     let kct = rs_rand();
+    let kpt = rs_rand();
     let rpd_i = *ud * krd + gd[index] * kxd;
     let rqd_i = gseld * kxd + *ud * ktd;
     let rc_i = h * kct;
+    let rp_i = *u_r * kpt;
     let hv = leaf_chal(
         &enc_v(&rpd_i),
         &enc_v(&rqd_i),
         &enc_r(&rc_i),
+        &enc_r(&rp_i),
         &pd_b,
         &wd_b,
         &qd_b,
         &ct_b,
-        &sib,
+        &pcom_b,
+        &sib_c,
+        &sib_p,
     );
     let mut ed = vesta::Scalar::from_uniform_bytes(&hv);
     let mut ec = RScalar::from_bytes_mod_order_wide(&hv);
@@ -886,23 +926,30 @@ pub fn leaf_prove(
         let b = vs_rand();
         let c = vs_rand();
         let d = rs_rand();
+        let e = rs_rand();
         zxd[j] = a.to_repr().into();
         zrd[j] = b.to_repr().into();
         ztd[j] = c.to_repr().into();
         zct[j] = d.to_bytes();
+        zpt[j] = e.to_bytes();
         let cj = dec_r(&c_ch[j]).unwrap_or_else(RistrettoPoint::identity);
+        let ppj = dec_r(&p_ch[j]).unwrap_or_else(RistrettoPoint::identity);
         let rpd = *ud * b + gd[j] * a - pwd * ed;
         let rqd = gseld * a + *ud * c - qd * ed;
         let rc = h * d - (*c_tilde - cj) * ec;
+        let rp = *u_r * e - (*p_com - ppj) * ec;
         let hv = leaf_chal(
             &enc_v(&rpd),
             &enc_v(&rqd),
             &enc_r(&rc),
+            &enc_r(&rp),
             &pd_b,
             &wd_b,
             &qd_b,
             &ct_b,
-            &sib,
+            &pcom_b,
+            &sib_c,
+            &sib_p,
         );
         ed = vesta::Scalar::from_uniform_bytes(&hv);
         ec = RScalar::from_bytes_mod_order_wide(&hv);
@@ -912,16 +959,20 @@ pub fn leaf_prove(
     zrd[index] = (krd + ed * rd).to_repr().into();
     ztd[index] = (ktd + ed * *t_d).to_repr().into();
     zct[index] = (kct + ec * *t_note).to_bytes();
+    zpt[index] = (kpt + ec * *w_p).to_bytes();
 
     let mut seed0 = leaf_chal(
         &enc_v(&rpd_i),
         &enc_v(&rqd_i),
         &enc_r(&rc_i),
+        &enc_r(&rp_i),
         &pd_b,
         &wd_b,
         &qd_b,
         &ct_b,
-        &sib,
+        &pcom_b,
+        &sib_c,
+        &sib_p,
     );
     let mut e0d = vesta::Scalar::from_uniform_bytes(&seed0);
     let mut e0c = RScalar::from_bytes_mod_order_wide(&seed0);
@@ -931,19 +982,25 @@ pub fn leaf_prove(
         let b = vs(&zrd[jj]);
         let c = vs(&ztd[jj]);
         let d = rsc(&zct[jj]);
+        let e = rsc(&zpt[jj]);
         let cj = dec_r(&c_ch[jj]).unwrap_or_else(RistrettoPoint::identity);
+        let ppj = dec_r(&p_ch[jj]).unwrap_or_else(RistrettoPoint::identity);
         let rpd = *ud * b + gd[jj] * a - pwd * e0d;
         let rqd = gseld * a + *ud * c - qd * e0d;
         let rc = h * d - (*c_tilde - cj) * e0c;
+        let rp = *u_r * e - (*p_com - ppj) * e0c;
         seed0 = leaf_chal(
             &enc_v(&rpd),
             &enc_v(&rqd),
             &enc_r(&rc),
+            &enc_r(&rp),
             &pd_b,
             &wd_b,
             &qd_b,
             &ct_b,
-            &sib,
+            &pcom_b,
+            &sib_c,
+            &sib_p,
         );
         e0d = vesta::Scalar::from_uniform_bytes(&seed0);
         e0c = RScalar::from_bytes_mod_order_wide(&seed0);
@@ -958,6 +1015,7 @@ pub fn leaf_prove(
         out.extend_from_slice(&zrd[j]);
         out.extend_from_slice(&ztd[j]);
         out.extend_from_slice(&zct[j]);
+        out.extend_from_slice(&zpt[j]);
     }
     Some(out)
 }
@@ -972,7 +1030,9 @@ pub fn leaf_qd(proof: &[u8]) -> Option<[u8; 32]> {
 pub fn leaf_verify(
     dest_parent: &[u8; 32],
     c_ch: &[[u8; 32]; ARITY],
+    p_ch: &[[u8; 32]; ARITY],
     c_tilde: &RistrettoPoint,
+    p_com: &RistrettoPoint,
     proof: &[u8],
 ) -> bool {
     if proof.len() != LEAF_PAIRED_LEN {
@@ -1002,17 +1062,23 @@ pub fn leaf_verify(
         Some(x) => x,
         None => return false,
     };
-    if bool::from(qd.is_identity()) || c_tilde.is_identity() {
+    if bool::from(qd.is_identity()) || c_tilde.is_identity() || p_com.is_identity() {
         return false;
     }
     let h = ristretto_h_note();
+    let (u_r, _, _) = ristretto_gens();
     let pwd = pd - wd;
     let pwd_t = VestaVar::new(pwd);
     let qd_t = VestaVar::new(qd);
     let ct_b = enc_r(c_tilde);
-    let mut sib = Vec::with_capacity(ARITY * 32);
+    let pcom_b = enc_r(p_com);
+    let mut sib_c = Vec::with_capacity(ARITY * 32);
+    let mut sib_p = Vec::with_capacity(ARITY * 32);
     for c in c_ch {
-        sib.extend_from_slice(c);
+        sib_c.extend_from_slice(c);
+    }
+    for p in p_ch {
+        sib_p.extend_from_slice(p);
     }
     let mut ed = vesta::Scalar::from_uniform_bytes(&hv0);
     let mut ec = RScalar::from_bytes_mod_order_wide(&hv0);
@@ -1035,20 +1101,29 @@ pub fn leaf_verify(
             Some(x) => x,
             None => return false,
         });
-        off += 128;
+        let e = rsc(&match take32(proof, off + 128) {
+            Some(x) => x,
+            None => return false,
+        });
+        off += 160;
         let cj = dec_r(&c_ch[j]).unwrap_or_else(RistrettoPoint::identity);
+        let ppj = dec_r(&p_ch[j]).unwrap_or_else(RistrettoPoint::identity);
         let rpd = vesta_mul_u(&b) + vesta_mul_g(j, &a) - pwd_t.mul(&ed);
         let rqd = vesta_mul_gsel(&a) + vesta_mul_u(&c) - qd_t.mul(&ed);
         let rc = h * d - (*c_tilde - cj) * ec;
+        let rp = *u_r * e - (*p_com - ppj) * ec;
         let hv = leaf_chal(
             &enc_v(&rpd),
             &enc_v(&rqd),
             &enc_r(&rc),
+            &enc_r(&rp),
             dest_parent,
             &wd_b,
             &qd_b,
             &ct_b,
-            &sib,
+            &pcom_b,
+            &sib_c,
+            &sib_p,
         );
         last = hv;
         ed = vesta::Scalar::from_uniform_bytes(&hv);
@@ -1146,26 +1221,39 @@ mod tests {
     fn leaf_rerand_binds_c_tilde() {
         let d = kids(1);
         let mut c = [[0u8; 32]; ARITY];
+        let mut p_ch = [[0u8; 32]; ARITY];
         let mut pts = Vec::new();
+        let mut dest_p = Vec::new();
+        let g = curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
+        let (u, _, _) = ristretto_gens();
         for i in 0..ARITY {
             let r = rs_rand();
-            let p = curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT
-                * RScalar::from((i as u64) + 1)
-                + ristretto_h_note() * r;
+            let p = g * RScalar::from((i as u64) + 1) + ristretto_h_note() * r;
             pts.push(p);
             c[i] = p.compress().to_bytes();
+            let dp = g * RScalar::from((i as u64) + 7);
+            dest_p.push(dp);
+            p_ch[i] = dp.compress().to_bytes();
         }
         let t = rs_rand();
+        let w = rs_rand();
         let ct = pts[6] + ristretto_h_note() * t;
+        let pcom = dest_p[6] + u * w;
         let td = vs_rand();
-        let pr = leaf_prove(&d, &c, 6, &td, &t, &ct).expect("leaf");
+        let pr = leaf_prove(&d, &c, &p_ch, 6, &td, &t, &w, &ct, &pcom).expect("leaf");
         let pd = commit_vesta(&d);
-        assert!(leaf_verify(&pd, &c, &ct, &pr));
+        assert!(leaf_verify(&pd, &c, &p_ch, &ct, &pcom, &pr));
         let fake = ct + ristretto_h_note() * rs_rand();
-        assert!(!leaf_verify(&pd, &c, &fake, &pr));
+        assert!(!leaf_verify(&pd, &c, &p_ch, &fake, &pcom, &pr));
+        let fake_p = pcom + u * rs_rand();
+        assert!(!leaf_verify(&pd, &c, &p_ch, &ct, &fake_p, &pr));
         let mut c2 = c;
         c2.swap(6, 7);
-        assert!(!leaf_verify(&pd, &c2, &ct, &pr));
+        assert!(!leaf_verify(&pd, &c2, &p_ch, &ct, &pcom, &pr));
         assert!(!pr.windows(32).any(|w| w == &d[6]));
+        assert!(
+            leaf_prove(&d, &c, &p_ch, 6, &td, &t, &w, &ct, &(dest_p[0] + u * w)).is_none(),
+            "p_com must be the selected dest P"
+        );
     }
 }

@@ -218,6 +218,22 @@ fn take32(buf: &[u8], i: usize) -> [u8; 32] {
     o
 }
 
+/// Raw dest P encodings in the leaf-layer arity-32 bucket that contains `index`.
+/// Pad slots are the all-zero encoding, matching `pad_to_arity` on dest_leaf_fp.
+pub fn leaf_p_siblings(dest_leaves: &[u8], n: usize, index: usize) -> Option<[[u8; 32]; ARITY]> {
+    if n == 0 || index >= n {
+        return None;
+    }
+    let mut xs = [[0u8; 32]; ARITY];
+    let start = (index / ARITY) * ARITY;
+    for i in 0..ARITY {
+        if start + i < n {
+            xs[i] = take32(dest_leaves, start + i);
+        }
+    }
+    Some(xs)
+}
+
 /// Pad a level to a multiple of ARITY with identity children. Do not expand
 /// to the next power of D (that made |J|=100k rebuild 1_048_576 dummy leaves).
 fn pad_to_arity(level: &mut Vec<[u8; 32]>) {

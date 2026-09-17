@@ -5,7 +5,7 @@ import { admitPub, admitProve, admitVerify, emptyFluxset, applyBlockToFluxset, j
 import { levyNeed, levyFromWeight, LEVY_CAP_NANOS } from '../../crypto/levy.js';
 
 const SIB = 32 * 32;
-const LEAF_PAIRED = 32 * 2 + 64 + 32 * 32 * 4;
+const LEAF_PAIRED = 32 * 2 + 64 + 32 * 32 * 5;
 
 describe('ADMITv2 adversary (zero skips)', () => {
   it('native verify rejects from-scratch non-member, self-minted C̃, mixed dest/C siblings', () => {
@@ -28,6 +28,9 @@ describe('ADMITv2 adversary (zero skips)', () => {
       c: aC,
     });
     assert.ok(attackerOwn);
+    const forged = admitProve({ x: ax, index: 7, pubs, commits, c: commits[7] });
+    assert.ok(forged);
+    assert.equal(admitVerify(forged, { pubs, commits }, extra(forged)), false);
     const jr = jroot({ pubs, commits });
     assert.equal(admitVerify(attackerOwn, { pubs: [], commits: [] }, { jroot: jr, cTilde: attackerOwn.cTilde, spendTag: attackerOwn.spendTag }), false);
     const minted = Buffer.from(victim.blob);

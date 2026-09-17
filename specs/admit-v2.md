@@ -58,7 +58,7 @@ Replacement, **outside** the membership circuit:
 - Spend **select-and-rerandomizes** C: public `C̃ = C + t·H` with fresh `t ≠ 0`. `C̃` is not equal to any vout C.
 - Sealed vin carries **only** `{ commit: C̃ }` (and coinbase marker if any).
 - C-tree leaves are the ristretto C encodings. Membership is D-ary CDS select-and-rerandomize (dest Vesta + C ristretto share one wrap-around so mixed indices fail). Slot `d0` and the dest_leaf of the spent note are **not** on the wire. Intermediate parents are opened from the previous layer’s Q (32-bucket, not the spent leaf).
-- At the C leaf, `C̃ = C_j + t·H` is a 1-of-D among the arity-32 sibling C’s. A self-minted `C̃` that is not a rerandomization of a tree member fails `admit_membership`.
+- At the leaf, the arity-32 dest P encodings (admitPub) and C encodings may appear as sibling buckets (32-anonymity). `p_com = P_j + w·U` and `C̃ = C_j + t·H` are 1-of-D at the **same** hidden slot. `dest_parent` must equal the Vesta commit of `H_to_field` of those P’s (zero-pad slots stay the identity child). An attacker x with a victim path / self-minted `C̃` fails `admit_membership`.
 - Kernel: `Σ C_out + C_fee = Σ C̃_in + excess·H`. `C_fee` is Pedersen of the weight-levy. Amount sent is not an input to the fee. `v` is not on the body.
 
 Wallet openings (`r`, `t`, original C, dest) never leave the wallet. `compactTx` is the privacy boundary.

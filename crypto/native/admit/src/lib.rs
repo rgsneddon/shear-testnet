@@ -568,8 +568,8 @@ mod tests {
         .expect("prove");
         let dest_l = crate::leaf::dest_leaf_fp(&ps[idx]);
         assert!(
-            !proof.windows(32).any(|w| w == ps[idx]),
-            "blob must not contain P"
+            !proof[1..(1 + 32 * 8 + 1)].windows(32).any(|w| *w == ps[idx]),
+            "header must not name P"
         );
         assert!(
             !proof.windows(32).any(|w| w == dest_l),
@@ -616,6 +616,43 @@ mod tests {
             "from-scratch attacker-x + self-minted C̃ against honest jroot must fail"
         );
         let _ = (xs, ps, cs);
+    }
+
+    #[test]
+    fn attacker_x_cannot_spend_victim_index() {
+        let n = 8usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let ax = rand_scalar();
+        let ap = (RISTRETTO_BASEPOINT_POINT * ax).compress().to_bytes();
+        let t = rand_scalar();
+        assert!(
+            admit_prove(
+                &ax.to_bytes(),
+                &ap,
+                &cs[3],
+                &t.to_bytes(),
+                3,
+                &dest_blob,
+                &c_blob,
+                n,
+            )
+            .is_none(),
+            "attacker x + victim dest/C index must not prove"
+        );
+        let (ct, proof) = admit_prove(
+            &xs[3].to_bytes(),
+            &ps[3],
+            &cs[3],
+            &t.to_bytes(),
+            3,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .expect("honest");
+        let tag = proof_spend_tag(&proof).unwrap();
+        assert!(admit_verify(&proof, &jr, &ct, &tag, &[], &[], 0));
     }
 
     #[test]
