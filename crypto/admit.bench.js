@@ -24,7 +24,7 @@ describe('ADMITv2 bench 1k/10k/100k', { timeout: 600_000 }, () => {
     const ok = admitVerify(proof, { pubs: [], commits: [] }, { jroot: jr, cTilde: proof.cTilde, spendTag: proof.spendTag });
     const verifyMs = Date.now() - t1;
     assert.equal(ok, true);
-    assert.ok(proof.blob.length <= 16384, `proof ${proof.blob.length}`);
+    assert.ok(proof.blob.length <= 32768, `proof ${proof.blob.length}`);
     assert.ok(proveMs < 30_000, `prove ${proveMs}ms`);
     assert.ok(verifyMs < 1_000, `verify ${verifyMs}ms (must be log-time vs jroot)`);
   });
@@ -35,7 +35,7 @@ describe('ADMITv2 bench 1k/10k/100k', { timeout: 600_000 }, () => {
       assert.ok(got, `native bench ${n} failed`);
       const proveMs = got.proveUs / 1000;
       const verifyMs = got.verifyUs / 1000;
-      assert.ok(got.proofLen <= 16384, `proof ${got.proofLen}`);
+      assert.ok(got.proofLen <= 32768, `proof ${got.proofLen}`);
       assert.ok(got.proofLen > 0);
       if (n <= 1_000) {
         assert.ok(proveMs < 5_000, `1k prove ${proveMs}ms`);

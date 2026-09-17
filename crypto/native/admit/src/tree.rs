@@ -4,10 +4,10 @@
 //! Parent of Fp children is a Vesta Pedersen (Vesta scalar = Pallas base).
 //! Internal Vesta-point x-coords (Fq) are committed on Pallas.
 
-use crate::leaf::{c_leaf_scalar, dest_leaf_fp, jroot_hash, sha512_64, vesta_scalar_from_fp_bytes};
+use crate::leaf::{dest_leaf_fp, jroot_hash, sha512_64};
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar as RScalar;
-use ff::FromUniformBytes;
+use ff::{FromUniformBytes, PrimeField};
 use group::{Group, GroupEncoding};
 use pasta_curves::{pallas, vesta};
 
@@ -54,7 +54,7 @@ fn gen_ristretto(i: u64, dst: &[u8]) -> RistrettoPoint {
 
 use std::sync::OnceLock;
 
-fn vesta_gens() -> &'static (vesta::Point, Vec<vesta::Point>) {
+pub(crate) fn vesta_gens() -> &'static (vesta::Point, Vec<vesta::Point>) {
     static G: OnceLock<(vesta::Point, Vec<vesta::Point>)> = OnceLock::new();
     G.get_or_init(|| {
         let u = gen_vesta(0, b"shear-ct-vesta-U");
@@ -76,7 +76,7 @@ fn pallas_gens() -> &'static (pallas::Point, Vec<pallas::Point>) {
     })
 }
 
-fn ristretto_gens() -> &'static (RistrettoPoint, Vec<RistrettoPoint>, RistrettoPoint) {
+pub(crate) fn ristretto_gens() -> &'static (RistrettoPoint, Vec<RistrettoPoint>, RistrettoPoint) {
     static G: OnceLock<(RistrettoPoint, Vec<RistrettoPoint>, RistrettoPoint)> = OnceLock::new();
     G.get_or_init(|| {
         let u = gen_ristretto(0, b"shear-ct-ristretto-U");
@@ -88,7 +88,15 @@ fn ristretto_gens() -> &'static (RistrettoPoint, Vec<RistrettoPoint>, RistrettoP
     })
 }
 
-fn blind_fp(xs: &[[u8; 32]]) -> vesta::Scalar {
+pub(crate) fn vesta_gsel() -> vesta::Point {
+    gen_vesta(99, b"shear-ct-vesta-sel")
+}
+
+pub(crate) fn ristretto_gsel() -> RistrettoPoint {
+    gen_ristretto(99, b"shear-ct-ristretto-sel")
+}
+
+pub(crate) fn blind_fp(xs: &[[u8; 32]]) -> vesta::Scalar {
     let mut parts: Vec<&[u8]> = vec![b"shear-ct-blind"];
     for x in xs {
         parts.push(x.as_ref());
@@ -97,14 +105,21 @@ fn blind_fp(xs: &[[u8; 32]]) -> vesta::Scalar {
     vesta::Scalar::from_uniform_bytes(&w)
 }
 
-fn commit_vesta(xs: &[[u8; 32]; ARITY]) -> [u8; 32] {
+/// Map a 32-byte child to a Vesta scalar. Canonical Fp encodings (dest leaves)
+/// stay as-is; internal Vesta-point bytes that are not a field element reduce
+/// via SHA-512 so every slot has a defined opening (matches CDS).
+pub(crate) fn vesta_x(b: &[u8; 32]) -> vesta::Scalar {
+    Option::<vesta::Scalar>::from(vesta::Scalar::from_repr((*b).into())).unwrap_or_else(|| {
+        vesta::Scalar::from_uniform_bytes(&sha512_64(&[b"shear-ct-vesta-red", b]))
+    })
+}
+
+pub(crate) fn commit_vesta(xs: &[[u8; 32]; ARITY]) -> [u8; 32] {
     let (u, g) = vesta_gens();
     let r = blind_fp(xs);
     let mut acc = *u * r;
     for i in 0..ARITY {
-        if let Some(s) = vesta_scalar_from_fp_bytes(&xs[i]) {
-            acc += g[i] * s;
-        }
+        acc += g[i] * vesta_x(&xs[i]);
     }
     let enc = acc.to_bytes();
     let mut o = [0u8; 32];
@@ -163,7 +178,8 @@ fn dest_leaf_level(dest_leaves: &[u8], n: usize) -> Vec<[u8; 32]> {
 fn c_leaf_level(c_leaves: &[u8], n: usize) -> Vec<[u8; 32]> {
     let mut level: Vec<[u8; 32]> = Vec::with_capacity(n.max(ARITY));
     for i in 0..n {
-        level.push(c_leaf_scalar(&take32(c_leaves, i)));
+        // C-tree leaves are the ristretto C encodings (not a hash of C).
+        level.push(take32(c_leaves, i));
     }
     if level.is_empty() {
         level.push([0u8; 32]);
@@ -237,7 +253,7 @@ pub fn c_levels(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
     levels
 }
 
-fn path_from_levels(levels: &[Vec<[u8; 32]>], index: usize) -> Option<Vec<[[u8; 32]; ARITY]>> {
+pub fn path_from_levels(levels: &[Vec<[u8; 32]>], index: usize) -> Option<Vec<[[u8; 32]; ARITY]>> {
     if levels.is_empty() {
         return None;
     }
@@ -269,7 +285,7 @@ fn path_from_levels(levels: &[Vec<[u8; 32]>], index: usize) -> Option<Vec<[[u8; 
     Some(path)
 }
 
-fn root_of_levels(levels: &[Vec<[u8; 32]>]) -> [u8; 32] {
+pub fn root_of_levels(levels: &[Vec<[u8; 32]>]) -> [u8; 32] {
     levels
         .last()
         .and_then(|l| l.first().copied())
@@ -307,7 +323,7 @@ pub fn pasta_root(dest_leaves: &[u8], n: usize) -> [u8; 32] {
     root_of_levels(&dest_levels(dest_leaves, n))
 }
 
-fn commit_ristretto_encodings(cs: &[[u8; 32]; ARITY]) -> [u8; 32] {
+pub(crate) fn commit_ristretto_encodings(cs: &[[u8; 32]; ARITY]) -> [u8; 32] {
     let (u, g, _) = ristretto_gens();
     let mut parts: Vec<&[u8]> = vec![b"shear-ct-c-blind"];
     for c in cs {

@@ -1,17 +1,27 @@
 //! ADMITv2 prove / verify. Version byte 2. ADMITv1 (linear r) fails.
+//! Membership is D-ary CDS select-and-rerandomize. No d0 / nonce / XOR path
+//! / dest_leaf of the spent note on the wire. C-tree leaves are ristretto C;
+//! C̃ is a 1-of-D rerandomization of a tree C.
 
-use crate::leaf::{c_leaf_scalar, dest_leaf_fp, jroot_hash, sha512_64};
-use crate::tree::{
-    c_path_slots, c_paths_and_root, dest_path_slots, dest_paths_and_root, note_u,
-    path_selected_leaf, rerand_c, ristretto_h_note, ARITY,
+use crate::leaf::{jroot_hash, sha512_64};
+use crate::select::{
+    leaf_prove, leaf_qd, leaf_verify, paired_prove, paired_qc_opens, paired_qd_opens, paired_verify,
+    rs_rand, vs_rand, LEAF_PAIRED_LEN, PAIRED_LEN,
 };
+use crate::tree::{
+    c_levels, commit_ristretto_encodings, commit_vesta, dest_levels, note_u, path_from_levels,
+    rerand_c, root_of_levels, ARITY,
+};
+use ff::PrimeField;
+use pasta_curves::vesta;
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use curve25519_dalek::traits::{Identity, IsIdentity};
+use curve25519_dalek::traits::IsIdentity;
 
-pub const MAX_PROOF: usize = 16384;
+pub const MAX_PROOF: usize = 32768;
 pub const VERSION: u8 = 2;
+const HDR: usize = 1 + 32 * 8 + 1; // version, tag, ct, dest_root, c_root, p_com, r_x, z_x, z_w, n_layers
 
 pub struct Proof {
     pub bytes: Vec<u8>,
@@ -31,34 +41,18 @@ fn decompress(b: &[u8; 32]) -> Option<RistrettoPoint> {
     CompressedRistretto(*b).decompress()
 }
 
-fn enc_path(path: &[[[u8; 32]; ARITY]]) -> Vec<u8> {
-    let mut o = Vec::with_capacity(path.len() * ARITY * 32);
-    for lvl in path {
-        for x in lvl {
-            o.extend_from_slice(x);
-        }
-    }
-    o
+fn read32(p: &[u8], off: usize) -> Option<[u8; 32]> {
+    p.get(off..off + 32)?.try_into().ok()
 }
 
-/// Blind a path so wire bytes do not match public tree nodes (index hide vs casual match).
-fn blind_path(path: &[[[u8; 32]; ARITY]], nonce: &[u8; 32]) -> Vec<u8> {
-    let raw = enc_path(path);
-    let mut out = raw.clone();
-    for (i, b) in out.iter_mut().enumerate() {
-        let w = sha512_64(&[b"shear-path-blind", nonce, &(i as u64).to_le_bytes()]);
-        *b ^= w[i % 32];
+fn slots_of(index: usize, n_layers: usize) -> Vec<usize> {
+    let mut idx = index;
+    let mut s = Vec::with_capacity(n_layers);
+    for _ in 0..n_layers {
+        s.push(idx % ARITY);
+        idx /= ARITY;
     }
-    out
-}
-
-pub(crate) fn unblind_path(blinded: &[u8], nonce: &[u8; 32]) -> Vec<u8> {
-    let mut out = blinded.to_vec();
-    for (i, b) in out.iter_mut().enumerate() {
-        let w = sha512_64(&[b"shear-path-blind", nonce, &(i as u64).to_le_bytes()]);
-        *b ^= w[i % 32];
-    }
-    out
+    s
 }
 
 const ZERO_BIND: [u8; 32] = [0u8; 32];
@@ -100,56 +94,72 @@ pub fn admit_prove_in(
         return None;
     }
     let p_pt = decompress(p)?;
-    let c_pt = decompress(c)?;
     let i_pt = hp(&p_pt) * xs;
     if i_pt.is_identity() {
         return None;
     }
     let tag = i_pt.compress().to_bytes();
-    let (dpath, dest_r) = dest_paths_and_root(dest_leaves, n, index)?;
-    let (cpath, c_r) = c_paths_and_root(c_leaves, n, index)?;
-    let jr = jroot_hash(&dest_r, &c_r);
-    let d0 = (index % ARITY) as u8;
-    let dest_l = dest_leaf_fp(p);
-    let c_l = c_leaf_scalar(c);
-    if dpath.first()?.get(d0 as usize) != Some(&dest_l) {
+    let dlevels = dest_levels(dest_leaves, n);
+    let clev = c_levels(c_leaves, n);
+    let dpath = path_from_levels(&dlevels, index)?;
+    let cpath = path_from_levels(&clev, index)?;
+    if dpath.len() != cpath.len() || dpath.is_empty() {
         return None;
     }
-    if cpath.first()?.get(d0 as usize) != Some(&c_l) {
+    let n_layers = dpath.len();
+    if n_layers > 255 {
         return None;
     }
+    let dest_root = root_of_levels(&dlevels);
+    let c_root_b = root_of_levels(&clev);
+    let jr = jroot_hash(&dest_root, &c_root_b);
+    let slots = slots_of(index, n_layers);
+    let ct_pt = decompress(&c_tilde)?;
 
-    // Com_C = C + s U, U independent of H
-    let s = chal(&[b"s", x, t, c]);
+    // Membership: paired CDS root→leaf-1, leaf dest CDS + C̃ 1-of-D.
+    let mut mem = Vec::new();
+    let mut t_d_prev: Option<vesta::Scalar> = None;
+    let mut t_c_prev: Option<Scalar> = None;
+    if n_layers > 1 {
+        for layer in (1..n_layers).rev() {
+            let td = vs_rand();
+            let tc = rs_rand();
+            let pr = paired_prove(&dpath[layer], &cpath[layer], slots[layer], &td, &tc)?;
+            if layer + 1 < n_layers {
+                let parent_d = commit_vesta(&dpath[layer]);
+                let parent_c = commit_ristretto_encodings(&cpath[layer]);
+                let td_b: [u8; 32] = t_d_prev?.to_repr().into();
+                mem.extend_from_slice(&parent_d);
+                mem.extend_from_slice(&td_b);
+                mem.extend_from_slice(&parent_c);
+                mem.extend_from_slice(&t_c_prev?.to_bytes());
+            }
+            mem.extend_from_slice(&pr);
+            t_d_prev = Some(td);
+            t_c_prev = Some(tc);
+        }
+        let parent_d = commit_vesta(&dpath[0]);
+        let parent_c = commit_ristretto_encodings(&cpath[0]);
+        let td_b: [u8; 32] = t_d_prev?.to_repr().into();
+        mem.extend_from_slice(&parent_d);
+        mem.extend_from_slice(&td_b);
+        mem.extend_from_slice(&parent_c);
+        mem.extend_from_slice(&t_c_prev?.to_bytes());
+    }
+    for x in &cpath[0] {
+        mem.extend_from_slice(x);
+    }
+    let td_leaf = vs_rand();
+    let leaf = leaf_prove(&dpath[0], &cpath[0], slots[0], &td_leaf, &ts, &ct_pt)?;
+    mem.extend_from_slice(&leaf);
+
     let u = note_u();
-    let h = ristretto_h_note();
-    let com_c = c_pt + u * s;
-    let com_b = com_c.compress().to_bytes();
-
-    // Representation: C̃ - Com_C = t H - s U. Also C̃ = C + t H (select-and-rerandomize).
-    let a_t = chal(&[b"at", t, x]);
-    let a_s = chal(&[b"as", t, x, c]);
-    let r_rep = h * a_t - u * a_s;
-    let e = chal(&[
-        b"rep",
-        &r_rep.compress().to_bytes(),
-        &c_tilde,
-        &com_b,
-        &jr,
-        &tag,
-        &[d0],
-        &dest_l,
-        &c_l,
-        forest_bind,
-    ]);
-    let z_t = a_t + e * ts;
-    let z_s = a_s + e * s;
-
     let w = chal(&[b"w", x, p]);
     let p_com = p_pt + u * w;
     let k = chal(&[b"k", x, t]);
     let a_w = chal(&[b"aw", x, t]);
     let r_x = G * k + u * a_w;
+    let dest_q = leaf_qd(&leaf)?;
     let e2 = chal(&[
         b"dleq",
         &r_x.compress().to_bytes(),
@@ -157,38 +167,24 @@ pub fn admit_prove_in(
         &tag,
         &c_tilde,
         &jr,
-        &[d0],
-        &dest_l,
-        &c_l,
+        &dest_q,
         forest_bind,
     ]);
     let z_x = k + e2 * xs;
     let z_w = a_w + e2 * w;
 
-    let nonce = chal(&[b"nonce", x, t, &jr]).to_bytes();
-    let bdest = blind_path(&dpath, &nonce);
-    let bc = blind_path(&cpath, &nonce);
-
-    // Wire blob names neither P nor original C. Index bit d0 is committed in
-    // FS with the selected dest_leaf and c_leaf taken from the paths.
     let mut proof = Vec::new();
     proof.push(VERSION);
     proof.extend_from_slice(&tag);
     proof.extend_from_slice(&c_tilde);
-    proof.extend_from_slice(&com_b);
+    proof.extend_from_slice(&dest_root);
+    proof.extend_from_slice(&c_root_b);
     proof.extend_from_slice(&p_com.compress().to_bytes());
-    proof.extend_from_slice(&r_rep.compress().to_bytes());
     proof.extend_from_slice(&r_x.compress().to_bytes());
-    proof.extend_from_slice(&z_t.to_bytes());
-    proof.extend_from_slice(&z_s.to_bytes());
     proof.extend_from_slice(&z_x.to_bytes());
     proof.extend_from_slice(&z_w.to_bytes());
-    proof.extend_from_slice(&nonce);
-    proof.push(d0);
-    proof.extend_from_slice(&(bdest.len() as u32).to_le_bytes());
-    proof.extend_from_slice(&(bc.len() as u32).to_le_bytes());
-    proof.extend_from_slice(&bdest);
-    proof.extend_from_slice(&bc);
+    proof.push(n_layers as u8);
+    proof.extend_from_slice(&mem);
     if proof.len() > MAX_PROOF {
         return None;
     }
@@ -204,8 +200,15 @@ pub fn spend_tag_of(proof: &[u8]) -> Option<[u8; 32]> {
     Some(t)
 }
 
-fn read32(p: &[u8], off: usize) -> Option<[u8; 32]> {
-    p.get(off..off + 32)?.try_into().ok()
+fn parse_c_siblings(p: &[u8], off: usize) -> Option<([[u8; 32]; ARITY], usize)> {
+    if p.len() < off + ARITY * 32 {
+        return None;
+    }
+    let mut xs = [[0u8; 32]; ARITY];
+    for i in 0..ARITY {
+        xs[i].copy_from_slice(&p[off + i * 32..off + i * 32 + 32]);
+    }
+    Some((xs, off + ARITY * 32))
 }
 
 pub fn admit_verify(
@@ -230,16 +233,14 @@ pub fn admit_verify_in(
     n: usize,
     forest_bind: &[u8; 32],
 ) -> bool {
-    let _ = (dest_leaves, c_leaves);
+    let _ = (dest_leaves, c_leaves, n);
     if proof.is_empty() || proof[0] != VERSION {
         return false;
     }
-    // ADMITv1 linear blob: often has r.length === |J| as a long vector and no version 2
     if n > 0 && proof.len() == 4 + 64 + n * 32 {
         return false;
     }
-    // version + 11×32 + d0 + ld + lc
-    if proof.len() < 1 + 32 * 11 + 1 + 8 {
+    if proof.len() < HDR {
         return false;
     }
     let tag = match read32(proof, 1) {
@@ -259,15 +260,18 @@ pub fn admit_verify_in(
     if decompress(c_tilde).is_none() || decompress(&tag).map(|p| p.is_identity()).unwrap_or(true) {
         return false;
     }
-    let com_b = match read32(proof, 65) {
+    let dest_root = match read32(proof, 65) {
         Some(x) => x,
         None => return false,
     };
-    let p_com_b = match read32(proof, 97) {
+    let c_root_b = match read32(proof, 97) {
         Some(x) => x,
         None => return false,
     };
-    let r_rep_b = match read32(proof, 129) {
+    if jroot_hash(&dest_root, &c_root_b) != *jr {
+        return false;
+    }
+    let p_com_b = match read32(proof, 129) {
         Some(x) => x,
         None => return false,
     };
@@ -275,89 +279,124 @@ pub fn admit_verify_in(
         Some(x) => x,
         None => return false,
     };
-    let z_t = Scalar::from_bytes_mod_order(read32(proof, 193).unwrap_or([0u8; 32]));
-    let z_s = Scalar::from_bytes_mod_order(read32(proof, 225).unwrap_or([0u8; 32]));
-    let z_x = Scalar::from_bytes_mod_order(read32(proof, 257).unwrap_or([0u8; 32]));
-    let z_w = Scalar::from_bytes_mod_order(read32(proof, 289).unwrap_or([0u8; 32]));
-    let nonce = match read32(proof, 321) {
-        Some(x) => x,
-        None => return false,
-    };
-    let d0 = *proof.get(353).unwrap_or(&255u8);
-    if (d0 as usize) >= ARITY {
+    let z_x = Scalar::from_bytes_mod_order(read32(proof, 193).unwrap_or([0u8; 32]));
+    let z_w = Scalar::from_bytes_mod_order(read32(proof, 225).unwrap_or([0u8; 32]));
+    let n_layers = *proof.get(257).unwrap_or(&0u8) as usize;
+    if n_layers == 0 || n_layers > 8 {
         return false;
     }
-    let ld = u32::from_le_bytes(proof.get(354..358).and_then(|s| s.try_into().ok()).unwrap_or([0; 4]))
-        as usize;
-    let lc = u32::from_le_bytes(proof.get(358..362).and_then(|s| s.try_into().ok()).unwrap_or([0; 4]))
-        as usize;
-    if proof.len() < 362 + ld + lc {
-        return false;
+    fn vesta_t(b: &[u8; 32]) -> Option<vesta::Scalar> {
+        Option::<vesta::Scalar>::from(vesta::Scalar::from_repr((*b).into()))
     }
-    let bdest = &proof[362..362 + ld];
-    let bc = &proof[362 + ld..362 + ld + lc];
-
-    // Membership first: unblind D-ary paths, same index digits, selected
-    // dest_leaf / c_leaf at d0. P and original C are not on the wire.
-    let raw_d = unblind_path(bdest, &nonce);
-    let raw_c = unblind_path(bc, &nonce);
-    let (dest_r, dest_digits) = match dest_path_slots(&raw_d) {
+    let mut off = HDR;
+    let mut dest_parent = dest_root;
+    let mut c_parent = c_root_b;
+    let mut prev_off: Option<usize> = None;
+    if n_layers > 1 {
+        for layer in 0..(n_layers - 1) {
+            if layer > 0 {
+                let pd = match read32(proof, off) {
+                    Some(x) => x,
+                    None => return false,
+                };
+                let td = match read32(proof, off + 32) {
+                    Some(x) => x,
+                    None => return false,
+                };
+                let pc = match read32(proof, off + 64) {
+                    Some(x) => x,
+                    None => return false,
+                };
+                let tc = match read32(proof, off + 96) {
+                    Some(x) => x,
+                    None => return false,
+                };
+                off += 128;
+                let po = match prev_off {
+                    Some(x) => x,
+                    None => return false,
+                };
+                let prev = &proof[po..po + PAIRED_LEN];
+                let tdv = match vesta_t(&td) {
+                    Some(x) => x,
+                    None => return false,
+                };
+                if !paired_qd_opens(prev, &pd, &tdv)
+                    || !paired_qc_opens(prev, &pc, &Scalar::from_bytes_mod_order(tc))
+                {
+                    return false;
+                }
+                dest_parent = pd;
+                c_parent = pc;
+            }
+            if proof.len() < off + PAIRED_LEN {
+                return false;
+            }
+            let pr = &proof[off..off + PAIRED_LEN];
+            if !paired_verify(&dest_parent, &c_parent, pr) {
+                return false;
+            }
+            prev_off = Some(off);
+            off += PAIRED_LEN;
+        }
+        let pd = match read32(proof, off) {
+            Some(x) => x,
+            None => return false,
+        };
+        let td = match read32(proof, off + 32) {
+            Some(x) => x,
+            None => return false,
+        };
+        let pc = match read32(proof, off + 64) {
+            Some(x) => x,
+            None => return false,
+        };
+        let tc = match read32(proof, off + 96) {
+            Some(x) => x,
+            None => return false,
+        };
+        off += 128;
+        let po = match prev_off {
+            Some(x) => x,
+            None => return false,
+        };
+        let prev = &proof[po..po + PAIRED_LEN];
+        let tdv = match vesta_t(&td) {
+            Some(x) => x,
+            None => return false,
+        };
+        if !paired_qd_opens(prev, &pd, &tdv)
+            || !paired_qc_opens(prev, &pc, &Scalar::from_bytes_mod_order(tc))
+        {
+            return false;
+        }
+        dest_parent = pd;
+        c_parent = pc;
+    }
+    let (siblings, off2) = match parse_c_siblings(proof, off) {
         Some(v) => v,
         None => return false,
     };
-    let (c_r, c_digits) = match c_path_slots(&raw_c) {
-        Some(v) => v,
-        None => return false,
-    };
-    if dest_digits != c_digits {
+    off = off2;
+    if commit_ristretto_encodings(&siblings) != c_parent {
         return false;
     }
-    if jroot_hash(&dest_r, &c_r) != *jr {
+    if proof.len() < off + LEAF_PAIRED_LEN {
         return false;
     }
-    let dest_l = match path_selected_leaf(&raw_d, d0) {
-        Some(v) => v,
-        None => return false,
-    };
-    let c_l = match path_selected_leaf(&raw_c, d0) {
-        Some(v) => v,
-        None => return false,
-    };
-
-    let h = ristretto_h_note();
-    let u = note_u();
-    let r_rep = match decompress(&r_rep_b) {
-        Some(p) => p,
-        None => return false,
-    };
-    let com_c = match decompress(&com_b) {
-        Some(p) => p,
-        None => return false,
-    };
+    let leaf = &proof[off..off + LEAF_PAIRED_LEN];
     let ct = match decompress(c_tilde) {
         Some(p) => p,
         None => return false,
     };
-    let e = chal(&[
-        b"rep",
-        &r_rep_b,
-        c_tilde,
-        &com_b,
-        jr,
-        &tag,
-        &[d0],
-        &dest_l,
-        &c_l,
-        forest_bind,
-    ]);
-    // z_t H - z_s U  ?==  R + e (C̃ - Com_C). C̃ is in e with the selected
-    // c_leaf so a self-minted C̃ cannot keep the honest path's z values.
-    let left = h * z_t - u * z_s;
-    let right = r_rep + (ct - com_c) * e;
-    if left != right {
+    if !leaf_verify(&dest_parent, &siblings, &ct, leaf) {
         return false;
     }
-
+    let dest_q = match leaf_qd(leaf) {
+        Some(x) => x,
+        None => return false,
+    };
+    let u = note_u();
     let p_com = match decompress(&p_com_b) {
         Some(p) => p,
         None => return false,
@@ -373,13 +412,9 @@ pub fn admit_verify_in(
         &tag,
         c_tilde,
         jr,
-        &[d0],
-        &dest_l,
-        &c_l,
+        &dest_q,
         forest_bind,
     ]);
-    // z_x G + z_w U  ?== R + e2 P_com. e2 binds spendTag and P_com to the
-    // selected dest_leaf — attacker x on a victim path gets the wrong e2.
     if G * z_x + u * z_w != r_x + p_com * e2 {
         return false;
     }
@@ -404,13 +439,12 @@ pub fn admit_verify_batch(
     true
 }
 
-fn forest_bind_of(pre: &[([u8; 32], [u8; 32], u8)]) -> [u8; 32] {
-    let mut buf = Vec::with_capacity(16 + pre.len() * 65);
-    buf.extend_from_slice(b"forest-idx");
-    for (tag, ct, d0) in pre {
+fn forest_bind_of(pre: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(16 + pre.len() * 64);
+    buf.extend_from_slice(b"forest-ct");
+    for (tag, ct) in pre {
         buf.extend_from_slice(tag);
         buf.extend_from_slice(ct);
-        buf.push(*d0);
     }
     chal(&[&buf]).to_bytes()
 }
@@ -426,7 +460,7 @@ pub fn forest_prove(
     dest_leaves: &[u8],
     c_leaves: &[u8],
     n: usize,
-) -> Option<Vec<( [u8; 32], Vec<u8>)>> {
+) -> Option<Vec<([u8; 32], Vec<u8>)>> {
     if spends.len() < 2 {
         return None;
     }
@@ -443,7 +477,7 @@ pub fn forest_prove(
         }
         let tag = i_pt.compress().to_bytes();
         let ct = rerand_c(c, t)?;
-        pre.push((tag, ct, (*idx % ARITY) as u8));
+        pre.push((tag, ct));
     }
     let bind = forest_bind_of(&pre);
     let mut out = Vec::new();
@@ -463,12 +497,10 @@ pub fn forest_prove(
     Some(out)
 }
 
-fn proof_d0(proof: &[u8]) -> Option<u8> {
-    let d0 = *proof.get(353)?;
-    if (d0 as usize) >= ARITY {
-        return None;
-    }
-    Some(d0)
+fn proof_ct_tag(proof: &[u8]) -> Option<([u8; 32], [u8; 32])> {
+    let tag = read32(proof, 1)?;
+    let ct = read32(proof, 33)?;
+    Some((ct, tag))
 }
 
 pub fn forest_verify(
@@ -483,11 +515,14 @@ pub fn forest_verify(
     }
     let mut pre = Vec::with_capacity(proofs.len());
     for (pr, ct, tag) in proofs {
-        let d0 = match proof_d0(pr) {
-            Some(d) => d,
+        let (ct_p, tag_p) = match proof_ct_tag(pr) {
+            Some(v) => v,
             None => return false,
         };
-        pre.push((*tag, *ct, d0));
+        if ct_p != *ct || tag_p != *tag {
+            return false;
+        }
+        pre.push((*tag, *ct));
     }
     let bind = forest_bind_of(&pre);
     for (pr, ct, tag) in proofs {

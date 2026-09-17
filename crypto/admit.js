@@ -114,7 +114,7 @@ export function admitVerify(proof, fluxset, extra = {}) {
     if (!blob) return false;
     const pr = Buffer.from(asU8(blob));
     if (!pr.length || pr[0] !== 2) return false;
-    if (pr.length > 16384) return false;
+    if (pr.length > 32768) return false;
     let jr = extra.jroot || (Array.isArray(fluxset) ? null : fluxset?.jroot) || null;
     if (!jr) {
       const { destLeaves, cLeaves } = leafLists(fluxset);

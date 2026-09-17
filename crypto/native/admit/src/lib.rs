@@ -6,6 +6,7 @@
 mod bpplus;
 mod leaf;
 mod prove;
+mod select;
 mod tree;
 
 pub use bpplus::{prove_range, verify_range, RANGE_BITS};
@@ -549,31 +550,8 @@ mod tests {
         (xs, ps, cs, dest_blob, c_blob)
     }
 
-    const PATH_OFF: usize = 362;
-
-    fn path_off(proof: &[u8]) -> (usize, usize, usize) {
-        let ld = u32::from_le_bytes(proof[354..358].try_into().unwrap()) as usize;
-        let lc = u32::from_le_bytes(proof[358..362].try_into().unwrap()) as usize;
-        (PATH_OFF, ld, lc)
-    }
-
-    fn nonce_of(proof: &[u8]) -> [u8; 32] {
-        proof[321..353].try_into().unwrap()
-    }
-
-    /// Unblind with `from`, re-blind with `to` so the path still folds to jroot.
-    fn reblind_paths(from: &[u8], nonce_from: &[u8; 32], nonce_to: &[u8; 32]) -> (Vec<u8>, Vec<u8>) {
-        let (off, ld, lc) = path_off(from);
-        let dest = prove::unblind_path(&from[off..off + ld], nonce_from);
-        let c = prove::unblind_path(&from[off + ld..off + ld + lc], nonce_from);
-        (
-            prove::unblind_path(&dest, nonce_to),
-            prove::unblind_path(&c, nonce_to),
-        )
-    }
-
     #[test]
-    fn proof_blob_does_not_name_p_or_c() {
+    fn proof_blob_does_not_name_p_or_c_or_dest_leaf() {
         let n = 8usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
         let idx = 3usize;
@@ -589,66 +567,56 @@ mod tests {
             n,
         )
         .expect("prove");
+        let dest_l = crate::leaf::dest_leaf_fp(&ps[idx]);
         assert!(
             !proof.windows(32).any(|w| w == ps[idx]),
             "blob must not contain P"
         );
         assert!(
-            !proof.windows(32).any(|w| w == cs[idx]),
-            "blob must not contain original C"
+            !proof.windows(32).any(|w| w == dest_l),
+            "blob must not contain dest_leaf of the spent note"
         );
+        // Original C may appear in the arity-32 sibling bucket (anonymity 32),
+        // never as a unique named field and never equal to C̃.
+        assert_ne!(_ct, cs[idx]);
+        assert_ne!(proof.get(257).copied().unwrap_or(0), idx as u8);
     }
 
     #[test]
-    fn admit_rejects_attacker_x_on_victim_path() {
+    fn from_scratch_non_member_fails_admit_verify() {
         let n = 8usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
         let jr = jroot(&dest_blob, &c_blob, n);
+        let ax = rand_scalar();
+        let ap = (RISTRETTO_BASEPOINT_POINT * ax).compress().to_bytes();
+        let h = hash_to_ristretto(b"shear-note-H-v1");
+        let ac = (RISTRETTO_BASEPOINT_POINT * Scalar::from(99u64) + h * rand_scalar()).compress().to_bytes();
         let t = rand_scalar();
-        let (_ct_v, proof_v) = admit_prove(
-            &xs[2].to_bytes(),
-            &ps[2],
-            &cs[2],
+        assert!(
+            admit_prove(&ax.to_bytes(), &ap, &ac, &t.to_bytes(), 0, &dest_blob, &c_blob, n).is_none(),
+            "prove must refuse attacker P not at the claimed index"
+        );
+        let mut d_att = ap.to_vec();
+        d_att.extend_from_slice(&dest_blob[32..]);
+        let mut c_att = ac.to_vec();
+        c_att.extend_from_slice(&c_blob[32..]);
+        let (ct_a, proof_a) = admit_prove(
+            &ax.to_bytes(),
+            &ap,
+            &ac,
             &t.to_bytes(),
-            2,
-            &dest_blob,
-            &c_blob,
-            n,
-        )
-        .expect("victim");
-        let t2 = rand_scalar();
-        let (ct_a, mut proof_a) = admit_prove(
-            &xs[0].to_bytes(),
-            &ps[0],
-            &cs[0],
-            &t2.to_bytes(),
             0,
-            &dest_blob,
-            &c_blob,
+            &d_att,
+            &c_att,
             n,
         )
-        .expect("attacker");
+        .expect("attacker can prove against a J that contains them");
         let tag_a = proof_spend_tag(&proof_a).unwrap();
-        let n_v = nonce_of(&proof_v);
-        let n_a = nonce_of(&proof_a);
-        let (bd, bc) = reblind_paths(&proof_v, &n_v, &n_a);
-        let (off, ld, lc) = path_off(&proof_a);
-        assert_eq!(bd.len(), ld);
-        assert_eq!(bc.len(), lc);
-        proof_a[353] = proof_v[353]; // victim d0 so selected leaf is dest_leaf(P_victim)
-        proof_a[off..off + ld].copy_from_slice(&bd);
-        proof_a[off + ld..off + ld + lc].copy_from_slice(&bc);
-        let raw_d = prove::unblind_path(&proof_a[off..off + ld], &n_a);
-        let raw_c = prove::unblind_path(&proof_a[off + ld..off + ld + lc], &n_a);
-        let (dr, dd) = tree::dest_path_slots(&raw_d).expect("victim dest path folds");
-        let (cr, cd) = tree::c_path_slots(&raw_c).expect("victim C path folds");
-        assert_eq!(dd, cd);
-        assert_eq!(crate::leaf::jroot_hash(&dr, &cr), jr);
-        // Path folds; dest_leaf(P_attacker) ≠ selected victim leaf → e2 mismatch.
         assert!(
             !admit_verify(&proof_a, &jr, &ct_a, &tag_a, &[], &[], 0),
-            "attacker x + victim path must fail dest_leaf bind"
+            "from-scratch attacker-x + self-minted C̃ against honest jroot must fail"
         );
+        let _ = (xs, ps, cs);
     }
 
     #[test]
@@ -669,7 +637,6 @@ mod tests {
         )
         .expect("honest");
         let tag = proof_spend_tag(&proof).unwrap();
-        // Path still folds; only C̃ is replaced. Representation + FS (C̃ in e) fail.
         ct[0] ^= 0x5a;
         proof[33] ^= 0x5a;
         assert!(
@@ -708,14 +675,17 @@ mod tests {
         )
         .expect("idx39");
         let tag_a = proof_spend_tag(&proof_a).unwrap();
-        let n_a = nonce_of(&proof_a);
-        let n_b = nonce_of(&proof_b);
-        let (_bd7, _bc7) = reblind_paths(&proof_a, &n_a, &n_a);
-        let (_bd39, bc39) = reblind_paths(&proof_b, &n_b, &n_a);
-        let (off, ld, lc) = path_off(&proof_a);
-        assert_eq!(bc39.len(), lc);
-        // dest path of 7 (already under nonce_a) + C path of 39 re-blinded to nonce_a
-        proof_a[off + ld..off + ld + lc].copy_from_slice(&bc39);
+        let nlay_a = proof_a[257];
+        let nlay_b = proof_b[257];
+        assert_eq!(nlay_a, nlay_b);
+        // Swap C siblings (32×32 at the leaf) from 39 into 7's blob.
+        let sib_len = 32 * 32;
+        assert!(proof_a.len() > sib_len + 64);
+        assert!(proof_b.len() > sib_len + 64);
+        let off_a = proof_a.len() - crate::select::LEAF_PAIRED_LEN - sib_len;
+        let off_b = proof_b.len() - crate::select::LEAF_PAIRED_LEN - sib_len;
+        let sib_b = proof_b[off_b..off_b + sib_len].to_vec();
+        proof_a[off_a..off_a + sib_len].copy_from_slice(&sib_b);
         assert!(
             !admit_verify(&proof_a, &jr, &ct_a, &tag_a, &[], &[], 0),
             "mixed dest/C indices must fail"

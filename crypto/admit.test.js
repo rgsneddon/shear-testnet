@@ -1,38 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { randomScalar, commit, scalarBytes, pointBytes } from './note.js';
-import { admitPub, admitProve, admitVerify, spendTag, jroot, emptyFluxset, applyBlockToFluxset, fluxsetFromBlocks } from './admit.js';
+import { randomScalar, commit, pointBytes } from './note.js';
+import { admitPub, admitProve, admitVerify, jroot, emptyFluxset, applyBlockToFluxset, fluxsetFromBlocks } from './admit.js';
 import { nativeLoaded, nativeMaxProof, nativeArity } from './native_admit.js';
 
-function sha512(parts) {
-  const h = createHash('sha512');
-  for (const p of parts) h.update(p);
-  return h.digest();
-}
-function xorPath(buf, nonce) {
-  const out = Buffer.from(buf);
-  for (let i = 0; i < out.length; i += 1) {
-    const idx = Buffer.alloc(8);
-    idx.writeBigUInt64LE(BigInt(i));
-    const w = sha512([Buffer.from('shear-path-blind'), nonce, idx]);
-    out[i] ^= w[i % 32];
-  }
-  return out;
-}
-function pathOff(blob) {
-  const b = Buffer.from(blob);
-  return { ld: b.readUInt32LE(354), lc: b.readUInt32LE(358), off: 362, d0: b[353], nonce: Buffer.from(b.subarray(321, 353)) };
-}
-function reblindPaths(srcBlob, nonceFrom, nonceTo) {
-  const { ld, lc, off } = pathOff(srcBlob);
-  const dest = xorPath(srcBlob.subarray(off, off + ld), nonceFrom);
-  const c = xorPath(srcBlob.subarray(off + ld, off + ld + lc), nonceFrom);
-  return { dest: xorPath(dest, nonceTo), c: xorPath(c, nonceTo), ld, lc, off };
-}
+const SIB = 32 * 32;
+const LEAF_PAIRED = 32 * 2 + 64 + 32 * 32 * 4;
 
 describe('ADMITv2 fluxset membership', () => {
   it('proves a spend is admissible in the fluxset; a sampled subset is the wrong set', () => {
@@ -66,40 +42,38 @@ describe('ADMITv2 fluxset membership', () => {
     assert.equal(root.equals(otherRoot), false);
   });
 
-  it('native verify rejects attacker x on victim path, self-minted C̃, mixed dest/C indices', () => {
+  it('native verify rejects from-scratch non-member, self-minted C̃, mixed dest/C siblings', () => {
     const n = 40;
     const xs = Array.from({ length: n }, () => randomScalar());
     const pubs = xs.map(admitPub);
     const commits = xs.map((_, i) => pointBytes(commit(i + 2, randomScalar())));
     const victim = admitProve({ x: xs[7], index: 7, pubs, commits, c: commits[7] });
-    const attacker = admitProve({ x: xs[0], index: 0, pubs, commits, c: commits[0] });
     const other = admitProve({ x: xs[39], index: 39, pubs, commits, c: commits[39] });
-    assert.ok(victim && attacker && other);
+    assert.ok(victim && other);
     const extra = (p) => ({ cTilde: p.cTilde, spendTag: p.spendTag });
     assert.equal(admitVerify(victim, { pubs, commits }, extra(victim)), true);
-    const pAtt = pointBytes(pubs[0]);
-    const cAtt = Buffer.from(commits[0]);
-    assert.equal(Buffer.from(attacker.blob).includes(pAtt), false);
-    assert.equal(Buffer.from(attacker.blob).includes(cAtt), false);
-    const aBlob = Buffer.from(attacker.blob);
-    const vBlob = Buffer.from(victim.blob);
-    const oBlob = Buffer.from(other.blob);
-    const aMeta = pathOff(aBlob);
-    const vMeta = pathOff(vBlob);
-    const reb = reblindPaths(vBlob, vMeta.nonce, aMeta.nonce);
-    const spliced = Buffer.from(aBlob);
-    spliced[353] = vMeta.d0;
-    reb.dest.copy(spliced, aMeta.off);
-    reb.c.copy(spliced, aMeta.off + aMeta.ld);
-    assert.equal(admitVerify({ ...attacker, blob: spliced }, { pubs, commits }, extra(attacker)), false);
-    const minted = Buffer.from(vBlob);
+    const pAtt = pointBytes(pubs[7]);
+    assert.equal(Buffer.from(victim.blob).includes(pAtt), false);
+    const ax = randomScalar();
+    const aPub = admitPub(ax);
+    const aC = pointBytes(commit(99, randomScalar()));
+    const aPubs = [aPub, ...pubs.slice(1)];
+    const aCommits = [aC, ...commits.slice(1)];
+    const attackerOwn = admitProve({ x: ax, index: 0, pubs: aPubs, commits: aCommits, c: aC });
+    assert.ok(attackerOwn);
+    const jr = jroot({ pubs, commits });
+    assert.equal(admitVerify(attackerOwn, { pubs: [], commits: [] }, { jroot: jr, cTilde: attackerOwn.cTilde, spendTag: attackerOwn.spendTag }), false);
+    const minted = Buffer.from(victim.blob);
     minted[33] ^= 0x5a;
     const fakeCt = Buffer.from(victim.cTilde);
     fakeCt[0] ^= 0x5a;
     assert.equal(admitVerify({ ...victim, blob: minted }, { pubs, commits }, { cTilde: fakeCt, spendTag: victim.spendTag }), false);
-    const mixedReb = reblindPaths(oBlob, pathOff(oBlob).nonce, vMeta.nonce);
+    const vBlob = Buffer.from(victim.blob);
+    const oBlob = Buffer.from(other.blob);
     const mixed = Buffer.from(vBlob);
-    mixedReb.c.copy(mixed, vMeta.off + vMeta.ld);
+    const offV = vBlob.length - LEAF_PAIRED - SIB;
+    const offO = oBlob.length - LEAF_PAIRED - SIB;
+    oBlob.subarray(offO, offO + SIB).copy(mixed, offV);
     assert.equal(admitVerify({ ...victim, blob: mixed }, { pubs, commits }, extra(victim)), false);
   });
 
@@ -144,7 +118,7 @@ describe('specs/admit-v2.md pins the shipped native book', () => {
     assert.match(spec, /shear-admit-leaf-v2/);
     assert.match(spec, /Curve Forests/);
     assert.match(spec, /admit_verify_batch/);
-    assert.match(spec, /\*\*16384\*\*/);
+    assert.match(spec, /\*\*32768\*\*/);
     assert.match(spec, /admit_membership/);
     assert.match(spec, /admit_link_tag/);
     assert.match(spec, /range_proof/);
@@ -153,7 +127,7 @@ describe('specs/admit-v2.md pins the shipped native book', () => {
     assert.match(spec, /not a tower over Ed25519/);
     assert.match(spec, /Helios\/Selene \| \*\*not used\*\*/);
     assert.ok(nativeLoaded(), 'shearadmit.node must load');
-    assert.equal(nativeMaxProof(), 16384);
+    assert.equal(nativeMaxProof(), 32768);
     assert.equal(nativeArity(), 32);
   });
 });

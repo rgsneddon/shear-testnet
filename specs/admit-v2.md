@@ -38,7 +38,7 @@ ADMITv1 blobs (`proof.r.length === |J|`, DST `shear-admit-v1`) fail `admit_membe
 | jroot | 32-byte commitment: SHA-256(`shear-jroot-v2` \|\| pasta_root \|\| c_root) |
 | Reference root | height−**k** with **k = 1** (prove against the live J as of the parent plus earlier body notes in this block) |
 | Curve Forests | inputs ≥ 2 share one forest proof against the same jroot (same path-bit commitment) |
-| Max proof size | **16384** bytes. Larger → `admit_membership` |
+| Max proof size | **32768** bytes. Larger → `admit_membership` |
 | Native | `admit_prove` / `admit_verify` / `admit_verify_batch` in `crypto/native`. JS is glue. `verifyBlock` must not be JS-only. Verify **returns false**, never throws. |
 
 Internal nodes: Pedersen vector commitments of arity D, alternating Pallas / Vesta so child coordinates are native to the parent’s scalar field (Curve Trees on a 2-cycle, not a tower over Ed25519).
@@ -57,9 +57,9 @@ Replacement, **outside** the membership circuit:
 - `c_root` is mixed into `jroot` as above.
 - Spend **select-and-rerandomizes** C: public `C̃ = C + t·H` with fresh `t ≠ 0`. `C̃` is not equal to any vout C.
 - Sealed vin carries **only** `{ commit: C̃ }` (and coinbase marker if any).
-- Path index bits are committed **once** in the Fiat-Shamir transcript and used by both the Pasta membership tree and the C tree, so the selected P and C are the same note.
+- C-tree leaves are the ristretto C encodings. Membership is D-ary CDS select-and-rerandomize (dest Vesta + C ristretto share one wrap-around so mixed indices fail). Slot `d0` and the dest_leaf of the spent note are **not** on the wire. Intermediate parents are opened from the previous layer’s Q (32-bucket, not the spent leaf).
+- At the C leaf, `C̃ = C_j + t·H` is a 1-of-D among the arity-32 sibling C’s. A self-minted `C̃` that is not a rerandomization of a tree member fails `admit_membership`.
 - Kernel: `Σ C_out + C_fee = Σ C̃_in + excess·H`. `C_fee` is Pedersen of the weight-levy. Amount sent is not an input to the fee. `v` is not on the body.
-- A self-minted `C̃` that is not a rerandomization of a tree member fails `commit_sum` / `admit_membership`.
 
 Wallet openings (`r`, `t`, original C, dest) never leave the wallet. `compactTx` is the privacy boundary.
 
@@ -104,7 +104,7 @@ Rebuild J, both trees, and spent tags from the sealed chain. Do not delete spent
 | 10k | one spinner / tens of ms | tens of ms | few ms |
 | 100k | still one spinner / tens of ms, not hundreds | tens of ms | block inside 90s |
 
-Proof: few KB (≤ 16384). Node RAM: tens of MB, not ~1 GB. Miss 100k → fix cycle / arity / native code, not hash bonus.
+Proof: few KB (≤ 32768). Node RAM: tens of MB, not ~1 GB. Miss 100k → fix cycle / arity / native code, not hash bonus.
 
 ## P0 (unchanged law, this book)
 
