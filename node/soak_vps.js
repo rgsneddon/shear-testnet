@@ -163,11 +163,11 @@ async function vort1() {
   const okTx = vorticeRegisterTx({ from: dest, bytesHash: 'cd'.repeat(32), vort1: 'vort1.ok-dapp', ticker: 'ABC', fee: L });
   assert.equal(gateVorticeRegister(okTx).ok, true);
   const failTpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: dest, bits: GENESIS_BITS_PACKED, now: Date.now(), txs: [bad] });
-  const failFound = mineTemplate(failTpl, { maxTries: 3_000_000, shareBits: 12 });
+  const failFound = mineTemplate(failTpl, { maxTries: 8_000_000, shareBits: 32 });
   const failOk = verifyBlock({ header: failFound.header, txs: failTpl.txs, samples: failTpl.samples, height: 1 }, null);
   assert.equal(failOk.ok, false);
   const goodTpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: dest, bits: GENESIS_BITS_PACKED, now: Date.now(), txs: [okTx] });
-  const goodFound = mineTemplate(goodTpl, { maxTries: 3_000_000, shareBits: 12 });
+  const goodFound = mineTemplate(goodTpl, { maxTries: 8_000_000, shareBits: 32 });
   const goodOk = verifyBlock({ header: goodFound.header, txs: goodTpl.txs, samples: goodTpl.samples, height: 1 }, null);
   assert.equal(goodOk.ok, true, goodOk.reason);
   console.log(JSON.stringify({ step: 'vort1', reject: failOk.reason, accept: true, ok: true }));
