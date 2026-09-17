@@ -188,7 +188,7 @@ describe('drop idle / wrong-algo miners', () => {
     sock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.old`, client: 'ShearHash', name: 'Shear-Miner', threads: 1 },
+      params: { login: `${dest}.old`, client: 'ShearHash', version: '2.1', name: 'Shear-Miner', threads: 1 },
     }) + '\n');
     const login = await waitMsg(msgs, (m) => m.id === 1);
     assert.equal(login.error, undefined);
@@ -213,7 +213,7 @@ describe('drop idle / wrong-algo miners', () => {
     sock2.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest2}.bad`, client: 'ShearHash', threads: 1 },
+      params: { login: `${dest2}.bad`, client: 'ShearHash', version: '2.1', threads: 1 },
     }) + '\n');
     const login2 = await waitMsg(msgs2, (m) => m.id === 1);
     sock2.write(JSON.stringify({
@@ -240,7 +240,7 @@ describe('drop idle / wrong-algo miners', () => {
     sock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.low`, client: 'ShearHash', threads: 1 },
+      params: { login: `${dest}.low`, client: 'ShearHash', version: '2.1', threads: 1 },
     }) + '\n');
     await waitMsg(msgs, (m) => m.id === 1);
     sock.write(JSON.stringify({
@@ -268,7 +268,7 @@ describe('drop idle / wrong-algo miners', () => {
     idleSock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${idleDest}.idle`, client: 'ShearHash', threads: 1 },
+      params: { login: `${idleDest}.idle`, client: 'ShearHash', version: '2.1', threads: 1 },
     }) + '\n');
     await waitMsg(idleMsgs, (m) => m.id === 1);
     const note = await waitMsg(idleMsgs, (m) => m.error === 'no_valid_share' || m.method === 'error', 2000)
@@ -295,7 +295,7 @@ describe('drop idle / wrong-algo miners', () => {
     sock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.ok`, client: 'ShearHash', name: 'ShearK-Miner', threads: 1 },
+      params: { login: `${dest}.ok`, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads: 1 },
     }) + '\n');
     await waitMsg(msgs, (m) => m.id === 1);
     sock.write(JSON.stringify({
@@ -326,7 +326,7 @@ describe('drop idle / wrong-algo miners', () => {
     sock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.old`, client: 'ShearHash', name: 'Shear-Miner', threads: 1 },
+      params: { login: `${dest}.old`, client: 'ShearHash', version: '2.1', name: 'Shear-Miner', threads: 1 },
     }) + '\n');
     await waitMsg(msgs, (m) => m.id === 1);
     sock.write(JSON.stringify({
@@ -350,7 +350,7 @@ describe('drop idle / wrong-algo miners', () => {
       s.write(JSON.stringify({
         id: 1,
         method: 'login',
-        params: { login, client: 'ShearHash', name: 'ShearK-Miner', threads: 1 },
+        params: { login, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads: 1 },
       }) + '\n');
       const reply = await waitMsg(out, (m) => m.id === 1);
       await waitClose(s).catch(() => {});
@@ -381,7 +381,7 @@ describe('drop idle / wrong-algo miners', () => {
     sock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.idle`, client: 'ShearHash', name: 'ShearK-Miner', threads: 1 },
+      params: { login: `${dest}.idle`, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads: 1 },
     }) + '\n');
     await waitMsg(msgs, (m) => m.id === 1);
     await waitClose(sock, 2000);
@@ -396,7 +396,7 @@ describe('drop idle / wrong-algo miners', () => {
     s2.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.idle`, client: 'ShearHash', name: 'ShearK-Miner', threads: 1 },
+      params: { login: `${dest}.idle`, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads: 1 },
     }) + '\n');
     const reply = await waitMsg(out, (m) => m.id === 1);
     assert.equal(reply.error, undefined, JSON.stringify(reply));

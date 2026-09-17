@@ -8,6 +8,7 @@ import {
   POOL_FEE_BPS,
   NANOS_PER_SHE,
   SHARE_FLOOR_BITS,
+  GENESIS_BITS_PACKED,
 } from '../crypto/asert.js';
 import { dest20OfShare, unitsForShare, collateShareUnits, noteCommitOfShare } from '../crypto/share_batch.js';
 import { verifySealedNote, noteCommitOfDest20 } from '../crypto/note.js';
@@ -99,7 +100,7 @@ describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: a,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_000_000,
       shareBatch: batch,
       poolDest: pool,

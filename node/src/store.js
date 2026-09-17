@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, medianTimePast, MTP_WINDOW } from '../../crypto/asert.js';
 import { hashHex } from '../../crypto/shear_hash.js';
 import {
   buildTemplate,
@@ -1000,7 +1000,8 @@ export function createStore(dir, {
     if (bitsIn == null && t?.header) {
       try {
         const parent = decodeHeader(Buffer.from(t.header));
-        now = templateStampMs(parent.timestamp, wall, wallIntervalMs);
+        const mtp = medianTimePast(blocks.slice(-MTP_WINDOW).map((b) => blockTimeMs(b)));
+        now = templateStampMs(parent.timestamp, wall, wallIntervalMs, mtp);
       } catch { /* keep wall */ }
     }
     const bits = bitsIn != null ? bitsIn : retarget(blocks, now);

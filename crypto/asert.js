@@ -49,9 +49,11 @@ export const POOL_FEE_BPS = 100;
 export const SHARE_FLOOR_BITS = 8;
 export const MAX_SHARES_PER_BLOCK = 8192;
 export const MAX_HASH_UNITS_PER_BLOCK = MAX_SHARES_PER_BLOCK * (2 ** SHARE_FLOOR_BITS);
-/** Median of last 11 header timestamps. Future skew 15 min (not 2h). */
+/** Median of last 11 header timestamps. Future skew 2 h (Bitcoin-class).
+ *  15 min left only ~3 s of legal header time when the tip sat near the
+ *  cap; ASERT then saw a 3 s interval and hardened +2 every round. */
 export const MTP_WINDOW = 11;
-export const MTP_FUTURE_MS = 15 * 60_000;
+export const MTP_FUTURE_MS = 2 * 60 * 60_000;
 export const SPEND_SIG_DOMAIN = 'shear-spend-v1';
 export const SPEND_SIG = 'ed25519-shear-spend-v1';
 export const INTEREST_LAW = '400d-bps-floor';
@@ -388,14 +390,24 @@ export function bitsForBlock(parentBits, parentTimestamp, blockTimestamp) {
  * Fast rounds may raise bits; they must not write a future stamp.
  * `wallIntervalMs` is accepted for callers and ignored: wall is the interval.
  */
-export function templateStampMs(parentTimestamp, now = Date.now(), wallIntervalMs = null) {
+export function templateStampMs(parentTimestamp, now = Date.now(), wallIntervalMs = null, mtpTimestamp = null) {
   void wallIntervalMs;
   const wall = Number(now);
   const parent = Number(parentTimestamp);
   if (!Number.isFinite(wall)) return Date.now();
   if (!Number.isFinite(parent)) return wall;
-  if (wall <= parent) return parent;
-  return wall;
+  // Strictly after parent when we can (verifyBlock requires ts > parentTs).
+  // Clock skew `wall < parent` still stamps parent so bits do not see a
+  // negative interval — callers without MTP keep the old contract.
+  // verifyBlock requires ts > parentTs. Clock skew wall < parent still
+  // needs a positive interval so ASERT does not treat it as 1 ms and harden.
+  let stamp = wall <= parent ? parent + 1 : wall;
+  if (mtpTimestamp != null && Number.isFinite(Number(mtpTimestamp))) {
+    const cap = Number(mtpTimestamp) + MTP_FUTURE_MS;
+    if (stamp > cap) stamp = cap;
+    if (stamp <= parent && cap > parent) stamp = parent + 1;
+  }
+  return stamp;
 }
 
 export function blockWork(bits) {

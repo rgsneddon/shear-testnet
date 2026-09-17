@@ -91,7 +91,7 @@ describe('verifyBlock Phase B Flow levy', () => {
       prevBlock: parent,
       parentFluxset: fluxsetFromBlocks([parent]).pubs,
       height: 2,
-      now: Date.now() + 90_000,
+      now: nextNow(),
     };
     function potSend({ id: txId, fee, maxLevy }) {
       const change = BLOCK_SUBSIDY_NANOS - sendNanos - fee;
@@ -135,7 +135,6 @@ describe('verifyBlock Phase B Flow levy', () => {
 
     const capped = mine(buildTemplate({
       ...childBase,
-      now: Date.now() + 180_000,
       txs: [potSend({ id: 'cap', fee: need, maxLevy: need - 1 })],
     }));
     const capDenied = verifyBlock(capped, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
@@ -144,7 +143,6 @@ describe('verifyBlock Phase B Flow levy', () => {
 
     const paid = mine(buildTemplate({
       ...childBase,
-      now: Date.now() + 270_000,
       txs: [potSend({ id: 'u2', fee: need })],
     }));
     const allowed = verifyBlock(paid, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
@@ -194,7 +192,7 @@ describe('verifyBlock Phase B Flow levy', () => {
         bits: GENESIS_BITS_PACKED,
         now: t0 + i * 90_000,
       });
-      const foundFund = mineTemplate(fund, { maxTries: 3_000_000, shareBits: 4 });
+      const foundFund = mineTemplate(fund, { maxTries: 3_000_000, shareBits: shareBitsOf(fund.bits) });
       assert.ok(foundFund && foundFund.block, 'fund pow');
       const pot = (fund.txs[0].vout || []).find((o) => o.kind === 'pot');
       lastPot = {

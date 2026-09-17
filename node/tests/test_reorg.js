@@ -9,7 +9,14 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
-import { LIVE_MIN_BITS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { GENESIS_BITS_PACKED, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { setHashBackend } from '../../crypto/shear_hash.js';
+try { setHashBackend('jit'); } catch { /* interpreter */ }
+
+function shareBitsOf(bits) {
+  const n = Number(bits) || 0;
+  return n >= 65536 ? Math.max(4, Math.floor(n / 65536)) : Math.max(4, n);
+}
 import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos, bindWeightFee } from '../../crypto/levy.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
@@ -20,13 +27,14 @@ function destMiner() {
   return encodeDest(Buffer.alloc(20, 9));
 }
 
-function mineOne(store, dest, bits = LIVE_MIN_BITS) {
+function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
   const parent = store.tip();
   const now = parent
     ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
     : Date.now();
-  const { tpl } = store.template({ miner: dest, bits, shareBits: bits, now });
-  const found = mineTemplate({ ...tpl, bits }, { maxTries: 3_000_000, shareBits: bits });
+  const sb = shareBitsOf(bits);
+  const { tpl } = store.template({ miner: dest, bits, shareBits: sb, now });
+  const found = mineTemplate({ ...tpl, bits }, { maxTries: 3_000_000, shareBits: sb });
   assert.ok(found && found.block, 'need pow');
   return store.append({
     header: found.header,
@@ -123,8 +131,8 @@ describe('most-work adopt', () => {
     assert.equal(mineOne(store, dest).ok, true);
     const parent = store.tip();
     const now = Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000;
-    const { tpl } = store.template({ miner: dest, bits: LIVE_MIN_BITS, shareBits: LIVE_MIN_BITS, now });
-    const found = mineTemplate({ ...tpl, bits: LIVE_MIN_BITS }, { maxTries: 3_000_000, shareBits: LIVE_MIN_BITS });
+    const { tpl } = store.template({ miner: dest, bits: GENESIS_BITS_PACKED, shareBits: shareBitsOf(GENESIS_BITS_PACKED), now });
+    const found = mineTemplate({ ...tpl, bits: GENESIS_BITS_PACKED }, { maxTries: 3_000_000, shareBits: shareBitsOf(GENESIS_BITS_PACKED) });
     assert.ok(found && found.block, 'need child pow');
     const id = newIdentity();
     const poisoned = {

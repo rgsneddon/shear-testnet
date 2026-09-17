@@ -244,10 +244,10 @@ describe('privacy.walk', () => {
   it('10: stratum she1 is RAM-only; serialized miner row and pool-miner.json have no she1/IP/UA', () => {
     const alice = newIdentity();
     const owned = freshStealthDest(alice.paymentCode).dest;
-    const sheOnly = admitClient({ login: alice.paymentCode, client: 'ShearHash' });
+    const sheOnly = admitClient({ version: '2.1', login: alice.paymentCode, client: 'ShearHash' });
     assert.equal(sheOnly.payoutDest, '');
     assert.equal(sheOnly.ramAlias, true);
-    const sheOwned = admitClient({ login: `${alice.paymentCode}.worker`, dest: owned, client: 'ShearHash' });
+    const sheOwned = admitClient({ version: '2.1', login: `${alice.paymentCode}.worker`, dest: owned, client: 'ShearHash' });
     assert.equal(sheOwned.payoutDest, owned);
     assert.equal(sheOwned.login.startsWith('ssa1'), true);
     assert.equal(hasherPayoutDest(alice.paymentCode, { dest: aliasDestOfSilentId(alice.paymentCode) }), null);
@@ -301,6 +301,7 @@ describe('privacy.walk', () => {
     assert.match(fp, /AMOUNT=confidential/);
     assert.match(fp, /DUMMY_OUTS=1/);
     assert.match(fp, /ENC_SHARE=v5/);
+    assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
     assert.match(fp, /DANDELIONPP=1/);
     assert.match(fp, /VIEW_TAG=1/);
     assert.match(fp, /KDF=argon2id-shewall/);

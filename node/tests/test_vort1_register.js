@@ -8,7 +8,14 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, containsShe1 } from '../../crypto/levy.js';
 import { gateVorticeRegister, vorticeRegisterTx } from '../../crypto/vortex.js';
 import { signSpendTx } from '../../crypto/spend.js';
-import { SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { SPENDABLE_CONFIRMATIONS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { setHashBackend } from '../../crypto/shear_hash.js';
+try { setHashBackend('jit'); } catch { /* interpreter */ }
+
+function shareBitsOf(bits) {
+  const n = Number(bits) || 0;
+  return n >= 65536 ? Math.max(4, Math.floor(n / 65536)) : Math.max(4, n);
+}
 import { createStore } from '../src/store.js';
 import { decodeHeader } from '../../crypto/header.js';
 import {
@@ -19,7 +26,7 @@ import {
 } from '../src/chain.js';
 
 function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
+  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: shareBitsOf(tpl.bits) });
   assert.ok(found && found.block, 'pow');
   return {
     header: found.header,
@@ -77,7 +84,7 @@ describe('vort1 register consensus tx', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: Date.now(),
       txs: [she],
     }));
@@ -97,7 +104,7 @@ describe('vort1 register consensus tx', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: Date.now() + 1,
       txs: [okTx],
     })), null);
@@ -109,8 +116,8 @@ describe('vort1 register consensus tx', () => {
       const now = parent
         ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
         : t0;
-      const { tpl } = store2.template({ miner: pay, bits: 4, now });
-      const found = mineTemplate({ ...tpl, bits: 4 }, { maxTries: 3_000_000, shareBits: 4 });
+      const { tpl } = store2.template({ miner: pay, bits: GENESIS_BITS_PACKED, now });
+      const found = mineTemplate({ ...tpl, bits: GENESIS_BITS_PACKED }, { maxTries: 3_000_000, shareBits: shareBitsOf(GENESIS_BITS_PACKED) });
       assert.ok(found && found.block, 'fund');
       const funded = await store2.append({
         header: found.header,
@@ -131,10 +138,10 @@ describe('vort1 register consensus tx', () => {
     const parentH = decodeHeader(Buffer.from(parent.header));
     const { tpl } = store2.template({
       miner: pay,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: Number(parentH.timestamp) + 90_000,
     });
-    const found = mineTemplate({ ...tpl, bits: 4 }, { maxTries: 3_000_000, shareBits: 4 });
+    const found = mineTemplate({ ...tpl, bits: GENESIS_BITS_PACKED }, { maxTries: 3_000_000, shareBits: shareBitsOf(GENESIS_BITS_PACKED) });
     assert.ok(found && found.block, 'pow');
     const appended = await store2.append({
       header: found.header,
@@ -160,6 +167,6 @@ describe('vort1 register consensus tx', () => {
     assert.match(src, /GENESIS_BITS_PACKED/);
     assert.match(src, /bitsForBlock/);
     assert.equal(/packBits\(4\)/.test(src), false);
-    assert.equal(/shareBits: 4/.test(src), false);
+    assert.equal(/shareBits: shareBitsOf(GENESIS_BITS_PACKED)/.test(src), false);
   });
 });

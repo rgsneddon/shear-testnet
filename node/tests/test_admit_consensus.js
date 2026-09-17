@@ -7,7 +7,7 @@ import { newIdentity, freshStealthDest, ed25519SeedOf, stealthKey } from '../../
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { sealNote } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
-import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { admitProve, admitScalarFromSeed, fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
 import { signSpendTx } from '../../crypto/spend.js';
@@ -20,8 +20,13 @@ import {
   GENESIS_PREV,
 } from '../src/chain.js';
 
+function shareBitsOf(bits) {
+  const n = Number(bits) || 0;
+  return n >= 65536 ? Math.max(4, Math.floor(n / 65536)) : Math.max(4, n);
+}
+
 function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
+  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: shareBitsOf(tpl.bits) });
   assert.ok(found && found.block, 'pow');
   return {
     header: found.header,
@@ -56,7 +61,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_000_000,
     }));
     const okG = verifyBlock(genesis, null);
@@ -67,7 +72,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prevHeader: genesis.header,
       height: 2,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_090_000,
       prevBlock: genesis,
       parentFluxset: fluxsetFromBlocks([genesis]).pubs,
@@ -116,7 +121,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prevHeader: parent.header,
       height: 3,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_180_000,
       txs: [compactTx(honest)],
       prevBlock: parent,
@@ -134,7 +139,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prevHeader: parent.header,
       height: 3,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_270_000,
       txs: [compactTx(missing)],
       prevBlock: parent,
@@ -159,7 +164,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prevHeader: parent.header,
       height: 3,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_360_000,
       txs: [compactTx(sampled)],
       prevBlock: parent,
@@ -200,7 +205,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prevHeader: parent.header,
       height: 3,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_450_000,
       txs: [compactTx(attack)],
       prevBlock: parent,
@@ -221,7 +226,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_001_000_000,
     }));
     const appended = store.append({
@@ -301,7 +306,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now,
     }));
     let appended = store.append({
@@ -316,7 +321,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const idx = parent.txs[0].vout.indexOf(spent);
     for (let h = 2; h <= 6; h += 1) {
       now += 90_000;
-      const { tpl } = store.template({ miner: dest, bits: 4, now });
+      const { tpl } = store.template({ miner: dest, bits: GENESIS_BITS_PACKED, now });
       const found = mine(tpl);
       appended = store.append({
         header: found.header,
@@ -365,7 +370,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const parentH = decodeHeader(Buffer.from(store.tip().header));
     const { tpl } = store.template({
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: Number(parentH.timestamp) + 90_000,
     });
     const user = (tpl.txs || []).slice(1);
@@ -397,7 +402,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_003_000_000,
     }));
     const okP = verifyBlock(parent, null);
@@ -437,7 +442,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_003_090_000,
       txs: [compactTx(body)],
       prevBlock: parent,
@@ -489,7 +494,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_003_180_000,
       txs: [she],
     });
@@ -510,7 +515,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_004_000_000,
     }));
     const okP = verifyBlock(parent, null);
@@ -531,7 +536,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_004_090_000,
       txs: [plain],
       prevBlock: parent,
@@ -562,7 +567,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_004_135_000,
       txs: [openSealed],
       prevBlock: parent,
@@ -579,7 +584,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_004_180_000,
       txs: [stub],
       prevBlock: parent,

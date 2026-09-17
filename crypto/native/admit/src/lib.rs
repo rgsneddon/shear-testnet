@@ -525,4 +525,252 @@ mod tests {
             assert_ne!(bad, honest);
         }
     }
+
+    fn note_set(n: usize) -> (Vec<Scalar>, Vec<[u8; 32]>, Vec<[u8; 32]>, Vec<u8>, Vec<u8>) {
+        let h = hash_to_ristretto(b"shear-note-H-v1");
+        let mut xs = Vec::new();
+        let mut ps = Vec::new();
+        let mut cs = Vec::new();
+        for i in 0..n {
+            let x = rand_scalar();
+            let p = RISTRETTO_BASEPOINT_POINT * x;
+            let r = rand_scalar();
+            let c = RISTRETTO_BASEPOINT_POINT * Scalar::from((i as u64) + 1) + h * r;
+            xs.push(x);
+            ps.push(point_bytes(&p));
+            cs.push(point_bytes(&c));
+        }
+        let mut dest_blob = Vec::new();
+        let mut c_blob = Vec::new();
+        for i in 0..n {
+            dest_blob.extend_from_slice(&ps[i]);
+            c_blob.extend_from_slice(&cs[i]);
+        }
+        (xs, ps, cs, dest_blob, c_blob)
+    }
+
+    const PATH_OFF: usize = 362;
+
+    fn path_off(proof: &[u8]) -> (usize, usize, usize) {
+        let ld = u32::from_le_bytes(proof[354..358].try_into().unwrap()) as usize;
+        let lc = u32::from_le_bytes(proof[358..362].try_into().unwrap()) as usize;
+        (PATH_OFF, ld, lc)
+    }
+
+    fn nonce_of(proof: &[u8]) -> [u8; 32] {
+        proof[321..353].try_into().unwrap()
+    }
+
+    /// Unblind with `from`, re-blind with `to` so the path still folds to jroot.
+    fn reblind_paths(from: &[u8], nonce_from: &[u8; 32], nonce_to: &[u8; 32]) -> (Vec<u8>, Vec<u8>) {
+        let (off, ld, lc) = path_off(from);
+        let dest = prove::unblind_path(&from[off..off + ld], nonce_from);
+        let c = prove::unblind_path(&from[off + ld..off + ld + lc], nonce_from);
+        (
+            prove::unblind_path(&dest, nonce_to),
+            prove::unblind_path(&c, nonce_to),
+        )
+    }
+
+    #[test]
+    fn proof_blob_does_not_name_p_or_c() {
+        let n = 8usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let idx = 3usize;
+        let t = rand_scalar();
+        let (_ct, proof) = admit_prove(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .expect("prove");
+        assert!(
+            !proof.windows(32).any(|w| w == ps[idx]),
+            "blob must not contain P"
+        );
+        assert!(
+            !proof.windows(32).any(|w| w == cs[idx]),
+            "blob must not contain original C"
+        );
+    }
+
+    #[test]
+    fn admit_rejects_attacker_x_on_victim_path() {
+        let n = 8usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let t = rand_scalar();
+        let (_ct_v, proof_v) = admit_prove(
+            &xs[2].to_bytes(),
+            &ps[2],
+            &cs[2],
+            &t.to_bytes(),
+            2,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .expect("victim");
+        let t2 = rand_scalar();
+        let (ct_a, mut proof_a) = admit_prove(
+            &xs[0].to_bytes(),
+            &ps[0],
+            &cs[0],
+            &t2.to_bytes(),
+            0,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .expect("attacker");
+        let tag_a = proof_spend_tag(&proof_a).unwrap();
+        let n_v = nonce_of(&proof_v);
+        let n_a = nonce_of(&proof_a);
+        let (bd, bc) = reblind_paths(&proof_v, &n_v, &n_a);
+        let (off, ld, lc) = path_off(&proof_a);
+        assert_eq!(bd.len(), ld);
+        assert_eq!(bc.len(), lc);
+        proof_a[353] = proof_v[353]; // victim d0 so selected leaf is dest_leaf(P_victim)
+        proof_a[off..off + ld].copy_from_slice(&bd);
+        proof_a[off + ld..off + ld + lc].copy_from_slice(&bc);
+        let raw_d = prove::unblind_path(&proof_a[off..off + ld], &n_a);
+        let raw_c = prove::unblind_path(&proof_a[off + ld..off + ld + lc], &n_a);
+        let (dr, dd) = tree::dest_path_slots(&raw_d).expect("victim dest path folds");
+        let (cr, cd) = tree::c_path_slots(&raw_c).expect("victim C path folds");
+        assert_eq!(dd, cd);
+        assert_eq!(crate::leaf::jroot_hash(&dr, &cr), jr);
+        // Path folds; dest_leaf(P_attacker) ≠ selected victim leaf → e2 mismatch.
+        assert!(
+            !admit_verify(&proof_a, &jr, &ct_a, &tag_a, &[], &[], 0),
+            "attacker x + victim path must fail dest_leaf bind"
+        );
+    }
+
+    #[test]
+    fn admit_rejects_self_minted_c_tilde() {
+        let n = 8usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let t = rand_scalar();
+        let (mut ct, mut proof) = admit_prove(
+            &xs[3].to_bytes(),
+            &ps[3],
+            &cs[3],
+            &t.to_bytes(),
+            3,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .expect("honest");
+        let tag = proof_spend_tag(&proof).unwrap();
+        // Path still folds; only C̃ is replaced. Representation + FS (C̃ in e) fail.
+        ct[0] ^= 0x5a;
+        proof[33] ^= 0x5a;
+        assert!(
+            !admit_verify(&proof, &jr, &ct, &tag, &[], &[], 0),
+            "self-minted C̃ must fail"
+        );
+    }
+
+    #[test]
+    fn admit_rejects_mixed_dest_c_indices() {
+        let n = 40usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let t = rand_scalar();
+        let (ct_a, mut proof_a) = admit_prove(
+            &xs[7].to_bytes(),
+            &ps[7],
+            &cs[7],
+            &t.to_bytes(),
+            7,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .expect("idx7");
+        let t2 = rand_scalar();
+        let (_ct_b, proof_b) = admit_prove(
+            &xs[39].to_bytes(),
+            &ps[39],
+            &cs[39],
+            &t2.to_bytes(),
+            39,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .expect("idx39");
+        let tag_a = proof_spend_tag(&proof_a).unwrap();
+        let n_a = nonce_of(&proof_a);
+        let n_b = nonce_of(&proof_b);
+        let (_bd7, _bc7) = reblind_paths(&proof_a, &n_a, &n_a);
+        let (_bd39, bc39) = reblind_paths(&proof_b, &n_b, &n_a);
+        let (off, ld, lc) = path_off(&proof_a);
+        assert_eq!(bc39.len(), lc);
+        // dest path of 7 (already under nonce_a) + C path of 39 re-blinded to nonce_a
+        proof_a[off + ld..off + ld + lc].copy_from_slice(&bc39);
+        assert!(
+            !admit_verify(&proof_a, &jr, &ct_a, &tag_a, &[], &[], 0),
+            "mixed dest/C indices must fail"
+        );
+    }
+
+    #[test]
+    fn forest_shares_one_path_bit_commitment() {
+        let n = 8usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let t0 = rand_scalar();
+        let t1 = rand_scalar();
+        let spends = [
+            (xs[1].to_bytes(), ps[1], cs[1], t0.to_bytes(), 1usize),
+            (xs[4].to_bytes(), ps[4], cs[4], t1.to_bytes(), 4usize),
+        ];
+        let got = prove::forest_prove(&spends, &dest_blob, &c_blob, n).expect("forest");
+        assert_eq!(got.len(), 2);
+        let items: Vec<(&[u8], [u8; 32], [u8; 32])> = got
+            .iter()
+            .map(|(ct, pr)| {
+                let tag = proof_spend_tag(pr).unwrap();
+                (pr.as_slice(), *ct, tag)
+            })
+            .collect();
+        assert!(prove::forest_verify(&items, &jr, &[], &[], 0));
+        // Independent single-input proofs do not share the forest bind.
+        let a = admit_prove(
+            &xs[1].to_bytes(),
+            &ps[1],
+            &cs[1],
+            &t0.to_bytes(),
+            1,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .unwrap();
+        let b = admit_prove(
+            &xs[4].to_bytes(),
+            &ps[4],
+            &cs[4],
+            &t1.to_bytes(),
+            4,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .unwrap();
+        let loose = [
+            (a.1.as_slice(), a.0, proof_spend_tag(&a.1).unwrap()),
+            (b.1.as_slice(), b.0, proof_spend_tag(&b.1).unwrap()),
+        ];
+        assert!(!prove::forest_verify(&loose, &jr, &[], &[], 0));
+        assert!(admit_verify(&a.1, &jr, &a.0, &proof_spend_tag(&a.1).unwrap(), &[], &[], 0));
+    }
 }

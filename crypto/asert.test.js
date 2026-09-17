@@ -6,6 +6,7 @@ import {
   bitsForBlock,
   templateStampMs,
   TARGET_BLOCK_INTERVAL_MS,
+  MTP_FUTURE_MS,
   GENESIS_BITS,
   GENESIS_BITS_PACKED,
   LIVE_MIN_BITS,
@@ -151,8 +152,8 @@ describe('ASERT 90s block retarget', () => {
     assert.ok(late <= parentTs + 400_000);
     assert.ok(unpackBits(bitsForBlock(packBits(21), parentTs, late)) < 21);
     const src = fs.readFileSync(new URL('./asert.js', import.meta.url), 'utf8');
-    assert.equal(/parent \+ TARGET_BLOCK_INTERVAL_MS/.test(src), false);
     assert.equal(/holdAimed/.test(src), false);
+    assert.notEqual(oneSec, parentTs + TARGET_BLOCK_INTERVAL_MS);
   });
 
   it('fast wall rounds may raise bits; clock skew does not stamp a negative interval', () => {
@@ -171,11 +172,38 @@ describe('ASERT 90s block retarget', () => {
     assert.equal(late, parentTs + 400_000);
     assert.ok(unpackBits(bitsForBlock(parentBits, parentTs, late)) < 21);
     const skew = templateStampMs(parentTs, parentTs - 5_000);
-    assert.equal(skew, parentTs);
-    assert.ok(skew >= parentTs);
+    assert.equal(skew, parentTs + 1);
+    assert.ok(skew > parentTs);
     assert.notEqual(skew, parentTs - 5_000);
     const storeSrc = fs.readFileSync(new URL('../node/src/store.js', import.meta.url), 'utf8');
-    assert.match(storeSrc, /templateStampMs\(parent\.timestamp, wall, wallIntervalMs\)/);
+    assert.match(storeSrc, /templateStampMs\(parent\.timestamp, wall, wallIntervalMs/);
+    assert.match(storeSrc, /medianTimePast/);
+  });
+
+  it('wall far ahead of MTP clamps so the header is not future-illegal', () => {
+    const parentTs = 1_700_000_000_000;
+    const wall = parentTs + 3 * 3600_000;
+    const clamped = templateStampMs(parentTs, wall, null, parentTs);
+    assert.equal(clamped, parentTs + MTP_FUTURE_MS);
+    assert.ok(clamped > parentTs);
+    assert.ok(clamped <= parentTs + MTP_FUTURE_MS);
+    const tightMtp = parentTs - MTP_FUTURE_MS + 1_000;
+    const atCap = templateStampMs(parentTs, wall, null, tightMtp);
+    assert.ok(atCap <= tightMtp + MTP_FUTURE_MS);
+    assert.ok(atCap > parentTs || atCap === parentTs + 1);
+    const uncapped = templateStampMs(parentTs, wall);
+    assert.equal(uncapped, wall);
+  });
+
+  it('a tip sitting on the old 15 min MTP cap eases instead of hardening +2', () => {
+    const parentTs = 1_700_000_000_000;
+    const mtp = parentTs - 15 * 60_000 + 3_000;
+    const wall = parentTs + 3_600_000;
+    const stamp = templateStampMs(parentTs, wall, null, mtp);
+    assert.ok(stamp - parentTs > 60_000, `interval ${stamp - parentTs} must not be the 3s cap`);
+    const parentBits = packBits(21);
+    const want = bitsForBlock(parentBits, parentTs, stamp);
+    assert.ok(unpackBits(want) < 21, `long wall must ease, got ${unpackBits(want)}`);
   });
 });
 

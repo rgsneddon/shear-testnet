@@ -51,7 +51,7 @@ describe('testnet blockBits', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: dest + '.bits', client: 'ShearHash', threads: 1 },
+          params: { login: dest + '.bits', client: 'ShearHash', version: '2.1', threads: 1 },
         }) + '\n');
         setTimeout(() => reject(new Error('login_timeout')), 8000);
       });

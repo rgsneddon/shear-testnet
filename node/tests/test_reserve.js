@@ -12,6 +12,7 @@ import {
   PI_SHE_NANOS,
   RESERVE_EPOCH_MS,
   LIVE_MIN_BITS,
+  GENESIS_BITS_PACKED,
   SPENDABLE_CONFIRMATIONS,
   NANOS_PER_SHE,
   HASH_BONUS_NANOS,
@@ -48,15 +49,24 @@ function spendBox(id) {
   };
 }
 
-async function mineOne(store, dest, { bits = 4, now } = {}) {
+import { setHashBackend } from '../../crypto/shear_hash.js';
+try { setHashBackend('jit'); } catch { /* interpreter */ }
+
+function shareBitsOf(bits) {
+  const n = Number(bits) || 0;
+  return n >= 65536 ? Math.max(4, Math.floor(n / 65536)) : Math.max(4, n);
+}
+
+async function mineOne(store, dest, { bits = GENESIS_BITS_PACKED, now } = {}) {
   const parent = store.tip();
   const stamp = now != null
     ? now
     : (parent
       ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
       : Date.now());
-  const { tpl } = store.template({ miner: dest, bits, shareBits: bits, now: stamp });
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: bits });
+  const sb = shareBitsOf(bits);
+  const { tpl } = store.template({ miner: dest, bits, shareBits: sb, now: stamp });
+  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: sb });
   assert.ok(found && found.block, 'need pow');
   const got = await store.append({
     header: found.header,
@@ -133,7 +143,7 @@ describe('node Reserve vault', () => {
 
     const fundBlocks = 4;
     for (let i = 0; i < fundBlocks + SPENDABLE_CONFIRMATIONS; i += 1) {
-      await mineOne(store, continuum, { bits: LIVE_MIN_BITS, now: t0 + i * 90_000 });
+      await mineOne(store, continuum, { bits: GENESIS_BITS_PACKED, now: t0 + i * 90_000 });
     }
     const before = spendableOf(store, continuum);
     assert.ok(before >= fundBlocks * NANOS_PER_SHE, `spendable ${before} after ${fundBlocks} pots`);
@@ -168,7 +178,7 @@ describe('node Reserve vault', () => {
     const queued = store.queueTx(lock);
     assert.equal(queued.ok, true, queued.reason);
     await mineOne(store, continuum, {
-      bits: LIVE_MIN_BITS,
+      bits: GENESIS_BITS_PACKED,
       now: t0 + (fundBlocks + SPENDABLE_CONFIRMATIONS) * 90_000,
     });
     assert.equal(store.reserveVault.epochStartMs > 0, true);
@@ -228,7 +238,7 @@ describe('node Reserve vault', () => {
     const dest = aliceBox.dest;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reuse-dest-'));
     const store = createStore(dir);
-    await mineOne(store, dest, { bits: LIVE_MIN_BITS, now: 1_700_000_000_000 });
+    await mineOne(store, dest, { bits: GENESIS_BITS_PACKED, now: 1_700_000_000_000 });
     const tip = store.tip();
     const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
     const tx = attachDummyOuts({
@@ -265,7 +275,7 @@ describe('node Reserve vault', () => {
     const store = createStore(dir);
     const t0 = 1_700_000_000_000;
     for (let i = 0; i < 4 + SPENDABLE_CONFIRMATIONS; i += 1) {
-      await mineOne(store, continuum, { bits: LIVE_MIN_BITS, now: t0 + i * 90_000 });
+      await mineOne(store, continuum, { bits: GENESIS_BITS_PACKED, now: t0 + i * 90_000 });
     }
     const lock = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-pend' });
     lock.open = open;
@@ -284,7 +294,7 @@ describe('node Reserve vault', () => {
     assert.equal(lockRow.amountHidden, true);
     assert.equal(/she1|shear1/i.test(JSON.stringify(lockRow)), false);
     await mineOne(store, continuum, {
-      bits: LIVE_MIN_BITS,
+      bits: GENESIS_BITS_PACKED,
       now: t0 + (4 + SPENDABLE_CONFIRMATIONS) * 90_000,
     });
     const vt = voteTx({ from: continuum, dest: vault, choice: VOTE_INCREASE, id: 'vote-pend' });
@@ -307,14 +317,14 @@ describe('node Reserve vault', () => {
     assert.equal(refused.ok, false);
     assert.equal(explorerRecentTxs(store).some((t) => t.id === 'lock-rejected'), false);
     await mineOne(store, continuum, {
-      bits: LIVE_MIN_BITS,
+      bits: GENESIS_BITS_PACKED,
       now: t0 + (5 + SPENDABLE_CONFIRMATIONS) * 90_000,
     });
     assert.equal(store.reserveVault.votes.increase, 1);
     assert.equal(explorerRecentTxs(store).some((t) => t.id === 'lock-rejected' && t.status === 'confirmed'), false);
     for (let i = 1; i <= SPENDABLE_CONFIRMATIONS; i += 1) {
       await mineOne(store, continuum, {
-        bits: LIVE_MIN_BITS,
+        bits: GENESIS_BITS_PACKED,
         now: t0 + (5 + SPENDABLE_CONFIRMATIONS + i) * 90_000,
       });
     }
@@ -343,8 +353,8 @@ describe('node Reserve vault', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-change-vout-'));
     const store = createStore(dir);
     const t0 = 1_700_000_000_000;
-    const { tpl: fundTpl } = store.template({ miner: destA, bits: LIVE_MIN_BITS, shareBits: LIVE_MIN_BITS, now: t0 });
-    const foundFund = mineTemplate(fundTpl, { maxTries: 3_000_000, shareBits: LIVE_MIN_BITS });
+    const { tpl: fundTpl } = store.template({ miner: destA, bits: GENESIS_BITS_PACKED, shareBits: shareBitsOf(GENESIS_BITS_PACKED), now: t0 });
+    const foundFund = mineTemplate(fundTpl, { maxTries: 3_000_000, shareBits: shareBitsOf(GENESIS_BITS_PACKED) });
     assert.ok(foundFund && foundFund.block, 'need pow');
     const pot = (fundTpl.txs[0].vout || []).find((o) => o.kind === 'pot');
     const lastPot = {
@@ -367,7 +377,7 @@ describe('node Reserve vault', () => {
     });
     assert.equal(funded.ok, true, funded.reason);
     for (let i = 1; i < SPENDABLE_CONFIRMATIONS; i += 1) {
-      await mineOne(store, minerDest, { bits: LIVE_MIN_BITS, now: t0 + i * 90_000 });
+      await mineOne(store, minerDest, { bits: GENESIS_BITS_PACKED, now: t0 + i * 90_000 });
     }
     const fundH = Number(store.tip().height);
     const before = matureSpendableNanos(store.historyFor(destA), destA, fundH);
@@ -407,7 +417,7 @@ describe('node Reserve vault', () => {
     assert.equal(queued.ok, true, queued.reason);
 
     await mineOne(store, minerDest, {
-      bits: LIVE_MIN_BITS,
+      bits: GENESIS_BITS_PACKED,
       now: t0 + SPENDABLE_CONFIRMATIONS * 90_000,
     });
     const sealedH = Number(store.tip().height);
@@ -424,7 +434,7 @@ describe('node Reserve vault', () => {
 
     for (let i = 1; i <= SPENDABLE_CONFIRMATIONS; i += 1) {
       await mineOne(store, minerDest, {
-        bits: LIVE_MIN_BITS,
+        bits: GENESIS_BITS_PACKED,
         now: t0 + (SPENDABLE_CONFIRMATIONS + i) * 90_000,
       });
     }

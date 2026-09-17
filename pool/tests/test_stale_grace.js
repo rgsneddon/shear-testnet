@@ -70,7 +70,7 @@ function loginAndSubmit(port, dest, submits) {
       sock.write(JSON.stringify({
         id: 1,
         method: 'login',
-        params: { login: `${dest}.rig`, client: 'ShearHash', name: 'ShearK-Miner', version: '1.2', threads: 1 },
+        params: { login: `${dest}.rig`, client: 'ShearHash', name: 'ShearK-Miner', version: '2.1', threads: 1 },
       }) + '\n');
     });
     sock.on('data', (c) => {
@@ -111,7 +111,7 @@ describe('stale classification and restamp/grace accept', () => {
     assert.equal(isStaleReject('duplicate_share'), false);
     assert.equal(isStaleReject('low_diff'), false);
     assert.equal(JOB_HEADER_HISTORY, 12);
-    assert.equal(PREV_JOB_GRACE_MS, 3_000);
+    assert.equal(PREV_JOB_GRACE_MS, 12_000);
     const job = { jobId: 'j', header: 'aa' };
     rememberJobHeader(job, 'aa');
     rememberJobHeader(job, 'bb');

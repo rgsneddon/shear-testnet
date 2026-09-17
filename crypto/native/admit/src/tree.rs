@@ -430,17 +430,34 @@ fn fold_path(
     raw: &[u8],
     commit: fn(&[[u8; 32]; ARITY]) -> [u8; 32],
 ) -> Option<[u8; 32]> {
+    fold_path_slots(raw, commit).map(|(root, _)| root)
+}
+
+/// Parent-in-child fold that also returns the unique child slot of each parent.
+/// Ambiguous or missing slots fail — mixed dest/C indices cannot hide here.
+fn fold_path_slots(
+    raw: &[u8],
+    commit: fn(&[[u8; 32]; ARITY]) -> [u8; 32],
+) -> Option<([u8; 32], Vec<u8>)> {
     let path = parse_path(raw)?;
     if path.is_empty() {
         return None;
     }
+    let mut digits = Vec::with_capacity(path.len().saturating_sub(1));
     for i in 0..path.len() - 1 {
         let parent = commit(&path[i]);
-        if !path[i + 1].iter().any(|x| *x == parent) {
-            return None;
+        let mut found: Option<u8> = None;
+        for (k, x) in path[i + 1].iter().enumerate() {
+            if *x == parent {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(k as u8);
+            }
         }
+        digits.push(found?);
     }
-    Some(commit(path.last()?))
+    Some((commit(path.last()?), digits))
 }
 
 /// Fold an unblinded dest path to the dest-tree root. Intermediate levels must
@@ -451,4 +468,22 @@ pub fn dest_path_root(raw: &[u8]) -> Option<[u8; 32]> {
 
 pub fn c_path_root(raw: &[u8]) -> Option<[u8; 32]> {
     fold_path(raw, commit_ristretto_encodings)
+}
+
+pub fn dest_path_slots(raw: &[u8]) -> Option<([u8; 32], Vec<u8>)> {
+    fold_path_slots(raw, commit_vesta)
+}
+
+pub fn c_path_slots(raw: &[u8]) -> Option<([u8; 32], Vec<u8>)> {
+    fold_path_slots(raw, commit_ristretto_encodings)
+}
+
+/// Leaf at slot `d0` of the bottom sibling vector.
+pub fn path_selected_leaf(raw: &[u8], d0: u8) -> Option<[u8; 32]> {
+    if (d0 as usize) >= ARITY {
+        return None;
+    }
+    let path = parse_path(raw)?;
+    let first = path.first()?;
+    Some(first[d0 as usize])
 }

@@ -20,6 +20,9 @@ import {
   HASH_TX_LIVE,
   bitsForBlock,
   templateStampMs,
+  medianTimePast,
+  MTP_WINDOW,
+  MTP_FUTURE_MS,
   consensusFingerprint,
   consensusLaw,
   formatShe,
@@ -69,7 +72,7 @@ export const JOB_RESTAMP_MS = 10_000;
 /** Keep this many prior restamp headers per job so in-flight shares still verify. */
 export const JOB_HEADER_HISTORY = 12;
 /** After the tip moves, accept the previous job this long without new-round credit. */
-export const PREV_JOB_GRACE_MS = 3_000;
+export const PREV_JOB_GRACE_MS = 12_000;
 /** Hold last positive self-rate this long across a RandomX cache pause. */
 export const HASHRATE_STALL_HOLD_MS = 90_000;
 /** Mixed hashing+K-pause windows often land at 50–90% of the true rate. */
@@ -1059,6 +1062,17 @@ export function createPool({
   }
 
   function blockBitsNow() {
+    const tip = store.tip();
+    if (tip?.header) {
+      try {
+        const parent = decodeHeader(Buffer.from(tip.header));
+        const mtp = medianTimePast((store.blocks || []).slice(-MTP_WINDOW).map((b) => {
+          try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
+        }));
+        const stamp = templateStampMs(parent.timestamp, Date.now(), null, mtp);
+        return bitsForBlock(parent.bits, parent.timestamp, BigInt(stamp));
+      } catch { /* fall through */ }
+    }
     return Number(lastJob?.blockBits || lastJob?.bits || bits);
   }
 
@@ -1259,17 +1273,22 @@ export function createPool({
     }
     const wall = Number(now);
     let stamp = wall;
+    let overMtp = false;
     const tip = store.tip();
     if (tip?.header) {
       try {
         const parent = decodeHeader(Buffer.from(tip.header));
-        stamp = templateStampMs(parent.timestamp, wall);
+        const mtp = medianTimePast((store.blocks || []).slice(-MTP_WINDOW).map((b) => {
+          try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
+        }));
+        stamp = templateStampMs(parent.timestamp, wall, null, mtp);
+        overMtp = Number(decoded.timestamp) > Number(mtp) + MTP_FUTURE_MS;
         const wantBits = bitsForBlock(parent.bits, parent.timestamp, BigInt(stamp));
-        if (wantBits !== Number(decoded.bits)) return lastJob;
+        if (wantBits !== Number(decoded.bits) && !overMtp) return lastJob;
       } catch { /* keep live stamp */ }
     }
-    if (stamp > wall) return lastJob;
-    if (stamp <= Number(decoded.timestamp)) return lastJob;
+    if (stamp > wall && !overMtp) return lastJob;
+    if (stamp <= Number(decoded.timestamp) && !overMtp) return lastJob;
     const header = encodeHeader({
       version: decoded.version,
       prevBlockHash: decoded.prevBlockHash,
@@ -1305,9 +1324,17 @@ export function createPool({
       try {
         const parent = decodeHeader(Buffer.from(tip.header));
         const decoded = decodeHeader(headerFromHex(lastJob.header));
-        const stamp = templateStampMs(parent.timestamp, now);
+        const mtp = medianTimePast((store.blocks || []).slice(-MTP_WINDOW).map((b) => {
+          try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
+        }));
+        const stamp = templateStampMs(parent.timestamp, now, null, mtp);
         const wantBits = bitsForBlock(parent.bits, parent.timestamp, BigInt(stamp));
-        if (wantBits !== Number(decoded.bits) && stamp > Number(decoded.timestamp)) {
+        const liveTs = Number(decoded.timestamp);
+        const overMtp = liveTs > Number(mtp) + MTP_FUTURE_MS;
+        // Long round: ASERT may ease while the job stamp is already wall.
+        // Reissue when packed bits moved; keep the same parent so dest-bind
+        // shares still match via prev-job grace (12s).
+        if (wantBits !== Number(decoded.bits) || overMtp) {
           const next = issueJob(undefined, { force: true });
           if (next) broadcastJob(next);
           return next;

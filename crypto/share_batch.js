@@ -2,7 +2,13 @@
  * Lag-1 proven shareBatch. A hash is one ShearHash-v3 digest of the frozen
  * parent header (nonce replaced). Units are 2^SHARE_FLOOR_BITS, never a
  * client counter.
+ *
+ * Share difficulty binds hasher identity: the floor target is on
+ * sha256("shear-share-dest-v1" || rx || noteCommit), not on rx alone.
+ * A third-party pool cannot restamp dest/noteCommit on a stolen nonce.
+ * Block POW stays ShearHash-v3 of the 128-byte header.
  */
+import { createHash } from 'node:crypto';
 import {
   SHARE_FLOOR_BITS,
   MAX_SHARES_PER_BLOCK,
@@ -15,6 +21,22 @@ import { setNonce } from './header.js';
 import { packShareV5, unpackShareBatch } from './pack.js';
 import { isDestAddress, bech32Hrp, encodeDest, hash20FromAddress } from './address.js';
 import { noteCommitOfDest20 } from './note.js';
+
+export const SHARE_DEST_DST = Buffer.from('shear-share-dest-v1');
+
+/** Dest-bound share digest. rx is ShearHash-v3(header with nonce). */
+export function destBoundShareHash(rxHash, noteCommit) {
+  const rx = Buffer.from(rxHash || []);
+  const nc = Buffer.from(noteCommit || []);
+  if (rx.length !== 32 || nc.length !== 32) return Buffer.alloc(32);
+  return createHash('sha256').update(SHARE_DEST_DST).update(rx).update(nc).digest();
+}
+
+export function shareMeetsFloor(rxHash, share, floorBits = SHARE_FLOOR_BITS) {
+  const nc = noteCommitOfShare(share);
+  if (!nc || nc.length !== 32) return false;
+  return meetsTarget(destBoundShareHash(rxHash, nc), floorBits);
+}
 
 export function unitsForShare(shareBits = SHARE_FLOOR_BITS) {
   const b = Math.max(SHARE_FLOOR_BITS, Math.floor(Number(shareBits) || 0));
@@ -172,11 +194,15 @@ export function verifyShareBatch({
     const cached = skipPow || (jobKey && liveSharePow.has(`${jobKey}:${nk}`));
     let lz = Number(s.lz) & 0xff;
     if (!cached) {
+      if (!nc || Buffer.from(nc).length !== 32) {
+        return { ok: false, reason: 'miner_addr' };
+      }
       const hash = shearHash(header);
-      if (!meetsTarget(hash, floorBits)) {
+      const bound = destBoundShareHash(hash, nc);
+      if (!meetsTarget(bound, floorBits)) {
         return { ok: false, reason: 'share_pow' };
       }
-      lz = leadingZeroBits(hash) & 0xff;
+      lz = leadingZeroBits(bound) & 0xff;
     }
     // Historical persist dropped dest/noteCommit and kept nonce+lz. POW still binds
     // the share; hasher identity is the sealed aLeaf. New rows keep noteCommit.
@@ -217,23 +243,27 @@ export function findShare(header, {
   for (let n = BigInt(startNonce); n < BigInt(startNonce) + BigInt(maxTries); n += 1n) {
     const h = setNonce(job, n);
     const hash = shearHash(h);
-    if (meetsTarget(hash, floorBits)) {
-      const share = {
-        dest20: d20,
-        dest: addr,
-        nonce: n,
-        lz: leadingZeroBits(hash) & 0xff,
-      };
+    const share = {
+      dest20: d20,
+      dest: addr,
+      nonce: n,
+      lz: 0,
+    };
+    const nc = noteCommitOfShare(share);
+    const bound = destBoundShareHash(hash, nc);
+    if (meetsTarget(bound, floorBits)) {
+      share.lz = leadingZeroBits(bound) & 0xff;
       return {
         ...share,
-        noteCommit: noteCommitOfShare(share),
+        noteCommit: nc,
         packed: packShareV5({
-          noteCommit: noteCommitOfShare(share),
+          noteCommit: nc,
           nonce: n,
-          lz: leadingZeroBits(hash) & 0xff,
+          lz: share.lz,
         }),
         header: h,
         hash,
+        bound,
       };
     }
   }

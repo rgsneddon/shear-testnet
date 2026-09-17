@@ -29,7 +29,6 @@ import {
   SELF_RATE_MIN_DT_S,
   HASHRATE_STALL_HOLD_MS,
   HASHRATE_HOLD_FRAC,
-  HASHRATE_RISE_FRAC,
   HASH_QUEUE_MAX,
   HASH_INFLIGHT_PER_CONN,
 } from '../src/pool.js';
@@ -134,7 +133,7 @@ describe('duplicate shares cannot inflate round work', () => {
       clientHashes: 16_590_151_266_784,
       clientHashesRound0: 0,
     };
-    assert.equal(admitClient({ login: dest, client: 'ShearHash', name: 'Shear-Miner' }).ok, true);
+    assert.equal(admitClient({ version: '2.1', login: dest, client: 'ShearHash', name: 'Shear-Miner' }).ok, true);
     assert.equal(hasherHasValidRoundShare(idle), false);
     assert.equal(roundActualHashes(idle), 0);
     const none = pendingFor(new Map([['idle', idle]]), dest);
@@ -208,7 +207,7 @@ describe('duplicate shares cannot inflate round work', () => {
     sock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.old`, client: 'ShearHash', name: 'Shear-Miner', version: '1.1', threads: 8, hashes: 9e12, hashrate: 1e9 },
+      params: { login: `${dest}.old`, client: 'ShearHash', name: 'Shear-Miner', version: '2.1', threads: 8, hashes: 9e12, hashrate: 1e9 },
     }) + '\n');
     await new Promise((res) => sock.once('data', res));
     const t0 = Date.now();
@@ -329,16 +328,38 @@ describe('folded-row inventory', () => {
   });
 
   it('pool HUD hashes/dt matches the miner hashrate formula; mint stays proven', () => {
-    assert.equal(SELF_RATE_MIN_DT_S, 2);
+    assert.equal(SELF_RATE_MIN_DT_S, 8);
     assert.equal(HASHRATE_EMA_TAU_S, 8);
     const t0 = 1_700_000_000_000;
     const m = { connections: [{ sock: {} }], threads: 2 };
     applyMinerSelfRate(m, { hashes: 10_000 }, t0);
+    applyMinerSelfRate(m, { hashes: 10_000 + 2320, hashrate: 970, threads: 2 }, t0 + 2_000);
+    assert.equal(Number(m.clientHs) || 0, 0);
     applyMinerSelfRate(m, { hashes: 10_000 + 970 * 10 }, t0 + 10_000);
-    assert.equal(m.clientHs, 970);
+    assert.equal(Math.round(m.clientHs), 970);
     assert.equal(Math.round(reportedHashrate(m, t0 + 10_000)), 970);
     assert.equal(provenHashrate(m, t0 + 10_000), 0);
     assert.equal(Number(m.roundHashes) || 0, 0);
+  });
+
+  it('junk claimed hashrate is ignored; display is hashes/dt; mint stays proven', () => {
+    const t0 = 1_700_000_000_000;
+    const m = { connections: [{ sock: {} }], threads: 2 };
+    applyMinerSelfRate(m, { hashes: 10_000, hashrate: 2_000_000_000, threads: 2 }, t0);
+    applyMinerSelfRate(m, { hashes: 10_000 + 970 * 10, hashrate: 2_000_000_000, threads: 2 }, t0 + 10_000);
+    assert.equal(m.clientHs, 970);
+    assert.equal(Math.round(reportedHashrate(m, t0 + 10_000)), 970);
+  });
+
+  it('8s hashes/dt matches a 12 kH/s miner; a 2s burst does not paint 1.2×', () => {
+    const t0 = 1_700_000_000_000;
+    const m = { connections: [{ sock: {} }], threads: 40 };
+    applyMinerSelfRate(m, { hashes: 0, hashrate: 12_000, threads: 40 }, t0);
+    applyMinerSelfRate(m, { hashes: 2_400, hashrate: 12_000, threads: 40 }, t0 + 2_000);
+    assert.equal(Number(m.clientHs) || 0, 0);
+    applyMinerSelfRate(m, { hashes: 12_000 * 8, hashrate: 14_400, threads: 40 }, t0 + 8_000);
+    assert.equal(m.clientHs, 12_000);
+    assert.equal(Math.round(reportedHashrate(m, t0 + 8_000)), 12_000);
   });
 
   it('1-thread ~55 H/s hashes/dt paints ~55, not kH/s', () => {
@@ -352,9 +373,10 @@ describe('folded-row inventory', () => {
     assert.ok(reportedHashrate(m, t0 + 10_000) < 200);
   });
 
-  it('K-pause / between-block dip holds the last rate, no spike on resume', () => {
+  it('K-pause / between-block dip holds the last rate', () => {
     assert.equal(HASHRATE_HOLD_FRAC, 0.9);
-    assert.equal(HASHRATE_RISE_FRAC, 1.15);
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.equal(/HASHRATE_RISE_FRAC/.test(src), false);
     const t0 = 1_700_000_000_000;
     const m = { connections: [{ sock: {} }], threads: 1 };
     applyMinerSelfRate(m, { hashes: 1_000 }, t0);
@@ -364,10 +386,6 @@ describe('folded-row inventory', () => {
     applyMinerSelfRate(m, { hashes: 1_000 + 80 * 10 + 400 }, t0 + 30_000);
     assert.equal(m.clientHs, 80);
     assert.equal(reportedHashrate(m, t0 + 30_000), 80);
-    m.clientHs = 800;
-    const rose = reportedHashrate(m, t0 + 31_000);
-    assert.ok(rose <= 80 * HASHRATE_RISE_FRAC + 0.01, `spike ${rose}`);
-    assert.ok(rose >= 80, `rose ${rose}`);
   });
 
   it('connect hashrate ramps up from own hashes, never down from a session-average spike', () => {
@@ -440,8 +458,8 @@ describe('folded-row inventory', () => {
     const dest = freshStealthDest(id.paymentCode).dest;
     assert.equal(workerKey(`${dest}.alpha`), `${dest}.alpha`);
     assert.notEqual(workerKey(`${dest}.alpha`), workerKey(`${dest}.beta`));
-    assert.equal(admitClient({ login: `${dest}.alpha`, client: 'ShearHash' }).workerKey, `${dest}.alpha`);
-    assert.equal(admitClient({ login: `${dest}.alpha`, client: 'ShearHash' }).login, dest);
+    assert.equal(admitClient({ version: '2.1', login: `${dest}.alpha`, client: 'ShearHash' }).workerKey, `${dest}.alpha`);
+    assert.equal(admitClient({ version: '2.1', login: `${dest}.alpha`, client: 'ShearHash' }).login, dest);
   });
 
   it('two sockets on one worker sum; dest.other is a separate row', async () => {
@@ -468,7 +486,7 @@ describe('folded-row inventory', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: user, client: 'ShearHash', name: 'ShearK-Miner', threads, cpuThreads, cpuCores: cpuThreads },
+          params: { login: user, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads, cpuThreads, cpuCores: cpuThreads },
         }) + '\n');
       });
       sock.once('data', () => resolve(sock));

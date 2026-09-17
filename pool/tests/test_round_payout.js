@@ -70,7 +70,7 @@ async function login(port, login) {
   send(sock, {
     id: 1,
     method: 'login',
-    params: { login, client: 'ShearHash', threads: 1 },
+    params: { login, client: 'ShearHash', version: '2.1', threads: 1 },
   });
   const hello = await lines.readLine();
   assert.equal(hello.result?.status, 'OK');

@@ -79,7 +79,15 @@ A **hash** is one ShearHash-v3 digest of the frozen 128-byte job header with a u
 
 A **unit** is `HASH_BONUS_NANOS = 1`.
 
-A digest that meets `SHARE_FLOOR_BITS` is worth `units(share) = 2^SHARE_FLOOR_BITS`.
+Share difficulty binds hasher identity. The floor target is
+`meetsTarget(sha256("shear-share-dest-v1" || ShearHash(header) || noteCommit), SHARE_FLOOR_BITS)`.
+`noteCommit = sha256("shear-note-commit-v1" || dest20)`. Changing dest or noteCommit
+invalidates the share. A third-party pool cannot restamp hasher dest on a stolen nonce.
+Block POW stays ShearHash-v3 of the 128-byte header.
+
+A digest that meets `SHARE_FLOOR_BITS` on that dest-bound hash is worth `units(share) = 2^SHARE_FLOOR_BITS`.
+Inclusion of a hasher in `shareBatch` is the finder's (like txs). Omitted work is not minted
+to the operator; operator `kind:hash` notes still require dest-bound POW on the operator dest.
 
 Forbidden: count from `clientHashes`, banners, thread counts, or a number the template author typed. `applyMinerSelfRate` is not a credit path. `roundActualHashes` has no client-hash branch. After one valid share the bonus may not jump to a reported counter.
 

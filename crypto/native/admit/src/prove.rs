@@ -1,9 +1,9 @@
 //! ADMITv2 prove / verify. Version byte 2. ADMITv1 (linear r) fails.
 
-use crate::leaf::{jroot_hash, sha512_64};
+use crate::leaf::{c_leaf_scalar, dest_leaf_fp, jroot_hash, sha512_64};
 use crate::tree::{
-    c_path_root, c_paths_and_root, dest_path_root, dest_paths_and_root, note_u, rerand_c,
-    ristretto_h_note, ARITY,
+    c_path_slots, c_paths_and_root, dest_path_slots, dest_paths_and_root, note_u,
+    path_selected_leaf, rerand_c, ristretto_h_note, ARITY,
 };
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
@@ -52,7 +52,7 @@ fn blind_path(path: &[[[u8; 32]; ARITY]], nonce: &[u8; 32]) -> Vec<u8> {
     out
 }
 
-fn unblind_path(blinded: &[u8], nonce: &[u8; 32]) -> Vec<u8> {
+pub(crate) fn unblind_path(blinded: &[u8], nonce: &[u8; 32]) -> Vec<u8> {
     let mut out = blinded.to_vec();
     for (i, b) in out.iter_mut().enumerate() {
         let w = sha512_64(&[b"shear-path-blind", nonce, &(i as u64).to_le_bytes()]);
@@ -60,6 +60,8 @@ fn unblind_path(blinded: &[u8], nonce: &[u8; 32]) -> Vec<u8> {
     }
     out
 }
+
+const ZERO_BIND: [u8; 32] = [0u8; 32];
 
 pub fn admit_prove(
     x: &[u8; 32],
@@ -70,6 +72,20 @@ pub fn admit_prove(
     dest_leaves: &[u8],
     c_leaves: &[u8],
     n: usize,
+) -> Option<([u8; 32], Vec<u8>)> {
+    admit_prove_in(x, p, c, t, index, dest_leaves, c_leaves, n, &ZERO_BIND)
+}
+
+pub fn admit_prove_in(
+    x: &[u8; 32],
+    p: &[u8; 32],
+    c: &[u8; 32],
+    t: &[u8; 32],
+    index: usize,
+    dest_leaves: &[u8],
+    c_leaves: &[u8],
+    n: usize,
+    forest_bind: &[u8; 32],
 ) -> Option<([u8; 32], Vec<u8>)> {
     if n == 0 || index >= n {
         return None;
@@ -93,6 +109,15 @@ pub fn admit_prove(
     let (dpath, dest_r) = dest_paths_and_root(dest_leaves, n, index)?;
     let (cpath, c_r) = c_paths_and_root(c_leaves, n, index)?;
     let jr = jroot_hash(&dest_r, &c_r);
+    let d0 = (index % ARITY) as u8;
+    let dest_l = dest_leaf_fp(p);
+    let c_l = c_leaf_scalar(c);
+    if dpath.first()?.get(d0 as usize) != Some(&dest_l) {
+        return None;
+    }
+    if cpath.first()?.get(d0 as usize) != Some(&c_l) {
+        return None;
+    }
 
     // Com_C = C + s U, U independent of H
     let s = chal(&[b"s", x, t, c]);
@@ -101,7 +126,7 @@ pub fn admit_prove(
     let com_c = c_pt + u * s;
     let com_b = com_c.compress().to_bytes();
 
-    // Representation: C̃ - Com_C = t H - s U
+    // Representation: C̃ - Com_C = t H - s U. Also C̃ = C + t H (select-and-rerandomize).
     let a_t = chal(&[b"at", t, x]);
     let a_s = chal(&[b"as", t, x, c]);
     let r_rep = h * a_t - u * a_s;
@@ -112,21 +137,14 @@ pub fn admit_prove(
         &com_b,
         &jr,
         &tag,
+        &[d0],
+        &dest_l,
+        &c_l,
+        forest_bind,
     ]);
     let z_t = a_t + e * ts;
     let z_s = a_s + e * s;
 
-    // DLEQ: P = x G and I = x Hp(P) — P is a witness; we send only R = kG, R2 = k Hp(P), z
-    // Sending Hp(P) would leak. Send R2 without Hp(P): verifier checks z*G = R + e2 P
-    // which needs P. Hide P as P_com = P + w U, then we cannot DLEQ I without Hp(P).
-    // Bind I by including it in e and proving knowledge of x: R = k G, z = k + e x
-    // Check z G = R + e P still needs P.
-    // We prove z G - R = e P so (z G - R) is e * P. Verifier doesn't have P.
-    // Include P_com = P + w U in the proof (hiding). Check z G + (e w) U = R + e P_com.
-    // Needs w in the check as e*w, so send z_w = ...  knowledge of x,w for P_com.
-    // I = x Hp(P) still needs Hp(P). We put I in the transcript and compute it in prove.
-    // Native verify checks the Schnorr on P_com and that I ≠ 0. Binding I to x is
-    // the same-x Schnorr plus I in the FS challenge of the representation (already).
     let w = chal(&[b"w", x, p]);
     let p_com = p_pt + u * w;
     let k = chal(&[b"k", x, t]);
@@ -139,6 +157,10 @@ pub fn admit_prove(
         &tag,
         &c_tilde,
         &jr,
+        &[d0],
+        &dest_l,
+        &c_l,
+        forest_bind,
     ]);
     let z_x = k + e2 * xs;
     let z_w = a_w + e2 * w;
@@ -147,6 +169,8 @@ pub fn admit_prove(
     let bdest = blind_path(&dpath, &nonce);
     let bc = blind_path(&cpath, &nonce);
 
+    // Wire blob names neither P nor original C. Index bit d0 is committed in
+    // FS with the selected dest_leaf and c_leaf taken from the paths.
     let mut proof = Vec::new();
     proof.push(VERSION);
     proof.extend_from_slice(&tag);
@@ -160,6 +184,7 @@ pub fn admit_prove(
     proof.extend_from_slice(&z_x.to_bytes());
     proof.extend_from_slice(&z_w.to_bytes());
     proof.extend_from_slice(&nonce);
+    proof.push(d0);
     proof.extend_from_slice(&(bdest.len() as u32).to_le_bytes());
     proof.extend_from_slice(&(bc.len() as u32).to_le_bytes());
     proof.extend_from_slice(&bdest);
@@ -192,6 +217,19 @@ pub fn admit_verify(
     c_leaves: &[u8],
     n: usize,
 ) -> bool {
+    admit_verify_in(proof, jr, c_tilde, spend_tag, dest_leaves, c_leaves, n, &ZERO_BIND)
+}
+
+pub fn admit_verify_in(
+    proof: &[u8],
+    jr: &[u8; 32],
+    c_tilde: &[u8; 32],
+    spend_tag: &[u8; 32],
+    dest_leaves: &[u8],
+    c_leaves: &[u8],
+    n: usize,
+    forest_bind: &[u8; 32],
+) -> bool {
     let _ = (dest_leaves, c_leaves);
     if proof.is_empty() || proof[0] != VERSION {
         return false;
@@ -200,7 +238,8 @@ pub fn admit_verify(
     if n > 0 && proof.len() == 4 + 64 + n * 32 {
         return false;
     }
-    if proof.len() < 1 + 32 * 11 + 8 {
+    // version + 11×32 + d0 + ld + lc
+    if proof.len() < 1 + 32 * 11 + 1 + 8 {
         return false;
     }
     let tag = match read32(proof, 1) {
@@ -244,15 +283,46 @@ pub fn admit_verify(
         Some(x) => x,
         None => return false,
     };
-    let ld = u32::from_le_bytes(proof.get(353..357).and_then(|s| s.try_into().ok()).unwrap_or([0; 4]))
-        as usize;
-    let lc = u32::from_le_bytes(proof.get(357..361).and_then(|s| s.try_into().ok()).unwrap_or([0; 4]))
-        as usize;
-    if proof.len() < 361 + ld + lc {
+    let d0 = *proof.get(353).unwrap_or(&255u8);
+    if (d0 as usize) >= ARITY {
         return false;
     }
-    let bdest = &proof[361..361 + ld];
-    let bc = &proof[361 + ld..361 + ld + lc];
+    let ld = u32::from_le_bytes(proof.get(354..358).and_then(|s| s.try_into().ok()).unwrap_or([0; 4]))
+        as usize;
+    let lc = u32::from_le_bytes(proof.get(358..362).and_then(|s| s.try_into().ok()).unwrap_or([0; 4]))
+        as usize;
+    if proof.len() < 362 + ld + lc {
+        return false;
+    }
+    let bdest = &proof[362..362 + ld];
+    let bc = &proof[362 + ld..362 + ld + lc];
+
+    // Membership first: unblind D-ary paths, same index digits, selected
+    // dest_leaf / c_leaf at d0. P and original C are not on the wire.
+    let raw_d = unblind_path(bdest, &nonce);
+    let raw_c = unblind_path(bc, &nonce);
+    let (dest_r, dest_digits) = match dest_path_slots(&raw_d) {
+        Some(v) => v,
+        None => return false,
+    };
+    let (c_r, c_digits) = match c_path_slots(&raw_c) {
+        Some(v) => v,
+        None => return false,
+    };
+    if dest_digits != c_digits {
+        return false;
+    }
+    if jroot_hash(&dest_r, &c_r) != *jr {
+        return false;
+    }
+    let dest_l = match path_selected_leaf(&raw_d, d0) {
+        Some(v) => v,
+        None => return false,
+    };
+    let c_l = match path_selected_leaf(&raw_c, d0) {
+        Some(v) => v,
+        None => return false,
+    };
 
     let h = ristretto_h_note();
     let u = note_u();
@@ -268,8 +338,20 @@ pub fn admit_verify(
         Some(p) => p,
         None => return false,
     };
-    let e = chal(&[b"rep", &r_rep_b, c_tilde, &com_b, jr, &tag]);
-    // z_t H - z_s U  ?==  R + e (C̃ - Com_C)
+    let e = chal(&[
+        b"rep",
+        &r_rep_b,
+        c_tilde,
+        &com_b,
+        jr,
+        &tag,
+        &[d0],
+        &dest_l,
+        &c_l,
+        forest_bind,
+    ]);
+    // z_t H - z_s U  ?==  R + e (C̃ - Com_C). C̃ is in e with the selected
+    // c_leaf so a self-minted C̃ cannot keep the honest path's z values.
     let left = h * z_t - u * z_s;
     let right = r_rep + (ct - com_c) * e;
     if left != right {
@@ -284,25 +366,21 @@ pub fn admit_verify(
         Some(p) => p,
         None => return false,
     };
-    let e2 = chal(&[b"dleq", &r_x_b, &p_com_b, &tag, c_tilde, jr]);
-    // z_x G + z_w U  ?== R + e2 P_com
+    let e2 = chal(&[
+        b"dleq",
+        &r_x_b,
+        &p_com_b,
+        &tag,
+        c_tilde,
+        jr,
+        &[d0],
+        &dest_l,
+        &c_l,
+        forest_bind,
+    ]);
+    // z_x G + z_w U  ?== R + e2 P_com. e2 binds spendTag and P_com to the
+    // selected dest_leaf — attacker x on a victim path gets the wrong e2.
     if G * z_x + u * z_w != r_x + p_com * e2 {
-        return false;
-    }
-
-    // Membership is log-time against jroot: unblind the D-ary paths and fold
-    // them with parent-in-child checks. Never recompute jroot from full J.
-    let raw_d = unblind_path(bdest, &nonce);
-    let raw_c = unblind_path(bc, &nonce);
-    let dest_r = match dest_path_root(&raw_d) {
-        Some(r) => r,
-        None => return false,
-    };
-    let c_r = match c_path_root(&raw_c) {
-        Some(r) => r,
-        None => return false,
-    };
-    if jroot_hash(&dest_r, &c_r) != *jr {
         return false;
     }
     true
@@ -326,6 +404,17 @@ pub fn admit_verify_batch(
     true
 }
 
+fn forest_bind_of(pre: &[([u8; 32], [u8; 32], u8)]) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(16 + pre.len() * 65);
+    buf.extend_from_slice(b"forest-idx");
+    for (tag, ct, d0) in pre {
+        buf.extend_from_slice(tag);
+        buf.extend_from_slice(ct);
+        buf.push(*d0);
+    }
+    chal(&[&buf]).to_bytes()
+}
+
 pub fn forest_prove(
     spends: &[(
         [u8; 32],
@@ -338,11 +427,48 @@ pub fn forest_prove(
     c_leaves: &[u8],
     n: usize,
 ) -> Option<Vec<( [u8; 32], Vec<u8>)>> {
+    if spends.len() < 2 {
+        return None;
+    }
+    let mut pre = Vec::with_capacity(spends.len());
+    for (x, p, c, t, idx) in spends {
+        if *idx >= n {
+            return None;
+        }
+        let xs = Scalar::from_bytes_mod_order(*x);
+        let p_pt = decompress(p)?;
+        let i_pt = hp(&p_pt) * xs;
+        if i_pt.is_identity() {
+            return None;
+        }
+        let tag = i_pt.compress().to_bytes();
+        let ct = rerand_c(c, t)?;
+        pre.push((tag, ct, (*idx % ARITY) as u8));
+    }
+    let bind = forest_bind_of(&pre);
     let mut out = Vec::new();
     for (x, p, c, t, idx) in spends {
-        out.push(admit_prove(x, p, c, t, *idx, dest_leaves, c_leaves, n)?);
+        out.push(admit_prove_in(
+            x,
+            p,
+            c,
+            t,
+            *idx,
+            dest_leaves,
+            c_leaves,
+            n,
+            &bind,
+        )?);
     }
     Some(out)
+}
+
+fn proof_d0(proof: &[u8]) -> Option<u8> {
+    let d0 = *proof.get(353)?;
+    if (d0 as usize) >= ARITY {
+        return None;
+    }
+    Some(d0)
 }
 
 pub fn forest_verify(
@@ -352,5 +478,22 @@ pub fn forest_verify(
     c_leaves: &[u8],
     n: usize,
 ) -> bool {
-    admit_verify_batch(proofs, jr, dest_leaves, c_leaves, n)
+    if proofs.len() < 2 {
+        return false;
+    }
+    let mut pre = Vec::with_capacity(proofs.len());
+    for (pr, ct, tag) in proofs {
+        let d0 = match proof_d0(pr) {
+            Some(d) => d,
+            None => return false,
+        };
+        pre.push((*tag, *ct, d0));
+    }
+    let bind = forest_bind_of(&pre);
+    for (pr, ct, tag) in proofs {
+        if !admit_verify_in(pr, jr, ct, tag, dest_leaves, c_leaves, n, &bind) {
+            return false;
+        }
+    }
+    true
 }

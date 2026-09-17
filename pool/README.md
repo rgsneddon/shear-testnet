@@ -8,7 +8,7 @@ Public site example in this repo is **https://mypool.site**. Operator admin is *
 
 ## What you get
 
-- Stratum `0.0.0.0:1111` (ShearK 128-byte job; pin **ShearK-Miner 1.9**)
+- Stratum `0.0.0.0:1111` (ShearK 128-byte job; pin **ShearK-Miner 2.2**)
 - HTTP `127.0.0.1:8088` (nginx terminates TLS)
 - Validating node + pool in one process (same magic as the book)
 - Operator desk: username + password + 2FA (TOTP)

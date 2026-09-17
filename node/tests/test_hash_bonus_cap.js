@@ -10,8 +10,10 @@ import {
   SHARE_FLOOR_BITS,
   HASH_BONUS_NANOS_FLOOR,
   SAMPLE_PRUNE_CONFIRMATIONS,
+  GENESIS_BITS_PACKED,
+  bitsForBlock,
 } from '../../crypto/asert.js';
-import { unitsForShare, findShare, dest20OfShare } from '../../crypto/share_batch.js';
+import { unitsForShare, findShare, dest20OfShare, verifyShareBatch } from '../../crypto/share_batch.js';
 import { roundActualHashes } from '../../pool/src/hash_credit.js';
 import { hashesCreditedForShare } from '../../pool/src/share_vardiff.js';
 import {
@@ -29,6 +31,11 @@ import { applyMinerSelfRate } from '../../pool/src/pool.js';
 function destMiner() {
   const id = newIdentity();
   return freshStealthDest(id.paymentCode).dest;
+}
+
+function childBits(parent, now) {
+  const p = decodeHeader(Buffer.from(parent.header));
+  return bitsForBlock(p.bits, p.timestamp, now);
 }
 
 function mine(tpl) {
@@ -60,7 +67,7 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_000_000,
       samples: [],
     });
@@ -76,7 +83,7 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: Date.now(),
       samples: [],
     });
@@ -101,7 +108,7 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
       prevBlock: { ...parent, hash: okP.hash, header: parent.header },
       height: 2,
       miner: dest,
-      bits: 4,
+      bits: childBits(parent, 1_700_000_090_000),
       now: 1_700_000_090_000,
       shareBatch: [{ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz }],
     });
@@ -123,13 +130,52 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
     assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
   });
 
+  it('rejects a third-party pool that restamps hasher dest on a stolen nonce', () => {
+    const thief = destMiner();
+    assert.notEqual(thief, dest);
+    const stolen = {
+      dest20: dest20OfShare({ dest: thief }),
+      dest: thief,
+      nonce: share.nonce,
+      lz: share.lz,
+    };
+    const proved = verifyShareBatch({
+      parentHeader: parent.header,
+      shares: [stolen],
+      floorBits: SHARE_FLOOR_BITS,
+    });
+    assert.equal(proved.ok, false, 'dest rewrite must fail dest-bound share POW');
+    assert.equal(proved.reason, 'share_pow');
+
+    const honest = verifyShareBatch({
+      parentHeader: parent.header,
+      shares: [{ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz }],
+      floorBits: SHARE_FLOOR_BITS,
+    });
+    assert.equal(honest.ok, true, honest.reason);
+
+    const childTpl = buildTemplate({
+      prev: okP.hash,
+      prevHeader: parent.header,
+      height: 2,
+      miner: thief,
+      bits: childBits(parent, 1_700_000_090_000),
+      now: 1_700_000_090_000,
+      shareBatch: [stolen],
+    });
+    const child = mine(childTpl);
+    const got = verifyBlock(child, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
+    assert.equal(got.ok, false);
+    assert.ok(got.reason === 'share_pow' || got.reason === 'hash_bonus', got.reason);
+  });
+
   it('rejects a share that misses SHARE_FLOOR_BITS', () => {
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: 4,
+      bits: childBits(parent, 1_700_000_090_000),
       now: 1_700_000_090_000,
       shareBatch: [{
         dest20: dest20OfShare({ dest }),
@@ -151,7 +197,7 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: 4,
+      bits: childBits(parent, 1_700_000_090_000),
       now: 1_700_000_090_000,
       shareBatch: [row, row],
     });
@@ -168,7 +214,7 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: 4,
+      bits: childBits(parent, 1_700_000_090_000),
       now: 1_700_000_090_000,
       shareBatch: [{ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz }],
     });
@@ -194,7 +240,7 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
       prevBlock: { ...parent, hash: okP.hash, header: parent.header },
       height: 2,
       miner: dest,
-      bits: 4,
+      bits: childBits(parent, 1_700_000_090_000),
       now: 1_700_000_090_000,
       shareBatch: [{ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz }],
     });
