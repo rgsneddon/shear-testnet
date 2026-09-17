@@ -23,6 +23,7 @@ import {
   medianTimePast,
   MTP_WINDOW,
   MTP_FUTURE_MS,
+  unpackBits,
   consensusFingerprint,
   consensusLaw,
   formatShe,
@@ -1141,7 +1142,9 @@ export function createPool({
       : '';
     const jobPrev = String(lastJob?.prevBlockHash || '');
     const parentOk = !tipHash || jobPrev === tipHash;
-    if (!force && lastJob && parentOk && Number(lastJob.blockBits || lastJob.bits) === liveBits) {
+    // Same parent must keep the jobId. Packed Q16.16 ticks every restamp
+    // and a new id stales dest-bind shares that are still in flight.
+    if (!force && lastJob && parentOk) {
       lastIssueAt = now;
       if (Number(lastJob.shareBits) === sb) return lastJob;
       const hist = [...(lastJob.shareBitsHist || []), { bits: Number(lastJob.shareBits), at: now }]
@@ -1331,14 +1334,37 @@ export function createPool({
         const wantBits = bitsForBlock(parent.bits, parent.timestamp, BigInt(stamp));
         const liveTs = Number(decoded.timestamp);
         const overMtp = liveTs > Number(mtp) + MTP_FUTURE_MS;
-        // Long round: ASERT may ease while the job stamp is already wall.
-        // Reissue when packed bits moved; keep the same parent so dest-bind
-        // shares still match via prev-job grace (12s).
-        if (wantBits !== Number(decoded.bits) || overMtp) {
-          const next = issueJob(undefined, { force: true });
-          if (next) broadcastJob(next);
-          return next;
+        const liveInt = Math.floor(unpackBits(wantBits));
+        const jobInt = Math.floor(unpackBits(decoded.bits));
+        // Packed Q16.16 moves every 10s on a long ease. A new jobId makes
+        // dest-bind shares stale_job. Only restamp the same id when integer
+        // bits actually step or the live header is past the MTP cap.
+        if (!overMtp && liveInt === jobInt) return lastJob;
+        const header = encodeHeader({
+          version: decoded.version,
+          prevBlockHash: decoded.prevBlockHash,
+          merkleRoot: decoded.merkleRoot,
+          continuityRoot: decoded.continuityRoot,
+          timestamp: BigInt(stamp),
+          bits: wantBits,
+          nonce: 0n,
+          baseFee: decoded.baseFee,
+        });
+        rememberJobHeader(lastJob, lastJob.header);
+        lastJob = {
+          ...lastJob,
+          header: header.toString('hex'),
+          timestamp: String(stamp),
+          bits: wantBits,
+          blockBits: wantBits,
+        };
+        const rec = store.jobs.get(String(lastJob.jobId));
+        if (rec) {
+          rec.tpl = { ...rec.tpl, header, bits: wantBits };
+          rec.job = lastJob;
         }
+        broadcastJob(lastJob);
+        return lastJob;
       } catch { /* keep live job */ }
     }
     return lastJob;
@@ -1349,6 +1375,11 @@ export function createPool({
     const byId = id ? store.jobs.get(id)?.job : null;
     const liveId = String(lastJob?.jobId || '');
     if (byId && String(byId.jobId) === liveId) {
+      return { job: byId, closedRound: false, stale: false };
+    }
+    const livePrev = String(lastJob?.prevBlockHash || '');
+    const byPrev = String(byId?.prevBlockHash || '');
+    if (byId && livePrev && byPrev === livePrev) {
       return { job: byId, closedRound: false, stale: false };
     }
     if (byId && jobWithinGrace(byId, prevJob, prevJobAt)) {

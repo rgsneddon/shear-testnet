@@ -119,7 +119,10 @@ describe('stale classification and restamp/grace accept', () => {
     assert.equal(c[0], 'cc');
     assert.ok(c.includes('aa'));
     assert.equal(jobWithinGrace({ jobId: 'old' }, { jobId: 'old' }, Date.now() - 500), true);
-    assert.equal(jobWithinGrace({ jobId: 'old' }, { jobId: 'old' }, Date.now() - 10_000), false);
+    assert.equal(jobWithinGrace({ jobId: 'old' }, { jobId: 'old' }, Date.now() - 13_000), false);
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.match(src, /byPrev === livePrev/);
+    assert.match(src, /liveInt === jobInt/);
     const { pool } = tmpPool(8);
     const a = pool.issueJob();
     a.timestamp = String(Date.now() - JOB_RESTAMP_MS - 50_000);
@@ -127,7 +130,6 @@ describe('stale classification and restamp/grace accept', () => {
     assert.equal(b.jobId, a.jobId, 'mid-round issueJob must not mint a new RandomX K');
     assert.equal(b.shareBits, 9);
     pool.close();
-    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     assert.match(src, /rememberJobHeader/);
     assert.match(src, /closedRound/);
     assert.equal(/m\.accepted = 0/.test(src), false);

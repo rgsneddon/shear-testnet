@@ -88,14 +88,15 @@ describe('observed interval', () => {
     assert.equal(/avgBlockTimeMs: avgBlockIntervalMs/.test(src), false);
   });
 
-  it('live timer does not timestamp-restamp; bits-ease still rebuilds', () => {
+  it('live timer does not mint a new jobId on packed Q16.16 ticks', () => {
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     assert.match(src, /JOB_RESTAMP_MS/);
     assert.match(src, /maybeRestampJob/);
     assert.match(src, /setInterval\(maybeRestampJob/);
-    assert.match(src, /wantBits !== Number\(decoded\.bits\)/);
+    assert.match(src, /liveInt === jobInt/);
     assert.match(src, /restampJob: restampLiveHeader/);
-    assert.equal(/broadcastJob\(job\);\s*return job;/.test(src.slice(src.indexOf('function maybeRestampJob'), src.indexOf('function resolveSubmitJob'))), false);
+    const body = src.slice(src.indexOf('function maybeRestampJob'), src.indexOf('function resolveSubmitJob'));
+    assert.equal(/issueJob\(undefined, \{ force: true \}\)/.test(body), false);
     assert.equal(/if \(hashWait\.size > 0\) return lastJob/.test(src), false);
     assert.match(src, /stats\.lastFoundAt = Date\.now\(\)/);
     assert.equal(/stats\.lastFoundAt = sealed\?\.header/.test(src), false);
