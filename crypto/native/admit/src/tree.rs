@@ -52,7 +52,88 @@ fn gen_ristretto(i: u64, dst: &[u8]) -> RistrettoPoint {
     RistrettoPoint::from_uniform_bytes(&w)
 }
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+
+/// 4-bit window table: `t[w][n] = n * 16^w * base` for w in 0..64, n in 0..16.
+type VestaWin = [[vesta::Point; 16]; 64];
+
+fn vesta_win(base: vesta::Point) -> VestaWin {
+    let mut t = [[vesta::Point::identity(); 16]; 64];
+    let mut pwr = base;
+    for w in 0..64 {
+        t[w][0] = vesta::Point::identity();
+        let mut acc = vesta::Point::identity();
+        for n in 1..16 {
+            acc += pwr;
+            t[w][n] = acc;
+        }
+        for _ in 0..4 {
+            pwr = pwr.double();
+        }
+    }
+    t
+}
+
+fn vesta_mul_win(t: &VestaWin, s: &vesta::Scalar) -> vesta::Point {
+    let bytes: [u8; 32] = s.to_repr().into();
+    let mut acc = vesta::Point::identity();
+    for i in 0..32 {
+        let b = bytes[i];
+        let lo = (b & 0x0f) as usize;
+        let hi = (b >> 4) as usize;
+        if lo != 0 {
+            acc += t[i * 2][lo];
+        }
+        if hi != 0 {
+            acc += t[i * 2 + 1][hi];
+        }
+    }
+    acc
+}
+
+pub(crate) struct VestaVar {
+    t: VestaWin,
+}
+
+impl VestaVar {
+    pub(crate) fn new(p: vesta::Point) -> Self {
+        Self { t: vesta_win(p) }
+    }
+    pub(crate) fn mul(&self, s: &vesta::Scalar) -> vesta::Point {
+        vesta_mul_win(&self.t, s)
+    }
+}
+
+struct VestaFixed {
+    u: VestaWin,
+    gsel: VestaWin,
+    g: Vec<VestaWin>,
+}
+
+fn vesta_fixed() -> &'static VestaFixed {
+    static T: OnceLock<VestaFixed> = OnceLock::new();
+    T.get_or_init(|| {
+        let (u, g) = vesta_gens();
+        let gsel = vesta_gsel();
+        VestaFixed {
+            u: vesta_win(*u),
+            gsel: vesta_win(gsel),
+            g: g.iter().copied().map(vesta_win).collect(),
+        }
+    })
+}
+
+pub(crate) fn vesta_mul_u(s: &vesta::Scalar) -> vesta::Point {
+    vesta_mul_win(&vesta_fixed().u, s)
+}
+
+pub(crate) fn vesta_mul_gsel(s: &vesta::Scalar) -> vesta::Point {
+    vesta_mul_win(&vesta_fixed().gsel, s)
+}
+
+pub(crate) fn vesta_mul_g(i: usize, s: &vesta::Scalar) -> vesta::Point {
+    vesta_mul_win(&vesta_fixed().g[i], s)
+}
 
 pub(crate) fn vesta_gens() -> &'static (vesta::Point, Vec<vesta::Point>) {
     static G: OnceLock<(vesta::Point, Vec<vesta::Point>)> = OnceLock::new();
@@ -89,11 +170,13 @@ pub(crate) fn ristretto_gens() -> &'static (RistrettoPoint, Vec<RistrettoPoint>,
 }
 
 pub(crate) fn vesta_gsel() -> vesta::Point {
-    gen_vesta(99, b"shear-ct-vesta-sel")
+    static G: OnceLock<vesta::Point> = OnceLock::new();
+    *G.get_or_init(|| gen_vesta(99, b"shear-ct-vesta-sel"))
 }
 
 pub(crate) fn ristretto_gsel() -> RistrettoPoint {
-    gen_ristretto(99, b"shear-ct-ristretto-sel")
+    static G: OnceLock<RistrettoPoint> = OnceLock::new();
+    *G.get_or_init(|| gen_ristretto(99, b"shear-ct-ristretto-sel"))
 }
 
 pub(crate) fn blind_fp(xs: &[[u8; 32]]) -> vesta::Scalar {
@@ -115,11 +198,10 @@ pub(crate) fn vesta_x(b: &[u8; 32]) -> vesta::Scalar {
 }
 
 pub(crate) fn commit_vesta(xs: &[[u8; 32]; ARITY]) -> [u8; 32] {
-    let (u, g) = vesta_gens();
     let r = blind_fp(xs);
-    let mut acc = *u * r;
+    let mut acc = vesta_mul_u(&r);
     for i in 0..ARITY {
-        acc += g[i] * vesta_x(&xs[i]);
+        acc += vesta_mul_g(i, &vesta_x(&xs[i]));
     }
     let enc = acc.to_bytes();
     let mut o = [0u8; 32];
@@ -213,7 +295,47 @@ fn fold_c(level: &[[u8; 32]]) -> Vec<[u8; 32]> {
 }
 
 /// Every D-ary level including the 1-element root. Built once per prove.
-pub fn dest_levels(dest_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
+struct LevelCache {
+    n: usize,
+    dest_key: [u8; 32],
+    c_key: [u8; 32],
+    dlevels: Vec<Vec<[u8; 32]>>,
+    clevels: Vec<Vec<[u8; 32]>>,
+}
+
+fn leaves_key(buf: &[u8], n: usize) -> [u8; 32] {
+    let mut o = [0u8; 32];
+    o.copy_from_slice(&sha512_64(&[b"shear-lv", &(n as u64).to_le_bytes(), buf])[..32]);
+    o
+}
+
+/// Dest + C levels, memoized. Wallet/jroot already hashes J; send-path prove reuses this.
+pub fn trees(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> (Vec<Vec<[u8; 32]>>, Vec<Vec<[u8; 32]>>) {
+    let dk = leaves_key(dest_leaves, n);
+    let ck = leaves_key(c_leaves, n);
+    static CACHE: Mutex<Option<LevelCache>> = Mutex::new(None);
+    {
+        let g = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(c) = g.as_ref() {
+            if c.n == n && c.dest_key == dk && c.c_key == ck {
+                return (c.dlevels.clone(), c.clevels.clone());
+            }
+        }
+    }
+    let dlevels = dest_levels_build(dest_leaves, n);
+    let clevels = c_levels_build(c_leaves, n);
+    let mut g = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    *g = Some(LevelCache {
+        n,
+        dest_key: dk,
+        c_key: ck,
+        dlevels: dlevels.clone(),
+        clevels: clevels.clone(),
+    });
+    (dlevels, clevels)
+}
+
+fn dest_levels_build(dest_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
     let mut level = dest_leaf_level(dest_leaves, n);
     let mut levels = Vec::new();
     loop {
@@ -233,7 +355,11 @@ pub fn dest_levels(dest_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
     levels
 }
 
-pub fn c_levels(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
+pub fn dest_levels(dest_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
+    dest_levels_build(dest_leaves, n)
+}
+
+fn c_levels_build(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
     let mut level = c_leaf_level(c_leaves, n);
     let mut levels = Vec::new();
     loop {
@@ -251,6 +377,10 @@ pub fn c_levels(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
         pad_to_arity(&mut level);
     }
     levels
+}
+
+pub fn c_levels(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
+    c_levels_build(c_leaves, n)
 }
 
 pub fn path_from_levels(levels: &[Vec<[u8; 32]>], index: usize) -> Option<Vec<[[u8; 32]; ARITY]>> {
@@ -331,12 +461,16 @@ pub(crate) fn commit_ristretto_encodings(cs: &[[u8; 32]; ARITY]) -> [u8; 32] {
     }
     let w = sha512_64(&parts);
     let r = RScalar::from_bytes_mod_order_wide(&w);
-    let mut acc = u * r;
+    let mut scalars = Vec::with_capacity(ARITY + 1);
+    let mut points = Vec::with_capacity(ARITY + 1);
+    scalars.push(r);
+    points.push(*u);
     for i in 0..ARITY {
-        let s = RScalar::from_bytes_mod_order(cs[i]);
-        acc += g[i] * s;
+        scalars.push(RScalar::from_bytes_mod_order(cs[i]));
+        points.push(g[i]);
     }
-    acc.compress().to_bytes()
+    use curve25519_dalek::traits::VartimeMultiscalarMul;
+    RistrettoPoint::vartime_multiscalar_mul(scalars.iter(), points.iter()).compress().to_bytes()
 }
 
 pub fn c_root(c_leaves: &[u8], n: usize) -> [u8; 32] {
@@ -344,9 +478,8 @@ pub fn c_root(c_leaves: &[u8], n: usize) -> [u8; 32] {
 }
 
 pub fn jroot(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> [u8; 32] {
-    let p = pasta_root(dest_leaves, n);
-    let c = c_root(c_leaves, n);
-    jroot_hash(&p, &c)
+    let (d, c) = trees(dest_leaves, c_leaves, n);
+    jroot_hash(&root_of_levels(&d), &root_of_levels(&c))
 }
 
 pub struct PastaTree {

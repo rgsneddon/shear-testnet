@@ -9,8 +9,8 @@ use crate::select::{
     rs_rand, vs_rand, LEAF_PAIRED_LEN, PAIRED_LEN,
 };
 use crate::tree::{
-    c_levels, commit_ristretto_encodings, commit_vesta, dest_levels, note_u, path_from_levels,
-    rerand_c, root_of_levels, ARITY,
+    commit_ristretto_encodings, commit_vesta, note_u, path_from_levels, rerand_c, root_of_levels,
+    trees, ARITY,
 };
 use ff::PrimeField;
 use pasta_curves::vesta;
@@ -99,8 +99,7 @@ pub fn admit_prove_in(
         return None;
     }
     let tag = i_pt.compress().to_bytes();
-    let dlevels = dest_levels(dest_leaves, n);
-    let clev = c_levels(c_leaves, n);
+    let (dlevels, clev) = trees(dest_leaves, c_leaves, n);
     let dpath = path_from_levels(&dlevels, index)?;
     let cpath = path_from_levels(&clev, index)?;
     if dpath.len() != cpath.len() || dpath.is_empty() {

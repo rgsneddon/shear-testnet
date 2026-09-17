@@ -8,7 +8,7 @@
 use crate::leaf::sha512_64;
 use crate::tree::{
     commit_ristretto_encodings, commit_vesta, ristretto_gens, ristretto_gsel, ristretto_h_note,
-    vesta_gens, vesta_gsel, vesta_x, ARITY,
+    vesta_gens, vesta_gsel, vesta_mul_g, vesta_mul_gsel, vesta_mul_u, vesta_x, VestaVar, ARITY,
 };
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar as RScalar;
@@ -501,8 +501,6 @@ pub fn paired_prove(
     if bool::from(xd.is_zero()) || xc == RScalar::ZERO {
         return None;
     }
-    let (ud, gd) = vesta_gens();
-    let gseld = vesta_gsel();
     let (uc, gc, _) = ristretto_gens();
     let gselc = ristretto_gsel();
     let pd_b = commit_vesta(dest_ch);
@@ -523,13 +521,15 @@ pub fn paired_prove(
         if k == index {
             continue;
         }
-        wd += gd[k] * vesta_x(&dest_ch[k]);
+        wd += vesta_mul_g(k, &vesta_x(&dest_ch[k]));
         wc += gc[k] * rsc(&c_ch[k]);
     }
-    let qd = gseld * xd + *ud * t_d;
+    let qd = vesta_mul_gsel(&xd) + vesta_mul_u(t_d);
     let qc = gselc * xc + uc * t_c;
     let pwd = pd - wd;
     let pwc = pc - wc;
+    let pwd_t = VestaVar::new(pwd);
+    let qd_t = VestaVar::new(qd);
     let wd_b = enc_v(&wd);
     let qd_b = enc_v(&qd);
     let wc_b = enc_r(&wc);
@@ -547,8 +547,8 @@ pub fn paired_prove(
     let kxc = rs_rand();
     let krc = rs_rand();
     let ktc = rs_rand();
-    let rpd_i = *ud * krd + gd[index] * kxd;
-    let rqd_i = gseld * kxd + *ud * ktd;
+    let rpd_i = vesta_mul_u(&krd) + vesta_mul_g(index, &kxd);
+    let rqd_i = vesta_mul_gsel(&kxd) + vesta_mul_u(&ktd);
     let rpc_i = uc * krc + gc[index] * kxc;
     let rqc_i = gselc * kxc + uc * ktc;
     let hv = pair_chal(
@@ -579,8 +579,8 @@ pub fn paired_prove(
         zxc[j] = d.to_bytes();
         zrc[j] = e.to_bytes();
         ztc[j] = f.to_bytes();
-        let rpd = *ud * b + gd[j] * a - pwd * ed;
-        let rqd = gseld * a + *ud * c - qd * ed;
+        let rpd = vesta_mul_u(&b) + vesta_mul_g(j, &a) - pwd_t.mul(&ed);
+        let rqd = vesta_mul_gsel(&a) + vesta_mul_u(&c) - qd_t.mul(&ed);
         let rpc = uc * e + gc[j] * d - pwc * ec;
         let rqc = gselc * d + uc * f - qc * ec;
         let hv = pair_chal(
@@ -628,8 +628,8 @@ pub fn paired_prove(
         let d = rsc(&zxc[jj]);
         let e = rsc(&zrc[jj]);
         let f = rsc(&ztc[jj]);
-        let rpd = *ud * b + gd[jj] * a - pwd * e0d;
-        let rqd = gseld * a + *ud * c - qd * e0d;
+        let rpd = vesta_mul_u(&b) + vesta_mul_g(jj, &a) - pwd_t.mul(&e0d);
+        let rqd = vesta_mul_gsel(&a) + vesta_mul_u(&c) - qd_t.mul(&e0d);
         let rpc = uc * e + gc[jj] * d - pwc * e0c;
         let rqc = gselc * d + uc * f - qc * e0c;
         seed0 = pair_chal(
@@ -716,12 +716,12 @@ pub fn paired_verify(dest_parent: &[u8; 32], c_parent: &[u8; 32], proof: &[u8]) 
     if bool::from(qd.is_identity()) || qc.is_identity() {
         return false;
     }
-    let (ud, gd) = vesta_gens();
-    let gseld = vesta_gsel();
     let (uc, gc, _) = ristretto_gens();
     let gselc = ristretto_gsel();
     let pwd = pd - wd;
     let pwc = pc - wc;
+    let pwd_t = VestaVar::new(pwd);
+    let qd_t = VestaVar::new(qd);
     let mut ed = vesta::Scalar::from_uniform_bytes(&hv0);
     let mut ec = RScalar::from_bytes_mod_order_wide(&hv0);
     let mut off = 192;
@@ -752,8 +752,8 @@ pub fn paired_verify(dest_parent: &[u8; 32], c_parent: &[u8; 32], proof: &[u8]) 
             None => return false,
         });
         off += 192;
-        let rpd = *ud * b + gd[j] * a - pwd * ed;
-        let rqd = gseld * a + *ud * c - qd * ed;
+        let rpd = vesta_mul_u(&b) + vesta_mul_g(j, &a) - pwd_t.mul(&ed);
+        let rqd = vesta_mul_gsel(&a) + vesta_mul_u(&c) - qd_t.mul(&ed);
         let rpc = uc * e + gc[j] * d - pwc * ec;
         let rqc = gselc * d + uc * f - qc * ec;
         let hv = pair_chal(
@@ -1005,10 +1005,10 @@ pub fn leaf_verify(
     if bool::from(qd.is_identity()) || c_tilde.is_identity() {
         return false;
     }
-    let (ud, gd) = vesta_gens();
-    let gseld = vesta_gsel();
     let h = ristretto_h_note();
     let pwd = pd - wd;
+    let pwd_t = VestaVar::new(pwd);
+    let qd_t = VestaVar::new(qd);
     let ct_b = enc_r(c_tilde);
     let mut sib = Vec::with_capacity(ARITY * 32);
     for c in c_ch {
@@ -1037,8 +1037,8 @@ pub fn leaf_verify(
         });
         off += 128;
         let cj = dec_r(&c_ch[j]).unwrap_or_else(RistrettoPoint::identity);
-        let rpd = *ud * b + gd[j] * a - pwd * ed;
-        let rqd = gseld * a + *ud * c - qd * ed;
+        let rpd = vesta_mul_u(&b) + vesta_mul_g(j, &a) - pwd_t.mul(&ed);
+        let rqd = vesta_mul_gsel(&a) + vesta_mul_u(&c) - qd_t.mul(&ed);
         let rc = h * d - (*c_tilde - cj) * ec;
         let hv = leaf_chal(
             &enc_v(&rpd),

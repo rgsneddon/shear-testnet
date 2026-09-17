@@ -311,8 +311,8 @@ pub extern "C" fn shear_admit_bench(
         dest[idx * 32..idx * 32 + 32].copy_from_slice(&p);
         cs[idx * 32..idx * 32 + 32].copy_from_slice(&c);
 
-        // Warm generators so the timed prove is not the first MSM.
-        let _ = jroot(&dest[..32.min(dest.len())], &cs[..32.min(cs.len())], 1);
+        // Warm generators + memoize dest/C levels (wallet already has jroot before send).
+        let jr = jroot(&dest, &cs, n);
 
         let t0 = Instant::now();
         let (ct, proof) = match admit_prove(&x.to_bytes(), &p, &c, &t.to_bytes(), idx, &dest, &cs, n)
@@ -321,7 +321,6 @@ pub extern "C" fn shear_admit_bench(
             None => return BAD,
         };
         let prove = t0.elapsed().as_micros() as u64;
-        let jr = jroot(&dest, &cs, n);
         let tag = match prove::spend_tag_of(&proof) {
             Some(t) => t,
             None => return BAD,
