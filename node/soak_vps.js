@@ -11,7 +11,7 @@ import { mineTemplate, shouldAdopt, verifyBlock, buildTemplate, GENESIS_PREV } f
 import { decodeHeader } from '../crypto/header.js';
 import { setHashBackend } from '../crypto/shear_hash.js';
 try { setHashBackend('jit'); } catch { /* interpreter */ }
-import { GENESIS_BITS_PACKED, bitsForBlock, SPENDABLE_CONFIRMATIONS, PI_SHE_NANOS, MAGIC_TESTNET } from '../crypto/asert.js';
+import { GENESIS_BITS_PACKED, bitsForBlock, SPENDABLE_CONFIRMATIONS, PI_SHE_NANOS, MAGIC_TESTNET, NANOS_PER_SHE } from '../crypto/asert.js';
 import { newIdentity, destOpeningFromView, freshStealthDest, encodeDest, ed25519SeedOf } from '../crypto/address.js';
 import { vaultDest } from '../crypto/flow_sheet.js';
 import { lockTx, voteTx, VOTE_INCREASE } from '../crypto/reserve_vault.js';
@@ -28,7 +28,7 @@ async function getJson(p) {
   return res.json();
 }
 
-function mineOne(store, dest, _bits, now) {
+async function mineOne(store, dest, _bits, now) {
   const parent = store.tip();
   const stamp = now != null
     ? now
@@ -40,7 +40,7 @@ function mineOne(store, dest, _bits, now) {
   }
   const share = Math.max(4, Math.floor(Number(packed) / 65536));
   const t0 = Date.now();
-  const { tpl } = store.template({ miner: dest, bits: packed, shareBits: share, now: stamp });
+  const { tpl } = store.template({ miner: dest, bits: packed, shareBits: 32, now: stamp });
   // shareBits 32: only packed header bits count as a block. Equal integer
   // share==block bits used to return the first 12-lz as block:false.
   console.error(JSON.stringify({
@@ -50,6 +50,7 @@ function mineOne(store, dest, _bits, now) {
     tplBits: tpl.bits,
     headerLen: Buffer.from(tpl.header).length,
     share,
+    height: parent ? parent.height + 1 : 1,
   }));
   const t1 = Date.now();
   const found = mineTemplate(tpl, { maxTries: 8_000_000, shareBits: 32 });
@@ -60,7 +61,7 @@ function mineOne(store, dest, _bits, now) {
     nonce: found?.nonce != null ? String(found.nonce) : null,
   }));
   assert.ok(found && found.block, 'pow');
-  return store.append({
+  const got = await store.append({
     header: found.header,
     txs: tpl.txs,
     samples: tpl.samples,
@@ -72,6 +73,8 @@ function mineOne(store, dest, _bits, now) {
     rootB: tpl.rootB,
     weight: tpl.weight,
   });
+  assert.equal(got.ok, true, `${got.reason || 'append'}:${got.error || ''}`);
+  return got;
 }
 
 async function live() {
@@ -124,18 +127,21 @@ async function reserveLockVote() {
   const box = { dest, key: { type: 'ed25519-stealth', seed: ed25519SeedOf(alice.privateKey), shared: pay.shared } };
   const store = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-soak-reserve-')));
   const t0 = 1_700_000_000_000;
-  for (let i = 0; i < 4 + SPENDABLE_CONFIRMATIONS; i += 1) {
+  // 4 pots so 1 SHE lock + weight levy + a later vote fee still mature.
+  const fund = 4;
+  const lockNanos = NANOS_PER_SHE;
+  for (let i = 0; i < fund + SPENDABLE_CONFIRMATIONS; i += 1) {
     await mineOne(store, dest, undefined, t0 + i * 90_000);
   }
-  const lock = lockTx({ from: dest, to: vault, nanos: PI_SHE_NANOS, id: 'soak-lock' });
+  const lock = lockTx({ from: dest, to: vault, nanos: lockNanos, id: 'soak-lock' });
   lock.open = open;
   bindWeightFee(lock);
   lock.maxLevy = lock.fee;
   signSpendTx(lock, box.key);
   const q = store.queueTx(lock);
   assert.equal(q.ok, true, q.reason);
-  await mineOne(store, dest, undefined, t0 + (4 + SPENDABLE_CONFIRMATIONS) * 90_000);
-  assert.ok(Number(store.reserveVault.totalLockedNanos) >= PI_SHE_NANOS);
+  await mineOne(store, dest, undefined, t0 + (fund + SPENDABLE_CONFIRMATIONS) * 90_000);
+  assert.ok(Number(store.reserveVault.totalLockedNanos) >= lockNanos);
   const vt = voteTx({ from: dest, dest: vault, choice: VOTE_INCREASE, id: 'soak-vote' });
   vt.open = open;
   vt.portalOpen = open;
@@ -145,7 +151,7 @@ async function reserveLockVote() {
   signSpendTx(vt, box.key);
   const qv = store.queueTx(vt);
   assert.equal(qv.ok, true, qv.reason);
-  await mineOne(store, dest, undefined, t0 + (5 + SPENDABLE_CONFIRMATIONS) * 90_000);
+  await mineOne(store, dest, undefined, t0 + (fund + 1 + SPENDABLE_CONFIRMATIONS) * 90_000);
   assert.equal(store.reserveVault.votes.increase, 1);
   console.log(JSON.stringify({
     step: 'reserve',
