@@ -4,10 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../src/store.js';
-import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_TESTNET_V4, MAGIC_MAINNET, LIVE_MIN_BITS, packBits } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_TESTNET_V4, MAGIC_MAINNET, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { encodeDest } from '../../crypto/address.js';
 import { mineTemplate } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
+import { setHashBackend } from '../../crypto/shear_hash.js';
+try { setHashBackend('jit'); } catch { /* interpreter */ }
 
 describe('v3 and v4 datadirs refuse each other', () => {
   it('createStore throws datadir_magic on a v2 book.magic file', () => {
@@ -121,15 +123,22 @@ describe('v3 and v4 datadirs refuse each other', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-p2p-v3-'));
     const store = createStore(dir);
     const dest = encodeDest(Buffer.alloc(20, 7));
-    const packed = packBits(LIVE_MIN_BITS);
-    const { tpl } = store.template({ miner: dest, bits: packed, shareBits: packed, now: Date.now() });
-    const found = mineTemplate({ ...tpl, bits: packed }, { maxTries: 3_000_000, shareBits: packed });
+    const packed = GENESIS_BITS_PACKED;
+    const shareBits = Math.max(4, Math.floor(packed / 65536));
+    const { tpl } = store.template({ miner: dest, bits: packed, shareBits, now: Date.now() });
+    const found = mineTemplate({ ...tpl, bits: packed }, { maxTries: 3_000_000, shareBits });
     assert.ok(found && found.block, 'need pow');
     assert.equal(store.append({
       header: found.header,
       txs: tpl.txs,
       samples: tpl.samples,
       miner: dest,
+      shareBatch: tpl.shareBatch || [],
+      aLeaves: tpl.aLeaves,
+      bLeaves: tpl.bLeaves,
+      rootA: tpl.rootA,
+      rootB: tpl.rootB,
+      weight: tpl.weight,
     }).ok, true);
     const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET });
     const bound = await p2p.listen();

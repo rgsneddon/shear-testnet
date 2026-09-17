@@ -9,7 +9,9 @@ import { spendBox, admitSend } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { lockTx, voteTx } from '../../crypto/reserve_vault.js';
-import { MAGIC_TESTNET, LIVE_MIN_BITS, packBits } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { setHashBackend } from '../../crypto/shear_hash.js';
+try { setHashBackend('jit'); } catch { /* interpreter */ }
 import { decodeHeader } from '../../crypto/header.js';
 import {
   P2P_PORT,
@@ -40,15 +42,32 @@ function destMiner() {
   return encodeDest(Buffer.alloc(20, 5));
 }
 
-function mineOne(store, dest, bits = 8) {
-  const { tpl } = store.template({ miner: dest, bits, shareBits: bits });
-  const found = mineTemplate({ ...tpl, bits }, { maxTries: 3_000_000, shareBits: bits });
+function shareBitsOf(bits) {
+  const n = Number(bits) || 0;
+  return n >= 65536 ? Math.max(4, Math.floor(n / 65536)) : Math.max(4, n);
+}
+
+function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
+  const packed = Number(bits) >= 65536 ? Number(bits) : GENESIS_BITS_PACKED;
+  const sb = shareBitsOf(packed);
+  const parent = store.tip();
+  const now = parent
+    ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
+    : Date.now();
+  const { tpl } = store.template({ miner: dest, bits: packed, shareBits: sb, now });
+  const found = mineTemplate({ ...tpl, bits: packed }, { maxTries: 3_000_000, shareBits: sb });
   assert.ok(found && found.block, 'need pow');
   return store.append({
     header: found.header,
     txs: tpl.txs,
     samples: tpl.samples,
     miner: dest,
+    shareBatch: tpl.shareBatch || [],
+    aLeaves: tpl.aLeaves,
+    bLeaves: tpl.bLeaves,
+    rootA: tpl.rootA,
+    rootB: tpl.rootB,
+    weight: tpl.weight,
   });
 }
 
@@ -459,26 +478,7 @@ function fakeHash(n) {
 }
 
 function mineChainOne(store, dest) {
-  const packed = packBits(LIVE_MIN_BITS);
-  const parent = store.tip();
-  const now = parent
-    ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
-    : Date.now();
-  const { tpl } = store.template({ miner: dest, bits: packed, shareBits: packed, now });
-  const found = mineTemplate(tpl, { maxTries: 250_000, shareBits: packed });
-  assert.ok(found && found.block, 'need pow');
-  const got = store.append({
-    header: found.header,
-    txs: tpl.txs,
-    samples: tpl.samples,
-    miner: dest,
-    shareBatch: tpl.shareBatch || [],
-    aLeaves: tpl.aLeaves,
-    bLeaves: tpl.bLeaves,
-    rootA: tpl.rootA,
-    rootB: tpl.rootB,
-    weight: tpl.weight,
-  });
+  const got = mineOne(store, dest, GENESIS_BITS_PACKED);
   assert.equal(got.ok, true, got.reason);
   return got;
 }
