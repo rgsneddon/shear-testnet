@@ -44,7 +44,7 @@ function mine(tpl) {
 
 function identityDest() {
   const id = newIdentity();
-  const pay = freshStealthDest(id.paymentCode);
+  const pay = freshStealthDest(id);
   const spendSeed = id.spendSeed || ed25519SeedOf(id.privateKey);
   return {
     id,

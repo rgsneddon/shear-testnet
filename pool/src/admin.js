@@ -315,7 +315,15 @@ export function createAdmin(dir) {
     return { ok: true };
   }
 
-  return { status, setup, login, startTotp, confirmTotp, sessionOf, logout, load, setupToken };
+  return { status, setup, login, startTotp, confirmTotp, sessionOf, logout, load, setupToken, dir };
+}
+
+export function appendAdminAudit(dir, rec) {
+  if (!dir) return null;
+  fs.mkdirSync(dir, { recursive: true });
+  const line = JSON.stringify({ t: Date.now(), ...rec }) + '\n';
+  fs.appendFileSync(path.join(dir, 'admin-audit.jsonl'), line, { mode: 0o600 });
+  return rec;
 }
 
 function cookieToken(cookie) {
@@ -503,7 +511,9 @@ export function handleAdminApi(url, method, body, {
     const miss = needOps(ops, 'setPaused');
     if (miss) return miss;
     const next = body.pause !== false && body.paused !== false && body.resume !== true;
-    return { status: 200, json: { ok: true, ...ops.setPaused(!!next) } };
+    const paused = ops.setPaused(!!next);
+    appendAdminAudit(admin?.dir, { action: 'pause', paused: !!next });
+    return { status: 200, json: { ok: true, ...paused } };
   }
   if (pathName === '/api/admin/resume' && verb === 'POST') {
     const miss = needOps(ops, 'setPaused');
@@ -535,6 +545,7 @@ export function handleAdminApi(url, method, body, {
     if (miss) return miss;
     const want = String(body.miner || body.tag || body.workerKey || body.dest || '');
     if (!want) return { status: 400, json: { ok: false, reason: 'need_miner' } };
+    appendAdminAudit(admin?.dir, { action: 'kick', miner: want });
     return { status: 200, json: { ok: true, ...ops.kick(want) } };
   }
   if (pathName === '/api/admin/ban' && verb === 'POST') {
@@ -542,6 +553,7 @@ export function handleAdminApi(url, method, body, {
     if (miss) return miss;
     const want = String(body.miner || body.tag || body.workerKey || body.dest || '');
     if (!want) return { status: 400, json: { ok: false, reason: 'need_miner' } };
+    appendAdminAudit(admin?.dir, { action: 'ban', miner: want });
     return { status: 200, json: { ok: true, ...ops.ban(want) } };
   }
   if (pathName === '/api/admin/unban' && verb === 'POST') {

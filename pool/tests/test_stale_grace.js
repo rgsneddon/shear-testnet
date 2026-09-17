@@ -21,7 +21,7 @@ import { decodeHeader, encodeHeader, headerFromHex } from '../../crypto/header.j
 
 function tmpPool(shareBits = 8) {
   const id = newIdentity();
-  const dest = freshStealthDest(id.paymentCode).dest;
+  const dest = freshStealthDest(id).dest;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stale-'));
   const pool = createPool({
     dataDir: dir,

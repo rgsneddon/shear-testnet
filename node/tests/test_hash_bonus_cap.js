@@ -30,7 +30,7 @@ import { applyMinerSelfRate } from '../../pool/src/pool.js';
 
 function destMiner() {
   const id = newIdentity();
-  return freshStealthDest(id.paymentCode).dest;
+  return freshStealthDest(id).dest;
 }
 
 function childBits(parent, now) {

@@ -11,10 +11,11 @@ import 'package:shear_wallet/shear_shewall.dart';
 void main() {
   test('two pays to one published code yield two dests; fingerprint cannot pay', () {
     final alice = createIdentity();
-    expect(isFullPaymentCode(alice.paymentCode), isTrue);
+    expect(isFullPaymentCode(alice.paymentCodeFull), isTrue);
+    expect(isPaymentFingerprint(alice.paymentCode), isTrue);
     expect(payoutDest(alice.paymentCode), isNull);
-    final bob = silentPay(alice.paymentCode)!;
-    final carol = silentPay(alice.paymentCode)!;
+    final bob = silentPay(alice.paymentCodeFull)!;
+    final carol = silentPay(alice.paymentCodeFull)!;
     expect(bob.dest.startsWith('ssa1'), isTrue);
     expect(carol.dest.startsWith('ssa1'), isTrue);
     expect(bob.dest, isNot(carol.dest));
@@ -32,7 +33,7 @@ void main() {
 
   test('dest-only memoOpen is null; shared secret opens; public hydrate drops secrets', () async {
     final alice = createIdentity();
-    final pay = silentPay(alice.paymentCode)!;
+    final pay = silentPay(alice.paymentCodeFull)!;
     final env = await memoSeal(pay.dest, 'hello stealth', pay.shared);
     expect(await memoOpen(pay.dest, env), isNull);
     expect(await memoOpen(pay.dest, env, pay.shared), 'hello stealth');
@@ -77,7 +78,7 @@ void main() {
     final parsed = decodePaymentCode(alice.paymentCode)!;
     expect(parsed['spendPub']!.length, 32);
     expect(parsed['scanPub']!.length, 32);
-    final pay = silentPay(alice.paymentCode)!;
+    final pay = silentPay(alice.paymentCodeFull)!;
     final rec = recognizeSilentDest(
       viewKey: alice.viewKey,
       spendPub: parsed['spendPub']!,
@@ -106,7 +107,7 @@ void main() {
 
   test('homeDest spendFrom send and lock dest-bind destCommit, not destAtIndex', () async {
     final alice = createIdentity();
-    final bob = silentPay(alice.paymentCode)!;
+    final bob = silentPay(alice.paymentCodeFull)!;
     final ledger = ShearLedger();
     ledger.viewSecret = alice.viewKey;
     ledger.spendPub = decodePaymentCode(alice.paymentCode)!['spendPub'];
@@ -174,7 +175,8 @@ void main() {
 
   test('copy ID is the full payment code, not alias dest', () {
     final id = createIdentity();
-    expect(isFullPaymentCode(id.paymentCode), isTrue);
+    expect(isFullPaymentCode(id.paymentCodeFull), isTrue);
+    expect(isPaymentFingerprint(id.paymentCode), isTrue);
     expect(id.paymentCode.startsWith('she1'), isTrue);
     expect(payoutDest(id.paymentCode), isNull);
     expect(id.paymentFingerprint.startsWith('she1'), isTrue);

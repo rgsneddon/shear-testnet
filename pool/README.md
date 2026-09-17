@@ -8,9 +8,11 @@ Public site example in this repo is **https://mypool.site**. Operator admin is *
 
 ## What you get
 
-- Stratum `0.0.0.0:1111` (ShearK 128-byte job; pin **ShearK-Miner 2.2**)
+- Stratum bind `SHEAR_STRATUM_BIND` (testnet default `0.0.0.0:1111`; production should set an explicit interface). Optional `SHEAR_STRATUM_AUTH=1` requires an ed25519 login signature over `shear-stratum-login-v1`. Unauthenticated dest login is an ephemeral tag, not dest ownership.
+- Pin **ShearK-Miner 2.3** (or current cut) for the 128-byte job
 - HTTP `127.0.0.1:8088` (nginx terminates TLS)
 - Validating node + pool in one process (same magic as the book)
+- Two meters: `hashrate` is a time-window / EMA (does not spike when a round resets). `proven_round` / `roundHashes` is accepted dest-bound work this block for hash-bonus minting and **does** reset at block found.
 - Operator desk: username + password + 2FA (TOTP)
 
 ## Requirements
@@ -58,6 +60,8 @@ Optional environment (drop-in `/etc/systemd/system/shear-pool.service.d/local.co
 |---|---|
 | `SHEAR_DATA` | Chain + pool state |
 | `SHEAR_STRATUM` | Stratum port (default 1111) |
+| `SHEAR_STRATUM_BIND` | Stratum bind host (default 0.0.0.0; set a specific iface in prod) |
+| `SHEAR_STRATUM_AUTH` | `1` = require signed login |
 | `SHEAR_HTTP` | Loopback HTTP (default 8088) |
 | `SHEAR_P2P_PORT` | Public P2P (default 30303). `0` disables |
 | `SHEAR_SEEDS` | Comma-separated `host:port` peers |
@@ -77,6 +81,14 @@ sudo certbot --nginx -d mypool.site
 ```
 
 Public miners: `ShearK-Miner --pool mypool.site:1111 --user YOUR_SSA1.worker`
+
+Unauthenticated stratum login is dest-format only (no ownership proof). Soft-deny is per-IP; dest/tag durable bans require accepted shares or an operator ban.
+
+`/api/stats` publishes `poolFeeBps`, `feeDest`, `hashrate` (HUD/EMA), `proven_round` per worker (hash-bonus), `topDestSharePct`, and `shareBlockRatio`. Operator-trust model: admin password+TOTP can pause/kick/ban/withdraw; mutating calls append `admin-audit.jsonl`.
+
+## Solo / second pool
+
+`SHARE_BIND=rx+noteCommit` is book law, so a third-party pool or solo template can validate the same shares. Run a second `shear-pool` with its own `SHEAR_DATA` and `SHEAR_SEEDS` pointing at `p2p.shear.digital:30303` (plus `r2r` / `b2b`). Do not claim multi-party mining security until a second path is live.
 
 ## Admin desk (first run)
 

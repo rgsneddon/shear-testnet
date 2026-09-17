@@ -573,7 +573,7 @@ export function createStore(dir, {
       }),
       nowMs: Date.now(),
       trustedPowHash: verifyOpts.trustedPowHash || null,
-      skipSharePow: !!verifyOpts.skipSharePow || archiveFast,
+      skipSharePow: !!verifyOpts.skipSharePow,
       parentFluxset: liveFlux,
       parentSpendTags: liveFlux.spendTags,
     });

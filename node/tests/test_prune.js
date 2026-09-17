@@ -39,7 +39,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
     const bob = newIdentity();
     const aliceBox = spendBox(alice);
     const destA = aliceBox.dest;
-    const destB = freshStealthDest(bob.paymentCode).dest;
+    const destB = freshStealthDest(bob).dest;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-prune-'));
     const store = createStore(dir, { pruneAfter: 2 });
     const fat = Array.from({ length: 250 }, (_, i) => ({

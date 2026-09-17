@@ -19,7 +19,7 @@ import { encodeHeader, setNonce } from '../crypto/header.js';
 import { provenLag1Shares } from '../pool/src/pool.js';
 
 function bindable(id) {
-  return freshStealthDest(id.paymentCode).dest;
+  return freshStealthDest(id).dest;
 }
 
 function share(dest, nonce) {

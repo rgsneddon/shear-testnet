@@ -2,13 +2,13 @@ import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
-import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, hash20FromAddress } from '../../crypto/address.js';
+import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, hash20FromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import { destBoundShareHash, noteCommitOfShare, shareMeetsFloor } from '../../crypto/share_batch.js';
 import {
@@ -395,6 +395,73 @@ export function banInvalidKeys({ login, workerKey } = {}) {
     keys.push(publicMinerTag(dest));
   }
   return [...new Set(keys.filter(Boolean))];
+}
+
+/** Unauthenticated first-contact cannot durable-ban a dest. */
+export const DEST_BAN_MIN_ACCEPTS = 3;
+export const IP_SOFT_STRIKES = 8;
+export const BAN_TTL_MS = 6 * 3600 * 1000;
+
+export function shouldDurableDestBan(session) {
+  return (Number(session?.accepted) || 0) >= DEST_BAN_MIN_ACCEPTS;
+}
+
+export function sockIp(sock) {
+  let a = String(sock?.remoteAddress || '');
+  if (a.startsWith('::ffff:')) a = a.slice(7);
+  return a;
+}
+
+export function normalizeBanBook(raw, now = Date.now()) {
+  const list = Array.isArray(raw?.bans) ? raw.bans : [];
+  const bans = [];
+  for (const b of list) {
+    const rec = typeof b === 'string'
+      ? { key: b, kind: 'dest', until: now + BAN_TTL_MS, strikes: 1 }
+      : { key: String(b?.key || ''), kind: String(b?.kind || 'dest'), until: Number(b?.until) || 0, strikes: Number(b?.strikes) || 1 };
+    if (!rec.key) continue;
+    if (rec.until && rec.until < now) continue;
+    bans.push(rec);
+  }
+  return { version: 2, bans };
+}
+
+export function destBannedInBook(book, dest, now = Date.now()) {
+  const want = String(dest || '');
+  if (!want) return false;
+  return (book?.bans || []).some((b) => (
+    b.kind !== 'ip'
+    && (b.key === want || b.key === publicMinerTag(want))
+    && (!b.until || b.until >= now)
+  ));
+}
+
+export function stratumBindHost(override) {
+  const h = String(override ?? process.env.SHEAR_STRATUM_BIND ?? '0.0.0.0').trim();
+  return h || '0.0.0.0';
+}
+
+export function makeLoginChallenge() {
+  return randomBytes(16).toString('hex');
+}
+
+export function verifyStratumLoginAuth({ dest, challenge, sig, pub } = {}) {
+  if (!dest || !challenge || !sig || !pub) return false;
+  try {
+    const raw = Buffer.from(String(pub), 'hex');
+    if (raw.length !== 32) return false;
+    const key = createPublicKey({ key: Buffer.concat([ED25519_SPKI_PREFIX, raw]), format: 'der', type: 'spki' });
+    const msg = Buffer.from(`shear-stratum-login-v1:${challenge}:${dest}`);
+    return verifyEd25519(null, msg, key, Buffer.from(String(sig), 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+export function topDestSharePct(workers) {
+  const total = (workers || []).reduce((a, w) => a + (Number(w.hashrate) || 0), 0);
+  const top = Number(workers?.[0]?.hashrate) || 0;
+  return total > 0 ? top / total : 0;
 }
 
 /** ShearHash-v3 digest the miner claims. Empty if they did not compute the algo. */
@@ -873,6 +940,8 @@ export function createPool({
   dataDir,
   stratumPort = 1111,
   httpPort = 8088,
+  stratumBind = process.env.SHEAR_STRATUM_BIND || '0.0.0.0',
+  requireLoginAuth = String(process.env.SHEAR_STRATUM_AUTH || '') === '1',
   miner,
   shareBits = SHARE_BITS_V2_START,
   bits = GENESIS_BITS_PACKED,
@@ -987,14 +1056,19 @@ export function createPool({
   function loadBans() {
     try {
       const j = JSON.parse(fs.readFileSync(banPath, 'utf8'));
-      return new Set((Array.isArray(j?.bans) ? j.bans : []).map(String));
+      const book = normalizeBanBook(j);
+      return new Set(book.bans.filter((b) => b.kind !== 'ip').map((b) => b.key));
     } catch {
       return new Set();
     }
   }
   let bans = loadBans();
+  const ipStrikes = new Map();
+  const ipDeniedUntil = new Map();
   function saveBans() {
-    fs.writeFileSync(banPath, JSON.stringify({ bans: [...bans] }), { mode: 0o600 });
+    const now = Date.now();
+    const recs = [...bans].map((key) => ({ key, kind: 'dest', until: now + BAN_TTL_MS, strikes: DEST_BAN_MIN_ACCEPTS }));
+    fs.writeFileSync(banPath, JSON.stringify({ version: 2, bans: recs }), { mode: 0o600 });
   }
   function isBanned(key) {
     const raw = String(key || '');
@@ -1002,6 +1076,12 @@ export function createPool({
     const dest = parseLogin(raw);
     const tag = publicMinerTag(raw);
     return bans.has(raw) || bans.has(dest) || bans.has(tag);
+  }
+  function isIpDenied(sock, now = Date.now()) {
+    const ip = sockIp(sock);
+    if (!ip) return false;
+    const until = Number(ipDeniedUntil.get(ip)) || 0;
+    return until > now;
   }
   const stats = {
     started: Date.now(),
@@ -1011,9 +1091,11 @@ export function createPool({
     stale: 0,
     blocks: 0,
     dropped: 0,
+    lostWorkHashes: 0,
+    lostWorkEvents: 0,
     coin: 'SHE',
     algo: ALGO,
-    stratum: `0.0.0.0:${stratumPort}`,
+    stratum: `${stratumBindHost(stratumBind)}:${stratumPort}`,
   };
   const pendingPulls = new Map();
   const idleMs = Number.isFinite(Number(noValidShareMs)) && Number(noValidShareMs) > 0
@@ -1040,7 +1122,16 @@ export function createPool({
     }
   }
 
-  function rememberInvalid(session, extraLogin) {
+  function rememberInvalid(session, extraLogin, sock) {
+    const ip = sockIp(sock);
+    if (!shouldDurableDestBan(session)) {
+      if (ip) {
+        const n = (Number(ipStrikes.get(ip)) || 0) + 1;
+        ipStrikes.set(ip, n);
+        if (n >= IP_SOFT_STRIKES) ipDeniedUntil.set(ip, Date.now() + BAN_TTL_MS);
+      }
+      return [];
+    }
     const keys = banInvalidKeys({
       login: extraLogin || session?.login,
       workerKey: session?.workerKey || extraLogin,
@@ -1058,7 +1149,7 @@ export function createPool({
   function rejectSubmit(sock, session, msg, reason) {
     paintReject(session, reason);
     const drop = shouldDropOnReject(session, reason);
-    if (drop) rememberInvalid(session);
+    if (drop) rememberInvalid(session, undefined, sock);
     replyLine(sock, { id: msg.id, error: reason }, { drop });
   }
 
@@ -1098,8 +1189,17 @@ export function createPool({
   }
 
   let lastIssueAt = 0;
-  function resetOpenRound() {
+  function resetOpenRound({ sealed = false } = {}) {
     if (paused) return lastJob;
+    if (!sealed) {
+      for (const m of miners.values()) {
+        const n = roundActualHashes(m);
+        if (n > 0) {
+          stats.lostWorkHashes = (Number(stats.lostWorkHashes) || 0) + n;
+          stats.lostWorkEvents = (Number(stats.lostWorkEvents) || 0) + 1;
+        }
+      }
+    }
     pendingPayout = [];
     for (const m of miners.values()) {
       resetMinerRoundDisplay(m);
@@ -1636,14 +1736,27 @@ export function createPool({
           const adm = admitClient(params);
           if (!adm.ok) {
             if (isWrongAlgoReject(adm.reason)) {
-              rememberInvalid(null, String(params.login || params.user || ''));
+              rememberInvalid(null, String(params.login || params.user || ''), sock);
             }
             replyLine(sock, { id: msg.id, error: adm.reason }, { drop: true });
             continue;
           }
-          if (isBanned(adm.workerKey) || isBanned(adm.login)) {
+          if (isIpDenied(sock) || isBanned(adm.workerKey) || isBanned(adm.login)) {
             replyLine(sock, { id: msg.id, error: 'banned' }, { drop: true });
             continue;
+          }
+          if (requireLoginAuth) {
+            const okAuth = verifyStratumLoginAuth({
+              dest: adm.login,
+              challenge: params.challenge || params.authChallenge,
+              sig: params.authSig || params.sig,
+              pub: params.authPub || params.spendPub,
+            });
+            if (!okAuth) {
+              const challenge = makeLoginChallenge();
+              replyLine(sock, { id: msg.id, error: 'need_auth', challenge }, { drop: true });
+              continue;
+            }
           }
           const key = adm.workerKey;
           session = miners.get(key) || {
@@ -1751,6 +1864,7 @@ export function createPool({
       hashes: roundActualHashes(m),
       roundHashes: roundActualHashes(m),
       provenHashes: roundActualHashes(m),
+      proven_round: roundActualHashes(m),
       accepted: m.accepted || 0,
       stale: m.stale || 0,
       blocks: Number(m.blocks) || 0,
@@ -1805,6 +1919,16 @@ export function createPool({
         ? (store.getpolicy().operational?.pool_merchant || 30)
         : 30,
       stratum: `:${stratumPort}`,
+      stratumBind: stratumBindHost(stratumBind),
+      poolFeeBps: POOL_FEE_BPS,
+      feeDest: poolFeeDest(),
+      lostWorkHashes: Number(stats.lostWorkHashes) || 0,
+      lostWorkEvents: Number(stats.lostWorkEvents) || 0,
+      topDestSharePct: topDestSharePct(workers),
+      shareBlockRatio: (Number(stats.blocks) || 0) > 0
+        ? (Number(stats.accepted) || 0) / Number(stats.blocks)
+        : 0,
+      loginAuth: requireLoginAuth ? 'ed25519' : 'dest-only',
       proof: 'PoW',
       miners: workers.length,
       threads: workers.reduce((a, m) => a + (m.threads || 0), 0),
@@ -2362,7 +2486,7 @@ export function createPool({
 
   function listen() {
     return new Promise((resolve, reject) => {
-      stratum.listen(stratumPort, '0.0.0.0', () => {
+      stratum.listen(stratumPort, stratumBindHost(stratumBind), () => {
         httpServer.listen(httpPort, '127.0.0.1', () => {
           if (!restampTimer) restampTimer = setInterval(maybeRestampJob, JOB_RESTAMP_MS);
           resolve({

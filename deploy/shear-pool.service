@@ -5,14 +5,17 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/shear-v4
-Environment=SHEAR_DATA=/var/lib/shear/testnet-v4-pool
+# Pool is the main node: stratum :1111, HTTP loopback :8088, P2P :30303.
+Environment=SHEAR_DATA=/var/lib/shear/testnet-v4
 Environment=SHEAR_NETWORK=shear-testnet-v4
-Environment=SHEAR_SEEDS=p2p.shear.digital:30303
+Environment=SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
 Environment=SHEAR_STRATUM=1111
+Environment=SHEAR_STRATUM_BIND=0.0.0.0
 Environment=SHEAR_HTTP=8088
 Environment=SHEAR_SHARE_BITS=8
 Environment=SHEAR_P2P_PORT=30303
 Environment=SHEAR_P2P_BIND=0.0.0.0
+Environment=SHEAR_RPC_BIND=127.0.0.1
 ExecStart=/usr/bin/node pool/src/main.js
 Restart=always
 RestartSec=2

@@ -15,6 +15,11 @@ try { setHashBackend('jit'); } catch { /* interpreter */ }
 import { decodeHeader } from '../../crypto/header.js';
 import {
   P2P_PORT,
+  P2P_MAX_FRAME,
+  P2P_FAIL_DISCONNECT,
+  noteExpensiveFail,
+  ipv4Subnet24,
+  inboundCountForSubnet,
   pickStemSocket,
   fluffDelayMs,
   FLUFF_MIN_MS,
@@ -445,13 +450,40 @@ describe('p2p gossip', () => {
     assert.match(src, /getblocks/);
     assert.match(src, /sock\.destroy\(\)/);
     assert.equal(src.includes('seenTx.clear()'), false);
+    const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(storeSrc, /skipSharePow: !!verifyOpts\.skipSharePow \|\| archiveFast/);
+    assert.match(storeSrc, /skipSharePow: !!verifyOpts\.skipSharePow,/);
+    const nodeSrc = fs.readFileSync(new URL('../src/node.js', import.meta.url), 'utf8');
+    assert.match(nodeSrc, /skip archival bodies \(not share PoW/);
+
     assert.ok(DEFAULT_SEEDS.includes('p2p.shear.digital:30303'));
+    assert.ok(DEFAULT_SEEDS.includes('r2r.shear.digital:30303'));
+    assert.ok(DEFAULT_SEEDS.includes('b2b.shear.digital:30303'));
+    assert.equal(DEFAULT_SEEDS.length >= 2, true);
     assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('46.224.132.83')), false);
+    assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('77.42.91.84')), false);
+    assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('157.180.70.110')), false);
+    assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('157.180.70.100')), false);
+    assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('2.28.8.89')), false);
+    assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('178.105.187.178')), false);
+    assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('178.156.222.223')), false);
     assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('shear.digital:30303') && !String(s).includes('p2p.shear.digital')), false);
     assert.equal(GETBLOCK_BATCH, 16);
     assert.equal(HEADERS_PAGE, 2000);
     assert.match(src, /requestHeaders/);
     assert.match(src, /dialSeeds/);
+    assert.ok(P2P_MAX_FRAME <= 2 * 1024 * 1024 || process.env.SHEAR_P2P_MAX_FRAME);
+    assert.equal(ipv4Subnet24('1.2.3.4'), '1.2.3.0');
+    const rec = { expensiveFails: 0 };
+    for (let i = 0; i < P2P_FAIL_DISCONNECT - 1; i += 1) {
+      assert.equal(noteExpensiveFail(rec), false);
+    }
+    assert.equal(noteExpensiveFail(rec), true);
+    const fakePeers = new Map();
+    fakePeers.set(1, { inbound: true, remote: '10.1.2.9' });
+    fakePeers.set(2, { inbound: true, remote: '10.1.2.8' });
+    fakePeers.set(3, { inbound: false, remote: '10.1.2.7' });
+    assert.equal(inboundCountForSubnet(fakePeers, '10.1.2.0'), 2);
     assert.equal(src.includes('hdrs.slice(-2000)'), false);
     assert.match(src, /function ibdBusy/);
     assert.match(src, /if \(ibdBusy\(\)\) return;/);

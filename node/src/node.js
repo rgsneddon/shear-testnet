@@ -69,8 +69,12 @@ export function printConfig() {
 
 export { createP2p, P2P_PORT, createStore, createRpc, RPC_PORT, mintVorticeDeployKey, parseVorticeKey };
 
-/** ADMITv2 soak tip. Hostname only — never a raw IP. */
-export const DEFAULT_SEEDS = ['p2p.shear.digital:30303'];
+/** ADMITv2 soak tip. Hostnames only — never a raw IP. DNS + static names (not DNS-only). */
+export const DEFAULT_SEEDS = [
+  'p2p.shear.digital:30303',
+  'r2r.shear.digital:30303',
+  'b2b.shear.digital:30303',
+];
 
 export async function startNode({
   dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4'),
@@ -78,7 +82,7 @@ export async function startNode({
   p2pBind = process.env.SHEAR_P2P_BIND || '0.0.0.0',
   rpcPort = Number(process.env.SHEAR_RPC_PORT || RPC_PORT),
   rpcBind = process.env.SHEAR_RPC_BIND || '127.0.0.1',
-  seeds = (process.env.SHEAR_SEEDS || '').split(',').map((s) => s.trim()).filter(Boolean),
+  seeds = (process.env.SHEAR_SEEDS || DEFAULT_SEEDS.join(',')).split(',').map((s) => s.trim()).filter(Boolean),
   fluffDelayMs = null,
   network = process.env.SHEAR_NETWORK || MAGIC_TESTNET,
   fastSync = process.argv.includes('--fast-sync')
@@ -146,8 +150,9 @@ export function printHelp() {
     '  SHEAR_P2P_BIND     default 0.0.0.0',
     '  SHEAR_RPC_PORT     default 18332',
     '  SHEAR_RPC_BIND     default 127.0.0.1 (loopback)',
-    '  SHEAR_SEEDS        comma host:port (default p2p.shear.digital:30303)',
-    '  SHEAR_FAST_SYNC    1 = skip archival bodies',
+    '  SHEAR_SEEDS        comma host:port (default p2p/r2r/b2b.shear.digital:30303)',
+    '  SHEAR_P2P_MAX_FRAME  P2P JSON line cap (default 2 MiB)',
+    '  SHEAR_FAST_SYNC    1 = skip archival bodies (not share PoW; peers always verify)',
     '',
     'RPC is loopback. Do not bind RPC to the public internet.',
     'Mainnet shear-v1 is not live. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 after genesis.',

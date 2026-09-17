@@ -11,10 +11,10 @@ Environment=SHEAR_P2P_PORT=30303
 Environment=SHEAR_P2P_BIND=0.0.0.0
 Environment=SHEAR_RPC_PORT=18332
 Environment=SHEAR_RPC_BIND=127.0.0.1
-# Public seed is hostname only.
-Environment=SHEAR_SEEDS=p2p.shear.digital:30303
+# Public seeds are hostnames only. Never raw fleet IPs in this unit.
+Environment=SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
 Environment=SHEAR_REORG_HALT_DEPTH=0
-ExecStart=/usr/local/bin/node node/src/node.js
+ExecStart=/usr/bin/node node/src/node.js
 Restart=on-failure
 RestartSec=3
 

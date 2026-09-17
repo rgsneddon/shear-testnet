@@ -40,7 +40,7 @@ function loadIdent() {
     }
   } catch { /* mint */ }
   const id = newIdentity();
-  const pay = freshStealthDest(id.paymentCode);
+  const pay = freshStealthDest(id);
   const rec = {
     dest: pay.dest,
     paymentCode: id.paymentCode,

@@ -26,7 +26,7 @@ window.SHEAR_DOCS = {
     { title: 'Mining', children: [
       { id: 'mine', title: 'How to mine' },
       { id: 'solo', title: 'Solo mine' },
-      { id: 'sheark', title: 'ShearK 2.2' },
+      { id: 'sheark', title: 'ShearK 2.3' },
       { id: 'shares', title: 'Shares and PROP' },
       { id: 'hash-bonus', title: 'Hash bonus' }
     ]},
@@ -81,8 +81,8 @@ window.SHEAR_DOCS = {
       '<tr><th>Spendable</th><td>6 confirmations</td></tr>' +
       '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
-      '<tr><th>Wallet pin</th><td>0.34</td></tr>' +
-      '<tr><th>Miner pin</th><td>ShearK 2.2</td></tr></table>' +
+      '<tr><th>Wallet pin</th><td>0.35</td></tr>' +
+      '<tr><th>Miner pin</th><td>ShearK 2.3</td></tr></table>' +
       '<p>How-to lives in this tree. The architecture note is a PDF at <a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> — that URL is not in the navbar on purpose.</p>'
   };
 
@@ -125,7 +125,7 @@ window.SHEAR_DOCS = {
     title: 'Wallet overview',
     crumb: 'wallet / overview',
     html:
-      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.34</strong> (macOS, Windows, Android, Linux, Arch). Sync is a local node at <code>127.0.0.1:18332</code> — not flyclient, not pool HTTP as the only path. Magic <code>shear-testnet-v4</code>.</p>' +
+      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.35</strong> (macOS, Windows, Android, Linux, Arch). Sync is a local node at <code>127.0.0.1:18332</code> — not flyclient, not pool HTTP as the only path. Magic <code>shear-testnet-v4</code>.</p>' +
       '<table><tr><th>Continuum</th><td>Spendable balance, <code>she1</code>, six-slice pending pie</td></tr>' +
       '<tr><th>Flow</th><td>Send and receive</td></tr>' +
       '<tr><th>Resistance</th><td>Public CTF CLI</td></tr>' +
@@ -144,14 +144,14 @@ window.SHEAR_DOCS = {
       '<li>You will enter that password each time. If it is lost, the wallet cannot be opened. Fingerprint or face unlock, where the device offers it, only works on this device.</li>' +
       '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
       '<li>Open Closure and export <code>shewall.bin</code>. Keep that file with the password.</li></ol>' +
-      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.34">shear-testnet 0.34</a>. 0.33 is the previous v3 pin; 0.31 is the last flyclient pin — do not recut it.</p>'
+      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.35">shear-testnet 0.34</a>. 0.33 is the previous v3 pin; 0.31 is the last flyclient pin — do not recut it.</p>'
   };
 
   P.android = {
     title: 'Android APK',
     crumb: 'wallet / android',
     html:
-      '<p>Install <code>shear-wallet-0.34-android.apk</code> from the official 0.34 tag only. Package id is <code>com.shear.shear_wallet</code>. The APK is a single fat package (all ABIs), INTERNET granted on the released file, not a split APK.</p>' +
+      '<p>Install <code>shear-wallet-0.35-android.apk</code> from the official 0.34 tag only. Package id is <code>com.shear.shear_wallet</code>. The APK is a single fat package (all ABIs), INTERNET granted on the released file, not a split APK.</p>' +
       '<p>If a phone still says <strong>App not installed</strong>: uninstall the old debug-signed build first, then sideload 0.34. Do not install a Darwin zip or an unsigned copy. Camera and biometrics need the permissions already in the manifest.</p>'
   };
 
@@ -224,10 +224,10 @@ window.SHEAR_DOCS = {
     title: 'How to mine',
     crumb: 'mining / how-to',
     html:
-      '<p>Official miner is <strong>ShearK-Miner 2.2</strong>, CPU only. Login is wallet Copy dest as <code>ssa1.worker</code>.</p>' +
+      '<p>Official miner is <strong>ShearK-Miner 2.3</strong>, CPU only. Login is wallet Copy dest as <code>ssa1.worker</code>.</p>' +
       '<pre>./ShearK-Miner --selftest\n' +
       './ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit-full --threads 8</pre>' +
-      '<p>Windows: <code>ShearK-Miner.exe</code> with the same flags. <code>.worker</code> is only a name. Downloads: <a href="https://github.com/rgsneddon/ShearK/releases/tag/2.2">ShearK 2.2</a>.</p>' +
+      '<p>Windows: <code>ShearK-Miner.exe</code> with the same flags. <code>.worker</code> is only a name. Downloads: <a href="https://github.com/rgsneddon/ShearK/releases/tag/2.3">ShearK 2.3</a>.</p>' +
       '<p>The public pool takes 1% of the 1 SHE pot. Each hasher dest that produced proven work receives its own hash bonus in full on the next sealed block.</p>'
   };
 
@@ -244,7 +244,7 @@ window.SHEAR_DOCS = {
   };
 
   P.sheark = {
-    title: 'ShearK 2.2',
+    title: 'ShearK 2.3',
     crumb: 'mining / sheark',
     html:
       '<p>ShearK-Miner is the official hasher. Pin <strong>2.2</strong>. Do not recut 1.1 or 1.0. Default <code>--backend jit-full</code> is the 2 GiB dataset (same digest as light). Always run <code>--selftest</code> once on a new machine.</p>' +
@@ -356,9 +356,9 @@ window.SHEAR_DOCS = {
       '<p>A node is the book. It appends, verifies, speaks P2P, and runs the GATE that lets native Flow and pinned Reserve bytecode land in the same block. Wallet 0.34 reads this node, not flyclient.</p>' +
       '<pre>git clone https://github.com/rgsneddon/shear-testnet.git\n' +
       'cd shear-testnet\nnpm install\n' +
-      'export SHEAR_DATA="$HOME/.shear/testnet-v3"\n' +
+      'export SHEAR_DATA="$HOME/.shear/testnet-v4"\n' +
       'node node/src/node.js</pre>' +
-      '<p>Default seeds: <code>p2p.shear.digital:30303</code>. Magic <code>shear-testnet-v4</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine. Build RandomX on the box; never copy a macOS <code>shearhash.node</code> onto Linux.</p>' +
+      '<p>Default seeds: <code>p2p.shear.digital:30303</code>, <code>r2r.shear.digital:30303</code>, <code>b2b.shear.digital:30303</code>. Magic <code>shear-testnet-v4</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine. Build RandomX on the box; never copy a macOS <code>shearhash.node</code> onto Linux.</p>' +
       '<p>Default sync is full archival IBD. An opt-in prune snapshot (latest only) is at <a href="https://boot.shear.digital">boot.shear.digital</a> — first published at height 1000, then every 400 blocks. Copy <code>latest.bin</code> to <code>$SHEAR_DATA/chain.bin</code> on an empty datadir, or <code>node node/src/node.js --bootstrap=DIR</code>. Then IBD the last ~1000 unpruned blocks from the live seed. Do not set <code>SHEAR_FAST_SYNC</code> on a mining node.</p>' +
       '<p>Tree: <a href="https://github.com/rgsneddon/shear-testnet/tree/main/node">rgsneddon/shear-testnet/node</a>.</p>'
   };
@@ -433,7 +433,7 @@ window.SHEAR_DOCS = {
     title: 'P2P',
     crumb: 'network / p2p',
     html:
-      '<p>Port 30303. Magic <code>shear-testnet-v4</code>. A v3 node drops hello magic <code>shear-testnet-v3</code> or <code>shear-v1</code>. Shipped seed is <code>p2p.shear.digital:30303</code>. Do not dual-magic. IBD is headers then a window of getblocks (default 16 in flight); merkle and native PoW still run.</p>'
+      '<p>Port 30303. Magic <code>shear-testnet-v4</code>. A v3 node drops hello magic <code>shear-testnet-v3</code> or <code>shear-v1</code>. Shipped seed is <code>p2p.shear.digital:30303</code>. Also <code>r2r.shear.digital:30303</code> and <code>b2b.shear.digital:30303</code>. Do not dual-magic. IBD is headers then a window of getblocks (default 16 in flight); merkle and native PoW still run.</p>'
   };
 
   P.rpc = {

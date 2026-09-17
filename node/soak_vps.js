@@ -217,7 +217,7 @@ async function reorgN() {
 
 async function reserveLockVote() {
   const alice = newIdentity();
-  const pay = freshStealthDest(alice.paymentCode);
+  const pay = freshStealthDest(alice);
   const dest = pay.dest;
   const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
   const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);

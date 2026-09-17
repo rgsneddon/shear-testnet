@@ -10,6 +10,7 @@ import 'shear_read_sync.dart';
 import 'shear_ed25519.dart';
 import 'shear_pack.dart';
 import 'shear_admit.dart';
+import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
 
@@ -1969,7 +1970,7 @@ class ShearLedger {
       for (final o in vouts) {
         final kind = (o['kind'] as String?) ?? 'send';
         if (kind == 'dummy') {
-          var note = sealNote(0, dest20: randomBytes(20), kind: 'dummy');
+          var note = nativeSealNote(0, dest20: randomBytes(20), kind: 'dummy');
           note = attachAdmitPub(note);
           sealed.add(note);
           continue;
@@ -1977,7 +1978,7 @@ class ShearLedger {
         final addr = (o['address'] as String?) ?? destTo;
         final n = (o['nanos'] as int?) ?? 0;
         final d20 = hash20FromAddress(addr);
-        var note = sealNote(n, dest20: d20, kind: kind);
+        var note = nativeSealNote(n, dest20: d20, kind: kind);
         if (addr.isNotEmpty) note['address'] = addr;
         final B = admitBaseFromAddress(addr) ??
             ((addr == src || addr == changeDest) ? (admitBase ?? _admitBaseOf(paymentCode)) : null);

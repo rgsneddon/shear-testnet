@@ -13,7 +13,7 @@ function noteOf(dest) {
 describe('flow dest coinbase', { timeout: 600_000 }, () => {
   it('pays miner login as dest; shear1 never on coinbase', () => {
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     assert.equal(isDestAddress(dest), true);
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
@@ -39,7 +39,7 @@ describe('flow dest coinbase', { timeout: 600_000 }, () => {
 
   it('verifyBlock rejects rest-frame shear1 on vout', () => {
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const tpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: dest, bits: 8, now: Date.now() });
     const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
     assert.ok(found && found.block, 'need pow');

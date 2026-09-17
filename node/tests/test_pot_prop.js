@@ -20,7 +20,7 @@ import { coinbaseSplit as mintSplit } from '../../crypto/mint.js';
 import { sealCoinbaseNote, excessOf } from '../../crypto/note.js';
 
 function destOf(id) {
-  return freshStealthDest(id.paymentCode).dest;
+  return freshStealthDest(id).dest;
 }
 
 function mine(tpl) {

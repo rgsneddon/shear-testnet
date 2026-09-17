@@ -21,7 +21,7 @@ import { attachDummyOuts } from '../../crypto/dummy.js';
 
 function signedSend(id, { nanos, to, fee } = {}) {
   const { privateKey: eph } = generateKeyPairSync('x25519');
-  const pay = silentPay(id.paymentCode, eph);
+  const pay = silentPay(id.paymentCodeFull, eph);
   const rec = recognizeSilentDest({
     viewKey: id.viewKey, spendPub: id.spendPub, dest: pay.dest, ephPub: pay.ephPub,
   });

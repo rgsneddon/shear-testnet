@@ -42,7 +42,7 @@ import { attachDummyOuts } from '../../crypto/dummy.js';
 import { admitSend } from '../../tests/spend_box.js';
 
 function spendBox(id) {
-  const pay = freshStealthDest(id.paymentCode);
+  const pay = freshStealthDest(id);
   return {
     dest: pay.dest,
     key: { type: 'ed25519-stealth', seed: ed25519SeedOf(id.privateKey), shared: pay.shared },
@@ -341,8 +341,8 @@ describe('node Reserve vault', () => {
     const aliceBox = spendBox(alice);
     const destA = aliceBox.dest;
     const destC = destAtIndex(alice.address, { index: 1, viewKey: alice.viewKey });
-    const destB = freshStealthDest(bob.paymentCode).dest;
-    const minerDest = freshStealthDest(minerId.paymentCode).dest;
+    const destB = freshStealthDest(bob).dest;
+    const minerDest = freshStealthDest(bob).dest;
     const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
     assert.ok(destA.startsWith('ssa1'));
     assert.ok(destC.startsWith('ssa1'));

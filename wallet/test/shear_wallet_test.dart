@@ -26,6 +26,7 @@ import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_levy.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_admit.dart';
+import 'package:shear_wallet/shear_native_prove.dart';
 import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
 import 'package:ristretto255/ristretto255.dart' as r255;
@@ -78,18 +79,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.34"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.35"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.34"'), isTrue);
+    expect(winMain.contains('L"Shear 0.35"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.34"'), isTrue);
+    expect(winRc.contains('"Shear 0.35"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.34"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.35"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -107,7 +108,9 @@ void main() {
     expect(a.address.startsWith('shear1'), isTrue);
     expect(isShearAddress(a.address), isTrue);
     expect(a.paymentCode.startsWith('she1'), isTrue);
-    expect(isFullPaymentCode(a.paymentCode), isTrue);
+    expect(isFullPaymentCode(a.paymentCodeFull), isTrue);
+    expect(isPaymentFingerprint(a.paymentCode), isTrue);
+    expect(a.paymentCode.length, lessThanOrEqualTo(shortAddrMax));
     expect(a.paymentFingerprint.length < 50, isTrue);
     expect(isPaymentCode(a.paymentCode), isTrue);
     expect(isDestAddress(a.paymentCode), isFalse);
@@ -295,16 +298,31 @@ void main() {
   });
 
   test('tracks owned notes and POSTs a sealed Flow body (vin, vout, admit_proof, sig, spendPub)', () async {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs}) => {
+      'admit_proof': true,
+      'v': 2,
+      'spendTag': Uint8List(32)..[0] = 1,
+      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
+      'cTilde': Uint8List(32)..[0] = 2,
+    };
+    debugNativeSealNote = (v, {dest20, kind = 'send'}) {
+      final n = sealNote(v, dest20: dest20, kind: kind);
+      n['rangeProof'] = Uint8List.fromList([2, ...List.filled(64, 4)]);
+      return n;
+    };
+    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
     expect(kTabs, ['Continuum', 'Flow', 'Resistance', 'Vortex', 'Shearview', 'Closure']);
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
     final probe = ShearLedger()..bindIdentity(id);
     final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
-    expect(admitBaseFromAddress(dest), isNotNull);
+    expect(dest.startsWith('ssa1'), isTrue);
+    expect(dest.length, lessThanOrEqualTo(shortAddrMax));
+    expect(admitBaseFromAddress(dest), isNull);
     final d20 = hash20FromAddress(dest)!;
     var spent = sealNote(kUnitsPerShe, dest20: d20, kind: 'pot');
     spent['address'] = dest;
-    spent = attachAdmitPub(spent, admitBase: pointFrom(admitBaseFromAddress(dest)!));
+    spent = attachAdmitPub(spent, admitBase: pointFrom(admitBaseBytes(seed)));
     final compacted = compactSealedVout(spent);
     expect(compacted.containsKey('r'), isFalse);
     expect(compacted['rEph'], isNotNull);
@@ -459,6 +477,19 @@ void main() {
   });
 
   test('send skips notes whose spendTag is already in the live fluxset', () async {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs}) => {
+      'admit_proof': true,
+      'v': 2,
+      'spendTag': Uint8List(32)..[0] = 1,
+      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
+      'cTilde': Uint8List(32)..[0] = 2,
+    };
+    debugNativeSealNote = (v, {dest20, kind = 'send'}) {
+      final n = sealNote(v, dest20: dest20, kind: kind);
+      n['rangeProof'] = Uint8List.fromList([2, ...List.filled(64, 4)]);
+      return n;
+    };
+    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
     final probe = ShearLedger()..bindIdentity(id);
@@ -466,7 +497,7 @@ void main() {
     final d20 = hash20FromAddress(dest)!;
     var spent = sealNote(kUnitsPerShe, dest20: d20, kind: 'pot');
     spent['address'] = dest;
-    spent = attachAdmitPub(spent, admitBase: pointFrom(admitBaseFromAddress(dest)!));
+    spent = attachAdmitPub(spent, admitBase: pointFrom(admitBaseBytes(seed)));
     final x = admitScalarFromSeed(seed, spent);
     final tag = pointBytes(spendTagPoint(x, admitPub(x)));
     final tagHex = tag.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
@@ -499,6 +530,19 @@ void main() {
   });
 
   test('sealed send change is the spent note leftover, not dest-balance of extra notes', () async {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs}) => {
+      'admit_proof': true,
+      'v': 2,
+      'spendTag': Uint8List(32)..[0] = 1,
+      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
+      'cTilde': Uint8List(32)..[0] = 2,
+    };
+    debugNativeSealNote = (v, {dest20, kind = 'send'}) {
+      final n = sealNote(v, dest20: dest20, kind: kind);
+      n['rangeProof'] = Uint8List.fromList([2, ...List.filled(64, 4)]);
+      return n;
+    };
+    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
     final probe = ShearLedger()..bindIdentity(id);
@@ -506,11 +550,11 @@ void main() {
     final d20 = hash20FromAddress(dest)!;
     var pot = sealNote(kUnitsPerShe, dest20: d20, kind: 'pot');
     pot['address'] = dest;
-    pot = attachAdmitPub(pot, admitBase: pointFrom(admitBaseFromAddress(dest)!));
+    pot = attachAdmitPub(pot, admitBase: pointFrom(admitBaseBytes(seed)));
     final potRow = compactSealedVout(pot)..['nanos'] = kUnitsPerShe;
     var hash = sealNote(512, dest20: d20, kind: 'hash');
     hash['address'] = dest;
-    hash = attachAdmitPub(hash, admitBase: pointFrom(admitBaseFromAddress(dest)!));
+    hash = attachAdmitPub(hash, admitBase: pointFrom(admitBaseBytes(seed)));
     final hashRow = compactSealedVout(hash)..['nanos'] = 512;
     final x = admitScalarFromSeed(seed, pot);
     final pubs = [pointBytes(admitPub(x)), pointBytes(admitPub(randomScalar()))];
@@ -1140,7 +1184,9 @@ void main() {
     expect(isDestAddress(a.paymentCode), isFalse);
     expect(destForLogin(a.paymentCode), isNull);
     expect(payoutDest(a.paymentCode), isNull);
-    expect(isFullPaymentCode(a.paymentCode), isTrue);
+    expect(isFullPaymentCode(a.paymentCodeFull), isTrue);
+    expect(isPaymentFingerprint(a.paymentCode), isTrue);
+    expect(a.paymentCode.length, lessThanOrEqualTo(shortAddrMax));
     final mined = ShearLedger();
     mined.viewSecret = a.viewKey;
     expect(mined.ownedAddresses(a.address, paymentCode: a.paymentCode).contains(a.paymentCode), isFalse);
@@ -1174,7 +1220,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.34');
+    expect(kWalletVersion, '0.35');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -1633,8 +1679,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.34');
-    expect(kWalletVersion, '0.34');
+    expect(app.title, 'Shear 0.35');
+    expect(kWalletVersion, '0.35');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -3851,8 +3897,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.34 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.34');
+  test('kWalletVersion == 0.35 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.35');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);

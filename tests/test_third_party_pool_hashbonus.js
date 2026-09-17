@@ -22,7 +22,7 @@ describe('third-party pool cannot cheat hash bonus', () => {
     assert.equal(no.ok, false);
     assert.equal(no.reason, 'mint_forbidden');
 
-    const a = freshStealthDest(alice.paymentCode).dest;
+    const a = freshStealthDest(alice).dest;
     const b = freshStealthDest(newIdentity().paymentCode).dest;
     assert.notEqual(a, b);
     const rx = createHash('sha256').update('rx-fixture').digest();

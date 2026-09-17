@@ -1,5 +1,5 @@
 #!/bin/sh
-# ShearK-Miner 2.2 (ShearHash-v3 light)
+# ShearK-Miner 2.3 (ShearHash-v3 light)
 # Pool: pool.shear.digital:1111  (shear-testnet-v4)
 #
 # Paid login is an ssa1 dest the wallet exported (Copy dest), then .worker.
@@ -11,7 +11,7 @@
 
 cd "$(dirname "$0")"
 if [ ! -x ./ShearK-Miner ]; then
-  echo "ShearK-Miner missing or not executable. Unpack ShearK-Miner-2.2-linux.zip first."
+  echo "ShearK-Miner missing or not executable. Unpack ShearK-Miner-2.3-linux.zip first."
   exit 1
 fi
 

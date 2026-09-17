@@ -180,6 +180,9 @@ pub fn verify_range(c_bytes: &[u8; 32], proof: &[u8]) -> bool {
         chal_parts.push(&b_bytes[i]);
     }
     let e_all = chal(&chal_parts);
+    if e_all == Scalar::ZERO {
+        return false;
+    }
     for i in 0..RANGE_BITS {
         let r0 = match decompress(&proof[off..off + 32]) {
             Some(p) => p,
@@ -209,6 +212,9 @@ pub fn verify_range(c_bytes: &[u8; 32], proof: &[u8]) -> bool {
             &proof[off - 160..off - 128],
             &e_all.to_bytes(),
         ]);
+        if e == Scalar::ZERO {
+            return false;
+        }
         if e0 + e1 != e {
             return false;
         }
@@ -236,6 +242,9 @@ pub fn verify_range(c_bytes: &[u8; 32], proof: &[u8]) -> bool {
     zb.copy_from_slice(&proof[off + 32..off + 64]);
     let z = Scalar::from_bytes_mod_order(zb);
     let e = chal(&[b"cons", &proof[1..33], &compress(&p), &proof[off..off + 32]]);
+    if e == Scalar::ZERO {
+        return false;
+    }
     h * z == r_pt + p * e
 }
 
@@ -256,5 +265,12 @@ mod tests {
         let p = prove_range(4, &r.to_bytes()).unwrap();
         assert!(!verify_range(&c.compress().to_bytes(), &p));
         assert!(!verify_range(&c.compress().to_bytes(), &[0u8; 8]));
+        let cb = (G * Scalar::from(1u64) + h * r).compress().to_bytes();
+        let mut z = prove_range(1, &r.to_bytes()).unwrap();
+        let e0 = 1 + 32 + RANGE_BITS * 32 + 64;
+        for b in z.iter_mut().skip(e0).take(64) {
+            *b = 0;
+        }
+        assert!(!verify_range(&cb, &z), "zero Fiat–Shamir e0/e1 rejected");
     }
 }

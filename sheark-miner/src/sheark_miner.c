@@ -108,6 +108,7 @@ static int g_qtail = 0;
 static uint64_t g_meets = 0;
 static int g_accepted = 0;
 static int g_rejected = 0;
+static int g_stale = 0;
 static int g_blocks = 0;
 static int g_color = 1;
 
@@ -599,18 +600,19 @@ static void apply_job(const char *line) {
     pthread_mutex_unlock(&g_job_mu);
     return;
   }
-  /* Timestamp/nonce restamp: same RandomX K. Do not bump gen (that aborts
-     the hash pipeline and paints a hashrate dip every JOB_RESTAMP). */
+  /* Timestamp/nonce restamp: same RandomX K, but abort in-flight hashes so
+     we never submit a digest for the previous header. Dropped gens are
+     g_dropped, never g_rejected (aborted_stale). */
   if (g_have_main && g_main_job.have
       && memcmp(g_main_job.header, job.header, 100) == 0
       && memcmp(g_main_job.header + 108, job.header + 108, 4) == 0) {
-    memcpy(g_main_job.header, job.header, SHEAR_HEADER_LEN);
-    g_main_job.share_bits = job.share_bits;
-    g_main_job.block_bits = job.block_bits;
-    if (job.height > 0) g_main_job.height = job.height;
-    if (job.jobId[0]) snprintf(g_main_job.jobId, sizeof(g_main_job.jobId), "%s", job.jobId);
+    g_job_gen++;
+    job.gen = g_job_gen;
+    job.have = 1;
+    g_main_job = job;
     atomic_store_explicit(&g_share_bits_live, job.share_bits, memory_order_release);
     atomic_store_explicit(&g_block_bits_live, job.block_bits, memory_order_release);
+    atomic_store_explicit(&g_job_seq, g_job_gen, memory_order_release);
     atomic_fetch_add_explicit(&g_stamp_seq, 1, memory_order_release);
     pthread_mutex_unlock(&g_job_mu);
     return;
@@ -738,6 +740,15 @@ static void apply_ack(const char *line) {
   if (strstr(low, "busy")) {
     if (inflight > 0) atomic_fetch_sub(&g_inflight, 1);
     if (g_have_sent) enqueue_front(&g_sent);
+    return;
+  }
+  if (strstr(low, "stale")) {
+    if (inflight > 0) {
+      g_stale++;
+      atomic_fetch_sub(&g_inflight, 1);
+    }
+    g_have_sent = 0;
+    fprintf(stderr, "stale %s\n", err[0] ? err : (low[0] ? low : "stale"));
     return;
   }
   if (err[0] || strstr(low, "error") || strstr(low, "refus")) {

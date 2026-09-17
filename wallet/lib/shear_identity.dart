@@ -27,7 +27,7 @@ class ShearIdentity {
   final String seedHex;
   final String address;
   final String viewKey;
-  /// Public-facing silent ID (she1). Full payment code (keys). Never a dest.
+  /// Public-facing silent ID (she1 fingerprint, dest20-sized). Never a dest.
   final String paymentCode;
 
   String get paymentFingerprint {
@@ -36,6 +36,13 @@ class ShearIdentity {
       return encodePaymentFingerprint(scanPub: d['scanPub']!, spendPub: d['spendPub']!);
     }
     return paymentCode;
+  }
+
+  /// Full scan||spend she1 for ECDH. Public paymentCode is the short fingerprint.
+  String get paymentCodeFull {
+    if (isFullPaymentCode(paymentCode)) return paymentCode;
+    final spendPub = ed25519PublicFromSeed(_seedBytes(seedHex));
+    return paymentCodeAtIndex(viewKey, spendPub, 0) ?? paymentCode;
   }
 
   Map<String, String> toJson() => {
@@ -131,6 +138,7 @@ Uint8List? decodeBech32Payload(String address) {
   final raw = address.trim();
   final one = raw.indexOf('1');
   if (one < 1) return null;
+  final hrp = raw.substring(0, one).toLowerCase();
   final body = raw.substring(one + 1).toLowerCase();
   final vals = <int>[];
   for (final ch in body.split('')) {
@@ -139,6 +147,7 @@ Uint8List? decodeBech32Payload(String address) {
     vals.add(i);
   }
   if (vals.length < 7) return null;
+  if (_polymod([..._hrpExpand(hrp), ...vals]) != 1) return null;
   final data = vals.sublist(0, vals.length - 6);
   final bytes = _convertBits(data.sublist(1), 5, 8, false);
   if (bytes.isEmpty) return null;
@@ -190,9 +199,10 @@ String encodePaymentCode({required Uint8List scanPub, required Uint8List spendPu
   if (scanPub.length != 32 || spendPub.length != 32) {
     throw ArgumentError('silent code keys must be 32 bytes');
   }
-  final payload = <int>[paymentCodeVersion, ...scanPub, ...spendPub];
-  if (admitBase != null && admitBase.length == 32) payload.addAll(admitBase);
-  return encodeHrp(payHrp, Uint8List.fromList(payload));
+  // Public she1 is the 20-byte fingerprint; this full code is backup/ECDH only.
+  // admitBase is not stuffed into the string (decode still accepts old 97-byte payloads).
+  assert(admitBase == null || admitBase.length == 32 || admitBase.isEmpty);
+  return encodeHrp(payHrp, Uint8List.fromList([paymentCodeVersion, ...scanPub, ...spendPub]));
 }
 
 String encodePaymentFingerprint({required Uint8List scanPub, required Uint8List spendPub}) {
@@ -346,26 +356,15 @@ ShearIdentity createIdentity([Uint8List? seed]) {
   final address = encodeShearAddress(hash20);
   final view = sha256.convert(utf8.encode('shear-view-v1') + _ed25519Pkcs8Prefix + s);
   final viewKey = _hex(view.bytes);
-  final paymentCode = paymentCodeAtIndex(viewKey, spendPub, 0, admitBaseBytes(s))!;
+  final scanPub = x25519PublicFromSeed(scanSeedFromView(viewKey, 0));
+  final paymentCode = encodePaymentFingerprint(scanPub: scanPub, spendPub: spendPub);
   return ShearIdentity(seedHex: seedHex, address: address, viewKey: viewKey, paymentCode: paymentCode);
 }
 
 Uint8List? hash20FromAddress(String address) {
-  final raw = address.trim();
-  final one = raw.lastIndexOf('1');
-  if (one < 1) return null;
-  final body = raw.substring(one + 1).toLowerCase();
-  final vals = <int>[];
-  for (final ch in body.split('')) {
-    final i = _charset.indexOf(ch);
-    if (i < 0) return null;
-    vals.add(i);
-  }
-  if (vals.length < 7) return null;
-  final data = vals.sublist(0, vals.length - 6);
-  final bytes = _convertBits(data.sublist(1), 5, 8, false);
-  if (bytes.length < 20) return null;
-  return Uint8List.fromList(bytes.sublist(0, 20));
+  final p = decodeBech32Payload(address);
+  if (p == null || p.length < 20) return null;
+  return Uint8List.fromList(p.sublist(0, 20));
 }
 
 Uint8List? spendHashFromAddress(String address) {
@@ -390,33 +389,18 @@ String encodeShearAddress(Uint8List pubkeyHash20) => encodeHrp(shearHrp, pubkeyH
 
 /// 32-byte ristretto B from dest payload dest20||B. 20-byte dests have no base.
 Uint8List? admitBaseFromAddress(String address) {
-  final raw = address.trim();
-  final one = raw.lastIndexOf('1');
-  if (one < 1) return null;
-  final body = raw.substring(one + 1).toLowerCase();
-  final vals = <int>[];
-  for (final ch in body.split('')) {
-    final i = _charset.indexOf(ch);
-    if (i < 0) return null;
-    vals.add(i);
-  }
-  if (vals.length < 7) return null;
-  final data = vals.sublist(0, vals.length - 6);
-  final bytes = _convertBits(data.sublist(1), 5, 8, false);
-  if (bytes.length < 52) return null;
-  return Uint8List.fromList(bytes.sublist(20, 52));
+  final p = decodeBech32Payload(address);
+  if (p == null || p.length < 52) return null;
+  return Uint8List.fromList(p.sublist(20, 52));
 }
+
+const shortAddrMax = 48;
 
 String encodeDestAddress(Uint8List pubkeyHash20, [Uint8List? admitBase]) {
   if (pubkeyHash20.length != 20) {
     throw ArgumentError('spend hash must be 20 bytes');
   }
-  if (admitBase != null) {
-    if (admitBase.length != 32) {
-      throw ArgumentError('admit base must be 32 bytes');
-    }
-    return encodeHrp(destHrp, Uint8List.fromList([...pubkeyHash20, ...admitBase]));
-  }
+  assert(admitBase == null || admitBase.length == 32 || admitBase.isEmpty);
   return encodeHrp(destHrp, pubkeyHash20);
 }
 
@@ -468,3 +452,11 @@ Uint8List _randomBytes(int n) {
 }
 
 String _hex(List<int> b) => b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+
+Uint8List _seedBytes(String hex) {
+  final o = Uint8List(hex.length ~/ 2);
+  for (var i = 0; i < o.length; i++) {
+    o[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+  }
+  return o;
+}

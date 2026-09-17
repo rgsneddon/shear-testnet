@@ -3,7 +3,7 @@
 **Written:** 2026-09-17T19:20Z from the Mac (`/Users/russellsneddon/shear`). HEAD **`f63c1e1`+** (dest-P bind `03fe7fe` is in this history).  
 **Canonical GitHub tree:** https://github.com/rgsneddon/shear-testnet  
 **Working branch:** `feat/admit-v2`  
-**This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Pins are the **latest** clients: wallet **0.34**, ShearK **2.2**. Do not recut older tags.
+**This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Pins are the **latest** clients: wallet **0.35**, ShearK **2.3**. Do not recut older tags.
 
 Other Shear GitHub repos (`rgsneddon/shear`, `rgsneddon/shear-wallet`, `rgsneddon/shear-pool`) are being deleted. Clone **this** repo only, plus **ShearK**.
 
@@ -34,13 +34,13 @@ Private inventory (optional): `gh repo clone rgsneddon/handoff %USERPROFILE%\han
 | Book / magic | `shear-testnet-v4` |
 | ADMIT | ADMITv2 (Pasta arity-32 CDS; Membership, not Multiple) |
 | Fingerprint | `shear-book-law-2` … `ADMIT=ADMITv2\|RANGE=bpplus\|LEVY=weight\|NETWORK=shear-testnet-v4\|BITS=q16.16\|ASERT_TAU_MS=25920000` |
-| Wallet | **0.34** (`wallet/lib/main.dart` `kWalletVersion`) |
-| Miner | **ShearK 2.2** — https://github.com/rgsneddon/ShearK/releases/tag/2.2 |
+| Wallet | **0.35** (`wallet/lib/main.dart` `kWalletVersion`) |
+| Miner | **ShearK 2.3** — https://github.com/rgsneddon/ShearK/releases/tag/2.3 |
 | SHARE_BIND | `rx+noteCommit` |
 | Mainnet | **blocked**. Genesis pin stays `2026-09-18T21:00:00+01:00`. Do **not** invent another. Do **not** set `SHEAR_MAINNET_EMIT=1`. Operator is **not** cutting over. |
 
-Wallet zip on **this** repo: https://github.com/rgsneddon/shear-testnet/releases/tag/0.34  
-Miner zip: https://github.com/rgsneddon/ShearK/releases/tag/2.2 (`ShearK-Miner-2.2-windows.zip` is this box’s job if still missing).
+Wallet zip on **this** repo: https://github.com/rgsneddon/shear-testnet/releases/tag/0.35  
+Miner zip: https://github.com/rgsneddon/ShearK/releases/tag/2.3 (`ShearK-Miner-2.3-windows.zip` is this box’s job if still missing).
 
 ---
 
@@ -97,7 +97,7 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 ## 5) Next work on Windows (priority)
 
 1. Pack **wallet 0.34 Windows zip** onto existing tag `0.34` on **this** repo (do not recut). Darwin cannot `flutter build windows`.
-2. If `ShearK-Miner-2.2-windows.zip` is still missing, pack it on **`rgsneddon/ShearK`** tag `2.2` (PE + `example.bat`). Do not recut 2.1/2.0.
+2. If `ShearK-Miner-2.3-windows.zip` is still missing, pack it on **`rgsneddon/ShearK`** tag `2.2` (PE + `example.bat`). Do not recut 2.1/2.0.
 3. Confirm seed/peer-2/p2pnode2/DE share height+jroot after dest-P wipe; isolated reorg/Reserve/vort1 on this binary; optional new 24 h mine+Flow.
 4. Keep mainnet blocked. No `SHEAR_MAINNET_EMIT=1`.
 
@@ -117,8 +117,8 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 - Invent a mainnet genesis datetime.
 - Dual-stack ADMITv1 + ADMITv2.
-- Recut an older wallet or ShearK tag. Pins are **0.34** and **2.2**.
+- Recut an older wallet or ShearK tag. Pins are **0.35** and **2.3**.
 - Put ShearK inside the wallet zip.
 - Attach Darwin as `*-linux.zip`.
-- Commit `id_ed25519_*`, `deploy/nginx-*-secrets.conf`, or `kyrusfables` admin host.
+- Commit `id_ed25519_*`, `deploy/nginx-*-secrets.conf`, or a live admin hostname.
 - Restart soak-clock / `shear-ibd-v4-mine` unless you intend a new 24 h run.

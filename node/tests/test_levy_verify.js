@@ -55,7 +55,7 @@ describe('verifyBlock Phase B Flow levy', () => {
     assert.equal(levyNanos(1), 100);
     assert.equal(levyNanos(NANOS_PER_SHE), 100);
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const other = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey, height: 1 });
     const base = {
       prev: GENESIS_PREV,

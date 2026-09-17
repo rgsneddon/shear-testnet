@@ -19,7 +19,7 @@ import {
 
 function newDest() {
   const id = newIdentity();
-  return freshStealthDest(id.paymentCode).dest;
+  return freshStealthDest(id).dest;
 }
 
 function tmpPool(shareBits = 8, extra = {}) {
@@ -315,7 +315,7 @@ describe('drop idle / wrong-algo miners', () => {
     pool.close();
   });
 
-  it('wrong-algo software is dest-banned and cannot log back in; IP is not banned', async () => {
+  it('unauthenticated need_hash cannot durable-ban a victim dest', async () => {
     const { pool, dest, dir } = tmpPool();
     const port = await listen(pool);
     const sock = net.connect(port, '127.0.0.1');
@@ -338,8 +338,8 @@ describe('drop idle / wrong-algo miners', () => {
     await waitClose(sock);
 
     const book = readBans(dir);
-    assert.ok(book.bans.includes(dest), JSON.stringify(book));
-    assert.equal(book.bans.some((k) => String(k).startsWith('ip:') || /^\d+\.\d+\.\d+\.\d+$/.test(k)), false);
+    const keys = (book.bans || []).map((b) => (typeof b === 'string' ? b : b.key));
+    assert.equal(keys.includes(dest), false, JSON.stringify(book));
 
     async function tryLogin(login) {
       const s = net.connect(port, '127.0.0.1');
@@ -359,14 +359,8 @@ describe('drop idle / wrong-algo miners', () => {
     }
 
     const again = await tryLogin(`${dest}.old`);
-    assert.equal(again.error, 'banned');
-    const otherWorker = await tryLogin(`${dest}.other`);
-    assert.equal(otherWorker.error, 'banned');
-
-    const fresh = newDest();
-    const ok = await tryLogin(`${fresh}.rig`);
-    assert.equal(ok.error, undefined, JSON.stringify(ok));
-    assert.equal(ok.result?.status, 'OK');
+    assert.equal(again.error, undefined, JSON.stringify(again));
+    assert.equal(again.result?.status, 'OK');
     pool.close();
   });
 

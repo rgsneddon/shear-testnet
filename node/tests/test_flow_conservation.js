@@ -34,7 +34,7 @@ function mine(tpl) {
 describe('Flow conservation binds vin.commit to spent vout', () => {
   it('compact send whose vin.commit is the parent coinbase is ok; a self-minted C_in is confidential', () => {
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const spendSeed = id.spendSeed || ed25519SeedOf(id.privateKey);
     const parent = mine(buildTemplate({
       prev: GENESIS_PREV,

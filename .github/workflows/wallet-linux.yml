@@ -7,11 +7,11 @@ on:
       pin:
         description: Public two-part wallet pin (release tag)
         required: true
-        default: '0.34'
+        default: '0.35'
       build_number:
         description: Flutter build-number
         required: true
-        default: '50'
+        default: '51'
 
 jobs:
   linux:

@@ -282,7 +282,10 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /ADMIT=ADMITv2/);
     assert.match(fp, /RANGE=bpplus/);
     assert.match(fp, /LEVY=weight/);
+    assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
     assert.match(fp, /BITS=q16\.16/);
+    assert.equal(MTP_FUTURE_MS, 7_200_000);
+    assert.match(fp, /MTP_FUTURE_MS=7200000/);
     assert.match(fp, new RegExp(`ASERT_TAU_MS=${ASERT_HALFLIFE_MS}`));
     assert.equal(/fcmp/i.test(fp), false);
     assert.equal(/2026-\d{2}-\d{2}T/.test(fp), false);
@@ -304,7 +307,7 @@ describe('hash-tx consensus law', () => {
     const law = consensusLaw();
     assert.equal(PRODUCT_VERSION, '0.4');
     assert.equal(MINER_VERSION, '1.1');
-    assert.equal(SHEARK_MINER_VERSION, '2.2');
+    assert.equal(SHEARK_MINER_VERSION, '2.3');
     assert.equal(PRODUCT_VERSION.split('.').length, 2);
     assert.equal(MINER_VERSION.split('.').length, 2);
     assert.equal(SHEARK_MINER_VERSION.split('.').length, 2);
@@ -316,7 +319,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(/^\d+\.\d+$/.test('0.1.0'), false);
     assert.equal(law.productVersion, '0.4');
     assert.equal(law.minerVersion, '1.1');
-    assert.equal(law.shearkMinerVersion, '2.2');
+    assert.equal(law.shearkMinerVersion, '2.3');
     assert.equal(fp.includes(SHEARK_MINER_VERSION), false);
     assert.equal(fp.includes('shearkMinerVersion'), false);
     assert.equal(law.hashTxLive, 1);

@@ -3,17 +3,17 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
 
-/// Inspects the packed 0.34 fat APK when present.
+/// Inspects the packed 0.35 fat APK when present.
 File _apk() {
   for (final p in [
-    '../dist/shear-wallet-0.34-android.apk',
-    'dist/shear-wallet-0.34-android.apk',
-    '${Directory.current.path}/../dist/shear-wallet-0.34-android.apk',
+    '../dist/shear-wallet-0.35-android.apk',
+    'dist/shear-wallet-0.35-android.apk',
+    '${Directory.current.path}/../dist/shear-wallet-0.35-android.apk',
   ]) {
     final f = File(p);
     if (f.existsSync()) return f;
   }
-  return File('../dist/shear-wallet-0.34-android.apk');
+  return File('../dist/shear-wallet-0.35-android.apk');
 }
 
 String? _aapt() {
@@ -28,8 +28,8 @@ String? _aapt() {
 }
 
 void main() {
-  test('0.34 APK is a fat installable package (applicationId, versionCode > 48, INTERNET)', () {
-    expect(kWalletVersion, '0.34');
+  test('0.35 APK is a fat installable package (applicationId, versionCode > 48, INTERNET)', () {
+    expect(kWalletVersion, '0.35');
     final apk = _apk();
     if (!apk.existsSync()) return;
     expect(apk.lengthSync(), greaterThan(10 * 1024 * 1024));

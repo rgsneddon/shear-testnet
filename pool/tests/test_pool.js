@@ -108,7 +108,7 @@ describe('observed interval', () => {
   it('issued job header timestamp is never after wall and never parent+90s', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stamp-wall-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -133,7 +133,7 @@ describe('observed interval', () => {
   it('restamp patches timestamp only; merkle/bits/jobId stay so RandomX K does not rebuild', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-restamp-k-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -175,7 +175,7 @@ describe('observed interval', () => {
   it('restamp refuses to rewind a future header stamp', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-restamp-ahead-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -234,7 +234,7 @@ describe('HTTP stats cannot stall', () => {
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pool-stats-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -286,7 +286,7 @@ describe('job gate', () => {
 describe('admit', () => {
   it('admits ssa1 dest and she1 silent ID, refuses rest-frame shear1 and wrong client', () => {
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     assert.equal(admitClient({ version: '2.1', login: dest, client: 'ShearHash' }).ok, true);
     const sheOnly = admitClient({ version: '2.1', login: id.paymentCode, client: 'ShearHash', name: 'Shear-Miner' });
     assert.equal(sheOnly.ok, true);
@@ -373,7 +373,7 @@ describe('pool dashboard + stratum', () => {
   it('serves light SHE page and accepts a header share on 1111', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pool-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -508,7 +508,7 @@ describe('pool dashboard + stratum', () => {
   it('two sockets on one login sum thread inventory instead of last-write', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pool-sess-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -816,7 +816,7 @@ describe('public miner listing', () => {
   it('publicStats lists a connected hasher with accepted=0 and records miner hashes without minting them', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-list-on-login-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const tag = publicMinerTag(dest);
     const pool = createPool({
       dataDir: dir,
@@ -892,7 +892,7 @@ describe('public miner listing', () => {
   it('dashboard lists one miner-tag row for two device logins; 12s after full disconnect ghosts drop', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-miner-ui-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const tag = publicMinerTag(dest);
     const pool = createPool({
       dataDir: dir,
@@ -961,7 +961,7 @@ describe('public miner listing', () => {
   it('hashes this round is own count after a valid share; zero with no share', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-round-h-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const tag = publicMinerTag(dest);
     const pool = createPool({
       dataDir: dir,
@@ -1027,7 +1027,7 @@ describe('public miner listing', () => {
   it('miner pull stub/empty sig is unsigned; EIP-712 she1+ssa1 is ok; she1 dest fails', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pull-http-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const tag = publicMinerTag(dest);
     const pool = createPool({
       dataDir: dir,
@@ -1104,7 +1104,7 @@ describe('public miner listing', () => {
       login: id.paymentCode, dest, minerShe1: id.paymentCode, payoutSsa1: dest, nanos: ripe.confirmedNanos,
     });
     const spendSig = sign(null, digest, id.privateKey).toString('hex');
-    const other = freshStealthDest(id.paymentCode).dest;
+    const other = freshStealthDest(id).dest;
     const wrongDest = await post({
       login: id.paymentCode,
       dest: other,

@@ -111,8 +111,8 @@ describe('round hash bonuses', { timeout: 1_200_000 }, () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pay-'));
     const alice = newIdentity();
     const bob = newIdentity();
-    const destA = freshStealthDest(alice.paymentCode).dest;
-    const destB = freshStealthDest(bob.paymentCode).dest;
+    const destA = freshStealthDest(alice).dest;
+    const destB = freshStealthDest(alice).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -208,7 +208,7 @@ describe('round hash bonuses', { timeout: 1_200_000 }, () => {
   it('provenLag1Shares drops a parent-header miss so the next job stays sealable', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-lag1-'));
     const alice = newIdentity();
-    const destA = freshStealthDest(alice.paymentCode).dest;
+    const destA = freshStealthDest(alice).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -232,7 +232,7 @@ describe('round hash bonuses', { timeout: 1_200_000 }, () => {
       verifiedHeader: sealed.toString('hex'),
     };
     const bob = newIdentity();
-    const destB = freshStealthDest(bob.paymentCode).dest;
+    const destB = freshStealthDest(bob).dest;
     const bobShare = {
       dest: destB,
       nonce: 12n,

@@ -19,7 +19,32 @@ function reviveDeep(v) {
 }
 
 export const P2P_PORT = 30303;
-export const P2P_MAX_FRAME = Math.max(1024 * 1024, Number(process.env.SHEAR_P2P_MAX_FRAME || 16 * 1024 * 1024) || 16 * 1024 * 1024);
+/** Default 2 MiB. Override with SHEAR_P2P_MAX_FRAME. Cheap reject before Admit/BP+/RX. */
+export const P2P_MAX_FRAME = Math.max(1024 * 1024, Number(process.env.SHEAR_P2P_MAX_FRAME || 2 * 1024 * 1024) || 2 * 1024 * 1024);
+export const P2P_FAIL_DISCONNECT = 8;
+export const P2P_INBOUND_PER24 = 8;
+export const P2P_BAN_MS = 15 * 60 * 1000;
+
+export function ipv4Subnet24(addr) {
+  const a = String(addr || '');
+  const m = a.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/);
+  return m ? `${m[1]}.0` : a;
+}
+
+export function noteExpensiveFail(rec) {
+  if (!rec || typeof rec !== 'object') return false;
+  rec.expensiveFails = (Number(rec.expensiveFails) || 0) + 1;
+  rec.lastFailAt = Date.now();
+  return rec.expensiveFails >= P2P_FAIL_DISCONNECT;
+}
+
+export function inboundCountForSubnet(peers, subnet) {
+  let n = 0;
+  for (const rec of (peers?.values?.() || [])) {
+    if (rec?.inbound && ipv4Subnet24(rec.remote) === subnet) n += 1;
+  }
+  return n;
+}
 /** Headers served after a locator. A window, not the end of IBD. */
 export const HEADERS_PAGE = 2000;
 /** Documented default in-flight getblock window. Tests may set SHEAR_GETBLOCK_BATCH. */
@@ -296,6 +321,7 @@ export function createP2p({
   const peers = new Map();
   const linking = new Set();
   const seenTx = new Set();
+  const peerBans = new Map();
   let ingestChain = Promise.resolve();
   const originInvSize = new Map();
   const fluffTimers = new Map();
@@ -664,6 +690,11 @@ export function createP2p({
                 height: last?.height,
               }));
             } catch { /* ignore */ }
+          }
+          if (!got?.ok && noteExpensiveFail(rec)) {
+            const until = Date.now() + P2P_BAN_MS;
+            if (rec.remote) peerBans.set(rec.remote, until);
+            try { sock.destroy(); } catch { /* ignore */ }
           } else if (got?.ok) {
             try {
               console.error(JSON.stringify({
@@ -704,13 +735,29 @@ export function createP2p({
   }
 
   function attach(sock, extra = {}) {
+    const remote = peerRemoteKey(sock);
+    const until = peerBans.get(remote) || 0;
+    if (until > Date.now()) {
+      try { sock.destroy(); } catch { /* ignore */ }
+      return;
+    }
+    const inbound = !extra.dialHost;
+    if (inbound) {
+      const subnet = ipv4Subnet24(remote);
+      if (inboundCountForSubnet(peers, subnet) >= P2P_INBOUND_PER24) {
+        try { sock.destroy(); } catch { /* ignore */ }
+        return;
+      }
+    }
     sockets.add(sock);
     peers.set(sock, {
       id: ++peerSeq,
-      remote: peerRemoteKey(sock),
+      remote,
       hash: null,
       height: 0,
       dialHost: extra.dialHost || '',
+      inbound,
+      expensiveFails: 0,
     });
     let buf = '';
     sock.on('data', (chunk) => {

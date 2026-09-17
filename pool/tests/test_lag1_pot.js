@@ -95,8 +95,8 @@ describe('lag-1 PROP pot', { timeout: 1_200_000 }, () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-seal-'));
     const alice = newIdentity();
     const bob = newIdentity();
-    const destA = freshStealthDest(alice.paymentCode).dest;
-    const destB = freshStealthDest(bob.paymentCode).dest;
+    const destA = freshStealthDest(alice).dest;
+    const destB = freshStealthDest(alice).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,

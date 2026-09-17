@@ -1,4 +1,4 @@
-# Shear wallet 0.34
+# Shear wallet 0.35
 
 GUI (Flutter) and CLI. Same identity, same encrypted `shewall.bin`, same book magic `shear-testnet-v4`.
 

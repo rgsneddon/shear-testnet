@@ -94,14 +94,13 @@ export function encodeAddress(pubkeyHash20) {
   return encodeHrp(HRP, pubkeyHash20);
 }
 
-export function encodeDest(pubkeyHash20, admitBase = null) {
+/** Public dest/she/shear strings are dest20 (or she1 fingerprint). Long dest20||B still decodes. */
+export const SHORT_ADDR_MAX = 48;
+
+export function encodeDest(pubkeyHash20, _admitBase = null) {
   const data = Buffer.from(pubkeyHash20);
   if (data.length !== 20) throw new Error('spend hash must be 20 bytes');
-  if (admitBase) {
-    const B = Buffer.from(admitBase);
-    if (B.length !== 32) throw new Error('admit base must be 32 bytes');
-    return encodeHrp(HRP_DEST, Buffer.concat([data, B]));
-  }
+  void _admitBase;
   return encodeHrp(HRP_DEST, data);
 }
 
@@ -132,13 +131,8 @@ export function encodePaymentCode({ scanPub, spendPub, admitBase = null }) {
   const scan = Buffer.from(scanPub);
   const spend = Buffer.from(spendPub);
   if (scan.length !== 32 || spend.length !== 32) throw new Error('silent code keys must be 32 bytes');
-  const parts = [Buffer.from([PAYMENT_CODE_VERSION]), scan, spend];
-  if (admitBase) {
-    const B = Buffer.from(admitBase);
-    if (B.length !== 32) throw new Error('admit base must be 32 bytes');
-    parts.push(B);
-  }
-  return encodeHrp(HRP_PAY, Buffer.concat(parts));
+  void admitBase;
+  return encodeHrp(HRP_PAY, Buffer.concat([Buffer.from([PAYMENT_CODE_VERSION]), scan, spend]));
 }
 
 export function encodePaymentFingerprint(scanPub, spendPub) {
@@ -192,6 +186,7 @@ export function decodeBech32Payload(address) {
   const raw = String(address || '').trim();
   const one = raw.indexOf('1');
   if (one < 1) return null;
+  const hrp = raw.slice(0, one).toLowerCase();
   const body = raw.slice(one + 1).toLowerCase();
   const vals = [];
   for (const ch of body) {
@@ -200,6 +195,7 @@ export function decodeBech32Payload(address) {
     vals.push(i);
   }
   if (vals.length < 7) return null;
+  if (polymod([...hrpExpand(hrp), ...vals]) !== 1) return null;
   const bytes = convertBits(vals.slice(0, -6).slice(1), 5, 8, false);
   if (!bytes || !bytes.length) return null;
   return Buffer.from(bytes);
@@ -433,9 +429,16 @@ export function recognizeSilentDest({ viewKey, spendPub, dest, ephPub, maxIndex 
   return null;
 }
 
+export function paymentCodeForPay(idOrCode) {
+  if (idOrCode && typeof idOrCode === 'object') {
+    return idOrCode.paymentCodeFull || idOrCode.paymentCode || '';
+  }
+  return String(idOrCode || '');
+}
+
 export function freshStealthDest(paymentCode) {
   const { privateKey } = generateKeyPairSync('x25519');
-  return silentPay(paymentCode, privateKey);
+  return silentPay(paymentCodeForPay(paymentCode), privateKey);
 }
 
 export function ed25519PrivateFromSeed(seed32) {
@@ -516,14 +519,15 @@ export function newIdentity() {
   const scanPub = x25519PublicRaw(scanPriv);
   const spendSeed = ed25519SeedOf(privateKey);
   const admitBase = pointBytes(admitBasePub(spendSeed));
-  const paymentCode = encodePaymentCode({ scanPub, spendPub, admitBase });
+  const paymentCodeFull = encodePaymentCode({ scanPub, spendPub });
   const paymentFingerprint = encodePaymentFingerprint(scanPub, spendPub);
   return {
     address,
     viewKey,
     publicKey,
     privateKey,
-    paymentCode,
+    paymentCode: paymentFingerprint,
+    paymentCodeFull,
     paymentFingerprint,
     spendPub,
     scanPub,

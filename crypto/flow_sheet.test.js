@@ -103,7 +103,7 @@ describe('flow sheets', () => {
     const p0 = paymentCodeAtIndex(alice.viewKey, alice.spendPub, 0, alice.admitBase);
     const p1 = paymentCodeAtIndex(alice.viewKey, alice.spendPub, 1, alice.admitBase);
     const p2 = paymentCodeAtIndex(alice.viewKey, alice.spendPub, 2, alice.admitBase);
-    assert.equal(p0, alice.paymentCode);
+    assert.equal(p0, alice.paymentCodeFull);
     assert.equal(isPaymentCode(p0), true);
     assert.equal(isDestAddress(p0), false);
     assert.notEqual(p0, p1);
@@ -114,9 +114,12 @@ describe('flow sheets', () => {
     assert.equal(isDestAddress(silent), true);
     assert.equal(silent.startsWith('ssa1'), true);
     assert.equal(isFullPaymentCode(p0), true);
-    assert.ok(alice.paymentFingerprint.length < 50, alice.paymentFingerprint);
+    assert.ok(alice.paymentCode.length <= 48, alice.paymentCode);
+    assert.ok(alice.paymentFingerprint.length <= 48, alice.paymentFingerprint);
+    assert.ok(silent.length <= 48, silent);
+    assert.ok(alice.address.length <= 50, alice.address);
     assert.notEqual(p0.slice(4), encodeAddress(s).slice(6));
-    const pay = silentPay(alice.paymentCode, eph);
+    const pay = silentPay(alice.paymentCodeFull, eph);
     assert.ok(pay);
     assert.notEqual(pay.dest, aliasDestOfSilentId(alice.paymentCode));
   });

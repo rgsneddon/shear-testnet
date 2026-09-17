@@ -125,7 +125,7 @@ describe('duplicate shares cannot inflate round work', () => {
 
   it('old-miner hash counter without a valid share mints nothing; a scored share still pays', () => {
     const idIdle = newIdentity();
-    const dest = freshStealthDest(idIdle.paymentCode).dest;
+    const dest = freshStealthDest(idIdle).dest;
     const idle = {
       login: dest,
       accepted: 0,
@@ -183,7 +183,7 @@ describe('duplicate shares cannot inflate round work', () => {
 
   it('nonce-only submits (old miner) are refused without hashing and cannot stall stats', async () => {
     const idNeed = newIdentity();
-    const dest = freshStealthDest(idNeed.paymentCode).dest;
+    const dest = freshStealthDest(idNeed).dest;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-need-hash-'));
     const pool = createPool({
       dataDir: dir,
@@ -312,6 +312,24 @@ describe('folded-row inventory', () => {
     applyMinerSelfRate(m, { hashes: 1000 + 550 + 50_000 }, t0 + 15_000);
     const hs = reportedHashrate(m, t0 + 15_000);
     assert.ok(hs < 200, `blockfound spike ${hs}`);
+  });
+
+  it('public stats keep proven_round separate from time-window hashrate', () => {
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.match(src, /proven_round: roundActualHashes\(m\)/);
+    assert.match(src, /hashrate: reportedHashrate\(m, now\)/);
+    const t0 = 1_700_000_000_000;
+    const m = {
+      connections: [{ sock: {} }],
+      threads: 1,
+      roundHashes: 256,
+      acceptAt: [t0 - 1000],
+      acceptWork: [55 * RATE_WIN_S],
+    };
+    assert.equal(roundActualHashes(m), 256);
+    resetMinerRoundDisplay(m, t0 + 10_000);
+    assert.equal(roundActualHashes(m), 0);
+    assert.ok(reportedHashrate(m, t0 + 10_000) > 40, 'round reset must not zero H/s');
   });
 
   it('HUD hashes follow the miner counter; bonus stays proven 2^shareBits units', () => {
@@ -455,7 +473,7 @@ describe('folded-row inventory', () => {
 
   it('keys the book by dest.worker, not dest-only', () => {
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     assert.equal(workerKey(`${dest}.alpha`), `${dest}.alpha`);
     assert.notEqual(workerKey(`${dest}.alpha`), workerKey(`${dest}.beta`));
     assert.equal(admitClient({ version: '2.1', login: `${dest}.alpha`, client: 'ShearHash' }).workerKey, `${dest}.alpha`);
@@ -465,7 +483,7 @@ describe('folded-row inventory', () => {
   it('two sockets on one worker sum; dest.other is a separate row', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hon-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -522,7 +540,7 @@ describe('folded-row inventory', () => {
   it('createPool 32/32 + 230/256 still folds without an honesty verdict', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ep01-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,

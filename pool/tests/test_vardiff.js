@@ -124,7 +124,7 @@ describe('share vardiff', () => {
     assert.match(src, /conn\.shareBits = next/);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-var-'));
     const id = newIdentity();
-    const dest = freshStealthDest(id.paymentCode).dest;
+    const dest = freshStealthDest(id).dest;
     const openBits = 4;
     const pool = createPool({
       dataDir: dir,

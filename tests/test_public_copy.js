@@ -24,6 +24,9 @@ const PUBLIC = [
   'README.md',
   'wallet/README.md',
   'sheark-miner/README.md',
+  'site/p2p/index.html',
+  'site/r2r/index.html',
+  'site/b2b/index.html',
 ];
 
 describe('public copy: dest privacy and per-hasher hash bonus', () => {
@@ -78,8 +81,19 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(readme, /own hash bonus on the next sealed block/);
     assert.match(readme, /shear-testnet-v4/);
     assert.doesNotMatch(readme, /Chain: `shear-testnet-v2`/);
-    assert.match(readme, /shear\.digital:30303/);
+    assert.match(readme, /p2p\.shear\.digital:30303/);
+    assert.match(readme, /r2r\.shear\.digital:30303/);
+    assert.match(readme, /b2b\.shear\.digital:30303/);
+    assert.match(joined, /p2p\.shear\.digital/);
+    assert.match(joined, /r2r\.shear\.digital/);
+    assert.match(joined, /b2b\.shear\.digital/);
     assert.doesNotMatch(joined, /46\.224\.132\.83/);
+    assert.doesNotMatch(joined, /77\.42\.91\.84/);
+    assert.doesNotMatch(joined, /157\.180\.70\.110/);
+    assert.doesNotMatch(joined, /157\.180\.70\.100/);
+    assert.doesNotMatch(joined, /2\.28\.8\.89/);
+    assert.doesNotMatch(joined, /178\.105\.187\.178/);
+    assert.doesNotMatch(joined, /178\.156\.222\.223/);
     const sheark = read('sheark-miner/README.md');
     assert.match(sheark, /magic `shear-testnet-v4`/);
     assert.doesNotMatch(sheark, /magic `shear-testnet-v2`/);

@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.34 (current)
+## 0.35 (current)
+
+ADMITv2 book `shear-testnet-v4`. Short public `she1` / `ssa1` / `shear1` (dest20 / fingerprint). Native ADMITv2 send path. GUI + CLI. Magic pin `kBookMagic = shear-testnet-v4`. ShearK **2.3**. Do not recut 0.34.
+
+## 0.34
 
 ADMITv2 book `shear-testnet-v4`. GUI + CLI. Sign Flow / pool-pull / Reserve vote / lock. vort1 create + register + call. Reserve staked rewards + claim. Closure backup/restore (v1 migrate). Magic pin `kBookMagic = shear-testnet-v4`. ShearK **2.2**. Mainnet `shear-v1` refused (`clock_wait`). Windows / Linux / Arch zips pack on the Windows box.
 

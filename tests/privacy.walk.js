@@ -52,13 +52,14 @@ void _pub;
 describe('privacy.walk', () => {
   it('1–6: published full payment code yields unlinkable stealth dests; fingerprint cannot pay', () => {
     const alice = newIdentity();
-    assert.equal(isFullPaymentCode(alice.paymentCode), true);
+    assert.equal(isFullPaymentCode(alice.paymentCodeFull), true);
+    assert.equal(isPaymentFingerprint(alice.paymentCode), true);
     assert.equal(isPaymentFingerprint(alice.paymentFingerprint), true);
     assert.equal(payoutDest(alice.paymentCode), null);
-    assert.notEqual(alice.paymentCode, alice.paymentFingerprint);
+    assert.notEqual(alice.paymentCodeFull, alice.paymentFingerprint);
 
     const bobEph = generateKeyPairSync('x25519').privateKey;
-    const bobPay = silentPay(alice.paymentCode, bobEph);
+    const bobPay = silentPay(alice.paymentCodeFull, bobEph);
     assert.ok(bobPay);
     assert.equal(isDestAddress(bobPay.dest), true);
     assert.equal(bobPay.dest.startsWith('ssa1'), true);
@@ -69,7 +70,7 @@ describe('privacy.walk', () => {
     assert.notEqual(bobPay.dest, aliasDestOfSilentId(alice.paymentFingerprint));
 
     const carolEph = generateKeyPairSync('x25519').privateKey;
-    const carolPay = silentPay(alice.paymentCode, carolEph);
+    const carolPay = silentPay(alice.paymentCodeFull, carolEph);
     assert.ok(carolPay);
     assert.notEqual(carolPay.dest, bobPay.dest);
 
@@ -96,7 +97,7 @@ describe('privacy.walk', () => {
     const spendKey = stealthSpendPrivate(recBob.shared, seed);
     const nanos = NANOS_PER_SHE;
     const fee = levyNanos(nanos);
-    const change = freshStealthDest(alice.paymentCode);
+    const change = freshStealthDest(alice);
     assert.ok(change);
     assert.notEqual(change.dest, bobPay.dest);
     const tx = signSpendTx(attachDummyOuts({
@@ -125,7 +126,7 @@ describe('privacy.walk', () => {
   it('7–8: sealed compact body drops openings and identity; spend sig still verifies', async () => {
     const alice = newIdentity();
     const eph = generateKeyPairSync('x25519').privateKey;
-    const pay = silentPay(alice.paymentCode, eph);
+    const pay = silentPay(alice.paymentCodeFull, eph);
     const rec = recognizeSilentDest({
       viewKey: alice.viewKey,
       spendPub: alice.spendPub,
@@ -211,7 +212,7 @@ describe('privacy.walk', () => {
   it('9: memo opens only with stealth shared secret; public JSON is amounts+dests+memo boolean', () => {
     const alice = newIdentity();
     const bobEph = generateKeyPairSync('x25519').privateKey;
-    const pay = silentPay(alice.paymentCode, bobEph);
+    const pay = silentPay(alice.paymentCodeFull, bobEph);
     const rec = recognizeSilentDest({
       viewKey: alice.viewKey,
       spendPub: alice.spendPub,
@@ -243,7 +244,7 @@ describe('privacy.walk', () => {
 
   it('10: stratum she1 is RAM-only; serialized miner row and pool-miner.json have no she1/IP/UA', () => {
     const alice = newIdentity();
-    const owned = freshStealthDest(alice.paymentCode).dest;
+    const owned = freshStealthDest(alice).dest;
     const sheOnly = admitClient({ version: '2.1', login: alice.paymentCode, client: 'ShearHash' });
     assert.equal(sheOnly.payoutDest, '');
     assert.equal(sheOnly.ramAlias, true);
@@ -278,7 +279,7 @@ describe('privacy.walk', () => {
     assert.equal(checkAddressField(alice.paymentCode).reason, 'silent_id_on_chain');
     assert.equal(checkAddressField(alice.paymentFingerprint).reason, 'silent_id_on_chain');
     assert.equal(checkAddressField(alice.address).reason, 'rest_frame_on_chain');
-    const dest = freshStealthDest(alice.paymentCode).dest;
+    const dest = freshStealthDest(alice).dest;
     assert.equal(checkAddressField(dest).ok, true);
     const sheTx = { kind: 'send', from: dest, to: alice.paymentCode, vin: [{ address: dest }], vout: [{ address: alice.paymentCode, nanos: 1 }] };
     assert.equal(checkTxAddressFields(sheTx).reason, 'silent_id_on_chain');
@@ -331,16 +332,16 @@ describe('privacy.walk', () => {
 
   it('13: change is a fresh stealth dest of the sender, not parent and not dest index 0', () => {
     const alice = newIdentity();
-    const parent = freshStealthDest(alice.paymentCode).dest;
-    const changeA = freshStealthDest(alice.paymentCode).dest;
-    const changeB = freshStealthDest(alice.paymentCode).dest;
+    const parent = freshStealthDest(alice).dest;
+    const changeA = freshStealthDest(alice).dest;
+    const changeB = freshStealthDest(alice).dest;
     assert.notEqual(changeA, parent);
     assert.notEqual(changeB, parent);
     assert.notEqual(changeA, changeB);
     const idx0 = destAtIndex(alice.address, { index: 0, viewKey: alice.viewKey });
     assert.notEqual(changeA, idx0);
     assert.equal(hasherPayoutDest(alice.paymentCode), null);
-    const mailbox = freshStealthDest(alice.paymentCode).dest;
+    const mailbox = freshStealthDest(alice).dest;
     assert.equal(hasherPayoutDest(alice.paymentCode, { dest: mailbox }), mailbox);
   });
 

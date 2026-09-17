@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
 
@@ -160,9 +161,19 @@ Map<String, dynamic> proveFlowSpend(
   required Map<String, dynamic> spentNote,
   required List<Uint8List> pubs,
 }) {
-  final x = admitScalarFromSeed(spendSeed, spentNote);
   final index = fluxsetIndexOf(pubs, spendSeed, spentNote);
   if (index < 0) throw StateError('not_in_fluxset');
+  const magic = String.fromEnvironment('SHEAR_NETWORK', defaultValue: 'shear-testnet-v4');
+  if (magic == 'shear-testnet-v4' || magic == 'shear-v1') {
+    final proof = nativeProveFlowSpend(spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
+    if (proof == null || proof['v'] != 2 || proof['r'] != null) {
+      throw StateError('admit_native_required');
+    }
+    tx['admit_proof'] = proof;
+    tx['spendTag'] = proof['spendTag'];
+    return tx;
+  }
+  final x = admitScalarFromSeed(spendSeed, spentNote);
   final proof = admitProve(x: x, index: index, pubs: pubs);
   tx['admit_proof'] = proof;
   tx['spendTag'] = proof['spendTag'];

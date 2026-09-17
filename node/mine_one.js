@@ -17,7 +17,7 @@ if (!dir) {
 const store = createStore(dir);
 const before = store.tip();
 const id = newIdentity();
-const dest = freshStealthDest(id.paymentCode).dest;
+const dest = freshStealthDest(id).dest;
 const { tpl } = store.template({ miner: dest });
 const found = mineTemplate(tpl, { maxTries: 8_000_000, shareBits: tpl.bits });
 if (!found || !found.block) {

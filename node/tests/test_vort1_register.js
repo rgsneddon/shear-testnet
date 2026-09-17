@@ -45,7 +45,7 @@ describe('vort1 register consensus tx', () => {
   it('bad ticker or mint-not-Reserve fails with no id; passing register pays L; mined fields have no she1', async () => {
     const id = newIdentity();
     const box = (() => {
-      const pay = freshStealthDest(id.paymentCode);
+      const pay = freshStealthDest(id);
       return { dest: pay.dest, key: { type: 'ed25519-stealth', seed: ed25519SeedOf(id.privateKey), shared: pay.shared } };
     })();
     const dest = box.dest;

@@ -51,7 +51,7 @@ describe('explorer pending paint', () => {
 
   it('30 sealed blocks plus a mempool lock still paint (pending) first after the page transform', () => {
     const alice = newIdentity();
-    const from = freshStealthDest(alice.paymentCode).dest;
+    const from = freshStealthDest(alice).dest;
     const to = vaultDest(alice.address, { viewKey: alice.viewKey });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pending-30-'));
     const store = createStore(dir);

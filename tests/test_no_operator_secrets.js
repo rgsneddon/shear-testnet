@@ -41,6 +41,11 @@ describe('no operator secrets in the public tree', () => {
     const src = fs.readFileSync(path.join(root, 'node/src/node.js'), 'utf8');
     assert.match(src, /p2p\.shear\.digital:30303/);
     assert.doesNotMatch(src, /46\.224\.132\.83/);
+    assert.doesNotMatch(src, /77\.42\.91\.84/);
+    assert.doesNotMatch(src, /157\.180\.70\.110/);
+    assert.doesNotMatch(src, /2\.28\.8\.89/);
+    assert.doesNotMatch(src, /178\.105\.187\.178/);
+    assert.doesNotMatch(src, /178\.156\.222\.223/);
     const r = spawnSync(process.execPath, ['node/src/node.js', '--help'], { cwd: root, encoding: 'utf8', timeout: 20000 });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /SHEAR_DATA/);
