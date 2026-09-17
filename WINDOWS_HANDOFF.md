@@ -1,25 +1,18 @@
 # Windows pointer — Shear
 
-**Start here in this repo:** [`HANDOFF_OPS.md`](HANDOFF_OPS.md)
+**Start:** [`HANDOFF_OPS.md`](HANDOFF_OPS.md)
 
-The formatted Windows box has **no local repo**. Clone `rgsneddon/shear-testnet` and read `HANDOFF_OPS.md`. Historical pointer:
+Live pins are always the **latest** clients:
 
-**https://github.com/rgsneddon/handoff/blob/main/WINDOWS.md**
-
-Full inventory (every repo / every platform):
-
-**https://github.com/rgsneddon/handoff/blob/main/HANDOFF.md**
-
-The Windows machine was **formatted** (2026-09-11) to recover from an error. There is **no** leftover tree, **no** zip, **no** Flutter, **no** Visual Studio / WSL. `gh repo clone` from GitHub, then download — do **not** recut.
+| Client | Pin | Repo |
+|--------|-----|------|
+| Wallet | **0.34** | this tree, tag [`0.34`](https://github.com/rgsneddon/shear-testnet/releases/tag/0.34) |
+| Miner | **ShearK 2.2** | [`rgsneddon/ShearK`](https://github.com/rgsneddon/ShearK/releases/tag/2.2) |
 
 ```
-gh auth login
-gh repo clone rgsneddon/handoff %USERPROFILE%\handoff
 gh repo clone rgsneddon/shear-testnet %USERPROFILE%\shear-testnet
-gh repo clone rgsneddon/ShearK %USERPROFILE%\ShearK
-notepad %USERPROFILE%\handoff\WINDOWS.md
+cd /d %USERPROFILE%\shear-testnet
+git checkout feat/admit-v2
+git pull
+notepad HANDOFF_OPS.md
 ```
-
-Do **not** `git -C` a path until after clone.
-
-Current pin: wallet **0.30** on `rgsneddon/shear-testnet`, miner **ShearK 1.6** on `rgsneddon/ShearK`. **0.30 Windows zip is on tag** (`shear-wallet-0.30-windows.zip` sha256 `8bc28d5255e14935e2ec7afc5cd43d89a217c84247eff40edfe25da667bc29a8`). Miner 1.6 Windows zip is on tag (`ShearK-Miner-1.6-windows.zip` sha256 `879a0024297962cd9a97bf544dcd1fe1656a546d82ea37cfa6f6a2615befb5fb`, `example.bat` is `YOUR_SSA1.worker`). Linux/Arch 0.30 already on the tag. Download; do **not** recut **0.30**. Do **not** recut **0.29**. Do **not** recut **0.28**. Do **not** pack a second windows zip. Do **not** attach zips from the dead disk. Do **not** attach a Darwin binary as `*-linux.zip`. Privacy-class v3 is Mac-side WIP — do **not** pack v3 clients on this box.

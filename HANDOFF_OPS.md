@@ -3,7 +3,7 @@
 **Written:** 2026-09-17T19:15Z from the Mac (`/Users/russellsneddon/shear`).  
 **Canonical GitHub tree:** https://github.com/rgsneddon/shear-testnet  
 **Working branch:** `feat/admit-v2`  
-**This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Do not recut ShearK **2.1** / **2.0**. Do not recut wallet **0.33** / **0.32**.
+**This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Pins are the **latest** clients: wallet **0.34**, ShearK **2.2**. Do not recut older tags.
 
 Other Shear GitHub repos (`rgsneddon/shear`, `rgsneddon/shear-wallet`, `rgsneddon/shear-pool`) are being deleted. Clone **this** repo only, plus **ShearK**.
 
@@ -117,7 +117,7 @@ d0 / XOR-path / dest_leaf of the spent note are **not** on the wire (CDS).
 
 - Invent a mainnet genesis datetime.
 - Dual-stack ADMITv1 + ADMITv2.
-- Recut wallet 0.33/0.32 or ShearK 2.1/2.0/2.1.
+- Recut an older wallet or ShearK tag. Pins are **0.34** and **2.2**.
 - Put ShearK inside the wallet zip.
 - Attach Darwin as `*-linux.zip`.
 - Commit `id_ed25519_*`, `deploy/nginx-*-secrets.conf`, or `kyrusfables` admin host.
