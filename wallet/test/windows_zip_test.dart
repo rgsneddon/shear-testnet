@@ -16,8 +16,23 @@ File _shippedWindowsZip() {
   return candidates.first;
 }
 
+String _pythonBin() {
+  final candidates = Platform.isWindows
+      ? <String>['python', 'python3']
+      : <String>['python3', 'python'];
+  for (final c in candidates) {
+    final r = Process.runSync(c, ['-c', 'import zipfile,sys; sys.stdout.write("ok")']);
+    if (r.exitCode == 0 && r.stdout.toString().contains('ok')) return c;
+  }
+  fail('python with zipfile not found');
+}
+
 List<String> _zipNames(File zip) {
-  final listed = Process.runSync('tar', ['-tf', zip.path], runInShell: true);
+  final listed = Process.runSync(_pythonBin(), [
+    '-c',
+    'import zipfile,sys; print("\\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))',
+    zip.path,
+  ]);
   expect(listed.exitCode, 0, reason: listed.stderr.toString());
   return listed.stdout
       .toString()
@@ -96,39 +111,59 @@ void main() {
     return candidates.first;
   }
 
-  test('built shear-wallet-0.34-linux.zip has shear_wallet and no miner', () {
+  Map<String, String> _inspectZip(File zip) {
+    final py = Process.runSync(_pythonBin(), [
+      '-c',
+      r'''
+import zipfile, sys
+z = zipfile.ZipFile(sys.argv[1])
+names = z.namelist()
+print("NAMES", "\n".join(names))
+wallet = "shear_wallet" if "shear_wallet" in names else next(n for n in names if n.endswith("/shear_wallet") or n.endswith("shear_wallet"))
+print("MAGIC", z.read(wallet)[:4].hex())
+if "PKGBUILD" in names:
+    print("PKGBUILD", z.read("PKGBUILD").decode())
+''',
+      zip.path,
+    ]);
+    expect(py.exitCode, 0, reason: py.stderr.toString());
+    return {'out': py.stdout.toString()};
+  }
+
+  test('built shear-wallet-0.34-linux.zip is ELF shear_wallet, libsodium, no miner', () {
     final zip = _zipAt('shear-wallet-0.34-linux.zip');
-    if (!zip.existsSync()) return;
+    expect(zip.existsSync(), isTrue, reason: 'missing ${zip.path}');
     expect(zip.lengthSync(), greaterThan(1 * 1024 * 1024));
     final names = _zipNames(zip);
     expect(names.any((n) => n == 'shear_wallet' || n.endsWith('/shear_wallet')), isTrue);
+    expect(names.any((n) => n.contains('libsodium.so')), isTrue, reason: names.join('\n'));
+    final inspected = _inspectZip(zip);
+    expect(inspected['out'], contains('MAGIC 7f454c46'));
+    expect(inspected['out']!.toLowerCase().contains('cffaedfe'), isFalse);
+    expect(inspected['out']!.contains('MAGIC 4d5a'), isFalse);
     for (final n in names) {
       final base = n.split('/').last;
       expect(base.toLowerCase(), isNot(equals('shear-miner')));
       expect(base, isNot(equals('Shear-Miner')));
       expect(base, isNot(equals('ShearK-Miner')));
+      expect(base.toLowerCase(), isNot(equals('sheark-miner.exe')));
+      expect(base.toLowerCase(), isNot(equals('shear_wallet.exe')));
     }
   });
 
-  test('built shear-wallet-0.34-archlinux.zip has PKGBUILD pkgver=0.34 and no miner', () {
+  test('built shear-wallet-0.34-archlinux.zip has PKGBUILD pkgver=0.34, ELF, no miner', () {
     final zip = _zipAt('shear-wallet-0.34-archlinux.zip');
-    if (!zip.existsSync()) return;
+    expect(zip.existsSync(), isTrue, reason: 'missing ${zip.path}');
     expect(zip.lengthSync(), greaterThan(1 * 1024 * 1024));
     final names = _zipNames(zip);
     expect(names.contains('PKGBUILD') || names.any((n) => n.endsWith('/PKGBUILD')), isTrue);
     expect(names.any((n) => n == 'shear_wallet' || n.endsWith('/shear_wallet')), isTrue);
-    final listed = Process.runSync(
-      'python3',
-      [
-        '-c',
-        "import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read('PKGBUILD').decode())",
-        zip.path,
-      ],
-      runInShell: true,
-    );
-    expect(listed.exitCode, 0, reason: listed.stderr.toString());
-    expect(listed.stdout.toString(), contains('pkgver=0.34'));
-    expect(listed.stdout.toString().contains('pkgver=0.34.0'), isFalse);
+    expect(names.any((n) => n.contains('libsodium.so')), isTrue, reason: names.join('\n'));
+    final inspected = _inspectZip(zip);
+    expect(inspected['out'], contains('MAGIC 7f454c46'));
+    expect(inspected['out'], contains('pkgver=0.34'));
+    expect(inspected['out']!.contains('pkgver=0.34.0'), isFalse);
+    expect(inspected['out']!.contains('pkgver=0.33'), isFalse);
     for (final n in names) {
       final base = n.split('/').last;
       expect(base.toLowerCase(), isNot(equals('shear-miner')));

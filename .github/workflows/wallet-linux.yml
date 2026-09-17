@@ -1,0 +1,122 @@
+# Linux + Arch GUI zips for an existing wallet tag. Native ELF on ubuntu-latest.
+# Bundles libsodium. Does not clobber Android/macOS assets. Does not recut 0.33.
+name: wallet-linux
+on:
+  workflow_dispatch:
+    inputs:
+      pin:
+        description: Public two-part wallet pin (release tag)
+        required: true
+        default: '0.34'
+      build_number:
+        description: Flutter build-number
+        required: true
+        default: '50'
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      - name: Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libsodium-dev
+      - name: Build Linux GUI
+        working-directory: wallet
+        run: |
+          flutter config --enable-linux-desktop
+          flutter pub get
+          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+      - name: Bundle libsodium and zip linux + arch
+        env:
+          PIN: ${{ inputs.pin }}
+        run: |
+          python3 - <<'PY'
+          import os, shutil, sys, zipfile
+          pin = os.environ["PIN"]
+          bundle = "wallet/build/linux/x64/release/bundle"
+          exe = os.path.join(bundle, "shear_wallet")
+          if not os.path.isfile(exe):
+              sys.exit(f"missing {exe}")
+          with open(exe, "rb") as f:
+              magic = f.read(4)
+          if magic != b"\x7fELF":
+              sys.exit(f"shear_wallet is not ELF: {magic.hex()}")
+          libdir = os.path.join(bundle, "lib")
+          os.makedirs(libdir, exist_ok=True)
+          copied = None
+          for p in (
+              "/usr/lib/x86_64-linux-gnu/libsodium.so.26",
+              "/usr/lib/x86_64-linux-gnu/libsodium.so.23",
+              "/usr/local/lib/libsodium.so.26",
+              "/usr/local/lib/libsodium.so.23",
+          ):
+              if os.path.isfile(p):
+                  dest = os.path.join(libdir, os.path.basename(p))
+                  shutil.copy2(p, dest, follow_symlinks=True)
+                  os.symlink(os.path.basename(p), os.path.join(libdir, "libsodium.so"))
+                  copied = dest
+                  break
+          if copied is None:
+              sys.exit("libsodium.so.26/23 not found")
+          dist = "dist"
+          os.makedirs(dist, exist_ok=True)
+          pkgbuild = "wallet/pack/archlinux/PKGBUILD"
+          pkg = open(pkgbuild, encoding="utf-8").read()
+          if f"pkgver={pin}" not in pkg or f"pkgver={pin}.0" in pkg:
+              sys.exit(f"PKGBUILD not two-part {pin}")
+
+          def add_tree(z, root):
+              for dp, _, fns in os.walk(root):
+                  for fn in fns:
+                      p = os.path.join(dp, fn)
+                      z.write(p, os.path.relpath(p, root))
+
+          def assert_wallet_zip(path, arch=False):
+              names = zipfile.ZipFile(path).namelist()
+              if "shear_wallet" not in names:
+                  sys.exit(f"missing shear_wallet in {path}")
+              raw = zipfile.ZipFile(path).read("shear_wallet")[:4]
+              if raw != b"\x7fELF":
+                  sys.exit(f"{path} shear_wallet not ELF {raw.hex()}")
+              banned = ("ShearK-Miner", "Shear-Miner", "shear-miner", "ShearK-Miner.exe", "shear_wallet.exe")
+              for n in names:
+                  base = n.split("/")[-1]
+                  if base in banned:
+                      sys.exit(f"miner/PE inside wallet zip: {n}")
+              if not any("libsodium.so" in n for n in names):
+                  sys.exit(f"libsodium missing in {path}")
+              if arch:
+                  if "PKGBUILD" not in names:
+                      sys.exit(f"missing PKGBUILD in {path}")
+                  text = zipfile.ZipFile(path).read("PKGBUILD").decode()
+                  if f"pkgver={pin}" not in text or f"pkgver={pin}.0" in text:
+                      sys.exit(f"arch PKGBUILD not two-part {pin}")
+              if os.path.getsize(path) < 1_000_000:
+                  sys.exit(f"refusing tiny zip {path}")
+              print("ok", path, os.path.getsize(path), "members", len(names))
+
+          linux = os.path.join(dist, f"shear-wallet-{pin}-linux.zip")
+          arch = os.path.join(dist, f"shear-wallet-{pin}-archlinux.zip")
+          with zipfile.ZipFile(linux, "w", zipfile.ZIP_DEFLATED) as z:
+              add_tree(z, bundle)
+          with zipfile.ZipFile(arch, "w", zipfile.ZIP_DEFLATED) as z:
+              z.write(pkgbuild, "PKGBUILD")
+              add_tree(z, bundle)
+          assert_wallet_zip(linux, arch=False)
+          assert_wallet_zip(arch, arch=True)
+          print("LINUX_PACK_OK", pin)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shear-wallet-${{ inputs.pin }}-linux-arch
+          path: |
+            dist/shear-wallet-${{ inputs.pin }}-linux.zip
+            dist/shear-wallet-${{ inputs.pin }}-archlinux.zip
