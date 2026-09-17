@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../src/store.js';
-import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_TESTNET_V4, MAGIC_MAINNET } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_TESTNET_V4, MAGIC_MAINNET, LIVE_MIN_BITS, packBits } from '../../crypto/asert.js';
 import { encodeDest } from '../../crypto/address.js';
 import { mineTemplate } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -121,8 +121,9 @@ describe('v3 and v4 datadirs refuse each other', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-p2p-v3-'));
     const store = createStore(dir);
     const dest = encodeDest(Buffer.alloc(20, 7));
-    const { tpl } = store.template({ miner: dest, bits: 4, shareBits: 4, now: Date.now() });
-    const found = mineTemplate({ ...tpl, bits: 4 }, { maxTries: 3_000_000, shareBits: 4 });
+    const packed = packBits(LIVE_MIN_BITS);
+    const { tpl } = store.template({ miner: dest, bits: packed, shareBits: packed, now: Date.now() });
+    const found = mineTemplate({ ...tpl, bits: packed }, { maxTries: 3_000_000, shareBits: packed });
     assert.ok(found && found.block, 'need pow');
     assert.equal(store.append({
       header: found.header,
