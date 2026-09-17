@@ -39,8 +39,26 @@ function mineOne(store, dest, _bits, now) {
     packed = bitsForBlock(ph.bits, ph.timestamp, stamp);
   }
   const share = Math.max(4, Math.floor(Number(packed) / 65536));
+  const t0 = Date.now();
   const { tpl } = store.template({ miner: dest, bits: packed, shareBits: share, now: stamp });
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: share });
+  // shareBits 32: only packed header bits count as a block. Equal integer
+  // share==block bits used to return the first 12-lz as block:false.
+  console.error(JSON.stringify({
+    event: 'soak_tpl',
+    ms: Date.now() - t0,
+    packed,
+    tplBits: tpl.bits,
+    headerLen: Buffer.from(tpl.header).length,
+    share,
+  }));
+  const t1 = Date.now();
+  const found = mineTemplate(tpl, { maxTries: 8_000_000, shareBits: 32 });
+  console.error(JSON.stringify({
+    event: 'soak_mined',
+    ms: Date.now() - t1,
+    block: !!(found && found.block),
+    nonce: found?.nonce != null ? String(found.nonce) : null,
+  }));
   assert.ok(found && found.block, 'pow');
   return store.append({
     header: found.header,
