@@ -1,6 +1,6 @@
 # HANDOFF_OPS.md — Windows continue
 
-**Written:** 2026-09-17T19:15Z from the Mac (`/Users/russellsneddon/shear`).  
+**Written:** 2026-09-17T19:20Z from the Mac (`/Users/russellsneddon/shear`). HEAD **`f63c1e1`+** (dest-P bind `03fe7fe` is in this history).  
 **Canonical GitHub tree:** https://github.com/rgsneddon/shear-testnet  
 **Working branch:** `feat/admit-v2`  
 **This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Pins are the **latest** clients: wallet **0.34**, ShearK **2.2**. Do not recut older tags.
@@ -62,35 +62,35 @@ DE miner dest: `ssa1qkdevt2u9k0494ynhkresghyjnugalv0muzzjf8gmd4reugrt072qc7y7dk9
 
 ---
 
-## 3) Soak — **stopped** 2026-09-17T19:06Z
+## 3) Dest-P bind fleet cut — 2026-09-17T19:16Z
 
-Operator asked to stop the soak. Do **not** restart `shear-ibd-v4-mine` or the soak-clock timer unless you mean to.
+Datadirs **wiped** on seed, peer-2, p2pnode2, Dedicated-de. Linux `shearadmit.node` rebuilt on P2pnode and copied to the other two boxes. Empty genesis jroot (dest-P bind does not change empty J):
 
-| | |
-|--|--|
-| Clock start | 2026-09-17T09:11Z |
-| Stopped | ~2026-09-17T19:06Z (~10 h, **not** 24 h) |
-| Tip | height **275**, magic `shear-testnet-v4`, ADMITv2 |
-| Shared jroot | `f2a546d939b86cd5abcbb3041fdc34a6c06ceb189108e9d5bdcc789c5d8c6e71` (seed = peer-2) |
-| Flow | `/var/lib/shear/testnet-v4/soak-flow.json` — `soak-flow-1789657598274` at height 195 |
-| Isolated Reserve | p2pnode2 `reserve_exit=0` (lock **π SHE**, `votesIncrease=1`) |
-| Isolated reorg | `reorg_exit=0` n=8 depth=7 |
-| Isolated vort1 | `vort1_exit=0` |
+`7af6bf27660f95c6bc5bd15a0ffb5fc57b8381b16392d049134e415bf8461e7a`
 
-Stopped: `shear-ibd-v4-mine` (disabled), `shear-v4-soak-clock.timer`, soak-recheck timer.  
-Left up: seed, peer-2, p2pnode2, pool, `sheark-v4-afk`.
+Seed + peer-2 + p2pnode2 shared that jroot at height 0 after restart. Pool (`sheark-v4-afk`) began mining immediately; seed logged `p2p_ingest prev` for heights 2–4 (missing block 1). **IBD catch-up may still be in flight** — confirm same height+jroot before treating the fleet as one tip.
+
+P2pnode native bench (jroot then prove, dest-P blob):
+
+| \|J\| | prove | verify | proof |
+|------|-------|--------|-------|
+| 1k | 163 ms | 41 ms | 14018 B |
+| 10k | 211 ms | 69 ms | 20482 B |
+| 100k | 294 ms | 89 ms | 26946 B |
+
+VPS `node --test crypto/admit.bench.js tests/adversary/admit_v2.js crypto/admit.test.js`: **13/13 pass, 0 skip** (includes attacker-x + victim index).
+
+`shear-ibd-v4-mine` and soak-clock stay **off**. Do not start them unless you want a new 24 h run.
+
+Prior isolated soak on the **old** (pre-wipe) datadir: `reorg_exit=0`, `reserve_exit=0` (π SHE lock), `vort1_exit=0`. Re-run those on p2pnode2 against **this** binary when you resume soak.
 
 ---
 
-## 4) In-tree, **not** on the VPS nodes
+## 4) Dest-P bind (in-tree **and** on `/opt/shear-v4`)
 
-Commit **`03fe7fe`** (and follow-ups on this branch) bind dest **P** as 1-of-D `p_com = P_j + wU` at the same hidden slot as `C̃`. jroot formula unchanged; **blob grew ~2 KB**. Deploying that native addon over the live datadir will fail IBD of already-sealed spends.
+`p_com = P_j + wU` is 1-of-D at the same hidden slot as `C̃`. `dest_parent` = Vesta commit of `H_to_field` over the arity-32 dest P bucket. d0 / dest_leaf of the spent note stay off the wire. Blob ~2 KB larger; empty jroot unchanged.
 
-To cut it: wipe `SHEAR_DATA` on **every** public node, rsync this tree (Linux `shearadmit.node`, **exclude Darwin `.node`**), reset chain, re-peer. Do that only when you mean a new soak.
-
-Native tests: `attacker_x_cannot_spend_victim_index`. JS: `crypto/admit.test.js`, `tests/adversary/admit_v2.js` (0 skip).
-
-d0 / XOR-path / dest_leaf of the spent note are **not** on the wire (CDS).
+Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shearadmit.node` from P2pnode.
 
 ---
 
@@ -98,7 +98,7 @@ d0 / XOR-path / dest_leaf of the spent note are **not** on the wire (CDS).
 
 1. Pack **wallet 0.34 Windows zip** onto existing tag `0.34` on **this** repo (do not recut). Darwin cannot `flutter build windows`.
 2. If `ShearK-Miner-2.2-windows.zip` is still missing, pack it on **`rgsneddon/ShearK`** tag `2.2` (PE + `example.bat`). Do not recut 2.1/2.0.
-3. When you want ADMITv2 dest-P bind on the fleet: wipe + deploy this branch, new 24 h mine+Flow.
+3. Confirm seed/peer-2/p2pnode2/DE share height+jroot after dest-P wipe; isolated reorg/Reserve/vort1 on this binary; optional new 24 h mine+Flow.
 4. Keep mainnet blocked. No `SHEAR_MAINNET_EMIT=1`.
 
 ---
