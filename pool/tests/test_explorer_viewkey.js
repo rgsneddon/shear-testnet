@@ -218,6 +218,9 @@ describe('explorer dests', () => {
     assert.match(page, /block-list-scroll/);
     assert.match(page, /max-height: 22\.5rem/);
     assert.doesNotMatch(page, /slice\(0, 30\)/);
+    assert.match(page, />Height</);
+    assert.match(page, /heightLabel/);
+    assert.match(page, /Number\(b\.height\) - Number\(a\.height\)/);
     assert.match(page, />Time</);
     assert.match(page, />Status</);
     assert.match(page, />Type</);

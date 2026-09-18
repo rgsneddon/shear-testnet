@@ -59,7 +59,8 @@
       position: sticky; top: 0; z-index: 1;
       background: var(--card, #fff);
     }
-    #ex-txs td:nth-child(2) { white-space: nowrap; }
+    #ex-txs td:nth-child(1),
+    #ex-txs td:nth-child(3) { white-space: nowrap; }
     .reserve-chip {
       display: inline-block; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em;
       text-transform: uppercase; color: #0d5c4d; background: #d4f0e8;
@@ -200,6 +201,7 @@
       <table id="ex-txs">
         <thead>
           <tr>
+            <th>Height</th>
             <th>Id</th>
             <th>Time</th>
             <th>Status</th>
@@ -361,11 +363,13 @@
               ? blockStatus(t, tipHeight, spendableNeed)
               : (t.status || 'pending');
             const pendingLabel = st === 'pending' || st === '(pending)' ? '(pending)' : 'confirmed';
-            return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
+            const heightLabel = Number(t.height) >= 1 ? String(Number(t.height)) : '—';
+            return '<tr><td class="mono">' + esc(heightLabel) + '</td><td class="mono"><a href="' + href + '">' +
+              esc(shortId(t.id)) + '</a></td><td>' +
               esc(fmtLocalTs(t.at)) + '</td><td>' +
               esc(pendingLabel) + '</td><td class="mono">' + esc(t.kind || 'block') + '</td></tr>';
           }).join('')
-        : '<tr><td colspan="4">No sealed blocks yet.</td></tr>';
+        : '<tr><td colspan="5">No sealed blocks yet.</td></tr>';
     }
     function queryFromForm() {
       const q = new URLSearchParams();

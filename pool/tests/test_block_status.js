@@ -100,6 +100,9 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(all.length, 40);
     assert.equal(all[0].height, 40);
     assert.equal(all[39].height, 1);
+    for (let i = 1; i < all.length; i += 1) {
+      assert.ok(all[i - 1].height > all[i].height, 'newest height first');
+    }
     const capped = explorerRecentTxs(store, 30).filter((t) => t.kind === 'block');
     assert.equal(capped.length, 30);
   });

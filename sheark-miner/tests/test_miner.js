@@ -175,6 +175,9 @@ describe('ShearK-Miner', () => {
     assert.match(src, /backend_arg = "jit-full"/);
     assert.equal(/backend_arg = "auto"/.test(src), false);
     assert.match(src, /--dest ssa1/);
+    assert.match(src, /ssa1 dest is incomplete or checksum-failed/);
+    assert.match(src, /Copy dest from the Shear wallet/);
+    assert.match(src, /she1 login has no --dest ssa1/);
     assert.equal(/randomx_calculate_hash\(g_vm,/.test(hashc), false);
     assert.match(src, /pthread_setaffinity_np/);
     assert.match(src, /g_cpu_map/);

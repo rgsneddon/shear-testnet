@@ -1289,8 +1289,35 @@ int main(int argc, char **argv) {
     return 2;
   }
   if (!build_login(g_user)) {
-    fprintf(stderr, "user must be she1... or ssa1... (not shear1)\n");
+    fprintf(stderr, "user must be she1... or ssa1....worker (not shear1)\n");
+    fprintf(stderr, "Copy dest from the wallet. An incomplete ssa1 (truncated, missing checksum) is not a login.\n");
     return 2;
+  }
+  {
+    char id[320];
+    snprintf(id, sizeof(id), "%s", g_login);
+    char *dot = strchr(id, '.');
+    if (dot) *dot = 0;
+    if (strncmp(id, "ssa1", 4) == 0) {
+      unsigned char d20[20];
+      if (dest20_from_ssa1(id, d20) != 0) {
+        fprintf(stderr, "ssa1 dest is incomplete or checksum-failed (%zu chars).\n", strlen(id));
+        fprintf(stderr, "Copy dest from the Shear wallet (Copy dest). Do not paste she1. Do not truncate ssa1.\n");
+        fprintf(stderr, "Typical dest20 ssa1 is about 42 characters. Dest20||B is longer and still valid.\n");
+        return 2;
+      }
+    } else if (strncmp(id, "she1", 4) == 0 && !g_dest[0]) {
+      fprintf(stderr, "warning: she1 login has no --dest ssa1. Mining continues; auto-payout cannot send until an owned Copy dest is set.\n");
+      fprintf(stderr, "Pool still books your work under the miner tag. Add --dest ssa1… from the wallet.\n");
+    }
+    if (g_dest[0]) {
+      unsigned char d20[20];
+      if (dest20_from_ssa1(g_dest, d20) != 0) {
+        fprintf(stderr, "ssa1 --dest is incomplete or checksum-failed (%zu chars).\n", strlen(g_dest));
+        fprintf(stderr, "Copy dest from the Shear wallet. Do not truncate.\n");
+        return 2;
+      }
+    }
   }
   init_note_commit();
 #if defined(_WIN32)

@@ -8,7 +8,7 @@ import { Worker } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
-import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, hash20FromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
+import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import { destBoundShareHash, noteCommitOfShare, shareMeetsFloor } from '../../crypto/share_batch.js';
 import {
@@ -354,7 +354,11 @@ export function admitClient(params) {
   }
   const raw = String(params?.login || params?.user || '').trim();
   const dest = parseLogin(raw);
-  if (!isMineLogin(dest)) return { ok: false, reason: 'bad_login' };
+  if (!raw) return { ok: false, reason: 'bad_login' };
+  if (isShearAddress(dest)) return { ok: false, reason: 'bad_login' };
+  if (!isMineLogin(dest)) {
+    return { ok: true, login: dest, workerKey: raw || dest, payoutDest: '', ramAlias: true };
+  }
   const payout = hasherPayoutDest(dest, { dest: params?.dest || params?.payout });
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
   if (isPaymentCode(dest)) {
@@ -1822,6 +1826,7 @@ export function createPool({
               nanos: potCreditAfterFeeNanos(wantLivePot()),
               hashByDest: hashPays,
               hashUnit: unit,
+              finderTag: publicMinerTag(session?.login || session?.workerKey),
             },
           );
           setImmediate(runAutoPayoutSweep);
@@ -2192,7 +2197,8 @@ export function createPool({
       ? (store.getpolicy().operational?.pool_merchant || 30)
       : 30;
     const pull = pullBook.view(tag, { tipHeight: tipH, need });
-    if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs) {
+    const held = pullBook.ledger(tag);
+    if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs && !held.length) {
       return { ok: false, reason: 'unknown_miner', tag };
     }
     const views = rows.length
@@ -2218,6 +2224,7 @@ export function createPool({
       lastSeen: views.length ? Math.max(...views.map((v) => v.lastSeen)) : 0,
       firstSeen: views.length ? Math.min(...views.map((v) => v.firstSeen || now)) : 0,
       ...roll,
+      blocks: Math.max(Number(roll.blocks) || 0, Number(pull.foundBlocks) || 0),
       workers: views,
       pendingShe: pull.pendingNanos / NANOS_PER_SHE,
       confirmedShe: pull.sentNanos / NANOS_PER_SHE,
@@ -2232,7 +2239,10 @@ export function createPool({
       sentShe: pull.sentNanos / NANOS_PER_SHE,
       sentDisplay: formatShe(pull.sentNanos / NANOS_PER_SHE),
       destRedacted: pull.destRedacted,
-      confirmedSentLabel: `All-time sent to ${pull.destRedacted || 'ssa1********'}`,
+      hasPayoutDest: !!pull.dest,
+      confirmedSentLabel: pull.dest
+        ? `All-time sent to ${pull.destRedacted || 'ssa1********'}`
+        : 'No valid ssa1 on login — credits held for admin payout',
       autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
       autoPayoutMinShe: AUTO_PAYOUT_MIN_NANOS / NANOS_PER_SHE,
       lastPullMs: pull.lastPullMs,
@@ -2581,7 +2591,8 @@ export function createPool({
         ? (store.getpolicy().operational?.pool_merchant || 30)
         : 30;
       const pull = pullBook.view(tag, { tipHeight: tipH, need });
-      if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs) {
+      const held = typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : [];
+      if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs && !held.length) {
         res.statusCode = 404;
         res.end(JSON.stringify({ ok: false, reason: 'unknown_miner', tag }));
         return;

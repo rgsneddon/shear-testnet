@@ -342,6 +342,10 @@ describe('admit', () => {
     assert.equal(admitClient({ version: '2.1', login: id.paymentCode, dest: aliasDestOfSilentId(id.paymentCode), client: 'ShearHash' }).payoutDest, '');
     assert.equal(admitClient({ version: '2.1', login: dest, client: 'ShearHash', name: 'ShearK-Miner' }).ok, true);
     assert.equal(admitClient({ version: '2.1', login: id.address, client: 'ShearHash' }).ok, false);
+    const truncated = admitClient({ version: '2.1', login: 'ssa1qincomplete.ubuntu-noel', client: 'ShearHash' });
+    assert.equal(truncated.ok, true);
+    assert.equal(truncated.payoutDest, '');
+    assert.equal(truncated.ramAlias, true);
     assert.equal(admitClient({ version: '2.1', login: dest, client: 'other' }).ok, false);
     assert.equal(admitClient({ version: '1.9', login: dest, client: 'ShearHash' }).ok, false);
     assert.equal(admitClient({ version: '2.0', login: dest, client: 'ShearHash' }).ok, true);
@@ -714,6 +718,8 @@ describe('public miner listing', () => {
     assert.match(miner, /id="m-pending"/);
     assert.match(miner, /id="m-confirming"/);
     assert.match(miner, /id="m-waiting"/);
+    assert.match(miner, /hasPayoutDest/);
+    assert.match(miner, /credits held for admin/);
     assert.match(miner, /Confirming SHE/);
     assert.match(miner, /Waiting payout/);
     assert.match(miner, /unconfirmedShe/);

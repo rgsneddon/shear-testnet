@@ -67,6 +67,46 @@ describe('pool pull book', () => {
     assert.equal(rows[0].dest, undefined);
   });
 
+  it('books work for a dest-less login so admin can pay the tag later', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-nodest-'));
+    const book = createPullBook(dir);
+    const tag = publicMinerTag('not-a-dest.worker');
+    assert.equal(book.creditRound(
+      [{ tag, dest: '', count: 10 }],
+      { height: 3, nanos: potCreditNanos() },
+    ).ok, true);
+    const v = book.view(tag, { tipHeight: 3, need: 30 });
+    assert.ok(v.pendingNanos > 0);
+    assert.equal(v.dest, '');
+    const rows = book.ledger(tag);
+    assert.equal(rows.length, 1);
+    assert.ok(rows[0].blockRwdNanos > 0);
+    const due = book.dueAuto({ tipHeight: 40, need: 30 });
+    assert.equal(due.some((d) => d.tag === tag), false);
+  });
+
+  it('splits one pot across dest and dest-less work; finder without dest is still counted', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-split-'));
+    const book = createPullBook(dir);
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const paid = publicMinerTag(dest);
+    const held = publicMinerTag('ssa1qincomplete.ubuntu-noel');
+    const pot = potCreditNanos();
+    assert.equal(book.creditRound([
+      { tag: paid, dest, count: 70 },
+      { tag: held, dest: '', count: 30 },
+    ], { height: 5, nanos: pot, finderTag: held }).ok, true);
+    const a = book.view(paid, { tipHeight: 5, need: 30 });
+    const b = book.view(held, { tipHeight: 5, need: 30 });
+    assert.equal(a.pendingNanos + b.pendingNanos, pot);
+    assert.equal(b.pendingNanos, Math.floor(pot * 30 / 100));
+    assert.equal(a.pendingNanos, pot - b.pendingNanos);
+    assert.equal(b.foundBlocks, 1);
+    assert.equal(a.foundBlocks, 0);
+    assert.equal(book.dueAuto({ tipHeight: 40, need: 30 }).some((d) => d.tag === held), false);
+  });
+
   it('sentNanos is all-time pulled, not 30-conf after the payout height', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-sent-all-'));
     const book = createPullBook(dir);

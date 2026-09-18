@@ -56,11 +56,18 @@ export function createPullBook(dir) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'pull-book.json');
   const destByTag = new Map();
-  let state = { credits: [], pulled: [], lastPullMs: {} };
+  let state = { credits: [], pulled: [], lastPullMs: {}, found: {} };
   let loaded = false;
   if (fs.existsSync(file)) {
     try {
       const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const found = {};
+      if (raw?.found && typeof raw.found === 'object') {
+        for (const [k, v] of Object.entries(raw.found)) {
+          const n = Math.floor(Number(v) || 0);
+          if (k && n > 0) found[String(k).toLowerCase()] = n;
+        }
+      }
       state = {
         credits: Array.isArray(raw?.credits) ? raw.credits.map((c) => ({
           tag: c.tag,
@@ -78,13 +85,14 @@ export function createPullBook(dir) {
           dest20: p.dest20 || '',
         })) : [],
         lastPullMs: raw?.lastPullMs && typeof raw.lastPullMs === 'object' ? raw.lastPullMs : {},
+        found,
       };
       loaded = true;
       for (const c of state.credits) {
         if (c.tag && c.dest20) destByTag.set(c.tag, destFrom20(c.dest20));
       }
     } catch {
-      state = { credits: [], pulled: [], lastPullMs: {} };
+      state = { credits: [], pulled: [], lastPullMs: {}, found: {} };
     }
   }
 
@@ -106,6 +114,7 @@ export function createPullBook(dir) {
         dest20: p.dest20 || '',
       })),
       lastPullMs: state.lastPullMs,
+      found: state.found,
     };
     fs.writeFileSync(file, `${JSON.stringify(disk)}\n`, { mode: 0o600 });
   }
@@ -122,12 +131,15 @@ export function createPullBook(dir) {
     hashByDest = null,
     hashUnit = HASH_BONUS_NANOS,
     now = Date.now(),
+    finderTag = '',
   } = {}) {
-    const list = (rows || []).filter((r) => r && r.tag && r.dest && (Number(r.count) || 0) > 0);
+    const list = (rows || []).filter((r) => r && r.tag && (Number(r.count) || 0) > 0);
     const total = list.reduce((a, r) => a + (Number(r.count) || 0), 0);
     const pot = Math.max(0, Math.floor(Number(nanos) || 0));
     if (!(height >= 1)) return { ok: false, reason: 'empty' };
     if (!total && !(hashByDest && hashByDest.size)) return { ok: false, reason: 'empty' };
+    const finder = String(finderTag || '').trim().toLowerCase();
+    if (finder) state.found[finder] = (Math.floor(Number(state.found[finder]) || 0) + 1);
     let left = pot;
     if (total && pot) {
       for (let i = 0; i < list.length; i += 1) {
@@ -224,6 +236,7 @@ export function createPullBook(dir) {
       dest,
       destRedacted: redactSsa1(dest),
       autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
+      foundBlocks: Math.floor(Number(state.found[key]) || 0),
     };
   }
 
