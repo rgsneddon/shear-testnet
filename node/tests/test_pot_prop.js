@@ -198,6 +198,14 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       weight: parent.weight,
     }, { poolDest: pool, trustedPowHash: TRUSTED, skipSharePow: true });
     assert.equal(got.ok, true, got.reason);
+    const p2p = verifyBlock(child, {
+      ...parent,
+      hash: okP.hash,
+      header: parent.header,
+      height: 1,
+      weight: parent.weight,
+    }, { trustedPowHash: TRUSTED, skipSharePow: true });
+    assert.equal(p2p.ok, true, p2p.reason);
     const kinds = (childTpl.txs[0].vout || []).map((o) => o.kind);
     assert.ok(kinds.includes('hash'));
     assert.ok(kinds.includes('pot'));

@@ -405,8 +405,7 @@ export function matchDestBoundHashCustodyPot({
   hasherNcs,
 } = {}) {
   const hasher = hasherNcs instanceof Set ? hasherNcs : new Set();
-  const dest = hinted && isDestAddress(hinted) ? hinted : '';
-  if (!dest || !leaves.length) return false;
+  if (!leaves.length) return false;
   const unit = hashBonusUnitNanos(liveUnit);
   for (const leaf of leaves) {
     const n = (Number(leaf.count) || 0) * unit;
@@ -416,15 +415,38 @@ export function matchDestBoundHashCustodyPot({
   for (const o of hashVouts) {
     if (!hasher.has(ncHex(o.noteCommit))) return false;
   }
-  const shares = custodyPotShares(dest, wantPot);
-  if (!shares.length || potVouts.length !== shares.length) return false;
-  const used = new Set();
-  for (const s of shares) {
-    const hit = potVouts.find((o) => !used.has(ncHex(o.noteCommit)) && notePays(o, s.address, s.nanos));
-    if (!hit) return false;
-    used.add(ncHex(hit.noteCommit));
+  const extra = (potVouts || []).filter((o) => !hasher.has(ncHex(o.noteCommit)));
+  if (extra.length !== potVouts.length || !extra.length) return false;
+  const dest = hinted && isDestAddress(hinted) ? hinted : '';
+  if (dest) {
+    const shares = custodyPotShares(dest, wantPot);
+    if (shares.length === extra.length) {
+      const used = new Set();
+      let ok = true;
+      for (const s of shares) {
+        const hit = extra.find((o) => !used.has(ncHex(o.noteCommit)) && notePays(o, s.address, s.nanos));
+        if (!hit) {
+          ok = false;
+          break;
+        }
+        used.add(ncHex(hit.noteCommit));
+      }
+      if (ok && used.size === extra.length) return true;
+    }
   }
-  return used.size === potVouts.length;
+  // P2P ingest has no out-of-band poolDest. Accept 1–3% fee + rest on non-hasher dests.
+  const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
+  if (extra.length === 2 && pot > 0) {
+    for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
+      const fee = Math.floor(pot * bps / 10000);
+      const rest = pot - fee;
+      if (!(fee > 0) || rest <= 0) continue;
+      const feeV = extra.find((o) => verifySealedNote(o, fee));
+      const restV = extra.find((o) => o !== feeV && verifySealedNote(o, rest));
+      if (feeV && restV) return true;
+    }
+  }
+  return false;
 }
 
 /** Per-hasher extra pot note: 0% (absent) through POOL_FEE_MAX_BPS. */
