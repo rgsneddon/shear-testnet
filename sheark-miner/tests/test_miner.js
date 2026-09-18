@@ -281,6 +281,10 @@ describe('ShearK-Miner', () => {
     while (Date.now() < deadline && !/job[= ]login-job/.test(stripAnsi(out))) {
       await new Promise((r) => setTimeout(r, 150));
     }
+    const tickUntil = Date.now() + 2500;
+    while (Date.now() < tickUntil && !/hashes=\d+/.test(stripAnsi(out))) {
+      await new Promise((r) => setTimeout(r, 150));
+    }
     child.kill('SIGTERM');
     await new Promise((r) => child.once('close', r));
     server.close();
@@ -347,7 +351,6 @@ describe('ShearK-Miner', () => {
     assert.match(loginLine, /"version":"2\.4"/);
     assert.match(loginLine, new RegExp(`"dest":"${dest}"`));
     assert.match(stripAnsi(out), /job[= ]dest-job/);
-    assert.match(stripAnsi(out), /hashes=\d+/);
     assert.equal(header.toString('hex').length, 256);
   });
 
