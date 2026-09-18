@@ -14,7 +14,8 @@ Live pins are always the **latest** clients:
 ```
 gh repo clone rgsneddon/shear-testnet %USERPROFILE%\shear-testnet
 cd /d %USERPROFILE%\shear-testnet
-git checkout feat/admit-v2
+git checkout main
 git pull
 notepad HANDOFF_OPS.md
+notepad MACBOOK_HANDOFF.md
 ```

@@ -6,13 +6,21 @@ Tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure. The Reserve lives
 
 Backup file: encrypted `shewall.bin`. Offer `she1` when someone pays you. Incoming coin lands on a revolving `ssa1` dest. Rest-frame `shear1` stays in Closure.
 
-Mine with **Copy dest**: log ShearK in as `ssa1.worker`. Each hasher dest that produced proven work receives its own hash bonus on the next sealed block. The 1 SHE pot is split among those dests.
+Mine with **Copy dest**: log ShearK in as `ssa1.worker`. Hash bonus (no 1% fee) and your pot share accumulate; the public pool auto-pays that `ssa1` at π SHE.
 
-Pool: `pool.shear.digital:1111`.
+Pool: `pool.shear.digital:1111` (cleartext TCP unless TLS is in front). Magic: `shear-testnet-v4`.
 
 Continuum is spendable, pending transfers until six confirmations, and Copy ID. Already-confirmed SHE loads from a local node (`127.0.0.1:18332`) on unlock. Open-round hashes stay pending until the next sealed block. Shearview is confirmed transfers; tap a tx for its CTF printout on Resistance. This wallet does not mine. Public pool HTTP submit is an advanced toggle.
 
-Releases (every pin ships executables for macOS, Windows, Linux, Arch, Android): https://github.com/rgsneddon/shear-wallet
+Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.35
+
+| Platform | Install |
+|----------|---------|
+| Windows | Unzip `shear-wallet-0.35-windows.zip`, run `shear_wallet.exe` |
+| Linux | Unzip `shear-wallet-0.35-linux.zip`, run `./shear_wallet` |
+| Arch | Unzip `shear-wallet-0.35-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
+| Android | Sideload `shear-wallet-0.35-android.apk` (`com.shear.shear_wallet`). Uninstall any old debug-signed build first |
+| macOS | `.dmg` is packed on the MacBook — see `MACBOOK_HANDOFF.md` until the asset 200s |
 
 ## CLI
 
@@ -22,7 +30,6 @@ dart run bin/shear.dart help
 dart run bin/shear.dart create --store ./session.json --password-file ./pw
 dart run bin/shear.dart dest --store ./session.json --password-file ./pw
 dart run bin/shear.dart send --to she1… --amount 0.001 --password-file ./pw
-dart run bin/shear.dart sign pull --dest ssa1… --amount 0.01 --password-file ./pw
 dart run bin/shear.dart vote --choice hold --password-file ./pw
 dart run bin/shear.dart rewards
 dart run bin/shear.dart vortex create --id mydapp --origin https://host/dapp.json --source-file ./dapp.json

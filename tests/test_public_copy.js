@@ -111,4 +111,13 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /shear-wallet-0\.35-android\.apk/);
     assert.doesNotMatch(pool, /shear-testnet-v3/);
   });
+
+  it('MacBook handoff points at merged GitHub main, 0.35 tag, and pack_macos.sh', () => {
+    const md = read('MACBOOK_HANDOFF.md');
+    assert.match(md, /https:\/\/github\.com\/rgsneddon\/shear-testnet/);
+    assert.match(md, /blob\/main\/MACBOOK_HANDOFF\.md/);
+    assert.match(md, /releases\/tag\/0\.35/);
+    assert.match(md, /pack_macos\.sh/);
+    assert.match(md, /shear-wallet-0\.35-macos\.dmg/);
+  });
 });

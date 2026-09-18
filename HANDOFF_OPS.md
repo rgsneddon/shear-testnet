@@ -18,9 +18,10 @@ gh auth login
 gh repo clone rgsneddon/shear-testnet %USERPROFILE%\shear-testnet
 gh repo clone rgsneddon/ShearK %USERPROFILE%\ShearK
 cd /d %USERPROFILE%\shear-testnet
-git checkout feat/admit-v2
+git checkout main
 git pull
 notepad HANDOFF_OPS.md
+notepad MACBOOK_HANDOFF.md
 ```
 
 Private inventory (optional): `gh repo clone rgsneddon/handoff %USERPROFILE%\handoff`
@@ -50,13 +51,16 @@ SSH as **root** with key `~/.ssh/id_ed25519_restore_privacy_eu` (on the Mac; cop
 
 | Box | IP | Role | Units |
 |-----|-----|------|--------|
-| P2pnode / seed | `46.224.132.83` | `p2p.shear.digital:30303` | `shear-ibd-v4` (RPC 18332), `shear-ibd-v4-peer2` (RPC 18333) |
-| p2pnode2 | `77.42.91.84` | second validating node | `shear-ibd-v4` |
-| Dedicated-de | `178.105.187.178` | pool **is** the node | `shear-pool-v4` (stratum `:1111`, HTTP `127.0.0.1:8088`), `sheark-v4-afk` |
+| **shear-pool** | `77.42.91.84` | pool **is** the node; Linux/Arch pack host; Helsinki | `shear-pool.service` (stratum `:1111`, HTTP `:8088`, P2P `:30303`), `sheark-v4-afk` |
+| **p2p-a** | `157.180.70.110` | seed `p2p.shear.digital:30303`; Helsinki | `shear-node.service` / `shear-ibd-v4` |
+| **p2p-b** | `2.28.8.89` | satellite `r2r.shear.digital:30303`; Falkenstein | `shear-node.service` / `shear-ibd-v4` |
+| **p2p-c** | `178.156.222.223` | satellite `b2b.shear.digital:30303`; Ashburn | `shear-node.service` / `shear-ibd-v4` |
 
-Tree on boxes: `/opt/shear-v4`. Data: `/var/lib/shear/testnet-v4` (peer-2 `/var/lib/shear/testnet-v4-peer2`).
+Tree on every box: `/opt/shear-v4`. Data: `/var/lib/shear/testnet-v4`. Magic remains **`shear-testnet-v4`** (not v3, not v5). The epoch pot is a **fingerprint** change (`POT_SCHED` / `EPOCH_DAYS=4`); wipe every datadir together, then start the three P2P nodes, then the pool. Dedicated-de `178.105.187.178` and old seed `46.224.132.83` are dead — do not recut them.
 
-DE miner dest: `ssa1qkdevt2u9k0494ynhkresghyjnugalv0muzzjf8gmd4reugrt072qc7y7dk94sjph0zuqaq7p4ytx9apymseshr3ft0.de2`
+Windows SSH key is `~\.ssh\id_ed25519` (this box). Mac key name remains `id_ed25519_restore_privacy_eu`.
+
+Linux/Arch wallet zips are packed **on 77.42.91.84** (`wallet/pack/pack_linux_de.sh` with `SHEAR_WALLET=/opt/shear-v4/wallet`). Windows zip + Android APK are packed on the Windows box. macOS `.dmg` is MacBook-only (`MACBOOK_HANDOFF.md`).
 
 `/stats` on pool `:8088` prints `missing`; use **`/api/stats`**.
 

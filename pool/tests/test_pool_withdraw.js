@@ -11,7 +11,7 @@ import { signPoolWithdraw, ownerSecpPubFromSeed, ownerPubFromOpening, evmPrivFro
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { handleWalletApi } from '../src/wallet_api.js';
 import { createPool, publicMinerTag } from '../src/pool.js';
-import { writePoolIdent, readPoolIdent, poolIdentLeaked } from '../src/pool_ident.js';
+import { writePoolIdent, readPoolIdent, poolIdentLeaked, loadOrCreatePoolIdent } from '../src/pool_ident.js';
 import { withdrawNonces, withdrawDigests } from '../src/withdraw_state.js';
 
 function url(p) {
@@ -211,5 +211,18 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
     void encodeDest;
     void evmPrivFromSeed;
     void secp256k1;
+  });
+
+  it('loadOrCreatePoolIdent on an empty datadir writes dest20 and an ssa1 miner dest', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ident-empty-'));
+    const file = path.join(dir, 'pool-miner.json');
+    const got = loadOrCreatePoolIdent(file);
+    assert.equal(got.dest20.length, 20);
+    assert.equal(String(got.miner).startsWith('ssa1'), true);
+    const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(disk.dest20.length, 40);
+    assert.equal(disk.viewKey, undefined);
+    const again = loadOrCreatePoolIdent(file);
+    assert.equal(again.miner, got.miner);
   });
 });
