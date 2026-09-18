@@ -4,7 +4,6 @@ import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
 
-final admitDst = utf8Bytes('shear-admit-v1');
 final admitXDst = utf8Bytes('shear-admit-x-v1');
 final admitHpDst = utf8Bytes('shear-admit-Hp');
 
@@ -99,62 +98,6 @@ bool _eq(Uint8List a, Uint8List b) {
   return true;
 }
 
-Map<String, dynamic> admitProve({required Scalar x, required int index, required List<Uint8List> pubs}) {
-  final n = pubs.length;
-  if (n == 0) throw StateError('empty_fluxset');
-  if (index < 0 || index >= n) throw StateError('index');
-  final hpRing = List<Uint8List>.generate(n, (i) => hpBytes(pubs[i]));
-  final xb = scalarBytes(x);
-  final Ibytes = mulBytes(hpRing[index], xb);
-  final c = List<Uint8List?>.filled(n, null);
-  final r = List<Uint8List?>.filled(n, null);
-  final alpha = scalarBytes(randomScalar());
-  final Lj = mulGBytes(alpha);
-  final Rj = mulBytes(hpRing[index], alpha);
-  c[(index + 1) % n] = scalarBytes(hashToScalar([Ibytes, Lj, Rj, admitDst]));
-  for (var i = (index + 1) % n; i != index; i = (i + 1) % n) {
-    r[i] = scalarBytes(randomScalar());
-    final L = addBytes(mulGBytes(r[i]!), mulBytes(pubs[i], c[i]!));
-    final Rpt = addBytes(mulBytes(hpRing[i], r[i]!), mulBytes(Ibytes, c[i]!));
-    c[(i + 1) % n] = scalarBytes(hashToScalar([Ibytes, L, Rpt, admitDst]));
-  }
-  r[index] = scalarBytes(scalarSub(scalarFromBytes(alpha), scalarMul(scalarFromBytes(c[index]!), x)));
-  return {
-    'admit_proof': true,
-    'spendTag': Ibytes,
-    'c0': c[0]!,
-    'r': r.map((s) => s!).toList(),
-  };
-}
-
-bool admitVerify(Map<String, dynamic> proof, List<Uint8List> pubs) {
-  try {
-    final n = pubs.length;
-    final rs = proof['r'];
-    if (n == 0 || rs is! List || rs.length != n) return false;
-    final tag = proof['spendTag'];
-    if (tag is! Uint8List || tag.length != 32) return false;
-    var acc = 0;
-    for (final b in tag) {
-      acc |= b;
-    }
-    if (acc == 0) return false;
-    final c0 = proof['c0'];
-    if (c0 is! Uint8List) return false;
-    var c = c0;
-    for (var i = 0; i < n; i++) {
-      final ri = rs[i];
-      if (ri is! Uint8List) return false;
-      final L = addBytes(mulGBytes(ri), mulBytes(pubs[i], c));
-      final R = addBytes(mulBytes(hpBytes(pubs[i]), ri), mulBytes(tag, c));
-      c = scalarBytes(hashToScalar([tag, L, R, admitDst]));
-    }
-    return _eq(c, c0);
-  } catch (_) {
-    return false;
-  }
-}
-
 Map<String, dynamic> proveFlowSpend(
   Map<String, dynamic> tx, {
   required Uint8List spendSeed,
@@ -163,18 +106,10 @@ Map<String, dynamic> proveFlowSpend(
 }) {
   final index = fluxsetIndexOf(pubs, spendSeed, spentNote);
   if (index < 0) throw StateError('not_in_fluxset');
-  const magic = String.fromEnvironment('SHEAR_NETWORK', defaultValue: 'shear-testnet-v4');
-  if (magic == 'shear-testnet-v4' || magic == 'shear-v1') {
-    final proof = nativeProveFlowSpend(spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
-    if (proof == null || proof['v'] != 2 || proof['r'] != null) {
-      throw StateError('admit_native_required');
-    }
-    tx['admit_proof'] = proof;
-    tx['spendTag'] = proof['spendTag'];
-    return tx;
+  final proof = nativeProveFlowSpend(spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
+  if (proof == null || proof['v'] != 2 || proof['r'] != null) {
+    throw StateError('admit_native_required');
   }
-  final x = admitScalarFromSeed(spendSeed, spentNote);
-  final proof = admitProve(x: x, index: index, pubs: pubs);
   tx['admit_proof'] = proof;
   tx['spendTag'] = proof['spendTag'];
   return tx;

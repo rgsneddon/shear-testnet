@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
@@ -81,7 +82,8 @@ class DeviceBiometrics implements ShearBiometrics {
               mOptions: MacOsOptions(useDataProtectionKeyChain: false),
             );
 
-  static const _key = 'shear.wallet.password';
+  static const _tokenKey = 'shear.wallet.unlock';
+  static const _wrapKey = 'shear.wallet.wrap';
   final LocalAuthentication _auth;
   final FlutterSecureStorage _store;
 
@@ -119,14 +121,23 @@ class DeviceBiometrics implements ShearBiometrics {
   @override
   Future<void> rememberPassword(String password) async {
     try {
-      await _store.write(key: _key, value: password);
+      final rnd = Random.secure();
+      final tok = List<int>.generate(32, (_) => rnd.nextInt(256))
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
+      await _store.write(key: _tokenKey, value: tok);
+      final wrap = _wrapSecret(password, tok);
+      await _store.write(key: _wrapKey, value: wrap);
     } catch (_) {}
   }
 
   @override
   Future<String?> recalledPassword() async {
     try {
-      return await _store.read(key: _key);
+      final tok = await _store.read(key: _tokenKey);
+      final wrap = await _store.read(key: _wrapKey);
+      if (tok == null || wrap == null) return null;
+      return _unwrapSecret(wrap, tok);
     } catch (_) {
       return null;
     }
@@ -135,7 +146,28 @@ class DeviceBiometrics implements ShearBiometrics {
   @override
   Future<void> forget() async {
     try {
-      await _store.delete(key: _key);
+      await _store.delete(key: _tokenKey);
+      await _store.delete(key: _wrapKey);
     } catch (_) {}
   }
+}
+
+String _wrapSecret(String password, String token) {
+  final p = password.codeUnits;
+  final t = token.codeUnits;
+  final out = StringBuffer();
+  for (var i = 0; i < p.length; i++) {
+    out.write(((p[i] ^ t[i % t.length]) & 0xff).toRadixString(16).padLeft(2, '0'));
+  }
+  return out.toString();
+}
+
+String _unwrapSecret(String wrap, String token) {
+  final t = token.codeUnits;
+  final chars = <int>[];
+  for (var i = 0; i < wrap.length; i += 2) {
+    final b = int.parse(wrap.substring(i, i + 2), radix: 16);
+    chars.add(b ^ t[(i ~/ 2) % t.length]);
+  }
+  return String.fromCharCodes(chars);
 }

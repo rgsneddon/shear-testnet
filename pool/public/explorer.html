@@ -132,7 +132,7 @@
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.4" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.35" target="_blank" rel="noopener">WALLET</a>
-      <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -382,7 +382,7 @@
       const pulse = document.getElementById('live-pulse');
       if (pulse) {
         pulse.classList.remove('stale');
-        pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v3') + ' · height ' + (stats.height ?? 0);
+        pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v4') + ' · height ' + (stats.height ?? 0);
       }
       tipHeight = Number(stats.height) || 0;
       spendableNeed = Number(stats.spendableConfirmations)

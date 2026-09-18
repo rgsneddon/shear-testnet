@@ -152,10 +152,12 @@ export function printHelp() {
     '  SHEAR_RPC_BIND     default 127.0.0.1 (loopback)',
     '  SHEAR_SEEDS        comma host:port (default p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303)',
     '  SHEAR_P2P_MAX_FRAME  P2P JSON line cap (default 2 MiB)',
+    '  SHEAR_MAX_PEERS    live peer cap (default 32)',
     '  SHEAR_FAST_SYNC    1 = skip archival bodies (not share PoW; peers always verify)',
+    '  SHEAR_MAINNET_EMIT  1 = allow shear-v1 emit after genesis (also needs SHEAR_MAINNET_EMIT_CONFIRM)',
     '',
     'RPC is loopback. Do not bind RPC to the public internet.',
-    'Mainnet shear-v1 is not live. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 after genesis.',
+    'Mainnet shear-v1 is not live. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 and SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET after genesis.',
     'Build native addons on this box: make -C crypto/native',
   ].join('\n');
 }

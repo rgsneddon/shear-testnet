@@ -23,6 +23,7 @@ import {
   GENESIS_PREV,
   coinbaseTx,
   digestTx,
+  hashBonusByMiner,
 } from '../src/chain.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
@@ -52,6 +53,18 @@ function mine(tpl) {
     hash: found.hash,
   };
 }
+
+describe('hash bonus unit never zero', () => {
+  it('hashBonusByMiner never applies a zero unit', () => {
+    const dest = destMiner();
+    const unit = 2 ** SHARE_FLOOR_BITS;
+    const zero = hashBonusByMiner([], 0, [{ dest, nonce: 1n, lz: SHARE_FLOOR_BITS }]);
+    assert.equal(zero.get(dest), unit * HASH_BONUS_NANOS_FLOOR);
+    assert.ok(zero.get(dest) > 0);
+    const neg = hashBonusByMiner([], -9, [{ dest, nonce: 1n, lz: SHARE_FLOOR_BITS }]);
+    assert.equal(neg.get(dest), unit * HASH_BONUS_NANOS_FLOOR);
+  });
+});
 
 describe('proven hash bonus cap', { timeout: 600_000 }, () => {
   let dest;

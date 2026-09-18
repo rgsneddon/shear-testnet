@@ -451,6 +451,13 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       snack('Unlock with your password first.');
       return;
     }
+    if (session.biometricsEnabled) {
+      final ok = await biometrics.authenticate(reason: 'Export shewall.bin');
+      if (!ok) {
+        snack('Re-auth required to export.');
+        return;
+      }
+    }
     try {
       _rememberLedger();
       final packed = exportShewall(
@@ -576,9 +583,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         }());
       }
       ticks += 1;
-      if (ident != null && ticks % 2 == 0 && !widget.skipPoolSync) {
-        unawaited(_pollPull(ident));
-      }
+      // Miner payouts are automatic at π SHE to ssa1. Wallet pull-from-pool is deprecated.
       if (ticks % 5 == 0 && ident != null && !creditBusy && !widget.skipPoolSync) {
         creditBusy = true;
         unawaited(ledger.syncCredits(ident.address, paymentCode: ident.paymentCode).whenComplete(() {
@@ -601,70 +606,10 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     }
   }
 
+  /// Deprecated: pool auto-pays π SHE to miner ssa1. Wallet pull is gone.
   Future<void> _pollPull(ShearIdentity ident) async {
-    if (_pullPrompting || !mounted || !unlocked) return;
-    try {
-      final p = await ledger.fetchPendingPull(ident.paymentCode);
-      if (p == null || p['login'] == null) return;
-      final login = p['login'].toString().split('.')[0];
-      if (login != ident.paymentCode.split('.')[0]) return;
-      final offerId = p['id']?.toString() ?? '';
-      if (offerId.isNotEmpty && _handledPullIds.contains(offerId)) return;
-      if (_pullOffer?['id'] == p['id'] && _pullPrompting) return;
-      if (!mounted) return;
-      _pullPrompting = true;
-      _pullOffer = p;
-      final nanos = (p['nanos'] as num?)?.round() ?? 0;
-      final dest = p['dest']?.toString() ?? '';
-      final she = formatShe(nanos / kUnitsPerShe);
-      final navCtx = _nav.currentContext;
-      if (navCtx == null || !navCtx.mounted) return;
-      final go = await showDialog<bool>(
-        context: navCtx,
-        barrierDismissible: false,
-        builder: (ctx) => AlertDialog(
-          key: const Key('pull-sign'),
-          title: Text(p['kind']?.toString() == 'admin-spendable' ? 'Sign pool send' : 'Sign pool pull'),
-          content: Text('Pay $she SHE to $dest'),
-          actions: [
-            TextButton(
-              key: const Key('pull-sign-cancel'),
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              key: const Key('pull-sign-accept'),
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Sign'),
-            ),
-          ],
-        ),
-      );
-      if (go == true && mounted) {
-        try {
-          final tx = await ledger.signPendingPull(
-            login: login,
-            dest: dest,
-            nanos: nanos,
-            seed: hexToBytes(ident.seedHex),
-          );
-          if (offerId.isNotEmpty) _handledPullIds.add(offerId);
-          _ingestTx(ident, tx);
-          if (mounted) setState(() {});
-        } catch (e) {
-          if (offerId.isNotEmpty) _handledPullIds.add(offerId);
-          if (!mounted) return;
-          _showPoolWithdrawError(_pullFailReason(e));
-        }
-      } else if (go == false && offerId.isNotEmpty) {
-        _handledPullIds.add(offerId);
-      }
-    } catch (_) {
-      /* pool unreachable */
-    } finally {
-      _pullPrompting = false;
-      _pullOffer = null;
-    }
+    assert(ident.paymentCode.isNotEmpty || ident.paymentCode.isEmpty);
+    return;
   }
 
   String _pullFailReason(Object e) {
@@ -2159,7 +2104,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             ],
     ], key: const Key('reserve-overall-box'));
     final voteKids = <Widget>[
-      const Text('Vote to raise, lower, or leave the hash bonus (±1 unit). The 1 SHE pot does not change. Your vote is sealed for this epoch.'),
+      const Text('Vote to raise, lower, or leave the hash bonus (±1 unit). The pot schedule does not change. Your vote is sealed for this epoch.'),
     ];
     if (voted) {
       final choice = p.vote!;

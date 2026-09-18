@@ -31,7 +31,7 @@ describe('docs.shear.digital', () => {
     assert.match(content, /id: 'creators'/);
     assert.match(content, /id: 'reserve'/);
     assert.match(content, /vort1\./);
-    assert.match(content, /ShearK-Miner 2\.3/);
+    assert.match(content, /ShearK-Miner 2\.4/);
     assert.match(content, /Copy dest/);
     assert.match(content, /hasher dest/);
     assert.match(content, /ShearHash-v3/);
@@ -61,7 +61,7 @@ describe('docs.shear.digital', () => {
     assert.match(docs, /border-bottom:1px solid rgba\(26,111,181,\.25\)/);
     assert.match(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
     assert.match(docs, /\.banner-wordmark \{ height:36px; width:auto; max-width:none/);
-    assert.match(docs, /content\.js\?v=7/);
+    assert.match(docs, /content\.js\?v=8/);
     assert.match(content, /Remove vortice/);
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);
@@ -106,7 +106,7 @@ describe('whitepaper.shear.digital', () => {
     const labels = navLabels(paper);
     assert.deepEqual(labels, withDocs);
     assert.equal(labels.includes('WHITEPAPER'), false);
-    assert.match(paper, /href="https:\/\/docs\.shear\.digital">DOCS</);
+    assert.match(paper, /href="https:\/\/shear\.digital\/docs\/">DOCS</);
     assert.match(paper, /overflow-x:hidden/);
     assert.match(paper, /box-sizing: border-box/);
     assert.match(paper, /iframe \{\s*display:block; width:100%; max-width:100%/);

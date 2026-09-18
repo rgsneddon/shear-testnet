@@ -102,5 +102,11 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(joined, /amounts stay public/);
     assert.match(joined, /confidential amounts/);
     assert.match(joined, /ADMITv2/);
+    assert.match(joined, /https:\/\/shear\.digital\/docs\//);
+    assert.match(joined, /cleartext TCP/);
+    assert.match(main, /ShearK-Miner <strong>2\.4<\/strong>/);
+    assert.doesNotMatch(main, /shear-wallet-0\.35-macos\.dmg/);
+    assert.match(main, /shear-wallet-0\.35-android\.apk/);
+    assert.doesNotMatch(pool, /shear-testnet-v3/);
   });
 });

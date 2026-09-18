@@ -126,6 +126,20 @@ void main() {
     expect(b.paymentCode, a.paymentCode);
   });
 
+  test('loadOrCreate refuses plaintext session.json', () async {
+    final dir = Directory.systemTemp.createTempSync('shear-plain-');
+    final store = File('${dir.path}/session.json');
+    store.writeAsStringSync(jsonEncode(createIdentity().toJson()));
+    final s = ShearSession(store: store);
+    await expectLater(s.loadOrCreate(), throwsA(isA<FormatException>()));
+  });
+
+  test('HTTP helpers never put viewKey in a query string', () {
+    final src = File('lib/shear_ledger.dart').readAsStringSync();
+    expect(src.contains('viewKey='), isFalse);
+    expect(src.contains("view_register_remote_blocked"), isTrue);
+  });
+
   test('Ed25519 public-from-seed and spend-sig match RFC 8032 (node verifySpendSig)', () {
     // RFC 8032 test 1: empty message.
     final seed = hexToBytes('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60');
@@ -279,7 +293,7 @@ void main() {
     expect(ledger.sealedHeight, 3 + ShearLedger.continuumConfirmations - 1);
   });
 
-  test('libsodium ristretto matches dart Element and node-compatible AdmitV1', () {
+  test('libsodium ristretto matches dart Element; v4 send is native ADMITv2 only', () {
     final s = randomScalar();
     final dartG = r255.Element.newElement()..scalarBaseMult(s);
     expect(pointBytes(mulG(s)), pointBytes(dartG));
@@ -288,13 +302,10 @@ void main() {
     final msg = utf8Bytes('shear-admit-hp-probe');
     final dartH = r255.Element.newElement()..fromUniformBytes(expandMessageXmd(msg, admitHpDst, 64));
     expect(pointBytes(hashToRistretto(msg, admitHpDst)), pointBytes(dartH));
-    final x = randomScalar();
-    final pubs = List<Uint8List>.generate(24, (_) => pointBytes(admitPub(randomScalar())));
-    pubs[5] = pointBytes(admitPub(x));
-    final proof = admitProve(x: x, index: 5, pubs: pubs);
-    expect(admitVerify(proof, pubs), isTrue);
-    expect((proof['r'] as List).length, 24);
-    expect(admitVerify({'admit_proof': true, 'spendTag': Uint8List(32), 'c0': Uint8List(32), 'r': List.filled(24, Uint8List(32))}, pubs), isFalse);
+    final src = File('lib/shear_admit.dart').readAsStringSync();
+    expect(src.contains('shear-admit-v1'), isFalse);
+    expect(src.contains('admitProve'), isFalse);
+    expect(src.contains('nativeProveFlowSpend'), isTrue);
   });
 
   test('tracks owned notes and POSTs a sealed Flow body (vin, vout, admit_proof, sig, spendPub)', () async {
@@ -395,15 +406,9 @@ void main() {
       isTrue,
       reason: 'wallet-sealed change keeps r locally',
     );
-    Uint8List b(dynamic v) => v is Uint8List ? v : hexToBytes(v.toString());
-    final liveProof = {
-      'admit_proof': true,
-      'c0': b(proof['c0']),
-      'spendTag': b(proof['spendTag']),
-      'r': (proof['r'] as List).map(b).toList(),
-    };
-    expect(admitVerify(liveProof, pubs), isTrue);
-    expect(admitVerify({'admit_proof': true, 'spendTag': Uint8List(32)}, pubs), isFalse);
+    expect(proof['v'], 2);
+    expect(proof['r'], isNull);
+    expect(proof['admit_proof'], isTrue);
     expect(
       ledger.notes.any((n) => n['commit'] != null && n['r'] != null && n['prev'] != null),
       isTrue,
@@ -1258,15 +1263,9 @@ void main() {
     expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos, sig: ''), isFalse);
     expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos + 1, sig: sig), isFalse);
     final dartMain = File('lib/main.dart').readAsStringSync();
-    expect(dartMain.contains("Key('pull-sign')"), isTrue);
-    expect(dartMain.contains("Key('pull-sign-accept')"), isTrue);
-    expect(dartMain.contains("Key('pull-sign-cancel')"), isTrue);
-    expect(dartMain.contains('_handledPullIds'), isTrue);
-    expect(dartMain.contains('Pool withdraw:'), isTrue);
-    expect(dartMain.contains('_showPoolWithdrawError'), isTrue);
-    expect(dartMain.contains('removeCurrentSnackBar'), isTrue);
-    expect(dartMain.contains('Sign pool send'), isTrue);
+    expect(dartMain.contains("Key('pull-sign')"), isFalse);
     expect(dartMain.contains('Pull from pool'), isFalse);
+    expect(dartMain.contains('auto-pays π SHE'), isTrue);
     expect(dartMain.contains("Key('receive-qr')"), isTrue);
     expect(dartMain.contains("Key('show-qr')"), isTrue);
     expect(dartMain.contains("Key('unlock-biometrics')"), isTrue);
@@ -1274,9 +1273,8 @@ void main() {
     expect(dartMain.contains('Show QR code'), isTrue);
     expect(dartMain.contains("Key('scan-qr')"), isTrue);
     expect(dartMain.contains("Key('bio-seal')"), isTrue);
-    expect(dartMain.contains('Sign pool pull'), isTrue);
-    expect(dartMain.contains('signPendingPull'), isTrue);
-    expect(dartMain.contains("login != ident.paymentCode.split('.')[0]"), isTrue);
+    expect(dartMain.contains('Sign pool pull'), isFalse);
+    expect(dartMain.contains('_pollPull'), isTrue);
     final dartLedger = File('lib/shear_ledger.dart').readAsStringSync();
     expect(dartLedger.contains('signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos)'), isTrue);
     expect(dartLedger.contains('fetchPendingPull'), isTrue);

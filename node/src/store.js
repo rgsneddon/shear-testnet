@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, medianTimePast, MTP_WINDOW } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, hashBonusUnitNanos, medianTimePast, MTP_WINDOW } from '../../crypto/asert.js';
 import { hashHex } from '../../crypto/shear_hash.js';
 import {
   buildTemplate,
@@ -273,6 +273,7 @@ export function createStore(dir, {
         const raw = JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
         if (raw && typeof raw === 'object' && raw.portals) {
           Object.assign(reserveVault, raw);
+          reserveVault.liveHashBonusNanos = hashBonusUnitNanos(reserveVault.liveHashBonusNanos);
           if (!reserveVault.oracle) reserveVault.oracle = loadedOracle;
           return;
         }
@@ -287,7 +288,7 @@ export function createStore(dir, {
     const fromExplorer = matureSpendableNanos(rows, addr, tipH);
     if (fromExplorer > 0) return fromExplorer;
     return noteCommitSpendableNanos(chain, addr, tipH, {
-      hashBonusNanos: Number(reserveVault.liveHashBonusNanos || HASH_BONUS_NANOS),
+      hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
     });
   }
 
@@ -572,6 +573,14 @@ export function createStore(dir, {
         try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
       }),
       nowMs: Date.now(),
+      genesisMs: (() => {
+        try {
+          const g = blocks[0];
+          if (!g?.header) return 0;
+          return Number(decodeHeader(Buffer.from(g.header)).timestamp) || 0;
+        } catch { return 0; }
+      })(),
+      magic: MAGIC_TESTNET,
       trustedPowHash: verifyOpts.trustedPowHash || null,
       skipSharePow: !!verifyOpts.skipSharePow,
       parentFluxset: liveFlux,
@@ -992,7 +1001,7 @@ export function createStore(dir, {
     return out.sort((a, b) => b.count - a.count);
   }
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, poolDest = null } = {}) {
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, poolDest = null, hashBonusCustodyDest = null } = {}) {
     const t = tip();
     const height = t ? t.height + 1 : 1;
     const wall = nowIn != null ? Number(nowIn) : Date.now();
@@ -1055,9 +1064,10 @@ export function createStore(dir, {
       txs: pendingTxs,
       now,
       bits,
-      hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
+      hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
       shareBatch: Array.isArray(shareBatch) ? shareBatch : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch : []),
       poolDest,
+      hashBonusCustodyDest,
       parentBlocks: blocks,
       parentFluxset: liveFlux,
     });
@@ -1069,7 +1079,7 @@ export function createStore(dir, {
     return { tpl, job };
   }
 
-  function submitHeader({ jobId, nonce, miner, powHash } = {}) {
+  function submitHeader({ jobId, nonce, miner, powHash, skipSharePow, trustedPowHash } = {}, verifyOpts = {}) {
     const rec = jobs.get(String(jobId));
     if (!rec) return { ok: false, reason: 'stale_job' };
     const header = setNonce(rec.tpl.header, BigInt(nonce));
@@ -1084,8 +1094,13 @@ export function createStore(dir, {
       rootA: rec.tpl.rootA,
       rootB: rec.tpl.rootB,
     };
-    const trustedPowHash = powHash ? Buffer.from(String(powHash), 'hex') : null;
-    const okHash = trustedPowHash && trustedPowHash.length === 32 ? trustedPowHash : null;
+    // Wire/RPC/P2P cannot skip share PoW. In-process pool may pass { trusted: true }
+    // after it has already verified the claimed digest.
+    const allowTrust = verifyOpts?.trusted === true;
+    const claimed = powHash ? Buffer.from(String(powHash), 'hex') : null;
+    const okHash = allowTrust && claimed && claimed.length === 32 ? claimed : null;
+    void skipSharePow;
+    void trustedPowHash;
     return append(block, { trustedPowHash: okHash, skipSharePow: !!okHash });
   }
 

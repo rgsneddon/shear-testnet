@@ -24,6 +24,11 @@ export const P2P_MAX_FRAME = Math.max(1024 * 1024, Number(process.env.SHEAR_P2P_
 export const P2P_FAIL_DISCONNECT = 8;
 export const P2P_INBOUND_PER24 = 8;
 export const P2P_BAN_MS = 15 * 60 * 1000;
+/** Default max live peers (inbound + outbound). Override with SHEAR_MAX_PEERS. */
+export function p2pMaxPeers() {
+  return Math.max(1, Number(process.env.SHEAR_MAX_PEERS || 32) || 32);
+}
+export const P2P_MAX_PEERS = p2pMaxPeers();
 
 export function ipv4Subnet24(addr) {
   const a = String(addr || '');
@@ -316,6 +321,7 @@ export function createP2p({
   magic = MAGIC_TESTNET,
   fluffDelayMs: fluffMs = null,
   stemRng = Math.random,
+  maxPeers = p2pMaxPeers(),
 } = {}) {
   const sockets = new Set();
   const peers = new Map();
@@ -742,6 +748,10 @@ export function createP2p({
       return;
     }
     const inbound = !extra.dialHost;
+    if (peers.size >= maxPeers) {
+      try { sock.destroy(); } catch { /* ignore */ }
+      return;
+    }
     if (inbound) {
       const subnet = ipv4Subnet24(remote);
       if (inboundCountForSubnet(peers, subnet) >= P2P_INBOUND_PER24) {

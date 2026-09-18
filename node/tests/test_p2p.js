@@ -452,7 +452,9 @@ describe('p2p gossip', () => {
     assert.equal(src.includes('seenTx.clear()'), false);
     const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
     assert.doesNotMatch(storeSrc, /skipSharePow: !!verifyOpts\.skipSharePow \|\| archiveFast/);
-    assert.match(storeSrc, /skipSharePow: !!verifyOpts\.skipSharePow,/);
+    assert.match(storeSrc, /allowTrust = verifyOpts\?\.trusted === true/);
+    assert.match(storeSrc, /skipSharePow: !!okHash/);
+    assert.doesNotMatch(storeSrc, /skipSharePow: !!params\.skipSharePow/);
     const nodeSrc = fs.readFileSync(new URL('../src/node.js', import.meta.url), 'utf8');
     assert.match(nodeSrc, /skip archival bodies \(not share PoW/);
 
@@ -489,6 +491,28 @@ describe('p2p gossip', () => {
     assert.match(src, /function ibdBusy/);
     assert.match(src, /if \(ibdBusy\(\)\) return;/);
     assert.match(src, /String\(rec\.hash \|\| ''\) !== local/);
+    assert.match(src, /maxPeers/);
+    assert.match(src, /SHEAR_MAX_PEERS/);
+  });
+
+  it('max-peers disconnects extra inbound sockets', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-maxpeer-'));
+    const store = createStore(dir);
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, maxPeers: 1 });
+    const bound = await p2p.listen();
+    const first = net.connect(bound.port, '127.0.0.1');
+    await new Promise((r) => first.once('connect', r));
+    await new Promise((r) => setTimeout(r, 80));
+    const second = net.connect(bound.port, '127.0.0.1');
+    const dropped = await new Promise((resolve) => {
+      const t = setTimeout(() => resolve(false), 2000);
+      second.once('close', () => { clearTimeout(t); resolve(true); });
+      second.once('error', () => { clearTimeout(t); resolve(true); });
+    });
+    try { first.destroy(); } catch { /* ignore */ }
+    try { second.destroy(); } catch { /* ignore */ }
+    p2p.close();
+    assert.equal(dropped, true);
   });
 });
 

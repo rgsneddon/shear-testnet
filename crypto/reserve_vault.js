@@ -2,22 +2,26 @@ import { createHash } from 'node:crypto';
 import {
   RESERVE_PROGRAM,
   PI_SHE_NANOS,
-  RESERVE_EPOCH_MS,
   RESERVE_JOIN_CUTOFF_MS,
   extraMintAllowed,
   NANOS_PER_SHE,
   HASH_BONUS_NANOS_FLOOR,
+  hashBonusUnitNanos,
+  MAGIC_TESTNET,
 } from './asert.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest } from './address.js';
-import { sealNote, verifySealedNote, asU8 } from './note.js';
+import { sealCoinbaseNote, verifySealedNote, asU8 } from './note.js';
 import {
   emptyOracle,
   interestNanos,
   accruedNanos,
   observeRate as observeOracleRate,
   freezeEpochBps,
+  makeFreezeRecord,
+  verifyFreezeRecord,
   GENESIS_BPS,
 } from './reserve_oracle.js';
+import { vortexEpochIndex, epochDays, epochMs, joinCutoffMs, MAGIC_MAINNET } from './pot_sched.js';
 import { extraMint } from './mint.js';
 import { splitLevy } from './levy.js';
 
@@ -70,7 +74,7 @@ export function emptyVault() {
     epochStartMs: 0,
     currentEpoch: 0,
     bonusEnacted: false,
-    liveHashBonusNanos: 1n,
+    liveHashBonusNanos: BigInt(HASH_BONUS_NANOS_FLOOR),
     totalLockedNanos: 0n,
     feeBankNanos: 0n,
     mintBankNanos: 0n,
@@ -79,6 +83,9 @@ export function emptyVault() {
     votes: { increase: 0, decrease: 0, hold: 0 },
     oracle: emptyOracle(),
     epochBps: GENESIS_BPS,
+    freezes: Object.create(null),
+    genesisMs: 0,
+    magic: MAGIC_TESTNET,
     enactedUp: 0,
     enactedDown: 0,
     enactedHold: 0,
@@ -135,14 +142,15 @@ export function payoutStakeReward({
 }
 
 export function remainingMs(state, nowMs) {
-  if (!state.epochStartMs || state.bonusEnacted) return RESERVE_EPOCH_MS;
-  const end = state.epochStartMs + RESERVE_EPOCH_MS;
+  const span = epochMs(state.magic);
+  if (!state.epochStartMs || state.bonusEnacted) return span;
+  const end = state.epochStartMs + span;
   return Math.max(0, end - nowMs);
 }
 
 export function canJoin(state, nowMs) {
   if (!state.epochStartMs) return true;
-  return remainingMs(state, nowMs) >= RESERVE_JOIN_CUTOFF_MS;
+  return remainingMs(state, nowMs) >= joinCutoffMs(state.magic);
 }
 
 export function canVote(stakedNanos, idleNanos = 0) {
@@ -172,7 +180,7 @@ export function publicVaultView(state, nowMs) {
     const idle = asBig(p.idle);
     totalStaked += staked;
     totalIdle += idle;
-    totalAccrued += asBig(accruedNanos(staked, bps, elapsed));
+    totalAccrued += asBig(accruedNanos(staked, bps, elapsed, state.magic));
     totalClaimable += asBig(p.claimableRewards);
   }
   return {
@@ -188,7 +196,10 @@ export function publicVaultView(state, nowMs) {
     mintBankNanos: asNum(state.mintBankNanos),
     votes: votesView(state),
     oracleBps: state.oracle?.annualBps ?? 0,
+    oracleObserved: true,
     epochBps: Number(state.epochBps ?? GENESIS_BPS),
+    epochIndex: Number(state.epochIndex || 0),
+    freezeEpochIndex: Number(state.freeze?.epochIndex || 0),
     liveHashBonusNanos: asNum(state.liveHashBonusNanos || 1n),
     bonusEnacted: !!state.bonusEnacted,
     currentEpoch: Number(state.currentEpoch || 0),
@@ -214,14 +225,35 @@ function portalOf(state, destOrId) {
 }
 
 function beginEpoch(state, nowMs) {
-  state.epochStartMs = nowMs;
-  state.bonusEnacted = false;
-  state.epochBps = freezeEpochBps({
+  if (!state.genesisMs) state.genesisMs = nowMs;
+  const magic = state.magic || MAGIC_TESTNET;
+  const days = epochDays(magic);
+  const idx = vortexEpochIndex({ nowMs, genesisMs: state.genesisMs, epochDays: days });
+  const rec = makeFreezeRecord({
+    epochIndex: idx,
     prevEpochBps: state.epochBps ?? GENESIS_BPS,
     annualBps: state.oracle?.annualBps,
     observedAtMs: state.oracle?.observedAtMs,
     nowMs,
+    components: state.oracle?.components,
+    magic,
   });
+  state.freezes = state.freezes || Object.create(null);
+  const prior = state.freezes[idx];
+  const check = verifyFreezeRecord(rec, { epochIndex: idx, prevFreeze: prior, magic });
+  if (prior && (!check.ok || prior.epochBps !== rec.epochBps)) {
+    state.epochBps = prior.epochBps;
+    state.freeze = prior;
+  } else {
+    state.freezes[idx] = rec;
+    state.freeze = rec;
+    state.epochBps = rec.epochBps;
+  }
+  state.epochIndex = idx;
+  state.epochStartMs = nowMs;
+  state.bonusEnacted = false;
+  void freezeEpochBps;
+  void MAGIC_MAINNET;
 }
 
 function portalPublic(p) {
@@ -289,7 +321,7 @@ export function vote({ state, dest, portalId, choice, nowMs }) {
   if (state.bonusEnacted) return { ok: false, reason: 'epoch_closed' };
   const allowed = [VOTE_INCREASE, VOTE_DECREASE, VOTE_HOLD];
   if (!allowed.includes(choice)) return { ok: false, reason: 'bad_vote' };
-  if (choice === VOTE_DECREASE && asNum(state.liveHashBonusNanos || 1n) <= HASH_BONUS_NANOS_FLOOR) {
+  if (choice === VOTE_DECREASE && hashBonusUnitNanos(state.liveHashBonusNanos) <= HASH_BONUS_NANOS_FLOOR) {
     return { ok: false, reason: 'unit_floor' };
   }
   const first = !p.vote || p.voteEpoch !== state.currentEpoch;
@@ -319,7 +351,7 @@ export function reserveInterestNanos(stakedNanos, oracleOrBps) {
 
 export function elapsedMs(state, nowMs) {
   if (!state.epochStartMs) return 0;
-  return Math.max(0, Math.min(Number(nowMs) - state.epochStartMs, RESERVE_EPOCH_MS));
+  return Math.max(0, Math.min(Number(nowMs) - state.epochStartMs, epochMs(state.magic)));
 }
 
 /** Per-portal accrued rewards for the owning wallet. Idle SHE earns nothing. */
@@ -328,7 +360,7 @@ export function portalRewards(state, dest, nowMs) {
   const bps = Number(state.epochBps ?? GENESIS_BPS);
   const elapsed = elapsedMs(state, nowMs);
   return {
-    accrued: accruedNanos(p.staked, bps, elapsed),
+    accrued: accruedNanos(p.staked, bps, elapsed, state.magic),
     projected: reserveInterestNanos(p.staked, bps),
     staked: asNum(p.staked),
     idle: asNum(p.idle),
@@ -361,7 +393,9 @@ export function previewWithdraw(state, dest) {
 function sealedReserveVout(to, n, kind) {
   const d20 = hash20FromAddress(to);
   if (!d20) return { address: to, nanos: n, kind };
-  const note = sealNote(n, { dest20: d20, kind });
+  // Reserve lock/vote/withdraw amounts are public (valueProof.v stays on the
+  // wire). Exact-value Schnorr, not BP+ range — same as coinbase notes.
+  const note = sealCoinbaseNote(n, { dest20: d20, kind });
   if (note.valueProof && typeof note.valueProof === 'object') {
     note.valueProof = { ...note.valueProof, v: n };
   }
@@ -489,7 +523,7 @@ export function applyReserveBlock({ state, block, nowMs }) {
   const results = [];
   // First block whose time is past the epoch collates votes into the live
   // hash bonus. Winning plurality moves the bonus by ±1. Height is unchanged.
-  if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + RESERVE_EPOCH_MS) {
+  if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + epochMs(state.magic)) {
     results.push({ action: 'enact', ...enact({ state, nowMs }) });
   }
   const cb = txs.find((t) => t?.coinbase) || txs[0];
@@ -549,7 +583,7 @@ export function applyReserveBlock({ state, block, nowMs }) {
 }
 
 export function enact({ state, nowMs } = {}) {
-  if (!state.epochStartMs || nowMs < state.epochStartMs + RESERVE_EPOCH_MS) {
+  if (!state.epochStartMs || nowMs < state.epochStartMs + epochMs(state.magic)) {
     return { ok: false, reason: 'epoch_open' };
   }
   if (state.bonusEnacted) return { ok: false, reason: 'already_enacted' };
@@ -562,7 +596,7 @@ export function enact({ state, nowMs } = {}) {
   if (m > 0 && up === m) { winners += 1; delta = 1; }
   if (m > 0 && down === m) { winners += 1; delta = -1; }
   if (m > 0 && hold === m) { winners += 1; delta = 0; }
-  let live = asNum(state.liveHashBonusNanos || 1n);
+  let live = hashBonusUnitNanos(state.liveHashBonusNanos);
   if (winners === 1 && delta > 0) live += 1;
   else if (winners === 1 && delta < 0) {
     if (live <= HASH_BONUS_NANOS_FLOOR) {
@@ -571,6 +605,7 @@ export function enact({ state, nowMs } = {}) {
       live -= 1;
     }
   }
+  live = hashBonusUnitNanos(live);
   state.liveHashBonusNanos = BigInt(live);
   state.bonusEnacted = true;
   state.enactedUp = up;
@@ -596,7 +631,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {
     return { ok: false, reason: 'bad_dest' };
   }
-  if (!state.epochStartMs || nowMs < state.epochStartMs + RESERVE_EPOCH_MS) {
+  if (!state.epochStartMs || nowMs < state.epochStartMs + epochMs(state.magic)) {
     return { ok: false, reason: 'epoch_open' };
   }
   if (!state.bonusEnacted) {

@@ -100,11 +100,7 @@ class ShearSession {
       biometricsEnabled = j['biometricsEnabled'] == true;
       return null;
     }
-    _applyPlain(j);
-    sealed = false;
-    _envelope = null;
-    _password = null;
-    return identity;
+    throw const FormatException('plaintext_session');
   }
 
   Future<void> setPassword(String password, {String? confirm}) async {
@@ -143,7 +139,12 @@ class ShearSession {
     final env = Map<String, dynamic>.from(await ShearLock.seal(_plainBody(), _password!));
     env['biometricsEnabled'] = biometricsEnabled;
     _envelope = env;
-    store.writeAsStringSync(jsonEncode(env));
+    store.writeAsStringSync(jsonEncode(env), flush: true);
+    if (!Platform.isWindows) {
+      try {
+        Process.runSync('chmod', ['600', store.path]);
+      } catch (_) {}
+    }
   }
 
   Map<String, dynamic> _plainBody() => {

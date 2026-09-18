@@ -20,6 +20,9 @@ String? _aapt() {
   for (final p in [
     '${Platform.environment['HOME']}/Library/Android/sdk/build-tools/36.0.0/aapt',
     '${Platform.environment['HOME']}/Library/Android/sdk/build-tools/35.0.0/aapt',
+    '${Platform.environment['LOCALAPPDATA']}/Android/Sdk/build-tools/36.0.0/aapt.exe',
+    '${Platform.environment['LOCALAPPDATA']}/Android/Sdk/build-tools/36.0.0/aapt',
+    '${Platform.environment['ANDROID_HOME']}/build-tools/36.0.0/aapt.exe',
     '/opt/homebrew/bin/aapt',
   ]) {
     if (File(p).existsSync()) return p;
@@ -39,7 +42,7 @@ void main() {
     expect(badging.exitCode, 0, reason: badging.stderr.toString());
     final out = badging.stdout.toString();
     expect(out, contains("name='com.shear.shear_wallet'"));
-    expect(RegExp(r"versionName='0\.33(\.0)?'").hasMatch(out), isTrue);
+    expect(RegExp(r"versionName='0\.35(\.0)?'").hasMatch(out), isTrue);
     final code = RegExp(r"versionCode='(\d+)'").firstMatch(out);
     expect(code, isNotNull);
     expect(int.parse(code!.group(1)!), greaterThan(49));

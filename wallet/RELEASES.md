@@ -23,7 +23,7 @@ Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) at
 
 ## 0.35 (current)
 
-ADMITv2 book `shear-testnet-v4`. Short public `she1` / `ssa1` / `shear1` (dest20 / fingerprint). Native ADMITv2 send path. GUI + CLI. Magic pin `kBookMagic = shear-testnet-v4`. ShearK **2.3**. Do not recut 0.34.
+ADMITv2 book `shear-testnet-v4`. Short public `she1` / `ssa1` / `shear1` (dest20 / fingerprint). Native ADMITv2 send path. GUI + CLI. Magic pin `kBookMagic = shear-testnet-v4`. Required miner ShearK **≥ 2.4**. Do not recut 0.34. Android `.apk` is packed on Windows. macOS `.dmg` is a MacBook handoff.
 
 ## 0.34
 

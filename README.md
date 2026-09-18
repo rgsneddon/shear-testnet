@@ -25,7 +25,9 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Pool: https://pool.shear.digital
 - Chain: `shear-testnet-v4`
 
-Mainnet `shear-v1` is **not live**. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` after the in-tree genesis instant. Do not invent a different datetime. Do not set that env.
+Mainnet `shear-v1` is **not live**. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` **and** `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET` after the in-tree genesis instant. Fingerprint must include `POT_SCHED` + `EPOCH_DAYS=400` + oracle policy before emit. Do not invent a different datetime. Do not set those env vars.
+
+Block pot starts at **1.00 SHE** and falls **0.01 SHE per Vortex epoch** to a **0.20 SHE** floor. Testnet epochs are **4 days** (so rollovers can be watched); mainnet epochs are **400 days**. Hash bonus stays governance-voted. Reserve interest is oracle-frozen each epoch. The pot schedule is not votable.
 
 One proven floor share mints hash-bonus units onto the dest that hashed. User transfers are signed Flow. The header commits a continuity root. Full nodes validate shareBatch until prune-1000; money vouts remain. The public pool is an equal node with a stratum.
 

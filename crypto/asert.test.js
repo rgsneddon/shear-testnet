@@ -22,6 +22,8 @@ import {
   SHE_PUBLIC_DIGITS,
   NANOS_PER_SHE,
   HASH_BONUS_NANOS,
+  HASH_BONUS_NANOS_FLOOR,
+  hashBonusUnitNanos,
   formatShe,
   HASH_BONUS_VOTE_DELTA_NANOS,
   HASH_BONUS_VOTE_DELTA,
@@ -215,6 +217,12 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
     assert.equal(BLOCK_SUBSIDY_NANOS / NANOS_PER_SHE, 1);
     assert.equal(HASH_BONUS_NANOS, 1);
+    assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
+    assert.equal(hashBonusUnitNanos(0), 1);
+    assert.equal(hashBonusUnitNanos(-1), 1);
+    assert.equal(hashBonusUnitNanos(null), 1);
+    assert.equal(hashBonusUnitNanos(0n), 1);
+    assert.equal(hashBonusUnitNanos(3), 3);
     assert.equal(HASH_BONUS_NANOS / NANOS_PER_SHE, 1e-11);
     assert.equal(HASH_BONUS_VOTE_DELTA_NANOS, 1);
     assert.equal(HASH_BONUS_VOTE_DELTA, 1 / NANOS_PER_SHE);
@@ -227,6 +235,24 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(MAGIC_TESTNET_V1, 'shear-testnet-v1');
     assert.equal(MAGIC_TESTNET_V2, 'shear-testnet-v2');
     assert.equal(MAGIC_TESTNET_V3, 'shear-testnet-v3');
+  });
+});
+
+describe('hash bonus never zero (law)', () => {
+  it('HASH_UNIT_FLOOR=1 is fingerprinted and hashBonusUnitNanos never returns 0', () => {
+    assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
+    assert.equal(HASH_BONUS_NANOS, 1);
+    assert.ok(HASH_BONUS_NANOS_FLOOR >= 1);
+    for (const bad of [0, -1, -99, null, undefined, Number.NaN, Number.POSITIVE_INFINITY, '', '0', 0n, -1n]) {
+      const got = hashBonusUnitNanos(bad);
+      assert.equal(got, HASH_BONUS_NANOS_FLOOR, `hashBonusUnitNanos(${String(bad)}) → ${got}`);
+      assert.ok(got >= 1);
+    }
+    assert.equal(hashBonusUnitNanos(2), 2);
+    assert.equal(hashBonusUnitNanos(7n), 7);
+    const fp = consensusFingerprint();
+    assert.match(fp, /HASH_UNIT_FLOOR=1/);
+    assert.match(mainnetFingerprint(), /HASH_UNIT_FLOOR=1/);
   });
 });
 
@@ -255,7 +281,9 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /MEMO_NOT_DEST_KEYED=1/);
     assert.equal(HASH_TX_LIVE, 1);
     assert.match(fp, /:1:/); // HASH_TX_LIVE pin stays 1
-    assert.match(fp, /INTEREST=400d-bps-floor/);
+    assert.match(fp, /INTEREST=epoch-bps-floor/);
+    assert.match(fp, /EPOCH_DAYS=4/);
+    assert.match(fp, /POT_SCHED=lin-epoch/);
     assert.match(fp, /ORACLE=basket-mean-14/);
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
     assert.match(fp, /POT_PROP=shareBatch/);
@@ -274,7 +302,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /KDF=argon2id-shewall/);
     assert.match(fp, /RESERVE=shear-reserve-v1/);
     assert.match(fp, /RESERVE_EVM=1/);
-    assert.match(fp, /RESERVE_INTEREST=400d-bps-floor/);
+    assert.match(fp, /RESERVE_INTEREST=4d-bps-floor/);
     assert.match(fp, /VORTEX=vort1-pin/);
     assert.match(fp, /VORTICE_NO_MINT=1/);
     assert.match(fp, /LEVY_CAP=0.001-SHE/);
@@ -296,11 +324,18 @@ describe('hash-tx consensus law', () => {
     assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET) - 1), false);
     assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET)), false);
     const prevEmit = process.env.SHEAR_MAINNET_EMIT;
+    const prevConfirm = process.env.SHEAR_MAINNET_EMIT_CONFIRM;
     process.env.SHEAR_MAINNET_EMIT = '1';
+    delete process.env.SHEAR_MAINNET_EMIT_CONFIRM;
+    assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET) - 1), false);
+    assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET)), false);
+    process.env.SHEAR_MAINNET_EMIT_CONFIRM = 'I_UNDERSTAND_SHEAR_MAINNET';
     assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET) - 1), false);
     assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET)), true);
     if (prevEmit === undefined) delete process.env.SHEAR_MAINNET_EMIT;
     else process.env.SHEAR_MAINNET_EMIT = prevEmit;
+    if (prevConfirm === undefined) delete process.env.SHEAR_MAINNET_EMIT_CONFIRM;
+    else process.env.SHEAR_MAINNET_EMIT_CONFIRM = prevConfirm;
     assert.equal(HASH_FN, 'ShearHash-v3');
     assert.equal(fp.includes('HASH_FN=ShearHash-v3'), true);
     assert.equal(fp.includes('HASH_FN=ShearHash-v2'), false);

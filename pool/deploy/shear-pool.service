@@ -8,6 +8,8 @@ WorkingDirectory=/opt/shear-pool
 Environment=SHEAR_DATA=/var/lib/shear/testnet-v4
 Environment=SHEAR_NETWORK=shear-testnet-v4
 Environment=SHEAR_STRATUM=1111
+Environment=SHEAR_STRATUM_BIND=127.0.0.1
+Environment=SHEAR_STRATUM_AUTH=1
 Environment=SHEAR_HTTP=8088
 Environment=SHEAR_SHARE_BITS=8
 Environment=SHEAR_P2P_PORT=30303

@@ -54,6 +54,9 @@ Shear pool book:
 - Seal a “window” that the node cannot independently re-validate
 - Drop a still-connected hasher from the miner table when a block is found
 - Dual-login a miner fee
+- Charge the 1% pool fee on hash bonus (fee is pot-only)
+- Instant-pay hash bonus on the public pool (it accumulates to π SHE)
+- Keep a miner “Withdraw confirmed sum” / wallet “Pull from pool” button (auto-payout replaced both)
 - Last-write CPU inventory on a worker name (see above)
 - Cap folded worker threads at 256
 - Mention any other project in the UI

@@ -1,3 +1,4 @@
+import { potSubsidyAt, chainGenesisMs as genesisMsOf } from '../../crypto/pot_sched.js';
 import { shearHash, meetsTarget, hashHex } from '../../crypto/shear_hash.js';
 import { encodeHeader, decodeHeader, setNonce, VERSION } from '../../crypto/header.js';
 import { merkleRoot, EMPTY_ROOT } from '../../crypto/merkle.js';
@@ -14,6 +15,7 @@ import {
   BLOCK_SUBSIDY_NANOS,
   HASH_BONUS_NANOS,
   HASH_BONUS_NANOS_FLOOR,
+  hashBonusUnitNanos,
   MAGIC_TESTNET,
   extraMintAllowed,
   wrapMintForbidden,
@@ -78,6 +80,7 @@ import {
   containsShe1,
   levyNeed,
   LEVY_CAP_NANOS,
+  poolFeeDest,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange, reserveDest20Open } from '../../crypto/dummy.js';
@@ -242,8 +245,7 @@ export function sampleCapExceeded(samples = [], bits) {
 }
 
 export function hashBonusByMiner(samples = [], unit = HASH_BONUS_NANOS, shareBatch = null) {
-  const u = Number(unit);
-  const bonus = Number.isFinite(u) && u >= HASH_BONUS_NANOS_FLOOR ? u : HASH_BONUS_NANOS;
+  const bonus = hashBonusUnitNanos(unit);
   const by = new Map();
   void samples;
   if (shareBatch != null) {
@@ -262,14 +264,33 @@ function ncHex(buf) {
   }
 }
 
+function chainGenesisMsFrom(blocks, prevHeader) {
+  return genesisMsOf(blocks, prevHeader, decodeHeader);
+}
+
+function blockTimeMs(block) {
+  try {
+    return Number(decodeHeader(Buffer.from(block.header)).timestamp) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function wantPotNanos(block, opts = {}) {
+  const nowMs = blockTimeMs(block) || Number(opts.nowMs) || 0;
+  const genesisMs = Number(opts.genesisMs) || nowMs;
+  return potSubsidyAt({ nowMs, genesisMs, magic: opts.magic || MAGIC_TESTNET });
+}
+
 /** PROP of (pot − pool fee) across Tree-A note_commits. Pool note gets only the fee. */
-export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null) {
+export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null, potNanos = BLOCK_SUBSIDY_NANOS) {
+  const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const pool = poolDest && isDestAddress(poolDest) ? poolDest : '';
   const poolNc = pool ? noteCommitOfDest20(hash20FromAddress(pool)).toString('hex') : '';
   const fee = feeNanos != null
     ? Math.max(0, Math.floor(Number(feeNanos) || 0))
-    : (poolNc ? Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000) : 0);
-  const rest = BLOCK_SUBSIDY_NANOS - fee;
+    : (poolNc ? Math.floor(pot * POOL_FEE_BPS / 10000) : 0);
+  const rest = pot - fee;
   const list = (leaves || []).map((l) => ({
     noteCommit: Buffer.from(l.noteCommit || []),
     count: Number(l.count) || 0,
@@ -293,9 +314,9 @@ export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null)
 }
 
 /** PROP of (pot - pool fee) across dest20 in shareBatch. Pool dest gets only the fee. */
-export function potSharesFromBatch(shareBatch = [], poolDest = null) {
+export function potSharesFromBatch(shareBatch = [], poolDest = null, potNanos = BLOCK_SUBSIDY_NANOS) {
   const leaves = aLeavesFromShares(shareBatch);
-  const pays = potPaysFromLeaves(leaves, poolDest);
+  const pays = potPaysFromLeaves(leaves, poolDest, null, potNanos);
   const destByNc = new Map();
   for (const s of shareBatch || []) {
     const dest = destOfShare(s);
@@ -320,19 +341,70 @@ export function lag1Continuity(prevHeader) {
   }
 }
 
+export function custodyPotShares(poolDest, potNanos = BLOCK_SUBSIDY_NANOS) {
+  const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
+  const feeDest = poolFeeDest() || poolDest;
+  const fee = Math.floor(pot * POOL_FEE_BPS / 10000);
+  const rest = pot - fee;
+  const out = [];
+  if (rest > 0 && isDestAddress(poolDest)) out.push({ address: poolDest, nanos: rest, kind: 'pot' });
+  if (fee > 0 && isDestAddress(feeDest)) {
+    out.push({ address: feeDest, nanos: fee, kind: feeDest === poolDest ? 'pot' : 'pool-fee' });
+  }
+  return out;
+}
+
+function notePays(o, dest, nanos) {
+  if (!o?.commit || !isDestAddress(dest) || !(nanos > 0)) return false;
+  const nc = ncHex(noteCommitOfDest20(hash20FromAddress(dest)));
+  return ncHex(o.noteCommit) === nc && verifySealedNote(o, nanos);
+}
+
+/** Custodial coinbase: 99% pot + 100% hash bonus to poolDest; 1% fee only on the pot. */
+export function matchCustodyCoinbase({ hashVouts = [], potVouts = [], poolDest, wantBonus, wantPot } = {}) {
+  if (!isDestAddress(poolDest)) return false;
+  const bonus = Math.max(0, Math.floor(Number(wantBonus) || 0));
+  const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
+  const fee = Math.floor(pot * POOL_FEE_BPS / 10000);
+  const rest = pot - fee;
+  const feeDest = poolFeeDest() || poolDest;
+  if (bonus > 0) {
+    if (hashVouts.length !== 1 || !notePays(hashVouts[0], poolDest, bonus)) return false;
+  } else if (hashVouts.length) return false;
+  if (rest > 0) {
+    const restHit = potVouts.filter((o) => notePays(o, poolDest, rest));
+    if (feeDest === poolDest && fee > 0) {
+      const whole = potVouts.some((o) => notePays(o, poolDest, pot));
+      const split = restHit.length === 1 && potVouts.some((o) => notePays(o, poolDest, fee));
+      if (!whole && !split) return false;
+    } else if (restHit.length !== 1) return false;
+  }
+  if (fee > 0 && feeDest !== poolDest) {
+    if (!potVouts.some((o) => notePays(o, feeDest, fee))) return false;
+  }
+  return true;
+}
+
 export function coinbaseTx({
   height, miner, samples = [], potShares = null, destOf = (a) => a, hashBonusNanos = HASH_BONUS_NANOS,
-  shareBatch = null, poolDest = null,
+  shareBatch = null, poolDest = null, potNanos = BLOCK_SUBSIDY_NANOS,
+  hashBonusCustodyDest = null,
 }) {
+  const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const bonuses = hashBonusByMiner(samples, hashBonusNanos, shareBatch);
   const vout = [];
+  const custody = hashBonusCustodyDest && isDestAddress(hashBonusCustodyDest)
+    ? hashBonusCustodyDest
+    : '';
   let shares = potShares && potShares.length ? potShares : null;
   if (!shares) {
-    if (Array.isArray(shareBatch) && shareBatch.length) {
-      shares = potSharesFromBatch(shareBatch, poolDest);
-      if (!shares.length) shares = [{ address: miner, nanos: BLOCK_SUBSIDY_NANOS, kind: 'pot' }];
+    if (custody) {
+      shares = custodyPotShares(custody, pot);
+    } else if (Array.isArray(shareBatch) && shareBatch.length) {
+      shares = potSharesFromBatch(shareBatch, poolDest, pot);
+      if (!shares.length) shares = [{ address: miner, nanos: pot, kind: 'pot' }];
     } else {
-      shares = [{ address: miner, nanos: BLOCK_SUBSIDY_NANOS, kind: 'pot' }];
+      shares = [{ address: miner, nanos: pot, kind: 'pot' }];
     }
   }
   for (const s of shares) {
@@ -343,13 +415,24 @@ export function coinbaseTx({
       admitBase: admitBaseFromAddress(pay),
     }));
   }
-  for (const [address, nanos] of bonuses) {
-    const pay = destOf(address);
-    if (!isDestAddress(pay)) continue;
-    const d20 = hash20FromAddress(pay);
-    vout.push(attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind: 'hash' }), {
-      admitBase: admitBaseFromAddress(pay),
-    }));
+  if (custody) {
+    let total = 0;
+    for (const n of bonuses.values()) total += n;
+    if (total > 0) {
+      const d20 = hash20FromAddress(custody);
+      vout.push(attachAdmitPub(sealCoinbaseNote(total, { dest20: d20, kind: 'hash' }), {
+        admitBase: admitBaseFromAddress(custody),
+      }));
+    }
+  } else {
+    for (const [address, nanos] of bonuses) {
+      const pay = destOf(address);
+      if (!isDestAddress(pay)) continue;
+      const d20 = hash20FromAddress(pay);
+      vout.push(attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind: 'hash' }), {
+        admitBase: admitBaseFromAddress(pay),
+      }));
+    }
   }
   if (!vout.length) {
     throw new Error('coinbase_needs_dest');
@@ -380,6 +463,7 @@ export function buildTemplate({
   hashBonusNanos = HASH_BONUS_NANOS,
   shareBatch = null,
   poolDest = null,
+  hashBonusCustodyDest = null,
   parentFluxset = null,
   parentBlocks = null,
 }) {
@@ -396,8 +480,11 @@ export function buildTemplate({
   // Tree A is shareBatch units only. Typed sample counts are not money.
   const collated = fromBatch;
   const pay = destOf || ((login) => hasherPayoutDest(login) || '');
+  const genesisMs = chainGenesisMsFrom(parentBlocks, prevHeader);
+  const potNanos = potSubsidyAt({ nowMs: now, genesisMs: genesisMs || now, magic: MAGIC_TESTNET });
   const cb = coinbaseTx({
-    height, miner, samples: collated, potShares, destOf: pay, hashBonusNanos, shareBatch: batch, poolDest,
+    height, miner, samples: collated, potShares, destOf: pay, hashBonusNanos, shareBatch: batch, poolDest, potNanos,
+    hashBonusCustodyDest,
   });
   const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
   const split = splitLevy(fees);
@@ -538,6 +625,8 @@ function verifyBlockConsensus(block, prev, {
   skipSharePow = false,
   parentFluxset = null,
   parentSpendTags = null,
+  genesisMs = 0,
+  magic = MAGIC_TESTNET,
 } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
@@ -547,6 +636,7 @@ function verifyBlockConsensus(block, prev, {
   } catch (e) {
     return { ok: false, reason: 'bad_header' };
   }
+  const wantPot = wantPotNanos(block, { genesisMs, magic, nowMs });
   if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
   const wantPrev = prev?.hash ? Buffer.from(prev.hash) : GENESIS_PREV;
   if (!decoded.prevBlockHash.equals(wantPrev)) return { ok: false, reason: 'prev' };
@@ -620,8 +710,7 @@ function verifyBlockConsensus(block, prev, {
   const skipFlow = flowSkipAllowed({ height, samplesPruned: block.samplesPruned }, tip);
   const shareBatch = Array.isArray(block.shareBatch) ? block.shareBatch : [];
   const payAddr = (a) => a;
-  const unit = Number(hashBonusNanos);
-  const liveUnit = Number.isFinite(unit) && unit >= HASH_BONUS_NANOS_FLOOR ? unit : HASH_BONUS_NANOS;
+  const liveUnit = hashBonusUnitNanos(hashBonusNanos);
   let provenUnits = 0;
   let provenByDest = new Map();
   let shareLeaves = null;
@@ -643,6 +732,20 @@ function verifyBlockConsensus(block, prev, {
     }
     if (confidential) {
       const wantBonus = provenUnits * liveUnit;
+      const poolPay = poolDest && isDestAddress(poolDest) ? poolDest : '';
+      if (poolPay && matchCustodyCoinbase({
+        hashVouts,
+        potVouts,
+        poolDest: poolPay,
+        wantBonus,
+        wantPot,
+      })) {
+        bonusNanos = wantBonus;
+        potNanos = wantPot;
+        const T = wantPot + wantBonus;
+        const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
+        if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
+      } else {
       const sealedLeaves = Array.isArray(block.aLeaves) ? block.aLeaves : [];
       const fromSealed = sealedLeaves.map((l) => {
         const d20 = l.dest20 ? Buffer.from(l.dest20) : Buffer.alloc(20);
@@ -665,21 +768,20 @@ function verifyBlockConsensus(block, prev, {
         if (!hasherNcs.has(ncHex(o.noteCommit))) return { ok: false, reason: 'hash_bonus' };
       }
       bonusNanos = wantBonus;
-      const feeAmt = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
-      const poolPay = poolDest && isDestAddress(poolDest) ? poolDest : '';
+      const feeAmt = Math.floor(wantPot * POOL_FEE_BPS / 10000);
       if (hasherNcs.size) {
         const extra = potVouts.filter((o) => !hasherNcs.has(ncHex(o.noteCommit)));
         for (const o of extra) {
-          if (verifySealedNote(o, BLOCK_SUBSIDY_NANOS)) {
+          if (verifySealedNote(o, wantPot)) {
             return { ok: false, reason: 'pot_prop' };
           }
         }
         const candidates = [];
-        if (poolPay) candidates.push(potPaysFromLeaves(leaves, poolPay));
-        candidates.push(potPaysFromLeaves(leaves, null, extra.length ? feeAmt : 0));
-        if (extra.length) candidates.push(potPaysFromLeaves(leaves, null, 0));
+        if (poolPay) candidates.push(potPaysFromLeaves(leaves, poolPay, null, wantPot));
+        candidates.push(potPaysFromLeaves(leaves, null, extra.length ? feeAmt : 0, wantPot));
+        if (extra.length) candidates.push(potPaysFromLeaves(leaves, null, 0, wantPot));
         if (!extra.length && feeAmt > 0) {
-          const base = potPaysFromLeaves(leaves, null, feeAmt);
+          const base = potPaysFromLeaves(leaves, null, feeAmt, wantPot);
           for (let i = 0; i < base.length; i += 1) {
             candidates.push(base.map((p, j) => (j === i ? { ...p, nanos: p.nanos + feeAmt } : p)));
           }
@@ -706,14 +808,15 @@ function verifyBlockConsensus(block, prev, {
         }
         if (!matched) return { ok: false, reason: 'pot_prop' };
       }
-      const T = BLOCK_SUBSIDY_NANOS + wantBonus;
+      const T = wantPot + wantBonus;
       const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
       if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
-      potNanos = BLOCK_SUBSIDY_NANOS;
+      potNanos = wantPot;
+      }
     } else {
       potNanos = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
       bonusNanos = hashVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
-      if (potNanos !== BLOCK_SUBSIDY_NANOS) return { ok: false, reason: 'pot' };
+      if (potNanos !== wantPot) return { ok: false, reason: 'pot_sched' };
       if (bonusNanos !== provenUnits * liveUnit) return { ok: false, reason: 'hash_bonus' };
       const paid = new Map();
       for (const o of hashVouts) {
@@ -725,14 +828,14 @@ function verifyBlockConsensus(block, prev, {
       for (const dest of paid.keys()) {
         if (!provenByDest.has(dest)) return { ok: false, reason: 'hash_bonus' };
       }
-      const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
+      const fee = Math.floor(wantPot * POOL_FEE_BPS / 10000);
       const hasherSet = new Set(provenByDest.keys());
       const poolPay = poolDest && isDestAddress(poolDest) ? poolDest : '';
       if (hasherSet.size) {
         const extra = potVouts.filter((o) => !hasherSet.has(o.address));
         const extraNanos = extra.reduce((a, o) => a + Number(o.nanos || 0), 0);
         if (extraNanos > fee) return { ok: false, reason: 'pot_prop' };
-        if (extraNanos === BLOCK_SUBSIDY_NANOS) return { ok: false, reason: 'pot_prop' };
+        if (extraNanos === wantPot) return { ok: false, reason: 'pot_prop' };
         if (poolPay && extra.some((o) => o.address === poolPay) && extraNanos > fee) {
           return { ok: false, reason: 'pot_prop' };
         }
