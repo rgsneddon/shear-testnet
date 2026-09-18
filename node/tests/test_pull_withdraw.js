@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, destOpeningFromView } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, hash20FromAddress } from '../../crypto/address.js';
 import { sign } from 'node:crypto';
 import { poolWithdrawDigest } from '../../crypto/eip712.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
@@ -13,7 +13,7 @@ import {
   containsShe1,
 } from '../../crypto/levy.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
-import { BLOCK_SUBSIDY_NANOS, PI_SHE_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, PI_SHE_NANOS, GENESIS_BITS_PACKED, bitsForBlock } from '../../crypto/asert.js';
 import { buildAutoPayoutTx } from '../../pool/src/auto_payout.js';
 import { splitPot } from '../../pool/src/pool.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
@@ -122,6 +122,50 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     assert.equal(api.json.ok, false);
     assert.equal(api.json.reason, 'auto_payout');
     assert.equal(api.status, 410);
+  });
+
+  it('custody hash-bonus coinbase verifies from block.miner without opts.poolDest', () => {
+    const hasherId = newIdentity();
+    const poolId = newIdentity();
+    const hasher = destForLogin(hasherId.address, { viewKey: hasherId.viewKey, height: 1 });
+    const pool = destForLogin(poolId.address, { viewKey: poolId.viewKey, height: 1 });
+    const parentTpl = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: pool,
+      bits: GENESIS_BITS_PACKED,
+      now: 1_700_000_000_000,
+      poolDest: pool,
+      hashBonusCustodyDest: pool,
+    });
+    const parent = blockFromTpl(parentTpl);
+    const okP = verifyBlock(parent, null, { trustedPowHash: TRUSTED_POW });
+    assert.equal(okP.ok, true, okP.reason);
+    const now = 1_700_000_090_000;
+    const p = decodeHeader(parent.header);
+    const row = { dest: hasher, dest20: hash20FromAddress(hasher), nonce: 1n, lz: 8 };
+    const childTpl = buildTemplate({
+      prev: okP.hash,
+      prevHeader: parent.header,
+      prevBlock: parent,
+      parentWeight: parent.weight,
+      height: 2,
+      miner: pool,
+      bits: bitsForBlock(p.bits, p.timestamp, now),
+      now,
+      shareBatch: [row],
+      poolDest: pool,
+      hashBonusCustodyDest: pool,
+    });
+    const child = { ...blockFromTpl(childTpl), miner: pool };
+    const got = verifyBlock(child, {
+      ...parent,
+      hash: okP.hash,
+      header: parent.header,
+      height: 1,
+      weight: parent.weight,
+    }, { trustedPowHash: TRUSTED_POW, skipSharePow: true });
+    assert.equal(got.ok, true, got.reason);
   });
 
   it('miner pull HTTP is deprecated; auto-payout still spends the pool wallet while operator Flow is locked', async () => {

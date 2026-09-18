@@ -566,6 +566,8 @@ export function buildTemplate({
     samples: Array.isArray(samples) && samples.length ? collateSamples(samples) : collated,
     shareBatch: batch,
     miner,
+    poolDest: poolDest || hashBonusCustodyDest || '',
+    hashBonusCustodyDest: hashBonusCustodyDest || '',
   };
 }
 
@@ -732,7 +734,12 @@ function verifyBlockConsensus(block, prev, {
     }
     if (confidential) {
       const wantBonus = provenUnits * liveUnit;
-      const poolPay = poolDest && isDestAddress(poolDest) ? poolDest : '';
+      // P2P has no out-of-band poolDest. Public pool coinbase is custody to
+      // block.miner (the pool dest). Without this fallback, height 2+ with
+      // lag-1 shares fails hash_bonus on every peer.
+      const poolPay = (poolDest && isDestAddress(poolDest))
+        ? poolDest
+        : (block.miner && isDestAddress(block.miner) ? block.miner : '');
       if (poolPay && matchCustodyCoinbase({
         hashVouts,
         potVouts,
@@ -830,7 +837,9 @@ function verifyBlockConsensus(block, prev, {
       }
       const fee = Math.floor(wantPot * POOL_FEE_BPS / 10000);
       const hasherSet = new Set(provenByDest.keys());
-      const poolPay = poolDest && isDestAddress(poolDest) ? poolDest : '';
+      const poolPay = (poolDest && isDestAddress(poolDest))
+        ? poolDest
+        : (block.miner && isDestAddress(block.miner) ? block.miner : '');
       if (hasherSet.size) {
         const extra = potVouts.filter((o) => !hasherSet.has(o.address));
         const extraNanos = extra.reduce((a, o) => a + Number(o.nanos || 0), 0);

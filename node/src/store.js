@@ -21,6 +21,7 @@ import {
 } from './chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
+import { isDestAddress } from '../../crypto/address.js';
 import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
 import { publicExplorerRow } from '../../crypto/dummy.js';
 import { reviveBytes, reviveTx, noteCommitOfDest20 } from '../../crypto/note.js';
@@ -585,6 +586,9 @@ export function createStore(dir, {
       skipSharePow: !!verifyOpts.skipSharePow,
       parentFluxset: liveFlux,
       parentSpendTags: liveFlux.spendTags,
+      poolDest: verifyOpts.poolDest
+        || block.poolDest
+        || (block.miner && isDestAddress(block.miner) ? block.miner : null),
     });
     for (const tx of (block.txs || []).slice(1)) {
       const pay = verifyReservePayout(reserveVault, tx);
@@ -1089,6 +1093,7 @@ export function createStore(dir, {
       samples: rec.tpl.samples,
       shareBatch: rec.tpl.shareBatch || [],
       miner: destForLogin(miner) || miner || rec.tpl.miner,
+      poolDest: rec.tpl.poolDest || rec.tpl.hashBonusCustodyDest || rec.tpl.miner || '',
       aLeaves: rec.tpl.aLeaves,
       bLeaves: rec.tpl.bLeaves,
       rootA: rec.tpl.rootA,
