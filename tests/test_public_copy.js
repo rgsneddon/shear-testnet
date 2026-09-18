@@ -112,6 +112,17 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(pool, /shear-testnet-v3/);
   });
 
+  it('clone and operator handoff stay on merged main, not feat/admit-v2', () => {
+    const readme = read('README.md');
+    const ops = read('HANDOFF_OPS.md');
+    assert.match(readme, /git checkout main/);
+    assert.doesNotMatch(readme, /git checkout feat\/admit-v2/);
+    assert.match(ops, /\*\*Working branch:\*\* `main`/);
+    assert.doesNotMatch(ops, /\*\*Working branch:\*\* `feat\/admit-v2`/);
+    assert.match(ops, /git checkout main/);
+    assert.doesNotMatch(ops, /git checkout feat\/admit-v2/);
+  });
+
   it('MacBook handoff points at merged GitHub main, 0.35 tag, and pack_macos.sh', () => {
     const md = read('MACBOOK_HANDOFF.md');
     assert.match(md, /https:\/\/github\.com\/rgsneddon\/shear-testnet/);

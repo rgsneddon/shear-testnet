@@ -59,7 +59,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
 git clone https://github.com/rgsneddon/shear-testnet.git
 cd shear-testnet
-git checkout feat/admit-v2
+git checkout main
 npm ci
 cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
 cmake --build crypto/randomx/build -j"$(nproc)"
