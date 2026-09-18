@@ -139,7 +139,9 @@ describe('P0 hardening + short addresses', () => {
     const id = newIdentity();
     assert.ok(id.paymentCode.length <= SHORT_ADDR_MAX, id.paymentCode);
     assert.ok(id.address.length <= 50, id.address);
-    const dest = encodeDest(Buffer.alloc(20, 3), Buffer.alloc(32, 9));
+    const dest = encodeDest(Buffer.alloc(20, 3));
     assert.ok(dest.length <= SHORT_ADDR_MAX, dest);
+    const money = encodeDest(Buffer.alloc(20, 3), Buffer.alloc(32, 9));
+    assert.ok(money.length > SHORT_ADDR_MAX, money);
   });
 });

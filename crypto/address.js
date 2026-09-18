@@ -97,10 +97,14 @@ export function encodeAddress(pubkeyHash20) {
 /** Public dest/she/shear strings are dest20 (or she1 fingerprint). Long dest20||B still decodes. */
 export const SHORT_ADDR_MAX = 48;
 
-export function encodeDest(pubkeyHash20, _admitBase = null) {
+export function encodeDest(pubkeyHash20, admitBase = null) {
   const data = Buffer.from(pubkeyHash20);
   if (data.length !== 20) throw new Error('spend hash must be 20 bytes');
-  void _admitBase;
+  if (admitBase) {
+    const B = Buffer.from(admitBase);
+    if (B.length !== 32) throw new Error('admit base must be 32 bytes');
+    return encodeHrp(HRP_DEST, Buffer.concat([data, B]));
+  }
   return encodeHrp(HRP_DEST, data);
 }
 
@@ -131,8 +135,13 @@ export function encodePaymentCode({ scanPub, spendPub, admitBase = null }) {
   const scan = Buffer.from(scanPub);
   const spend = Buffer.from(spendPub);
   if (scan.length !== 32 || spend.length !== 32) throw new Error('silent code keys must be 32 bytes');
-  void admitBase;
-  return encodeHrp(HRP_PAY, Buffer.concat([Buffer.from([PAYMENT_CODE_VERSION]), scan, spend]));
+  const parts = [Buffer.from([PAYMENT_CODE_VERSION]), scan, spend];
+  if (admitBase) {
+    const B = Buffer.from(admitBase);
+    if (B.length !== 32) throw new Error('admit base must be 32 bytes');
+    parts.push(B);
+  }
+  return encodeHrp(HRP_PAY, Buffer.concat(parts));
 }
 
 export function encodePaymentFingerprint(scanPub, spendPub) {
@@ -519,7 +528,7 @@ export function newIdentity() {
   const scanPub = x25519PublicRaw(scanPriv);
   const spendSeed = ed25519SeedOf(privateKey);
   const admitBase = pointBytes(admitBasePub(spendSeed));
-  const paymentCodeFull = encodePaymentCode({ scanPub, spendPub });
+  const paymentCodeFull = encodePaymentCode({ scanPub, spendPub, admitBase });
   const paymentFingerprint = encodePaymentFingerprint(scanPub, spendPub);
   return {
     address,

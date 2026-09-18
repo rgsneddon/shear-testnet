@@ -60,7 +60,7 @@ function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
     ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
     : Date.now();
   const { tpl } = store.template({ miner: dest, bits: packed, shareBits: sb, now });
-  const found = mineTemplate({ ...tpl, bits: packed }, { maxTries: 3_000_000, shareBits: sb });
+  const found = mineTemplate({ ...tpl, bits: packed }, { maxTries: 3_000_000, shareBits: sb, blockOnly: true });
   assert.ok(found && found.block, 'need pow');
   return store.append({
     header: found.header,

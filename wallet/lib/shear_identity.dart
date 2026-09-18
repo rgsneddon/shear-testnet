@@ -38,11 +38,11 @@ class ShearIdentity {
     return paymentCode;
   }
 
-  /// Full scan||spend she1 for ECDH. Public paymentCode is the short fingerprint.
+  /// Full scan||spend||B she1 for ECDH. Public paymentCode is the short fingerprint.
   String get paymentCodeFull {
-    if (isFullPaymentCode(paymentCode)) return paymentCode;
-    final spendPub = ed25519PublicFromSeed(_seedBytes(seedHex));
-    return paymentCodeAtIndex(viewKey, spendPub, 0) ?? paymentCode;
+    final seed = _seedBytes(seedHex);
+    final spendPub = ed25519PublicFromSeed(seed);
+    return paymentCodeAtIndex(viewKey, spendPub, 0, admitBaseBytes(seed)) ?? paymentCode;
   }
 
   Map<String, String> toJson() => {
@@ -199,10 +199,11 @@ String encodePaymentCode({required Uint8List scanPub, required Uint8List spendPu
   if (scanPub.length != 32 || spendPub.length != 32) {
     throw ArgumentError('silent code keys must be 32 bytes');
   }
-  // Public she1 is the 20-byte fingerprint; this full code is backup/ECDH only.
-  // admitBase is not stuffed into the string (decode still accepts old 97-byte payloads).
-  assert(admitBase == null || admitBase.length == 32 || admitBase.isEmpty);
-  return encodeHrp(payHrp, Uint8List.fromList([paymentCodeVersion, ...scanPub, ...spendPub]));
+  // Public she1 is the 20-byte fingerprint; full code is backup/ECDH and
+  // includes B so silent dests are ADMIT-spendable (dest20||B).
+  final payload = <int>[paymentCodeVersion, ...scanPub, ...spendPub];
+  if (admitBase != null && admitBase.length == 32) payload.addAll(admitBase);
+  return encodeHrp(payHrp, Uint8List.fromList(payload));
 }
 
 String encodePaymentFingerprint({required Uint8List scanPub, required Uint8List spendPub}) {
@@ -400,7 +401,9 @@ String encodeDestAddress(Uint8List pubkeyHash20, [Uint8List? admitBase]) {
   if (pubkeyHash20.length != 20) {
     throw ArgumentError('spend hash must be 20 bytes');
   }
-  assert(admitBase == null || admitBase.length == 32 || admitBase.isEmpty);
+  if (admitBase != null && admitBase.length == 32) {
+    return encodeHrp(destHrp, Uint8List.fromList([...pubkeyHash20, ...admitBase]));
+  }
   return encodeHrp(destHrp, pubkeyHash20);
 }
 

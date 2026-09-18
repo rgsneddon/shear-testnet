@@ -24,11 +24,14 @@ describe('bech32 checksum (P0-2)', () => {
   it('public she1 / ssa1 / shear1 stay dest20-sized; long dest20||B still decodes', () => {
     const dest20 = Buffer.alloc(20, 7);
     const admit = Buffer.alloc(32, 9);
-    const dest = encodeDest(dest20, admit);
+    const dest = encodeDest(dest20);
     assert.match(dest, /^ssa1/);
     assert.ok(dest.length <= SHORT_ADDR_MAX, dest);
     assert.equal(admitBaseFromAddress(dest), null);
     assert.equal(hash20FromAddress(dest).equals(dest20), true);
+    const money = encodeDest(dest20, admit);
+    assert.ok(money.length > SHORT_ADDR_MAX, money);
+    assert.ok(admitBaseFromAddress(money).equals(admit));
     const long = encodeHrp('ssa', Buffer.concat([dest20, admit]));
     assert.ok(long.length > SHORT_ADDR_MAX, long);
     assert.ok(admitBaseFromAddress(long).equals(admit));
