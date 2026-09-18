@@ -159,15 +159,38 @@ describe('A5 + 2FA QR', () => {
     const m = qrModules(uri);
     assert.equal(m.length, m[0].length);
     assert.ok(m.length >= 21);
-    assert.equal(m[0][0], 1);
-    assert.equal(m[0][6], 1);
-    assert.equal(m[6][0], 1);
+    const finder = [
+      '#######',
+      '#.....#',
+      '#.###.#',
+      '#.###.#',
+      '#.###.#',
+      '#.....#',
+      '#######',
+    ];
+    const dump = (r0, c0) => finder.map((_, y) => {
+      let s = '';
+      for (let x = 0; x < 7; x += 1) s += m[r0 + y][c0 + x] ? '#' : '.';
+      return s;
+    });
+    assert.deepEqual(dump(0, 0), finder);
+    assert.deepEqual(dump(0, m.length - 7), finder);
+    assert.deepEqual(dump(m.length - 7, 0), finder);
+    for (let i = 8; i < m.length - 8; i += 1) {
+      assert.equal(m[6][i], i % 2 === 0 ? 1 : 0);
+      assert.equal(m[i][6], i % 2 === 0 ? 1 : 0);
+    }
     const svg = qrSvg(uri);
     assert.match(svg, /^<svg /);
+    assert.match(svg, /fill="#000"/);
+    assert.match(svg, /viewBox="0 0 (\d+) /);
+    const dim = Number((svg.match(/viewBox="0 0 (\d+)/) || [])[1] || 0);
+    assert.ok(dim >= 200, `qr svg ${dim}px is too small to scan`);
     const html = fs.readFileSync(path.join(root, 'pool/admin/index.html'), 'utf8');
     assert.match(html, /id="totp-qr"/);
     assert.match(html, /function paintTotp/);
     assert.match(html, /otpauth:\/\/totp\//);
+    assert.match(html, /width:220px/);
   });
 
   it('withdraw appends an audit record', () => {

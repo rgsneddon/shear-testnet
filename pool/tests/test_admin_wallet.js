@@ -96,6 +96,28 @@ describe('operator admin fee wallet', () => {
     }
   });
 
+  it('third-party desk is /admin when SHEAR_ADMIN_HOST is unset', () => {
+    const prev = process.env.SHEAR_ADMIN_HOST;
+    delete process.env.SHEAR_ADMIN_HOST;
+    try {
+      assert.equal(isAdminHost('mypool.site'), false);
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-3p-admin-'));
+      const admin = createAdmin(dir);
+      const setup = handleAdminApi(new URL('https://mypool.site/api/admin/setup'), 'POST', {
+        user: 'operator', password: 'aaaaaaaa',
+      }, { admin, host: 'mypool.site' });
+      assert.equal(setup.json.ok, true, setup.json.reason);
+      const poolSrc = fs.readFileSync(path.join(root, 'pool/src/pool.js'), 'utf8');
+      assert.match(poolSrc, /url\.pathname === '\/admin'/);
+      const ngx = fs.readFileSync(path.join(root, 'pool/deploy/nginx-mypool.site.conf'), 'utf8');
+      assert.match(ngx, /location = \/admin/);
+      assert.match(ngx, /proxy_pass http:\/\/127\.0\.0\.1:8088\/admin/);
+    } finally {
+      if (prev == null) delete process.env.SHEAR_ADMIN_HOST;
+      else process.env.SHEAR_ADMIN_HOST = prev;
+    }
+  });
+
   it('only the intended operator can create access; after 2FA the door stays closed; withdraw pays network L', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admin-'));
     const admin = createAdmin(dir);
@@ -133,7 +155,7 @@ describe('operator admin fee wallet', () => {
       user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken,
     });
     assert.doesNotMatch(fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8'), /if \(!same\(user, ADMIN_USER\)\)/);
-    assert.match(fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8'), /issuer=\$\{ADMIN_ISSUER\}/);
+    assert.match(fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8'), /issuer=\$\{encodeURIComponent\(iss\)\}/);
     assert.match(fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8'), /ADMIN_ISSUER = 'shear'/);
     assert.equal(created.json.ok, true, created.json.reason);
     const cookie = cookieOf(created.headers);

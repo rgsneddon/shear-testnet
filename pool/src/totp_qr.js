@@ -291,12 +291,17 @@ function buildGrid(text, ver, mask) {
       fn[n - 8 + j][i] = true;
     }
   }
-  for (let i = 0; i < n; i += 1) {
+  // Timing lives in the gap between finders. Painting row/col 6 through the
+  // 7×7 finders strips their borders and authenticators will not lock on.
+  for (let i = 8; i < n - 8; i += 1) {
     grid[6][i] = i % 2 === 0 ? 1 : 0;
     grid[i][6] = i % 2 === 0 ? 1 : 0;
     fn[6][i] = true;
     fn[i][6] = true;
   }
+  placeFinder(grid, 0, 0);
+  placeFinder(grid, n - 7, 0);
+  placeFinder(grid, 0, n - 7);
   const pos = ALIGN[ver] || [];
   for (const ay of [6, ...pos]) {
     for (const ax of [6, ...pos]) {
@@ -377,7 +382,7 @@ export function qrModules(text) {
   return best;
 }
 
-export function qrSvg(text, { moduleSize = 4, margin = 4 } = {}) {
+export function qrSvg(text, { moduleSize = 6, margin = 4 } = {}) {
   const m = qrModules(text);
   const n = m.length;
   const dim = (n + margin * 2) * moduleSize;
@@ -385,7 +390,7 @@ export function qrSvg(text, { moduleSize = 4, margin = 4 } = {}) {
   for (let y = 0; y < n; y += 1) {
     for (let x = 0; x < n; x += 1) {
       if (m[y][x]) {
-        rects += `<rect x="${(x + margin) * moduleSize}" y="${(y + margin) * moduleSize}" width="${moduleSize}" height="${moduleSize}"/>`;
+        rects += `<rect x="${(x + margin) * moduleSize}" y="${(y + margin) * moduleSize}" width="${moduleSize}" height="${moduleSize}" fill="#000"/>`;
       }
     }
   }

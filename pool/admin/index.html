@@ -88,10 +88,14 @@
     .gate-wrap { max-width:28rem; }
     #flow { position:relative; }
     .totp-qr {
-      width:12.5rem; height:12.5rem; margin:10px 0; padding:8px;
+      width:auto; height:auto; margin:10px 0; padding:12px;
       background:#fff; border:1px solid var(--line);
+      display:inline-block;
     }
-    .totp-qr svg { width:100%; height:100%; display:block; }
+    .totp-qr svg {
+      width:220px; height:220px; display:block;
+      image-rendering:pixelated; shape-rendering:crispEdges;
+    }
     .totp-qr.hid { display:none; }
   </style>
 </head>

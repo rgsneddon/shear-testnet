@@ -636,9 +636,9 @@ export async function handleAdminHttp(req, res, opts) {
     return;
   }
   let file = url.pathname;
-  if (file === '/admin') file = '/index.html';
+  if (file === '/admin' || file === '/admin/') file = '/index.html';
   else if (file.startsWith('/admin/')) file = file.slice('/admin'.length) || '/index.html';
-  else if (file === '/') file = '/index.html';
+  if (file === '/' || file === '') file = '/index.html';
   const brand = file.startsWith('/brand/');
   const root = brand ? PUBLIC_BRAND : ADMIN_DIR;
   const rel = brand ? file.slice('/brand'.length) : file;
