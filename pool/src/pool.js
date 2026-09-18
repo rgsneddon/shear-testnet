@@ -84,6 +84,10 @@ export const HASHRATE_STALL_HOLD_MS = 90_000;
 export const HASHRATE_HOLD_FRAC = 0.9;
 /** Rebuild /api/stats JSON on this cadence. The HTTP handler never computes it. */
 export const STATS_REFRESH_MS = 400;
+/** Auto-payout sweep cadence. Never share the stats paint interval. */
+export const PAYOUT_SWEEP_MS = Math.max(5000, Number(process.env.SHEAR_PAYOUT_SWEEP_MS) || 5000);
+/** One due miner per tick so a slow queueTx cannot monopolize the loop. */
+export const PAYOUT_SWEEP_MAX_ROWS = 1;
 const HASH_WORKER = fileURLToPath(new URL('./hash_worker.js', import.meta.url));
 const HASH_WORKER_TIMEOUT_MS = 15_000;
 /** Cap in-flight RandomX verifies so a junk submit flood cannot stall HTTP. */
@@ -1820,7 +1824,7 @@ export function createPool({
               hashUnit: unit,
             },
           );
-          sweepAutoPayouts();
+          setImmediate(runAutoPayoutSweep);
         } catch {
           stats.lastFoundAt = Date.now();
           stats.findAt = Array.isArray(stats.findAt) ? stats.findAt : [];
@@ -2058,13 +2062,16 @@ export function createPool({
 
   let statsSnap = { at: 0, json: '{"ok":true}' };
   let statsTimer = null;
+  let payoutTimer = null;
+  let payoutSweepBusy = false;
+  let payoutSweepAgain = false;
+  let jobDirty = false;
   function paintStatsSnap() {
     try {
       const rows = openRoundHashRows(miners, hashBonusUnitNanos(store.reserveVault?.liveHashBonusNanos))
         .map((r) => ({ tag: r.tag, count: r.count }));
       if (typeof store.noteOpenRound === 'function') store.noteOpenRound(rows, { source: 'local' });
       if (typeof p2pNet?.publishWork === 'function') p2pNet.publishWork(rows);
-      try { sweepAutoPayouts(); } catch { /* payout is best-effort */ }
       statsSnap = { at: Date.now(), json: JSON.stringify(publicStats()) };
     } catch {
       if (!statsSnap.json) statsSnap = { at: Date.now(), json: '{"ok":true}' };
@@ -2217,6 +2224,7 @@ export function createPool({
       unconfirmedShe: pull.unconfirmedNanos / NANOS_PER_SHE,
       unconfirmedDisplay: formatShe(pull.unconfirmedNanos / NANOS_PER_SHE),
       creditConfirmedShe: pull.confirmedNanos / NANOS_PER_SHE,
+      creditConfirmedDisplay: formatShe(pull.confirmedNanos / NANOS_PER_SHE),
       confirmNeed: need,
       pendingDisplay: formatShe(pull.pendingNanos / NANOS_PER_SHE),
       confirmedDisplay: formatShe(pull.sentNanos / NANOS_PER_SHE),
@@ -2224,7 +2232,7 @@ export function createPool({
       sentShe: pull.sentNanos / NANOS_PER_SHE,
       sentDisplay: formatShe(pull.sentNanos / NANOS_PER_SHE),
       destRedacted: pull.destRedacted,
-      confirmedSentLabel: `Confirmed sent to ${pull.destRedacted || 'ssa1********'}`,
+      confirmedSentLabel: `All-time sent to ${pull.destRedacted || 'ssa1********'}`,
       autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
       autoPayoutMinShe: AUTO_PAYOUT_MIN_NANOS / NANOS_PER_SHE,
       lastPullMs: pull.lastPullMs,
@@ -2246,7 +2254,33 @@ export function createPool({
     }
   }
 
-  function sweepAutoPayouts() {
+  function runAutoPayoutSweep() {
+    if (payoutSweepBusy) {
+      payoutSweepAgain = true;
+      return [];
+    }
+    payoutSweepBusy = true;
+    const t0 = Date.now();
+    console.error(JSON.stringify({ event: 'auto_payout_begin', at: t0 }));
+    try {
+      return sweepAutoPayouts({ maxRows: PAYOUT_SWEEP_MAX_ROWS });
+    } catch (err) {
+      console.error(JSON.stringify({
+        event: 'auto_payout_error',
+        error: String(err && err.message ? err.message : err),
+      }));
+      return [];
+    } finally {
+      console.error(JSON.stringify({ event: 'auto_payout_end', ms: Date.now() - t0 }));
+      payoutSweepBusy = false;
+      if (payoutSweepAgain) {
+        payoutSweepAgain = false;
+        setImmediate(runAutoPayoutSweep);
+      }
+    }
+  }
+
+  function sweepAutoPayouts({ maxRows = PAYOUT_SWEEP_MAX_ROWS } = {}) {
     const tipH = Number(store.tip?.()?.height || 0);
     const need = typeof store.getpolicy === 'function'
       ? (store.getpolicy().operational?.pool_merchant || 30)
@@ -2256,10 +2290,23 @@ export function createPool({
     const due = pullBook.dueAuto({ tipHeight: tipH, need });
     const sent = [];
     const fee = levyNanos(0, { depth: mempoolDepthBytes(store.mempool || []) });
+    const cap = Math.max(1, Math.floor(Number(maxRows) || PAYOUT_SWEEP_MAX_ROWS));
+    let n = 0;
     for (const row of due) {
+      if (n >= cap) break;
+      n += 1;
       const built = buildAutoPayoutTx({ from, to: row.dest, nanos: row.nanos, fee });
       if (!built.ok) continue;
+      const q0 = Date.now();
       const queued = queueSend(built.tx);
+      console.error(JSON.stringify({
+        event: 'queue_tx_ms',
+        id: built.tx && built.tx.id,
+        kind: 'pool-withdraw',
+        ok: !(queued && queued.ok === false),
+        reason: queued && queued.reason,
+        ms: Date.now() - q0,
+      }));
       if (queued && queued.ok === false) continue;
       const taken = pullBook.takeConfirmed(row.tag, {
         tipHeight: tipH,
@@ -2278,15 +2325,24 @@ export function createPool({
     if (typeof store.queueTx === 'function') {
       const got = store.queueTx(tx);
       if (!got.ok) return got;
-      try {
-        const next = issueJob(undefined, { force: true });
-        if (next) broadcastJob(next);
-      } catch { /* rebuild is best-effort so the next header can carry the send */ }
+      jobDirty = true;
+      setImmediate(flushDirtyJob);
       return got.tx || tx;
     }
     store.mempool = store.mempool || [];
     store.mempool.push(tx);
     return tx;
+  }
+
+  function flushDirtyJob() {
+    if (!jobDirty) return;
+    jobDirty = false;
+    const t0 = Date.now();
+    try {
+      const next = issueJob(undefined, { force: true });
+      if (next) broadcastJob(next);
+    } catch { /* next natural issueJob still picks the send up */ }
+    console.error(JSON.stringify({ event: 'issue_job_force_ms', ms: Date.now() - t0 }));
   }
 
   function dropSockets(list) {
@@ -2642,6 +2698,10 @@ export function createPool({
     setImmediate(() => {
       paintStatsSnap();
       if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);
+      if (!payoutTimer) {
+        payoutTimer = setInterval(runAutoPayoutSweep, PAYOUT_SWEEP_MS);
+        payoutTimer.unref?.();
+      }
     });
   });
 
@@ -2657,6 +2717,10 @@ export function createPool({
           setImmediate(() => {
             paintStatsSnap();
             if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);
+            if (!payoutTimer) {
+              payoutTimer = setInterval(runAutoPayoutSweep, PAYOUT_SWEEP_MS);
+              payoutTimer.unref?.();
+            }
           });
         });
       });
@@ -2672,6 +2736,10 @@ export function createPool({
     if (statsTimer) {
       clearInterval(statsTimer);
       statsTimer = null;
+    }
+    if (payoutTimer) {
+      clearInterval(payoutTimer);
+      payoutTimer = null;
     }
     if (dropTimer) {
       clearInterval(dropTimer);
@@ -2707,6 +2775,8 @@ export function createPool({
     stratum,
     httpServer,
     snapshotRound,
+    paintStatsSnap,
+    runAutoPayoutSweep,
     setP2p,
     restampJob: restampLiveHeader,
     sweepIdle: sweepIdleMiners,

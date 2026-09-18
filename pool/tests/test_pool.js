@@ -15,7 +15,7 @@ import {
 import { requiredJobFields, encodeHeader, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { payoutDest, newIdentity, encodeHrp, aliasDestOfSilentId, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, JOB_RESTAMP_MS, STATS_REFRESH_MS, wireJob } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, JOB_RESTAMP_MS, STATS_REFRESH_MS, PAYOUT_SWEEP_MS, wireJob } from '../src/pool.js';
 import { hasherHasValidRoundShare, roundActualHashes } from '../src/hash_credit.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
 import { verifyPoolWithdrawOffchain } from '../../crypto/levy.js';
@@ -265,6 +265,51 @@ describe('HTTP stats cannot stall', () => {
     assert.equal(shePage.status, 404);
     const sheApi = await fetch(`http://127.0.0.1:${httpPort}/api/miners/she1862e37`);
     assert.equal(sheApi.status, 404);
+    pool.close();
+  });
+
+  it('does not sweep auto-payout from stats paint (borkatpayout)', async () => {
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    const paintAt = src.indexOf('function paintStatsSnap()');
+    const pubAt = src.indexOf('function publicStats()');
+    assert.ok(paintAt >= 0 && pubAt > paintAt);
+    const paint = src.slice(paintAt, pubAt);
+    assert.doesNotMatch(paint, /sweepAutoPayouts/);
+    assert.doesNotMatch(paint, /queueSend/);
+    assert.match(src, /PAYOUT_SWEEP_MS/);
+    assert.ok(PAYOUT_SWEEP_MS >= 5000);
+    assert.match(src, /runAutoPayoutSweep/);
+    assert.match(src, /setImmediate\(flushDirtyJob\)/);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pool-payout-paint-'));
+    const id = newIdentity();
+    const dest = freshStealthDest(id).dest;
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 8,
+      bits: 16,
+    });
+    let queueCalls = 0;
+    const inner = pool.store.queueTx.bind(pool.store);
+    pool.store.queueTx = (tx) => {
+      queueCalls += 1;
+      return inner(tx);
+    };
+    await new Promise((resolve, reject) => {
+      pool.stratum.listen(0, '127.0.0.1', () => {
+        pool.httpServer.listen(0, '127.0.0.1', resolve);
+      });
+      pool.stratum.on('error', reject);
+    });
+    pool.paintStatsSnap();
+    assert.equal(queueCalls, 0, 'stats paint must not queueTx; slow mock would be HTTP-only, never an admit_verify stub');
+    const httpPort = pool.httpServer.address().port;
+    const t0 = Date.now();
+    const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+    assert.ok(Date.now() - t0 < 200);
+    assert.equal(stats.ok, true);
     pool.close();
   });
 });
@@ -668,16 +713,20 @@ describe('public miner listing', () => {
     assert.match(miner, /d\.workers/);
     assert.match(miner, /id="m-pending"/);
     assert.match(miner, /id="m-confirming"/);
+    assert.match(miner, /id="m-waiting"/);
     assert.match(miner, /Confirming SHE/);
+    assert.match(miner, /Waiting payout/);
     assert.match(miner, /unconfirmedShe/);
+    assert.match(miner, /creditConfirmedShe/);
+    assert.match(miner, /creditConfirmedDisplay/);
     assert.match(miner, /unconfirmedDisplay/);
     assert.match(miner, /setInterval\(tick, 1000\)/);
     assert.match(miner, /value yellow/);
-    assert.match(miner, /Confirmed sent to ssa1/);
+    assert.match(miner, /All-time sent to ssa1/);
     assert.match(miner, /id="m-sent-label"/);
     assert.match(miner, /id="pull-row"/);
     assert.match(miner, /grid-template-columns: repeat\(4/);
-    assert.match(miner, /\.pull-row \{[\s\S]*repeat\(3/);
+    assert.match(miner, /\.pull-row \{[\s\S]*repeat\(4/);
     assert.doesNotMatch(miner, /pull-acc \{ grid-column: span 1/);
     assert.doesNotMatch(miner, /pull-conf \{ grid-column: span 3/);
     assert.doesNotMatch(miner, /Withdraw confirmed sum/);
