@@ -295,7 +295,7 @@ describe('ShearK-Miner', () => {
     assert.match(stripAnsi(out), /accepted=0/);
     assert.match(stripAnsi(out), /rejected=0/);
     assert.match(out, /threads=1/);
-    assert.match(out, /job=login-job/);
+    assert.match(stripAnsi(out), /job[= ]login-job/);
     assert.match(out, /shareBits=32/);
     assert.match(out, /blockBits=32/);
     assert.equal(/accepted=1/.test(out), false, out);
@@ -346,7 +346,7 @@ describe('ShearK-Miner', () => {
     server.close();
     assert.match(loginLine, /"version":"2\.4"/);
     assert.match(loginLine, new RegExp(`"dest":"${dest}"`));
-    assert.match(out, /job=dest-job/);
+    assert.match(stripAnsi(out), /job[= ]dest-job/);
     assert.match(out, /hashes=(?:\x1b\[(?:32m|1;92m))?\d+/);
     assert.equal(header.toString('hex').length, 256);
   });

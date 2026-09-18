@@ -34,7 +34,7 @@ function tmpPool(shareBits = 8) {
   return { pool, dest };
 }
 
-function findShare(job, dest, max = 200_000n) {
+function findShare(job, dest, max = 30_000n) {
   for (let nonce = 0n; nonce < max; nonce += 1n) {
     const s = scoreShare({ job, nonce, dest });
     if (s.ok) return { nonce, s };
@@ -158,7 +158,7 @@ describe('stale classification and restamp/grace accept', () => {
     const next = pool.restampJob();
     assert.equal(next.jobId, job.jobId);
     assert.notEqual(next.header, beforeHeader);
-    const scored = scoreShare({ job: next, nonce: hit.nonce, claimed: hit.s.hash });
+    const scored = scoreShare({ job: next, nonce: hit.nonce, claimed: hit.s.hash, dest });
     assert.equal(scored.ok, true, JSON.stringify(scored));
     assert.equal(scored.hash, hit.s.hash);
     const port = await listen(pool);
@@ -182,7 +182,7 @@ describe('stale classification and restamp/grace accept', () => {
     const a = findShare(job, dest);
     let b;
     for (let nonce = a.nonce + 1n; nonce < a.nonce + 2000n; nonce += 1n) {
-      const s = scoreShare({ job, nonce });
+      const s = scoreShare({ job, nonce, dest });
       if (s.ok) { b = { nonce, s }; break; }
     }
     assert.ok(b, 'need a second share on the same job');
