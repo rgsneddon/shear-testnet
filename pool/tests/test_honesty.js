@@ -32,7 +32,7 @@ import {
   HASH_QUEUE_MAX,
   HASH_INFLIGHT_PER_CONN,
 } from '../src/pool.js';
-import { extraMintAllowed, RESERVE_PROGRAM, JOIN_PROGRAM, HASH_BONUS_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
+import { extraMintAllowed, RESERVE_PROGRAM, JOIN_PROGRAM, HASH_BONUS_NANOS, NANOS_PER_SHE, SHEARK_MINER_VERSION } from '../../crypto/asert.js';
 import { pendingFor } from '../src/wallet_api.js';
 import { hasherHasValidRoundShare, clientHashCreditForbidden } from '../src/hash_credit.js';
 import { expectedOneThreadHs, hashesProvenByShare } from '../src/share_vardiff.js';
@@ -290,9 +290,10 @@ describe('folded-row inventory', () => {
     assert.equal(reportedHashrate(m, t0), 100);
     m.clientHs = 96;
     const eased = reportedHashrate(m, t0 + 1000);
-    assert.ok(eased < 100 && eased > 96, `eased ${eased}`);
+    /* Connected HUD is hashes/dt (clientHs). EMA lives in applyMinerSelfRate. */
+    assert.equal(eased, 96);
     assert.equal(liveHashrate(m, t0 + 1000), 96);
-    const held = { connections: [{ sock: {} }], clientHs: 0, emaHs: 80, emaAt: t0 };
+    const held = { connections: [], clientHs: 80, clientHsAt: t0 };
     assert.equal(reportedHashrate(held, t0 + 1000), 80);
   });
 
@@ -567,6 +568,7 @@ describe('folded-row inventory', () => {
             login: `${dest}.EP01`,
             client: 'ShearHash',
             name: 'ShearK-Miner',
+            version: SHEARK_MINER_VERSION,
             threads,
             cpuThreads,
             cpuCores: cpuThreads,
