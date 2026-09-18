@@ -697,11 +697,15 @@ export function createP2p({
       }
       const recNow = peers.get(sock);
       const lastHash = last ? wireHash(last.hash) : '';
+      const haveNow = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
       if (recNow) {
         if (!recNow.pending) recNow.pending = new Set();
         if (!recNow.failed) recNow.failed = new Set();
         if (lastHash) recNow.pending.delete(lastHash);
         pumpGetblocks(sock);
+      }
+      if (lastHash && haveNow.has(lastHash)) {
+        return;
       }
       const job = ingestChain.then(() => {
         const before = store.tip();
@@ -713,7 +717,8 @@ export function createP2p({
         if (rec) {
           if (!rec.failed) rec.failed = new Set();
           if (!got?.ok && lastHash) {
-            if (got?.reason === 'prev') requeuePrevHash(rec, lastHash);
+            const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
+            if (got?.reason === 'prev' && !have.has(lastHash)) requeuePrevHash(rec, lastHash);
             else if (isFinalIngestFail(got?.reason)) rec.failed.add(lastHash);
             try {
               console.error(JSON.stringify({

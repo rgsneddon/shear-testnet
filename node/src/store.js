@@ -549,6 +549,14 @@ export function createStore(dir, {
   }
 
   function append(block, verifyOpts = {}) {
+    const incoming = block?.hash != null ? Buffer.from(block.hash) : null;
+    if (incoming && incoming.length === 32) {
+      for (const b of blocks) {
+        if (b.hash && Buffer.from(b.hash).equals(incoming)) {
+          return { ok: false, reason: 'not_heavier', tip: tip() };
+        }
+      }
+    }
     const prev = tip();
     const parentH = prev ? prev.height : 0;
     const check = verifyBlock(block, prev ? {
