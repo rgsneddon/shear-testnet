@@ -6,7 +6,11 @@ import path from 'node:path';
 import net from 'node:net';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, scoreShare } from '../src/pool.js';
+import { createPool, scoreShare, judgeShare } from '../src/pool.js';
+import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
+import { setNonce } from '../../crypto/header.js';
+import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
+import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import {
   clampShareBits,
   expectedOneThreadHs,
@@ -122,6 +126,9 @@ describe('share vardiff', () => {
     assert.match(src, /shouldRetargetShare/);
     assert.match(src, /nextShareBits/);
     assert.match(src, /conn\.shareBits = next/);
+    assert.equal(src.includes('const retargeted = issueJob(next)'), false);
+    assert.match(src, /wireJob\(live, next\)/);
+    assert.match(src, /shareBits: conn\?\.shareBits/);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-var-'));
     const id = newIdentity();
     const dest = freshStealthDest(id).dest;
@@ -148,8 +155,10 @@ describe('share vardiff', () => {
         method: 'login',
         params: { login: dest + '.var', client: 'ShearHash', threads: 1 },
       });
-      const hello = await readLine();
+      let hello = await readLine();
+      if (!hello?.job && !hello?.result?.job) hello = await readLine();
       const job = hello.job || hello.result?.job;
+      assert.ok(job, `login must return a job, got ${JSON.stringify(hello)}`);
       assert.equal(Number(job.shareBits), mintShareMinBits());
       assert.ok(Number(job.shareBits) > openBits);
       assert.ok(Number(job.blockBits) >= Number(job.shareBits));
@@ -166,5 +175,29 @@ describe('share vardiff', () => {
       sock.end();
       pool.close();
     }
+  });
+
+  it('1-thread dest-bound 8 still scores when a farm has climbed lastJob.shareBits', () => {
+    const dest = 'ssa1qsj3qt0mcuznqv6r5370d58tw32gz3yhjychuu0sljyw5zmw9pmwc47d9vnwagjafs3ywjz7udh7suc7e3qsshw25ze';
+    const header = Buffer.alloc(128, 0);
+    header[0] = 1;
+    let hit = null;
+    for (let n = 1; n < 400_000; n += 1) {
+      const h = setNonce(header, n);
+      const rx = shearHash(h);
+      const bound = destBoundShareHash(rx, noteCommitOfShare({ dest }));
+      if (!meetsTarget(bound, SHARE_FLOOR_BITS)) continue;
+      if (meetsTarget(bound, 12)) continue;
+      hit = { header: h, hash: rx };
+      break;
+    }
+    assert.ok(hit, 'need dest-bound 8 that misses 12');
+    const farmJob = { shareBits: 12, blockBits: 16, bits: 16 };
+    const asFarm = judgeShare({ job: farmJob, header: hit.header, hash: hit.hash, dest });
+    assert.equal(asFarm.ok, false, 'farm 12-bit job must not accept 8-bit dest-bound');
+    assert.equal(asFarm.reason, 'low_diff');
+    const asAfk = judgeShare({ job: farmJob, header: hit.header, hash: hit.hash, dest, shareBits: 8 });
+    assert.equal(asAfk.ok, true, asAfk.reason);
+    assert.equal(asAfk.creditedShareBits, 8);
   });
 });

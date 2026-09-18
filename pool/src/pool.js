@@ -537,8 +537,8 @@ export function jobWithinGrace(job, prevJob, prevJobAt, now = Date.now()) {
   return at > 0 && (Number(now) - at) < PREV_JOB_GRACE_MS;
 }
 
-export function judgeShare({ job, header, hash, dest } = {}) {
-  const current = Number(job.shareBits);
+export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
+  const current = Number(shareBits ?? job?.shareBits);
   const prev = Number(job.shareBitsPrev);
   const prevAt = Number(job.shareBitsAt) || 0;
   const now = Date.now();
@@ -1028,7 +1028,13 @@ export function createPool({
         last = { ok: false, reason: 'bad_hash', hash: hex };
         continue;
       }
-      const judged = judgeShare({ job, header: prep.header, hash, dest });
+      const judged = judgeShare({
+        job,
+        header: prep.header,
+        hash,
+        dest,
+        shareBits: conn?.shareBits ?? job?.shareBits,
+      });
       if (judged.ok) return judged;
       last = judged;
     }
@@ -1719,11 +1725,13 @@ export function createPool({
         conn.varShares = 0;
         conn.varWindowAt = now;
         if (next !== conn.shareBits) {
+          /* Per-TCP-session vardiff. Never rewrite lastJob.shareBits — that
+           * made a 22-thread farm's 12-bit target reject 1-thread AFK dest-bound 8 as low_diff. */
           conn.shareBits = next;
-          const retargeted = issueJob(next);
-          if (retargeted) {
-            conn.job = retargeted;
-            try { sock.write(line({ method: 'job', params: wireJob(retargeted, next) })); } catch { /* ignore */ }
+          const live = lastJob || conn.job;
+          if (live) {
+            conn.job = live;
+            try { sock.write(line({ method: 'job', params: wireJob(live, next) })); } catch { /* ignore */ }
           }
         }
       }
