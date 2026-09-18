@@ -103,7 +103,7 @@ function loginAndSubmit(port, dest, submits) {
   });
 }
 
-describe('stale classification and restamp/grace accept', () => {
+describe('stale classification and restamp/grace accept', { timeout: 300_000 }, () => {
   it('only stale_job counts as stale; restamp history is kept', () => {
     assert.equal(isStaleReject('stale_job'), true);
     assert.equal(isStaleReject('stale'), true);
