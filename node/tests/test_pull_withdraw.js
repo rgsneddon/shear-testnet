@@ -13,22 +13,22 @@ import {
   containsShe1,
 } from '../../crypto/levy.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
-import { BLOCK_SUBSIDY_NANOS, PI_SHE_NANOS } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, PI_SHE_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { buildAutoPayoutTx } from '../../pool/src/auto_payout.js';
 import { splitPot } from '../../pool/src/pool.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
 import {
   buildTemplate,
-  mineTemplate,
   verifyBlock,
   GENESIS_PREV,
 } from '../src/chain.js';
+import { decodeHeader } from '../../crypto/header.js';
 
-function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
-  assert.ok(found && found.block, 'pow');
+const TRUSTED_POW = Buffer.alloc(32);
+
+function blockFromTpl(tpl) {
   return {
-    header: found.header,
+    header: tpl.header,
     txs: tpl.txs,
     samples: tpl.samples,
     miner: tpl.miner,
@@ -37,6 +37,7 @@ function mine(tpl) {
     rootA: tpl.rootA,
     rootB: tpl.rootB,
     weight: tpl.weight,
+    shareBatch: tpl.shareBatch || [],
   };
 }
 
@@ -77,35 +78,38 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     assert.equal(JSON.stringify(tx).includes('she1'), false);
     assert.equal(tx.vout[0].address.startsWith('ssa1'), true);
 
-    const block = mine(buildTemplate({
+    const tpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
-      now: Date.now(),
+      bits: GENESIS_BITS_PACKED,
+      now: 1_700_000_000_000,
       potShares: shares,
       txs: [tx],
-    }));
-    const got = verifyBlock(block, null);
+    });
+    assert.equal(decodeHeader(tpl.header).bits, GENESIS_BITS_PACKED);
+    const block = blockFromTpl(tpl);
+    const got = verifyBlock(block, null, { trustedPowHash: TRUSTED_POW });
     assert.equal(got.ok, true, got.reason);
     const body = JSON.stringify(block.txs.slice(1));
     assert.equal(body.includes('she1'), false);
     assert.equal(containsShe1(block.txs[1]), false);
 
-    const leak = mine(buildTemplate({
+    const leakTpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
-      now: Date.now(),
+      bits: GENESIS_BITS_PACKED,
+      now: 1_700_000_000_000,
       txs: [{
         ...tx,
         id: 'leak',
         login: id.paymentCode,
         she1: id.paymentCode,
       }],
-    }));
-    const denied = verifyBlock(leak, null);
+    });
+    const leak = blockFromTpl(leakTpl);
+    const denied = verifyBlock(leak, null, { trustedPowHash: TRUSTED_POW });
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'she1_on_chain');
 

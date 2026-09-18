@@ -73,10 +73,10 @@ window.SHEAR_DOCS = {
     crumb: 'start / overview',
     html:
       '<p>Shear is a CPU-mined ledger. Coin is created when a block is found, not before. There is no premine and the developers do not sell SHE. You hash, or someone who already holds coin pays you.</p>' +
-      '<p>ADMITv2 membership over this book\'s notes, with confidential amounts. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. Each hasher dest that produced proven work in a round receives its own hash bonus on the next sealed block. The live network today is <code>shear-testnet-v4</code>. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
+      '<p>ADMITv2 membership over this book\'s notes, with confidential amounts. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. On the public pool, hash bonus (no 1% fee) and pot share accumulate and auto-pay to your miner <code>ssa1</code> at π SHE on the next sealed payout. The live network today is <code>shear-testnet-v4</code>. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
       '<table><tr><th>Coin</th><td>SHE (11 protocol decimals; public pages show nine)</td></tr>' +
       '<tr><th>Algo</th><td>ShearHash-v3 (RandomX light, CPU)</td></tr>' +
-      '<tr><th>Block pot</th><td>Exactly 1 SHE</td></tr>' +
+      '<tr><th>Block pot</th><td>1.00 SHE in epoch 0, then −0.01 SHE/epoch to a 0.20 SHE floor (4d testnet / 400d mainnet)</td></tr>' +
       '<tr><th>Target interval</th><td>90 seconds (ASERT)</td></tr>' +
       '<tr><th>Spendable</th><td>6 confirmations</td></tr>' +
       '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
