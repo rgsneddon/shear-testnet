@@ -176,6 +176,23 @@ describe('stale classification and restamp/grace accept', { timeout: 300_000 }, 
     pool.close();
   });
 
+  it('claimed ShearHash of the live header is not bad_hash just because history exists', () => {
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.match(src, /if \(want\) return judged/);
+    const { pool, dest } = tmpPool(8);
+    const job = pool.issueJob();
+    const hit = findShare(job, dest);
+    rememberJobHeader(job, '11'.repeat(128));
+    const ok = scoreShare({ job, nonce: hit.nonce, claimed: hit.s.hash, dest });
+    assert.equal(ok.ok, true, JSON.stringify(ok));
+    assert.equal(ok.hash, hit.s.hash);
+    const miss = findMiss(job, dest);
+    const bad = scoreShare({ job, nonce: miss.nonce, claimed: miss.s.hash, dest });
+    assert.equal(bad.ok, false, JSON.stringify(bad));
+    assert.equal(bad.reason, 'low_diff', JSON.stringify(bad));
+    pool.close();
+  });
+
   it('previous-job share after a new round is not stale and does not add roundHashes', async () => {
     const { pool, dest } = tmpPool(8);
     const job = pool.issueJob();

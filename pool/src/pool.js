@@ -605,12 +605,17 @@ export function scoreShare({ job, nonce, claimed, dest } = {}) {
     const hash = shearHash(prep.header);
     const hex = hash.toString('hex');
     if (want && hex !== want) {
-      last = { ok: false, reason: 'bad_hash', hash: hex };
+      if (last.reason !== 'low_diff' && last.reason !== 'miner_addr') {
+        last = { ok: false, reason: 'bad_hash', hash: hex, hashedHeader: headerHex };
+      }
       continue;
     }
     const judged = judgeShare({ job, header: prep.header, hash, dest });
     if (judged.ok) return judged;
     last = judged;
+    /* Claimed digest matched this header. Later restamp candidates are a
+     * different preimage — do not overwrite low_diff with bad_hash. */
+    if (want) return judged;
   }
   return last;
 }
@@ -1013,8 +1018,15 @@ export function createPool({
   }
   async function scoreShareLive({ job, nonce, claimed, conn, dest } = {}) {
     const want = claimed ? String(claimed).toLowerCase() : '';
-    const headers = candidateShareHeaders(job);
-    const list = headers.length ? headers : [job?.header];
+    const headers = candidateShareHeaders({
+      ...job,
+      header: job?.header || conn?.job?.header,
+      headerHistory: [
+        ...(Array.isArray(job?.headerHistory) ? job.headerHistory : []),
+        conn?.job?.header,
+      ].filter(Boolean),
+    });
+    const list = headers.length ? headers : [job?.header || conn?.job?.header];
     let last = { ok: false, reason: 'incomplete_job' };
     for (const headerHex of list) {
       const prep = prepareShareHeader({ job, nonce, headerHex });
@@ -1025,7 +1037,9 @@ export function createPool({
       const hash = await hashOffThread(prep.header, conn);
       const hex = hash.toString('hex');
       if (want && hex !== want) {
-        last = { ok: false, reason: 'bad_hash', hash: hex };
+        if (last.reason !== 'low_diff' && last.reason !== 'miner_addr') {
+          last = { ok: false, reason: 'bad_hash', hash: hex, hashedHeader: headerHex };
+        }
         continue;
       }
       const judged = judgeShare({
@@ -1037,6 +1051,7 @@ export function createPool({
       });
       if (judged.ok) return judged;
       last = judged;
+      if (want) return judged;
     }
     return last;
   }
@@ -1551,7 +1566,7 @@ export function createPool({
             computed: scored.hash || '',
             jobId: job?.jobId || '',
             hist: Array.isArray(job?.headerHistory) ? job.headerHistory.length : 0,
-            header: String(job?.header || ''),
+            header: String(scored.hashedHeader || job?.header || ''),
             worker: String(session?.workerKey || session?.login || ''),
           }));
         } catch { /* ignore */ }
