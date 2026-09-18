@@ -1551,6 +1551,8 @@ export function createPool({
             computed: scored.hash || '',
             jobId: job?.jobId || '',
             hist: Array.isArray(job?.headerHistory) ? job.headerHistory.length : 0,
+            header: String(job?.header || ''),
+            worker: String(session?.workerKey || session?.login || ''),
           }));
         } catch { /* ignore */ }
       }
@@ -1566,6 +1568,8 @@ export function createPool({
           computed: scored.hash || '',
           jobId: job?.jobId || '',
           hist: Array.isArray(job?.headerHistory) ? job.headerHistory.length : 0,
+          header: String(job?.header || ''),
+          worker: String(session?.workerKey || session?.login || ''),
         }));
       } catch { /* ignore */ }
       rejectSubmit(sock, session, msg, 'bad_hash');
