@@ -34,17 +34,17 @@ function tmpPool(shareBits = 8) {
   return { pool, dest };
 }
 
-function findShare(job, max = 6_000n) {
+function findShare(job, dest, max = 200_000n) {
   for (let nonce = 0n; nonce < max; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+    const s = scoreShare({ job, nonce, dest });
     if (s.ok) return { nonce, s };
   }
   throw new Error('no_share');
 }
 
-function findMiss(job, max = 4096n) {
+function findMiss(job, dest, max = 80_000n) {
   for (let nonce = 0n; nonce < max; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+    const s = scoreShare({ job, nonce, dest });
     if (!s.ok && s.reason === 'low_diff' && s.hash) return { nonce, s };
   }
   throw new Error('no_low_diff');
@@ -139,7 +139,7 @@ describe('stale classification and restamp/grace accept', () => {
   it('a share on the pre-restamp header of the same jobId is accepted', async () => {
     const { pool, dest } = tmpPool(8);
     const job = pool.issueJob();
-    const hit = findShare(job);
+    const hit = findShare(job, dest);
     const beforeHeader = job.header;
     rememberJobHeader(job, beforeHeader);
     const before = decodeHeader(headerFromHex(job.header));
@@ -179,7 +179,7 @@ describe('stale classification and restamp/grace accept', () => {
   it('previous-job share after a new round is not stale and does not add roundHashes', async () => {
     const { pool, dest } = tmpPool(8);
     const job = pool.issueJob();
-    const a = findShare(job);
+    const a = findShare(job, dest);
     let b;
     for (let nonce = a.nonce + 1n; nonce < a.nonce + 2000n; nonce += 1n) {
       const s = scoreShare({ job, nonce });
@@ -214,7 +214,7 @@ describe('stale classification and restamp/grace accept', () => {
   it('bad_hash, duplicate_share, and low_diff do not increment stale; accepted survives a round roll', async () => {
     const { pool, dest } = tmpPool(8);
     const job = pool.issueJob();
-    const hit = findShare(job);
+    const hit = findShare(job, dest);
     const port = await listen(pool);
     const first = await loginAndSubmit(port, dest, [{
       id: 2, jobId: job.jobId, nonce: hit.nonce, hash: hit.s.hash,
@@ -235,7 +235,7 @@ describe('stale classification and restamp/grace accept', () => {
 
     const { pool: pool2, dest: dest2 } = tmpPool(8);
     const job2 = pool2.issueJob();
-    const miss = findMiss(job2);
+    const miss = findMiss(job2, dest2);
     const port2 = await listen(pool2);
     const low = await loginAndSubmit(port2, dest2, [{
       id: 2, jobId: job2.jobId, nonce: miss.nonce, hash: miss.s.hash,
@@ -248,7 +248,7 @@ describe('stale classification and restamp/grace accept', () => {
 
     const { pool: pool3, dest: dest3 } = tmpPool(8);
     const job3 = pool3.issueJob();
-    const hit3 = findShare(job3);
+    const hit3 = findShare(job3, dest3);
     const port3 = await listen(pool3);
     await loginAndSubmit(port3, dest3, [{
       id: 2, jobId: job3.jobId, nonce: hit3.nonce, hash: hit3.s.hash,
