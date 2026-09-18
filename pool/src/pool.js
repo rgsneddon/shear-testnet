@@ -2540,7 +2540,10 @@ export function createPool({
       || url.pathname.startsWith('/admin/')
       || url.pathname.startsWith('/api/admin')
     ) {
-      await handleAdminHttp(req, res, { store, admin, queueSend, ops: adminOps, pendingPulls });
+      await handleAdminHttp(req, res, {
+        store, admin, queueSend, ops: adminOps, pendingPulls,
+        poolDest: payoutDest(miner) || miner,
+      });
       return;
     }
     if (url.pathname === '/api/stats') {

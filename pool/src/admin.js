@@ -42,6 +42,44 @@ const PUBLIC_BRAND = path.join(__dirname, '../public/brand');
 /** Documented generic example. Override with SHEAR_ADMIN_HOST. */
 export const ADMIN_HOST_EXAMPLE = 'mypool.site';
 
+/** Operator Continuum dests: custody pot dest plus the 1% fee dest. */
+export function adminWalletDests(poolDest) {
+  const out = [];
+  const pay = payoutDest(poolDest) || (isDestAddress(poolDest) ? String(poolDest).trim() : '');
+  if (pay && isDestAddress(pay)) out.push(pay);
+  const fee = poolFeeDest();
+  if (fee && isDestAddress(fee) && fee !== pay) out.push(fee);
+  if (!out.length && fee) out.push(fee);
+  return out;
+}
+
+function adminWalletBalance(store, poolDest) {
+  const dests = adminWalletDests(poolDest);
+  let nanos = 0;
+  for (const d of dests) nanos += reconstructOwner(store, d).spendableNanos;
+  if (nanos < 0) nanos = 0;
+  return {
+    dests,
+    spendableNanos: nanos,
+    spendable: nanos / NANOS_PER_SHE,
+    display: formatShe(nanos / NANOS_PER_SHE),
+  };
+}
+
+function adminSpendFrom(store, poolDest) {
+  const dests = adminWalletDests(poolDest);
+  let best = dests[0] || poolFeeDest();
+  let bestN = -1;
+  for (const d of dests) {
+    const n = reconstructOwner(store, d).spendableNanos;
+    if (n > bestN) {
+      bestN = n;
+      best = d;
+    }
+  }
+  return best;
+}
+
 export function configuredAdminHosts() {
   return String(process.env.SHEAR_ADMIN_HOST || '')
     .split(',')
@@ -361,7 +399,7 @@ function needOps(ops, name) {
 }
 
 export function handleAdminApi(url, method, body, {
-  store, queueSend, cookie, admin, ops, loopback = false, host = '', pendingPulls,
+  store, queueSend, cookie, admin, ops, loopback = false, host = '', pendingPulls, poolDest = '',
 } = {}) {
   const pathName = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
@@ -411,21 +449,20 @@ export function handleAdminApi(url, method, body, {
   const rec = admin.sessionOf(token);
   if (!rec) return { status: 401, json: { ok: false, reason: 'auth' } };
   if (pathName === '/api/admin/wallet' && verb === 'GET') {
-    const from = poolFeeDest();
-    const hist = reconstructOwner(store, from);
+    const bal = adminWalletBalance(store, poolDest);
     return {
       status: 200,
       json: {
         ok: true,
-        spendable: hist.spendable,
-        spendableNanos: hist.spendableNanos,
-        display: formatShe(hist.spendable),
+        spendable: bal.spendable,
+        spendableNanos: bal.spendableNanos,
+        display: bal.display,
         totp: !!admin.status().totp,
       },
     };
   }
   if (pathName === '/api/admin/withdraw' && verb === 'POST') {
-    const from = poolFeeDest();
+    const from = adminSpendFrom(store, poolDest);
     if (containsShe1(body.to) || containsShe1(body.dest)) {
       return { status: 400, json: { ok: false, reason: 'she1_on_chain' } };
     }

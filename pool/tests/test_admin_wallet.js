@@ -4,9 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { NANOS_PER_SHE } from '../../crypto/asert.js';
+import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { noteCommitOfDest20 } from '../../crypto/note.js';
+import { reconstructOwner } from '../src/wallet_api.js';
 import { destOpeningFromView } from '../../crypto/address.js';
 import { levyNanos, poolFeeDest, containsShe1 } from '../../crypto/levy.js';
 import { signPoolWithdraw, poolWithdrawDigest } from '../../crypto/eip712.js';
@@ -20,6 +22,7 @@ import {
   handleAdminApi,
   totpCode,
   isAdminHost,
+  adminWalletDests,
 } from '../src/admin.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -90,6 +93,8 @@ describe('operator admin fee wallet', () => {
     assert.doesNotMatch(nginx, /\/api\/stats/);
     const adminSrc = fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8');
     assert.doesNotMatch(adminSrc, /kyrusfables/);
+    assert.match(adminSrc, /adminWalletDests/);
+    assert.match(adminSrc, /adminWalletBalance/);
     for (const rel of ['site/index.html', 'pool/public/index.html', 'pool/public/miner.html', 'pool/public/explorer.html', 'pool/src/admin.js', 'pool/src/pool.js']) {
       const pub = fs.readFileSync(path.join(root, rel), 'utf8');
       assert.doesNotMatch(pub, /kyrusfables/);
@@ -166,6 +171,7 @@ describe('operator admin fee wallet', () => {
     const wallet = run('/api/admin/wallet', 'GET', {}, cookie);
     assert.equal(wallet.json.ok, true);
     assert.equal(wallet.json.spendable, 1);
+    assert.ok(adminWalletDests('').includes(from));
 
     const leak = run('/api/admin/withdraw', 'POST', { to: id.paymentCode, amount }, cookie);
     assert.equal(leak.json.ok, false);
@@ -228,5 +234,52 @@ describe('operator admin fee wallet', () => {
     assert.equal(withCode.json.ok, true);
     if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
     else process.env.SHEAR_ADMIN_HOST = prevHost;
+  });
+
+  it('admin spendable reconstructs custody pots on the pool dest, not only the 1% fee dest', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admin-pot-'));
+    const admin = createAdmin(dir);
+    const poolId = newIdentity();
+    const hasherId = newIdentity();
+    const poolDest = destForLogin(poolId.address, { viewKey: poolId.viewKey, height: 1 });
+    const hasher = destForLogin(hasherId.address, { viewKey: hasherId.viewKey, height: 1 });
+    const want = noteCommitOfDest20(hash20FromAddress(poolDest));
+    const store = {
+      blocks: [{
+        height: 2,
+        miner: hasher,
+        aLeaves: [{ noteCommit: Buffer.alloc(32, 3), count: 256 }],
+        txs: [{
+          coinbase: true,
+          vout: [
+            { kind: 'pot', noteCommit: want, nanos: 0 },
+            { kind: 'hash', noteCommit: want, nanos: 0 },
+          ],
+        }],
+      }],
+      tip: () => ({ height: 2 + SPENDABLE_CONFIRMATIONS }),
+      mempool: [],
+    };
+    const rec = reconstructOwner(store, poolDest);
+    const pot = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * 0.01);
+    assert.equal(rec.spendableNanos, pot + 256);
+    const prevHost = process.env.SHEAR_ADMIN_HOST;
+    process.env.SHEAR_ADMIN_HOST = ADMIN_HOST;
+    try {
+      const created = handleAdminApi(url('/api/admin/setup'), 'POST', {
+        user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken,
+      }, { store, admin, cookie: '', host: ADMIN_HOST });
+      assert.equal(created.json.ok, true, created.json.reason);
+      const cookie = cookieOf(created.headers);
+      const wallet = handleAdminApi(url('/api/admin/wallet'), 'GET', {}, {
+        store, admin, cookie, host: ADMIN_HOST, poolDest,
+      });
+      assert.equal(wallet.json.ok, true);
+      assert.ok(wallet.json.spendableNanos >= pot);
+      assert.ok(wallet.json.spendable > 0.9);
+    } finally {
+      if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
+      else process.env.SHEAR_ADMIN_HOST = prevHost;
+    }
   });
 });

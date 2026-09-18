@@ -30,7 +30,7 @@ import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, open
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, spentNoteCommits } from '../../crypto/coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, spentNoteCommits, noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
@@ -201,6 +201,7 @@ export function reconstructOwner(store, address) {
   const tipH = Number(store?.tip?.()?.height || (store.blocks || []).at(-1)?.height || 0);
   const rec = rowsToHistory(rows, dests, tipH);
   const mempool = store?.mempool || [];
+  const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
   let nanos = 0;
   for (const d of dests) {
     const destRows = typeof store?.historyFor === 'function' ? store.historyFor(d) : rows;
@@ -213,7 +214,6 @@ export function reconstructOwner(store, address) {
       return h ? noteCommitOfDest20(h) : null;
     }).filter(Boolean);
     const spent = spentNoteCommits(store.blocks || []);
-    const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
     for (const b of store.blocks || []) {
       const pays = [
         ...expectedCoinbasePays(b.shareBatch || [], {
@@ -236,6 +236,14 @@ export function reconstructOwner(store, address) {
     }
     nanos -= dests.reduce((a, d) => a + mempoolDebitNanos(mempool, d), 0);
   }
+  let notes = 0;
+  for (const d of dests) {
+    notes += noteCommitSpendableNanos(store.blocks || [], d, tipH, {
+      hashBonusNanos: bonus,
+    });
+    notes -= mempoolDebitNanos(mempool, d);
+  }
+  if (notes > nanos) nanos = notes;
   if (nanos < 0) nanos = 0;
   return { ...rec, spendableNanos: nanos, spendable: nanosToShe(nanos) };
 }
