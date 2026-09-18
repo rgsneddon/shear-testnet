@@ -17,7 +17,9 @@ import {
   mainnetFingerprint,
   consensusFingerprint,
 } from '../../crypto/asert.js';
-import { CLIENT, ALGO, HEADER_LEN } from '../../crypto/shear_hash.js';
+import { CLIENT, ALGO, HEADER_LEN, assertHashBackend, hashBackendKind } from '../../crypto/shear_hash.js';
+import { printHelp, helpTopics } from './help.js';
+import { nodeStatus, printNodeStatus, watchNodeStatus } from './status.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_DAYS, RESERVE_JOIN_CUTOFF_DAYS } from '../../crypto/asert.js';
 import { extraMintAllowed } from '../../crypto/mint.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
@@ -132,43 +134,62 @@ export async function startNode({
   };
 }
 
-export function printHelp() {
-  return [
-    'shear-node — validating full node (ADMITv2)',
-    '',
-    'Usage:',
-    '  node node/src/node.js',
-    '  node node/src/node.js --print-config',
-    '  node node/src/node.js --fast-sync',
-    '  node node/src/node.js --bootstrap=/path/or/url',
-    '  node node/src/node.js --help',
-    '',
-    'Env:',
-    '  SHEAR_DATA         datadir (default ~/.shear/testnet-v4)',
-    '  SHEAR_NETWORK      shear-testnet-v4 (this book). shear-v1 waits for genesis.',
-    '  SHEAR_P2P_PORT     default 30303',
-    '  SHEAR_P2P_BIND     default 0.0.0.0',
-    '  SHEAR_RPC_PORT     default 18332',
-    '  SHEAR_RPC_BIND     default 127.0.0.1 (loopback)',
-    '  SHEAR_SEEDS        comma host:port (default p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303)',
-    '  SHEAR_P2P_MAX_FRAME  P2P JSON line cap (default 2 MiB)',
-    '  SHEAR_MAX_PEERS    live peer cap (default 32)',
-    '  SHEAR_FAST_SYNC    1 = skip archival bodies (not share PoW; peers always verify)',
-    '  SHEAR_MAINNET_EMIT  1 = allow shear-v1 emit after genesis (also needs SHEAR_MAINNET_EMIT_CONFIRM)',
-    '',
-    'RPC is loopback. Do not bind RPC to the public internet.',
-    'Mainnet shear-v1 is not live. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 and SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET after genesis.',
-    'Build native addons on this box: make -C crypto/native',
-  ].join('\n');
+export { printHelp, helpTopics, nodeStatus, printNodeStatus };
+
+function parseHelpTopic(argv) {
+  const args = argv.slice(2);
+  if (args[0] === 'help') return args[1] || '';
+  if (args.includes('--help') || args.includes('-h')) {
+    const i = Math.max(args.indexOf('--help'), args.indexOf('-h'));
+    const next = args[i + 1];
+    if (next && !String(next).startsWith('-')) return next;
+    return '';
+  }
+  return null;
 }
 
 async function main() {
-  if (process.argv.includes('--help') || process.argv.includes('-h')) {
-    console.log(printHelp());
+  const argv = process.argv;
+  const args = argv.slice(2);
+  const unknown = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (a === 'help' || helpTopics().includes(a)) continue;
+    if (['--help', '-h', '--print-config', '--fast-sync', '--status'].includes(a)) continue;
+    if (a.startsWith('--bootstrap=')) continue;
+    if (a === '--bootstrap') {
+      i += 1;
+      continue;
+    }
+    unknown.push(a);
+  }
+  const topic = parseHelpTopic(argv);
+  if (topic !== null) {
+    if (topic && !helpTopics().includes(String(topic).toLowerCase())) {
+      console.error(`unknown help topic: ${topic}`);
+      console.log(printHelp());
+      process.exitCode = 2;
+      return;
+    }
+    console.log(printHelp(topic));
     return;
   }
-  if (process.argv.includes('--print-config')) {
+  if (unknown.length) {
+    console.error(`unknown flag: ${unknown[0]}`);
+    console.log(printHelp());
+    process.exitCode = 2;
+    return;
+  }
+  if (argv.includes('--print-config')) {
     console.log(JSON.stringify(printConfig()));
+    return;
+  }
+  if (argv.includes('--status')) {
+    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4');
+    const store = createStore(dataDir, {
+      fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
+    });
+    printNodeStatus({ store, extra: { hashBackend: hashBackendKind() || 'missing' } });
     return;
   }
   const bootArg = process.argv.find((a) => a.startsWith('--bootstrap='))
@@ -199,8 +220,15 @@ async function main() {
   }
   const tip = started.store.tip();
   const live = typeof started.store.fluxset === 'function' ? started.store.fluxset() : null;
+  let hashBackend = hashBackendKind() || 'missing';
+  try {
+    assertHashBackend();
+  } catch (e) {
+    console.error(JSON.stringify({ event: 'shearhash', ok: false, error: String(e?.message || e) }));
+  }
   console.log(JSON.stringify({
     ok: true,
+    event: 'boot',
     p2p: started.bound.port,
     rpc: started.rpcBound?.port,
     bind: started.bound.host,
@@ -213,7 +241,17 @@ async function main() {
     hashTxLive: HASH_TX_LIVE,
     admit: 'ADMITv2',
     jroot: live?.jroot ? Buffer.from(live.jroot).toString('hex') : '',
+    hashBackend,
   }));
+  watchNodeStatus({
+    store: started.store,
+    p2p: started.p2p,
+    extra: () => ({
+      p2p: started.bound.port,
+      rpc: started.rpcBound?.port,
+      hashBackend: hashBackendKind() || 'missing',
+    }),
+  });
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;

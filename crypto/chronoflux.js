@@ -366,6 +366,13 @@ function compactVout(o) {
     return row;
   }
   const row = { kind };
+  const d20 = dest20FromOpen(o);
+  if (d20) row.dest20 = d20;
+  if (o.noteCommit) row.noteCommit = o.noteCommit;
+  const claimed = claimedReserveV(o);
+  if (Number.isFinite(claimed)) {
+    row.valueProof = { ...(o.valueProof && typeof o.valueProof === 'object' ? compactValue(o.valueProof) : {}), v: claimed };
+  }
   if (reserveKind) attachReserveSeal(row, o);
   if (keepDest && o.address) row.address = o.address;
   if (o.memo) row.memo = true;
@@ -398,12 +405,16 @@ export function compactTx(tx) {
     delete out.from;
     delete out.to;
     delete out.payer;
+    delete out.sponsor;
   }
   if (tx.vin) {
     out.vin = (tx.vin || []).map((v) => {
       if (v?.coinbase) return compactValue({ coinbase: true, height: v.height });
       const row = compactValue({
         commit: v.pseudo || v.cTilde || v.commit,
+        prev: v.prev,
+        index: v.index,
+        noteCommit: v.noteCommit,
       });
       if (keepDest && v.address) row.address = v.address;
       if (reserveTx) {

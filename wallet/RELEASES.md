@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.35 (current)
+## 0.36 (current)
+
+Dest-opening Shearview/pending (amounts-only pool history no longer wipes dest-owned rows). Continuum Reddit at https://www.reddit.com/r/shear/. Social buttons open https URLs with no query/fragment/referrer. ADMITv2 book `shear-testnet-v4`. GUI + CLI. Required miner ShearK **≥ 2.4**. Do not recut 0.35. Android `.apk` is packed on Windows. macOS `.dmg` is a MacBook handoff.
+
+## 0.35
 
 ADMITv2 book `shear-testnet-v4`. Short public `she1` / `ssa1` / `shear1` (dest20 / fingerprint). Native ADMITv2 send path. GUI + CLI. Magic pin `kBookMagic = shear-testnet-v4`. Required miner ShearK **≥ 2.4**. Do not recut 0.34. Android `.apk` is packed on Windows. macOS `.dmg` is a MacBook handoff.
 

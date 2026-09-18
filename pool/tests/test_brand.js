@@ -160,7 +160,7 @@ describe('brand pages', () => {
     for (const page of [siteHtml, poolHtml, explorerHtml, mempoolHtml]) {
       assert.match(page, /rgsneddon\/shear-testnet/);
       assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
-      assert.match(page, /releases\/tag\/0\.35|shear-wallet-0\.35/);
+      assert.match(page, /releases\/tag\/0\.36|shear-wallet-0\.36/);
       assert.doesNotMatch(page, /releases\/tag\/0\.28|shear-wallet-0\.28/);
       assert.match(page, /rgsneddon\/ShearK/);
       assert.match(page, /theme\.js\?v=15/);
@@ -273,6 +273,23 @@ describe('brand pages', () => {
     assert.ok(ico.length > 20000);
     const png = bytes('wallet/windows/runner/resources/app_icon.png');
     assert.deepEqual(pngSize(png), { w: 256, h: 256 });
+    const rgbaIcons = [
+      'wallet/windows/runner/resources/app_icon.png',
+      'wallet/macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_256.png',
+      'wallet/macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_1024.png',
+      'wallet/web/icons/Icon-192.png',
+      'wallet/web/icons/Icon-512.png',
+      'wallet/web/icons/Icon-maskable-192.png',
+      'wallet/web/icons/Icon-maskable-512.png',
+      'wallet/web/favicon.png',
+      'wallet/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png',
+      'wallet/ios/Runner/Assets.xcassets/AppIcon.appiconset/Icon-App-1024x1024@1x.png',
+      'wallet/linux/runner/resources/app_icon.png',
+    ];
+    for (const rel of rgbaIcons) {
+      const buf = bytes(rel);
+      assert.equal(buf[25], 6, `${rel} must be RGBA (no white plate)`);
+    }
     const webIndex = read('wallet/web/index.html');
     assert.match(webIndex, /Shear wallet/);
     assert.equal(/A new Flutter project/.test(webIndex), false);
@@ -361,11 +378,20 @@ describe('sticky public navbar', () => {
       'pool/public/miner.html',
       'site/docs/index.html',
       'site/whitepaper/index.html',
+      'mempool/index.html',
+      'pool/admin/index.html',
     ]) {
       const page = read(rel);
       assert.match(page, /class="nav-btn/, `${rel} must ship nav-btn`);
-      assert.match(page, /grid-auto-columns:\s*1fr/, `${rel} nav must match explorer equal-column boxes`);
+      assert.match(page, /id="shear-nav"/, `${rel} must ship shear-nav`);
+      assert.doesNotMatch(
+        page,
+        /\.top-banner\s*>\s*\.nav\s*\{\s*display:\s*inline-grid/,
+        `${rel} must not force the full banner nav on small screens`,
+      );
     }
+    assert.match(siteCss, /@media \(max-width: 1024px\)[\s\S]*button\.nav-toggle \{ display: inline-flex; \}/);
+    assert.match(siteCss, /@media \(min-width: 1025px\)[\s\S]*button\.nav-toggle \{ display: none; \}/);
   });
 
   it('pins .top-banner on every public Shear page', () => {

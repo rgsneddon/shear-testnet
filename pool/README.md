@@ -32,7 +32,7 @@ npm install
 make -C crypto/native
 ```
 
-If `shearadmit.node` / `shearhash.node` fail to build, the pool cannot verify ADMITv2 or ShearHash. Fix the native build before mining.
+If `shearadmit.node` / `shearhash.node` fail to build, the pool cannot verify ADMITv2 or ShearHash. `npm run pool` exits if ShearHash-v3 cannot verify; shares would otherwise come back `native_missing`. Build RandomX then `make -C crypto/native shearhash.node` before mining. Do not copy a Darwin `.node` onto Linux.
 
 ## Datadir
 

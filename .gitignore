@@ -27,6 +27,7 @@ wallet/dist/dmg-stage/
 wallet/dist/*.dmg
 wallet/dist/*.apk
 wallet/dist/*.zip
+wallet/dist-cli/
 dist/
 wallet/**/local.properties
 wallet/**/Flutter/ephemeral/

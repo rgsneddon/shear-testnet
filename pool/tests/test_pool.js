@@ -15,7 +15,7 @@ import {
 import { requiredJobFields, encodeHeader, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { payoutDest, newIdentity, encodeHrp, aliasDestOfSilentId, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, JOB_RESTAMP_MS, STATS_REFRESH_MS, PAYOUT_SWEEP_MS, wireJob } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, JOB_RESTAMP_MS, STATS_REFRESH_MS, PAYOUT_SWEEP_MS, wireJob, hashWorkerRejectReason } from '../src/pool.js';
 import { hasherHasValidRoundShare, roundActualHashes } from '../src/hash_credit.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
 import { verifyPoolWithdrawOffchain } from '../../crypto/levy.js';
@@ -23,6 +23,26 @@ import { publicJob, buildTemplate, hashBonusByMiner } from '../../node/src/chain
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
 describe('stratum wire job', () => {
+  it('hash worker throws map to native_missing not a silent hash_failed', () => {
+    assert.equal(hashWorkerRejectReason(new Error('hash_busy')), 'busy');
+    assert.equal(
+      hashWorkerRejectReason(new Error('ShearHash-v3 native addon missing and ShearK-Miner not built')),
+      'native_missing',
+    );
+    assert.equal(hashWorkerRejectReason(new Error('header must be 128 bytes')), 'bad_header');
+    assert.equal(hashWorkerRejectReason(new Error('hash_timeout')), 'hash_timeout');
+    assert.equal(hashWorkerRejectReason(new Error('hash_worker_exit')), 'hash_timeout');
+    assert.equal(hashWorkerRejectReason(new Error('verify parse')), 'native_missing');
+    assert.equal(hashWorkerRejectReason(new Error('rx crash')), 'hash_failed');
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.match(src, /hashWorkerRejectReason/);
+    assert.match(src, /headerHex: copy\.toString\('hex'\)/);
+    const main = fs.readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+    assert.match(main, /assertHashBackend/);
+    const worker = fs.readFileSync(new URL('../src/hash_worker.js', import.meta.url), 'utf8');
+    assert.match(worker, /headerHex/);
+  });
+
   it('omits headerHistory so great and small miners can parse and submit', () => {
     const j = wireJob({
       jobId: 'shear-1-1',

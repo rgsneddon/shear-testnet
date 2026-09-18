@@ -25,6 +25,7 @@ import { vaultDest, destForLogin } from './flow_sheet.js';
 import { verifySealedNote, reviveBytes } from './note.js';
 import { PI_SHE_NANOS } from './asert.js';
 import { digestTx } from '../node/src/chain.js';
+import { poolWithdrawTx } from './levy.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -240,8 +241,10 @@ describe('chronoflux prune + collate', () => {
     assert.equal(sealed.nanos, undefined);
     assert.equal(sealed.vout[0].nanos, undefined);
     assert.ok(sealed.vout[0].commit);
-    assert.ok(sealed.vout[0].rangeProof);
-    assert.equal(sealed.vout[0].rangeProof === true, false);
+    assert.ok(sealed.vout[0].rangeProof || sealed.vout[0].valueProof);
+    if (sealed.vout[0].rangeProof) {
+      assert.equal(sealed.vout[0].rangeProof === true, false);
+    }
     const wire = JSON.parse(JSON.stringify(sealed), reviveBytes);
     assert.equal(Buffer.isBuffer(wire.vout[0].commit), true);
     assert.equal(verifySealedNote(wire.vout[0], PI_SHE_NANOS), true);
@@ -300,5 +303,33 @@ describe('chronoflux prune + collate', () => {
     assert.equal(voteSealed.payer, undefined);
     assert.ok(voteSealed.vout[0].dest20);
     assert.equal(digestTx(voteSealed).equals(digestTx(voteFat)), true);
+  });
+
+  it('compact pool-withdraw keeps dest20+value so header merkle still matches after lean/wire', () => {
+    const id = newIdentity();
+    const payee = newIdentity();
+    const from = destForLogin(id.address, { viewKey: id.viewKey });
+    const to = destForLogin(payee.address, { viewKey: payee.viewKey });
+    const fat = poolWithdrawTx({ from, to, nanos: 314_159_265_358, fee: 100, id: 'auto-payout-test' });
+    const sealed = compactTx(fat);
+    const blob = JSON.stringify(sealed);
+    assert.doesNotMatch(blob, /ssa1/);
+    assert.equal(sealed.from, undefined);
+    assert.equal(sealed.to, undefined);
+    assert.equal(sealed.vout[0].address, undefined);
+    assert.equal(sealed.vout[0].kind, 'pool-withdraw');
+    assert.ok(sealed.vout[0].dest20);
+    assert.equal(Number(sealed.vout[0].valueProof.v), 314_159_265_358);
+    assert.equal(digestTx(sealed).equals(digestTx(fat)), true);
+    const wire = JSON.parse(JSON.stringify(sealed), reviveBytes);
+    assert.equal(digestTx(wire).equals(digestTx(fat)), true);
+    const lean = leanBlock({
+      height: 36,
+      txs: [
+        { coinbase: true, height: 36, vout: [{ kind: 'pot', nanos: 100_000_000_000 }, { kind: 'finder-fee', nanos: 50 }, { kind: 'reserve-fee', nanos: 50 }] },
+        fat,
+      ],
+    });
+    assert.equal(digestTx(lean.txs[1]).equals(digestTx(fat)), true);
   });
 });

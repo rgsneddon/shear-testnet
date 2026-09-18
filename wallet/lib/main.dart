@@ -27,7 +27,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.35';
+const kWalletVersion = '0.36';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
@@ -1051,13 +1051,19 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   }
 
   Future<void> _openSocial(String url) async {
-    final uri = Uri.parse(url);
+    final uri = socialUri(url);
+    if (uri == null) return;
     final opener = widget.openUrl;
     if (opener != null) {
       await opener(uri);
       return;
     }
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
+    // External browser only: in-app tabs share cookies and send a referrer.
+    await launchUrl(
+      uri,
+      mode: LaunchMode.externalApplication,
+      webOnlyWindowName: '_blank',
+    );
   }
 
   Widget _socialIcon(BuildContext context, String name, String url) {

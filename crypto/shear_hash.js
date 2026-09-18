@@ -38,9 +38,43 @@ try {
   } catch { /* ignore */ }
 }
 
-function minerBin() {
-  const p = path.join(here, '..', 'sheark-miner', process.platform === 'win32' ? 'ShearK-Miner.exe' : 'ShearK-Miner');
-  return fs.existsSync(p) ? p : '';
+export function minerBin() {
+  const names = process.platform === 'win32' ? 'ShearK-Miner.exe' : 'ShearK-Miner';
+  const cands = [
+    process.env.SHEARK_MINER,
+    process.env.SHEAR_MINER,
+    path.join(here, '..', 'sheark-miner', names),
+  ];
+  for (const p of cands) {
+    if (p && fs.existsSync(p) && fs.statSync(p).isFile()) return p;
+  }
+  for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    const p = path.join(dir, names);
+    try {
+      if (fs.existsSync(p) && fs.statSync(p).isFile()) return p;
+    } catch { /* skip */ }
+  }
+  return '';
+}
+
+export function hashBackendKind() {
+  if (native?.hash) return 'native';
+  if (minerBin()) return 'miner';
+  return '';
+}
+
+/** Solo/pool must verify ShearHash-v3 before taking shares. */
+export function assertHashBackend() {
+  const kind = hashBackendKind();
+  if (kind) return kind;
+  throw new Error(
+    'ShearHash-v3 native addon missing and ShearK-Miner not built. '
+    + 'On Linux: cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native '
+    + '&& cmake --build crypto/randomx/build -j$(nproc) '
+    + '&& make -C crypto/native shearhash.node. '
+    + 'Or set SHEARK_MINER to a 2.4 ShearK-Miner binary.',
+  );
 }
 
 export function sha256(buf) {

@@ -18,14 +18,14 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
 - Miner pin: **ShearK-Miner 2.4** — https://github.com/rgsneddon/ShearK/releases/tag/2.4
-- Wallet pin: **0.35** (GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.35
+- Wallet pin: **0.36** (GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.36
 - Stratum: `pool.shear.digital:1111`
 - P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v4`)
 - Site: https://shear.digital
 - Pool: https://pool.shear.digital
 - Chain: `shear-testnet-v4`
 
-Mainnet `shear-v1` is **not live**. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` **and** `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET` after the in-tree genesis instant. Fingerprint must include `POT_SCHED` + `EPOCH_DAYS=400` + oracle policy before emit. Do not invent a different datetime. Do not set those env vars.
+Mainnet `shear-v1` is **not live** and is not yet scheduled. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` **and** `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`. Fingerprint must include `POT_SCHED` + `EPOCH_DAYS=400` + oracle policy before emit. Do not set those env vars.
 
 Block pot starts at **1.00 SHE** and falls **0.01 SHE per Vortex epoch** to a **0.20 SHE** floor. Testnet epochs are **4 days** (so rollovers can be watched); mainnet epochs are **400 days**. Hash bonus stays governance-voted. Reserve interest is oracle-frozen each epoch. The pot schedule is not votable.
 
@@ -105,7 +105,7 @@ ShearK-Miner --pool pool.shear.digital:1111 --user ssa1YOURDEST.worker --threads
 
 `ssa1.worker` is the dest the wallet exported for this worker. Amounts are confidential; dests are stealth. Reuse links your blocks; rotate dests.
 
-Wallet **0.35** syncs a local node at `127.0.0.1:18332` (headers + compact blocks). It does not use the old height sampler. Public pool HTTP submit is an advanced toggle.
+Wallet **0.36** syncs a local node at `127.0.0.1:18332` (headers + compact blocks). It does not use the old height sampler. Public pool HTTP submit is an advanced toggle.
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure.
 CLI covers the same functions (`dart run bin/shear.dart help`), including sign, The Reserve vote/rewards, vort1 create/register, and Closure backup/restore.

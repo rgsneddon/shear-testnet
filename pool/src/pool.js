@@ -588,6 +588,17 @@ export function submittedShareDigest(params) {
   return /^[0-9a-f]{64}$/.test(h) ? h : '';
 }
 
+/** Map hash-worker throws to a stratum reject the miner can print. */
+export function hashWorkerRejectReason(err) {
+  const m = String(err?.message || err || '');
+  if (m === 'hash_busy') return 'busy';
+  if (m.includes('native addon missing') || m.includes('ShearK-Miner not built')) return 'native_missing';
+  if (m.includes('header must be')) return 'bad_header';
+  if (m === 'hash_timeout' || m === 'hash_worker_exit') return 'hash_timeout';
+  if (m.includes('verify parse') || m.includes('verify failed')) return 'native_missing';
+  return 'hash_failed';
+}
+
 export function gateJob(job) {
   return requiredJobFields(job);
 }
@@ -1135,7 +1146,7 @@ export function createPool({
       timer.unref?.();
       hashWait.set(id, { resolve, reject, timer, conn });
       try {
-        bootHashWorker().postMessage({ id, header: copy });
+        bootHashWorker().postMessage({ id, headerHex: copy.toString('hex') });
       } catch (e) {
         hashWait.delete(id);
         clearTimeout(timer);
@@ -1684,8 +1695,16 @@ export function createPool({
     try {
       scored = await scoreShareLive({ job, nonce: params.nonce, claimed, conn, dest: destPay });
     } catch (e) {
-      const reason = String(e?.message || e) === 'hash_busy' ? 'busy' : 'hash_failed';
+      const reason = hashWorkerRejectReason(e);
       if (reason === 'busy') stats.hashBusy = (Number(stats.hashBusy) || 0) + 1;
+      try {
+        console.error(JSON.stringify({
+          event: 'share_hash_backend',
+          reason,
+          error: String(e?.message || e).slice(0, 180),
+          worker: String(session?.workerKey || session?.login || ''),
+        }));
+      } catch { /* ignore */ }
       replyLine(sock, { id: msg.id, error: reason });
       return;
     }

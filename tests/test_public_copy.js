@@ -107,9 +107,15 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
     assert.match(main, /ShearK-Miner <strong>2\.4<\/strong>/);
-    assert.doesNotMatch(main, /shear-wallet-0\.35-macos\.dmg/);
-    assert.match(main, /shear-wallet-0\.35-android\.apk/);
+    assert.doesNotMatch(main, /shear-wallet-0\.36-macos\.dmg/);
+    assert.match(main, /shear-wallet-0\.36-android\.apk/);
     assert.doesNotMatch(pool, /shear-testnet-v3/);
+    assert.match(main, /A launch date is not decided/);
+    assert.doesNotMatch(main, /2026-09-18T21:00:00/);
+    assert.doesNotMatch(docs, /2026-09-18T21:00:00/);
+    assert.doesNotMatch(read('site/admin/index.html'), /2026-09-18T21:00:00/);
+    assert.doesNotMatch(readme, /2026-09-18T21:00:00/);
+    assert.match(readme, /not yet scheduled/);
   });
 
   it('clone and operator handoff stay on merged main, not feat/admit-v2', () => {
@@ -123,12 +129,12 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /git checkout feat\/admit-v2/);
   });
 
-  it('MacBook handoff points at merged GitHub main, 0.35 tag, and pack_macos.sh', () => {
+  it('MacBook handoff points at merged GitHub main, 0.36 tag, and pack_macos.sh', () => {
     const md = read('MACBOOK_HANDOFF.md');
     assert.match(md, /https:\/\/github\.com\/rgsneddon\/shear-testnet/);
     assert.match(md, /blob\/main\/MACBOOK_HANDOFF\.md/);
-    assert.match(md, /releases\/tag\/0\.35/);
+    assert.match(md, /releases\/tag\/0\.36/);
     assert.match(md, /pack_macos\.sh/);
-    assert.match(md, /shear-wallet-0\.35-macos\.dmg/);
+    assert.match(md, /shear-wallet-0\.36-macos\.dmg/);
   });
 });

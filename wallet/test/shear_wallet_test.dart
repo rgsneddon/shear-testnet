@@ -79,18 +79,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.35"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.36"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.35"'), isTrue);
+    expect(winMain.contains('L"Shear 0.36"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.35"'), isTrue);
+    expect(winRc.contains('"Shear 0.36"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.35"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.36"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -1281,7 +1281,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.35');
+    expect(kWalletVersion, '0.36');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -1733,8 +1733,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.35');
-    expect(kWalletVersion, '0.35');
+    expect(app.title, 'Shear 0.36');
+    expect(kWalletVersion, '0.36');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -1788,6 +1788,75 @@ void main() {
     expect(app.darkTheme!.inputDecorationTheme.fillColor, isNot(const Color(0xFFFFFFFF)));
     expect(app.theme!.cardColor, shearCard);
     expect(app.theme!.cardTheme.color, shearCard);
+  });
+
+  test('Continuum social URLs are https with no tracking query, fragment, or userInfo', () {
+    const urls = [kDiscordUrl, kTelegramUrl, kXUrl, kRedditUrl];
+    expect(kRedditUrl, 'https://www.reddit.com/r/shear/');
+    for (final url in urls) {
+      final parsed = Uri.parse(url);
+      expect(parsed.scheme, 'https');
+      expect(parsed.hasQuery, isFalse, reason: url);
+      expect(parsed.hasFragment, isFalse, reason: url);
+      expect(parsed.userInfo, isEmpty, reason: url);
+      expect(url.contains('utm_'), isFalse);
+      expect(url.contains('fbclid'), isFalse);
+      expect(url.contains('gclid'), isFalse);
+      expect(url.contains('si='), isFalse);
+      expect(socialUri(url), parsed);
+    }
+    expect(
+      socialUri('https://www.reddit.com/r/shear/?utm_source=wallet&fbclid=abc&si=1#hot'),
+      Uri.parse('https://www.reddit.com/r/shear/'),
+    );
+    expect(
+      socialUri('https://x.com/shearprivacy?s=20&t=tracker'),
+      Uri.parse('https://x.com/shearprivacy'),
+    );
+    expect(socialUri('https://evil.example/r/shear/?utm_source=x'), isNull);
+    expect(socialUri('javascript:alert(1)'), isNull);
+    expect(socialUri('https://user:pass@x.com/shearprivacy'), Uri.parse('https://x.com/shearprivacy'));
+  });
+
+  testWidgets('Continuum social buttons open sanitized https URLs, including Reddit', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-social-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final opened = <Uri>[];
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ShearLedger(),
+      startUnlocked: true,
+      skipPoolSync: true,
+      openUrl: (uri) async {
+        opened.add(uri);
+        return true;
+      },
+    ));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byTooltip('Reddit'), findsOneWidget);
+    for (final name in ['Reddit', 'Discord', 'Telegram', 'X']) {
+      final icon = find.byTooltip(name);
+      await tester.ensureVisible(icon);
+      await tester.pump();
+      await tester.tap(icon);
+      await tester.pump();
+    }
+
+    expect(opened.map((u) => u.toString()).toList(), [
+      'https://www.reddit.com/r/shear/',
+      'https://discord.gg/AzVtMnSxCe',
+      'https://t.me/shearprivacy',
+      'https://x.com/shearprivacy',
+    ]);
+    for (final uri in opened) {
+      expect(uri.scheme, 'https');
+      expect(uri.hasQuery, isFalse);
+      expect(uri.hasFragment, isFalse);
+      expect(uri.userInfo, isEmpty);
+    }
   });
 
   testWidgets('Continuum is spendable + Copy ID; explorer history is its own tab', (tester) async {
@@ -3999,8 +4068,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.35 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.35');
+  test('kWalletVersion == 0.36 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.36');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);

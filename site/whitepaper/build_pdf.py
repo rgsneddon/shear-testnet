@@ -257,7 +257,7 @@ def main() -> None:
         "Login is Copy dest as ssa1.worker. The explorer paints confirmed blocks, kinds, and proof-ok — no dest safari, no amount column. Ciphertext "
         "and rest-frame strings stay off that page. A node is the book: append, verify, P2P, and the GATE that lets "
         "native Flow and pinned Reserve bytecode land in the same block model. "
-        "Shipped P2P seeds are p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303, magic shear-testnet-v4. Wallet 0.35 reads a local node at 127.0.0.1:18332. "
+        "Shipped P2P seeds are p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303, magic shear-testnet-v4. Wallet 0.36 reads a local node at 127.0.0.1:18332. "
         "After 1000 confirmations, sample rows prune; sealed txs stay. An optional latest-only snapshot is published at height 1000, then every 400 blocks.",
     )
 

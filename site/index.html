@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=28"/>
+  <link rel="stylesheet" href="/brand/theme.css?v=30"/>
   <style>
     :root {
       --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
@@ -75,8 +75,7 @@
       border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
       position:sticky; top:0; z-index:40;
     }
-    .nav { display:inline-grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:6px; overflow-x:auto; }
-    .top-banner > .nav { display:inline-grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:6px; overflow-x:auto; }
+
     a.nav-btn {
       display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
       font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
@@ -249,7 +248,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/2.4" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.35" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.36" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -269,18 +268,18 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.35</strong> · miner <strong>2.4</strong>
+      wallet <strong>0.36</strong> · miner <strong>2.4</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.35">WALLET</a>
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.36">WALLET</a>
         <div class="client-menu" id="menu-wallet">
           <span data-pack="wallet-macos" class="coming-soon">macOS — coming soon</span>
-          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.35/shear-wallet-0.35-windows.zip">Windows</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.35/shear-wallet-0.35-android.apk">Android</a>
-          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.35/shear-wallet-0.35-linux.zip">Linux</a>
-          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.35/shear-wallet-0.35-archlinux.zip">Arch</a>
+          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.36/shear-wallet-0.36-windows.zip">Windows</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.36/shear-wallet-0.36-android.apk">Android</a>
+          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.36/shear-wallet-0.36-linux.zip">Linux</a>
+          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.36/shear-wallet-0.36-archlinux.zip">Arch</a>
         </div>
       </div>
       <div class="client-dd">
@@ -300,7 +299,7 @@
     </nav>
     <div id="testnet-banner" role="status">
       <div class="tn-word">TESTNET</div>
-      <div class="tn-launch">Testnet is the privacy-class book. Mainnet shear-v1 is not live. Operator has not cut over.</div>
+      <div class="tn-launch">Testnet is the privacy-class book. Mainnet shear-v1 is not live. A launch date is not decided.</div>
       <div class="tn-count" id="mainnet-countdown">not live</div>
     </div>
     <div class="intro-split" id="intro-split">
@@ -381,7 +380,7 @@
     </div>
     <section class="panel-card guide-wide" id="wallet-start">
       <h2>Start a wallet from scratch</h2>
-      <p>Current pin is <strong>0.35</strong>. Use the WALLET button above and pick your system. Magic <code>shear-testnet-v4</code> / ADMITv2.</p>
+      <p>Current pin is <strong>0.36</strong>. Use the WALLET button above and pick your system. Magic <code>shear-testnet-v4</code> / ADMITv2.</p>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
         <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
@@ -400,7 +399,10 @@
       <div class="copy-row">
         <pre id="solo-node">git clone --depth 1 https://github.com/rgsneddon/shear-testnet.git
 cd shear-testnet
-npm install
+npm ci
+cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
+cmake --build crypto/randomx/build -j"$(nproc)"
+make -C crypto/native
 npm run pool</pre>
         <button type="button" data-copy="solo-node">Copy</button>
       </div>
@@ -438,11 +440,11 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
       else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
-        macos: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.35',
-        windows: BASE + '/0.35/shear-wallet-0.35-windows.zip',
-        android: BASE + '/0.35/shear-wallet-0.35-android.apk',
-        linux: BASE + '/0.35/shear-wallet-0.35-linux.zip',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.35'
+        macos: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.36',
+        windows: BASE + '/0.36/shear-wallet-0.36-windows.zip',
+        android: BASE + '/0.36/shear-wallet-0.36-android.apk',
+        linux: BASE + '/0.36/shear-wallet-0.36-linux.zip',
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.36'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
