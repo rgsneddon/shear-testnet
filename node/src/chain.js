@@ -391,6 +391,42 @@ export function matchCustodyCoinbase({
   return hashVouts.length === 0;
 }
 
+/**
+ * Dest-bound hash to hasher dests, pot still custodial on the pool dest.
+ * Hash is never fee'd. Pot is 1% fee + rest on pool dest (custodyPotShares).
+ */
+export function matchDestBoundHashCustodyPot({
+  hashVouts = [],
+  potVouts = [],
+  leaves = [],
+  liveUnit,
+  wantPot,
+  hinted,
+  hasherNcs,
+} = {}) {
+  const hasher = hasherNcs instanceof Set ? hasherNcs : new Set();
+  const dest = hinted && isDestAddress(hinted) ? hinted : '';
+  if (!dest || !leaves.length) return false;
+  const unit = hashBonusUnitNanos(liveUnit);
+  for (const leaf of leaves) {
+    const n = (Number(leaf.count) || 0) * unit;
+    const hit = hashVouts.find((o) => ncHex(o.noteCommit) === ncHex(leaf.noteCommit));
+    if (!(n > 0) || !hit || !verifySealedNote(hit, n)) return false;
+  }
+  for (const o of hashVouts) {
+    if (!hasher.has(ncHex(o.noteCommit))) return false;
+  }
+  const shares = custodyPotShares(dest, wantPot);
+  if (!shares.length || potVouts.length !== shares.length) return false;
+  const used = new Set();
+  for (const s of shares) {
+    const hit = potVouts.find((o) => !used.has(ncHex(o.noteCommit)) && notePays(o, s.address, s.nanos));
+    if (!hit) return false;
+    used.add(ncHex(hit.noteCommit));
+  }
+  return used.size === potVouts.length;
+}
+
 /** Per-hasher extra pot note: 0% (absent) through POOL_FEE_MAX_BPS. */
 export function extraPotFeeNanos(extraVouts = [], wantPot) {
   const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
@@ -780,7 +816,16 @@ function verifyBlockConsensus(block, prev, {
         wantBonus,
         hasherNcs,
       });
-      if (custody) {
+      const destBoundHashCustodyPot = matchDestBoundHashCustodyPot({
+        hashVouts,
+        potVouts,
+        leaves,
+        liveUnit,
+        wantPot,
+        hinted,
+        hasherNcs,
+      });
+      if (custody || destBoundHashCustodyPot) {
         bonusNanos = wantBonus;
         potNanos = wantPot;
         const T = wantPot + wantBonus;

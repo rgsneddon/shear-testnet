@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { mempoolPressure } from '../../crypto/levy.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
-import { MAGIC_TESTNET, HASH_TX_LIVE, NANOS_PER_SHE } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, HASH_TX_LIVE, NANOS_PER_SHE, consensusFingerprint } from '../../crypto/asert.js';
 import { hash20FromAddress, isDestAddress, isPaymentCode, encodeDest } from '../../crypto/address.js';
 import { noteCommitOfDest20 } from '../../crypto/note.js';
 
@@ -96,6 +96,7 @@ function statsJson(store) {
     admit: 'ADMITv2',
     hashTxLive: HASH_TX_LIVE,
     jroot: live.jroot ? Buffer.from(live.jroot).toString('hex') : '',
+    bookLawFingerprint: consensusFingerprint(),
   };
 }
 

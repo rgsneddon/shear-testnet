@@ -13,6 +13,7 @@ import {
   GENESIS_PREV,
   digestTx,
   potSharesFromBatch,
+  custodyPotShares,
 } from '../src/chain.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
@@ -137,5 +138,68 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     }, { poolDest: pool, trustedPowHash: TRUSTED, skipSharePow: true });
     assert.equal(got.ok, false);
     assert.equal(got.reason, 'pot_prop');
+  });
+
+  it('accepts dest-bound hash to hasher dests with custodial pot on the pool dest', () => {
+    const hasher = destOf(newIdentity());
+    const pool = destOf(newIdentity());
+    const TRUSTED = Buffer.alloc(32);
+    const parentTpl = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: hasher,
+      bits: GENESIS_BITS_PACKED,
+      now: 1_700_000_000_000,
+    });
+    const parent = {
+      header: parentTpl.header,
+      txs: parentTpl.txs,
+      samples: parentTpl.samples,
+      shareBatch: parentTpl.shareBatch || [],
+      miner: hasher,
+      aLeaves: parentTpl.aLeaves,
+      bLeaves: parentTpl.bLeaves,
+      weight: parentTpl.weight,
+    };
+    const okP = verifyBlock(parent, null, { trustedPowHash: TRUSTED });
+    assert.equal(okP.ok, true, okP.reason);
+    const now = 1_700_000_090_000;
+    const ph = decodeHeader(parent.header);
+    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
+    const childTpl = buildTemplate({
+      prev: okP.hash,
+      prevHeader: parent.header,
+      prevBlock: parent,
+      parentWeight: parent.weight,
+      height: 2,
+      miner: hasher,
+      bits: bitsForBlock(ph.bits, ph.timestamp, now),
+      now,
+      shareBatch: [row],
+      poolDest: pool,
+      potShares: custodyPotShares(pool),
+    });
+    const child = {
+      header: childTpl.header,
+      txs: childTpl.txs,
+      samples: childTpl.samples,
+      shareBatch: childTpl.shareBatch || [],
+      miner: hasher,
+      aLeaves: childTpl.aLeaves,
+      bLeaves: childTpl.bLeaves,
+      weight: childTpl.weight,
+      poolDest: pool,
+    };
+    const got = verifyBlock(child, {
+      ...parent,
+      hash: okP.hash,
+      header: parent.header,
+      height: 1,
+      weight: parent.weight,
+    }, { poolDest: pool, trustedPowHash: TRUSTED, skipSharePow: true });
+    assert.equal(got.ok, true, got.reason);
+    const kinds = (childTpl.txs[0].vout || []).map((o) => o.kind);
+    assert.ok(kinds.includes('hash'));
+    assert.ok(kinds.includes('pot'));
   });
 });
