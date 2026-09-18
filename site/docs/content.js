@@ -420,7 +420,7 @@ window.SHEAR_DOCS = {
     title: 'Mempool',
     crumb: 'network / mempool',
     html:
-      '<p><a href="https://mempool.shear.digital">mempool.shear.digital</a> shows in-flight work. Levy surge is taken from waiting depth. Spendable policy on that page follows the API, not a hard-coded 6 in the HTML.</p>'
+      '<p><a href="https://mempool.shear.digital">mempool.shear.digital</a> is the network logarithmic lattice: gold pending sends, cyan miners, purple confirming rings with tx counts, then the curling sealed chain. Levy surge is taken from waiting depth. Spendable policy on that page follows the API, not a hard-coded 6 in the HTML.</p>'
   };
 
   P.admit = {

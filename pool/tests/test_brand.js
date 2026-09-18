@@ -322,8 +322,10 @@ describe('mempool pulse', () => {
     assert.match(page, /glass ×2\.8/);
     assert.equal(/ZAP!/.test(page), false);
     assert.equal(/blockfound #/.test(page), false);
-    assert.match(page, /one glowing dot per miner/);
+    assert.match(page, /one seat per miner on the network/);
     assert.match(page, /Empty gold hoop sits wide at the base/);
+    assert.match(page, /Open in full screen/);
+    assert.match(page, /txCount \+ ' txs'/);
     assert.match(page, /graphics only, no lettering/);
     assert.match(page, /y: h \* 0\.64/);
     assert.match(page, /\.col\s*\{[^}]*overflow-y:\s*auto/);

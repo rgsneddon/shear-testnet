@@ -142,6 +142,15 @@
       .col { max-height: 34vh; }
       .col.mid { order:-1; max-height: none; }
     }
+    .full-btn {
+      pointer-events: auto; cursor: pointer; font: inherit; font-weight: 700;
+      letter-spacing: .04em; text-transform: uppercase; padding: 8px 10px;
+      color: var(--card-ink); background: transparent; border: 1px solid var(--card-line);
+    }
+    html.lattice-full header.top-banner,
+    html.lattice-full .hud { display: none !important; }
+    html.lattice-full, html.lattice-full body { height: 100%; overflow: hidden; }
+    html.lattice-full .stage { position: fixed; inset: 0; height: 100%; }
   </style>
 </head>
 <body>
@@ -178,15 +187,15 @@
       <div class="col">
         <section class="card">
           <div class="label">Logarithmic spiral of txs</div>
-          <p>Sealed heights fall on <span class="eq">r = ln(1 + n)</span>. Pending rings sit above them as counts and kinds, not dest+amount pairs. Hash bonuses land on each hasher dest that produced proven work. This page reads the <strong>network</strong> mempool and open-round miners from every equal node — any pool or solo — not only the official pool. While this book has fewer than 10,000 notes the membership set is thin.</p>
+          <p>Sealed heights fall on <span class="eq">r = ln(1 + n)</span>. Pending rings sit above them as counts and kinds, not dest+amount pairs. The gold hoop is in-flight Flow sends. The cyan hoop is miners on the network working the open round. Sealed hash-bonus vouts stay off the spiral so it stays readable; they still mint on-chain. This page reads the <strong>network</strong> mempool from every equal node — any pool or solo — not only the official pool. While this book has fewer than 10,000 notes the membership set is thin.</p>
         </section>
         <section class="card">
           <div class="label">Visual legend</div>
           <div class="legend">
             <div><span class="dot" style="background:var(--lattice-tip)"></span>Tip — neon green apex</div>
-            <div><span class="dot" style="background:var(--lattice-cyan)"></span>Forming — neon cyan hoop: one seat per hasher with Valid hashes &gt; 0 (immature until 6-conf). Not client hash counters.</div>
-            <div><span class="dot" style="background:var(--lattice-gold)"></span>Gold hoop — user Flow sends. Empty: wide at the base. Full: climbs, tightens, tilts, then merges into cyan</div>
-            <div><span class="dot" style="background:var(--lattice-link)"></span>Confirming rings — sealed heights with 1–5 conf: hash bonuses, pot, and every other tx until 6-conf spendable</div>
+            <div><span class="dot" style="background:var(--lattice-cyan)"></span>Forming — neon cyan hoop: one seat per miner on the network with Valid hashes &gt; 0 this round. Not sealed hash-bonus vouts.</div>
+            <div><span class="dot" style="background:var(--lattice-gold)"></span>Gold hoop — pending Flow sends. Weight sets the level: heavier / nearer inclusion sits closer to the miners</div>
+            <div><span class="dot" style="background:var(--lattice-link)"></span>Confirming rings — purple, below the tip. Each purple hub is a sealed block with its tx count. At 6-conf the block cascades down the curling lattice</div>
             <div><span class="dot" style="background:var(--lattice-link)"></span>σ-flow filaments — outer rings falling inward</div>
             <div><span class="dot" style="background:var(--lattice-cyan)"></span>Hover glass — pointer magnifies any neighbourhood</div>
           </div>
@@ -197,8 +206,8 @@
         </section>
         <section class="card">
           <div class="label">Commission</div>
-          <p>When the gold hoop is empty it rests at the base of the lattice, wide around the circumference. As sends arrive and near inclusion it climbs, contracts, and tilts so the next-in tx sits nearest the tip.</p>
-          <p>When that hoop reaches the cyan forming block, those sends merge into it. Each cyan seat is one hasher’s <strong>valid-hash bonus</strong> (pending hash vouts). Immature until 6-conf. Client hash totals never paint a seat.</p>
+          <p>When the gold hoop is empty it rests at the base of the lattice, wide around the circumference. Each pending send sits on a level set by its weight × levy: heavier work climbs toward the tip.</p>
+          <p>Filaments link those gold seats to the cyan miners packing the next block. When a send is committed it leaves gold, bursts into the tip, then falls through the purple confirming rings. From the last purple ring the block cascades down the curling lattice. Sealed hash-bonus vouts stay off the spiral so a busy book does not pack it.</p>
           <p>At blockfound the cyan hoop tilts to the tip and miner rewards firework in — graphics only, no lettering.</p>
           <p>Consensus spendable at <strong>6 confirmations</strong>. Third-party <span class="eq">min_confirms</span> default 12.</p>
         </section>
@@ -209,14 +218,14 @@
           <p class="sub">Network-wide pending rings breathe, lean, and converge as they commission into the next block. she is private</p>
           <p id="pulse">waiting · lattice</p>
         </div>
-        <p class="foot">Gold hoop climbs from the base until it merges into cyan. At blockfound, miner rewards firework into the neon-green tip. Hover to magnify · drag to orbit · scroll to zoom.</p>
+        <p class="foot">Gold climbs to the tip, purple rings confirm, then blocks cascade down the curl. Hover to magnify · drag to orbit · scroll to zoom.</p>
       </div>
       <div class="col">
         <section class="card">
           <div class="label">Hierarchy descendancy law</div>
           <p class="eq">continuity_root = H(rootA ∥ rootB)</p>
           <p>A-leaves: dest20 + count. B-leaves: opt-in extras. B-spend only after the committing block is accepted.</p>
-          <p>Open-round hash rows gossip across equal nodes. The lattice paints every miner the network can see, not only this pool’s stratum logins.</p>
+          <p>Open-round miners paint the cyan hoop. Pending Flow sends stay on gold. Sealed hash-bonus vouts are omitted from confirming rings.</p>
         </section>
         <section class="card">
           <div class="label">Live book</div>
@@ -227,15 +236,16 @@
           <p>Rings <span class="eq" id="h-rings">0</span> · Forming weight <span class="eq" id="h-weight">0</span></p>
           <p>Levy in flight <span class="eq" id="h-levy">0</span> · Next in <span class="eq" id="h-next">—</span></p>
           <p>Base fee <span class="eq" id="h-fee">1</span> · Mature depth <span class="eq">6 conf</span></p>
+          <p><button type="button" class="full-btn" id="lattice-full-open">Open in full screen</button></p>
           <pre id="pick">select a node</pre>
         </section>
         <section class="card">
           <div class="label">Interpretation</div>
           <ul>
             <li>Tip is the neon-green apex. The forming block is the inner cyan hoop.</li>
-            <li>Empty gold hoop sits wide at the base. Fee × weight lifts it and contracts it toward cyan.</li>
-            <li>Sends that reach cyan merge into the pending block. Each cyan seat is one glowing dot per miner, not all hashes this round.</li>
-            <li>At blockfound their rewards firework into the tip. Sealed heights then spiral down.</li>
+            <li>Empty gold hoop sits wide at the base. Tx weight lifts each send toward the tip.</li>
+            <li>Committed sends burst into the tip, then the purple confirming rings. Each purple hub shows that block’s tx count.</li>
+            <li>From the last purple ring, mature blocks cascade down the curling lattice. Hash-bonus vouts are not painted.</li>
           </ul>
         </section>
       </div>
@@ -244,11 +254,15 @@
   <script>
     const canvas = document.getElementById('lattice');
     const ctx = canvas.getContext('2d');
+    const latticeFull = new URLSearchParams(location.search).get('full') === '1'
+      || new URLSearchParams(location.search).get('fullscreen') === '1';
+    if (latticeFull) document.documentElement.classList.add('lattice-full');
     const state = {
       yaw: 0.55, pitch: 0.72, zoom: 1.05, nodes: [], links: [], rails: [],
       pendRings: [], nextIn: null, t: 0, loupe: null, snap: null, zaps: [], tipH: 0,
       dragging: false, lx: 0, ly: 0, hover: null, live: false, seq: 0,
-      tipAt: 0, blockIntervalMs: 90000,
+      tipAt: 0, blockIntervalMs: 90000, commits: [], cascades: [],
+      goldIds: new Set(), goldPos: {}, confIds: new Set(), confPos: {},
     };
 
     function resize() {
@@ -304,22 +318,43 @@
       const w = canvas.clientWidth, h = canvas.clientHeight;
       return { x: w * 0.5 + x1 * f * 42 * state.zoom, y: h * 0.64 - y1 * f * 38 * state.zoom, s: f, z: z2 };
     }
+    function isHashBonus(tx) {
+      return String((tx && tx.kind) || '') === 'hash';
+    }
+    function latticeTxs(list) {
+      return (list || []).filter((tx) => !isHashBonus(tx) && String((tx && tx.kind) || '') !== 'dummy');
+    }
+    function formingHashSeats(block) {
+      return (Array.isArray(block && block.txs) ? block.txs : []).filter(function (tx) {
+        if (!isHashBonus(tx)) return false;
+        const n = Math.floor(Number(tx.roundHashes != null ? tx.roundHashes : tx.count) || 0);
+        return n > 0;
+      });
+    }
     function massOf(tx) {
       if (!tx) return 1;
-      if (tx.kind === 'hash') return Math.max(1, Number(tx.count) || 1);
+      if (isHashBonus(tx)) return Math.max(1, Number(tx.count) || 1);
       const w = Math.max(1, Number(tx.weight) || 1);
       const fee = Math.max(0, Number(tx.fee) || 0);
       return w * (1 + Math.log1p(fee));
     }
+    function txWeightLevel(tx) {
+      if (!tx || isHashBonus(tx)) return 0;
+      const included = tx.included ? 1 : 0.42;
+      return Math.max(0, Math.min(1, Math.tanh(massOf(tx) / 5.5) * (0.22 + 0.78 * included)));
+    }
     function bandSends(sends) {
-      const sorted = (sends || []).slice().sort((a, b) => (Number(b.priority) || massOf(b)) - (Number(a.priority) || massOf(a)));
+      const sorted = (sends || []).slice().sort((a, b) => txWeightLevel(b) - txWeightLevel(a) || massOf(b) - massOf(a));
       if (!sorted.length) return [];
-      if (sorted.length <= 3) return [sorted];
-      const n = Math.min(3, Math.ceil(sorted.length / 3));
-      const size = Math.ceil(sorted.length / n);
-      const bands = [];
-      for (let i = 0; i < n; i += 1) bands.push(sorted.slice(i * size, (i + 1) * size));
-      return bands.filter((b) => b.length);
+      const high = [], mid = [], low = [];
+      for (const tx of sorted) {
+        const lv = txWeightLevel(tx);
+        if (lv >= 0.66) high.push(tx);
+        else if (lv >= 0.33) mid.push(tx);
+        else low.push(tx);
+      }
+      const bands = [high, mid, low].filter((b) => b.length);
+      return bands.length ? bands : [sorted];
     }
 
     function layout(data) {
@@ -327,7 +362,7 @@
       const links = [];
       const rails = [];
       const gens = data.generations || [];
-      const pending = data.pending || [];
+      const pending = latticeTxs(data.pending || []);
       const tipH = data.tip?.height || 0;
       const prevCyan = (state.pendRings || []).find((r) => r.kind === 'block');
       const origins = [];
@@ -343,20 +378,8 @@
         gen: -0.15, x: 0, y: Y_TIP, z: 0, role: 'tip', r: 8.2, meta: data.tip || {},
       });
       const block = data.pendingBlock || { height: tipH + 1, hashes: 0, txs: [] };
-      const hashTxs = (Array.isArray(block.txs) ? block.txs : []).filter(function (tx) {
-        if (tx.kind !== 'hash') return false;
-        const n = Math.floor(Number(tx.roundHashes != null ? tx.roundHashes : tx.count) || 0);
-        return n > 0;
-      });
-      const MERGE_AT = 0.78;
-      function sendProx(tx) {
-        const heat = Math.tanh(massOf(tx) / 5.5);
-        const inc = tx.included ? 1 : 0.32;
-        return Math.max(0, Math.min(1, (0.18 + 0.82 * heat) * (0.22 + 0.78 * inc)));
-      }
-      const commissioned = pending.filter((tx) => sendProx(tx) >= MERGE_AT).sort((a, b) => massOf(b) - massOf(a));
-      const waiting = pending.filter((tx) => sendProx(tx) < MERGE_AT);
-      const bands = bandSends(waiting);
+      const hashTxs = formingHashSeats(block);
+      const bands = bandSends(pending);
       const rings = [];
       function addRing({ kind, y, baseRad, items, label, color, hub, tilt, expand }) {
         const sorted = (items || []).slice().sort((a, b) => massOf(b) - massOf(a));
@@ -376,7 +399,7 @@
       const cyanRad = 1.22 + 2.55 * Math.tanh(minerN / 5.2) + 0.1 * Math.min(minerN, 20);
       addRing({
         kind: 'block', y: Y_TIP - 0.88, baseRad: cyanRad, expand: 1,
-        items: hashTxs.concat(commissioned),
+        items: hashTxs,
         label: 'forming #' + (block.height || (tipH + 1)) + ' · ' + hashTxs.length + ' miners',
         color: 'cyan', hub: true, tilt: 0.1,
       });
@@ -391,13 +414,9 @@
       const Y_GOLD_TOP = Y_TIP - 1.08;
       const RAD_WIDE = 7.2;
       const RAD_TIGHT = 1.52;
-      function goldPose(items, bandIndex, bandCount) {
+      function goldPose(items) {
         if (!items.length) return { y: Y_BASE, baseRad: RAD_WIDE, tilt: 0.04, prox: 0 };
-        const mass = items.reduce((a, t) => a + massOf(t), 0);
-        const included = items.filter((t) => t.included).length / items.length;
-        const heat = Math.tanh(mass / 5.5);
-        const bandFrac = bandCount <= 1 ? 1 : 1 - bandIndex / Math.max(1, bandCount);
-        const prox = Math.max(0, Math.min(1, (0.18 + 0.82 * heat) * (0.2 + 0.8 * included) * bandFrac));
+        const prox = items.reduce((a, t) => a + txWeightLevel(t), 0) / items.length;
         return {
           y: Y_BASE + (Y_GOLD_TOP - Y_BASE) * prox,
           baseRad: RAD_WIDE + (RAD_TIGHT - RAD_WIDE) * prox,
@@ -406,11 +425,11 @@
         };
       }
       if (!bands.length) {
-        const pose = goldPose([], 0, 1);
+        const pose = goldPose([]);
         addRing({ kind: 'send0', y: pose.y, baseRad: pose.baseRad, tilt: pose.tilt, expand: 1, items: [], label: 'pending  0', color: 'gold', hub: false });
       } else {
         bands.forEach((items, i) => {
-          const pose = goldPose(items, i, bands.length);
+          const pose = goldPose(items);
           addRing({
             kind: i === 0 ? 'send0' : 'send', y: pose.y, baseRad: pose.baseRad, tilt: pose.tilt, expand: 1,
             items, label: i === 0 ? 'next in' : ('pending  ' + (i + 1)), color: 'gold', hub: false,
@@ -431,22 +450,37 @@
           const n = Math.max(ring.items.length, 1);
           const th = (i / n) * Math.PI * 2;
           const id = String(tx.id || (ring.kind + '-' + i));
-          const hash = tx.kind === 'hash';
+          const hash = isHashBonus(tx);
           const node = {
             id, label: (tx.kind || 'send') + ' ' + id.slice(0, 8),
             kind: tx.kind || 'send', prime: !!tx.prime || !hash, gen: 0, pending: true, nextIn: false,
-            role: hash ? 'form' : 'gold', r: 3.3 + 2.6 * Math.tanh(massOf(tx) / 8),
+            role: hash || ring.kind === 'block' ? 'form' : 'gold', r: 3.3 + 2.6 * Math.tanh(massOf(tx) / 8),
             _theta: th, x: 0, y: ring.y, z: 0, meta: tx,
           };
-          if ((ring.kind === 'block' && !hash && commissioned.length && i === hashTxs.length) ||
-              (ring.kind === 'send0' && i === 0 && !commissioned.length)) {
+          if (ring.kind === 'send0' && i === 0) {
             node.nextIn = true;
           }
           ring.nodes.push(node);
           nodes.push(node);
-          const parent = ring.hubNode ? ring.hubNode.id : (rings[0].hubNode ? rings[0].hubNode.id : 'tip');
-          links.push({ a: parent, b: id, flow: ring.kind !== 'block' });
+          if (ring.kind === 'block' && ring.hubNode) {
+            links.push({ a: ring.hubNode.id, b: id });
+          }
         });
+      });
+      const minerNodes = (rings.find((r) => r.kind === 'block') || { nodes: [] }).nodes || [];
+      const goldNodes = rings.filter((r) => r.color === 'gold').flatMap((r) => r.nodes);
+      goldNodes.forEach((gn, i) => {
+        const lv = txWeightLevel(gn.meta);
+        if (!minerNodes.length) {
+          const hub = rings[0] && rings[0].hubNode;
+          if (hub) links.push({ a: gn.id, b: hub.id, flow: true });
+          return;
+        }
+        const nLinks = Math.max(1, Math.min(minerNodes.length, 1 + Math.round(lv * Math.min(2, minerNodes.length - 1))));
+        for (let k = 0; k < nLinks; k += 1) {
+          const miner = minerNodes[(i + k) % minerNodes.length];
+          links.push({ a: gn.id, b: miner.id, flow: true });
+        }
       });
       const nextIn = rings.flatMap((r) => r.nodes).find((n) => n.nextIn) || null;
       if (nextIn) nextIn.nextIn = true;
@@ -455,19 +489,37 @@
       state.pendRing = rings.find((r) => r.color === 'gold') || rings[0] || null;
       state.tipAt = Number(data.tip?.timestamp) || 0;
       state.blockIntervalMs = Number(data.targetBlockIntervalMs) || 90_000;
-      if (state.tipH && tipH > state.tipH) spawnFireworks(origins, { x: 0, y: Y_TIP, z: 0 }, tipH);
-      state.tipH = tipH;
       const confirming = gens.filter((g) => g.confirming || (Number(g.confirmations) >= 1 && !g.spendable));
       const recovered = gens.filter((g) => !(g.confirming || (Number(g.confirmations) >= 1 && !g.spendable)));
+      const newGoldIds = new Set(goldNodes.map((n) => n.id));
+      const committed = [...(state.goldIds || [])].filter((id) => !newGoldIds.has(id));
+      if (state.tipH && tipH > state.tipH) {
+        spawnFireworks(origins, { x: 0, y: Y_TIP, z: 0 }, tipH);
+        const fromGold = committed.map((id) => state.goldPos[id]).filter(Boolean);
+        if (fromGold.length) spawnCommitBursts(fromGold, { x: 0, y: Y_TIP, z: 0 }, { x: 0, y: Y_TIP - 1.72, z: 0 }, tipH);
+      }
+      const newConfIds = new Set(confirming.map((g) => Number(g.height)));
+      [...(state.confIds || [])].forEach((h) => {
+        if (newConfIds.has(h)) return;
+        const from = state.confPos[h];
+        if (!from) return;
+        const gi = recovered.findIndex((g) => Number(g.height) === h);
+        spawnCascade(from, gi >= 0 ? gi + 1 : 1, h);
+      });
+      state.goldIds = newGoldIds;
+      state.confIds = newConfIds;
+      state.tipH = tipH;
       confirming.forEach((g, ci) => {
-        const txs = (g.txs && g.txs.length ? g.txs : []).filter((tx) => tx.kind !== 'dummy');
+        const raw = (g.txs || []).filter((tx) => String(tx.kind || '') !== 'dummy');
+        const txs = latticeTxs(raw);
+        const txCount = raw.length;
         addRing({
           kind: 'confirm',
           y: Y_TIP - 1.72 - ci * 0.52,
-          baseRad: 2.1 + 0.18 * Math.min(txs.length, 12),
-          items: txs.length ? txs : [{ id: 'h-' + g.height, kind: 'block', prime: true, count: 1 }],
-          label: 'confirming #' + g.height + ' · ' + (g.confirmations || 0) + '/6',
-          color: 'cyan',
+          baseRad: 2.1 + 0.18 * Math.min(Math.max(txCount, 1), 12),
+          items: txs.length ? txs : [],
+          label: 'confirming #' + g.height + ' · ' + txCount + ' txs · ' + (g.confirmations || 0) + '/6',
+          color: 'link',
           hub: true,
           tilt: 0.08,
           expand: 1,
@@ -475,8 +527,9 @@
         const ring = rings[rings.length - 1];
         if (ring.hub) {
           const hub = {
-            id: 'conf-' + g.height, label: ring.label, kind: 'block', prime: true, gen: 0,
-            pending: false, role: 'form', r: 5.8, x: 0, y: ring.y + 0.22, z: 0, meta: g,
+            id: 'conf-' + g.height, label: txCount + ' txs', kind: 'block', prime: true, gen: 0,
+            pending: false, role: 'confirm', r: 5.2 + Math.min(3, txCount * 0.15),
+            x: 0, y: ring.y + 0.22, z: 0, meta: { ...g, txCount },
           };
           ring.hubNode = hub;
           nodes.push(hub);
@@ -485,11 +538,10 @@
           const n = Math.max(ring.items.length, 1);
           const th = (i / n) * Math.PI * 2;
           const id = String(tx.id || ('conf-' + g.height + '-' + i));
-          const hash = tx.kind === 'hash';
           const node = {
             id, label: (tx.kind || 'tx') + ' ' + id.slice(0, 8),
-            kind: tx.kind || 'tx', prime: !!tx.prime || !hash, gen: 0, pending: false,
-            role: hash ? 'form' : 'gold', r: 2.8 + 1.4 * Math.tanh(massOf(tx) / 8),
+            kind: tx.kind || 'tx', prime: !!tx.prime, gen: 0, pending: false,
+            role: 'confirm', r: 2.8 + 1.4 * Math.tanh(massOf(tx) / 8),
             _theta: th, x: 0, y: ring.y, z: 0, meta: { ...tx, height: g.height },
           };
           ring.nodes.push(node);
@@ -502,15 +554,22 @@
         const y = 9.2 - n * 0.72;
         const rad = Math.log(1 + n) * 2.15;
         const theta0 = n * 0.46;
-        const txs = g.txs && g.txs.length ? g.txs : [{ id: 'b-' + g.height, kind: 'block', prime: true }];
+        const raw = (g.txs || []).filter((tx) => String(tx.kind || '') !== 'dummy');
+        const txs = latticeTxs(raw.length ? raw : [{ id: 'b-' + g.height, kind: 'block', prime: true }]);
+        const txCount = raw.length;
         const blockId = 'h-' + g.height;
         const bx = rad * Math.cos(theta0), bz = rad * Math.sin(theta0);
-        nodes.push({ id: blockId, label: '#' + g.height, kind: 'block', prime: true, gen: n, x: bx, y, z: bz, role: 'recover', r: 5.4, meta: g });
+        nodes.push({
+          id: blockId, label: '#' + g.height + ' · ' + txCount + ' txs', kind: 'block', prime: true, gen: n,
+          x: bx, y, z: bz, role: 'recover', r: 5.4, meta: { ...g, txCount },
+        });
         rails.push({ x: bx, y, z: bz });
-        const parent = n === 1 ? 'tip' : 'h-' + recovered[gi - 1].height;
+        const lastConf = confirming[confirming.length - 1];
+        const parent = n === 1
+          ? (lastConf ? ('conf-' + lastConf.height) : 'tip')
+          : 'h-' + recovered[gi - 1].height;
         links.push({ a: parent, b: blockId });
         txs.forEach((tx, i) => {
-          if (tx.kind === 'dummy') return;
           const th = theta0 + (i + 1) * 0.31;
           const rr = rad + 0.35 + (i % 5) * 0.12;
           const id = tx.id || (blockId + '-' + i);
@@ -518,7 +577,7 @@
             id, label: (tx.kind || 'tx') + ' ' + String(id).slice(0, 8),
             kind: tx.kind || 'tx', prime: !!tx.prime, gen: n,
             x: rr * Math.cos(th), y: y - 0.12, z: rr * Math.sin(th),
-            role: tx.kind === 'hash' ? 'form' : 'recover',
+            role: 'recover',
             r: tx.prime ? 3.4 : 2.2, meta: { ...tx, height: g.height },
           });
           links.push({ a: blockId, b: id });
@@ -559,7 +618,7 @@
           kind: i === 0 ? 'coinbase' : (i % 4 === 0 ? 'hash' : 'transfer'),
           prime: i === 0 || i % 4 !== 0,
         }));
-        return { height, hash: '', confirmations: gi + 1, spendable: gi >= 0, txs };
+        return { height, hash: '', confirmations: gi + 1, spendable: gi >= 5, confirming: gi < 5, txs };
       });
       return {
         tip: { height: tip, hash: '', baseFee: 1, timestamp: Date.now() - 55_000 },
@@ -604,6 +663,91 @@
         return { x: o.x, y: o.y, z: o.z, kind: o.kind, sparks };
       });
       state.zaps.push({ t0, life: 1100, height, tip, bursts });
+    }
+    function spawnCommitBursts(origins, tip, fall, height) {
+      const t0 = performance.now();
+      state.commits.push({
+        t0, life: 1400, height,
+        tip: tip || { x: 0, y: 11.2, z: 0 },
+        fall: fall || { x: 0, y: 9.5, z: 0 },
+        origins: (origins && origins.length) ? origins : [{ x: 0, y: -1.55, z: 0 }],
+      });
+    }
+    function spawnCascade(from, index, height) {
+      const t0 = performance.now();
+      const n = Math.max(1, Number(index) || 1);
+      const rad = Math.log(1 + n) * 2.15;
+      const th = n * 0.46;
+      state.cascades.push({
+        t0, life: 1600, height,
+        from: from || { x: 0, y: 9.5, z: 0 },
+        to: { x: rad * Math.cos(th), y: 9.2 - n * 0.72, z: rad * Math.sin(th) },
+      });
+    }
+    function drawCommits(t) {
+      const pal = palette();
+      const live = [];
+      for (const c of state.commits || []) {
+        const age = t - c.t0;
+        if (age < 0 || age > c.life) continue;
+        live.push(c);
+        const u = age / c.life;
+        const fade = u < 0.12 ? u / 0.12 : Math.max(0, 1 - (u - 0.12) / 0.88);
+        const tip = project(c.tip.x, c.tip.y, c.tip.z);
+        const fall = project(c.fall.x, c.fall.y, c.fall.z);
+        for (const o of c.origins) {
+          const origin = project(o.x, o.y, o.z);
+          const up = Math.min(1, u / 0.45);
+          const down = u < 0.45 ? 0 : (u - 0.45) / 0.55;
+          const ax = origin.x + (tip.x - origin.x) * up;
+          const ay = origin.y + (tip.y - origin.y) * up;
+          const px = ax + (fall.x - ax) * down;
+          const py = ay + (fall.y - ay) * down;
+          ctx.beginPath();
+          ctx.moveTo(origin.x, origin.y);
+          ctx.lineTo(px, py);
+          ctx.strokeStyle = u < 0.45 ? pal.gold : pal.link;
+          ctx.globalAlpha = 0.55 * fade;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(px, py, 3.2 * (1 - u * 0.4), 0, Math.PI * 2);
+          ctx.fillStyle = u < 0.45 ? pal.gold : pal.link;
+          ctx.globalAlpha = fade;
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
+      state.commits = live;
+    }
+    function drawCascades(t) {
+      const pal = palette();
+      const live = [];
+      for (const c of state.cascades || []) {
+        const age = t - c.t0;
+        if (age < 0 || age > c.life) continue;
+        live.push(c);
+        const u = age / c.life;
+        const fade = u < 0.15 ? u / 0.15 : Math.max(0, 1 - (u - 0.15) / 0.85);
+        const a = project(c.from.x, c.from.y, c.from.z);
+        const b = project(c.to.x, c.to.y, c.to.z);
+        const px = a.x + (b.x - a.x) * u;
+        const py = a.y + (b.y - a.y) * u + 28 * u * u;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.quadraticCurveTo(px, py - 24, b.x, b.y);
+        ctx.strokeStyle = pal.link;
+        ctx.globalAlpha = 0.5 * fade;
+        ctx.lineWidth = 2.4;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(px, py, 4.2 * (1 - u * 0.35), 0, Math.PI * 2);
+        ctx.fillStyle = pal.link;
+        ctx.globalAlpha = fade;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      state.cascades = live;
     }
     function drawFireworks(t) {
       const pal = palette();
@@ -659,6 +803,7 @@
       if (n.kind === 'tip' || n.role === 'tip') return p.tip;
       if (n.kind === 'pending-block' || n.kind === 'hash' || n.role === 'form' || n.role === 'cyan') return p.cyan;
       if (n.role === 'gold') return p.gold;
+      if (n.role === 'confirm') return p.link;
       return recoverColor((Number(n.gen) || 0) / 18);
     }
     function blockDue() {
@@ -684,14 +829,25 @@
         ring.nodes.forEach((node, i) => {
           const th = (i / n) * Math.PI * 2;
           node._theta = th;
+          const lift = node.role === 'gold' ? 0.62 * txWeightLevel(node.meta) : 0;
           node.x = ring.ox + rad * Math.cos(th);
           node.z = ring.oz + rad * Math.sin(th);
-          node.y = ring.y + ring.tilt * Math.cos(th - ring.peak);
+          node.y = ring.y + ring.tilt * Math.cos(th - ring.peak) + lift;
         });
         if (ring.hubNode) {
           ring.hubNode.x = ring.ox;
           ring.hubNode.z = ring.oz;
           ring.hubNode.y = ring.y + 0.3 + 0.045 * Math.sin(t / 480);
+          if (ring.kind === 'confirm' && ring.hubNode.meta && ring.hubNode.meta.height != null) {
+            state.confPos[Number(ring.hubNode.meta.height)] = {
+              x: ring.hubNode.x, y: ring.hubNode.y, z: ring.hubNode.z,
+            };
+          }
+        }
+        if (ring.color === 'gold') {
+          ring.nodes.forEach((node) => {
+            state.goldPos[node.id] = { x: node.x, y: node.y, z: node.z };
+          });
         }
       }
     }
@@ -762,7 +918,7 @@
       ctx.lineWidth = 1.4;
       ctx.stroke();
       for (const ring of state.pendRings || []) {
-        strokeHoop(ring, ring.color === 'cyan' ? pal.cyan : pal.gold);
+        strokeHoop(ring, ring.color === 'cyan' ? pal.cyan : (ring.color === 'gold' ? pal.gold : pal.link));
       }
       const drawnLinks = state.links.map((l) => {
         const A = byId[l.a], B = byId[l.b];
@@ -818,9 +974,11 @@
           ctx.stroke();
           ctx.shadowBlur = 0;
         }
-        if (n.kind === 'tip' || n.kind === 'pending-block' || n.nextIn) {
+        if (n.kind === 'tip' || n.kind === 'pending-block' || n.nextIn || n.role === 'confirm' || (n.role === 'recover' && n.kind === 'block')) {
           ctx.font = (n.nextIn ? '800 11px' : '650 11px') + ' "Segoe UI",system-ui,sans-serif';
-          ctx.fillStyle = n.kind === 'tip' ? pal.tip : (n.kind === 'pending-block' || n.role === 'form' ? pal.cyan : pal.gold);
+          ctx.fillStyle = n.kind === 'tip' ? pal.tip
+            : (n.role === 'confirm' || (n.role === 'recover' && n.kind === 'block') ? pal.link
+              : (n.kind === 'pending-block' || n.role === 'form' ? pal.cyan : pal.gold));
           ctx.shadowColor = ctx.fillStyle;
           ctx.shadowBlur = 10;
           ctx.textAlign = 'left';
@@ -830,6 +988,8 @@
         n._sx = p.x; n._sy = p.y; n._sr = r;
       }
       drawFireworks(now);
+      drawCommits(now);
+      drawCascades(now);
       drawLoupe();
     }
     function drawLoupe() {
@@ -953,6 +1113,7 @@
           m.included === true ? 'in forming block' : '',
           m.source ? 'source ' + m.source : '',
           m.confirmations != null ? 'conf ' + m.confirmations : '',
+          m.txCount != null ? m.txCount + ' txs' : '',
           m.spendable === true ? 'spendable' : (m.spendable === false ? 'immature' : ''),
         ].filter(Boolean).join('\n');
       }
@@ -963,7 +1124,7 @@
     }, { passive: false });
     function paintHud(data) {
       const pb = data.pendingBlock || {};
-      const pending = data.pending || [];
+      const pending = latticeTxs(data.pending || []);
       const next = pending[0];
       const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
       set('h-tip', data.tip?.height ?? '—');
@@ -972,7 +1133,7 @@
       set('h-pend', String(pending.length));
       set('h-hashes', String(pb.hashes || 0));
       set('h-form', pb.height != null ? ('#' + pb.height) : '—');
-      set('h-miners', String((pb.txs || []).length));
+      set('h-miners', String(formingHashSeats(pb).length));
       set('h-rings', String((state.pendRings || []).length));
       set('h-weight', String(pb.weight || 0));
       set('h-levy', String(pb.fee || pending.reduce((a, t) => a + (Number(t.fee) || 0), 0)));
@@ -1003,6 +1164,11 @@
     }
     document.documentElement.addEventListener('shear-theme', function () { draw(); });
     new MutationObserver(function () { draw(); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    document.getElementById('lattice-full-open')?.addEventListener('click', () => {
+      const u = new URL(location.href);
+      u.searchParams.set('full', '1');
+      window.open(u.toString(), '_blank', 'noopener');
+    });
     layout(demoData());
     paintHud(demoData());
     pull();

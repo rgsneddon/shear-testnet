@@ -20,7 +20,19 @@ describe('mempool lattice honesty', () => {
   it('does not paint bonus seats from clientHashes', () => {
     assert.doesNotMatch(html, /clientHashes/);
     assert.match(html, /roundHashes/);
-    assert.match(html, /valid-hash bonus|Valid hashes/);
+    assert.match(html, /function isHashBonus/);
+    assert.match(html, /function latticeTxs/);
+    assert.match(html, /function txWeightLevel/);
+    assert.match(html, /one seat per miner on the network/);
+    assert.match(html, /Filaments link those gold seats to the cyan miners/);
+    assert.match(html, /Weight sets the level/);
+    assert.match(html, /Open in full screen/);
+    assert.match(html, /lattice-full/);
+    assert.match(html, /function spawnCommitBursts/);
+    assert.match(html, /function spawnCascade/);
+    assert.match(html, /txCount \+ ' txs'/);
+    assert.doesNotMatch(html, /hash bonuses, pot, and every other tx/);
+    assert.doesNotMatch(html, /valid-hash bonus/);
     assert.match(html, /releases\/tag\/0\.35/);
     assert.doesNotMatch(html, /releases\/tag\/0\.34/);
     assert.doesNotMatch(html, /releases\/tag\/0\.32/);
@@ -29,7 +41,38 @@ describe('mempool lattice honesty', () => {
     assert.doesNotMatch(html, /releases\/tag\/0\.29/);
     assert.doesNotMatch(html, /GNFP/);
     assert.doesNotMatch(html, /50 hashes each/);
-    assert.match(html, /Gold hoop — user Flow sends/);
+    assert.match(html, /Gold hoop — pending Flow sends/);
+  });
+
+  it('latticeTxs drops hash bonuses; tx weight lifts pending sends; miners stay cyan seats', () => {
+    const start = html.indexOf('function isHashBonus(');
+    const end = html.indexOf('function layout(');
+    assert.ok(start >= 0 && end > start, 'shipped lattice helpers');
+    const fns = new Function(`${html.slice(start, end)}\nreturn { isHashBonus, latticeTxs, formingHashSeats, massOf, txWeightLevel, bandSends };`)();
+    assert.equal(fns.isHashBonus({ kind: 'hash' }), true);
+    assert.equal(fns.isHashBonus({ kind: 'send' }), false);
+    const kept = fns.latticeTxs([
+      { id: 'a', kind: 'send' },
+      { id: 'b', kind: 'hash' },
+      { id: 'c', kind: 'lock' },
+      { id: 'd', kind: 'dummy' },
+      { id: 'e', kind: 'b-spend' },
+      { id: 'f', kind: 'coinbase' },
+    ]);
+    assert.deepEqual(kept.map((t) => t.id), ['a', 'c', 'e', 'f']);
+    const miners = fns.formingHashSeats({
+      txs: [
+        { id: 'hash-m1', kind: 'hash', count: 40 },
+        { id: 'send-1', kind: 'send', weight: 2, fee: 8 },
+        { id: 'hash-zero', kind: 'hash', count: 0 },
+      ],
+    });
+    assert.deepEqual(miners.map((t) => t.id), ['hash-m1']);
+    const heavy = { id: 'hi', kind: 'send', weight: 8, fee: 12, included: true };
+    const light = { id: 'lo', kind: 'send', weight: 1, fee: 0, included: false };
+    assert.ok(fns.txWeightLevel(heavy) > fns.txWeightLevel(light));
+    const bands = fns.bandSends([light, heavy]);
+    assert.equal(bands[0][0].id, 'hi');
   });
 });
 
