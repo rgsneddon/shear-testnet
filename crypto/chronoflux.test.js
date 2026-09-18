@@ -20,9 +20,10 @@ import {
   compactTx,
 } from './chronoflux.js';
 import { lockTx, voteTx, portalIdFromDest } from './reserve_vault.js';
-import { newIdentity } from './address.js';
+import { newIdentity, hash20FromAddress, admitBaseFromAddress, freshStealthDest } from './address.js';
 import { vaultDest, destForLogin } from './flow_sheet.js';
-import { verifySealedNote, reviveBytes } from './note.js';
+import { verifySealedNote, reviveBytes, sealCoinbaseNote, noteCommitOfDest20 } from './note.js';
+import { attachAdmitPub } from './admit.js';
 import { PI_SHE_NANOS } from './asert.js';
 import { digestTx } from '../node/src/chain.js';
 import { poolWithdrawTx } from './levy.js';
@@ -331,5 +332,33 @@ describe('chronoflux prune + collate', () => {
       ],
     });
     assert.equal(digestTx(lean.txs[1]).equals(digestTx(fat)), true);
+  });
+
+  it('compact hash vout keeps dest20, noteCommit, wrap, and valueProof.v', () => {
+    const id = newIdentity();
+    const dest = freshStealthDest(id).dest;
+    const d20 = hash20FromAddress(dest);
+    const admit = admitBaseFromAddress(dest);
+    const nanos = 620544;
+    const fat = attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind: 'hash' }), { admitBase: admit });
+    const tx = { coinbase: true, height: 7, vin: [{ coinbase: true, height: 7 }], vout: [fat] };
+    const sealed = compactTx(tx);
+    const o = sealed.vout[0];
+    assert.equal(o.kind, 'hash');
+    assert.equal(o.r, undefined);
+    assert.ok(o.noteCommit);
+    assert.ok(o.dest20);
+    assert.equal(Buffer.from(o.dest20).length, 20);
+    assert.ok(Buffer.from(o.noteCommit).equals(noteCommitOfDest20(d20)));
+    assert.ok(o.rEph);
+    assert.ok(o.rCt);
+    assert.equal(Number(o.valueProof.v), nanos);
+    assert.doesNotMatch(JSON.stringify(sealed), /ssa1/);
+    assert.equal(digestTx(sealed).equals(digestTx(tx)), true);
+    const rows = sealedExplorerRows({ height: 7, hash: Buffer.alloc(32, 7), txs: [sealed] });
+    const hashRow = rows.find((r) => r.kind === 'hash');
+    assert.ok(hashRow);
+    assert.ok(hashRow.toDest20);
+    assert.equal(hashRow.nanos, nanos);
   });
 });

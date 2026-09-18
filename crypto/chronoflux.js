@@ -141,15 +141,17 @@ export function sealedExplorerRows(block) {
     }
     cb.vout.forEach((o, i) => {
       const hit = matchSealedCoinbaseVout(o, pays);
+      const toDest20 = dest20Buf(o.dest20) || (hit.address ? dest20Buf(hash20FromAddress(hit.address)) : null);
       rows.push({
         id: `${hid}-${o.kind || 'cb'}-${i}`,
         kind: o.kind === 'hash' ? 'hash' : (o.kind === 'lock' || o.kind === 'vote' || o.kind === 'withdraw' ? o.kind : 'coinbase'),
         from: 'coinbase',
         to: hit.address || o.address || '',
-        nanos: hit.nanos || Number(o.nanos || 0),
+        nanos: hit.nanos || Number(o.valueProof?.v != null ? o.valueProof.v : (o.nanos || 0)),
         height,
         confirmed: true,
         noteCommit: o.noteCommit,
+        toDest20: toDest20 || undefined,
       });
     });
   }
@@ -356,8 +358,15 @@ function compactVout(o) {
     if (o.rCt) row.rCt = o.rCt;
     if (o.dest20) row.dest20 = o.dest20;
     if (o.portalId) row.portalId = o.portalId;
-    if (reserveKind) attachReserveSeal(row, o);
-    else if (row.valueProof && typeof row.valueProof === 'object') {
+    const coinbaseMoney = kind === 'hash' || kind === 'pot' || kind === 'finder-fee' || kind === 'reserve-fee';
+    if (reserveKind || coinbaseMoney) {
+      const d20 = dest20FromOpen(o);
+      if (d20) row.dest20 = d20;
+      if (coinbaseMoney && o.valueProof?.v != null) {
+        row.valueProof = { ...(row.valueProof && typeof row.valueProof === 'object' ? compactValue(o.valueProof) : {}), v: Math.floor(Number(o.valueProof.v)) };
+      }
+      if (reserveKind) attachReserveSeal(row, o);
+    } else if (row.valueProof && typeof row.valueProof === 'object') {
       const { v: _v, ...vp } = row.valueProof;
       row.valueProof = vp;
     }

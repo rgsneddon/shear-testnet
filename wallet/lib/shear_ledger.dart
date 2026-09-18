@@ -65,7 +65,10 @@ List<Map<String, dynamic>> _postedVout(List<Map<String, dynamic>> vouts) {
 String formatShe(num she) {
   if (!she.isFinite) return '0.000000000';
   final trunc = (she * 1e9).truncateToDouble() / 1e9;
-  if (trunc == 0 && she != 0) return she < 0 ? '-0.000000000' : '0.000000000';
+  if (trunc == 0 && she != 0) {
+    final s = formatHashBonusShe((she.abs() * kUnitsPerShe).round());
+    return she < 0 ? '-$s' : s;
+  }
   final s = trunc.toStringAsFixed(kShePublicDigits);
   if (RegExp(r'^-?\d+\.000000000$').hasMatch(s)) return trunc.truncate().toString();
   return s;
@@ -470,6 +473,12 @@ class ShearLedger {
         amt = (o['nanos'] as num) / kUnitsPerShe;
       }
       if (amt == null) {
+        final vp = o['valueProof'];
+        if (vp is Map && vp['v'] is num) {
+          amt = (vp['v'] as num) / kUnitsPerShe;
+        }
+      }
+      if (amt == null) {
         final h = (o['height'] as num?)?.toInt();
         for (final t in _txs) {
           if (h != null && t.height != h) continue;
@@ -497,6 +506,46 @@ class ShearLedger {
         if (o['height'] != null) 'height': o['height'],
         if (amt != null) 'amount': amt,
       });
+      // Hashbonus is on-chain to the miner dest immediately. Do not fold pool
+      // pot notes here — those stay custodial until 30-conf π auto-payout.
+      if (kind == 'hash' && matched != null && amt != null) {
+        rememberDest(matched);
+        final h = (o['height'] as num?)?.toInt() ?? 0;
+        final she = amt.toDouble();
+        final id = matched.isEmpty ? 'blockfound:$h' : 'blockfound:$h:$matched';
+        final iTx = _txs.indexWhere((t) => t.id == id);
+        if (iTx >= 0) {
+          final t = _txs[iTx];
+          _txs[iTx] = ShearTx(
+            id: t.id,
+            from: t.from,
+            to: t.to,
+            amount: t.amount + she,
+            kind: t.kind,
+            height: t.height,
+            confirmed: t.confirmed,
+            memo: t.memo,
+            memoPlain: t.memoPlain,
+            memoCt: t.memoCt,
+            rounds: t.rounds,
+            hashAmount: (t.hashAmount ?? 0) + she,
+            threads: t.threads,
+            pot: t.pot,
+            change: t.change,
+          );
+        } else {
+          _txs.add(ShearTx(
+            id: id,
+            from: 'coinbase',
+            to: matched,
+            amount: she,
+            kind: 'blockfound',
+            height: h,
+            confirmed: h < 1 || confirmationsOf(h) >= spendableConfirmations,
+            hashAmount: she,
+          ));
+        }
+      }
     }
   }
   final Map<String, double> _pending = {};
@@ -1152,13 +1201,29 @@ class ShearLedger {
     }
   }
 
+  double _noteSpendable(String dest) {
+    var n = 0.0;
+    for (final note in _notes) {
+      if (note['spent'] == true) continue;
+      if (note['address'] != dest && note['dest'] != dest) continue;
+      final amt = note['amount'];
+      if (amt is! num) continue;
+      final h = (note['height'] as num?)?.toInt();
+      if (h != null && h > 0 && confirmationsOf(h) < spendableConfirmations) continue;
+      n += amt.toDouble();
+    }
+    return n;
+  }
+
   double spendableOwned(String restFrame, {String? paymentCode}) {
     spendPub ??= decodePaymentCode(paymentCode ?? '')?['spendPub'];
     _dropProgramVaults();
     var n = 0.0;
     for (final d in ownedAddresses(restFrame, paymentCode: paymentCode)) {
       if (_isProgramVaultDest(d)) continue;
-      n += _spendable[d] ?? 0;
+      final mapped = _spendable[d] ?? 0;
+      final notes = _noteSpendable(d);
+      n += mapped >= notes ? mapped : notes;
     }
     return n;
   }

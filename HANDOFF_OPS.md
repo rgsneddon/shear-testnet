@@ -3,7 +3,7 @@
 **Written:** 2026-09-17T19:20Z from the Mac (`/Users/russellsneddon/shear`). HEAD **`f63c1e1`+** (dest-P bind `03fe7fe` is in this history).  
 **Canonical GitHub tree:** https://github.com/rgsneddon/shear-testnet  
 **Working branch:** `main`  
-**This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Pins are the **latest** clients: wallet **0.36**, ShearK **2.4**. Do not recut older tags.
+**This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Pins are the **latest** clients: wallet **0.37**, ShearK **2.4**. Do not recut older tags.
 
 Other Shear GitHub repos (`rgsneddon/shear`, `rgsneddon/shear-wallet`, `rgsneddon/shear-pool`) are being deleted. Clone **this** repo only, plus **ShearK**.
 
@@ -35,12 +35,12 @@ Private inventory (optional): `gh repo clone rgsneddon/handoff %USERPROFILE%\han
 | Book / magic | `shear-testnet-v4` |
 | ADMIT | ADMITv2 (Pasta arity-32 CDS; Membership, not Multiple) |
 | Fingerprint | `shear-book-law-2` … `ADMIT=ADMITv2\|RANGE=bpplus\|LEVY=weight\|NETWORK=shear-testnet-v4\|BITS=q16.16\|ASERT_TAU_MS=25920000` |
-| Wallet | **0.36** (`wallet/lib/main.dart` `kWalletVersion`) |
+| Wallet | **0.37** (`wallet/lib/main.dart` `kWalletVersion`) |
 | Miner | **ShearK 2.4** — https://github.com/rgsneddon/ShearK/releases/tag/2.4 |
 | SHARE_BIND | `rx+noteCommit` |
 | Mainnet | **blocked**. Launch date is not decided. Do **not** set `SHEAR_MAINNET_EMIT=1`. Operator is **not** cutting over. |
 
-Wallet zip on **this** repo: https://github.com/rgsneddon/shear-testnet/releases/tag/0.36  
+Wallet zip on **this** repo: https://github.com/rgsneddon/shear-testnet/releases/tag/0.37  
 Miner zip: https://github.com/rgsneddon/ShearK/releases/tag/2.4 (`ShearK-Miner-2.4-windows.zip` is this box’s job if still missing).
 
 ---
@@ -100,8 +100,8 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 ## 5) Next work on Windows (priority)
 
-1. Pack **wallet 0.36** Windows/Linux/Arch onto existing tag `0.36` (do not recut). Darwin cannot `flutter build windows`.
-2. **Android 0.36 APK can be packed on this Windows box** (Flutter + Android SDK 36 + Eclipse Temurin JDK 17). See §6a. Do not wait for the Mac for Android.
+1. Pack **wallet 0.37** Windows/Linux/Arch onto existing tag `0.36` (do not recut). Darwin cannot `flutter build windows`.
+2. **Android 0.37 APK can be packed on this Windows box** (Flutter + Android SDK 36 + Eclipse Temurin JDK 17). See §6a. Do not wait for the Mac for Android.
 3. **macOS `.dmg` (and iOS) stay a MacBook handoff.** See §6b. Do not recut 0.35.
 4. If `ShearK-Miner-2.4-windows.zip` is still missing, pack it on **`rgsneddon/ShearK`** tag `2.4` (PE + `example.bat`). Do not recut 2.3/2.2.
 5. Keep mainnet blocked. No `SHEAR_MAINNET_EMIT=1` without `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`.
@@ -112,7 +112,7 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 - Linux node: `make -C crypto/native` on the box. Never copy a macOS `.node` to Linux.
 - p2pnode2 (Ubuntu 26.04) has no gcc — copy Linux `shearadmit.node` from P2pnode.
-- Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.36**. `--build-name=0.36` / pubspec `0.36.0+52`.
+- Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.36**. `--build-name=0.36` / pubspec `0.37.0+53`.
 - Pool HTTP: `/api/stats`, not `/stats`.
 - Operator admin vhost is **not** in git.
 
@@ -126,13 +126,13 @@ set ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
 set ANDROID_SDK_ROOT=%ANDROID_HOME%
 cd /d %USERPROFILE%\shear-testnet\wallet
 flutter pub get
-flutter build apk --release --build-name=0.36.0 --build-number=52
-copy /Y build\app\outputs\flutter-apk\app-release.apk dist\shear-wallet-0.36-android.apk
-copy /Y build\app\outputs\flutter-apk\app-release.apk ..\dist\shear-wallet-0.36-android.apk
-gh release upload 0.36 dist\shear-wallet-0.36-android.apk --repo rgsneddon/shear-testnet --clobber
+flutter build apk --release --build-name=0.37.0 --build-number=53
+copy /Y build\app\outputs\flutter-apk\app-release.apk dist\shear-wallet-0.37-android.apk
+copy /Y build\app\outputs\flutter-apk\app-release.apk ..\dist\shear-wallet-0.37-android.apk
+gh release upload 0.36 dist\shear-wallet-0.37-android.apk --repo rgsneddon/shear-testnet --clobber
 ```
 
-Fat APK only (`flutter build apk`, not `--split-per-abi`). `applicationId` `com.shear.shear_wallet`. Uninstall any old debug-signed build before sideload. Tag `0.36` has `shear-wallet-0.36-android.apk` (packed on this Windows box, 2026-09-18).
+Fat APK only (`flutter build apk`, not `--split-per-abi`). `applicationId` `com.shear.shear_wallet`. Uninstall any old debug-signed build before sideload. Tag `0.36` has `shear-wallet-0.37-android.apk` (packed on this Windows box, 2026-09-18).
 
 ### 6b) Mac handoff — Apple clients only
 
@@ -145,8 +145,8 @@ flutter --version            # 3.44.6+ is fine
 brew list libsodium >/dev/null || brew install libsodium
 PACK_REBUILD=1 ./pack_macos.sh
 python3 pack/sign_and_notarize.py
-# writes wallet/dist/shear-wallet-0.36-macos.dmg
-gh release upload 0.36 dist/shear-wallet-0.36-macos.dmg --repo rgsneddon/shear-testnet --clobber
+# writes wallet/dist/shear-wallet-0.37-macos.dmg
+gh release upload 0.36 dist/shear-wallet-0.37-macos.dmg --repo rgsneddon/shear-testnet --clobber
 ```
 
 - Drag-to-Applications DMG; do not ship a zip. Developer ID `Russell Sneddon (SFCBP95595)`.

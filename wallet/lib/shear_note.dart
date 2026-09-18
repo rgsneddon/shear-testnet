@@ -126,10 +126,11 @@ Map<String, dynamic> sealNote(int v, {Uint8List? dest20, Uint8List? noteCommit, 
     'kind': kind,
     'noteCommit': nc,
     'commit': value['C'],
-    'valueProof': {'R': value['R'], 'z': value['z']},
+    'valueProof': {'R': value['R'], 'z': value['z'], 'v': v},
     'rangeProof': proveRange(v, r),
     'r': scalarBytes(r),
     'nanos': v,
+    if (dest20 != null) 'dest20': dest20,
   };
 }
 
@@ -187,6 +188,14 @@ Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
   if (o['admitPub'] != null) row['admitPub'] = o['admitPub'];
   if (o['rEph'] != null) row['rEph'] = o['rEph'];
   if (o['rCt'] != null) row['rCt'] = o['rCt'];
+  if (o['dest20'] != null) row['dest20'] = o['dest20'];
+  final coinbaseMoney = kind == 'hash' || kind == 'pot' || kind == 'finder-fee' || kind == 'reserve-fee';
+  if (coinbaseMoney) {
+    final vp = row['valueProof'];
+    if (vp is Map && vp['v'] == null && o['nanos'] is num) {
+      row['valueProof'] = {...vp, 'v': o['nanos']};
+    }
+  }
   return row;
 }
 

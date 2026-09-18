@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.36 (current)
+## 0.37 (current)
+
+Hashbonus seals on-chain to the hasher dest immediately (dest20 + wrap). Continuum spendable and Shearview fold dest-owned hash notes after 6 confs. The 1 SHE pot stays custodial on the pool wallet until 30 confirms, then π auto-payout. Do not recut 0.36. Android `.apk` is packed on Windows. macOS `.dmg` is a MacBook handoff.
+
+## 0.36
 
 Dest-opening Shearview/pending (amounts-only pool history no longer wipes dest-owned rows). Continuum Reddit at https://www.reddit.com/r/shear/. Social buttons open https URLs with no query/fragment/referrer. ADMITv2 book `shear-testnet-v4`. GUI + CLI. Required miner ShearK **≥ 2.4**. Do not recut 0.35. Android `.apk` is packed on Windows. macOS `.dmg` is a MacBook handoff.
 

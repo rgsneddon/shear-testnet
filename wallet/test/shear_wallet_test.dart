@@ -79,18 +79,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.36"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.37"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.36"'), isTrue);
+    expect(winMain.contains('L"Shear 0.37"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.36"'), isTrue);
+    expect(winRc.contains('"Shear 0.37"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.36"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.37"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -1281,7 +1281,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.36');
+    expect(kWalletVersion, '0.37');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -1733,8 +1733,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.36');
-    expect(kWalletVersion, '0.36');
+    expect(app.title, 'Shear 0.37');
+    expect(kWalletVersion, '0.37');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -2559,6 +2559,31 @@ void main() {
     await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
     expect(ledger.shearviewTxs(id.address).any((t) => t.kind == 'blockfound' || t.id == 'cb-14'), isTrue);
     expect(ledger.pendingTxs(id.address).any((t) => t.id == 'in-pend'), isTrue);
+  });
+
+  test('dest-owned hashbonus notes credit spendable at 6 confs and fold into Shearview, not pot', () {
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final ledger = ShearLedger()..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final d20 = hash20FromAddress(dest)!;
+    const nanos = 620544;
+    var note = sealNote(nanos, dest20: d20, kind: 'hash');
+    note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
+    final compacted = compactSealedVout(note);
+    compacted['height'] = 1;
+    expect(compacted.containsKey('r'), isFalse);
+    expect(compacted['rEph'], isNotNull);
+    expect(compacted['dest20'], isNotNull);
+    ledger.ingestSealedVouts([compacted], spendSeed: seed, dest: dest);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations - 1);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), nanos / kUnitsPerShe);
+    expect(formatShe(nanos / kUnitsPerShe), isNot('0'));
+    expect(formatShe(nanos / kUnitsPerShe), isNot('0.000000000'));
+    final view = ledger.shearviewTxs(id.address);
+    expect(view.where((t) => t.kind == 'hash'), isEmpty);
+    expect(view.any((t) => t.kind == 'blockfound' && (t.hashAmount ?? 0) > 0), isTrue);
+    expect(view.any((t) => t.kind == 'pot' || (t.pot ?? 0) >= 1), isFalse);
   });
 
   testWidgets('incoming pie evaporates at spendable confs; leftover pendings continue', (tester) async {
@@ -4068,8 +4093,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.36 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.36');
+  test('kWalletVersion == 0.37 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.37');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);

@@ -244,13 +244,18 @@ export function sealCoinbaseNote(v, { dest20, noteCommit, kind } = {}) {
   const nc = noteCommit
     ? Buffer.from(noteCommit)
     : (dest20 ? noteCommitOfDest20(dest20) : Buffer.alloc(32));
-  return {
+  const row = {
     kind: kind || 'hash',
     noteCommit: nc,
     commit: value.C,
-    valueProof: { R: value.R, z: value.z },
+    valueProof: { R: value.R, z: value.z, v },
     r: scalarBytes(r),
   };
+  if (dest20) {
+    const d = Buffer.from(dest20);
+    if (d.length === 20) row.dest20 = d;
+  }
+  return row;
 }
 
 export function sealNote(v, { dest20, noteCommit, kind } = {}) {

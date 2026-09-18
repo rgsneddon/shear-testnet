@@ -1452,6 +1452,8 @@ export function createPool({
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     const chainLen = (store.blocks || []).length;
+    // Hashbonus is per-hasher dest (omit hashBonusCustodyDest). Pot stays
+    // custodial on poolPay for 30-conf → π auto-payout. Do not conflate.
     const { job, tpl } = store.template({
       miner: payout,
       samples,
@@ -2286,7 +2288,7 @@ export function createPool({
       destRedacted: dest ? redactSsa1(dest) : (pull.destRedacted || 'ssa1********'),
       hasPayoutDest: !!dest,
       confirmedSentLabel: dest
-        ? `All-time sent to ${redactSsa1(dest)}`
+        ? `On-chain hashbonus to ${redactSsa1(dest)}`
         : 'No valid ssa1 on login — credits held for admin payout',
       autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
       autoPayoutMinShe: AUTO_PAYOUT_MIN_NANOS / NANOS_PER_SHE,

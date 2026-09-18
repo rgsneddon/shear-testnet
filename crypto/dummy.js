@@ -131,6 +131,19 @@ export function publicExplorerRow(row) {
     memo: !!row?.memo,
     amountHidden: true,
   };
-  if (row?.noteCommit) out.note = Buffer.from(row.noteCommit).toString('hex');
+  if (row?.noteCommit) {
+    const nc = Buffer.from(row.noteCommit);
+    out.note = nc.toString('hex');
+    out.noteCommit = nc;
+  } else if (row?.note) {
+    out.note = String(row.note);
+  }
+  const d20 = row?.toDest20 || row?.dest20;
+  if (d20) {
+    try {
+      const b = Buffer.from(d20);
+      if (b.length >= 20) out.toDest20 = Buffer.from(b.subarray(0, 20));
+    } catch { /* omit */ }
+  }
   return out;
 }

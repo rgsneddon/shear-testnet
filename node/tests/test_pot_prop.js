@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { newIdentity, freshStealthDest, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SHARE_FLOOR_BITS, GENESIS_BITS_PACKED, bitsForBlock } from '../../crypto/asert.js';
@@ -18,7 +19,7 @@ import {
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { coinbaseSplit as mintSplit } from '../../crypto/mint.js';
-import { sealCoinbaseNote, excessOf } from '../../crypto/note.js';
+import { sealCoinbaseNote, excessOf, noteCommitOfDest20 } from '../../crypto/note.js';
 
 function destOf(id) {
   return freshStealthDest(id).dest;
@@ -209,5 +210,42 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const kinds = (childTpl.txs[0].vout || []).map((o) => o.kind);
     assert.ok(kinds.includes('hash'));
     assert.ok(kinds.includes('pot'));
+  });
+
+  it('hashbonus noteCommit is the hasher dest; pot vouts stay on the pool dest', () => {
+    const hasherId = newIdentity();
+    const poolId = newIdentity();
+    const hasher = destOf(hasherId);
+    const pool = destOf(poolId);
+    const hasher20 = hash20FromAddress(hasher);
+    const pool20 = hash20FromAddress(pool);
+    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
+    const tpl = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: pool,
+      bits: GENESIS_BITS_PACKED,
+      now: 1_700_000_000_000,
+      shareBatch: [row],
+      poolDest: pool,
+      potShares: custodyPotShares(pool),
+    });
+    const vout = tpl.txs[0].vout || [];
+    const hashes = vout.filter((o) => o.kind === 'hash');
+    const pots = vout.filter((o) => o.kind === 'pot' || o.kind === 'finder-fee' || o.kind === 'reserve-fee');
+    assert.ok(hashes.length >= 1, 'per-miner hash vout');
+    for (const h of hashes) {
+      assert.ok(Buffer.from(h.noteCommit).equals(noteCommitOfDest20(hasher20)));
+      assert.ok(h.dest20);
+      assert.ok(Buffer.from(h.dest20).equals(Buffer.from(hasher20)));
+      assert.ok(!Buffer.from(h.noteCommit).equals(noteCommitOfDest20(pool20)));
+      assert.ok(h.rEph && h.rCt);
+    }
+    assert.ok(pots.length >= 1, 'custodial pot');
+    for (const p of pots) {
+      assert.ok(Buffer.from(p.noteCommit).equals(noteCommitOfDest20(pool20)));
+    }
+    const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(src, /hashBonusCustodyDest\s*:/);
   });
 });

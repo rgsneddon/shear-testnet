@@ -107,8 +107,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
     assert.match(main, /ShearK-Miner <strong>2\.4<\/strong>/);
-    assert.doesNotMatch(main, /shear-wallet-0\.36-macos\.dmg/);
-    assert.match(main, /shear-wallet-0\.36-android\.apk/);
+    assert.doesNotMatch(main, /shear-wallet-0\.37-macos\.dmg/);
+    assert.match(main, /shear-wallet-0\.37-android\.apk/);
     assert.doesNotMatch(pool, /shear-testnet-v3/);
     assert.match(main, /A launch date is not decided/);
     assert.doesNotMatch(main, /2026-09-18T21:00:00/);
@@ -129,12 +129,12 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /git checkout feat\/admit-v2/);
   });
 
-  it('MacBook handoff points at merged GitHub main, 0.36 tag, and pack_macos.sh', () => {
+  it('MacBook handoff points at merged GitHub main, 0.37 tag, and pack_macos.sh', () => {
     const md = read('MACBOOK_HANDOFF.md');
     assert.match(md, /https:\/\/github\.com\/rgsneddon\/shear-testnet/);
     assert.match(md, /blob\/main\/MACBOOK_HANDOFF\.md/);
-    assert.match(md, /releases\/tag\/0\.36/);
+    assert.match(md, /releases\/tag\/0\.37/);
     assert.match(md, /pack_macos\.sh/);
-    assert.match(md, /shear-wallet-0\.36-macos\.dmg/);
+    assert.match(md, /shear-wallet-0\.37-macos\.dmg/);
   });
 });
