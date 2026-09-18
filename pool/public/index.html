@@ -356,7 +356,7 @@
       </section>
     </div>
     <div id="testnet-banner" role="status">TESTNET</div>
-    <p id="fee-note">Pool fee is 1% of the 1 SHE pot. Hash bonuses pay in full to each hasher dest.</p>
+    <p id="fee-note">Pool fee is 1% of the 1 SHE pot. Hash bonuses pay in full to each hasher dest. Rewards share the block pot by round work after the 1% pool fee — not one SHE per block you found.</p>
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
       <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash-v3</div></article>
@@ -415,7 +415,8 @@
             <th>Miner</th>
             <th>Client</th>
             <th>Hashrate</th>
-            <th>Blocks found</th>
+            <th>Session finds</th>
+            <th>Lifetime seals</th>
             <th>Accepted shares</th>
             <th>Hashes reported</th>
             <th>Stale shares</th>
@@ -787,7 +788,8 @@
         const href = '/miner/' + encodeURIComponent(tag);
         return '<tr><td><a href="' + href + '">' + tag + '</a></td><td>' +
           ([w.name, w.version].filter(Boolean).join(' ') || '—') + '</td><td>' + fmtRate(w.hashrate) + '</td><td>' +
-          (Number(w.blocks) || 0) + '</td><td>' + (w.accepted || 0) + '</td><td>' +
+          (Number(w.blocksSession != null ? w.blocksSession : w.blocks) || 0) + '</td><td>' +
+          (Number(w.blocksLifetime) || 0) + '</td><td>' + (w.accepted || 0) + '</td><td>' +
           (w.hashes != null ? w.hashes : (w.roundHashes || w.provenHashes || 0)) + '</td><td>' +
           (w.stale || 0) + '</td><td>' + (w.threads || 0) + '</td></tr>';
       }).join('');

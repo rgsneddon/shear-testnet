@@ -28,7 +28,7 @@ export function extraMint({ programId, to, nanos, kind }) {
   if (!extraMintAllowed(programId, { kind: k })) {
     return { ok: false, reason: 'mint_forbidden' };
   }
-  if (!isDestAddress(to) && !isShearAddress(to)) return { ok: false, reason: 'bad_address' };
+  if (isShearAddress(to) || !isDestAddress(to)) return { ok: false, reason: 'shear1' };
   const n = Number(nanos);
   if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: 'bad_nanos' };
   return { ok: true, programId, to, nanos: n, kind: k, mint: true };

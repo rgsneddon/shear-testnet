@@ -197,6 +197,7 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
     const pays = [
       ...expectedCoinbasePays(b.shareBatch || [], {
         miner: b.miner,
+        poolDest: b.poolDest || '',
         hashBonusNanos,
       }),
       ...paysFromALeaves(b.aLeaves || [], { hashBonusNanos }),
@@ -211,8 +212,16 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
           const matched = matchSealedCoinbaseVout(o, pays);
           if (matched.nanos) n = matched.nanos;
           else {
-            const hit = pays.find((p) => p.noteCommit && noteCommitEq(p.noteCommit, o.noteCommit));
+            const hit = pays.find((p) => p.noteCommit && noteCommitEq(p.noteCommit, o.noteCommit))
+              || pays.find((p) => {
+                const d = hash20FromAddress(p.address);
+                return d && Buffer.from(d).equals(Buffer.from(dest20));
+              });
             if (hit) n = Number(hit.nanos || 0);
+            else if (isDestAddress(b.miner) && hash20FromAddress(b.miner)
+              && Buffer.from(hash20FromAddress(b.miner)).equals(Buffer.from(dest20))) {
+              n = BLOCK_SUBSIDY_NANOS;
+            }
           }
         }
         if (n > 0) nanos += n;

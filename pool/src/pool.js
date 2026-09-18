@@ -844,6 +844,8 @@ export function foldPublicMinerViews(views) {
         accepted: Number(v.accepted) || 0,
         stale: Number(v.stale) || 0,
         blocks: Number(v.blocks) || 0,
+        blocksSession: Number(v.blocksSession ?? v.blocks) || 0,
+        blocksLifetime: Number(v.blocksLifetime) || 0,
         threads: Number(v.threads) || 0,
         sessions: Number(v.sessions) || 1,
         connected: !!v.connected,
@@ -860,6 +862,8 @@ export function foldPublicMinerViews(views) {
     prev.accepted += Number(v.accepted) || 0;
     prev.stale += Number(v.stale) || 0;
     prev.blocks += Number(v.blocks) || 0;
+    prev.blocksSession = (Number(prev.blocksSession) || 0) + (Number(v.blocksSession ?? v.blocks) || 0);
+    prev.blocksLifetime = Math.max(Number(prev.blocksLifetime) || 0, Number(v.blocksLifetime) || 0);
     prev.threads += Number(v.threads) || 0;
     prev.sessions += Number(v.sessions) || 1;
     prev.connected = prev.connected || !!v.connected;
@@ -2057,6 +2061,8 @@ export function createPool({
       accepted: m.accepted || 0,
       stale: m.stale || 0,
       blocks: Number(m.blocks) || 0,
+      blocksSession: Number(m.blocks) || 0,
+      blocksLifetime: Number(pullBook.view(publicMinerTag(m.login || m.workerKey)).foundBlocks) || 0,
       threads: m.threads || 0,
       sessions: m.sessions || (m.connections || []).length,
       connected,
@@ -2154,6 +2160,12 @@ export function createPool({
       threads: workers.reduce((a, m) => a + (m.threads || 0), 0),
       hashrate: workers.reduce((a, m) => a + (Number(m.hashrate) || 0), 0),
       blocks: stats.blocks,
+      blocksSession: stats.blocks,
+      blocksLifetime: typeof pullBook.sealsLifetime === 'function' ? pullBook.sealsLifetime() : 0,
+      sealsLifetime: typeof pullBook.sealsLifetime === 'function' ? pullBook.sealsLifetime() : 0,
+      rewardIdentity: 'shareBatch-prop-after-fee',
+      rewardCopy: 'Rewards share the block pot by round work after the 1% pool fee — not one SHE per block you found.',
+      reconcile: typeof pullBook.reconcile === 'function' ? pullBook.reconcile() : undefined,
       accepted: stats.accepted,
       stale: stats.stale,
       circulatingNanos: supply.circulatingNanos,
@@ -2161,6 +2173,9 @@ export function createPool({
       hashBonusEmittedNanos: supply.hashNanos,
       extraMintedNanos: supply.extraMintNanos,
       burnedNanos: supply.burnedNanos,
+      reserveMintedNanos: supply.reserveMintedNanos || 0,
+      reserveVaultNanos: supply.vaultNanos || 0,
+      accruingNanos: supply.accruingNanos || 0,
       height: tip?.height || 0,
       header: tip?.header ? Buffer.from(tip.header).toString('hex') : '',
       bits: displayBits(lastJob?.blockBits || lastJob?.bits || bits),
@@ -2198,7 +2213,8 @@ export function createPool({
       : 30;
     const pull = pullBook.view(tag, { tipHeight: tipH, need });
     const held = pullBook.ledger(tag);
-    if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs && !held.length) {
+    const known = typeof pullBook.hasTag === 'function' ? pullBook.hasTag(tag) : false;
+    if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs && !held.length && !known) {
       return { ok: false, reason: 'unknown_miner', tag };
     }
     const views = rows.length
@@ -2224,7 +2240,11 @@ export function createPool({
       lastSeen: views.length ? Math.max(...views.map((v) => v.lastSeen)) : 0,
       firstSeen: views.length ? Math.min(...views.map((v) => v.firstSeen || now)) : 0,
       ...roll,
+      blocksSession: Number(roll.blocks) || 0,
+      blocksLifetime: Number(pull.foundBlocks) || 0,
       blocks: Math.max(Number(roll.blocks) || 0, Number(pull.foundBlocks) || 0),
+      confirmRemain: Number(pull.confirmRemain) || 0,
+      oldestUnconfirmedHeight: Number(pull.oldestUnconfirmedHeight) || 0,
       workers: views,
       pendingShe: pull.pendingNanos / NANOS_PER_SHE,
       confirmedShe: pull.sentNanos / NANOS_PER_SHE,
@@ -2592,7 +2612,8 @@ export function createPool({
         : 30;
       const pull = pullBook.view(tag, { tipHeight: tipH, need });
       const held = typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : [];
-      if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs && !held.length) {
+      const known = typeof pullBook.hasTag === 'function' ? pullBook.hasTag(tag) : false;
+      if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs && !held.length && !known) {
         res.statusCode = 404;
         res.end(JSON.stringify({ ok: false, reason: 'unknown_miner', tag }));
         return;

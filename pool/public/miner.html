@@ -28,6 +28,22 @@
     }
     .grid { display:grid; gap:8px; width:100%; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 8px 0 16px; }
     .grid .panel-card { margin:0; padding:7px 8px; }
+    .grid .split-card { gap: 0; }
+    .split-stat {
+      display: grid;
+      grid-template-columns: 1fr 1px 1fr;
+      width: 100%;
+      align-items: stretch;
+    }
+    .split-col {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      align-items: center;
+      text-align: center;
+      min-width: 0;
+    }
+    .split-rule { width: 1px; background: rgba(26,111,181,.28); }
     .pull-row {
       display:grid; gap:8px; width:100%;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -129,6 +145,7 @@
     <section class="panel-card">
       <h1>Miner stats · <span class="mono" id="miner-tag">—</span></h1>
       <p>Hash bonus and your share of the block pot accumulate here. At <strong>π SHE</strong> (3.14159265358) of <em>confirmed</em> credit the pool sends the unpaid sum to your miner <code>ssa1</code> dest and pays the levy. The 1% pool fee is taken from the block pot only — hash bonus is fee-free. There is no withdraw button.</p>
+      <p id="reward-identity">Rewards share the block pot by round work after the 1% pool fee — not one SHE per block you found.</p>
       <p id="payout-note">Pool auto-payout waits for <strong>30 confirmations</strong> (pool merchant band). That is not the chain’s 6-confirm spendable bar — credit stays unconfirmed until 30 blocks, then counts toward π.</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
     </section>
@@ -158,7 +175,19 @@
       <article class="panel-card"><div class="label">Algo</div><div class="value" id="m-algo">ShearHash-v3</div></article>
       <article class="panel-card"><div class="label">Connected</div><div class="value" id="m-connected">—</div></article>
       <article class="panel-card"><div class="label">Hashrate</div><div class="value" id="m-hashrate">0 H/s</div></article>
-      <article class="panel-card"><div class="label">Blocks found</div><div class="value" id="m-blocks">0</div></article>
+      <article class="panel-card split-card" id="m-finds-box">
+        <div class="split-stat">
+          <div class="split-col">
+            <div class="label">Session finds</div>
+            <div class="value" id="m-blocks-session">0</div>
+          </div>
+          <div class="split-rule" aria-hidden="true"></div>
+          <div class="split-col">
+            <div class="label">Lifetime seals</div>
+            <div class="value" id="m-blocks">0</div>
+          </div>
+        </div>
+      </article>
       <article class="panel-card"><div class="label">Accepted work</div><div class="value" id="m-accepted">0</div></article>
       <article class="panel-card"><div class="label">Stale shares</div><div class="value" id="m-stale">0</div></article>
       <article class="panel-card"><div class="label">Orphans</div><div class="value" id="m-orphans">0</div></article>
@@ -283,7 +312,8 @@
       set('m-algo', d.personalisation || 'ShearHash-v3');
       set('m-connected', d.connected ? 'yes' : 'no');
       set('m-hashrate', fmtRate(d.hashrate));
-      set('m-blocks', String(d.blocks || 0));
+      set('m-blocks-session', String(d.blocksSession != null ? d.blocksSession : 0));
+      set('m-blocks', String(d.blocksLifetime != null ? d.blocksLifetime : (d.blocks || 0)));
       set('m-accepted', String(d.accepted || 0));
       set('m-stale', String(d.stale || 0));
       set('m-orphans', String(d.orphans || 0));
@@ -296,7 +326,9 @@
       set('m-sent-label', d.confirmedSentLabel || ('All-time sent to ' + (d.destRedacted || 'ssa1********')));
       var need = Number(d.confirmNeed) > 0 ? Number(d.confirmNeed) : 30;
       var toward = (d.creditConfirmedShe != null) ? Number(d.creditConfirmedShe) : 0;
+      var remain = Number(d.confirmRemain) || 0;
       var note = 'Pool auto-payout waits for ' + need + ' confirmations (pool merchant). Chain spendable is 6. Confirmed toward π: ' + fmtPullShe(null, toward) + '. Send fires at π of that confirmed sum, not on a timer.';
+      if (remain > 0) note += ' Oldest credit needs ' + remain + ' more confirm' + (remain === 1 ? '' : 's') + ' before it counts as confirmed.';
       if (d.hasPayoutDest === false) {
         note = 'No valid ssa1 on this miner login. Work is still booked here — credits held for admin payout. Auto-payout cannot send until Copy dest is used.';
       }

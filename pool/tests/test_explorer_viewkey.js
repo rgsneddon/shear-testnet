@@ -156,7 +156,7 @@ describe('explorer dests', () => {
     assert.equal(circ.status, 200);
     assert.equal(circ.json.ok, true);
     assert.equal(circ.json.proofs, true);
-    assert.equal(circ.json.amountHidden, true);
+    assert.equal(circ.json.amountHidden, false);
     assert.ok(circ.json.noteCount >= 1);
     assert.equal(circ.json.holderCount, 0);
     assert.deepEqual(circ.json.holders, []);
@@ -238,6 +238,15 @@ describe('explorer dests', () => {
     assert.doesNotMatch(page, />Memo</);
     assert.doesNotMatch(page, /Recent transfers/);
     assert.match(page, /id="net-grid"/);
+    assert.match(page, /Circulating Shear/);
+    assert.match(page, /Shear minted by Reserve/);
+    assert.match(page, /VAULT/);
+    assert.match(page, /id="ex-circ-she"/);
+    assert.match(page, /id="ex-reserve-minted"/);
+    assert.match(page, /id="ex-reserve-vault"/);
+    assert.match(page, /stats\.circulatingNanos/);
+    assert.match(page, /stats\.reserveVaultNanos/);
+    assert.doesNotMatch(page, /circ\.proofs \? 'proofs'/);
     assert.doesNotMatch(page, /id="ex-algo"/);
     assert.doesNotMatch(page, /id="ex-network"/);
     assert.match(page, /id="tx-cli"/);

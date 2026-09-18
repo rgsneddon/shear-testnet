@@ -22,6 +22,7 @@ import {
   withdraw,
   enact,
   applyReserveBlock,
+  verifyReservePayout,
   creditFeeBank,
   payoutStakeReward,
   canJoin,
@@ -42,6 +43,7 @@ import { compactTx } from './chronoflux.js';
 import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
 import { digestTx } from '../node/src/chain.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, interestNanos } from './reserve_oracle.js';
+import { extraMint } from './mint.js';
 
 const DAY = 86_400_000;
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -568,6 +570,46 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       nowMs: t0 + 2,
     });
     assert.equal(voted.some((r) => r.action === 'vote' && r.ok === true), true, JSON.stringify(voted));
+  });
+
+  it('rejects over-mint withdraw, shear1 extra-mint, mid-epoch payout, and oracle mid-epoch games', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    const due = interestNanos(PI_SHE_NANOS, state.epochBps);
+    const openTx = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + due, id: 'early' });
+    openTx.nowMs = t0 + 1000;
+    assert.equal(verifyReservePayout(state, openTx).ok, false);
+    assert.equal(verifyReservePayout(state, openTx).reason, 'epoch_open');
+    const end = t0 + RESERVE_EPOCH_MS;
+    const fat = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + due + NANOS_PER_SHE, id: 'fat' });
+    fat.nowMs = end;
+    const over = verifyReservePayout(state, fat);
+    assert.equal(over.ok, false);
+    assert.equal(over.reason, 'over_mint');
+    const okTx = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + due, id: 'ok' });
+    okTx.nowMs = end;
+    assert.equal(verifyReservePayout(state, okTx).ok, true);
+    observeRate({ state, annualBps: 9000, nowMs: t0 + DAY });
+    const rw = portalRewards(state, a, t0 + DAY);
+    assert.equal(rw.epochBps, 264);
+    assert.equal(rw.projected, due);
+    const shear1 = extraMint({ programId: RESERVE_PROGRAM, to: alice.address, nanos: 1, kind: 'withdraw' });
+    assert.equal(shear1.ok, false);
+    assert.equal(shear1.reason, 'shear1');
+    const twice = payoutStakeReward({ state, reward: due, id: 'dup', maxReward: due });
+    assert.equal(twice.ok, true);
+    const again = payoutStakeReward({ state, reward: due, id: 'dup', maxReward: due });
+    assert.equal(again.ok, false);
+    assert.equal(again.reason, 'double_mint');
+    const greedy = payoutStakeReward({ state, reward: due * 10, id: 'g', maxReward: due });
+    assert.equal(greedy.ok, false);
+    assert.equal(greedy.reason, 'over_mint');
+    const view = publicVaultView(state, t0 + DAY);
+    assert.ok(view.vaultNanos >= view.totalLockedNanos);
+    assert.equal(view.accruingNanos, rw.accrued);
   });
 });
 

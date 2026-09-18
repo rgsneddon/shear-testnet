@@ -2171,7 +2171,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
             textAlign: TextAlign.justify,
           ),
           Text(
-            'Accrued this epoch  $accruedShe SHE  ·  minted daily, locked until epoch end',
+            'Accrued this epoch  $accruedShe SHE  ·  updates daily at frozen oracle bps; paid at epoch end',
             textAlign: TextAlign.justify,
           ),
           Text(

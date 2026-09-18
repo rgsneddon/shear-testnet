@@ -96,6 +96,20 @@ export function createPullBook(dir) {
     }
   }
 
+  function uniquePotHeights() {
+    const s = new Set();
+    for (const c of state.credits) {
+      if (c.kind === 'hash') continue;
+      const h = Number(c.height) || 0;
+      if (h >= 1) s.add(h);
+    }
+    return s;
+  }
+
+  function sealsLifetime() {
+    return uniquePotHeights().size;
+  }
+
   function save() {
     const disk = {
       credits: state.credits.map((c) => ({
@@ -115,6 +129,7 @@ export function createPullBook(dir) {
       })),
       lastPullMs: state.lastPullMs,
       found: state.found,
+      sealsLifetime: sealsLifetime(),
     };
     fs.writeFileSync(file, `${JSON.stringify(disk)}\n`, { mode: 0o600 });
   }
@@ -224,6 +239,17 @@ export function createPullBook(dir) {
     }
     const lastPullMs = Number(state.lastPullMs[key] || 0);
     const dest = destOf(key);
+    let oldestUnconfirmedHeight = 0;
+    for (const c of state.credits) {
+      if (c.tag !== key) continue;
+      const h = Number(c.height) || 0;
+      if (!(h >= 1)) continue;
+      if (isSpendableHeight(h, tipHeight, need)) continue;
+      if (!oldestUnconfirmedHeight || h < oldestUnconfirmedHeight) oldestUnconfirmedHeight = h;
+    }
+    const confirmRemain = oldestUnconfirmedHeight
+      ? Math.max(0, oldestUnconfirmedHeight + Math.max(1, Number(need) || 1) - 1 - tipHeight)
+      : 0;
     return {
       pendingNanos: conf + unconfirmed,
       confirmedNanos: conf,
@@ -237,6 +263,9 @@ export function createPullBook(dir) {
       destRedacted: redactSsa1(dest),
       autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
       foundBlocks: Math.floor(Number(state.found[key]) || 0),
+      oldestUnconfirmedHeight,
+      confirmRemain,
+      confirmNeed: Math.max(1, Number(need) || 1),
     };
   }
 
@@ -289,8 +318,51 @@ export function createPullBook(dir) {
 
   function tags() {
     const s = new Set();
-    for (const c of state.credits) s.add(c.tag);
+    for (const c of state.credits) if (c.tag) s.add(c.tag);
+    for (const p of state.pulled) if (p.tag) s.add(p.tag);
+    for (const k of Object.keys(state.found || {})) if (k) s.add(k);
     return [...s];
+  }
+
+  function hasTag(tag) {
+    const key = String(tag || '').trim().toLowerCase();
+    if (!key) return false;
+    if (Number(state.found[key]) > 0) return true;
+    if (state.lastPullMs[key]) return true;
+    for (const c of state.credits) if (c.tag === key) return true;
+    for (const p of state.pulled) if (p.tag === key) return true;
+    return false;
+  }
+
+  function reconcile({ potAfterFeeNanos = potCreditNanos() } = {}) {
+    const net = Math.max(0, Math.floor(Number(potAfterFeeNanos) || 0));
+    let potCredits = 0;
+    let hashCredits = 0;
+    const byH = new Map();
+    for (const c of state.credits) {
+      const n = Math.floor(Number(c.nanos) || 0);
+      if (c.kind === 'hash') {
+        hashCredits += n;
+        continue;
+      }
+      potCredits += n;
+      const h = Number(c.height) || 0;
+      if (h >= 1) byH.set(h, (byH.get(h) || 0) + n);
+    }
+    let attributedFee = 0;
+    for (const n of byH.values()) attributedFee += attributedPoolFeeNanos(n);
+    const seals = byH.size;
+    const expectedNet = seals * net;
+    const drift = potCredits - expectedNet;
+    return {
+      sealsLifetime: seals,
+      potCreditsNanos: potCredits,
+      hashCreditsNanos: hashCredits,
+      attributedFeeNanos: attributedFee,
+      expectedNetPotNanos: expectedNet,
+      driftNanos: drift,
+      ok: Math.abs(drift) <= seals,
+    };
   }
 
   function ledger(tag) {
@@ -348,5 +420,8 @@ export function createPullBook(dir) {
   }
 
   if (loaded) save();
-  return { creditRound, view, takeConfirmed, destOf, tags, dueAuto, sweepAuto, ledger };
+  return {
+    creditRound, view, takeConfirmed, destOf, tags, hasTag, dueAuto, sweepAuto, ledger,
+    sealsLifetime, reconcile,
+  };
 }

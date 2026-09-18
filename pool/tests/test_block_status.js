@@ -1,8 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
-import { explorerRecentTxs, confirmedBlockTxs } from '../src/wallet_api.js';
+import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
+import { explorerRecentTxs, confirmedBlockTxs, networkSupply } from '../src/wallet_api.js';
+import { encodeHeader } from '../../crypto/header.js';
+import { emptyVault } from '../../crypto/reserve_vault.js';
 
 function loadBlockStatus(rel) {
   const src = fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
@@ -105,5 +107,28 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     }
     const capped = explorerRecentTxs(store, 30).filter((t) => t.kind === 'block');
     assert.equal(capped.length, 30);
+  });
+
+  it('networkSupply uses the pot schedule when compact coinbase nanos are hidden', () => {
+    const hdr = (ms) => encodeHeader({
+      prevBlockHash: Buffer.alloc(32),
+      merkleRoot: Buffer.alloc(32),
+      continuityRoot: Buffer.alloc(32),
+      timestamp: BigInt(ms),
+      bits: 16,
+    });
+    const blocks = [];
+    for (let h = 1; h <= 3; h += 1) {
+      blocks.push({
+        height: h,
+        header: hdr(1_700_000_000_000 + h * 90_000),
+        txs: [{ coinbase: true, vout: [{ kind: 'pot', noteCommit: Buffer.alloc(32), nanos: 0 }] }],
+      });
+    }
+    const store = { blocks, tip: () => blocks[2], reserveVault: emptyVault() };
+    const supply = networkSupply(store);
+    assert.equal(supply.potNanos, 3 * NANOS_PER_SHE);
+    assert.equal(supply.circulatingNanos, 3 * NANOS_PER_SHE);
+    assert.equal(supply.vaultNanos, 0);
   });
 });

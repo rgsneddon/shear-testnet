@@ -11,6 +11,8 @@ import {
   MIN_CONFIRMS_POLICY,
   RESERVE_PROGRAM,
   extraMintAllowed,
+  potSubsidyAt,
+  MAGIC_TESTNET,
 } from '../../crypto/asert.js';
 import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx } from '../../crypto/reserve_vault.js';
 import {
@@ -29,6 +31,7 @@ import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, spentNoteCommits } from '../../crypto/coinbase_notes.js';
+import { collateShareUnits } from '../../crypto/share_batch.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
@@ -693,14 +696,42 @@ export function networkSupply(store) {
         }
       }
     }
-    const circulatingNanos = potNanos + hashNanos + extraMintNanos - burnedNanos;
+    const blocks = store?.blocks || [];
+    if (!(potNanos > 0) && blocks.length) {
+      let genesisMs = 0;
+      try {
+        const g = blocks[0];
+        if (g?.header) genesisMs = Number(decodeHeader(Buffer.from(g.header)).timestamp) || 0;
+      } catch { genesisMs = 0; }
+      const unit = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
+      let schedPot = 0;
+      let schedHash = 0;
+      for (const b of blocks) {
+        let ts = genesisMs;
+        try {
+          if (b?.header) ts = Number(decodeHeader(Buffer.from(b.header)).timestamp) || ts;
+        } catch { /* schedule */ }
+        schedPot += potSubsidyAt({ nowMs: ts || genesisMs, genesisMs: genesisMs || ts, magic: MAGIC_TESTNET });
+        if (b?.shareBatch) {
+          for (const n of collateShareUnits(b.shareBatch).values()) schedHash += n * unit;
+        }
+      }
+      potNanos = schedPot;
+      if (!(hashNanos > 0)) hashNanos = schedHash;
+    }
+    const vault = publicVaultView(store?.reserveVault || {}, Date.now());
+    const extra = Math.max(extraMintNanos, Math.floor(Number(vault.mintBankNanos) || 0));
+    const circulatingNanos = potNanos + hashNanos + extra - burnedNanos;
     _supplyVal = {
       circulatingNanos: circulatingNanos > 0 ? circulatingNanos : 0,
       potNanos,
       hashNanos,
-      extraMintNanos,
+      extraMintNanos: extra,
       burnedNanos,
-      lockedNanos: Math.max(0, Math.floor(Number(store?.reserveVault?.totalLockedNanos || 0))),
+      lockedNanos: Math.max(0, Math.floor(Number(vault.totalLockedNanos) || 0)),
+      accruingNanos: Math.max(0, Math.floor(Number(vault.accruingNanos) || 0)),
+      vaultNanos: Math.max(0, Math.floor(Number(vault.vaultNanos) || 0)),
+      reserveMintedNanos: Math.max(0, Math.floor(Number(vault.reserveMintedNanos) || 0)),
     };
     _supplyAt = h;
     return _supplyVal;
@@ -721,11 +752,14 @@ export function explorerCirculation(store) {
   }
   return {
     proofs: true,
-    amountHidden: true,
+    amountHidden: false,
     noteCount,
     circulatingNanos: supply.circulatingNanos,
     circulating: nanosToShe(supply.circulatingNanos),
     emitted: nanosToShe(supply.potNanos + supply.hashNanos + supply.extraMintNanos),
+    reserveMintedNanos: supply.reserveMintedNanos || 0,
+    reserveVaultNanos: supply.vaultNanos || supply.lockedNanos || 0,
+    accruingNanos: supply.accruingNanos || 0,
     holderCount: 0,
     holders: [],
   };

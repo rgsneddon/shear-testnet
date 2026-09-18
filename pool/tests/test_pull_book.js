@@ -105,6 +105,10 @@ describe('pool pull book', () => {
     assert.equal(b.foundBlocks, 1);
     assert.equal(a.foundBlocks, 0);
     assert.equal(book.dueAuto({ tipHeight: 40, need: 30 }).some((d) => d.tag === held), false);
+    const rec = book.reconcile({ potAfterFeeNanos: pot });
+    assert.equal(rec.sealsLifetime, 1);
+    assert.equal(rec.potCreditsNanos, pot);
+    assert.equal(rec.ok, true);
   });
 
   it('sentNanos is all-time pulled, not 30-conf after the payout height', () => {

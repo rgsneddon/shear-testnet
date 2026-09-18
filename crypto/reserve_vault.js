@@ -108,12 +108,22 @@ export function payoutStakeReward({
   reward = 0,
   gateOk = true,
   id = 'reward',
+  maxReward = null,
 } = {}) {
   const vault = state || emptyVault();
   vault.mintedIds = vault.mintedIds || Object.create(null);
   if (!gateOk) return { ok: false, reason: 'gate_wait', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
   if (vault.mintedIds[id]) return { ok: false, reason: 'double_mint', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
   const need = asBig(reward);
+  if (need <= 0n) {
+    return { ok: false, reason: 'bad_reward', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
+  }
+  if (maxReward != null && need > asBig(maxReward)) {
+    return { ok: false, reason: 'over_mint', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
+  }
+  if (!id) {
+    return { ok: false, reason: 'need_id', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
+  }
   const bank = asBig(vault.feeBankNanos);
   const fromFee = need < bank ? need : bank;
   const gap = need - fromFee;
@@ -192,6 +202,9 @@ export function publicVaultView(state, nowMs) {
     totalIdleNanos: asNum(totalIdle),
     totalAccruedNanos: asNum(totalAccrued),
     totalClaimableNanos: asNum(totalClaimable),
+    accruingNanos: asNum(totalAccrued),
+    vaultNanos: asNum(asBig(state.totalLockedNanos) + totalAccrued),
+    reserveMintedNanos: asNum(asBig(state.mintBankNanos) + totalClaimable),
     feeBankNanos: asNum(state.feeBankNanos),
     mintBankNanos: asNum(state.mintBankNanos),
     votes: votesView(state),
@@ -506,7 +519,13 @@ export function reserveAction(tx) {
 
 export function verifyReservePayout(state, tx) {
   const act = reserveAction(tx);
-  if (!act || act.kind !== KIND_WITHDRAW) return { ok: true };
+  if (!act) return { ok: true };
+  if (act.kind === KIND_LOCK) {
+    if (!(act.nanos > 0)) return { ok: false, reason: 'bad_amount' };
+    if (act.dest && isShearAddress(act.dest)) return { ok: false, reason: 'shear1' };
+    return { ok: true };
+  }
+  if (act.kind !== KIND_WITHDRAW) return { ok: true };
   const p = act.portalId ? state?.portals?.[act.portalId] : null;
   if (act.payoutPortalId && p?.payoutPortalId && act.payoutPortalId !== p.payoutPortalId) {
     return { ok: false, reason: 'payout_mismatch' };
@@ -514,6 +533,20 @@ export function verifyReservePayout(state, tx) {
   if (p?.payout && act.payout && isDestAddress(act.payout) && act.payout !== p.payout) {
     return { ok: false, reason: 'payout_mismatch' };
   }
+  if (act.payout && (isShearAddress(act.payout) || !isDestAddress(act.payout))) {
+    return { ok: false, reason: 'shear1' };
+  }
+  const nowMs = Number(tx?.nowMs);
+  const clock = Number.isFinite(nowMs) && nowMs > 0 ? nowMs : Date.now();
+  if (!state?.epochStartMs || clock < state.epochStartMs + epochMs(state.magic)) {
+    return { ok: false, reason: 'epoch_open' };
+  }
+  if (!p) return { ok: false, reason: 'empty' };
+  const principal = asNum(asBig(p.staked) + asBig(p.idle));
+  const interest = reserveInterestNanos(p.staked, state.epochBps);
+  if (act.nanos > principal + interest) return { ok: false, reason: 'over_mint' };
+  const mintId = withdrawMintId(p.id || act.portalId, state.currentEpoch);
+  if (state.mintedIds && state.mintedIds[mintId]) return { ok: false, reason: 'double_mint' };
   return { ok: true };
 }
 
@@ -654,7 +687,13 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   let mint = null;
   if (interest > 0) {
     const mintId = withdrawMintId(p.id, state.currentEpoch);
-    const paid = payoutStakeReward({ state, reward: interest, id: mintId, gateOk: true });
+    const paid = payoutStakeReward({
+      state,
+      reward: interest,
+      id: mintId,
+      gateOk: true,
+      maxReward: interest,
+    });
     if (!paid.ok) return { ok: false, reason: paid.reason };
     mint = extraMint({ programId: RESERVE_PROGRAM, to, nanos: interest });
     if (!mint.ok) return { ok: false, reason: mint.reason };

@@ -770,7 +770,7 @@ describe('public miner listing', () => {
     assert.match(miner, /max-height: 22\.5rem/);
     assert.match(miner, /id="tot-earned"/);
     const gridHtml = miner.slice(statsAt, workersAt);
-    assert.equal((gridHtml.match(/<article class="panel-card"/g) || []).length, 16);
+    assert.equal((gridHtml.match(/<article class="panel-card/g) || []).length, 16);
     assert.match(miner, /confirmNeed/);
     assert.match(miner, /creditConfirmedShe/);
     assert.doesNotMatch(miner, /wait 24 hours before the next one/);
