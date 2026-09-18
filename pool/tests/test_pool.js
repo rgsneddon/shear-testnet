@@ -38,7 +38,7 @@ describe('stratum wire job', () => {
     assert.match(src, /export function wireJob/);
     assert.match(src, /payload = wireJob\(job, sb\)/);
     assert.match(src, /job: wireJob\(job, conn\.shareBits\)/);
-    assert.match(src, /params: wireJob\(retargeted, next\)/);
+    assert.match(src, /params: wireJob\(live, next\)/);
   });
 
   it('hash bonus follows every hasher with a valid share this round, not only the largest', () => {
@@ -299,7 +299,7 @@ describe('admit', () => {
     assert.equal(admitClient({ version: '2.1', login: id.address, client: 'ShearHash' }).ok, false);
     assert.equal(admitClient({ version: '2.1', login: dest, client: 'other' }).ok, false);
     assert.equal(admitClient({ version: '1.9', login: dest, client: 'ShearHash' }).ok, false);
-    assert.equal(admitClient({ version: '2.0', login: dest, client: 'ShearHash' }).reason, 'miner_version');
+    assert.equal(admitClient({ version: '2.0', login: dest, client: 'ShearHash' }).ok, true);
     assert.equal(admitClient({ version: '1.9', login: dest, client: 'ShearHash' }).reason, 'miner_version');
     assert.equal(admitClient({ version: '1.8', login: dest, client: 'ShearHash' }).reason, 'miner_version');
     assert.equal(admitClient({ login: dest, client: 'ShearHash' }).reason, 'miner_version');
@@ -668,16 +668,18 @@ describe('public miner listing', () => {
     assert.match(miner, /d\.workers/);
     assert.match(miner, /id="m-pending"/);
     assert.match(miner, /value yellow/);
-    assert.match(miner, /Withdraw confirmed sum/);
+    assert.match(miner, /Confirmed sent to ssa1/);
+    assert.match(miner, /id="m-sent-label"/);
     assert.match(miner, /id="pull-row"/);
     assert.match(miner, /grid-template-columns: repeat\(4/);
     assert.match(miner, /pull-acc \{ grid-column: span 1/);
     assert.match(miner, /pull-conf \{ grid-column: span 3/);
-    assert.match(miner, /pull-form \{ display:flex; flex-wrap:nowrap/);
-    assert.match(miner, /Confirm in Shear wallet/);
+    assert.doesNotMatch(miner, /Withdraw confirmed sum/);
+    assert.doesNotMatch(miner, /id="m-withdraw"/);
+    assert.doesNotMatch(miner, /Pull from pool/);
     assert.match(miner, /MINER_BOOT/);
     assert.match(miner, /fmtPullShe/);
-    assert.match(miner, /confirmedShe/);
+    assert.match(miner, /confirmedSentLabel/);
     assert.doesNotMatch(miner, /id="pull-login"/);
     assert.doesNotMatch(miner, /id="pull-dest"/);
     const explainerAt = miner.indexOf('id="live-pulse"');
@@ -685,14 +687,10 @@ describe('public miner listing', () => {
     const pullAt = miner.indexOf('id="pull-row"');
     const statsAt = miner.indexOf('id="stat-grid"');
     assert.ok(explainerAt >= 0 && pullAt > explainerAt && statsAt > pullAt && workersAt > statsAt);
-    assert.match(miner, /Hash bonuses land automatically/);
-    assert.match(miner, /never asks for/);
-    assert.match(miner, /Withdraw confirmed sum/);
-    assert.match(miner, /never asks for/);
-    assert.match(miner, /never asks for/);
-    assert.match(miner, /wait 24 hours before the next one/);
+    assert.match(miner, /π SHE/);
+    assert.match(miner, /hash bonus is fee-free/);
+    assert.doesNotMatch(miner, /wait 24 hours before the next one/);
     assert.doesNotMatch(miner, /wait 90 hours before the next one/);
-    assert.match(miner, /j\.reason/);
     assert.doesNotMatch(miner, /sig: 'pull-'/);
     assert.match(miner, /background:var\(--input\); color:var\(--ink\)/);
     assert.match(miner, /input::placeholder \{ color:var\(--muted\)/);
@@ -711,7 +709,7 @@ describe('public miner listing', () => {
     assert.doesNotMatch(dash, /Valid hashes \(round\)/);
     assert.match(dash, /Pool explorer · last 10 transactions/);
     assert.match(dash, />Status</);
-    assert.match(dash, />Kind</);
+    assert.match(dash, />Type</);
     assert.doesNotMatch(dash, />From</);
     assert.doesNotMatch(dash, />Amount</);
     assert.match(dash, /function blockStatus/);
@@ -765,7 +763,7 @@ describe('public miner listing', () => {
       { miner: 'maaaaaaaa', name: 'Shear-Miner', version: '2.1', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
     ]);
     assert.equal(folded[0].name, 'Shear-Miner');
-    assert.equal(folded[0].version, '1.1');
+    assert.equal(folded[0].version, '2.1');
   });
 
   it('replaces rude miner software names with flower names; worker names stay raw', () => {
@@ -1024,7 +1022,7 @@ describe('public miner listing', () => {
     assert.equal(/CMINER_FEE_DEST|CMINER_FEE_SHE/.test(src), false);
   });
 
-  it('miner pull stub/empty sig is unsigned; EIP-712 she1+ssa1 is ok; she1 dest fails', async () => {
+  it('miner withdraw HTTP is gone; auto-payout 410; miner JSON has confirmed-sent label', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pull-http-'));
     const id = newIdentity();
     const dest = freshStealthDest(id).dest;
@@ -1044,87 +1042,20 @@ describe('public miner listing', () => {
     const httpPort = pool.httpServer.address().port;
     pool.store.tip = () => ({ height: 40 });
     pool.store.getpolicy = () => ({ operational: { pool_merchant: 6 } });
-    const poolPay = payoutDest(dest) || dest;
-    for (let h = 1; h <= 40; h += 1) {
-      pool.store.blocks.push({ height: h, txs: [] });
-    }
-    pool.store.explorer.push({
-      from: 'coinbase',
-      to: poolPay,
-      nanos: 10 * BLOCK_SUBSIDY_NANOS,
-      height: 1,
-      kind: 'pot',
-    });
     assert.equal(pool.pullBook.creditRound([{ tag, dest, count: 10 }], { height: 1 }).ok, true);
-    const url = `http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}/withdraw`;
-    async function post(body) {
-      const r = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      return { status: r.status, json: await r.json() };
-    }
-    const ripe = pool.pullBook.view(tag, { tipHeight: 40, need: 6 });
-    const stub = await post({ login: id.paymentCode, dest, sig: `pull-${tag}-1` });
-    assert.equal(stub.json.ok, false);
-    assert.equal(stub.json.reason, 'unsigned');
-    assert.equal(stub.json.pending.tag, tag);
-    assert.equal(stub.json.pending.dest, undefined);
-    assert.equal(stub.json.pending.login, undefined);
-    assert.equal(stub.json.pending.nanos, ripe.confirmedNanos);
-    assert.equal(stub.json.pending.chainId, 2701);
-    assert.equal(verifyPoolWithdrawOffchain({
-      login: id.paymentCode, dest, nanos: 2e9, sig: `pull-${tag}-1`,
-    }).reason, 'unsigned');
-    const empty = await post({ login: id.paymentCode, dest });
-    assert.equal(empty.json.reason, 'unsigned');
-    assert.equal(empty.json.pending.nanos, ripe.confirmedNanos);
-    const pendingGet = await fetch(`http://127.0.0.1:${httpPort}/api/pool/pullPending?tag=${encodeURIComponent(tag)}`);
-    const pendingJson = await pendingGet.json();
-    assert.equal(pendingJson.ok, true);
-    assert.equal(pendingJson.pending.tag, tag);
-    assert.equal(pendingJson.pending.dest, undefined);
-    assert.equal(pendingJson.pending.nanos, ripe.confirmedNanos);
-    assert.equal(pendingJson.chainId, 2701);
-    const leak = await post({ login: id.paymentCode, dest: id.paymentCode, sig: 'x' });
-    assert.equal(leak.json.reason, 'she1');
-    assert.equal(leak.json.pending, undefined);
-    const sig = signPoolWithdraw({
-      seed: id.spendPub,
-      login: id.paymentCode,
-      dest,
-      nanos: ripe.confirmedNanos,
+    const r = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}/withdraw`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
     });
-    const { destOpeningFromView } = await import('../../crypto/address.js');
-    const { poolWithdrawDigest } = await import('../../crypto/eip712.js');
-    const { sign } = await import('node:crypto');
-    const open = destOpeningFromView(id.viewKey, id.spendPub, 0);
-    const digest = poolWithdrawDigest({
-      login: id.paymentCode, dest, minerShe1: id.paymentCode, payoutSsa1: dest, nanos: ripe.confirmedNanos,
-    });
-    const spendSig = sign(null, digest, id.privateKey).toString('hex');
-    const other = freshStealthDest(id).dest;
-    const wrongDest = await post({
-      login: id.paymentCode,
-      dest: other,
-      nanos: ripe.confirmedNanos,
-      sig,
-      open,
-      spendSig,
-    });
-    assert.equal(wrongDest.json.ok, false);
-    assert.equal(wrongDest.json.reason === 'dest' || wrongDest.json.reason === 'auth', true);
-    const ok = await post({
-      login: id.paymentCode,
-      dest,
-      nanos: ripe.confirmedNanos,
-      sig,
-      open,
-      spendSig,
-    });
-    assert.equal(ok.json.ok, true, ok.json.reason);
-    assert.equal(String(ok.json.to).startsWith('ssa1'), true);
+    const json = await r.json();
+    assert.equal(r.status, 410);
+    assert.equal(json.reason, 'auto_payout');
+    const view = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`);
+    const miner = await view.json();
+    assert.equal(miner.ok, true);
+    assert.match(miner.confirmedSentLabel, /^Confirmed sent to ssa1\*{8}/);
+    assert.equal(typeof miner.sentNanos, 'number');
     pool.close();
   });
 });

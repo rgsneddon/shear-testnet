@@ -1,0 +1,7 @@
+{
+  "crate": "shear_admit",
+  "version": "0.1.0",
+  "edition": "2021",
+  "cargo": "crypto/native/admit/Cargo.toml",
+  "note": "Pin matches Cargo.toml. Rebuild with npm run build:admit. Never copy a Darwin shearadmit.node onto Linux."
+}

@@ -3,6 +3,7 @@ import { isDestAddress, isPaymentCode, isShearAddress, payoutDest, isFullPayment
 import { walletSubmitLog, newConnId, lineJoinsIpToIdentity } from '../../crypto/privacy_net.js';
 import {
   HASH_BONUS_NANOS,
+  hashBonusUnitNanos,
   NANOS_PER_SHE,
   BLOCK_SUBSIDY_NANOS,
   TARGET_BLOCK_INTERVAL_MS,
@@ -208,7 +209,7 @@ export function reconstructOwner(store, address) {
       return h ? noteCommitOfDest20(h) : null;
     }).filter(Boolean);
     const spent = spentNoteCommits(store.blocks || []);
-    const bonus = Number(store?.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS);
+    const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
     for (const b of store.blocks || []) {
       const pays = [
         ...expectedCoinbasePays(b.shareBatch || [], {
@@ -667,7 +668,7 @@ export function networkSupply(store) {
         if (cb?.coinbase && Array.isArray(cb.vout)) {
           const pays = expectedCoinbasePays(b.shareBatch || [], {
             miner: b.miner,
-            hashBonusNanos: HASH_BONUS_NANOS,
+            hashBonusNanos: hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos),
           });
           for (const o of cb.vout) {
             const kind = String(o.kind || '');
@@ -891,7 +892,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         miners,
         lastJob,
         nodesOnline,
-        hashBonusNanos: Number(store?.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS),
+        hashBonusNanos: hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos),
       }),
     };
   }
@@ -944,7 +945,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           if (!Buffer.from(o.noteCommit).equals(want)) return;
           let nanos;
           if (tx.coinbase) {
-            const bonus = Number(store?.reserveVault?.liveHashBonusNanos || HASH_BONUS_NANOS);
+            const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
             const pays = expectedCoinbasePays(b.shareBatch || [], {
               miner: b.miner,
               poolDest,
@@ -1036,7 +1037,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (!got) return { status: 404, json: { ok: false, reason: 'unknown_tx' } };
     return { status: 200, json: { ok: true, asset: 'SHE', ...got } };
   }
-  if (path === '/api/explorer/history' && verb === 'GET') {
+  if (path === '/api/explorer/history' && (verb === 'GET' || verb === 'POST')) {
     const txs = confirmedBlockTxs(store, 30).map((t) => explorerRowPublic({
       ...t,
       kind: t.kind || 'block',
@@ -1061,8 +1062,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const txs = explorerRecentTxs(store, 30);
     return { status: 200, json: { ok: true, txs, asset: 'SHE' } };
   }
-  if (path === '/api/wallet/history' && verb === 'GET') {
-    const address = url.searchParams.get('address') || '';
+  if (path === '/api/wallet/history' && (verb === 'GET' || verb === 'POST')) {
+    if (url.searchParams.get('viewKey')) {
+      return { status: 400, json: { ok: false, reason: 'viewKey_query_forbidden' } };
+    }
+    const address = url.searchParams.get('address') || body.address || '';
     if (!isDestAddress(address) && !isPaymentCode(address)) {
       return { status: 400, json: { ok: false, reason: 'bad_address' } };
     }
@@ -1287,6 +1291,18 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     };
   }
   if (path === '/api/pool/withdraw' && verb === 'POST') {
+    return {
+      status: 410,
+      json: {
+        ok: false,
+        reason: 'auto_payout',
+        deprecated: true,
+        public: false,
+        dest: 'ssa1',
+      },
+    };
+  }
+  if (false && path === '/api/pool/withdraw' && verb === 'POST') {
     const login = body.login || body.she1;
     const rawDest = String(body.dest || body.to || '').trim();
     const nanos = body.nanos != null ? body.nanos : Math.round(Number(body.amount || 0) * NANOS_PER_SHE);

@@ -108,7 +108,8 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
       store, miners: new Map(), queueSend: (t) => posted.push(t) && t, poolDest: dest,
     });
     assert.equal(pull.json.ok, false);
-    assert.equal(pull.json.reason, 'not_owner');
+    assert.equal(pull.json.reason, 'auto_payout');
+    assert.equal(pull.status, 410);
 
     const tag = publicMinerTag(id.paymentCode);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-wd-http-'));
@@ -129,7 +130,8 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
     });
     const minerJson = await r.json();
     assert.equal(minerJson.ok, false);
-    assert.equal(minerJson.reason, 'not_owner');
+    assert.equal(minerJson.reason, 'auto_payout');
+    assert.equal(r.status, 410);
     pool.close();
   });
 
@@ -164,9 +166,9 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
       body: JSON.stringify({ login: id.paymentCode, dest: dest20Only }),
     });
     const json = await r.json();
-    assert.notEqual(json.reason, 'auth', json);
     assert.equal(json.ok, false);
-    assert.equal(json.reason, 'unsigned');
+    assert.equal(json.reason, 'auto_payout');
+    assert.equal(r.status, 410);
     pool.close();
   });
 

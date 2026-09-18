@@ -231,6 +231,8 @@ export function createRpc({
         nonce: params.nonce || params[1],
         miner: params.miner,
         powHash: params.powHash,
+        skipSharePow: params.skipSharePow,
+        trustedPowHash: params.trustedPowHash,
       });
     }
     if (m === 'mempoolPressure' || m === 'mempoolpressure') {

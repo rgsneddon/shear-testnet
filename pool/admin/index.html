@@ -87,6 +87,12 @@
     }
     .gate-wrap { max-width:28rem; }
     #flow { position:relative; }
+    .totp-qr {
+      width:12.5rem; height:12.5rem; margin:10px 0; padding:8px;
+      background:#fff; border:1px solid var(--line);
+    }
+    .totp-qr svg { width:100%; height:100%; display:block; }
+    .totp-qr.hid { display:none; }
   </style>
 </head>
 <body>
@@ -107,7 +113,7 @@
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.4" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.35" target="_blank" rel="noopener">WALLET</a>
-      <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -143,8 +149,11 @@
 
     <div id="totp-box" class="card hid">
       <div class="label">Enable 2FA</div>
-      <p>Add this key to your authenticator, then enter a 6-digit code. The desk stays closed until 2FA is on.</p>
+      <p>Scan this QR with Google Authenticator, Aegis, or any TOTP app. You can also type the key. The desk stays closed until 2FA is on.</p>
+      <div id="totp-qr" class="totp-qr hid" role="img" aria-label="Authenticator QR"></div>
+      <p class="label" style="text-transform:none;letter-spacing:0;font-weight:500">Manual key</p>
       <p><code id="totp-secret"></code></p>
+      <p><a id="totp-otpauth" class="hid" href="#">Open in authenticator</a></p>
       <input id="totp-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code"/>
       <button type="button" id="totp-ok">Confirm 2FA</button>
       <p class="err" id="totp-err"></p>
@@ -234,7 +243,7 @@
         <form id="flow" class="card" autocomplete="off">
           <div class="label">Withdraw</div>
           <p class="label" style="text-transform:none;letter-spacing:0;font-weight:500;margin:8px 0 12px">
-            Sign this send in Shear wallet (0.34+). The pool will not spend without that signature.
+            Sign this send in Shear wallet (0.35+). The pool will not spend without that signature.
           </p>
           <input id="she1" name="she1" type="text" spellcheck="false" placeholder="she1 silent ID"/>
           <input id="to" name="to" type="text" spellcheck="false" placeholder="ssa1 dest"/>
@@ -413,6 +422,28 @@
       $('gate').classList.remove('hid');
       if (window.flagShearOsadmin) window.flagShearOsadmin(false);
     }
+    function paintTotp(json) {
+      $('totp-secret').textContent = json && json.secret ? json.secret : '';
+      const qr = $('totp-qr');
+      const link = $('totp-otpauth');
+      const svg = json && typeof json.qrSvg === 'string' ? json.qrSvg : '';
+      if (svg.indexOf('<svg') === 0) {
+        qr.innerHTML = svg;
+        qr.classList.remove('hid');
+      } else {
+        qr.innerHTML = '';
+        qr.classList.add('hid');
+      }
+      const uri = json && typeof json.otpauth === 'string' ? json.otpauth : '';
+      if (uri.indexOf('otpauth://totp/') === 0) {
+        link.href = uri;
+        link.classList.remove('hid');
+      } else {
+        link.removeAttribute('href');
+        link.classList.add('hid');
+      }
+      $('totp-box').classList.remove('hid');
+    }
     async function paintWallet() {
       const w = await api('/api/admin/wallet', 'GET');
       if (w.status === 401) { signedOut(); return false; }
@@ -544,8 +575,7 @@
       if (!st.json.setup) {
         const totp = await api('/api/admin/totp/start', 'POST', {});
         if (totp.json.ok) {
-          $('totp-secret').textContent = totp.json.secret;
-          $('totp-box').classList.remove('hid');
+          paintTotp(totp.json);
           $('gate').classList.add('hid');
           $('add-2fa').classList.add('hid');
           return;
@@ -576,8 +606,7 @@
     $('add-2fa').addEventListener('click', async () => {
       const got = await api('/api/admin/totp/start', 'POST', {});
       if (!got.json.ok) return;
-      $('totp-secret').textContent = got.json.secret;
-      $('totp-box').classList.remove('hid');
+      paintTotp(got.json);
     });
     $('totp-ok').addEventListener('click', async () => {
       $('totp-err').textContent = '';

@@ -48,16 +48,18 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /revolving dest/);
     assert.match(main, /ADMITv2 membership/);
     assert.match(main, /10,000 notes/);
-    assert.match(main, /Copy dest \(<code>ssa1\.worker<\/code>\)/);
-    assert.match(main, /own <code>kind:hash<\/code> payout/);
+    assert.match(main, /ssa1\.worker|miner <code>ssa1<\/code>/);
+    assert.match(main, /π SHE/);
+    assert.match(main, /never 0/);
 
     const docs = read('site/docs/content.js');
-    assert.match(docs, /next sealed block/);
+    assert.match(docs, /next sealed payout|next sealed block/);
     assert.match(docs, /Copy dest as <code>ssa1\.worker<\/code>/);
 
     const pool = read('pool/public/index.html');
     assert.match(pool, /Copy dest/);
-    assert.match(pool, /Hash bonuses pay in full to each hasher dest/);
+    assert.match(pool, /Hash bonus \(no pool fee\)/);
+    assert.match(pool, /π SHE/);
     assert.doesNotMatch(pool, /<th>From<\/th>/);
     assert.doesNotMatch(pool, /<th>To<\/th>/);
     assert.doesNotMatch(pool, /<th>Amount<\/th>/);
@@ -102,5 +104,11 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(joined, /amounts stay public/);
     assert.match(joined, /confidential amounts/);
     assert.match(joined, /ADMITv2/);
+    assert.match(joined, /https:\/\/shear\.digital\/docs\//);
+    assert.match(joined, /cleartext TCP/);
+    assert.match(main, /ShearK-Miner <strong>2\.4<\/strong>/);
+    assert.doesNotMatch(main, /shear-wallet-0\.35-macos\.dmg/);
+    assert.match(main, /shear-wallet-0\.35-android\.apk/);
+    assert.doesNotMatch(pool, /shear-testnet-v3/);
   });
 });

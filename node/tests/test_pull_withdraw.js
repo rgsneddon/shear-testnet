@@ -13,21 +13,22 @@ import {
   containsShe1,
 } from '../../crypto/levy.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
-import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, PI_SHE_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { buildAutoPayoutTx } from '../../pool/src/auto_payout.js';
 import { splitPot } from '../../pool/src/pool.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
 import {
   buildTemplate,
-  mineTemplate,
   verifyBlock,
   GENESIS_PREV,
 } from '../src/chain.js';
+import { decodeHeader } from '../../crypto/header.js';
 
-function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
-  assert.ok(found && found.block, 'pow');
+const TRUSTED_POW = Buffer.alloc(32);
+
+function blockFromTpl(tpl) {
   return {
-    header: found.header,
+    header: tpl.header,
     txs: tpl.txs,
     samples: tpl.samples,
     miner: tpl.miner,
@@ -36,6 +37,7 @@ function mine(tpl) {
     rootA: tpl.rootA,
     rootB: tpl.rootB,
     weight: tpl.weight,
+    shareBatch: tpl.shareBatch || [],
   };
 }
 
@@ -76,35 +78,38 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     assert.equal(JSON.stringify(tx).includes('she1'), false);
     assert.equal(tx.vout[0].address.startsWith('ssa1'), true);
 
-    const block = mine(buildTemplate({
+    const tpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
-      now: Date.now(),
+      bits: GENESIS_BITS_PACKED,
+      now: 1_700_000_000_000,
       potShares: shares,
       txs: [tx],
-    }));
-    const got = verifyBlock(block, null);
+    });
+    assert.equal(decodeHeader(tpl.header).bits, GENESIS_BITS_PACKED);
+    const block = blockFromTpl(tpl);
+    const got = verifyBlock(block, null, { trustedPowHash: TRUSTED_POW });
     assert.equal(got.ok, true, got.reason);
     const body = JSON.stringify(block.txs.slice(1));
     assert.equal(body.includes('she1'), false);
     assert.equal(containsShe1(block.txs[1]), false);
 
-    const leak = mine(buildTemplate({
+    const leakTpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
-      now: Date.now(),
+      bits: GENESIS_BITS_PACKED,
+      now: 1_700_000_000_000,
       txs: [{
         ...tx,
         id: 'leak',
         login: id.paymentCode,
         she1: id.paymentCode,
       }],
-    }));
-    const denied = verifyBlock(leak, null);
+    });
+    const leak = blockFromTpl(leakTpl);
+    const denied = verifyBlock(leak, null, { trustedPowHash: TRUSTED_POW });
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'she1_on_chain');
 
@@ -115,9 +120,11 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       sig: 'x',
     }, { store: { historyFor: () => [], tip: () => ({ height: 20 }), mempool: [] }, queueSend: () => ({}) });
     assert.equal(api.json.ok, false);
+    assert.equal(api.json.reason, 'auto_payout');
+    assert.equal(api.status, 410);
   });
 
-  it('miner pull and levy still spend the pool wallet while operator Flow is locked', () => {
+  it('miner pull HTTP is deprecated; auto-payout still spends the pool wallet while operator Flow is locked', async () => {
     const prev = process.env.SHEAR_POOL_WALLET_LOCK;
     process.env.SHEAR_POOL_WALLET_LOCK = '1';
     try {
@@ -141,7 +148,6 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
         nanos,
       });
       const spendSig = sign(null, digest, hasher.privateKey).toString('hex');
-      const posted = [];
       const got = handleWalletApi(new URL('http://127.0.0.1/api/pool/withdraw'), 'POST', {
         login: hasher.paymentCode,
         dest,
@@ -158,16 +164,18 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
           mempool: [],
         },
         poolDest: pool,
-        queueSend: (t) => {
-          posted.push(t);
-          return { ok: true, id: 'pull-1', ...t };
-        },
+        queueSend: () => ({ ok: true }),
       });
-      assert.equal(got.json.ok, true, got.json.reason);
-      assert.equal(posted[0].from, pool);
-      assert.equal(posted[0].sponsor, pool);
-      assert.equal(posted[0].fee, fee);
-      assert.equal(posted[0].kind, 'pool-withdraw');
+      assert.equal(got.json.ok, false);
+      assert.equal(got.json.reason, 'auto_payout');
+      assert.equal(got.status, 410);
+      const built = buildAutoPayoutTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee });
+      assert.equal(built.ok, true, built.reason);
+      assert.equal(built.tx.from, pool);
+      assert.equal(built.tx.sponsor, pool);
+      assert.equal(built.tx.fee, fee);
+      assert.equal(built.tx.kind, 'pool-withdraw');
+      assert.equal(built.tx.poolPaysFee, true);
     } finally {
       if (prev === undefined) delete process.env.SHEAR_POOL_WALLET_LOCK;
       else process.env.SHEAR_POOL_WALLET_LOCK = prev;

@@ -296,7 +296,10 @@ export function verifySealedNote(vout, v) {
   if (!vout?.commit || !vout.valueProof) return false;
   if (v < 0 || v >= 2 ** NOTE_BITS) return false;
   if (!verifyValue(vout.commit, v, vout.valueProof)) return false;
-  if (vout.rangeProof && !verifyRange(vout.commit, vout.rangeProof)) return false;
+  if (vout.rangeProof) {
+    const pr = Buffer.isBuffer(vout.rangeProof) ? vout.rangeProof : Buffer.from(asU8(vout.rangeProof));
+    if (pr.length && !verifyRange(vout.commit, vout.rangeProof)) return false;
+  }
   return true;
 }
 

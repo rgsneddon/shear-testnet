@@ -2,7 +2,7 @@
  * Recover dest + nanos for confidential coinbase vouts from shareBatch + proofs.
  * Public dest20+nanos stay off the sealed vout; Tree-A units still imply values.
  */
-import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS } from './asert.js';
+import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS, hashBonusUnitNanos } from './asert.js';
 import { isDestAddress, hash20FromAddress } from './address.js';
 import { aLeavesFromShares, destOfShare, noteCommitOfShare } from './share_batch.js';
 import { noteCommitOfDest20, verifySealedNote, asU8 } from './note.js';
@@ -20,6 +20,7 @@ export function expectedCoinbasePays(shareBatch, {
   poolDest,
   hashBonusNanos = HASH_BONUS_NANOS,
 } = {}) {
+  hashBonusNanos = hashBonusUnitNanos(hashBonusNanos);
   const batch = Array.isArray(shareBatch) ? shareBatch : [];
   const destByNc = new Map();
   for (const s of batch) {
@@ -81,6 +82,7 @@ export function expectedCoinbasePays(shareBatch, {
 export function paysFromALeaves(aLeaves, {
   hashBonusNanos = HASH_BONUS_NANOS,
 } = {}) {
+  hashBonusNanos = hashBonusUnitNanos(hashBonusNanos);
   const leaves = (Array.isArray(aLeaves) ? aLeaves : []).filter((l) => Number(l?.count) > 0);
   const total = leaves.reduce((a, l) => a + (Number(l.count) || 0), 0);
   const out = [];

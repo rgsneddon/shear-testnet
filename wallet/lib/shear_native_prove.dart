@@ -66,7 +66,10 @@ Map<String, dynamic>? nativeProveFlowSpend({
           : spentNote['noteCommit'],
     },
     'pubs': pubs.map(_hex).toList(),
-  }));
+  }), flush: true);
+  if (!Platform.isWindows) {
+    try { Process.runSync('chmod', ['600', tmp.path]); } catch (_) {}
+  }
   try {
     final r = Process.runSync('node', [helper, tmp.path], runInShell: false);
     if (r.exitCode != 0) return null;
@@ -100,7 +103,10 @@ Map<String, dynamic> nativeSealNote(int v, {Uint8List? dest20, String kind = 'se
   final r = note['r'];
   if (r is! Uint8List) throw StateError('admit_native_required');
   final tmp = File('${Directory.systemTemp.path}/shear-range-${DateTime.now().microsecondsSinceEpoch}.json');
-  tmp.writeAsStringSync(jsonEncode({ 'op': 'prove_range', 'v': v, 'r': _hex(r) }));
+  tmp.writeAsStringSync(jsonEncode({ 'op': 'prove_range', 'v': v, 'r': _hex(r) }), flush: true);
+  if (!Platform.isWindows) {
+    try { Process.runSync('chmod', ['600', tmp.path]); } catch (_) {}
+  }
   try {
     final out = Process.runSync('node', [helper, tmp.path], runInShell: false);
     if (out.exitCode != 0) throw StateError('admit_native_required');

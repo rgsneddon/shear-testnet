@@ -28,6 +28,7 @@ import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { reconstructOwner } from './wallet_api.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
+import { qrSvg } from './totp_qr.js';
 
 export const ADMIN_ISSUER = 'shear';
 /** Display-only. Authorization is password + TOTP after setup. */
@@ -95,6 +96,15 @@ function hotp(secret, counter) {
 
 export function totpCode(secret, now = Date.now()) {
   return hotp(secret, Math.floor(now / 30_000));
+}
+
+/** Google Authenticator Key URI. Label is issuer:account; secret is unpadded Base32. */
+export function totpKeyUri({ secret, issuer = ADMIN_ISSUER, account = 'operator' } = {}) {
+  const iss = String(issuer || 'shear').trim() || 'shear';
+  const acc = String(account || 'operator').trim() || 'operator';
+  const b32 = String(secret || '').replace(/[\s=]+/g, '').toUpperCase();
+  const label = `${encodeURIComponent(iss)}:${encodeURIComponent(acc)}`;
+  return `otpauth://totp/${label}?secret=${b32}&issuer=${encodeURIComponent(iss)}&algorithm=SHA1&digits=6&period=30`;
 }
 
 export function verifyTotp(secret, code, now = Date.now()) {
@@ -294,8 +304,11 @@ export function createAdmin(dir) {
     const secret = randomBytes(20);
     rec.totpPending = secret;
     const b32 = toBase32(secret);
-    const otpauth = `otpauth://totp/shear?secret=${b32}&issuer=${ADMIN_ISSUER}&algorithm=SHA1&digits=6&period=30`;
-    return { ok: true, secret: b32, otpauth };
+    const account = String(s.user || 'operator');
+    const otpauth = totpKeyUri({ secret: b32, issuer: ADMIN_ISSUER, account });
+    let svg = '';
+    try { svg = qrSvg(otpauth); } catch { svg = ''; }
+    return { ok: true, secret: b32, otpauth, qrSvg: svg, account, issuer: ADMIN_ISSUER };
   }
 
   function confirmTotp(token, code) {
@@ -486,6 +499,7 @@ export function handleAdminApi(url, method, body, {
     if (pendingPulls && typeof pendingPulls.delete === 'function' && she) {
       pendingPulls.delete(she.toLowerCase());
     }
+    appendAdminAudit(admin?.dir, { action: 'withdraw', dest: to, nanos, amount, fee });
     return {
       status: 200,
       json: {
@@ -493,6 +507,7 @@ export function handleAdminApi(url, method, body, {
         levy: fee,
         spendable: (hist.spendableNanos - nanos - fee) / NANOS_PER_SHE,
         tx: { id: queued?.id || queued?.tx?.id, to, amount, fee, kind: 'send' },
+        audit: 'admin-audit.jsonl',
       },
     };
   }

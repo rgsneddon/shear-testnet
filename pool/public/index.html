@@ -298,7 +298,7 @@
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.4" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.35" target="_blank" rel="noopener">WALLET</a>
-      <a class="nav-btn" href="https://docs.shear.digital">DOCS</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
@@ -315,17 +315,18 @@
         <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
         <p>ADMITv2 membership over this book's notes, with confidential amounts. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
         <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. While this book has fewer than 10,000 notes the membership set is thin.</p>
-        <p>Mine with Copy dest: <code>ssa1.worker</code>. Each hasher dest that produced proven work receives its own hash bonus on the next sealed block. The 1 SHE pot is split among those dests.</p>
+        <p>Mine with Copy dest: <code>ssa1.worker</code>. Hash bonus (no pool fee) and your share of the block pot (after 1%) accumulate. At π SHE the pool sends the unpaid sum to that <code>ssa1</code> and pays the levy.</p>
         <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v4</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
       </section>
       <section class="panel-card" id="start-mining">
         <h2>Start mining</h2>
         <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v4</code> · ShearHash-v3.</p>
+        <p class="label" id="stratum-cleartext">Stratum is <strong>cleartext TCP</strong> unless TLS is configured in front of the bind. Production should set <code>SHEAR_STRATUM_AUTH=1</code>.</p>
         <ol class="mine-steps">
           <li>Wallet → <strong>Copy dest</strong> (<code>ssa1</code> mailbox).</li>
           <li>Paste dest and a worker name. Pick CPU threads.</li>
-          <li>Copy the command. Hash bonuses land on that dest next block. No withdraw for units.</li>
+          <li>Copy the command. Unpaid hash bonus + pot share auto-pay to that <code>ssa1</code> at π SHE. No withdraw button.</li>
         </ol>
         <form id="mine-form" action="#" method="get" autocomplete="off">
         <p>
@@ -340,7 +341,7 @@
           <label class="label" for="threads">CPU threads</label><br/>
           <input id="threads" name="threads" type="number" min="1" max="256" value="4" step="1"/>
         </p>
-        <p class="mine-dl label">Miner 2.3:
+        <p class="mine-dl label">Miner 2.4:
           <a href="https://github.com/rgsneddon/ShearK/releases/download/2.4/ShearK-Miner-2.4-linux.zip">Linux</a>
           ·
           <a href="https://github.com/rgsneddon/ShearK/releases/download/2.4/ShearK-Miner-2.4-windows.zip">Windows</a>
@@ -359,7 +360,7 @@
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
       <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash-v3</div></article>
-      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v3</div></article>
+      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v4</div></article>
       <article class="panel-card"><div class="label">Proof</div><div class="value" id="proof">PoW</div></article>
       <article class="panel-card"><div class="label">NODES ONLINE</div><div class="value" id="nodes-n">0</div></article>
       <article class="panel-card"><div class="label">Height</div><div class="value" id="height">0</div></article>
@@ -486,7 +487,7 @@
       else addrEl.removeAttribute('aria-invalid');
       document.getElementById('copy-cmd').disabled = !ok;
       document.getElementById('cmd-hint').textContent = ok
-        ? 'Ready to copy · ShearHash-v3 · shear-testnet-v3 · :1111'
+        ? 'Ready to copy · ShearHash-v3 · shear-testnet-v4 · :1111'
         : 'Paste Copy dest (ssa1). Login is ssa1.worker.';
       saveMineForm(addr, (document.getElementById('worker').value || '').trim(), t);
     }
@@ -775,7 +776,7 @@
       paintResistance(s);
       paintAvgBlock(s);
       const net = document.getElementById('network');
-      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v3';
+      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v4';
       document.getElementById('uptime').textContent = fmtUptime(s.uptimeMs);
       paintLastBlock(s);
       const tb = document.querySelector('#miners tbody');

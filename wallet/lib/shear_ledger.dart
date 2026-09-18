@@ -2165,13 +2165,14 @@ class ShearLedger {
     _dests.add(changeDest);
   }
 
+  /// Deprecated. Pool auto-pays ≥ π SHE to the miner ssa1 dest.
   Future<ShearTx> pullPool({
     required String login,
     required String dest,
     required double amount,
     required Uint8List seed,
   }) async {
-    if (amount <= 0) throw ArgumentError('amount');
+    throw StateError('auto_payout');
     if (isShearAddress(dest) || dest.startsWith('she1')) {
       throw ArgumentError('she1');
     }
@@ -2214,7 +2215,7 @@ class ShearLedger {
     required int nanos,
     required Uint8List seed,
   }) async {
-    if (nanos <= 0) throw ArgumentError('nanos');
+    throw StateError('auto_payout');
     if (isShearAddress(dest) || dest.startsWith('she1')) {
       throw ArgumentError('she1');
     }
@@ -2459,14 +2460,26 @@ class ShearPoolClient {
   Future<Map<String, dynamic>> balance(String address) =>
       _get('/api/wallet/balance?address=$address');
 
-  Future<Map<String, dynamic>> history(String address, {String? viewKey}) =>
-      _get('/api/wallet/history?address=$address${viewKey != null ? '&viewKey=$viewKey' : ''}');
+  Future<Map<String, dynamic>> history(String address, {String? viewKey}) {
+    if (viewKey != null && viewKey.isNotEmpty) {
+      return _post('/api/wallet/history', {'address': address, 'viewKey': viewKey});
+    }
+    return _get('/api/wallet/history?address=$address');
+  }
 
   Future<Map<String, dynamic>> explorerHistory({required String viewKey, String? address}) =>
-      _get('/api/explorer/history?viewKey=$viewKey${address != null ? '&address=$address' : ''}');
+      _post('/api/explorer/history', {
+        'viewKey': viewKey,
+        if (address != null) 'address': address,
+      });
 
-  Future<Map<String, dynamic>> registerView({required String address, required String viewKey}) =>
-      _post('/api/wallet/register', {'address': address, 'viewKey': viewKey});
+  Future<Map<String, dynamic>> registerView({required String address, required String viewKey}) {
+    final host = Uri.tryParse(baseUrl)?.host ?? '';
+    if (host.isNotEmpty && host != '127.0.0.1' && host != 'localhost' && host != '::1') {
+      throw StateError('view_register_remote_blocked');
+    }
+    return _post('/api/wallet/register', {'address': address, 'viewKey': viewKey});
+  }
 
   Future<Map<String, dynamic>> send({
     required String from,

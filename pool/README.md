@@ -8,7 +8,7 @@ Public site example in this repo is **https://mypool.site**. Operator admin is *
 
 ## What you get
 
-- Stratum bind `SHEAR_STRATUM_BIND` (testnet default `0.0.0.0:1111`; production should set an explicit interface). Optional `SHEAR_STRATUM_AUTH=1` requires an ed25519 login signature over `shear-stratum-login-v1`. Unauthenticated dest login is an ephemeral tag, not dest ownership.
+- Stratum bind `SHEAR_STRATUM_BIND` (testnet dest-only may use `0.0.0.0`; **prod example is `127.0.0.1` behind TLS**). `SHEAR_STRATUM_AUTH=1` (prod example on) requires an ed25519 login signature over `shear-stratum-login-v1`. Dev dest-only is `SHEAR_STRATUM_AUTH=0`. Unauthenticated dest login is an ephemeral tag, not dest ownership. Testnet cleartext TCP is temporary — see `deploy/nginx-stratum-tls.conf`.
 - Pin **ShearK-Miner 2.4** (or current cut) for the 128-byte job
 - HTTP `127.0.0.1:8088` (nginx terminates TLS)
 - Validating node + pool in one process (same magic as the book)
@@ -60,8 +60,10 @@ Optional environment (drop-in `/etc/systemd/system/shear-pool.service.d/local.co
 |---|---|
 | `SHEAR_DATA` | Chain + pool state |
 | `SHEAR_STRATUM` | Stratum port (default 1111) |
-| `SHEAR_STRATUM_BIND` | Stratum bind host (default 0.0.0.0; set a specific iface in prod) |
-| `SHEAR_STRATUM_AUTH` | `1` = require signed login |
+| `SHEAR_STRATUM_BIND` | Stratum bind host (dev default 0.0.0.0; prod example `127.0.0.1`) |
+| `SHEAR_STRATUM_AUTH` | `1` = require signed login (prod example on; `0` = dest-only for local dev) |
+| `SHEAR_ALERT_CONCENTRATION` | `/api/stats` `alerts.concentration` threshold (default 0.5) |
+| `SHEAR_ALERT_SHARE_BLOCK` | `/api/stats` `alerts.shareBlock` threshold (default 10000) |
 | `SHEAR_HTTP` | Loopback HTTP (default 8088) |
 | `SHEAR_P2P_PORT` | Public P2P (default 30303). `0` disables |
 | `SHEAR_SEEDS` | Comma-separated `host:port` peers |
@@ -84,7 +86,7 @@ Public miners: `ShearK-Miner --pool mypool.site:1111 --user YOUR_SSA1.worker`
 
 Unauthenticated stratum login is dest-format only (no ownership proof). Soft-deny is per-IP; dest/tag durable bans require accepted shares or an operator ban.
 
-`/api/stats` publishes `poolFeeBps`, `feeDest`, `hashrate` (HUD/EMA), `proven_round` per worker (hash-bonus), `topDestSharePct`, and `shareBlockRatio`. Operator-trust model: admin password+TOTP can pause/kick/ban/withdraw; mutating calls append `admin-audit.jsonl`.
+`/api/stats` publishes `poolFeeBps`, `feeDest`, `hashrate` (HUD/EMA), `proven_round` per worker (hash-bonus), `topDestSharePct`, `shareBlockRatio`, `lostWorkHashes`, `hashBusy`, `alerts.concentration`, `alerts.shareBlock`, `autoPayoutMinNanos` (π SHE), and `stratumCleartextWarning`. Miner unpaid pot-share (after 1%) plus **fee-free hash bonus** auto-pay to the login `ssa1` at π SHE; the pool pays the levy. `/api/miners/:tag/withdraw` and `/api/pool/withdraw` return **410** `auto_payout`. Operator-trust model: admin password+TOTP can pause/kick/ban/withdraw; mutating calls append `admin-audit.jsonl` (including withdraw). Audit file: `$SHEAR_DATA/admin-audit.jsonl`.
 
 ## Solo / second pool
 
@@ -94,7 +96,7 @@ Unauthenticated stratum login is dest-format only (no ownership proof). Soft-den
 
 1. Open **https://mypool.site/admin** (or your dedicated admin host if `SHEAR_ADMIN_HOST` is set).
 2. Create **username** + **password** (8+ characters, confirm).
-3. Enrol **2FA** (authenticator key + 6-digit code). The desk stays closed until 2FA confirms.
+3. Enrol **2FA** (scan the QR, or type the authenticator key + 6-digit code). The desk stays closed until 2FA confirms.
 4. Later logins need username, password, and the authenticator code.
 
 If `SHEAR_ADMIN_HOST` is set, first-run setup is allowed only on that host (not on the public pool name). Loopback + `SHEAR_ADMIN_SETUP=1` is an emergency first-run on the box itself.

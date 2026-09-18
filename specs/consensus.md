@@ -29,11 +29,11 @@ PoW: `ShearHash-v3(header) ≤ target(bits)` (RandomX light, 128 MiB cache). Alg
 
 Coinbase is the only source of new SHE.
 
-- Base subsidy: `100_000_000_000` units (**1 SHE**, 11 decimals) for the round. Solo: the finder. Pool: split by proven work in that round (1% of this pot may go to a published development address).
+- Base subsidy: `subsidy(epoch) = max(20e9, 100e9 - epoch * 1e9)` nanos. Epoch 0 is **1.00 SHE**; after 80 epochs a permanent **0.20 SHE** tail. Epoch length is fingerprinted: **4 days testnet**, **400 days mainnet**. Solo: the finder. Pool: split by proven work in that round (1% of this pot may go to a published development address). Votes and the Reserve oracle cannot move this schedule.
 - Per-hash bonus: **1 unit = 0.00000000001 SHE** per proven share-unit, paid **to each miner who produced that share on the parent job header**. A floor-meeting share is worth `2^SHARE_FLOOR_BITS` units. Votes move that bonus by **1 unit** (±10⁻¹¹ SHE). Public amounts show eight fractional digits; sealed coinbase still includes the 10⁻¹¹ dust. The block finder does **not** scoop other miners’ hash bonuses.
 - Samples under `continuity_root` are the audit trail for those hashes (`nonce`, recipient tag, units from `shareBatch`). They are collated **per hasher** (one leaf per miner per round, never one JSON object per hash). After 1000 confirmations the sample **bodies** may be pruned from storage. The header `continuity_root`, `merkle_root`, coinbase `vout`, and every user tx stay sealed. Explorer reconstructs history from those sealed txs forever. On-disk `chain.jsonl` stores compact rows only (header hex, collated samples until prune, sealed txs). Nodes do not keep template objects or per-hash JSON. Full nodes validate `shareBatch` until prune-1000; money vouts forever.
 - Official miner uses a single login.
-- Extra emission: **The Reserve only** (`shear-reserve-v1`) may mint interest at the rate observed by The Reserve oracle. Any other dapp mint is invalid.
+- Extra emission: **The Reserve only** (`shear-reserve-v1`) may mint interest at the **frozen `epochBps`** for that epoch. Any other dapp mint is invalid. Oracle observations are display-only until freeze.
 
 ## Resistance
 

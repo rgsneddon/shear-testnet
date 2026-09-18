@@ -96,10 +96,11 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 ## 5) Next work on Windows (priority)
 
-1. Pack **wallet 0.34 Windows zip** onto existing tag `0.34` on **this** repo (do not recut). Darwin cannot `flutter build windows`.
-2. If `ShearK-Miner-2.4-windows.zip` is still missing, pack it on **`rgsneddon/ShearK`** tag `2.2` (PE + `example.bat`). Do not recut 2.1/2.0.
-3. Confirm seed/peer-2/p2pnode2/DE share height+jroot after dest-P wipe; isolated reorg/Reserve/vort1 on this binary; optional new 24 h mine+Flow.
-4. Keep mainnet blocked. No `SHEAR_MAINNET_EMIT=1`.
+1. Pack **wallet 0.35** Windows/Linux/Arch onto existing tag `0.35` (do not recut). Darwin cannot `flutter build windows`.
+2. **Android 0.35 APK can be packed on this Windows box** (Flutter + Android SDK 36 + Eclipse Temurin JDK 17). See §6a. Do not wait for the Mac for Android.
+3. **macOS `.dmg` (and iOS) stay a MacBook handoff.** See §6b. Do not recut 0.34.
+4. If `ShearK-Miner-2.4-windows.zip` is still missing, pack it on **`rgsneddon/ShearK`** tag `2.4` (PE + `example.bat`). Do not recut 2.3/2.2.
+5. Keep mainnet blocked. No `SHEAR_MAINNET_EMIT=1` without `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`.
 
 ---
 
@@ -107,9 +108,47 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 - Linux node: `make -C crypto/native` on the box. Never copy a macOS `.node` to Linux.
 - p2pnode2 (Ubuntu 26.04) has no gcc — copy Linux `shearadmit.node` from P2pnode.
-- Wallet Flutter 3.44.6. Pin **0.34**. `--build-name=0.34`.
+- Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.35**. `--build-name=0.35` / pubspec `0.35.0+51`.
 - Pool HTTP: `/api/stats`, not `/stats`.
 - Operator admin vhost is **not** in git.
+
+### 6a) Android APK on this Windows box
+
+SDK is at `%LOCALAPPDATA%\Android\Sdk` (platform android-36, build-tools 36.0.0). JDK is Eclipse Temurin **17** at `C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot`. `JAVA_HOME` is often unset — set it for the pack, do not install another JDK.
+
+```
+set JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot
+set ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
+set ANDROID_SDK_ROOT=%ANDROID_HOME%
+cd /d %USERPROFILE%\shear-testnet\wallet
+flutter pub get
+flutter build apk --release --build-name=0.35.0 --build-number=51
+copy /Y build\app\outputs\flutter-apk\app-release.apk dist\shear-wallet-0.35-android.apk
+copy /Y build\app\outputs\flutter-apk\app-release.apk ..\dist\shear-wallet-0.35-android.apk
+gh release upload 0.35 dist\shear-wallet-0.35-android.apk --repo rgsneddon/shear-testnet --clobber
+```
+
+Fat APK only (`flutter build apk`, not `--split-per-abi`). `applicationId` `com.shear.shear_wallet`. Uninstall any old debug-signed build before sideload. Tag `0.35` now has `shear-wallet-0.35-android.apk` (packed on this Windows box, 2026-09-18).
+
+### 6b) Mac handoff — Apple clients only
+
+The Windows box cannot produce a notarized `.dmg` or an iOS build. On the Mac (`/Users/russellsneddon/shear` or a clone of this tree):
+
+```
+cd ~/shear-testnet/wallet   # or the live tree
+git pull
+flutter --version            # 3.44.6+ is fine
+brew list libsodium >/dev/null || brew install libsodium
+PACK_REBUILD=1 ./pack_macos.sh
+python3 pack/sign_and_notarize.py
+# writes wallet/dist/shear-wallet-0.35-macos.dmg
+gh release upload 0.35 dist/shear-wallet-0.35-macos.dmg --repo rgsneddon/shear-testnet --clobber
+```
+
+- Drag-to-Applications DMG; do not ship a zip. Developer ID `Russell Sneddon (SFCBP95595)`.
+- Wallet must **not** bundle ShearK. Official miner is a separate ShearK 2.4 zip.
+- iOS is still a later cut; do not link a missing `.ipa`.
+- After the `.dmg` 200s on tag `0.35`, replace the site “macOS — coming soon” span with the download href.
 
 ---
 

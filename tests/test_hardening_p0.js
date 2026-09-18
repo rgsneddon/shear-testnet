@@ -8,7 +8,7 @@ import { admitProve, admitVerify, jroot } from '../crypto/admit.js';
 import { randomScalar, commit, pointBytes, proveRange, verifyRange } from '../crypto/note.js';
 import { admitPub } from '../crypto/admit.js';
 import { nativeLoaded } from '../crypto/native_admit.js';
-import { POOL_FEE_BPS } from '../crypto/asert.js';
+import { POOL_FEE_BPS, mainnetMayEmit, GENESIS_MAINNET } from '../crypto/asert.js';
 import { poolFeeDest } from '../crypto/levy.js';
 import {
   shouldDurableDestBan,
@@ -36,6 +36,7 @@ describe('P0 hardening + short addresses', () => {
     assert.match(ledger, /proveFlowSpend\(/);
     assert.match(ledger, /nativeSealNote\(/);
     assert.equal(ledger.includes('var note = sealNote('), false);
+    assert.equal(ledger.includes('viewKey='), false);
     assert.match(admit, /nativeProveFlowSpend/);
     assert.match(admit, /admit_native_required/);
     const helper = fs.readFileSync(path.join(root, 'crypto/wallet_native_prove.mjs'), 'utf8');
@@ -133,6 +134,20 @@ describe('P0 hardening + short addresses', () => {
     assert.equal(topDestSharePct([]), 0);
     const readme = fs.readFileSync(path.join(root, 'pool/README.md'), 'utf8');
     assert.match(readme, /solo/i);
+  });
+
+  it('P0 emit without confirm double-key fails; default units unset', () => {
+    const prevE = process.env.SHEAR_MAINNET_EMIT;
+    const prevC = process.env.SHEAR_MAINNET_EMIT_CONFIRM;
+    process.env.SHEAR_MAINNET_EMIT = '1';
+    delete process.env.SHEAR_MAINNET_EMIT_CONFIRM;
+    assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET)), false);
+    if (prevE === undefined) delete process.env.SHEAR_MAINNET_EMIT;
+    else process.env.SHEAR_MAINNET_EMIT = prevE;
+    if (prevC === undefined) delete process.env.SHEAR_MAINNET_EMIT_CONFIRM;
+    else process.env.SHEAR_MAINNET_EMIT_CONFIRM = prevC;
+    const unit = fs.readFileSync(path.join(root, 'deploy/shear-node.service'), 'utf8');
+    assert.doesNotMatch(unit, /SHEAR_MAINNET_EMIT=/);
   });
 
   it('public she1/ssa1/shear1 are short dest20-sized strings', () => {

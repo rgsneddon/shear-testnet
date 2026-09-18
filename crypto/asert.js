@@ -1,3 +1,24 @@
+export {
+  EPOCH_DAYS_TESTNET,
+  EPOCH_DAYS_MAINNET,
+  POT_START_NANOS,
+  POT_STEP_NANOS,
+  POT_FLOOR_NANOS,
+  POT_EPOCHS_TO_FLOOR,
+  epochDays,
+  epochMs,
+  vortexEpochIndex,
+  potSubsidyNanos,
+  potSubsidyAt,
+  nextPotNanos,
+  potSchedPin,
+  epochView,
+  chainGenesisMs,
+  joinCutoffDays,
+  joinCutoffMs,
+} from './pot_sched.js';
+import { epochDays, potSchedPin, EPOCH_DAYS_TESTNET, EPOCH_DAYS_MAINNET, POT_FLOOR_NANOS } from './pot_sched.js';
+
 export const TARGET_BLOCK_INTERVAL_MS = 90_000;
 export const MIN_BITS = 1;
 /**
@@ -36,14 +57,24 @@ export const GENESIS_BITS_PACKED = (GENESIS_BITS * BITS_FP_SCALE) >>> 0;
 export const SHE_DECIMALS = 11;
 export const SHE_PUBLIC_DIGITS = 8;
 export const NANOS_PER_SHE = 100_000_000_000; // 10^11
-/** 1 SHE pot (100_000_000_000 units). Hash bonus stays 1 unit. */
+/** Epoch-0 / genesis pot (1.00 SHE). Live coinbase uses potSubsidyNanos(epoch). */
 export const BLOCK_SUBSIDY_NANOS = 100_000_000_000;
 /** 0.00000000001 SHE per valid hash = 1 protocol unit. */
 export const HASH_BONUS_NANOS = 1;
 /** Vote moves the per-hash bonus by one protocol unit (±10⁻¹¹ SHE). The pot does not move. */
 export const HASH_BONUS_VOTE_DELTA_NANOS = 1;
-/** Votes cannot set the hash unit to 0. */
+/**
+ * Per-hash unit is never 0. Fingerprint pin HASH_UNIT_FLOOR=1.
+ * Votes, vault load, coinbase, and verify all clamp through hashBonusUnitNanos.
+ */
 export const HASH_BONUS_NANOS_FLOOR = 1;
+
+/** Consensus clamp: the live hash-bonus unit is always ≥ HASH_BONUS_NANOS_FLOOR. Never 0. */
+export function hashBonusUnitNanos(n) {
+  const v = typeof n === 'bigint' ? Number(n) : Math.floor(Number(n));
+  if (!Number.isFinite(v) || v < HASH_BONUS_NANOS_FLOOR) return HASH_BONUS_NANOS_FLOOR;
+  return v;
+}
 export const POOL_FEE_BPS = 100;
 /** A digest that meets this floor is worth 2^SHARE_FLOOR_BITS units. */
 export const SHARE_FLOOR_BITS = 8;
@@ -56,7 +87,7 @@ export const MTP_WINDOW = 11;
 export const MTP_FUTURE_MS = 2 * 60 * 60_000;
 export const SPEND_SIG_DOMAIN = 'shear-spend-v1';
 export const SPEND_SIG = 'ed25519-shear-spend-v1';
-export const INTEREST_LAW = '400d-bps-floor';
+export const INTEREST_LAW = 'epoch-bps-floor';
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
@@ -126,7 +157,9 @@ export const MIN_CONFIRMS_POLICY = 12;
 export const RESERVE_FEE_FIRST = 1;
 
 /** Consensus fingerprint. Mainnet genesis seals this; it is not revertible. */
-export function consensusFingerprint() {
+export function consensusFingerprint(magic = MAGIC_TESTNET) {
+  const days = epochDays(magic);
+  const network = String(magic) === MAGIC_MAINNET ? MAGIC_MAINNET : MAGIC_TESTNET;
   return [
     BOOK_LAW_ID,
     MAGIC_MAINNET,
@@ -176,8 +209,11 @@ export function consensusFingerprint() {
     `ORACLE=${ORACLE_LAW}`,
     `HASH_UNIT_FLOOR=${HASH_BONUS_NANOS_FLOOR}`,
     `POT_PROP=${POT_PROP}`,
+    `POT_SCHED=${potSchedPin(days)}`,
+    `EPOCH_DAYS=${days}`,
+    `RESERVE_ORACLE=shear-reserve-oracle-v1:maxBps=10000:maxStep=100:maxAgeMs=${ORACLE_MAX_AGE_MS}:quorum=14`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
-    `NETWORK=${MAGIC_TESTNET}`,
+    `NETWORK=${network}`,
     `HASH_TX_LIVE=${HASH_TX_LIVE}`,
     'AMOUNT=confidential',
     'DUMMY_OUTS=1',
@@ -188,7 +224,7 @@ export function consensusFingerprint() {
     'KDF=argon2id-shewall',
     `RESERVE=${RESERVE_PROGRAM}`,
     'RESERVE_EVM=1',
-    'RESERVE_INTEREST=400d-bps-floor',
+    `RESERVE_INTEREST=${days}d-bps-floor`,
     'VORTEX=vort1-pin',
     'VORTICE_NO_MINT=1',
     'LEVY_CAP=0.001-SHE',
@@ -213,11 +249,19 @@ export function consensusFingerprint() {
 
 /** Mainnet book: same privacy-class law, NETWORK=shear-v1 + frozen genesis. */
 export function mainnetFingerprint() {
-  return `${consensusFingerprint().replace(`NETWORK=${MAGIC_TESTNET}`, `NETWORK=${MAGIC_MAINNET}`)}:GENESIS=${GENESIS_MAINNET}`;
+  return `${consensusFingerprint(MAGIC_MAINNET)}:GENESIS=${GENESIS_MAINNET}`;
+}
+
+/** Second key. SHEAR_MAINNET_EMIT=1 alone is not enough. */
+export const MAINNET_EMIT_CONFIRM = 'I_UNDERSTAND_SHEAR_MAINNET';
+
+export function mainnetEmitConfirmed() {
+  return String(process.env.SHEAR_MAINNET_EMIT_CONFIRM || '').trim() === MAINNET_EMIT_CONFIRM;
 }
 
 export function mainnetMayEmit(nowMs = Date.now()) {
   if (String(process.env.SHEAR_MAINNET_EMIT || '').trim() !== '1') return false;
+  if (!mainnetEmitConfirmed()) return false;
   return Number(nowMs) >= GENESIS_MAINNET_MS;
 }
 
@@ -235,6 +279,10 @@ export function consensusLaw() {
     hashTxLive: HASH_TX_LIVE,
     hashBonusNanos: HASH_BONUS_NANOS,
     blockSubsidyNanos: BLOCK_SUBSIDY_NANOS,
+    potStartNanos: BLOCK_SUBSIDY_NANOS,
+    potFloorNanos: POT_FLOOR_NANOS,
+    epochDaysTestnet: EPOCH_DAYS_TESTNET,
+    epochDaysMainnet: EPOCH_DAYS_MAINNET,
     magicMainnet: MAGIC_MAINNET,
     destHrp: DEST_HRP,
     feeTauMs: FEE_TAU_MS,
@@ -267,9 +315,10 @@ export const JOIN_WINDOW_MS = 0;
 export const PRIOR_UNITS_PER_COIN = 100_000_000_000;
 export const PRIOR_TO_SHEAR_UNITS = NANOS_PER_SHE / PRIOR_UNITS_PER_COIN;
 export const PI_SHE_NANOS = 314159265358; // floor(π × 10^11) SHE in protocol units
-export const RESERVE_EPOCH_DAYS = 400;
-export const RESERVE_JOIN_CUTOFF_DAYS = 99;
-export const INTEREST_DENOM_DAYS = 400;
+/** Default book is testnet (4-day epochs). Mainnet fingerprint uses 400. */
+export const RESERVE_EPOCH_DAYS = EPOCH_DAYS_TESTNET;
+export const RESERVE_JOIN_CUTOFF_DAYS = 1;
+export const INTEREST_DENOM_DAYS = EPOCH_DAYS_MAINNET;
 export const GENESIS_BPS = 264;
 export const EPOCH_BPS_MAX_STEP = 100;
 export const ORACLE_MAX_AGE_MS = 14 * 86_400_000;

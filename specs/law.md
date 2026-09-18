@@ -12,7 +12,7 @@ Network: `shear-testnet-v4` (privacy-class). Frozen `shear-testnet-v2` is a diff
 | `BLOCK_SUBSIDY_NANOS` | `100_000_000_000` (1 SHE, 11 decimals) |
 | `HASH_BONUS_NANOS` | `1` (10⁻¹¹ SHE). Kill every 10⁻¹⁰ line. |
 | `HASH_BONUS_VOTE_DELTA_NANOS` | `1` |
-| `HASH_BONUS_NANOS_FLOOR` | `1` (votes cannot set the unit to 0) |
+| `HASH_BONUS_NANOS_FLOOR` | `1` — **the per-hash unit is never 0**. Votes, vault load, coinbase, and verify all clamp through `hashBonusUnitNanos`. A book that pays 0 per proven hash is a different book. |
 | `SHE_PUBLIC_DIGITS` | `8` (sealed book still holds 11) |
 | `SPENDABLE_CONFIRMATIONS` | `6` |
 | `SAMPLE_PRUNE_CONFIRMATIONS` | `1000` |
@@ -71,7 +71,7 @@ SPEND_SIG=ed25519-shear-spend-v1
 POOL_WITHDRAW=eip712-spend-bound
 ```
 
-Mainnet `shear-v1` uses the same privacy-class law with `NETWORK=shear-v1` and `GENESIS=2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). `HASH_TX_LIVE=1`. `HASH_BONUS_NANOS=1`. Votes cannot zero the unit or move the 1 SHE pot. Clients refuse to emit before that instant.
+Mainnet `shear-v1` uses the same privacy-class law with `NETWORK=shear-v1` and `GENESIS=2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). `HASH_TX_LIVE=1`. `HASH_BONUS_NANOS=1`. **Hash bonus never goes to 0** (`HASH_UNIT_FLOOR=1`). Votes cannot zero the unit or move the pot schedule. Clients refuse to emit before that instant.
 
 ## Hash unit (proven)
 

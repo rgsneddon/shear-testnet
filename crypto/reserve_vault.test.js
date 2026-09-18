@@ -106,8 +106,8 @@ describe('Reserve vault protocol', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
-    assert.equal(canJoin(state, t0 + 10 * DAY), true);
-    const late = t0 + (400 - 98) * DAY;
+    assert.equal(canJoin(state, t0 + Math.floor(RESERVE_EPOCH_MS / 2)), true);
+    const late = t0 + RESERVE_EPOCH_MS - 1;
     assert.equal(remainingUnder99(state, late), true);
     const idleBob = deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: late });
     assert.equal(idleBob.ok, true);
@@ -143,7 +143,7 @@ describe('Reserve vault protocol', () => {
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
     assert.equal(Number(state.liveHashBonusNanos), 1);
-    const tooSoon = enact({ state, nowMs: t0 + 10 * DAY });
+    const tooSoon = enact({ state, nowMs: t0 + Math.floor(RESERVE_EPOCH_MS / 2) });
     assert.equal(tooSoon.ok, false);
     const done = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(done.ok, true);
@@ -171,7 +171,7 @@ describe('Reserve vault protocol', () => {
     vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
     const height = 40;
     const block = { height, txs: [{ coinbase: true, vout: [] }] };
-    applyReserveBlock({ state, block, nowMs: t0 + 10 * DAY });
+    applyReserveBlock({ state, block, nowMs: t0 + Math.floor(RESERVE_EPOCH_MS / 2) });
     assert.equal(Number(state.liveHashBonusNanos), 1);
     assert.equal(state.bonusEnacted, false);
     applyReserveBlock({ state, block, nowMs: t0 + RESERVE_EPOCH_MS });
@@ -193,12 +193,12 @@ describe('Reserve vault protocol', () => {
     const start = portalRewards(state, a, t0);
     assert.equal(start.accrued, 0);
     assert.ok(start.projected > 0);
-    const mid = portalRewards(state, a, t0 + 200 * DAY);
+    const mid = portalRewards(state, a, t0 + Math.floor(RESERVE_EPOCH_MS / 2));
     assert.ok(mid.accrued > 0);
     assert.ok(mid.accrued < mid.projected);
     const end = portalRewards(state, a, t0 + RESERVE_EPOCH_MS);
     assert.equal(end.accrued, end.projected);
-    const late = t0 + (400 - 50) * DAY;
+    const late = t0 + RESERVE_EPOCH_MS - 1;
     deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: late });
     const idle = portalRewards(state, b, late + DAY);
     assert.equal(idle.accrued, 0);
@@ -239,7 +239,7 @@ describe('Reserve vault protocol', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0, payout: continuum });
-    const early = withdraw({ state, dest: a, nowMs: t0 + 10 * DAY });
+    const early = withdraw({ state, dest: a, nowMs: t0 + Math.floor(RESERVE_EPOCH_MS / 2) });
     assert.equal(early.ok, false);
     const done = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(done.ok, true);
@@ -439,6 +439,24 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(done.ok, true);
     assert.equal(Number(state.liveHashBonusNanos), 1);
     assert.equal(Number(state.liveHashBonusNanos) >= 1, true);
+  });
+
+  it('enact cannot write a zero hash unit even if vault state is corrupted to 0', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    state.liveHashBonusNanos = 0n;
+    const down = vote({ state, dest: a, choice: VOTE_DECREASE, nowMs: t0 + 2 });
+    assert.equal(down.ok, false);
+    assert.equal(down.reason, 'unit_floor');
+    assert.equal(vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 }).ok, true);
+    const done = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(done.ok, true);
+    assert.ok(Number(state.liveHashBonusNanos) >= 1);
+    assert.equal(Number(state.liveHashBonusNanos), 1);
+    assert.notEqual(Number(state.liveHashBonusNanos), 0);
   });
 
   it('compactTx(lockTx) through applyReserveBlock credits the portal; vote and withdraw follow', () => {

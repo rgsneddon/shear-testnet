@@ -1,0 +1,20 @@
+name: admit-v1-grep
+on:
+  push:
+  pull_request:
+jobs:
+  grep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if ADMITv1 / bit-OR prove appears on the v4 send path
+        run: |
+          if grep -R -n -E 'shear-admit-v1|bit-OR prove' \
+            wallet/lib/shear_ledger.dart \
+            wallet/lib/shear_admit.dart \
+            wallet/lib/shear_native_prove.dart \
+            crypto/wallet_native_prove.mjs; then
+            echo 'ADMITv1 leftover on v4 send path'
+            exit 1
+          fi
+          node --test tests/test_admit_v1_grep.js

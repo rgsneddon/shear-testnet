@@ -257,7 +257,7 @@ def main() -> None:
         "Login is Copy dest as ssa1.worker. The explorer paints confirmed blocks, kinds, and proof-ok — no dest safari, no amount column. Ciphertext "
         "and rest-frame strings stay off that page. A node is the book: append, verify, P2P, and the GATE that lets "
         "native Flow and pinned Reserve bytecode land in the same block model. "
-        "Shipped P2P seed is shear.digital:30303, magic shear-testnet-v3. Wallet 0.32 reads a local node at 127.0.0.1:18332. "
+        "Shipped P2P seeds are p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303, magic shear-testnet-v4. Wallet 0.35 reads a local node at 127.0.0.1:18332. "
         "After 1000 confirmations, sample rows prune; sealed txs stay. An optional latest-only snapshot is published at height 1000, then every 400 blocks.",
     )
 
@@ -267,7 +267,7 @@ def main() -> None:
         "This is a testnet preprint. Constants here match the live fingerprint: 1 SHE pot, 10^-11 SHE per proven floor share "
         "paid per hasher dest, six-confirmation spendable floor, ASERT 90 s, ShearHash-v3 light, chain id 2701 for pool withdraw signatures. How-to pages — "
         "installing the wallet, pointing ShearK at the pool, opening The Reserve, minting a vort1 key — live at "
-        "docs.shear.digital. The clients are the WALLET, MINER, and NODE buttons on shear.digital.",
+        "shear.digital/docs. The clients are the WALLET, MINER, and NODE buttons on shear.digital.",
     )
     body(
         pdf,
