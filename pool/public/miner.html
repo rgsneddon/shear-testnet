@@ -58,6 +58,7 @@
     .mono { font-family: ui-monospace, Consolas, monospace; font-size:.88rem; }
     table { width:100%; border-collapse:collapse; }
     th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.88rem; overflow-wrap:anywhere; }
+    #accounting th:not(:first-child), #accounting td:not(:first-child) { text-align:right; font-variant-numeric: tabular-nums; }
     .pulse { color:var(--green); font-size:.8rem; }
     .top-banner {
       display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
@@ -169,6 +170,22 @@
         <tbody></tbody>
       </table>
     </section>
+    <section class="panel-card">
+      <h2>Accounting</h2>
+      <p>Per sealed block. Block rwd is your share of the pot after the pool fee. Hash bonus is fee-free and shown to 11 decimals. Pool fee is this pool’s cut of your pot share (0–3% cap; this pool takes 1%). Total earned is block rwd + hash bonus.</p>
+      <table id="accounting">
+        <thead>
+          <tr>
+            <th>HEIGHT</th>
+            <th>BLOCK RWD</th>
+            <th>HASHBONUS</th>
+            <th>POOL FEE</th>
+            <th>TOTAL EARNED</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
     <a class="back-pool" href="/">back to pool</a>
   </div>
   <script>
@@ -202,6 +219,13 @@
       if (Number.isFinite(n) && n > 0) return n.toFixed(8).replace(/0+$/, '').replace(/\.$/, '') + ' SHE';
       return '0 SHE';
     }
+    function fmtSheNanos(nanos, digits) {
+      const n = Number(nanos) || 0;
+      const she = n / 1e11;
+      const d = digits == null ? 8 : digits;
+      if (!(she > 0)) return (0).toFixed(d);
+      return she.toFixed(d);
+    }
     function paint(d) {
       if (!d || !d.ok) {
         set('live-pulse', 'unknown miner');
@@ -231,17 +255,29 @@
       set('m-last', ago(d.lastSeen));
       document.title = d.tag + ' · Shear miner';
       const tb = document.querySelector('#workers tbody');
-      if (!tb) return;
-      tb.innerHTML = (d.workers || []).slice().sort(function (a, b) {
-        return (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0);
-      }).map(function (w) {
-        const name = String(w.worker || 'worker').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || 'worker';
-        return '<tr><td class="mono">' + name + '</td><td>' + ([w.name, w.version].filter(Boolean).join(' ') || '—') +
-          '</td><td>' + fmtRate(w.hashrate) + '</td><td>' + (w.blocks || 0) +
-          '</td><td>' + (w.accepted || 0) + '</td><td>' + (w.stale || 0) +
-          '</td><td>' + (w.threads || 0) + '</td><td>' + (w.hashes || w.roundHashes || 0) +
-          '</td><td>' + (w.connected ? 'yes' : 'no') + '</td></tr>';
-      }).join('');
+      if (tb) {
+        tb.innerHTML = (d.workers || []).slice().sort(function (a, b) {
+          return (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0);
+        }).map(function (w) {
+          const name = String(w.worker || 'worker').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || 'worker';
+          return '<tr><td class="mono">' + name + '</td><td>' + ([w.name, w.version].filter(Boolean).join(' ') || '—') +
+            '</td><td>' + fmtRate(w.hashrate) + '</td><td>' + (w.blocks || 0) +
+            '</td><td>' + (w.accepted || 0) + '</td><td>' + (w.stale || 0) +
+            '</td><td>' + (w.threads || 0) + '</td><td>' + (w.hashes || w.roundHashes || 0) +
+            '</td><td>' + (w.connected ? 'yes' : 'no') + '</td></tr>';
+        }).join('');
+      }
+      const ab = document.querySelector('#accounting tbody');
+      if (ab) {
+        const rows = (d.ledger || []).slice();
+        ab.innerHTML = rows.map(function (r) {
+          return '<tr><td class="mono">' + (r.height || 0) +
+            '</td><td>' + fmtSheNanos(r.blockRwdNanos, 8) +
+            '</td><td class="mono">' + fmtSheNanos(r.hashBonusNanos, 11) +
+            '</td><td>' + fmtSheNanos(r.poolFeeNanos, 8) +
+            '</td><td>' + fmtSheNanos(r.totalNanos, 11) + '</td></tr>';
+        }).join('') || '<tr><td colspan="5">No sealed credits yet.</td></tr>';
+      }
     }
     function tick() {
       if (!/^m[0-9a-f]{8}$/i.test(tag)) {

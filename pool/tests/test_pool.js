@@ -691,6 +691,16 @@ describe('public miner listing', () => {
     assert.match(miner, /hash bonus is fee-free/);
     assert.match(miner, /30 confirmations/);
     assert.match(miner, /id="payout-note"/);
+    assert.match(miner, /id="accounting"/);
+    assert.match(miner, />HEIGHT</);
+    assert.match(miner, />BLOCK RWD</);
+    assert.match(miner, />HASHBONUS</);
+    assert.match(miner, />POOL FEE</);
+    assert.match(miner, />TOTAL EARNED</);
+    assert.match(miner, /fmtSheNanos/);
+    assert.match(miner, /hashBonusNanos, 11/);
+    const accountingAt = miner.indexOf('id="accounting"');
+    assert.ok(accountingAt > workersAt);
     assert.match(miner, /confirmNeed/);
     assert.match(miner, /creditConfirmedShe/);
     assert.doesNotMatch(miner, /wait 24 hours before the next one/);

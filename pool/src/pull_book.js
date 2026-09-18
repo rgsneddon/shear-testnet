@@ -25,6 +25,16 @@ export function potCreditNanos(potNanos = BLOCK_SUBSIDY_NANOS) {
   return potCreditAfterFeeNanos(potNanos);
 }
 
+/** 1% (this pool) of the gross pot share implied by a net pot credit. Hash bonus is not fee'd. */
+export function attributedPoolFeeNanos(potShareNanos) {
+  const net = Math.max(0, Math.floor(Number(potShareNanos) || 0));
+  if (!net) return 0;
+  const restBps = 10000 - POOL_FEE_BPS;
+  if (restBps <= 0) return 0;
+  const gross = Math.floor((net * 10000) / restBps);
+  return Math.max(0, gross - net);
+}
+
 function dest20Hex(dest) {
   try {
     const h = hash20FromAddress(dest);
@@ -273,6 +283,33 @@ export function createPullBook(dir) {
     return [...s];
   }
 
+  function ledger(tag) {
+    const key = String(tag || '').trim().toLowerCase();
+    const byH = new Map();
+    for (const c of state.credits) {
+      if (c.tag !== key) continue;
+      const h = Number(c.height) || 0;
+      if (!(h >= 1)) continue;
+      if (!byH.has(h)) byH.set(h, { height: h, potNanos: 0, hashNanos: 0 });
+      const row = byH.get(h);
+      const n = Math.floor(Number(c.nanos) || 0);
+      if (c.kind === 'hash') row.hashNanos += n;
+      else row.potNanos += n;
+    }
+    return [...byH.values()]
+      .sort((a, b) => b.height - a.height)
+      .map((r) => {
+        const fee = attributedPoolFeeNanos(r.potNanos);
+        return {
+          height: r.height,
+          blockRwdNanos: r.potNanos,
+          hashBonusNanos: r.hashNanos,
+          poolFeeNanos: fee,
+          totalNanos: r.potNanos + r.hashNanos,
+        };
+      });
+  }
+
   function dueAuto({ tipHeight = 0, need = SPENDABLE_CONFIRMATIONS } = {}) {
     const out = [];
     for (const tag of tags()) {
@@ -301,5 +338,5 @@ export function createPullBook(dir) {
   }
 
   if (loaded) save();
-  return { creditRound, view, takeConfirmed, destOf, tags, dueAuto, sweepAuto };
+  return { creditRound, view, takeConfirmed, destOf, tags, dueAuto, sweepAuto, ledger };
 }

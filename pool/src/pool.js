@@ -2229,6 +2229,7 @@ export function createPool({
       lastPullMs: pull.lastPullMs,
       nextPullMs: pull.nextPullMs,
       cooldownMs: PULL_COOLDOWN_MS,
+      ledger: typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : [],
     };
   }
 
