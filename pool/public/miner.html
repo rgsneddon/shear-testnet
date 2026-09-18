@@ -30,12 +30,10 @@
     .grid .panel-card { margin:0; padding:7px 8px; }
     .pull-row {
       display:grid; gap:8px; width:100%;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       margin: 8px 0 16px; align-items: stretch;
     }
     .pull-row .panel-card { margin:0; padding:7px 8px; min-width:0; }
-    .pull-acc { grid-column: span 1; }
-    .pull-conf { grid-column: span 3; }
     .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; }
     .value { font-size:.9rem; font-weight:650; margin-top:2px; color:var(--cyan); overflow-wrap:anywhere; }
     .value.yellow { color:#d4a017; }
@@ -58,7 +56,25 @@
     .mono { font-family: ui-monospace, Consolas, monospace; font-size:.88rem; }
     table { width:100%; border-collapse:collapse; }
     th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.88rem; overflow-wrap:anywhere; }
-    #accounting th:not(:first-child), #accounting td:not(:first-child) { text-align:right; font-variant-numeric: tabular-nums; }
+    #accounting th:not(:first-child), #accounting td:not(:first-child),
+    #acct-totals th:not(:first-child), #acct-totals td:not(:first-child) { text-align:right; font-variant-numeric: tabular-nums; }
+    .acct-scroll {
+      max-height: 22.5rem;
+      overflow-y: auto;
+      overflow-x: auto;
+    }
+    #accounting thead th {
+      position: sticky; top: 0; z-index: 1;
+      background: var(--card, #fff);
+    }
+    #acct-totals { margin-top: 8px; }
+    #acct-totals table { margin: 0; }
+    #back-pool-box .back-pool {
+      display: block; margin: 2px 0 0; text-align: left;
+      color: var(--cyan); font-size: .9rem; font-weight: 650; text-decoration: none;
+      text-transform: uppercase; letter-spacing: .04em;
+    }
+    #back-pool-box .back-pool:hover { color: var(--blue); }
     .pulse { color:var(--green); font-size:.8rem; }
     .top-banner {
       display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
@@ -75,15 +91,9 @@
         linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
       background-origin:border-box; background-clip:padding-box, border-box;
     }
-    .back-pool {
-      display: block; text-align: right; margin: 10px 2px 0;
-      color: var(--muted); font-size: .8rem; text-decoration: none;
-    }
-    .back-pool:hover { color: var(--cyan); }
     @media (max-width: 1024px) {
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .pull-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .pull-conf { grid-column: span 1; }
+      .pull-row { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -117,7 +127,6 @@
   </header>
   <div class="wrap">
     <section class="panel-card">
-      <p><a href="/">Back to pool</a></p>
       <h1>Miner stats · <span class="mono" id="miner-tag">—</span></h1>
       <p>Hash bonus and your share of the block pot accumulate here. At <strong>π SHE</strong> (3.14159265358) of <em>confirmed</em> credit the pool sends the unpaid sum to your miner <code>ssa1</code> dest and pays the levy. The 1% pool fee is taken from the block pot only — hash bonus is fee-free. There is no withdraw button.</p>
       <p id="payout-note">Pool auto-payout waits for <strong>30 confirmations</strong> (pool merchant band). That is not the chain’s 6-confirm spendable bar — credit stays unconfirmed until 30 blocks, then counts toward π.</p>
@@ -127,6 +136,10 @@
       <article class="panel-card pull-acc">
         <div class="label">Accumulated</div>
         <div class="value yellow" id="m-pending">0 SHE</div>
+      </article>
+      <article class="panel-card pull-confirming">
+        <div class="label">Confirming SHE</div>
+        <div class="value yellow" id="m-confirming">0 SHE</div>
       </article>
       <article class="panel-card pull-conf">
         <div class="label" id="m-sent-label">Confirmed sent to ssa1********</div>
@@ -149,6 +162,10 @@
       <article class="panel-card"><div class="label">Hashes this round</div><div class="value" id="m-round">0</div></article>
       <article class="panel-card"><div class="label">First seen</div><div class="value" id="m-first">—</div></article>
       <article class="panel-card"><div class="label">Last seen</div><div class="value" id="m-last">—</div></article>
+      <article class="panel-card" id="back-pool-box">
+        <div class="label">Pool</div>
+        <a class="back-pool" href="/">back to pool</a>
+      </article>
     </div>
     <section class="panel-card">
       <h2>Workers</h2>
@@ -172,7 +189,8 @@
     </section>
     <section class="panel-card">
       <h2>Accounting</h2>
-      <p>Per sealed block. Block rwd is your share of the pot after the pool fee. Hash bonus is fee-free and shown to 11 decimals. Pool fee is this pool’s cut of your pot share (0–3% cap; this pool takes 1%). Total earned is block rwd + hash bonus.</p>
+      <p>Per sealed block. Block rwd is your share of the pot after the pool fee. Hash bonus is fee-free and shown to 11 decimals. Pool fee is this pool’s cut of your pot share (0–3% cap; this pool takes 1%). Total earned is block rwd + hash bonus. Latest 10 rows sit in view; older heights scroll.</p>
+      <div class="acct-scroll">
       <table id="accounting">
         <thead>
           <tr>
@@ -185,8 +203,30 @@
         </thead>
         <tbody></tbody>
       </table>
+      </div>
     </section>
-    <a class="back-pool" href="/">back to pool</a>
+    <section class="panel-card" id="acct-totals">
+      <table>
+        <thead>
+          <tr>
+            <th>TOTALS</th>
+            <th>BLOCK RWD</th>
+            <th>HASHBONUS</th>
+            <th>POOL FEE</th>
+            <th>TOTAL EARNED</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">all heights</td>
+            <td id="tot-block">0.00000000</td>
+            <td class="mono" id="tot-hash">0.00000000000</td>
+            <td id="tot-fee">0.00000000</td>
+            <td id="tot-earned">0.00000000000</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
   </div>
   <script>
     const tag = decodeURIComponent((location.pathname.split('/miner/')[1] || '').split('/')[0] || '');
@@ -246,6 +286,7 @@
       set('m-threads', String(d.threads || 0));
       set('m-round', String(d.hashes || d.roundHashes || 0));
       set('m-pending', fmtPullShe(d.pendingDisplay, d.pendingShe));
+      set('m-confirming', fmtPullShe(d.unconfirmedDisplay, d.unconfirmedShe));
       set('m-confirmed', fmtPullShe(d.sentDisplay || d.confirmedDisplay, d.sentShe != null ? d.sentShe : d.confirmedShe));
       set('m-sent-label', d.confirmedSentLabel || ('Confirmed sent to ' + (d.destRedacted || 'ssa1********')));
       var need = Number(d.confirmNeed) > 0 ? Number(d.confirmNeed) : 30;
@@ -277,6 +318,17 @@
             '</td><td>' + fmtSheNanos(r.poolFeeNanos, 8) +
             '</td><td>' + fmtSheNanos(r.totalNanos, 11) + '</td></tr>';
         }).join('') || '<tr><td colspan="5">No sealed credits yet.</td></tr>';
+        let totB = 0, totH = 0, totF = 0, totT = 0;
+        for (let i = 0; i < rows.length; i += 1) {
+          totB += Number(rows[i].blockRwdNanos) || 0;
+          totH += Number(rows[i].hashBonusNanos) || 0;
+          totF += Number(rows[i].poolFeeNanos) || 0;
+          totT += Number(rows[i].totalNanos) || 0;
+        }
+        set('tot-block', fmtSheNanos(totB, 8));
+        set('tot-hash', fmtSheNanos(totH, 11));
+        set('tot-fee', fmtSheNanos(totF, 8));
+        set('tot-earned', fmtSheNanos(totT, 11));
       }
     }
     function tick() {

@@ -2215,6 +2215,7 @@ export function createPool({
       pendingShe: pull.pendingNanos / NANOS_PER_SHE,
       confirmedShe: pull.sentNanos / NANOS_PER_SHE,
       unconfirmedShe: pull.unconfirmedNanos / NANOS_PER_SHE,
+      unconfirmedDisplay: formatShe(pull.unconfirmedNanos / NANOS_PER_SHE),
       creditConfirmedShe: pull.confirmedNanos / NANOS_PER_SHE,
       confirmNeed: need,
       pendingDisplay: formatShe(pull.pendingNanos / NANOS_PER_SHE),

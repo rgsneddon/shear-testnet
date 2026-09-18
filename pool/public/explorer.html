@@ -50,6 +50,15 @@
     table { width:100%; max-width:100%; border-collapse:collapse; table-layout:fixed; }
     th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.88rem; overflow-wrap:anywhere; word-break:break-word; }
     .table-wrap { width:100%; max-width:100%; overflow:visible; }
+    .block-list-scroll {
+      max-height: 22.5rem;
+      overflow-y: auto;
+      overflow-x: auto;
+    }
+    #ex-txs thead th {
+      position: sticky; top: 0; z-index: 1;
+      background: var(--card, #fff);
+    }
     #ex-txs td:nth-child(2) { white-space: nowrap; }
     .reserve-chip {
       display: inline-block; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em;
@@ -185,9 +194,9 @@
       </form>
     </section>
     <section class="panel-card">
-      <h2>Last 30 blocks</h2>
-      <p class="label">Reserve lock and vote appear from mempool as (pending). Hash bonuses in the open round stay off this list. Pending drops at 6 confirmations.</p>
-      <div class="table-wrap" id="ex-tx-wrap">
+      <h2>BLOCK LIST - FULL</h2>
+      <p class="label">Every sealed block, newest first. Ten rows in view; scroll for the rest. Reserve lock and vote appear from mempool as (pending). Hash bonuses in the open round stay off this list. Pending drops at 6 confirmations.</p>
+      <div class="table-wrap block-list-scroll" id="ex-tx-wrap">
       <table id="ex-txs">
         <thead>
           <tr>
@@ -334,7 +343,9 @@
       sealed.sort(function (a, b) {
         return Number(b.height) - Number(a.height);
       });
-      const n = Math.max(1, Math.floor(Number(limit) || 30));
+      if (limit == null || limit === Infinity) return pending.concat(sealed);
+      const n = Math.max(0, Math.floor(Number(limit) || 0));
+      if (!n) return pending.concat(sealed);
       return pending.concat(sealed).slice(0, n);
     }
     function paintTxs(txs, status) {
@@ -342,7 +353,7 @@
       const st = document.getElementById('tx-status');
       if (st) st.textContent = status || '';
       if (!body) return;
-      const rows = Array.isArray(txs) ? txs.slice(0, 30) : [];
+      const rows = Array.isArray(txs) ? txs.slice() : [];
       body.innerHTML = rows.length
         ? rows.map(function (t) {
             const href = '/tx/' + encodeURIComponent(t.id);
@@ -399,7 +410,7 @@
       filled = true;
       const hist = await fetchJson('/explorer/recent').catch(function () { return { txs: [] }; });
       const circ = await fetchJson('/explorer/circulation').catch(function () { return { holders: [] }; });
-      const recent = orderRecentTxs(hist.txs || [], 30);
+      const recent = orderRecentTxs(hist.txs || []);
       paintTxs(recent, '');
       paintHolders(circ);
     }

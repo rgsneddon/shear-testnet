@@ -83,4 +83,24 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(h6.pending, true);
     assert.equal(h6.confirmations, 1);
   });
+
+  it('explorer recent Infinity returns every sealed block', () => {
+    function block(height) {
+      return {
+        height,
+        hash: Buffer.alloc(32, height),
+        header: Buffer.alloc(128),
+        txs: [{ coinbase: true, height, vout: [{ kind: 'pot', nanos: 1 }] }],
+      };
+    }
+    const blocks = [];
+    for (let h = 1; h <= 40; h += 1) blocks.push(block(h));
+    const store = { blocks, tip: () => blocks[blocks.length - 1], mempool: [] };
+    const all = explorerRecentTxs(store, Infinity).filter((t) => t.kind === 'block');
+    assert.equal(all.length, 40);
+    assert.equal(all[0].height, 40);
+    assert.equal(all[39].height, 1);
+    const capped = explorerRecentTxs(store, 30).filter((t) => t.kind === 'block');
+    assert.equal(capped.length, 30);
+  });
 });
