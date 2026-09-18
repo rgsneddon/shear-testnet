@@ -160,7 +160,7 @@ describe('brand pages', () => {
     for (const page of [siteHtml, poolHtml, explorerHtml, mempoolHtml]) {
       assert.match(page, /rgsneddon\/shear-testnet/);
       assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
-      assert.match(page, /releases\/tag\/0\.33|shear-wallet-0\.33/);
+      assert.match(page, /releases\/tag\/0\.35|shear-wallet-0\.35/);
       assert.doesNotMatch(page, /releases\/tag\/0\.28|shear-wallet-0\.28/);
       assert.match(page, /rgsneddon\/ShearK/);
       assert.match(page, /theme\.js\?v=15/);
@@ -176,7 +176,7 @@ describe('brand pages', () => {
     assert.match(poolHtml, /id="addr"/);
     assert.match(poolHtml, /id="copy-cmd"/);
     assert.match(poolHtml, /ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker/);
-    assert.match(poolHtml, /ShearK-Miner-1\.7-linux\.zip/);
+    assert.match(poolHtml, /ShearK-Miner-2\.4-linux\.zip/);
     assert.doesNotMatch(poolHtml, /Private by default/);
     assert.doesNotMatch(poolHtml, /Proof of work only/);
     assert.doesNotMatch(poolHtml, /shewall\.json/);
@@ -345,9 +345,9 @@ describe('sticky public navbar', () => {
     const brandCss = read('brand/theme.css');
     assert.equal(poolCss, siteCss, 'pool theme.css must match main shear.digital chrome');
     assert.equal(brandCss, siteCss, 'root brand/theme.css must match main shear.digital chrome');
-    assert.match(siteCss, /\.nav \{\n  display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr;/);
+    assert.match(siteCss, /\.nav \{\r?\n  display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr;/);
     assert.match(siteCss, /grid-auto-columns:\s*1fr/);
-    assert.match(siteCss, /\.top-banner > \.nav \{\n  display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr;/);
+    assert.match(siteCss, /\.top-banner > \.nav \{\r?\n  display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr;/);
     assert.doesNotMatch(siteCss, /flex: 0 0 auto; width: auto;/);
     assert.match(siteCss, /\.top-banner\.nav-open \.nav \{ display: flex; \}/);
     assert.match(siteCss, /min-width: 12\.5rem/);
