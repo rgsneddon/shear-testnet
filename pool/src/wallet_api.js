@@ -1137,7 +1137,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     const rec = reconstructOwner(store, address);
     const destOwner = isDestAddress(address)
-      && verifyDestOpening(address, url.searchParams.get('open') || url.searchParams.get('destOpen') || '');
+      && verifyDestOpening(address, url.searchParams.get('open') || url.searchParams.get('destOpen') || body.open || body.destOpen || '');
     const owner = destOwner;
     const rolled = rollupDestTxs(rec.txs, { revealDest: owner });
     const txs = owner ? rolled : rolled.map((t) => explorerRowPublic({ ...t, kind: t.kind || 'block' }));

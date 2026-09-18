@@ -1806,9 +1806,11 @@ void main() {
     expect(find.byTooltip('Discord'), findsOneWidget);
     expect(find.byTooltip('Telegram'), findsOneWidget);
     expect(find.byTooltip('X'), findsOneWidget);
+    expect(find.byTooltip('Reddit'), findsOneWidget);
     expect(kDiscordUrl, 'https://discord.gg/AzVtMnSxCe');
     expect(kTelegramUrl, 'https://t.me/shearprivacy');
     expect(kXUrl, 'https://x.com/shearprivacy');
+    expect(kRedditUrl, 'https://www.reddit.com/r/shear/');
     expect(find.textContaining(session.identity!.paymentCode), findsWidgets);
     final spendY = tester.getTopLeft(find.text('Spendable')).dy;
     final receiveY = tester.getTopLeft(find.text('Receive ID')).dy;
@@ -2442,6 +2444,52 @@ void main() {
     expect(ledger.transactions.length < 20, isTrue);
     expect(ledger.shearviewTxs(id.address).where((t) => t.kind == 'hash'), isEmpty);
     expect(ledger.shearviewTxs(id.address).any((t) => t.kind == 'blockfound'), isTrue);
+  });
+
+  test('amounts-only pool history does not wipe dest-owned Shearview or pending rows', () async {
+    final id = createIdentity();
+    final header = Uint8List.fromList(List.filled(128, 0x11));
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final dest = (ShearLedger()..viewSecret = id.viewKey).homeDest(id.address, paymentCode: id.paymentCode);
+    final live = _PoolLive(headerHex: hex, height: 20, balance: 1.4, owner: dest);
+    live.headerAtHeight[1] = hex;
+    live.history = [
+      {
+        'id': 'cb-14',
+        'from': 'coinbase',
+        'to': dest,
+        'amount': 1,
+        'kind': 'coinbase',
+        'height': 14,
+        'confirmed': true,
+      },
+      {
+        'id': 'in-pend',
+        'from': 'ssa1peerpay',
+        'to': dest,
+        'amount': 0.4,
+        'kind': 'receive',
+        'height': 0,
+        'confirmed': false,
+      },
+    ];
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final ledger = ShearLedger(
+      pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp()),
+    )..bindIdentity(id);
+    await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+    expect(ledger.shearviewTxs(id.address), isNotEmpty);
+    expect(ledger.pendingTxs(id.address).any((t) => t.id == 'in-pend'), isTrue);
+    expect(live.lastHistoryOpen, isNotEmpty);
+
+    live.history = [
+      {'id': 'blockfound:14', 'kind': 'blockfound', 'height': 14},
+      {'id': 'blockfound:15', 'kind': 'blockfound', 'height': 15},
+    ];
+    await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+    expect(ledger.shearviewTxs(id.address).any((t) => t.kind == 'blockfound' || t.id == 'cb-14'), isTrue);
+    expect(ledger.pendingTxs(id.address).any((t) => t.id == 'in-pend'), isTrue);
   });
 
   testWidgets('incoming pie evaporates at spendable confs; leftover pendings continue', (tester) async {
@@ -4932,6 +4980,7 @@ class _PoolLive {
   String? owner;
   List<Map<String, dynamic>> incoming;
   List<Map<String, dynamic>> history;
+  String lastHistoryOpen = '';
   int balanceHits = 0;
   int statsHits = 0;
   int headerHits = 0;
@@ -5063,6 +5112,7 @@ Future<HttpServer> _fakePool({
         'height': state.height,
       }));
     } else if (req.uri.path == '/api/wallet/history' || req.uri.path == '/api/explorer/history') {
+      state.lastHistoryOpen = req.uri.queryParameters['open'] ?? '';
       req.response.write(jsonEncode({'txs': state.history}));
     } else if (req.uri.path == '/api/wallet/register') {
       req.response.write(jsonEncode({'ok': true}));

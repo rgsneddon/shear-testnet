@@ -1069,6 +1069,9 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       case 'Telegram':
         icon = Icons.send;
         break;
+      case 'Reddit':
+        icon = Icons.reddit;
+        break;
       default:
         icon = Icons.close;
     }
@@ -1351,6 +1354,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           _socialIcon(context, 'Discord', kDiscordUrl),
           _socialIcon(context, 'Telegram', kTelegramUrl),
           _socialIcon(context, 'X', kXUrl),
+          _socialIcon(context, 'Reddit', kRedditUrl),
         ],
       ),
     ];

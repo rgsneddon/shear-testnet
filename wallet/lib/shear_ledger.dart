@@ -392,8 +392,11 @@ class ShearLedger {
     return true;
   }
 
+  String? _restFrame;
+
   /// Bind spend seed so Copy dest carries B and sealed vouts can be unwrapped.
   void bindIdentity(ShearIdentity ident) {
+    _restFrame = ident.address;
     viewSecret = ident.viewKey;
     spendPub = decodePaymentCode(ident.paymentCode)?['spendPub'];
     admitBase = decodePaymentCode(ident.paymentCode)?['admitBase'];
@@ -1269,7 +1272,7 @@ class ShearLedger {
       return ownerHistory(address);
     }
     try {
-      final json = await pool!.history(address);
+      final json = await pool!.history(address, open: destProofOpen(address));
       final rows = (json['txs'] as List?) ?? const [];
       final parsed = <ShearTx>[];
       for (final row in rows) {
@@ -1279,6 +1282,7 @@ class ShearLedger {
       for (final raw in rollupExplorerTxs(parsed)) {
         var tx = raw;
         if (tx.kind == 'hash') continue;
+        if (tx.to.isEmpty && tx.from.isEmpty) continue;
         final existing = _txs.cast<ShearTx?>().firstWhere((t) => t!.id == tx.id, orElse: () => null);
         var plain = existing?.memoPlain ?? tx.memoPlain;
         if (plain == null && tx.memoCt != null) {
@@ -1311,7 +1315,8 @@ class ShearLedger {
       }
       // Empty live history with a known credit is a miss (node stall on a
       // new block) — retry next poll instead of freezing Shearview.
-      if (parsed.isNotEmpty || spendable(key) <= 0) {
+      final named = parsed.any((t) => t.to.isNotEmpty || t.from.isNotEmpty);
+      if (named || spendable(key) <= 0) {
         _historyAt[key] = _sealedHeight;
       }
     } catch (_) {}
@@ -1662,12 +1667,29 @@ class ShearLedger {
     return rollupExplorerTxs(mine).where((t) => t.kind != 'hash').toList();
   }
 
+  /// Dest opening for /api/wallet/history so the book returns dests, not public stubs.
+  String? destProofOpen(String dest) {
+    final view = viewSecret ?? '';
+    if (view.isEmpty) return null;
+    if (spendPub != null && destMatchesSpendPub(dest, spendPub!)) {
+      return destOpeningFromView(view, spendPub!);
+    }
+    final rest = _restFrame;
+    if (rest != null && rest.isNotEmpty) {
+      return openingForDest(from: dest, restFrame: rest, viewKey: view, destCount: destCount);
+    }
+    if (spendPub != null) return destOpeningFromView(view, spendPub!);
+    return null;
+  }
+
   /// Live owner history is the book. Leftover ids from a prior genesis go.
   /// Empty live is a no-op: same-chain mempool / confirmRound-stamped receives
   /// are not yet in explorer history. Height < 1 always stays. First live
   /// genesis bind already wiped leftover including never-confirmed old-pend.
+  /// Amounts-only / dest-stripped rows (no to/from) must not wipe dest-owned txs.
   void adoptLiveHistory(String key, List<ShearTx> live) {
     if (live.isEmpty) return;
+    if (live.every((t) => t.to.isEmpty && t.from.isEmpty)) return;
     final liveIds = <String>{for (final t in live) t.id};
     _txs.removeWhere((t) {
       if ((t.height ?? 0) < 1) return false;
@@ -2460,11 +2482,15 @@ class ShearPoolClient {
   Future<Map<String, dynamic>> balance(String address) =>
       _get('/api/wallet/balance?address=$address');
 
-  Future<Map<String, dynamic>> history(String address, {String? viewKey}) {
+  Future<Map<String, dynamic>> history(String address, {String? viewKey, String? open}) {
     if (viewKey != null && viewKey.isNotEmpty) {
-      return _post('/api/wallet/history', {'address': address, 'viewKey': viewKey});
+      return _post('/api/wallet/history', {'address': address, 'viewKey': viewKey, if (open != null && open.isNotEmpty) 'open': open});
     }
-    return _get('/api/wallet/history?address=$address');
+    final q = StringBuffer('/api/wallet/history?address=${Uri.encodeQueryComponent(address)}');
+    if (open != null && open.isNotEmpty) {
+      q.write('&open=${Uri.encodeQueryComponent(open)}');
+    }
+    return _get(q.toString());
   }
 
   Future<Map<String, dynamic>> explorerHistory({required String viewKey, String? address}) =>
