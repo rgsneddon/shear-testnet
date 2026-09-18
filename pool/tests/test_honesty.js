@@ -327,9 +327,11 @@ describe('folded-row inventory', () => {
       acceptWork: [55 * RATE_WIN_S],
     };
     assert.equal(roundActualHashes(m), 256);
+    const hsBefore = reportedHashrate(m, t0);
     resetMinerRoundDisplay(m, t0 + 10_000);
     assert.equal(roundActualHashes(m), 0);
-    assert.ok(reportedHashrate(m, t0 + 10_000) > 40, 'round reset must not zero H/s');
+    assert.equal(m.roundHashes, 0);
+    assert.equal(reportedHashrate(m, t0 + 10_000), hsBefore, 'proven_round reset must not jump H/s');
   });
 
   it('HUD hashes follow the miner counter; bonus stays proven 2^shareBits units', () => {

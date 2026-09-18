@@ -806,5 +806,20 @@ int shear_selftest(char got_hex[65]) {
   if (strcmp(SHEAR_SELFTEST_HASH, "0000000000000000000000000000000000000000000000000000000000000000") == 0) {
     return 1;
   }
-  return strcmp(got_hex, SHEAR_SELFTEST_HASH) == 0;
+  if (strcmp(got_hex, SHEAR_SELFTEST_HASH) != 0) return 0;
+  /* hash_next must equal shear_hash of the previous header. A mismatch is
+   * the live pool's bad_hash: claimed digest is not ShearHash-v3(header). */
+  {
+    unsigned char h0[SHEAR_HEADER_LEN], h1[SHEAR_HEADER_LEN];
+    unsigned char full[32], piped[32];
+    memcpy(h0, header, SHEAR_HEADER_LEN);
+    memcpy(h1, header, SHEAR_HEADER_LEN);
+    shear_set_nonce(h0, 1);
+    shear_set_nonce(h1, 2);
+    shear_hash(h0, full);
+    if (shear_hash_first(h0) != 0) return 0;
+    if (shear_hash_next(h1, piped) != 0) return 0;
+    if (memcmp(full, piped, 32) != 0) return 0;
+  }
+  return 1;
 }

@@ -1534,10 +1534,32 @@ export function createPool({
       return;
     }
     if (!scored.ok) {
+      if (scored.reason === 'bad_hash') {
+        try {
+          console.error(JSON.stringify({
+            event: 'share_bad_hash',
+            nonce: String(params.nonce || ''),
+            claimed,
+            computed: scored.hash || '',
+            jobId: job?.jobId || '',
+            hist: Array.isArray(job?.headerHistory) ? job.headerHistory.length : 0,
+          }));
+        } catch { /* ignore */ }
+      }
       rejectSubmit(sock, session, msg, scored.reason);
       return;
     }
     if (scored.hash !== claimed) {
+      try {
+        console.error(JSON.stringify({
+          event: 'share_bad_hash',
+          nonce: String(params.nonce || ''),
+          claimed,
+          computed: scored.hash || '',
+          jobId: job?.jobId || '',
+          hist: Array.isArray(job?.headerHistory) ? job.headerHistory.length : 0,
+        }));
+      } catch { /* ignore */ }
       rejectSubmit(sock, session, msg, 'bad_hash');
       return;
     }

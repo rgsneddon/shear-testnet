@@ -113,9 +113,13 @@ static int g_blocks = 0;
 static int g_color = 1;
 
 #define C_RST "\033[0m"
+#define C_DIM "\033[2m"
 #define C_GRN "\033[1;92m"
 #define C_YEL "\033[1;93m"
 #define C_RED "\033[1;91m"
+#define C_CYN "\033[1;96m"
+#define C_MAG "\033[1;95m"
+#define C_WHT "\033[1;97m"
 
 
 static atomic_int g_inflight = 0;
@@ -665,9 +669,15 @@ static void promote_pending_job(void) {
   g_have_pending = 0;
   install_live_job_locked(job);
   pthread_mutex_unlock(&g_job_mu);
-  printf("job %s height=%d shareBits=%d blockBits=%d algo=%s workers=%d backend=%s cpuCores=%d cpuThreads=%d\n",
-         job.jobId, job.height, job.share_bits, job.block_bits, SHEAR_ALGO, g_threads,
-         shear_hash_backend(), g_cpu_cores, g_cpu_threads);
+  if (g_color) {
+    printf(C_CYN "job %s" C_RST " height=" C_CYN "%d" C_RST " shareBits=%d blockBits=%d algo=%s workers=%d backend=%s cpuCores=%d cpuThreads=%d\n",
+           job.jobId, job.height, job.share_bits, job.block_bits, SHEAR_ALGO, g_threads,
+           shear_hash_backend(), g_cpu_cores, g_cpu_threads);
+  } else {
+    printf("job %s height=%d shareBits=%d blockBits=%d algo=%s workers=%d backend=%s cpuCores=%d cpuThreads=%d\n",
+           job.jobId, job.height, job.share_bits, job.block_bits, SHEAR_ALGO, g_threads,
+           shear_hash_backend(), g_cpu_cores, g_cpu_threads);
+  }
   fflush(stdout);
 }
 
@@ -733,6 +743,8 @@ static void apply_ack(const char *line) {
           fputs(linebuf, stdout);
           fflush(stdout);
         }
+      } else if (g_color) {
+        fprintf(stderr, C_GRN "accept" C_RST "\n");
       }
     }
     return;
@@ -748,7 +760,8 @@ static void apply_ack(const char *line) {
       atomic_fetch_sub(&g_inflight, 1);
     }
     g_have_sent = 0;
-    fprintf(stderr, "stale %s\n", err[0] ? err : (low[0] ? low : "stale"));
+    if (g_color) fprintf(stderr, C_YEL "stale %s" C_RST "\n", err[0] ? err : (low[0] ? low : "stale"));
+    else fprintf(stderr, "stale %s\n", err[0] ? err : (low[0] ? low : "stale"));
     return;
   }
   if (err[0] || strstr(low, "error") || strstr(low, "refus")) {
@@ -757,7 +770,8 @@ static void apply_ack(const char *line) {
       atomic_fetch_sub(&g_inflight, 1);
     }
     g_have_sent = 0;
-    fprintf(stderr, "reject %s\n", err[0] ? err : (low[0] ? low : "unknown"));
+    if (g_color) fprintf(stderr, C_RED "reject %s" C_RST "\n", err[0] ? err : (low[0] ? low : "unknown"));
+    else fprintf(stderr, "reject %s\n", err[0] ? err : (low[0] ? low : "unknown"));
     if (strstr(low, "old_miner") || strstr(low, "client")) {
       fprintf(stderr, "pool refused this client — use ShearHash\n");
     }
@@ -896,14 +910,10 @@ static void *hash_worker(void *arg) {
         continue;
       }
       last_stamp = stamp;
-      /* Restamp keeps RandomX K (bytes 0-99 and bits) but changes time.
-       * hash_next returns the digest of the previous input. Feeding a new
-       * timestamp there submits a digest the pool's current header will not
-       * match. Drop the in-flight pair and start on the live header. */
-      if (primed && (memcmp(live, primed_hdr, 100) != 0
-                     || memcmp(live + 108, primed_hdr + 108, 4) != 0)) {
-        primed = 0;
-      }
+      /* hash_next returns the previous header's digest. Any restamp (even
+       * same K / timestamp-only) must drop the in-flight pair. Submitting
+       * that digest against the live header is pool bad_hash. */
+      primed = 0;
       memcpy(header, live, SHEAR_HEADER_LEN);
     }
     shear_set_nonce(header, n);
@@ -933,6 +943,18 @@ static void *hash_worker(void *arg) {
     atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
     if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
         && share_or_block_hit(hash)) {
+      unsigned char check[32];
+      shear_hash(primed_hdr, check);
+      if (memcmp(hash, check, 32) != 0) {
+        memcpy(hash, check, 32);
+        if (!share_or_block_hit(hash)) {
+          g_dropped++;
+          primed_n = n;
+          memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
+          n += (uint64_t)g_threads;
+          continue;
+        }
+      }
       enqueue_share(job.jobId, primed_n, hash, job.gen);
     }
     primed_n = n;
@@ -1113,10 +1135,11 @@ static int mine_once(void) {
       double elapsed = (double)(now - (g_t0 ? g_t0 : now));
       if (elapsed < 1) elapsed = 1;
       if (g_color) {
-        printf("hashes=" C_GRN "%llu" C_RST " round=" C_GRN "%llu" C_RST " hashrate=" C_GRN "%s" C_RST
-               " accepted=" C_YEL "%d" C_RST " rejected=" C_RED "%d" C_RST
-               " submitted=%llu blocks=%d dropped=%llu threads=%d cpuCores=%d cpuThreads=%d "
-               "job=%s height=%d shareBits=%d blockBits=%d backend=%s user=%s pool=%s:%d elapsed=%.0fs inflight=%d\n",
+        printf("hashes=" C_DIM "%llu" C_RST " round=" C_CYN "%llu" C_RST " hashrate=" C_WHT "%s" C_RST
+               " accepted=" C_GRN "%d" C_RST " rejected=" C_RED "%d" C_RST
+               " submitted=" C_DIM "%llu" C_RST " blocks=" C_MAG "%d" C_RST " dropped=" C_YEL "%llu" C_RST
+               " threads=%d cpuCores=%d cpuThreads=%d "
+               "job=" C_CYN "%s" C_RST " height=" C_CYN "%d" C_RST " shareBits=%d blockBits=%d backend=%s user=%s pool=%s:%d elapsed=%.0fs inflight=%d\n",
                (unsigned long long)h, (unsigned long long)round, rate, g_accepted, g_rejected,
                (unsigned long long)g_submitted, g_blocks, (unsigned long long)g_dropped,
                g_threads, g_cpu_cores, g_cpu_threads, jobId, height, sb, bb,

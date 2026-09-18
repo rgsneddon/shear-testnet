@@ -63,7 +63,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
     assert.equal(j.personalisation, 'ShearHash-v3');
-    assert.equal(j.version, '2.3');
+    assert.equal(j.version, '2.4');
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.headerBytes, 128);
     assert.equal(j.magic, 'shear-testnet-v4');
@@ -90,7 +90,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.backend, 'interpreter');
     assert.equal(typeof j.hugePages, 'boolean');
     const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
-    assert.match(help.stdout, /ShearK-Miner 2\.3 \(ShearHash-v3 light\)/);
+    assert.match(help.stdout, /ShearK-Miner 2\.4 \(ShearHash-v3 light\)/);
     assert.match(help.stdout, /ShearHash-v3 light/);
     assert.match(help.stdout, /--backend jit-full/);
     assert.match(help.stdout, /--backend jit/);
@@ -108,7 +108,7 @@ describe('ShearK-Miner', () => {
     assert.match(bat, /--user YOUR_SSA1\.worker/);
     assert.match(bat, /--dest YOUR_SSA1/);
     assert.match(bat, /--backend jit-full/);
-    assert.match(bat, /ShearK-Miner-2\.3-windows\.zip/);
+    assert.match(bat, /ShearK-Miner-2\.4-windows\.zip/);
     assert.equal(help.stdout.toLowerCase().includes('feeless'), false);
     assert.match(src, /hashes=%llu round=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu blocks=%d dropped=%llu/);
     assert.match(src, /cpuCores=%d cpuThreads=%d/);
@@ -119,6 +119,15 @@ describe('ShearK-Miner', () => {
     assert.match(src, /g_job_gen\+\+/);
     assert.match(src, /aborted_stale/);
     assert.match(src, /g_dropped\+\+/);
+    assert.match(src, /primed = 0;/);
+    assert.match(src, /shear_hash\(primed_hdr, check\)/);
+    assert.match(src, /accepted=" C_GRN "%d"/);
+    assert.match(src, /rejected=" C_RED "%d"/);
+    assert.match(src, /C_RED "reject %s"/);
+    assert.match(src, /C_GRN "accept"/);
+    const hashNext = fs.readFileSync(path.join(root, 'src/shear_hash.c'), 'utf8');
+    assert.match(hashNext, /shear_hash_next\(h1, piped\)/);
+    assert.match(hashNext, /memcmp\(full, piped, 32\)/);
     assert.equal(src.includes('do not bump gen'), false);
     assert.match(src, /blen > 160/);
     assert.match(src, /Copy dest is dest20/);
@@ -191,17 +200,17 @@ describe('ShearK-Miner', () => {
     }
   });
 
-  it('2.3 windows zip is only ShearK-Miner.exe + example.bat (MZ)', () => {
-    const zip = path.join(dist, 'ShearK-Miner-2.3-windows.zip');
+  it('2.4 windows zip is only ShearK-Miner.exe + example.bat (MZ)', () => {
+    const zip = path.join(dist, 'ShearK-Miner-2.4-windows.zip');
     assert.equal(fs.existsSync(zip), true, `missing ${zip}`);
     assert.deepEqual(zipNamelist(zip).sort(), ['ShearK-Miner.exe', 'example.bat'].sort());
     assert.equal(zipMemberHead(zip, 'ShearK-Miner.exe', 2), '4d5a');
   });
 
-  it('2.3 linux zip is ELF, never Darwin Mach-O', (t) => {
-    const zip = path.join(dist, 'ShearK-Miner-2.3-linux.zip');
+  it('2.4 linux zip is ELF, never Darwin Mach-O', (t) => {
+    const zip = path.join(dist, 'ShearK-Miner-2.4-linux.zip');
     if (!fs.existsSync(zip)) {
-      t.skip('2.3 linux zip is packed on the linux box, not this Windows cut');
+      t.skip('2.4 linux zip is packed on the linux box, not this Windows cut');
       return;
     }
     const py = spawnSync(pythonBin(), ['-c',
@@ -376,8 +385,8 @@ describe('ShearK-Miner', () => {
     assert.ok(two > one, `1-thread hashes=${one} 2-thread hashes=${two}`);
   });
 
-  it('2.3 windows zip root is PE + example.bat', () => {
-    const win = path.join(dist, 'ShearK-Miner-2.3-windows.zip');
+  it('2.4 windows zip root is PE + example.bat', () => {
+    const win = path.join(dist, 'ShearK-Miner-2.4-windows.zip');
     assert.equal(fs.existsSync(win), true, win);
     const names = zipNamelist(win);
     assert.deepEqual(names.sort(), ['ShearK-Miner.exe', 'example.bat'].sort());

@@ -88,4 +88,4 @@ v3 nodes must not load a v2 or v1 book. Reset `SHEAR_DATA` on cutover.
 
 ## Official miner
 
-ShearK implements ShearHash-v3. Banner `ShearK-Miner 2.3 (ShearHash-v3 light)`. `--print-config` `personalisation=ShearHash-v3`, `rxMode=light`. Default `--backend jit-full` (2 GiB dataset). Pool/node verify light. Share floor is dest-bound (`SHARE_BIND=rx+noteCommit`).
+ShearK implements ShearHash-v3. Banner `ShearK-Miner 2.4 (ShearHash-v3 light)`. `--print-config` `personalisation=ShearHash-v3`, `rxMode=light`. Default `--backend jit-full` (2 GiB dataset). Pool/node verify light. Share floor is dest-bound (`SHARE_BIND=rx+noteCommit`).

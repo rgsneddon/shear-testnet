@@ -7,7 +7,7 @@ Live pins are always the **latest** clients:
 | Client | Pin | Repo |
 |--------|-----|------|
 | Wallet | **0.35** | this tree, tag [`0.35`](https://github.com/rgsneddon/shear-testnet/releases/tag/0.35) |
-| Miner | **ShearK 2.3** | [`rgsneddon/ShearK`](https://github.com/rgsneddon/ShearK/releases/tag/2.3) |
+| Miner | **ShearK 2.4** | [`rgsneddon/ShearK`](https://github.com/rgsneddon/ShearK/releases/tag/2.4) |
 
 ```
 gh repo clone rgsneddon/shear-testnet %USERPROFILE%\shear-testnet

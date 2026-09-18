@@ -9,7 +9,7 @@ Public site example in this repo is **https://mypool.site**. Operator admin is *
 ## What you get
 
 - Stratum bind `SHEAR_STRATUM_BIND` (testnet default `0.0.0.0:1111`; production should set an explicit interface). Optional `SHEAR_STRATUM_AUTH=1` requires an ed25519 login signature over `shear-stratum-login-v1`. Unauthenticated dest login is an ephemeral tag, not dest ownership.
-- Pin **ShearK-Miner 2.3** (or current cut) for the 128-byte job
+- Pin **ShearK-Miner 2.4** (or current cut) for the 128-byte job
 - HTTP `127.0.0.1:8088` (nginx terminates TLS)
 - Validating node + pool in one process (same magic as the book)
 - Two meters: `hashrate` is a time-window / EMA (does not spike when a round resets). `proven_round` / `roundHashes` is accepted dest-bound work this block for hash-bonus minting and **does** reset at block found.
