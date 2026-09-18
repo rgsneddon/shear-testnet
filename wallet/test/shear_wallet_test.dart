@@ -134,6 +134,62 @@ void main() {
     await expectLater(s.loadOrCreate(), throwsA(isA<FormatException>()));
   });
 
+  test('ShearSession.persist seals session.json with argon2id-shewall', () async {
+    final dir = Directory.systemTemp.createTempSync('shear-argon-');
+    final store = File('${dir.path}/session.json');
+    final s = ShearSession(store: store);
+    await s.loadOrCreate();
+    await s.setPassword(kGatePassword);
+    expect(store.existsSync(), isTrue);
+    final env = jsonDecode(store.readAsStringSync()) as Map<String, dynamic>;
+    expect(env['kind'], ShearLock.kind);
+    expect(env['kdf'], ShearLock.kdfArgon2id);
+    expect(env['kdf'], isNot(ShearLock.kdfLegacyPbkdf2));
+    expect(env['argonMemoryKib'], shewallArgonMemoryKib);
+    expect(env['argonIters'], shewallArgonIters);
+    expect(env['argonParallel'], shewallArgonParallel);
+    final again = ShearSession(store: store);
+    expect(await again.loadOrCreate(), isNull);
+    final id = await again.unlock(kGatePassword);
+    expect(id.address.startsWith('shear1'), isTrue);
+  });
+
+  test('nativeProveFlowSpend leaves no durable shear-admit-*.json', () {
+    final prev = debugNativeSpendProver;
+    debugNativeSpendProver = null;
+    final helperWallet = File('${Directory.current.path}/../crypto/wallet_native_prove.mjs');
+    final helperRoot = File('${Directory.current.path}/crypto/wallet_native_prove.mjs');
+    expect(helperWallet.existsSync() || helperRoot.existsSync(), isTrue,
+        reason: 'real native prove helper must exist so the temp-write path runs');
+    Set<String> admitTemps() {
+      return Directory.systemTemp
+          .listSync()
+          .whereType<File>()
+          .map((f) => f.path)
+          .where((p) {
+            final name = p.replaceAll('\\', '/').split('/').last;
+            return name.startsWith('shear-admit-') && name.endsWith('.json');
+          })
+          .toSet();
+    }
+    final before = admitTemps();
+    try {
+      nativeProveFlowSpend(
+        spendSeed: Uint8List(32),
+        spentNote: {
+          'kind': 'send',
+          'commit': Uint8List(32),
+          'noteCommit': Uint8List(32),
+        },
+        pubs: [Uint8List(32)],
+      );
+    } finally {
+      debugNativeSpendProver = prev;
+    }
+    final leftover = admitTemps().difference(before);
+    expect(leftover, isEmpty, reason: 'shear-admit-*.json must be wiped in finally: $leftover');
+  });
+
   test('HTTP helpers never put viewKey in a query string', () {
     final src = File('lib/shear_ledger.dart').readAsStringSync();
     expect(src.contains('viewKey='), isFalse);
