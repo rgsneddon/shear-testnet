@@ -772,6 +772,9 @@ describe('public miner listing', () => {
     const gridHtml = miner.slice(statsAt, workersAt);
     assert.equal((gridHtml.match(/<article class="panel-card/g) || []).length, 16);
     assert.match(miner, /confirmNeed/);
+    assert.match(miner, /confirmRemain/);
+    assert.match(miner, /more confirm/);
+    assert.match(miner, /Oldest credit needs/);
     assert.match(miner, /creditConfirmedShe/);
     assert.doesNotMatch(miner, /wait 24 hours before the next one/);
     assert.doesNotMatch(miner, /wait 24 hours before the next one/);
