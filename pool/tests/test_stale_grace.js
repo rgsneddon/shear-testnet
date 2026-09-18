@@ -87,7 +87,7 @@ function loginAndSubmit(port, dest, submits) {
             sock.write(JSON.stringify({
               id: s.id,
               method: 'submit',
-              params: { jobId: s.jobId, nonce: String(s.nonce), hash: s.hash },
+              params: { jobId: s.jobId, nonce: String(s.nonce), hash: s.hash, dest },
             }) + '\n');
           }
           continue;
@@ -181,11 +181,11 @@ describe('stale classification and restamp/grace accept', () => {
     const job = pool.issueJob();
     const a = findShare(job, dest);
     let b;
-    for (let nonce = a.nonce + 1n; nonce < a.nonce + 2000n; nonce += 1n) {
+    for (let nonce = a.nonce + 1n; nonce < a.nonce + 30_000n; nonce += 1n) {
       const s = scoreShare({ job, nonce, dest });
       if (s.ok) { b = { nonce, s }; break; }
     }
-    assert.ok(b, 'need a second share on the same job');
+    assert.ok(b, 'need a second dest-bound share on the same job');
     const port = await listen(pool);
     await loginAndSubmit(port, dest, [{
       id: 2, jobId: job.jobId, nonce: a.nonce, hash: a.s.hash,
@@ -199,6 +199,10 @@ describe('stale classification and restamp/grace accept', () => {
     const next = pool.issueJob(1, { force: true });
     assert.notEqual(next.jobId, job.jobId);
     assert.ok(pool.prevJob && pool.prevJob.jobId === job.jobId);
+    const still = scoreShare({
+      job: pool.prevJob, nonce: b.nonce, claimed: b.s.hash, dest,
+    });
+    assert.equal(still.ok, true, JSON.stringify(still));
     const replies = await loginAndSubmit(port, dest, [{
       id: 3, jobId: job.jobId, nonce: b.nonce, hash: b.s.hash,
     }]);
