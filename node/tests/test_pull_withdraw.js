@@ -21,6 +21,7 @@ import {
   buildTemplate,
   verifyBlock,
   GENESIS_PREV,
+  extraPotFeeNanos,
 } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 
@@ -124,7 +125,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     assert.equal(api.status, 410);
   });
 
-  it('custody hash-bonus coinbase verifies from block.miner without opts.poolDest', () => {
+  it('custody hash-bonus coinbase verifies on P2P with finder miner and no opts.poolDest', () => {
     const hasherId = newIdentity();
     const poolId = newIdentity();
     const hasher = destForLogin(hasherId.address, { viewKey: hasherId.viewKey, height: 1 });
@@ -157,7 +158,8 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       poolDest: pool,
       hashBonusCustodyDest: pool,
     });
-    const child = { ...blockFromTpl(childTpl), miner: pool };
+    const child = { ...blockFromTpl(childTpl), miner: hasher };
+    delete child.poolDest;
     const got = verifyBlock(child, {
       ...parent,
       hash: okP.hash,
@@ -166,6 +168,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       weight: parent.weight,
     }, { trustedPowHash: TRUSTED_POW, skipSharePow: true });
     assert.equal(got.ok, true, got.reason);
+    assert.equal(extraPotFeeNanos([], BLOCK_SUBSIDY_NANOS), 0);
   });
 
   it('miner pull HTTP is deprecated; auto-payout still spends the pool wallet while operator Flow is locked', async () => {

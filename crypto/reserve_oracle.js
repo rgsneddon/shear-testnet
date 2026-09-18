@@ -79,7 +79,7 @@ export function accruedNanos(stakedNanos, epochBps, elapsedMs, magic) {
   const p = asUnit(stakedNanos);
   const bps = asUnit(epochBps);
   let ms = asUnit(elapsedMs);
-  const cap = BigInt(magic == null ? 400 * 86_400_000 : epochMs(magic));
+  const cap = BigInt(epochMs(magic));
   if (ms > cap) ms = cap;
   if (p <= 0n || ms <= 0n || cap <= 0n) return 0;
   return Number((p * bps * ms) / (10000n * cap));

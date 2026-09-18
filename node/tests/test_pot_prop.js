@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity, freshStealthDest, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SHARE_FLOOR_BITS, GENESIS_BITS_PACKED, bitsForBlock } from '../../crypto/asert.js';
 import { poolFeeDest } from '../../crypto/levy.js';
 import { splitPot } from '../../pool/src/pool.js';
 import { findShare, dest20OfShare } from '../../crypto/share_batch.js';
@@ -67,29 +67,41 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.equal(prop.find((s) => s.address === poolFeeDest()).nanos, fee);
   });
 
-  it('rejects a block that pays the whole pot to the pool dest', async () => {
+  it('rejects a block that pays the whole pot to the pool dest', () => {
     const hasher = destOf(newIdentity());
     const pool = poolFeeDest();
+    const TRUSTED = Buffer.alloc(32);
     const parentTpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: hasher,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_000_000,
     });
-    const parent = mine(parentTpl);
-    const okP = verifyBlock(parent, null);
+    const parent = {
+      header: parentTpl.header,
+      txs: parentTpl.txs,
+      samples: parentTpl.samples,
+      shareBatch: parentTpl.shareBatch || [],
+      miner: hasher,
+      aLeaves: parentTpl.aLeaves,
+      bLeaves: parentTpl.bLeaves,
+      weight: parentTpl.weight,
+    };
+    const okP = verifyBlock(parent, null, { trustedPowHash: TRUSTED });
     assert.equal(okP.ok, true, okP.reason);
-    const share = findShare(parent.header, { dest: hasher, floorBits: SHARE_FLOOR_BITS, maxTries: 2_000_000 });
-    assert.ok(share, 'need share');
-    const row = { dest20: share.dest20, dest: hasher, nonce: share.nonce, lz: share.lz };
+    const now = 1_700_000_090_000;
+    const ph = decodeHeader(parent.header);
+    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
+      prevBlock: parent,
+      parentWeight: parent.weight,
       height: 2,
       miner: hasher,
-      bits: 4,
-      now: 1_700_000_090_000,
+      bits: bitsForBlock(ph.bits, ph.timestamp, now),
+      now,
       shareBatch: [row],
       poolDest: pool,
     });
@@ -106,8 +118,23 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       ...decoded,
       merkleRoot: merkleRoot(childTpl.txs.map(digestTx)),
     });
-    const child = mine(childTpl);
-    const got = verifyBlock(child, { ...parent, hash: okP.hash, header: parent.header, height: 1 }, { poolDest: pool });
+    const child = {
+      header: childTpl.header,
+      txs: childTpl.txs,
+      samples: childTpl.samples,
+      shareBatch: childTpl.shareBatch || [],
+      miner: hasher,
+      aLeaves: childTpl.aLeaves,
+      bLeaves: childTpl.bLeaves,
+      weight: childTpl.weight,
+    };
+    const got = verifyBlock(child, {
+      ...parent,
+      hash: okP.hash,
+      header: parent.header,
+      height: 1,
+      weight: parent.weight,
+    }, { poolDest: pool, trustedPowHash: TRUSTED, skipSharePow: true });
     assert.equal(got.ok, false);
     assert.equal(got.reason, 'pot_prop');
   });

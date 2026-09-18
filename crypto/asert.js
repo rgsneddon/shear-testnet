@@ -75,7 +75,10 @@ export function hashBonusUnitNanos(n) {
   if (!Number.isFinite(v) || v < HASH_BONUS_NANOS_FLOOR) return HASH_BONUS_NANOS_FLOOR;
   return v;
 }
+/** This public pool's construction rate (1%). Not a consensus requirement. */
 export const POOL_FEE_BPS = 100;
+/** Consensus cap: a pool may charge 0–3% of the pot. Hash bonus is never fee'd. */
+export const POOL_FEE_MAX_BPS = 300;
 /** A digest that meets this floor is worth 2^SHARE_FLOOR_BITS units. */
 export const SHARE_FLOOR_BITS = 8;
 export const MAX_SHARES_PER_BLOCK = 8192;
@@ -237,7 +240,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'ADMIT_K=1',
     'ADMIT_LEAF=shear-admit-leaf-v2',
     'LAG1_SHAREBATCH=1',
-    `POOL_FEE_BPS=${POOL_FEE_BPS}`,
+    `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,
     'BITS=q16.16',
     `ASERT_TAU_MS=${ASERT_HALFLIFE_MS}`,
     'ASERT_STEP=log2',

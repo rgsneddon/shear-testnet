@@ -17,7 +17,8 @@ import {
   redactSsa1,
 } from './auto_payout.js';
 
-export const PULL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+/** Auto-payout is π-sum, not a clock. Zero: a dest can be paid again as soon as it re-accumulates π. */
+export const PULL_COOLDOWN_MS = 0;
 export { AUTO_PAYOUT_MIN_NANOS, redactSsa1 };
 
 export function potCreditNanos(potNanos = BLOCK_SUBSIDY_NANOS) {

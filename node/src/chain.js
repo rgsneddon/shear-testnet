@@ -25,6 +25,7 @@ import {
   SHARE_FLOOR_BITS,
   MAX_SHARES_PER_BLOCK,
   POOL_FEE_BPS,
+  POOL_FEE_MAX_BPS,
   MTP_WINDOW,
   MTP_FUTURE_MS,
   medianTimePast,
@@ -360,29 +361,48 @@ function notePays(o, dest, nanos) {
   return ncHex(o.noteCommit) === nc && verifySealedNote(o, nanos);
 }
 
-/** Custodial coinbase: 99% pot + 100% hash bonus to poolDest; 1% fee only on the pot. */
-export function matchCustodyCoinbase({ hashVouts = [], potVouts = [], poolDest, wantBonus, wantPot } = {}) {
-  if (!isDestAddress(poolDest)) return false;
+/**
+ * Custodial coinbase: one hash note for 100% of the proven bonus, paid to a
+ * dest that is not a hasher leaf (the pool). Pot split is pool policy from
+ * 0% through POOL_FEE_MAX_BPS (3%). Hash bonus is never fee'd. Any pool can
+ * build this to its own dest — verify from the sealed notes, not an
+ * out-of-band poolDest on the wire.
+ */
+export function matchCustodyCoinbase({
+  hashVouts = [],
+  poolDest,
+  wantBonus,
+  hasherNcs,
+} = {}) {
   const bonus = Math.max(0, Math.floor(Number(wantBonus) || 0));
-  const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
-  const fee = Math.floor(pot * POOL_FEE_BPS / 10000);
-  const rest = pot - fee;
-  const feeDest = poolFeeDest() || poolDest;
+  const dest = poolDest && isDestAddress(poolDest) ? poolDest : '';
+  const hasher = hasherNcs instanceof Set ? hasherNcs : new Set();
   if (bonus > 0) {
-    if (hashVouts.length !== 1 || !notePays(hashVouts[0], poolDest, bonus)) return false;
-  } else if (hashVouts.length) return false;
-  if (rest > 0) {
-    const restHit = potVouts.filter((o) => notePays(o, poolDest, rest));
-    if (feeDest === poolDest && fee > 0) {
-      const whole = potVouts.some((o) => notePays(o, poolDest, pot));
-      const split = restHit.length === 1 && potVouts.some((o) => notePays(o, poolDest, fee));
-      if (!whole && !split) return false;
-    } else if (restHit.length !== 1) return false;
+    if (hashVouts.length !== 1) return false;
+    if (dest) {
+      if (!notePays(hashVouts[0], dest, bonus)) return false;
+    } else if (!verifySealedNote(hashVouts[0], bonus)) {
+      return false;
+    }
+    const hashNc = ncHex(hashVouts[0].noteCommit);
+    if (hasher.has(hashNc)) return false;
+    return true;
   }
-  if (fee > 0 && feeDest !== poolDest) {
-    if (!potVouts.some((o) => notePays(o, feeDest, fee))) return false;
+  return hashVouts.length === 0;
+}
+
+/** Per-hasher extra pot note: 0% (absent) through POOL_FEE_MAX_BPS. */
+export function extraPotFeeNanos(extraVouts = [], wantPot) {
+  const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
+  const maxFee = Math.floor(pot * POOL_FEE_MAX_BPS / 10000);
+  const extra = Array.isArray(extraVouts) ? extraVouts : [];
+  if (!extra.length) return 0;
+  if (extra.length !== 1 || !(pot > 0)) return null;
+  for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
+    const n = Math.floor(pot * bps / 10000);
+    if (n > 0 && n <= maxFee && verifySealedNote(extra[0], n)) return n;
   }
-  return true;
+  return null;
 }
 
 export function coinbaseTx({
@@ -734,25 +754,6 @@ function verifyBlockConsensus(block, prev, {
     }
     if (confidential) {
       const wantBonus = provenUnits * liveUnit;
-      // P2P has no out-of-band poolDest. Public pool coinbase is custody to
-      // block.miner (the pool dest). Without this fallback, height 2+ with
-      // lag-1 shares fails hash_bonus on every peer.
-      const poolPay = (poolDest && isDestAddress(poolDest))
-        ? poolDest
-        : (block.miner && isDestAddress(block.miner) ? block.miner : '');
-      if (poolPay && matchCustodyCoinbase({
-        hashVouts,
-        potVouts,
-        poolDest: poolPay,
-        wantBonus,
-        wantPot,
-      })) {
-        bonusNanos = wantBonus;
-        potNanos = wantPot;
-        const T = wantPot + wantBonus;
-        const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
-        if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
-      } else {
       const sealedLeaves = Array.isArray(block.aLeaves) ? block.aLeaves : [];
       const fromSealed = sealedLeaves.map((l) => {
         const d20 = l.dest20 ? Buffer.from(l.dest20) : Buffer.alloc(20);
@@ -764,6 +765,28 @@ function verifyBlockConsensus(block, prev, {
         ? shareLeaves
         : (shareBatch.length && fromSealed.length ? fromSealed : aLeavesFromShares(shareBatch));
       const hasherNcs = new Set(leaves.map((l) => ncHex(l.noteCommit)));
+      const hinted = (poolDest && isDestAddress(poolDest))
+        ? poolDest
+        : (block.poolDest && isDestAddress(block.poolDest)
+          ? block.poolDest
+          : (block.miner && isDestAddress(block.miner) ? block.miner : ''));
+      const custody = matchCustodyCoinbase({
+        hashVouts,
+        poolDest: hinted,
+        wantBonus,
+        hasherNcs,
+      }) || matchCustodyCoinbase({
+        hashVouts,
+        wantBonus,
+        hasherNcs,
+      });
+      if (custody) {
+        bonusNanos = wantBonus;
+        potNanos = wantPot;
+        const T = wantPot + wantBonus;
+        const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
+        if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
+      } else {
       for (const leaf of leaves) {
         const nc = ncHex(leaf.noteCommit);
         const hit = hashVouts.find((o) => ncHex(o.noteCommit) === nc);
@@ -775,7 +798,6 @@ function verifyBlockConsensus(block, prev, {
         if (!hasherNcs.has(ncHex(o.noteCommit))) return { ok: false, reason: 'hash_bonus' };
       }
       bonusNanos = wantBonus;
-      const feeAmt = Math.floor(wantPot * POOL_FEE_BPS / 10000);
       if (hasherNcs.size) {
         const extra = potVouts.filter((o) => !hasherNcs.has(ncHex(o.noteCommit)));
         for (const o of extra) {
@@ -783,16 +805,12 @@ function verifyBlockConsensus(block, prev, {
             return { ok: false, reason: 'pot_prop' };
           }
         }
+        const extraAmt = extraPotFeeNanos(extra, wantPot);
+        if (extraAmt == null) return { ok: false, reason: 'pot_prop' };
         const candidates = [];
-        if (poolPay) candidates.push(potPaysFromLeaves(leaves, poolPay, null, wantPot));
-        candidates.push(potPaysFromLeaves(leaves, null, extra.length ? feeAmt : 0, wantPot));
-        if (extra.length) candidates.push(potPaysFromLeaves(leaves, null, 0, wantPot));
-        if (!extra.length && feeAmt > 0) {
-          const base = potPaysFromLeaves(leaves, null, feeAmt, wantPot);
-          for (let i = 0; i < base.length; i += 1) {
-            candidates.push(base.map((p, j) => (j === i ? { ...p, nanos: p.nanos + feeAmt } : p)));
-          }
-        }
+        if (hinted) candidates.push(potPaysFromLeaves(leaves, hinted, extraAmt, wantPot));
+        candidates.push(potPaysFromLeaves(leaves, null, extraAmt, wantPot));
+        if (extraAmt > 0) candidates.push(potPaysFromLeaves(leaves, null, 0, wantPot));
         let matched = false;
         for (const pays of candidates) {
           let okTry = true;
@@ -805,7 +823,7 @@ function verifyBlockConsensus(block, prev, {
           }
           if (!okTry) continue;
           const extraOk = extra.length === 0
-            || (extra.length === 1 && verifySealedNote(extra[0], feeAmt));
+            || (extra.length === 1 && verifySealedNote(extra[0], extraAmt));
           if (!extraOk) continue;
           const covered = new Set(pays.map((p) => ncHex(p.noteCommit)));
           if (extra.length === 1) covered.add(ncHex(extra[0].noteCommit));
@@ -835,19 +853,13 @@ function verifyBlockConsensus(block, prev, {
       for (const dest of paid.keys()) {
         if (!provenByDest.has(dest)) return { ok: false, reason: 'hash_bonus' };
       }
-      const fee = Math.floor(wantPot * POOL_FEE_BPS / 10000);
+      const maxFee = Math.floor(wantPot * POOL_FEE_MAX_BPS / 10000);
       const hasherSet = new Set(provenByDest.keys());
-      const poolPay = (poolDest && isDestAddress(poolDest))
-        ? poolDest
-        : (block.miner && isDestAddress(block.miner) ? block.miner : '');
       if (hasherSet.size) {
         const extra = potVouts.filter((o) => !hasherSet.has(o.address));
         const extraNanos = extra.reduce((a, o) => a + Number(o.nanos || 0), 0);
-        if (extraNanos > fee) return { ok: false, reason: 'pot_prop' };
+        if (extraNanos > maxFee) return { ok: false, reason: 'pot_prop' };
         if (extraNanos === wantPot) return { ok: false, reason: 'pot_prop' };
-        if (poolPay && extra.some((o) => o.address === poolPay) && extraNanos > fee) {
-          return { ok: false, reason: 'pot_prop' };
-        }
       }
     }
   }

@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { PI_SHE_NANOS, NANOS_PER_SHE, HASH_BONUS_NANOS } from './asert.js';
+import { MAGIC_MAINNET } from './pot_sched.js';
 
 describe('Reserve oracle', () => {
   it('observes a variable annual rate and pays interest on staked SHE only', () => {
@@ -44,18 +45,20 @@ describe('Reserve oracle', () => {
     assert.notEqual(interestNanos(NANOS_PER_SHE, GENESIS_BPS), 4_250_000_000);
   });
 
-  it('accrues on elapsed time and matches full-epoch interest at 400 days', () => {
+  it('accrues on elapsed time; testnet caps at 4 days, mainnet at 400', () => {
     const day = 86_400_000;
     assert.equal(accruedNanos(PI_SHE_NANOS, 425, 0), 0);
     const day1 = accruedNanos(PI_SHE_NANOS, 425, day);
-    const day200 = accruedNanos(PI_SHE_NANOS, 425, 200 * day);
-    const full = accruedNanos(PI_SHE_NANOS, 425, 400 * day);
+    const full4 = accruedNanos(PI_SHE_NANOS, 425, 4 * day);
     assert.ok(day1 > 0);
-    assert.ok(day200 > day1);
-    assert.ok(full > day200);
-    assert.equal(full, interestNanos(PI_SHE_NANOS, 425, 400));
-    assert.equal(accruedNanos(PI_SHE_NANOS, 425, 500 * day), full);
-    assert.equal(accruedNanos(0, 425, 200 * day), 0);
+    assert.ok(full4 > day1);
+    assert.equal(full4, interestNanos(PI_SHE_NANOS, 425));
+    assert.equal(accruedNanos(PI_SHE_NANOS, 425, 10 * day), full4);
+    const day200 = accruedNanos(PI_SHE_NANOS, 425, 200 * day, MAGIC_MAINNET);
+    const full400 = accruedNanos(PI_SHE_NANOS, 425, 400 * day, MAGIC_MAINNET);
+    assert.ok(full400 > day200);
+    assert.equal(full400, interestNanos(PI_SHE_NANOS, 425));
+    assert.equal(accruedNanos(0, 425, 200 * day, MAGIC_MAINNET), 0);
   });
 
   it('default bps is the unweighted average of all observed policy rates', () => {
