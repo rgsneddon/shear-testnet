@@ -66,4 +66,20 @@ describe('pool pull book', () => {
     assert.equal(rows[0].poolFeeNanos, Math.floor(NANOS_PER_SHE * 0.01));
     assert.equal(rows[0].dest, undefined);
   });
+
+  it('sentNanos is all-time pulled, not 30-conf after the payout height', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-sent-all-'));
+    const book = createPullBook(dir);
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const tag = publicMinerTag(dest);
+    const pot = potCreditNanos();
+    assert.equal(book.creditRound([{ tag, dest, count: 10 }], { height: 1, nanos: pot }).ok, true);
+    const ripe = book.view(tag, { tipHeight: 40, need: 30 });
+    const taken = book.takeConfirmed(tag, { tipHeight: 40, need: 30, skipCooldown: true });
+    assert.equal(taken.ok, true);
+    const sameTip = book.view(tag, { tipHeight: 40, need: 30 });
+    assert.equal(sameTip.sentNanos, taken.nanos);
+    assert.equal(sameTip.confirmedNanos, 0);
+  });
 });

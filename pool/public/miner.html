@@ -30,7 +30,7 @@
     .grid .panel-card { margin:0; padding:7px 8px; }
     .pull-row {
       display:grid; gap:8px; width:100%;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       margin: 8px 0 16px; align-items: stretch;
     }
     .pull-row .panel-card { margin:0; padding:7px 8px; min-width:0; }
@@ -93,7 +93,7 @@
     }
     @media (max-width: 1024px) {
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .pull-row { grid-template-columns: 1fr; }
+      .pull-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
   </style>
 </head>
@@ -141,8 +141,12 @@
         <div class="label">Confirming SHE</div>
         <div class="value yellow" id="m-confirming">0 SHE</div>
       </article>
+      <article class="panel-card pull-waiting">
+        <div class="label">Waiting payout</div>
+        <div class="value yellow" id="m-waiting">0 SHE</div>
+      </article>
       <article class="panel-card pull-conf">
-        <div class="label" id="m-sent-label">Confirmed sent to ssa1********</div>
+        <div class="label" id="m-sent-label">All-time sent to ssa1********</div>
         <div class="value yellow" id="m-confirmed">0 SHE</div>
       </article>
     </div>
@@ -287,8 +291,9 @@
       set('m-round', String(d.hashes || d.roundHashes || 0));
       set('m-pending', fmtPullShe(d.pendingDisplay, d.pendingShe));
       set('m-confirming', fmtPullShe(d.unconfirmedDisplay, d.unconfirmedShe));
+      set('m-waiting', fmtPullShe(d.creditConfirmedDisplay, d.creditConfirmedShe));
       set('m-confirmed', fmtPullShe(d.sentDisplay || d.confirmedDisplay, d.sentShe != null ? d.sentShe : d.confirmedShe));
-      set('m-sent-label', d.confirmedSentLabel || ('Confirmed sent to ' + (d.destRedacted || 'ssa1********')));
+      set('m-sent-label', d.confirmedSentLabel || ('All-time sent to ' + (d.destRedacted || 'ssa1********')));
       var need = Number(d.confirmNeed) > 0 ? Number(d.confirmNeed) : 30;
       var toward = (d.creditConfirmedShe != null) ? Number(d.creditConfirmedShe) : 0;
       set('payout-note', 'Pool auto-payout waits for ' + need + ' confirmations (pool merchant). Chain spendable is 6. Confirmed toward π: ' + fmtPullShe(null, toward) + '. Send fires at π of that confirmed sum, not on a timer.');

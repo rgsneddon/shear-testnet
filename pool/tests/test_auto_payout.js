@@ -67,7 +67,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
     assert.equal(built.tx.from, pool);
   });
 
-  it('credits pot after fee plus hash bonus; auto-pays at π; sentNanos is confirmed receipts', () => {
+  it('credits pot after fee plus hash bonus; auto-pays at π; sentNanos is all-time pulled', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-auto-'));
     const book = createPullBook(dir);
     const dest = ssa1();
@@ -100,7 +100,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
         skipCooldown: true,
       });
       assert.equal(taken.ok, true);
-      const after = book.view(tag, { tipHeight: 70, need: 30 });
+      const after = book.view(tag, { tipHeight: 40, need: 30 });
       assert.equal(after.sentNanos, taken.nanos);
       assert.match(after.destRedacted, /^ssa1\*{8}/);
     } else {
@@ -120,7 +120,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
         skipCooldown: true,
       });
       assert.equal(taken.ok, true);
-      const sent = book.view(tag, { tipHeight: 70, need: 30 });
+      const sent = book.view(tag, { tipHeight: 40, need: 30 });
       assert.equal(sent.sentNanos, taken.nanos);
     }
     const disk = fs.readFileSync(path.join(dir, 'pull-book.json'), 'utf8');

@@ -21,7 +21,9 @@ describe('mempool lattice honesty', () => {
     assert.doesNotMatch(html, /clientHashes/);
     assert.match(html, /roundHashes/);
     assert.match(html, /valid-hash bonus|Valid hashes/);
-    assert.match(html, /releases\/tag\/0\.32/);
+    assert.match(html, /releases\/tag\/0\.35/);
+    assert.doesNotMatch(html, /releases\/tag\/0\.34/);
+    assert.doesNotMatch(html, /releases\/tag\/0\.32/);
     assert.doesNotMatch(html, /releases\/tag\/0\.31/);
     assert.doesNotMatch(html, /releases\/tag\/0\.30/);
     assert.doesNotMatch(html, /releases\/tag\/0\.29/);

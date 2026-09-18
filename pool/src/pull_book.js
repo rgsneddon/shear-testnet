@@ -201,12 +201,9 @@ export function createPullBook(dir) {
       } else unconfirmed += n;
     }
     let pulled = 0;
-    let sentConfirmed = 0;
     for (const p of state.pulled) {
       if (p.tag !== key) continue;
-      const n = Math.floor(Number(p.nanos) || 0);
-      pulled += n;
-      if (isSpendableHeight(p.height, tipHeight, need)) sentConfirmed += n;
+      pulled += Math.floor(Number(p.nanos) || 0);
     }
     let conf = confirmed - pulled;
     if (conf < 0) {
@@ -221,7 +218,7 @@ export function createPullBook(dir) {
       unconfirmedNanos: unconfirmed,
       confirmedPotNanos: Math.max(0, confirmedPot),
       confirmedHashNanos: Math.max(0, confirmedHash),
-      sentNanos: sentConfirmed,
+      sentNanos: pulled,
       lastPullMs,
       nextPullMs: lastPullMs ? lastPullMs + PULL_COOLDOWN_MS : 0,
       dest,
