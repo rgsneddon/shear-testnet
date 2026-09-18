@@ -63,8 +63,8 @@ export const SEED_RETRY_MS = 3_000;
 export const GETBLOCK_WAIT_MS = 20_000;
 
 function hexHash(h) {
-  if (Buffer.isBuffer(h)) return h.toString('hex');
-  return String(h || '');
+  if (Buffer.isBuffer(h) || h instanceof Uint8Array) return Buffer.from(h).toString('hex').toLowerCase();
+  return String(h || '').replace(/^0x/i, '').toLowerCase();
 }
 
 function hexHeader(h) {
@@ -329,11 +329,21 @@ export function drainRetryPrev(rec) {
 }
 
 export function countSyncedOnline({ localHash = '', peers = [], includeSelf = true } = {}) {
-  const want = String(localHash || '');
+  const want = String(localHash || '').toLowerCase();
   const seen = new Set();
   for (const rec of peers) {
     if (rec == null || rec.hash == null) continue;
-    if (String(rec.hash) !== want) continue;
+    if (String(rec.hash).toLowerCase() !== want) continue;
+    seen.add(String(rec.remote || '') || `id:${rec.id || 0}`);
+  }
+  return (includeSelf ? 1 : 0) + seen.size;
+}
+
+/** Live TCP remotes, including peers still catching the block we just sealed. */
+export function countLiveOnline({ peers = [], includeSelf = true } = {}) {
+  const seen = new Set();
+  for (const rec of peers) {
+    if (rec == null) continue;
     seen.add(String(rec.remote || '') || `id:${rec.id || 0}`);
   }
   return (includeSelf ? 1 : 0) + seen.size;
@@ -356,6 +366,7 @@ export function createP2p({
   let ingestChain = Promise.resolve();
   const originInvSize = new Map();
   const fluffTimers = new Map();
+  const inflightBlocks = new Set();
   let server = null;
   let peerSeq = 0;
 
@@ -535,11 +546,13 @@ export function createP2p({
     if (!rec.pending) rec.pending = new Set();
     if (!rec.failed) rec.failed = new Set();
     drainRetryPrev(rec);
-    const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
+    const have = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
     while (rec.pending.size < getblockBatch() && rec.want.length) {
       const hash = rec.want.shift();
       if (!hash || have.has(hash) || rec.failed.has(hash) || rec.pending.has(hash)) continue;
+      if (inflightBlocks.has(hash)) continue;
       rec.pending.add(hash);
+      inflightBlocks.add(hash);
       rec.pendingAt = Date.now();
       rec.syncing = true;
       send(sock, { type: 'getblock', magic, hash });
@@ -697,7 +710,8 @@ export function createP2p({
       }
       const recNow = peers.get(sock);
       const lastHash = last ? wireHash(last.hash) : '';
-      const haveNow = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
+      if (lastHash) inflightBlocks.delete(lastHash);
+      const haveNow = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
       if (recNow) {
         if (!recNow.pending) recNow.pending = new Set();
         if (!recNow.failed) recNow.failed = new Set();
@@ -932,6 +946,13 @@ export function createP2p({
     });
   }
 
+  function liveOnline() {
+    return countLiveOnline({
+      peers: [...peers.values()],
+      includeSelf: true,
+    });
+  }
+
   function wrap(name) {
     if (typeof store[name] !== 'function') return;
     const orig = store[name].bind(store);
@@ -964,6 +985,7 @@ export function createP2p({
     sockets,
     peers,
     syncedOnline,
+    liveOnline,
     originInvSetSize: (id) => Number(originInvSize.get(String(id || '')) || 0),
     get port() { return server?.address()?.port ?? port; },
     get listening() { return Boolean(server?.listening); },

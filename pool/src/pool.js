@@ -1174,7 +1174,7 @@ export function createPool({
   }
   function setP2p(next) { p2pNet = next; }
   function nodesOnline() {
-    const n = p2pNet?.syncedOnline?.();
+    const n = p2pNet?.liveOnline?.() ?? p2pNet?.syncedOnline?.();
     const v = Number(n);
     return Number.isFinite(v) && v >= 0 ? v : 1;
   }
@@ -2215,6 +2215,8 @@ export function createPool({
       pendingShe: pull.pendingNanos / NANOS_PER_SHE,
       confirmedShe: pull.sentNanos / NANOS_PER_SHE,
       unconfirmedShe: pull.unconfirmedNanos / NANOS_PER_SHE,
+      creditConfirmedShe: pull.confirmedNanos / NANOS_PER_SHE,
+      confirmNeed: need,
       pendingDisplay: formatShe(pull.pendingNanos / NANOS_PER_SHE),
       confirmedDisplay: formatShe(pull.sentNanos / NANOS_PER_SHE),
       sentNanos: pull.sentNanos,

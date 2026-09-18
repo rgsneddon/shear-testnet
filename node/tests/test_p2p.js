@@ -41,7 +41,7 @@ import {
 import { DEFAULT_SEEDS } from '../src/node.js';
 import { mineTemplate } from '../src/chain.js';
 import { printConfig, startNode, createStore } from '../src/node.js';
-import { countSyncedOnline, isFinalIngestFail, requeuePrevHash, drainRetryPrev } from '../src/p2p.js';
+import { countSyncedOnline, countLiveOnline, isFinalIngestFail, requeuePrevHash, drainRetryPrev } from '../src/p2p.js';
 
 function destMiner() {
   return encodeDest(Buffer.alloc(20, 5));
@@ -154,6 +154,8 @@ describe('p2p gossip', () => {
       ],
     }), 2);
     assert.equal(countSyncedOnline({ localHash: local, peers: [] }), 1);
+    assert.equal(countLiveOnline({ peers: live }), 4);
+    assert.equal(countLiveOnline({ peers: live.filter((p) => p.hash === 'old') }), 2);
   });
 
   it('two connected empty nodes each see the other as online, then drop on close', async () => {

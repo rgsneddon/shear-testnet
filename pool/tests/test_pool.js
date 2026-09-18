@@ -689,6 +689,11 @@ describe('public miner listing', () => {
     assert.ok(explainerAt >= 0 && pullAt > explainerAt && statsAt > pullAt && workersAt > statsAt);
     assert.match(miner, /π SHE/);
     assert.match(miner, /hash bonus is fee-free/);
+    assert.match(miner, /30 confirmations/);
+    assert.match(miner, /id="payout-note"/);
+    assert.match(miner, /confirmNeed/);
+    assert.match(miner, /creditConfirmedShe/);
+    assert.doesNotMatch(miner, /wait 24 hours before the next one/);
     assert.doesNotMatch(miner, /wait 24 hours before the next one/);
     assert.doesNotMatch(miner, /wait 90 hours before the next one/);
     assert.doesNotMatch(miner, /sig: 'pull-'/);
