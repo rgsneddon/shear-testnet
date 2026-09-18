@@ -287,10 +287,10 @@ export function createStore(dir, {
 
   function destSpendableNanos(addr, tipH, chain = blocks, rows = explorer) {
     const fromExplorer = matureSpendableNanos(rows, addr, tipH);
-    if (fromExplorer > 0) return fromExplorer;
-    return noteCommitSpendableNanos(chain, addr, tipH, {
+    const fromNotes = noteCommitSpendableNanos(chain, addr, tipH, {
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
     });
+    return Math.max(fromExplorer, fromNotes);
   }
 
   const vortice = createVorticeCatalog(dir);
@@ -733,6 +733,12 @@ export function createStore(dir, {
       const tipH = Number(t?.height || 0);
       const have = destSpendableNanos(debit.from, tipH) - mempoolDebitNanos(mempool, debit.from);
       if (have < debit.nanos) {
+        console.error(JSON.stringify({
+          event: 'insufficient',
+          from: debit.from,
+          need: debit.nanos,
+          have,
+        }));
         return { ok: false, reason: 'insufficient', need: debit.nanos, have };
       }
     }

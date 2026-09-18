@@ -2335,6 +2335,9 @@ export function createPool({
         kind: 'pool-withdraw',
         ok: !(queued && queued.ok === false),
         reason: queued && queued.reason,
+        have: queued && queued.have,
+        need: queued && queued.need,
+        from: built.tx && built.tx.from,
         ms: Date.now() - q0,
       }));
       if (queued && queued.ok === false) continue;

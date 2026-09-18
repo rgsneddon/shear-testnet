@@ -219,9 +219,21 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
               });
             if (hit) n = Number(hit.nanos || 0);
             else if (isDestAddress(b.miner) && hash20FromAddress(b.miner)
-              && Buffer.from(hash20FromAddress(b.miner)).equals(Buffer.from(dest20))) {
-              n = BLOCK_SUBSIDY_NANOS;
+              && Buffer.from(hash20FromAddress(b.miner)).equals(Buffer.from(dest20))
+              && String(o.kind || 'pot') !== 'hash'
+              && String(o.kind || '') !== 'pool-fee') {
+              n = BLOCK_SUBSIDY_NANOS - Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
             }
+          }
+          if (!n) {
+            const kind = String(o.kind || 'pot');
+            const pot = BLOCK_SUBSIDY_NANOS;
+            const fee = Math.floor(pot * POOL_FEE_BPS / 10000);
+            if (kind === 'pool-fee' || kind === 'finder-fee' || kind === 'reserve-fee') n = fee;
+            else if (kind === 'hash') {
+              const unit = hashBonusUnitNanos(hashBonusNanos);
+              n = (b.aLeaves || []).reduce((a, l) => a + Math.max(0, Math.floor(Number(l.count) || 0)), 0) * unit;
+            } else n = pot - fee;
           }
         }
         if (n > 0) nanos += n;

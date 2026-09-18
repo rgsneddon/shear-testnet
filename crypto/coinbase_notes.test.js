@@ -50,4 +50,27 @@ describe('noteCommitSpendableNanos', () => {
     ];
     assert.equal(noteCommitSpendableNanos(blocks, dest, matureTip), 0);
   });
+
+  it('recovers custody pot after fee when miner is another dest and nanos are hidden', () => {
+    const pool = spendDestOf(newIdentity().spendPub);
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const want = noteCommitOfDest20(hash20FromAddress(pool));
+    const matureTip = 2 + SPENDABLE_CONFIRMATIONS - 1;
+    const blocks = [{
+      height: 2,
+      miner: hasher,
+      aLeaves: [{ noteCommit: Buffer.alloc(32, 9), count: 256 }],
+      txs: [{
+        coinbase: true,
+        vout: [
+          { kind: 'pot', noteCommit: want, nanos: 0 },
+          { kind: 'hash', noteCommit: want, nanos: 0 },
+        ],
+      }],
+    }];
+    const got = noteCommitSpendableNanos(blocks, pool, matureTip);
+    const pot = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * 0.01);
+    assert.equal(got, pot + 256);
+    assert.equal(noteCommitSpendableNanos(blocks, hasher, matureTip), 0);
+  });
 });
