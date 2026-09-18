@@ -23,7 +23,9 @@ import {
   totpCode,
   isAdminHost,
   adminWalletDests,
+  adminWalletBalance,
 } from '../src/admin.js';
+import { createPullBook, potCreditNanos } from '../src/pull_book.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const ADMIN_HOST = 'admin.mypool.site';
@@ -66,7 +68,10 @@ describe('operator admin fee wallet', () => {
     assert.match(html, /flagShearOsadmin\(false\)/);
     assert.match(html, /noindex/);
     assert.doesNotMatch(html, /raskul/);
-    assert.match(html, /Spendable/);
+    assert.match(html, /Admin may withdraw/);
+    assert.match(html, /Miner rewards unpaid/);
+    assert.match(html, /bal-miners/);
+    assert.match(html, /minerReservedDisplay/);
     assert.match(html, /Withdraw/);
     assert.match(html, /Username/);
     assert.match(html, /Confirm password/);
@@ -275,11 +280,34 @@ describe('operator admin fee wallet', () => {
         store, admin, cookie, host: ADMIN_HOST, poolDest,
       });
       assert.equal(wallet.json.ok, true);
-      assert.ok(wallet.json.spendableNanos >= pot);
-      assert.ok(wallet.json.spendable > 0.9);
+      assert.ok(wallet.json.spendableNanos >= 0);
+      assert.equal(wallet.json.spendable < 0.02, true);
+      assert.ok(wallet.json.custodyDisplay);
     } finally {
       if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
       else process.env.SHEAR_ADMIN_HOST = prevHost;
     }
+  });
+
+  it('admin may withdraw only the fee dest; unpaid miner credits are reserved', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admin-split-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const book = createPullBook(dir);
+    const pot = potCreditNanos();
+    assert.equal(book.creditRound([{ tag: 'mabcdef12', dest, count: 10 }], { height: 5, nanos: pot }).ok, true);
+    const fee = poolFeeDest();
+    const store = {
+      historyFor: (addr) => (addr === fee ? [{
+        id: 'fee-1', from: 'coinbase', to: fee, nanos: NANOS_PER_SHE, height: 10, kind: 'pool-fee',
+      }] : []),
+      tip: () => ({ height: 20 }),
+      mempool: [],
+    };
+    const bal = adminWalletBalance(store, dest, book);
+    assert.equal(bal.spendable, 1);
+    assert.equal(bal.minerReservedNanos, pot);
+    assert.ok(bal.minerReserved > 0.9);
+    assert.ok(bal.minerReserved < 1);
   });
 });

@@ -139,10 +139,10 @@ export function sealedExplorerRows(block) {
       const recovered = paysFromALeaves(block.aLeaves || [], { hashBonusNanos: HASH_BONUS_NANOS });
       if (recovered.length) pays = [...pays, ...recovered];
     }
-    for (const o of cb.vout) {
+    cb.vout.forEach((o, i) => {
       const hit = matchSealedCoinbaseVout(o, pays);
       rows.push({
-        id: `${hid}-${o.kind || 'cb'}`,
+        id: `${hid}-${o.kind || 'cb'}-${i}`,
         kind: o.kind === 'hash' ? 'hash' : (o.kind === 'lock' || o.kind === 'vote' || o.kind === 'withdraw' ? o.kind : 'coinbase'),
         from: 'coinbase',
         to: hit.address || o.address || '',
@@ -151,7 +151,7 @@ export function sealedExplorerRows(block) {
         confirmed: true,
         noteCommit: o.noteCommit,
       });
-    }
+    });
   }
   for (const tx of txs.slice(1)) {
     const from = tx.from || tx.vin?.[0]?.address || '';

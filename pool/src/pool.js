@@ -1448,7 +1448,6 @@ export function createPool({
       shareBits: sb,
       shareBatch: lag1Shares,
       poolDest: poolPay,
-      hashBonusCustodyDest: poolPay,
       ...(chainLen >= 1 && !lockBits ? {} : { bits }),
       wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
     });
@@ -1959,7 +1958,12 @@ export function createPool({
             firstSeen: Date.now(),
             payoutDest: adm.payoutDest || '',
           };
-          if (adm.payoutDest) session.payoutDest = adm.payoutDest;
+          if (adm.payoutDest) {
+            session.payoutDest = adm.payoutDest;
+            if (typeof pullBook.bindDest === 'function') {
+              pullBook.bindDest(publicMinerTag(adm.login), adm.payoutDest);
+            }
+          }
           if (params.version) session.version = String(params.version);
           else session.version = String(session.version || '');
           session.client = String(params.client || session.client || CLIENT);
@@ -2228,6 +2232,8 @@ export function createPool({
       blocks: a.blocks + v.blocks,
       threads: a.threads + v.threads,
     }), { hashrate: 0, roundHashes: 0, accepted: 0, stale: 0, blocks: 0, threads: 0 });
+    const liveDest = rows.map((m) => hasherPayoutDest(m.login, { dest: m.payoutDest })).find(Boolean) || '';
+    const dest = pull.dest || liveDest;
     return {
       ok: true,
       tag,
@@ -2258,10 +2264,10 @@ export function createPool({
       sentNanos: pull.sentNanos,
       sentShe: pull.sentNanos / NANOS_PER_SHE,
       sentDisplay: formatShe(pull.sentNanos / NANOS_PER_SHE),
-      destRedacted: pull.destRedacted,
-      hasPayoutDest: !!pull.dest,
-      confirmedSentLabel: pull.dest
-        ? `All-time sent to ${pull.destRedacted || 'ssa1********'}`
+      destRedacted: dest ? redactSsa1(dest) : (pull.destRedacted || 'ssa1********'),
+      hasPayoutDest: !!dest,
+      confirmedSentLabel: dest
+        ? `All-time sent to ${redactSsa1(dest)}`
         : 'No valid ssa1 on login — credits held for admin payout',
       autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
       autoPayoutMinShe: AUTO_PAYOUT_MIN_NANOS / NANOS_PER_SHE,
@@ -2543,6 +2549,7 @@ export function createPool({
       await handleAdminHttp(req, res, {
         store, admin, queueSend, ops: adminOps, pendingPulls,
         poolDest: payoutDest(miner) || miner,
+        pullBook,
       });
       return;
     }

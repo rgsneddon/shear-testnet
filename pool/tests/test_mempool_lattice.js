@@ -7,7 +7,7 @@ describe('mempool lattice pending rings', () => {
   it('exposes forming-block hashes and fee-weighted pending sends', () => {
     const dest = encodeDest(Buffer.alloc(20, 7));
     const store = {
-      blocks: [{ height: 10, hash: Buffer.alloc(32, 1), header: Buffer.alloc(128), txs: [{ coinbase: true, vout: [{ address: dest, nanos: 1, kind: 'coinbase' }] }] }],
+      blocks: [{ height: 10, hash: Buffer.alloc(32, 1), header: Buffer.alloc(128), txs: [{ coinbase: true, vout: [{ address: dest, nanos: 1, kind: 'coinbase' }, { address: dest, nanos: 256, kind: 'hash' }] }] }],
       tip() { return this.blocks[0]; },
       mempool: [
         { id: 'tx-hi', kind: 'send', to: dest, nanos: 3, fee: 8, vout: [{ address: dest }] },
@@ -40,6 +40,8 @@ describe('mempool lattice pending rings', () => {
       assert.equal(row.nanos, undefined);
     }
     for (const g of out.generations) {
+      assert.ok(Number(g.confirmations) >= 1);
+      assert.equal(typeof g.spendable, 'boolean');
       for (const tx of g.txs || []) {
         assert.equal(tx.to, undefined);
         assert.equal(tx.amount, undefined);
@@ -51,6 +53,10 @@ describe('mempool lattice pending rings', () => {
       assert.equal(h.amount, undefined);
       assert.equal(h.to, undefined);
     }
+    const gen = out.generations.find((g) => g.height === 10);
+    assert.ok(gen, 'sealed height missing from lattice generations');
+    assert.equal(gen.txs.some((t) => t.kind === 'hash'), true);
+    assert.equal(typeof gen.confirming, 'boolean');
     const blob = JSON.stringify(out);
     assert.doesNotMatch(blob, /ssa1/);
   });

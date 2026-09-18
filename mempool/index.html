@@ -186,6 +186,7 @@
             <div><span class="dot" style="background:var(--lattice-tip)"></span>Tip — neon green apex</div>
             <div><span class="dot" style="background:var(--lattice-cyan)"></span>Forming — neon cyan hoop: one seat per hasher with Valid hashes &gt; 0 (immature until 6-conf). Not client hash counters.</div>
             <div><span class="dot" style="background:var(--lattice-gold)"></span>Gold hoop — user Flow sends. Empty: wide at the base. Full: climbs, tightens, tilts, then merges into cyan</div>
+            <div><span class="dot" style="background:var(--lattice-link)"></span>Confirming rings — sealed heights with 1–5 conf: hash bonuses, pot, and every other tx until 6-conf spendable</div>
             <div><span class="dot" style="background:var(--lattice-link)"></span>σ-flow filaments — outer rings falling inward</div>
             <div><span class="dot" style="background:var(--lattice-cyan)"></span>Hover glass — pointer magnifies any neighbourhood</div>
           </div>
@@ -456,7 +457,47 @@
       state.blockIntervalMs = Number(data.targetBlockIntervalMs) || 90_000;
       if (state.tipH && tipH > state.tipH) spawnFireworks(origins, { x: 0, y: Y_TIP, z: 0 }, tipH);
       state.tipH = tipH;
-      gens.forEach((g, gi) => {
+      const confirming = gens.filter((g) => g.confirming || (Number(g.confirmations) >= 1 && !g.spendable));
+      const recovered = gens.filter((g) => !(g.confirming || (Number(g.confirmations) >= 1 && !g.spendable)));
+      confirming.forEach((g, ci) => {
+        const txs = (g.txs && g.txs.length ? g.txs : []).filter((tx) => tx.kind !== 'dummy');
+        addRing({
+          kind: 'confirm',
+          y: Y_TIP - 1.72 - ci * 0.52,
+          baseRad: 2.1 + 0.18 * Math.min(txs.length, 12),
+          items: txs.length ? txs : [{ id: 'h-' + g.height, kind: 'block', prime: true, count: 1 }],
+          label: 'confirming #' + g.height + ' · ' + (g.confirmations || 0) + '/6',
+          color: 'cyan',
+          hub: true,
+          tilt: 0.08,
+          expand: 1,
+        });
+        const ring = rings[rings.length - 1];
+        if (ring.hub) {
+          const hub = {
+            id: 'conf-' + g.height, label: ring.label, kind: 'block', prime: true, gen: 0,
+            pending: false, role: 'form', r: 5.8, x: 0, y: ring.y + 0.22, z: 0, meta: g,
+          };
+          ring.hubNode = hub;
+          nodes.push(hub);
+        }
+        ring.items.forEach((tx, i) => {
+          const n = Math.max(ring.items.length, 1);
+          const th = (i / n) * Math.PI * 2;
+          const id = String(tx.id || ('conf-' + g.height + '-' + i));
+          const hash = tx.kind === 'hash';
+          const node = {
+            id, label: (tx.kind || 'tx') + ' ' + id.slice(0, 8),
+            kind: tx.kind || 'tx', prime: !!tx.prime || !hash, gen: 0, pending: false,
+            role: hash ? 'form' : 'gold', r: 2.8 + 1.4 * Math.tanh(massOf(tx) / 8),
+            _theta: th, x: 0, y: ring.y, z: 0, meta: { ...tx, height: g.height },
+          };
+          ring.nodes.push(node);
+          nodes.push(node);
+          if (ring.hubNode) links.push({ a: ring.hubNode.id, b: id });
+        });
+      });
+      recovered.forEach((g, gi) => {
         const n = gi + 1;
         const y = 9.2 - n * 0.72;
         const rad = Math.log(1 + n) * 2.15;
@@ -466,10 +507,10 @@
         const bx = rad * Math.cos(theta0), bz = rad * Math.sin(theta0);
         nodes.push({ id: blockId, label: '#' + g.height, kind: 'block', prime: true, gen: n, x: bx, y, z: bz, role: 'recover', r: 5.4, meta: g });
         rails.push({ x: bx, y, z: bz });
-        const parent = n === 1 ? 'tip' : 'h-' + gens[gi - 1].height;
+        const parent = n === 1 ? 'tip' : 'h-' + recovered[gi - 1].height;
         links.push({ a: parent, b: blockId });
         txs.forEach((tx, i) => {
-          if (i === 0 && tx.kind === 'coinbase') return;
+          if (tx.kind === 'dummy') return;
           const th = theta0 + (i + 1) * 0.31;
           const rr = rad + 0.35 + (i % 5) * 0.12;
           const id = tx.id || (blockId + '-' + i);

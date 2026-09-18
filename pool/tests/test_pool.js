@@ -765,6 +765,10 @@ describe('public miner listing', () => {
     const backBoxAt = miner.indexOf('id="back-pool-box"');
     assert.ok(accountingAt > workersAt);
     assert.ok(backBoxAt > statsAt && backBoxAt < workersAt);
+    assert.match(miner, /class="back-pool"/);
+    assert.match(miner, /#back-pool-box \.back-pool[\s\S]*text-decoration: underline/);
+    assert.match(miner, /#back-pool-box \.back-pool[\s\S]*#1558c0/);
+    assert.doesNotMatch(miner, /#back-pool-box \.back-pool[\s\S]*color: var\(--cyan\)/);
     assert.ok(totalsAt > accountingAt);
     assert.match(miner, /acct-scroll/);
     assert.match(miner, /max-height: 22\.5rem/);

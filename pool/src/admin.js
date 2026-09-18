@@ -53,31 +53,39 @@ export function adminWalletDests(poolDest) {
   return out;
 }
 
-function adminWalletBalance(store, poolDest) {
-  const dests = adminWalletDests(poolDest);
-  let nanos = 0;
-  for (const d of dests) nanos += reconstructOwner(store, d).spendableNanos;
-  if (nanos < 0) nanos = 0;
+export function minerReservedNanos(pullBook) {
+  if (!pullBook || typeof pullBook.tags !== 'function' || typeof pullBook.view !== 'function') return 0;
+  let n = 0;
+  for (const tag of pullBook.tags()) {
+    const v = pullBook.view(tag);
+    n += Math.max(0, Math.floor(Number(v?.pendingNanos) || 0));
+  }
+  return n;
+}
+
+export function adminWalletBalance(store, poolDest, pullBook) {
+  const fee = poolFeeDest();
+  const pay = payoutDest(poolDest) || (isDestAddress(poolDest) ? String(poolDest).trim() : '');
+  const feeN = fee ? reconstructOwner(store, fee).spendableNanos : 0;
+  const custodyN = pay && pay !== fee ? reconstructOwner(store, pay).spendableNanos : 0;
+  const reserved = minerReservedNanos(pullBook);
+  const adminN = Math.max(0, feeN);
   return {
-    dests,
-    spendableNanos: nanos,
-    spendable: nanos / NANOS_PER_SHE,
-    display: formatShe(nanos / NANOS_PER_SHE),
+    dests: adminWalletDests(poolDest),
+    spendableNanos: adminN,
+    spendable: adminN / NANOS_PER_SHE,
+    display: formatShe(adminN / NANOS_PER_SHE),
+    minerReservedNanos: reserved,
+    minerReserved: reserved / NANOS_PER_SHE,
+    minerReservedDisplay: formatShe(reserved / NANOS_PER_SHE),
+    custodySpendableNanos: Math.max(0, custodyN),
+    custodyDisplay: formatShe(Math.max(0, custodyN) / NANOS_PER_SHE),
+    feeSpendableNanos: adminN,
   };
 }
 
-function adminSpendFrom(store, poolDest) {
-  const dests = adminWalletDests(poolDest);
-  let best = dests[0] || poolFeeDest();
-  let bestN = -1;
-  for (const d of dests) {
-    const n = reconstructOwner(store, d).spendableNanos;
-    if (n > bestN) {
-      bestN = n;
-      best = d;
-    }
-  }
-  return best;
+function adminSpendFrom() {
+  return poolFeeDest();
 }
 
 export function configuredAdminHosts() {
@@ -399,7 +407,7 @@ function needOps(ops, name) {
 }
 
 export function handleAdminApi(url, method, body, {
-  store, queueSend, cookie, admin, ops, loopback = false, host = '', pendingPulls, poolDest = '',
+  store, queueSend, cookie, admin, ops, loopback = false, host = '', pendingPulls, poolDest = '', pullBook = null,
 } = {}) {
   const pathName = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
@@ -449,7 +457,7 @@ export function handleAdminApi(url, method, body, {
   const rec = admin.sessionOf(token);
   if (!rec) return { status: 401, json: { ok: false, reason: 'auth' } };
   if (pathName === '/api/admin/wallet' && verb === 'GET') {
-    const bal = adminWalletBalance(store, poolDest);
+    const bal = adminWalletBalance(store, poolDest, pullBook);
     return {
       status: 200,
       json: {
@@ -457,12 +465,16 @@ export function handleAdminApi(url, method, body, {
         spendable: bal.spendable,
         spendableNanos: bal.spendableNanos,
         display: bal.display,
+        minerReserved: bal.minerReserved,
+        minerReservedNanos: bal.minerReservedNanos,
+        minerReservedDisplay: bal.minerReservedDisplay,
+        custodyDisplay: bal.custodyDisplay,
         totp: !!admin.status().totp,
       },
     };
   }
   if (pathName === '/api/admin/withdraw' && verb === 'POST') {
-    const from = adminSpendFrom(store, poolDest);
+    const from = adminSpendFrom();
     if (containsShe1(body.to) || containsShe1(body.dest)) {
       return { status: 400, json: { ok: false, reason: 'she1_on_chain' } };
     }

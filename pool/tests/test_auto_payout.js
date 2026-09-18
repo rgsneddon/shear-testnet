@@ -80,12 +80,14 @@ describe('auto payout at π SHE to miner ssa1', () => {
     ).ok, true);
     const young = book.view(tag, { tipHeight: 1, need: 30 });
     assert.equal(young.confirmedNanos, 0);
-    assert.equal(young.sentNanos, 0);
+    assert.equal(young.hashPaidNanos, hashN);
+    assert.equal(young.sentNanos, hashN);
     const ripe = book.view(tag, { tipHeight: 40, need: 30 });
-    assert.equal(ripe.confirmedNanos, potShare + hashN);
+    assert.equal(ripe.confirmedNanos, potShare);
     assert.equal(ripe.confirmedHashNanos, hashN);
+    assert.equal(ripe.hashPaidNanos, hashN);
     assert.ok(ripe.confirmedPotNanos <= potShare);
-    assert.equal(ripe.confirmedPotNanos + ripe.confirmedHashNanos, ripe.confirmedNanos);
+    assert.equal(ripe.sentNanos, hashN);
     const wouldFeeHash = Math.floor(hashN * POOL_FEE_BPS / 10000);
     assert.ok(wouldFeeHash > 0);
     assert.equal(ripe.confirmedHashNanos, hashN);
@@ -101,7 +103,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
       });
       assert.equal(taken.ok, true);
       const after = book.view(tag, { tipHeight: 40, need: 30 });
-      assert.equal(after.sentNanos, taken.nanos);
+      assert.equal(after.sentNanos, taken.nanos + hashN);
       assert.match(after.destRedacted, /^ssa1\*{8}/);
     } else {
       assert.equal(due.length, 0);
@@ -121,7 +123,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
       });
       assert.equal(taken.ok, true);
       const sent = book.view(tag, { tipHeight: 40, need: 30 });
-      assert.equal(sent.sentNanos, taken.nanos);
+      assert.equal(sent.sentNanos, taken.nanos + hashN);
     }
     const disk = fs.readFileSync(path.join(dir, 'pull-book.json'), 'utf8');
     assert.doesNotMatch(disk, /ssa1/);

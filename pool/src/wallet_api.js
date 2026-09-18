@@ -908,15 +908,19 @@ export function mempoolLattice(store, limitOrOpts = 24) {
   for (let i = list.length - 1; i >= 0 && generations.length < n; i -= 1) {
     const b = list[i];
     const rows = sealedExplorerRows(b) || [];
+    const confs = flowConfirmations(b.height, tip.height);
+    const spendable = isSpendableHeight(b.height, tip.height);
     generations.push({
       height: Number(b.height || 0),
       hash: hex32(b.hash),
-      confirmations: flowConfirmations(b.height, tip.height),
-      spendable: isSpendableHeight(b.height, tip.height),
-      txs: rows.map((r) => ({
-        id: String(r.id || ''),
+      confirmations: confs,
+      spendable,
+      confirming: confs >= 1 && !spendable,
+      txs: rows.map((r, i) => ({
+        id: String(r.id || `${b.height}-${i}`),
         kind: r.kind || 'vout',
-        prime: r.kind === 'transfer' || r.kind === 'b-spend' || r.kind === 'coinbase',
+        prime: r.kind === 'transfer' || r.kind === 'b-spend' || r.kind === 'coinbase' || r.kind === 'hash',
+        confirming: confs >= 1 && !spendable,
       })),
     });
   }

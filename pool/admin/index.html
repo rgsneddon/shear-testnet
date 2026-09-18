@@ -97,6 +97,18 @@
       image-rendering:pixelated; shape-rendering:crispEdges;
     }
     .totp-qr.hid { display:none; }
+    .spend-split {
+      display: grid;
+      grid-template-columns: 1fr 1px 1fr;
+      width: 100%;
+      align-items: stretch;
+      gap: 0;
+    }
+    .spend-split .split-col { padding: 0 10px; min-width: 0; }
+    .spend-split .split-col:first-child { padding-left: 0; }
+    .spend-split .split-col:last-child { padding-right: 0; }
+    .spend-split .split-rule { width: 1px; background: var(--line); }
+    .spend-note { margin: 8px 0 0; }
   </style>
 </head>
 <body>
@@ -241,8 +253,18 @@
 
       <div id="wallet">
         <div class="card">
-          <div class="label">Spendable</div>
-          <div class="spend" id="bal">—</div>
+          <div class="spend-split">
+            <div class="split-col">
+              <div class="label">Admin may withdraw</div>
+              <div class="spend" id="bal">—</div>
+            </div>
+            <div class="split-rule" aria-hidden="true"></div>
+            <div class="split-col">
+              <div class="label">Miner rewards unpaid</div>
+              <div class="spend" id="bal-miners">—</div>
+            </div>
+          </div>
+          <p class="label spend-note" id="bal-escrow" style="text-transform:none;letter-spacing:0;font-weight:500">On-chain miner escrow is held for auto-payout. Do not withdraw it.</p>
         </div>
         <form id="flow" class="card" autocomplete="off">
           <div class="label">Withdraw</div>
@@ -452,6 +474,13 @@
       const w = await api('/api/admin/wallet', 'GET');
       if (w.status === 401) { signedOut(); return false; }
       $('bal').textContent = (w.json.display || '0') + ' SHE';
+      const minersEl = $('bal-miners');
+      if (minersEl) minersEl.textContent = (w.json.minerReservedDisplay || '0') + ' SHE';
+      const escrow = $('bal-escrow');
+      if (escrow) {
+        const held = w.json.custodyDisplay || '0';
+        escrow.textContent = 'On-chain miner escrow ' + held + ' SHE is held for auto-payout. Do not withdraw it.';
+      }
       if (w.json.totp) {
         $('add-2fa').classList.add('hid');
         $('totp-box').classList.add('hid');

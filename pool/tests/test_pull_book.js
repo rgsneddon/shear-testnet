@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { NANOS_PER_SHE } from '../../crypto/asert.js';
 import { createPullBook, PULL_COOLDOWN_MS, potCreditNanos, attributedPoolFeeNanos } from '../src/pull_book.js';
@@ -65,6 +65,23 @@ describe('pool pull book', () => {
     assert.equal(rows[0].totalNanos, pot + hashN);
     assert.equal(rows[0].poolFeeNanos, Math.floor(NANOS_PER_SHE * 0.01));
     assert.equal(rows[0].dest, undefined);
+  });
+
+  it('bindDest records ssa1 before any found block', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bind-'));
+    const book = createPullBook(dir);
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const tag = publicMinerTag(dest);
+    assert.equal(book.view(tag).dest, '');
+    assert.equal(book.bindDest(tag, dest), true);
+    assert.equal(book.view(tag).dest, dest);
+    const again = createPullBook(dir);
+    assert.ok(again.view(tag).dest);
+    assert.equal(
+      Buffer.from(hash20FromAddress(again.view(tag).dest)).equals(Buffer.from(hash20FromAddress(dest))),
+      true,
+    );
   });
 
   it('books work for a dest-less login so admin can pay the tag later', () => {

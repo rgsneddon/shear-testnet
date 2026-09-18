@@ -88,8 +88,18 @@ export function createPullBook(dir) {
         found,
       };
       loaded = true;
+      if (raw?.dests && typeof raw.dests === 'object') {
+        for (const [k, v] of Object.entries(raw.dests)) {
+          if (!k) continue;
+          if (isMinerSsa1(v)) destByTag.set(String(k).toLowerCase(), String(v).trim().split('.')[0]);
+          else {
+            const d = destFrom20(v);
+            if (d) destByTag.set(String(k).toLowerCase(), d);
+          }
+        }
+      }
       for (const c of state.credits) {
-        if (c.tag && c.dest20) destByTag.set(c.tag, destFrom20(c.dest20));
+        if (c.tag && c.dest20 && !destByTag.get(c.tag)) destByTag.set(c.tag, destFrom20(c.dest20));
       }
     } catch {
       state = { credits: [], pulled: [], lastPullMs: {}, found: {} };
@@ -129,6 +139,7 @@ export function createPullBook(dir) {
       })),
       lastPullMs: state.lastPullMs,
       found: state.found,
+      dests: Object.fromEntries([...destByTag].map(([k, v]) => [k, dest20Hex(v)])),
       sealsLifetime: sealsLifetime(),
     };
     fs.writeFileSync(file, `${JSON.stringify(disk)}\n`, { mode: 0o600 });
@@ -136,8 +147,15 @@ export function createPullBook(dir) {
 
   function rememberDest(tag, dest) {
     if (!tag || !isMinerSsa1(dest)) return '';
-    destByTag.set(tag, dest);
+    destByTag.set(String(tag).toLowerCase(), String(dest).trim().split('.')[0]);
     return dest20Hex(dest);
+  }
+
+  /** Record payout dest on login so miner pages show ssa1**** before the next found block. */
+  function bindDest(tag, dest) {
+    const d20 = rememberDest(tag, dest);
+    if (d20) save();
+    return !!d20;
   }
 
   function creditRound(rows, {
@@ -214,27 +232,27 @@ export function createPullBook(dir) {
 
   function view(tag, { tipHeight = 0, need = SPENDABLE_CONFIRMATIONS } = {}) {
     const key = String(tag || '').trim().toLowerCase();
-    let confirmed = 0;
-    let unconfirmed = 0;
+    let unconfirmedPot = 0;
     let confirmedPot = 0;
-    let confirmedHash = 0;
+    let hashPaid = 0;
     for (const c of state.credits) {
       if (c.tag !== key) continue;
       const n = Math.floor(Number(c.nanos) || 0);
-      if (isSpendableHeight(c.height, tipHeight, need)) {
-        confirmed += n;
-        if (c.kind === 'hash') confirmedHash += n;
-        else confirmedPot += n;
-      } else unconfirmed += n;
+      if (c.kind === 'hash') {
+        hashPaid += n;
+        continue;
+      }
+      if (isSpendableHeight(c.height, tipHeight, need)) confirmedPot += n;
+      else unconfirmedPot += n;
     }
     let pulled = 0;
     for (const p of state.pulled) {
       if (p.tag !== key) continue;
       pulled += Math.floor(Number(p.nanos) || 0);
     }
-    let conf = confirmed - pulled;
+    let conf = confirmedPot - pulled;
     if (conf < 0) {
-      unconfirmed = Math.max(0, unconfirmed + conf);
+      unconfirmedPot = Math.max(0, unconfirmedPot + conf);
       conf = 0;
     }
     const lastPullMs = Number(state.lastPullMs[key] || 0);
@@ -244,6 +262,7 @@ export function createPullBook(dir) {
       if (c.tag !== key) continue;
       const h = Number(c.height) || 0;
       if (!(h >= 1)) continue;
+      if (c.kind === 'hash') continue;
       if (isSpendableHeight(h, tipHeight, need)) continue;
       if (!oldestUnconfirmedHeight || h < oldestUnconfirmedHeight) oldestUnconfirmedHeight = h;
     }
@@ -251,12 +270,13 @@ export function createPullBook(dir) {
       ? Math.max(0, oldestUnconfirmedHeight + Math.max(1, Number(need) || 1) - 1 - tipHeight)
       : 0;
     return {
-      pendingNanos: conf + unconfirmed,
+      pendingNanos: conf + unconfirmedPot,
       confirmedNanos: conf,
-      unconfirmedNanos: unconfirmed,
+      unconfirmedNanos: unconfirmedPot,
       confirmedPotNanos: Math.max(0, confirmedPot),
-      confirmedHashNanos: Math.max(0, confirmedHash),
-      sentNanos: pulled,
+      confirmedHashNanos: Math.max(0, hashPaid),
+      hashPaidNanos: Math.max(0, hashPaid),
+      sentNanos: pulled + hashPaid,
       lastPullMs,
       nextPullMs: lastPullMs ? lastPullMs + PULL_COOLDOWN_MS : 0,
       dest,
@@ -421,7 +441,7 @@ export function createPullBook(dir) {
 
   if (loaded) save();
   return {
-    creditRound, view, takeConfirmed, destOf, tags, hasTag, dueAuto, sweepAuto, ledger,
+    creditRound, view, takeConfirmed, destOf, bindDest, tags, hasTag, dueAuto, sweepAuto, ledger,
     sealsLifetime, reconcile,
   };
 }

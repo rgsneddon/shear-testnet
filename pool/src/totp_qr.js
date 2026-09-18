@@ -40,7 +40,7 @@ function rsGenerator(ec) {
     }
     poly = next;
   }
-  return poly;
+  return poly.slice().reverse();
 }
 
 function rsEncode(data, ec) {
