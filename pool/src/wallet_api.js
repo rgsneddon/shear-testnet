@@ -31,7 +31,8 @@ import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, spentNoteCommits } from '../../crypto/coinbase_notes.js';
-import { collateShareUnits } from '../../crypto/share_batch.js';
+import { unitsForShare } from '../../crypto/share_batch.js';
+import { unpackShareBatch } from '../../crypto/pack.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
@@ -637,6 +638,34 @@ export function searchExplorerTxs(store, q = {}) {
   return txs;
 }
 
+/** Hash-bonus nanos minted in one sealed block. Compact shares drop dest; Tree-A counts remain. */
+export function hashBonusEmittedOfBlock(block, unit = HASH_BONUS_NANOS) {
+  const u = hashBonusUnitNanos(unit);
+  let n = 0;
+  for (const leaf of block?.aLeaves || []) {
+    n += Math.max(0, Math.floor(Number(leaf?.count) || 0)) * u;
+  }
+  if (n > 0) return n;
+  const packed = unpackShareBatch(block?.shareBatch || []);
+  if (packed.length) return packed.length * unitsForShare() * u;
+  const cb = Array.isArray(block?.txs) ? block.txs[0] : null;
+  if (cb?.coinbase && Array.isArray(cb.vout)) {
+    const pays = [
+      ...expectedCoinbasePays(block.shareBatch || [], {
+        miner: block.miner,
+        hashBonusNanos: u,
+      }),
+      ...paysFromALeaves(block.aLeaves || [], { hashBonusNanos: u }),
+    ];
+    for (const o of cb.vout) {
+      if (String(o.kind || '') !== 'hash') continue;
+      const hit = matchSealedCoinbaseVout(o, pays);
+      n += Math.max(0, Math.floor(Number(hit.nanos || o.nanos || 0)));
+    }
+  }
+  return n;
+}
+
 /** All SHE in existence: block pots + hash bonuses + extra mints − burns. Staked coin stays in. */
 let _supplyAt = -1;
 let _supplyVal = null;
@@ -652,8 +681,6 @@ export function networkSupply(store) {
   }
   _supplyBusy = true;
   try {
-    let potNanos = 0;
-    let hashNanos = 0;
     let extraMintNanos = 0;
     let burnedNanos = 0;
     const rows = store?.explorer;
@@ -662,31 +689,12 @@ export function networkSupply(store) {
         const kind = String(r.kind || '');
         const n = Math.max(0, Math.floor(Number(r.nanos || 0)));
         if (!n) continue;
-        if (kind === 'hash') hashNanos += n;
-        else if (kind === 'burn') burnedNanos += n;
-        else if (kind === 'coinbase' || kind === 'pot' || kind === 'finder-fee') potNanos += n;
+        if (kind === 'burn') burnedNanos += n;
         else if (r.mint === true) extraMintNanos += n;
       }
     } else {
       for (const b of store?.blocks || []) {
-        const txs = Array.isArray(b?.txs) ? b.txs : [];
-        const cb = txs[0];
-        if (cb?.coinbase && Array.isArray(cb.vout)) {
-          const pays = expectedCoinbasePays(b.shareBatch || [], {
-            miner: b.miner,
-            hashBonusNanos: hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos),
-          });
-          for (const o of cb.vout) {
-            const kind = String(o.kind || '');
-            if (kind === 'finder-fee' || kind === 'reserve-fee') continue;
-            const hit = o.commit ? matchSealedCoinbaseVout(o, pays) : { nanos: Number(o.nanos || 0) };
-            const n = Math.max(0, Math.floor(Number(hit.nanos || o.nanos || 0)));
-            if (!n) continue;
-            if (kind === 'hash') hashNanos += n;
-            else potNanos += n;
-          }
-        }
-        for (const tx of txs) {
+        for (const tx of b?.txs || []) {
           if (tx?.coinbase) continue;
           const n = Math.max(0, Math.floor(Number(tx.nanos || tx.vout?.[0]?.nanos || 0)));
           if (!n) continue;
@@ -697,28 +705,32 @@ export function networkSupply(store) {
       }
     }
     const blocks = store?.blocks || [];
-    if (!(potNanos > 0) && blocks.length) {
-      let genesisMs = 0;
+    let genesisMs = 0;
+    try {
+      const g = blocks[0];
+      if (g?.header) genesisMs = Number(decodeHeader(Buffer.from(g.header)).timestamp) || 0;
+    } catch { genesisMs = 0; }
+    const unit = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
+    let potNanos = 0;
+    let notedPot = 0;
+    let hashNanos = 0;
+    for (const b of blocks) {
+      let ts = genesisMs;
       try {
-        const g = blocks[0];
-        if (g?.header) genesisMs = Number(decodeHeader(Buffer.from(g.header)).timestamp) || 0;
-      } catch { genesisMs = 0; }
-      const unit = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
-      let schedPot = 0;
-      let schedHash = 0;
-      for (const b of blocks) {
-        let ts = genesisMs;
-        try {
-          if (b?.header) ts = Number(decodeHeader(Buffer.from(b.header)).timestamp) || ts;
-        } catch { /* schedule */ }
-        schedPot += potSubsidyAt({ nowMs: ts || genesisMs, genesisMs: genesisMs || ts, magic: MAGIC_TESTNET });
-        if (b?.shareBatch) {
-          for (const n of collateShareUnits(b.shareBatch).values()) schedHash += n * unit;
+        if (b?.header) ts = Number(decodeHeader(Buffer.from(b.header)).timestamp) || ts;
+      } catch { /* schedule */ }
+      potNanos += potSubsidyAt({ nowMs: ts || genesisMs, genesisMs: genesisMs || ts, magic: MAGIC_TESTNET });
+      hashNanos += hashBonusEmittedOfBlock(b, unit);
+      const cb = Array.isArray(b?.txs) ? b.txs[0] : null;
+      if (cb?.coinbase) {
+        for (const o of cb.vout || []) {
+          const kind = String(o.kind || '');
+          if (kind === 'hash' || kind === 'finder-fee' || kind === 'reserve-fee') continue;
+          notedPot += Math.max(0, Math.floor(Number(o.nanos) || 0));
         }
       }
-      potNanos = schedPot;
-      if (!(hashNanos > 0)) hashNanos = schedHash;
     }
+    if (notedPot > 0) potNanos = notedPot;
     const vault = publicVaultView(store?.reserveVault || {}, Date.now());
     const extra = Math.max(extraMintNanos, Math.floor(Number(vault.mintBankNanos) || 0));
     const circulatingNanos = potNanos + hashNanos + extra - burnedNanos;

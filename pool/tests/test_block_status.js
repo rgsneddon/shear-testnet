@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
-import { explorerRecentTxs, confirmedBlockTxs, networkSupply } from '../src/wallet_api.js';
+import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, HASH_BONUS_NANOS } from '../../crypto/asert.js';
+import { explorerRecentTxs, confirmedBlockTxs, networkSupply, hashBonusEmittedOfBlock } from '../src/wallet_api.js';
+import { unitsForShare } from '../../crypto/share_batch.js';
 import { encodeHeader } from '../../crypto/header.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 
@@ -128,7 +129,45 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     const store = { blocks, tip: () => blocks[2], reserveVault: emptyVault() };
     const supply = networkSupply(store);
     assert.equal(supply.potNanos, 3 * NANOS_PER_SHE);
+    assert.equal(supply.hashNanos, 0);
     assert.equal(supply.circulatingNanos, 3 * NANOS_PER_SHE);
     assert.equal(supply.vaultNanos, 0);
+  });
+
+  it('networkSupply adds Tree-A hash bonus units on top of the 1 SHE pots', () => {
+    const hdr = (ms) => encodeHeader({
+      prevBlockHash: Buffer.alloc(32),
+      merkleRoot: Buffer.alloc(32),
+      continuityRoot: Buffer.alloc(32),
+      timestamp: BigInt(ms),
+      bits: 16,
+    });
+    const units = 768;
+    const blocks = [{
+      height: 1,
+      header: hdr(1_700_000_000_000),
+      aLeaves: [{ noteCommit: Buffer.alloc(32, 1), count: units }],
+      shareBatch: [],
+      txs: [{ coinbase: true, vout: [{ kind: 'pot', nanos: 0 }, { kind: 'hash', nanos: 0 }] }],
+    }, {
+      height: 2,
+      header: hdr(1_700_000_090_000),
+      aLeaves: [],
+      shareBatch: [
+        { noteCommit: Buffer.alloc(32, 2).toString('hex'), nonce: '1', lz: 8 },
+        { noteCommit: Buffer.alloc(32, 3).toString('hex'), nonce: '2', lz: 8 },
+      ],
+      txs: [{ coinbase: true, vout: [{ kind: 'pot', nanos: 0 }] }],
+    }];
+    const store = { blocks, tip: () => blocks[1], reserveVault: emptyVault() };
+    const fromLeaves = hashBonusEmittedOfBlock(blocks[0], HASH_BONUS_NANOS);
+    assert.equal(fromLeaves, units * HASH_BONUS_NANOS);
+    const fromShares = hashBonusEmittedOfBlock(blocks[1], HASH_BONUS_NANOS);
+    assert.equal(fromShares, 2 * unitsForShare() * HASH_BONUS_NANOS);
+    const supply = networkSupply(store);
+    assert.equal(supply.potNanos, 2 * NANOS_PER_SHE);
+    assert.equal(supply.hashNanos, fromLeaves + fromShares);
+    assert.equal(supply.circulatingNanos, supply.potNanos + supply.hashNanos);
+    assert.ok(supply.circulatingNanos > supply.potNanos);
   });
 });
