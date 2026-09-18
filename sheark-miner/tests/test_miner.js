@@ -278,7 +278,7 @@ describe('ShearK-Miner', () => {
     child.stdout.on('data', (d) => { out += d.toString(); });
     child.stderr.on('data', (d) => { out += d.toString(); });
     const deadline = Date.now() + 8000;
-    while (Date.now() < deadline && !/hashes=\d+/.test(stripAnsi(out))) {
+    while (Date.now() < deadline && !/job[= ]login-job/.test(stripAnsi(out))) {
       await new Promise((r) => setTimeout(r, 150));
     }
     child.kill('SIGTERM');
@@ -338,7 +338,7 @@ describe('ShearK-Miner', () => {
     child.stdout.on('data', (d) => { out += d.toString(); });
     child.stderr.on('data', (d) => { out += d.toString(); });
     const deadline = Date.now() + 8000;
-    while (Date.now() < deadline && !/hashes=\d+/.test(stripAnsi(out))) {
+    while (Date.now() < deadline && !/job[= ]dest-job/.test(stripAnsi(out))) {
       await new Promise((r) => setTimeout(r, 150));
     }
     child.kill('SIGTERM');
