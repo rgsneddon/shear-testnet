@@ -191,7 +191,7 @@ describe('ShearK-Miner', () => {
     assert.match(src, /strstr\(low, "busy"\)/);
     assert.match(src, /memcmp\(g_main_job\.header, job\.header, 100\)/);
     assert.match(src, /primed_hdr/);
-    assert.match(src, /Drop the in-flight pair and start on the live header/);
+    assert.match(src, /hash_next returns the previous header's digest/);
     assert.match(src, /reject %s/);
     assert.match(src, /g_smooth_hs/);
     assert.match(src, /promote_pending_job/);

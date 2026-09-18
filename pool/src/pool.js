@@ -1486,7 +1486,9 @@ export function createPool({
     const livePrev = String(lastJob?.prevBlockHash || '');
     const byPrev = String(byId?.prevBlockHash || '');
     if (byId && livePrev && byPrev === livePrev) {
-      return { job: byId, closedRound: false, stale: false };
+      /* Same parent, new jobId is a new round (force template / next block).
+       * Credit accepted, but do not add to this round's hash-bonus. */
+      return { job: byId, closedRound: true, stale: false };
     }
     if (byId && jobWithinGrace(byId, prevJob, prevJobAt)) {
       return { job: byId, closedRound: true, stale: false };
