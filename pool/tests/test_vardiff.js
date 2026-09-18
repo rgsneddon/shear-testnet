@@ -10,7 +10,7 @@ import { createPool, scoreShare, judgeShare } from '../src/pool.js';
 import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
 import { setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
-import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { SHARE_FLOOR_BITS, SHEARK_MINER_VERSION } from '../../crypto/asert.js';
 import {
   clampShareBits,
   expectedOneThreadHs,
@@ -153,10 +153,15 @@ describe('share vardiff', () => {
       send(sock, {
         id: 1,
         method: 'login',
-        params: { login: dest + '.var', client: 'ShearHash', threads: 1 },
+        params: {
+          login: dest + '.var',
+          client: 'ShearHash',
+          version: SHEARK_MINER_VERSION,
+          threads: 1,
+        },
       });
-      let hello = await readLine();
-      if (!hello?.job && !hello?.result?.job) hello = await readLine();
+      const hello = await readLine();
+      assert.equal(hello.error, undefined, JSON.stringify(hello));
       const job = hello.job || hello.result?.job;
       assert.ok(job, `login must return a job, got ${JSON.stringify(hello)}`);
       assert.equal(Number(job.shareBits), mintShareMinBits());
