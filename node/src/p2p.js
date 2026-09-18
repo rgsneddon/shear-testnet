@@ -303,6 +303,31 @@ export function isFinalIngestFail(reason) {
   return true;
 }
 
+/** Out-of-order getblock: do not drop the child. Retry after in-flight parents land. */
+export function requeuePrevHash(rec, hash) {
+  const h = String(hash || '');
+  if (!rec || !h) return rec;
+  rec.retryPrev = Array.isArray(rec.retryPrev) ? rec.retryPrev : [];
+  rec.want = Array.isArray(rec.want) ? rec.want : [];
+  rec.pending = rec.pending instanceof Set ? rec.pending : new Set();
+  if (rec.retryPrev.includes(h) || rec.want.includes(h) || rec.pending.has(h)) return rec;
+  rec.retryPrev.push(h);
+  return rec;
+}
+
+export function drainRetryPrev(rec) {
+  if (!rec) return rec;
+  rec.retryPrev = Array.isArray(rec.retryPrev) ? rec.retryPrev : [];
+  rec.want = Array.isArray(rec.want) ? rec.want : [];
+  rec.pending = rec.pending instanceof Set ? rec.pending : new Set();
+  if (rec.pending.size || !rec.retryPrev.length) return rec;
+  for (const h of rec.retryPrev) {
+    if (h && !rec.want.includes(h) && !rec.pending.has(h)) rec.want.unshift(h);
+  }
+  rec.retryPrev = [];
+  return rec;
+}
+
 export function countSyncedOnline({ localHash = '', peers = [], includeSelf = true } = {}) {
   const want = String(localHash || '');
   const seen = new Set();
@@ -509,6 +534,7 @@ export function createP2p({
     if (!Array.isArray(rec.want)) rec.want = [];
     if (!rec.pending) rec.pending = new Set();
     if (!rec.failed) rec.failed = new Set();
+    drainRetryPrev(rec);
     const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
     while (rec.pending.size < getblockBatch() && rec.want.length) {
       const hash = rec.want.shift();
@@ -687,7 +713,8 @@ export function createP2p({
         if (rec) {
           if (!rec.failed) rec.failed = new Set();
           if (!got?.ok && lastHash) {
-            if (isFinalIngestFail(got?.reason)) rec.failed.add(lastHash);
+            if (got?.reason === 'prev') requeuePrevHash(rec, lastHash);
+            else if (isFinalIngestFail(got?.reason)) rec.failed.add(lastHash);
             try {
               console.error(JSON.stringify({
                 event: 'p2p_ingest',

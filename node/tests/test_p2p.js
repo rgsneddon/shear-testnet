@@ -41,7 +41,7 @@ import {
 import { DEFAULT_SEEDS } from '../src/node.js';
 import { mineTemplate } from '../src/chain.js';
 import { printConfig, startNode, createStore } from '../src/node.js';
-import { countSyncedOnline, isFinalIngestFail } from '../src/p2p.js';
+import { countSyncedOnline, isFinalIngestFail, requeuePrevHash, drainRetryPrev } from '../src/p2p.js';
 
 function destMiner() {
   return encodeDest(Buffer.alloc(20, 5));
@@ -121,6 +121,15 @@ describe('p2p gossip', () => {
     assert.equal(isFinalIngestFail('merkle'), true);
     assert.equal(isFinalIngestFail('pow'), true);
     assert.equal(isFinalIngestFail(''), true);
+    const rec = { want: [], pending: new Set(['parent']), retryPrev: [] };
+    requeuePrevHash(rec, 'child');
+    assert.deepEqual(rec.retryPrev, ['child']);
+    drainRetryPrev(rec);
+    assert.deepEqual(rec.retryPrev, ['child']);
+    rec.pending = new Set();
+    drainRetryPrev(rec);
+    assert.deepEqual(rec.want, ['child']);
+    assert.deepEqual(rec.retryPrev, []);
     const mk = fs.readFileSync(new URL('../../crypto/native/Makefile', import.meta.url), 'utf8');
     assert.match(mk, /-z,noexecstack/);
   });
