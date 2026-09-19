@@ -49,11 +49,11 @@ dynamic _hexify(dynamic v) {
   return v;
 }
 
+/// Posted Flow vin is C̃-only. Tip `vin_link` rejects prev/index/noteCommit.
 List<Map<String, dynamic>> _postedVin(List<Map<String, dynamic>> vin) {
   return vin.map((v) {
-    final row = Map<String, dynamic>.from(v);
-    row.remove('r');
-    row.remove('address');
+    final row = <String, dynamic>{};
+    if (v['commit'] != null) row['commit'] = v['commit'];
     return row;
   }).toList();
 }

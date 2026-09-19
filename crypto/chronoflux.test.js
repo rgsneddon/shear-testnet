@@ -18,6 +18,7 @@ import {
   sealedExplorerRows,
   compactChainBlock,
   compactTx,
+  sealedVinLinkField,
 } from './chronoflux.js';
 import { lockTx, voteTx, portalIdFromDest } from './reserve_vault.js';
 import { newIdentity, hash20FromAddress, admitBaseFromAddress, freshStealthDest } from './address.js';
@@ -361,6 +362,20 @@ describe('chronoflux prune + collate', () => {
     assert.equal(sealed.vin[0].prev, undefined);
     assert.equal(sealed.vin[0].index, undefined);
     assert.equal(sealed.vin[0].noteCommit, undefined);
+    assert.equal(sealedVinLinkField(sealed.vin[0]), null);
+    const commitOnly = attachDummyOuts({
+      kind: 'send',
+      from: dest,
+      to: dest,
+      fee: 100,
+      id: 'commit-only-vin',
+      vin: [{ commit: fat.vin[0].commit }],
+      vout: [{ address: dest, nanos: 1, kind: 'send' }],
+    });
+    assert.deepEqual(Object.keys(commitOnly.vin[0]), ['commit']);
+    assert.equal(sealedVinLinkField(commitOnly.vin[0]), null);
+    const admitCommit = admitMempool(emptyMempool(), commitOnly);
+    assert.notEqual(admitCommit.reason, 'vin_link');
     const linked = attachDummyOuts({ ...fat, id: 'linked-vin' });
     assert.equal(admitMempool(emptyMempool(), linked).reason, 'vin_link');
     const tpl = buildTemplate({
