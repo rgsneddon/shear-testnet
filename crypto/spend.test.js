@@ -197,6 +197,32 @@ describe('funded spend / no double-spend', () => {
     assert.equal(verifySpendSig(tx), true);
   });
 
+  it('commit-only Flow vin verifies; a fat-vin signature does not', () => {
+    const seed = Buffer.from('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex');
+    const key = ed25519PrivateFromSeed(seed);
+    const from = encodeDest(destCommitFromSpendPub(ed25519RawPub(key)));
+    const commit = Buffer.alloc(32, 2);
+    const fat = {
+      kind: 'send',
+      from,
+      vin: [{
+        prev: Buffer.alloc(32, 9),
+        index: 1,
+        noteCommit: Buffer.alloc(32, 4),
+        commit,
+        address: from,
+      }],
+      vout: [{ address: from, nanos: 1, kind: 'send' }],
+    };
+    signSpendTx(fat, key);
+    assert.equal(verifySpendSig(fat), true);
+    const lean = { ...fat, vin: [{ commit }] };
+    assert.equal(verifySpendSig(lean), false);
+    signSpendTx(lean, key);
+    assert.equal(verifySpendSig(lean), true);
+    assert.deepEqual(Object.keys(lean.vin[0]), ['commit']);
+  });
+
   it('note-bound Flow send is not dest-balance insufficient', () => {
     const seed = Buffer.from('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex');
     const key = ed25519PrivateFromSeed(seed);

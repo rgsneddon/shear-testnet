@@ -2135,11 +2135,14 @@ class ShearLedger {
       admitProof = Map<String, dynamic>.from(body['admit_proof'] as Map);
       spent['spent'] = true;
     }
+    final postedVin = _postedVin(vin);
+    final postedVout = _postedVout(vouts);
     if (spendSeed != null && spendSeed.length == 32) {
       if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
         throw StateError('unspendable_dest');
       }
-      final msg = spendMessage(from: src, vout: vouts, kind: sendKind, vin: vin);
+      // Sign the posted C̃-only vin/vout so spendPackDigest matches the server.
+      final msg = spendMessage(from: src, vout: postedVout, kind: sendKind, vin: postedVin);
       final shared = _stealthShared[src];
       late Uint8List sig;
       late Uint8List pub;
@@ -2169,8 +2172,8 @@ class ShearLedger {
           sig: sigHex,
           spendPub: spendPubHex,
           ephPub: pay?.ephPub != null ? _bytesHex(pay!.ephPub) : null,
-          vin: List<dynamic>.from(_hexify(_postedVin(vin)) as List),
-          vout: List<dynamic>.from(_hexify(_postedVout(vouts)) as List),
+          vin: List<dynamic>.from(_hexify(postedVin) as List),
+          vout: List<dynamic>.from(_hexify(postedVout) as List),
           excess: excess is Uint8List ? _bytesHex(excess) : excess,
           admitProof: admitProof != null
               ? Map<String, dynamic>.from(_hexify(admitProof) as Map)

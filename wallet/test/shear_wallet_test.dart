@@ -469,6 +469,37 @@ void main() {
     expect(vin0.containsKey('address'), isFalse);
     expect(body['sig'], isNotEmpty);
     expect(body['spendPub'], isNotEmpty);
+    final repo = Directory.current.path.replaceAll('\\', '/').endsWith('/wallet')
+        ? Directory.current.parent.path
+        : Directory.current.path;
+    final postedFile = File(
+      '${Directory.systemTemp.path}${Platform.pathSeparator}shear-posted-vin-${pid}.json',
+    );
+    postedFile.writeAsStringSync(jsonEncode({
+      'from': body['from'],
+      'kind': body['kind'] ?? 'send',
+      'vin': body['vin'],
+      'vout': body['vout'],
+      'sig': body['sig'],
+      'spendPub': body['spendPub'],
+    }));
+    addTearDown(() {
+      try {
+        postedFile.deleteSync();
+      } catch (_) {}
+    });
+    final checked = Process.runSync(
+      'node',
+      ['tests/verify_posted_spend.mjs', postedFile.path],
+      workingDirectory: repo,
+    );
+    expect(
+      checked.exitCode,
+      0,
+      reason: 'tip verifySpendSig rejected posted body: ${checked.stdout}${checked.stderr}',
+    );
+    final verified = jsonDecode(checked.stdout as String) as Map;
+    expect(verified['ok'], true);
     expect(
       ledger.notes.any((n) => n['kind'] == 'send' && n['r'] != null && n['spent'] != true),
       isTrue,
@@ -5061,6 +5092,7 @@ class _RecordingPool extends ShearPoolClient {
       'from': from,
       'to': to,
       'amount': amount,
+      'kind': kind ?? 'send',
       'vin': vin,
       'vout': vout,
       'excess': excess,
