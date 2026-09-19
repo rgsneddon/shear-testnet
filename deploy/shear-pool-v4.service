@@ -11,8 +11,11 @@ Environment=SHEAR_SEEDS=127.0.0.1:30303
 Environment=SHEAR_P2P_BIND=127.0.0.1
 Environment=SHEAR_P2P_PORT=30305
 Environment=SHEAR_STRATUM=1111
+Environment=SHEAR_STRATUM_BIND=127.0.0.1
+Environment=SHEAR_STRATUM_AUTH=1
 Environment=SHEAR_HTTP=8088
 Environment=SHEAR_SHARE_BITS=8
+Environment=SHEAR_ADMIN_HOST=mypool.site
 ExecStart=/usr/bin/node pool/src/main.js
 Restart=on-failure
 RestartSec=3

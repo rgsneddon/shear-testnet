@@ -57,6 +57,52 @@ describe('operator desk', () => {
     else process.env.SHEAR_ADMIN_HOST = prevHost;
   });
 
+  it('SHEAR_ADMIN_HOST unset: non-loopback is setup_forbidden; loopback+SHEAR_ADMIN_SETUP=1 first-runs', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admin-deny-'));
+    const admin = createAdmin(dir);
+    const prev = process.env.SHEAR_ADMIN_SETUP;
+    const prevHost = process.env.SHEAR_ADMIN_HOST;
+    delete process.env.SHEAR_ADMIN_HOST;
+    delete process.env.SHEAR_ADMIN_SETUP;
+    try {
+      assert.equal(admin.setup({ user: 'operator', password: 'aaaaaaaa' }).reason, 'setup_forbidden');
+      const remoteReq = Readable.from([Buffer.from(JSON.stringify({
+        user: 'operator', password: 'aaaaaaaa',
+      }))]);
+      remoteReq.method = 'POST';
+      remoteReq.url = '/api/admin/setup';
+      remoteReq.headers = { host: 'mypool.site', 'content-type': 'application/json' };
+      remoteReq.socket = { remoteAddress: '203.0.113.9' };
+      let remoteRaw = '';
+      const remoteRes = { statusCode: 0, setHeader() {}, end(s) { remoteRaw = String(s || ''); } };
+      await handleAdminHttp(remoteReq, remoteRes, { admin });
+      const remoteJson = JSON.parse(remoteRaw);
+      assert.equal(remoteJson.ok, false);
+      assert.equal(remoteJson.reason, 'setup_forbidden');
+      assert.equal(admin.status().setup, false);
+
+      process.env.SHEAR_ADMIN_SETUP = '1';
+      const localReq = Readable.from([Buffer.from(JSON.stringify({
+        user: 'operator', password: 'aaaaaaaa',
+      }))]);
+      localReq.method = 'POST';
+      localReq.url = '/api/admin/setup';
+      localReq.headers = { host: '127.0.0.1', 'content-type': 'application/json' };
+      localReq.socket = { remoteAddress: '127.0.0.1' };
+      let localRaw = '';
+      const localRes = { statusCode: 0, setHeader() {}, end(s) { localRaw = String(s || ''); } };
+      await handleAdminHttp(localReq, localRes, { admin });
+      const localJson = JSON.parse(localRaw);
+      assert.equal(localJson.ok, true, localJson.reason);
+      assert.equal(admin.status().setup, true);
+    } finally {
+      if (prev == null) delete process.env.SHEAR_ADMIN_SETUP;
+      else process.env.SHEAR_ADMIN_SETUP = prev;
+      if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
+      else process.env.SHEAR_ADMIN_HOST = prevHost;
+    }
+  });
+
   it('SHEAR_ADMIN_SETUP=1 without loopback is setup_forbidden; loopback+env is first-run only', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admin-env-'));
     const admin = createAdmin(dir);
@@ -161,7 +207,15 @@ describe('operator desk', () => {
     assert.equal(calls.kick[0], 'mabcd1234');
     assert.equal(run('/api/admin/clear-stale', 'POST', {}, cookie).json.stale, 0);
     assert.equal(calls.stale, 1);
+    assert.equal(run('/api/admin/unban', 'POST', { miner: 'mabcd1234' }, cookie).json.banned, false);
     assert.equal(run('/api/admin/ban', 'POST', {}, cookie).status, 400);
+    const audit = fs.readFileSync(path.join(dir, 'admin-audit.jsonl'), 'utf8');
+    assert.match(audit, /"action":"pause"/);
+    assert.match(audit, /"action":"resume"/);
+    assert.match(audit, /"action":"restart"/);
+    assert.match(audit, /"action":"restart-hasher"/);
+    assert.match(audit, /"action":"clear-stale"/);
+    assert.match(audit, /"action":"unban"/);
     if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
     else process.env.SHEAR_ADMIN_HOST = prevHost;
   });

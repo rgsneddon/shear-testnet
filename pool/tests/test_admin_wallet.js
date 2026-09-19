@@ -106,9 +106,11 @@ describe('operator admin fee wallet', () => {
     }
   });
 
-  it('third-party desk is /admin when SHEAR_ADMIN_HOST is unset', () => {
+  it('third-party desk is /admin; first-run is setup_forbidden when SHEAR_ADMIN_HOST is unset', () => {
     const prev = process.env.SHEAR_ADMIN_HOST;
+    const prevSetup = process.env.SHEAR_ADMIN_SETUP;
     delete process.env.SHEAR_ADMIN_HOST;
+    delete process.env.SHEAR_ADMIN_SETUP;
     try {
       assert.equal(isAdminHost('mypool.site'), false);
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-3p-admin-'));
@@ -116,7 +118,12 @@ describe('operator admin fee wallet', () => {
       const setup = handleAdminApi(new URL('https://mypool.site/api/admin/setup'), 'POST', {
         user: 'operator', password: 'aaaaaaaa',
       }, { admin, host: 'mypool.site' });
-      assert.equal(setup.json.ok, true, setup.json.reason);
+      assert.equal(setup.json.ok, false);
+      assert.equal(setup.json.reason, 'setup_forbidden');
+      const token = handleAdminApi(new URL('https://mypool.site/api/admin/setup'), 'POST', {
+        user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken,
+      }, { admin, host: 'mypool.site' });
+      assert.equal(token.json.ok, true, token.json.reason);
       const poolSrc = fs.readFileSync(path.join(root, 'pool/src/pool.js'), 'utf8');
       assert.match(poolSrc, /url\.pathname === '\/admin'/);
       const ngx = fs.readFileSync(path.join(root, 'pool/deploy/nginx-mypool.site.conf'), 'utf8');
@@ -125,6 +132,8 @@ describe('operator admin fee wallet', () => {
     } finally {
       if (prev == null) delete process.env.SHEAR_ADMIN_HOST;
       else process.env.SHEAR_ADMIN_HOST = prev;
+      if (prevSetup == null) delete process.env.SHEAR_ADMIN_SETUP;
+      else process.env.SHEAR_ADMIN_SETUP = prevSetup;
     }
   });
 

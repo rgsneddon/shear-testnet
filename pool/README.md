@@ -4,11 +4,11 @@ Open-source Shear pool: stratum on `:1111`, HTTP dashboard on loopback `:8088`, 
 
 This cut speaks **shear-testnet-v4** (ADMITv2, Bulletproofs+, weight levy, Q16.16 packed ASERT toward **90s** blocks). When mainnet `shear-v1` is cut, update `MAGIC_TESTNET` / systemd `SHEAR_NETWORK` and this README — do not dual-stack.
 
-Public site example in this repo is **https://mypool.site**. Operator admin is **https://mypool.site/admin**. Point those names at your box. A dedicated admin hostname is optional (`SHEAR_ADMIN_HOST`); do not commit a real operator subdomain.
+Public site example in this repo is **https://mypool.site**. Operator admin is **https://mypool.site/admin**. Point those names at your box. Prod examples require `SHEAR_ADMIN_HOST` (generic example `mypool.site`); do not commit a real operator subdomain. First-run is deny-by-default when that env is unset.
 
 ## What you get
 
-- Stratum bind `SHEAR_STRATUM_BIND` (testnet dest-only may use `0.0.0.0`; **prod example is `127.0.0.1` behind TLS**). `SHEAR_STRATUM_AUTH=1` (prod example on) requires an ed25519 login signature over `shear-stratum-login-v1`. Dev dest-only is `SHEAR_STRATUM_AUTH=0`. Unauthenticated dest login is an ephemeral tag, not dest ownership. Testnet cleartext TCP is temporary — see `deploy/nginx-stratum-tls.conf`.
+- Stratum bind `SHEAR_STRATUM_BIND` (testnet dest-only may use `0.0.0.0`; **prod example is `127.0.0.1` behind a TLS terminator**). `SHEAR_STRATUM_AUTH=1` (prod example on) requires an ed25519 login signature over `shear-stratum-login-v1`. Dev dest-only is `SHEAR_STRATUM_AUTH=0`. Unauthenticated dest login is an ephemeral tag, not dest ownership. Testnet cleartext TCP is temporary — see `deploy/nginx-stratum-tls.conf`. This tree does not ship TLS certificates. Confirm bind and login via `GET /api/stats` (`stratumBind` should be `127.0.0.1`, `loginAuth` should be `ed25519` when auth is on).
 - Pin **ShearK-Miner 2.4** (or current cut) for the 128-byte job
 - HTTP `127.0.0.1:8088` (nginx terminates TLS)
 - Validating node + pool in one process (same magic as the book)
@@ -67,7 +67,7 @@ Optional environment (drop-in `/etc/systemd/system/shear-pool.service.d/local.co
 | `SHEAR_HTTP` | Loopback HTTP (default 8088) |
 | `SHEAR_P2P_PORT` | Public P2P (default 30303). `0` disables |
 | `SHEAR_SEEDS` | Comma-separated `host:port` peers |
-| `SHEAR_ADMIN_HOST` | Dedicated admin hostname (optional) |
+| `SHEAR_ADMIN_HOST` | Dedicated admin hostname (required in prod examples; first-run is deny-by-default when unset) |
 | `SHEAR_POOL_MINER` | Pool dest (`ssa1…`) if you do not want a generated ident |
 
 ## nginx
@@ -99,7 +99,7 @@ Unauthenticated stratum login is dest-format only (no ownership proof). Soft-den
 3. Enrol **2FA** (scan the QR, or type the authenticator key + 6-digit code). The desk stays closed until 2FA confirms.
 4. Later logins need username, password, and the authenticator code.
 
-If `SHEAR_ADMIN_HOST` is set, first-run setup is allowed only on that host (not on the public pool name). Loopback + `SHEAR_ADMIN_SETUP=1` is an emergency first-run on the box itself.
+If `SHEAR_ADMIN_HOST` is unset, first-run setup is **not** open to the world: a non-loopback request without an explicit setup token is `setup_forbidden`. Allowed first-run paths are the configured admin host, loopback + `SHEAR_ADMIN_SETUP=1`, or the in-process setup token. Do not leave first-run on a public hostname.
 
 Admin HTML is `noindex`. Do not put operator secrets, SSH hosts, or a real admin subdomain in this git tree.
 
