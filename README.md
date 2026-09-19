@@ -18,7 +18,7 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
 - Miner pin: **ShearK-Miner 2.4** — https://github.com/rgsneddon/ShearK/releases/tag/2.4
-- Wallet pin: **0.38** (GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.38
+- Wallet pin: **0.39** (GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.39
 - Stratum: `pool.shear.digital:1111`
 - P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v4`)
 - Site: https://shear.digital
@@ -102,12 +102,15 @@ export SHEAR_RPC_BIND=127.0.0.1
 export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
 
 node node/src/node.js
+# validator only (no stratum). Solo mining:
+# npm run solo
+# or: node node/src/node.js --solo
 # or: node node/src/node.js --help
 ```
 
-RPC stays on **loopback**. Wallet talks to `http://127.0.0.1:18332`. Optional systemd unit: `deploy/shear-node.service`.
+RPC stays on **loopback**. Wallet/CLI talks to `http://127.0.0.1:18332`. Optional systemd unit: `deploy/shear-node.service`.
 
-`npm run pool` does **not** default `SHEAR_SEEDS` (unlike `node.js`). Export all three seeds in the **same shell**. Outbound to those seeds is required; opening inbound `30303` alone does not sync. Status `height=0 want=0 ibd=false` is an empty tip that is **not** fetching — IBD is only `want>0`. Check `nc -vz p2p.shear.digital 30303`; if a peer is also height 0, pick a seed that is ahead. Full copy/paste: https://shear.digital#solo-sync-stuck
+Solo is **node + thin stratum + CLI + ShearK**. `npm run pool` is the public-pool operator stack — do not use it as the beginner solo path. Export all three `SHEAR_SEEDS` in the **same shell** as `npm run solo`. Outbound to those seeds is required; opening inbound `30303` alone does not sync. Status `height=0 want=0 ibd=false` is an empty tip that is **not** fetching — IBD is only `want>0`. Mid-IBD `unsigned@N` then `prev`: pull tip, rebuild native, `SHEAR_GETBLOCK_BATCH=1` — do not wipe. Check `nc -vz p2p.shear.digital 30303`. Full copy/paste: https://shear.digital#solo-sync-stuck
 
 IBD: headers then a window of getblocks (default 16 in flight). First checkpoint at height **1000**, then every **400**. Heavier fork that replaces a checkpoint hash is rejected (`reorg_checkpoint`).
 
@@ -117,15 +120,23 @@ Do **not** set `SHEAR_NETWORK=shear-v1` or `SHEAR_MAINNET_EMIT=1`. The process p
 
 ## Mine
 
-Log in with wallet **Copy dest**:
+Solo (node + thin stratum + CLI + ShearK) — see https://shear.digital#solo-mine:
+
+```
+npm run solo
+dart run bin/shear.dart dest --rpc http://127.0.0.1:18332
+ShearK-Miner --pool 127.0.0.1:1111 --user ssa1YOURDEST.solo --threads 4
+```
+
+Optional public pool (not solo):
 
 ```
 ShearK-Miner --pool pool.shear.digital:1111 --user ssa1YOURDEST.worker --threads 4
 ```
 
-`ssa1.worker` is Continuum Copy dest — the `ssa1` shown on screen, not a rotated mailbox. Amounts are confidential; dests are stealth. Reuse that mining mailbox so blocks stay linked.
+`ssa1.worker` / `ssa1.solo` is Continuum/CLI Copy dest — the `ssa1` shown on screen, not a rotated mailbox. Amounts are confidential; dests are stealth. Reuse that mining mailbox so blocks stay linked.
 
-Wallet **0.38** syncs a local node at `127.0.0.1:18332` (headers + compact blocks). It does not use the old height sampler. Public pool HTTP submit is an advanced toggle.
+Wallet **0.39** syncs a local node at `127.0.0.1:18332` (headers + compact blocks). It does not use the old height sampler. Public pool HTTP submit is an advanced toggle.
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure.
 CLI covers the same functions (`dart run bin/shear.dart help`), including sign, The Reserve vote/rewards, vort1 create/register, and Closure backup/restore.

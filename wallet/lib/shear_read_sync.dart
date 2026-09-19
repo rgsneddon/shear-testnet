@@ -119,13 +119,23 @@ class ShearReadSync {
   /// Header hex at height 1. Identifies the live book after a chain reset.
   String? genesisHex;
 
-  int get provenHeaders => sampledTip < 1
-      ? 0
-      : [for (var h = 1; h <= sampledTip; h++) h].where(_proven.contains).length;
+  int get provenHeaders {
+    if (sampledTip < 1) return 0;
+    var n = 0;
+    for (final h in _proven) {
+      if (h >= 1 && h <= sampledTip) n++;
+    }
+    return n;
+  }
   int get wantedHeaders => sampledTip < 1 ? 0 : sampledTip;
-  int get provenCompactBlocks => sampledTip < 1
-      ? 0
-      : [for (var h = 1; h <= sampledTip; h++) h].where(_compactProven.contains).length;
+  int get provenCompactBlocks {
+    if (sampledTip < 1) return 0;
+    var n = 0;
+    for (final h in _compactProven) {
+      if (h >= 1 && h <= sampledTip) n++;
+    }
+    return n;
+  }
   int get failures => _failures;
   bool get honest =>
       liveBase != null &&
@@ -321,6 +331,7 @@ class ShearReadSync {
         if (h == 1) genesisHex = hex.toLowerCase();
         _proven.add(h);
       }
+      await Future<void>.delayed(Duration.zero);
     }
     sampledTip = tip;
   }
@@ -360,6 +371,7 @@ class ShearReadSync {
           _compactProven.add(h);
         }
       }
+      await Future<void>.delayed(Duration.zero);
     }
   }
 

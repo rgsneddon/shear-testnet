@@ -6,6 +6,8 @@ function sectionRun() {
   return [
     'Run:',
     '  node node/src/node.js                 start validator (P2P + loopback RPC)',
+    '  node node/src/node.js --solo          validator + thin local stratum 127.0.0.1:1111',
+    '  npm run solo                          same as --solo (not the public pool)',
     '  node node/src/node.js --fast-sync     skip archival bodies (peers still verify PoW)',
     '  node node/src/node.js --bootstrap=PATH|URL',
     '  node node/src/node.js --status        print height/hash/jroot/peers from datadir and exit',
@@ -32,6 +34,9 @@ function sectionEnv() {
     '  SHEAR_MAX_PEERS     live peer cap (default 32)',
     '  SHEAR_FAST_SYNC     1 = skip archival bodies (not share PoW)',
     '  SHEAR_GETBLOCK_BATCH  in-flight IBD getblock window (default 16)',
+    '  SHEAR_SOLO          1 = thin local stratum (same as --solo / npm run solo)',
+    '  SHEAR_STRATUM       solo stratum port (default 1111)',
+    '  SHEAR_STRATUM_BIND  solo stratum bind (default 127.0.0.1)',
     '  SHEARK_MINER        optional path to ShearK-Miner 2.4 if shearhash.node is missing',
     '  SHEAR_MAINNET_EMIT  do not set. Launch is not decided.',
     '  SHEAR_MAINNET_EMIT_CONFIRM  do not set.',
@@ -56,19 +61,31 @@ function sectionRpc() {
 
 function sectionSolo() {
   return [
-    'Solo (your node finds the block):',
+    'Solo (your node finds the block — no full pool):',
     '  1. Build RandomX + native on THIS box (never copy Darwin .node onto Linux):',
     '       cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native',
     '       cmake --build crypto/randomx/build -j"$(nproc)"',
     '       make -C crypto/native',
-    '  2. npm run pool     (stratum :1111 + validating node + optional P2P)',
-    '     or node node/src/node.js   (validator only, no stratum)',
-    '  3. Status lines print height, hash, peers, want, ibd, hashBackend.',
+    '  2. Validating node + thin local stratum (NOT npm run pool):',
+    '       export SHEAR_NETWORK=shear-testnet-v4',
+    '       export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303',
+    '       export SHEAR_RPC_BIND=127.0.0.1',
+    '       npm run solo',
+    '     Bare node node/src/node.js is validator-only (no stratum).',
+    '     npm run pool is the public-pool operator stack — not solo.',
+    '  3. CLI (first-class) or Continuum 0.39:',
+    '       dart run bin/shear.dart dest --rpc http://127.0.0.1:18332',
+    '       dart run bin/shear.dart balance',
+    '       dart run bin/shear.dart history',
+    '  4. Status lines print height, hash, peers, want, ibd, hashBackend.',
     '     hashBackend=missing means shares will reject native_missing — build step 1.',
-    '  4. ./ShearK-Miner --selftest',
+    '  5. ./ShearK-Miner --selftest',
     '     ./ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8',
     '',
-    'Login is wallet Copy dest as ssa1.worker. .solo is only a worker name.',
+    'Finder keeps the live epoch pot + hash bonus on Copy dest. No pool fee.',
+    'Login is wallet/CLI Copy dest as ssa1.solo. .solo is only a worker name.',
+    'Stuck mid-IBD (unsigned@N then prev): pull tip, rebuild native, SHEAR_GETBLOCK_BATCH=1,',
+    'same-shell SHEAR_SEEDS. Do not wipe the datadir unless CoS says so.',
   ];
 }
 
@@ -78,8 +95,9 @@ function sectionP2p() {
     '  Listen :30303. Seeds are hostnames only.',
     '  IBD: status.want > 0 means this node is still fetching blocks (ibd=true).',
     '  p2p_ingest reason=merkle is a sealed-block mismatch — do not skip verify.',
-    '  p2p_ingest reason=prev is a parent miss; the node retries.',
-    '  Wipe every datadir together if you recut; start P2P boxes, then the pool.',
+    '  p2p_ingest reason=prev is a parent miss; the node retries. It is not a ban.',
+    '  p2p_ingest reason=unsigned on a sealed compact block is a node bug — pull tip, rebuild native.',
+    '  Do not wipe a mid-IBD datadir unless CoS says so after a fix.',
     '  Magic stays shear-testnet-v4. Do not start sheark-v4-afk.',
   ];
 }

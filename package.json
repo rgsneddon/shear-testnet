@@ -8,6 +8,7 @@
     "build:admit": "make -C crypto/native shearadmit.node",
     "test": "npm run build:admit && node --test --test-concurrency=1 --test-timeout=1800000 crypto/*.test.js crypto/admit.bench.js node/tests/*.js pool/tests/*.js miner/tests/*.js sheark-miner/tests/*.js tests/*.js tests/adversary/*.js",
     "node": "node node/src/node.js",
+    "solo": "node node/src/node.js --solo",
     "pool": "node pool/src/main.js",
     "forbid": "node tests/forbid_foreign_names.js"
   },

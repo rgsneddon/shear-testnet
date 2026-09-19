@@ -41,7 +41,7 @@ import {
 import { DEFAULT_SEEDS } from '../src/node.js';
 import { mineTemplate } from '../src/chain.js';
 import { printConfig, startNode, createStore } from '../src/node.js';
-import { countSyncedOnline, countLiveOnline, isFinalIngestFail, requeuePrevHash, drainRetryPrev } from '../src/p2p.js';
+import { countSyncedOnline, countLiveOnline, isFinalIngestFail, recordIngestFail, requeuePrevHash, drainRetryPrev } from '../src/p2p.js';
 
 function destMiner() {
   return encodeDest(Buffer.alloc(20, 5));
@@ -117,8 +117,14 @@ describe('p2p gossip', () => {
 
   it('retries prev misses and does not blacklist them as final', () => {
     assert.equal(isFinalIngestFail('prev'), false);
+    assert.equal(isFinalIngestFail('native_missing'), false);
     assert.equal(isFinalIngestFail('ShearHash-v3 native addon missing and ShearK-Miner not built'), false);
     assert.equal(isFinalIngestFail('merkle'), true);
+    const recBan = { expensiveFails: 0 };
+    for (let i = 0; i < P2P_FAIL_DISCONNECT + 2; i += 1) {
+      assert.equal(recordIngestFail(recBan, 'prev'), false);
+    }
+    assert.equal(recBan.expensiveFails, 0);
     assert.equal(isFinalIngestFail('pow'), true);
     assert.equal(isFinalIngestFail(''), true);
     const rec = { want: [], pending: new Set(['parent']), retryPrev: [] };

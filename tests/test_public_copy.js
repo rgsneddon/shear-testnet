@@ -79,9 +79,9 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(paper, /hasher dest that produced proven work/);
 
     const readme = read('README.md');
-    assert.match(readme, /Wallet pin: \*\*0\.38\*\*/);
-    assert.doesNotMatch(readme, /Wallet pin: \*\*0\.37\*\*/);
-    assert.doesNotMatch(readme, /Wallet \*\*0\.37\*\* syncs/);
+    assert.match(readme, /Wallet pin: \*\*0\.39\*\*/);
+    assert.doesNotMatch(readme, /Wallet pin: \*\*0\.38\*\*/);
+    assert.doesNotMatch(readme, /Wallet \*\*0\.38\*\* syncs/);
     assert.match(readme, /Copy dest/);
     assert.match(readme, /own hash bonus on the next sealed block/);
     assert.match(readme, /shear-testnet-v4/);
@@ -113,7 +113,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(joined, /cleartext TCP/);
     assert.match(main, /ShearK-Miner <strong>2\.4<\/strong>/);
     assert.doesNotMatch(main, /shear-wallet-0\.38-macos\.dmg/);
-    assert.match(main, /shear-wallet-0\.38-android\.apk/);
+    assert.match(main, /shear-wallet-0\.39-android\.apk/);
     assert.match(main, /id="solo-deps"/);
     assert.match(main, /apt-get install -y git curl build-essential cmake/);
     assert.match(main, /role="tablist"/);
@@ -148,7 +148,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /ibd=true/);
     assert.match(main, /egress\/DNS/);
     assert.match(main, /data-copy="solo-sync-fix"/);
-    assert.match(readme, /does \*\*not\*\* default `SHEAR_SEEDS`/);
+    assert.match(readme, /same shell.*npm run solo|npm run solo/);
     assert.match(main, /Darwin/);
     assert.match(main, /Wrong dest/);
     assert.match(main, /cleartext TCP/);
@@ -171,18 +171,18 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /\*\*Working branch:\*\* `feat\/admit-v2`/);
     assert.match(ops, /git checkout main/);
     assert.doesNotMatch(ops, /git checkout feat\/admit-v2/);
-    assert.match(ops, /Pins are \*\*0\.38\*\*/);
-    assert.doesNotMatch(ops, /Pins are \*\*0\.37\*\*/);
-    assert.match(ops, /Pin \*\*0\.38\*\*/);
-    assert.doesNotMatch(ops, /Pin \*\*0\.37\*\*/);
+    assert.match(ops, /Pins are \*\*0\.39\*\*/);
+    assert.doesNotMatch(ops, /Pins are \*\*0\.38\*\*/);
+    assert.match(ops, /Pin \*\*0\.39\*\*/);
+    assert.doesNotMatch(ops, /Pin \*\*0\.38\*\*/);
   });
 
-  it('MacBook handoff points at merged GitHub main, 0.38 tag, and pack_macos.sh', () => {
+  it('MacBook handoff points at merged GitHub main, 0.39 tag, and pack_macos.sh', () => {
     const md = read('MACBOOK_HANDOFF.md');
     assert.match(md, /https:\/\/github\.com\/rgsneddon\/shear-testnet/);
     assert.match(md, /blob\/main\/MACBOOK_HANDOFF\.md/);
-    assert.match(md, /releases\/tag\/0\.38/);
+    assert.match(md, /releases\/tag\/0\.39/);
     assert.match(md, /pack_macos\.sh/);
-    assert.match(md, /shear-wallet-0\.38-macos\.dmg/);
+    assert.match(md, /shear-wallet-0\.39-macos\.dmg/);
   });
 });

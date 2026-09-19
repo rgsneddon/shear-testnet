@@ -1,5 +1,5 @@
 pkgname=shear-wallet
-pkgver=0.38
+pkgver=0.39
 pkgrel=1
 pkgdesc='Shear wallet [testnet] 0.38'
 url='https://github.com/rgsneddon/shear-testnet'
