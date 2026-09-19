@@ -619,12 +619,13 @@ node node/src/node.js --print-config</pre>
       </div>
       <p><code>--print-config</code> must show <code>"magic":"shear-testnet-v4"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
       <h3>2. Node config + local stratum</h3>
+      <p><code>SHEAR_SEEDS</code> must list <strong>all three</strong> seeds. Export them in the <strong>same shell</strong> as <code>npm run pool</code> — the pool process does <strong>not</strong> default seeds (unlike <code>node.js</code>). Outbound TCP to those seeds is required; opening inbound firewall <code>30303</code> alone does <strong>not</strong> sync.</p>
       <div class="copy-row">
         <pre id="solo-run">export SHEAR_NETWORK=shear-testnet-v4
 export SHEAR_P2P_PORT=30303
 export SHEAR_RPC_PORT=18332
 export SHEAR_RPC_BIND=127.0.0.1
-export SHEAR_SEEDS=p2p.shear.digital:30303
+export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
 export SHEAR_STRATUM=1111
 export SHEAR_STRATUM_BIND=127.0.0.1
 npm run pool</pre>
@@ -653,6 +654,24 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
         <li><strong>Missing node_api.h</strong> — Node version alone is not enough; need <code>include/node/node_api.h</code>. Bare <code>-I.</code> in the make line means <code>NODE_INC</code> was empty. Fix headers, then rebuild. Prefer Node 20 LTS from NodeSource if unsure.</li>
         <li><strong>macOS/Darwin <code>.node</code> on Linux</strong> — never copy <code>shearhash.node</code> / <code>shearadmit.node</code> from a Mac onto Linux. Build RandomX + <code>make -C crypto/native</code> on the Linux box.</li>
       </ul>
+      <h3 id="solo-sync-stuck">Stuck at height=0 / want=0 / ibd=false</h3>
+      <p><code>height=0</code> is an empty tip. <code>want=0</code> means the node is not fetching blocks. <code>ibd=false</code> when <code>want=0</code> is <strong>not</strong> “synced” — IBD is only true while <code>want&gt;0</code> (in-flight getblocks). Opening inbound <code>30303</code> without outbound to the seeds leaves you at this status (peers=1 can still be another empty solo).</p>
+      <div class="copy-row">
+        <pre id="solo-sync-fix"># Outbound must work
+nc -vz p2p.shear.digital 30303
+export SHEAR_NETWORK=shear-testnet-v4
+export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
+export SHEAR_P2P_PORT=30303
+export SHEAR_RPC_PORT=18332
+export SHEAR_RPC_BIND=127.0.0.1
+export SHEAR_STRATUM=1111
+export SHEAR_STRATUM_BIND=127.0.0.1
+# same shell:
+npm run pool
+# Expect status want>0 ibd=true then height climbing; stderr p2p_headers missing>0</pre>
+        <button type="button" data-copy="solo-sync-fix">Copy</button>
+      </div>
+      <p>If <code>nc</code> fails → egress/DNS, not the node. If a peer’s tip equals yours (both height 0) → you need a seed that is <em>ahead</em>, not another empty solo.</p>
       <h3>Public pool instead</h3>
       <p>Skip the local node and hash on the official stratum (cleartext unless TLS is configured):</p>
       <div class="copy-row">
