@@ -345,6 +345,24 @@ export function destMatchesSpendPub(dest, spendPub) {
   return Buffer.from(want).equals(got);
 }
 
+/** Same bind as destMatchesSpendPub, from a raw dest20 (sealed vin). */
+export function dest20MatchesSpendPub(dest20, spendPub) {
+  let want;
+  try {
+    if (typeof dest20 === 'string' && /^[0-9a-f]+$/i.test(String(dest20).replace(/^0x/i, ''))) {
+      want = Buffer.from(String(dest20).replace(/^0x/i, ''), 'hex');
+    } else {
+      want = Buffer.from(dest20 || []);
+    }
+  } catch {
+    return false;
+  }
+  if (want.length > 20) want = want.subarray(0, 20);
+  const got = destCommitFromSpendPub(spendPub);
+  if (!got || want.length !== 20) return false;
+  return Buffer.from(want).equals(Buffer.from(got));
+}
+
 /** One-time dest from view-key scan/spend (she1 string no longer carries the 64-byte keys). */
 export function silentDestFromView(viewKey, spendPub32, ephPrivate, index = 0) {
   const n = Number(index);

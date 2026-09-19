@@ -320,6 +320,9 @@ describe('chronoflux prune + collate', () => {
     assert.equal(sealed.from, undefined);
     assert.equal(sealed.to, undefined);
     assert.equal(sealed.vout[0].address, undefined);
+    assert.equal(sealed.vin[0].address, undefined);
+    assert.ok(sealed.vin[0].dest20);
+    assert.equal(sealed.vin[0].prev, undefined);
     assert.equal(sealed.vout[0].kind, 'pool-withdraw');
     assert.ok(sealed.vout[0].dest20);
     assert.equal(Number(sealed.vout[0].valueProof.v), 314_159_265_358);

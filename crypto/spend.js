@@ -9,7 +9,7 @@ import { createHash, createPublicKey, sign, verify } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN } from './asert.js';
 import { levyTaxed, txAmountNanos } from './levy.js';
 import { isSpendableHeight } from './chronoflux.js';
-import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
+import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, reserveDest20Open } from './dummy.js';
@@ -202,12 +202,30 @@ export function flowSendNeedsOpen(tx) {
   return true;
 }
 
-/** Operator Flow spend sig (or already-bound sig) on every pool-withdraw. Fail-closed unsigned. */
+/** Operator dest20 on sealed vin (or fat from/address). */
+export function poolWithdrawOperatorDest20(tx) {
+  const v = tx?.vin?.[0];
+  if (v?.dest20) {
+    try {
+      const b = Buffer.from(asU8(v.dest20));
+      if (b.length >= 20) return Buffer.from(b.subarray(0, 20));
+    } catch { /* fall through */ }
+  }
+  const from = String(tx?.from || v?.address || '');
+  const h = hash20FromAddress(from);
+  return h ? Buffer.from(h) : null;
+}
+
+/** Operator Flow spend sig bound to the pool dest20. Fail-closed unsigned. */
 export function verifyPoolWithdrawBound(tx) {
   const k = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (k !== 'pool-withdraw') return { ok: true };
-  if (verifySpendSig(tx)) return { ok: true };
-  return { ok: false, reason: 'unsigned' };
+  const pubRaw = spendPubFromTx(tx);
+  if (!pubRaw) return { ok: false, reason: 'unsigned' };
+  const d20 = poolWithdrawOperatorDest20(tx);
+  if (!d20 || !dest20MatchesSpendPub(d20, pubRaw)) return { ok: false, reason: 'unsigned' };
+  if (!verifySpendSig(tx)) return { ok: false, reason: 'unsigned' };
+  return { ok: true };
 }
 
 export function reservePortalDest(tx) {
@@ -252,9 +270,15 @@ export function fundedDebit(tx) {
   }
   if (tx.mint && String(tx.kind || '') !== 'pool-withdraw') return null;
   const kind = String(tx.kind || tx.vout?.[0]?.kind || 'send');
-  const from = kind === 'vote'
+  let from = kind === 'vote'
     ? String(tx.payer || tx.vin?.[0]?.address || '')
     : String(tx.from || tx.vin?.[0]?.address || '');
+  if (!from && tx.vin?.[0]?.dest20) {
+    try {
+      const d20 = Buffer.from(asU8(tx.vin[0].dest20));
+      if (d20.length >= 20) from = encodeDest(d20.subarray(0, 20));
+    } catch { /* keep empty */ }
+  }
   if (!from) return null;
   const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0;
   if (unfunded) return null;

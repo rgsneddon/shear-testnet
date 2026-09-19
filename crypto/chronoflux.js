@@ -433,10 +433,10 @@ export function compactTx(tx) {
       const row = {};
       if (commit != null && commit !== '') row.commit = compactValue(commit);
       if (keepDest && v.address) row.address = v.address;
-      if (reserveTx) {
+      if (reserveTx || poolWithdraw) {
         if (v.dest20) row.dest20 = v.dest20;
-        else if (v.address) {
-          const h = hash20FromAddress(v.address);
+        else {
+          const h = hash20FromAddress(v.address || (poolWithdraw ? tx.from : ''));
           if (h) row.dest20 = Buffer.from(h);
         }
       }

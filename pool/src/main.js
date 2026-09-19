@@ -4,8 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createPool } from './pool.js';
 import { isShearAddress } from '../../crypto/address.js';
-import { destForLogin, payoutDest } from '../../crypto/flow_sheet.js';
-import { loadOrCreatePoolIdent } from './pool_ident.js';
+import { bootPoolOperator } from './pool_ident.js';
 import { createP2p, P2P_PORT, SEED_RETRY_MS } from '../../node/src/p2p.js';
 import { MAGIC_TESTNET, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { SHARE_BITS_V2_START } from './share_vardiff.js';
@@ -25,12 +24,14 @@ try {
 
 const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4');
 fs.mkdirSync(dataDir, { recursive: true });
-const identPath = path.join(dataDir, 'pool-miner.json');
-let miner = process.env.SHEAR_POOL_MINER;
-if (!miner) {
-  const ident = loadOrCreatePoolIdent(identPath);
-  miner = ident.miner
-    || (ident.miner && !isShearAddress(ident.miner) ? ident.miner : '');
+const boot = bootPoolOperator({ dataDir });
+const miner = boot.miner
+  || (boot.miner && !isShearAddress(boot.miner) ? boot.miner : '');
+if (!boot.signed) {
+  console.error(JSON.stringify({
+    event: 'auto_payout_unsigned',
+    reason: 'need_SHEAR_POOL_SPEND_SEED',
+  }));
 }
 const pool = createPool({
   dataDir,
@@ -39,6 +40,7 @@ const pool = createPool({
   stratumBind: process.env.SHEAR_STRATUM_BIND || '127.0.0.1',
   requireLoginAuth: String(process.env.SHEAR_STRATUM_AUTH || '') === '1',
   miner,
+  operatorSpendKey: boot.operatorSpendKey,
   shareBits: Number(process.env.SHEAR_SHARE_BITS || SHARE_BITS_V2_START),
   bits: Number(process.env.SHEAR_BITS || GENESIS_BITS_PACKED),
 });
