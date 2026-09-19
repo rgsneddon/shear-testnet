@@ -22,9 +22,9 @@ const kCliGuiCoverage = <String, String>{
   'unlock': 'lock screen',
   'status': 'Continuum',
   'id': 'Continuum — Copy ID (she1)',
-  'dest': 'Continuum — Copy dest (ssa1)',
+  'dest': 'Continuum — Copy dest (ssa1 mining mailbox)',
   'balance': 'Continuum spendable / pending',
-  'receive': 'Continuum — new revolving dest',
+  'receive': 'fresh stealth ssa1 (not the mining mailbox)',
   'send': 'Flow — sign and post a spend',
   'sign': 'Flow / pull / vote / lock — sign with spend key',
   'vote': 'Vortex — The Reserve vote (signed)',
@@ -92,9 +92,9 @@ Commands (GUI surface):
   unlock               lock screen
   status               Continuum overview
   id                   Continuum — she1 (Copy ID)
-  dest                 Continuum — ssa1 (Copy dest)
+  dest                 Continuum — ssa1 mining mailbox (Copy dest)
   balance              Continuum spendable + pending
-  receive              Continuum — new revolving dest
+  receive              mint a fresh stealth ssa1 (not the mining mailbox)
   send                 Flow — sign + pay she1 or ssa1
   sign                 sign Flow / pool-pull / Reserve vote / lock
   vote                 The Reserve vote (signed kind=vote)
@@ -327,11 +327,11 @@ shear unlock — open a sealed session
     case 'id':
       return 'shear id — print she1 (Copy ID). Never a dest. Never mine to this alone.\n';
     case 'dest':
-      return 'shear dest — print ssa1 Copy dest. ShearK login is ssa1.worker\n';
+      return 'shear dest — print the stable mining mailbox (homeDest / Copy dest). ShearK login is ssa1.worker\n';
     case 'balance':
       return 'shear balance — spendable and pending SHE (confidential amounts)\n';
     case 'receive':
-      return 'shear receive — mint a new revolving ssa1 dest (same as Continuum receive)\n';
+      return 'shear receive — mint a fresh stealth ssa1 (not the mining mailbox)\n';
     case 'send':
       return '''
 shear send — Flow
@@ -479,9 +479,7 @@ Future<ShearIdentity> _needId(ShearSession session, _Flags flags, Map<String, St
 }
 
 void _bindLedger(ShearLedger ledger, ShearIdentity id, [ShearSession? session]) {
-  ledger.viewSecret = id.viewKey;
-  ledger.spendPub = decodePaymentCode(id.paymentCode)?['spendPub'];
-  ledger.spendSeed = hexToBytes(id.seedHex);
+  ledger.bindIdentity(id);
   if (session == null) return;
   if (session.rememberedDests.isEmpty && session.rememberedTxs.isEmpty) return;
   applyUserArchive(ledger, {
@@ -625,7 +623,7 @@ Future<int> _dest(IOSink out, _Flags flags, Map<String, String> env) async {
   final id = await _needId(session, flags, env);
   final ledger = ShearLedger();
   _bindLedger(ledger, id, session);
-  final dest = ledger.currentDest(id.address, paymentCode: id.paymentCode);
+  final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
   out.writeln(flags.json ? jsonEncode({'ok': true, 'dest': dest, 'login': '$dest.worker'}) : dest);
   return 0;
 }

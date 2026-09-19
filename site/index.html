@@ -419,7 +419,7 @@ npm run pool</pre>
 ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
         <button type="button" data-copy="solo-win">Copy</button>
       </div>
-      <p>Replace <code>YOUR_SSA1</code> with Copy dest from the wallet. <code>.solo</code> is only a worker name. Hash bonus is 10<sup>−11</sup> SHE per accepted hash, paid onto that dest on the next sealed block, spendable after 6 confirms. Reuse links your blocks; rotate dests. Amounts are confidential.</p>
+      <p>Replace <code>YOUR_SSA1</code> with Copy dest from Continuum (the <code>ssa1</code> shown on screen — Copy dest copies that mailbox, it does not mint a new one). <code>.solo</code> is only a worker name. Hash bonus is 10<sup>−11</sup> SHE per accepted hash, paid onto that dest on the next sealed block, spendable after 6 confirms. Reuse the same mining mailbox so blocks stay linked. Amounts are confidential.</p>
       <h3>Public pool instead</h3>
       <p>Public stratum <code>pool.shear.digital:1111</code> is <strong>cleartext TCP</strong> unless TLS is configured in front of it. Production pools should set <code>SHEAR_STRATUM_AUTH=1</code> (signed dest login).</p>
       <p>Skip the local node and hash on the official stratum:</p>

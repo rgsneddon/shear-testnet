@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_identity.dart';
@@ -323,7 +324,7 @@ void main() {
 
   test('unconfirmed send is pending until the next block is found', () async {
     final id = createIdentity();
-    final ledger = ShearLedger()..viewSecret = id.viewKey;
+    final ledger = ShearLedger()..bindIdentity(id);
     final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     ledger.confirmRound(address: dest, pot: 1, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
@@ -381,7 +382,7 @@ void main() {
     expect(kTabs, ['Continuum', 'Flow', 'Resistance', 'Vortex', 'Shearview', 'Closure']);
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
-    final probe = ShearLedger()..bindIdentity(id);
+    final probe = ShearLedger()..viewSecret = id.viewKey;
     final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
     expect(dest.startsWith('ssa1'), isTrue);
     expect(dest.length, lessThanOrEqualTo(shortAddrMax));
@@ -472,14 +473,18 @@ void main() {
     );
   });
 
-  test('Copy dest rotation yields two dests; human send errors', () {
+  test('newDest / shear-receive rotation yields two dests; homeDest stays the mining mailbox', () {
     final id = createIdentity();
     final ledger = ShearLedger()..bindIdentity(id);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     final a = ledger.newDest(id.address, paymentCode: id.paymentCode);
     final b = ledger.newDest(id.address, paymentCode: id.paymentCode);
     expect(a.startsWith('ssa1'), isTrue);
     expect(b.startsWith('ssa1'), isTrue);
     expect(a, isNot(b));
+    expect(home, isNot(a));
+    expect(home, isNot(b));
+    expect(ledger.homeDest(id.address, paymentCode: id.paymentCode), home);
     expect(kErrNoteSpent, contains('already spent'));
     expect(kErrRangeProof, contains('range proof'));
     expect(kErrPublicHttp, contains('public node'));
@@ -1453,7 +1458,11 @@ void main() {
     expect(destAtIndex(id.address, index: 0, viewKey: id.viewKey), d0);
     expect(destAtIndex(id.address, index: 99, viewKey: id.viewKey)!.startsWith('ssa1'), isTrue);
     expect(isDestAddress(encodeHrp('ssa', Uint8List.fromList(List.filled(20, 7)))), isTrue);
-    final pub = decodePaymentCode(id.paymentCode)!['spendPub']!;
+    final pub = ed25519PublicFromSeed(Uint8List.fromList([
+      for (var i = 0; i < 32; i++)
+        int.parse(id.seedHex.substring(i * 2, i * 2 + 2), radix: 16),
+    ]));
+    ledger.bindIdentity(id);
     final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     expect(destMatchesSpendPub(home, pub), isTrue);
     expect(home, ledger.currentDest(id.address, paymentCode: id.paymentCode));
@@ -1898,8 +1907,7 @@ void main() {
     expect(find.byKey(const Key('copy-id')), findsOneWidget);
     expect(find.byKey(const Key('copy-dest')), findsOneWidget);
     expect(find.byKey(const Key('continuum-ssa1')), findsOneWidget);
-    final dest = ShearLedger()
-      ..viewSecret = session.identity!.viewKey;
+    final dest = ShearLedger()..bindIdentity(session.identity!);
     final ssa1 = dest.homeDest(session.identity!.address, paymentCode: session.identity!.paymentCode);
     expect(ssa1.startsWith('ssa1'), isTrue);
     expect(find.textContaining(ssa1), findsWidgets);
@@ -1912,6 +1920,56 @@ void main() {
     expect(find.text('Shearview  S_{μν}'), findsOneWidget);
     expect(find.text('No confirmed transactions yet.'), findsOneWidget);
     expect(find.text('Copy ID'), findsNothing);
+  });
+
+  testWidgets('Copy dest clips Continuum homeDest, not a rotated dest', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('shear-copy-dest-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ledger = ShearLedger();
+    String? clip;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (MethodCall call) async {
+        if (call.method == 'Clipboard.setData') {
+          final args = call.arguments as Map?;
+          clip = args?['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null);
+    });
+
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
+    await tester.pump();
+    await tester.pump();
+
+    final ident = session.identity!;
+    final shown = tester.widget<SelectableText>(find.byKey(const Key('continuum-ssa1'))).data!;
+    final home = ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
+    expect(shown, home);
+    expect(shown.startsWith('ssa1'), isTrue);
+    final destCountBefore = ledger.destCount;
+
+    await tester.ensureVisible(find.byKey(const Key('copy-dest')));
+    await tester.tap(find.byKey(const Key('copy-dest')));
+    await tester.pump();
+
+    expect(ledger.destCount, destCountBefore);
+    expect(clip, shown);
+    expect(clip, home);
+    expect(find.textContaining('Each Copy dest mints a fresh mailbox'), findsNothing);
+    expect(find.textContaining('Copy dest copies the mailbox shown above'), findsOneWidget);
+
+    final probe = ShearLedger()..bindIdentity(ident);
+    final rotated = probe.newDest(ident.address, paymentCode: ident.paymentCode);
+    expect(rotated, isNot(home));
+    expect(clip, isNot(rotated));
   });
 
   test('Path 1 fold sums sealed pot vouts and excludes pending templates and hash bonus', () {
@@ -3350,12 +3408,12 @@ void main() {
     final server = await _fakePool(live: live, posted: posted);
     addTearDown(() => server.close(force: true));
     final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
-    final aliceL = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
+    final aliceL = ShearLedger(pool: pool)..bindIdentity(alice);
     final home = aliceL.homeDest(alice.address, paymentCode: alice.paymentCode);
     live.destBalances[home] = 1.5;
     await aliceL.syncCredits(alice.address, paymentCode: alice.paymentCode);
     expect(home, isNot(indexed));
-    expect(destMatchesSpendPub(home, decodePaymentCode(alice.paymentCode)!['spendPub']!), isTrue);
+    expect(destMatchesSpendPub(home, aliceL.spendPub!), isTrue);
     expect(aliceL.spendFrom(alice.address, paymentCode: alice.paymentCode, amount: 0.4), home);
     expect(aliceL.spendFrom(alice.address, paymentCode: alice.paymentCode, amount: 0.4), isNot(indexed));
 
@@ -3421,7 +3479,7 @@ void main() {
     final server = await _fakePool(live: live);
     addTearDown(() => server.close(force: true));
     final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
-    final ledger = ShearLedger(pool: pool)..viewSecret = alice.viewKey;
+    final ledger = ShearLedger(pool: pool)..bindIdentity(alice);
     final home = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
     final indexed = destAtIndex(alice.address, index: 0, viewKey: alice.viewKey)!;
     live.destBalances[home] = kPiShe + levyNanos(kPiSheNanos) / kUnitsPerShe;
@@ -3431,7 +3489,7 @@ void main() {
     final from = ledger.spendFrom(alice.address, paymentCode: alice.paymentCode, amount: lockNeed);
     expect(from, home);
     expect(from, isNot(indexed));
-    expect(destMatchesSpendPub(from, decodePaymentCode(alice.paymentCode)!['spendPub']!), isTrue);
+    expect(destMatchesSpendPub(from, ledger.spendPub!), isTrue);
     final vault = vaultDest(alice.address, viewKey: alice.viewKey)!;
     final r = ShearReserve();
     expect(r.deposit(dest: vault, she: kPiShe, nowMs: 1700000000000, payout: from), isNull);
@@ -3534,13 +3592,13 @@ void main() {
 
   test('homeDest is a stable ssa1 from shear1 — never the rest-frame on chain', () {
     final alice = createIdentity();
-    final ledger = ShearLedger()..viewSecret = alice.viewKey;
+    final ledger = ShearLedger()..bindIdentity(alice);
     expect(alice.address.startsWith('shear1'), isTrue);
     final home = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
     expect(home.startsWith('ssa1'), isTrue);
     expect(home, isNot(equals(alice.address)));
     expect(isShearAddress(home), isFalse);
-    expect(destMatchesSpendPub(home, decodePaymentCode(alice.paymentCode)!['spendPub']!), isTrue);
+    expect(destMatchesSpendPub(home, ledger.spendPub!), isTrue);
     expect(home, ledger.currentDest(alice.address, paymentCode: alice.paymentCode));
     ledger.tipHeight = 900;
     ledger.lag1Root = Uint8List(32)..fillRange(0, 32, 9);

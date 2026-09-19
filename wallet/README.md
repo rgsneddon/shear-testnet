@@ -6,7 +6,7 @@ Tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure. The Reserve lives
 
 Backup file: encrypted `shewall.bin`. Offer `she1` when someone pays you. Incoming coin lands on a revolving `ssa1` dest. Rest-frame `shear1` stays in Closure.
 
-Mine with **Copy dest**: log ShearK in as `ssa1.worker`. Hash bonus (no 1% fee) and your pot share accumulate; the public pool auto-pays that `ssa1` at π SHE.
+Mine with **Copy dest**: the Continuum `ssa1` shown on screen (Copy dest copies that mailbox; it does not mint a new one). Log ShearK in as `ssa1.worker`. Hash bonus (no 1% fee) and your pot share accumulate; the public pool auto-pays that `ssa1` at π SHE.
 
 Pool: `pool.shear.digital:1111` (cleartext TCP unless TLS is in front). Magic: `shear-testnet-v4`.
 

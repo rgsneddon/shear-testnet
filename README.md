@@ -103,7 +103,7 @@ Log in with wallet **Copy dest**:
 ShearK-Miner --pool pool.shear.digital:1111 --user ssa1YOURDEST.worker --threads 4
 ```
 
-`ssa1.worker` is the dest the wallet exported for this worker. Amounts are confidential; dests are stealth. Reuse links your blocks; rotate dests.
+`ssa1.worker` is Continuum Copy dest — the `ssa1` shown on screen, not a rotated mailbox. Amounts are confidential; dests are stealth. Reuse that mining mailbox so blocks stay linked.
 
 Wallet **0.36** syncs a local node at `127.0.0.1:18332` (headers + compact blocks). It does not use the old height sampler. Public pool HTTP submit is an advanced toggle.
 

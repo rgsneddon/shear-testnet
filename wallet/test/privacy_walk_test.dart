@@ -23,7 +23,7 @@ void main() {
     expect(silentDestFromCode(alice.paymentFingerprint, bob.ephSeed), isNull);
     final rec = recognizeSilentDest(
       viewKey: alice.viewKey,
-      spendPub: decodePaymentCode(alice.paymentCode)!['spendPub']!,
+      spendPub: decodePaymentCode(alice.paymentCodeFull)!['spendPub']!,
       dest: bob.dest,
       ephPub: bob.ephPub,
     );
@@ -75,7 +75,7 @@ void main() {
 
   test('stealth dest commits to one-time spend pub; wallet scans and keeps dest', () {
     final alice = createIdentity();
-    final parsed = decodePaymentCode(alice.paymentCode)!;
+    final parsed = decodePaymentCode(alice.paymentCodeFull)!;
     expect(parsed['spendPub']!.length, 32);
     expect(parsed['scanPub']!.length, 32);
     final pay = silentPay(alice.paymentCodeFull)!;
@@ -108,9 +108,7 @@ void main() {
   test('homeDest spendFrom send and lock dest-bind destCommit, not destAtIndex', () async {
     final alice = createIdentity();
     final bob = silentPay(alice.paymentCodeFull)!;
-    final ledger = ShearLedger();
-    ledger.viewSecret = alice.viewKey;
-    ledger.spendPub = decodePaymentCode(alice.paymentCode)!['spendPub'];
+    final ledger = ShearLedger()..bindIdentity(alice);
     final home = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
     expect(home, ledger.currentDest(alice.address, paymentCode: alice.paymentCode));
     expect(destMatchesSpendPub(home, ledger.spendPub!), isTrue);
@@ -153,11 +151,15 @@ void main() {
 
   test('hash credits land on homeDest destCommit; dest-index is not spendable', () {
     final alice = createIdentity();
-    final ledger = ShearLedger()..viewSecret = alice.viewKey;
+    final ledger = ShearLedger()..bindIdentity(alice);
     final home = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
     final indexed = destAtIndex(alice.address, index: 0, viewKey: alice.viewKey)!;
     expect(home, isNot(indexed));
-    expect(destMatchesSpendPub(home, decodePaymentCode(alice.paymentCode)!['spendPub']!), isTrue);
+    final spend = ed25519PublicFromSeed(Uint8List.fromList([
+      for (var i = 0; i < 32; i++)
+        int.parse(alice.seedHex.substring(i * 2, i * 2 + 2), radix: 16),
+    ]));
+    expect(destMatchesSpendPub(home, spend), isTrue);
     ledger.creditHash(home, hashes: 256);
     expect(
       ledger.pending(alice.address, paymentCode: alice.paymentCode),
@@ -171,6 +173,19 @@ void main() {
       ledger.pending(alice.address, paymentCode: alice.paymentCode),
       closeTo(256 * kHashBonusShe, 1e-18),
     );
+    ledger.confirmRound(address: home, pot: 1, height: 20);
+    ledger.settleTo(20 + ShearLedger.spendableConfirmations);
+    expect(
+      ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode),
+      closeTo(1 + 256 * kHashBonusShe, 1e-18),
+    );
+
+    final other = ShearLedger()..bindIdentity(alice);
+    other.creditHash(indexed, hashes: 100);
+    other.confirmRound(address: indexed, pot: 1, height: 20);
+    other.settleTo(20 + ShearLedger.spendableConfirmations);
+    expect(other.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
+    expect(other.spendable(indexed), closeTo(1 + 100 * kHashBonusShe, 1e-18));
   });
 
   test('copy ID is the full payment code, not alias dest', () {
@@ -180,7 +195,8 @@ void main() {
     expect(id.paymentCode.startsWith('she1'), isTrue);
     expect(payoutDest(id.paymentCode), isNull);
     expect(id.paymentFingerprint.startsWith('she1'), isTrue);
-    expect(id.paymentFingerprint, isNot(id.paymentCode));
+    expect(id.paymentFingerprint, id.paymentCode);
+    expect(id.paymentCodeFull, isNot(id.paymentCode));
   });
 }
 

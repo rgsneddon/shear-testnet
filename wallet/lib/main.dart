@@ -1286,15 +1286,14 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       OutlinedButton(
         key: const Key('copy-dest'),
         onPressed: () {
-          final fresh = ledger.newDest(ident.address, paymentCode: ident.paymentCode);
-          Clipboard.setData(ClipboardData(text: fresh));
-          setState(() {});
+          final shown = ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
+          Clipboard.setData(ClipboardData(text: shown));
         },
         child: const Text('Copy dest'),
       ),
       const SizedBox(height: 6),
       Text(
-        'Reuse links your blocks; rotate dests. Each Copy dest mints a fresh mailbox. Parent-job dest stays valid through lag-1 mint.',
+        'Mining login is this ssa1 (optionally ssa1.worker). Copy dest copies the mailbox shown above.',
         style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
       ),
     ];

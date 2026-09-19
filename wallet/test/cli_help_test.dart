@@ -133,6 +133,65 @@ void main() {
     expect(idOut.toString().trim(), imported.paymentCode);
   });
 
+  test('CLI dest prints homeDest twice for the same store', () async {
+    final dir = Directory.systemTemp.createTempSync('shear-cli-dest-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final store = File('${dir.path}/session.json');
+    final pwFile = File('${dir.path}/pw')..writeAsStringSync('correct-horse');
+    final confirm = File('${dir.path}/pw2')..writeAsStringSync('correct-horse');
+    final created = StringBuffer();
+    var code = await runShearCli([
+      'create',
+      '--store',
+      store.path,
+      '--password-file',
+      pwFile.path,
+      '--confirm-file',
+      confirm.path,
+    ], stdout: created, stderr: StringBuffer());
+    expect(code, 0, reason: created.toString());
+
+    Future<String> destOnce() async {
+      final destOut = StringBuffer();
+      final destCode = await runShearCli([
+        'dest',
+        '--store',
+        store.path,
+        '--password-file',
+        pwFile.path,
+      ], stdout: destOut, stderr: StringBuffer());
+      expect(destCode, 0, reason: destOut.toString());
+      return destOut.toString().trim();
+    }
+
+    final first = await destOnce();
+    final second = await destOnce();
+    expect(first.startsWith('ssa1'), isTrue);
+    expect(second, first);
+
+    final session = ShearSession(store: store);
+    final id = await session.unlock('correct-horse');
+    final ledger = ShearLedger()..bindIdentity(id);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    expect(first, home);
+
+    final recOut = StringBuffer();
+    code = await runShearCli([
+      'receive',
+      '--store',
+      store.path,
+      '--password-file',
+      pwFile.path,
+    ], stdout: recOut, stderr: StringBuffer());
+    expect(code, 0, reason: recOut.toString());
+    final received = recOut.toString().trim();
+    expect(received.startsWith('ssa1'), isTrue);
+    expect(received, isNot(home));
+    expect(await destOnce(), home);
+  });
+
   test('v1 shewall.bin still restores (Closure migrate) then reseals v2', () async {
     final dir = Directory.systemTemp.createTempSync('shear-cli-v1-');
     addTearDown(() {

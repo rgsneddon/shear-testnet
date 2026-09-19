@@ -398,6 +398,8 @@ class ShearLedger {
   String? _restFrame;
 
   /// Bind spend seed so Copy dest carries B and sealed vouts can be unwrapped.
+  /// Public she1 is a fingerprint (no spendPub in the payload). Derive the
+  /// long-term spend pub from the seed so homeDest is destCommit, not destForLogin.
   void bindIdentity(ShearIdentity ident) {
     _restFrame = ident.address;
     viewSecret = ident.viewKey;
@@ -406,7 +408,7 @@ class ShearLedger {
     final seed = hexToBytes(ident.seedHex);
     if (seed.length == 32) {
       spendSeed = seed;
-      admitBase ??= admitBaseBytes(seed);
+      spendPub ??= ed25519PublicFromSeed(seed);
     }
   }
 
@@ -1484,6 +1486,9 @@ class ShearLedger {
     final parsed = decodePaymentCode(paymentCode ?? '');
     spendPub ??= parsed?['spendPub'];
     admitBase ??= parsed?['admitBase'];
+    if (spendPub == null && spendSeed != null && spendSeed!.length == 32) {
+      spendPub = ed25519PublicFromSeed(spendSeed!);
+    }
     return spendPub;
   }
 
@@ -1549,7 +1554,7 @@ class ShearLedger {
   void _foldFlowDest(String restFrame, {String? paymentCode}) {
     final pub = _spendPubOf(paymentCode);
     if (pub == null || pub.length != 32) return;
-    final bound = encodeDestAddress(destCommitFromSpendPub(pub), _admitBaseOf(paymentCode));
+    final bound = encodeDestAddress(destCommitFromSpendPub(pub));
     final flow = destForLogin(
       restFrame,
       height: tipHeight,
@@ -1614,18 +1619,22 @@ class ShearLedger {
   }
 
   Uint8List? _admitBaseOf(String? paymentCode) {
-    admitBase ??= decodePaymentCode(paymentCode ?? '')?['admitBase'];
-    if (admitBase == null && spendSeed != null && spendSeed!.length == 32) {
-      admitBase = admitBaseBytes(spendSeed!);
+    final fromCode = decodePaymentCode(paymentCode ?? '')?['admitBase'];
+    if (fromCode != null && fromCode.length == 32) return fromCode;
+    if (admitBase != null && admitBase!.length == 32) return admitBase;
+    if (spendSeed != null && spendSeed!.length == 32) {
+      return admitBaseBytes(spendSeed!);
     }
-    return admitBase;
+    return null;
   }
 
   String currentDest(String restFrame, {String? paymentCode}) {
     if (isDestAddress(restFrame)) return restFrame;
-    final pub = spendPub ?? decodePaymentCode(paymentCode ?? '')?['spendPub'];
+    final pub = _spendPubOf(paymentCode);
     if (pub != null && pub.length == 32) {
-      return encodeDestAddress(destCommitFromSpendPub(pub), _admitBaseOf(paymentCode));
+      // Mining mailbox is destCommit(spendPub) dest20. dest20||B is a
+      // different ssa1 — Copy dest must match the Continuum string.
+      return encodeDestAddress(destCommitFromSpendPub(pub));
     }
     return destForLogin(restFrame, height: tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ??
         restFrame;
@@ -1932,7 +1941,7 @@ class ShearLedger {
     }
     if (spendPub != null && spendPub!.length == 32) {
       if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
-        src = encodeDestAddress(destCommitFromSpendPub(spendPub!), admitBase ?? _admitBaseOf(paymentCode));
+        src = encodeDestAddress(destCommitFromSpendPub(spendPub!));
       }
     }
     var depth = 0;

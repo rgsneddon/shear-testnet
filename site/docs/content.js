@@ -110,7 +110,7 @@ window.SHEAR_DOCS = {
       '<table><tr><th>Rest-frame</th><td><code>shear1…</code> — never share, never on chain</td></tr>' +
       '<tr><th>Silent ID</th><td><code>she1…</code> — offer this; never written as a vout</td></tr>' +
       '<tr><th>Dest</th><td><code>ssa1…</code> — revolving mailbox the book actually writes</td></tr></table>' +
-      '<p>The wallet password is the view secret. Copy ID is the full <code>she1</code> payment code (scan + spend pubs). Copy dest is the <code>ssa1</code> mailbox you mine to. Two pays to one published code produce two <code>ssa1</code> dests. Miner login is Copy dest as <code>ssa1.worker</code>. Nodes keep <code>she1</code> and <code>shear1</code> off address fields on the book.</p>'
+      '<p>The wallet password is the view secret. Copy ID is the full <code>she1</code> payment code (scan + spend pubs). Copy dest is the stable Continuum <code>ssa1</code> mining mailbox (the string on screen — Copy dest copies it and does not mint a new dest). Two pays to one published code produce two <code>ssa1</code> dests. Miner login is Copy dest as <code>ssa1.worker</code>. Nodes keep <code>she1</code> and <code>shear1</code> off address fields on the book.</p>'
   };
 
   P.privacy = {
