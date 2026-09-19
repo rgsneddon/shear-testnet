@@ -131,6 +131,15 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /rustup\.rs/);
     assert.match(main, /crypto\/native/);
     assert.match(main, /NODE_INC|node_api\.h/);
+    assert.match(main, /Headers check/);
+    assert.match(main, /node_prefix/);
+    assert.match(main, /data-copy="solo-headers-debian"/);
+    assert.match(main, /data-copy="solo-nodeinc-debian"/);
+    assert.match(main, /NODE_INC=\./);
+    assert.match(main, /Missing node_api\.h/);
+    assert.match(readme, /Headers check/);
+    assert.match(readme, /node_prefix/);
+    assert.match(readme, /NODE_INC=\./);
     assert.match(main, /Darwin/);
     assert.match(main, /Wrong dest/);
     assert.match(main, /cleartext TCP/);

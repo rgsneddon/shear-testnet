@@ -67,7 +67,25 @@ make -C crypto/native
 node node/src/node.js --print-config
 ```
 
-`--print-config` must show `"magic":"shear-testnet-v4"`, `"admit":"ADMITv2"`, `"mainnet":false`.
+Headers check (runtime Node is not enough — `ls` must show `node_api.h`). If `ls` fails, install Node *with headers* (NodeSource / nodejs-devel), not a headerless binary:
+
+```bash
+node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"
+```
+
+NODE_INC recovery — do **not** `find /usr` only if empty (that sets `NODE_INC=.` and the compile shows bare `-I.`):
+
+```bash
+# Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native
+```
+
+`--print-config` must show `"magic":"shear-testnet-v4"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
 
 ### Run
 
