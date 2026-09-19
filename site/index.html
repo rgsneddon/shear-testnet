@@ -432,7 +432,22 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"</pre>
             <button type="button" data-copy="solo-deps">Copy</button>
           </div>
-          <p>If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, <code>export NODE_INC=/usr/include/node</code> (the directory that contains that file).</p>
+          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource / nodejs-devel), not a headerless binary.</p>
+          <div class="copy-row">
+            <pre id="solo-headers-debian">node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
+            <button type="button" data-copy="solo-headers-debian">Copy</button>
+          </div>
+          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
+          <div class="copy-row">
+            <pre id="solo-nodeinc-debian"># Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native</pre>
+            <button type="button" data-copy="solo-nodeinc-debian">Copy</button>
+          </div>
           <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
         </div>
         <div class="os-tabpanel" role="tabpanel" id="solo-pane-fedora" aria-labelledby="solo-tab-fedora" data-os="fedora" hidden>
@@ -448,7 +463,22 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"</pre>
             <button type="button" data-copy="solo-deps-fedora">Copy</button>
           </div>
-          <p>If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, <code>export NODE_INC=/usr/include/node</code> (the directory that contains that file).</p>
+          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource / nodejs-devel), not a headerless binary.</p>
+          <div class="copy-row">
+            <pre id="solo-headers-fedora">node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
+            <button type="button" data-copy="solo-headers-fedora">Copy</button>
+          </div>
+          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
+          <div class="copy-row">
+            <pre id="solo-nodeinc-fedora"># Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native</pre>
+            <button type="button" data-copy="solo-nodeinc-fedora">Copy</button>
+          </div>
           <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
         </div>
         <div class="os-tabpanel" role="tabpanel" id="solo-pane-arch" aria-labelledby="solo-tab-arch" data-os="arch" hidden>
@@ -460,7 +490,22 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 # . "$HOME/.cargo/env"</pre>
             <button type="button" data-copy="solo-deps-arch">Copy</button>
           </div>
-          <p>If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, <code>export NODE_INC=/usr/include/node</code> (the directory that contains that file).</p>
+          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource / nodejs-devel), not a headerless binary.</p>
+          <div class="copy-row">
+            <pre id="solo-headers-arch">node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
+            <button type="button" data-copy="solo-headers-arch">Copy</button>
+          </div>
+          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
+          <div class="copy-row">
+            <pre id="solo-nodeinc-arch"># Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native</pre>
+            <button type="button" data-copy="solo-nodeinc-arch">Copy</button>
+          </div>
           <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
         </div>
         <div class="os-tabpanel" role="tabpanel" id="solo-pane-suse" aria-labelledby="solo-tab-suse" data-os="suse" hidden>
@@ -476,7 +521,22 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"</pre>
             <button type="button" data-copy="solo-deps-suse">Copy</button>
           </div>
-          <p>If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, <code>export NODE_INC=/usr/include/node</code> (the directory that contains that file).</p>
+          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource / nodejs-devel), not a headerless binary.</p>
+          <div class="copy-row">
+            <pre id="solo-headers-suse">node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
+            <button type="button" data-copy="solo-headers-suse">Copy</button>
+          </div>
+          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
+          <div class="copy-row">
+            <pre id="solo-nodeinc-suse"># Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native</pre>
+            <button type="button" data-copy="solo-nodeinc-suse">Copy</button>
+          </div>
           <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
         </div>
         <div class="os-tabpanel" role="tabpanel" id="solo-pane-macos" aria-labelledby="solo-tab-macos" data-os="macos" hidden>
@@ -487,7 +547,22 @@ brew install git cmake python pkg-config openssl node rust
 export NODE_INC="$(brew --prefix node)/include/node"</pre>
             <button type="button" data-copy="solo-deps-macos">Copy</button>
           </div>
-          <p>If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, <code>export NODE_INC="$(brew --prefix node)/include/node"</code>. On the cmake line below, use <code>-j"$(sysctl -n hw.ncpu)"</code> instead of <code>nproc</code>.</p>
+          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (Homebrew <code>node</code> includes them). On cmake below, use <code>-j"$(sysctl -n hw.ncpu)"</code> instead of <code>nproc</code>.</p>
+          <div class="copy-row">
+            <pre id="solo-headers-macos">node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
+            <button type="button" data-copy="solo-headers-macos">Copy</button>
+          </div>
+          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
+          <div class="copy-row">
+            <pre id="solo-nodeinc-macos"># Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native</pre>
+            <button type="button" data-copy="solo-nodeinc-macos">Copy</button>
+          </div>
           <p>Then continue with clone / RandomX / <code>crypto/native</code> below. Miner unzip + <code>./ShearK-Miner</code> is the macOS / Linux login block in step 3.</p>
         </div>
         <div class="os-tabpanel" role="tabpanel" id="solo-pane-windows" aria-labelledby="solo-tab-windows" data-os="windows" hidden>
@@ -504,7 +579,23 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"</pre>
             <button type="button" data-copy="solo-deps-windows">Copy</button>
           </div>
-          <p>If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, <code>export NODE_INC=/usr/include/node</code> (inside WSL). After <code>npm run pool</code> in WSL, on Windows:</p>
+          <p>Headers check (inside WSL) — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource), not a headerless binary.</p>
+          <div class="copy-row">
+            <pre id="solo-headers-windows">node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
+            <button type="button" data-copy="solo-headers-windows">Copy</button>
+          </div>
+          <p>NODE_INC recovery (inside WSL) — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
+          <div class="copy-row">
+            <pre id="solo-nodeinc-windows"># Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native</pre>
+            <button type="button" data-copy="solo-nodeinc-windows">Copy</button>
+          </div>
+          <p>After <code>npm run pool</code> in WSL, on Windows:</p>
           <div class="copy-row">
             <pre id="solo-deps-windows-miner">ShearK-Miner.exe --selftest
 ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
@@ -514,7 +605,7 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
         </div>
       </div>
       <h3>1. Clone, RandomX, crypto/native</h3>
-      <p>Same as README “Build your own node”. If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, set <code>NODE_INC</code> to the directory that contains it (often <code>/usr/include/node</code> or the Node prefix <code>include/node</code>).</p>
+      <p>Same as README “Build your own node”. Run the Headers check in your OS tab first. If make still fails on <code>node_api.h</code>, use that tab’s NODE_INC recovery (do not <code>find /usr</code> into an empty <code>NODE_INC=.</code>).</p>
       <div class="copy-row">
         <pre id="solo-node">git clone https://github.com/rgsneddon/shear-testnet.git
 cd shear-testnet
@@ -559,7 +650,7 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
       <ul>
         <li><strong>Wrong dest</strong> — login must be Continuum Copy dest, the <code>ssa1</code> shown on screen. A rotated Flow receive dest will not show mining credits on the mailbox you are staring at.</li>
         <li><strong>Cleartext stratum</strong> — <code>127.0.0.1:1111</code> is local. Public <code>pool.shear.digital:1111</code> is <strong>cleartext TCP</strong> unless TLS sits in front. Production pools set <code>SHEAR_STRATUM_AUTH=1</code> and bind <code>127.0.0.1</code>.</li>
-        <li><strong>NODE_INC / node_api.h</strong> — native addons need Node headers. If the make line fails on <code>node_api.h</code>, install Node 20+ and export <code>NODE_INC</code> to the include dir that contains that file.</li>
+        <li><strong>Missing node_api.h</strong> — Node version alone is not enough; need <code>include/node/node_api.h</code>. Bare <code>-I.</code> in the make line means <code>NODE_INC</code> was empty. Fix headers, then rebuild. Prefer Node 20 LTS from NodeSource if unsure.</li>
         <li><strong>macOS/Darwin <code>.node</code> on Linux</strong> — never copy <code>shearhash.node</code> / <code>shearadmit.node</code> from a Mac onto Linux. Build RandomX + <code>make -C crypto/native</code> on the Linux box.</li>
       </ul>
       <h3>Public pool instead</h3>
