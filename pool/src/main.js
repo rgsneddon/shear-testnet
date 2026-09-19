@@ -36,7 +36,7 @@ const pool = createPool({
   dataDir,
   stratumPort: Number(process.env.SHEAR_STRATUM || 1111),
   httpPort: Number(process.env.SHEAR_HTTP || 8088),
-  stratumBind: process.env.SHEAR_STRATUM_BIND || '0.0.0.0',
+  stratumBind: process.env.SHEAR_STRATUM_BIND || '127.0.0.1',
   requireLoginAuth: String(process.env.SHEAR_STRATUM_AUTH || '') === '1',
   miner,
   shareBits: Number(process.env.SHEAR_SHARE_BITS || SHARE_BITS_V2_START),

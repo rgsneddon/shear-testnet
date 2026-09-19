@@ -60,7 +60,7 @@ Optional environment (drop-in `/etc/systemd/system/shear-pool.service.d/local.co
 |---|---|
 | `SHEAR_DATA` | Chain + pool state |
 | `SHEAR_STRATUM` | Stratum port (default 1111) |
-| `SHEAR_STRATUM_BIND` | Stratum bind host (dev default 0.0.0.0; prod example `127.0.0.1`) |
+| `SHEAR_STRATUM_BIND` | Stratum bind host (default `127.0.0.1` behind TLS; set `0.0.0.0` only for local dest-only) |
 | `SHEAR_STRATUM_AUTH` | `1` = require signed login (prod example on; `0` = dest-only for local dev) |
 | `SHEAR_ALERT_CONCENTRATION` | `/api/stats` `alerts.concentration` threshold (default 0.5) |
 | `SHEAR_ALERT_SHARE_BLOCK` | `/api/stats` `alerts.shareBlock` threshold (default 10000) |

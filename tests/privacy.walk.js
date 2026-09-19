@@ -198,6 +198,41 @@ describe('privacy.walk', () => {
     assert.equal(/"open"/.test(persisted), false);
     assert.equal(/portalOpen/.test(persisted), false);
     assert.equal(/viewKey/.test(persisted), false);
+    const fatVin = {
+      kind: 'send',
+      from: pay.dest,
+      to: pay.dest,
+      fee: 100,
+      vin: [{
+        prev: Buffer.alloc(32, 9),
+        index: 3,
+        noteCommit: Buffer.alloc(32, 4),
+        commit: Buffer.alloc(32, 2),
+        address: pay.dest,
+      }],
+      vout: [{ address: pay.dest, nanos, kind: 'send' }],
+    };
+    const stripped = compactTx(fatVin);
+    assert.equal(Object.keys(stripped.vin[0]).join(','), 'commit');
+    assert.equal(stripped.vin[0].prev, undefined);
+    assert.equal(stripped.vin[0].index, undefined);
+    assert.equal(stripped.vin[0].noteCommit, undefined);
+    assert.equal(stripped.vin[0].address, undefined);
+    const linked = attachDummyOuts({
+      kind: 'send',
+      from: pay.dest,
+      to: pay.dest,
+      fee: 100,
+      vin: [{
+        prev: Buffer.alloc(32, 9),
+        index: 3,
+        noteCommit: Buffer.alloc(32, 4),
+        commit: Buffer.alloc(32, 2),
+        address: pay.dest,
+      }],
+      vout: [{ address: pay.dest, nanos, kind: 'send' }],
+    });
+    assert.equal(admitMempool(emptyMempool(), linked).reason, 'vin_link');
     const { encodeWireBlock } = await import('../node/src/p2p.js');
     const wire = JSON.stringify(encodeWireBlock({
       header: Buffer.alloc(128),

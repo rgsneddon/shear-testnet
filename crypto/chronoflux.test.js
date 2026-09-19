@@ -24,9 +24,11 @@ import { newIdentity, hash20FromAddress, admitBaseFromAddress, freshStealthDest 
 import { vaultDest, destForLogin } from './flow_sheet.js';
 import { verifySealedNote, reviveBytes, sealCoinbaseNote, noteCommitOfDest20 } from './note.js';
 import { attachAdmitPub } from './admit.js';
-import { PI_SHE_NANOS } from './asert.js';
-import { digestTx } from '../node/src/chain.js';
+import { PI_SHE_NANOS, GENESIS_BITS_PACKED } from './asert.js';
+import { digestTx, buildTemplate, verifyBlock, GENESIS_PREV } from '../node/src/chain.js';
 import { poolWithdrawTx } from './levy.js';
+import { attachDummyOuts } from './dummy.js';
+import { admitMempool, emptyMempool } from './mempool.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -332,6 +334,53 @@ describe('chronoflux prune + collate', () => {
       ],
     });
     assert.equal(digestTx(lean.txs[1]).equals(digestTx(fat)), true);
+  });
+
+  it('compact of a fat vin is C̃-only; verify and mempool reject a still-linked vin', () => {
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey });
+    const fat = {
+      kind: 'send',
+      from: dest,
+      to: dest,
+      fee: 100,
+      vin: [{
+        prev: Buffer.alloc(32, 9),
+        index: 1,
+        noteCommit: Buffer.alloc(32, 4),
+        commit: Buffer.alloc(32, 2),
+        address: dest,
+      }],
+      vout: [{ address: dest, nanos: 1, kind: 'send' }],
+    };
+    const sealed = compactTx(fat);
+    assert.deepEqual(Object.keys(sealed.vin[0]), ['commit']);
+    assert.equal(sealed.vin[0].prev, undefined);
+    assert.equal(sealed.vin[0].index, undefined);
+    assert.equal(sealed.vin[0].noteCommit, undefined);
+    const linked = attachDummyOuts({ ...fat, id: 'linked-vin' });
+    assert.equal(admitMempool(emptyMempool(), linked).reason, 'vin_link');
+    const tpl = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: dest,
+      bits: GENESIS_BITS_PACKED,
+      now: 1_700_000_000_000,
+      txs: [linked],
+    });
+    const block = {
+      header: tpl.header,
+      txs: tpl.txs,
+      samples: tpl.samples,
+      miner: tpl.miner,
+      aLeaves: tpl.aLeaves,
+      bLeaves: tpl.bLeaves,
+      weight: tpl.weight,
+      shareBatch: tpl.shareBatch || [],
+    };
+    const got = verifyBlock(block, null, { trustedPowHash: Buffer.alloc(32) });
+    assert.equal(got.ok, false);
+    assert.equal(got.reason, 'vin_link');
   });
 
   it('compact hash vout keeps dest20, noteCommit, wrap, and valueProof.v', () => {

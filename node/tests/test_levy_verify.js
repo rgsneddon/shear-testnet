@@ -105,11 +105,7 @@ describe('verifyBlock Phase B Flow levy', () => {
         ...(maxLevy != null ? { maxLevy } : {}),
         changeNanos: change,
         vin: [{
-          prev: parent.hash,
-          index: spentIdx,
           commit: spent.commit,
-          noteCommit: spent.noteCommit,
-          r: spent.r,
           address: dest,
         }],
         vout: [
@@ -233,11 +229,7 @@ describe('verifyBlock Phase B Flow levy', () => {
       changeNanos: lastPot.change,
       open: destOpeningFromView(id.viewKey, id.spendPub, 0),
       vin: [{
-        prev: tip.hash,
-        index: lastPot.index,
         commit: lastPot.commit,
-        noteCommit: lastPot.noteCommit,
-        r: lastPot.r,
         address: dest,
       }],
       vout: [

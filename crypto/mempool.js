@@ -8,6 +8,8 @@ import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } f
 import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
 import { asU8, verifyRange } from './note.js';
+import { sealedVinLinkField } from './chronoflux.js';
+import { verifyPoolWithdrawBound } from './spend.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
@@ -37,6 +39,12 @@ export function admitMempool(pool, tx, opts = {}) {
   if (!allowed.has(kind)) {
     return { ok: false, reason: 'kind' };
   }
+  for (const v of tx.vin || []) {
+    const link = sealedVinLinkField(v);
+    if (link) return { ok: false, reason: 'vin_link' };
+  }
+  const bound = verifyPoolWithdrawBound(tx);
+  if (!bound.ok) return bound;
   const fields = checkTxAddressFields(tx, { coinbase: false });
   if (!fields.ok) return { ok: false, reason: fields.reason };
   const dests = [];

@@ -152,10 +152,11 @@ export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
   return sum / n;
 }
 
-/** 1 SHE pot: PROP of (pot - 100 bps) across hasher dests. Pool dest gets only the fee. */
-export function splitPot(round, poolDest) {
-  const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
-  const rest = BLOCK_SUBSIDY_NANOS - fee;
+/** PROP of (pot - 100 bps) across hasher dests. Pool dest gets only the fee. */
+export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS) {
+  const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
+  const fee = Math.floor(pot * POOL_FEE_BPS / 10000);
+  const rest = pot - fee;
   const feeAddr = poolFeeDest() || payoutDest(poolDest);
   const by = new Map();
   for (const r of Array.isArray(round) ? round : []) {
@@ -449,8 +450,8 @@ export function destBannedInBook(book, dest, now = Date.now()) {
 }
 
 export function stratumBindHost(override) {
-  const h = String(override ?? process.env.SHEAR_STRATUM_BIND ?? '0.0.0.0').trim();
-  return h || '0.0.0.0';
+  const h = String(override ?? process.env.SHEAR_STRATUM_BIND ?? '127.0.0.1').trim();
+  return h || '127.0.0.1';
 }
 
 export function explorerHostList() {
@@ -1083,9 +1084,10 @@ export function createPool({
   dataDir,
   stratumPort = 1111,
   httpPort = 8088,
-  stratumBind = process.env.SHEAR_STRATUM_BIND || '0.0.0.0',
+  stratumBind = process.env.SHEAR_STRATUM_BIND || '127.0.0.1',
   requireLoginAuth = String(process.env.SHEAR_STRATUM_AUTH || '') === '1',
   miner,
+  operatorSpendKey = null,
   shareBits = SHARE_BITS_V2_START,
   bits = GENESIS_BITS_PACKED,
   lockBits = false,
@@ -1438,13 +1440,15 @@ export function createPool({
     // Coinbase pot is PROP of proven lag-1 dests. splitPot of the live hasher
     // disagrees with shareBatch whenever the connected dest changed, and
     // verifyBlock then rejects every block-quality share (pot_prop).
+    const wantPot = wantLivePot();
     const potShares = poolPay
-      ? custodyPotShares(poolPay)
+      ? custodyPotShares(poolPay, wantPot)
       : (lag1Shares.length
-        ? potSharesFromBatch(lag1Shares, poolPay)
+        ? potSharesFromBatch(lag1Shares, poolPay, wantPot)
         : splitPot(
           potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
           poolPay,
+          wantPot,
         ));
     // she1 login may have no dest yet (dest arrives as owned ssa1). The header
     // still issues; shareBatch credit stays hasher dests only.
@@ -2352,7 +2356,7 @@ export function createPool({
     for (const row of due) {
       if (n >= cap) break;
       n += 1;
-      const built = buildAutoPayoutTx({ from, to: row.dest, nanos: row.nanos, fee });
+      const built = buildAutoPayoutTx({ from, to: row.dest, nanos: row.nanos, fee, spendKey: operatorSpendKey });
       if (!built.ok) continue;
       const q0 = Date.now();
       const queued = queueSend(built.tx);

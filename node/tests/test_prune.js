@@ -97,11 +97,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
       changeNanos: change,
       open: destOpeningFromView(alice.viewKey, alice.spendPub, 0),
       vin: [{
-        prev: store.tip().hash,
-        index: lastPot.index,
         commit: lastPot.commit,
-        noteCommit: lastPot.noteCommit,
-        r: lastPot.r,
         address: destA,
       }],
       vout: [

@@ -98,11 +98,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         fee,
         changeNanos: change,
         vin: [{
-          prev: parent.hash,
-          index: idx,
           commit: spent.commit,
-          noteCommit: spent.noteCommit,
-          r: spent.r,
           address: dest,
         }],
         vout: [
@@ -186,11 +182,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       fee,
       changeNanos: change,
       vin: [{
-        prev: parent.hash,
-        index: idx,
         commit: fakeIn.commit,
-        noteCommit: fakeIn.noteCommit,
-        r: fakeIn.r,
         address: dest,
       }],
       vout: [
@@ -254,11 +246,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       fee,
       changeNanos: change,
       vin: [{
-        prev: appended.block.hash,
-        index: idx,
         commit: spent.commit,
-        noteCommit: spent.noteCommit,
-        r: spent.r,
         address: dest,
       }],
       vout: [
@@ -348,11 +336,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       fee,
       changeNanos: change,
       vin: [{
-        prev: genesisHash,
-        index: idx,
         commit: spent.commit,
-        noteCommit: spent.noteCommit,
-        r: spent.r,
         address: dest,
       }],
       vout: [
@@ -422,11 +406,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       fee,
       changeNanos: change,
       vin: [{
-        prev: parent.hash,
-        index: idx,
         commit: spent.commit,
-        noteCommit: spent.noteCommit,
-        r: spent.r,
         address: dest,
       }],
       vout: [
@@ -463,11 +443,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       fee,
       changeNanos: change,
       vin: [{
-        prev: parent.hash,
-        index: idx,
         commit: spent.commit,
-        noteCommit: spent.noteCommit,
-        r: spent.r,
         address: dest,
       }],
       vout: [

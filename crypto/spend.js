@@ -30,6 +30,14 @@ function kindByte(kind) {
   return 0;
 }
 
+function dest20Field(x) {
+  try {
+    const b = Buffer.from(asU8(x));
+    if (b.length >= 20) return Buffer.from(b.subarray(0, 20));
+  } catch { /* ignore */ }
+  return Buffer.alloc(20);
+}
+
 /** Pack digest of the spend body. sig and open are not hashed. */
 export function spendPackDigest(tx) {
   const vins = (tx?.vin || []).map((v, i) => {
@@ -44,10 +52,13 @@ export function spendPackDigest(tx) {
   const vouts = (tx?.vout || []).map((o) => {
     const nc = asU8(o.noteCommit);
     const k = String(o.kind || tx?.kind || '');
-    const publicNanos = k === 'lock' || k === 'vote' || k === 'withdraw' || k === 'vortice-register';
+    const publicNanos = k === 'lock' || k === 'vote' || k === 'withdraw' || k === 'vortice-register' || k === 'pool-withdraw';
+    let d20 = nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : dest20Of(o.address || '');
+    if ((!d20 || d20.every((b) => b === 0)) && o.dest20) d20 = dest20Field(o.dest20);
+    const claimed = o.valueProof?.v != null ? Number(o.valueProof.v) : Number(o.nanos || 0);
     return {
-      dest20: nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : dest20Of(o.address || ''),
-      nanos: o.commit && !publicNanos ? 0 : Number(o.nanos || 0),
+      dest20: d20,
+      nanos: o.commit && !publicNanos ? 0 : claimed,
       kind: kindByte(o.kind || tx?.kind),
     };
   });
@@ -189,6 +200,14 @@ export function flowSendNeedsOpen(tx) {
   if (k === 'pool-withdraw' || k === 'claim') return false;
   if (k === 'lock' || k === 'vote' || k === 'withdraw') return false;
   return true;
+}
+
+/** Operator Flow spend sig (or already-bound sig) on every pool-withdraw. Fail-closed unsigned. */
+export function verifyPoolWithdrawBound(tx) {
+  const k = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (k !== 'pool-withdraw') return { ok: true };
+  if (verifySpendSig(tx)) return { ok: true };
+  return { ok: false, reason: 'unsigned' };
 }
 
 export function reservePortalDest(tx) {

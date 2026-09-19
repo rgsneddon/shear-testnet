@@ -237,5 +237,9 @@ describe('prod examples', () => {
     const tls = fs.readFileSync(path.join(root, 'pool/deploy/nginx-stratum-tls.conf'), 'utf8');
     assert.match(tls, /127\.0\.0\.1:1111/);
     assert.match(tls, /cleartext/);
+    const spec = fs.readFileSync(path.join(root, 'specs/pool.md'), 'utf8');
+    assert.doesNotMatch(spec, /Stratum: `0\.0\.0\.0:1111`/);
+    assert.match(spec, /SHEAR_STRATUM_AUTH=1/);
+    assert.match(spec, /SHEAR_STRATUM_BIND=127\.0\.0\.1/);
   });
 });

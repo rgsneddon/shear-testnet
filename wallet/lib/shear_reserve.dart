@@ -9,8 +9,12 @@ const kReserveProgram = 'shear-reserve-v1';
 const kReserveOracleId = 'shear-reserve-oracle-v1';
 const kPiSheNanos = 314159265358;
 const kPiShe = kPiSheNanos / kUnitsPerShe;
-const kReserveEpochDays = 400;
-const kReserveJoinCutoffDays = 99;
+const kReserveEpochDaysTestnet = 4;
+const kReserveEpochDaysMainnet = 400;
+const kReserveEpochDays = kBookMagic == 'shear-v1' ? kReserveEpochDaysMainnet : kReserveEpochDaysTestnet;
+const kReserveJoinCutoffDaysTestnet = 1;
+const kReserveJoinCutoffDaysMainnet = 99;
+const kReserveJoinCutoffDays = kBookMagic == 'shear-v1' ? kReserveJoinCutoffDaysMainnet : kReserveJoinCutoffDaysTestnet;
 const kReserveEpochMs = kReserveEpochDays * 86400000;
 const kReserveJoinCutoffMs = kReserveJoinCutoffDays * 86400000;
 /// Unweighted mean of all observed first-world policy rates (14 banks). 2.636% → 264 bps.
@@ -21,7 +25,7 @@ const kVoteIncrease = 'increase bonus';
 const kVoteDecrease = 'decrease bonus';
 const kVoteHold = 'leave bonus as-is';
 const kReserveCutoffDisclaimer =
-    'Fewer than 99 days remain. New deposits still lock and can unlock a vote, even on a first Reserve deposit. They do not earn stake.';
+    'Fewer than $kReserveJoinCutoffDays days remain. New deposits still lock and can unlock a vote, even on a first Reserve deposit. They do not earn stake.';
 const kReserveAccruedLabel = 'Accrued rewards';
 
 bool extraMintAllowed(String programId) => programId == kReserveProgram;
