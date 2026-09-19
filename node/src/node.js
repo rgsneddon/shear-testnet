@@ -29,6 +29,7 @@ import { applyLatestBootstrap } from './bootstrap.js';
 import { createP2p, P2P_PORT, SEED_RETRY_MS } from './p2p.js';
 import { PHASE_B_GATE } from './chain.js';
 import { createRpc, RPC_PORT } from './rpc.js';
+import { createSoloStratum, SOLO_STRATUM_PORT, SOLO_STRATUM_BIND } from './solo_stratum.js';
 import { mintVorticeDeployKey, parseVorticeKey, VORTICE_KEY_PREFIX } from '../../crypto/vortex.js';
 
 const VERSION = PRODUCT_VERSION;
@@ -89,6 +90,10 @@ export async function startNode({
   network = process.env.SHEAR_NETWORK || MAGIC_TESTNET,
   fastSync = process.argv.includes('--fast-sync')
     || String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
+  solo = process.argv.includes('--solo')
+    || String(process.env.SHEAR_SOLO || '').trim() === '1',
+  stratumPort = Number(process.env.SHEAR_STRATUM || process.env.SHEAR_STRATUM_PORT || SOLO_STRATUM_PORT) || SOLO_STRATUM_PORT,
+  stratumBind = process.env.SHEAR_STRATUM_BIND || SOLO_STRATUM_BIND,
 } = {}) {
   const mainnet = String(network) === MAGIC_MAINNET;
   if (mainnet && !mainnetMayEmit()) {
@@ -117,13 +122,21 @@ export async function startNode({
     p2p.dialSeeds(seedList);
   }, SEED_RETRY_MS);
   if (typeof seedTimer.unref === 'function') seedTimer.unref();
+  let stratum = null;
+  let stratumBound = null;
+  if (solo) {
+    stratum = createSoloStratum({ store, port: stratumPort, host: stratumBind });
+    stratumBound = await stratum.listen();
+  }
   const origClose = p2p.close.bind(p2p);
   p2p.close = () => {
     clearInterval(seedTimer);
+    try { stratum?.close(); } catch { /* ignore */ }
     origClose();
   };
   return {
-    store, p2p, rpc, bound, rpcBound,
+    store, p2p, rpc, bound, rpcBound, stratum, stratumBound,
+    solo: !!stratum,
     magic: MAGIC_TESTNET,
     mainnet: false,
     emit: true,
@@ -155,7 +168,7 @@ async function main() {
   for (let i = 0; i < args.length; i += 1) {
     const a = args[i];
     if (a === 'help' || helpTopics().includes(a)) continue;
-    if (['--help', '-h', '--print-config', '--fast-sync', '--status'].includes(a)) continue;
+    if (['--help', '-h', '--print-config', '--fast-sync', '--status', '--solo'].includes(a)) continue;
     if (a.startsWith('--bootstrap=')) continue;
     if (a === '--bootstrap') {
       i += 1;
@@ -231,6 +244,8 @@ async function main() {
     event: 'boot',
     p2p: started.bound.port,
     rpc: started.rpcBound?.port,
+    stratum: started.stratumBound ? `${started.stratumBound.host}:${started.stratumBound.port}` : null,
+    solo: !!started.solo,
     bind: started.bound.host,
     magic: MAGIC_TESTNET,
     phaseBGate: PHASE_B_GATE,

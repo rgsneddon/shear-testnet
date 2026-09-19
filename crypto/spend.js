@@ -84,6 +84,16 @@ export function spendPubFromTx(tx) {
   return null;
 }
 
+/** compactTx-stripped spend: no spendPub/from, commit-only vin. Sealed verify must not demand openings the wire dropped. */
+export function sealedCompactSpend(tx) {
+  if (!tx || tx.coinbase) return false;
+  if (spendPubFromTx(tx)) return false;
+  if (String(tx.from || tx.vin?.[0]?.address || '')) return false;
+  const vin = Array.isArray(tx.vin) ? tx.vin[0] : null;
+  if (!vin || vin.coinbase) return false;
+  return !!(vin.commit || vin.pseudo || vin.cTilde);
+}
+
 export function signSpendTx(tx, privateKey) {
   const msg = spendMessage(tx);
   if (isStealthKey(privateKey)) {
@@ -224,6 +234,7 @@ export function poolWithdrawOperatorDest20(tx) {
 export function verifyPoolWithdrawBound(tx) {
   const k = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (k !== 'pool-withdraw') return { ok: true };
+  if (sealedCompactSpend(tx)) return { ok: true };
   const pubRaw = spendPubFromTx(tx);
   if (!pubRaw) return { ok: false, reason: 'unsigned' };
   const d20 = poolWithdrawOperatorDest20(tx);
@@ -342,15 +353,20 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null } = {})
     const d = fundedDebit(tx);
     if (!d) continue;
     if (flowSendNeedsOpen(tx)) {
-      if (!verifySpendSig(tx)) {
+      const compact = sealedCompactSpend(tx);
+      if (!compact && !verifySpendSig(tx)) {
         return { ok: false, reason: 'unsigned', from: d.from };
       }
-      const digest = spendPackDigest(tx).toString('hex');
-      if (seen.has(digest)) return { ok: false, reason: 'replay', from: d.from };
-      seen.add(digest);
+      if (!compact) {
+        const digest = spendPackDigest(tx).toString('hex');
+        if (seen.has(digest)) return { ok: false, reason: 'replay', from: d.from };
+        seen.add(digest);
+      }
     }
     if (reserveNeedsPortalOpen(tx) && !verifyReservePortalOpen(tx)) {
-      return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+      if (!sealedCompactSpend(tx)) {
+        return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+      }
     }
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
     if (!noteBound && have(d.from) < d.nanos) {

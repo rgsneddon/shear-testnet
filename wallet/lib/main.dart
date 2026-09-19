@@ -27,7 +27,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.38';
+const kWalletVersion = '0.39';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
@@ -546,7 +546,6 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     _accrualTick?.cancel();
     _syncJoinRoster();
     if (id != null && !widget.skipPoolSync) unawaited(_syncVaults(id!));
-    var ticks = 0;
     var tipBusy = false;
     var creditBusy = false;
     if (widget.skipPoolSync && widget.demoTx) unawaited(_playDemoLive());
@@ -564,10 +563,22 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         unawaited(() async {
           await ledger.syncTip();
           await _syncVaults(ident);
-          if (ledger.needsHistoryRefresh && !creditBusy) {
+          final pendingThin = pendingReceiveThinPoll([
+            ...ledger.pendingTxs(ident.address),
+            ...ledger.ownerHistory(ident.address),
+          ]);
+          final full = shouldFullSyncCredits(
+            hasPendingReceive: pendingThin,
+            historyBehindTip: ledger.historyBehindTip,
+          );
+          if (!creditBusy) {
             creditBusy = true;
             try {
-              await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
+              if (full) {
+                await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
+              } else {
+                await ledger.syncBalancesOnly(ident.address, paymentCode: ident.paymentCode);
+              }
               _rememberLedger();
               final now = DateTime.now();
               if (now.difference(lastPersist) >= const Duration(seconds: 15)) {
@@ -582,24 +593,6 @@ class ShearWalletAppState extends State<ShearWalletApp> {
           if (mounted) setState(() {});
         }());
       }
-      ticks += 1;
-      // Miner payouts are automatic at π SHE to ssa1. Wallet pull-from-pool is deprecated.
-      if (ticks % 5 == 0 && ident != null && !creditBusy && !widget.skipPoolSync) {
-        creditBusy = true;
-        unawaited(ledger.syncCredits(ident.address, paymentCode: ident.paymentCode).whenComplete(() {
-          _rememberLedger();
-          final now = DateTime.now();
-          if (now.difference(lastPersist) >= const Duration(seconds: 15)) {
-            lastPersist = now;
-            unawaited(session.persist());
-          }
-          unawaited(_syncVaults(ident));
-          creditBusy = false;
-          if (mounted) setState(() {});
-        }));
-      }
-      if (!mounted) return;
-      setState(() {});
     });
     if (widget.demoTx) {
       unawaited(_playDemoLive());
@@ -909,13 +902,13 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         body: const Center(child: CircularProgressIndicator()),
       );
     }
-    final pages = [
-      _continuum(context, ident),
-      _flow(context, ident),
-      _resistance(context),
-      _vortex(context, ident),
-      _shearview(context, ident),
-      _closure(context, ident),
+    final pages = <Widget Function()>[
+      () => _continuum(context, ident),
+      () => _flow(context, ident),
+      () => _resistance(context),
+      () => _vortex(context, ident),
+      () => _shearview(context, ident),
+      () => _closure(context, ident),
     ];
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
@@ -974,7 +967,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
               ),
               actions: const [SizedBox.shrink()],
             ),
-          Expanded(child: pages[tab]),
+          Expanded(child: pages[tab]()),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -1500,15 +1493,25 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                 ? '${_shearviewSubtitle(t)}  memo: ${t.memoPlain}'
                 : _shearviewSubtitle(t),
           ),
-          onTap: () => setState(() {
-            if (t.memo) {
-              openedMemos.add(t.id);
-              lastMemoPlain = t.memoPlain;
+          onTap: () async {
+            if (t.memo && t.memoPlain == null && t.memoCt != null) {
+              final plain = await memoOpenOffUi(t.to, t.memoCt);
+              ledger.applyMemoPlain(t.id, plain);
             }
-            _ingestTx(ident, t);
-            _focusedTxId = t.id;
-            tab = _resistanceTab;
-          }),
+            if (!mounted) return;
+            setState(() {
+              if (t.memo) {
+                openedMemos.add(t.id);
+                lastMemoPlain = t.memoPlain ?? ledger.ownerHistory(ident.address)
+                    .cast<ShearTx?>()
+                    .firstWhere((x) => x!.id == t.id, orElse: () => t)
+                    ?.memoPlain;
+              }
+              _ingestTx(ident, t);
+              _focusedTxId = t.id;
+              tab = _resistanceTab;
+            });
+          },
         ),
     ]);
   }

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -246,6 +247,10 @@ Map<String, dynamic> explorerRowPublic(Map<String, dynamic> row) {
     'height': row['height'],
     'memo': row['memoCt'] != null || row['memo'] == true,
   };
+}
+
+Future<String?> memoOpenOffUi(String dest, Map<String, dynamic>? env, [List<int>? shared]) {
+  return Isolate.run(() => memoOpen(dest, env, shared));
 }
 
 Future<String?> memoOpen(String dest, Map<String, dynamic>? env, [List<int>? shared]) async {

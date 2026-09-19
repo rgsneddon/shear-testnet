@@ -299,8 +299,15 @@ export function lineHasIpBesideIdentity(line) {
 export function isFinalIngestFail(reason) {
   const r = String(reason || '');
   if (r === 'prev') return false;
-  if (r.includes('native addon missing')) return false;
+  if (/native[_ ]addon[_ ]missing|native_missing/i.test(r)) return false;
   return true;
+}
+
+/** Ban only on final fails. `prev` / native-missing must not increment expensiveFails. */
+export function recordIngestFail(rec, reason) {
+  if (!rec) return false;
+  if (!isFinalIngestFail(reason)) return false;
+  return noteExpensiveFail(rec);
 }
 
 /** Out-of-order getblock: do not drop the child. Retry after in-flight parents land. */
@@ -743,7 +750,7 @@ export function createP2p({
               }));
             } catch { /* ignore */ }
           }
-          if (!got?.ok && noteExpensiveFail(rec)) {
+          if (!got?.ok && recordIngestFail(rec, got?.reason)) {
             const until = Date.now() + P2P_BAN_MS;
             if (rec.remote) peerBans.set(rec.remote, until);
             try { sock.destroy(); } catch { /* ignore */ }

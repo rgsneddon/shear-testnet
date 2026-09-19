@@ -80,18 +80,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.38"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.39"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.38"'), isTrue);
+    expect(winMain.contains('L"Shear 0.39"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.38"'), isTrue);
+    expect(winRc.contains('"Shear 0.39"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.38"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.39"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -1272,6 +1272,47 @@ void main() {
         reason: 'send/balance/history/tip-proof must not call the FlyClient sampler');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.39.0+56'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.39'"));
+  });
+
+  test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
+    final id = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 3, balance: 0, pending: 0.4);
+    final peer = createIdentity();
+    final from = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..viewSecret = id.viewKey;
+    ledger.applyTipHex(hex, sealedHeight: 3);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    live.owner = dest;
+    live.incoming = [
+      {'id': 'in-pending', 'from': from, 'to': dest, 'amount': 0.4, 'kind': 'receive', 'confirmed': false},
+    ];
+    await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+    expect(ledger.hasPendingReceive, isTrue);
+    expect(pendingReceiveThinPoll(ledger.pendingTxs(id.address)), isTrue);
+    expect(
+      shouldFullSyncCredits(hasPendingReceive: true, historyBehindTip: true),
+      isFalse,
+    );
+    final historyBefore = live.historyHits;
+    final notesBefore = live.notesHits;
+    for (var i = 0; i < 5; i++) {
+      await ledger.syncBalancesOnly(id.address, paymentCode: id.paymentCode);
+    }
+    expect(live.historyHits, historyBefore);
+    expect(live.notesHits, notesBefore);
+    expect(
+      shouldFullSyncCredits(hasPendingReceive: false, historyBehindTip: true),
+      isTrue,
+    );
+    final syncSrc = File('lib/shear_read_sync.dart').readAsStringSync();
+    expect(syncSrc.contains('[for (var h = 1; h <= sampledTip; h++) h]'), isFalse);
   });
 
   test('CTF dest is she1 with password C, not C-from-S', () {
@@ -1329,7 +1370,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.38');
+    expect(kWalletVersion, '0.39');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -1785,8 +1826,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.38');
-    expect(kWalletVersion, '0.38');
+    expect(app.title, 'Shear 0.39');
+    expect(kWalletVersion, '0.39');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -4280,8 +4321,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.38 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.38');
+  test('kWalletVersion == 0.39 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.39');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -5267,6 +5308,8 @@ class _PoolLive {
   List<Map<String, dynamic>> history;
   String lastHistoryOpen = '';
   int balanceHits = 0;
+  int historyHits = 0;
+  int notesHits = 0;
   int statsHits = 0;
   int headerHits = 0;
   int headersBatchHits = 0;
@@ -5397,8 +5440,12 @@ Future<HttpServer> _fakePool({
         'height': state.height,
       }));
     } else if (req.uri.path == '/api/wallet/history' || req.uri.path == '/api/explorer/history') {
+      state.historyHits += 1;
       state.lastHistoryOpen = req.uri.queryParameters['open'] ?? '';
       req.response.write(jsonEncode({'txs': state.history}));
+    } else if (req.uri.path == '/api/wallet/notes' || req.uri.path == '/notes') {
+      state.notesHits += 1;
+      req.response.write(jsonEncode({'ok': true, 'notes': []}));
     } else if (req.uri.path == '/api/wallet/register') {
       req.response.write(jsonEncode({'ok': true}));
     } else if (req.uri.path == '/api/vault/reserve') {

@@ -261,7 +261,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/2.4" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.38" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.39" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -281,18 +281,18 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.38</strong> · miner <strong>2.4</strong>
+      wallet <strong>0.39</strong> · miner <strong>2.4</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.38">WALLET</a>
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.39">WALLET</a>
         <div class="client-menu" id="menu-wallet">
           <span data-pack="wallet-macos" class="coming-soon">macOS — coming soon</span>
-          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.38/shear-wallet-0.38-windows.zip">Windows</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.38/shear-wallet-0.38-android.apk">Android</a>
-          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.38/shear-wallet-0.38-linux.zip">Linux</a>
-          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.38/shear-wallet-0.38-archlinux.zip">Arch</a>
+          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.39/shear-wallet-0.39-windows.zip">Windows</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.39/shear-wallet-0.39-android.apk">Android</a>
+          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.39/shear-wallet-0.39-linux.zip">Linux</a>
+          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.39/shear-wallet-0.39-archlinux.zip">Arch</a>
         </div>
       </div>
       <div class="client-dd">
@@ -393,7 +393,7 @@
     </div>
     <section class="panel-card guide-wide" id="wallet-start">
       <h2>Start a wallet from scratch</h2>
-      <p>Current pin is <strong>0.38</strong>. Use the WALLET button above and pick your system. Magic <code>shear-testnet-v4</code> / ADMITv2. Hashbonus is on-chain to Copy dest after 6 confs; the pot auto-pays at π after 30 confs — Continuum is not instant while those clocks run.</p>
+      <p>Current pin is <strong>0.39</strong>. Use the WALLET button above and pick your system. Magic <code>shear-testnet-v4</code> / ADMITv2. Hashbonus is on-chain to Copy dest after 6 confs; the pot auto-pays at π after 30 confs — Continuum is not instant while those clocks run.</p>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
         <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
@@ -406,8 +406,8 @@
     </section>
     <section class="panel-card guide-wide" id="solo-mine">
       <h2>Solo mine</h2>
-      <p>ShearK-Miner <strong>2.4</strong>, CPU only. Log in with wallet <strong>Copy dest</strong> (<code>ssa1.worker</code> or <code>ssa1.solo</code>). Solo means <em>your</em> node finds the block: you keep the <strong>live epoch pot</strong> (starts at 1.00 SHE, falls 0.01 SHE per Vortex epoch to a 0.20 SHE floor — see Continuity) plus the hash bonus on that dest. The public pool takes 1% of the pot only.</p>
-      <p>Beginner path: install OS deps → clone → build RandomX + <code>crypto/native</code> → run a local node with stratum → Copy dest from Continuum → ShearK login → confirm accepts → wait for rewards.</p>
+      <p>ShearK-Miner <strong>2.4</strong>, CPU only. Solo is <strong>node + thin local stratum + CLI (or Continuum 0.39) + ShearK</strong> — not the full public pool. Log in with <strong>Copy dest</strong> (<code>ssa1.solo</code>). Your node finds the block: you keep the <strong>live epoch pot</strong> (starts at 1.00 SHE, falls 0.01 SHE per Vortex epoch to a 0.20 SHE floor) plus the hash bonus on that dest. No pool fee, no pool dashboard, no auto-payout custody.</p>
+      <p>Beginner path: OS deps → clone → RandomX + <code>crypto/native</code> → validating node → <code>npm run solo</code> (thin stratum on 127.0.0.1:1111) → CLI Copy dest → ShearK → confirm accepts. Continuum GUI 0.39 is optional. Never <code>npm run pool</code> for solo.</p>
       <h3>0. OS dependencies — copy/paste</h3>
       <p>Pick your OS. Each pane is a copy/paste install. Then continue with clone / RandomX / <code>crypto/native</code> below. Do not copy a macOS/Darwin <code>.node</code> onto Linux.</p>
       <div class="os-tabs" id="solo-os-tabs">
@@ -595,7 +595,7 @@ test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall No
 make -C crypto/native</pre>
             <button type="button" data-copy="solo-nodeinc-windows">Copy</button>
           </div>
-          <p>After <code>npm run pool</code> in WSL, on Windows:</p>
+          <p>After <code>npm run solo</code> in WSL, on Windows:</p>
           <div class="copy-row">
             <pre id="solo-deps-windows-miner">ShearK-Miner.exe --selftest
 ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
@@ -618,22 +618,38 @@ node node/src/node.js --print-config</pre>
         <button type="button" data-copy="solo-node">Copy</button>
       </div>
       <p><code>--print-config</code> must show <code>"magic":"shear-testnet-v4"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
-      <h3>2. Node config + local stratum</h3>
-      <p><code>SHEAR_SEEDS</code> must list <strong>all three</strong> seeds. Export them in the <strong>same shell</strong> as <code>npm run pool</code> — the pool process does <strong>not</strong> default seeds (unlike <code>node.js</code>). Outbound TCP to those seeds is required; opening inbound firewall <code>30303</code> alone does <strong>not</strong> sync.</p>
+      <h3>2. Validating node (not the full pool)</h3>
+      <p>Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). <code>SHEAR_SEEDS</code> must list <strong>all three</strong> seeds in the <strong>same shell</strong> as the node. Outbound TCP to those seeds is required; opening inbound firewall <code>30303</code> alone does <strong>not</strong> sync. Do <strong>not</strong> <code>npm run pool</code> — that is the public-pool operator stack (HTTP dashboard, auto-payout, pool fee).</p>
       <div class="copy-row">
-        <pre id="solo-run">export SHEAR_NETWORK=shear-testnet-v4
+        <pre id="solo-run">export SHEAR_DATA="$HOME/.shear/testnet-v4"
+export SHEAR_NETWORK=shear-testnet-v4
 export SHEAR_P2P_PORT=30303
 export SHEAR_RPC_PORT=18332
 export SHEAR_RPC_BIND=127.0.0.1
 export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
-export SHEAR_STRATUM=1111
-export SHEAR_STRATUM_BIND=127.0.0.1
-npm run pool</pre>
+node node/src/node.js</pre>
         <button type="button" data-copy="solo-run">Copy</button>
       </div>
-      <p>Wallet 0.38 syncs that node at <code>http://127.0.0.1:18332</code>. RPC stays on loopback.</p>
-      <h3>3. ShearK 2.4 + Copy dest login</h3>
-      <p>Download miner <strong>2.4</strong> from the MINER button (not an older pin). Unzip. Continuum → <strong>Copy dest</strong> copies the <code>ssa1</code> on screen (it does not mint a new mailbox). ShearK login is that string plus a worker name.</p>
+      <h3>3. Thin solo stratum</h3>
+      <p>Same shell. <code>npm run solo</code> is <code>node node/src/node.js --solo</code>: validator + stratum on <code>127.0.0.1:1111</code>. No pool admin, no sweep auto-payouts, no pool fee split. Finder keeps pot + hash bonus on Copy dest.</p>
+      <div class="copy-row">
+        <pre id="solo-stratum">export SHEAR_STRATUM=1111
+export SHEAR_STRATUM_BIND=127.0.0.1
+npm run solo</pre>
+        <button type="button" data-copy="solo-stratum">Copy</button>
+      </div>
+      <h3>4. CLI (first-class) — Copy dest</h3>
+      <p>Continuum GUI <strong>0.39</strong> is optional. The CLI talks to local RPC:</p>
+      <div class="copy-row">
+        <pre id="solo-cli">cd wallet
+dart run bin/shear.dart dest --rpc http://127.0.0.1:18332
+dart run bin/shear.dart balance
+dart run bin/shear.dart history</pre>
+        <button type="button" data-copy="solo-cli">Copy</button>
+      </div>
+      <p><code>shear dest</code> prints the stable mining mailbox (Copy dest). Wallet 0.39 also syncs that node at <code>http://127.0.0.1:18332</code>. RPC stays on loopback.</p>
+      <h3>5. ShearK 2.4 + Copy dest login</h3>
+      <p>Download miner <strong>2.4</strong> from the MINER button (not an older pin). Unzip. CLI <code>dest</code> or Continuum → <strong>Copy dest</strong> copies the <code>ssa1</code> on screen (it does not mint a new mailbox). ShearK login is that string plus a worker name.</p>
       <p>macOS / Linux:</p>
       <div class="copy-row">
         <pre id="solo-unix">./ShearK-Miner --selftest
@@ -646,16 +662,18 @@ npm run pool</pre>
 ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
         <button type="button" data-copy="solo-win">Copy</button>
       </div>
-      <p>Confirm the miner prints accepted shares (not <code>native_missing</code> / <code>hash_failed</code>). Hash bonus is 10<sup>−11</sup> SHE per accepted hash, sealed onto that dest on the next block, Continuum-spendable after <strong>6 confirms</strong>. The block pot is pool-custodial until <strong>30 confirms</strong>, then auto-pays at <strong>π SHE</strong> (~3.14159265358). Wallet ShearView lists those landings (height, from/to, date, amount). Reuse the same mining mailbox so blocks stay linked. Amounts are confidential.</p>
+      <p>Confirm the miner prints accepted shares (not <code>native_missing</code> / <code>hash_failed</code>). Hash bonus is 10<sup>−11</sup> SHE per accepted hash, sealed onto that dest on the next block, Continuum-spendable after <strong>6 confirms</strong>. Solo finder keeps the pot (no pool custody / π auto-pay). CLI <code>history</code> / wallet ShearView lists landings (height, from/to, date, amount). Reuse the same mining mailbox so blocks stay linked. Amounts are confidential.</p>
       <h3>Hazards / trip-ups</h3>
       <ul>
-        <li><strong>Wrong dest</strong> — login must be Continuum Copy dest, the <code>ssa1</code> shown on screen. A rotated Flow receive dest will not show mining credits on the mailbox you are staring at.</li>
-        <li><strong>Cleartext stratum</strong> — <code>127.0.0.1:1111</code> is local. Public <code>pool.shear.digital:1111</code> is <strong>cleartext TCP</strong> unless TLS sits in front. Production pools set <code>SHEAR_STRATUM_AUTH=1</code> and bind <code>127.0.0.1</code>.</li>
+        <li><strong>Wrong dest</strong> — login must be Continuum/CLI Copy dest, the <code>ssa1</code> shown on screen. A rotated Flow receive dest will not show mining credits on the mailbox you are staring at.</li>
+        <li><strong>Do not install the full pool</strong> — <code>npm run pool</code> is for operators of pool.shear.digital. Solo is <code>npm run solo</code> (thin stratum on the node).</li>
+        <li><strong>Cleartext stratum</strong> — <code>127.0.0.1:1111</code> is local. Public <code>pool.shear.digital:1111</code> is <strong>cleartext TCP</strong> unless TLS sits in front.</li>
         <li><strong>Missing node_api.h</strong> — Node version alone is not enough; need <code>include/node/node_api.h</code>. Bare <code>-I.</code> in the make line means <code>NODE_INC</code> was empty. Fix headers, then rebuild. Prefer Node 20 LTS from NodeSource if unsure.</li>
         <li><strong>macOS/Darwin <code>.node</code> on Linux</strong> — never copy <code>shearhash.node</code> / <code>shearadmit.node</code> from a Mac onto Linux. Build RandomX + <code>make -C crypto/native</code> on the Linux box.</li>
+        <li><strong>IBD unsigned@N then prev storms</strong> — do <strong>not</strong> wipe the datadir. Pull tip, rebuild native, set <code>SHEAR_GETBLOCK_BATCH=1</code> temporarily, keep three <code>SHEAR_SEEDS</code> in the same shell as <code>npm run solo</code>.</li>
       </ul>
-      <h3 id="solo-sync-stuck">Stuck at height=0 / want=0 / ibd=false</h3>
-      <p><code>height=0</code> is an empty tip. <code>want=0</code> means the node is not fetching blocks. <code>ibd=false</code> when <code>want=0</code> is <strong>not</strong> “synced” — IBD is only true while <code>want&gt;0</code> (in-flight getblocks). Opening inbound <code>30303</code> without outbound to the seeds leaves you at this status (peers=1 can still be another empty solo).</p>
+      <h3 id="solo-sync-stuck">Stuck at height=0 / want=0 / ibd=false — or unsigned@N + prev</h3>
+      <p><code>height=0</code> is an empty tip. <code>want=0</code> means the node is not fetching blocks. <code>ibd=false</code> when <code>want=0</code> is <strong>not</strong> “synced” — IBD is only true while <code>want&gt;0</code>. Opening inbound <code>30303</code> without outbound to the seeds leaves you at this status. Mid-IBD <code>p2p_ingest reason=unsigned</code> then <code>prev</code> storms: pull tip + rebuild native; do not reset the chain.</p>
       <div class="copy-row">
         <pre id="solo-sync-fix"># Outbound must work
 nc -vz p2p.shear.digital 30303
@@ -666,14 +684,17 @@ export SHEAR_RPC_PORT=18332
 export SHEAR_RPC_BIND=127.0.0.1
 export SHEAR_STRATUM=1111
 export SHEAR_STRATUM_BIND=127.0.0.1
-# same shell:
-npm run pool
-# Expect status want>0 ibd=true then height climbing; stderr p2p_headers missing>0</pre>
+export SHEAR_GETBLOCK_BATCH=1
+make -C crypto/native
+# same shell as the node — never npm run pool:
+npm run solo
+# Expect status want>0 ibd=true then height climbing; stderr p2p_headers missing>0
+# Do not wipe ~/.shear/testnet-v4 unless CoS says so after a fix</pre>
         <button type="button" data-copy="solo-sync-fix">Copy</button>
       </div>
       <p>If <code>nc</code> fails → egress/DNS, not the node. If a peer’s tip equals yours (both height 0) → you need a seed that is <em>ahead</em>, not another empty solo.</p>
-      <h3>Public pool instead</h3>
-      <p>Skip the local node and hash on the official stratum (cleartext unless TLS is configured):</p>
+      <h3>Mine on the public pool instead</h3>
+      <p>Optional. Skip the local node and hash on the official stratum (cleartext unless TLS is configured). This is <em>not</em> solo. On the public pool the pot is custodial until <strong>30 confirms</strong>, then auto-pays at π SHE.</p>
       <div class="copy-row">
         <pre id="solo-pool">./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --threads 8</pre>
         <button type="button" data-copy="solo-pool">Copy</button>
@@ -691,11 +712,11 @@ npm run pool
       else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
-        macos: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.38',
-        windows: BASE + '/0.38/shear-wallet-0.38-windows.zip',
-        android: BASE + '/0.38/shear-wallet-0.38-android.apk',
-        linux: BASE + '/0.38/shear-wallet-0.38-linux.zip',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.38'
+        macos: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.39',
+        windows: BASE + '/0.39/shear-wallet-0.39-windows.zip',
+        android: BASE + '/0.39/shear-wallet-0.39-android.apk',
+        linux: BASE + '/0.39/shear-wallet-0.39-linux.zip',
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.39'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {

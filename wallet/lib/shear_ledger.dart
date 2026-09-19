@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'shear_ctf.dart';
@@ -24,6 +25,19 @@ const kTargetBlockIntervalMs = 90000;
 /// 0.00000000001 SHE per valid hash.
 const kHashBonusShe = 0.00000000001;
 const kHashBonusVoteDeltaShe = 0.00000000001;
+
+/// Pending receive / pool-withdraw (height < 1) must not drive full history+notes+memoOpen.
+bool pendingReceiveThinPoll(Iterable<ShearTx> txs) => txs.any((t) =>
+    (t.kind == 'pool-withdraw' || t.kind == 'receive') && (t.height ?? 0) < 1);
+
+/// Full syncCredits only after confirm/timeout; thin tip/balance while pending.
+bool shouldFullSyncCredits({
+  required bool hasPendingReceive,
+  required bool historyBehindTip,
+}) {
+  if (hasPendingReceive) return false;
+  return historyBehindTip;
+}
 
 String _bytesHex(Uint8List b) =>
     b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
@@ -648,6 +662,7 @@ class ShearLedger {
   /// fires after syncTip.
   int _settledHeight = 0;
   final Map<String, int> _historyAt = {};
+  final Map<String, int> _notesAt = {};
   /// Height-1 header hex of the book this ledger is bound to.
   String? _chainGenesis;
 
@@ -682,6 +697,7 @@ class ShearLedger {
     _immature.clear();
     _owedPiDisplay = 0;
     _historyAt.clear();
+    _notesAt.clear();
     _sealedHeight = 0;
     _settledHeight = 0;
     lag1Root = null;
@@ -1071,8 +1087,42 @@ class ShearLedger {
     if (tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) rememberDest(tx.to);
   }
 
-  bool get needsHistoryRefresh => _txs.any((t) =>
-      (t.kind == 'pool-withdraw' || t.kind == 'receive') && (t.height ?? 0) < 1);
+  bool get needsHistoryRefresh => pendingReceiveThinPoll(_txs);
+
+  bool get hasPendingReceive => pendingReceiveThinPoll(_txs);
+
+  bool get historyBehindTip {
+    if (_sealedHeight < 1) return false;
+    if (_historyAt.isEmpty) return true;
+    return _historyAt.values.any((h) => h != _sealedHeight);
+  }
+
+  void applyMemoPlain(String id, String? plain) {
+    if (plain == null || plain.isEmpty) return;
+    ShearTx? found;
+    for (final t in _txs) {
+      if (t.id == id) {
+        found = t;
+        break;
+      }
+    }
+    if (found == null) return;
+    mergeChainTx(ShearTx(
+      id: found.id,
+      from: found.from,
+      to: found.to,
+      amount: found.amount,
+      kind: found.kind,
+      height: found.height,
+      confirmed: found.confirmed,
+      memo: true,
+      memoPlain: plain,
+      memoCt: found.memoCt,
+      hashAmount: found.hashAmount,
+      threads: found.threads,
+      pot: found.pot,
+    ));
+  }
 
   /// Live mempool pays. Same row as [creditReceive]; merge height when the
   /// node already sealed the pay.
@@ -1405,7 +1455,7 @@ class ShearLedger {
 
   /// Pull Continuum from the silent mining dest and current Flow dest.
   /// Mining credits land on the silent dest. Do not query every historical dest.
-  Future<double> syncCredits(String restFrame, {String? paymentCode}) async {
+  Future<double> syncCredits(String restFrame, {String? paymentCode, bool openMemos = false}) async {
     if (pool == null) return spendableOwned(restFrame, paymentCode: paymentCode);
     keepOwnedDests(restFrame, paymentCode: paymentCode);
     final before = _settledHeight;
@@ -1426,19 +1476,42 @@ class ShearLedger {
       final key = payKey(d);
       if (!histSeen.add(key)) continue;
       try {
-        await syncHistory(key);
+        await syncHistory(key, openMemos: openMemos);
       } catch (_) {}
+      if (_notesAt[key] == _sealedHeight) continue;
       final seed = spendSeed;
       if (seed != null && seed.length == 32 && pool != null) {
         try {
           final json = await pool!.notes(key);
           final rows = json['notes'];
           if (rows is List) {
+            await Future<void>.delayed(Duration.zero);
             ingestSealedVouts(rows, spendSeed: seed, dest: key);
+            _notesAt[key] = _sealedHeight;
           }
         } catch (_) {}
       }
     }
+    return spendableOwned(restFrame, paymentCode: paymentCode);
+  }
+
+  /// Thin poll: tip + dest balances only. No history, notes, or memoOpen.
+  Future<double> syncBalancesOnly(String restFrame, {String? paymentCode}) async {
+    if (pool == null) return spendableOwned(restFrame, paymentCode: paymentCode);
+    keepOwnedDests(restFrame, paymentCode: paymentCode);
+    final before = _settledHeight;
+    try {
+      await syncTip();
+    } catch (_) {}
+    final dests = syncDests(restFrame, paymentCode: paymentCode);
+    for (final d in dests) {
+      if (!isDestAddress(d)) continue;
+      try {
+        final json = await pool!.balance(d);
+        applyPoolSnapshot(d, json, beforeHeight: before, tipSealed: _sealedHeight);
+      } catch (_) {}
+    }
+    _markSettled(_sealedHeight, before);
     return spendableOwned(restFrame, paymentCode: paymentCode);
   }
 
@@ -1451,7 +1524,7 @@ class ShearLedger {
     }
   }
 
-  Future<List<ShearTx>> syncHistory(String address) async {
+  Future<List<ShearTx>> syncHistory(String address, {bool openMemos = false}) async {
     if (pool == null) return ownerHistory(address);
     final key = payKey(address);
     if (_historyAt[key] == _sealedHeight && !needsHistoryRefresh) {
@@ -1477,8 +1550,8 @@ class ShearLedger {
         if (tx.amount <= 0 && (tx.hashAmount == null || tx.hashAmount! <= 0) && tx.to.isEmpty) continue;
         final existing = _txs.cast<ShearTx?>().firstWhere((t) => t!.id == tx.id, orElse: () => null);
         var plain = existing?.memoPlain ?? tx.memoPlain;
-        if (plain == null && tx.memoCt != null) {
-          plain = await memoOpen(tx.to, tx.memoCt);
+        if (openMemos && plain == null && tx.memoCt != null) {
+          plain = await Isolate.run(() => memoOpen(tx.to, tx.memoCt));
         }
         if (plain != null) {
           tx = ShearTx(
