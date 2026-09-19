@@ -32,7 +32,7 @@ import { requiredJobFields } from '../../crypto/header.js';
 import { emptyVault, applyReserveBlock, verifyReservePayout } from '../../crypto/reserve_vault.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest } from '../../crypto/spend.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest, verifyPoolWithdrawBound } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin, appendChainBin } from '../../crypto/chainbin.js';
 import { writeLatestBootstrap, reorgBreaksCheckpoint } from './bootstrap.js';
@@ -667,6 +667,8 @@ export function createStore(dir, {
     if (pause.poolWithdraw && String(tx?.kind || '') === 'pool-withdraw') {
       return { ok: false, reason: 'paused' };
     }
+    const bound = verifyPoolWithdrawBound(tx);
+    if (!bound.ok) return bound;
     let base = 1;
     const t = tip();
     try {
@@ -789,6 +791,10 @@ export function createStore(dir, {
     const parentH = i === 0 ? 0 : Number(accepted[i - 1].height || i);
     const rows = [];
     for (const b of accepted) rows.push(...sealedExplorerRows(b));
+    for (const tx of (fork[i]?.txs || []).slice(1)) {
+      const pay = verifyReservePayout(reserveVault, tx);
+      if (!pay.ok) return pay;
+    }
     return verifyBlock(fork[i], prev, {
       spentB: trialSpent,
       tipHeight: Number(fork[fork.length - 1]?.height || fork.length),

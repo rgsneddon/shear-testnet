@@ -10,6 +10,7 @@
 import { PI_SHE_NANOS, POOL_FEE_BPS, NANOS_PER_SHE, hashBonusUnitNanos } from '../../crypto/asert.js';
 import { isDestAddress } from '../../crypto/address.js';
 import { containsShe1, poolWithdrawTx } from '../../crypto/levy.js';
+import { signSpendTx } from '../../crypto/spend.js';
 
 export const AUTO_PAYOUT_MIN_NANOS = PI_SHE_NANOS;
 export const AUTO_PAYOUT_MIN_SHE = PI_SHE_NANOS / NANOS_PER_SHE;
@@ -59,7 +60,7 @@ export function shouldAutoPayout({ confirmedNanos, dest } = {}) {
 /**
  * Miner receives `nanos` in full. `fee` is extra, sponsored by the pool dest.
  */
-export function buildAutoPayoutTx({ from, to, nanos, fee = 0, id } = {}) {
+export function buildAutoPayoutTx({ from, to, nanos, fee = 0, id, spendKey } = {}) {
   const gate = shouldAutoPayout({ confirmedNanos: nanos, dest: to });
   if (!gate.ok) return gate;
   if (!isDestAddress(from) || containsShe1(from)) return { ok: false, reason: 'bad_pool_dest' };
@@ -73,6 +74,7 @@ export function buildAutoPayoutTx({ from, to, nanos, fee = 0, id } = {}) {
   });
   tx.poolPaysFee = true;
   tx.sponsor = from;
+  if (spendKey) signSpendTx(tx, spendKey);
   if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
   return { ok: true, tx, dest: gate.dest, nanos: gate.nanos, fee: L };
 }

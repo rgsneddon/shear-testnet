@@ -33,12 +33,15 @@ error UnitFloor();
 contract Reserve {
     bytes32 public constant SHEAR_TESTNET = keccak256(bytes("shear-testnet-v2"));
     bytes32 public constant SHEAR_TESTNET_V3 = keccak256(bytes("shear-testnet-v3"));
+    bytes32 public constant SHEAR_TESTNET_V4 = keccak256(bytes("shear-testnet-v4"));
     bytes32 public constant SHEAR_TESTNET_V1 = keccak256(bytes("shear-testnet-v1"));
     bytes32 public constant SHEAR_MAINNET = keccak256(bytes("shear-v1"));
     bytes32 public constant PROGRAM_ID = keccak256(bytes("shear-reserve-v1"));
 
     uint256 public constant PI_NANOS = 314_159_265_358;
-    uint256 public constant EPOCH_DAYS = 400;
+    uint256 public constant EPOCH_DAYS_TESTNET = 4;
+    uint256 public constant EPOCH_DAYS_MAINNET = 400;
+    uint256 public constant EPOCH_DAYS = EPOCH_DAYS_MAINNET;
     uint256 public constant JOIN_CUTOFF_DAYS = 99;
     uint256 public constant DAY_MS = 86_400_000;
     uint256 public constant EPOCH_MS = 400 * 86_400_000;
@@ -107,12 +110,25 @@ contract Reserve {
         if (id == 1 || id == 56 || id == 137 || id == 10 || id == 42161 || id == 43114 || id == 8453) {
             revert NotShear();
         }
-        if (magic != SHEAR_TESTNET && magic != SHEAR_TESTNET_V3 && magic != SHEAR_TESTNET_V1 && magic != SHEAR_MAINNET) revert NotShear();
+        if (magic != SHEAR_TESTNET && magic != SHEAR_TESTNET_V3 && magic != SHEAR_TESTNET_V4 && magic != SHEAR_TESTNET_V1 && magic != SHEAR_MAINNET) revert NotShear();
+    }
+
+    function epochDaysOf() public view returns (uint256) {
+        return magic == SHEAR_MAINNET ? EPOCH_DAYS_MAINNET : EPOCH_DAYS_TESTNET;
+    }
+
+    function epochLengthMs() public view returns (uint256) {
+        return epochDaysOf() * DAY_MS;
+    }
+
+    function cutoffLengthMs() public view returns (uint256) {
+        return (99 * epochLengthMs()) / 400;
     }
 
     function remainingMs(uint256 nowTs) public view returns (uint256) {
-        if (epochStart == 0 || bonusEnacted) return EPOCH_MS;
-        uint256 end = epochStart + EPOCH_MS;
+        uint256 span = epochLengthMs();
+        if (epochStart == 0 || bonusEnacted) return span;
+        uint256 end = epochStart + span;
         if (nowTs >= end) return 0;
         return end - nowTs;
     }
@@ -123,7 +139,7 @@ contract Reserve {
 
     function canJoin(uint256 nowTs) public view returns (bool) {
         if (epochStart == 0 || bonusEnacted) return true;
-        return remainingMs(nowTs) >= CUTOFF_MS;
+        return remainingMs(nowTs) >= cutoffLengthMs();
     }
 
     function epochOpen(uint256 nowTs) public view returns (bool) {
@@ -218,7 +234,7 @@ contract Reserve {
 
     function enact(uint256 nowTs) external onlyShear {
         if (epochStart == 0) revert EpochNotEnded();
-        if (nowTs < epochStart + EPOCH_MS) revert EpochNotEnded();
+        if (nowTs < epochStart + epochLengthMs()) revert EpochNotEnded();
         if (bonusEnacted) revert AlreadyEnacted();
         uint256 up = votesIncrease;
         uint256 down = votesDecrease;
@@ -247,7 +263,7 @@ contract Reserve {
     }
 
     function withdraw(bytes calldata dest, uint256 nowTs) external onlyShear returns (uint256 principal, uint256 interest) {
-        if (epochStart == 0 || nowTs < epochStart + EPOCH_MS) revert EpochNotEnded();
+        if (epochStart == 0 || nowTs < epochStart + epochLengthMs()) revert EpochNotEnded();
         if (!bonusEnacted) revert NeedEnact();
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];

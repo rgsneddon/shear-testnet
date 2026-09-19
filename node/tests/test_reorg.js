@@ -87,10 +87,7 @@ describe('most-work adopt', () => {
       fee: levyNanos(1),
       open: destOpeningFromView(id.viewKey, id.spendPub, 0),
       vin: [{
-        prev: tip.hash,
-        index: tip.txs[0].vout.indexOf(spent),
         commit: spent.commit,
-        noteCommit: spent.noteCommit,
         address: dest,
       }],
       vout: [{ address: dest, nanos: 1 }],

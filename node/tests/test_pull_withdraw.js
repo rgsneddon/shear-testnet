@@ -17,6 +17,14 @@ import { BLOCK_SUBSIDY_NANOS, PI_SHE_NANOS, GENESIS_BITS_PACKED, bitsForBlock } 
 import { buildAutoPayoutTx } from '../../pool/src/auto_payout.js';
 import { splitPot } from '../../pool/src/pool.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
+import { spendBox } from '../../tests/spend_box.js';
+import { signSpendTx, verifyPoolWithdrawBound } from '../../crypto/spend.js';
+import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
+import { compactTx } from '../../crypto/chronoflux.js';
+import { createStore } from '../src/store.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   buildTemplate,
   verifyBlock,
@@ -72,9 +80,11 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       sig,
     });
     assert.equal(off.ok, true, off.reason);
-    const from = poolPayoutDest();
+    const poolBox = spendBox(newIdentity());
+    const from = poolBox.dest;
     const L = levyNanos(off.nanos);
     const tx = poolWithdrawTx({ from, to: dest, nanos: off.nanos, fee: L });
+    signSpendTx(tx, poolBox.key);
     assert.equal(containsShe1(tx), false);
     assert.equal(JSON.stringify(tx).includes('she1'), false);
     assert.equal(tx.vout[0].address.startsWith('ssa1'), true);
@@ -227,5 +237,40 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       if (prev === undefined) delete process.env.SHEAR_POOL_WALLET_LOCK;
       else process.env.SHEAR_POOL_WALLET_LOCK = prev;
     }
+  });
+
+  it('unsigned pool-withdraw is rejected; operator-bound auto-pay queues then credits', () => {
+    const minerBox = spendBox(newIdentity());
+    const dest = minerBox.dest;
+    const poolBox = spendBox(newIdentity());
+    const pool = poolBox.dest;
+    const unsigned = poolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100 });
+    assert.equal(verifyPoolWithdrawBound(unsigned).reason, 'unsigned');
+    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'unsigned');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pull-bound-'));
+    const store = createStore(dir);
+    assert.equal(store.queueTx(unsigned).reason, 'unsigned');
+    const built = buildAutoPayoutTx({
+      from: pool,
+      to: dest,
+      nanos: PI_SHE_NANOS,
+      fee: 100,
+      spendKey: poolBox.key,
+    });
+    assert.equal(built.ok, true, built.reason);
+    assert.equal(verifyPoolWithdrawBound(built.tx).ok, true);
+    built.tx.vin[0].commit = Buffer.alloc(32, 7);
+    const queued = store.queueTx(built.tx);
+    assert.equal(queued.ok, true, queued.reason);
+    const failed = store.queueTx(poolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100, id: 'no-sig' }));
+    assert.equal(failed.ok, false);
+    assert.equal(failed.reason, 'unsigned');
+    const sealed = compactTx(built.tx);
+    assert.ok(sealed.vin[0].dest20);
+    assert.equal(sealed.from, undefined);
+    assert.equal(verifyPoolWithdrawBound(sealed).ok, true);
+    const stolen = { ...sealed, spendPub: undefined, sig: undefined, vin: sealed.vin.map((v) => ({ ...v })) };
+    signSpendTx(stolen, spendBox(newIdentity()).key);
+    assert.equal(store.queueTx({ ...stolen, id: 'stolen-compact' }).reason, 'unsigned');
   });
 });

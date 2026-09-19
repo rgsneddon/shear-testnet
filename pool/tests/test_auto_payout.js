@@ -16,7 +16,12 @@ import {
   hashCreditNanos,
 } from '../src/auto_payout.js';
 import { createPullBook } from '../src/pull_book.js';
-import { publicMinerTag } from '../src/pool.js';
+import { publicMinerTag, createPool } from '../src/pool.js';
+import { spendBox } from '../../tests/spend_box.js';
+import { verifyPoolWithdrawBound, signSpendTx } from '../../crypto/spend.js';
+import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
+import { compactTx } from '../../crypto/chronoflux.js';
+import { bootPoolOperator } from '../src/pool_ident.js';
 
 function ssa1() {
   const id = newIdentity();
@@ -127,5 +132,90 @@ describe('auto payout at π SHE to miner ssa1', () => {
     }
     const disk = fs.readFileSync(path.join(dir, 'pull-book.json'), 'utf8');
     assert.doesNotMatch(disk, /ssa1/);
+  });
+
+  it('bound auto-pay credits pulled only after successful queueTx; unsigned is refused', () => {
+    const dest = ssa1();
+    const poolBox = spendBox(newIdentity());
+    const unsigned = buildAutoPayoutTx({ from: poolBox.dest, to: dest, nanos: PI_SHE_NANOS, fee: 100 });
+    assert.equal(unsigned.ok, true);
+    assert.equal(verifyPoolWithdrawBound(unsigned.tx).reason, 'unsigned');
+    assert.equal(admitMempool(emptyMempool(), unsigned.tx).reason, 'unsigned');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-auto-sweep-'));
+    const pool = createPool({
+      dataDir: dir,
+      miner: poolBox.dest,
+      operatorSpendKey: poolBox.key,
+      stratumPort: 0,
+      httpPort: 0,
+    });
+    const tag = publicMinerTag(dest);
+    pool.pullBook.creditRound(
+      [{ tag, dest, count: 10 }],
+      { height: 1, nanos: PI_SHE_NANOS, hashByDest: new Map() },
+    );
+    pool.store.tip = () => ({ height: 40 });
+    const before = pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos;
+    pool.store.queueTx = () => ({ ok: false, reason: 'forced' });
+    assert.equal(pool.runAutoPayoutSweep().length, 0);
+    assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos, before);
+    pool.store.queueTx = (tx) => {
+      assert.equal(verifyPoolWithdrawBound(tx).ok, true);
+      return { ok: true, tx };
+    };
+    const sent = pool.runAutoPayoutSweep();
+    assert.equal(sent.length, 1);
+    assert.ok(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos > before);
+    pool.close();
+  });
+
+  it('compact pool-withdraw keeps operator dest20; a foreign spendPub is rejected', () => {
+    const dest = ssa1();
+    const poolBox = spendBox(newIdentity());
+    const built = buildAutoPayoutTx({
+      from: poolBox.dest,
+      to: dest,
+      nanos: PI_SHE_NANOS,
+      fee: 100,
+      spendKey: poolBox.key,
+    });
+    assert.equal(built.ok, true, built.reason);
+    const sealed = compactTx(built.tx);
+    assert.equal(sealed.from, undefined);
+    assert.equal(sealed.vin[0].address, undefined);
+    assert.ok(sealed.vin[0].dest20);
+    assert.ok(sealed.spendPub);
+    assert.equal(verifyPoolWithdrawBound(sealed).ok, true, 'sealed operator bind');
+    assert.equal(admitMempool(emptyMempool(), sealed).ok, true);
+    const stolen = { ...sealed, spendPub: undefined, sig: undefined, vin: sealed.vin.map((v) => ({ ...v })) };
+    signSpendTx(stolen, spendBox(newIdentity()).key);
+    assert.equal(verifyPoolWithdrawBound(stolen).ok, false);
+    assert.equal(admitMempool(emptyMempool(), stolen).reason, 'unsigned');
+  });
+
+  it('bootPoolOperator writes a matching spend seed and signs auto-pay', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-op-'));
+    const boot = bootPoolOperator({ dataDir: dir });
+    assert.equal(boot.signed, true);
+    assert.ok(boot.operatorSpendKey);
+    assert.match(boot.miner, /^ssa1/);
+    const dest = ssa1();
+    const built = buildAutoPayoutTx({
+      from: boot.miner,
+      to: dest,
+      nanos: PI_SHE_NANOS,
+      fee: 100,
+      spendKey: boot.operatorSpendKey,
+    });
+    assert.equal(built.ok, true, built.reason);
+    const sealed = compactTx(built.tx);
+    assert.equal(verifyPoolWithdrawBound(sealed).ok, true);
+    assert.equal(admitMempool(emptyMempool(), sealed).ok, true);
+    const again = bootPoolOperator({ dataDir: dir });
+    assert.equal(again.miner, boot.miner);
+    assert.equal(again.signed, true);
+    const main = fs.readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+    assert.match(main, /bootPoolOperator/);
+    assert.match(main, /operatorSpendKey: boot\.operatorSpendKey/);
   });
 });

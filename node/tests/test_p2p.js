@@ -206,7 +206,7 @@ describe('p2p gossip', () => {
         to: payDest,
         nanos: sendNanos,
         fee,
-        vin: [{ prev: tip.hash, index: tip.txs[0].vout.indexOf(spent), commit: spent.commit, noteCommit: spent.noteCommit, address: payDest }],
+        vin: [{ commit: spent.commit, address: payDest }],
         vout: [{ address: payDest, nanos: sendNanos, kind: 'send' }],
       }, { spent });
       admitSend(tx, { id, spent, blocks: a.store.blocks });
@@ -375,7 +375,7 @@ describe('p2p gossip', () => {
         to: payDest,
         nanos: sendNanos,
         fee,
-        vin: [{ prev: tip.hash, index: tip.txs[0].vout.indexOf(spent), commit: spent.commit, noteCommit: spent.noteCommit, address: payDest }],
+        vin: [{ commit: spent.commit, address: payDest }],
         vout: [{ address: payDest, nanos: sendNanos, kind: 'send' }],
       }, { spent });
       admitSend(tx, { id, spent, blocks: a.store.blocks });

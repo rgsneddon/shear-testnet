@@ -104,12 +104,12 @@ describe('node Reserve vault', () => {
     const c = printConfig();
     assert.equal(c.reserveProgram, RESERVE_PROGRAM);
     assert.equal(c.extraMintOnlyReserve, true);
-    assert.equal(c.reserveEpochDays, 400);
-    assert.equal(c.reserveJoinCutoffDays, 99);
+    assert.equal(c.reserveEpochDays, 4);
+    assert.equal(c.reserveJoinCutoffDays, 1);
     assert.equal(c.reserveOracle, RESERVE_ORACLE_ID);
     assert.equal(c.reserveOracleDefaultBps, RESERVE_ORACLE_DEFAULT_BPS);
     assert.equal(c.reserveOracleDefaultBps, 264);
-    assert.equal(c.reserveEpochDays, 400);
+    assert.equal(c.reserveEpochDays, 4);
     assert.equal(c.interestDenomDays, INTEREST_DENOM_DAYS);
     assert.equal(c.interestDenomDays, 400);
     assert.equal(c.hashBonusNanos, HASH_BONUS_NANOS);
@@ -249,10 +249,7 @@ describe('node Reserve vault', () => {
       nanos: 2,
       fee: levyNanos(2, { depth: 1e9 }),
       vin: [{
-        prev: tip.hash,
-        index: tip.txs[0].vout.indexOf(spent),
         commit: spent.commit,
-        noteCommit: spent.noteCommit,
         address: dest,
       }],
       vout: [{ address: dest, nanos: 2, kind: 'send' }],
@@ -398,11 +395,7 @@ describe('node Reserve vault', () => {
       changeNanos: leftover,
       open,
       vin: [{
-        prev: store.blocks[0].hash,
-        index: lastPot.index,
         commit: lastPot.commit,
-        noteCommit: lastPot.noteCommit,
-        r: lastPot.r,
         address: destA,
       }],
       vout: [

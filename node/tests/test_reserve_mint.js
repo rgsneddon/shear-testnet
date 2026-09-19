@@ -13,6 +13,7 @@ import {
   extraMintAllowed,
   wrapMintForbidden,
   GENESIS_BPS,
+  GENESIS_BITS_PACKED,
 } from '../../crypto/asert.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { vote, deposit, emptyVault, VOTE_DECREASE, VOTE_HOLD, withdrawTx } from '../../crypto/reserve_vault.js';
@@ -30,16 +31,15 @@ function destOf(id) {
 }
 
 function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
-  assert.ok(found && found.block, 'pow');
   return {
-    header: found.header,
+    header: tpl.header,
     txs: tpl.txs,
     samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
     miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
+    weight: tpl.weight,
   };
 }
 
@@ -66,11 +66,12 @@ describe('Reserve mint is sealed-state pure', () => {
     const id = newIdentity();
     const dest = destOf(id);
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
+    const TRUSTED = Buffer.alloc(32);
     const base = {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_000_000,
     };
     const staked = NANOS_PER_SHE;
@@ -80,7 +81,7 @@ describe('Reserve mint is sealed-state pure', () => {
       stakedNanos: staked,
       principalNanos: staked,
     };
-    const denied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, txs: [wrong] })), null, { committedBps: 425 }));
+    const denied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, txs: [wrong] })), null, { committedBps: 425, trustedPowHash: TRUSTED }));
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'mint_amount');
 
@@ -92,6 +93,7 @@ describe('Reserve mint is sealed-state pure', () => {
     };
     const idleDenied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, now: 1_700_000_000_000 + 90_000, txs: [idleTaxed] })), null, {
       committedBps: 425,
+      trustedPowHash: TRUSTED,
     }));
     assert.equal(idleDenied.ok, false);
     assert.equal(idleDenied.reason, 'mint_amount');
@@ -101,7 +103,7 @@ describe('Reserve mint is sealed-state pure', () => {
       stakedNanos: staked,
       principalNanos: staked,
     };
-    const defDenied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, now: 1_700_000_000_000 + 180_000, txs: [as425] })), null));
+    const defDenied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, now: 1_700_000_000_000 + 180_000, txs: [as425] })), null, { trustedPowHash: TRUSTED }));
     assert.equal(defDenied.ok, false);
     assert.equal(defDenied.reason, 'mint_amount');
     assert.equal(GENESIS_BPS, 264);
@@ -127,11 +129,11 @@ describe('Reserve mint is sealed-state pure', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_000_000,
       txs: [bad],
     }));
-    const got = verifyBlock(block, null);
+    const got = verifyBlock(block, null, { trustedPowHash: Buffer.alloc(32) });
     assert.equal(got.ok, false);
     assert.equal(got.reason, 'ticker');
   });

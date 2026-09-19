@@ -60,11 +60,7 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       fee,
       changeNanos: change,
       vin: [{
-        prev: parent.hash,
-        index: idx,
         commit: spent.commit,
-        noteCommit: spent.noteCommit,
-        r: spent.r,
         address: dest,
       }],
       vout: [
@@ -107,11 +103,7 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       fee,
       changeNanos: change,
       vin: [{
-        prev: parent.hash,
-        index: idx,
         commit: fakeIn.commit,
-        noteCommit: fakeIn.noteCommit,
-        r: fakeIn.r,
         address: dest,
       }],
       vout: [

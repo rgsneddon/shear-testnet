@@ -63,7 +63,7 @@ Shear pool book:
 
 ## Ports
 
-- Stratum: `0.0.0.0:1111`
+- Stratum: `127.0.0.1:1111` behind a TLS terminator (`SHEAR_STRATUM_BIND=127.0.0.1`, `SHEAR_STRATUM_AUTH=1`). Dev dest-only is `SHEAR_STRATUM_AUTH=0`. Do not recommend bare `0.0.0.0:1111` in production.
 - Dashboard: nginx `pool.shear.digital` (TLS) reverse-proxied to the pool HTTP
 
 ## UI

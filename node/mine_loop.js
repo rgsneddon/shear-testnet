@@ -120,7 +120,7 @@ async function trySoakFlow(tipHeight) {
     maxLevy: fee,
     changeNanos: leftover,
     open,
-    vin: [{ commit: spent.commit, r: spent.r, noteCommit: spent.noteCommit }],
+    vin: [{ commit: spent.commit }],
     vout: [
       { address: destB, nanos: pay, kind: 'send' },
       { address: destC, nanos: leftover, kind: 'send' },

@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   EPOCH_DAYS_TESTNET,
   EPOCH_DAYS_MAINNET,
@@ -78,6 +81,24 @@ describe('I1 pot schedule', () => {
     assert.equal(epochDays(MAGIC_MAINNET), 400);
     if (prev == null) delete process.env.SHEAR_EPOCH_DAYS;
     else process.env.SHEAR_EPOCH_DAYS = prev;
+  });
+
+  it('JS + Sol + wallet epoch pins agree: testnet 4d, mainnet 400d', () => {
+    const root = path.join(fileURLToPath(new URL('.', import.meta.url)), '..');
+    const sol = fs.readFileSync(path.join(root, 'contracts/Reserve.sol'), 'utf8');
+    const dart = fs.readFileSync(path.join(root, 'wallet/lib/shear_reserve.dart'), 'utf8');
+    const js = fs.readFileSync(path.join(root, 'crypto/pot_sched.js'), 'utf8');
+    const asert = fs.readFileSync(path.join(root, 'crypto/asert.js'), 'utf8');
+    assert.match(js, /export const EPOCH_DAYS_TESTNET = 4/);
+    assert.match(js, /export const EPOCH_DAYS_MAINNET = 400/);
+    assert.match(asert, /RESERVE_EPOCH_DAYS = EPOCH_DAYS_TESTNET/);
+    assert.match(sol, /EPOCH_DAYS_TESTNET = 4/);
+    assert.match(sol, /EPOCH_DAYS_MAINNET = 400/);
+    assert.match(sol, /function epochDaysOf/);
+    assert.match(dart, /kReserveEpochDaysTestnet = 4/);
+    assert.match(dart, /kReserveEpochDaysMainnet = 400/);
+    assert.equal(epochDays(MAGIC_TESTNET), 4);
+    assert.equal(epochDays(MAGIC_MAINNET), 400);
   });
 });
 

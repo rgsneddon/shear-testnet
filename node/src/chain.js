@@ -55,8 +55,9 @@ import {
   fluxsetFromBlocks,
   jroot as jrootOf,
 } from '../../crypto/admit.js';
-import { collateSamples, shouldPruneSamples, flowSkipAllowed } from '../../crypto/chronoflux.js';
-import { verifyFundedBody } from '../../crypto/spend.js';
+import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
+import { verifyFundedBody, verifyPoolWithdrawBound } from '../../crypto/spend.js';
+import { portalIdFromDest } from '../../crypto/reserve_vault.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
   sealCoinbaseNote,
@@ -1025,6 +1026,8 @@ function verifyBlockConsensus(block, prev, {
     }
     const ins = Array.isArray(tx.vin) ? tx.vin : [];
     for (const i of ins) {
+      const link = sealedVinLinkField(i);
+      if (link) return { ok: false, reason: 'vin_link' };
       if (i?.address) {
         const r = checkAddressField(i.address, { allowEmpty: false });
         if (!r.ok) return { ok: false, reason: r.reason };
@@ -1076,19 +1079,25 @@ function verifyBlockConsensus(block, prev, {
       const bps = Number(committedBps ?? reserveState?.epochBps ?? GENESIS_BPS);
       const dest = String(tx.from || tx.vin?.[0]?.address || '');
       const portals = reserveState?.portals || {};
-      const portal = portals[dest]
-        || Object.values(portals).find((p) => p && (Number(p.staked || 0) + Number(p.idle || 0) > 0));
-      const staked = Number(tx.stakedNanos ?? portal?.staked ?? 0);
-      const idle = Number(tx.idleNanos ?? portal?.idle ?? 0);
-      const principal = Number(tx.principalNanos ?? (staked + idle));
+      const pid = String(tx.portalId || '').toLowerCase();
+      const portal = (pid && portals[pid])
+        || (dest && (portals[dest] || portals[portalIdFromDest(dest)]))
+        || null;
+      if (!portal) return { ok: false, reason: 'mint_amount' };
+      const staked = Number(portal.staked || 0);
+      const idle = Number(portal.idle || 0);
+      const principal = staked + idle;
       const want = principal + interestNanos(staked, bps);
       const o = tx.vout?.[0];
+      const claimed = o?.valueProof?.v != null ? Number(o.valueProof.v) : Number(o?.nanos ?? tx.nanos ?? 0);
       const got = o?.commit
         ? (verifySealedNote(o, want) ? want : -1)
-        : Number(o?.nanos ?? tx.nanos ?? 0);
-      if (!evmSession && got !== want) return { ok: false, reason: 'mint_amount' };
+        : claimed;
+      if (got !== want) return { ok: false, reason: 'mint_amount' };
     }
     if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
+    const bound = verifyPoolWithdrawBound(tx);
+    if (!bound.ok) return bound;
     const taxed = levyTaxed(tx);
     const need = levyNeed(tx, body.slice(0, i));
     const paid = Math.floor(Number(tx.fee || 0));
