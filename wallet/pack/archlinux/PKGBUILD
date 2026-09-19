@@ -1,7 +1,7 @@
 pkgname=shear-wallet
-pkgver=0.37
+pkgver=0.38
 pkgrel=1
-pkgdesc='Shear wallet [testnet] 0.37'
+pkgdesc='Shear wallet [testnet] 0.38'
 url='https://github.com/rgsneddon/shear-testnet'
 arch=('x86_64')
 license=('MIT')
