@@ -5,6 +5,9 @@ import 'package:shear_wallet/shear_ctf.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ed25519.dart';
 import 'package:shear_wallet/shear_ledger.dart';
+import 'package:shear_wallet/shear_admit.dart';
+import 'package:shear_wallet/shear_note.dart';
+import 'package:shear_wallet/shear_ristretto.dart';
 import 'package:shear_wallet/shear_pack.dart';
 import 'package:shear_wallet/shear_shewall.dart';
 
@@ -160,6 +163,7 @@ void main() {
         int.parse(alice.seedHex.substring(i * 2, i * 2 + 2), radix: 16),
     ]));
     expect(destMatchesSpendPub(home, spend), isTrue);
+    expect(admitBaseFromAddress(home)?.length, 32);
     ledger.creditHash(home, hashes: 256);
     expect(
       ledger.pending(alice.address, paymentCode: alice.paymentCode),
@@ -186,6 +190,61 @@ void main() {
     other.settleTo(20 + ShearLedger.spendableConfirmations);
     expect(other.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
     expect(other.spendable(indexed), closeTo(1 + 100 * kHashBonusShe, 1e-18));
+  });
+
+  test('homeDest dest20||B wraps hash notes; dest20-only ingest cannot recover r', () {
+    final alice = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(alice);
+    final home = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
+    final b = admitBaseFromAddress(home);
+    expect(b, isNotNull);
+    expect(b!.length, 32);
+    expect(destMatchesSpendPub(home, ledger.spendPub!), isTrue);
+
+    final d20 = hash20FromAddress(home)!;
+    final r = randomScalar();
+    var wrapped = <String, dynamic>{
+      'kind': 'hash',
+      'noteCommit': noteCommitOfDest20(d20),
+      'commit': pointBytes(commit(1, r)),
+      'r': scalarBytes(r),
+      'address': home,
+    };
+    wrapped = attachAdmitPub(wrapped, admitBase: pointFrom(b));
+    expect(wrapped['rEph'], isNotNull);
+    expect(wrapped['rCt'], isNotNull);
+    final rBytes = wrapped['r'] as Uint8List;
+    final compacted = compactSealedVout(wrapped);
+    expect(compacted.containsKey('r'), isFalse);
+    expect(compacted['rEph'], isNotNull);
+    expect(compacted['rCt'], isNotNull);
+
+    ledger.ingestSealedVouts([compacted], spendSeed: ledger.spendSeed!, dest: home);
+    final opened = ledger.notes.where((n) =>
+        n['r'] != null && (n['address'] == home || n['dest'] == home));
+    expect(opened, isNotEmpty);
+    final got = opened.first['r'];
+    expect(got, isA<Uint8List>());
+    expect(got as Uint8List, rBytes);
+
+    final dest20only = encodeDestAddress(destCommitFromSpendPub(ledger.spendPub!));
+    expect(admitBaseFromAddress(dest20only), isNull);
+    expect(dest20only, isNot(home));
+    final rBare = randomScalar();
+    var bare = <String, dynamic>{
+      'kind': 'hash',
+      'noteCommit': noteCommitOfDest20(hash20FromAddress(dest20only)!),
+      'commit': pointBytes(commit(1, rBare)),
+      'r': scalarBytes(rBare),
+      'address': dest20only,
+    };
+    bare = attachAdmitPub(bare);
+    final compactBare = compactSealedVout(bare);
+    expect(compactBare['rEph'], isNull);
+    expect(compactBare.containsKey('r'), isFalse);
+    final probe = ShearLedger()..bindIdentity(alice);
+    probe.ingestSealedVouts([compactBare], spendSeed: probe.spendSeed!, dest: dest20only);
+    expect(probe.notes.any((n) => n['r'] != null), isFalse);
   });
 
   test('copy ID is the full payment code, not alias dest', () {

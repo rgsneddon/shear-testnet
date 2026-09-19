@@ -409,6 +409,7 @@ class ShearLedger {
     if (seed.length == 32) {
       spendSeed = seed;
       spendPub ??= ed25519PublicFromSeed(seed);
+      admitBase ??= admitBaseBytes(seed);
     }
   }
 
@@ -1554,7 +1555,7 @@ class ShearLedger {
   void _foldFlowDest(String restFrame, {String? paymentCode}) {
     final pub = _spendPubOf(paymentCode);
     if (pub == null || pub.length != 32) return;
-    final bound = encodeDestAddress(destCommitFromSpendPub(pub));
+    final bound = encodeDestAddress(destCommitFromSpendPub(pub), _admitBaseOf(paymentCode));
     final flow = destForLogin(
       restFrame,
       height: tipHeight,
@@ -1619,22 +1620,20 @@ class ShearLedger {
   }
 
   Uint8List? _admitBaseOf(String? paymentCode) {
-    final fromCode = decodePaymentCode(paymentCode ?? '')?['admitBase'];
-    if (fromCode != null && fromCode.length == 32) return fromCode;
-    if (admitBase != null && admitBase!.length == 32) return admitBase;
-    if (spendSeed != null && spendSeed!.length == 32) {
-      return admitBaseBytes(spendSeed!);
+    admitBase ??= decodePaymentCode(paymentCode ?? '')?['admitBase'];
+    if (admitBase == null && spendSeed != null && spendSeed!.length == 32) {
+      admitBase = admitBaseBytes(spendSeed!);
     }
-    return null;
+    return admitBase;
   }
 
   String currentDest(String restFrame, {String? paymentCode}) {
     if (isDestAddress(restFrame)) return restFrame;
     final pub = _spendPubOf(paymentCode);
     if (pub != null && pub.length == 32) {
-      // Mining mailbox is destCommit(spendPub) dest20. dest20||B is a
-      // different ssa1 — Copy dest must match the Continuum string.
-      return encodeDestAddress(destCommitFromSpendPub(pub));
+      // Mining mailbox is destCommit(spendPub)||B so coinbase wrap can
+      // attach rEph/rCt and ingestSealedVouts can recover r.
+      return encodeDestAddress(destCommitFromSpendPub(pub), _admitBaseOf(paymentCode));
     }
     return destForLogin(restFrame, height: tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ??
         restFrame;
@@ -1941,7 +1940,7 @@ class ShearLedger {
     }
     if (spendPub != null && spendPub!.length == 32) {
       if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
-        src = encodeDestAddress(destCommitFromSpendPub(spendPub!));
+        src = encodeDestAddress(destCommitFromSpendPub(spendPub!), admitBase ?? _admitBaseOf(paymentCode));
       }
     }
     var depth = 0;
