@@ -116,6 +116,18 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /shear-wallet-0\.38-android\.apk/);
     assert.match(main, /id="solo-deps"/);
     assert.match(main, /apt-get install -y git curl build-essential cmake/);
+    assert.match(main, /role="tablist"/);
+    assert.match(main, /dnf groupinstall -y "Development Tools"/);
+    assert.match(main, /pacman -Syu --needed base-devel/);
+    assert.match(main, /zypper install -t pattern devel_C_C\+\+/);
+    assert.match(main, /brew install git cmake python pkg-config openssl node rust/);
+    assert.match(main, /wsl --install -d Ubuntu/);
+    assert.match(main, /data-copy="solo-deps-fedora"/);
+    assert.match(main, /data-copy="solo-deps-arch"/);
+    assert.match(main, /data-copy="solo-deps-suse"/);
+    assert.match(main, /data-copy="solo-deps-macos"/);
+    assert.match(main, /data-copy="solo-deps-windows"/);
+    assert.match(main, /Never copy a Darwin/);
     assert.match(main, /rustup\.rs/);
     assert.match(main, /crypto\/native/);
     assert.match(main, /NODE_INC|node_api\.h/);
