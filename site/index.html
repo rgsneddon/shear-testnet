@@ -57,6 +57,19 @@
       text-transform:uppercase; font-size:.72rem; color:var(--cyan);
       border:1px solid var(--blue); background:var(--input);
     }
+    .os-tablist {
+      display:flex; flex-wrap:wrap; gap:6px; margin:0 0 12px;
+    }
+    .os-tablist [role="tab"] {
+      cursor:pointer; padding:8px 12px; font-weight:750; letter-spacing:.04em;
+      text-transform:uppercase; font-size:.72rem; color:var(--cyan);
+      border:1px solid var(--blue); background:var(--input);
+    }
+    .os-tablist [role="tab"][aria-selected="true"] {
+      color:#fff; background:var(--blue); border-color:var(--cyan);
+    }
+    .os-tabpanel[hidden] { display:none; }
+    .os-tabpanel > p:last-child { margin-bottom:0; }
     .sched { width: 100%; border-collapse: collapse; margin: 4px 0 12px; font-size: .88rem; }
     .sched th, .sched td {
       text-align: left; padding: .45rem .2rem; vertical-align: top;
@@ -395,10 +408,21 @@
       <h2>Solo mine</h2>
       <p>ShearK-Miner <strong>2.4</strong>, CPU only. Log in with wallet <strong>Copy dest</strong> (<code>ssa1.worker</code> or <code>ssa1.solo</code>). Solo means <em>your</em> node finds the block: you keep the <strong>live epoch pot</strong> (starts at 1.00 SHE, falls 0.01 SHE per Vortex epoch to a 0.20 SHE floor — see Continuity) plus the hash bonus on that dest. The public pool takes 1% of the pot only.</p>
       <p>Beginner path: install OS deps → clone → build RandomX + <code>crypto/native</code> → run a local node with stratum → Copy dest from Continuum → ShearK login → confirm accepts → wait for rewards.</p>
-      <h3>0. OS dependencies (Linux x86_64 Debian/Ubuntu) — copy/paste</h3>
-      <p>Windows: build the node in WSL2 or on a Linux box. You can still run <code>ShearK-Miner.exe</code> on Windows against <code>127.0.0.1:1111</code> on that node. Do not copy a macOS/Darwin <code>.node</code> onto Linux.</p>
-      <div class="copy-row">
-        <pre id="solo-deps">sudo apt-get update
+      <h3>0. OS dependencies — copy/paste</h3>
+      <p>Pick your OS. Each pane is a copy/paste install. Then continue with clone / RandomX / <code>crypto/native</code> below. Do not copy a macOS/Darwin <code>.node</code> onto Linux.</p>
+      <div class="os-tabs" id="solo-os-tabs">
+        <div class="os-tablist" role="tablist" aria-label="OS dependencies">
+          <button type="button" role="tab" id="solo-tab-debian" aria-controls="solo-pane-debian" aria-selected="true" tabindex="0" data-os="debian">Debian / Ubuntu</button>
+          <button type="button" role="tab" id="solo-tab-fedora" aria-controls="solo-pane-fedora" aria-selected="false" tabindex="-1" data-os="fedora">Fedora / RHEL</button>
+          <button type="button" role="tab" id="solo-tab-arch" aria-controls="solo-pane-arch" aria-selected="false" tabindex="-1" data-os="arch">Arch</button>
+          <button type="button" role="tab" id="solo-tab-suse" aria-controls="solo-pane-suse" aria-selected="false" tabindex="-1" data-os="suse">openSUSE</button>
+          <button type="button" role="tab" id="solo-tab-macos" aria-controls="solo-pane-macos" aria-selected="false" tabindex="-1" data-os="macos">macOS</button>
+          <button type="button" role="tab" id="solo-tab-windows" aria-controls="solo-pane-windows" aria-selected="false" tabindex="-1" data-os="windows">Windows</button>
+        </div>
+        <div class="os-tabpanel" role="tabpanel" id="solo-pane-debian" aria-labelledby="solo-tab-debian" data-os="debian">
+          <p>Debian / Ubuntu x86_64. Node 20 from NodeSource; rustup for native ADMITv2.</p>
+          <div class="copy-row">
+            <pre id="solo-deps">sudo apt-get update
 sudo apt-get install -y git curl build-essential cmake python3 pkg-config libssl-dev
 # Node 20+
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
@@ -406,7 +430,88 @@ sudo apt-get install -y nodejs
 # Rust (native ADMITv2 / BP+)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"</pre>
-        <button type="button" data-copy="solo-deps">Copy</button>
+            <button type="button" data-copy="solo-deps">Copy</button>
+          </div>
+          <p>If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, <code>export NODE_INC=/usr/include/node</code> (the directory that contains that file).</p>
+          <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
+        </div>
+        <div class="os-tabpanel" role="tabpanel" id="solo-pane-fedora" aria-labelledby="solo-tab-fedora" data-os="fedora" hidden>
+          <p>Fedora / RHEL. Development Tools, cmake, openssl-devel, NodeSource 20 rpm, rustup.</p>
+          <div class="copy-row">
+            <pre id="solo-deps-fedora">sudo dnf groupinstall -y "Development Tools"
+sudo dnf install -y git curl cmake python3 pkgconf-pkg-config openssl-devel
+# Node 20+
+curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+sudo dnf install -y nodejs
+# Rust (native ADMITv2 / BP+)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"</pre>
+            <button type="button" data-copy="solo-deps-fedora">Copy</button>
+          </div>
+          <p>If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, <code>export NODE_INC=/usr/include/node</code> (the directory that contains that file).</p>
+          <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
+        </div>
+        <div class="os-tabpanel" role="tabpanel" id="solo-pane-arch" aria-labelledby="solo-tab-arch" data-os="arch" hidden>
+          <p>Arch Linux. <code>base-devel</code> plus nodejs, npm, cmake, openssl. Repo <code>rust</code> is enough; rustup is optional.</p>
+          <div class="copy-row">
+            <pre id="solo-deps-arch">sudo pacman -Syu --needed base-devel git curl cmake python pkgconf openssl nodejs npm rust
+# optional rustup instead of repo rust:
+# curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+# . "$HOME/.cargo/env"</pre>
+            <button type="button" data-copy="solo-deps-arch">Copy</button>
+          </div>
+          <p>If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, <code>export NODE_INC=/usr/include/node</code> (the directory that contains that file).</p>
+          <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
+        </div>
+        <div class="os-tabpanel" role="tabpanel" id="solo-pane-suse" aria-labelledby="solo-tab-suse" data-os="suse" hidden>
+          <p>openSUSE. C/C++ devel pattern, cmake, openssl-devel, Node 20, rustup.</p>
+          <div class="copy-row">
+            <pre id="solo-deps-suse">sudo zypper install -t pattern devel_C_C++
+sudo zypper install -y git curl cmake gcc gcc-c++ openssl-devel python3 pkg-config
+# Node 20+
+curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+sudo zypper install -y nodejs
+# Rust (native ADMITv2 / BP+)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"</pre>
+            <button type="button" data-copy="solo-deps-suse">Copy</button>
+          </div>
+          <p>If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, <code>export NODE_INC=/usr/include/node</code> (the directory that contains that file).</p>
+          <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
+        </div>
+        <div class="os-tabpanel" role="tabpanel" id="solo-pane-macos" aria-labelledby="solo-tab-macos" data-os="macos" hidden>
+          <p>macOS with Homebrew. Build RandomX and <code>crypto/native</code> on this Mac. Never copy a Darwin <code>.node</code> onto Linux.</p>
+          <div class="copy-row">
+            <pre id="solo-deps-macos">xcode-select --install
+brew install git cmake python pkg-config openssl node rust
+export NODE_INC="$(brew --prefix node)/include/node"</pre>
+            <button type="button" data-copy="solo-deps-macos">Copy</button>
+          </div>
+          <p>If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, <code>export NODE_INC="$(brew --prefix node)/include/node"</code>. On the cmake line below, use <code>-j"$(sysctl -n hw.ncpu)"</code> instead of <code>nproc</code>.</p>
+          <p>Then continue with clone / RandomX / <code>crypto/native</code> below. Miner unzip + <code>./ShearK-Miner</code> is the macOS / Linux login block in step 3.</p>
+        </div>
+        <div class="os-tabpanel" role="tabpanel" id="solo-pane-windows" aria-labelledby="solo-tab-windows" data-os="windows" hidden>
+          <p>Build the node in <strong>WSL2 Ubuntu</strong> (or on a Linux box). Run <code>ShearK-Miner.exe</code> on Windows against <code>127.0.0.1:1111</code> (WSL localhost / port forward) or the public pool. SmartScreen may warn — More info → Run anyway, or unblock the zip. Never copy a Darwin <code>.node</code> onto Linux or into WSL.</p>
+          <div class="copy-row">
+            <pre id="solo-deps-windows">wsl --install -d Ubuntu
+wsl -d Ubuntu
+# inside Ubuntu, paste the Debian / Ubuntu deps block, then clone / RandomX / native below
+sudo apt-get update
+sudo apt-get install -y git curl build-essential cmake python3 pkg-config libssl-dev
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"</pre>
+            <button type="button" data-copy="solo-deps-windows">Copy</button>
+          </div>
+          <p>If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, <code>export NODE_INC=/usr/include/node</code> (inside WSL). After <code>npm run pool</code> in WSL, on Windows:</p>
+          <div class="copy-row">
+            <pre id="solo-deps-windows-miner">ShearK-Miner.exe --selftest
+ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
+            <button type="button" data-copy="solo-deps-windows-miner">Copy</button>
+          </div>
+          <p>Public pool instead: <code>ShearK-Miner.exe --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --threads 8</code>. Then continue with clone / RandomX / <code>crypto/native</code> below (in WSL).</p>
+        </div>
       </div>
       <h3>1. Clone, RandomX, crypto/native</h3>
       <p>Same as README “Build your own node”. If <code>make -C crypto/native</code> cannot find <code>node_api.h</code>, set <code>NODE_INC</code> to the directory that contains it (often <code>/usr/include/node</code> or the Node prefix <code>include/node</code>).</p>
@@ -572,6 +677,61 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
           }
         });
       });
+      (function osTabs() {
+        var root = document.getElementById('solo-os-tabs');
+        if (!root) return;
+        var tabs = [].slice.call(root.querySelectorAll('[role="tab"]'));
+        var panes = [].slice.call(root.querySelectorAll('[role="tabpanel"]'));
+        var ids = tabs.map(function (t) { return t.getAttribute('data-os'); });
+        function osFromHash() {
+          var h = (location.hash || '').replace(/^#/, '');
+          var q = new URLSearchParams(location.search).get('solo-os');
+          if (q && ids.indexOf(q) >= 0) return q;
+          if (h.indexOf('solo-mine=') === 0) {
+            var v = h.slice('solo-mine='.length);
+            if (ids.indexOf(v) >= 0) return v;
+          }
+          if (h.indexOf('solo-os-') === 0) {
+            var o = h.slice('solo-os-'.length);
+            if (ids.indexOf(o) >= 0) return o;
+          }
+          return ids[0];
+        }
+        function select(os, push) {
+          if (ids.indexOf(os) < 0) os = ids[0];
+          tabs.forEach(function (tab) {
+            var on = tab.getAttribute('data-os') === os;
+            tab.setAttribute('aria-selected', on ? 'true' : 'false');
+            tab.tabIndex = on ? 0 : -1;
+          });
+          panes.forEach(function (pane) {
+            var on = pane.getAttribute('data-os') === os;
+            if (on) pane.removeAttribute('hidden');
+            else pane.setAttribute('hidden', '');
+          });
+          if (push) {
+            try { history.replaceState(null, '', '#solo-mine=' + os); } catch (e) {}
+          }
+        }
+        tabs.forEach(function (tab, i) {
+          tab.addEventListener('click', function () { select(tab.getAttribute('data-os'), true); });
+          tab.addEventListener('keydown', function (ev) {
+            var k = ev.key;
+            var next = i;
+            if (k === 'ArrowRight' || k === 'ArrowDown') next = (i + 1) % tabs.length;
+            else if (k === 'ArrowLeft' || k === 'ArrowUp') next = (i - 1 + tabs.length) % tabs.length;
+            else if (k === 'Home') next = 0;
+            else if (k === 'End') next = tabs.length - 1;
+            else if (k === 'Enter' || k === ' ') { select(tab.getAttribute('data-os'), true); ev.preventDefault(); return; }
+            else return;
+            ev.preventDefault();
+            tabs[next].focus();
+            select(tabs[next].getAttribute('data-os'), true);
+          });
+        });
+        select(osFromHash(), false);
+        window.addEventListener('hashchange', function () { select(osFromHash(), false); });
+      })();
       var rateEl = document.getElementById('oracle-rate');
       if (rateEl) {
         fetch('/reserve/latest.json', { cache: 'no-store' })
