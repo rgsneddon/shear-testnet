@@ -140,6 +140,15 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(readme, /Headers check/);
     assert.match(readme, /node_prefix/);
     assert.match(readme, /NODE_INC=\./);
+    assert.match(main, /p2p\.shear\.digital:30303,r2r\.shear\.digital:30303,b2b\.shear\.digital:30303/);
+    assert.match(main, /same shell/);
+    assert.match(main, /Stuck at height=0 \/ want=0 \/ ibd=false/);
+    assert.match(main, /nc -vz p2p\.shear\.digital 30303/);
+    assert.match(main, /want>0/);
+    assert.match(main, /ibd=true/);
+    assert.match(main, /egress\/DNS/);
+    assert.match(main, /data-copy="solo-sync-fix"/);
+    assert.match(readme, /does \*\*not\*\* default `SHEAR_SEEDS`/);
     assert.match(main, /Darwin/);
     assert.match(main, /Wrong dest/);
     assert.match(main, /cleartext TCP/);

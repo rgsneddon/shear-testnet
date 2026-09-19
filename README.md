@@ -99,13 +99,15 @@ export SHEAR_P2P_PORT=30303
 export SHEAR_P2P_BIND=0.0.0.0
 export SHEAR_RPC_PORT=18332
 export SHEAR_RPC_BIND=127.0.0.1
-export SHEAR_SEEDS=p2p.shear.digital:30303
+export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
 
 node node/src/node.js
 # or: node node/src/node.js --help
 ```
 
 RPC stays on **loopback**. Wallet talks to `http://127.0.0.1:18332`. Optional systemd unit: `deploy/shear-node.service`.
+
+`npm run pool` does **not** default `SHEAR_SEEDS` (unlike `node.js`). Export all three seeds in the **same shell**. Outbound to those seeds is required; opening inbound `30303` alone does not sync. Status `height=0 want=0 ibd=false` is an empty tip that is **not** fetching — IBD is only `want>0`. Check `nc -vz p2p.shear.digital 30303`; if a peer is also height 0, pick a seed that is ahead. Full copy/paste: https://shear.digital#solo-sync-stuck
 
 IBD: headers then a window of getblocks (default 16 in flight). First checkpoint at height **1000**, then every **400**. Heavier fork that replaces a checkpoint hash is rejected (`reorg_checkpoint`).
 

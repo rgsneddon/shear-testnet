@@ -312,6 +312,17 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /NODE_INC=\./);
     assert.match(html, /Missing node_api\.h/);
     assert.match(html, /bare <code>-I\.<\/code>/);
+    assert.match(html, /p2p\.shear\.digital:30303,r2r\.shear\.digital:30303,b2b\.shear\.digital:30303/);
+    assert.match(html, /same shell/);
+    assert.match(html, /does <strong>not<\/strong> default seeds/);
+    assert.match(html, /inbound firewall <code>30303<\/code> alone does <strong>not<\/strong> sync/);
+    assert.match(html, /Stuck at height=0 \/ want=0 \/ ibd=false/);
+    assert.match(html, /nc -vz p2p\.shear\.digital 30303/);
+    assert.match(html, /want>0/);
+    assert.match(html, /ibd=true/);
+    assert.match(html, /p2p_headers missing>0/);
+    assert.match(html, /egress\/DNS/);
+    assert.match(html, /data-copy="solo-sync-fix"/);
     assert.match(html, /Darwin/);
     assert.match(html, /live epoch pot/);
     assert.match(html, /guide-grid/);
