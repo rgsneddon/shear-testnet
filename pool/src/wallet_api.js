@@ -219,6 +219,7 @@ export function reconstructOwner(store, address) {
         ...expectedCoinbasePays(b.shareBatch || [], {
           miner: b.miner,
           hashBonusNanos: bonus,
+          potNanos: Number(b.blockSubsidyNanos) || undefined,
         }),
         ...paysFromALeaves(b.aLeaves || [], { hashBonusNanos: bonus }),
       ];
@@ -662,6 +663,7 @@ export function hashBonusEmittedOfBlock(block, unit = HASH_BONUS_NANOS) {
       ...expectedCoinbasePays(block.shareBatch || [], {
         miner: block.miner,
         hashBonusNanos: u,
+        potNanos: Number(block.blockSubsidyNanos) || undefined,
       }),
       ...paysFromALeaves(block.aLeaves || [], { hashBonusNanos: u }),
     ];
@@ -1011,6 +1013,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
               miner: b.miner,
               poolDest,
               hashBonusNanos: bonus,
+              potNanos: Number(b.blockSubsidyNanos) || undefined,
             });
             nanos = matchSealedCoinbaseVout(o, pays).nanos || undefined;
             if (nanos == null) {

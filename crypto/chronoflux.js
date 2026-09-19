@@ -17,7 +17,7 @@
  * Never prune vouts. continuity_root in the header remains the 32-byte seal.
  */
 import { createHash } from 'node:crypto';
-import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS } from './asert.js';
+import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS, BLOCK_SUBSIDY_NANOS } from './asert.js';
 import { shareRowJson } from './pack.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
@@ -127,6 +127,7 @@ export function sealedExplorerRows(block) {
       miner: block.miner,
       poolDest: poolFeeDest(),
       hashBonusNanos: HASH_BONUS_NANOS,
+      potNanos: Number(block.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS,
     });
     const paysBound = (pays || []).some((p) => {
       try {

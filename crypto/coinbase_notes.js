@@ -19,6 +19,7 @@ export function expectedCoinbasePays(shareBatch, {
   miner,
   poolDest,
   hashBonusNanos = HASH_BONUS_NANOS,
+  potNanos = BLOCK_SUBSIDY_NANOS,
 } = {}) {
   hashBonusNanos = hashBonusUnitNanos(hashBonusNanos);
   const batch = Array.isArray(shareBatch) ? shareBatch : [];
@@ -42,12 +43,13 @@ export function expectedCoinbasePays(shareBatch, {
     }
   }
   const pool = poolDest && isDestAddress(poolDest) ? poolDest : '';
-  const fee = pool ? Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000) : 0;
-  const rest = BLOCK_SUBSIDY_NANOS - fee;
+  const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
+  const fee = pool ? Math.floor(pot * POOL_FEE_BPS / 10000) : 0;
+  const rest = pot - fee;
   const total = leaves.reduce((a, l) => a + l.count, 0);
   if (!total) {
     if (miner && isDestAddress(miner)) {
-      out.push({ address: miner, nanos: BLOCK_SUBSIDY_NANOS, kind: 'pot' });
+      out.push({ address: miner, nanos: pot, kind: 'pot' });
     }
     return out;
   }
@@ -199,6 +201,7 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
         miner: b.miner,
         poolDest: b.poolDest || '',
         hashBonusNanos,
+        potNanos: Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS,
       }),
       ...paysFromALeaves(b.aLeaves || [], { hashBonusNanos }),
     ];

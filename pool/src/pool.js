@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createHash, randomBytes, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
@@ -64,6 +64,31 @@ export { hasherHasValidRoundShare, roundActualHashes };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
+const REPO_ROOT = path.join(__dirname, '../..');
+
+export function gitHeadOf(cwd = REPO_ROOT) {
+  const env = String(process.env.SHEAR_GIT_HEAD || '').trim();
+  if (/^[0-9a-f]{7,40}$/i.test(env)) return env.toLowerCase();
+  try {
+    const gitDir = path.join(cwd, '.git');
+    let head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+    if (/^ref:/.test(head)) {
+      head = fs.readFileSync(path.join(gitDir, head.slice(4).trim()), 'utf8').trim();
+    }
+    if (/^[0-9a-f]{7,40}$/i.test(head)) return head.toLowerCase();
+  } catch { /* packed-refs or missing */ }
+  try {
+    const r = spawnSync('git', ['rev-parse', 'HEAD'], {
+      cwd,
+      encoding: 'utf8',
+      timeout: 2000,
+      windowsHide: true,
+    });
+    const h = String(r.stdout || '').trim();
+    if (/^[0-9a-f]{7,40}$/i.test(h)) return h.toLowerCase();
+  } catch { /* not a git checkout */ }
+  return '';
+}
 /** Public H/s is proven hashes in this window, not lifetime hashes / first-seen. */
 export const HASHRATE_WINDOW_MS = 180_000;
 /** Display H/s eases toward hashes/dt. 8s tau matches ShearK RATE_TAU so miner and pool agree. */
@@ -1246,6 +1271,27 @@ export function createPool({
     const until = Number(ipDeniedUntil.get(ip)) || 0;
     return until > now;
   }
+  const lostPath = path.join(dataDir, 'lost-work.json');
+  function loadLostWork() {
+    try {
+      const j = JSON.parse(fs.readFileSync(lostPath, 'utf8'));
+      return {
+        lostWorkHashes: Math.max(0, Math.floor(Number(j.lostWorkHashes) || 0)),
+        lostWorkEvents: Math.max(0, Math.floor(Number(j.lostWorkEvents) || 0)),
+      };
+    } catch {
+      return { lostWorkHashes: 0, lostWorkEvents: 0 };
+    }
+  }
+  function saveLostWork() {
+    try {
+      fs.writeFileSync(lostPath, JSON.stringify({
+        lostWorkHashes: Number(stats.lostWorkHashes) || 0,
+        lostWorkEvents: Number(stats.lostWorkEvents) || 0,
+      }));
+    } catch { /* datadir may be read-only in tests */ }
+  }
+  const persistedLost = loadLostWork();
   const stats = {
     started: Date.now(),
     lastFoundAt: 0,
@@ -1254,8 +1300,8 @@ export function createPool({
     stale: 0,
     blocks: 0,
     dropped: 0,
-    lostWorkHashes: 0,
-    lostWorkEvents: 0,
+    lostWorkHashes: persistedLost.lostWorkHashes,
+    lostWorkEvents: persistedLost.lostWorkEvents,
     hashBusy: 0,
     coin: 'SHE',
     algo: ALGO,
@@ -1361,6 +1407,7 @@ export function createPool({
         if (n > 0) {
           stats.lostWorkHashes = (Number(stats.lostWorkHashes) || 0) + n;
           stats.lostWorkEvents = (Number(stats.lostWorkEvents) || 0) + 1;
+          saveLostWork();
         }
       }
     }
@@ -2184,6 +2231,7 @@ export function createPool({
       poolFeeOnPotOnly: true,
       hashBonusPoolFeeBps: 0,
       loginAuth: requireLoginAuth ? 'ed25519' : 'dest-only',
+      gitHead: gitHeadOf(),
       proof: 'PoW',
       miners: workers.length,
       threads: workers.reduce((a, m) => a + (m.threads || 0), 0),

@@ -248,6 +248,9 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     }
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
     assert.doesNotMatch(src, /hashBonusCustodyDest\s*:/);
+    const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
+    assert.match(storeSrc, /void hashBonusCustodyDest/);
+    assert.doesNotMatch(storeSrc, /hashBonusCustodyDest,/);
   });
 
   it('epoch-1 potShares sum equals schedule pot and fails if Σ ≠ wantPot', () => {

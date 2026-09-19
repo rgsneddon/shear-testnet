@@ -20,6 +20,7 @@ import {
   topDestSharePct,
   resetMinerRoundDisplay,
   reportedHashrate,
+  gitHeadOf,
 } from '../pool/src/pool.js';
 import { roundActualHashes } from '../pool/src/hash_credit.js';
 import { appendAdminAudit } from '../pool/src/admin.js';
@@ -90,6 +91,9 @@ describe('P0 hardening + short addresses', () => {
     assert.match(src, /poolFeeBps: POOL_FEE_BPS/);
     assert.match(src, /loginAuth:/);
     assert.match(src, /stratumBindHost/);
+    assert.match(src, /gitHead:/);
+    const head = gitHeadOf();
+    assert.match(head, /^[0-9a-f]{7,40}$/i);
   });
 
   it('P0-7 unauthenticated session cannot durable dest-ban', () => {

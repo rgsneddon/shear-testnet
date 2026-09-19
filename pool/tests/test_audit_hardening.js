@@ -79,7 +79,12 @@ describe('A3 lost work on tip reset', () => {
     pool.store.emit('tip', { hash: 'ab', height: 2 });
     assert.ok(Number(pool.stats.lostWorkHashes) >= before + 512);
     assert.ok(Number(pool.stats.lostWorkEvents) >= 1);
+    const n = Number(pool.stats.lostWorkHashes);
     pool.close();
+    const again = createPool({ dataDir: dir, stratumPort: 0, httpPort: 0 });
+    assert.ok(Number(again.stats.lostWorkHashes) >= n);
+    assert.ok(fs.existsSync(path.join(dir, 'lost-work.json')));
+    again.close();
   });
 });
 
@@ -205,7 +210,7 @@ describe('A5 + 2FA QR', () => {
     const admin = createAdmin(dir);
     const prev = process.env.SHEAR_ADMIN_HOST;
     delete process.env.SHEAR_ADMIN_HOST;
-    const setup = admin.setup({ user: 'operator', password: 'aaaaaaaa' });
+    const setup = admin.setup({ user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken });
     assert.equal(setup.ok, true);
     const start = handleAdminApi(new URL('https://mypool.site/api/admin/totp/start'), 'POST', {}, {
       admin,
@@ -228,10 +233,18 @@ describe('A5 + 2FA QR', () => {
 
 describe('prod examples', () => {
   it('prod systemd example sets auth on and non-all-iface bind', () => {
-    const unit = fs.readFileSync(path.join(root, 'deploy/shear-pool.service'), 'utf8');
-    assert.match(unit, /SHEAR_STRATUM_AUTH=1/);
-    assert.match(unit, /SHEAR_STRATUM_BIND=127\.0\.0\.1/);
-    assert.doesNotMatch(unit, /SHEAR_MAINNET_EMIT=1/);
+    const units = [
+      'deploy/shear-pool.service',
+      'deploy/shear-pool-v4.service',
+      'pool/deploy/shear-pool.service',
+    ];
+    for (const rel of units) {
+      const unit = fs.readFileSync(path.join(root, rel), 'utf8');
+      assert.match(unit, /SHEAR_STRATUM_AUTH=1/, rel);
+      assert.match(unit, /SHEAR_STRATUM_BIND=127\.0\.0\.1/, rel);
+      assert.match(unit, /^Environment=SHEAR_ADMIN_HOST=/m, rel);
+      assert.doesNotMatch(unit, /SHEAR_MAINNET_EMIT=1/, rel);
+    }
     const node = fs.readFileSync(path.join(root, 'deploy/shear-node.service'), 'utf8');
     assert.doesNotMatch(node, /SHEAR_MAINNET_EMIT/);
     const tls = fs.readFileSync(path.join(root, 'pool/deploy/nginx-stratum-tls.conf'), 'utf8');
@@ -241,5 +254,10 @@ describe('prod examples', () => {
     assert.doesNotMatch(spec, /Stratum: `0\.0\.0\.0:1111`/);
     assert.match(spec, /SHEAR_STRATUM_AUTH=1/);
     assert.match(spec, /SHEAR_STRATUM_BIND=127\.0\.0\.1/);
+    assert.match(spec, /\/api\/stats/);
+    const readme = fs.readFileSync(path.join(root, 'pool/README.md'), 'utf8');
+    assert.match(readme, /stratumBind/);
+    assert.match(readme, /loginAuth/);
+    assert.match(readme, /TLS terminator/);
   });
 });
