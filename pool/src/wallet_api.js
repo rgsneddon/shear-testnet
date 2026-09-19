@@ -1022,6 +1022,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
               })).nanos || undefined;
             }
           }
+          if (nanos == null && o.valueProof?.v != null) {
+            const v = Math.floor(Number(o.valueProof.v));
+            if (Number.isFinite(v) && v > 0) nanos = v;
+          }
           notes.push({
             kind: o.kind || (tx.coinbase ? 'pot' : 'send'),
             noteCommit: hex(o.noteCommit),
@@ -1030,11 +1034,12 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
             rCt: hex(o.rCt),
             admitPub: hex(o.admitPub),
             viewTag: hex(o.viewTag),
+            dest20: hex(o.dest20),
             prev,
             index,
             height: b.height,
             coinbase: !!tx.coinbase,
-            ...(nanos != null ? { nanos } : {}),
+            ...(nanos != null ? { nanos, amount: nanosToShe(nanos), valueProof: { v: nanos } } : {}),
           });
         });
       }

@@ -48,8 +48,15 @@ String ctfTranscript({
   buf.writeln('kind        ${tx.kind}');
   buf.writeln('amount      ${formatShe(tx.amount)} SHE');
   buf.writeln('height      $height');
-  buf.writeln('from        ${tx.from}');
-  buf.writeln('to          ${tx.to}');
+  buf.writeln('from        ${tx.from.isEmpty ? '(none)' : tx.from}');
+  buf.writeln('to          ${tx.to.isEmpty ? '(none)' : tx.to}');
+  buf.writeln('status      ${tx.confirmed ? 'spendable' : 'confirming'}');
+  if (tx.hashAmount != null) buf.writeln('hashbonus   ${formatShe(tx.hashAmount!)} SHE');
+  if (tx.pot != null) buf.writeln('pot         ${formatShe(tx.pot!)} SHE');
+  if (tx.memoPlain != null && tx.memoPlain!.isNotEmpty) buf.writeln('snippet     ${tx.memoPlain}');
+  if (tx.atMs != null) {
+    buf.writeln('date        ${DateTime.fromMillisecondsSinceEpoch(tx.atMs!, isUtc: true).toIso8601String()}');
+  }
   buf.writeln('-- identity --');
   buf.writeln('shear1      ${identity.address}');
   buf.writeln('            rest-frame; never a dest; never share; never on chain');

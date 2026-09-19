@@ -25,7 +25,7 @@ Also in this branch (post-audit book law):
 
 ## Still human ops (not faked)
 
-- TLS cert for `docs.shear.digital` (nav uses `shear.digital/docs/` until then).
+- `docs.shear.digital` SAN/vhost is retired in public nav: href `https://shear.digital/docs/` only. Ops may DNS-retire the `docs.` name; do not invent a cert in-repo.
 - Fleet binary rollout + **datadir wipe** for the new fingerprint (`/var/lib/shear/testnet-v4*`).
 - Second physical pool / extra hashrate.
 - External ADMIT/BP+ audit engagement.

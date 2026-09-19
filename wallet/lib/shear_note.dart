@@ -194,6 +194,8 @@ Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
     final vp = row['valueProof'];
     if (vp is Map && vp['v'] == null && o['nanos'] is num) {
       row['valueProof'] = {...vp, 'v': o['nanos']};
+    } else if ((vp == null || (vp is Map && vp['v'] == null)) && o['nanos'] is num) {
+      row['valueProof'] = {'v': o['nanos']};
     }
   }
   return row;

@@ -311,19 +311,13 @@ SilentPay? silentPay(String fullCode, [Uint8List? ephSeed]) {
 
 String? freshStealthDest(String paymentCode) => silentPay(paymentCode)?.dest;
 
-String destOpeningFromView(String viewKey, Uint8List spendHash20, [int index = 0]) {
+/// 64-byte scanPub||spendPub hex. Same preimage as JS `destOpeningFromView`.
+/// Mining mailbox destProof is destCommit(spendPub), not a hashed spend mix.
+String destOpeningFromView(String viewKey, Uint8List spendPub32, [int index = 0]) {
   if (index < 0) return '';
+  if (spendPub32.length != 32) return '';
   final scanPub = x25519PublicFromSeed(scanSeedFromView(viewKey, index));
-  final idx = Uint8List(8);
-  var x = index;
-  for (var i = 0; i < 8; i++) {
-    idx[i] = x & 0xff;
-    x >>= 8;
-  }
-  final spend = Uint8List.fromList(
-    sha256.convert(utf8.encode('shear-spend-v1') + _asSpend(spendHash20) + idx).bytes,
-  );
-  return _hexOf(Uint8List.fromList([...scanPub, ...spend]));
+  return _hexOf(Uint8List.fromList([...scanPub, ...spendPub32]));
 }
 
 String indexedDestOpening(Uint8List spendHash20, Uint8List closure, int index) {

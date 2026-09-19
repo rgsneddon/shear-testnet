@@ -1,4 +1,4 @@
-# Shear wallet 0.37
+# Shear wallet 0.38
 
 GUI (Flutter) and CLI. Same identity, same encrypted `shewall.bin`, same book magic `shear-testnet-v4`.
 
@@ -10,16 +10,16 @@ Mine with **Copy dest**: the Continuum `ssa1` shown on screen (Copy dest copies 
 
 Pool: `pool.shear.digital:1111` (cleartext TCP unless TLS is in front). Magic: `shear-testnet-v4`.
 
-Continuum is spendable, pending transfers until six confirmations, and Copy ID. Already-confirmed SHE loads from a local node (`127.0.0.1:18332`) on unlock. Open-round hashes stay pending until the next sealed block. Shearview is confirmed transfers; tap a tx for its CTF printout on Resistance. This wallet does not mine. Public pool HTTP submit is an advanced toggle.
+Continuum is spendable, pending transfers until six confirmations, and Copy ID. Already-confirmed SHE loads from a local node (`127.0.0.1:18332`) on unlock. Open-round hashes stay pending until the next sealed block. Shearview lists your landings (height, from/to, date, amount, snippet); tap a row for full Resistance detail. Hashbonus sits inside the block row. The pot is pool-custodial until 30 confirms, then auto-pays at π. This wallet does not mine. Public pool HTTP submit is an advanced toggle.
 
-Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.37
+Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.38
 
 | Platform | Install |
 |----------|---------|
-| Windows | Unzip `shear-wallet-0.37-windows.zip`, run `shear_wallet.exe` |
-| Linux | Unzip `shear-wallet-0.37-linux.zip`, run `./shear_wallet` |
-| Arch | Unzip `shear-wallet-0.37-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
-| Android | Sideload `shear-wallet-0.37-android.apk` (`com.shear.shear_wallet`). Uninstall any old debug-signed build first |
+| Windows | Unzip `shear-wallet-0.38-windows.zip`, run `shear_wallet.exe` |
+| Linux | Unzip `shear-wallet-0.38-linux.zip`, run `./shear_wallet` |
+| Arch | Unzip `shear-wallet-0.38-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
+| Android | Sideload `shear-wallet-0.38-android.apk` (`com.shear.shear_wallet`). Uninstall any old debug-signed build first |
 | macOS | `.dmg` is packed on the MacBook — see `MACBOOK_HANDOFF.md` until the asset 200s |
 
 ## CLI

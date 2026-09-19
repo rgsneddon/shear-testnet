@@ -114,6 +114,7 @@ class ShearTx {
     this.threads,
     this.pot,
     this.change,
+    this.atMs,
   });
 
   final String id;
@@ -133,6 +134,8 @@ class ShearTx {
   final double? pot;
   /// Newly derived dest that received leftover. Never [from] or the portal.
   final String? change;
+  /// Sealed header timestamp (ms) when known. ShearView date column.
+  final int? atMs;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -150,6 +153,7 @@ class ShearTx {
         if (threads != null) 'threads': threads,
         if (pot != null) 'pot': pot,
         if (change != null) 'change': change,
+        if (atMs != null) 'atMs': atMs,
       };
 
   ShearTx copyWith({bool? confirmed, int? height}) => ShearTx(
@@ -168,6 +172,7 @@ class ShearTx {
         threads: threads,
         pot: pot,
         change: change,
+        atMs: atMs,
       );
 
   bool get isHashReward => kind == 'hash';
@@ -191,6 +196,9 @@ class ShearTx {
         threads: (j['threads'] as num?)?.toInt(),
         pot: (j['pot'] as num?)?.toDouble(),
         change: j['change']?.toString(),
+        atMs: (j['atMs'] as num?)?.toInt() ??
+            (j['ms'] as num?)?.toInt() ??
+            (j['timestamp'] as num?)?.toInt(),
       );
 }
 
@@ -276,20 +284,69 @@ String walletTxLabel(ShearTx t) => isWalletBlockKind(t.kind) ? 'block' : t.kind;
 
 bool isFlowTransfer(ShearTx t) => t.kind == 'send' || t.kind == 'receive';
 
+/// Owner ShearView landings: Flow + π auto-pay + dest-owned hash folded into the block.
+bool isOwnerLanding(ShearTx t) =>
+    isFlowTransfer(t) || t.kind == 'pool-withdraw' || t.kind == 'blockfound' || t.kind == 'coinbase';
+
 bool isReservePendingKind(ShearTx t) => t.kind == 'lock' || t.kind == 'vote';
 
 /// Continuum pending pie remark. Sender: sending. Recipient: receive.
 String continuumPendingRemark(ShearTx t, {required bool outgoing}) {
-  if (t.kind == 'send' || t.kind == 'pool-withdraw') return 'sending';
+  if (t.kind == 'send') return 'sending';
+  if (t.kind == 'pool-withdraw') return outgoing ? 'sending' : 'receiving';
   if (t.kind == 'receive') return outgoing ? 'sending' : 'receive';
   return walletTxLabel(t);
 }
 
 /// Shearview kind after 1 conf. Pending remarks drop at 6: sent / received.
 String shearviewKindLabel(ShearTx t, {required bool outgoing, required int confs}) {
+  if (t.kind == 'pool-withdraw') {
+    if (confs >= ShearLedger.continuumConfirmations) return outgoing ? 'sent' : 'received';
+    return outgoing ? 'sending' : 'receiving';
+  }
   if (!isFlowTransfer(t)) return walletTxLabel(t);
   if (confs >= ShearLedger.continuumConfirmations) return outgoing ? 'sent' : 'received';
   return outgoing ? 'sending' : 'receiving';
+}
+
+/// Owner ShearView list: height, status, sums. Never blank amount for the owner.
+String shearviewListTitle(ShearTx t, {required int confs, required bool outgoing}) {
+  final kind = shearviewKindLabel(t, outgoing: outgoing, confs: confs);
+  final h = t.height ?? 0;
+  final pending = confs >= 1 && confs < ShearLedger.continuumConfirmations;
+  final status = pending ? 'pending  $kind' : kind;
+  return 'h=$h  $status  ${formatShe(t.amount)} SHE';
+}
+
+/// Owner ShearView list: from/to, date, snippet. Never blank dest for the owner.
+String shearviewListSubtitle(ShearTx t, {int? tipMs, int? tipHeight, required int confs}) {
+  final from = t.from.isEmpty ? '—' : t.from;
+  final to = t.to.isEmpty ? '—' : t.to;
+  return '$from → $to  ${shearviewDate(t, tipMs: tipMs, tipHeight: tipHeight)}  ${shearviewSnippet(t)}';
+}
+
+String shearviewDate(ShearTx t, {int? tipMs, int? tipHeight}) {
+  final ms = t.atMs;
+  if (ms != null && ms > 0) {
+    return DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true).toIso8601String();
+  }
+  final h = t.height ?? 0;
+  if (tipMs != null && tipHeight != null && h > 0 && tipHeight >= h) {
+    final est = tipMs - (tipHeight - h) * kTargetBlockIntervalMs;
+    if (est > 0) return DateTime.fromMillisecondsSinceEpoch(est, isUtc: true).toIso8601String();
+  }
+  return h > 0 ? 'block $h' : 'pending';
+}
+
+String shearviewSnippet(ShearTx t) {
+  final memo = t.memoPlain?.trim() ?? '';
+  if (memo.isNotEmpty) return memo;
+  if ((t.hashAmount ?? 0) > 0) {
+    return 'hashbonus ${formatShe(t.hashAmount!)} SHE';
+  }
+  if (t.kind == 'pool-withdraw') return 'π auto-pay landing';
+  if (t.kind == 'blockfound' || t.kind == 'coinbase' || t.kind == 'block') return 'block landing';
+  return t.kind;
 }
 
 /// Fold per-hash / pot / mine rows into one block row per dest+height.
@@ -445,7 +502,24 @@ class ShearLedger {
         final d20 = hash20FromAddress(dest);
         if (d20 != null && _bytesEq(nc, noteCommitOfDest20(d20))) matched = dest;
       }
+      if (matched == null) {
+        final row20 = _noteBytes(o['dest20']);
+        if (row20 != null && row20.length >= 20) {
+          final want = Uint8List.fromList(row20.sublist(0, 20));
+          for (final d in dests) {
+            final d20 = hash20FromAddress(d);
+            if (d20 != null && _bytesEq(d20, want)) {
+              matched = d;
+              break;
+            }
+          }
+        }
+      }
       if (matched == null) continue;
+      final seenCommit = _notes.any((n) {
+        final have = _noteBytes(n['commit']);
+        return have != null && _bytesEq(have, commit);
+      });
       Uint8List? r = _noteBytes(o['r']);
       final rEph = _noteBytes(o['rEph']);
       final rCt = _noteBytes(o['rCt']);
@@ -511,7 +585,7 @@ class ShearLedger {
       });
       // Hashbonus is on-chain to the miner dest immediately. Do not fold pool
       // pot notes here — those stay custodial until 30-conf π auto-payout.
-      if (kind == 'hash' && matched != null && amt != null) {
+      if (kind == 'hash' && matched != null && amt != null && !seenCommit) {
         rememberDest(matched);
         final h = (o['height'] as num?)?.toInt() ?? 0;
         final she = amt.toDouble();
@@ -521,11 +595,11 @@ class ShearLedger {
           final t = _txs[iTx];
           _txs[iTx] = ShearTx(
             id: t.id,
-            from: t.from,
-            to: t.to,
+            from: t.from.isNotEmpty ? t.from : 'coinbase',
+            to: t.to.isNotEmpty ? t.to : matched,
             amount: t.amount + she,
             kind: t.kind,
-            height: t.height,
+            height: t.height ?? (h > 0 ? h : t.height),
             confirmed: t.confirmed,
             memo: t.memo,
             memoPlain: t.memoPlain,
@@ -547,6 +621,9 @@ class ShearLedger {
             confirmed: h < 1 || confirmationsOf(h) >= spendableConfirmations,
             hashAmount: she,
           ));
+        }
+        if (h > 0) {
+          _immature.add((dest: matched, amount: she, height: h));
         }
       }
     }
@@ -603,6 +680,7 @@ class ShearLedger {
     _notes.clear();
     _pending.clear();
     _immature.clear();
+    _owedPiDisplay = 0;
     _historyAt.clear();
     _sealedHeight = 0;
     _settledHeight = 0;
@@ -918,6 +996,44 @@ class ShearLedger {
   /// pool-withdraw to the same dest and amount). Height and kind come from
   /// the node — never invented.
   void mergeChainTx(ShearTx tx) {
+    if (tx.kind == 'hash' && tx.to.isNotEmpty) {
+      final h = tx.height ?? 0;
+      final she = tx.amount;
+      if (she > 0 && h > 0) {
+        final id = 'blockfound:$h:${tx.to}';
+        final iTx = _txs.indexWhere((t) => t.id == id || t.id == tx.id);
+        if (iTx >= 0) {
+          final t = _txs[iTx];
+          if ((t.hashAmount ?? 0) > 0) return;
+          _txs[iTx] = ShearTx(
+            id: id,
+            from: t.from.isNotEmpty ? t.from : 'coinbase',
+            to: t.to.isNotEmpty ? t.to : tx.to,
+            amount: t.amount + she,
+            kind: t.kind == 'hash' ? 'blockfound' : t.kind,
+            height: t.height ?? h,
+            confirmed: t.confirmed,
+            hashAmount: (t.hashAmount ?? 0) + she,
+            pot: t.pot,
+            atMs: t.atMs ?? tx.atMs,
+          );
+        } else {
+          _txs.add(ShearTx(
+            id: id,
+            from: 'coinbase',
+            to: tx.to,
+            amount: she,
+            kind: 'blockfound',
+            height: h,
+            confirmed: confirmationsOf(h) >= spendableConfirmations,
+            hashAmount: she,
+            atMs: tx.atMs,
+          ));
+        }
+        rememberDest(tx.to);
+      }
+      return;
+    }
     var i = _txs.indexWhere((t) => t.id == tx.id);
     if (i < 0 && tx.kind == 'pool-withdraw') {
       i = _txs.indexWhere((t) =>
@@ -1263,6 +1379,8 @@ class ShearLedger {
     required int tipSealed,
   }) {
     _ingestIncoming(json);
+    final owed = json['owedPi'] ?? json['confirmingPot'];
+    if (owed is num && owed >= 0) _owedPiDisplay = owed.toDouble();
     if (!isDestAddress(address)) return;
     _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
     if (beforeHeight > 0 && tipSealed > beforeHeight) {
@@ -1346,11 +1464,17 @@ class ShearLedger {
       for (final row in rows) {
         parsed.add(ShearTx.fromJson(Map<String, dynamic>.from(row as Map)));
       }
+      // Owner ShearView never paints explorerRowPublic stubs (blank dest/amount).
+      final amountsOnly = json['amountsOnly'] == true && json['destProof'] != true;
+      if (amountsOnly) {
+        prune();
+        return ownerHistory(address);
+      }
       adoptLiveHistory(key, parsed);
-      for (final raw in rollupExplorerTxs(parsed)) {
+      for (final raw in parsed) {
         var tx = raw;
-        if (tx.kind == 'hash') continue;
         if (tx.to.isEmpty && tx.from.isEmpty) continue;
+        if (tx.amount <= 0 && (tx.hashAmount == null || tx.hashAmount! <= 0) && tx.to.isEmpty) continue;
         final existing = _txs.cast<ShearTx?>().firstWhere((t) => t!.id == tx.id, orElse: () => null);
         var plain = existing?.memoPlain ?? tx.memoPlain;
         if (plain == null && tx.memoCt != null) {
@@ -1724,7 +1848,13 @@ class ShearLedger {
 
   List<ShearTx> ownerHistory(String address) {
     return _ownedRolled(address)
-        .where((t) => t.kind != 'hash' && (t.confirmed || t.kind == 'send' || t.kind == 'pool-withdraw'))
+        .where((t) =>
+            t.kind != 'sample' &&
+            (t.confirmed ||
+                t.kind == 'send' ||
+                t.kind == 'pool-withdraw' ||
+                t.kind == 'blockfound' ||
+                t.kind == 'coinbase'))
         .toList();
   }
 
@@ -1784,11 +1914,12 @@ class ShearLedger {
     return ownedAddresses(address).contains(t.from);
   }
 
-  /// Dedicated explorer list: full blocks at 6 confs; Flow send/receive from 1 conf.
-  /// Reserve lock/vote: mempool (0 conf) and 1-conf, same as Flow after the node accepts them.
+  /// Dedicated explorer list. Owner view: every landing (amount, dest, status)
+  /// from 1 conf — never explorerRowPublic blanks. Hash sits inside the block row.
   List<ShearTx> shearviewTxs(String address) {
     final rows = _ownedRolled(address).where((t) {
       if (t.kind == 'hash' || t.kind == 'sample') return false;
+      if (t.to.isEmpty && t.from.isEmpty) return false;
       final h = t.height ?? 0;
       if (isReservePendingKind(t)) {
         if (h < 1) return !t.confirmed;
@@ -1796,12 +1927,26 @@ class ShearLedger {
       }
       if (h < 1) return false;
       final confs = confirmationsOf(h);
-      if (isFlowTransfer(t)) return confs >= 1;
+      if (isOwnerLanding(t)) return confs >= 1;
       return confs >= continuumConfirmations;
     }).toList();
     rows.sort((a, b) => (b.height ?? 0).compareTo(a.height ?? 0));
     return rows;
   }
+
+  /// Pool-custodial pot still confirming toward π auto-pay, plus in-flight
+  /// pool-withdraw landings. Display only — not Continuum spendable.
+  double owedTowardPi(String restFrame, {String? paymentCode}) {
+    var n = _owedPiDisplay;
+    for (final t in pendingTxs(restFrame)) {
+      if (t.kind == 'pool-withdraw') n += t.amount;
+      final pot = t.pot ?? 0;
+      if (pot > 0) n += pot;
+    }
+    return n;
+  }
+
+  double _owedPiDisplay = 0;
 
   List<ShearTx> shearviewSearch(String address, String query) {
     return shearviewTxs(address).where((t) => shearviewMatches(t, query)).toList();
