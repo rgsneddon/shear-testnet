@@ -147,7 +147,11 @@ export function verifyDestOpening(from, open) {
     if (/^[0-9a-f]{128}$/i.test(hex)) {
       const o = parseDestOpening(hex);
       if (!o) return false;
-      return Buffer.from(paymentIdHash(o.scanPub, o.spendPub)).equals(Buffer.from(want));
+      // she1 fingerprint dests: SHA256(shear-she1-v2 || scan || spend)[0:20]
+      if (Buffer.from(paymentIdHash(o.scanPub, o.spendPub)).equals(Buffer.from(want))) return true;
+      // Mining mailbox homeDest is destCommit(spendPub), not the she1 fingerprint.
+      if (dest20MatchesSpendPub(want, o.spendPub)) return true;
+      return false;
     }
     if (/^[0-9a-f]{120}$/i.test(hex)) {
       const buf = Buffer.from(hex, 'hex');

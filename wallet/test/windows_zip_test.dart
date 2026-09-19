@@ -6,9 +6,9 @@ import 'package:shear_wallet/main.dart';
 /// Inspects a built windows zip when one exists. Testnet is not gated on Windows.
 File _shippedWindowsZip() {
   final candidates = <File>[
-    File('../dist/shear-wallet-0.37-windows.zip'),
-    File('dist/shear-wallet-0.37-windows.zip'),
-    File('${Directory.current.path}/../dist/shear-wallet-0.37-windows.zip'),
+    File('../dist/shear-wallet-0.38-windows.zip'),
+    File('dist/shear-wallet-0.38-windows.zip'),
+    File('${Directory.current.path}/../dist/shear-wallet-0.38-windows.zip'),
   ];
   for (final f in candidates) {
     if (f.existsSync()) return f;
@@ -43,8 +43,8 @@ List<String> _zipNames(File zip) {
 }
 
 void main() {
-  test('kWalletVersion public pin is two-part 0.37 (not 0.14.0)', () {
-    expect(kWalletVersion, '0.37');
+  test('kWalletVersion public pin is two-part 0.38 (not 0.14.0)', () {
+    expect(kWalletVersion, '0.38');
     final zipPy = File('pack/zip_windows.py').readAsStringSync();
     expect(zipPy, contains('kWalletVersion'));
     expect(zipPy, contains('shear-wallet-{PUBLIC_PIN}-windows.zip'));
@@ -59,7 +59,7 @@ void main() {
     expect(macos, isNot(contains('VER=0.14')));
   });
 
-  test('built shear-wallet-0.37-windows.zip is a Flutter runner with no miner', () {
+  test('built shear-wallet-0.38-windows.zip is a Flutter runner with no miner', () {
     final zip = _shippedWindowsZip();
     if (!zip.existsSync()) {
       return; // leftover on Windows; Darwin Mac-cut does not pack this zip
@@ -130,8 +130,8 @@ if "PKGBUILD" in names:
     return {'out': py.stdout.toString()};
   }
 
-  test('built shear-wallet-0.37-linux.zip is ELF shear_wallet, libsodium, no miner', () {
-    final zip = _zipAt('shear-wallet-0.37-linux.zip');
+  test('built shear-wallet-0.38-linux.zip is ELF shear_wallet, libsodium, no miner', () {
+    final zip = _zipAt('shear-wallet-0.38-linux.zip');
     expect(zip.existsSync(), isTrue, reason: 'missing ${zip.path}');
     expect(zip.lengthSync(), greaterThan(1 * 1024 * 1024));
     final names = _zipNames(zip);
@@ -151,8 +151,8 @@ if "PKGBUILD" in names:
     }
   });
 
-  test('built shear-wallet-0.37-archlinux.zip has PKGBUILD pkgver=0.37, ELF, no miner', () {
-    final zip = _zipAt('shear-wallet-0.37-archlinux.zip');
+  test('built shear-wallet-0.38-archlinux.zip has PKGBUILD pkgver=0.38, ELF, no miner', () {
+    final zip = _zipAt('shear-wallet-0.38-archlinux.zip');
     expect(zip.existsSync(), isTrue, reason: 'missing ${zip.path}');
     expect(zip.lengthSync(), greaterThan(1 * 1024 * 1024));
     final names = _zipNames(zip);
@@ -161,8 +161,8 @@ if "PKGBUILD" in names:
     expect(names.any((n) => n.contains('libsodium.so')), isTrue, reason: names.join('\n'));
     final inspected = _inspectZip(zip);
     expect(inspected['out'], contains('MAGIC 7f454c46'));
-    expect(inspected['out'], contains('pkgver=0.37'));
-    expect(inspected['out']!.contains('pkgver=0.37.0'), isFalse);
+    expect(inspected['out'], contains('pkgver=0.38'));
+    expect(inspected['out']!.contains('pkgver=0.38.0'), isFalse);
     expect(inspected['out']!.contains('pkgver=0.33'), isFalse);
     for (final n in names) {
       final base = n.split('/').last;

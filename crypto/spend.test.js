@@ -172,6 +172,10 @@ describe('funded spend / no double-spend', () => {
     const heightDest = destAtIndex(id.address, { index: 0, viewKey: id.viewKey });
     const idxOpen = indexedDestOpening(spendH, closureCommit(id.viewKey), 0);
     assert.equal(verifyDestOpening(heightDest, idxOpen), true);
+
+    const home = encodeDest(destCommitFromSpendPub(id.spendPub));
+    const homeOpen = destOpeningFromView(id.viewKey, id.spendPub, 0);
+    assert.equal(verifyDestOpening(home, homeOpen), true);
   });
 
   it('RFC 8032 seed pub and sig verify the same way as node verifySpendSig', () => {

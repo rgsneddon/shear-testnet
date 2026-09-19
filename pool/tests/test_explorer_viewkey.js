@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, destCommitFromSpendPub, encodeDest } from '../../crypto/address.js';
 import { destForLogin, memoSeal } from '../../crypto/flow_sheet.js';
 import { createStore } from '../../node/src/store.js';
 import { buildTemplate, mineTemplate, GENESIS_PREV } from '../../node/src/chain.js';
@@ -79,6 +79,47 @@ describe('explorer dests', () => {
     assert.equal(she.json.amountsOnly, true);
     assert.ok(she.json.txs.every((t) => t.to == null && t.from == null && t.memoCt == null));
     assert.equal(JSON.stringify(she.json).includes(dest), false);
+  });
+
+  it('destCommit homeDest destProof returns owner dests and amounts, not explorerRowPublic blanks', () => {
+    const alice = newIdentity();
+    const dest = encodeDest(destCommitFromSpendPub(alice.spendPub));
+    const rows = [{
+      id: 'hash-1',
+      kind: 'hash',
+      from: 'coinbase',
+      to: dest,
+      nanos: 620544,
+      amount: 620544 / NANOS_PER_SHE,
+      height: 1,
+      confirmed: true,
+    }, {
+      id: 'pull-1',
+      kind: 'pool-withdraw',
+      from: 'pool',
+      to: dest,
+      nanos: 314159265358,
+      amount: 314159265358 / NANOS_PER_SHE,
+      height: 2,
+      confirmed: true,
+    }];
+    const store = {
+      historyFor: (addr) => (String(addr) === dest ? rows : []),
+      blocks: [],
+      mempool: [],
+      tip: () => ({ height: 20 }),
+    };
+    const open = destOpeningFromView(alice.viewKey, alice.spendPub, 0);
+    const hist = get(store, `/api/wallet/history?address=${encodeURIComponent(dest)}&open=${open}`);
+    assert.equal(hist.status, 200);
+    assert.equal(hist.json.destProof, true);
+    assert.equal(hist.json.amountsOnly, false);
+    assert.ok(Array.isArray(hist.json.txs));
+    assert.equal(hist.json.txs.some((t) => t.amountHidden === true && !t.to && !t.amount), false);
+    const named = hist.json.txs.filter((t) => t.to === dest || t.from === dest);
+    assert.ok(named.length > 0, 'owner history must name the mining dest');
+    assert.ok(named.some((t) => Number(t.amount) > 0));
+    assert.ok(JSON.stringify(hist.json).includes(dest));
   });
 
   it('search by height, tx id, and from–to range; circulation sums dest balances', () => {

@@ -27,7 +27,7 @@ import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 
-const kWalletVersion = '0.37';
+const kWalletVersion = '0.38';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
@@ -699,7 +699,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   void _ingestHistory() {
     final ident = id;
     if (ident == null) return;
-    for (final t in ledger.ownerHistory(ident.address)) {
+    for (final t in ledger.shearviewTxs(ident.address)) {
       _ingestTx(ident, t);
     }
   }
@@ -1107,14 +1107,20 @@ class ShearWalletAppState extends State<ShearWalletApp> {
 
   String _shearviewTitle(String address, ShearTx t) {
     final confs = ledger.confirmationsOf(t.height ?? 0);
-    final kind = shearviewKindLabel(
+    return shearviewListTitle(
       t,
-      outgoing: ledger.isOutgoingTx(address, t),
       confs: confs,
+      outgoing: ledger.isOutgoingTx(address, t),
     );
-    final pending = isFlowTransfer(t) && confs >= 1 && confs < ShearLedger.continuumConfirmations;
-    if (pending) return 'pending  $kind  ${formatShe(t.amount)} SHE';
-    return '$kind  ${formatShe(t.amount)} SHE';
+  }
+
+  String _shearviewSubtitle(ShearTx t) {
+    return shearviewListSubtitle(
+      t,
+      tipMs: ledger.observedIntervalMs == null ? null : null,
+      tipHeight: ledger.displayHeight,
+      confs: ledger.confirmationsOf(t.height ?? 0),
+    );
   }
 
   List<Widget> _shearviewMemoAdvice(ShearIdentity ident, List<ShearTx> hist) {
@@ -1230,6 +1236,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   Widget _continuum(BuildContext context, ShearIdentity ident) {
     final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
     final pending = ledger.pendingTxs(ident.address);
+    final owedPi = ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode);
     final path1 = ledger.path1Observation();
     final fluxSec = (path1.targetIntervalMs / 1000).round();
     final dt = path1.observedIntervalMs;
@@ -1243,6 +1250,26 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         ),
       ),
       Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
+      if (owedPi > 0) ...[
+        const SizedBox(height: 8),
+        Text(
+          'Owed toward π  ${formatShe(owedPi)} SHE',
+          key: const Key('continuum-owed-pi'),
+          style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface),
+        ),
+        Text(
+          'Pool-custodial pot until 30 confirms, then auto-pays at ${formatShe(kPiShe)} SHE. Not Continuum spendable yet.',
+          style: TextStyle(color: shearMutedOf(context), fontSize: 12),
+        ),
+      ],
+      if (spend == 0 && pending.isEmpty) ...[
+        const SizedBox(height: 8),
+        Text(
+          'Sync a local node at 127.0.0.1:18332. Hashbonus on Copy dest is spendable after 6 confs. The pot auto-pays at π SHE (${formatShe(kPiShe)}) after 30 confs — miner-page numbers are not Continuum spendable.',
+          key: const Key('continuum-empty-honesty'),
+          style: TextStyle(color: shearMutedOf(context), fontSize: 12),
+        ),
+      ],
       const SizedBox(height: 12),
       Text('Receive ID', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
       const SizedBox(height: 6),
@@ -1445,7 +1472,10 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     final hist = ledger.shearviewSearch(ident.address, shearviewQuery.text);
     return _card([
       const Text('Shearview  S_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
-      Text('Your dedicated explorer. Full blocks only — hash rewards are inside each block.', style: TextStyle(color: shearMutedOf(context))),
+      Text(
+        'Your transactions: height, from/to, date, amount, snippet. Tap a row for full Resistance detail. Hashbonus sits inside the block landing.',
+        style: TextStyle(color: shearMutedOf(context)),
+      ),
       TextField(
         key: const Key('shearview-search'),
         controller: shearviewQuery,
@@ -1453,15 +1483,22 @@ class ShearWalletAppState extends State<ShearWalletApp> {
         onChanged: (_) => setState(() {}),
       ),
       ..._shearviewMemoAdvice(ident, hist),
-      if (hist.isEmpty) Text('No confirmed transactions yet.', style: TextStyle(color: shearMutedOf(context))),
+      if (hist.isEmpty)
+        Text(
+          'No landings yet. Hashbonus appears here after the including block (6 confs to spend). The 1 SHE-class pot is pool-custodial until 30 confs, then auto-pays at π SHE (${formatShe(kPiShe)}). Tap a row for full Resistance detail.',
+          key: const Key('shearview-empty'),
+          style: TextStyle(color: shearMutedOf(context)),
+        ),
       for (final t in hist)
         ListTile(
+          key: Key('shearview-row-${t.id}'),
           dense: true,
+          isThreeLine: true,
           title: Text(_shearviewTitle(ident.address, t)),
           subtitle: Text(
             t.kind == 'receive' && t.memo && openedMemos.contains(t.id) && t.memoPlain != null
-                ? '${t.from} → ${t.to}  h=${t.height ?? '-'}  memo: ${t.memoPlain}'
-                : '${t.from} → ${t.to}  h=${t.height ?? '-'}',
+                ? '${_shearviewSubtitle(t)}  memo: ${t.memoPlain}'
+                : _shearviewSubtitle(t),
           ),
           onTap: () => setState(() {
             if (t.memo) {
