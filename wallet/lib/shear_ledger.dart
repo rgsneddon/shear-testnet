@@ -42,8 +42,221 @@ bool shouldFullSyncCredits({
 String _bytesHex(Uint8List b) =>
     b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
 
+bool noteBytesEq(Uint8List a, Uint8List b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+/// Pure CPU scan of compacted vouts. Full-sync calls this via [Isolate.run].
+/// Returns `{notes, hashFolds}` maps — no ledger mutation.
+Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
+  final vouts = List<dynamic>.from(input['vouts'] as List? ?? const []);
+  final dests = <String>{
+    ...List<String>.from(input['dests'] as List? ?? const []),
+    if ((input['dest'] as String?)?.isNotEmpty == true) input['dest'] as String,
+  };
+  final seedRaw = input['spendSeed'];
+  final spendSeed = seedRaw is Uint8List
+      ? seedRaw
+      : Uint8List.fromList(List<int>.from(seedRaw as List));
+  final seenHex = <String>{
+    ...List<String>.from(input['seenCommitHex'] as List? ?? const []),
+  };
+  final txHints = <Map<String, dynamic>>[
+    for (final raw in (input['txHints'] as List? ?? const []))
+      if (raw is Map) Map<String, dynamic>.from(raw),
+  ];
+  final dest = input['dest'] as String?;
+  final prevIn = input['prev'];
+  final prev = prevIn == null
+      ? null
+      : (prevIn is Uint8List
+          ? prevIn
+          : Uint8List.fromList(List<int>.from(prevIn as List)));
+  final startIndex = (input['startIndex'] as num?)?.toInt() ?? 0;
+  final xBase = admitBaseScalar(spendSeed);
+  final notes = <Map<String, dynamic>>[];
+  final hashFolds = <Map<String, dynamic>>[];
+  for (var i = 0; i < vouts.length; i++) {
+    final raw = vouts[i];
+    if (raw is! Map) continue;
+    final o = Map<String, dynamic>.from(raw);
+    final nc = _noteBytes(o['noteCommit']);
+    final commit = _noteBytes(o['commit']);
+    if (nc == null || commit == null) continue;
+    String? matched;
+    for (final d in dests) {
+      final d20 = hash20FromAddress(d);
+      if (d20 != null && noteBytesEq(nc, noteCommitOfDest20(d20))) {
+        matched = d;
+        break;
+      }
+    }
+    if (matched == null && dest != null) {
+      final d20 = hash20FromAddress(dest);
+      if (d20 != null && noteBytesEq(nc, noteCommitOfDest20(d20))) matched = dest;
+    }
+    if (matched == null) {
+      final row20 = _noteBytes(o['dest20']);
+      if (row20 != null && row20.length >= 20) {
+        final want = Uint8List.fromList(row20.sublist(0, 20));
+        for (final d in dests) {
+          final d20 = hash20FromAddress(d);
+          if (d20 != null && noteBytesEq(d20, want)) {
+            matched = d;
+            break;
+          }
+        }
+      }
+    }
+    if (matched == null) continue;
+    final commitHex = _bytesHex(commit);
+    final seenCommit = seenHex.contains(commitHex);
+    Uint8List? r = _noteBytes(o['r']);
+    final rEph = _noteBytes(o['rEph']);
+    final rCt = _noteBytes(o['rCt']);
+    if (r == null && rEph != null && rCt != null) {
+      try {
+        r = unwrapBlind(rEph, rCt, xBase, concatBytes([nc, commit]));
+      } catch (_) {
+        continue;
+      }
+    }
+    if (r == null) continue;
+    final admit = _noteBytes(o['admitPub']);
+    if (admit != null) {
+      try {
+        final want = pointBytes(admitPub(admitScalarFromSeed(spendSeed, {
+          'kind': (o['kind'] as String?) ?? 'pot',
+          'noteCommit': nc,
+          'commit': commit,
+        })));
+        if (!noteBytesEq(want, admit)) continue;
+      } catch (_) {
+        continue;
+      }
+    }
+    final kind = (o['kind'] as String?) ?? 'pot';
+    num? amt = o['amount'] as num?;
+    if (amt == null && o['nanos'] is num) {
+      amt = (o['nanos'] as num) / kUnitsPerShe;
+    }
+    if (amt == null) {
+      final vp = o['valueProof'];
+      if (vp is Map && vp['v'] is num) {
+        amt = (vp['v'] as num) / kUnitsPerShe;
+      }
+    }
+    if (amt == null) {
+      final h = (o['height'] as num?)?.toInt();
+      for (final t in txHints) {
+        if (h != null && (t['height'] as num?)?.toInt() != h) continue;
+        if (t['to'] != matched) continue;
+        final tk = t['kind']?.toString() ?? '';
+        final same = tk == kind
+            || (kind == 'pot' && tk == 'coinbase')
+            || (kind == 'hash' && tk == 'hash');
+        if (!same) continue;
+        amt = t['amount'] as num?;
+        break;
+      }
+    }
+    notes.add({
+      'address': matched,
+      'dest': matched,
+      'kind': kind,
+      'commit': commit,
+      'noteCommit': nc,
+      'r': r,
+      'rEph': rEph,
+      'rCt': rCt,
+      'admitPub': admit,
+      'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
+      'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
+      if (o['height'] != null) 'height': o['height'],
+      if (amt != null) 'amount': amt,
+    });
+    seenHex.add(commitHex);
+    if (kind == 'hash' && amt != null && !seenCommit) {
+      hashFolds.add({
+        'matched': matched,
+        'she': amt.toDouble(),
+        'height': (o['height'] as num?)?.toInt() ?? 0,
+      });
+    }
+  }
+  return {'notes': notes, 'hashFolds': hashFolds};
+}
+
+/// Pure history-row parse + optional memoOpen. Full-sync via [Isolate.run].
+Future<Map<String, dynamic>> parseHistoryPayload(Map<String, dynamic> input) async {
+  final amountsOnly = input['amountsOnly'] == true && input['destProof'] != true;
+  if (amountsOnly) {
+    return {'amountsOnly': true, 'txs': <Map<String, dynamic>>[], 'dests': <String>[], 'named': false};
+  }
+  final key = input['key']?.toString() ?? '';
+  final openMemos = input['openMemos'] == true;
+  final existingPlain = <String, String>{
+    for (final e in (input['existingPlain'] as Map? ?? {}).entries)
+      e.key.toString(): e.value.toString(),
+  };
+  final vaults = <String>{...List<String>.from(input['vaultDests'] as List? ?? const [])};
+  final rows = input['rows'] as List? ?? const [];
+  final txs = <Map<String, dynamic>>[];
+  final dests = <String>[];
+  var named = false;
+  for (final row in rows) {
+    if (row is! Map) continue;
+    var tx = ShearTx.fromJson(Map<String, dynamic>.from(row));
+    if (tx.to.isEmpty && tx.from.isEmpty) continue;
+    if (tx.amount <= 0 && (tx.hashAmount == null || tx.hashAmount! <= 0) && tx.to.isEmpty) {
+      continue;
+    }
+    named = named || tx.to.isNotEmpty || tx.from.isNotEmpty;
+    var plain = existingPlain[tx.id] ?? tx.memoPlain;
+    if (openMemos && plain == null && tx.memoCt != null) {
+      plain = await memoOpen(tx.to, tx.memoCt);
+    }
+    if (plain != null) {
+      tx = ShearTx(
+        id: tx.id,
+        from: tx.from,
+        to: tx.to,
+        amount: tx.amount,
+        kind: tx.kind,
+        height: tx.height,
+        confirmed: tx.confirmed,
+        memo: true,
+        memoPlain: plain,
+        memoCt: tx.memoCt,
+        hashAmount: tx.hashAmount,
+        threads: tx.threads,
+        pot: tx.pot,
+        change: tx.change,
+        atMs: tx.atMs,
+        rounds: tx.rounds,
+      );
+    }
+    if (tx.to == key && tx.to.isNotEmpty && !vaults.contains(tx.to)) {
+      dests.add(tx.to);
+    }
+    txs.add(tx.toJson());
+  }
+  return {'amountsOnly': false, 'txs': txs, 'dests': dests, 'named': named};
+}
+
 Uint8List? _noteBytes(dynamic v) {
   if (v is Uint8List) return v;
+  if (v is List) {
+    try {
+      return Uint8List.fromList(List<int>.from(v));
+    } catch (_) {
+      return null;
+    }
+  }
   if (v is String && v.length >= 2 && v.length % 2 == 0) {
     try {
       return hexToBytes(v);
@@ -484,7 +697,87 @@ class ShearLedger {
     }
   }
 
+  Map<String, dynamic> _sealedScanInput(
+    List<dynamic> vouts, {
+    required Uint8List spendSeed,
+    String? dest,
+    Uint8List? prev,
+    int startIndex = 0,
+  }) =>
+      {
+        'vouts': vouts,
+        'dests': _dests.toList(),
+        'dest': dest,
+        'spendSeed': spendSeed,
+        'seenCommitHex': [
+          for (final n in _notes)
+            if (_noteBytes(n['commit']) != null) _bytesHex(_noteBytes(n['commit'])!),
+        ],
+        'txHints': [
+          for (final t in _txs)
+            {'to': t.to, 'kind': t.kind, 'height': t.height, 'amount': t.amount},
+        ],
+        'prev': prev,
+        'startIndex': startIndex,
+      };
+
+  void _applySealedScan(Map<String, dynamic> out) {
+    final notes = out['notes'];
+    if (notes is List) {
+      for (final n in notes) {
+        if (n is Map) rememberNote(Map<String, dynamic>.from(n));
+      }
+    }
+    final folds = out['hashFolds'];
+    if (folds is! List) return;
+    for (final raw in folds) {
+      if (raw is! Map) continue;
+      final matched = raw['matched']?.toString() ?? '';
+      final she = (raw['she'] as num?)?.toDouble() ?? 0;
+      final h = (raw['height'] as num?)?.toInt() ?? 0;
+      if (matched.isEmpty || she <= 0) continue;
+      rememberDest(matched);
+      final id = 'blockfound:$h:$matched';
+      final iTx = _txs.indexWhere((t) => t.id == id);
+      if (iTx >= 0) {
+        final t = _txs[iTx];
+        _txs[iTx] = ShearTx(
+          id: t.id,
+          from: t.from.isNotEmpty ? t.from : 'coinbase',
+          to: t.to.isNotEmpty ? t.to : matched,
+          amount: t.amount + she,
+          kind: t.kind,
+          height: t.height ?? (h > 0 ? h : t.height),
+          confirmed: t.confirmed,
+          memo: t.memo,
+          memoPlain: t.memoPlain,
+          memoCt: t.memoCt,
+          rounds: t.rounds,
+          hashAmount: (t.hashAmount ?? 0) + she,
+          threads: t.threads,
+          pot: t.pot,
+          change: t.change,
+        );
+      } else {
+        _txs.add(ShearTx(
+          id: id,
+          from: 'coinbase',
+          to: matched,
+          amount: she,
+          kind: 'blockfound',
+          height: h,
+          confirmed: h < 1 || confirmationsOf(h) >= spendableConfirmations,
+          hashAmount: she,
+        ));
+      }
+      if (h > 0) {
+        _immature.add((dest: matched, amount: she, height: h));
+      }
+    }
+  }
+
   /// Scan compacted vouts (chain persist drops r). Match noteCommit to dest20, unwrap rEph/rCt.
+  /// Tests call this synchronously; the 1 Hz/full-sync path uses [Isolate.run] on [scanSealedVouts].
   void ingestSealedVouts(
     List<dynamic> vouts, {
     required Uint8List spendSeed,
@@ -492,156 +785,15 @@ class ShearLedger {
     Uint8List? prev,
     int startIndex = 0,
   }) {
-    final dests = <String>{
-      if (dest != null && dest.isNotEmpty) dest,
-      ..._dests,
-    };
-    final xBase = admitBaseScalar(spendSeed);
-    for (var i = 0; i < vouts.length; i++) {
-      final raw = vouts[i];
-      if (raw is! Map) continue;
-      final o = Map<String, dynamic>.from(raw);
-      final nc = _noteBytes(o['noteCommit']);
-      final commit = _noteBytes(o['commit']);
-      if (nc == null || commit == null) continue;
-      String? matched;
-      for (final d in dests) {
-        final d20 = hash20FromAddress(d);
-        if (d20 != null && _bytesEq(nc, noteCommitOfDest20(d20))) {
-          matched = d;
-          break;
-        }
-      }
-      if (matched == null && dest != null) {
-        final d20 = hash20FromAddress(dest);
-        if (d20 != null && _bytesEq(nc, noteCommitOfDest20(d20))) matched = dest;
-      }
-      if (matched == null) {
-        final row20 = _noteBytes(o['dest20']);
-        if (row20 != null && row20.length >= 20) {
-          final want = Uint8List.fromList(row20.sublist(0, 20));
-          for (final d in dests) {
-            final d20 = hash20FromAddress(d);
-            if (d20 != null && _bytesEq(d20, want)) {
-              matched = d;
-              break;
-            }
-          }
-        }
-      }
-      if (matched == null) continue;
-      final seenCommit = _notes.any((n) {
-        final have = _noteBytes(n['commit']);
-        return have != null && _bytesEq(have, commit);
-      });
-      Uint8List? r = _noteBytes(o['r']);
-      final rEph = _noteBytes(o['rEph']);
-      final rCt = _noteBytes(o['rCt']);
-      if (r == null && rEph != null && rCt != null) {
-        try {
-          r = unwrapBlind(rEph, rCt, xBase, concatBytes([nc, commit]));
-        } catch (_) {
-          continue;
-        }
-      }
-      if (r == null) continue;
-      final admit = _noteBytes(o['admitPub']);
-      if (admit != null) {
-        try {
-          final want = pointBytes(admitPub(admitScalarFromSeed(spendSeed, {
-            'kind': (o['kind'] as String?) ?? 'pot',
-            'noteCommit': nc,
-            'commit': commit,
-          })));
-          if (!_bytesEq(want, admit)) continue;
-        } catch (_) {
-          continue;
-        }
-      }
-      final kind = (o['kind'] as String?) ?? 'pot';
-      num? amt = o['amount'] as num?;
-      if (amt == null && o['nanos'] is num) {
-        amt = (o['nanos'] as num) / kUnitsPerShe;
-      }
-      if (amt == null) {
-        final vp = o['valueProof'];
-        if (vp is Map && vp['v'] is num) {
-          amt = (vp['v'] as num) / kUnitsPerShe;
-        }
-      }
-      if (amt == null) {
-        final h = (o['height'] as num?)?.toInt();
-        for (final t in _txs) {
-          if (h != null && t.height != h) continue;
-          if (t.to != matched) continue;
-          final same = t.kind == kind
-              || (kind == 'pot' && t.kind == 'coinbase')
-              || (kind == 'hash' && t.kind == 'hash');
-          if (!same) continue;
-          amt = t.amount;
-          break;
-        }
-      }
-      rememberNote({
-        'address': matched,
-        'dest': matched,
-        'kind': kind,
-        'commit': commit,
-        'noteCommit': nc,
-        'r': r,
-        'rEph': rEph,
-        'rCt': rCt,
-        'admitPub': admit,
-        'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
-        'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
-        if (o['height'] != null) 'height': o['height'],
-        if (amt != null) 'amount': amt,
-      });
-      // Hashbonus is on-chain to the miner dest immediately. Do not fold pool
-      // pot notes here — those stay custodial until 30-conf π auto-payout.
-      if (kind == 'hash' && matched != null && amt != null && !seenCommit) {
-        rememberDest(matched);
-        final h = (o['height'] as num?)?.toInt() ?? 0;
-        final she = amt.toDouble();
-        final id = matched.isEmpty ? 'blockfound:$h' : 'blockfound:$h:$matched';
-        final iTx = _txs.indexWhere((t) => t.id == id);
-        if (iTx >= 0) {
-          final t = _txs[iTx];
-          _txs[iTx] = ShearTx(
-            id: t.id,
-            from: t.from.isNotEmpty ? t.from : 'coinbase',
-            to: t.to.isNotEmpty ? t.to : matched,
-            amount: t.amount + she,
-            kind: t.kind,
-            height: t.height ?? (h > 0 ? h : t.height),
-            confirmed: t.confirmed,
-            memo: t.memo,
-            memoPlain: t.memoPlain,
-            memoCt: t.memoCt,
-            rounds: t.rounds,
-            hashAmount: (t.hashAmount ?? 0) + she,
-            threads: t.threads,
-            pot: t.pot,
-            change: t.change,
-          );
-        } else {
-          _txs.add(ShearTx(
-            id: id,
-            from: 'coinbase',
-            to: matched,
-            amount: she,
-            kind: 'blockfound',
-            height: h,
-            confirmed: h < 1 || confirmationsOf(h) >= spendableConfirmations,
-            hashAmount: she,
-          ));
-        }
-        if (h > 0) {
-          _immature.add((dest: matched, amount: she, height: h));
-        }
-      }
-    }
+    _applySealedScan(scanSealedVouts(_sealedScanInput(
+      vouts,
+      spendSeed: spendSeed,
+      dest: dest,
+      prev: prev,
+      startIndex: startIndex,
+    )));
   }
+
   final Map<String, double> _pending = {};
   final List<ShearTx> _txs = [];
   final Set<String> _dests = {};
@@ -1485,8 +1637,19 @@ class ShearLedger {
           final json = await pool!.notes(key);
           final rows = json['notes'];
           if (rows is List) {
-            await Future<void>.delayed(Duration.zero);
-            ingestSealedVouts(rows, spendSeed: seed, dest: key);
+            final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
+            final input = <String, dynamic>{
+              'vouts': jsonDecode(jsonEncode(_hexify(raw['vouts']))),
+              'dests': List<String>.from(raw['dests'] as List? ?? const []),
+              'dest': raw['dest'],
+              'spendSeed': seed,
+              'seenCommitHex': List<String>.from(raw['seenCommitHex'] as List? ?? const []),
+              'txHints': jsonDecode(jsonEncode(raw['txHints'])),
+              'prev': raw['prev'],
+              'startIndex': raw['startIndex'],
+            };
+            final scanned = await Isolate.run(() => scanSealedVouts(input));
+            _applySealedScan(scanned);
             _notesAt[key] = _sealedHeight;
           }
         } catch (_) {}
@@ -1533,46 +1696,37 @@ class ShearLedger {
     try {
       final json = await pool!.history(address, open: destProofOpen(address));
       final rows = (json['txs'] as List?) ?? const [];
-      final parsed = <ShearTx>[];
-      for (final row in rows) {
-        parsed.add(ShearTx.fromJson(Map<String, dynamic>.from(row as Map)));
-      }
-      // Owner ShearView never paints explorerRowPublic stubs (blank dest/amount).
-      final amountsOnly = json['amountsOnly'] == true && json['destProof'] != true;
-      if (amountsOnly) {
+      final existingPlain = <String, String>{
+        for (final t in _txs)
+          if (t.memoPlain != null && t.memoPlain!.isNotEmpty) t.id: t.memoPlain!,
+      };
+      final input = <String, dynamic>{
+        'amountsOnly': json['amountsOnly'] == true,
+        'destProof': json['destProof'] == true,
+        'key': key,
+        'openMemos': openMemos,
+        'existingPlain': Map<String, String>.from(existingPlain),
+        'vaultDests': _vaultDests.toList(),
+        'rows': jsonDecode(jsonEncode([
+          for (final row in rows)
+            if (row is Map) Map<String, dynamic>.from(row),
+        ])),
+      };
+      final parsed = await Isolate.run(() => parseHistoryPayload(input));
+      if (parsed['amountsOnly'] == true) {
         prune();
         return ownerHistory(address);
       }
-      adoptLiveHistory(key, parsed);
-      for (final raw in parsed) {
-        var tx = raw;
+      final txs = <ShearTx>[
+        for (final raw in (parsed['txs'] as List? ?? const []))
+          if (raw is Map) ShearTx.fromJson(Map<String, dynamic>.from(raw)),
+      ];
+      adoptLiveHistory(key, txs);
+      for (final tx in txs) {
         if (tx.to.isEmpty && tx.from.isEmpty) continue;
-        if (tx.amount <= 0 && (tx.hashAmount == null || tx.hashAmount! <= 0) && tx.to.isEmpty) continue;
-        final existing = _txs.cast<ShearTx?>().firstWhere((t) => t!.id == tx.id, orElse: () => null);
-        var plain = existing?.memoPlain ?? tx.memoPlain;
-        if (openMemos && plain == null && tx.memoCt != null) {
-          plain = await Isolate.run(() => memoOpen(tx.to, tx.memoCt));
+        if (tx.amount <= 0 && (tx.hashAmount == null || tx.hashAmount! <= 0) && tx.to.isEmpty) {
+          continue;
         }
-        if (plain != null) {
-          tx = ShearTx(
-            id: tx.id,
-            from: tx.from,
-            to: tx.to,
-            amount: tx.amount,
-            kind: tx.kind,
-            height: tx.height,
-            confirmed: tx.confirmed,
-            memo: true,
-            memoPlain: plain,
-            memoCt: tx.memoCt,
-            hashAmount: tx.hashAmount,
-            threads: tx.threads,
-            pot: tx.pot,
-          );
-        }
-        // Only remember dests this history was fetched for (ours).
-        // Never adopt counterparty `to` on a send (that was the pool dest)
-        // or `from` on a receive.
         if (payKey(tx.to) == key && tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) {
           _dests.add(tx.to);
         }
@@ -1580,7 +1734,7 @@ class ShearLedger {
       }
       // Empty live history with a known credit is a miss (node stall on a
       // new block) — retry next poll instead of freezing Shearview.
-      final named = parsed.any((t) => t.to.isNotEmpty || t.from.isNotEmpty);
+      final named = parsed['named'] == true;
       if (named || spendable(key) <= 0) {
         _historyAt[key] = _sealedHeight;
       }

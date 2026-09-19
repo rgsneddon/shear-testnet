@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -1270,6 +1271,10 @@ void main() {
     final syncSrc = File('lib/shear_read_sync.dart').readAsStringSync();
     expect(ledgerSrc.contains('flyclientSampleHeights'), isFalse,
         reason: 'send/balance/history/tip-proof must not call the FlyClient sampler');
+    expect(ledgerSrc.contains('Isolate.run(() => scanSealedVouts'), isTrue,
+        reason: 'full-sync notes scan must leave the UI isolate');
+    expect(ledgerSrc.contains('Isolate.run(() => parseHistoryPayload'), isTrue,
+        reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
     expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.39.0+56'));
@@ -1313,6 +1318,41 @@ void main() {
     );
     final syncSrc = File('lib/shear_read_sync.dart').readAsStringSync();
     expect(syncSrc.contains('[for (var h = 1; h <= sampledTip; h++) h]'), isFalse);
+  });
+
+  test('scanSealedVouts and parseHistoryPayload are Isolate.run sendable', () async {
+    final seed = Uint8List.fromList(List<int>.generate(32, (i) => i + 1));
+    final dest = 'ssa1isolate';
+    final scanned = await Isolate.run(() => scanSealedVouts({
+          'vouts': const <Map<String, dynamic>>[],
+          'dests': [dest],
+          'dest': dest,
+          'spendSeed': seed,
+          'seenCommitHex': <String>[],
+          'txHints': <Map<String, dynamic>>[],
+          'startIndex': 0,
+        }));
+    expect(scanned['notes'], isA<List>());
+    expect(scanned['hashFolds'], isA<List>());
+    final parsed = await Isolate.run(() => parseHistoryPayload({
+          'amountsOnly': false,
+          'key': dest,
+          'openMemos': false,
+          'existingPlain': <String, String>{},
+          'vaultDests': <String>[],
+          'rows': [
+            {
+              'id': 'iso-1',
+              'from': 'coinbase',
+              'to': dest,
+              'amount': 1.0,
+              'kind': 'receive',
+              'height': 2,
+            },
+          ],
+        }));
+    expect(parsed['named'], isTrue);
+    expect((parsed['txs'] as List).length, 1);
   });
 
   test('CTF dest is she1 with password C, not C-from-S', () {
