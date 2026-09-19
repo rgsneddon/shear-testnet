@@ -9,10 +9,24 @@ from fpdf.enums import XPos, YPos
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "shear-whitepaper.pdf"
-FONT = "/System/Library/Fonts/Supplemental/Times New Roman.ttf"
-FONT_B = "/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf"
-FONT_I = "/System/Library/Fonts/Supplemental/Times New Roman Italic.ttf"
-FONT_BI = "/System/Library/Fonts/Supplemental/Times New Roman Bold Italic.ttf"
+
+
+def _font_pair():
+    mac = Path("/System/Library/Fonts/Supplemental")
+    win = Path(r"C:\Windows\Fonts")
+    if (mac / "Times New Roman.ttf").exists():
+        return (
+            mac / "Times New Roman.ttf",
+            mac / "Times New Roman Bold.ttf",
+            mac / "Times New Roman Italic.ttf",
+            mac / "Times New Roman Bold Italic.ttf",
+        )
+    if (win / "times.ttf").exists():
+        return (win / "times.ttf", win / "timesbd.ttf", win / "timesi.ttf", win / "timesbi.ttf")
+    raise FileNotFoundError("Times New Roman not found (macOS Supplemental or Windows Fonts)")
+
+
+FONT, FONT_B, FONT_I, FONT_BI = _font_pair()
 
 
 class Paper(FPDF):
@@ -101,7 +115,7 @@ def main() -> None:
     pdf.set_font("ShearSerif", "", 12)
     pdf.multi_cell(0, 6, "Shear project", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font("ShearSerif", "I", 11)
-    pdf.multi_cell(0, 6, "shear.digital  ·  Version 2.0 (testnet)  ·  Network magic shear-testnet-v3", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.multi_cell(0, 6, "shear.digital  ·  Version 2.0 (testnet)  ·  Network magic shear-testnet-v4", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(4)
 
     pdf.set_font("ShearSerif", "B", 11)
@@ -138,7 +152,7 @@ def main() -> None:
         [
             "PoW elects the tip. Coin comes from hashing, not from an allocation, an auction, or a snapshot of some other book.",
             "CPU only. ShearHash-v3 is RandomX light.",
-            "Private dests, confidential amounts. ADMITV1 membership over this book’s notes. Rest-frame shear1 stays in Closure. Holders offer she1. Settled dests are ssa1.",
+            "Private dests, confidential amounts. ADMITv2 membership over this book’s notes. Rest-frame shear1 stays in Closure. Holders offer she1. Settled dests are ssa1.",
             "One coin per block. The pot is 1 SHE. Votes leave the pot in place. The Reserve oracle leaves the pot in place.",
             "Each hasher dest keeps its own bonus. Finding the block leaves every other dest’s hashes with that dest.",
             "Programmes may move coin you already have. They may not print SHE, other than The Reserve’s interest.",
@@ -148,8 +162,8 @@ def main() -> None:
     body(
         pdf,
         "The public sites — shear.digital, pool.shear.digital, explorer.shear.digital, mempool.shear.digital — "
-        "are the face of the testnet. Live magic is shear-testnet-v3. Mainnet shear-v1 genesis is "
-        "2026-09-18T21:00:00+01:00. Do not emit before that instant. "
+        "are the face of the testnet. Live magic is shear-testnet-v4. Mainnet shear-v1 is not live "
+        "and a launch date is not decided. "
         "Testnet balances can vanish. Treat them as a practice run.",
     )
 
@@ -219,7 +233,7 @@ def main() -> None:
     h2(pdf, "2.6  Wallet")
     body(
         pdf,
-        "The wallet is a six-tab app, pin 0.32. Continuum is spendable balance, silent ID, and the six-slice pending pie. "
+        "The wallet is a six-tab app, pin 0.37. Continuum is spendable balance, silent ID, and the six-slice pending pie. "
         "Flow is send and receive. Resistance is a public CTF CLI. Vortex is where programmes live. Shearview is "
         "the holder’s own explorer. Closure holds the rest-frame string and the shewall.bin export. The file plus "
         "the password restore the same wallet. There is no paper seed. Lose the password and the file does not open. "
@@ -257,7 +271,7 @@ def main() -> None:
         "Login is Copy dest as ssa1.worker. The explorer paints confirmed blocks, kinds, and proof-ok — no dest safari, no amount column. Ciphertext "
         "and rest-frame strings stay off that page. A node is the book: append, verify, P2P, and the GATE that lets "
         "native Flow and pinned Reserve bytecode land in the same block model. "
-        "Shipped P2P seeds are p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303, magic shear-testnet-v4. Wallet 0.36 reads a local node at 127.0.0.1:18332. "
+        "Shipped P2P seeds are p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303, magic shear-testnet-v4. Wallet 0.37 reads a local node at 127.0.0.1:18332. "
         "After 1000 confirmations, sample rows prune; sealed txs stay. An optional latest-only snapshot is published at height 1000, then every 400 blocks.",
     )
 
@@ -284,8 +298,8 @@ def main() -> None:
         0,
         5,
         "Correspondence: shear.digital. Software under the MIT License, Copyright 2026 Shear. "
-        "RandomX is vendored from tevador/RandomX v1.2.3 (BSD). Official miner ShearK-Miner 1.6. "
-        "Wallet pin at publication: 0.32.",
+        "RandomX is vendored from tevador/RandomX v1.2.3 (BSD). Official miner ShearK-Miner 2.4. "
+        "Wallet pin at publication: 0.37.",
         new_x=XPos.LMARGIN,
         new_y=YPos.NEXT,
     )

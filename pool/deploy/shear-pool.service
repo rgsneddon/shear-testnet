@@ -15,8 +15,7 @@ Environment=SHEAR_SHARE_BITS=8
 Environment=SHEAR_P2P_PORT=30303
 Environment=SHEAR_P2P_BIND=0.0.0.0
 Environment=SHEAR_RPC_BIND=127.0.0.1
-# Optional dedicated admin hostname. Leave unset to use https://mypool.site/admin
-# Environment=SHEAR_ADMIN_HOST=admin.mypool.site
+Environment=SHEAR_ADMIN_HOST=mypool.site
 ExecStart=/usr/bin/node pool/src/main.js
 Restart=always
 RestartSec=2

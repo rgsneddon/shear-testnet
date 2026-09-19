@@ -34,9 +34,9 @@ export function extraMint({ programId, to, nanos, kind }) {
   return { ok: true, programId, to, nanos: n, kind: k, mint: true };
 }
 
-function splitOnce(cb, shareBatch, miner, poolDest) {
+function splitOnce(cb, shareBatch, miner, poolDest, potNanosIn) {
   const vout = Array.isArray(cb?.vout) ? cb.vout : [];
-  const pays = expectedCoinbasePays(shareBatch || [], { miner, poolDest });
+  const pays = expectedCoinbasePays(shareBatch || [], { miner, poolDest, potNanos: potNanosIn });
   const hashByMiner = {};
   let potNanos = 0;
   let hashNanos = 0;
@@ -58,9 +58,10 @@ function splitOnce(cb, shareBatch, miner, poolDest) {
   return { potNanos, hashNanos, hashByMiner };
 }
 
-export function coinbaseSplit(cb, { shareBatch, miner, poolDest } = {}) {
+export function coinbaseSplit(cb, { shareBatch, miner, poolDest, potNanos } = {}) {
   const batch = shareBatch || [];
   const m = miner || cb?.miner;
+  const wantPot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const tries = [];
   if (poolDest) tries.push(poolDest);
   if (m) tries.push(m);
@@ -68,8 +69,8 @@ export function coinbaseSplit(cb, { shareBatch, miner, poolDest } = {}) {
   const uniq = [...new Set(tries)];
   let best = { potNanos: 0, hashNanos: 0, hashByMiner: {} };
   for (const pd of uniq) {
-    const got = splitOnce(cb, batch, m, pd);
-    if (got.potNanos === BLOCK_SUBSIDY_NANOS) return got;
+    const got = splitOnce(cb, batch, m, pd, wantPot);
+    if (got.potNanos === wantPot) return got;
     if (got.potNanos + got.hashNanos > best.potNanos + best.hashNanos) best = got;
   }
   return best;

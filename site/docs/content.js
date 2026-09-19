@@ -117,7 +117,7 @@ window.SHEAR_DOCS = {
     title: 'She is private',
     crumb: 'addresses / privacy',
     html:
-      '<p>The public explorer reports amounts, dests, and whether a memo exists. Ciphertext and rest-frame strings stay off that page. Memo plaintext opens only with the stealth shared secret in the two wallets that scanned that dest.</p>' +
+      '<p>The public explorer shows height, time, status, and type — no dest, no amount. Ciphertext and rest-frame strings stay off that page. Memo plaintext opens only with the stealth shared secret in the two wallets that scanned that dest.</p>' +
       '<p>Amounts are confidential. Dests are stealth. Stratum login is Copy dest (<code>ssa1.worker</code>). Hash bonuses land on that dest. Keep view secrets, rest-frame, seeds, and passwords off POST bodies and vortice hosts. There is no telemetry. While this book has fewer than 10,000 notes the membership set is thin.</p>'
   };
 

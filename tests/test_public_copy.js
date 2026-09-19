@@ -79,6 +79,9 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(paper, /hasher dest that produced proven work/);
 
     const readme = read('README.md');
+    assert.match(readme, /Wallet pin: \*\*0\.37\*\*/);
+    assert.doesNotMatch(readme, /Wallet pin: \*\*0\.36\*\*/);
+    assert.doesNotMatch(readme, /Wallet \*\*0\.36\*\* syncs/);
     assert.match(readme, /Copy dest/);
     assert.match(readme, /own hash bonus on the next sealed block/);
     assert.match(readme, /shear-testnet-v4/);
@@ -102,6 +105,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
 
     assert.doesNotMatch(joined, /Private dests, public amounts/);
     assert.doesNotMatch(joined, /amounts stay public/);
+    assert.doesNotMatch(docs, /explorer reports amounts, dests/);
+    assert.match(docs, /no dest, no amount/);
     assert.match(joined, /confidential amounts/);
     assert.match(joined, /ADMITv2/);
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
@@ -127,6 +132,10 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /\*\*Working branch:\*\* `feat\/admit-v2`/);
     assert.match(ops, /git checkout main/);
     assert.doesNotMatch(ops, /git checkout feat\/admit-v2/);
+    assert.match(ops, /Pins are \*\*0\.37\*\*/);
+    assert.doesNotMatch(ops, /Pins are \*\*0\.36\*\*/);
+    assert.match(ops, /Pin \*\*0\.37\*\*/);
+    assert.doesNotMatch(ops, /Pin \*\*0\.36\*\*/);
   });
 
   it('MacBook handoff points at merged GitHub main, 0.37 tag, and pack_macos.sh', () => {

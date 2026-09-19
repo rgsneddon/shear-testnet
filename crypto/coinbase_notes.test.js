@@ -1,9 +1,26 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
+import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS, POOL_FEE_BPS } from './asert.js';
 import { newIdentity, spendDestOf, hash20FromAddress } from './address.js';
 import { noteCommitOfDest20 } from './note.js';
-import { noteCommitSpendableNanos } from './coinbase_notes.js';
+import { expectedCoinbasePays, noteCommitSpendableNanos } from './coinbase_notes.js';
+
+describe('expectedCoinbasePays potNanos', () => {
+  it('splits the supplied epoch pot, not the 1 SHE fingerprint', () => {
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const pool = spendDestOf(newIdentity().spendPub);
+    const share = { dest: hasher, dest20: hash20FromAddress(hasher), nonce: 1n, lz: 8 };
+    const pot = 99_000_000_000;
+    const pays = expectedCoinbasePays([share], { miner: hasher, poolDest: pool, potNanos: pot });
+    const potPays = pays.filter((p) => p.kind === 'pot');
+    const sum = potPays.reduce((a, p) => a + p.nanos, 0);
+    assert.equal(sum, pot);
+    const fee = Math.floor(pot * POOL_FEE_BPS / 10000);
+    assert.equal(potPays.find((p) => p.address === pool)?.nanos, fee);
+    const rest = potPays.find((p) => p.address === hasher);
+    assert.equal(rest?.nanos, pot - fee);
+  });
+});
 
 describe('noteCommitSpendableNanos', () => {
   it('recovers mature compact coinbase when explorer to is empty', () => {

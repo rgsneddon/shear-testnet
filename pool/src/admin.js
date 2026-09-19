@@ -291,7 +291,8 @@ export function createAdmin(dir) {
     if (loopback === true && envOk) return true;
     const hosts = configuredAdminHosts();
     if (hosts.length) return isAdminHost(host);
-    return true;
+    // Deny-by-default: Host header is not authorization when SHEAR_ADMIN_HOST is unset.
+    return false;
   }
 
   function setup({
@@ -582,16 +583,19 @@ export function handleAdminApi(url, method, body, {
   if (pathName === '/api/admin/resume' && verb === 'POST') {
     const miss = needOps(ops, 'setPaused');
     if (miss) return miss;
+    appendAdminAudit(admin?.dir, { action: 'resume', paused: false });
     return { status: 200, json: { ok: true, ...ops.setPaused(false) } };
   }
   if (pathName === '/api/admin/restart' && verb === 'POST') {
     const miss = needOps(ops, 'restart');
     if (miss) return miss;
+    appendAdminAudit(admin?.dir, { action: 'restart' });
     return { status: 200, json: { ok: true, ...ops.restart() } };
   }
   if (pathName === '/api/admin/restart-hasher' && verb === 'POST') {
     const miss = needOps(ops, 'restartHasher');
     if (miss) return miss;
+    appendAdminAudit(admin?.dir, { action: 'restart-hasher' });
     return { status: 200, json: { ok: true, ...ops.restartHasher() } };
   }
   if (pathName === '/api/admin/rebroadcast' && verb === 'POST') {
@@ -625,11 +629,13 @@ export function handleAdminApi(url, method, body, {
     if (miss) return miss;
     const want = String(body.miner || body.tag || body.workerKey || body.dest || '');
     if (!want) return { status: 400, json: { ok: false, reason: 'need_miner' } };
+    appendAdminAudit(admin?.dir, { action: 'unban', miner: want });
     return { status: 200, json: { ok: true, ...ops.unban(want) } };
   }
   if (pathName === '/api/admin/clear-stale' && verb === 'POST') {
     const miss = needOps(ops, 'clearStale');
     if (miss) return miss;
+    appendAdminAudit(admin?.dir, { action: 'clear-stale' });
     return { status: 200, json: { ok: true, ...ops.clearStale() } };
   }
   return { status: 404, json: { ok: false, reason: 'unknown' } };

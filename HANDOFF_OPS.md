@@ -112,7 +112,7 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 - Linux node: `make -C crypto/native` on the box. Never copy a macOS `.node` to Linux.
 - p2pnode2 (Ubuntu 26.04) has no gcc — copy Linux `shearadmit.node` from P2pnode.
-- Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.36**. `--build-name=0.36` / pubspec `0.37.0+53`.
+- Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.37**. `--build-name=0.37.0` / pubspec `0.37.0+54`.
 - Pool HTTP: `/api/stats`, not `/stats`.
 - Operator admin vhost is **not** in git.
 
@@ -126,7 +126,7 @@ set ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
 set ANDROID_SDK_ROOT=%ANDROID_HOME%
 cd /d %USERPROFILE%\shear-testnet\wallet
 flutter pub get
-flutter build apk --release --build-name=0.37.0 --build-number=53
+flutter build apk --release --build-name=0.37.0 --build-number=54
 copy /Y build\app\outputs\flutter-apk\app-release.apk dist\shear-wallet-0.37-android.apk
 copy /Y build\app\outputs\flutter-apk\app-release.apk ..\dist\shear-wallet-0.37-android.apk
 gh release upload 0.36 dist\shear-wallet-0.37-android.apk --repo rgsneddon/shear-testnet --clobber
@@ -160,7 +160,7 @@ gh release upload 0.36 dist/shear-wallet-0.37-macos.dmg --repo rgsneddon/shear-t
 
 - Invent a mainnet genesis datetime.
 - Dual-stack ADMITv1 + ADMITv2.
-- Recut an older wallet or ShearK tag. Pins are **0.36** and **2.4**.
+- Recut an older wallet or ShearK tag. Pins are **0.37** and **2.4**.
 - Put ShearK inside the wallet zip.
 - Attach Darwin as `*-linux.zip`.
 - Commit `id_ed25519_*`, `deploy/nginx-*-secrets.conf`, or a live admin hostname.

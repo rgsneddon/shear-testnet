@@ -374,24 +374,33 @@ void main() {
       'cTilde': Uint8List(32)..[0] = 2,
     };
     debugNativeSealNote = (v, {dest20, kind = 'send'}) {
-      final n = sealNote(v, dest20: dest20, kind: kind);
-      n['rangeProof'] = Uint8List.fromList([2, ...List.filled(64, 4)]);
-      return n;
+      final r = randomScalar();
+      final value = proveValue(v, r);
+      final nc = dest20 != null ? noteCommitOfDest20(dest20) : Uint8List(32);
+      return {
+        'kind': kind,
+        'noteCommit': nc,
+        'commit': value['C'],
+        'valueProof': {'R': value['R'], 'z': value['z'], 'v': v},
+        'rangeProof': Uint8List.fromList([2, ...List.filled(64, 4)]),
+        'r': scalarBytes(r),
+        'nanos': v,
+        if (dest20 != null) 'dest20': dest20,
+      };
     };
     addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
     expect(kTabs, ['Continuum', 'Flow', 'Resistance', 'Vortex', 'Shearview', 'Closure']);
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
-    final probe = ShearLedger()..viewSecret = id.viewKey;
+    final probe = ShearLedger()..bindIdentity(id);
     final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
     expect(dest.startsWith('ssa1'), isTrue);
-    expect(dest.length, lessThanOrEqualTo(shortAddrMax));
-    expect(admitBaseFromAddress(dest), isNull);
+    expect(destMatchesSpendPub(dest, probe.spendPub!), isTrue);
     final d20 = hash20FromAddress(dest)!;
-    var spent = sealNote(kUnitsPerShe, dest20: d20, kind: 'pot');
+    var spent = Map<String, dynamic>.from(debugNativeSealNote!(kUnitsPerShe, dest20: d20, kind: 'pot'));
     spent['address'] = dest;
     spent = attachAdmitPub(spent, admitBase: pointFrom(admitBaseBytes(seed)));
-    final compacted = compactSealedVout(spent);
+    final compacted = compactSealedVout(spent)..['nanos'] = kUnitsPerShe;
     expect(compacted.containsKey('r'), isFalse);
     expect(compacted['rEph'], isNotNull);
     expect(compacted['rCt'], isNotNull);
@@ -405,17 +414,12 @@ void main() {
     ledger.confirmRound(address: dest, pot: 1, height: 2);
     expect(ledger.notes, isEmpty, reason: 'confirmRound does not rememberNote');
     ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
-    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
-    await expectLater(
-      ledger.send(
-        from: dest,
-        to: bob,
-        amount: 0.25,
-        restFrame: id.address,
-        paymentCode: id.paymentCode,
-        spendSeed: seed,
-      ),
-      throwsA(isA<StateError>().having((e) => e.message, 'msg', contains('no_note'))),
+    final bob = encodeDestAddress(Uint8List.fromList(List.filled(20, 7)));
+    ledger.applyPoolSnapshot(
+      dest,
+      {'balance': 1.0, 'pending': 0, 'incoming': []},
+      beforeHeight: 1,
+      tipSealed: 2 + ShearLedger.spendableConfirmations - 1,
     );
     ledger.ingestSealedVouts(
       [compacted],
@@ -429,7 +433,8 @@ void main() {
           (n['address'] == dest || n['dest'] == dest) &&
           n['commit'] != null &&
           n['r'] != null &&
-          n['prev'] != null),
+          n['prev'] != null &&
+          n['amount'] != null),
       isTrue,
     );
     await ledger.send(
@@ -445,9 +450,9 @@ void main() {
     expect(body['admit_proof'], isA<Map>());
     final proof = Map<String, dynamic>.from(body['admit_proof'] as Map);
     expect(proof['admit_proof'], isTrue);
-    expect(proof['c0'], isNotNull);
-    expect(proof['r'], isA<List>());
-    expect((proof['r'] as List).length, pubs.length);
+    expect(proof['v'], 2);
+    expect(proof['blob'], isNotNull);
+    expect(proof['cTilde'], isNotNull);
     expect(proof['spendTag'], isNotNull);
     final vout = body['vout'] as List;
     expect(vout.any((o) => o is Map && o['kind'] == 'dummy' && o['commit'] != null), isTrue);
@@ -456,8 +461,45 @@ void main() {
     expect(vout.any((o) => o is Map && o['rEph'] != null && o['rCt'] != null), isTrue);
     expect((body['vin'] as List).first['commit'], isNotNull);
     expect((body['vin'] as List).first['r'], isNull);
+    final vin0 = Map<String, dynamic>.from((body['vin'] as List).first as Map);
+    expect(vin0.keys.toSet(), {'commit'});
+    expect(vin0.containsKey('prev'), isFalse);
+    expect(vin0.containsKey('index'), isFalse);
+    expect(vin0.containsKey('noteCommit'), isFalse);
+    expect(vin0.containsKey('address'), isFalse);
     expect(body['sig'], isNotEmpty);
     expect(body['spendPub'], isNotEmpty);
+    final repo = Directory.current.path.replaceAll('\\', '/').endsWith('/wallet')
+        ? Directory.current.parent.path
+        : Directory.current.path;
+    final postedFile = File(
+      '${Directory.systemTemp.path}${Platform.pathSeparator}shear-posted-vin-${pid}.json',
+    );
+    postedFile.writeAsStringSync(jsonEncode({
+      'from': body['from'],
+      'kind': body['kind'] ?? 'send',
+      'vin': body['vin'],
+      'vout': body['vout'],
+      'sig': body['sig'],
+      'spendPub': body['spendPub'],
+    }));
+    addTearDown(() {
+      try {
+        postedFile.deleteSync();
+      } catch (_) {}
+    });
+    final checked = Process.runSync(
+      'node',
+      ['tests/verify_posted_spend.mjs', postedFile.path],
+      workingDirectory: repo,
+    );
+    expect(
+      checked.exitCode,
+      0,
+      reason: 'tip verifySpendSig rejected posted body: ${checked.stdout}${checked.stderr}',
+    );
+    final verified = jsonDecode(checked.stdout as String) as Map;
+    expect(verified['ok'], true);
     expect(
       ledger.notes.any((n) => n['kind'] == 'send' && n['r'] != null && n['spent'] != true),
       isTrue,
@@ -465,6 +507,7 @@ void main() {
     );
     expect(proof['v'], 2);
     expect(proof['r'], isNull);
+    expect(proof.containsKey('c0'), isFalse);
     expect(proof['admit_proof'], isTrue);
     expect(
       ledger.notes.any((n) => n['commit'] != null && n['r'] != null && n['prev'] != null),
@@ -5002,7 +5045,10 @@ Future<void> _waitKey(WidgetTester tester, Key key) async {
 
 class _RecordingPool extends ShearPoolClient {
   _RecordingPool(this.posts, {this.pubs = const [], this.spendTags = const []})
-      : super(baseUrl: 'http://127.0.0.1:9');
+      : super(
+          baseUrl: 'http://127.0.0.1:9',
+          http: HttpClient()..connectionTimeout = const Duration(milliseconds: 50),
+        );
   final List<Map<String, dynamic>> posts;
   final List<Uint8List> pubs;
   final List<String> spendTags;
@@ -5046,6 +5092,7 @@ class _RecordingPool extends ShearPoolClient {
       'from': from,
       'to': to,
       'amount': amount,
+      'kind': kind ?? 'send',
       'vin': vin,
       'vout': vout,
       'excess': excess,

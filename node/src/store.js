@@ -1026,6 +1026,7 @@ export function createStore(dir, {
   }
 
   function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, poolDest = null, hashBonusCustodyDest = null } = {}) {
+    void hashBonusCustodyDest;
     const t = tip();
     const height = t ? t.height + 1 : 1;
     const wall = nowIn != null ? Number(nowIn) : Date.now();
@@ -1091,7 +1092,6 @@ export function createStore(dir, {
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
       shareBatch: Array.isArray(shareBatch) ? shareBatch : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch : []),
       poolDest,
-      hashBonusCustodyDest,
       parentBlocks: blocks,
       parentFluxset: liveFlux,
     });
@@ -1113,7 +1113,7 @@ export function createStore(dir, {
       samples: rec.tpl.samples,
       shareBatch: rec.tpl.shareBatch || [],
       miner: destForLogin(miner) || miner || rec.tpl.miner,
-      poolDest: rec.tpl.poolDest || rec.tpl.hashBonusCustodyDest || rec.tpl.miner || '',
+      poolDest: rec.tpl.poolDest || rec.tpl.miner || '',
       aLeaves: rec.tpl.aLeaves,
       bLeaves: rec.tpl.bLeaves,
       rootA: rec.tpl.rootA,
