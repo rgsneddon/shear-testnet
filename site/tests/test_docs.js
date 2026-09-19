@@ -61,7 +61,7 @@ describe('shear.digital/docs', () => {
     assert.match(docs, /border-bottom:1px solid rgba\(26,111,181,\.25\)/);
     assert.match(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
     assert.match(docs, /\.banner-wordmark \{ height:36px; width:auto; max-width:none/);
-    assert.match(docs, /content\.js\?v=8/);
+    assert.match(docs, /content\.js\?v=9/);
     assert.match(content, /Remove vortice/);
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);
@@ -78,6 +78,8 @@ describe('shear.digital/docs', () => {
     assert.match(content, /com\.shear\.shear_wallet/);
     assert.match(content, /Stem then fluff/);
     assert.match(content, /ADMITv2/);
+    assert.doesNotMatch(content, /explorer reports amounts, dests/);
+    assert.match(content, /no dest, no amount/);
     assert.match(content, /boot\.shear\.digital/);
     assert.doesNotMatch(content, /Dandelion\+\+/);
     assert.doesNotMatch(content, /FCMP/);
@@ -118,6 +120,8 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /min-width:0/);
     assert.match(paper, /\.banner-wordmark \{ height:36px; width:auto; max-width:none/);
     assert.match(paper, /Continuity-settled Proof of Work/);
+    assert.match(paper, /HTML is canonical/);
+    assert.match(paper, /PDF preview is stale/);
     assert.match(paper, /releases\/tag\/0\.37/);
     assert.doesNotMatch(paper, /releases\/tag\/0\.33/);
     assert.match(paper, /Publication/);
