@@ -29,7 +29,7 @@ import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { hash20FromAddress } from '../../crypto/address.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, applyReserveBlock, verifyReservePayout } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, verifyReservePayout } from '../../crypto/reserve_vault.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest, verifyPoolWithdrawBound } from '../../crypto/spend.js';
@@ -769,7 +769,16 @@ export function createStore(dir, {
     return got;
   }
 
-  function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null) {
+  function trialVaultAtForkRoot() {
+    const trial = cloneVault(emptyVault());
+    if (reserveVault?.oracle) {
+      trial.oracle = JSON.parse(JSON.stringify(reserveVault.oracle));
+    }
+    return trial;
+  }
+
+  function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null, trialVault = null) {
+    const vault = trialVault || reserveVault;
     const prev = i === 0 ? null : {
       hash: accepted[i - 1].hash,
       header: accepted[i - 1].header,
@@ -784,18 +793,18 @@ export function createStore(dir, {
     const rows = [];
     for (const b of accepted) rows.push(...sealedExplorerRows(b));
     for (const tx of (fork[i]?.txs || []).slice(1)) {
-      const pay = verifyReservePayout(reserveVault, tx);
+      const pay = verifyReservePayout(vault, tx);
       if (!pay.ok) return pay;
     }
     return verifyBlock(fork[i], prev, {
       spentB: trialSpent,
       tipHeight: Number(fork[fork.length - 1]?.height || fork.length),
-      hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
+      hashBonusNanos: Number(vault.liveHashBonusNanos || 1),
       evmSession: trialSession,
       evmHistory: trialSession ? [] : accepted,
       spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, parentH, accepted, rows)),
-      committedBps: Number(reserveVault.epochBps ?? 264),
-      reserveState: reserveVault,
+      committedBps: Number(vault.epochBps ?? 264),
+      reserveState: vault,
     });
   }
 
@@ -804,16 +813,19 @@ export function createStore(dir, {
     if (needs) return verifyForkAsync(fork);
     const accepted = [];
     const trialSpent = new Set();
+    const trialVault = trialVaultAtForkRoot();
     for (let i = 0; i < fork.length; i += 1) {
-      const check = verifyOneForkBlock(fork, i, accepted, trialSpent);
+      const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault);
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
-      accepted.push(leanBlock({
+      const lean = leanBlock({
         ...fork[i],
         magic: MAGIC_TESTNET,
         hash: check.hash,
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
-      }));
+      });
+      accepted.push(lean);
+      applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
     }
     return { ok: true, accepted };
   }
@@ -822,19 +834,22 @@ export function createStore(dir, {
     const accepted = [];
     const trialSpent = new Set();
     let trialSession = null;
+    const trialVault = trialVaultAtForkRoot();
     for (let i = 0; i < fork.length; i += 1) {
       const check = await Promise.resolve(
-        verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession),
+        verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession, trialVault),
       );
       if (check.evmSession) trialSession = check.evmSession;
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
-      accepted.push(leanBlock({
+      const lean = leanBlock({
         ...fork[i],
         magic: MAGIC_TESTNET,
         hash: check.hash,
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
-      }));
+      });
+      accepted.push(lean);
+      applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
     }
     return { ok: true, accepted };
   }

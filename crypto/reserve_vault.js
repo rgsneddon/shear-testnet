@@ -96,6 +96,28 @@ export function emptyVault() {
   };
 }
 
+/** Deep copy for fork trial state. Mutating the clone must not touch `state`. */
+export function cloneVault(state) {
+  const src = state && typeof state === 'object' ? state : emptyVault();
+  const raw = JSON.parse(JSON.stringify(src, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
+  const out = emptyVault();
+  Object.assign(out, raw);
+  out.portals = Object.create(null);
+  for (const [k, p] of Object.entries(raw.portals || {})) {
+    out.portals[k] = p && typeof p === 'object' ? { ...p } : p;
+  }
+  out.votes = { increase: 0, decrease: 0, hold: 0, ...(raw.votes || {}) };
+  out.mintedIds = Object.create(null);
+  Object.assign(out.mintedIds, raw.mintedIds || {});
+  out.freezes = Object.create(null);
+  Object.assign(out.freezes, raw.freezes || {});
+  out.liveHashBonusNanos = asBig(out.liveHashBonusNanos);
+  out.totalLockedNanos = asBig(out.totalLockedNanos);
+  out.feeBankNanos = asBig(out.feeBankNanos);
+  out.mintBankNanos = asBig(out.mintBankNanos);
+  return out;
+}
+
 export function creditFeeBank(state, nanos) {
   const n = asBig(nanos);
   state.feeBankNanos = asBig(state.feeBankNanos) + n;
