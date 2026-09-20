@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createPool } from './pool.js';
+import { createPool, stratumDriftShouldRefuse } from './pool.js';
 import { isShearAddress } from '../../crypto/address.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { createP2p, P2P_PORT, SEED_RETRY_MS } from '../../node/src/p2p.js';
@@ -38,12 +38,24 @@ if (!boot.signed) {
     reason: 'need_SHEAR_POOL_SPEND_SEED',
   }));
 }
+const stratumBind = process.env.SHEAR_STRATUM_BIND || '127.0.0.1';
+const requireLoginAuth = String(process.env.SHEAR_STRATUM_AUTH || '') === '1';
+if (stratumDriftShouldRefuse({ bind: stratumBind, requireLoginAuth })) {
+  console.error(JSON.stringify({
+    ok: false,
+    event: 'stratum_drift_refuse',
+    reason: 'non_loopback_without_auth',
+    stratumBind,
+    loginAuth: requireLoginAuth ? 'ed25519' : 'dest-only',
+  }));
+  process.exit(1);
+}
 const pool = createPool({
   dataDir,
   stratumPort: Number(process.env.SHEAR_STRATUM || 1111),
   httpPort: Number(process.env.SHEAR_HTTP || 8088),
-  stratumBind: process.env.SHEAR_STRATUM_BIND || '127.0.0.1',
-  requireLoginAuth: String(process.env.SHEAR_STRATUM_AUTH || '') === '1',
+  stratumBind,
+  requireLoginAuth,
   miner,
   operatorSpendKey: boot.operatorSpendKey,
   shareBits: Number(process.env.SHEAR_SHARE_BITS || SHARE_BITS_V2_START),

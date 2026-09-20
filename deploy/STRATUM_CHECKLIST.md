@@ -17,7 +17,9 @@ Dev dest-only (`SHEAR_STRATUM_BIND=0.0.0.0`, `SHEAR_STRATUM_AUTH=0`) is local-on
 GET http://127.0.0.1:8088/api/stats
 ```
 
-Must show `stratumBind` = `127.0.0.1` and `loginAuth` = `ed25519`.
+Must show `stratumBind` = `127.0.0.1` (not `0.0.0.0`) and `loginAuth` = `ed25519` (not `dest-only`) when AUTH is on.
+
+`alerts.stratumDrift` is true when bind is non-loopback **and** `SHEAR_STRATUM_AUTH≠1`. Loopback or `AUTH=1` does not trip it. Prod profile (`SHEAR_STRATUM_PROD_PROFILE=1` or `SHEAR_NETWORK=shear-v1`) refuse-starts on that same condition; testnet soak still boots and only alerts. Optional `stratumConfigSource` is `unit` (loopback+AUTH) or `drop-in` (soak override). `stratumCleartext=true` stays until a TLS terminator is in front.
 
 ## Reload
 
@@ -43,3 +45,4 @@ Helsinki pool (`77.42.91.84`) may have `/etc/systemd/system/shear-pool.service.d
 - Do not recut older ShearK tags
 - Do not bind stratum to `0.0.0.0` on a production fleet without a documented testnet drop-in
 - Do not wipe `/var/lib/shear/testnet-v4` for a BIND/AUTH reload
+- Do not enable dest-ban without ownership once AUTH is on (signed login is dest ownership; dest-only tags are not)

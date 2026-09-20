@@ -2,7 +2,30 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+
+function utf16be(str) {
+  const b = Buffer.alloc(str.length * 2);
+  for (let i = 0; i < str.length; i += 1) {
+    const c = str.charCodeAt(i);
+    b[i * 2] = (c >> 8) & 0xff;
+    b[i * 2 + 1] = c & 0xff;
+  }
+  return b;
+}
+
+function pdfHaystack(buf) {
+  const parts = [buf];
+  const re = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  const text = buf.toString('latin1');
+  let m;
+  while ((m = re.exec(text))) {
+    const raw = Buffer.from(m[1], 'latin1');
+    try { parts.push(zlib.inflateSync(raw)); } catch { /* not flate */ }
+  }
+  return Buffer.concat(parts);
+}
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const docs = fs.readFileSync(path.join(here, '../docs/index.html'), 'utf8');
@@ -43,6 +66,14 @@ describe('shear.digital/docs', () => {
     assert.match(content, /reserve-fee/);
     assert.match(content, /The Reserve vault fee bank/);
     assert.match(content, /not sent - try again/);
+    assert.match(content, /https:\/\/shear\.digital\/whitepaper\//);
+    assert.doesNotMatch(content, /href="https:\/\/whitepaper\.shear\.digital"/);
+    assert.match(content, /not instant/);
+    assert.match(content, /6\+ confs while the pool shows sent/);
+    assert.match(content, /wallet\/sync bug/);
+    assert.match(content, /Tx detail/);
+    assert.match(content, /https:\/\/pool\.shear\.digital/);
+    assert.match(content, /pool HUD is not spendable/);
     assert.match(content, /Your deposits/);
     assert.match(content, /two rows/);
     assert.doesNotMatch(content, /twenty rows/);
@@ -61,7 +92,7 @@ describe('shear.digital/docs', () => {
     assert.match(docs, /border-bottom:1px solid rgba\(26,111,181,\.25\)/);
     assert.match(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
     assert.match(docs, /\.banner-wordmark \{ height:36px; width:auto; max-width:none/);
-    assert.match(docs, /content\.js\?v=10/);
+    assert.match(docs, /content\.js\?v=11/);
     assert.match(content, /Remove vortice/);
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);
@@ -123,8 +154,10 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /\.banner-wordmark \{ height:36px; width:auto; max-width:none/);
     assert.match(paper, /Continuity-settled Proof of Work/);
     assert.match(paper, /HTML is canonical/);
-    assert.match(paper, /PDF preview is stale/);
     assert.match(paper, /id="pdf-stale"/);
+    assert.match(paper, /wallet 0\.40/);
+    assert.match(paper, /ShearK 2\.4/);
+    assert.doesNotMatch(paper, /The builder still carries older ADMITv1/);
     assert.match(paper, /releases\/tag\/0\.40/);
     assert.doesNotMatch(paper, /releases\/tag\/0\.33/);
     assert.match(paper, /Publication/);
@@ -146,7 +179,23 @@ describe('whitepaper.shear.digital', () => {
     const src = fs.readFileSync(path.join(here, '../whitepaper/build_pdf.py'), 'utf8');
     assert.doesNotMatch(src, /The Join/);
     assert.doesNotMatch(src, /join1\./);
+    assert.doesNotMatch(src, /ShearK-Miner 1\.6/);
+    assert.doesNotMatch(src, /pin 0\.32/);
+    assert.doesNotMatch(src, /pin 0\.37/);
+    assert.match(src, /ShearK-Miner 2\.4/);
+    assert.match(src, /pin 0\.40/);
     assert.equal(pdf.includes(Buffer.from('The Join')), false);
+    const hay = pdfHaystack(pdf);
+    assert.equal(hay.includes(Buffer.from('shear-testnet-v3')), false);
+    assert.equal(hay.includes(utf16be('shear-testnet-v3')), false);
+    assert.equal(hay.includes(Buffer.from('ADMITV1')), false);
+    assert.equal(hay.includes(utf16be('ADMITV1')), false);
+    assert.equal(hay.includes(Buffer.from('ShearK-Miner 1.6')), false);
+    assert.equal(hay.includes(utf16be('ShearK-Miner 1.6')), false);
+    assert.equal(hay.includes(Buffer.from('wallet 0.32')) || hay.includes(utf16be('wallet 0.32')) || hay.includes(utf16be('pin 0.32')), false);
+    assert.equal(pdf.includes(Buffer.from('shear-testnet-v4')), true);
+    assert.equal(pdf.includes(Buffer.from('wallet-0.40')), true);
+    assert.equal(pdf.includes(Buffer.from('ShearK-2.4')), true);
     assert.doesNotMatch(content, /The Join/);
     assert.doesNotMatch(content, /join1\./);
   });
@@ -165,5 +214,7 @@ describe('deploy headers', () => {
     const list = fs.readFileSync(path.join(root, 'deploy/STRATUM_CHECKLIST.md'), 'utf8');
     assert.match(list, /SHEAR_STRATUM_BIND=127\.0\.0\.1/);
     assert.match(list, /SHEAR_STRATUM_AUTH=1/);
+    assert.match(list, /dest-ban without ownership/);
+    assert.match(list, /reload-stratum-units\.sh/);
   });
 });

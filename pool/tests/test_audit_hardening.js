@@ -13,6 +13,10 @@ import {
   verifyStratumLoginAuth,
   foldPublicMinerViews,
   statsAlerts,
+  stratumDriftAlert,
+  stratumDriftShouldRefuse,
+  stratumConfigSourceOf,
+  isLoopbackBind,
   noteIpSubmit,
   rememberDestShareBits,
   destShareBitsOf,
@@ -149,6 +153,112 @@ describe('A7 stats alerts', () => {
     assert.equal(statsAlerts({ topDestSharePct: 0.6, shareBlockRatio: 10 }).concentration, true);
     assert.equal(statsAlerts({ topDestSharePct: 0.1, shareBlockRatio: 9_999 }).shareBlock, false);
     assert.equal(statsAlerts({ topDestSharePct: 0.1, shareBlockRatio: 10_000 }).shareBlock, true);
+  });
+
+  it('stratum drift alerts on non-loopback bind without AUTH; loopback or AUTH=1 does not', () => {
+    assert.equal(isLoopbackBind('127.0.0.1'), true);
+    assert.equal(isLoopbackBind('0.0.0.0'), false);
+    assert.equal(stratumDriftAlert({ bind: '0.0.0.0', requireLoginAuth: false }), true);
+    assert.equal(stratumDriftAlert({ bind: '127.0.0.1', requireLoginAuth: false }), false);
+    assert.equal(stratumDriftAlert({ bind: '0.0.0.0', requireLoginAuth: true }), false);
+    assert.equal(stratumDriftAlert({ bind: '::1', requireLoginAuth: false }), false);
+    assert.equal(statsAlerts({
+      topDestSharePct: 0.1,
+      shareBlockRatio: 1,
+      stratumBind: '0.0.0.0',
+      requireLoginAuth: false,
+    }).stratumDrift, true);
+    assert.equal(statsAlerts({
+      topDestSharePct: 0.1,
+      shareBlockRatio: 1,
+      stratumBind: '127.0.0.1',
+      requireLoginAuth: false,
+    }).stratumDrift, false);
+    assert.equal(statsAlerts({
+      topDestSharePct: 0.1,
+      shareBlockRatio: 1,
+      stratumBind: '0.0.0.0',
+      requireLoginAuth: true,
+    }).stratumDrift, false);
+    assert.equal(stratumDriftShouldRefuse({
+      bind: '0.0.0.0',
+      requireLoginAuth: false,
+      prodProfile: false,
+    }), false);
+    assert.equal(stratumDriftShouldRefuse({
+      bind: '0.0.0.0',
+      requireLoginAuth: false,
+      prodProfile: true,
+    }), true);
+    assert.equal(stratumDriftShouldRefuse({
+      bind: '127.0.0.1',
+      requireLoginAuth: false,
+      prodProfile: true,
+    }), false);
+    assert.equal(stratumConfigSourceOf({ bind: '127.0.0.1', requireLoginAuth: true, env: {} }), 'unit');
+    assert.equal(stratumConfigSourceOf({ bind: '0.0.0.0', requireLoginAuth: false, env: {} }), 'drop-in');
+    assert.equal(stratumConfigSourceOf({
+      bind: '0.0.0.0',
+      requireLoginAuth: false,
+      env: { SHEAR_STRATUM_CONFIG_SOURCE: 'unit' },
+    }), 'unit');
+  });
+
+  it('createPool /api/stats ships stratumDrift from the live bind+auth path', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stratum-drift-'));
+    const open = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      stratumBind: '0.0.0.0',
+      requireLoginAuth: false,
+    });
+    const drift = open.publicStats();
+    assert.equal(drift.ok, true);
+    assert.equal(drift.stratumBind, '0.0.0.0');
+    assert.equal(drift.loginAuth, 'dest-only');
+    assert.equal(drift.alerts.stratumDrift, true);
+    assert.equal(drift.stratumConfigSource, 'drop-in');
+    assert.equal(drift.stratumCleartext, true);
+    open.close();
+    const loop = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      stratumBind: '127.0.0.1',
+      requireLoginAuth: false,
+    });
+    assert.equal(loop.publicStats().alerts.stratumDrift, false);
+    loop.close();
+    const authed = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      stratumBind: '0.0.0.0',
+      requireLoginAuth: true,
+    });
+    const authStats = authed.publicStats();
+    assert.equal(authStats.alerts.stratumDrift, false);
+    assert.equal(authStats.loginAuth, 'ed25519');
+    authed.close();
+  });
+
+  it('checklist names reload script, loopback BIND+AUTH, and dest-ban-without-ownership stay off', () => {
+    const list = fs.readFileSync(path.join(root, 'deploy/STRATUM_CHECKLIST.md'), 'utf8');
+    const handoff = fs.readFileSync(path.join(root, 'HANDOFF_OPS.md'), 'utf8');
+    const readme = fs.readFileSync(path.join(root, 'pool/README.md'), 'utf8');
+    for (const text of [list, handoff, readme]) {
+      assert.match(text, /reload-stratum-units\.sh/);
+      assert.match(text, /SHEAR_STRATUM_BIND=127\.0\.0\.1/);
+      assert.match(text, /SHEAR_STRATUM_AUTH=1/);
+    }
+    assert.match(list, /dest-ban without ownership/);
+    assert.match(list, /stratumBind/);
+    assert.match(list, /loginAuth/);
+    assert.match(list, /TLS terminator|cleartext/);
+    const mainJs = fs.readFileSync(path.join(root, 'pool/src/main.js'), 'utf8');
+    assert.match(mainJs, /stratumDriftShouldRefuse/);
+    assert.doesNotMatch(mainJs, /SHEAR_MAINNET_EMIT/);
   });
 });
 

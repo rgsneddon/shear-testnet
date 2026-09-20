@@ -18,3 +18,4 @@ jobs:
             exit 1
           fi
           node --test tests/test_admit_v1_grep.js
+          node --test site/tests/test_docs.js tests/test_public_copy.js

@@ -307,6 +307,23 @@ String formatShe(num she) {
 const kErrNoteSpent = 'that note was already spent';
 const kErrRangeProof = 'range proof failed';
 const kErrPublicHttp = 'node not running — sends would use the public node and show your IP';
+const kErrSyncTip = 'node not at tip — wait for sync';
+const kErrSendGeneric = 'not sent - try again';
+
+/// Flow send catch: map known failures; keep generic for unknown.
+String flowSendAdvisoryOf(Object error) {
+  final msg = error.toString();
+  if (msg.contains(kErrPublicHttp) || msg.contains('public node')) {
+    return kErrPublicHttp;
+  }
+  if (msg.contains(kErrSyncTip) ||
+      msg.contains('sync-tip') ||
+      msg.contains('syncTip') ||
+      msg.contains('sync tip')) {
+    return kErrSyncTip;
+  }
+  return kErrSendGeneric;
+}
 
 StateError _sendHumanError(String? reason, String? baseUrl) {
   final why = reason ?? 'send failed';
