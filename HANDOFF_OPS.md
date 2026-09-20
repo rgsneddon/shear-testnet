@@ -177,3 +177,58 @@ Live drift (`0.0.0.0` / dest-only / cleartext) is ops, not an in-repo default bu
 - Attach Darwin as `*-linux.zip`.
 - Commit `id_ed25519_*`, `deploy/nginx-*-secrets.conf`, or a live admin hostname.
 - Restart soak-clock / `shear-ibd-v4-mine` unless you intend a new 24 h run.
+
+---
+
+## 8) Pool operator spend seed — restore (no hex in git)
+
+Auto-payout signs from **`SHEAR_DATA/pool-spend.seed`** (mode **0600**) matching **`SHEAR_DATA/pool-miner.json` dest20**. Typical `SHEAR_DATA` is `/var/lib/shear/testnet-v4` (`shear-pool.service`). Never put the hex in a systemd `Environment=` line, EnvironmentFile, unit drop-in, or this repo. Prefer the 0600 file on disk.
+
+Off-host vault (Windows, outside git): `C:\Users\rgsne\Desktop\SHEAR-SECRETS\` contains `pool-spend.seed`, `pool-miner.json`, and `SHA256SUMS`. Paths only — **do not paste seed hex here**. Desktop map: `C:\Users\rgsne\Desktop\NOTE-pool-spend-SEED-BACKUP.md`.
+
+`GET /api/stats` must show `bootPoolOperator.signed=true` after a matching restore. Journal must not show `need_spend_key` / `auto_payout_unsigned` / `pool_operator_unsigned`.
+
+### Restore one-liner (after a datadir wipe)
+
+Wipe deletes the on-host seed. Restore **both** files together, then start P2P nodes, then the pool.
+
+From the Windows box that holds the vault (`~\.ssh\id_ed25519`):
+
+```
+scp -i %USERPROFILE%\.ssh\id_ed25519 %USERPROFILE%\Desktop\SHEAR-SECRETS\pool-spend.seed %USERPROFILE%\Desktop\SHEAR-SECRETS\pool-miner.json root@77.42.91.84:/var/lib/shear/testnet-v4/
+ssh -i %USERPROFILE%\.ssh\id_ed25519 root@77.42.91.84 "chmod 600 /var/lib/shear/testnet-v4/pool-spend.seed /var/lib/shear/testnet-v4/pool-miner.json; systemctl restart shear-pool.service"
+```
+
+Signed check (prints `{signed:true}` only — never dumps hex):
+
+```
+ssh -i %USERPROFILE%\.ssh\id_ed25519 root@77.42.91.84 "cd /opt/shear-v4 && node --input-type=module -e \"import { bootPoolOperator } from './pool/src/pool_ident.js'; const b = bootPoolOperator({ dataDir: '/var/lib/shear/testnet-v4' }); if (!b.signed) process.exit(2); console.log(JSON.stringify({ signed: true }));\""
+```
+
+Then: `curl -sS http://127.0.0.1:8088/api/stats` → `bootPoolOperator.signed` is true. `journalctl -u shear-pool.service -n 80 --no-pager` has no `need_spend_key` / `auto_payout_unsigned`.
+
+If seed missing: do **not** restart dest-only. Restore both vault files, `chmod 600`, restart `shear-pool.service`, confirm `signed=true`. Minting a new pair abandons that custodial dest and needs a coordinated fleet datadir wipe (below).
+
+### Coordinated shear-testnet-v4 datadir wipe
+
+Magic stays **`shear-testnet-v4`**. Keep Continuum pin 0.40 / ShearK 2.4. Wipe every datadir together, restore the pool ident from the Desktop vault onto the pool box, start the three P2P nodes, then the pool.
+
+| Order | Box | IP | Stop | Data |
+|------|-----|----|------|------|
+| 1 | shear-pool | `77.42.91.84` | `systemctl stop shear-pool.service` | `/var/lib/shear/testnet-v4` |
+| 2 | p2p-a | `157.180.70.110` | `systemctl stop shear-node.service` | `/var/lib/shear/testnet-v4` |
+| 3 | p2p-b | `2.28.8.89` | `systemctl stop shear-node.service` | `/var/lib/shear/testnet-v4` |
+| 4 | p2p-c | `178.156.222.223` | `systemctl stop shear-node.service` | `/var/lib/shear/testnet-v4` |
+
+```
+# on each box (pool first, then a/b/c):
+systemctl stop <unit>
+rm -rf /var/lib/shear/testnet-v4
+mkdir -p -m 700 /var/lib/shear/testnet-v4
+# pool only: restore pool-spend.seed + pool-miner.json from SHEAR-SECRETS (chmod 600)
+# start p2p-a, p2p-b, p2p-c, THEN pool:
+systemctl start shear-node.service   # on a/b/c
+systemctl start shear-pool.service   # on 77.42.91.84 last
+```
+
+Do not recut dead hosts `178.105.187.178` / `46.224.132.83`. Do not set `SHEAR_MAINNET_EMIT`.

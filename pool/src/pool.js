@@ -2348,6 +2348,7 @@ export function createPool({
       poolFeeOnPotOnly: true,
       hashBonusPoolFeeBps: 0,
       loginAuth: requireLoginAuth ? 'ed25519' : 'dest-only',
+      bootPoolOperator: { signed: !!operatorSpendKey },
       gitHead: gitHeadOf(),
       proof: 'PoW',
       miners: workers.length,
