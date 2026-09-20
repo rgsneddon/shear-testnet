@@ -2316,7 +2316,11 @@ class ShearLedger {
     final rows = _ownedRolled(address).where((t) {
       if (t.kind == 'hash' || t.kind == 'sample') return false;
       if (t.to.isEmpty && t.from.isEmpty) return false;
-      if (t.amount <= 0 && (t.hashAmount == null || t.hashAmount! <= 0)) return false;
+      if (t.amount <= 0 &&
+          (t.hashAmount == null || t.hashAmount! <= 0) &&
+          !isReservePendingKind(t)) {
+        return false;
+      }
       final h = t.height ?? 0;
       if (isReservePendingKind(t)) {
         if (h < 1) return !t.confirmed;

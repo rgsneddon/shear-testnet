@@ -469,6 +469,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   @visibleForTesting
   Future<void> unlockBiometricsNow() => _unlockBiometric();
 
+  /// Same path as the lock-gate Set password / Unlock buttons. Argon2id cannot complete in FakeAsync.
+  @visibleForTesting
+  Future<void> setPasswordNow() => _setPassword(unlockCtrl.text, confirmCtrl.text);
+
+  @visibleForTesting
+  Future<void> unlockNow() => _unlock(unlockCtrl.text);
+
   /// Same path as the lock-gate and Closure Import buttons.
   @visibleForTesting
   Future<void> importShewallNow() => _importShewall();
