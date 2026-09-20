@@ -27,6 +27,8 @@ describe('shear-node CLI help', () => {
     assert.match(full, /make -C crypto\/native/);
     assert.match(full, /--status/);
     assert.match(full, /GET \/stats/);
+    assert.match(full, /live peer/);
+    assert.doesNotMatch(full, /ibd=true until want is 0/);
     assert.doesNotMatch(full, /77\.42\.91\.84/);
     for (const flag of ['--help', '-h', 'help']) {
       const r = run([flag]);

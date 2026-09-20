@@ -93,7 +93,7 @@ function sectionP2p() {
   return [
     'P2P:',
     '  Listen :30303. Seeds are hostnames only.',
-    '  IBD: status.want > 0 means this node is still fetching blocks (ibd=true).',
+    '  IBD: ibd=true while want/pending/retryPrev/syncing is busy, or a live peer height is above this tip.',
     '  p2p_ingest reason=merkle is a sealed-block mismatch — do not skip verify.',
     '  p2p_ingest reason=prev is a parent miss; the node retries. It is not a ban.',
     '  p2p_ingest reason=unsigned on a sealed compact block is a node bug — pull tip, rebuild native.',
@@ -118,7 +118,7 @@ function sectionStatus() {
     '    height=  hash=  peers=  want=  ibd=  hashBackend=',
     '  --status reads the datadir and prints once (no P2P bind).',
     '  height is this node\'s tip, not a guessed network height.',
-    '  want is outstanding getblock hashes. ibd=true until want is 0.',
+    '  want is outstanding getblock hashes. ibd=true while catching up (queues, syncing, or a live peer tip is ahead) — not merely when want is 0.',
   ];
 }
 
