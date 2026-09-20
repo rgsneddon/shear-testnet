@@ -26,7 +26,7 @@ window.SHEAR_DOCS = {
     { title: 'Mining', children: [
       { id: 'mine', title: 'How to mine' },
       { id: 'solo', title: 'Solo mine' },
-      { id: 'sheark', title: 'ShearK 2.4' },
+      { id: 'sheark', title: 'ShearK 2.5' },
       { id: 'shares', title: 'Shares and PROP' },
       { id: 'hash-bonus', title: 'Hash bonus' }
     ]},
@@ -82,7 +82,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
       '<tr><th>Wallet pin</th><td>0.40</td></tr>' +
-      '<tr><th>Miner pin</th><td>ShearK 2.4</td></tr></table>' +
+      '<tr><th>Miner pin</th><td>ShearK 2.5</td></tr></table>' +
       '<p>How-to lives in this tree. Docs live under <a href="https://shear.digital/docs/">https://shear.digital/docs/</a> (typed docs.shear.digital may fail TLS). The architecture note is a PDF at <a href="https://shear.digital/whitepaper/">https://shear.digital/whitepaper/</a> — that URL is not in the navbar on purpose.</p>'
   };
 
@@ -225,10 +225,10 @@ window.SHEAR_DOCS = {
     title: 'How to mine',
     crumb: 'mining / how-to',
     html:
-      '<p>Official miner is <strong>ShearK-Miner 2.4</strong>, CPU only. Login is wallet Copy dest as <code>ssa1.worker</code>.</p>' +
+      '<p>Official miner is <strong>ShearK-Miner 2.5</strong>, CPU only. Login is wallet Copy dest as <code>ssa1.worker</code>.</p>' +
       '<pre>./ShearK-Miner --selftest\n' +
       './ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit-full --threads 8</pre>' +
-      '<p>Windows: <code>ShearK-Miner.exe</code> with the same flags. <code>.worker</code> is only a name. Downloads: <a href="https://github.com/rgsneddon/ShearK/releases/tag/2.4">ShearK 2.4</a>.</p>' +
+      '<p>Windows: <code>ShearK-Miner.exe</code> with the same flags. <code>.worker</code> is only a name. Downloads: <a href="https://github.com/rgsneddon/ShearK/releases/tag/2.5">ShearK 2.5</a>.</p>' +
       '<p>Public stratum <code>pool.shear.digital:1111</code> is <strong>cleartext TCP</strong> unless TLS is configured. Production pools should set <code>SHEAR_STRATUM_AUTH=1</code>.</p>' +
       '<p>The public pool takes 1% of the 1 SHE pot. Each hasher dest that produced proven work receives its own hash bonus in full on the next sealed block.</p>'
   };
@@ -237,7 +237,7 @@ window.SHEAR_DOCS = {
     title: 'Solo mine',
     crumb: 'mining / solo',
     html:
-      '<p>Solo means your node finds the block: you keep the live epoch pot plus your hash bonus. OS deps match README (apt, cmake, Node 20, rustup). The pool process must light-verify ShearHash-v3 on that same box. Without <code>crypto/native/shearhash.node</code> (or a 2.4 <code>ShearK-Miner</code> on <code>PATH</code> / <code>SHEARK_MINER</code>), every share comes back <code>native_missing</code>. Never copy a Darwin <code>.node</code> onto Linux. If make misses <code>node_api.h</code>, set <code>NODE_INC</code>.</p>' +
+      '<p>Solo means your node finds the block: you keep the live epoch pot plus your hash bonus. OS deps match README (apt, cmake, Node 20, rustup). The pool process must light-verify ShearHash-v3 on that same box. Without <code>crypto/native/shearhash.node</code> (or a 2.5 <code>ShearK-Miner</code> on <code>PATH</code> / <code>SHEARK_MINER</code>), every share comes back <code>native_missing</code>. Never copy a Darwin <code>.node</code> onto Linux. If make misses <code>node_api.h</code>, set <code>NODE_INC</code>.</p>' +
       '<pre>sudo apt-get update\nsudo apt-get install -y git curl build-essential cmake python3 pkg-config libssl-dev\ncurl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -\nsudo apt-get install -y nodejs\ncurl --proto \'=https\' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y\n. "$HOME/.cargo/env"\ngit clone https://github.com/rgsneddon/shear-testnet.git\n' +
       'cd shear-testnet\ngit checkout main\nnpm ci\n' +
       'cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native\n' +
@@ -251,10 +251,10 @@ window.SHEAR_DOCS = {
   };
 
   P.sheark = {
-    title: 'ShearK 2.4',
+    title: 'ShearK 2.5',
     crumb: 'mining / sheark',
     html:
-      '<p>ShearK-Miner is the official hasher. Pin <strong>2.4</strong> (abort on restamp, verify claimed digest). Do not recut 1.1 or 1.0. Default <code>--backend jit-full</code> is the 2 GiB dataset (same digest as light). Always run <code>--selftest</code> once on a new machine.</p>' +
+      '<p>ShearK-Miner is the official hasher. Pin <strong>2.5</strong> (abort on restamp, verify claimed digest). Do not recut 1.1 or 1.0. Default <code>--backend jit-full</code> is the 2 GiB dataset (same digest as light). Always run <code>--selftest</code> once on a new machine.</p>' +
       '<p>One login. No miner-fee dual-login. Keep any extra fee yourself if you run a private stratum.</p>'
   };
 

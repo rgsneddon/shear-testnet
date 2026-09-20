@@ -156,7 +156,7 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /HTML is canonical/);
     assert.match(paper, /id="pdf-stale"/);
     assert.match(paper, /wallet 0\.40/);
-    assert.match(paper, /ShearK 2\.4/);
+    assert.match(paper, /ShearK 2\.5/);
     assert.doesNotMatch(paper, /The builder still carries older ADMITv1/);
     assert.match(paper, /releases\/tag\/0\.40/);
     assert.doesNotMatch(paper, /releases\/tag\/0\.33/);
@@ -195,7 +195,7 @@ describe('whitepaper.shear.digital', () => {
     assert.equal(hay.includes(Buffer.from('wallet 0.32')) || hay.includes(utf16be('wallet 0.32')) || hay.includes(utf16be('pin 0.32')), false);
     assert.equal(pdf.includes(Buffer.from('shear-testnet-v4')), true);
     assert.equal(pdf.includes(Buffer.from('wallet-0.40')), true);
-    assert.equal(pdf.includes(Buffer.from('ShearK-2.4')), true);
+    assert.equal(pdf.includes(Buffer.from('ShearK-2.5')), true);
     assert.doesNotMatch(content, /The Join/);
     assert.doesNotMatch(content, /join1\./);
   });
