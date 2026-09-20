@@ -64,6 +64,7 @@ export function buildAutoPayoutTx({ from, to, nanos, fee = 0, id, spendKey } = {
   const gate = shouldAutoPayout({ confirmedNanos: nanos, dest: to });
   if (!gate.ok) return gate;
   if (!isDestAddress(from) || containsShe1(from)) return { ok: false, reason: 'bad_pool_dest' };
+  if (!spendKey) return { ok: false, reason: 'need_spend_key' };
   const L = Math.max(0, Math.floor(Number(fee) || 0));
   const tx = poolWithdrawTx({
     from,
@@ -74,7 +75,7 @@ export function buildAutoPayoutTx({ from, to, nanos, fee = 0, id, spendKey } = {
   });
   tx.poolPaysFee = true;
   tx.sponsor = from;
-  if (spendKey) signSpendTx(tx, spendKey);
+  signSpendTx(tx, spendKey);
   if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
   return { ok: true, tx, dest: gate.dest, nanos: gate.nanos, fee: L };
 }

@@ -2265,6 +2265,7 @@ export function createPool({
   let payoutTimer = null;
   let payoutSweepBusy = false;
   let payoutSweepAgain = false;
+  let autoPayoutLastError = null;
   let jobDirty = false;
   function paintStatsSnap() {
     try {
@@ -2343,6 +2344,7 @@ export function createPool({
       autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
       autoPayoutMinShe: AUTO_PAYOUT_MIN_NANOS / NANOS_PER_SHE,
       autoPayoutDest: 'ssa1',
+      autoPayoutLastError,
       poolFeeOnPotOnly: true,
       hashBonusPoolFeeBps: 0,
       loginAuth: requireLoginAuth ? 'ed25519' : 'dest-only',
@@ -2464,6 +2466,9 @@ export function createPool({
       nextPullMs: pull.nextPullMs,
       cooldownMs: PULL_COOLDOWN_MS,
       ledger: typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : [],
+      ...(autoPayoutLastError && autoPayoutLastError.tag === tag
+        ? { autoPayoutLastError }
+        : {}),
     };
   }
 
@@ -2514,6 +2519,23 @@ export function createPool({
     return operatorSpendKey;
   }
 
+  function recordAutoPayoutError({ tag, reason, have, need, from } = {}) {
+    autoPayoutLastError = {
+      at: Date.now(),
+      tag: String(tag || ''),
+      reason: String(reason || ''),
+      have: Math.max(0, Math.floor(Number(have) || 0)),
+      need: Math.max(0, Math.floor(Number(need) || 0)),
+      fromRedacted: redactSsa1(from),
+    };
+    try { paintStatsSnap(); } catch { /* keep in-memory error even if snap fails */ }
+  }
+
+  function clearAutoPayoutError() {
+    autoPayoutLastError = null;
+    try { paintStatsSnap(); } catch { /* ignore */ }
+  }
+
   function sweepAutoPayouts({ maxRows = PAYOUT_SWEEP_MAX_ROWS } = {}) {
     const tipH = Number(store.tip?.()?.height || 0);
     const need = typeof store.getpolicy === 'function'
@@ -2526,6 +2548,22 @@ export function createPool({
     const sent = [];
     const fee = levyNanos(0, { depth: mempoolDepthBytes(store.mempool || []) });
     const cap = Math.max(1, Math.floor(Number(maxRows) || PAYOUT_SWEEP_MAX_ROWS));
+    if (!spendKey && due.length) {
+      const row = due[0];
+      console.error(JSON.stringify({
+        event: 'auto_payout_unsigned',
+        reason: 'need_spend_key',
+        tag: row.tag,
+      }));
+      recordAutoPayoutError({
+        tag: row.tag,
+        reason: 'unsigned',
+        have: 0,
+        need: row.nanos,
+        from,
+      });
+      return [];
+    }
     let n = 0;
     for (const row of due) {
       if (n >= cap) {
@@ -2534,7 +2572,23 @@ export function createPool({
       }
       n += 1;
       const built = buildAutoPayoutTx({ from, to: row.dest, nanos: row.nanos, fee, spendKey });
-      if (!built.ok) continue;
+      if (!built.ok) {
+        if (built.reason === 'need_spend_key') {
+          console.error(JSON.stringify({
+            event: 'auto_payout_unsigned',
+            reason: 'need_spend_key',
+            tag: row.tag,
+          }));
+          recordAutoPayoutError({
+            tag: row.tag,
+            reason: 'unsigned',
+            have: 0,
+            need: row.nanos,
+            from,
+          });
+        }
+        continue;
+      }
       const q0 = Date.now();
       const queued = queueSend(built.tx);
       console.error(JSON.stringify({
@@ -2548,14 +2602,26 @@ export function createPool({
         from: built.tx && built.tx.from,
         ms: Date.now() - q0,
       }));
-      if (queued && queued.ok === false) continue;
+      if (queued && queued.ok === false) {
+        recordAutoPayoutError({
+          tag: row.tag,
+          reason: queued.reason,
+          have: queued.have,
+          need: queued.need,
+          from,
+        });
+        continue;
+      }
       const taken = pullBook.takeConfirmed(row.tag, {
         tipHeight: tipH,
         need,
         amountNanos: row.nanos,
         skipCooldown: true,
       });
-      if (taken.ok) sent.push({ ...row, nanos: taken.nanos });
+      if (taken.ok) {
+        clearAutoPayoutError();
+        sent.push({ ...row, nanos: taken.nanos });
+      }
     }
     return sent;
   }
