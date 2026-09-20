@@ -4,14 +4,139 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { encodeDest } from '../../crypto/address.js';
 import { startNode } from '../src/node.js';
-import { parseSoloLogin, createSoloStratum } from '../src/solo_stratum.js';
+import {
+  parseSoloLogin,
+  createSoloStratum,
+  applySoloSubmit,
+} from '../src/solo_stratum.js';
 import { createStore } from '../src/node.js';
+import { setNonce, headerFromHex } from '../../crypto/header.js';
+import { shearHash, meetsTarget, setHashBackend } from '../../crypto/shear_hash.js';
+import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
+import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 
 function destMiner() {
   return encodeDest(Buffer.alloc(20, 5));
+}
+
+function minerBin() {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const dir = path.join(here, '../../sheark-miner');
+  const names = process.platform === 'win32'
+    ? ['ShearK-Miner-2.5.exe', 'ShearK-Miner.exe']
+    : ['ShearK-Miner'];
+  for (const n of names) {
+    const p = path.join(dir, n);
+    if (fs.existsSync(p)) return p;
+  }
+  return '';
+}
+
+function stripAnsi(s) {
+  return String(s || '').replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function killChild(child) {
+  if (!child) return;
+  try { child.kill(); } catch { /* ignore */ }
+  if (child.pid && process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+  }
+}
+
+function yieldTick() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function findDestShareNotBlock({ headerHex, dest, shareBits, blockBits, max = 400_000n }) {
+  const header0 = headerFromHex(headerHex);
+  const nc = noteCommitOfShare({ dest });
+  for (let nonce = 0n; nonce < max; nonce += 1n) {
+    const header = setNonce(header0, nonce);
+    const rx = shearHash(header);
+    const bound = destBoundShareHash(rx, nc);
+    if (meetsTarget(bound, shareBits) && !meetsTarget(rx, blockBits)) {
+      return { nonce, hash: rx.toString('hex') };
+    }
+    if ((nonce & 31n) === 31n) await yieldTick();
+  }
+  throw new Error('no_share');
+}
+
+async function findBlockHit({ headerHex, bits, max = 3_000_000n }) {
+  const header0 = headerFromHex(headerHex);
+  for (let nonce = 0n; nonce < max; nonce += 1n) {
+    const header = setNonce(header0, nonce);
+    const rx = shearHash(header);
+    if (meetsTarget(rx, bits)) return { nonce, hash: rx.toString('hex') };
+    if ((nonce & 31n) === 31n) await yieldTick();
+  }
+  throw new Error('no_block');
+}
+
+function loginSolo(port, dest, shareBits = SHARE_FLOOR_BITS) {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(port, '127.0.0.1');
+    let buf = '';
+    const t = setTimeout(() => reject(new Error('login timeout')), 15_000);
+    sock.on('error', reject);
+    sock.once('connect', () => {
+      sock.write(`${JSON.stringify({
+        id: 1,
+        method: 'login',
+        params: { login: `${dest}.solo`, shareBits, threads: 1 },
+      })}\n`);
+    });
+    const onData = (chunk) => {
+      buf += chunk.toString('utf8');
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const raw = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!raw) continue;
+        clearTimeout(t);
+        sock.off('data', onData);
+        let msg;
+        try { msg = JSON.parse(raw); } catch (e) { reject(e); return; }
+        resolve({ sock, msg });
+        return;
+      }
+    };
+    sock.on('data', onData);
+  });
+}
+
+function submitAndReply(sock, payload, timeoutMs = 60_000) {
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    const t = setTimeout(() => reject(new Error('submit timeout')), timeoutMs);
+    const onData = (chunk) => {
+      buf += chunk.toString('utf8');
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const raw = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!raw) continue;
+        let msg;
+        try { msg = JSON.parse(raw); } catch { continue; }
+        if (msg.method === 'job') continue;
+        clearTimeout(t);
+        sock.off('data', onData);
+        resolve(msg);
+        return;
+      }
+    };
+    sock.on('data', onData);
+    sock.on('error', (err) => {
+      clearTimeout(t);
+      reject(err);
+    });
+    sock.write(`${JSON.stringify(payload)}\n`);
+  });
 }
 
 describe('thin solo stratum', () => {
@@ -94,6 +219,149 @@ describe('thin solo stratum', () => {
       assert.ok(job.jobId);
       assert.match(job.header, /^[0-9a-f]+$/i);
     } finally {
+      stratum.close();
+    }
+  });
+});
+
+describe('solo submit share vs block', () => {
+  setHashBackend('jit-full');
+
+  it('does not import pool and share hits skip submitHeader', () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const soloSrc = fs.readFileSync(path.join(here, '../src/solo_stratum.js'), 'utf8');
+    assert.doesNotMatch(soloSrc, /from ['"].*pool\/src/);
+    assert.match(soloSrc, /applySoloSubmit/);
+    assert.match(soloSrc, /evaluateSoloSubmit/);
+    assert.match(soloSrc, /destBoundShareHash/);
+    assert.match(soloSrc, /got\?\.ok && got\.block/);
+  });
+
+  it('dest-bound shareBits=8 that misses blockBits is OK and does not append', { timeout: 180_000 }, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-share-'));
+    const store = createStore(dir);
+    const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1', restampMs: 0 });
+    const bound = await stratum.listen();
+    const dest = destMiner();
+    const bin = minerBin();
+    assert.ok(bin, 'ShearK-Miner binary required to hash dest-bound shares');
+    let child;
+    try {
+      const heightBefore = store.tip()?.height || 0;
+      const nBefore = store.blocks.length;
+      child = spawn(bin, [
+        '--backend', 'interpreter',
+        '--pool', `127.0.0.1:${bound.port}`,
+        '--notls',
+        '--user', `${dest}.solo`,
+        '--threads', '1',
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      child.stdout.on('data', (d) => { out += d.toString(); });
+      child.stderr.on('data', (d) => { out += d.toString(); });
+      const deadline = Date.now() + 90_000;
+      while (Date.now() < deadline) {
+        const text = stripAnsi(out);
+        if (/accepted=[1-9]/.test(text)) break;
+        if (/reject pow/.test(text)) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      const text = stripAnsi(out);
+      assert.match(text, /accepted=[1-9]/, text.slice(-800));
+      assert.equal(/reject pow/.test(text), false, text.slice(-800));
+      assert.equal(store.tip()?.height || 0, heightBefore);
+      assert.equal(store.blocks.length, nBefore);
+    } finally {
+      killChild(child);
+      if (child) await new Promise((r) => child.once('close', r));
+      stratum.close();
+    }
+  });
+
+  it('header hash that meets blockBits calls submitHeader', { timeout: 120_000 }, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-block-'));
+    const store = createStore(dir);
+    const dest = destMiner();
+    const { job } = store.template({ miner: dest, shareBits: SHARE_FLOOR_BITS, bits: 1 });
+    assert.equal(Number(job.blockBits || job.bits), 1);
+    const found = await findBlockHit({ headerHex: job.header, bits: 1, max: 256n });
+    let submitCalls = 0;
+    const orig = store.submitHeader.bind(store);
+    store.submitHeader = (args) => {
+      submitCalls += 1;
+      void orig;
+      return { ok: true };
+    };
+    const got = applySoloSubmit({
+      store,
+      jobId: job.jobId,
+      nonce: found.nonce,
+      claimed: found.hash,
+      dest,
+    });
+    assert.equal(got.ok, true, got.reason);
+    assert.equal(got.block, true);
+    assert.equal(submitCalls, 1);
+    assert.equal(store.blocks.length, 0);
+  });
+
+  it('mismatched claimed hash is rejected and does not append', { timeout: 180_000 }, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-badhash-'));
+    const store = createStore(dir);
+    const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1', restampMs: 0 });
+    const bound = await stratum.listen();
+    const dest = destMiner();
+    let sock;
+    try {
+      const nBefore = store.blocks.length;
+      const logged = await loginSolo(bound.port, dest, SHARE_FLOOR_BITS);
+      sock = logged.sock;
+      const job = logged.msg.job;
+      const reply = await submitAndReply(sock, {
+        id: 2,
+        method: 'submit',
+        params: {
+          jobId: job.jobId,
+          nonce: '0',
+          hash: '00'.repeat(32),
+        },
+      });
+      assert.ok(reply.error);
+      assert.notEqual(reply.error, 'pow');
+      assert.equal(reply.error, 'bad_hash');
+      assert.notEqual(reply.result?.status, 'OK');
+      assert.equal(store.blocks.length, nBefore);
+    } finally {
+      try { sock?.destroy(); } catch { /* ignore */ }
+      stratum.close();
+    }
+  });
+
+  it('unknown jobId rejects stale_job', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-stale-'));
+    const store = createStore(dir);
+    const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1', restampMs: 0 });
+    const bound = await stratum.listen();
+    const dest = destMiner();
+    let sock;
+    try {
+      const nBefore = store.blocks.length;
+      const logged = await loginSolo(bound.port, dest, SHARE_FLOOR_BITS);
+      sock = logged.sock;
+      const reply = await submitAndReply(sock, {
+        id: 2,
+        method: 'submit',
+        params: {
+          jobId: 'shear-not-a-job',
+          nonce: '1',
+          hash: '00'.repeat(32),
+        },
+      });
+      assert.equal(reply.error, 'stale_job');
+      assert.notEqual(reply.result?.status, 'OK');
+      assert.equal(store.blocks.length, nBefore);
+    } finally {
+      try { sock?.destroy(); } catch { /* ignore */ }
       stratum.close();
     }
   });
