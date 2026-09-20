@@ -34,7 +34,7 @@ Private inventory (optional): `gh repo clone rgsneddon/handoff %USERPROFILE%\han
 |------|-----|
 | Book / magic | `shear-testnet-v4` |
 | ADMIT | ADMITv2 (Pasta arity-32 CDS; Membership, not Multiple) |
-| Fingerprint | `shear-book-law-2` … `ADMIT=ADMITv2\|RANGE=bpplus\|LEVY=weight\|NETWORK=shear-testnet-v4\|BITS=q16.16\|ASERT_TAU_MS=25920000` |
+| Fingerprint | `shear-book-law-2` … `ADMIT=ADMITv2\|RANGE=bpplus\|LEVY=weight\|NETWORK=shear-testnet-v4\|BITS=q16.16\|ASERT_TAU_MS=25920000\|ASERT_HARDEN=2\|ASERT_EASE=2` |
 | Wallet | **0.40** (`wallet/lib/main.dart` `kWalletVersion`) |
 | Miner | **ShearK 2.4** — https://github.com/rgsneddon/ShearK/releases/tag/2.4 |
 | SHARE_BIND | `rx+noteCommit` |

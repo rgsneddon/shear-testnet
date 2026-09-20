@@ -15,7 +15,7 @@ import {
 import { requiredJobFields, encodeHeader, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { payoutDest, newIdentity, encodeHrp, aliasDestOfSilentId, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, JOB_RESTAMP_MS, STATS_REFRESH_MS, PAYOUT_SWEEP_MS, wireJob, hashWorkerRejectReason } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, ewmaBlockIntervalMs, medianBlockIntervalMs, intervalDeltasMs, JOB_RESTAMP_MS, STATS_REFRESH_MS, PAYOUT_SWEEP_MS, wireJob, hashWorkerRejectReason } from '../src/pool.js';
 import { hasherHasValidRoundShare, roundActualHashes } from '../src/hash_credit.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
 import { verifyPoolWithdrawOffchain } from '../../crypto/levy.js';
@@ -104,8 +104,23 @@ describe('observed interval', () => {
     assert.equal(avgWallFindIntervalMs([1_000]), null);
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     assert.match(src, /avgBlockTimeMs: avgMs/);
-    assert.match(src, /avgWallFindIntervalMs\(stats\.findAt\)/);
+    assert.match(src, /ewmaBlockIntervalMs\(findDts\)/);
     assert.equal(/avgBlockTimeMs: avgBlockIntervalMs/.test(src), false);
+  });
+
+  it('public avgBlockTimeMs is stall-resistant EWMA, not a stall-poisoned mean', () => {
+    const T = 90_000;
+    const dts = Array.from({ length: 400 }, () => T);
+    dts.push(12 * 3600_000);
+    const mean = dts.reduce((a, b) => a + b, 0) / dts.length;
+    assert.ok(mean > 150_000, `raw mean must show the stall ${mean}`);
+    const ewma = ewmaBlockIntervalMs(dts);
+    const median = medianBlockIntervalMs(dts);
+    assert.ok(ewma > 80_000 && ewma < 110_000, `EWMA ${ewma}`);
+    assert.equal(median, T);
+    assert.deepEqual(intervalDeltasMs([1000, 91_000, 181_000]), [90_000, 90_000]);
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    assert.match(src, /avgBlockTimeMedianMs: medianMs/);
   });
 
   it('live timer does not mint a new jobId on packed Q16.16 ticks', () => {

@@ -36,12 +36,16 @@ export const LIVE_MIN_BITS = 4;
 /** Empty-chain start. 256 is the digest ceiling, not a start. Fast blocks harden +2/block so a farm cannot spew. */
 export const GENESIS_BITS = 12;
 /**
- * Per-block ASERT caps on log2(target/seen). Harden is stricter than ease:
- * a farm must not spew; a quiet chain may go slow. Hashrate-agnostic — do
- * not pin these to a live pool.
+ * Per-block ASERT caps on log2(target/seen). Harden +2 stops a farm spew.
+ * Testnet ease matches harden so a farm-off (or stall) can re-center the
+ * 90s long average. Mainnet stays ease=1 (frozen fingerprint). Do not pin
+ * these to a live pool hashrate.
  */
 export const ASERT_HARDEN_MAX = 2;
-export const ASERT_EASE_MAX = 1;
+export const ASERT_EASE_MAX_MAINNET = 1;
+export const ASERT_EASE_MAX_TESTNET = 2;
+/** Live book default (testnet). Mainnet fingerprint still pins EASE=1. */
+export const ASERT_EASE_MAX = ASERT_EASE_MAX_TESTNET;
 /**
  * Header `bits` is Q16.16 packed work (integer LZ + 16-bit fraction).
  * Integer rungs (16 vs 17) could not represent the 1.09× target that 90 s
@@ -119,6 +123,11 @@ export const SHEARK_MINER_NAME = 'ShearK-Miner';
 export const SHEARK_MINER_VERSION = '2.4';
 /** Frozen consensus identity. A different fingerprint is a different law. */
 export const BOOK_LAW_ID = 'shear-book-law-2';
+
+/** Testnet ease matches harden (±2). Mainnet genesis still pins ease=1. */
+export function asertEaseMax(magic = MAGIC_TESTNET) {
+  return String(magic) === MAGIC_MAINNET ? ASERT_EASE_MAX_MAINNET : ASERT_EASE_MAX_TESTNET;
+}
 /** Display/tag version for wallet, node, and pool. Two-part only (`*.*`, never `0.1.0`). Start 0.1; later 0.10+ legal. Never 1.* unless the operator says so. */
 export const PRODUCT_VERSION = '0.4';
 /** Official C miner display/tag version. Two-part only (`*.*`). Operator set Shear-Miner to 1.1 (fee-free). 1.0 keeps the built-in fee. */
@@ -245,7 +254,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `ASERT_TAU_MS=${ASERT_HALFLIFE_MS}`,
     'ASERT_STEP=log2',
     `ASERT_HARDEN=${ASERT_HARDEN_MAX}`,
-    `ASERT_EASE=${ASERT_EASE_MAX}`,
+    `ASERT_EASE=${asertEaseMax(magic)}`,
     `MTP_FUTURE_MS=${MTP_FUTURE_MS}`,
   ].join(':');
 }
@@ -407,11 +416,12 @@ export function clampBits(bits) {
 /**
  * Per-block ASERT toward 90s on Q16.16 packed work.
  * Pure function of the header timestamp delta — verifiers must not use
- * wall clock. Same-tick (≤0) is treated as 1ms so it still climbs.
- * Step is log2(T / seen), harden-capped at +2, ease-capped at −1.
- * A 3s farm jumps +2 bits/block; a stall does not dump the floor.
+ * wall clock. Same-tick (≤0) is treated as 1ms so it still climbs; the
+ * ±harden/ease cap (not a 1ms floor) is what stops a timestamp-collision
+ * storm. Stalls clamp at 8 half-lives so one gap cannot dump the floor.
+ * Step is log2(T / seen). Testnet ±2; mainnet harden +2 / ease −1.
  */
-export function nextBits(previousBits, intervalMs) {
+export function nextBits(previousBits, intervalMs, magic = MAGIC_TESTNET) {
   const prev = unpackBits(clampBits(previousBits));
   let seen = Number(intervalMs);
   if (!Number.isFinite(seen) || seen < 1) seen = 1;
@@ -419,7 +429,8 @@ export function nextBits(previousBits, intervalMs) {
   if (seen > cap) seen = cap;
   let delta = Math.log2(TARGET_BLOCK_INTERVAL_MS / seen);
   if (delta > ASERT_HARDEN_MAX) delta = ASERT_HARDEN_MAX;
-  if (delta < -ASERT_EASE_MAX) delta = -ASERT_EASE_MAX;
+  const ease = asertEaseMax(magic);
+  if (delta < -ease) delta = -ease;
   return packBits(prev + delta);
 }
 
@@ -429,8 +440,8 @@ export function displayBits(packed) {
 }
 
 /** Bits for this block from parent bits and the two header timestamps. */
-export function bitsForBlock(parentBits, parentTimestamp, blockTimestamp) {
-  return nextBits(parentBits, Number(blockTimestamp) - Number(parentTimestamp));
+export function bitsForBlock(parentBits, parentTimestamp, blockTimestamp, magic = MAGIC_TESTNET) {
+  return nextBits(parentBits, Number(blockTimestamp) - Number(parentTimestamp), magic);
 }
 
 /**

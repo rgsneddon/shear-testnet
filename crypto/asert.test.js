@@ -17,6 +17,9 @@ import {
   displayBits,
   ASERT_HARDEN_MAX,
   ASERT_EASE_MAX,
+  ASERT_EASE_MAX_TESTNET,
+  ASERT_EASE_MAX_MAINNET,
+  asertEaseMax,
   ASERT_HALFLIFE_MS,
   SHE_DECIMALS,
   SHE_PUBLIC_DIGITS,
@@ -40,6 +43,7 @@ import {
   MAGIC_TESTNET_V2,
   MAGIC_TESTNET_V3,
   MAGIC_TESTNET_V4,
+  MAGIC_MAINNET,
   HASH_FN,
   HASH_TX_LIVE,
   SPENDABLE_CONFIRMATIONS,
@@ -91,10 +95,16 @@ describe('ASERT 90s block retarget', () => {
 
   it('a 3s farm hardens +2 bits per block, not 0.003; HUD bits stay ≤ 256', () => {
     assert.equal(ASERT_HARDEN_MAX, 2);
-    assert.equal(ASERT_EASE_MAX, 1);
+    assert.equal(ASERT_EASE_MAX, 2);
+    assert.equal(ASERT_EASE_MAX_TESTNET, 2);
+    assert.equal(ASERT_EASE_MAX_MAINNET, 1);
+    assert.equal(asertEaseMax(MAGIC_TESTNET), 2);
+    assert.equal(asertEaseMax(MAGIC_MAINNET), 1);
     const jumped = unpackBits(nextBits(packBits(21), 3_500));
     assert.ok(jumped >= 23, `3.5s must +2, got ${jumped}`);
     assert.ok(jumped <= 23.01, `3.5s must cap at +2, got ${jumped}`);
+    const oneMs = unpackBits(nextBits(packBits(21), 1));
+    assert.ok(oneMs <= 23.01, `1ms must still cap at +2, got ${oneMs}`);
     const packedPaint = 731501;
     assert.ok(packedPaint > 256);
     assert.ok(displayBits(packedPaint) < 12);
@@ -104,7 +114,9 @@ describe('ASERT 90s block retarget', () => {
     const fp = consensusFingerprint();
     assert.match(fp, /ASERT_STEP=log2/);
     assert.match(fp, /ASERT_HARDEN=2/);
-    assert.match(fp, /ASERT_EASE=1/);
+    assert.match(fp, /ASERT_EASE=2/);
+    assert.match(mainnetFingerprint(), /ASERT_EASE=1/);
+    assert.match(mainnetFingerprint(), /ASERT_HARDEN=2/);
   });
 
   it('lowers packed bits when blocks arrive slower than 90s', () => {
@@ -125,6 +137,49 @@ describe('ASERT 90s block retarget', () => {
     }
     const mean = last.reduce((a, b) => a + b, 0) / last.length;
     assert.ok(mean > 85_000 && mean < 95_000, `mean last-200 ${mean}`);
+  });
+
+  it('farm on then off: testnet ease=2 long EWMA recenters near 90s; mainnet ease=1 walks slow', () => {
+    const target = TARGET_BLOCK_INTERVAL_MS;
+    const baseHs = (2 ** GENESIS_BITS) / (target / 1000);
+    function run(magic) {
+      let packed = packBits(GENESIS_BITS);
+      const intervals = [];
+      const pushHs = (hs, n) => {
+        for (let i = 0; i < n; i += 1) {
+          const fp = unpackBits(packed);
+          const intervalMs = ((2 ** fp) / hs) * 1000;
+          intervals.push(intervalMs);
+          packed = nextBits(packed, intervalMs, magic);
+        }
+      };
+      pushHs(baseHs, 40);
+      for (let c = 0; c < 200; c += 1) {
+        pushHs(baseHs * 8, 1);
+        pushHs(baseHs, 1);
+      }
+      const afterOsc = intervals.length;
+      pushHs(baseHs, 350);
+      return { intervals, afterOsc };
+    }
+    function ewma(dts) {
+      const half = 288;
+      const alpha = 1 - 2 ** (-1 / half);
+      let e = target;
+      for (const dt of dts) {
+        const c = Math.max(target / 8, Math.min(target * 8, dt));
+        e = alpha * c + (1 - alpha) * e;
+      }
+      return e;
+    }
+    const tn = run(MAGIC_TESTNET);
+    const mn = run(MAGIC_MAINNET);
+    const tnSettle = ewma(tn.intervals.slice(-288));
+    const tnOsc = ewma(tn.intervals.slice(40, tn.afterOsc));
+    const mnOsc = ewma(mn.intervals.slice(40, mn.afterOsc));
+    assert.ok(tnSettle > 80_000 && tnSettle < 105_000, `testnet long EWMA ${tnSettle}`);
+    assert.ok(tnOsc < 400_000, `testnet oscillation EWMA ${tnOsc}`);
+    assert.ok(mnOsc > tnOsc, `mainnet leftover slow bias ${mnOsc} vs testnet ${tnOsc}`);
   });
 
   it('is not stuck at 32 bits / 4.29e9 work', () => {
@@ -313,6 +368,8 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /LEVY=weight/);
     assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
     assert.match(fp, /BITS=q16\.16/);
+    assert.match(fp, /ASERT_HARDEN=2/);
+    assert.match(fp, /ASERT_EASE=2/);
     assert.equal(MTP_FUTURE_MS, 7_200_000);
     assert.match(fp, /MTP_FUTURE_MS=7200000/);
     assert.match(fp, new RegExp(`ASERT_TAU_MS=${ASERT_HALFLIFE_MS}`));
@@ -320,6 +377,8 @@ describe('hash-tx consensus law', () => {
     assert.equal(/2026-\d{2}-\d{2}T/.test(fp), false);
     const mfp = mainnetFingerprint();
     assert.match(mfp, /NETWORK=shear-v1/);
+    assert.match(mfp, /ASERT_EASE=1/);
+    assert.match(mfp, /ASERT_HARDEN=2/);
     assert.match(mfp, /GENESIS=2026-09-18T21:00:00\+01:00/);
     assert.equal(GENESIS_MAINNET, '2026-09-18T21:00:00+01:00');
     assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET) - 1), false);

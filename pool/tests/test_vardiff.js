@@ -103,6 +103,7 @@ describe('share vardiff', () => {
       blockBits: 21,
     });
     assert.ok(next > 8, `expected climb from 8, got ${next}`);
+    assert.equal(next, 10, `farm climb is +2 from 8, got ${next}`);
     assert.ok(next <= 21);
   });
 
