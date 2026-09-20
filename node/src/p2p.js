@@ -3,6 +3,7 @@ import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { shareRowJson } from '../../crypto/pack.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
+import { isInitialBlockDownload } from './status.js';
 
 function reviveDeep(v) {
   if (v == null) return v;
@@ -401,12 +402,21 @@ export function createP2p({
   }
 
   function ibdBusy() {
-    for (const rec of peers.values()) {
-      if (rec?.syncing) return true;
-      if (rec?.pending && rec.pending.size) return true;
-      if (Array.isArray(rec?.want) && rec.want.length) return true;
-    }
-    return false;
+    return isInitialBlockDownload({
+      height: store.tip()?.height || 0,
+      peers,
+    });
+  }
+
+  function peerTipAhead(rec) {
+    if (!rec) return false;
+    const local = localTipHash();
+    const localH = Number(store.tip()?.height || 0);
+    const peerHash = String(rec.hash || '');
+    const peerH = Number(rec.height);
+    const behindHeight = Number.isFinite(peerH) && peerH > localH;
+    const hashAhead = Boolean(peerHash) && peerHash !== local;
+    return behindHeight || hashAhead;
   }
 
   function alreadyLinked(host, p) {
@@ -534,15 +544,13 @@ export function createP2p({
     const rec = peers.get(sock);
     if (!rec) return;
     if (rec.syncing) return;
-    const local = localTipHash();
-    const peerHash = String(rec.hash || '');
-    if (!peerHash || peerHash === local) return;
+    if (!peerTipAhead(rec)) return;
     rec.syncing = true;
     send(sock, {
       type: 'getheaders',
       magic,
       locator: locators(),
-      stopHash: peerHash,
+      stopHash: String(rec.hash || ''),
     });
   }
 
@@ -665,11 +673,7 @@ export function createP2p({
       if (!added && !rec.want.length && !(rec.pending && rec.pending.size)) {
         rec.syncing = false;
         rec.pending = null;
-        const lastHdr = (msg.headers || [])[(msg.headers || []).length - 1];
-        const lastHash = lastHdr ? wireHash(lastHdr.hash) : '';
-        if ((msg.headers || []).length >= HEADERS_PAGE && lastHash && have.has(lastHash)) {
-          requestHeaders(sock);
-        }
+        requestHeaders(sock);
         return;
       }
       try {

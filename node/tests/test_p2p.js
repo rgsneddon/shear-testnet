@@ -507,7 +507,8 @@ describe('p2p gossip', () => {
     assert.equal(src.includes('hdrs.slice(-2000)'), false);
     assert.match(src, /function ibdBusy/);
     assert.match(src, /if \(ibdBusy\(\)\) return;/);
-    assert.match(src, /String\(rec\.hash \|\| ''\) !== local/);
+    assert.match(src, /function peerTipAhead/);
+    assert.match(src, /peerH > localH/);
     assert.match(src, /maxPeers/);
     assert.match(src, /SHEAR_MAX_PEERS/);
   });
@@ -629,6 +630,45 @@ describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
     const legacy = selectHeadersAfterLocator(blocks, { stopHash: fakeHash(16) });
     assert.equal(legacy[0].height, 17);
     assert.ok(legacy.length > 16);
+  });
+
+  it('re-requests getheaders from a drained want window while a live peer tip is still ahead', async () => {
+    const blocks = fakeBlocks(71);
+    const store = {
+      blocks,
+      tip: () => blocks[blocks.length - 1],
+      ingest: () => ({ ok: false, reason: 'fake' }),
+    };
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET });
+    const bound = await p2p.listen();
+    const sock = net.connect(bound.port, '127.0.0.1');
+    try {
+      await readJsonLines(sock, 2, 2000);
+      sock.write(`${JSON.stringify({
+        type: 'tip',
+        magic: MAGIC_TESTNET,
+        height: 95,
+        hash: fakeHash(95),
+      })}\n`);
+      const first = await readJsonLines(sock, 1, 2000);
+      assert.ok(first.some((m) => m.type === 'getheaders'), 'expected initial getheaders after taller tip');
+      sock.write(`${JSON.stringify({
+        type: 'headers',
+        magic: MAGIC_TESTNET,
+        headers: [
+          { hash: fakeHash(70), height: 70 },
+          { hash: fakeHash(71), height: 71 },
+        ],
+      })}\n`);
+      const second = await readJsonLines(sock, 1, 2000);
+      assert.ok(
+        second.some((m) => m.type === 'getheaders'),
+        'expected getheaders re-request while behind peer tip with drained want',
+      );
+    } finally {
+      sock.destroy();
+      p2p.close();
+    }
   });
 
   it('shipped getheaders honors locator/stop and continues to the next page', async () => {
