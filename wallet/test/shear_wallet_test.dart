@@ -534,6 +534,12 @@ void main() {
     expect(kErrNoteSpent, contains('already spent'));
     expect(kErrRangeProof, contains('range proof'));
     expect(kErrPublicHttp, contains('public node'));
+    expect(flowSendAdvisoryOf(StateError(kErrPublicHttp)), kErrPublicHttp);
+    expect(flowSendAdvisoryOf(StateError('sends would use the public node')), kErrPublicHttp);
+    expect(flowSendAdvisoryOf(StateError('sync-tip')), kErrSyncTip);
+    expect(flowSendAdvisoryOf(StateError('syncTip')), kErrSyncTip);
+    expect(flowSendAdvisoryOf(StateError('insufficient')), kErrSendGeneric);
+    expect(kErrSendGeneric, 'not sent - try again');
     expect(kWalletDefaultSeed, contains('127.0.0.1'));
     expect(kWalletDefaultSeed.contains('pool.shear.digital'), isFalse);
   });
@@ -1636,6 +1642,23 @@ void main() {
     expect(reserveWithdrawDialogCopy(), contains('$kReserveEpochDays-day'));
     final mainSrc = File('lib/main.dart').readAsStringSync();
     expect(mainSrc.contains('Withdraw after 400 days.'), isFalse);
+  });
+
+  test('Resistance chrome is Tx detail; CTF transcript stays off the header', () {
+    final mainSrc = File('lib/main.dart').readAsStringSync();
+    expect(mainSrc.contains('Resistance  η  —  Tx detail'), isTrue);
+    expect(mainSrc.contains('Resistance  η  —  CTF CLI'), isFalse);
+    expect(mainSrc.contains("flowSendAdvisoryOf(e)"), isTrue);
+    expect(mainSrc.contains('ctf-transcript-toggle'), isTrue);
+    expect(mainSrc.contains('https://pool.shear.digital'), isTrue);
+    expect(mainSrc.contains('pool HUD is not spendable'), isTrue);
+    expect(mainSrc.contains('This book starts empty until your first landing.'), isTrue);
+    final hdr = resistanceTxHeader(
+      const ShearTx(id: 'r1', from: 'ssa1from', to: 'ssa1to', amount: 1, kind: 'receive', height: 8, confirmed: true),
+      confs: 3,
+    );
+    expect(hdr.contains('CTF'), isFalse);
+    expect(hdr.contains('status'), isTrue);
   });
 
   test('Resistance structured header has status and confs', () {
@@ -3310,7 +3333,8 @@ void main() {
     expect(find.text('Stop'), findsNothing);
     expect(find.text('Mining…'), findsNothing);
     expect(find.textContaining('does not mine'), findsNothing);
-    expect(find.textContaining('CTF CLI'), findsWidgets);
+    expect(find.textContaining('Tx detail'), findsWidgets);
+    expect(find.textContaining('CTF CLI'), findsNothing);
     expect(find.textContaining('Waiting for CTF'), findsWidgets);
     expect(File('lib/shear_miner_host.dart').existsSync(), isFalse);
     expect(tester.widget<ColoredBox>(find.byKey(const Key('resistance-cli'))).color, kCliLightBg);
@@ -3352,28 +3376,14 @@ void main() {
     expect(text.contains(closureCommit(id.viewKey).map((b) => b.toRadixString(16).padLeft(2, '0')).join()), isTrue);
   });
 
-  testWidgets('Shearview tap opens Resistance CLI for that tx', (tester) async {
-    final dir = Directory.systemTemp.createTempSync('shear-cli-');
-    final session = ShearSession(store: File('${dir.path}/session.json'));
-    await _sealSession(tester, session);
-    final ident = session.identity!;
-    final ledger = ShearLedger()..viewSecret = ident.viewKey;
-    final dest = ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
-    final tx = ledger.confirmRound(address: dest, pot: 1, height: 3);
-    ledger.settleTo(3 + ShearLedger.continuumConfirmations - 1);
-    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
-    await tester.pump();
-    await tester.pump();
-    await tester.tap(find.text('Shearview'));
-    await tester.pump();
-    await tester.tap(find.text('block  ${formatShe(tx.amount)} SHE'));
-    await tester.pump();
-    expect(find.textContaining('CTF CLI'), findsWidgets);
-    expect(find.textContaining(formatShe(tx.amount)), findsWidgets);
-    expect(find.textContaining(ident.address), findsWidgets);
-    expect(find.textContaining(ident.paymentCode), findsWidgets);
-    expect(find.textContaining(tx.to), findsWidgets);
-    expect(find.textContaining('chronoflux-G-v1'), findsWidgets);
+  test('Shearview row tap still focuses Resistance Tx detail', () {
+    final mainSrc = File('lib/main.dart').readAsStringSync();
+    expect(mainSrc.contains("key: Key('shearview-row-\${t.id}')"), isTrue);
+    expect(mainSrc.contains('_focusedTxId = t.id'), isTrue);
+    expect(mainSrc.contains('Resistance  η  —  Tx detail'), isTrue);
+    expect(mainSrc.contains('resistance-tx-header'), isTrue);
+    expect(mainSrc.contains('ctf-transcript-toggle'), isTrue);
+    expect(mainSrc.contains('Resistance  η  —  CTF CLI'), isFalse);
   });
 
   testWidgets('demoTx records a confirmed round on Resistance CLI', (tester) async {
@@ -3394,8 +3404,12 @@ void main() {
     expect(find.byType(ConfirmPie), findsWidgets);
     await tester.tap(find.byType(NavigationDestination).at(kTabs.indexOf('Resistance')));
     await tester.pump();
-    expect(find.textContaining('CTF CLI'), findsWidgets);
+    expect(find.textContaining('Tx detail'), findsWidgets);
+    expect(find.textContaining('CTF CLI'), findsNothing);
+    expect(find.byKey(const Key('resistance-tx-header')), findsOneWidget);
     expect(find.textContaining(formatShe(0.25)), findsWidgets);
+    await tester.tap(find.byKey(const Key('ctf-transcript-toggle')));
+    await tester.pumpAndSettle();
     expect(find.textContaining(ident.address), findsWidgets);
     expect(find.textContaining(ident.paymentCode), findsWidgets);
     expect(find.textContaining('ssa1'), findsWidgets);

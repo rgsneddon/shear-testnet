@@ -133,6 +133,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   ThemeMode _themeMode = ThemeMode.light;
   final Map<String, String> _cliById = {};
   String? _focusedTxId;
+  bool _showCtfTranscript = false;
   Timer? _accrualTick;
   Timer? _preloginTick;
   bool _tipBusy = false;
@@ -1328,7 +1329,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (spend == 0 && pending.isEmpty) ...[
         const SizedBox(height: 8),
         Text(
-          'Sync a local node at 127.0.0.1:18332. Hashbonus on Copy dest is protocol-spendable after 6 confs unless credits are frozen. The pot auto-pays at π SHE (${formatShe(kPiShe)}) after 30 confs — miner-page numbers are not Continuum spendable.',
+          'Sync a local node at 127.0.0.1:18332. Fallback sync https://pool.shear.digital if local RPC is down; pool HUD is not spendable. Hashbonus on Copy dest is protocol-spendable after 6 confs unless credits are frozen. The pot auto-pays at π SHE (${formatShe(kPiShe)}) after 30 confs — miner-page numbers are not Continuum spendable. This book starts empty until your first landing.',
           key: const Key('continuum-empty-honesty'),
           style: TextStyle(color: shearMutedOf(context), fontSize: 12),
         ),
@@ -1659,7 +1660,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           } catch (e) {
             if (mounted) {
               setState(() {
-                _flowSendAdvisory = 'not sent - try again';
+                _flowSendAdvisory = flowSendAdvisoryOf(e);
                 _flowSendOk = false;
               });
             }
@@ -1716,7 +1717,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              'Resistance  η  —  CTF CLI',
+              'Resistance  η  —  Tx detail',
               style: TextStyle(
                 color: fg,
                 fontFamily: 'Courier',
@@ -1743,14 +1744,45 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 alignment: Alignment.topLeft,
                 child: SingleChildScrollView(
                   controller: _tabScroll[2],
-                  child: SelectableText(
-                    _cliText,
-                    style: TextStyle(
-                      color: fg,
-                      fontFamily: 'Courier',
-                      fontSize: 12,
-                      height: 1.35,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (header.isEmpty)
+                        SelectableText(
+                          _cliText,
+                          style: TextStyle(
+                            color: fg,
+                            fontFamily: 'Courier',
+                            fontSize: 12,
+                            height: 1.35,
+                          ),
+                        )
+                      else ...[
+                        TextButton(
+                          key: const Key('ctf-transcript-toggle'),
+                          onPressed: () => setState(() => _showCtfTranscript = !_showCtfTranscript),
+                          child: Text(
+                            _showCtfTranscript ? 'Hide CTF transcript' : 'CTF transcript',
+                            style: TextStyle(
+                              color: fg,
+                              fontFamily: 'Courier',
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        if (_showCtfTranscript)
+                          SelectableText(
+                            _cliText,
+                            style: TextStyle(
+                              color: fg,
+                              fontFamily: 'Courier',
+                              fontSize: 12,
+                              height: 1.35,
+                            ),
+                          ),
+                      ],
+                    ],
                   ),
                 ),
               ),

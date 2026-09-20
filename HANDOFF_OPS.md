@@ -115,7 +115,7 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 - Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.40**. `--build-name=0.40.0` / pubspec `0.40.0+57`.
 - Pool HTTP: `/api/stats`, not `/stats`.
 - Operator admin vhost is **not** in git.
-- Stratum fleet: `SHEAR_STRATUM_BIND=127.0.0.1` and `SHEAR_STRATUM_AUTH=1` (or TLS in front of loopback). Reload with `deploy/reload-stratum-units.sh`. Checklist: `deploy/STRATUM_CHECKLIST.md`. Do not invent TLS certs.
+- Stratum fleet: `SHEAR_STRATUM_BIND=127.0.0.1` and `SHEAR_STRATUM_AUTH=1` (or TLS in front of loopback). Reload with `deploy/reload-stratum-units.sh`. Checklist: `deploy/STRATUM_CHECKLIST.md`. Confirm `/api/stats` `stratumBind≠0.0.0.0` and `loginAuth≠dest-only` when AUTH is on; `alerts.stratumDrift` fires on non-loopback ∧ AUTH≠1. Do not enable dest-ban without ownership once AUTH is on. Do not invent TLS certs.
 
 ### 6a) Android APK on this Windows box
 
@@ -172,7 +172,7 @@ sudo bash deploy/reload-stratum-units.sh
 # expects /api/stats stratumBind=127.0.0.1 and loginAuth not dest-only
 ```
 
-Live drift (`0.0.0.0` / dest-only / cleartext) is ops, not an in-repo default bug. Terminate TLS in front of `127.0.0.1:1111`.
+Live drift (`0.0.0.0` / dest-only / cleartext) is ops, not an in-repo default bug. `/api/stats` `alerts.stratumDrift` is the in-repo gate; refuse-start is prod-profile only so soak still boots. Terminate TLS in front of `127.0.0.1:1111`. Do not enable dest-ban without ownership once AUTH is on.
 - Put ShearK inside the wallet zip.
 - Attach Darwin as `*-linux.zip`.
 - Commit `id_ed25519_*`, `deploy/nginx-*-secrets.conf`, or a live admin hostname.
@@ -187,6 +187,16 @@ Auto-payout signs from **`SHEAR_DATA/pool-spend.seed`** (mode **0600**) matching
 Off-host vault (Windows, outside git): `C:\Users\rgsne\Desktop\SHEAR-SECRETS\` contains `pool-spend.seed`, `pool-miner.json`, and `SHA256SUMS`. Paths only — **do not paste seed hex here**. Desktop map: `C:\Users\rgsne\Desktop\NOTE-pool-spend-SEED-BACKUP.md`.
 
 `GET /api/stats` must show `bootPoolOperator.signed=true` after a matching restore. Journal must not show `need_spend_key` / `auto_payout_unsigned` / `pool_operator_unsigned`.
+
+## 9) Ops notes (non-blockers — not code-merge work)
+
+- Fleet: run `deploy/reload-stratum-units.sh` (or set unit `SHEAR_STRATUM_BIND=127.0.0.1` + `SHEAR_STRATUM_AUTH=1` + TLS); confirm `/api/stats` (`stratumBind`, `loginAuth`, `alerts.stratumDrift`, `stratumConfigSource`). Cleartext warning remains until TLS.
+- `SHEAR_ADMIN_HOST=pool.shear.digital` (or the Host operators actually browse); `/api/admin/*` is the desk API.
+- Hostname: re-cert or DNS-retire `docs.shear.digital` + `whitepaper.shear.digital`; then HSTS + baseline headers (separate ops). In-repo copy now points at `https://shear.digital/docs/` and `https://shear.digital/whitepaper/`.
+- Concentration: keep `alerts.concentration`; bring a second hasher — no multi-party security claims at `topDest=100%`.
+- Seed hygiene: 0600 datadir restore; hex off git/units; watch first signed π auto-pay after `confirmedNeed=30` (path ready; `signed=true` live).
+- Soak checklist (watch, not code): Continuum 0.40 on live worker Copy dest — mine → ≥6 conf → ShearView row → Resistance; fail release if empty after sealed hash notes. ASERT settle claim only after ≥288 blocks. Thin |J| until ≥10k.
+- Follow-up (not this tree): vault fork trial clone + `applyReserveBlock` per accepted block (VS-R1); always `destProofOpen(homeDest)` on owner history / notes ingest before empty ShearView. Leave `wallet_api` previewWithdraw-only, biometrics unlock-token, prove stdin/FFI, TOTP mutate gate.
 
 ### Restore one-liner (after a datadir wipe)
 
