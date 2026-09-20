@@ -81,7 +81,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Spendable</th><td>6 confirmations</td></tr>' +
       '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
-      '<tr><th>Wallet pin</th><td>0.39</td></tr>' +
+      '<tr><th>Wallet pin</th><td>0.40</td></tr>' +
       '<tr><th>Miner pin</th><td>ShearK 2.4</td></tr></table>' +
       '<p>How-to lives in this tree. The architecture note is a PDF at <a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> — that URL is not in the navbar on purpose.</p>'
   };
@@ -99,7 +99,7 @@ window.SHEAR_DOCS = {
     title: 'Whitepaper',
     crumb: 'start / whitepaper',
     html:
-      '<p>Version 2.0 of the project note: ADMITv2, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve. Wallet pin 0.39. Live magic <code>shear-testnet-v4</code>.</p>' +
+      '<p>Version 2.0 of the project note: ADMITv2, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve. Wallet pin 0.40. Live magic <code>shear-testnet-v4</code>.</p>' +
       '<p><a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> presents it as a record with a PDF preview. Download <code>shear-whitepaper.pdf</code> from that page. There is no WHITEPAPER button in the site navbar.</p>'
   };
 
@@ -125,7 +125,7 @@ window.SHEAR_DOCS = {
     title: 'Wallet overview',
     crumb: 'wallet / overview',
     html:
-      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.39</strong> (Windows, Linux, Arch, Android; macOS coming soon). Sync is a local node at <code>127.0.0.1:18332</code> — not flyclient, not pool HTTP as the only path. Magic <code>shear-testnet-v4</code>.</p>' +
+      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.40</strong> (Windows, Linux, Arch, Android; macOS coming soon). Sync is a local node at <code>127.0.0.1:18332</code> — not flyclient, not pool HTTP as the only path. Magic <code>shear-testnet-v4</code>.</p>' +
       '<table><tr><th>Continuum</th><td>Spendable balance, <code>she1</code>, six-slice pending pie</td></tr>' +
       '<tr><th>Flow</th><td>Send and receive</td></tr>' +
       '<tr><th>Resistance</th><td>Public CTF CLI</td></tr>' +
@@ -144,22 +144,22 @@ window.SHEAR_DOCS = {
       '<li>You will enter that password each time. If it is lost, the wallet cannot be opened. Fingerprint or face unlock, where the device offers it, only works on this device.</li>' +
       '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
       '<li>Open Closure and export <code>shewall.bin</code>. Keep that file with the password.</li></ol>' +
-      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.39">shear-testnet 0.39</a>. 0.37 is the previous pin; 0.36 is the dest-opening pin; 0.35 is the previous v4 pin — do not recut them. macOS .dmg for 0.39 is a MacBook cut (coming soon).</p>'
+      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.40">shear-testnet 0.40</a>. 0.39 is the previous pin; 0.37/0.36 are older — do not recut them. macOS .dmg for 0.40 is a MacBook cut (coming soon).</p>'
   };
 
   P.android = {
     title: 'Android APK',
     crumb: 'wallet / android',
     html:
-      '<p>Install <code>shear-wallet-0.39-android.apk</code> from the official 0.39 tag. Package id is <code>com.shear.shear_wallet</code>. The APK is a single fat package (all ABIs), INTERNET granted on the released file, not a split APK. Packed on Windows (Flutter + Android SDK); macOS <code>.dmg</code> stays a MacBook cut.</p>' +
-      '<p>If a phone still says <strong>App not installed</strong>: uninstall the old debug-signed build first, then sideload 0.39. Do not install a Darwin zip or an unsigned copy. Camera and biometrics need the permissions already in the manifest.</p>'
+      '<p>Install <code>shear-wallet-0.40-android.apk</code> from the official 0.40 tag. Package id is <code>com.shear.shear_wallet</code>. The APK is a single fat package (all ABIs), INTERNET granted on the released file, not a split APK. Packed on Windows (Flutter + Android SDK); macOS <code>.dmg</code> stays a MacBook cut.</p>' +
+      '<p>If a phone still says <strong>App not installed</strong>: uninstall the old debug-signed build first, then sideload 0.40. Do not install a Darwin zip or an unsigned copy. Camera and biometrics need the permissions already in the manifest.</p>'
   };
 
   P['node-sync'] = {
     title: 'Node-sync',
     crumb: 'wallet / node-sync',
     html:
-      '<p>0.39 talks to a stock local node on <code>shear-testnet-v4</code>. Default seed is <code>http://127.0.0.1:18332</code>. Headers, compact blocks, and the tree root / jroot come from that node. Flyclient height sampling is not the send, balance, or history path. Hashbonus is dest-owned after 6 confs; the pot auto-pays at π after 30 confs.</p>' +
+      '<p>0.40 talks to a stock local node on <code>shear-testnet-v4</code>. Default seed is <code>http://127.0.0.1:18332</code>. Headers, compact blocks, and the tree root / jroot come from that node. Flyclient height sampling is not the send, balance, or history path. Hashbonus is dest-owned after 6 confs; the pot auto-pays at π after 30 confs.</p>' +
       '<p>Run <code>node node/src/node.js</code> on the same machine (or point the wallet at a node you trust). Public pool HTTP submit stays an advanced toggle with an IP warning. Do not use pool.shear.digital as the only sync path.</p>'
   };
 
@@ -359,7 +359,7 @@ window.SHEAR_DOCS = {
     title: 'Run a node',
     crumb: 'network / node',
     html:
-      '<p>A node is the book. It appends, verifies, speaks P2P, and runs the GATE that lets native Flow and pinned Reserve bytecode land in the same block. Wallet 0.39 reads this node, not flyclient.</p>' +
+      '<p>A node is the book. It appends, verifies, speaks P2P, and runs the GATE that lets native Flow and pinned Reserve bytecode land in the same block. Wallet 0.40 reads this node, not flyclient.</p>' +
       '<pre>git clone https://github.com/rgsneddon/shear-testnet.git\n' +
       'cd shear-testnet\nnpm install\n' +
       'export SHEAR_DATA="$HOME/.shear/testnet-v4"\n' +

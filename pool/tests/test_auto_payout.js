@@ -218,4 +218,38 @@ describe('auto payout at π SHE to miner ssa1', () => {
     assert.match(main, /bootPoolOperator/);
     assert.match(main, /operatorSpendKey: boot\.operatorSpendKey/);
   });
+
+  it('auto-pay sweep reloads a matching pool-spend.seed dropped after boot', () => {
+    const dest = ssa1();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-reload-'));
+    const boot = bootPoolOperator({ dataDir: dir });
+    const seedPath = path.join(dir, 'pool-spend.seed');
+    const seedHex = fs.readFileSync(seedPath, 'utf8');
+    fs.unlinkSync(seedPath);
+    const pool = createPool({
+      dataDir: dir,
+      miner: boot.miner,
+      operatorSpendKey: null,
+      stratumPort: 0,
+      httpPort: 0,
+    });
+    const tag = publicMinerTag(dest);
+    pool.pullBook.creditRound(
+      [{ tag, dest, count: 10 }],
+      { height: 1, nanos: PI_SHE_NANOS, hashByDest: new Map() },
+    );
+    pool.store.tip = () => ({ height: 40 });
+    const bound = [];
+    pool.store.queueTx = (tx) => {
+      const ok = verifyPoolWithdrawBound(tx).ok === true;
+      bound.push(ok);
+      return { ok, tx };
+    };
+    assert.equal(pool.runAutoPayoutSweep().length, 0);
+    fs.writeFileSync(seedPath, seedHex, { mode: 0o600 });
+    const sent = pool.runAutoPayoutSweep();
+    assert.equal(sent.length, 1);
+    assert.deepEqual(bound, [false, true]);
+    pool.close();
+  });
 });

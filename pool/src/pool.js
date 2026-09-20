@@ -45,6 +45,7 @@ import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
 import { createPullBook, PULL_COOLDOWN_MS, AUTO_PAYOUT_MIN_NANOS } from './pull_book.js';
 import { buildAutoPayoutTx, potCreditAfterFeeNanos, redactSsa1 } from './auto_payout.js';
+import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
 import { potSharesFromBatch, hashBonusByMiner, custodyPotShares } from '../../node/src/chain.js';
 import { sortShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
@@ -2389,6 +2390,15 @@ export function createPool({
     }
   }
 
+  function refreshOperatorSpendKey() {
+    if (operatorSpendKey) return operatorSpendKey;
+    try {
+      const boot = bootPoolOperator({ dataDir, minerEnv: miner });
+      if (boot.operatorSpendKey) operatorSpendKey = boot.operatorSpendKey;
+    } catch { /* keep unsigned until a matching seed is on disk */ }
+    return operatorSpendKey;
+  }
+
   function sweepAutoPayouts({ maxRows = PAYOUT_SWEEP_MAX_ROWS } = {}) {
     const tipH = Number(store.tip?.()?.height || 0);
     const need = typeof store.getpolicy === 'function'
@@ -2396,6 +2406,7 @@ export function createPool({
       : 30;
     const from = payoutDest(miner) || poolFeeDest();
     if (!isDestAddress(from) || containsShe1(from)) return [];
+    const spendKey = refreshOperatorSpendKey();
     const due = pullBook.dueAuto({ tipHeight: tipH, need });
     const sent = [];
     const fee = levyNanos(0, { depth: mempoolDepthBytes(store.mempool || []) });
@@ -2404,7 +2415,7 @@ export function createPool({
     for (const row of due) {
       if (n >= cap) break;
       n += 1;
-      const built = buildAutoPayoutTx({ from, to: row.dest, nanos: row.nanos, fee, spendKey: operatorSpendKey });
+      const built = buildAutoPayoutTx({ from, to: row.dest, nanos: row.nanos, fee, spendKey });
       if (!built.ok) continue;
       const q0 = Date.now();
       const queued = queueSend(built.tx);

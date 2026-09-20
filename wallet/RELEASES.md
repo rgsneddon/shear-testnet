@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.39 (current)
+## 0.40 (current)
+
+Always follow live tip: tipBusy finally, 8s timeout, idle 4s poll, restore last sealed height on unlock. Do not recut 0.39. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff.
+
+## 0.39
 
 Light-on-receive: pending height&lt;1 poll is tip/balance only (no 1 Hz history+notes+memoOpen). Catch-up yields between header/compact batches. Continuum 0.39. Solo path is node + thin stratum (`npm run solo`) + CLI + ShearK — not `npm run pool`. Do not recut 0.38. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff.
 

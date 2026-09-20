@@ -18,7 +18,7 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
 - Miner pin: **ShearK-Miner 2.4** — https://github.com/rgsneddon/ShearK/releases/tag/2.4
-- Wallet pin: **0.39** (GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.39
+- Wallet pin: **0.40** (GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.40
 - Stratum: `pool.shear.digital:1111`
 - P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v4`)
 - Site: https://shear.digital
@@ -136,7 +136,7 @@ ShearK-Miner --pool pool.shear.digital:1111 --user ssa1YOURDEST.worker --threads
 
 `ssa1.worker` / `ssa1.solo` is Continuum/CLI Copy dest — the `ssa1` shown on screen, not a rotated mailbox. Amounts are confidential; dests are stealth. Reuse that mining mailbox so blocks stay linked.
 
-Wallet **0.39** syncs a local node at `127.0.0.1:18332` (headers + compact blocks). It does not use the old height sampler. Public pool HTTP submit is an advanced toggle.
+Wallet **0.40** syncs a local node at `127.0.0.1:18332` (headers + compact blocks). It does not use the old height sampler. Public pool HTTP submit is an advanced toggle.
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure.
 CLI covers the same functions (`dart run bin/shear.dart help`), including sign, The Reserve vote/rewards, vort1 create/register, and Closure backup/restore.

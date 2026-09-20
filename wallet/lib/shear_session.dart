@@ -246,7 +246,7 @@ void applyUserArchive(ShearLedger ledger, Map<String, dynamic> archive) {
   );
   ledger.restoreDests(dests);
   final g = archive['chainGenesis']?.toString() ?? '';
-  if (g.isNotEmpty) ledger.restoreChainGenesis(g);
+  ledger.restoreSealedTip((archive['sealedHeight'] as num?)?.toInt() ?? 0, genesis: g);
   final sums = <String, double>{};
   for (final t in txs) {
     if (!t.confirmed || t.to.isEmpty) continue;
