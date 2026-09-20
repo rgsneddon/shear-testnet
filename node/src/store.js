@@ -276,7 +276,6 @@ export function createStore(dir, {
           Object.assign(reserveVault, raw);
           reserveVault.liveHashBonusNanos = hashBonusUnitNanos(reserveVault.liveHashBonusNanos);
           if (!reserveVault.oracle) reserveVault.oracle = loadedOracle;
-          return;
         }
       } catch { /* rebuild from chain */ }
     }

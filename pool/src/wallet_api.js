@@ -942,7 +942,17 @@ export function mempoolLattice(store, limitOrOpts = 24) {
   };
 }
 
-export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, poolOpen, poolIdentity } = {}) {
+/** Dest-scoped owed-π / confirming pot from the pull-book (credits still below π). */
+export function owedPiFromPullBook(pullBook, address, { tipHeight = 0, need = 30 } = {}) {
+  if (!pullBook || typeof pullBook.viewByDest !== 'function' || !isDestAddress(address)) {
+    return { owedPi: 0, confirmingPot: 0 };
+  }
+  const v = pullBook.viewByDest(address, { tipHeight, need });
+  const she = nanosToShe(v.pendingNanos);
+  return { owedPi: she, confirmingPot: she };
+}
+
+export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, poolOpen, poolIdentity, pullBook } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
   if ((path === '/api/mempoolPressure' || path === '/api/mempoolpressure') && verb === 'GET') {
@@ -1054,6 +1064,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const rec = reconstructOwner(store, address);
     const pending = pendingFor(miners, address);
     const incoming = mempoolIncoming(store, address);
+    const tipH = store.tip?.()?.height || 0;
+    const need = typeof store.getpolicy === 'function'
+      ? (store.getpolicy().operational?.pool_merchant || 30)
+      : 30;
+    const owed = owedPiFromPullBook(pullBook, address, { tipHeight: tipH, need });
     return {
       status: 200,
       json: {
@@ -1064,7 +1079,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         pending: pending.amount,
         incoming,
         reconstructed: rec.spendable,
-        height: store.tip?.()?.height || 0,
+        height: tipH,
+        owedPi: owed.owedPi,
+        confirmingPot: owed.confirmingPot,
       },
     };
   }

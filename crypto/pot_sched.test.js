@@ -17,6 +17,9 @@ import {
   nextPotNanos,
   potSchedPin,
   epochView,
+  joinCutoffDays,
+  joinCutoffMs,
+  MS_PER_DAY,
 } from './pot_sched.js';
 import {
   MAGIC_TESTNET,
@@ -99,6 +102,13 @@ describe('I1 pot schedule', () => {
     assert.match(dart, /kReserveEpochDaysMainnet = 400/);
     assert.equal(epochDays(MAGIC_TESTNET), 4);
     assert.equal(epochDays(MAGIC_MAINNET), 400);
+  });
+
+  it('late-idle join cutoff is 1 day on testnet, 99 on mainnet', () => {
+    assert.equal(joinCutoffDays(MAGIC_TESTNET), 1);
+    assert.equal(joinCutoffDays(MAGIC_MAINNET), 99);
+    assert.equal(joinCutoffMs(MAGIC_TESTNET), 1 * MS_PER_DAY);
+    assert.equal(joinCutoffMs(MAGIC_MAINNET), 99 * MS_PER_DAY);
   });
 });
 

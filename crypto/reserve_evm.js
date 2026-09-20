@@ -6,7 +6,7 @@ import { createCustomCommon, Mainnet, Hardfork } from '@ethereumjs/common';
 import { hexToBytes, bytesToHex, createAddressFromString, createAccount } from '@ethereumjs/util';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
-import { RESERVE_PROGRAM, RESERVE_EPOCH_MS } from './asert.js';
+import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET } from './asert.js';
 import { reserveAction } from './reserve_vault.js';
 import { asU8 } from './note.js';
 
@@ -25,7 +25,7 @@ const PIN = JSON.parse(fs.readFileSync(
 export const RESERVE_ABI = PIN.abi;
 export const RESERVE_BYTECODE = PIN.bytecode.startsWith('0x') ? PIN.bytecode : `0x${PIN.bytecode}`;
 
-export function shearMagicBytes(network = 'shear-testnet-v3') {
+export function shearMagicBytes(network = MAGIC_TESTNET) {
   return keccak256(Buffer.from(String(network), 'utf8'));
 }
 
@@ -176,7 +176,7 @@ function shearCommon() {
 
 const SYSTEM = createAddressFromString('0x0000000000000000000000000000000000002701');
 
-export async function bootReserveEvm({ network = 'shear-testnet-v3' } = {}) {
+export async function bootReserveEvm({ network = MAGIC_TESTNET } = {}) {
   const common = shearCommon();
   const evm = await createEVM({ common });
   const magic = shearMagicBytes(network);

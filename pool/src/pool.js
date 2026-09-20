@@ -2487,22 +2487,24 @@ export function createPool({
     payoutSweepBusy = true;
     const t0 = Date.now();
     console.error(JSON.stringify({ event: 'auto_payout_begin', at: t0 }));
-    try {
-      return sweepAutoPayouts({ maxRows: PAYOUT_SWEEP_MAX_ROWS });
-    } catch (err) {
-      console.error(JSON.stringify({
-        event: 'auto_payout_error',
-        error: String(err && err.message ? err.message : err),
-      }));
-      return [];
-    } finally {
-      console.error(JSON.stringify({ event: 'auto_payout_end', ms: Date.now() - t0 }));
-      payoutSweepBusy = false;
-      if (payoutSweepAgain) {
-        payoutSweepAgain = false;
-        setImmediate(runAutoPayoutSweep);
+    setImmediate(() => {
+      try {
+        sweepAutoPayouts({ maxRows: PAYOUT_SWEEP_MAX_ROWS });
+      } catch (err) {
+        console.error(JSON.stringify({
+          event: 'auto_payout_error',
+          error: String(err && err.message ? err.message : err),
+        }));
+      } finally {
+        console.error(JSON.stringify({ event: 'auto_payout_end', ms: Date.now() - t0 }));
+        payoutSweepBusy = false;
+        if (payoutSweepAgain) {
+          payoutSweepAgain = false;
+          setImmediate(runAutoPayoutSweep);
+        }
       }
-    }
+    });
+    return [];
   }
 
   function refreshOperatorSpendKey() {
@@ -2874,6 +2876,7 @@ export function createPool({
           lastJob,
           nodesOnline: nodesOnline(),
           poolDest: miner,
+          pullBook,
           queueSend,
           pendingPulls,
           completeMinerPull: (login, dest, nanos) => {

@@ -1457,6 +1457,158 @@ void main() {
     expect((parsed['txs'] as List).length, 1);
   });
 
+  test('shearviewDate uses tip wall-clock for height-only rows', () {
+    const t = ShearTx(
+      id: 'h-only',
+      from: 'coinbase',
+      to: 'ssa1owner',
+      amount: 1,
+      kind: 'blockfound',
+      height: 10,
+    );
+    expect(shearviewDate(t), 'block 10');
+    final tipMs = DateTime.utc(2026, 1, 15).millisecondsSinceEpoch;
+    const tipHeight = 12;
+    final got = shearviewDate(t, tipMs: tipMs, tipHeight: tipHeight);
+    expect(got.contains('block'), isFalse);
+    final parsed = DateTime.parse(got).toUtc();
+    expect(
+      tipMs - parsed.millisecondsSinceEpoch,
+      (tipHeight - 10) * kTargetBlockIntervalMs,
+    );
+    final ledger = ShearLedger();
+    final header = Uint8List(128);
+    var v = tipMs;
+    for (var i = 0; i < 8; i++) {
+      header[100 + i] = v & 0xff;
+      v >>= 8;
+    }
+    ledger.applyTipHeader(header, sealedHeight: tipHeight);
+    expect(ledger.tipTimestampMs, tipMs);
+    expect(ledger.tipTimestampMs, isNot(ledger.observedIntervalMs));
+    final mainSrc = File('lib/main.dart').readAsStringSync();
+    expect(mainSrc.contains('tipMs: ledger.observedIntervalMs == null ? null : null'), isFalse);
+    expect(mainSrc.contains('tipMs: ledger.tipTimestampMs'), isTrue);
+    expect(
+      shearviewListSubtitle(t, tipMs: ledger.tipTimestampMs, tipHeight: ledger.displayHeight, confs: 2)
+          .contains('block 10'),
+      isFalse,
+    );
+  });
+
+  test('parseHistoryPayload amountsOnly redacts; owner sync keeps local notes and hash landings', () async {
+    expect(keepLocalOwnerHistory(amountsOnly: true, destProof: false), isTrue);
+    expect(keepLocalOwnerHistory(amountsOnly: true, destProof: true), isFalse);
+    expect(keepLocalOwnerHistory(amountsOnly: false, destProof: false), isFalse);
+    final parsed = await parseHistoryPayload({
+      'amountsOnly': true,
+      'destProof': false,
+      'key': 'ssa1owner',
+      'openMemos': false,
+      'existingPlain': <String, String>{},
+      'vaultDests': <String>[],
+      'rows': [
+        {
+          'id': 'public-1',
+          'from': 'coinbase',
+          'to': 'ssa1owner',
+          'amount': 1.0,
+          'kind': 'receive',
+          'height': 2,
+        },
+      ],
+    });
+    expect(parsed['amountsOnly'], isTrue);
+    expect((parsed['txs'] as List), isEmpty);
+
+    final id = createIdentity();
+    final pool = _HistoryKeepPool();
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.mergeChainTx(ShearTx(
+      id: 'note-keep-1',
+      from: 'alice',
+      to: dest,
+      amount: 1.25,
+      kind: 'receive',
+      height: 3,
+      memo: true,
+      memoPlain: 'keep-me',
+    ));
+    ledger.mergeChainTx(ShearTx(
+      id: 'hash-keep-1',
+      from: 'coinbase',
+      to: dest,
+      amount: kHashBonusShe,
+      kind: 'hash',
+      height: 4,
+      hashAmount: kHashBonusShe,
+    ));
+    final after = await ledger.syncHistory(id.address);
+    expect(after.any((t) => t.id == 'note-keep-1' || t.memoPlain == 'keep-me'), isTrue);
+    expect(after.any((t) => (t.hashAmount ?? 0) > 0 || t.kind == 'blockfound'), isTrue);
+    expect(after.any((t) => t.id == 'public-blank'), isFalse);
+  });
+
+  test('applyPoolSnapshot owedPi from dest-scoped confirmingPot is non-zero', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    expect(ledger.owedTowardPi(id.address), 0);
+    const pot = 0.99;
+    ledger.applyPoolSnapshot(
+      dest,
+      {'balance': 0, 'pending': 0, 'owedPi': pot, 'confirmingPot': pot},
+      beforeHeight: 0,
+      tipSealed: 1,
+    );
+    expect(ledger.owedTowardPi(id.address), greaterThan(0));
+    expect(ledger.owedTowardPi(id.address), pot);
+  });
+
+  test('Continuum hash-bonus label is earned confirmed hash, not unit(s)', () {
+    expect(continuumHashBonusLabel(emittedNanos: 0), isNot(contains('unit(s)')));
+    expect(continuumHashBonusLabel(emittedNanos: 7), contains('SHE earned'));
+    expect(continuumHashBonusLabel(emittedNanos: 7), contains(formatHashBonusShe(7)));
+    final mainSrc = File('lib/main.dart').readAsStringSync();
+    expect(mainSrc.contains('unit(s)'), isFalse);
+  });
+
+  test('Reserve snackbars use testnet epoch days, not hardcoded 400', () {
+    expect(kReserveEpochDays, kReserveEpochDaysTestnet);
+    expect(reserveEpochStillOpenCopy(), contains('$kReserveEpochDays days'));
+    expect(reserveEpochStillOpenCopy(), isNot(contains('400 days')));
+    expect(reserveWithdrawDialogCopy(), contains('$kReserveEpochDays-day'));
+    final mainSrc = File('lib/main.dart').readAsStringSync();
+    expect(mainSrc.contains('Withdraw after 400 days.'), isFalse);
+  });
+
+  test('Resistance structured header has status and confs', () {
+    const tx = ShearTx(
+      id: 'r1',
+      from: 'ssa1from',
+      to: 'ssa1to',
+      amount: 1,
+      kind: 'receive',
+      height: 8,
+      confirmed: true,
+    );
+    final hdr = resistanceTxHeader(tx, confs: 3);
+    expect(hdr, contains('r1'));
+    expect(hdr, contains('status'));
+    expect(hdr, contains('confs'));
+    expect(hdr, contains('3'));
+    expect(hdr, contains('height'));
+    final transcript = ctfTranscript(
+      identity: createIdentity(),
+      tx: tx,
+      spendableAfter: 1,
+      confs: 3,
+    );
+    expect(transcript, contains('confs'));
+    expect(transcript, contains('3'));
+  });
+
   test('CTF dest is she1 with password C, not C-from-S', () {
     final a = createIdentity();
     final b = createIdentity();
@@ -5341,6 +5493,31 @@ Future<void> _waitKey(WidgetTester tester, Key key) async {
     if (find.byKey(key).evaluate().isNotEmpty) return;
   }
   fail('missing $key');
+}
+
+class _HistoryKeepPool extends ShearPoolClient {
+  _HistoryKeepPool()
+      : super(
+          baseUrl: 'http://127.0.0.1:9',
+          http: HttpClient()..connectionTimeout = const Duration(milliseconds: 50),
+        );
+
+  @override
+  Future<Map<String, dynamic>> history(String address, {String? viewKey, String? open}) async => {
+        'ok': true,
+        'amountsOnly': true,
+        'destProof': false,
+        'txs': [
+          {
+            'id': 'public-blank',
+            'from': '',
+            'to': '',
+            'amount': 0,
+            'kind': 'block',
+            'height': 5,
+          },
+        ],
+      };
 }
 
 class _RecordingPool extends ShearPoolClient {

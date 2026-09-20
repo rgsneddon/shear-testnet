@@ -344,6 +344,47 @@ export function createPullBook(dir) {
     return [...s];
   }
 
+  /** Dest-scoped pull-book view: sum every miner tag bound to this ssa1. */
+  function viewByDest(dest, opts = {}) {
+    const want = String(dest || '').trim();
+    const matching = want ? tags().filter((t) => destOf(t) === want) : [];
+    if (!matching.length) {
+      return {
+        pendingNanos: 0,
+        confirmedNanos: 0,
+        unconfirmedNanos: 0,
+        confirmedPotNanos: 0,
+        confirmedHashNanos: 0,
+        hashPaidNanos: 0,
+        sentNanos: 0,
+        dest: want,
+        destRedacted: want ? redactSsa1(want) : '',
+      };
+    }
+    const acc = {
+      pendingNanos: 0,
+      confirmedNanos: 0,
+      unconfirmedNanos: 0,
+      confirmedPotNanos: 0,
+      confirmedHashNanos: 0,
+      hashPaidNanos: 0,
+      sentNanos: 0,
+      dest: want,
+      destRedacted: redactSsa1(want),
+    };
+    for (const tag of matching) {
+      const v = view(tag, opts);
+      acc.pendingNanos += v.pendingNanos;
+      acc.confirmedNanos += v.confirmedNanos;
+      acc.unconfirmedNanos += v.unconfirmedNanos;
+      acc.confirmedPotNanos += v.confirmedPotNanos;
+      acc.confirmedHashNanos += v.confirmedHashNanos;
+      acc.hashPaidNanos += v.hashPaidNanos;
+      acc.sentNanos += v.sentNanos;
+    }
+    return acc;
+  }
+
   function hasTag(tag) {
     const key = String(tag || '').trim().toLowerCase();
     if (!key) return false;
@@ -441,7 +482,7 @@ export function createPullBook(dir) {
 
   if (loaded) save();
   return {
-    creditRound, view, takeConfirmed, destOf, bindDest, tags, hasTag, dueAuto, sweepAuto, ledger,
+    creditRound, view, viewByDest, takeConfirmed, destOf, bindDest, tags, hasTag, dueAuto, sweepAuto, ledger,
     sealsLifetime, reconcile,
   };
 }

@@ -78,7 +78,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Algo</th><td>ShearHash-v3 (RandomX light, CPU)</td></tr>' +
       '<tr><th>Block pot</th><td>1.00 SHE in epoch 0, then −0.01 SHE/epoch to a 0.20 SHE floor (4d testnet / 400d mainnet)</td></tr>' +
       '<tr><th>Target interval</th><td>90 seconds (ASERT)</td></tr>' +
-      '<tr><th>Spendable</th><td>6 confirmations</td></tr>' +
+      '<tr><th>Spendable</th><td>protocol floor 6 confirmations (policy may freeze credits)</td></tr>' +
       '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
       '<tr><th>Wallet pin</th><td>0.40</td></tr>' +
@@ -167,7 +167,7 @@ window.SHEAR_DOCS = {
     title: 'Continuum',
     crumb: 'wallet / continuum',
     html:
-      '<p>Continuum is spendable SHE and the pending pie. Each pending block fills one of six slices. Coin is spendable at 6 confirmations. Hash rewards sit inside the found block; they are not listed as their own rows.</p>' +
+      '<p>Continuum is spendable SHE and the pending pie. Each pending block fills one of six slices. Coin is protocol-spendable after 6 confirmations unless credits are frozen. Hash rewards sit inside the found block; they are not listed as their own rows.</p>' +
       '<p>While a Flow send is still filling the pie, the sender row remarks <strong>sending</strong>. The recipient row remarks <strong>receive</strong>.</p>' +
       '<p>Copy ID copies your <code>she1</code>. Offer that, not rest-frame.</p>'
   };
@@ -322,14 +322,14 @@ window.SHEAR_DOCS = {
     title: 'Epochs',
     crumb: 'reserve / epochs',
     html:
-      '<p>An epoch is 400 days. The first qualifying π deposit opens the inaugural epoch — not genesis, not an operator clock. Last 99 days: new deposits still lock and may vote, but they sit idle (no stake interest). Vote changes are only in the first 301 days.</p>'
+      '<p>An epoch is 4 days on this testnet (400 days on mainnet). The first qualifying π deposit opens the inaugural epoch — not genesis, not an operator clock. Last 1 testnet day / 99 mainnet days: new deposits still lock and may vote, but they sit idle (no stake interest). Vote changes are only before that idle window.</p>'
   };
 
   P.stake = {
     title: 'Stake, idle, lock',
     crumb: 'reserve / stake',
     html:
-      '<p>Staked principal earns the oracle APR for the full 400 days. Idle coin earns nothing. Locked is staked plus idle. Daily credits sit in the portal until you withdraw after epoch end. One fee to add funds (lock); Continuum pays it.</p>'
+      '<p>Staked principal earns the oracle APR for the full epoch (4 days testnet / 400 days mainnet). Idle coin earns nothing. Locked is staked plus idle. Daily credits sit in the portal until you withdraw after epoch end. One fee to add funds (lock); Continuum pays it.</p>'
   };
 
   P.votes = {

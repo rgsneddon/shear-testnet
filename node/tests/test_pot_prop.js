@@ -16,6 +16,7 @@ import {
   digestTx,
   potSharesFromBatch,
   custodyPotShares,
+  allowedHashBonusCustodyDest,
 } from '../src/chain.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
@@ -251,6 +252,45 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
     assert.match(storeSrc, /void hashBonusCustodyDest/);
     assert.doesNotMatch(storeSrc, /hashBonusCustodyDest,/);
+  });
+
+  it('hashBonusCustodyDest is fail-closed unless SHEAR_ALLOW_HASHBONUS_CUSTODY=1', () => {
+    const prev = process.env.SHEAR_ALLOW_HASHBONUS_CUSTODY;
+    delete process.env.SHEAR_ALLOW_HASHBONUS_CUSTODY;
+    try {
+      const hasher = destOf(newIdentity());
+      const pool = destOf(newIdentity());
+      assert.equal(allowedHashBonusCustodyDest(pool), '');
+      const hasher20 = hash20FromAddress(hasher);
+      const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
+      const tpl = buildTemplate({
+        prev: GENESIS_PREV,
+        height: 1,
+        miner: pool,
+        bits: GENESIS_BITS_PACKED,
+        now: 1_700_000_000_000,
+        shareBatch: [row],
+        poolDest: pool,
+        hashBonusCustodyDest: pool,
+      });
+      assert.equal(tpl.hashBonusCustodyDest, '');
+      const hashes = (tpl.txs[0].vout || []).filter((o) => o.kind === 'hash');
+      assert.ok(hashes.length >= 1);
+      for (const h of hashes) {
+        assert.ok(Buffer.from(h.dest20).equals(Buffer.from(hasher20)));
+      }
+      process.env.SHEAR_ALLOW_HASHBONUS_CUSTODY = '1';
+      assert.equal(allowedHashBonusCustodyDest(pool), pool);
+      const chainSrc = fs.readFileSync(new URL('../src/chain.js', import.meta.url), 'utf8');
+      assert.match(chainSrc, /SHEAR_ALLOW_HASHBONUS_CUSTODY/);
+      const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
+      const boot = storeSrc.slice(storeSrc.indexOf('function bootVault'), storeSrc.indexOf('\n  bootVault();'));
+      assert.match(boot, /replayVault\(\);/);
+      assert.doesNotMatch(boot, /^\s*return;/m);
+    } finally {
+      if (prev === undefined) delete process.env.SHEAR_ALLOW_HASHBONUS_CUSTODY;
+      else process.env.SHEAR_ALLOW_HASHBONUS_CUSTODY = prev;
+    }
   });
 
   it('epoch-1 potShares sum equals schedule pot and fails if Σ ≠ wantPot', () => {

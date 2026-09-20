@@ -73,6 +73,11 @@
       background:#fff; border:0; box-shadow: 0 8px 28px rgba(0,0,0,.35);
     }
     .lede { color:var(--muted); max-width: 48rem; overflow-wrap:anywhere; }
+    .stale-banner {
+      margin: 12px 0 0; padding: 12px 14px; border: 2px solid #c45c26; background: #fff4e8;
+      color: #5a2e12; font-weight: 750; overflow-wrap: anywhere;
+    }
+    html[data-theme="dark"] .stale-banner { background:#2a160c; color:#f0c9a8; border-color:#e08a4c; }
     @media (max-width: 640px) {
       h1 { font-size:1.18rem; }
       .record { padding: 12px; }
@@ -119,7 +124,8 @@
         <span class="chip">Version 2.0</span>
       </div>
       <h1>Shear: Continuity-settled Proof of Work</h1>
-      <p class="lede">Shear project · 13 September 2026 · <code>shear-testnet-v4</code>. HTML is canonical. The PDF preview is stale (builder still carries ADMITv1 / wallet 0.32 / v3 copy) until regenerated.</p>
+      <p class="lede">Shear project · 13 September 2026 · <code>shear-testnet-v4</code>. HTML is canonical.</p>
+      <p class="stale-banner" id="pdf-stale">PDF preview is stale. Do not treat the PDF as the live spec. This HTML page is canonical (ADMITv2, wallet 0.40, <code>shear-testnet-v4</code>). The builder still carries older ADMITv1 / wallet 0.32 / v3 copy until the PDF is regenerated.</p>
       <div class="meta">
         <div class="k">Publication date</div><div class="v">11 September 2026</div>
         <div class="k">Resource type</div><div class="v">Publication / Preprint</div>

@@ -61,23 +61,25 @@ describe('shear.digital/docs', () => {
     assert.match(docs, /border-bottom:1px solid rgba\(26,111,181,\.25\)/);
     assert.match(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
     assert.match(docs, /\.banner-wordmark \{ height:36px; width:auto; max-width:none/);
-    assert.match(docs, /content\.js\?v=9/);
+    assert.match(docs, /content\.js\?v=10/);
     assert.match(content, /Remove vortice/);
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);
-    assert.match(content, /Wallet pin<\/th><td>0\.37/);
-    assert.match(content, /Current pin is <strong>0\.37<\/strong>/);
-    assert.match(content, /releases\/tag\/0\.37/);
+    assert.match(content, /Wallet pin<\/th><td>0\.40/);
+    assert.match(content, /Current pin is <strong>0\.40<\/strong>/);
+    assert.match(content, /releases\/tag\/0\.40/);
     assert.doesNotMatch(content, /Current pin is <strong>0\.33<\/strong>/);
     assert.doesNotMatch(content, /Wallet pin<\/th><td>0\.33/);
     const readme = fs.readFileSync(path.join(here, '../../README.md'), 'utf8');
-    assert.match(readme, /releases\/tag\/0\.37/);
+    assert.match(readme, /releases\/tag\/0\.40/);
     assert.doesNotMatch(readme, /Wallet \*\*0\.33\*\*/);
     assert.match(content, /127\.0\.0\.1:18332/);
     assert.match(content, /node-sync/);
     assert.match(content, /com\.shear\.shear_wallet/);
     assert.match(content, /Stem then fluff/);
     assert.match(content, /ADMITv2/);
+    assert.match(content, /protocol-spendable after 6 confirmations unless credits are frozen/);
+    assert.match(content, /4 days on this testnet \(400 days on mainnet\)/);
     assert.doesNotMatch(content, /explorer reports amounts, dests/);
     assert.match(content, /no dest, no amount/);
     assert.match(content, /boot\.shear\.digital/);
@@ -122,7 +124,8 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /Continuity-settled Proof of Work/);
     assert.match(paper, /HTML is canonical/);
     assert.match(paper, /PDF preview is stale/);
-    assert.match(paper, /releases\/tag\/0\.37/);
+    assert.match(paper, /id="pdf-stale"/);
+    assert.match(paper, /releases\/tag\/0\.40/);
     assert.doesNotMatch(paper, /releases\/tag\/0\.33/);
     assert.match(paper, /Publication/);
     assert.match(paper, /Preprint/);
@@ -146,5 +149,21 @@ describe('whitepaper.shear.digital', () => {
     assert.equal(pdf.includes(Buffer.from('The Join')), false);
     assert.doesNotMatch(content, /The Join/);
     assert.doesNotMatch(content, /join1\./);
+  });
+});
+
+describe('deploy headers', () => {
+  it('SSL vhosts send HSTS; stratum reload requires BIND+AUTH', () => {
+    const root = path.join(here, '../..');
+    const boot = fs.readFileSync(path.join(root, 'deploy/nginx-boot.shear.digital.conf'), 'utf8');
+    const admin = fs.readFileSync(path.join(root, 'deploy/nginx-admin.shear.digital.conf'), 'utf8');
+    assert.match(boot, /Strict-Transport-Security/);
+    assert.match(admin, /Strict-Transport-Security/);
+    const reload = fs.readFileSync(path.join(root, 'deploy/reload-stratum-units.sh'), 'utf8');
+    assert.match(reload, /SHEAR_STRATUM_BIND=127\.0\.0\.1/);
+    assert.match(reload, /SHEAR_STRATUM_AUTH=1/);
+    const list = fs.readFileSync(path.join(root, 'deploy/STRATUM_CHECKLIST.md'), 'utf8');
+    assert.match(list, /SHEAR_STRATUM_BIND=127\.0\.0\.1/);
+    assert.match(list, /SHEAR_STRATUM_AUTH=1/);
   });
 });
