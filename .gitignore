@@ -36,3 +36,6 @@ crypto/native/admit/target/
 # Operator admin vhost lives on the box only (SHEAR_ADMIN_HOST).
 deploy/nginx-kyrusfables.shear.digital.conf
 deploy/nginx-*-secrets.conf
+# Operator spend seed is 0600 on the pool datadir / Desktop vault — never git.
+pool-spend.seed
+**/pool-spend.seed

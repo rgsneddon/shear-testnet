@@ -29,6 +29,11 @@ const miner = boot.miner
   || (boot.miner && !isShearAddress(boot.miner) ? boot.miner : '');
 if (!boot.signed) {
   console.error(JSON.stringify({
+    event: 'pool_operator_unsigned',
+    signed: false,
+    reason: 'need_spend_key',
+  }));
+  console.error(JSON.stringify({
     event: 'auto_payout_unsigned',
     reason: 'need_SHEAR_POOL_SPEND_SEED',
   }));
