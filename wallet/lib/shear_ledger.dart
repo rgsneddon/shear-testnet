@@ -938,6 +938,10 @@ class ShearLedger {
   int confirmedNeed = 30;
   /// Policy freeze: Continuum spendable stays pending even past 6.
   bool creditsFrozen = false;
+  /// Policy freeze_reason from getpolicy (h_ratio / d_max / side_lead).
+  String freezeReason = '';
+  /// One-line Continuum banner when frozen. Empty when not frozen.
+  String freezeBanner = '';
   final List<({String dest, double amount, int height})> _immature = [];
 
   /// Read lag-1 continuity from a 128-byte tip header. Next dest uses sealedHeight+1.
@@ -1419,6 +1423,16 @@ class ShearLedger {
     if (op is Map && op['pool_merchant'] is num) {
       confirmedNeed = (op['pool_merchant'] as num).toInt();
     }
+    freezeReason = json['freeze_reason']?.toString() ?? '';
+    freezeBanner = json['freeze_banner']?.toString() ?? '';
+    if (!creditsFrozen) {
+      freezeReason = '';
+      freezeBanner = '';
+    } else if (freezeBanner.isEmpty) {
+      final reason = freezeReason.isEmpty ? 'policy' : freezeReason;
+      freezeBanner =
+          'Credits frozen ($reason): confirmations elevated to $confirmedNeed.';
+    }
   }
 
   /// Disconnect orphaned heights; rows bounce to pending.
@@ -1497,7 +1511,11 @@ class ShearLedger {
       if (json['policy'] is Map) {
         applyPolicy(Map<String, dynamic>.from(json['policy'] as Map));
       } else if (json['frozen'] is bool) {
-        creditsFrozen = json['frozen'] as bool;
+        applyPolicy({
+          'frozen': json['frozen'],
+          'freeze_reason': json['freeze_reason'],
+          'freeze_banner': json['freeze_banner'],
+        });
       }
       final sealed = (json['height'] as num?)?.toInt() ?? 0;
       final hex = json['header']?.toString() ?? '';

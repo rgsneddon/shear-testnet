@@ -21,6 +21,8 @@ export const H_RATIO_RECOVER_BLOCKS = 20;
 export const D_MAX_RISK = 3;
 export const D_MAX_FREEZE = 10;
 export const H_RATIO_FREEZE = 0.5;
+export const HOURLY_BUCKETS = 24;
+export const HOUR_MS = 3_600_000;
 
 const FLOOR_BANDS = new Set(['ui_seen', 'consensus_spendable']);
 
@@ -145,15 +147,27 @@ export function coinbaseNeed(deskNeed, state) {
   return Math.max(CONSENSUS_MIN, desk, state?.frozen ? op : desk);
 }
 
+export function freezeBannerLine(policy) {
+  const p = policy || {};
+  if (!p.frozen) return '';
+  const reason = String(p.freeze_reason || p.freezeReason || 'policy').trim() || 'policy';
+  const need = Number(p.operational?.pool_merchant ?? p.confirmedNeed);
+  const n = Number.isFinite(need) && need > 0 ? need : POLICY_BANDS.pool_merchant;
+  return `Credits frozen (${reason}): confirmations elevated to ${n}.`;
+}
+
 export function getpolicy(state) {
   const s = state || emptyPolicyState();
   const operational = operationalBands(s);
+  const frozen = !!s.frozen;
+  const freeze_reason = s.freezeReason || '';
   return {
     consensus_min: CONSENSUS_MIN,
     merchant_default: MERCHANT_DEFAULT,
     bands: { ...POLICY_BANDS },
-    frozen: !!s.frozen,
-    freeze_reason: s.freezeReason || '',
+    frozen,
+    freeze_reason,
+    freeze_banner: freezeBannerLine({ frozen, freeze_reason, operational }),
     d_max: s.d_max || 0,
     h_ratio: Number.isFinite(Number(s.h_ratio)) ? Number(s.h_ratio) : 1,
     side_lead: s.side_lead || 0,
@@ -180,7 +194,33 @@ export function workInWindow(blocks, nowMs, windowMs, workOf) {
   return sum;
 }
 
-/** 1h work / median of 24 hourly buckets. Empty → 1 (do not freeze on thin data). */
+/**
+ * Rolling 24 hourly work buckets from sealed header timestamps.
+ * Bucket 23 is [now-1h, now]; bucket 0 is [now-24h, now-23h]. Empty hours stay 0.
+ * Same function the node store uses — do not re-implement in tests.
+ */
+export function hourlyWorkBuckets(blocks, nowMs, { workOf, timeOf } = {}) {
+  const buckets = Array(HOURLY_BUCKETS).fill(0);
+  const list = Array.isArray(blocks) ? blocks : [];
+  const now = Number(nowMs);
+  for (const b of list) {
+    const ts = Number(typeof timeOf === 'function' ? timeOf(b) : (b?.atMs ?? b?.timestamp ?? 0));
+    const ago = now - ts;
+    if (ago < 0 || ago >= HOURLY_BUCKETS * HOUR_MS) continue;
+    const i = HOURLY_BUCKETS - 1 - Math.floor(ago / HOUR_MS);
+    if (i >= 0 && i < HOURLY_BUCKETS) {
+      const w = Number(typeof workOf === 'function' ? workOf(b) : (b.work || 0));
+      buckets[i] += Number.isFinite(w) ? w : 0;
+    }
+  }
+  return buckets;
+}
+
+/**
+ * Last-hour work / median of populated prior hours.
+ * Thin data (empty array, one hour, or no populated prior hour) → 1.
+ * Zero-padded 24-bucket arrays from hourlyWorkBuckets skip empty hours in the median.
+ */
 export function hashRatioFromHours(hourlyWork) {
   const hrs = Array.isArray(hourlyWork) ? hourlyWork.map((n) => Number(n) || 0) : [];
   if (hrs.length < 2) return 1;

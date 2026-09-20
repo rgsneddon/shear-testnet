@@ -100,6 +100,15 @@
     html[data-theme="dark"] #back-pool-box .back-pool:hover,
     html[data-theme="dark"] #back-pool-box .back-pool:focus { color: #c5e0ff; }
     .pulse { color:var(--green); font-size:.8rem; }
+    #freeze-banner {
+      text-align:center; margin:4px 0 8px; padding:10px 12px;
+      font-size:.95rem; font-weight:750; color:#7a3b00;
+      background:#fff6e0; border:1px solid #e0a84a;
+    }
+    #freeze-banner[hidden] { display:none !important; }
+    html[data-theme="dark"] #freeze-banner {
+      color:#ffe14a; background:#2a1a08; border-color:#e08a4c;
+    }
     .top-banner {
       display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
       border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
@@ -155,6 +164,7 @@
       <p id="reward-identity">Rewards share the block pot by round work after the 1% pool fee — not one SHE per block you found.</p>
       <p id="payout-note">Pool auto-payout waits for <strong>30 confirmations</strong> (pool merchant band). That is not the chain’s 6-confirm spendable bar — credit stays unconfirmed until 30 blocks, then counts toward π.</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
+      <p id="freeze-banner" role="status" hidden></p>
     </section>
     <div class="pull-row" id="pull-row">
       <article class="panel-card pull-acc">
@@ -307,11 +317,20 @@
       if (!(she > 0)) return (0).toFixed(d);
       return she.toFixed(d);
     }
+    function paintFreezeBanner(el, s) {
+      if (!el) return;
+      const frozen = !!(s && s.frozen);
+      const policy = (s && s.policy) || {};
+      const line = frozen ? String(policy.freeze_banner || s.freeze_banner || '') : '';
+      el.hidden = !line;
+      el.textContent = line;
+    }
     function paint(d) {
       if (!d || !d.ok) {
         set('live-pulse', 'unknown miner');
         return;
       }
+      paintFreezeBanner(document.getElementById('freeze-banner'), d);
       set('miner-tag', d.tag);
       set('m-tag', d.tag);
       set('m-name', d.name || '—');

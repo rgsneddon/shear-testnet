@@ -2403,9 +2403,8 @@ export function createPool({
   function minerPublicJson(tag, now = Date.now()) {
     const rows = minerByTag(tag, now);
     const tipH = Number(store.tip?.()?.height || 0);
-    const need = typeof store.getpolicy === 'function'
-      ? (store.getpolicy().operational?.pool_merchant || 30)
-      : 30;
+    const policy = typeof store.getpolicy === 'function' ? store.getpolicy() : {};
+    const need = policy.operational?.pool_merchant || 30;
     const pull = pullBook.view(tag, { tipHeight: tipH, need });
     const held = pullBook.ledger(tag);
     const known = typeof pullBook.hasTag === 'function' ? pullBook.hasTag(tag) : false;
@@ -2450,6 +2449,9 @@ export function createPool({
       creditConfirmedShe: pull.confirmedNanos / NANOS_PER_SHE,
       creditConfirmedDisplay: formatShe(pull.confirmedNanos / NANOS_PER_SHE),
       confirmNeed: need,
+      frozen: !!policy.frozen,
+      freeze_reason: policy.freeze_reason || '',
+      freeze_banner: policy.freeze_banner || '',
       pendingDisplay: formatShe(pull.pendingNanos / NANOS_PER_SHE),
       confirmedDisplay: formatShe(pull.sentNanos / NANOS_PER_SHE),
       sentNanos: pull.sentNanos,
@@ -2720,6 +2722,7 @@ export function createPool({
       for (const m of miners.values()) {
         if (minerConnected(m)) connected += 1;
       }
+      const policy = typeof store.getpolicy === 'function' ? store.getpolicy() : {};
       return {
         paused,
         height: tip?.height || 0,
@@ -2739,6 +2742,12 @@ export function createPool({
         uptimeMs: Date.now() - stats.started,
         lastFoundAt: stats.lastFoundAt || 0,
         stratum: stats.stratum,
+        frozen: !!policy.frozen,
+        freeze_reason: policy.freeze_reason || '',
+        freeze_banner: policy.freeze_banner || '',
+        h_ratio: Number.isFinite(Number(policy.h_ratio)) ? Number(policy.h_ratio) : 1,
+        side_lead: Number(policy.side_lead) || 0,
+        confirmedNeed: policy.operational?.pool_merchant || 30,
       };
     },
     miners() {

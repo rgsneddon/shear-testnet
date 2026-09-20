@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { consensusFingerprint, SPENDABLE_CONFIRMATIONS, MIN_CONFIRMS_POLICY } from './asert.js';
+import fs from 'node:fs';
+import { consensusFingerprint, SPENDABLE_CONFIRMATIONS, MIN_CONFIRMS_POLICY, TARGET_BLOCK_INTERVAL_MS } from './asert.js';
 import {
   POLICY_BANDS,
   CONSENSUS_MIN,
@@ -10,8 +11,14 @@ import {
   getpolicy,
   operationalBands,
   hashRatioFromHours,
+  hourlyWorkBuckets,
+  freezeBannerLine,
   D_MAX_FREEZE,
   FREEZE_CLEAR_BLOCKS,
+  H_RATIO_FREEZE,
+  SIDE_LEAD_FREEZE_MS,
+  HOURLY_BUCKETS,
+  HOUR_MS,
 } from './confirm_policy.js';
 
 describe('confirm policy is not consensus', () => {
@@ -44,6 +51,8 @@ describe('getpolicy object', () => {
     assert.equal(p.frozen, false);
     assert.equal(p.d_max, 0);
     assert.equal(p.h_ratio, 1);
+    assert.equal(p.freeze_reason, '');
+    assert.equal(p.freeze_banner, '');
     assert.equal(p.operational.pool_merchant, 30);
     assert.equal(p.operational.consensus_spendable, 6);
   });
@@ -121,5 +130,158 @@ describe('h_ratio from hourly work', () => {
   it('is last hour over the median of prior hours', () => {
     const hrs = [10, 10, 10, 10, 5];
     assert.equal(hashRatioFromHours(hrs), 0.5);
+  });
+});
+
+function hourBlocks(nowMs, hoursAgo, work, n = 40) {
+  const startAgo = hoursAgo * HOUR_MS;
+  const blocks = [];
+  for (let i = 0; i < n; i += 1) {
+    const ago = startAgo + HOUR_MS - 1 - i * TARGET_BLOCK_INTERVAL_MS;
+    blocks.push({ timestamp: nowMs - ago, work });
+  }
+  return blocks;
+}
+
+function policyFromHeaders(blocks, nowMs, extra = {}) {
+  const hrs = hourlyWorkBuckets(blocks, nowMs);
+  const h_ratio = hashRatioFromHours(hrs);
+  return applySignals(emptyPolicyState(), {
+    nowMs,
+    h_ratio,
+    side_lead: extra.side_lead ?? 0,
+    newBlock: extra.newBlock ?? false,
+  });
+}
+
+describe('intended freeze policy from header work', () => {
+  const nowMs = 20 * HOUR_MS;
+
+  it('healthy multi-miner / steady hourly work stays unfrozen at baseline 30', () => {
+    const blocks = [
+      ...hourBlocks(nowMs, 3, 100),
+      ...hourBlocks(nowMs, 2, 100),
+      ...hourBlocks(nowMs, 1, 100),
+      ...hourBlocks(nowMs, 0, 100),
+    ];
+    const hrs = hourlyWorkBuckets(blocks, nowMs);
+    assert.equal(hrs.length, HOURLY_BUCKETS);
+    const ratio = hashRatioFromHours(hrs);
+    assert.ok(ratio >= H_RATIO_FREEZE, `steady h_ratio ${ratio}`);
+    assert.ok(Math.abs(ratio - 1) < 0.05, `steady h_ratio near 1, got ${ratio}`);
+    const s = applySignals(emptyPolicyState(), { nowMs, h_ratio: ratio, side_lead: 0 });
+    assert.equal(s.frozen, false);
+    assert.equal(s.freezeReason, '');
+    assert.equal(s.reorg_risk, false);
+    const p = getpolicy(s);
+    assert.equal(p.frozen, false);
+    assert.equal(p.operational.pool_merchant, 30);
+    assert.equal(p.operational.consensus_spendable, 6);
+    assert.equal(p.freeze_banner, '');
+    assert.equal(CONSENSUS_MIN, 6);
+  });
+
+  it('steady single miner at 90s with h_ratio≈1 stays unfrozen', () => {
+    const blocks = [
+      ...hourBlocks(nowMs, 2, 12),
+      ...hourBlocks(nowMs, 1, 12),
+      ...hourBlocks(nowMs, 0, 12),
+    ];
+    const s = policyFromHeaders(blocks, nowMs);
+    const ratio = hashRatioFromHours(hourlyWorkBuckets(blocks, nowMs));
+    assert.ok(ratio >= H_RATIO_FREEZE, `single-miner h_ratio ${ratio}`);
+    assert.equal(s.frozen, false);
+    assert.equal(operationalBands(s).pool_merchant, 30);
+    assert.equal(operationalBands(s).consensus_spendable, 6);
+  });
+
+  it('farm-then-drop to ~0.39 freezes on h_ratio even when 90s tip advances and reorg_risk=false', () => {
+    const blocks = [
+      ...hourBlocks(nowMs, 3, 100),
+      ...hourBlocks(nowMs, 2, 100),
+      ...hourBlocks(nowMs, 1, 100),
+      ...hourBlocks(nowMs, 0, 39),
+    ];
+    const hrs = hourlyWorkBuckets(blocks, nowMs);
+    const ratio = hashRatioFromHours(hrs);
+    assert.ok(ratio < H_RATIO_FREEZE, `drop h_ratio ${ratio}`);
+    assert.ok(Math.abs(ratio - 0.39) < 0.02, `expected ~0.39, got ${ratio}`);
+    const s = applySignals(emptyPolicyState(), { nowMs, h_ratio: ratio, side_lead: 0 });
+    assert.equal(s.reorg_risk, false);
+    assert.equal(s.d_max, 0);
+    assert.equal(s.frozen, true);
+    assert.equal(s.freezeReason, 'h_ratio');
+    const p = getpolicy(s);
+    assert.equal(p.frozen, true);
+    assert.equal(p.freeze_reason, 'h_ratio');
+    assert.equal(p.operational.pool_merchant, 60);
+    assert.equal(p.operational.peer_small_flow, 24);
+    assert.equal(p.operational.consensus_spendable, 6);
+    assert.equal(p.bands.pool_merchant, 30);
+    assert.match(p.freeze_banner, /h_ratio/);
+    assert.match(p.freeze_banner, /60/);
+    assert.equal(
+      p.freeze_banner,
+      'Credits frozen (h_ratio): confirmations elevated to 60.',
+    );
+  });
+
+  it('24-bucket zero-pad does not freeze on an empty or single populated hour', () => {
+    assert.equal(hashRatioFromHours(hourlyWorkBuckets([], nowMs)), 1);
+    const young = hourBlocks(nowMs, 0, 100);
+    const hrs = hourlyWorkBuckets(young, nowMs);
+    assert.equal(hrs.length, HOURLY_BUCKETS);
+    assert.equal(hrs.filter((n) => n > 0).length, 1);
+    assert.equal(hashRatioFromHours(hrs), 1);
+    const s = policyFromHeaders(young, nowMs);
+    assert.equal(s.frozen, false);
+    assert.equal(operationalBands(s).pool_merchant, 30);
+  });
+
+  it('d_max >= 10 still freezes fail-closed', () => {
+    let s = recordReorg(emptyPolicyState(), { depth: D_MAX_FREEZE, atMs: nowMs });
+    s = applySignals(s, { nowMs, h_ratio: 1, side_lead: 0 });
+    assert.equal(s.frozen, true);
+    assert.equal(s.freezeReason, 'd_max');
+    assert.equal(getpolicy(s).operational.consensus_spendable, 6);
+  });
+
+  it('side_lead > 0 held longer than 2 block times still freezes fail-closed', () => {
+    assert.equal(SIDE_LEAD_FREEZE_MS, 2 * TARGET_BLOCK_INTERVAL_MS);
+    let s = applySignals(emptyPolicyState(), { nowMs: 0, h_ratio: 1, side_lead: 10 });
+    assert.equal(s.frozen, false);
+    s = applySignals(s, { nowMs: SIDE_LEAD_FREEZE_MS, h_ratio: 1, side_lead: 10 });
+    assert.equal(s.frozen, false);
+    s = applySignals(s, { nowMs: SIDE_LEAD_FREEZE_MS + 1, h_ratio: 1, side_lead: 10 });
+    assert.equal(s.frozen, true);
+    assert.equal(s.freezeReason, 'side_lead');
+  });
+
+  it('negative side_lead (active tip ahead) does not freeze', () => {
+    const s = applySignals(emptyPolicyState(), {
+      nowMs: SIDE_LEAD_FREEZE_MS + 1,
+      h_ratio: 1,
+      side_lead: -37_808_167,
+    });
+    assert.equal(s.frozen, false);
+    assert.equal(s.side_lead, -37_808_167);
+  });
+});
+
+describe('freeze banner line', () => {
+  it('is empty when unfrozen and names the reason plus elevated confirms when frozen', () => {
+    assert.equal(freezeBannerLine({ frozen: false, freeze_reason: 'h_ratio' }), '');
+    assert.equal(
+      freezeBannerLine({
+        frozen: true,
+        freeze_reason: 'h_ratio',
+        operational: { pool_merchant: 60 },
+      }),
+      'Credits frozen (h_ratio): confirmations elevated to 60.',
+    );
+    const src = fs.readFileSync(new URL('../node/src/store.js', import.meta.url), 'utf8');
+    assert.match(src, /hourlyWorkBuckets/);
+    assert.match(src, /hashRatioFromHours\(hourlyWork\(/);
+    assert.doesNotMatch(src, /Array\(24\)\.fill\(0\)/);
   });
 });

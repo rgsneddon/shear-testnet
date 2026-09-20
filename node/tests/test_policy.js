@@ -36,6 +36,13 @@ describe('store policy and pause', () => {
     const p = store.getpolicy();
     assert.equal(p.consensus_min, 6);
     assert.equal(p.bands.pool_merchant, 30);
+    assert.equal(p.frozen, false);
+    assert.equal(p.freeze_reason, '');
+    assert.equal(p.freeze_banner, '');
+    assert.equal(p.h_ratio, 1);
+    assert.equal(typeof p.side_lead, 'number');
+    const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
+    assert.match(storeSrc, /hourlyWorkBuckets/);
     const fp = consensusFingerprint();
     assert.match(fp, /:6:1:1000:/);
     assert.match(fp, /HASH_FN=ShearHash-v3/);
