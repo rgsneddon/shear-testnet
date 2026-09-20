@@ -341,6 +341,8 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /nc -vz p2p\.shear\.digital 30303/);
     assert.match(html, /want>0/);
     assert.match(html, /ibd=true/);
+    assert.match(html, /live peer tip/);
+    assert.doesNotMatch(html, /IBD is only true while/);
     assert.match(html, /p2p_headers missing>0/);
     assert.match(html, /egress\/DNS/);
     assert.match(html, /data-copy="solo-sync-fix"/);

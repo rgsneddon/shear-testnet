@@ -162,6 +162,10 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /nc -vz p2p\.shear\.digital 30303/);
     assert.match(main, /want>0/);
     assert.match(main, /ibd=true/);
+    assert.match(main, /live peer tip/);
+    assert.doesNotMatch(main, /IBD is only true while/);
+    assert.match(readme, /live peer/);
+    assert.doesNotMatch(readme, /IBD is only `want>0`/);
     assert.match(main, /egress\/DNS/);
     assert.match(main, /data-copy="solo-sync-fix"/);
     assert.match(readme, /same shell.*npm run solo|npm run solo/);

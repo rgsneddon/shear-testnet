@@ -22,6 +22,29 @@ function peerWant(p2p) {
   return want;
 }
 
+function recBusy(rec) {
+  if (rec?.syncing) return true;
+  if (Array.isArray(rec?.want) && rec.want.length) return true;
+  if (rec?.pending instanceof Set && rec.pending.size) return true;
+  if (Array.isArray(rec?.retryPrev) && rec.retryPrev.length) return true;
+  return false;
+}
+
+/**
+ * IBD stays true until this tip has caught every live peer and queues are idle.
+ * Empty-tip height=0 with no advertised peer ahead remains false.
+ */
+export function isInitialBlockDownload({ height = 0, peers } = {}) {
+  const local = Number(height) || 0;
+  if (!peers || typeof peers.values !== 'function') return false;
+  for (const rec of peers.values()) {
+    if (recBusy(rec)) return true;
+    const peerH = Number(rec?.height);
+    if (Number.isFinite(peerH) && peerH > local) return true;
+  }
+  return false;
+}
+
 /** Truthful one-shot view of a running or on-disk node. */
 export function nodeStatus({ store, p2p, extra = {} } = {}) {
   const tip = typeof store?.tip === 'function' ? store.tip() : store?.tip || null;
@@ -38,7 +61,7 @@ export function nodeStatus({ store, p2p, extra = {} } = {}) {
     magic: MAGIC_TESTNET,
     peers,
     want,
-    ibd: want > 0,
+    ibd: isInitialBlockDownload({ height, peers: p2p?.peers }),
     hashBackend: backend,
     ...extra,
   };

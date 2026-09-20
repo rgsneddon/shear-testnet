@@ -673,7 +673,7 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
         <li><strong>IBD unsigned@N then prev storms</strong> — do <strong>not</strong> wipe the datadir. Pull tip, rebuild native, set <code>SHEAR_GETBLOCK_BATCH=1</code> temporarily, keep three <code>SHEAR_SEEDS</code> in the same shell as <code>npm run solo</code>.</li>
       </ul>
       <h3 id="solo-sync-stuck">Stuck at height=0 / want=0 / ibd=false — or unsigned@N + prev</h3>
-      <p><code>height=0</code> is an empty tip. <code>want=0</code> means the node is not fetching blocks. <code>ibd=false</code> when <code>want=0</code> is <strong>not</strong> “synced” — IBD is only true while <code>want&gt;0</code>. Opening inbound <code>30303</code> without outbound to the seeds leaves you at this status. Mid-IBD <code>p2p_ingest reason=unsigned</code> then <code>prev</code> storms: pull tip + rebuild native; do not reset the chain.</p>
+      <p><code>height=0</code> is an empty tip. <code>want=0</code> means the node is not fetching blocks. <code>ibd=false</code> at an empty tip with no live peer ahead is <strong>not</strong> “synced” — <code>ibd=true</code> while catching up (queues, syncing, or a live peer tip is taller), not merely while <code>want&gt;0</code>. Opening inbound <code>30303</code> without outbound to the seeds leaves you at this status. Mid-IBD <code>p2p_ingest reason=unsigned</code> then <code>prev</code> storms: pull tip + rebuild native; do not reset the chain.</p>
       <div class="copy-row">
         <pre id="solo-sync-fix"># Outbound must work
 nc -vz p2p.shear.digital 30303
@@ -688,7 +688,7 @@ export SHEAR_GETBLOCK_BATCH=1
 make -C crypto/native
 # same shell as the node — never npm run pool:
 npm run solo
-# Expect status want>0 ibd=true then height climbing; stderr p2p_headers missing>0
+# Expect status ibd=true while behind a live peer tip or want>0; then height climbing; stderr p2p_headers missing>0
 # Do not wipe ~/.shear/testnet-v4 unless CoS says so after a fix</pre>
         <button type="button" data-copy="solo-sync-fix">Copy</button>
       </div>
