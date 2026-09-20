@@ -37,7 +37,7 @@ function sectionEnv() {
     '  SHEAR_SOLO          1 = thin local stratum (same as --solo / npm run solo)',
     '  SHEAR_STRATUM       solo stratum port (default 1111)',
     '  SHEAR_STRATUM_BIND  solo stratum bind (default 127.0.0.1)',
-    '  SHEARK_MINER        optional path to ShearK-Miner 2.4 if shearhash.node is missing',
+    '  SHEARK_MINER        optional path to ShearK-Miner 2.5 if shearhash.node is missing',
     '  SHEAR_MAINNET_EMIT  do not set. Launch is not decided.',
     '  SHEAR_MAINNET_EMIT_CONFIRM  do not set.',
   ];

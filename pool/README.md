@@ -9,7 +9,7 @@ Public site example in this repo is **https://mypool.site**. Operator admin is *
 ## What you get
 
 - Stratum bind `SHEAR_STRATUM_BIND` (testnet dest-only may use `0.0.0.0`; **prod example is `127.0.0.1` behind a TLS terminator**). `SHEAR_STRATUM_AUTH=1` (prod example on) requires an ed25519 login signature over `shear-stratum-login-v1`. Dev dest-only is `SHEAR_STRATUM_AUTH=0`. Unauthenticated dest login is an ephemeral tag, not dest ownership. Do not enable dest-ban without ownership once AUTH is on. Testnet cleartext TCP is temporary — see `deploy/nginx-stratum-tls.conf`. This tree does not ship TLS certificates. Confirm bind and login via `GET /api/stats` (`stratumBind` should be `127.0.0.1`, `loginAuth` should be `ed25519` when auth is on). Non-loopback ∧ AUTH≠1 sets `alerts.stratumDrift`. Reload fleet units with `deploy/reload-stratum-units.sh` (`SHEAR_STRATUM_BIND=127.0.0.1`, `SHEAR_STRATUM_AUTH=1`).
-- Pin **ShearK-Miner 2.4** (or current cut) for the 128-byte job
+- Pin **ShearK-Miner 2.5** (or current cut) for the 128-byte job
 - HTTP `127.0.0.1:8088` (nginx terminates TLS)
 - Validating node + pool in one process (same magic as the book)
 - Two meters: `hashrate` is a time-window / EMA (does not spike when a round resets). `proven_round` / `roundHashes` is accepted dest-bound work this block for hash-bonus minting and **does** reset at block found.

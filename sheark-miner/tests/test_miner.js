@@ -73,7 +73,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
     assert.equal(j.personalisation, 'ShearHash-v3');
-    assert.equal(j.version, '2.4');
+    assert.equal(j.version, '2.5');
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.headerBytes, 128);
     assert.equal(j.magic, 'shear-testnet-v4');
@@ -213,20 +213,20 @@ describe('ShearK-Miner', () => {
     }
   });
 
-  it('2.4 windows zip is only ShearK-Miner.exe + example.bat (MZ)', (t) => {
-    const zip = path.join(dist, 'ShearK-Miner-2.4-windows.zip');
+  it('2.5 windows zip is only ShearK-Miner.exe + example.bat (MZ)', (t) => {
+    const zip = path.join(dist, 'ShearK-Miner-2.5-windows.zip');
     if (!fs.existsSync(zip)) {
-      t.skip('2.4 windows zip is packed on Windows, not this linux box');
+      t.skip('2.5 windows zip is packed on Windows, not this linux box');
       return;
     }
     assert.deepEqual(zipNamelist(zip).sort(), ['ShearK-Miner.exe', 'example.bat'].sort());
     assert.equal(zipMemberHead(zip, 'ShearK-Miner.exe', 2), '4d5a');
   });
 
-  it('2.4 linux zip is ELF, never Darwin Mach-O', (t) => {
-    const zip = path.join(dist, 'ShearK-Miner-2.4-linux.zip');
+  it('2.5 linux zip is ELF, never Darwin Mach-O', (t) => {
+    const zip = path.join(dist, 'ShearK-Miner-2.5-linux.zip');
     if (!fs.existsSync(zip)) {
-      t.skip('2.4 linux zip is packed on the linux box, not this Windows cut');
+      t.skip('2.5 linux zip is packed on the linux box, not this Windows cut');
       return;
     }
     const py = spawnSync(pythonBin(), ['-c',
@@ -404,10 +404,10 @@ describe('ShearK-Miner', () => {
     assert.ok(two > one, `1-thread hashes=${one} 2-thread hashes=${two}`);
   });
 
-  it('2.4 windows zip root is PE + example.bat', (t) => {
-    const win = path.join(dist, 'ShearK-Miner-2.4-windows.zip');
+  it('2.5 windows zip root is PE + example.bat', (t) => {
+    const win = path.join(dist, 'ShearK-Miner-2.5-windows.zip');
     if (!fs.existsSync(win)) {
-      t.skip('2.4 windows zip is packed on Windows, not this linux box');
+      t.skip('2.5 windows zip is packed on Windows, not this linux box');
       return;
     }
     const names = zipNamelist(win);
