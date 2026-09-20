@@ -2178,7 +2178,8 @@ void main() {
     expect(RegExp(r'^\d+\.\d+$').hasMatch('0.11'), isTrue);
     expect(RegExp(r'^\d+\.\d+$').hasMatch('0.1.0'), isFalse);
     expect(formatShe(1), '1');
-    expect(formatShe(kHashBonusShe), '0.000000000');
+    expect(formatShe(kHashBonusShe), '0.00000000001');
+    expect(formatShe(kHashBonusShe), isNot('0.000000000'));
     expect(formatShe(1e-8), '0.000000010');
     expect(kHashBonusShe, 0.00000000001);
     expect(kShePublicDigits, 9);
@@ -2221,7 +2222,9 @@ void main() {
     expect(dartMain.contains('ident.paymentCodeFull'), isTrue);
     expect(dartMain.contains('ClipboardData(text: ident.paymentCodeFull)'), isTrue);
     expect(dartMain.contains('encodeReceiveQr(ident.paymentCodeFull)'), isTrue);
-    expect(dartMain.contains('_ScanReceiveQrPage'), isTrue);
+    expect(dartMain.contains('ScanReceiveQrPage'), isTrue);
+    expect(dartMain.contains('_ScanReceiveQrPage'), isFalse);
+    expect(dartMain.contains('decodeReceiveQrImage'), isTrue);
     expect(dartMain.contains('MobileScanner'), isTrue);
     expect(dartMain.contains('localSendReady(ledger.pool'), isTrue);
     expect(dartMain.contains("Key('bio-seal')"), isTrue);
