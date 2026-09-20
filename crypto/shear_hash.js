@@ -73,7 +73,7 @@ export function assertHashBackend() {
     + 'On Linux: cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native '
     + '&& cmake --build crypto/randomx/build -j$(nproc) '
     + '&& make -C crypto/native shearhash.node. '
-    + 'Or set SHEARK_MINER to a 2.5 ShearK-Miner binary.',
+    + 'Or set SHEARK_MINER to a 2.4 ShearK-Miner binary.',
   );
 }
 

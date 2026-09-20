@@ -3,7 +3,7 @@
 **Written:** 2026-09-17T19:20Z from the Mac (`/Users/russellsneddon/shear`). HEAD **`f63c1e1`+** (dest-P bind `03fe7fe` is in this history).  
 **Canonical GitHub tree:** https://github.com/rgsneddon/shear-testnet  
 **Working branch:** `main`  
-**This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Pins are the **latest** clients: wallet **0.40**, ShearK **2.5**. Do not recut older tags.
+**This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Pins are the **latest** clients: wallet **0.40**, ShearK **2.4**. Do not recut older tags.
 
 Other Shear GitHub repos (`rgsneddon/shear`, `rgsneddon/shear-wallet`, `rgsneddon/shear-pool`) are being deleted. Clone **this** repo only, plus **ShearK**.
 
@@ -36,12 +36,12 @@ Private inventory (optional): `gh repo clone rgsneddon/handoff %USERPROFILE%\han
 | ADMIT | ADMITv2 (Pasta arity-32 CDS; Membership, not Multiple) |
 | Fingerprint | `shear-book-law-2` … `ADMIT=ADMITv2\|RANGE=bpplus\|LEVY=weight\|NETWORK=shear-testnet-v4\|BITS=q16.16\|ASERT_TAU_MS=25920000\|ASERT_HARDEN=2\|ASERT_EASE=2` |
 | Wallet | **0.40** (`wallet/lib/main.dart` `kWalletVersion`) |
-| Miner | **ShearK 2.5** — https://github.com/rgsneddon/ShearK/releases/tag/2.5 |
+| Miner | **ShearK 2.4** — https://github.com/rgsneddon/ShearK/releases/tag/2.4 |
 | SHARE_BIND | `rx+noteCommit` |
 | Mainnet | **blocked**. Launch date is not decided. Do **not** set `SHEAR_MAINNET_EMIT=1`. Operator is **not** cutting over. |
 
 Wallet zip on **this** repo: https://github.com/rgsneddon/shear-testnet/releases/tag/0.40  
-Miner zip: https://github.com/rgsneddon/ShearK/releases/tag/2.5 (`ShearK-Miner-2.5-windows.zip` is this box’s job if still missing).
+Miner zip: https://github.com/rgsneddon/ShearK/releases/tag/2.4 (`ShearK-Miner-2.4-windows.zip` is this box’s job if still missing).
 
 ---
 
@@ -103,7 +103,7 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 1. Pack **wallet 0.40** Windows/Android on this box onto tag `0.40`. Linux/Arch on `77.42.91.84`. Darwin cannot `flutter build windows`.
 2. **Android 0.40 APK can be packed on this Windows box** (Flutter + Android SDK 36 + Eclipse Temurin JDK 17). See §6a. Do not wait for the Mac for Android.
 3. **macOS `.dmg` (and iOS) stay a MacBook handoff.** See §6b. Do not recut 0.35.
-4. If `ShearK-Miner-2.5-windows.zip` is still missing, pack it on **`rgsneddon/ShearK`** tag `2.5` (PE + `example.bat`). Do not recut 2.4/2.3.
+4. If `ShearK-Miner-2.4-windows.zip` is still missing, pack it on **`rgsneddon/ShearK`** tag `2.4` (PE + `example.bat`). Do not recut 2.3/2.2.
 5. Keep mainnet blocked. No `SHEAR_MAINNET_EMIT=1` without `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`.
 
 ---
@@ -151,7 +151,7 @@ gh release upload 0.40 dist/shear-wallet-0.40-macos.dmg --repo rgsneddon/shear-t
 ```
 
 - Drag-to-Applications DMG; do not ship a zip. Developer ID `Russell Sneddon (SFCBP95595)`.
-- Wallet must **not** bundle ShearK. Official miner is a separate ShearK 2.5 zip.
+- Wallet must **not** bundle ShearK. Official miner is a separate ShearK 2.4 zip.
 - iOS is still a later cut; do not link a missing `.ipa`.
 - After the `.dmg` 200s on tag `0.36`, replace the site “macOS — coming soon” span with the download href.
 
@@ -161,7 +161,7 @@ gh release upload 0.40 dist/shear-wallet-0.40-macos.dmg --repo rgsneddon/shear-t
 
 - Invent a mainnet genesis datetime.
 - Dual-stack ADMITv1 + ADMITv2.
-- Recut an older wallet or ShearK tag. Pins are **0.40** and **2.5**.
+- Recut an older wallet or ShearK tag. Pins are **0.40** and **2.4**.
 
 ## 7) Stratum live stats vs tip units
 
@@ -221,7 +221,7 @@ If seed missing: do **not** restart dest-only. Restore both vault files, `chmod 
 
 ### Coordinated shear-testnet-v4 datadir wipe
 
-Magic stays **`shear-testnet-v4`**. Keep Continuum pin 0.40 / ShearK 2.5. Wipe every datadir together, restore the pool ident from the Desktop vault onto the pool box, start the three P2P nodes, then the pool.
+Magic stays **`shear-testnet-v4`**. Keep Continuum pin 0.40 / ShearK 2.4. Wipe every datadir together, restore the pool ident from the Desktop vault onto the pool box, start the three P2P nodes, then the pool.
 
 | Order | Box | IP | Stop | Data |
 |------|-----|----|------|------|

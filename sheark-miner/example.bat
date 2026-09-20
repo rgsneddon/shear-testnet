@@ -1,5 +1,5 @@
 @echo off
-REM ShearK-Miner 2.5 (ShearHash-v3 light) — Windows
+REM ShearK-Miner 2.4 (ShearHash-v3 light) — Windows
 REM Pool: pool.shear.digital:1111  (shear-testnet-v4)
 REM
 REM Paid login is an ssa1 dest the wallet exported (Copy dest), then .worker.
@@ -12,7 +12,7 @@ REM 3) Set --threads to this machine's logical CPUs (echo %NUMBER_OF_PROCESSORS%
 cd /d "%~dp0"
 
 if not exist "ShearK-Miner.exe" (
-  echo ShearK-Miner.exe missing. Unpack ShearK-Miner-2.5-windows.zip first.
+  echo ShearK-Miner.exe missing. Unpack ShearK-Miner-2.4-windows.zip first.
   pause
   exit /b 1
 )

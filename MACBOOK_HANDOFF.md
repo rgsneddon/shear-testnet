@@ -3,7 +3,7 @@
 **GitHub (merged main):** https://github.com/rgsneddon/shear-testnet  
 **This file on main:** https://github.com/rgsneddon/shear-testnet/blob/main/MACBOOK_HANDOFF.md  
 **Wallet tag:** https://github.com/rgsneddon/shear-testnet/releases/tag/0.40  
-**Miner:** https://github.com/rgsneddon/ShearK/releases/tag/2.5  
+**Miner:** https://github.com/rgsneddon/ShearK/releases/tag/2.4  
 **Ops:** [`HANDOFF_OPS.md`](HANDOFF_OPS.md) §6b
 
 Windows already published:
