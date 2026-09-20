@@ -1609,6 +1609,63 @@ void main() {
     expect(after.any((t) => t.id == 'note-keep-1' || t.memoPlain == 'keep-me'), isTrue);
     expect(after.any((t) => (t.hashAmount ?? 0) > 0 || t.kind == 'blockfound'), isTrue);
     expect(after.any((t) => t.id == 'public-blank'), isFalse);
+    expect(pool.lastOpen, ledger.destProofOpen(dest));
+    expect(pool.lastOpen, ledger.destProofOpen(ledger.homeDest(id.address, paymentCode: id.paymentCode)));
+  });
+
+  test('cold unlock destProofOpen(homeDest); notes ingest before empty ShearView', () async {
+    final id = createIdentity();
+    final header = Uint8List(128);
+    const tipMs = 1700000000000;
+    var v = tipMs;
+    for (var i = 0; i < 8; i++) {
+      header[100 + i] = v & 0xff;
+      v >>= 8;
+    }
+    final ledger = ShearLedger()..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final open = ledger.destProofOpen(dest);
+    expect(open, isNotNull);
+    expect(open, ledger.destProofOpen(ledger.homeDest(id.address, paymentCode: id.paymentCode)));
+    ledger.applyTipHeader(header, sealedHeight: 16);
+    expect(ledger.shearviewTxs(id.address), isEmpty);
+    expect(ledger.ownerHistory(id.address), isEmpty);
+    ledger.mergeChainTx(ShearTx(
+      id: 'cold-note-1',
+      from: 'coinbase',
+      to: dest,
+      amount: 1,
+      kind: 'blockfound',
+      height: 10,
+      confirmed: true,
+      hashAmount: kHashBonusShe,
+    ));
+    expect(ledger.shearviewTxs(id.address), isNotEmpty, reason: 'notes ingest before empty ShearView');
+    expect(ledger.ownerHistory(id.address).any((t) => t.to == dest), isTrue);
+    final row = ledger.shearviewTxs(id.address).first;
+    expect(row.height, isNotNull);
+    expect(row.height, greaterThan(0));
+    final confs = ledger.confirmationsOf(row.height ?? 0);
+    final subtitle = shearviewListSubtitle(
+      row,
+      tipMs: ledger.tipTimestampMs,
+      tipHeight: ledger.displayHeight,
+      confs: confs,
+    );
+    expect(subtitle.contains('→'), isTrue);
+    expect(shearviewDate(row, tipMs: ledger.tipTimestampMs, tipHeight: ledger.displayHeight), isNot(contains('block 10')));
+    expect(shearviewSnippet(row), isNotEmpty);
+    expect(ledger.tipTimestampMs, tipMs);
+    final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
+    final notesAt = ledgerSrc.indexOf('final json = await pool!.notes(key);');
+    final histAt = ledgerSrc.indexOf('await syncHistory(key, openMemos: openMemos);');
+    expect(notesAt, greaterThan(0));
+    expect(histAt, greaterThan(notesAt), reason: 'notes ingest before claiming empty ShearView');
+    expect(ledgerSrc.contains('destProofOpen(homeDest(address))'), isTrue);
+    final mainSrc = File('lib/main.dart').readAsStringSync();
+    expect(mainSrc.contains("key: Key('shearview-row-\${t.id}')"), isTrue);
+    expect(mainSrc.contains('Resistance  η  —  Tx detail'), isTrue);
+    expect(mainSrc.contains('tipMs: ledger.tipTimestampMs'), isTrue);
   });
 
   test('applyPoolSnapshot owedPi from dest-scoped confirmingPot is non-zero', () {
@@ -5571,8 +5628,14 @@ class _HistoryKeepPool extends ShearPoolClient {
           http: HttpClient()..connectionTimeout = const Duration(milliseconds: 50),
         );
 
+  String? lastOpen;
+  String? lastAddress;
+
   @override
-  Future<Map<String, dynamic>> history(String address, {String? viewKey, String? open}) async => {
+  Future<Map<String, dynamic>> history(String address, {String? viewKey, String? open}) async {
+    lastAddress = address;
+    lastOpen = open;
+    return {
         'ok': true,
         'amountsOnly': true,
         'destProof': false,
@@ -5587,6 +5650,7 @@ class _HistoryKeepPool extends ShearPoolClient {
           },
         ],
       };
+  }
 }
 
 class _RecordingPool extends ShearPoolClient {

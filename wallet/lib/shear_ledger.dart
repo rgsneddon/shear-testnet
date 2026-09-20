@@ -1685,9 +1685,6 @@ class ShearLedger {
     for (final d in dests) {
       final key = payKey(d);
       if (!histSeen.add(key)) continue;
-      try {
-        await syncHistory(key, openMemos: openMemos);
-      } catch (_) {}
       if (_notesAt[key] == _sealedHeight) continue;
       final seed = spendSeed;
       if (seed != null && seed.length == 32 && pool != null) {
@@ -1695,23 +1692,35 @@ class ShearLedger {
           final json = await pool!.notes(key);
           final rows = json['notes'];
           if (rows is List) {
-            final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
-            final input = <String, dynamic>{
-              'vouts': jsonDecode(jsonEncode(_hexify(raw['vouts']))),
-              'dests': List<String>.from(raw['dests'] as List? ?? const []),
-              'dest': raw['dest'],
-              'spendSeed': seed,
-              'seenCommitHex': List<String>.from(raw['seenCommitHex'] as List? ?? const []),
-              'txHints': jsonDecode(jsonEncode(raw['txHints'])),
-              'prev': raw['prev'],
-              'startIndex': raw['startIndex'],
-            };
-            final scanned = await Isolate.run(() => scanSealedVouts(input));
-            _applySealedScan(scanned);
-            _notesAt[key] = _sealedHeight;
+            if (rows.isEmpty) {
+              _notesAt[key] = _sealedHeight;
+            } else {
+              final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
+              final input = <String, dynamic>{
+                'vouts': jsonDecode(jsonEncode(_hexify(raw['vouts']))),
+                'dests': List<String>.from(raw['dests'] as List? ?? const []),
+                'dest': raw['dest'],
+                'spendSeed': seed,
+                'seenCommitHex': List<String>.from(raw['seenCommitHex'] as List? ?? const []),
+                'txHints': jsonDecode(jsonEncode(raw['txHints'])),
+                'prev': raw['prev'],
+                'startIndex': raw['startIndex'],
+              };
+              final scanned = await Isolate.run(() => scanSealedVouts(input));
+              _applySealedScan(scanned);
+              _notesAt[key] = _sealedHeight;
+            }
           }
         } catch (_) {}
       }
+    }
+    histSeen.clear();
+    for (final d in dests) {
+      final key = payKey(d);
+      if (!histSeen.add(key)) continue;
+      try {
+        await syncHistory(key, openMemos: openMemos);
+      } catch (_) {}
     }
     return spendableOwned(restFrame, paymentCode: paymentCode);
   }
@@ -1752,7 +1761,7 @@ class ShearLedger {
       return ownerHistory(address);
     }
     try {
-      final json = await pool!.history(address, open: destProofOpen(address));
+      final json = await pool!.history(address, open: destProofOpen(homeDest(address)));
       final rows = (json['txs'] as List?) ?? const [];
       final existingPlain = <String, String>{
         for (final t in _txs)
