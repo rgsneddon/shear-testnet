@@ -54,7 +54,7 @@ describe('shear.digital/docs', () => {
     assert.match(content, /id: 'creators'/);
     assert.match(content, /id: 'reserve'/);
     assert.match(content, /vort1\./);
-    assert.match(content, /ShearK-Miner 2\.4/);
+    assert.match(content, /ShearK-Miner 2\.5/);
     assert.match(content, /Copy dest/);
     assert.match(content, /hasher dest/);
     assert.match(content, /ShearHash-v3/);
@@ -182,7 +182,7 @@ describe('whitepaper.shear.digital', () => {
     assert.doesNotMatch(src, /ShearK-Miner 1\.6/);
     assert.doesNotMatch(src, /pin 0\.32/);
     assert.doesNotMatch(src, /pin 0\.37/);
-    assert.match(src, /ShearK-Miner 2\.4/);
+    assert.match(src, /ShearK-Miner 2\.5/);
     assert.match(src, /pin 0\.40/);
     assert.equal(pdf.includes(Buffer.from('The Join')), false);
     const hay = pdfHaystack(pdf);
