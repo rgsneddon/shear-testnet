@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
@@ -3119,6 +3120,30 @@ void main() {
     expect(bad.style!.color, const Color(0xFFFF3B3B));
   });
 
+  testWidgets('Flow Send of short she1 fingerprint paints full-she1 advisory, not generic not-sent', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-flow-short-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    expect(isPaymentFingerprint(ident.paymentCode), isTrue);
+    await tester.pumpWidget(ShearWalletApp(session: session, startUnlocked: true, skipPoolSync: true));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Flow'));
+    await tester.pump();
+    await tester.enterText(find.widgetWithText(TextField, 'To (full she1 payment code or ssa1)'), ident.paymentCode);
+    await tester.enterText(find.byKey(const Key('flow-amount')), '0.1');
+    await tester.tap(find.byKey(const Key('flow-send')));
+    await tester.pump();
+    expect(find.byKey(const Key('flow-send-advisory')), findsOneWidget);
+    final advisory = tester.widget<Text>(find.byKey(const Key('flow-send-advisory')));
+    expect(advisory.data, kErrShortShe1);
+    expect(find.text(kErrShortShe1), findsOneWidget);
+    expect(find.text('not sent - try again'), findsNothing);
+    expect(advisory.style!.color, const Color(0xFFFF3B3B));
+  });
+
   testWidgets('Flow New dest allocates a second receive dest', (tester) async {
     _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-flow-recv-');
@@ -4991,6 +5016,60 @@ void main() {
     await tester.pump();
     expect(find.text('Not a Shear receive QR.'), findsOneWidget);
     expect(tester.widget<TextField>(toField).controller!.text, dest);
+  });
+
+  test('decodeReceiveQrImage reads a Continuum receive PNG (Windows Scan QR path)', () {
+    final id = createIdentity();
+    final she1 = id.paymentCodeFull;
+    expect(isFullPaymentCode(she1), isTrue);
+    final png = encodeReceiveQrPng(she1);
+    expect(png.length, greaterThan(32));
+    expect(decodeReceiveQrImage(png), she1);
+    expect(decodeReceiveQrImage(png), isNot(id.paymentCode));
+    expect(decodeReceiveQrImage(Uint8List.fromList([0, 1, 2, 3])), isNull);
+    final plugins = File('windows/flutter/generated_plugin_registrant.cc').readAsStringSync();
+    expect(plugins.contains('MobileScanner'), isFalse,
+        reason: 'mobile_scanner has no Windows plugin; Scan QR uses decodeReceiveQrImage');
+  });
+
+  testWidgets('Flow Scan QR opens shipped page and Windows decode fills To from a picked PNG', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-qr-win-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final she1 = session.identity!.paymentCodeFull;
+    final png = encodeReceiveQrPng(she1);
+    expect(decodeReceiveQrImage(png), she1);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ShearLedger(),
+      startUnlocked: true,
+      skipPoolSync: true,
+      pickQrImage: () async => png,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Flow').first);
+    await tester.pump();
+    expect(find.byKey(const Key('scan-qr')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('scan-qr')));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byType(ScanReceiveQrPage), findsOneWidget);
+    expect(find.byKey(const Key('scan-qr-page')), findsOneWidget);
+    if (!scanQrUsesLiveCamera()) {
+      expect(find.byType(MobileScanner), findsNothing);
+      expect(find.byKey(const Key('scan-qr-pick-button')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('scan-qr-pick-button')));
+    } else {
+      await tester.tap(find.byKey(const Key('scan-qr-pick')));
+    }
+    await tester.pump();
+    await tester.pump();
+    expect(find.byType(ScanReceiveQrPage), findsNothing);
+    final toField = find.byWidgetPredicate((w) =>
+        w is TextField && w.decoration is InputDecoration && (w.decoration as InputDecoration).labelText == 'To (full she1 payment code or ssa1)');
+    expect(tester.widget<TextField>(toField).controller!.text, she1);
   });
 
   testWidgets('lock gate Unlock with biometrics after Enable biometrics is sealed', (tester) async {
