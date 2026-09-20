@@ -261,7 +261,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/2.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.40" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.41" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -281,18 +281,18 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.40</strong> · miner <strong>2.5</strong>
+      wallet <strong>0.41</strong> · miner <strong>2.5</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.40">WALLET</a>
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.41">WALLET</a>
         <div class="client-menu" id="menu-wallet">
           <span data-pack="wallet-macos" class="coming-soon">macOS — coming soon</span>
-          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.40/shear-wallet-0.40-windows.zip">Windows</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.40/shear-wallet-0.40-android.apk">Android</a>
-          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.40/shear-wallet-0.40-linux.zip">Linux</a>
-          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.40/shear-wallet-0.40-archlinux.zip">Arch</a>
+          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.41/shear-wallet-0.41-windows.zip">Windows</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.41/shear-wallet-0.41-android.apk">Android</a>
+          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.41/shear-wallet-0.41-linux.zip">Linux</a>
+          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.41/shear-wallet-0.41-archlinux.zip">Arch</a>
         </div>
       </div>
       <div class="client-dd">
@@ -393,7 +393,7 @@
     </div>
     <section class="panel-card guide-wide" id="wallet-start">
       <h2>Start a wallet from scratch</h2>
-      <p>Current pin is <strong>0.40</strong>. Use the WALLET button above and pick your system. Magic <code>shear-testnet-v4</code> / ADMITv2. Hashbonus is on-chain to Copy dest after 6 confs; the pot auto-pays at π after 30 confs — Continuum is not instant while those clocks run. If Continuum stays 0 after 6+ confs while the pool shows sent, treat that as a wallet/sync bug. Docs live under <a href="https://shear.digital/docs/">https://shear.digital/docs/</a> (typed docs.shear.digital may fail TLS).</p>
+      <p>Current pin is <strong>0.41</strong>. Use the WALLET button above and pick your system. Magic <code>shear-testnet-v4</code> / ADMITv2. Hashbonus is on-chain to Copy dest after 6 confs; the pot auto-pays at π after 30 confs — Continuum is not instant while those clocks run. If Continuum stays 0 after 6+ confs while the pool shows sent, treat that as a wallet/sync bug. Docs live under <a href="https://shear.digital/docs/">https://shear.digital/docs/</a> (typed docs.shear.digital may fail TLS).</p>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
         <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
@@ -406,8 +406,8 @@
     </section>
     <section class="panel-card guide-wide" id="solo-mine">
       <h2>Solo mine</h2>
-      <p>ShearK-Miner <strong>2.5</strong>, CPU only. Solo is <strong>node + thin local stratum + CLI (or Continuum 0.40) + ShearK</strong> — not the full public pool. Log in with <strong>Copy dest</strong> (<code>ssa1.solo</code>). Your node finds the block: you keep the <strong>live epoch pot</strong> (starts at 1.00 SHE, falls 0.01 SHE per Vortex epoch to a 0.20 SHE floor) plus the hash bonus on that dest. No pool fee, no pool dashboard, no auto-payout custody.</p>
-      <p>Beginner path: OS deps → clone → RandomX + <code>crypto/native</code> → validating node → <code>npm run solo</code> (thin stratum on 127.0.0.1:1111) → CLI Copy dest → ShearK → confirm accepts. Continuum GUI 0.40 is optional. Never <code>npm run pool</code> for solo.</p>
+      <p>ShearK-Miner <strong>2.5</strong>, CPU only. Solo is <strong>node + thin local stratum + CLI (or Continuum 0.41) + ShearK</strong> — not the full public pool. Log in with <strong>Copy dest</strong> (<code>ssa1.solo</code>). Your node finds the block: you keep the <strong>live epoch pot</strong> (starts at 1.00 SHE, falls 0.01 SHE per Vortex epoch to a 0.20 SHE floor) plus the hash bonus on that dest. No pool fee, no pool dashboard, no auto-payout custody.</p>
+      <p>Beginner path: OS deps → clone → RandomX + <code>crypto/native</code> → validating node → <code>npm run solo</code> (thin stratum on 127.0.0.1:1111) → CLI Copy dest → ShearK → confirm accepts. Continuum GUI 0.41 is optional. Never <code>npm run pool</code> for solo.</p>
       <p>Solo must be near the public tip before mining. A lagging local height is a sync issue, not a miner or shareBits problem — catch up first (see stuck-sync below); do not wipe the datadir.</p>
       <h3>0. OS dependencies — copy/paste</h3>
       <p>Pick your OS. Each pane is a copy/paste install. Then continue with clone / RandomX / <code>crypto/native</code> below. Do not copy a macOS/Darwin <code>.node</code> onto Linux.</p>
@@ -648,7 +648,7 @@ dart run bin/shear.dart balance
 dart run bin/shear.dart history</pre>
         <button type="button" data-copy="solo-cli">Copy</button>
       </div>
-      <p><code>shear dest</code> prints the stable mining mailbox (Copy dest). Wallet 0.40 also syncs that node at <code>http://127.0.0.1:18332</code>. RPC stays on loopback.</p>
+      <p><code>shear dest</code> prints the stable mining mailbox (Copy dest). Wallet 0.41 also syncs that node at <code>http://127.0.0.1:18332</code>. RPC stays on loopback.</p>
       <h3>5. ShearK 2.5 + Copy dest login</h3>
       <p>Download miner <strong>2.5</strong> from the MINER button (not an older pin). Unzip. CLI <code>dest</code> or Continuum → <strong>Copy dest</strong> copies the <code>ssa1</code> on screen (it does not mint a new mailbox). ShearK login is that string plus a worker name.</p>
       <p>macOS / Linux:</p>
@@ -713,11 +713,11 @@ npm run solo
       else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
-        macos: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.40',
-        windows: BASE + '/0.40/shear-wallet-0.40-windows.zip',
-        android: BASE + '/0.40/shear-wallet-0.40-android.apk',
-        linux: BASE + '/0.40/shear-wallet-0.40-linux.zip',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.40'
+        macos: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.41',
+        windows: BASE + '/0.41/shear-wallet-0.41-windows.zip',
+        android: BASE + '/0.41/shear-wallet-0.41-android.apk',
+        linux: BASE + '/0.41/shear-wallet-0.41-linux.zip',
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.41'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {

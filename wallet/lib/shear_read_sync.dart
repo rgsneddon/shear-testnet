@@ -15,6 +15,21 @@ const kLocalPoolHttp = 'http://127.0.0.1:8088';
 const kLocalNodeRpc = 'http://127.0.0.1:18332';
 const kPublicPoolHttp = 'https://pool.shear.digital';
 
+/// Loopback RPC only. Public pool HTTP is never send-ready (IP rule).
+bool isLocalRpcUrl(String? url) {
+  if (url == null || url.isEmpty) return false;
+  final host = Uri.tryParse(url)?.host ?? '';
+  return host == '127.0.0.1' || host == 'localhost' || host == '::1';
+}
+
+bool isPublicPoolHttp(String? url) {
+  final s = (url ?? '').toLowerCase();
+  return s.contains('pool.shear.digital');
+}
+
+/// Tip sync may use public HTTP. Reserve/Flow spends must not.
+bool localSendReady(String? url) => isLocalRpcUrl(url) && !isPublicPoolHttp(url);
+
 /// True only for the live ADMITv2 book. A leftover v3/v2 node is dropped.
 bool isLiveBookStats(Map<String, dynamic> stats) {
   final blob = [

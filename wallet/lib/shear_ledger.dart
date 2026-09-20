@@ -33,10 +33,13 @@ bool pendingReceiveThinPoll(Iterable<ShearTx> txs) => txs.any((t) =>
     (t.kind == 'pool-withdraw' || t.kind == 'receive') && (t.height ?? 0) < 1);
 
 /// Full syncCredits only after confirm/timeout; thin tip/balance while pending.
+/// First unlock collate must still run even if a pending receive already exists.
 bool shouldFullSyncCredits({
   required bool hasPendingReceive,
   required bool historyBehindTip,
+  bool openCollatePending = false,
 }) {
+  if (openCollatePending) return true;
   if (hasPendingReceive) return false;
   return historyBehindTip;
 }
@@ -214,7 +217,7 @@ Future<Map<String, dynamic>> parseHistoryPayload(Map<String, dynamic> input) asy
     if (row is! Map) continue;
     var tx = ShearTx.fromJson(Map<String, dynamic>.from(row));
     if (tx.to.isEmpty && tx.from.isEmpty) continue;
-    if (tx.amount <= 0 && (tx.hashAmount == null || tx.hashAmount! <= 0) && tx.to.isEmpty) {
+    if (tx.amount <= 0 && (tx.hashAmount == null || tx.hashAmount! <= 0)) {
       continue;
     }
     named = named || tx.to.isNotEmpty || tx.from.isNotEmpty;
@@ -309,10 +312,16 @@ const kErrRangeProof = 'range proof failed';
 const kErrPublicHttp = 'node not running — sends would use the public node and show your IP';
 const kErrSyncTip = 'node not at tip — wait for sync';
 const kErrSendGeneric = 'not sent - try again';
+const kErrShortShe1 = 'paste full she1 from Receive (not fingerprint)';
 
 /// Flow send catch: map known failures; keep generic for unknown.
 String flowSendAdvisoryOf(Object error) {
   final msg = error.toString();
+  if (msg.contains(kErrShortShe1) ||
+      msg.contains('not fingerprint') ||
+      msg.contains('payment fingerprint')) {
+    return kErrShortShe1;
+  }
   if (msg.contains(kErrPublicHttp) || msg.contains('public node')) {
     return kErrPublicHttp;
   }
@@ -434,26 +443,50 @@ class ShearTx {
   bool get isBlockBundle =>
       kind == 'coinbase' || kind == 'blockfound' || kind == 'block' || kind == 'pot' || kind == 'mine';
 
-  factory ShearTx.fromJson(Map<String, dynamic> j) => ShearTx(
-        id: j['id']?.toString() ?? '',
-        from: j['from']?.toString() ?? '',
-        to: j['to']?.toString() ?? '',
-        amount: (j['amount'] as num?)?.toDouble() ?? 0,
-        kind: j['kind']?.toString() ?? '',
-        height: (j['height'] as num?)?.toInt(),
-        confirmed: j['confirmed'] is bool ? j['confirmed'] as bool : true,
-        memo: j['memo'] == true,
-        memoPlain: j['memoPlain']?.toString(),
-        memoCt: j['memoCt'] is Map ? Map<String, dynamic>.from(j['memoCt'] as Map) : null,
-        rounds: (j['rounds'] as num?)?.toInt(),
-        hashAmount: (j['hashAmount'] as num?)?.toDouble(),
-        threads: (j['threads'] as num?)?.toInt(),
-        pot: (j['pot'] as num?)?.toDouble(),
-        change: j['change']?.toString(),
-        atMs: (j['atMs'] as num?)?.toInt() ??
-            (j['ms'] as num?)?.toInt() ??
-            (j['timestamp'] as num?)?.toInt(),
-      );
+  factory ShearTx.fromJson(Map<String, dynamic> j) {
+    final kind = j['kind']?.toString() ?? '';
+    final amount = shearTxAmountFromJson(j);
+    var from = j['from']?.toString() ?? '';
+    if (from.isEmpty &&
+        (kind == 'coinbase' ||
+            kind == 'blockfound' ||
+            kind == 'block' ||
+            kind == 'pot' ||
+            kind == 'hash')) {
+      from = 'coinbase';
+    }
+    return ShearTx(
+      id: j['id']?.toString() ?? '',
+      from: from,
+      to: j['to']?.toString() ?? '',
+      amount: amount,
+      kind: kind,
+      height: (j['height'] as num?)?.toInt(),
+      confirmed: j['confirmed'] is bool ? j['confirmed'] as bool : true,
+      memo: j['memo'] == true,
+      memoPlain: j['memoPlain']?.toString(),
+      memoCt: j['memoCt'] is Map ? Map<String, dynamic>.from(j['memoCt'] as Map) : null,
+      rounds: (j['rounds'] as num?)?.toInt(),
+      hashAmount: (j['hashAmount'] as num?)?.toDouble() ??
+          (kind == 'hash' && amount > 0 ? amount : null),
+      threads: (j['threads'] as num?)?.toInt(),
+      pot: (j['pot'] as num?)?.toDouble(),
+      change: j['change']?.toString(),
+      atMs: (j['atMs'] as num?)?.toInt() ??
+          (j['ms'] as num?)?.toInt() ??
+          (j['timestamp'] as num?)?.toInt(),
+    );
+  }
+}
+
+/// Owner history may ship `amount` (SHE) or `nanos`. Never treat a nanos-only
+/// dest-opened row as a zero ShearView sum.
+double shearTxAmountFromJson(Map<String, dynamic> j) {
+  final amount = (j['amount'] as num?)?.toDouble();
+  if (amount != null && amount > 0) return amount;
+  final nanos = j['nanos'];
+  if (nanos is num && nanos > 0) return nanos / kUnitsPerShe;
+  return amount ?? 0;
 }
 
 bool isWalletBlockKind(String kind) =>
@@ -567,6 +600,7 @@ String shearviewKindLabel(ShearTx t, {required bool outgoing, required int confs
 String shearviewListTitle(ShearTx t, {required int confs, required bool outgoing}) {
   final kind = shearviewKindLabel(t, outgoing: outgoing, confs: confs);
   final h = t.height ?? 0;
+  if (h < 1) return 'pending  $kind  ${formatShe(t.amount)} SHE';
   final pending = confs >= 1 && confs < ShearLedger.continuumConfirmations;
   final status = pending ? 'pending  $kind' : kind;
   return 'h=$h  $status  ${formatShe(t.amount)} SHE';
@@ -712,6 +746,7 @@ class ShearLedger {
   /// Public she1 is a fingerprint (no spendPub in the payload). Derive the
   /// long-term spend pub from the seed so homeDest is destCommit, not destForLogin.
   void bindIdentity(ShearIdentity ident) {
+    _openCollated = false;
     _restFrame = ident.address;
     viewSecret = ident.viewKey;
     spendPub = decodePaymentCode(ident.paymentCode)?['spendPub'];
@@ -752,7 +787,11 @@ class ShearLedger {
     final notes = out['notes'];
     if (notes is List) {
       for (final n in notes) {
-        if (n is Map) rememberNote(Map<String, dynamic>.from(n));
+        if (n is Map) {
+          final row = Map<String, dynamic>.from(n);
+          rememberNote(row);
+          _creditNoteToShearview(row);
+        }
       }
     }
     final folds = out['hashFolds'];
@@ -803,6 +842,54 @@ class ShearLedger {
     }
   }
 
+  /// Turn an unwrapped dest-owned note into a ShearView row so open collate
+  /// does not wait for a later history/incoming delta. Hash folds stay in
+  /// [_applySealedScan]. Existing dest+height rows are filled, not duplicated.
+  void _creditNoteToShearview(Map<String, dynamic> note) {
+    final dest = (note['dest'] ?? note['address'])?.toString() ?? '';
+    if (dest.isEmpty) return;
+    final kind = (note['kind'] as String?) ?? 'receive';
+    if (kind == 'hash' || kind == 'dummy') return;
+    num? amt = note['amount'] as num?;
+    if (amt == null && note['nanos'] is num) {
+      amt = (note['nanos'] as num) / kUnitsPerShe;
+    }
+    if (amt == null || amt <= 0) return;
+    final h = (note['height'] as num?)?.toInt();
+    final isBlock = isWalletBlockKind(kind);
+    final commit = _noteBytes(note['commit']);
+    final tag = commit != null && commit.isNotEmpty
+        ? _bytesHex(commit).substring(0, commit.length < 8 ? commit.length * 2 : 16)
+        : '${dest.hashCode}';
+    final existing = _txs.indexWhere((t) {
+      if (t.to != dest) return false;
+      if ((t.height ?? 0) != (h ?? 0)) return false;
+      if (isBlock) return isWalletBlockKind(t.kind);
+      return t.kind == 'receive' || t.kind == kind || t.kind == 'send';
+    });
+    final id = existing >= 0
+        ? _txs[existing].id
+        : (isBlock && h != null && h > 0
+            ? 'blockfound:$h:$dest'
+            : (h != null && h > 0 ? 'note:$h:$dest:$tag' : 'note-pending:$dest:$tag'));
+    var atMs = _headerTimestampMs;
+    if (atMs != null && h != null && h > 0 && _sealedHeight >= h) {
+      atMs = atMs - (_sealedHeight - h) * kTargetBlockIntervalMs;
+    } else if (h == null || h < 1) {
+      atMs = null;
+    }
+    mergeChainTx(ShearTx(
+      id: id,
+      from: isBlock ? 'coinbase' : (note['from']?.toString() ?? 'pending'),
+      to: dest,
+      amount: amt.toDouble(),
+      kind: isBlock ? 'blockfound' : (kind == 'send' ? 'receive' : kind),
+      height: h,
+      confirmed: h != null && h > 0 && confirmationsOf(h) >= spendableConfirmations,
+      atMs: atMs,
+    ));
+  }
+
   /// Scan compacted vouts (chain persist drops r). Match noteCommit to dest20, unwrap rEph/rCt.
   /// Tests call this synchronously; the 1 Hz/full-sync path uses [Isolate.run] on [scanSealedVouts].
   void ingestSealedVouts(
@@ -842,6 +929,10 @@ class ShearLedger {
   int _settledHeight = 0;
   final Map<String, int> _historyAt = {};
   final Map<String, int> _notesAt = {};
+  /// First unlock notes-then-history collate finished. Thin pending-receive
+  /// ticks must not skip that first full pull.
+  bool _openCollated = false;
+  bool get openCollated => _openCollated;
   /// Height-1 header hex of the book this ledger is bound to.
   String? _chainGenesis;
 
@@ -886,6 +977,7 @@ class ShearLedger {
     _owedPiDisplay = 0;
     _historyAt.clear();
     _notesAt.clear();
+    _openCollated = false;
     _sealedHeight = 0;
     _settledHeight = 0;
     lag1Root = null;
@@ -1272,6 +1364,8 @@ class ShearLedger {
         hashAmount: prev.hashAmount ?? tx.hashAmount,
         threads: prev.threads ?? tx.threads,
         pot: prev.pot ?? tx.pot,
+        change: prev.change ?? tx.change,
+        atMs: tx.atMs ?? prev.atMs,
       );
       return;
     }
@@ -1329,7 +1423,10 @@ class ShearLedger {
       if (row is! Map) continue;
       final id = row['id']?.toString() ?? '';
       final to = row['to']?.toString() ?? '';
-      final amount = (row['amount'] as num?)?.toDouble() ?? 0;
+      var amount = (row['amount'] as num?)?.toDouble() ?? 0;
+      if (amount <= 0 && row['nanos'] is num) {
+        amount = (row['nanos'] as num).toDouble() / kUnitsPerShe;
+      }
       if (id.isEmpty || to.isEmpty || amount <= 0) continue;
       final kind = row['kind']?.toString() ?? 'receive';
       final height = (row['height'] as num?)?.toInt();
@@ -1666,7 +1763,10 @@ class ShearLedger {
   /// Pull Continuum from the silent mining dest and current Flow dest.
   /// Mining credits land on the silent dest. Do not query every historical dest.
   Future<double> syncCredits(String restFrame, {String? paymentCode, bool openMemos = false}) async {
-    if (pool == null) return spendableOwned(restFrame, paymentCode: paymentCode);
+    if (pool == null) {
+      _openCollated = true;
+      return spendableOwned(restFrame, paymentCode: paymentCode);
+    }
     keepOwnedDests(restFrame, paymentCode: paymentCode);
     final before = _settledHeight;
     try {
@@ -1722,6 +1822,7 @@ class ShearLedger {
         await syncHistory(key, openMemos: openMemos);
       } catch (_) {}
     }
+    _openCollated = true;
     return spendableOwned(restFrame, paymentCode: paymentCode);
   }
 
@@ -1789,13 +1890,11 @@ class ShearLedger {
       final txs = <ShearTx>[
         for (final raw in (parsed['txs'] as List? ?? const []))
           if (raw is Map) ShearTx.fromJson(Map<String, dynamic>.from(raw)),
-      ];
+      ].where((tx) =>
+          (tx.to.isNotEmpty || tx.from.isNotEmpty) &&
+          (tx.amount > 0 || (tx.hashAmount ?? 0) > 0)).toList();
       adoptLiveHistory(key, txs);
       for (final tx in txs) {
-        if (tx.to.isEmpty && tx.from.isEmpty) continue;
-        if (tx.amount <= 0 && (tx.hashAmount == null || tx.hashAmount! <= 0) && tx.to.isEmpty) {
-          continue;
-        }
         if (payKey(tx.to) == key && tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) {
           _dests.add(tx.to);
         }
@@ -2212,16 +2311,24 @@ class ShearLedger {
 
   /// Dedicated explorer list. Owner view: every landing (amount, dest, status)
   /// from 1 conf — never explorerRowPublic blanks. Hash sits inside the block row.
+  /// Height-less pending owner rows belong here too (open collate + live append).
   List<ShearTx> shearviewTxs(String address) {
     final rows = _ownedRolled(address).where((t) {
       if (t.kind == 'hash' || t.kind == 'sample') return false;
       if (t.to.isEmpty && t.from.isEmpty) return false;
+      if (t.amount <= 0 && (t.hashAmount == null || t.hashAmount! <= 0)) return false;
       final h = t.height ?? 0;
       if (isReservePendingKind(t)) {
         if (h < 1) return !t.confirmed;
         return confirmationsOf(h) >= 1;
       }
-      if (h < 1) return false;
+      if (h < 1) {
+        return !t.confirmed &&
+            (t.kind == 'receive' ||
+                t.kind == 'send' ||
+                t.kind == 'pool-withdraw' ||
+                isOwnerLanding(t));
+      }
       final confs = confirmationsOf(h);
       if (isOwnerLanding(t)) return confs >= 1;
       return confs >= continuumConfirmations;
@@ -2353,12 +2460,18 @@ class ShearLedger {
     }
     var destTo = to;
     SilentPay? pay;
+    if (isPaymentFingerprint(to) && sendKind == 'send') {
+      throw StateError(kErrShortShe1);
+    }
     if (isFullPaymentCode(to)) {
       pay = silentPay(to);
       if (pay == null) throw ArgumentError('bad_send');
       destTo = pay.dest;
     } else if (!isDestAddress(to) && sendKind == 'send') {
       throw ArgumentError('bad_send');
+    }
+    if (!local && pool != null && !localSendReady(pool!.baseUrl)) {
+      throw StateError(kErrPublicHttp);
     }
     if (sendKind == 'send' && destTo == from) {
       throw ArgumentError('same_dest');
