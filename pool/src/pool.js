@@ -2487,24 +2487,22 @@ export function createPool({
     payoutSweepBusy = true;
     const t0 = Date.now();
     console.error(JSON.stringify({ event: 'auto_payout_begin', at: t0 }));
-    setImmediate(() => {
-      try {
-        sweepAutoPayouts({ maxRows: PAYOUT_SWEEP_MAX_ROWS });
-      } catch (err) {
-        console.error(JSON.stringify({
-          event: 'auto_payout_error',
-          error: String(err && err.message ? err.message : err),
-        }));
-      } finally {
-        console.error(JSON.stringify({ event: 'auto_payout_end', ms: Date.now() - t0 }));
-        payoutSweepBusy = false;
-        if (payoutSweepAgain) {
-          payoutSweepAgain = false;
-          setImmediate(runAutoPayoutSweep);
-        }
+    try {
+      return sweepAutoPayouts({ maxRows: PAYOUT_SWEEP_MAX_ROWS });
+    } catch (err) {
+      console.error(JSON.stringify({
+        event: 'auto_payout_error',
+        error: String(err && err.message ? err.message : err),
+      }));
+      return [];
+    } finally {
+      console.error(JSON.stringify({ event: 'auto_payout_end', ms: Date.now() - t0 }));
+      payoutSweepBusy = false;
+      if (payoutSweepAgain) {
+        payoutSweepAgain = false;
+        setImmediate(runAutoPayoutSweep);
       }
-    });
-    return [];
+    }
   }
 
   function refreshOperatorSpendKey() {
@@ -2530,7 +2528,10 @@ export function createPool({
     const cap = Math.max(1, Math.floor(Number(maxRows) || PAYOUT_SWEEP_MAX_ROWS));
     let n = 0;
     for (const row of due) {
-      if (n >= cap) break;
+      if (n >= cap) {
+        payoutSweepAgain = true;
+        break;
+      }
       n += 1;
       const built = buildAutoPayoutTx({ from, to: row.dest, nanos: row.nanos, fee, spendKey });
       if (!built.ok) continue;
@@ -3024,6 +3025,7 @@ export function createPool({
     snapshotRound,
     paintStatsSnap,
     runAutoPayoutSweep,
+    sweepAutoPayouts,
     setP2p,
     restampJob: restampLiveHeader,
     sweepIdle: sweepIdleMiners,

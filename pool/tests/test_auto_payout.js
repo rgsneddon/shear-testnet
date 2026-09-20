@@ -156,8 +156,10 @@ describe('auto payout at π SHE to miner ssa1', () => {
     );
     pool.store.tip = () => ({ height: 40 });
     const before = pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos;
+    assert.equal(typeof pool.sweepAutoPayouts, 'function');
     pool.store.queueTx = () => ({ ok: false, reason: 'forced' });
     assert.equal(pool.runAutoPayoutSweep().length, 0);
+    assert.equal(pool.sweepAutoPayouts({ maxRows: 1 }).length, 0);
     assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos, before);
     pool.store.queueTx = (tx) => {
       assert.equal(verifyPoolWithdrawBound(tx).ok, true);
