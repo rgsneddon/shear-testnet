@@ -179,7 +179,7 @@ describe('brand pages', () => {
     assert.match(poolHtml, /id="addr"/);
     assert.match(poolHtml, /id="copy-cmd"/);
     assert.match(poolHtml, /ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker/);
-    assert.match(poolHtml, /ShearK-Miner-2\.4-linux\.zip/);
+    assert.match(poolHtml, /ShearK-Miner-2\.5-linux\.zip/);
     assert.doesNotMatch(poolHtml, /Private by default/);
     assert.doesNotMatch(poolHtml, /Proof of work only/);
     assert.doesNotMatch(poolHtml, /shewall\.json/);

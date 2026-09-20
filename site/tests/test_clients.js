@@ -110,14 +110,14 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /shear-wallet-0\.8-/);
     assert.match(html, /rgsneddon\/shear-testnet/);
     assert.doesNotMatch(html, /github\.com\/rgsneddon\/shear"/);
-    assert.match(html, /miner <strong>2\.4<\/strong>/);
+    assert.match(html, /miner <strong>2\.5<\/strong>/);
     assert.doesNotMatch(html, /sha256/);
     assert.match(html, /rgsneddon\/ShearK/);
     assert.doesNotMatch(html, /ShearK-Miner-1\.9-macos\.zip/);
     assert.doesNotMatch(html, /ShearK-Miner-1\.9-windows\.zip/);
     assert.doesNotMatch(html, /ShearK-Miner-1\.9-linux\.zip/);
-    assert.match(html, /ShearK-Miner-2\.4-windows\.zip/);
-    assert.match(html, /ShearK-Miner-2\.4-linux\.zip/);
+    assert.match(html, /ShearK-Miner-2\.5-windows\.zip/);
+    assert.match(html, /ShearK-Miner-2\.5-linux\.zip/);
     assert.match(html, /SmartScreen/);
     assert.match(html, /Authenticode/);
     assert.match(html, /Run anyway/);
@@ -193,7 +193,7 @@ describe('shear.digital client buttons', () => {
       assert.doesNotMatch(page, /shear-wallet-0\.13-/);
       assert.doesNotMatch(page, /shear-wallet-0\.12-/);
       assert.doesNotMatch(page, /shear-wallet-0\.11-/);
-      assert.match(page, /ShearK\/releases\/tag\/2\.4/, `${name} MINER must pin 2.4`);
+      assert.match(page, /ShearK\/releases\/tag\/2\.5/, `${name} MINER must pin 2.5`);
       assert.doesNotMatch(page, /ShearK\/releases\/tag\/1\.1/, `${name} must not offer miner 1.1`);
       assert.doesNotMatch(page, /ShearK\/releases\/tag\/1\.4/, `${name} must not offer miner 1.4`);
     }
@@ -309,7 +309,8 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /rustup\.rs/);
     assert.match(html, /git clone https:\/\/github\.com\/rgsneddon\/shear-testnet\.git/);
     assert.match(html, /crypto\/native/);
-    assert.match(html, /ShearK-Miner <strong>2\.4<\/strong>/);
+    assert.match(html, /ShearK-Miner <strong>2\.5<\/strong>/);
+    assert.match(html, /near the public tip/);
     assert.match(html, /Copy dest/);
     assert.match(html, /ssa1\.worker/);
     assert.match(html, /6 confirms/);
@@ -363,7 +364,7 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /How to mine/);
     assert.match(admin, /The Reserve/);
     assert.match(admin, /pool\.shear\.digital:1111/);
-    assert.match(admin, /ShearK-Miner 2\.4/);
+    assert.match(admin, /ShearK-Miner 2\.5/);
     assert.match(admin, /shear-wallet-0\.40-/);
     assert.match(admin, /shear-wallet-0\.40-windows\.zip/);
     assert.match(admin, /shear-wallet-0\.40-android\.apk/);

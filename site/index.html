@@ -259,7 +259,7 @@
       <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/2.4" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/2.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
       <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.40" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
@@ -281,7 +281,7 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.40</strong> · miner <strong>2.4</strong>
+      wallet <strong>0.40</strong> · miner <strong>2.5</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
@@ -296,10 +296,10 @@
         </div>
       </div>
       <div class="client-dd">
-        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/2.4">MINER</a>
+        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/2.5">MINER</a>
         <div class="client-menu" id="menu-miner">
-          <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/download/2.4/ShearK-Miner-2.4-windows.zip">Windows</a>
-          <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/download/2.4/ShearK-Miner-2.4-linux.zip">Linux</a>
+          <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/download/2.5/ShearK-Miner-2.5-windows.zip">Windows</a>
+          <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/download/2.5/ShearK-Miner-2.5-linux.zip">Linux</a>
         </div>
       </div>
       <div class="client-dd">
@@ -406,8 +406,9 @@
     </section>
     <section class="panel-card guide-wide" id="solo-mine">
       <h2>Solo mine</h2>
-      <p>ShearK-Miner <strong>2.4</strong>, CPU only. Solo is <strong>node + thin local stratum + CLI (or Continuum 0.40) + ShearK</strong> — not the full public pool. Log in with <strong>Copy dest</strong> (<code>ssa1.solo</code>). Your node finds the block: you keep the <strong>live epoch pot</strong> (starts at 1.00 SHE, falls 0.01 SHE per Vortex epoch to a 0.20 SHE floor) plus the hash bonus on that dest. No pool fee, no pool dashboard, no auto-payout custody.</p>
+      <p>ShearK-Miner <strong>2.5</strong>, CPU only. Solo is <strong>node + thin local stratum + CLI (or Continuum 0.40) + ShearK</strong> — not the full public pool. Log in with <strong>Copy dest</strong> (<code>ssa1.solo</code>). Your node finds the block: you keep the <strong>live epoch pot</strong> (starts at 1.00 SHE, falls 0.01 SHE per Vortex epoch to a 0.20 SHE floor) plus the hash bonus on that dest. No pool fee, no pool dashboard, no auto-payout custody.</p>
       <p>Beginner path: OS deps → clone → RandomX + <code>crypto/native</code> → validating node → <code>npm run solo</code> (thin stratum on 127.0.0.1:1111) → CLI Copy dest → ShearK → confirm accepts. Continuum GUI 0.40 is optional. Never <code>npm run pool</code> for solo.</p>
+      <p>Solo must be near the public tip before mining. A lagging local height is a sync issue, not a miner or shareBits problem — catch up first (see stuck-sync below); do not wipe the datadir.</p>
       <h3>0. OS dependencies — copy/paste</h3>
       <p>Pick your OS. Each pane is a copy/paste install. Then continue with clone / RandomX / <code>crypto/native</code> below. Do not copy a macOS/Darwin <code>.node</code> onto Linux.</p>
       <div class="os-tabs" id="solo-os-tabs">
@@ -648,8 +649,8 @@ dart run bin/shear.dart history</pre>
         <button type="button" data-copy="solo-cli">Copy</button>
       </div>
       <p><code>shear dest</code> prints the stable mining mailbox (Copy dest). Wallet 0.40 also syncs that node at <code>http://127.0.0.1:18332</code>. RPC stays on loopback.</p>
-      <h3>5. ShearK 2.4 + Copy dest login</h3>
-      <p>Download miner <strong>2.4</strong> from the MINER button (not an older pin). Unzip. CLI <code>dest</code> or Continuum → <strong>Copy dest</strong> copies the <code>ssa1</code> on screen (it does not mint a new mailbox). ShearK login is that string plus a worker name.</p>
+      <h3>5. ShearK 2.5 + Copy dest login</h3>
+      <p>Download miner <strong>2.5</strong> from the MINER button (not an older pin). Unzip. CLI <code>dest</code> or Continuum → <strong>Copy dest</strong> copies the <code>ssa1</code> on screen (it does not mint a new mailbox). ShearK login is that string plus a worker name.</p>
       <p>macOS / Linux:</p>
       <div class="copy-row">
         <pre id="solo-unix">./ShearK-Miner --selftest
@@ -720,11 +721,11 @@ npm run solo
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {
-        macos: SHEARK + '/tag/2.4',
-        windows: SHEARK + '/download/2.4/ShearK-Miner-2.4-windows.zip',
-        linux: SHEARK + '/download/2.4/ShearK-Miner-2.4-linux.zip',
-        android: SHEARK + '/tag/2.4',
-        ios: SHEARK + '/tag/2.4'
+        macos: SHEARK + '/tag/2.5',
+        windows: SHEARK + '/download/2.5/ShearK-Miner-2.5-windows.zip',
+        linux: SHEARK + '/download/2.5/ShearK-Miner-2.5-linux.zip',
+        android: SHEARK + '/tag/2.5',
+        ios: SHEARK + '/tag/2.5'
       };
       var node = 'https://github.com/rgsneddon/shear-testnet/tree/main/node';
       function bind(id, href) {
