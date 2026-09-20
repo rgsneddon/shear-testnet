@@ -408,6 +408,7 @@
       <h2>Solo mine</h2>
       <p>ShearK-Miner <strong>2.4</strong>, CPU only. Solo is <strong>node + thin local stratum + CLI (or Continuum 0.40) + ShearK</strong> — not the full public pool. Log in with <strong>Copy dest</strong> (<code>ssa1.solo</code>). Your node finds the block: you keep the <strong>live epoch pot</strong> (starts at 1.00 SHE, falls 0.01 SHE per Vortex epoch to a 0.20 SHE floor) plus the hash bonus on that dest. No pool fee, no pool dashboard, no auto-payout custody.</p>
       <p>Beginner path: OS deps → clone → RandomX + <code>crypto/native</code> → validating node → <code>npm run solo</code> (thin stratum on 127.0.0.1:1111) → CLI Copy dest → ShearK → confirm accepts. Continuum GUI 0.40 is optional. Never <code>npm run pool</code> for solo.</p>
+      <p>Solo must be near the public tip before mining. A lagging local height is a sync issue, not a miner or shareBits problem — catch up first (see stuck-sync below); do not wipe the datadir.</p>
       <h3>0. OS dependencies — copy/paste</h3>
       <p>Pick your OS. Each pane is a copy/paste install. Then continue with clone / RandomX / <code>crypto/native</code> below. Do not copy a macOS/Darwin <code>.node</code> onto Linux.</p>
       <div class="os-tabs" id="solo-os-tabs">

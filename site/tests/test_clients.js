@@ -310,6 +310,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /git clone https:\/\/github\.com\/rgsneddon\/shear-testnet\.git/);
     assert.match(html, /crypto\/native/);
     assert.match(html, /ShearK-Miner <strong>2\.4<\/strong>/);
+    assert.match(html, /near the public tip/);
     assert.match(html, /Copy dest/);
     assert.match(html, /ssa1\.worker/);
     assert.match(html, /6 confirms/);
