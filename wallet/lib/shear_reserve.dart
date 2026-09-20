@@ -28,6 +28,12 @@ const kReserveCutoffDisclaimer =
     'Fewer than $kReserveJoinCutoffDays days remain. New deposits still lock and can unlock a vote, even on a first Reserve deposit. They do not earn stake.';
 const kReserveAccruedLabel = 'Accrued rewards';
 
+String reserveEpochStillOpenCopy([int days = kReserveEpochDays]) =>
+    'The epoch is still open. Withdraw after $days days.';
+
+String reserveWithdrawDialogCopy([int days = kReserveEpochDays]) =>
+    'Return principal and $days-day APR interest to Continuum.\nThis settles the finished epoch.';
+
 bool extraMintAllowed(String programId) => programId == kReserveProgram;
 
 /// Full-epoch interest: floor(stakedNanos * epochBps / 10000). Never `* 400 / 365`.
@@ -37,7 +43,7 @@ int reserveInterestNanos(int stakedNanos, int epochBps, [int days = kReserveEpoc
   return (BigInt.from(stakedNanos) * BigInt.from(epochBps) ~/ BigInt.from(10000)).toInt();
 }
 
-/// Accrued: `floor(stakedNanos * bps * e / (10000 * EPOCH_MS))`. Caps at 400 days.
+/// Accrued: `floor(stakedNanos * bps * e / (10000 * EPOCH_MS))`. Caps at epoch length (4d testnet / 400d mainnet).
 int accruedNanos(int stakedNanos, int annualBps, int elapsedMs) {
   if (stakedNanos <= 0 || annualBps < 0 || elapsedMs <= 0) return 0;
   final ms = elapsedMs > kReserveEpochMs ? kReserveEpochMs : elapsedMs;

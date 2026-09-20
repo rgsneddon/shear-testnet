@@ -755,6 +755,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       tx: tx,
       spendableAfter: ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
       continuityRoot: ledger.lag1Root,
+      confs: ledger.confirmationsOf(tx.height ?? 0),
     );
   }
 
@@ -1179,7 +1180,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   String _shearviewSubtitle(ShearTx t) {
     return shearviewListSubtitle(
       t,
-      tipMs: ledger.observedIntervalMs == null ? null : null,
+      tipMs: ledger.tipTimestampMs,
       tipHeight: ledger.displayHeight,
       confs: ledger.confirmationsOf(t.height ?? 0),
     );
@@ -1327,7 +1328,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (spend == 0 && pending.isEmpty) ...[
         const SizedBox(height: 8),
         Text(
-          'Sync a local node at 127.0.0.1:18332. Hashbonus on Copy dest is spendable after 6 confs. The pot auto-pays at π SHE (${formatShe(kPiShe)}) after 30 confs — miner-page numbers are not Continuum spendable.',
+          'Sync a local node at 127.0.0.1:18332. Hashbonus on Copy dest is protocol-spendable after 6 confs unless credits are frozen. The pot auto-pays at π SHE (${formatShe(kPiShe)}) after 30 confs — miner-page numbers are not Continuum spendable.',
           key: const Key('continuum-empty-honesty'),
           style: TextStyle(color: shearMutedOf(context), fontSize: 12),
         ),
@@ -1420,7 +1421,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           _continuumStatRow(
             context,
             'Hash bonus',
-            '${ledger.liveHashBonusNanos ?? 1} unit(s)',
+            continuumHashBonusLabel(emittedNanos: ledger.hashBonusEmittedNanos),
             key: const Key('continuum-hash-bonus'),
           ),
           _continuumStatRow(
@@ -1676,6 +1677,22 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final dark = Theme.of(context).brightness == Brightness.dark;
     final bg = dark ? kCliDarkBg : kCliLightBg;
     final fg = dark ? kCliDarkFg : kCliLightFg;
+    final ident = id;
+    ShearTx? focused;
+    if (ident != null && _focusedTxId != null) {
+      for (final t in ledger.shearviewTxs(ident.address)) {
+        if (t.id == _focusedTxId) {
+          focused = t;
+          break;
+        }
+      }
+    }
+    final header = focused == null
+        ? ''
+        : resistanceTxHeader(
+            focused,
+            confs: ledger.confirmationsOf(focused.height ?? 0),
+          );
     return ColoredBox(
       key: const Key('resistance-cli'),
       color: bg,
@@ -1693,6 +1710,19 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               ),
             ),
             const SizedBox(height: 8),
+            if (header.isNotEmpty) ...[
+              SelectableText(
+                header,
+                key: const Key('resistance-tx-header'),
+                style: TextStyle(
+                  color: fg,
+                  fontFamily: 'Courier',
+                  fontSize: 12,
+                  height: 1.35,
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
             Expanded(
               child: Container(
                 color: bg,
@@ -1842,7 +1872,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (!reserve.epochIsOver(now) && !canPrev) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('The epoch is still open. Withdraw after 400 days.')),
+          SnackBar(content: Text(reserveEpochStillOpenCopy())),
         );
       }
       return;
@@ -1853,10 +1883,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       builder: (ctx) => AlertDialog(
         key: const Key('reserve-withdraw-sign'),
         title: const Text('Sign Reserve withdraw'),
-        content: const Text(
-          'Return principal and 400-day APR interest to Continuum.\n'
-          'This settles the finished epoch.',
-        ),
+        content: Text(reserveWithdrawDialogCopy()),
         actions: [
           TextButton(
             key: const Key('reserve-withdraw-sign-cancel'),
@@ -1876,7 +1903,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (out == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('The epoch is still open. Withdraw after 400 days.')),
+          SnackBar(content: Text(reserveEpochStillOpenCopy())),
         );
       }
       return;
@@ -2176,7 +2203,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             Text('Program staked  ${formatShe(reserve.totalStakedNanos / kUnitsPerShe)} SHE  ·  idle ${formatShe(reserve.totalIdleNanos / kUnitsPerShe)} SHE'),
             Text('Fee bank  ${formatShe(reserve.feeBankNanos / kUnitsPerShe)} SHE  ·  extra-minted ${formatShe(reserve.mintBankNanos / kUnitsPerShe)} SHE'),
             Text('Accrued (all portals)  ${formatShe(reserve.totalAccruedNanos / kUnitsPerShe)} SHE  ·  claimable ${formatShe(reserve.totalClaimableNanos / kUnitsPerShe)} SHE'),
-            Text('Live hash bonus  ${reserve.liveHashBonusNanos} unit(s)'),
+            Text('Live hash bonus  ${formatHashBonusShe(reserve.liveHashBonusNanos)} SHE/hash'),
             Text(
               reserve.bonusEnacted
                   ? 'Enacted +${reserve.enactedUp} / −${reserve.enactedDown} / hold ${reserve.enactedHold} → delta ${reserve.enactedDelta}, live bonus = ${reserve.enactedLiveBonus}'

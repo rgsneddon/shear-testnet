@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { PI_SHE_NANOS, RESERVE_EPOCH_MS } from './asert.js';
+import { PI_SHE_NANOS, RESERVE_EPOCH_MS, NANOS_PER_SHE, MAGIC_TESTNET, EPOCH_DAYS_TESTNET } from './asert.js';
 import {
   bootReserveEvm,
   callReserve,
@@ -15,12 +15,20 @@ import {
   decodeWithdraw,
   encodeObserveRate,
 } from './reserve_evm.js';
-import { NANOS_PER_SHE } from './asert.js';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const destA = 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
 const destB = 'ssa1ppppppppppppppppppppppppppppppppppppppppppppppppppppp';
 
 describe('Reserve bytecode on the Shear EVM', () => {
+  it('bootReserveEvm defaults to MAGIC_TESTNET', () => {
+    const src = fs.readFileSync(fileURLToPath(new URL('./reserve_evm.js', import.meta.url)), 'utf8');
+    assert.match(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET \}/);
+    assert.match(src, /shearMagicBytes\(network = MAGIC_TESTNET\)/);
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v4');
+  });
+
   it('deploys, takes a π lock, lets a late first deposit vote, and enacts +1', async () => {
     const s = await bootReserveEvm();
     const t0 = 1_700_000_000_000;
@@ -31,7 +39,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(view0.liveHashBonusNanos, 1);
     const v = await callReserve(s, encodeVote(destA, 1, t0 + 2));
     assert.equal(v.ok, true, v.reason);
-    const late = t0 + (400 - 98) * 86_400_000;
+    const epochMs = EPOCH_DAYS_TESTNET * 86_400_000;
+    const cutoffMs = Math.floor((99 * epochMs) / 400);
+    const late = t0 + epochMs - cutoffMs + 1_000;
     const bob = await callReserve(s, encodeDeposit(destB, PI_SHE_NANOS, late));
     assert.equal(bob.ok, true, bob.reason);
     const portalB = decodePortal((await callReserve(s, encodePortalOf(destB), { staticCall: true })).returnValue);

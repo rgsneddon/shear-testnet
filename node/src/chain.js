@@ -464,6 +464,14 @@ export function extraPotFeeNanos(extraVouts = [], wantPot) {
   return null;
 }
 
+/** Fail-closed: consensus ignores hashBonusCustodyDest unless SHEAR_ALLOW_HASHBONUS_CUSTODY=1. */
+export const HASHBONUS_CUSTODY_ALLOW_ENV = 'SHEAR_ALLOW_HASHBONUS_CUSTODY';
+
+export function allowedHashBonusCustodyDest(dest) {
+  if (String(process.env.SHEAR_ALLOW_HASHBONUS_CUSTODY || '').trim() !== '1') return '';
+  return dest && isDestAddress(dest) ? dest : '';
+}
+
 export function coinbaseTx({
   height, miner, samples = [], potShares = null, destOf = (a) => a, hashBonusNanos = HASH_BONUS_NANOS,
   shareBatch = null, poolDest = null, potNanos = BLOCK_SUBSIDY_NANOS,
@@ -472,9 +480,7 @@ export function coinbaseTx({
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const bonuses = hashBonusByMiner(samples, hashBonusNanos, shareBatch);
   const vout = [];
-  const custody = hashBonusCustodyDest && isDestAddress(hashBonusCustodyDest)
-    ? hashBonusCustodyDest
-    : '';
+  const custody = allowedHashBonusCustodyDest(hashBonusCustodyDest);
   let shares = potShares && potShares.length ? potShares : null;
   if (!shares) {
     if (custody) {
@@ -645,8 +651,8 @@ export function buildTemplate({
     samples: Array.isArray(samples) && samples.length ? collateSamples(samples) : collated,
     shareBatch: batch,
     miner,
-    poolDest: poolDest || hashBonusCustodyDest || '',
-    hashBonusCustodyDest: hashBonusCustodyDest || '',
+    poolDest: poolDest || allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
+    hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
   };
 }
 

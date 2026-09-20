@@ -8,6 +8,7 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { NANOS_PER_SHE } from '../../crypto/asert.js';
 import { createPullBook, PULL_COOLDOWN_MS, potCreditNanos, attributedPoolFeeNanos } from '../src/pull_book.js';
 import { publicMinerTag } from '../src/pool.js';
+import { handleWalletApi, owedPiFromPullBook } from '../src/wallet_api.js';
 
 describe('pool pull book', () => {
   it('credits 0.99 by work, withdraws confirmed only, no 24h cooldown', () => {
@@ -142,5 +143,34 @@ describe('pool pull book', () => {
     const sameTip = book.view(tag, { tipHeight: 40, need: 30 });
     assert.equal(sameTip.sentNanos, taken.nanos);
     assert.equal(sameTip.confirmedNanos, 0);
+  });
+
+  it('viewByDest and GET /api/wallet/balance emit dest-scoped owedPi below π', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-owed-'));
+    const book = createPullBook(dir);
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const tag = publicMinerTag(dest);
+    const pot = potCreditNanos();
+    assert.ok(pot > 0);
+    assert.equal(book.creditRound([{ tag, dest, count: 10 }], { height: 1, nanos: pot, now: 1 }).ok, true);
+    const byDest = book.viewByDest(dest, { tipHeight: 2, need: 30 });
+    const byTag = book.view(tag, { tipHeight: 2, need: 30 });
+    assert.equal(byDest.pendingNanos, byTag.pendingNanos);
+    assert.equal(byDest.unconfirmedNanos, pot);
+    assert.ok(byDest.pendingNanos > 0);
+    const store = { tip: () => ({ height: 2 }), getpolicy: () => ({ operational: { pool_merchant: 30 } }) };
+    const url = new URL(`http://127.0.0.1/api/wallet/balance?address=${dest}`);
+    const a = handleWalletApi(url, 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
+    const b = handleWalletApi(url, 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
+    assert.equal(a.status, 200);
+    assert.equal(b.status, 200);
+    const fields = owedPiFromPullBook(book, dest, { tipHeight: 2, need: 30 });
+    assert.equal(a.json.owedPi, fields.owedPi);
+    assert.equal(a.json.confirmingPot, fields.confirmingPot);
+    assert.equal(b.json.owedPi, a.json.owedPi);
+    assert.equal(b.json.confirmingPot, a.json.confirmingPot);
+    assert.ok(a.json.owedPi > 0);
+    assert.equal(a.json.owedPi, pot / NANOS_PER_SHE);
   });
 });

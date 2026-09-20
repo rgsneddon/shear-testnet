@@ -326,6 +326,14 @@ String formatHashBonusShe(int nanos) {
   return (n / kUnitsPerShe).toStringAsFixed(11);
 }
 
+/// Continuum hash-bonus meter: earned confirmed hash, never "unit(s)".
+String continuumHashBonusLabel({int? emittedNanos}) =>
+    '${formatHashBonusShe(emittedNanos ?? 0)} SHE earned';
+
+/// Amounts-only / no destProof: keep local owner notes and hash landings.
+bool keepLocalOwnerHistory({required bool amountsOnly, required bool destProof}) =>
+    amountsOnly && destProof != true;
+
 class ShearTx {
   const ShearTx({
     required this.id,
@@ -904,6 +912,9 @@ class ShearLedger {
   /// Continuum observed interval: average of all sealed blocks when the pool
   /// sent one; otherwise the last pair of headers.
   int? get observedIntervalMs => _avgBlockTimeMs ?? lastSealedHeaderDtMs;
+
+  /// Sealed tip header wall-clock (ms). ShearView date column. Not an interval.
+  int? get tipTimestampMs => _headerTimestampMs;
 
   void applyAvgBlockTimeMs(int? ms) {
     if (ms == null || ms < 0) return;
@@ -1725,8 +1736,10 @@ class ShearLedger {
         ])),
       };
       final parsed = await Isolate.run(() => parseHistoryPayload(input));
-      if (parsed['amountsOnly'] == true) {
-        prune();
+      if (keepLocalOwnerHistory(
+        amountsOnly: json['amountsOnly'] == true || parsed['amountsOnly'] == true,
+        destProof: json['destProof'] == true,
+      )) {
         return ownerHistory(address);
       }
       final txs = <ShearTx>[

@@ -315,6 +315,15 @@ describe('HTTP stats cannot stall', () => {
     assert.ok(PAYOUT_SWEEP_MS >= 5000);
     assert.match(src, /runAutoPayoutSweep/);
     assert.match(src, /setImmediate\(flushDirtyJob\)/);
+    assert.match(src, /PAYOUT_SWEEP_MAX_ROWS/);
+    const sweepAt = src.indexOf('function runAutoPayoutSweep()');
+    assert.ok(sweepAt >= 0);
+    const sweep = src.slice(sweepAt, sweepAt + 900);
+    assert.match(sweep, /setImmediate\(/);
+    const reload = fs.readFileSync(new URL('../../deploy/reload-stratum-units.sh', import.meta.url), 'utf8');
+    assert.match(reload, /SHEAR_STRATUM_BIND=127\.0\.0\.1/);
+    assert.match(reload, /SHEAR_STRATUM_AUTH=1/);
+    assert.match(reload, /ok: live stats match tip BIND\+AUTH units/);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pool-payout-paint-'));
     const id = newIdentity();
     const dest = freshStealthDest(id).dest;

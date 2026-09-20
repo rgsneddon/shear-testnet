@@ -17,11 +17,39 @@ String _hex(Uint8List b) =>
 
 /// CTF conclusion + receive-path for one ledger tx. Uses [destForLogin] /
 /// [closureCommit] / spendable credit — not a second story.
+/// Structured Resistance header: id, kind, status, confs, height. Not the CTF transcript.
+String resistanceTxHeader(ShearTx tx, {required int confs}) {
+  final h = tx.height ?? 0;
+  final status = !tx.confirmed
+      ? 'pending'
+      : (confs >= ShearLedger.spendableConfirmations ? 'spendable' : 'confirming');
+  final buf = StringBuffer();
+  buf.writeln('======== SHEAR TX  ${tx.id}  ========');
+  buf.writeln('kind        ${tx.kind}');
+  buf.writeln('status      $status');
+  buf.writeln('confs       $confs');
+  buf.writeln('height      $h');
+  buf.writeln('from        ${tx.from.isEmpty ? '(none)' : tx.from}');
+  buf.writeln('to          ${tx.to.isEmpty ? '(none)' : tx.to}');
+  buf.writeln('amount      ${formatShe(tx.amount)} SHE');
+  buf.writeln('confirmed   ${tx.confirmed}');
+  if (tx.hashAmount != null) buf.writeln('hashbonus   ${formatShe(tx.hashAmount!)} SHE');
+  if (tx.pot != null) buf.writeln('pot         ${formatShe(tx.pot!)} SHE');
+  if (tx.atMs != null) {
+    buf.writeln(
+      'date        ${DateTime.fromMillisecondsSinceEpoch(tx.atMs!, isUtc: true).toIso8601String()}',
+    );
+  }
+  buf.writeln('========');
+  return buf.toString();
+}
+
 String ctfTranscript({
   required ShearIdentity identity,
   required ShearTx tx,
   required double spendableAfter,
   Uint8List? continuityRoot,
+  int? confs,
 }) {
   final view = identity.viewKey;
   final height = tx.height ?? 1;
@@ -51,6 +79,7 @@ String ctfTranscript({
   buf.writeln('from        ${tx.from.isEmpty ? '(none)' : tx.from}');
   buf.writeln('to          ${tx.to.isEmpty ? '(none)' : tx.to}');
   buf.writeln('status      ${tx.confirmed ? 'spendable' : 'confirming'}');
+  if (confs != null) buf.writeln('confs       $confs');
   if (tx.hashAmount != null) buf.writeln('hashbonus   ${formatShe(tx.hashAmount!)} SHE');
   if (tx.pot != null) buf.writeln('pot         ${formatShe(tx.pot!)} SHE');
   if (tx.memoPlain != null && tx.memoPlain!.isNotEmpty) buf.writeln('snippet     ${tx.memoPlain}');

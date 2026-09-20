@@ -115,6 +115,7 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 - Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.40**. `--build-name=0.40.0` / pubspec `0.40.0+57`.
 - Pool HTTP: `/api/stats`, not `/stats`.
 - Operator admin vhost is **not** in git.
+- Stratum fleet: `SHEAR_STRATUM_BIND=127.0.0.1` and `SHEAR_STRATUM_AUTH=1` (or TLS in front of loopback). Reload with `deploy/reload-stratum-units.sh`. Checklist: `deploy/STRATUM_CHECKLIST.md`. Do not invent TLS certs.
 
 ### 6a) Android APK on this Windows box
 

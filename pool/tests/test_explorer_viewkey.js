@@ -8,6 +8,9 @@ import { destForLogin, memoSeal } from '../../crypto/flow_sheet.js';
 import { createStore } from '../../node/src/store.js';
 import { buildTemplate, mineTemplate, GENESIS_PREV } from '../../node/src/chain.js';
 import { handleWalletApi, searchExplorerTxs, explorerCirculation, networkSupply, poolRecentBlockTxs, publicBlockDetail, mempoolIncoming, sealedReservePaint } from '../src/wallet_api.js';
+import { createPullBook } from '../src/pull_book.js';
+import { publicMinerTag } from '../src/pool.js';
+import { potCreditNanos } from '../src/pull_book.js';
 import { HASH_BONUS_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
 import { bitsForBlock, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -324,6 +327,29 @@ describe('wallet pending incoming', () => {
     assert.equal(out.json.incoming[0].amount, 0.4);
     assert.equal(out.json.pending, 7 * HASH_BONUS_NANOS / NANOS_PER_SHE);
     assert.equal(mempoolIncoming(store, dest).length, 1);
+    assert.equal(out.json.owedPi, 0);
+    assert.equal(out.json.confirmingPot, 0);
+  });
+
+  it('balance owedPi matches dest-scoped pull-book pot still below π', () => {
+    const alice = newIdentity();
+    const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-owed-ex-'));
+    const store = createStore(dir);
+    const book = createPullBook(path.join(dir, 'pull'));
+    const tag = publicMinerTag(dest);
+    const pot = potCreditNanos();
+    assert.equal(book.creditRound([{ tag, dest, count: 10 }], { height: 1, nanos: pot, now: 1 }).ok, true);
+    const url = new URL(`http://127.0.0.1/api/wallet/balance?address=${dest}`);
+    const first = handleWalletApi(url, 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
+    const second = handleWalletApi(url, 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
+    const view = book.viewByDest(dest, { tipHeight: store.tip()?.height || 0, need: 30 });
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.equal(first.json.owedPi, view.pendingNanos / NANOS_PER_SHE);
+    assert.equal(first.json.confirmingPot, first.json.owedPi);
+    assert.equal(second.json.owedPi, first.json.owedPi);
+    assert.ok(first.json.owedPi > 0);
   });
 });
 
