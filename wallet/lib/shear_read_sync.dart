@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+
+import 'shear_tip_tick.dart';
 
 import 'shear_identity.dart' show kBookMagic;
 export 'shear_identity.dart' show kBookMagic;
@@ -79,8 +82,11 @@ String walletHonestyText({
   int failures = 0,
   int height = 0,
 }) {
-  if (!live && failures == 0 && wanted <= 0) return 'connecting…';
-  if (!live) return 'looking for a node…';
+  if (!live && failures == 0 && wanted <= 0 && height < 1) return 'connecting…';
+  if (!live) {
+    if (height > 0) return 'reconnecting · $height';
+    return 'looking for a node…';
+  }
   final pct = walletSyncPercent(proven: proven, wanted: wanted);
   final h = height > 0 ? height : wanted;
   if (pct >= 100) return h > 0 ? 'synchronised · $h' : 'synchronised';
@@ -183,13 +189,21 @@ class ShearReadSync {
   static const dropAfterFailures = 3;
 
   /// Headers 1…tip + compact blocks + jroot from the local (or configured) node.
-  /// Keeps [liveBase] across a new block. Does not re-probe seeds while live.
+  /// Re-ranks same-genesis seeds so a lagging local RPC cannot pin below the live tip.
   Future<void> followTip() async {
-    var base = liveBase;
-    if (base == null) {
-      base = await findLiveNode();
-      if (base == null) return;
+    try {
+      await _followTipBody().timeout(kWalletTipTimeout);
+    } on TimeoutException {
+      // Keep last good sampledTip. Caller retries next tick.
     }
+  }
+
+  Future<void> _followTipBody() async {
+    var base = liveBase;
+    if (base == null || !honest) {
+      base = await findLiveNode(keepOnMiss: liveBase != null);
+    }
+    if (base == null) return;
     final stats = await _getFirst(base, const ['/stats', '/api/stats']);
     if (stats == null) {
       noteFailure();
@@ -214,7 +228,14 @@ class ShearReadSync {
     await _proveJroot(base);
   }
 
-  Future<String?> findLiveNode() async {
+  int _firstMissing(Set<int> have, int tip) {
+    for (var h = 1; h <= tip; h++) {
+      if (!have.contains(h)) return h;
+    }
+    return tip + 1;
+  }
+
+  Future<String?> findLiveNode({bool keepOnMiss = false}) async {
     if (jitter > Duration.zero) {
       final cap = jitter.inMilliseconds;
       if (cap > 0) {
@@ -227,6 +248,7 @@ class ShearReadSync {
       if (p != null) probes[seed] = p;
     }
     if (probes.isEmpty) {
+      if (keepOnMiss && liveBase != null) return liveBase;
       _failures++;
       final shift = (_failures - 1).clamp(0, 6);
       _backoffUntil = DateTime.now().add(Duration(milliseconds: 1000 * (1 << shift)));
@@ -259,6 +281,7 @@ class ShearReadSync {
       }
     }
     if (best == null) {
+      if (keepOnMiss && liveBase != null) return liveBase;
       _failures++;
       final shift = (_failures - 1).clamp(0, 6);
       _backoffUntil = DateTime.now().add(Duration(milliseconds: 1000 * (1 << shift)));
@@ -288,7 +311,7 @@ class ShearReadSync {
   }
 
   Future<void> _proveHeaders(String base, int tip) async {
-    for (var from = 1; from <= tip; from += kNodeSyncHeaderPage) {
+    for (var from = _firstMissing(_proven, tip); from <= tip; from += kNodeSyncHeaderPage) {
       final to = from + kNodeSyncHeaderPage - 1 > tip ? tip : from + kNodeSyncHeaderPage - 1;
       var need = false;
       for (var h = from; h <= to; h++) {
@@ -337,7 +360,7 @@ class ShearReadSync {
   }
 
   Future<void> _proveCompactBlocks(String base, int tip) async {
-    for (var from = 1; from <= tip; from += kNodeSyncBlockPage) {
+    for (var from = _firstMissing(_compactProven, tip); from <= tip; from += kNodeSyncBlockPage) {
       final to = from + kNodeSyncBlockPage - 1 > tip ? tip : from + kNodeSyncBlockPage - 1;
       var need = false;
       for (var h = from; h <= to; h++) {

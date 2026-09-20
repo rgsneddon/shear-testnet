@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -14,6 +15,7 @@ import 'shear_admit.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
+import 'shear_tip_tick.dart';
 
 const kSheDecimals = 11;
 const kShePublicDigits = 9;
@@ -827,6 +829,15 @@ class ShearLedger {
     _chainGenesis = g;
   }
 
+  /// Last known sealed tip from shewall. Never apply 0 over a remembered height.
+  void restoreSealedTip(int height, {String? genesis}) {
+    if (genesis != null && genesis.trim().isNotEmpty) restoreChainGenesis(genesis);
+    final h = height;
+    if (h < 1) return;
+    if (h > _sealedHeight) _sealedHeight = h;
+    if (h + 1 > tipHeight) tipHeight = h + 1;
+  }
+
   /// Bind to the live book's genesis. A different genesis (testnet reset or
   /// testnet→mainnet) drops leftover txs/credits so Continuum cannot keep
   /// painting the prior chain. An old session archive has no genesis: the
@@ -946,6 +957,7 @@ class ShearLedger {
   void _advanceSealed(int sealedHeight) {
     final prev = _sealedHeight;
     if (sealedHeight < 1) {
+      // Unreachable/failed RPC must not paint 0 over a remembered tip.
       settleTo(_sealedHeight);
       return;
     }
@@ -1469,7 +1481,7 @@ class ShearLedger {
   Future<void> syncTip() async {
     if (pool == null) return;
     try {
-      await pool!.followLive();
+      await pool!.followLive().timeout(kWalletTipTimeout);
       final json = await pool!.stats();
       if (json['policy'] is Map) {
         applyPolicy(Map<String, dynamic>.from(json['policy'] as Map));

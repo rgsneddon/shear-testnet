@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -27,6 +28,7 @@ import 'package:shear_wallet/shear_social.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_levy.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
+import 'package:shear_wallet/shear_tip_tick.dart';
 import 'package:shear_wallet/shear_admit.dart';
 import 'package:shear_wallet/shear_native_prove.dart';
 import 'package:shear_wallet/shear_note.dart';
@@ -81,18 +83,18 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.39"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.40"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.39"'), isTrue);
+    expect(winMain.contains('L"Shear 0.40"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.39"'), isTrue);
+    expect(winRc.contains('"Shear 0.40"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.39"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.40"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -1277,8 +1279,8 @@ void main() {
         reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.39.0+56'));
-    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.39'"));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.40.0+57'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.40'"));
   });
 
   test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
@@ -1318,6 +1320,106 @@ void main() {
     );
     final syncSrc = File('lib/shear_read_sync.dart').readAsStringSync();
     expect(syncSrc.contains('[for (var h = 1; h <= sampledTip; h++) h]'), isFalse);
+  });
+
+  test('runTipAccrualTick clears busy after throw and hang so the next tick runs', () async {
+    var busy = false;
+    var runs = 0;
+    await runTipAccrualTick(
+      busy: busy,
+      setBusy: (v) => busy = v,
+      work: () async {
+        runs++;
+        throw StateError('syncTip');
+      },
+    );
+    expect(busy, isFalse);
+    expect(runs, 1);
+    await runTipAccrualTick(
+      busy: busy,
+      setBusy: (v) => busy = v,
+      work: () async {
+        runs++;
+      },
+    );
+    expect(runs, 2);
+    expect(busy, isFalse);
+    await runTipAccrualTick(
+      busy: busy,
+      setBusy: (v) => busy = v,
+      timeout: const Duration(milliseconds: 40),
+      work: () => Completer<void>().future,
+    );
+    expect(busy, isFalse);
+    await runTipAccrualTick(
+      busy: busy,
+      setBusy: (v) => busy = v,
+      work: () async {
+        runs++;
+      },
+    );
+    expect(runs, 3);
+    final mainSrc = File('lib/main.dart').readAsStringSync();
+    expect(mainSrc, contains('runTipAccrualTick'));
+    expect(File('lib/shear_tip_tick.dart').readAsStringSync(), contains('finally'));
+    expect(walletPollIsHot(tipMoved: false, pendingReceive: false, historyBehindTip: false), isFalse);
+    expect(walletPollIsHot(tipMoved: true, pendingReceive: false, historyBehindTip: false), isTrue);
+    final t0 = DateTime.fromMillisecondsSinceEpoch(0);
+    expect(
+      walletShouldPoll(lastPoll: t0, now: t0.add(const Duration(seconds: 1)), hot: true),
+      isTrue,
+    );
+    expect(
+      walletShouldPoll(
+        lastPoll: t0.add(const Duration(seconds: 10)),
+        now: t0.add(const Duration(seconds: 11)),
+        hot: false,
+      ),
+      isFalse,
+    );
+    expect(
+      walletShouldPoll(
+        lastPoll: t0.add(const Duration(seconds: 10)),
+        now: t0.add(const Duration(seconds: 14)),
+        hot: false,
+      ),
+      isTrue,
+    );
+  });
+
+  test('syncTip sealed height tracks the live source across new blocks', () async {
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 10);
+    live.headerAtHeight[1] = hex;
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool);
+    await ledger.syncTip();
+    expect(ledger.sealedHeight, 10);
+    for (var h = 11; h <= 16; h++) {
+      live.height = h;
+      await ledger.syncTip();
+      expect(ledger.sealedHeight, h, reason: 'sealed tip must track source without restart');
+    }
+  });
+
+  test('remembered sealed tip survives unlock with RPC down and is not overwritten by 0', () {
+    final ledger = ShearLedger();
+    ledger.restoreSealedTip(921);
+    expect(ledger.sealedHeight, 921);
+    expect(ledger.displayHeight, 921);
+    ledger.applyTipHex('', sealedHeight: 0);
+    expect(ledger.sealedHeight, 921);
+    expect(ledger.displayHeight, 921);
+    applyUserArchive(ledger, {
+      'dests': <String>[],
+      'sealedHeight': 930,
+      'txs': <Map<String, dynamic>>[],
+    });
+    expect(ledger.sealedHeight, 930);
+    expect(File('lib/main.dart').readAsStringSync(), contains('restoreSealedTip'));
   });
 
   test('scanSealedVouts and parseHistoryPayload are Isolate.run sendable', () async {
@@ -1410,7 +1512,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.39');
+    expect(kWalletVersion, '0.40');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -1866,8 +1968,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.39');
-    expect(kWalletVersion, '0.39');
+    expect(app.title, 'Shear 0.40');
+    expect(kWalletVersion, '0.40');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -4361,8 +4463,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.39 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.39');
+  test('kWalletVersion == 0.40 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.40');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -4432,6 +4534,7 @@ void main() {
     expect(walletHonestyText(live: true, proven: 5, wanted: 5), 'synchronised · 5');
     expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 0), 'connecting…');
     expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), 'looking for a node…');
+    expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1, height: 921), 'reconnecting · 921');
     expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), isNot('no network'));
     await sync.followTip();
     expect(nodeSyncHeights(1, 16), hasLength(16));
@@ -4639,6 +4742,36 @@ void main() {
         reason: 'identity change must re-prove node-sync headers, not skip');
     expect(flyclientSampleHeightsForTest(64).length, lessThan(64));
     expect(flyclientSampleHeightsForTest(64), containsAll([1, 2, 4, 8, 16, 32, 64]));
+  });
+
+  test('followTip re-ranks a lagging local node to a taller same-genesis seed', () async {
+    String hdr(int b) => List.filled(128, b).map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+    final g = hdr(0x44);
+    final local = _PoolLive(headerHex: g, height: 12);
+    final publicLive = _PoolLive(headerHex: g, height: 80);
+    local.headerAtHeight[1] = g;
+    publicLive.headerAtHeight[1] = g;
+    final localServer = await _fakePool(live: local);
+    final publicServer = await _fakePool(live: publicLive);
+    addTearDown(() => localServer.close(force: true));
+    addTearDown(() => publicServer.close(force: true));
+    final localUrl = 'http://127.0.0.1:${localServer.port}';
+    final publicUrl = 'http://127.0.0.1:${publicServer.port}';
+    final sync = ShearReadSync(
+      seeds: [localUrl, publicUrl],
+      http: _realHttp(),
+      jitter: Duration.zero,
+    );
+    sync.liveBase = localUrl;
+    sync.sampledTip = 12;
+    await sync.followTip();
+    expect(sync.liveBase, publicUrl);
+    expect(sync.sampledTip, 80);
+    for (var h = 81; h <= 86; h++) {
+      publicLive.height = h;
+      await sync.followTip();
+      expect(sync.sampledTip, h, reason: 'followTip must track source tip without restart');
+    }
   });
 
   testWidgets('0.20 lock card still present after 6s; vote at π; no claim-hashes', (tester) async {

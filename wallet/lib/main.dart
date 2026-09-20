@@ -26,8 +26,9 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
+import 'shear_tip_tick.dart';
 
-const kWalletVersion = '0.39';
+const kWalletVersion = '0.40';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
@@ -102,7 +103,7 @@ class ShearWalletApp extends StatefulWidget {
   ShearWalletAppState createState() => ShearWalletAppState();
 }
 
-class ShearWalletAppState extends State<ShearWalletApp> {
+class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObserver {
   late final ShearSession session = widget.session ?? ShearSession();
   late final ShearLedger ledger = widget.ledger ?? ShearLedger(pool: ShearPoolClient());
   late final ShearBiometrics biometrics = widget.biometrics ?? const NoBiometrics();
@@ -134,6 +135,15 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   String? _focusedTxId;
   Timer? _accrualTick;
   Timer? _preloginTick;
+  bool _tipBusy = false;
+  bool _creditBusy = false;
+  bool _accrualPaused = false;
+  DateTime _lastPersist = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastPoll = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastVault = DateTime.fromMillisecondsSinceEpoch(0);
+  int _lastPaintSealed = -1;
+  int _lastPaintSpendable = 0;
+  int _lastPaintPending = 0;
   Map<String, dynamic>? _pullOffer;
   bool _pullPrompting = false;
   final Set<String> _handledPullIds = {};
@@ -154,6 +164,7 @@ class ShearWalletAppState extends State<ShearWalletApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _tabScroll = List.generate(kTabs.length, (_) => ScrollController());
     _boot();
   }
@@ -172,10 +183,24 @@ class ShearWalletAppState extends State<ShearWalletApp> {
       c.dispose();
     }
     _depositsScroll.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     _accrualTick?.cancel();
     _preloginTick?.cancel();
     _reserveLockHold?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _accrualPaused = true;
+      _accrualTick?.cancel();
+      _accrualTick = null;
+      return;
+    }
+    if (state != AppLifecycleState.resumed) return;
+    _accrualPaused = false;
+    if (unlocked && !widget.skipPoolSync) _startAccrualTick(immediate: true);
   }
 
   Future<void> _boot() async {
@@ -501,6 +526,10 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     ledger.bindIdentity(id!);
     ledger.bindVaultDest(restFrame: id!.address, viewKey: id!.viewKey);
     ledger.restoreDests(session.rememberedDests);
+    ledger.restoreSealedTip(
+      session.rememberedSealedHeight,
+      genesis: session.rememberedChainGenesis,
+    );
     if (session.rememberedTxs.isNotEmpty) {
       applyUserArchive(ledger, {
         'dests': session.rememberedDests,
@@ -543,36 +572,67 @@ class ShearWalletAppState extends State<ShearWalletApp> {
     // Do not build a CTF transcript for every sealed row on unlock — that
     // froze Shearview when history was hundreds of bundled blocks.
     if (mounted) setState(() => unlocked = true);
-    _accrualTick?.cancel();
     _syncJoinRoster();
     if (id != null && !widget.skipPoolSync) unawaited(_syncVaults(id!));
-    var tipBusy = false;
-    var creditBusy = false;
     if (widget.skipPoolSync && widget.demoTx) unawaited(_playDemoLive());
-    var lastPersist = DateTime.fromMillisecondsSinceEpoch(0);
-    _accrualTick = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted || !unlocked) return;
-      if (widget.skipPoolSync) {
+    _startAccrualTick(immediate: true);
+    if (widget.demoTx) {
+      unawaited(_playDemoLive());
+    }
+  }
+
+  void _startAccrualTick({bool immediate = false}) {
+    _accrualTick?.cancel();
+    if (widget.skipPoolSync) {
+      _accrualTick = Timer.periodic(kWalletHotPoll, (_) {
+        if (!mounted || !unlocked) return;
         setState(() {});
+      });
+      return;
+    }
+    Future<void> tick() async {
+      if (!mounted || !unlocked || _accrualPaused) return;
+      final ident = id;
+      if (ident == null) return;
+      final pendingThin = pendingReceiveThinPoll([
+        ...ledger.pendingTxs(ident.address),
+        ...ledger.ownerHistory(ident.address),
+      ]);
+      final hot = walletPollIsHot(
+        tipMoved: ledger.sealedHeight != _lastPaintSealed,
+        pendingReceive: pendingThin,
+        historyBehindTip: ledger.historyBehindTip,
+      );
+      final now = DateTime.now();
+      if (!immediate && !walletShouldPoll(lastPoll: _lastPoll, now: now, hot: hot)) {
         return;
       }
-      _syncJoinRoster();
-      final ident = id;
-      if (ident != null && !tipBusy) {
-        tipBusy = true;
-        unawaited(() async {
-          await ledger.syncTip();
-          await _syncVaults(ident);
-          final pendingThin = pendingReceiveThinPoll([
+      immediate = false;
+      _lastPoll = now;
+      await runTipAccrualTick(
+        busy: _tipBusy,
+        setBusy: (v) => _tipBusy = v,
+        work: () async {
+          final before = ledger.sealedHeight;
+          try {
+            await ledger.syncTip().timeout(kWalletTipTimeout);
+          } catch (_) {}
+          final tipMoved = ledger.sealedHeight != before;
+          if (tipMoved || now.difference(_lastVault) >= kWalletVaultGap) {
+            _lastVault = DateTime.now();
+            _syncJoinRoster();
+            await _syncVaults(ident);
+          }
+          final thin = pendingReceiveThinPoll([
             ...ledger.pendingTxs(ident.address),
             ...ledger.ownerHistory(ident.address),
           ]);
           final full = shouldFullSyncCredits(
-            hasPendingReceive: pendingThin,
+            hasPendingReceive: thin,
             historyBehindTip: ledger.historyBehindTip,
           );
-          if (!creditBusy) {
-            creditBusy = true;
+          if (!_creditBusy) {
+            _creditBusy = true;
             try {
               if (full) {
                 await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
@@ -580,23 +640,32 @@ class ShearWalletAppState extends State<ShearWalletApp> {
                 await ledger.syncBalancesOnly(ident.address, paymentCode: ident.paymentCode);
               }
               _rememberLedger();
-              final now = DateTime.now();
-              if (now.difference(lastPersist) >= const Duration(seconds: 15)) {
-                lastPersist = now;
+              final persistAt = DateTime.now();
+              if (persistAt.difference(_lastPersist) >= const Duration(seconds: 15)) {
+                _lastPersist = persistAt;
                 unawaited(session.persist());
               }
             } finally {
-              creditBusy = false;
+              _creditBusy = false;
             }
           }
-          tipBusy = false;
-          if (mounted) setState(() {});
-        }());
-      }
-    });
-    if (widget.demoTx) {
-      unawaited(_playDemoLive());
+          final spendUnits = (ledger.spendable(ident.address) * 1e9).round();
+          final pendingN = ledger.pendingTxs(ident.address).length;
+          final dirty = ledger.sealedHeight != _lastPaintSealed
+              || spendUnits != _lastPaintSpendable
+              || pendingN != _lastPaintPending
+              || tipMoved;
+          if (dirty && mounted) {
+            _lastPaintSealed = ledger.sealedHeight;
+            _lastPaintSpendable = spendUnits;
+            _lastPaintPending = pendingN;
+            setState(() {});
+          }
+        },
+      );
     }
+    if (immediate) unawaited(tick());
+    _accrualTick = Timer.periodic(kWalletHotPoll, (_) { unawaited(tick()); });
   }
 
   /// Deprecated: pool auto-pays π SHE to miner ssa1. Wallet pull is gone.
