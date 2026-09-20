@@ -6,6 +6,7 @@ import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, POOL_FEE_BPS, SPENDABLE_CONFIRMA
 import { isDestAddress, hash20FromAddress } from './address.js';
 import { aLeavesFromShares, destOfShare, noteCommitOfShare } from './share_batch.js';
 import { noteCommitOfDest20, verifySealedNote, asU8 } from './note.js';
+import { poolFeeDest } from './levy.js';
 
 function ncHex(buf) {
   try {
@@ -15,11 +16,44 @@ function ncHex(buf) {
   }
 }
 
+function pushPotPay(out, address, nanos, kind, noteCommit) {
+  if (!(nanos > 0) || !address) return;
+  out.push({
+    address,
+    nanos,
+    kind: kind || 'pot',
+    ...(noteCommit ? { noteCommit } : {}),
+  });
+}
+
+/** Sealed pot noteCommit is the pool dest and verifies as pot-after-fee (custodyPotShares). */
+export function sealedPotIsCustody(block, poolDest, potNanos = BLOCK_SUBSIDY_NANOS) {
+  if (!poolDest || !isDestAddress(poolDest)) return false;
+  const dest20 = hash20FromAddress(poolDest);
+  if (!dest20) return false;
+  const want = noteCommitOfDest20(dest20);
+  const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
+  const rest = pot - Math.floor(pot * POOL_FEE_BPS / 10000);
+  if (!(rest > 0)) return false;
+  for (const tx of block?.txs || []) {
+    if (!tx?.coinbase) continue;
+    for (const o of tx.vout || []) {
+      const kind = String(o.kind || 'pot');
+      if (kind === 'hash' || kind === 'pool-fee' || kind === 'finder-fee' || kind === 'reserve-fee') continue;
+      if (!noteCommitEq(o.noteCommit, want)) continue;
+      if (o.commit && verifySealedNote(o, rest)) return true;
+    }
+  }
+  return false;
+}
+
 export function expectedCoinbasePays(shareBatch, {
   miner,
   poolDest,
   hashBonusNanos = HASH_BONUS_NANOS,
   potNanos = BLOCK_SUBSIDY_NANOS,
+  custodialPot = false,
+  feeDest = '',
 } = {}) {
   hashBonusNanos = hashBonusUnitNanos(hashBonusNanos);
   const batch = Array.isArray(shareBatch) ? shareBatch : [];
@@ -46,6 +80,21 @@ export function expectedCoinbasePays(shareBatch, {
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const fee = pool ? Math.floor(pot * POOL_FEE_BPS / 10000) : 0;
   const rest = pot - fee;
+  if (custodialPot && pool) {
+    const poolNc = noteCommitOfDest20(hash20FromAddress(pool));
+    pushPotPay(out, pool, rest, 'pot', poolNc);
+    const fd = feeDest && isDestAddress(feeDest) ? feeDest : pool;
+    if (fee > 0) {
+      if (fd === pool) {
+        const existing = out.find((s) => s.kind === 'pot' && s.address === pool);
+        if (existing) existing.nanos += fee;
+        else pushPotPay(out, pool, fee, 'pot', poolNc);
+      } else {
+        pushPotPay(out, fd, fee, 'pool-fee', noteCommitOfDest20(hash20FromAddress(fd)));
+      }
+    }
+    return out;
+  }
   const total = leaves.reduce((a, l) => a + l.count, 0);
   if (!total) {
     if (miner && isDestAddress(miner)) {
@@ -196,12 +245,17 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
   for (const b of blocks || []) {
     const h = Number(b?.height) || 0;
     if (!(h > 0 && (tip - h + 1) >= need)) continue;
+    const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
+    const pool = b.poolDest || '';
+    const custodialPot = !!(pool && sealedPotIsCustody(b, pool, potNanos));
     const pays = [
       ...expectedCoinbasePays(b.shareBatch || [], {
         miner: b.miner,
-        poolDest: b.poolDest || '',
+        poolDest: pool,
         hashBonusNanos,
-        potNanos: Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS,
+        potNanos,
+        custodialPot,
+        feeDest: custodialPot ? poolFeeDest() : '',
       }),
       ...paysFromALeaves(b.aLeaves || [], { hashBonusNanos }),
     ];
@@ -220,12 +274,17 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
                 const d = hash20FromAddress(p.address);
                 return d && Buffer.from(d).equals(Buffer.from(dest20));
               });
-            if (hit) n = Number(hit.nanos || 0);
-            else if (isDestAddress(b.miner) && hash20FromAddress(b.miner)
-              && Buffer.from(hash20FromAddress(b.miner)).equals(Buffer.from(dest20))
-              && String(o.kind || 'pot') !== 'hash'
-              && String(o.kind || '') !== 'pool-fee') {
-              n = BLOCK_SUBSIDY_NANOS - Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
+            const hitN = Math.floor(Number(hit?.nanos || 0));
+            if (hit && hitN > 0 && verifySealedNote(o, hitN)) n = hitN;
+            else {
+              const sealedV = Math.floor(Number(o.valueProof?.v != null ? o.valueProof.v : 0));
+              if (sealedV > 0 && verifySealedNote(o, sealedV)) n = sealedV;
+              else if (isDestAddress(b.miner) && hash20FromAddress(b.miner)
+                && Buffer.from(hash20FromAddress(b.miner)).equals(Buffer.from(dest20))
+                && String(o.kind || 'pot') !== 'hash'
+                && String(o.kind || '') !== 'pool-fee') {
+                n = BLOCK_SUBSIDY_NANOS - Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
+              }
             }
           }
           if (!n) {

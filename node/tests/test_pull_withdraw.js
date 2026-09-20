@@ -226,10 +226,17 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       assert.equal(got.json.ok, false);
       assert.equal(got.json.reason, 'auto_payout');
       assert.equal(got.status, 410);
-      const built = buildAutoPayoutTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee });
+      const poolBox = spendBox(newIdentity());
+      const built = buildAutoPayoutTx({
+        from: poolBox.dest,
+        to: dest,
+        nanos: PI_SHE_NANOS,
+        fee,
+        spendKey: poolBox.key,
+      });
       assert.equal(built.ok, true, built.reason);
-      assert.equal(built.tx.from, pool);
-      assert.equal(built.tx.sponsor, pool);
+      assert.equal(built.tx.from, poolBox.dest);
+      assert.equal(built.tx.sponsor, poolBox.dest);
       assert.equal(built.tx.fee, fee);
       assert.equal(built.tx.kind, 'pool-withdraw');
       assert.equal(built.tx.poolPaysFee, true);
