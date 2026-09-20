@@ -246,6 +246,15 @@
         linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
       background-origin:border-box; background-clip:padding-box, border-box;
     }
+    #freeze-banner {
+      text-align:center; margin:4px 0 8px; padding:10px 12px;
+      font-size:.95rem; font-weight:750; color:#7a3b00;
+      background:#fff6e0; border:1px solid #e0a84a;
+    }
+    #freeze-banner[hidden] { display:none !important; }
+    html[data-theme="dark"] #freeze-banner {
+      color:#ffe14a; background:#2a1a08; border-color:#e08a4c;
+    }
     #fee-note {
       color: #3a6fb5; font-size: .8rem; margin: 8px 0 0; line-height: 1.4; font-weight: 650;
       text-shadow: 0 0 6px rgba(74,159,224,.45), 0 0 12px rgba(26,111,181,.22);
@@ -355,6 +364,7 @@
       </section>
     </div>
     <div id="testnet-banner" role="status">TESTNET</div>
+    <p id="freeze-banner" role="status" hidden></p>
     <p id="fee-note">Pool fee is 1% of the 1 SHE pot. Hash bonuses pay in full to each hasher dest. Rewards share the block pot by round work after the 1% pool fee — not one SHE per block you found.</p>
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
@@ -762,7 +772,16 @@
         meter.setAttribute('aria-valuetext', bitsWord(bits));
       }
     }
+    function paintFreezeBanner(el, s) {
+      if (!el) return;
+      const frozen = !!(s && s.frozen);
+      const policy = (s && s.policy) || {};
+      const line = frozen ? String(policy.freeze_banner || s.freeze_banner || '') : '';
+      el.hidden = !line;
+      el.textContent = line;
+    }
     function paint(s) {
+      paintFreezeBanner(document.getElementById('freeze-banner'), s);
       document.getElementById('coin').textContent = s.coin || 'SHE';
       document.getElementById('algo').textContent = s.personalisation || 'ShearHash-v3';
       document.getElementById('miners-n').textContent = String(s.miners || 0);

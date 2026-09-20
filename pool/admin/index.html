@@ -54,6 +54,15 @@
     th { color:var(--muted); font-size:.72rem; letter-spacing:.04em; text-transform:uppercase; }
     td.num { font-variant-numeric:tabular-nums; }
     .paused-flag { color:var(--err); font-weight:750; }
+    #freeze-banner {
+      text-align:center; margin:8px 0; padding:10px 12px;
+      font-size:.95rem; font-weight:750; color:#7a3b00;
+      background:#fff6e0; border:1px solid #e0a84a;
+    }
+    #freeze-banner[hidden] { display:none !important; }
+    html[data-theme="dark"] #freeze-banner {
+      color:#ffe14a; background:#2a1a08; border-color:#e08a4c;
+    }
     #advise.card { width:100%; margin:12px 0; padding:18px 20px; text-align:center; }
     #advise .advise-title {
       margin:4px 0 8px; font-weight:800; letter-spacing:.12em; text-transform:uppercase;
@@ -176,6 +185,7 @@
     </div>
 
     <div id="desk" class="hid">
+      <p id="freeze-banner" role="status" hidden></p>
       <div class="grid" id="health"></div>
 
       <div class="card">
@@ -331,6 +341,14 @@
       if (s < 60) return s + 's';
       if (s < 3600) return Math.floor(s / 60) + 'm';
       return Math.floor(s / 3600) + 'h';
+    }
+    function paintFreezeBanner(el, s) {
+      if (!el) return;
+      const frozen = !!(s && s.frozen);
+      const policy = (s && s.policy) || {};
+      const line = frozen ? String(policy.freeze_banner || s.freeze_banner || '') : '';
+      el.hidden = !line;
+      el.textContent = line;
     }
     function cell(h, n) {
       return '<div class="card"><div class="label">' + h + '</div><div class="value">' + n + '</div></div>';
@@ -496,6 +514,7 @@
       paused = !!h.json.paused;
       void h;
       $('pulse').innerHTML = paused ? '<span class="paused-flag">paused</span>' : 'live';
+      paintFreezeBanner($('freeze-banner'), h.json);
       $('health').innerHTML = [
         cell('Height', h.json.height || 0),
         cell('Job', h.json.jobId || '—'),

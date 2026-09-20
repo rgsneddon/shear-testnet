@@ -1500,6 +1500,20 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         primary: false,
         padding: const EdgeInsets.all(16),
         children: [
+          if (ledger.creditsFrozen) ...[
+            Text(
+              ledger.freezeBanner.isNotEmpty
+                  ? ledger.freezeBanner
+                  : 'Credits frozen (${ledger.freezeReason.isEmpty ? 'policy' : ledger.freezeReason}): confirmations elevated to ${ledger.confirmedNeed}.',
+              key: const Key('continuum-freeze-banner'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.error,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           if (wide)
             IntrinsicHeight(
               child: Row(

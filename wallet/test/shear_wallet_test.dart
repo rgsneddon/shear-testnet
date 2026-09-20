@@ -979,17 +979,72 @@ void main() {
     expect(ledger.confirmedNeed, 30);
     ledger.applyPolicy({
       'frozen': true,
-      'operational': {'pool_merchant': 30},
+      'freeze_reason': 'h_ratio',
+      'freeze_banner': 'Credits frozen (h_ratio): confirmations elevated to 60.',
+      'operational': {'pool_merchant': 60},
     });
     expect(ledger.creditsFrozen, isTrue);
+    expect(ledger.freezeReason, 'h_ratio');
+    expect(ledger.freezeBanner, contains('h_ratio'));
+    expect(ledger.freezeBanner, contains('elevated'));
+    expect(ledger.confirmedNeed, 60);
     ledger.confirmRound(address: id.address, pot: 1, height: 1);
     ledger.settleTo(12);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
     ledger.applyPolicy({'frozen': false, 'operational': {'pool_merchant': 30}});
+    expect(ledger.creditsFrozen, isFalse);
+    expect(ledger.freezeBanner, isEmpty);
+    expect(ledger.confirmedNeed, 30);
     ledger.settleTo(12);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 1);
     ledger.bounceHeights([1]);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(1));
+  });
+
+  testWidgets('Continuum freeze banner shows reason and elevated confirms when frozen', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-freeze-banner-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ledger = ShearLedger();
+    ledger.applyPolicy({
+      'frozen': true,
+      'freeze_reason': 'h_ratio',
+      'freeze_banner': 'Credits frozen (h_ratio): confirmations elevated to 60.',
+      'operational': {'pool_merchant': 60},
+    });
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('continuum-freeze-banner')), findsOneWidget);
+    expect(find.text('Credits frozen (h_ratio): confirmations elevated to 60.'), findsOneWidget);
+  });
+
+  testWidgets('Continuum freeze banner is hidden when not frozen', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-freeze-banner-off-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ShearLedger(),
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('continuum-freeze-banner')), findsNothing);
   });
 
   test('shewall.bin password seal restores address and balances; JSON refused', () async {

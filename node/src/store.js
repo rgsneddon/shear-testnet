@@ -48,6 +48,7 @@ import {
   applySignals,
   getpolicy as policyView,
   hashRatioFromHours,
+  hourlyWorkBuckets,
 } from '../../crypto/confirm_policy.js';
 
 function toRow(block) {
@@ -337,15 +338,7 @@ export function createStore(dir, {
   }
 
   function hourlyWork(nowMs) {
-    const buckets = Array(24).fill(0);
-    for (const b of blocks) {
-      const ts = blockTimeMs(b);
-      const ago = nowMs - ts;
-      if (ago < 0 || ago >= 24 * 3_600_000) continue;
-      const i = 23 - Math.floor(ago / 3_600_000);
-      if (i >= 0 && i < 24) buckets[i] += workOfBlock(b);
-    }
-    return buckets;
+    return hourlyWorkBuckets(blocks, nowMs, { workOf: workOfBlock, timeOf: blockTimeMs });
   }
 
   function sideLeadWork() {
