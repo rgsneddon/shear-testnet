@@ -207,7 +207,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
     assert.doesNotMatch(disk, /ssa1/);
   });
 
-  it('bound auto-pay credits pulled only after successful queueTx; unsigned is refused', () => {
+  it('bound auto-pay credits pulled only after successful queueTx; unsigned is refused', async () => {
     const dest = ssa1();
     const poolBox = spendBox(newIdentity());
     const unsigned = poolWithdrawTx({
@@ -235,14 +235,14 @@ describe('auto payout at π SHE to miner ssa1', () => {
     const before = pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos;
     assert.equal(typeof pool.sweepAutoPayouts, 'function');
     pool.store.queueTx = () => ({ ok: false, reason: 'forced' });
-    assert.equal(pool.runAutoPayoutSweep().length, 0);
-    assert.equal(pool.sweepAutoPayouts({ maxRows: 1 }).length, 0);
+    assert.equal((await pool.runAutoPayoutSweep()).length, 0);
+    assert.equal((await pool.sweepAutoPayouts({ maxRows: 1 })).length, 0);
     assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos, before);
     pool.store.queueTx = (tx) => {
       assert.equal(verifyPoolWithdrawBound(tx).ok, true);
       return { ok: true, tx };
     };
-    const sent = pool.runAutoPayoutSweep();
+    const sent = await pool.runAutoPayoutSweep();
     assert.equal(sent.length, 1);
     assert.ok(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos > before);
     pool.close();
@@ -298,7 +298,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
     assert.match(main, /operatorSpendKey: boot\.operatorSpendKey/);
   });
 
-  it('auto-pay sweep reloads a matching pool-spend.seed dropped after boot', () => {
+  it('auto-pay sweep reloads a matching pool-spend.seed dropped after boot', async () => {
     const dest = ssa1();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-reload-'));
     const boot = bootPoolOperator({ dataDir: dir });
@@ -324,7 +324,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
       bound.push(ok);
       return { ok, tx };
     };
-    assert.equal(pool.runAutoPayoutSweep().length, 0);
+    assert.equal((await pool.runAutoPayoutSweep()).length, 0);
     assert.deepEqual(bound, []);
     const skipped = pool.publicStats().autoPayoutLastError;
     assert.equal(skipped?.reason, 'unsigned');
@@ -332,7 +332,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
     assert.match(skipped.fromRedacted, /^ssa1\*{8}/);
     assert.equal(JSON.stringify(skipped).includes(boot.miner), false);
     fs.writeFileSync(seedPath, seedHex, { mode: 0o600 });
-    const sent = pool.runAutoPayoutSweep();
+    const sent = await pool.runAutoPayoutSweep();
     assert.equal(sent.length, 1);
     assert.deepEqual(bound, [true]);
     assert.equal(pool.publicStats().autoPayoutLastError, null);
@@ -368,7 +368,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
     assert.notEqual(queued.reason, 'insufficient');
   });
 
-  it('sweep takeConfirmed after a funded custody queue; lastPullMs advances', () => {
+  it('sweep takeConfirmed after a funded custody queue; lastPullMs advances', async () => {
     const dest = ssa1();
     const poolBox = spendBox(newIdentity());
     const hasherA = spendDestOf(newIdentity().spendPub);
@@ -390,7 +390,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
     const before = pool.pullBook.view(tag, { tipHeight: 40, need: 30 });
     assert.equal(before.lastPullMs, 0);
     assert.ok(before.confirmedNanos >= PI_SHE_NANOS);
-    const sent = pool.runAutoPayoutSweep();
+    const sent = await pool.runAutoPayoutSweep();
     assert.equal(sent.length, 1, JSON.stringify(sent));
     const after = pool.pullBook.view(tag, { tipHeight: 40, need: 30 });
     assert.ok(after.lastPullMs > 0);
@@ -422,7 +422,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
       have: 1,
       need: PI_SHE_NANOS,
     });
-    assert.equal(pool.runAutoPayoutSweep().length, 0);
+    assert.equal((await pool.runAutoPayoutSweep()).length, 0);
     const statsErr = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     assert.equal(statsErr.autoPayoutLastError?.reason, 'insufficient');
     assert.equal(statsErr.autoPayoutLastError?.tag, tag);
@@ -437,12 +437,54 @@ describe('auto payout at π SHE to miner ssa1', () => {
       assert.equal(verifyPoolWithdrawBound(tx).ok, true);
       return { ok: true, tx };
     };
-    assert.equal(pool.runAutoPayoutSweep().length, 1);
+    assert.equal((await pool.runAutoPayoutSweep()).length, 1);
     const statsOk = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     assert.equal(statsOk.autoPayoutLastError, null);
     const minerOk = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${tag}`).then((r) => r.json());
     assert.equal(minerOk.autoPayoutLastError, undefined);
     dumpScratch('stats-ok.json', statsOk);
+    pool.close();
+  });
+
+  it('yields so /api/stats progresses under a slow queueTx', async () => {
+    const dest = ssa1();
+    const poolBox = spendBox(newIdentity());
+    const hasherA = spendDestOf(newIdentity().spendPub);
+    const hasherB = spendDestOf(newIdentity().spendPub);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-payout-yield-'));
+    const pool = createPool({
+      dataDir: dir,
+      miner: poolBox.dest,
+      operatorSpendKey: poolBox.key,
+      stratumPort: 0,
+      httpPort: 0,
+    });
+    injectMatureCustody(pool.store, poolBox.dest, [hasherA, hasherB], { pots: 4, tipHeight: 40 });
+    const tag = publicMinerTag(dest);
+    pool.pullBook.creditRound(
+      [{ tag, dest, count: 10 }],
+      { height: 1, nanos: PI_SHE_NANOS, hashByDest: new Map() },
+    );
+    const httpPort = await listenHttp(pool);
+    pool.paintStatsSnap();
+    const orig = pool.store.queueTx.bind(pool.store);
+    pool.store.queueTx = (tx) => new Promise((resolve) => {
+      setTimeout(() => {
+        assert.equal(verifyPoolWithdrawBound(tx).ok, true);
+        resolve(orig(tx));
+      }, 600);
+    });
+    const sweepP = pool.runAutoPayoutSweep();
+    const t0 = Date.now();
+    const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+    const dt = Date.now() - t0;
+    assert.equal(stats.ok, true, JSON.stringify(stats));
+    assert.ok(stats.stratumBind);
+    assert.ok(stats.loginAuth);
+    assert.ok(dt < 300, `/api/stats stalled ${dt}ms during slow queueTx`);
+    const sent = await sweepP;
+    assert.equal(sent.length, 1, JSON.stringify(sent));
+    dumpScratch('payout-yield-stats.json', { dt, stats, sent });
     pool.close();
   });
 

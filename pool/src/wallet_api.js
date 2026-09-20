@@ -545,7 +545,7 @@ export function findSealedBlock(store, q) {
   return null;
 }
 
-/** Public CTF CLI for one confirmed block. No rest-frame, silent ID, view-key, or memo body. */
+/** Public tx detail for one confirmed block. No rest-frame, silent ID, view-key, or memo body. */
 export function publicBlockDetail(store, id) {
   const b = findSealedBlock(store, id);
   if (!b) return null;
@@ -984,13 +984,15 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         return '';
       }
     }).filter(Boolean);
+    const spendTags = [...(live.spendTags || [])];
+    // Public pool HTTP is count-only |J| until soak ≥10k notes. Full pubs stay on local RPC.
     return {
       status: 200,
       json: {
         ok: true,
         jroot: root.toString('hex'),
-        pubs,
-        spendTags: [...(live.spendTags || [])],
+        noteCount: pubs.length,
+        spendTagCount: spendTags.length,
       },
     };
   }
@@ -1204,7 +1206,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     let ephPub = body.ephPub || null;
     if (isDestAddress(rawTo)) {
       to = rawTo;
-    } else if (isFullPaymentCode(rawTo)) {
+    } else if (isFullPaymentCode(rawTo) || isPaymentCode(rawTo)) {
       return { status: 400, json: { ok: false, reason: 'need_dest' } };
     }
     const amount = Number(body.amount);

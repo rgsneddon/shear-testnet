@@ -114,6 +114,11 @@ export const STATS_REFRESH_MS = 400;
 export const PAYOUT_SWEEP_MS = Math.max(5000, Number(process.env.SHEAR_PAYOUT_SWEEP_MS) || 5000);
 /** One due miner per tick so a slow queueTx cannot monopolize the loop. */
 export const PAYOUT_SWEEP_MAX_ROWS = 1;
+/** Wall-clock budget for one sweep pass. Remaining due rows reschedule. */
+export const PAYOUT_SWEEP_BUDGET_MS = Math.max(
+  20,
+  Number(process.env.SHEAR_PAYOUT_SWEEP_BUDGET_MS) || 200,
+);
 const HASH_WORKER = fileURLToPath(new URL('./hash_worker.js', import.meta.url));
 const HASH_WORKER_TIMEOUT_MS = 15_000;
 /** Cap in-flight RandomX verifies so a junk submit flood cannot stall HTTP. */
@@ -535,6 +540,51 @@ export function stratumBindHost(override) {
   return h || '127.0.0.1';
 }
 
+/** Loopback (or empty → default loopback) is the unit BIND. */
+export function isLoopbackBind(host) {
+  const h = String(host || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return h === '' || h === '127.0.0.1' || h === '::1' || h === 'localhost';
+}
+
+/**
+ * Ops-drift: non-loopback bind with AUTH off. Alert on /api/stats.
+ * Refuse-start only when a prod profile is set — testnet soak still boots.
+ */
+export function stratumDriftAlert({ bind, requireLoginAuth } = {}) {
+  const host = stratumBindHost(bind);
+  return !isLoopbackBind(host) && requireLoginAuth !== true;
+}
+
+export function stratumProdProfile({
+  env = process.env,
+  prodProfile,
+} = {}) {
+  if (prodProfile === true) return true;
+  if (prodProfile === false) return false;
+  const e = env || {};
+  return String(e.SHEAR_STRATUM_PROD_PROFILE || '') === '1'
+    || String(e.SHEAR_NETWORK || '') === 'shear-v1';
+}
+
+export function stratumDriftShouldRefuse({
+  bind,
+  requireLoginAuth,
+  prodProfile,
+  env = process.env,
+} = {}) {
+  return stratumProdProfile({ env, prodProfile })
+    && stratumDriftAlert({ bind, requireLoginAuth });
+}
+
+/** tip unit defaults vs soak drop-in. Override with SHEAR_STRATUM_CONFIG_SOURCE. */
+export function stratumConfigSourceOf({ bind, requireLoginAuth, env = process.env } = {}) {
+  const forced = String((env || {}).SHEAR_STRATUM_CONFIG_SOURCE || '').trim();
+  if (forced === 'unit' || forced === 'drop-in') return forced;
+  const host = stratumBindHost(bind);
+  if (isLoopbackBind(host) && requireLoginAuth === true) return 'unit';
+  return 'drop-in';
+}
+
 export function explorerHostList() {
   const extra = String(process.env.SHEAR_EXPLORER_HOST || '')
     .split(',')
@@ -584,10 +634,13 @@ export function statsAlerts({
   shareBlockRatio: ratio,
   concentration = ALERT_CONCENTRATION,
   shareBlock = ALERT_SHARE_BLOCK,
+  stratumBind,
+  requireLoginAuth,
 } = {}) {
   return {
     concentration: Number(pct) >= Number(concentration),
     shareBlock: Number(ratio) >= Number(shareBlock),
+    stratumDrift: stratumDriftAlert({ bind: stratumBind, requireLoginAuth }),
   };
 }
 
@@ -2338,7 +2391,10 @@ export function createPool({
         shareBlockRatio: (Number(stats.blocks) || 0) > 0
           ? (Number(stats.accepted) || 0) / Number(stats.blocks)
           : 0,
+        stratumBind,
+        requireLoginAuth,
       }),
+      stratumConfigSource: stratumConfigSourceOf({ bind: stratumBind, requireLoginAuth }),
       stratumCleartext: true,
       stratumCleartextWarning: 'Stratum is cleartext TCP unless TLS is configured in front of SHEAR_STRATUM_BIND.',
       autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
@@ -2490,27 +2546,32 @@ export function createPool({
   function runAutoPayoutSweep() {
     if (payoutSweepBusy) {
       payoutSweepAgain = true;
-      return [];
+      return Promise.resolve([]);
     }
     payoutSweepBusy = true;
     const t0 = Date.now();
     console.error(JSON.stringify({ event: 'auto_payout_begin', at: t0 }));
-    try {
-      return sweepAutoPayouts({ maxRows: PAYOUT_SWEEP_MAX_ROWS });
-    } catch (err) {
-      console.error(JSON.stringify({
-        event: 'auto_payout_error',
-        error: String(err && err.message ? err.message : err),
-      }));
-      return [];
-    } finally {
-      console.error(JSON.stringify({ event: 'auto_payout_end', ms: Date.now() - t0 }));
-      payoutSweepBusy = false;
-      if (payoutSweepAgain) {
-        payoutSweepAgain = false;
-        setImmediate(runAutoPayoutSweep);
+    return (async () => {
+      try {
+        return await sweepAutoPayouts({
+          maxRows: PAYOUT_SWEEP_MAX_ROWS,
+          budgetMs: PAYOUT_SWEEP_BUDGET_MS,
+        });
+      } catch (err) {
+        console.error(JSON.stringify({
+          event: 'auto_payout_error',
+          error: String(err && err.message ? err.message : err),
+        }));
+        return [];
+      } finally {
+        console.error(JSON.stringify({ event: 'auto_payout_end', ms: Date.now() - t0 }));
+        payoutSweepBusy = false;
+        if (payoutSweepAgain) {
+          payoutSweepAgain = false;
+          setImmediate(runAutoPayoutSweep);
+        }
       }
-    }
+    })();
   }
 
   function refreshOperatorSpendKey() {
@@ -2539,7 +2600,10 @@ export function createPool({
     try { paintStatsSnap(); } catch { /* ignore */ }
   }
 
-  function sweepAutoPayouts({ maxRows = PAYOUT_SWEEP_MAX_ROWS } = {}) {
+  async function sweepAutoPayouts({
+    maxRows = PAYOUT_SWEEP_MAX_ROWS,
+    budgetMs = PAYOUT_SWEEP_BUDGET_MS,
+  } = {}) {
     const tipH = Number(store.tip?.()?.height || 0);
     const need = typeof store.getpolicy === 'function'
       ? (store.getpolicy().operational?.pool_merchant || 30)
@@ -2551,6 +2615,7 @@ export function createPool({
     const sent = [];
     const fee = levyNanos(0, { depth: mempoolDepthBytes(store.mempool || []) });
     const cap = Math.max(1, Math.floor(Number(maxRows) || PAYOUT_SWEEP_MAX_ROWS));
+    const budget = Math.max(20, Math.floor(Number(budgetMs) || PAYOUT_SWEEP_BUDGET_MS));
     if (!spendKey && due.length) {
       const row = due[0];
       console.error(JSON.stringify({
@@ -2567,12 +2632,18 @@ export function createPool({
       });
       return [];
     }
+    const t0 = Date.now();
     let n = 0;
     for (const row of due) {
       if (n >= cap) {
         payoutSweepAgain = true;
         break;
       }
+      if (n > 0 && Date.now() - t0 >= budget) {
+        payoutSweepAgain = true;
+        break;
+      }
+      await new Promise((resolve) => { setImmediate(resolve); });
       n += 1;
       const built = buildAutoPayoutTx({ from, to: row.dest, nanos: row.nanos, fee, spendKey });
       if (!built.ok) {
@@ -2593,7 +2664,7 @@ export function createPool({
         continue;
       }
       const q0 = Date.now();
-      const queued = queueSend(built.tx);
+      const queued = await Promise.resolve(queueSend(built.tx));
       console.error(JSON.stringify({
         event: 'queue_tx_ms',
         id: built.tx && built.tx.id,

@@ -63,7 +63,7 @@ Shear pool book:
 
 ## Ports
 
-- Stratum: `127.0.0.1:1111` behind a TLS terminator (`SHEAR_STRATUM_BIND=127.0.0.1`, `SHEAR_STRATUM_AUTH=1`). Dev dest-only is `SHEAR_STRATUM_AUTH=0`. Do not recommend bare `0.0.0.0:1111` in production. Confirm via `/api/stats` (`stratumBind`, `loginAuth`). This tree does not ship TLS certificates.
+- Stratum: `127.0.0.1:1111` behind a TLS terminator (`SHEAR_STRATUM_BIND=127.0.0.1`, `SHEAR_STRATUM_AUTH=1`). Dev dest-only is `SHEAR_STRATUM_AUTH=0`. Do not recommend bare `0.0.0.0:1111` in production. Confirm via `/api/stats` (`stratumBind`, `loginAuth`). `alerts.stratumDrift` is true when bind is non-loopback and AUTH is off. Do not enable dest-ban without ownership once AUTH is on. This tree does not ship TLS certificates. Reload: `deploy/reload-stratum-units.sh`.
 - Dashboard: nginx `pool.shear.digital` (TLS) reverse-proxied to the pool HTTP
 
 ## UI

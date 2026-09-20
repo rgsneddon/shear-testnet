@@ -68,7 +68,7 @@ describe('bootPoolOperator matching spend seed', () => {
     assert.equal(again.miner, boot.miner);
   });
 
-  it('mismatched seed is signed=false and auto-pay stays need_spend_key', () => {
+  it('mismatched seed is signed=false and auto-pay stays need_spend_key', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ident-mismatch-'));
     const boot = bootPoolOperator({ dataDir: dir });
     assert.equal(boot.signed, true);
@@ -109,7 +109,7 @@ describe('bootPoolOperator matching spend seed', () => {
       bound.push(verifyPoolWithdrawBound(tx).ok === true);
       return { ok: true, tx };
     };
-    assert.equal(pool.runAutoPayoutSweep().length, 0);
+    assert.equal((await pool.runAutoPayoutSweep()).length, 0);
     assert.deepEqual(bound, []);
     const err = pool.publicStats().autoPayoutLastError;
     assert.equal(err?.reason, 'unsigned');
