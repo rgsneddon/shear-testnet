@@ -278,31 +278,42 @@ describe('solo submit share vs block', () => {
     }
   });
 
-  it('header hash that meets blockBits calls submitHeader', { timeout: 120_000 }, async () => {
+  it('header hash that meets blockBits appends', { timeout: 300_000 }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-block-'));
     const store = createStore(dir);
+    const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1', restampMs: 0 });
+    const bound = await stratum.listen();
     const dest = destMiner();
-    const { job } = store.template({ miner: dest, shareBits: SHARE_FLOOR_BITS, bits: 1 });
-    assert.equal(Number(job.blockBits || job.bits), 1);
-    const found = await findBlockHit({ headerHex: job.header, bits: 1, max: 256n });
-    let submitCalls = 0;
-    const orig = store.submitHeader.bind(store);
-    store.submitHeader = (args) => {
-      submitCalls += 1;
-      void orig;
-      return { ok: true };
-    };
-    const got = applySoloSubmit({
-      store,
-      jobId: job.jobId,
-      nonce: found.nonce,
-      claimed: found.hash,
-      dest,
-    });
-    assert.equal(got.ok, true, got.reason);
-    assert.equal(got.block, true);
-    assert.equal(submitCalls, 1);
-    assert.equal(store.blocks.length, 0);
+    let sock;
+    try {
+      const heightBefore = store.tip()?.height || 0;
+      const nBefore = store.blocks.length;
+      const logged = await loginSolo(bound.port, dest, SHARE_FLOOR_BITS);
+      sock = logged.sock;
+      const job = logged.msg.job;
+      assert.ok(job?.jobId);
+      const found = await findBlockHit({
+        headerHex: job.header,
+        bits: Number(job.blockBits || job.bits),
+        max: 3_000_000n,
+      });
+      const reply = await submitAndReply(sock, {
+        id: 2,
+        method: 'submit',
+        params: {
+          jobId: job.jobId,
+          nonce: String(found.nonce),
+          hash: found.hash,
+        },
+      }, 30_000);
+      assert.equal(reply.error, undefined, reply.error);
+      assert.equal(reply.result?.status, 'OK');
+      assert.equal(store.tip()?.height, heightBefore + 1);
+      assert.equal(store.blocks.length, nBefore + 1);
+    } finally {
+      try { sock?.destroy(); } catch { /* ignore */ }
+      stratum.close();
+    }
   });
 
   it('mismatched claimed hash is rejected and does not append', { timeout: 180_000 }, async () => {
