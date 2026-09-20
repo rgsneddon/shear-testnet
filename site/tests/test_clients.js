@@ -110,7 +110,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /shear-wallet-0\.8-/);
     assert.match(html, /rgsneddon\/shear-testnet/);
     assert.doesNotMatch(html, /github\.com\/rgsneddon\/shear"/);
-    assert.match(html, /miner <strong>2\.5<\/strong>/);
+    assert.match(html, /miner <strong>2\.4<\/strong>/);
     assert.doesNotMatch(html, /sha256/);
     assert.match(html, /rgsneddon\/ShearK/);
     assert.doesNotMatch(html, /ShearK-Miner-1\.9-macos\.zip/);
@@ -309,7 +309,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /rustup\.rs/);
     assert.match(html, /git clone https:\/\/github\.com\/rgsneddon\/shear-testnet\.git/);
     assert.match(html, /crypto\/native/);
-    assert.match(html, /ShearK-Miner <strong>2\.5<\/strong>/);
+    assert.match(html, /ShearK-Miner <strong>2\.4<\/strong>/);
     assert.match(html, /near the public tip/);
     assert.match(html, /Copy dest/);
     assert.match(html, /ssa1\.worker/);

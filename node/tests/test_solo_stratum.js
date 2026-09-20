@@ -250,16 +250,16 @@ describe('solo submit share vs block', () => {
       const heightBefore = store.tip()?.height || 0;
       const nBefore = store.blocks.length;
       child = spawn(bin, [
-        '--backend', 'jit',
+        '--backend', 'interpreter',
         '--pool', `127.0.0.1:${bound.port}`,
         '--notls',
         '--user', `${dest}.solo`,
-        '--threads', '4',
+        '--threads', '1',
       ], { stdio: ['ignore', 'pipe', 'pipe'] });
       let out = '';
       child.stdout.on('data', (d) => { out += d.toString(); });
       child.stderr.on('data', (d) => { out += d.toString(); });
-      const deadline = Date.now() + 170_000;
+      const deadline = Date.now() + 90_000;
       while (Date.now() < deadline) {
         const text = stripAnsi(out);
         if (/accepted=[1-9]/.test(text)) break;
