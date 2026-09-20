@@ -83,7 +83,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
       '<tr><th>Wallet pin</th><td>0.40</td></tr>' +
       '<tr><th>Miner pin</th><td>ShearK 2.4</td></tr></table>' +
-      '<p>How-to lives in this tree. The architecture note is a PDF at <a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> — that URL is not in the navbar on purpose.</p>'
+      '<p>How-to lives in this tree. Docs live under <a href="https://shear.digital/docs/">https://shear.digital/docs/</a> (typed docs.shear.digital may fail TLS). The architecture note is a PDF at <a href="https://shear.digital/whitepaper/">https://shear.digital/whitepaper/</a> — that URL is not in the navbar on purpose.</p>'
   };
 
   P.testnet = {
@@ -100,7 +100,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / whitepaper',
     html:
       '<p>Version 2.0 of the project note: ADMITv2, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve. Wallet pin 0.40. Live magic <code>shear-testnet-v4</code>.</p>' +
-      '<p><a href="https://whitepaper.shear.digital">whitepaper.shear.digital</a> presents it as a record with a PDF preview. Download <code>shear-whitepaper.pdf</code> from that page. There is no WHITEPAPER button in the site navbar.</p>'
+      '<p><a href="https://shear.digital/whitepaper/">https://shear.digital/whitepaper/</a> presents it as a record with a PDF preview. Download <code>shear-whitepaper.pdf</code> from that page. There is no WHITEPAPER button in the site navbar. Typed whitepaper.shear.digital may fail TLS (apex SAN).</p>'
   };
 
   P.names = {
@@ -128,7 +128,7 @@ window.SHEAR_DOCS = {
       '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.40</strong> (Windows, Linux, Arch, Android; macOS coming soon). Sync is a local node at <code>127.0.0.1:18332</code> — not flyclient, not pool HTTP as the only path. Magic <code>shear-testnet-v4</code>.</p>' +
       '<table><tr><th>Continuum</th><td>Spendable balance, <code>she1</code>, six-slice pending pie</td></tr>' +
       '<tr><th>Flow</th><td>Send and receive</td></tr>' +
-      '<tr><th>Resistance</th><td>Public CTF CLI</td></tr>' +
+      '<tr><th>Resistance</th><td>Tx detail</td></tr>' +
       '<tr><th>Vortex</th><td>Programmes (The Reserve, plus any vort1 you paste)</td></tr>' +
       '<tr><th>Shearview</th><td>Your explorer</td></tr>' +
       '<tr><th>Closure</th><td>Rest-frame, silent ID, <code>shewall.bin</code></td></tr></table>' +
@@ -167,7 +167,8 @@ window.SHEAR_DOCS = {
     title: 'Continuum',
     crumb: 'wallet / continuum',
     html:
-      '<p>Continuum is spendable SHE and the pending pie. Each pending block fills one of six slices. Coin is protocol-spendable after 6 confirmations unless credits are frozen. Hash rewards sit inside the found block; they are not listed as their own rows.</p>' +
+      '<p>Continuum is spendable SHE and the pending pie. Each pending block fills one of six slices. Coin is protocol-spendable after 6 confirmations unless credits are frozen. Hash rewards sit inside the found block; they are not listed as their own rows. Continuum is not instant.</p>' +
+      '<p>If Continuum stays 0 after 6+ confs while the pool shows sent, treat that as a wallet/sync bug (until soak is green on this book). Fallback sync is <a href="https://pool.shear.digital">https://pool.shear.digital</a> if local RPC is down; pool HUD is not spendable.</p>' +
       '<p>While a Flow send is still filling the pie, the sender row remarks <strong>sending</strong>. The recipient row remarks <strong>receive</strong>.</p>' +
       '<p>Copy ID copies your <code>she1</code>. Offer that, not rest-frame.</p>'
   };
@@ -177,7 +178,7 @@ window.SHEAR_DOCS = {
     crumb: 'wallet / flow',
     html:
       '<p>Flow sends SHE to a <code>she1</code> or <code>ssa1</code>. Optional memo is ciphertext on the wire. The public explorer only shows that a memo exists.</p>' +
-      '<p>Scan receive QR fills the dest. Amount sits below that button. After Send, the tab keeps an advisory: <strong>sent</strong> (green) or <strong>not sent - try again</strong> (red). That line stays on Flow so you can read it.</p>' +
+      '<p>Scan receive QR fills the dest. Amount sits below that button. After Send, the tab keeps an advisory: <strong>sent</strong> (green), a public-http / sync-tip line when that is why it failed, or <strong>not sent - try again</strong> (red) for unknown failures. That line stays on Flow so you can read it.</p>' +
       '<p>One levy is quoted for the send, from current mempool depth, never more than 0.001 SHE. Continuum spendable pays it. See Levy.</p>'
   };
 
@@ -185,7 +186,7 @@ window.SHEAR_DOCS = {
     title: 'Resistance',
     crumb: 'wallet / resistance',
     html:
-      '<p>Resistance is a public CTF CLI. Open a confirmed block from Shearview or the explorer and the same public fields print here. No ciphertext, no rest-frame, no view key.</p>'
+      '<p>Resistance is Tx detail. Open a confirmed block from Shearview or the explorer and the same public fields print here. The CTF transcript sits behind an advanced toggle. No ciphertext, no rest-frame, no view key in the header.</p>'
   };
 
   P.shearview = {

@@ -51,8 +51,15 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /ssa1\.worker|miner <code>ssa1<\/code>/);
     assert.match(main, /π SHE/);
     assert.match(main, /never 0/);
+    assert.match(main, /not instant/);
+    assert.match(main, /6\+ confs while the pool shows sent/);
+    assert.match(main, /wallet\/sync bug/);
+    assert.match(main, /https:\/\/shear\.digital\/docs\//);
+    assert.match(main, /Never <code>npm run pool<\/code>/);
 
     const docs = read('site/docs/content.js');
+    assert.match(docs, /https:\/\/shear\.digital\/whitepaper\//);
+    assert.doesNotMatch(docs, /href="https:\/\/whitepaper\.shear\.digital"/);
     assert.match(docs, /next sealed payout|next sealed block/);
     assert.match(docs, /Copy dest as <code>ssa1\.worker<\/code>/);
 
