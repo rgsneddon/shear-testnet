@@ -150,6 +150,61 @@ export function avgWallFindIntervalMs(findTimes) {
   return sum / n;
 }
 
+/** Long-window EWMA half-life in blocks (matches ASERT 288). */
+export const AVG_BLOCK_EWMA_HALFLIFE = 288;
+export const AVG_BLOCK_MEDIAN_WINDOW = 288;
+export const AVG_BLOCK_SAMPLE_MIN_MS = TARGET_BLOCK_INTERVAL_MS / 8;
+export const AVG_BLOCK_SAMPLE_MAX_MS = TARGET_BLOCK_INTERVAL_MS * 8;
+
+export function intervalDeltasMs(findTimes) {
+  const times = (Array.isArray(findTimes) ? findTimes : [])
+    .map((t) => Number(t))
+    .filter((t) => Number.isFinite(t) && t > 0)
+    .sort((a, b) => a - b);
+  const dts = [];
+  for (let i = 1; i < times.length; i += 1) {
+    const dt = times[i] - times[i - 1];
+    if (Number.isFinite(dt) && dt > 0) dts.push(dt);
+  }
+  return dts;
+}
+
+export function clampBlockIntervalMs(dt) {
+  const n = Number(dt);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.max(AVG_BLOCK_SAMPLE_MIN_MS, Math.min(AVG_BLOCK_SAMPLE_MAX_MS, n));
+}
+
+/** Stall-resistant long EWMA. A 12h gap cannot pull the public average to hours. */
+export function ewmaBlockIntervalMs(dts, {
+  halfLife = AVG_BLOCK_EWMA_HALFLIFE,
+  target = TARGET_BLOCK_INTERVAL_MS,
+} = {}) {
+  const h = Math.max(1, Number(halfLife) || AVG_BLOCK_EWMA_HALFLIFE);
+  const alpha = 1 - 2 ** (-1 / h);
+  let ewma = target;
+  let n = 0;
+  for (const raw of Array.isArray(dts) ? dts : []) {
+    const dt = clampBlockIntervalMs(raw);
+    if (dt == null) continue;
+    ewma = alpha * dt + (1 - alpha) * ewma;
+    n += 1;
+  }
+  return n ? ewma : null;
+}
+
+export function medianBlockIntervalMs(dts, window = AVG_BLOCK_MEDIAN_WINDOW) {
+  const keep = Math.max(1, Math.floor(Number(window) || AVG_BLOCK_MEDIAN_WINDOW));
+  const clamped = (Array.isArray(dts) ? dts : [])
+    .map(clampBlockIntervalMs)
+    .filter((x) => x != null)
+    .slice(-keep);
+  if (!clamped.length) return null;
+  const s = [...clamped].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
 export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
   const list = Array.isArray(blocks) ? blocks : [];
   let window = list;
@@ -573,6 +628,35 @@ export function destShareBitsOf(book, dest, fallback) {
   return Number.isFinite(Number(got)) ? Number(got) : fallback;
 }
 
+export const SHARE_BITS_FILE = 'share-bits.json';
+
+export function loadDestShareBitsMap(dataDir) {
+  const book = new Map();
+  if (!dataDir) return book;
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(dataDir, SHARE_BITS_FILE), 'utf8'));
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return book;
+    for (const [k, v] of Object.entries(raw)) {
+      const n = Number(v);
+      if (k && Number.isFinite(n) && n >= 1) book.set(k, n);
+    }
+  } catch { /* first boot */ }
+  return book;
+}
+
+export function persistDestShareBitsMap(dataDir, book) {
+  if (!dataDir || !book || typeof book.entries !== 'function') return;
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    const obj = {};
+    for (const [k, v] of book.entries()) {
+      const n = Number(v);
+      if (k && Number.isFinite(n) && n >= 1) obj[k] = n;
+    }
+    fs.writeFileSync(path.join(dataDir, SHARE_BITS_FILE), `${JSON.stringify(obj)}\n`);
+  } catch { /* keep memory book */ }
+}
+
 export function openShareFingerprint(job, nonce, hashHex) {
   return shareFingerprint(job, nonce, hashHex);
 }
@@ -892,7 +976,9 @@ export function foldPublicMinerViews(views) {
       });
       continue;
     }
-    prev.hashrate += Number(v.hashrate) || 0;
+    const sameWorker = String(prev.worker || '') !== '' && String(prev.worker) === String(v.worker || '');
+    if (sameWorker) prev.hashrate = Math.max(prev.hashrate, Number(v.hashrate) || 0);
+    else prev.hashrate += Number(v.hashrate) || 0;
     prev.hashes += Number(v.hashes) || 0;
     prev.roundHashes += Number(v.roundHashes) || 0;
     prev.provenHashes = (Number(prev.provenHashes) || 0) + proven;
@@ -962,10 +1048,12 @@ function easeHashrate(miner, instant, now, tauS = HASHRATE_EMA_TAU_S) {
 }
 
 /**
- * Display H/s is hashes/dt over SELF_RATE_MIN_DT_S (ShearK g_smooth_hs tau).
- * Ignore login `hashrate` (first-second and 2s restamp spikes). Mint stays proven.
+ * Display H/s is hashes/dt over SELF_RATE_MIN_DT_S (ShearK RATE_MIN_DT=2).
+ * EMA tau 8s matches ShearK. Miner `hashrate` clamps a 2× hashes/dt stick.
+ * Mint stays proven 2^creditedShareBits.
  */
-export const SELF_RATE_MIN_DT_S = 8;
+/** Match ShearK `RATE_MIN_DT` (2s). 8s hid the miner paint and left proven 2^bits as HUD. */
+export const SELF_RATE_MIN_DT_S = 2;
 
 export function applyMinerSelfRate(session, params, now = Date.now()) {
   if (!session || !params) return session;
@@ -980,6 +1068,11 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
   if (!Number.isFinite(hashes) || hashes < 0) return session;
   const threads = Math.max(1, Number(session.threads) || Number(session.claimedThreads) || Number(params.threads) || 1);
   const cap = threads * 2500;
+  const claimed = Number(params.hashrate);
+  if (Number.isFinite(claimed) && claimed > 1 && claimed <= cap) {
+    session.minerPaintHs = claimed;
+    session.minerPaintHsAt = now;
+  }
   const prev = Number(session.rateHashes0);
   const t0 = Number(session.rateAt0);
   if (!Number.isFinite(prev) || !(t0 > 0) || hashes < prev) {
@@ -998,8 +1091,20 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
         session.rateHashes0 = hashes;
         session.rateAt0 = now;
       } else if (prevHs > 0 && inst < prevHs * HASHRATE_HOLD_FRAC) {
-        session.rateHashes0 = hashes;
-        session.rateAt0 = now;
+        const paint = Number(session.minerPaintHs) || 0;
+        const stall = inst < prevHs * 0.3;
+        if (stall && paint <= 0) {
+          session.rateHashes0 = hashes;
+          session.rateAt0 = now;
+        } else {
+          const tau = Math.max(1, HASHRATE_EMA_TAU_S);
+          const alpha = 1 - Math.exp(-dt / tau);
+          const toward = paint > 1 && paint <= cap ? paint : inst;
+          session.clientHs = prevHs + alpha * (toward - prevHs);
+          session.clientHsAt = now;
+          session.rateHashes0 = hashes;
+          session.rateAt0 = now;
+        }
       } else {
         const tau = Math.max(1, HASHRATE_EMA_TAU_S);
         const alpha = 1 - Math.exp(-dt / tau);
@@ -1012,6 +1117,12 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
       session.rateHashes0 = hashes;
       session.rateAt0 = now;
     }
+  }
+  const paint = Number(session.minerPaintHs) || 0;
+  const hs = Number(session.clientHs) || 0;
+  if (paint > 1 && paint <= cap && hs > paint * 1.25) {
+    session.clientHs = paint;
+    session.clientHsAt = now;
   }
   return session;
 }
@@ -1086,7 +1197,7 @@ export function adminMinerView(m, now = Date.now()) {
     version: String(m?.version || ''),
     name: String(m?.name || ''),
     client: String(m?.client || CLIENT),
-    hashrate: liveHashrate(m, now),
+    hashrate: reportedHashrate(m, now),
     hashrateEased: reportedHashrate(m, now),
     hashes: roundActualHashes(m),
     roundHashes: roundActualHashes(m),
@@ -1126,7 +1237,7 @@ export function createPool({
   const admin = createAdmin(dataDir);
   const pullBook = createPullBook(dataDir);
   const miners = new Map();
-  const destShareBits = new Map();
+  const destShareBits = loadDestShareBitsMap(dataDir);
   const ipSubmitAt = new Map();
   let p2pNet = p2p;
   let hashWorker = null;
@@ -1966,6 +2077,7 @@ export function createPool({
            * made a 22-thread farm's 12-bit target reject 1-thread AFK dest-bound 8 as low_diff. */
           conn.shareBits = next;
           rememberDestShareBits(destShareBits, session?.login || session?.payoutDest, next);
+          persistDestShareBitsMap(dataDir, destShareBits);
           const live = lastJob || conn.job;
           if (live) {
             conn.job = live;
@@ -2172,7 +2284,9 @@ export function createPool({
       active.map((m) => publicMinerView(m, now, active)),
     ).sort((a, b) => (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0));
     const tip = store.tip();
-    const avgMs = avgWallFindIntervalMs(stats.findAt);
+    const findDts = intervalDeltasMs(stats.findAt);
+    const avgMs = ewmaBlockIntervalMs(findDts);
+    const medianMs = medianBlockIntervalMs(findDts);
     const supply = networkSupply(store);
     let genesisMs = Date.now();
     try {
@@ -2265,7 +2379,8 @@ export function createPool({
       lastFoundAt: stats.lastFoundAt || 0,
       avgBlockTimeMs: avgMs,
       networkAvgBlockTimeMs: avgMs,
-      avgBlockWindow: (store.blocks || []).length,
+      avgBlockTimeMedianMs: medianMs,
+      avgBlockWindow: findDts.length,
       nodesOnline: nodesOnline(),
       uptimeMs: Date.now() - stats.started,
       workers,

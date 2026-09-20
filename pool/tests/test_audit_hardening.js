@@ -16,6 +16,8 @@ import {
   noteIpSubmit,
   rememberDestShareBits,
   destShareBitsOf,
+  loadDestShareBitsMap,
+  persistDestShareBitsMap,
   rememberOpenShare,
   publicHtmlFile,
   isExplorerHost,
@@ -103,6 +105,16 @@ describe('A4 fingerprint / dest bits / flood busy', () => {
     rememberDestShareBits(book, 'ssa1abc', 12);
     assert.equal(destShareBitsOf(book, 'ssa1abc', 8), 12);
     assert.equal(destShareBitsOf(book, 'ssa1zzz', 8), 8);
+  });
+
+  it('shareBits warm-start from disk after a pool restart', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-share-bits-'));
+    const book = new Map();
+    rememberDestShareBits(book, 'ssa1abc', 14);
+    persistDestShareBitsMap(dir, book);
+    const loaded = loadDestShareBitsMap(dir);
+    assert.equal(destShareBitsOf(loaded, 'ssa1abc', 8), 14);
+    assert.equal(destShareBitsOf(loaded, 'ssa1zzz', 8), 8);
   });
 
   it('per-IP submit flood returns busy', () => {

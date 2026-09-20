@@ -11,8 +11,12 @@
 import { MAX_BITS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 
 export const SHARE_VARDIFF_TARGET_MS = 2000;
-export const SHARE_VARDIFF_RETARGET_SHARES = 8;
-export const SHARE_VARDIFF_RETARGET_MS = 20_000;
+export const SHARE_VARDIFF_RETARGET_SHARES = 4;
+export const SHARE_VARDIFF_RETARGET_MS = 8_000;
+/** Farm climb per retarget. Matches header ASERT harden so a 22-thread box does not sit at opening 8. */
+export const SHARE_VARDIFF_CLIMB_MAX = 2;
+/** Ease per retarget stays 1 so a 1-thread reconnect is not dumped to the floor. */
+export const SHARE_VARDIFF_EASE_MAX = 1;
 /** 0: share bits may equal header bits so a farm can be throttled. */
 export const SHARE_BELOW_BLOCK = 0;
 /**
@@ -76,8 +80,8 @@ export function nextShareBits({
   const actual = Math.max(1, Number(actualIntervalMs) || target);
   const ratio = target / actual;
   let delta = Math.round(Math.log2(Math.max(1 / 16, Math.min(16, ratio))));
-  if (delta > 1) delta = 1;
-  if (delta < -1) delta = -1;
+  if (delta > SHARE_VARDIFF_CLIMB_MAX) delta = SHARE_VARDIFF_CLIMB_MAX;
+  if (delta < -SHARE_VARDIFF_EASE_MAX) delta = -SHARE_VARDIFF_EASE_MAX;
   return clampShareBits(cur + delta, { blockBits, minBits });
 }
 

@@ -37,7 +37,7 @@ Coinbase is the only source of new SHE.
 
 ## Resistance
 
-ASERT toward 90 s, per block, on **Q16.16 packed** header `bits` (`BITS=q16.16`, half-life `ASERT_TAU_MS` = 288 × 90 s). Floor 4 bits (`LIVE_MIN_BITS`), ceiling **256 bits**. Genesis **12** bits packed as `12 << 16`. Integer LZ rungs cannot represent the 1.09× work that 90 s needs when hashrate sits between powers of two. Share vardiff stays integer LZ. Do **not** keep a 32-bit (~4.29e9) lid — that froze GNFP under large CPU farms.
+ASERT toward 90 s, per block, on **Q16.16 packed** header `bits` (`BITS=q16.16`, half-life `ASERT_TAU_MS` = 288 × 90 s). Floor 4 bits (`LIVE_MIN_BITS`), ceiling **256 bits**. Genesis **12** bits packed as `12 << 16`. Per-block cap is **±2 log2** on testnet (`ASERT_HARDEN=2`, `ASERT_EASE=2`) so a farm-off can re-center the long average; mainnet genesis stays `ASERT_EASE=1`. Same-tick intervals are 1 ms and still only +2. Stalls clamp at 8 half-lives. Integer LZ rungs cannot represent the 1.09× work that 90 s needs when hashrate sits between powers of two. Share vardiff stays integer LZ. Do **not** keep a 32-bit (~4.29e9) lid — that froze GNFP under large CPU farms.
 
 Work of a block: `blockWorkBig(bits) => 2^{bits_fp}` as bigint. Heaviest valid chain wins. Equal work keeps first-seen.
 

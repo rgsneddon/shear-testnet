@@ -14,6 +14,7 @@ import {
   reportedHashrate,
   liveHashrate,
   applyMinerSelfRate,
+  foldPublicMinerViews,
   resetMinerRoundDisplay,
   liveRoundHashes,
   roundActualHashes,
@@ -349,16 +350,15 @@ describe('folded-row inventory', () => {
   });
 
   it('pool HUD hashes/dt matches the miner hashrate formula; mint stays proven', () => {
-    assert.equal(SELF_RATE_MIN_DT_S, 8);
+    assert.equal(SELF_RATE_MIN_DT_S, 2);
     assert.equal(HASHRATE_EMA_TAU_S, 8);
     const t0 = 1_700_000_000_000;
     const m = { connections: [{ sock: {} }], threads: 2 };
     applyMinerSelfRate(m, { hashes: 10_000 }, t0);
     applyMinerSelfRate(m, { hashes: 10_000 + 2320, hashrate: 970, threads: 2 }, t0 + 2_000);
-    assert.equal(Number(m.clientHs) || 0, 0);
-    applyMinerSelfRate(m, { hashes: 10_000 + 970 * 10 }, t0 + 10_000);
-    assert.equal(Math.round(m.clientHs), 970);
-    assert.equal(Math.round(reportedHashrate(m, t0 + 10_000)), 970);
+    applyMinerSelfRate(m, { hashes: 10_000 + 970 * 10, hashrate: 970, threads: 2 }, t0 + 10_000);
+    assert.ok(Math.abs(m.clientHs - 970) / 970 < 0.15, `clientHs ${m.clientHs}`);
+    assert.ok(Math.abs(reportedHashrate(m, t0 + 10_000) - 970) / 970 < 0.15);
     assert.equal(provenHashrate(m, t0 + 10_000), 0);
     assert.equal(Number(m.roundHashes) || 0, 0);
   });
@@ -377,10 +377,48 @@ describe('folded-row inventory', () => {
     const m = { connections: [{ sock: {} }], threads: 40 };
     applyMinerSelfRate(m, { hashes: 0, hashrate: 12_000, threads: 40 }, t0);
     applyMinerSelfRate(m, { hashes: 2_400, hashrate: 12_000, threads: 40 }, t0 + 2_000);
-    assert.equal(Number(m.clientHs) || 0, 0);
-    applyMinerSelfRate(m, { hashes: 12_000 * 8, hashrate: 14_400, threads: 40 }, t0 + 8_000);
-    assert.equal(m.clientHs, 12_000);
-    assert.equal(Math.round(reportedHashrate(m, t0 + 8_000)), 12_000);
+    for (let s = 4; s <= 24; s += 2) {
+      applyMinerSelfRate(m, { hashes: 12_000 * s, hashrate: 12_000, threads: 40 }, t0 + s * 1000);
+    }
+    const hud = reportedHashrate(m, t0 + 24_000);
+    assert.ok(Math.abs(hud - 12_000) / 12_000 < 0.1, `HUD ${hud}`);
+  });
+
+  it('simulated 5.21 kH/s submit stream paints ≈ 5.21k, not 2× proven bits', () => {
+    const t0 = 1_700_000_000_000;
+    const hs = 5_210;
+    const m = { connections: [{ sock: {} }], threads: 8 };
+    applyMinerSelfRate(m, { hashes: 0, hashrate: hs, threads: 8 }, t0);
+    for (let s = 2; s <= 20; s += 2) {
+      applyMinerSelfRate(m, { hashes: hs * s, hashrate: hs, threads: 8 }, t0 + s * 1000);
+    }
+    const hud = reportedHashrate(m, t0 + 20_000);
+    assert.ok(Math.abs(hud - hs) / hs < 0.1, `HUD ${hud}`);
+    m.acceptAt = [t0 + 19_000];
+    m.acceptWork = [2 ** 15];
+    assert.ok(Math.abs(reportedHashrate(m, t0 + 20_000) - hs) / hs < 0.1, 'must not fall back to 2^bits');
+  });
+
+  it('a 2× HUD spike eases back to ShearK paint; two same-worker rows do not 2×', () => {
+    const t0 = 1_700_000_000_000;
+    const m = { connections: [{ sock: {} }], threads: 8 };
+    applyMinerSelfRate(m, { hashes: 0, hashrate: 5_210, threads: 8 }, t0);
+    applyMinerSelfRate(m, { hashes: 12_000 * 2, hashrate: 5_210, threads: 8 }, t0 + 2_000);
+    applyMinerSelfRate(m, { hashes: 12_000 * 2 + 5_210 * 16, hashrate: 5_210, threads: 8 }, t0 + 18_000);
+    const hud = reportedHashrate(m, t0 + 18_000);
+    assert.ok(hud < 7_000, `stuck 2× HUD ${hud}`);
+    assert.ok(Math.abs(hud - 5_210) / 5_210 < 0.25, `eased HUD ${hud}`);
+    const folded = foldPublicMinerViews([
+      { miner: 'm4e1784c1', worker: 'rzndelinux1', hashrate: 5_210, sessions: 1 },
+      { miner: 'm4e1784c1', worker: 'rzndelinux1', hashrate: 5_210, sessions: 1 },
+    ]);
+    assert.equal(folded.length, 1);
+    assert.equal(folded[0].hashrate, 5_210);
+    const twoMachines = foldPublicMinerViews([
+      { miner: 'mf12f294f', worker: 'a', hashrate: 100, sessions: 1 },
+      { miner: 'mf12f294f', worker: 'b', hashrate: 100, sessions: 1 },
+    ]);
+    assert.equal(twoMachines[0].hashrate, 200);
   });
 
   it('1-thread ~55 H/s hashes/dt paints ~55, not kH/s', () => {
