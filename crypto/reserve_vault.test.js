@@ -17,6 +17,7 @@ import {
 } from './asert.js';
 import {
   emptyVault,
+  cloneVault,
   deposit,
   vote,
   withdraw,
@@ -162,6 +163,28 @@ describe('Reserve vault protocol', () => {
     assert.notEqual(pub.votes.increase + pub.votes.decrease + pub.votes.hold, 0);
     const again = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
     assert.equal(again.ok, false);
+  });
+
+  it('cloneVault is a deep copy; mutating the clone does not touch the original', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    const pid = portalIdFromDest(a);
+    const trial = cloneVault(state);
+    trial.totalLockedNanos = 0n;
+    trial.portals[pid].staked = 0;
+    trial.portals[pid] = { ...trial.portals[pid], joined: false };
+    applyReserveBlock({
+      state: trial,
+      block: { height: 1, txs: [{ coinbase: true, vout: [] }] },
+      nowMs: t0 + 90_000,
+    });
+    assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(state.portals[pid].staked), PI_SHE_NANOS);
+    assert.equal(state.portals[pid].joined, true);
+    assert.notEqual(trial.portals, state.portals);
   });
 
   it('first sealed block after epoch auto-enacts the winning vote; height is unchanged', () => {
