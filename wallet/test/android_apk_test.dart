@@ -42,7 +42,7 @@ void main() {
     expect(badging.exitCode, 0, reason: badging.stderr.toString());
     final out = badging.stdout.toString();
     expect(out, contains("name='com.shear.shear_wallet'"));
-    expect(RegExp(r"versionName='0\.42(\.0)?'").hasMatch(out), isTrue);
+    expect(RegExp(r"versionName='0\.43(\.0)?'").hasMatch(out), isTrue);
     final code = RegExp(r"versionCode='(\d+)'").firstMatch(out);
     expect(code, isNotNull);
     expect(int.parse(code!.group(1)!), greaterThan(49));
