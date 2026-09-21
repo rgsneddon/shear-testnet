@@ -143,7 +143,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-pack="miner-windows"/);
   });
 
-  it('WALLET nav on MAIN MEMPOOL POOL EXPLORER pins 0.42 and refuses older tags', () => {
+  it('WALLET nav on MAIN MEMPOOL POOL EXPLORER pins 0.43 and refuses older tags', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const pages = {
       main: html,
@@ -157,7 +157,7 @@ describe('shear.digital client buttons', () => {
       whitepaper: fs.readFileSync(path.join(here, '../whitepaper/index.html'), 'utf8'),
     };
     for (const [name, page] of Object.entries(pages)) {
-      assert.match(page, /releases\/tag\/0\.42/, `${name} WALLET must pin 0.42`);
+      assert.match(page, /releases\/tag\/0\.42/, `${name} WALLET must pin 0.43`);
       assert.doesNotMatch(page, /releases\/tag\/0\.41/, `${name} must not pin 0.41 as current`);
       assert.doesNotMatch(page, /releases\/download\/0\.41/, `${name} must not download from tag 0.41`);
       assert.doesNotMatch(page, /releases\/tag\/0\.40/, `${name} must not pin 0.40 as current`);

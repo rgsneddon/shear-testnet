@@ -29,8 +29,9 @@ import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
+import 'shear_privacy_hop.dart';
 
-const kWalletVersion = '0.42';
+const kWalletVersion = '0.43';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
@@ -77,6 +78,8 @@ class ShearWalletApp extends StatefulWidget {
     this.pickQrImage,
     this.startUnlocked = false,
     this.skipPoolSync = false,
+    this.privacyHop,
+    this.enforceReserveHopGate = false,
   });
 
   final ShearSession? session;
@@ -104,6 +107,10 @@ class ShearWalletApp extends StatefulWidget {
   final bool startUnlocked;
   /// Tests: skip unlock HTTP so the sign-pull dialog can be driven without a hung pool.
   final bool skipPoolSync;
+  /// Residual hop controller. Tests inject a mock.
+  final PrivacyHopController? privacyHop;
+  /// Tests: apply the Reserve hop/unprivate Send gate even when [skipPoolSync] is set.
+  final bool enforceReserveHopGate;
 
   @override
   ShearWalletAppState createState() => ShearWalletAppState();
@@ -132,6 +139,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   final shearviewQuery = TextEditingController();
   bool _vorticeBusy = false;
   late final ShearReserve reserve = widget.reserve ?? ShearReserve();
+  late final PrivacyHopController hop =
+      widget.privacyHop ?? PrivacyHopController();
   int vortexTab = 0;
   List<Vortice> vortices = const [reserveVortice];
   final Set<String> openedMemos = {};
@@ -167,12 +176,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   bool _newMemoExpanded = false;
   late final List<ScrollController> _tabScroll;
   final _depositsScroll = ScrollController();
+  bool _reserveUnprivateOk = false;
+
+  void _onHop() {
+    if (mounted) setState(() {});
+  }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _tabScroll = List.generate(kTabs.length, (_) => ScrollController());
+    hop.addListener(_onHop);
     _boot();
   }
 
@@ -190,6 +205,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       c.dispose();
     }
     _depositsScroll.dispose();
+    hop.removeListener(_onHop);
     WidgetsBinding.instance.removeObserver(this);
     _accrualTick?.cancel();
     _preloginTick?.cancel();
@@ -1904,7 +1920,33 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    if (!widget.skipPoolSync && ledger.pool != null && !localSendReady(ledger.pool!.baseUrl)) {
+    await _reserveLockPosted(
+      context,
+      ident,
+      dest: dest,
+      she: she,
+      need: need,
+      levyShe: lockL / kUnitsPerShe,
+    );
+  }
+
+  bool get _reserveSendReady => reserveVaultSendReady(
+        skipPoolSync: widget.skipPoolSync,
+        enforceHopGate: widget.enforceReserveHopGate,
+        poolUrl: ledger.pool?.baseUrl,
+        hop: hop.state,
+        unprivateConfirmed: _reserveUnprivateOk,
+      );
+
+  Future<void> _reserveLockPosted(
+    BuildContext context,
+    ShearIdentity ident, {
+    required String dest,
+    required double she,
+    required double need,
+    required double levyShe,
+  }) async {
+    if (!_reserveSendReady) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text(kErrPublicHttp)),
@@ -1927,6 +1969,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         restFrame: ident.address,
         paymentCode: ident.paymentCode,
         spendSeed: hexToBytes(ident.seedHex),
+        privacyHopUp: hop.isUp,
+        allowPublicHttp: hop.isUp || _reserveUnprivateOk,
       );
     } catch (e) {
       if (context.mounted) {
@@ -1954,9 +1998,55 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       'txid': tx.id,
       'cumulative': p.nanos / kUnitsPerShe,
       'canVote': p.canVote,
-      'levyShe': lockL / kUnitsPerShe,
+      'levyShe': levyShe,
     };
     if (mounted) setState(() {});
+  }
+
+  Future<void> _reserveHopToggle(BuildContext context) async {
+    if (hop.isUp || hop.isConnecting) {
+      await hop.disconnect();
+      return;
+    }
+    final ok = await hop.connect();
+    if (!ok && mounted) {
+      _snack.currentState?.showSnackBar(
+        SnackBar(content: Text(hop.message.isEmpty ? 'Hop did not come up' : hop.message)),
+      );
+    }
+  }
+
+  Future<void> _reserveUnprivateConfirm(BuildContext context) async {
+    final go = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        key: const Key('reserve-unprivate-confirm'),
+        title: const Text(kUnprivateConfirmTitle),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(kUnprivateConfirmHelper),
+          ],
+        ),
+        actions: [
+          TextButton(
+            key: const Key('reserve-unprivate-cancel'),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('reserve-unprivate-accept'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(kUnprivateConfirmLabel),
+          ),
+        ],
+      ),
+    );
+    if (go == true && mounted) {
+      setState(() => _reserveUnprivateOk = true);
+    }
   }
 
   Future<void> _reserveWithdraw(BuildContext context, ShearIdentity ident) async {
@@ -2121,7 +2211,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    if (!widget.skipPoolSync && ledger.pool != null && !localSendReady(ledger.pool!.baseUrl)) {
+    if (!_reserveSendReady) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text(kErrPublicHttp)),
@@ -2139,6 +2229,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         local: ledger.pool == null || widget.skipPoolSync,
         kind: 'vote',
         programId: kReserveProgram,
+        privacyHopUp: hop.isUp,
         restFrame: ident.address,
         paymentCode: ident.paymentCode,
         choice: choice,
@@ -2188,9 +2279,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             const Text('The Reserve', style: TextStyle(fontWeight: FontWeight.w700)),
             if (!widget.skipPoolSync &&
                 ledger.pool != null &&
-                !localSendReady(ledger.pool!.baseUrl))
+                !localSendReady(ledger.pool!.baseUrl) &&
+                !hop.isUp)
               Text(
-                'Waiting for local node at 127.0.0.1:18332. Public pool HTTP is not used for deposits.',
+                'Connect Privacy hop to hide your IP, then Send. Public pool HTTP is not used without the hop.',
                 key: const Key('reserve-local-wait'),
                 style: TextStyle(color: shearMutedOf(context)),
               ),
@@ -2296,10 +2388,26 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               key: const Key('reserve-lock-levy'),
             ),
             const SizedBox(height: 8),
+            Text(
+              hop.statusLine(),
+              key: const Key('reserve-hop-status'),
+              style: TextStyle(color: shearMutedOf(context)),
+            ),
+            const SizedBox(height: 8),
             Wrap(spacing: 8, runSpacing: 8, children: [
               FilledButton(
+                key: const Key('reserve-privacy-hop'),
+                onPressed: hop.isConnecting ? null : () => _reserveHopToggle(context),
+                child: Text(hop.isUp ? 'Disconnect hop' : kPrivacyHopButtonLabel),
+              ),
+              OutlinedButton(
+                key: const Key('reserve-send-unprivate'),
+                onPressed: _reserveUnprivateOk ? null : () => _reserveUnprivateConfirm(context),
+                child: const Text(kUnprivateSendLabel),
+              ),
+              FilledButton(
                 key: const Key('reserve-send'),
-                onPressed: () => _reserveSend(context, ident),
+                onPressed: _reserveSendReady ? () => _reserveSend(context, ident) : null,
                 child: const Text('Send'),
               ),
               if ((p.nanos > 0 && reserve.epochIsOver(now)) || p.claimableRewards > 0)

@@ -2,7 +2,104 @@
 
 #include <optional>
 
+#include <flutter/encodable_value.h>
+#include <flutter/method_channel.h>
+#include <flutter/standard_method_codec.h>
+
 #include "flutter/generated_plugin_registrant.h"
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#pragma comment(lib, "ws2_32.lib")
+
+namespace {
+bool g_hop_up = false;
+
+void RegisterPrivacyHopChannel(flutter::FlutterEngine* engine) {
+  auto channel = std::make_shared<flutter::MethodChannel<flutter::EncodableValue>>(
+      engine->messenger(), "shear/privacy_hop",
+      &flutter::StandardMethodCodec::GetInstance());
+  channel->SetMethodCallHandler(
+      [channel](const flutter::MethodCall<flutter::EncodableValue>& call,
+                std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                    result) {
+        flutter::EncodableMap off_map(
+            {{flutter::EncodableValue("ok"), flutter::EncodableValue(true)},
+             {flutter::EncodableValue("connected"), flutter::EncodableValue(false)},
+             {flutter::EncodableValue("message"),
+              flutter::EncodableValue("Disconnected")}});
+        if (call.method_name() == "connect") {
+          WSADATA wsa;
+          if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+            result->Error("hop", "WinSock init failed");
+            return;
+          }
+          SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+          if (s == INVALID_SOCKET) {
+            WSACleanup();
+            result->Error("hop", "UDP socket failed");
+            return;
+          }
+          sockaddr_in addr{};
+          addr.sin_family = AF_INET;
+          addr.sin_port = htons(44044);
+          inet_pton(AF_INET, "77.42.35.12", &addr.sin_addr);
+          // Residual RPT2 HELLO is the Android VpnService / WinTUN dataplane.
+          // Desktop attach: UDP 44044 must be reachable on the dedicated hop VPS.
+          const char magic[] = "RPT2";
+          sendto(s, magic, 4, 0, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+          DWORD timeout = 2000;
+          setsockopt(s, SOL_SOCKET, SO_RCVTIMEO,
+                     reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+          char buf[64];
+          sockaddr_in from{};
+          int fromlen = sizeof(from);
+          int n = recvfrom(s, buf, sizeof(buf), 0,
+                           reinterpret_cast<sockaddr*>(&from), &fromlen);
+          closesocket(s);
+          WSACleanup();
+          // UDP reachability is not a residual session. Do not mark hop up
+          // without WinTUN + authorized HELLO (Android VpnService path).
+          g_hop_up = false;
+          flutter::EncodableMap fail_map(
+              {{flutter::EncodableValue("ok"), flutter::EncodableValue(false)},
+               {flutter::EncodableValue("connected"), flutter::EncodableValue(false)},
+               {flutter::EncodableValue("fullTunnelActive"),
+                flutter::EncodableValue(false)},
+               {flutter::EncodableValue("message"),
+                flutter::EncodableValue(
+                    n > 0
+                        ? "SHEAR-HOP / EU is reachable on UDP 44044. Windows "
+                          "WinTUN residual HELLO is not in this cut — use "
+                          "Privacy hop on Android, or a local Shear node."
+                        : "No residual HELLO reply from SHEAR-HOP / EU. Use "
+                          "Privacy hop on Android, or a local Shear node.")}});
+          result->Success(flutter::EncodableValue(fail_map));
+          return;
+        }
+        if (call.method_name() == "disconnect") {
+          g_hop_up = false;
+          result->Success(flutter::EncodableValue(off_map));
+          return;
+        }
+        if (call.method_name() == "status") {
+          flutter::EncodableMap st(
+              {{flutter::EncodableValue("ok"), flutter::EncodableValue(g_hop_up)},
+               {flutter::EncodableValue("connected"),
+                flutter::EncodableValue(g_hop_up)},
+               {flutter::EncodableValue("fullTunnelActive"),
+                flutter::EncodableValue(g_hop_up)},
+               {flutter::EncodableValue("message"),
+                flutter::EncodableValue(g_hop_up ? "SHEAR-HOP / EU up"
+                                                : "Hop off")}});
+          result->Success(flutter::EncodableValue(st));
+          return;
+        }
+        result->NotImplemented();
+      });
+}
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -25,6 +122,7 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  RegisterPrivacyHopChannel(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {

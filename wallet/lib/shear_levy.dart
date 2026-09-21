@@ -1,3 +1,10 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:crypto/crypto.dart';
+
+import 'shear_identity.dart';
+
 const kLevyFloorUnits = 100;
 const kLevyBps = 2;
 const kSurgeMax = 3.0;
@@ -50,4 +57,13 @@ bool levyTaxed(String kind, {bool coinbase = false}) {
     'vote',
   };
   return taxed.contains(kind);
+}
+
+/// Canonical pool admin fee dest (ssa1). Same hash as JS `poolFeeDest()`.
+/// On-chain payouts cannot target raw she1.
+const kPoolFeeDest = 'ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6';
+
+String poolFeeDest() {
+  final d = sha256.convert(utf8.encode('shear-pool-fee-v1'));
+  return encodeDestAddress(Uint8List.fromList(d.bytes.sublist(0, 20)));
 }
