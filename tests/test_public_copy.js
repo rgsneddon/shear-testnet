@@ -129,6 +129,12 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
     assert.match(main, /ShearK-Miner <strong>2\.5<\/strong>/);
+    assert.match(main, /Continuum GUI <strong>0\.41<\/strong>/);
+    assert.doesNotMatch(main, /Continuum GUI <strong>0\.40<\/strong>/);
+    assert.doesNotMatch(main, /Continuum GUI 0\.40/);
+    const help = read('node/src/help.js');
+    assert.match(help, /Continuum 0\.41/);
+    assert.doesNotMatch(help, /Continuum 0\.40/);
     assert.doesNotMatch(main, /shear-wallet-0\.38-macos\.dmg/);
     assert.match(main, /shear-wallet-0\.41-android\.apk/);
     assert.match(main, /id="solo-deps"/);

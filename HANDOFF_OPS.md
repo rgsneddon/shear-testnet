@@ -178,7 +178,7 @@ Off-host vault (Windows, outside git): `C:\Users\rgsne\Desktop\SHEAR-SECRETS\` c
 - Hostname: re-cert or DNS-retire `docs.shear.digital` + `whitepaper.shear.digital`; then HSTS + baseline headers (separate ops). In-repo copy now points at `https://shear.digital/docs/` and `https://shear.digital/whitepaper/`.
 - Concentration: keep `alerts.concentration`; bring a second hasher — no multi-party security claims at `topDest=100%`.
 - Seed hygiene: 0600 datadir restore; hex off git/units; watch first signed π auto-pay after `confirmedNeed=30` (path ready; `signed=true` live).
-- Soak checklist (watch, not code): Continuum 0.40 on live worker Copy dest — mine → ≥6 conf → ShearView row → Resistance; fail release if empty after sealed hash notes. ASERT settle claim only after ≥288 blocks. Thin |J| until ≥10k.
+- Soak checklist (watch, not code): Continuum 0.41 on live worker Copy dest — mine → ≥6 conf → ShearView row → Resistance; fail release if empty after sealed hash notes. ASERT settle claim only after ≥288 blocks. Thin |J| until ≥10k.
 - W7 (this tree): fork verify uses a trial vault clone at the fork root + `applyReserveBlock` per accepted fork block (VS-R1); owner history always `destProofOpen(homeDest)` and notes ingest before empty ShearView. Leave `wallet_api` previewWithdraw-only, biometrics unlock-token, prove stdin/FFI, TOTP mutate gate.
 
 ### Restore one-liner (after a datadir wipe)
