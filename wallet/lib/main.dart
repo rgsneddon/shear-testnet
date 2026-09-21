@@ -31,9 +31,11 @@ import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
 import 'shear_privacy_hop.dart';
 
-const kWalletVersion = '0.45';
+const kWalletVersion = '0.46';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
+/// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
+const kReserveLockSent = 'Sent — please wait 6 confirmations';
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
 const kDepositRowHeight = 22.0;
 const kTabs = [
@@ -672,7 +674,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           final full = shouldFullSyncCredits(
             hasPendingReceive: thin,
             historyBehindTip: ledger.historyBehindTip,
-            openCollatePending: !ledger.openCollated,
+            openCollatePending: !ledger.openCollated || ledger.notesLagSpendable,
           );
           if (!_creditBusy) {
             _creditBusy = true;
@@ -2043,7 +2045,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       'cumulative': p.nanos / kUnitsPerShe,
       'canVote': p.canVote,
       'levyShe': levyShe,
+      'sent': kReserveLockSent,
     };
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(kReserveLockSent)),
+      );
+    }
     if (mounted) setState(() {});
   }
 
@@ -2056,11 +2064,28 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       await hook();
       return;
     }
-    final from = ledger.spendFrom(
+    final local = ledger.pool == null || widget.skipPoolSync;
+    var from = ledger.spendFrom(
       ident.address,
       paymentCode: ident.paymentCode,
       amount: need,
     );
+    if (!local) {
+      // Spendable SHE can be a balance snapshot while the sealed note book is
+      // still empty. Pull notes first. One note must cover the fee.
+      await ledger.collateSpendNotes(
+        dest: from,
+        restFrame: ident.address,
+        paymentCode: ident.paymentCode,
+      );
+      final covered = ledger.destCoveringSpend(
+        ident.address,
+        paymentCode: ident.paymentCode,
+        needShe: need,
+      );
+      if (covered == null) throw StateError(kErrNoSealedNote);
+      from = covered;
+    }
     // Seal + BP+/ADMIT inside send run on a worker isolate (see _sealFlowOffUi).
     await ledger.send(
       from: from,
@@ -2474,6 +2499,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      const Text(
+                        kReserveLockSent,
+                        key: Key('reserve-lock-sent'),
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
                       Text(
                         'Locked in  ${formatShe((_reserveLockNotice!['she'] as num).toDouble())} SHE. '
                         'Coins are locked in your portal.',

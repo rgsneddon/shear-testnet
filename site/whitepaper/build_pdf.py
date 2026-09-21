@@ -233,7 +233,7 @@ def main() -> None:
     h2(pdf, "2.6  Wallet")
     body(
         pdf,
-        "The wallet is a six-tab app, pin 0.45. Continuum is spendable balance, silent ID, and the six-slice pending pie. "
+        "The wallet is a six-tab app, pin 0.46. Continuum is spendable balance, silent ID, and the six-slice pending pie. "
         "Flow is send and receive. Resistance is Tx detail. Vortex is where programmes live. Shearview is "
         "the holder’s own explorer. Closure holds the rest-frame string and the shewall.bin export. The file plus "
         "the password restore the same wallet. There is no paper seed. Lose the password and the file does not open. "
@@ -271,7 +271,7 @@ def main() -> None:
         "Login is Copy dest as ssa1.worker. The explorer paints confirmed blocks, kinds, and proof-ok — no dest safari, no amount column. Ciphertext "
         "and rest-frame strings stay off that page. A node is the book: append, verify, P2P, and the GATE that lets "
         "native Flow and pinned Reserve bytecode land in the same block model. "
-        "Shipped P2P seeds are p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303, magic shear-testnet-v4. Wallet 0.45 reads a local node at 127.0.0.1:18332. "
+        "Shipped P2P seeds are p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303, magic shear-testnet-v4. Wallet 0.46 reads a local node at 127.0.0.1:18332. "
         "After 1000 confirmations, sample rows prune; sealed txs stay. An optional latest-only snapshot is published at height 1000, then every 400 blocks.",
     )
 
@@ -299,7 +299,7 @@ def main() -> None:
         5,
         "Correspondence: shear.digital. Software under the MIT License, Copyright 2026 Shear. "
         "RandomX is vendored from tevador/RandomX v1.2.3 (BSD). Official miner ShearK-Miner 2.5. "
-        "Wallet pin at publication: 0.45.",
+        "Wallet pin at publication: 0.46.",
         new_x=XPos.LMARGIN,
         new_y=YPos.NEXT,
     )
@@ -307,7 +307,7 @@ def main() -> None:
     pdf.set_title("Shear: Continuity-settled Proof of Work")
     pdf.set_author("Shear")
     pdf.set_subject("Testnet whitepaper")
-    pdf.set_keywords("shear-testnet-v4 ADMITv2 wallet-0.45 ShearK-2.5, ShearHash-v3, Vortex, vort1, The Reserve")
+    pdf.set_keywords("shear-testnet-v4 ADMITv2 wallet-0.46 ShearK-2.5, ShearHash-v3, Vortex, vort1, The Reserve")
     pdf.set_creator("Shear whitepaper builder")
     OUT.write_bytes(pdf.output())
     print("wrote", OUT, OUT.stat().st_size)

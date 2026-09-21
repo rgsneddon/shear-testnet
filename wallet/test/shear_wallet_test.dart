@@ -104,7 +104,7 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.45"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.46"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
@@ -112,11 +112,11 @@ void main() {
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.45"'), isTrue);
+    expect(winMain.contains('L"Shear 0.46"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.45"'), isTrue);
+    expect(winRc.contains('"Shear 0.46"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.45"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.46"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -742,6 +742,17 @@ void main() {
     expect(hopUp.message, 'note_busy');
     expect(hopFeeAdvisoryOf(StateError('insufficient')), 'insufficient');
     expect(hopFeeAdvisoryOf(StateError('insufficient')), isNot(kErrSendGeneric));
+    expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
+    expect(hopFeeAdvisoryOf(StateError('no_note')), isNot(contains('no_note')));
+    expect(
+      hopFeeAdvisoryOf(const FormatException('Unexpected character (at character 1)\n<html>')),
+      kErrPoolHtml,
+    );
+    expect(hopFeeAdvisoryOf(StateError(kErrPoolHtml)), kErrPoolHtml);
+    expect(hopFeeAdvisoryOf(StateError(kErrPoolHtml)).toLowerCase(), isNot(contains('<html')));
+    expect(kReserveLockSent, 'Sent — please wait 6 confirmations');
+    expect(kReserveLockSent, contains('please'));
+    expect(kReserveLockSent, isNot(contains('plesse')));
     expect(
       reserveVaultSendReady(
         skipPoolSync: false,
@@ -929,6 +940,169 @@ void main() {
       ),
       throwsA(isA<StateError>().having((e) => e.message, 'msg', contains('no_note'))),
     );
+    expect(ledger.spendable(dest) + 1e-18, lessThan(0.25));
+    expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
+  });
+
+  test('hop fee collates a sealed note when spendable covers but the book was empty', () async {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs}) => {
+      'admit_proof': true,
+      'v': 2,
+      'spendTag': Uint8List(32)..[0] = 1,
+      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
+      'cTilde': Uint8List(32)..[0] = 2,
+    };
+    debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
+        _sealNoteNoRange(v, dest20: dest20, kind: kind);
+    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final probe = ShearLedger()..bindIdentity(id);
+    final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
+    final d20 = hash20FromAddress(dest)!;
+    var pot = _sealNoteNoRange(kUnitsPerShe, dest20: d20, kind: 'pot');
+    pot['address'] = dest;
+    pot = attachAdmitPub(pot, admitBase: pointFrom(admitBaseBytes(seed)));
+    final x = admitScalarFromSeed(seed, pot);
+    final posts = <Map<String, dynamic>>[];
+    final pool = _RecordingPool(posts, pubs: [pointBytes(admitPub(x))]);
+    pool.sealedNotes = [pot];
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    ledger.confirmRound(address: dest, pot: 1, height: 2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    expect(ledger.notes, isEmpty);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      greaterThanOrEqualTo(kPrivacyHopFeeShe),
+    );
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    await ledger.send(
+      from: dest,
+      to: bob,
+      amount: kPrivacyHopFeeShe,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: seed,
+      allowPublicHttp: true,
+    );
+    expect(pool.notesHits, greaterThan(0));
+    expect(posts, isNotEmpty);
+    expect(posts.single['to'], kPrivacyHopFeeDest == bob ? bob : bob);
+    expect(posts.single['amount'], kPrivacyHopFeeShe);
+    expect(ledger.notes, isNotEmpty);
+  });
+
+  test('empty note inventory stops spendable from claiming a hop-fee cover', () async {
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final posts = <Map<String, dynamic>>[];
+    final pool = _RecordingPool(posts, pubs: const []);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.confirmRound(address: dest, pot: 2, height: 2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    expect(ledger.spendable(dest), greaterThanOrEqualTo(kPrivacyHopFeeShe));
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'cd' * 32)!;
+    await expectLater(
+      ledger.send(
+        from: dest,
+        to: bob,
+        amount: kPrivacyHopFeeShe,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        spendSeed: seed,
+        allowPublicHttp: true,
+      ),
+      throwsA(isA<StateError>().having(
+        (e) => e.message,
+        'msg',
+        kErrNoSealedNote,
+      )),
+    );
+    expect(posts, isEmpty);
+    expect(ledger.spendable(dest) + 1e-18, lessThan(kPrivacyHopFeeShe));
+    expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
+    expect(hopFeeAdvisoryOf(StateError('no_note')), isNot('no_note'));
+  });
+
+  test('HTML pool body on lock is a StateError, not FormatException', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((req) async {
+      await req.drain<void>();
+      req.response.statusCode = 502;
+      req.response.headers.contentType = ContentType.html;
+      req.response.write('<html><body>nginx</body></html>');
+      await req.response.close();
+    });
+    final id = createIdentity();
+    final pool = ShearPoolClient(
+      baseUrl: 'http://127.0.0.1:${server.port}',
+      http: _realHttp(),
+    );
+    addTearDown(pool.close);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final vault = vaultDest(id.address, viewKey: id.viewKey)!;
+    ledger.confirmRound(address: from, pot: 2, height: 2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    await expectLater(
+      ledger.send(
+        from: from,
+        to: vault,
+        amount: 0.05,
+        kind: 'lock',
+        programId: kReserveProgram,
+        local: false,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        spendSeed: hexToBytes(id.seedHex),
+        allowPublicHttp: true,
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (e) => hopFeeAdvisoryOf(e),
+          'advisory',
+          'pool returned an error page (http_502)',
+        ),
+      ),
+    );
+  });
+
+  test('unprivate lock posts kind=lock when spendable covers and the pool returns JSON', () async {
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final posted = <Map<String, dynamic>>[];
+    final live = _PoolLive(
+      headerHex: Uint8List(128).map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
+      height: 12,
+      balance: 10,
+    );
+    final server = await _fakePool(live: live, posted: posted);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final vault = vaultDest(id.address, viewKey: id.viewKey)!;
+    ledger.confirmRound(address: from, pot: 2, height: 2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations);
+    await ledger.send(
+      from: from,
+      to: vault,
+      amount: 0.05,
+      kind: 'lock',
+      programId: kReserveProgram,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: seed,
+      allowPublicHttp: true,
+    );
+    expect(posted.single['kind'], 'lock');
+    expect(posted.single['programId'], kReserveProgram);
+    final v0 = (posted.single['vout'] as List).first as Map;
+    expect(v0['kind'], 'lock');
+    expect(v0['commit'], isNotNull);
+    expect(posted.single['sig'], isNotEmpty);
   });
 
   test('sealed send change is the spent note leftover, not dest-balance of extra notes', () async {
@@ -1693,8 +1867,8 @@ void main() {
         reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.45.0+62'));
-    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.45'"));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.46.0+63'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.46'"));
   });
 
   test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
@@ -2472,7 +2646,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.45');
+    expect(kWalletVersion, '0.46');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -2934,8 +3108,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.45');
-    expect(kWalletVersion, '0.45');
+    expect(app.title, 'Shear 0.46');
+    expect(kWalletVersion, '0.46');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -4429,6 +4603,8 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.byKey(const Key('reserve-locked-in')), findsOneWidget);
+    expect(find.text(kReserveLockSent), findsWidgets);
+    expect(find.byKey(const Key('reserve-lock-sent')), findsOneWidget);
     expect(find.textContaining('Coins are locked in your portal'), findsOneWidget);
     expect(find.byKey(const Key('reserve-locked-in-levy')), findsOneWidget);
     expect(find.byKey(const Key('reserve-vote-submit')), findsNothing);
@@ -4793,6 +4969,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
     expect(find.text('fee_rejected'), findsOneWidget);
+    expect(find.text('no_note'), findsNothing);
     expect(hop.isUp, isFalse);
     expect(hop.state, PrivacyHopState.off);
     expect(find.text(kHopProgressPaying), findsNothing);
@@ -5911,8 +6088,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.45 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.45');
+  test('kWalletVersion == 0.46 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.46');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -6884,6 +7061,16 @@ class _HistoryKeepPool extends ShearPoolClient {
   }
 }
 
+class _NotesPool extends _RecordingPool {
+  _NotesPool(this.noteRows, {List<Uint8List> pubs = const []}) : super([], pubs: pubs);
+
+  final List<Map<String, dynamic>> noteRows;
+
+  @override
+  Future<Map<String, dynamic>> notes(String address) async =>
+      {'ok': true, 'notes': noteRows};
+}
+
 class _RecordingPool extends ShearPoolClient {
   _RecordingPool(this.posts, {this.pubs = const [], this.spendTags = const [], String? baseUrl})
       : super(
@@ -6893,6 +7080,14 @@ class _RecordingPool extends ShearPoolClient {
   final List<Map<String, dynamic>> posts;
   final List<Uint8List> pubs;
   final List<String> spendTags;
+  List<Map<String, dynamic>> sealedNotes = const [];
+  int notesHits = 0;
+
+  @override
+  Future<Map<String, dynamic>> notes(String address) async {
+    notesHits += 1;
+    return {'ok': true, 'notes': sealedNotes};
+  }
 
   @override
   Future<Map<String, dynamic>> fluxset() async {

@@ -408,6 +408,12 @@ const kErrSyncTip = 'node not at tip — wait for sync';
 const kErrSendGeneric = 'not sent - try again';
 const kErrShortShe1 = 'paste full she1 from Receive (not fingerprint)';
 const kErrLockUnsigned = 'lock signature rejected';
+/// Hop-fee picker had no single sealed note that can cover the fee.
+/// One Flow input spends one note; several smaller notes are not combined.
+const kErrNoSealedNote =
+    'No sealed Continuum note ready for the hop fee — wait for sync/confirms';
+/// Pool answered with an HTML error page (or other non-JSON). Never surface FormatException.
+const kErrPoolHtml = 'pool returned HTML';
 
 /// Flow send catch: map known failures; keep generic for unknown.
 String flowSendAdvisoryOf(Object error) {
@@ -430,29 +436,44 @@ String flowSendAdvisoryOf(Object error) {
 }
 
 /// Submit snack that keeps the reason body. Hop-fee pay uses this so a pool
-/// rejection is not collapsed to [kErrSendGeneric].
+/// rejection is not collapsed to [kErrSendGeneric]. Raw `no_note` and HTML
+/// parse failures are rewritten; a real pool reason is kept.
 String hopFeeAdvisoryOf(Object error) {
+  if (error is FormatException) return kErrPoolHtml;
+  var msg = '';
   if (error is StateError) {
-    final m = error.message.trim();
-    return m.isEmpty ? kErrSendGeneric : m;
-  }
-  if (error is ArgumentError) {
-    final m = error.message?.toString().trim() ?? '';
-    if (m.isNotEmpty) return m;
-  }
-  var msg = error.toString().trim();
-  const prefixes = <String>[
-    'Bad state: ',
-    'Invalid argument(s): ',
-    'Exception: ',
-  ];
-  for (final p in prefixes) {
-    if (msg.startsWith(p)) {
-      msg = msg.substring(p.length).trim();
-      break;
+    msg = error.message.trim();
+  } else if (error is ArgumentError) {
+    msg = error.message?.toString().trim() ?? '';
+  } else {
+    msg = error.toString().trim();
+    const prefixes = <String>[
+      'Bad state: ',
+      'Invalid argument(s): ',
+      'FormatException: ',
+      'Exception: ',
+    ];
+    for (final p in prefixes) {
+      if (msg.startsWith(p)) {
+        msg = msg.substring(p.length).trim();
+        break;
+      }
     }
   }
-  return msg.isEmpty ? kErrSendGeneric : msg;
+  if (msg.isEmpty) return kErrSendGeneric;
+  if (msg == 'no_note') return kErrNoSealedNote;
+  if (msg == 'unsigned') return kErrLockUnsigned;
+  if (msg.startsWith('pool returned an error page') || msg == kErrPoolHtml) return msg;
+  final low = msg.toLowerCase();
+  if (low.contains('<html') ||
+      low.contains('<!doctype') ||
+      low.contains('formatexception') ||
+      low.contains('unexpected character')) {
+    final code = RegExp(r'http_(\d+)').firstMatch(msg);
+    if (code != null) return 'pool returned an error page (http_${code.group(1)})';
+    return kErrPoolHtml;
+  }
+  return msg;
 }
 
 /// Public alias of [_sendHumanError] for unit tests.
@@ -479,6 +500,15 @@ StateError _sendHumanError(
   String? kind,
 }) {
   final why = (reason == null || reason.trim().isEmpty) ? 'send failed' : reason.trim();
+  if (why == 'no_note') return StateError(kErrNoSealedNote);
+  final whyLow = why.toLowerCase();
+  if (why == kErrPoolHtml ||
+      whyLow.contains('<html') ||
+      whyLow.contains('<!doctype') ||
+      whyLow.contains('formatexception') ||
+      whyLow.contains('unexpected character')) {
+    return StateError(kErrPoolHtml);
+  }
   if (why == 'admit_link_tag' || why == 'admit') {
     return StateError(kErrNoteSpent);
   }
@@ -1078,6 +1108,9 @@ class ShearLedger {
   int _settledHeight = 0;
   final Map<String, int> _historyAt = {};
   final Map<String, int> _notesAt = {};
+  /// Failed note pulls while spendable is ahead of the sealed book.
+  /// Stop the background retry after two misses at this height; Pay still forces one.
+  final Map<String, int> _noteMisses = {};
   /// First unlock notes-then-history collate finished. Thin pending-receive
   /// ticks must not skip that first full pull.
   bool _openCollated = false;
@@ -1126,6 +1159,7 @@ class ShearLedger {
     _owedPiDisplay = 0;
     _historyAt.clear();
     _notesAt.clear();
+    _noteMisses.clear();
     _openCollated = false;
     _sealedHeight = 0;
     _settledHeight = 0;
@@ -1893,6 +1927,205 @@ class ShearLedger {
     return n;
   }
 
+  double _noteSheOf(Map<String, dynamic> note, double fallback) {
+    final amt = note['amount'];
+    if (amt is num && amt > 0) return amt.toDouble();
+    final nanos = note['nanos'];
+    if (nanos is num && nanos > 0) return nanos.toDouble() / kUnitsPerShe;
+    final vp = note['valueProof'];
+    if (vp is Map && vp['v'] is num && (vp['v'] as num) > 0) {
+      return (vp['v'] as num).toDouble() / kUnitsPerShe;
+    }
+    return fallback;
+  }
+
+  bool _noteOnDest(Map<String, dynamic> note, String dest) {
+    final addr = (note['address'] ?? note['dest'])?.toString() ?? '';
+    if (addr.isEmpty) return false;
+    return addr == dest || payKey(addr) == payKey(dest);
+  }
+
+  /// Confirmed enough to spend. A missing height is already in the mature book.
+  /// Same floor as the Flow picker: [spendableConfirmations] from [_sealedHeight].
+  bool _noteMature(Map<String, dynamic> note, {bool ignoreConfs = false}) {
+    if (ignoreConfs) return true;
+    final h = (note['height'] as num?)?.toInt();
+    if (h == null || h < 1) return true;
+    return (_sealedHeight - h + 1) >= spendableConfirmations;
+  }
+
+  /// One sealed note on [dest] can cover [needShe]. Several smaller notes are
+  /// not combined. An amount-less note falls back to the spendable book.
+  bool _structuralCover(String dest, double needShe) {
+    var largest = 0.0;
+    var bare = false;
+    for (final n in _notes) {
+      if (n['spent'] == true) continue;
+      if (!_noteOnDest(n, dest)) continue;
+      if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+      if (!_noteMature(n)) continue;
+      final amt = n['amount'];
+      if (amt is num) {
+        if (amt.toDouble() > largest) largest = amt.toDouble();
+      } else if (spendable(dest) + 1e-18 >= needShe) {
+        bare = true;
+      }
+    }
+    return largest + 1e-18 >= needShe || bare;
+  }
+
+  /// Money dest that holds one sealed note covering [needShe], or null.
+  String? destCoveringSpend(
+    String restFrame, {
+    String? paymentCode,
+    required double needShe,
+  }) {
+    for (final d in syncDests(restFrame, paymentCode: paymentCode)) {
+      if (_structuralCover(d, needShe)) return d;
+    }
+    return null;
+  }
+
+  /// Largest unspent sealed note on [dest], or the sum when [sum] is set.
+  double inventoriedNoteShe(String dest, {bool sum = false}) {
+    var total = 0.0;
+    var largest = 0.0;
+    for (final n in _notes) {
+      if (n['spent'] == true) continue;
+      if (!_noteOnDest(n, dest)) continue;
+      if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+      final she = _noteSheOf(n, 0);
+      if (she <= 0) continue;
+      total += she;
+      if (she > largest) largest = she;
+    }
+    return sum ? total : largest;
+  }
+
+  bool _ownsSealedOn(String dest) {
+    for (final n in _notes) {
+      if (n['spent'] == true) continue;
+      if (!_noteOnDest(n, dest)) continue;
+      if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+      return true;
+    }
+    return false;
+  }
+
+  /// Spendable SHE with no local sealed note. The thin poll must full-sync
+  /// until a note lands or two pulls miss, so Pay is not the first collate.
+  bool get notesLagSpendable {
+    for (final e in _spendable.entries) {
+      if (e.value <= 1e-12) continue;
+      if (_isProgramVaultDest(e.key)) continue;
+      if (_ownsSealedOn(e.key)) continue;
+      if ((_noteMisses[e.key] ?? 0) >= 2) continue;
+      return true;
+    }
+    return false;
+  }
+
+  void _bindSpendableToNotes(Iterable<String> dests) {
+    for (final d in dests) {
+      if (!isDestAddress(d)) continue;
+      final key = payKey(d);
+      _spendable[key] = inventoriedNoteShe(key, sum: true);
+    }
+  }
+
+  /// Pull sealed notes for the spend dests. Balance snapshots can show SHE
+  /// before the note book is filled. Returns true when the pool answered,
+  /// including an empty list. A network miss returns false and leaves the book.
+  ///
+  /// One Flow spend consumes one note. Several smaller notes are not combined.
+  Future<bool> collateSpendNotes({
+    String? dest,
+    String? restFrame,
+    String? paymentCode,
+    bool bindSpendable = false,
+  }) async {
+    if (pool == null) return false;
+    final seed = spendSeed;
+    if (seed == null || seed.length != 32) return false;
+    final dests = <String>{};
+    if (dest != null && dest.isNotEmpty) {
+      final key = payKey(dest);
+      if (isDestAddress(key)) dests.add(key);
+    }
+    if (restFrame != null) {
+      for (final d in syncDests(restFrame, paymentCode: paymentCode)) {
+        if (isDestAddress(d)) dests.add(payKey(d));
+      }
+    }
+    if (dests.isEmpty) return false;
+    var saw = false;
+    var failed = false;
+    for (final key in dests) {
+      try {
+        final json = await pool!.notes(key);
+        final rows = json['notes'];
+        if (rows is! List) {
+          failed = true;
+          continue;
+        }
+        saw = true;
+        if (rows.isEmpty) continue;
+        final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
+        final input = <String, dynamic>{
+          'vouts': jsonDecode(jsonEncode(_hexify(raw['vouts']))),
+          'dests': List<String>.from(raw['dests'] as List? ?? const []),
+          'dest': raw['dest'],
+          'spendSeed': seed,
+          'seenCommitHex': List<String>.from(raw['seenCommitHex'] as List? ?? const []),
+          'txHints': jsonDecode(jsonEncode(raw['txHints'])),
+          'prev': raw['prev'],
+          'startIndex': raw['startIndex'],
+        };
+        Map<String, dynamic> scanned;
+        try {
+          scanned = await Isolate.run(() => scanSealedVouts(input));
+        } catch (_) {
+          scanned = scanSealedVouts(input);
+        }
+        _applySealedScan(scanned);
+        _notesAt[key] = _sealedHeight;
+      } catch (_) {
+        failed = true;
+      }
+    }
+    if (bindSpendable && saw && !failed) _bindSpendableToNotes(dests);
+    return saw && !failed;
+  }
+
+  Map<String, dynamic>? _pickSpendNote(
+    String dest,
+    double needShe,
+    Uint8List spendSeed, {
+    bool ignoreConfs = false,
+    double amountFallback = 0,
+  }) {
+    Map<String, dynamic>? best;
+    var bestShe = -1.0;
+    for (final n in _notes) {
+      if (n['spent'] == true) continue;
+      if (!_noteOnDest(n, dest)) continue;
+      if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+      if (!_noteMature(n, ignoreConfs: ignoreConfs)) continue;
+      final tag = _noteSpendTagHex(spendSeed, n);
+      if (tag != null && _spentTagHex.contains(tag)) {
+        n['spent'] = true;
+        continue;
+      }
+      final noteShe = _noteSheOf(n, amountFallback);
+      if (noteShe + 1e-18 < needShe) continue;
+      if (best == null || noteShe > bestShe) {
+        best = n;
+        bestShe = noteShe;
+      }
+    }
+    return best;
+  }
+
   /// Dest that actually holds reconstructed credits for a spend.
   /// Only dests [isBindable] accepts for the signing key. destAtIndex is not a money path.
   String spendFrom(String restFrame, {String? paymentCode, required double amount}) {
@@ -1974,16 +2207,17 @@ class ShearLedger {
     for (final d in dests) {
       final key = payKey(d);
       if (!histSeen.add(key)) continue;
-      if (_notesAt[key] == _sealedHeight) continue;
+      if (_notesAt[key] == _sealedHeight) {
+        final lag = spendable(key) > 1e-12 && !_ownsSealedOn(key);
+        if (!lag || (_noteMisses[key] ?? 0) >= 2) continue;
+      }
       final seed = spendSeed;
       if (seed != null && seed.length == 32 && pool != null) {
         try {
           final json = await pool!.notes(key);
           final rows = json['notes'];
           if (rows is List) {
-            if (rows.isEmpty) {
-              _notesAt[key] = _sealedHeight;
-            } else {
+            if (rows.isNotEmpty) {
               final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
               final input = <String, dynamic>{
                 'vouts': jsonDecode(jsonEncode(_hexify(raw['vouts']))),
@@ -1997,7 +2231,12 @@ class ShearLedger {
               };
               final scanned = await Isolate.run(() => scanSealedVouts(input));
               _applySealedScan(scanned);
-              _notesAt[key] = _sealedHeight;
+            }
+            _notesAt[key] = _sealedHeight;
+            if (_ownsSealedOn(key)) {
+              _noteMisses.remove(key);
+            } else if (spendable(key) > 1e-12) {
+              _noteMisses[key] = (_noteMisses[key] ?? 0) + 1;
             }
           }
         } catch (_) {}
@@ -2686,6 +2925,7 @@ class ShearLedger {
     }
     var src = from;
     if (spendSeed != null && spendSeed.length == 32) {
+      this.spendSeed ??= spendSeed;
       spendPub ??= ed25519PublicFromSeed(spendSeed);
     }
     if (paymentCode != null) {
@@ -2726,32 +2966,90 @@ class ShearLedger {
     }
     if (spendable(src) < needShe) throw StateError('insufficient');
     Map<String, dynamic>? spent;
+    Map<String, dynamic>? chosen;
     var fundedShe = spendable(src);
     List<Uint8List> livePubs = const [];
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local) {
+      // One sealed note must cover needShe. Summing several smaller notes into
+      // one Flow vin is out of scope. Pull the pool note list when the local
+      // book has no covering note.
       livePubs = await _fluxsetPubs();
-      for (final n in _notes) {
-        if (n['spent'] == true) continue;
-        if (n['address'] != src && n['dest'] != src) continue;
-        if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
-        final h = (n['height'] as num?)?.toInt();
-        if (h != null && h > 0 && (_sealedHeight - h + 1) < spendableConfirmations) {
-          continue;
-        }
-        final tag = _noteSpendTagHex(spendSeed, n);
-        if (tag != null && _spentTagHex.contains(tag)) {
-          n['spent'] = true;
-          continue;
-        }
-        final amt = n['amount'];
-        final noteShe = amt is num ? amt.toDouble() : fundedShe;
-        if (noteShe + 1e-18 < needShe) continue;
-        final have = spent?['amount'];
-        final haveShe = have is num ? have.toDouble() : -1.0;
-        if (spent == null || noteShe > haveShe) spent = n;
+      Map<String, dynamic>? pick(String fromDest, {bool ignoreConfs = false}) =>
+          _pickSpendNote(
+            fromDest,
+            needShe,
+            spendSeed,
+            ignoreConfs: ignoreConfs,
+            amountFallback: spendable(fromDest),
+          );
+      void adopt(String fromDest, Map<String, dynamic> note) {
+        spent = note;
+        src = fromDest;
       }
-      if (spent == null) throw StateError('no_note');
-      if (spent['amount'] is num) fundedShe = (spent['amount'] as num).toDouble();
+      bool sealedOn(String d) => _ownsSealedOn(d);
+      var hadLocal = sealedOn(src);
+      if (!hadLocal && restFrame != null) {
+        for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+          if (sealedOn(d)) {
+            hadLocal = true;
+            break;
+          }
+        }
+      }
+      final first = pick(src);
+      if (first != null) {
+        adopt(src, first);
+      } else if (restFrame != null) {
+        for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+          if (d == src) continue;
+          final alt = pick(d);
+          if (alt != null) {
+            adopt(d, alt);
+            break;
+          }
+        }
+      }
+      // Collate when the local book has no sealed note. A spend-tag reject
+      // stays no_note; the book is then rebuilt from the notes still held.
+      if (spent == null && !hadLocal) {
+        await collateSpendNotes(
+          dest: src,
+          restFrame: restFrame,
+          paymentCode: paymentCode,
+        );
+        final again = pick(src);
+        if (again != null) {
+          adopt(src, again);
+        } else if (restFrame != null) {
+          for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+            final alt = pick(d);
+            if (alt != null) {
+              adopt(d, alt);
+              break;
+            }
+          }
+        }
+      }
+      // 6 confirmations stay in force. A balance snapshot does not make a
+      // young note spendable.
+      // One note must cover the fee. Several smaller notes are not combined.
+      // After the picker misses, the book is the notes we can actually spend
+      // so Continuum does not keep claiming a cover the hop fee cannot use.
+      if (spent == null) {
+        final keys = <String>{payKey(src), payKey(from)};
+        if (restFrame != null) {
+          for (final d in syncDests(restFrame, paymentCode: paymentCode)) {
+            if (isDestAddress(d)) keys.add(payKey(d));
+          }
+        }
+        for (final key in keys) {
+          if (!isDestAddress(key)) continue;
+          _spendable[key] = inventoriedNoteShe(key, sum: true);
+        }
+        throw StateError(hadLocal ? 'no_note' : kErrNoSealedNote);
+      }
+      chosen = spent;
+      fundedShe = _noteSheOf(chosen!, spendable(src));
     }
     String? changeDest = change;
     if (sendKind == 'send') {
@@ -2807,12 +3105,13 @@ class ShearLedger {
     Map<String, dynamic>? admitProof;
     dynamic excess;
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local) {
-      if (spent == null) throw StateError('no_note');
+      if (chosen == null) throw StateError('no_note');
+      final note = chosen!;
       final spentNote = {
-        'kind': (spent['kind'] as String?) ?? 'pot',
-        'commit': _noteBytes(spent['commit'])!,
-        'noteCommit': _noteBytes(spent['noteCommit'])!,
-        'r': _noteBytes(spent['r'])!,
+        'kind': (note['kind'] as String?) ?? 'pot',
+        'commit': _noteBytes(note['commit'])!,
+        'noteCommit': _noteBytes(note['noteCommit'])!,
+        'r': _noteBytes(note['r'])!,
       };
       final sealedBuilt = await _sealFlowOffUi({
         'spendSeed': spendSeed,
@@ -2854,8 +3153,8 @@ class ShearLedger {
       }
       vin = [
         {
-          'prev': _noteBytes(spent['prev']) ?? Uint8List(32),
-          'index': (spent['index'] as int?) ?? 0,
+          'prev': _noteBytes(note['prev']) ?? Uint8List(32),
+          'index': (note['index'] as int?) ?? 0,
           'commit': spentNote['commit'],
           'noteCommit': spentNote['noteCommit'],
           'r': spentNote['r'],
@@ -2880,7 +3179,7 @@ class ShearLedger {
         'pubs': pubs,
       });
       admitProof = Map<String, dynamic>.from(proved['admitProof'] as Map);
-      spent['spent'] = true;
+      note['spent'] = true;
     }
     if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw') {
       final sealedReserve = <Map<String, dynamic>>[
@@ -2947,14 +3246,15 @@ class ShearLedger {
       Map<String, dynamic>? json;
       Object? lastErr;
       for (var attempt = 0; attempt < 3; attempt++) {
-        if (attempt > 0 && sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && spent != null) {
+        final retryNote = chosen;
+        if (attempt > 0 && sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && retryNote != null) {
           final pubs = await _fluxsetPubs();
           if (pubs.isEmpty) throw StateError('fluxset');
           final spentNote = {
-            'kind': (spent['kind'] as String?) ?? 'pot',
-            'commit': _noteBytes(spent['commit'])!,
-            'noteCommit': _noteBytes(spent['noteCommit'])!,
-            'r': _noteBytes(spent['r'])!,
+            'kind': (retryNote['kind'] as String?) ?? 'pot',
+            'commit': _noteBytes(retryNote['commit'])!,
+            'noteCommit': _noteBytes(retryNote['noteCommit'])!,
+            'r': _noteBytes(retryNote['r'])!,
           };
           final proved = await _proveFlowOffUi({
             'vin': vin,
@@ -3274,10 +3574,12 @@ class ShearPoolClient {
     final req = await _http.getUrl(Uri.parse('$baseUrl$path'));
     final res = await req.close();
     final text = await utf8.decodeStream(res);
+    final map = _decodePoolBody(res.statusCode, res.headers.contentType?.mimeType, text);
+    // GET fallbacks try the next path on non-2xx. HTML already threw above.
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw StateError('http_${res.statusCode}');
     }
-    return jsonDecode(text) as Map<String, dynamic>;
+    return map;
   }
 
   Future<Map<String, dynamic>?> _getRawFirst(List<String> paths) async {
@@ -3319,11 +3621,52 @@ class ShearPoolClient {
       req.contentLength = payload.length;
       req.add(payload);
       final res = await req.close();
-      return jsonDecode(await utf8.decodeStream(res)) as Map<String, dynamic>;
+      final text = await utf8.decodeStream(res);
+      return _decodePoolBody(res.statusCode, res.headers.contentType?.mimeType, text);
+    } on FormatException {
+      if (_pinned == null) _sync?.noteFailure();
+      throw StateError(kErrPoolHtml);
     } catch (_) {
       if (_pinned == null) _sync?.noteFailure();
       rethrow;
     }
+  }
+
+  /// JSON error objects (non-2xx with a reason) are returned so send mapping
+  /// still sees `unsigned` / `insufficient`. HTML and other non-JSON become
+  /// [kErrPoolHtml] or `http_<status>`. FormatException never leaves here.
+  Map<String, dynamic> _decodePoolBody(int status, String? contentType, String text) {
+    final trimmed = text.trimLeft();
+    if (_poolBodyLooksHtml(contentType, trimmed)) {
+      throw StateError('pool returned an error page (http_$status)');
+    }
+    if (trimmed.isEmpty) {
+      if (status < 200 || status >= 300) throw StateError('http_$status');
+      throw StateError('pool returned an error page (http_$status)');
+    }
+    Object? decoded;
+    try {
+      decoded = jsonDecode(trimmed);
+    } on FormatException {
+      decoded = null;
+    }
+    if (decoded is Map) return Map<String, dynamic>.from(decoded);
+    if (status < 200 || status >= 300) throw StateError('http_$status');
+    throw StateError('pool returned an error page (http_$status)');
+  }
+
+  bool _poolBodyLooksHtml(String? contentType, String trimmed) {
+    final ct = (contentType ?? '').toLowerCase();
+    if (ct.contains('text/html') || ct.contains('application/xhtml')) return true;
+    final sample = trimmed.length > 160 ? trimmed.substring(0, 160) : trimmed;
+    final low = sample.toLowerCase();
+    if (low.startsWith('<!doctype') ||
+        low.startsWith('<html') ||
+        low.startsWith('<head') ||
+        low.startsWith('<body')) {
+      return true;
+    }
+    return low.startsWith('<') && low.contains('<html');
   }
 
   Future<Map<String, dynamic>> balance(String address) =>
