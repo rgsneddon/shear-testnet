@@ -4531,10 +4531,53 @@ void main() {
     await tester.ensureVisible(find.byKey(const Key('reserve-privacy-hop')));
     await tester.tap(find.byKey(const Key('reserve-privacy-hop')));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byKey(const Key('reserve-hop-fee-confirm')), findsOneWidget);
+    expect(find.text(kPrivacyHopFeeConfirmTitle), findsOneWidget);
+    expect(find.textContaining('0.05 SHE'), findsWidgets);
+    await tester.tap(find.byKey(const Key('reserve-hop-fee-accept')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(hop.isUp, isTrue);
     expect(find.text('Disconnect hop'), findsOneWidget);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
+  });
+
+  testWidgets('Reserve hop fee cancel leaves Send gated', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-reserve-hop-cancel-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final ledger = ShearLedger();
+    ledger.viewSecret = ident.viewKey;
+    ledger.confirmRound(
+      address: ledger.homeDest(ident.address, paymentCode: ident.paymentCode),
+      pot: 10,
+      height: 20,
+    );
+    ledger.settleTo(30);
+    final hop = PrivacyHopController(mock: true);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      reserve: ShearReserve(),
+      startUnlocked: true,
+      skipPoolSync: true,
+      enforceReserveHopGate: true,
+      privacyHop: hop,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-privacy-hop')));
+    await tester.tap(find.byKey(const Key('reserve-privacy-hop')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-hop-fee-confirm')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-hop-fee-cancel')));
+    await tester.pump();
+    expect(hop.isUp, isFalse);
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
   });
 
   testWidgets('Reserve unprivate confirm uses already-on-VPN copy then unlocks Send', (tester) async {
