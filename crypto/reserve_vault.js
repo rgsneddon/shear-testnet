@@ -115,6 +115,8 @@ export function cloneVault(state) {
   out.totalLockedNanos = asBig(out.totalLockedNanos);
   out.feeBankNanos = asBig(out.feeBankNanos);
   out.mintBankNanos = asBig(out.mintBankNanos);
+  out.blankFork = !!src.blankFork;
+  delete out.vaultSeal;
   return out;
 }
 
@@ -207,29 +209,32 @@ export function publicVaultView(state, nowMs) {
   let totalClaimable = 0n;
   const bps = Number(state.epochBps ?? GENESIS_BPS);
   const elapsed = elapsedMs(state, nowMs);
-  for (const p of Object.values(state.portals || {})) {
-    const staked = asBig(p.staked);
-    const idle = asBig(p.idle);
-    totalStaked += staked;
-    totalIdle += idle;
-    totalAccrued += asBig(accruedNanos(staked, bps, elapsed, state.magic));
-    totalClaimable += asBig(p.claimableRewards);
+  const blank = !!state?.blankFork;
+  if (!blank) {
+    for (const p of Object.values(state.portals || {})) {
+      const staked = asBig(p.staked);
+      const idle = asBig(p.idle);
+      totalStaked += staked;
+      totalIdle += idle;
+      totalAccrued += asBig(accruedNanos(staked, bps, elapsed, state.magic));
+      totalClaimable += asBig(p.claimableRewards);
+    }
   }
   return {
     programId: RESERVE_PROGRAM,
-    epochStartMs: state.epochStartMs || 0,
-    remainingMs: remainingMs(state, nowMs),
-    totalLockedNanos: asNum(state.totalLockedNanos),
+    epochStartMs: blank ? 0 : (state.epochStartMs || 0),
+    remainingMs: blank ? 0 : remainingMs(state, nowMs),
+    totalLockedNanos: blank ? 0 : asNum(state.totalLockedNanos),
     totalStakedNanos: asNum(totalStaked),
     totalIdleNanos: asNum(totalIdle),
     totalAccruedNanos: asNum(totalAccrued),
     totalClaimableNanos: asNum(totalClaimable),
     accruingNanos: asNum(totalAccrued),
-    vaultNanos: asNum(asBig(state.totalLockedNanos) + totalAccrued),
-    reserveMintedNanos: asNum(asBig(state.mintBankNanos) + totalClaimable),
-    feeBankNanos: asNum(state.feeBankNanos),
-    mintBankNanos: asNum(state.mintBankNanos),
-    votes: votesView(state),
+    vaultNanos: blank ? 0 : asNum(asBig(state.totalLockedNanos) + totalAccrued),
+    reserveMintedNanos: blank ? 0 : asNum(asBig(state.mintBankNanos) + totalClaimable),
+    feeBankNanos: blank ? 0 : asNum(state.feeBankNanos),
+    mintBankNanos: blank ? 0 : asNum(state.mintBankNanos),
+    votes: blank ? { increase: 0, decrease: 0, hold: 0 } : votesView(state),
     oracleBps: state.oracle?.annualBps ?? 0,
     oracleObserved: true,
     epochBps: Number(state.epochBps ?? GENESIS_BPS),
@@ -245,6 +250,7 @@ export function publicVaultView(state, nowMs) {
     enactedLiveBonus: Number(state.enactedLiveBonus || 0),
     enactedAtMs: Number(state.enactedAtMs || 0),
     enactedAtEpoch: Number(state.enactedAtEpoch || 0),
+    blankFork: blank,
   };
 }
 
@@ -542,6 +548,7 @@ export function reserveAction(tx) {
 export function verifyReservePayout(state, tx) {
   const act = reserveAction(tx);
   if (!act) return { ok: true };
+  if (state?.blankFork) return { ok: false, reason: 'blank_vault' };
   if (act.kind === KIND_LOCK) {
     if (!(act.nanos > 0)) return { ok: false, reason: 'bad_amount' };
     if (act.dest && isShearAddress(act.dest)) return { ok: false, reason: 'shear1' };
@@ -574,6 +581,7 @@ export function verifyReservePayout(state, tx) {
 
 /** Honour Reserve lock / vote / withdraw txs already sealed in a block. */
 export function applyReserveBlock({ state, block, nowMs }) {
+  if (state?.blankFork) return [];
   const txs = Array.isArray(block?.txs) ? block.txs : [];
   const results = [];
   // First block whose time is past the epoch collates votes into the live
@@ -681,6 +689,7 @@ export function enact({ state, nowMs } = {}) {
 }
 
 export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId } = {}) {
+  if (state?.blankFork) return { ok: false, reason: 'blank_vault' };
   const id = portalKey(portalId || dest);
   if (!id) return { ok: false, reason: 'bad_dest' };
   if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {

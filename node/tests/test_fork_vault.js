@@ -65,6 +65,7 @@ describe('fork trial vault (VS-R1)', () => {
   it('verifyFork clones empty vault at fork root and applyReserveBlock on the trial, not tip saveReserve', () => {
     const src = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
     assert.match(src, /function trialVaultAtForkRoot\(/);
+    assert.match(src, /function trialVaultForFork\(/);
     assert.match(src, /cloneVault\(emptyVault\(\)\)/);
     assert.match(src, /applyReserveBlock\(\{ state: trialVault, block: lean/);
     assert.match(src, /verifyOneForkBlock\(fork, i, accepted, trialSpent, null, trialVault\)/);

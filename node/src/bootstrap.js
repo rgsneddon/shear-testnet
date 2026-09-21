@@ -35,11 +35,12 @@ export const BOOTSTRAP_EVERY_BLOCKS = 400;
 /** @deprecated internal lag; public cadence is FIRST + EVERY */
 export const BOOTSTRAP_LAG_BLOCKS = 0;
 
-export function bootstrapCheckpoint(tipH) {
+export function bootstrapCheckpoint(tipH, first = BOOTSTRAP_FIRST_HEIGHT, every = BOOTSTRAP_EVERY_BLOCKS) {
   const tip = Number(tipH || 0);
-  if (tip < BOOTSTRAP_FIRST_HEIGHT) return 0;
-  return BOOTSTRAP_FIRST_HEIGHT
-    + Math.floor((tip - BOOTSTRAP_FIRST_HEIGHT) / BOOTSTRAP_EVERY_BLOCKS) * BOOTSTRAP_EVERY_BLOCKS;
+  const f = Math.max(1, Math.floor(Number(first) || BOOTSTRAP_FIRST_HEIGHT));
+  const e = Math.max(1, Math.floor(Number(every) || BOOTSTRAP_EVERY_BLOCKS));
+  if (tip < f) return 0;
+  return f + Math.floor((tip - f) / e) * e;
 }
 
 function hexOf(h) {
@@ -52,12 +53,14 @@ function hexOf(h) {
  * Reorg floor: first frozen hash at height 1000, then every 400.
  * A heavier fork that replaces that block is refused (samples are pruned there).
  */
-export function reorgBreaksCheckpoint(fromBlocks, toBlocks) {
+export function reorgBreaksCheckpoint(fromBlocks, toBlocks, opts = {}) {
   const from = Array.isArray(fromBlocks) ? fromBlocks : [];
   const to = Array.isArray(toBlocks) ? toBlocks : [];
+  const first = Math.max(1, Math.floor(Number(opts.first ?? BOOTSTRAP_FIRST_HEIGHT)));
+  const every = Math.max(1, Math.floor(Number(opts.every ?? BOOTSTRAP_EVERY_BLOCKS)));
   const tipH = Number(from.at(-1)?.height || 0);
-  const cpH = bootstrapCheckpoint(tipH);
-  if (cpH < BOOTSTRAP_FIRST_HEIGHT) return null;
+  const cpH = bootstrapCheckpoint(tipH, first, every);
+  if (cpH < first) return null;
   const old = from.find((b) => Number(b.height) === cpH);
   if (!old) return null;
   const neu = to.find((b) => Number(b.height) === cpH);

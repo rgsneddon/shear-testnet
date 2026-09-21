@@ -30,12 +30,25 @@ import { hash20FromAddress } from '../../crypto/address.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
 import { emptyVault, cloneVault, applyReserveBlock, verifyReservePayout } from '../../crypto/reserve_vault.js';
+import {
+  vaultCommitment,
+  makeVaultSeal,
+  chainHasSealAncestry,
+  reorgBreaksVaultSeal,
+  vaultSealBanner,
+} from '../../crypto/vault_seal.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest, verifyPoolWithdrawBound } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin, appendChainBin } from '../../crypto/chainbin.js';
-import { writeLatestBootstrap, reorgBreaksCheckpoint } from './bootstrap.js';
+import {
+  writeLatestBootstrap,
+  reorgBreaksCheckpoint,
+  bootstrapCheckpoint,
+  BOOTSTRAP_FIRST_HEIGHT,
+  BOOTSTRAP_EVERY_BLOCKS,
+} from './bootstrap.js';
 import { blockWeight } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
 import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset } from '../../crypto/admit.js';
@@ -103,6 +116,8 @@ export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
   reorgHaltDepth = Number(process.env.SHEAR_REORG_HALT_DEPTH || 0),
   fastSync = String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
+  firstCheckpoint = BOOTSTRAP_FIRST_HEIGHT,
+  checkpointEvery = BOOTSTRAP_EVERY_BLOCKS,
 } = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
@@ -121,7 +136,11 @@ export function createStore(dir, {
   const pause = { reserveInterest: false, poolWithdraw: false };
   const haltDepth = Math.max(0, Math.floor(Number(reorgHaltDepth) || 0));
   const archiveFast = !!fastSync;
+  const sealFirst = Math.max(1, Math.floor(Number(firstCheckpoint) || BOOTSTRAP_FIRST_HEIGHT));
+  const sealEvery = Math.max(1, Math.floor(Number(checkpointEvery) || BOOTSTRAP_EVERY_BLOCKS));
+  const checkpointOpts = { first: sealFirst, every: sealEvery };
   let evmSession = null;
+  let vaultSeal = null;
 
   if (fs.existsSync(binFile)) {
     for (const b of readChainBin(binFile)) {
@@ -239,7 +258,69 @@ export function createStore(dir, {
   reserveVault.oracle = loadedOracle;
 
   function saveReserve() {
-    fs.writeFileSync(vaultFile, JSON.stringify(reserveVault, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
+    const raw = JSON.parse(JSON.stringify(reserveVault, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
+    delete raw.blankFork;
+    delete raw.vaultSeal;
+    if (vaultSeal) raw.vaultSeal = vaultSeal;
+    fs.writeFileSync(vaultFile, JSON.stringify(raw));
+  }
+
+  function tipHasSealAncestry(chain = blocks, seal = vaultSeal) {
+    if (!seal) return true;
+    return chainHasSealAncestry(chain, seal);
+  }
+
+  function deriveVaultSeal(chain, vault) {
+    const tipH = Number(chain.at(-1)?.height || 0);
+    const cpH = bootstrapCheckpoint(tipH, sealFirst, sealEvery);
+    if (cpH < sealFirst) return null;
+    const b = chain.find((x) => Number(x.height) === cpH);
+    if (!b) return null;
+    return makeVaultSeal({
+      height: cpH,
+      hash: b.hash,
+      commitment: vaultCommitment(vault),
+      genesisHash: chain[0]?.hash,
+    });
+  }
+
+  function refreshVaultSeal() {
+    const next = deriveVaultSeal(blocks, reserveVault);
+    if (!next) return vaultSeal;
+    if (!vaultSeal) {
+      vaultSeal = next;
+      return vaultSeal;
+    }
+    if (chainHasSealAncestry(blocks, vaultSeal)) vaultSeal = next;
+    return vaultSeal;
+  }
+
+  function syncBlankFlag() {
+    reserveVault.blankFork = !!(vaultSeal && !tipHasSealAncestry());
+  }
+
+  function vaultSealView() {
+    const ancestry = tipHasSealAncestry();
+    const tipH = Number(tip()?.height || 0);
+    return {
+      height: vaultSeal ? Number(vaultSeal.height) : 0,
+      hash: vaultSeal ? String(vaultSeal.hash || '') : '',
+      commitment: vaultSeal ? String(vaultSeal.commitment || '') : '',
+      genesisHash: vaultSeal ? String(vaultSeal.genesisHash || '') : '',
+      ancestry,
+      banner: vaultSealBanner({
+        seal: vaultSeal,
+        ancestry,
+        tipHeight: tipH,
+        first: sealFirst,
+      }),
+      blankFork: !ancestry,
+    };
+  }
+
+  function payoutOnTip(tx) {
+    if (vaultSeal && !tipHasSealAncestry()) return { ok: false, reason: 'blank_vault' };
+    return verifyReservePayout(reserveVault, tx);
   }
 
   function blockTimeMs(block) {
@@ -256,6 +337,11 @@ export function createStore(dir, {
   }
 
   function replayVault() {
+    if (vaultSeal && blocks.length && !chainHasSealAncestry(blocks, vaultSeal)) {
+      syncBlankFlag();
+      saveReserve();
+      return;
+    }
     const oracle = reserveVault.oracle || emptyOracle();
     const fresh = emptyVault();
     fresh.oracle = oracle;
@@ -263,9 +349,12 @@ export function createStore(dir, {
     Object.assign(reserveVault, fresh);
     reserveVault.portals = Object.create(null);
     reserveVault.votes = { increase: 0, decrease: 0, hold: 0 };
+    reserveVault.blankFork = false;
     for (const b of blocks) {
       applyReserveBlock({ state: reserveVault, block: b, nowMs: blockTimeMs(b) });
     }
+    refreshVaultSeal();
+    syncBlankFlag();
     saveReserve();
   }
 
@@ -274,6 +363,9 @@ export function createStore(dir, {
       try {
         const raw = JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
         if (raw && typeof raw === 'object' && raw.portals) {
+          if (raw.vaultSeal && raw.vaultSeal.hash) vaultSeal = raw.vaultSeal;
+          delete raw.vaultSeal;
+          delete raw.blankFork;
           Object.assign(reserveVault, raw);
           reserveVault.liveHashBonusNanos = hashBonusUnitNanos(reserveVault.liveHashBonusNanos);
           if (!reserveVault.oracle) reserveVault.oracle = loadedOracle;
@@ -591,7 +683,7 @@ export function createStore(dir, {
         || (block.miner && isDestAddress(block.miner) ? block.miner : null),
     });
     for (const tx of (block.txs || []).slice(1)) {
-      const pay = verifyReservePayout(reserveVault, tx);
+      const pay = payoutOnTip(tx);
       if (!pay.ok) return pay;
     }
     return settleCheck(check, (okCheck) => completeAppend(okCheck, block));
@@ -611,6 +703,9 @@ export function createStore(dir, {
     indexSealed(stored);
     applyReserve(stored);
     blocks.push(stored);
+    refreshVaultSeal();
+    syncBlankFlag();
+    saveReserve();
     liveFlux = applyBlockToFluxset(liveFlux, stored);
     persist(stored);
     rememberHeaders([stored], 'active');
@@ -754,7 +849,7 @@ export function createStore(dir, {
     if (reserveNeedsPortalOpen(tx) && !verifyReservePortalOpen(tx)) {
       return { ok: false, reason: 'unsigned' };
     }
-    const pay = verifyReservePayout(reserveVault, tx);
+    const pay = payoutOnTip(tx);
     if (!pay.ok) return pay;
     const live = liveFlux;
     const got = admitMempool(book, tx, {
@@ -775,6 +870,23 @@ export function createStore(dir, {
       trial.oracle = JSON.parse(JSON.stringify(reserveVault.oracle));
     }
     return trial;
+  }
+
+  /** Trial from LCA along the fork. Break seal ancestry → emptyVault, never tip reserveVault. */
+  function trialVaultForFork(fork) {
+    const list = Array.isArray(fork) ? fork : [];
+    if (vaultSeal && !chainHasSealAncestry(list, vaultSeal)) {
+      const trial = trialVaultAtForkRoot();
+      trial.blankFork = true;
+      return { trialVault: trial, lca: 0, blankFork: true };
+    }
+    const trial = trialVaultAtForkRoot();
+    const lca = commonPrefixLen(blocks, list);
+    for (let i = 0; i < lca; i += 1) {
+      const b = blocks[i];
+      applyReserveBlock({ state: trial, block: b, nowMs: blockTimeMs(b) });
+    }
+    return { trialVault: trial, lca, blankFork: false };
   }
 
   function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null, trialVault = null) {
@@ -813,7 +925,7 @@ export function createStore(dir, {
     if (needs) return verifyForkAsync(fork);
     const accepted = [];
     const trialSpent = new Set();
-    const trialVault = trialVaultAtForkRoot();
+    const { trialVault, lca, blankFork } = trialVaultForFork(fork);
     for (let i = 0; i < fork.length; i += 1) {
       const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault);
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
@@ -825,7 +937,9 @@ export function createStore(dir, {
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
       });
       accepted.push(lean);
-      applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
+      if (!blankFork && i >= lca) {
+        applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
+      }
     }
     return { ok: true, accepted };
   }
@@ -834,7 +948,7 @@ export function createStore(dir, {
     const accepted = [];
     const trialSpent = new Set();
     let trialSession = null;
-    const trialVault = trialVaultAtForkRoot();
+    const { trialVault, lca, blankFork } = trialVaultForFork(fork);
     for (let i = 0; i < fork.length; i += 1) {
       const check = await Promise.resolve(
         verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession, trialVault),
@@ -849,7 +963,9 @@ export function createStore(dir, {
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
       });
       accepted.push(lean);
-      applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
+      if (!blankFork && i >= lca) {
+        applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
+      }
     }
     return { ok: true, accepted };
   }
@@ -871,13 +987,23 @@ export function createStore(dir, {
       return { ok: false, reason: 'not_heavier', tip: tip() };
     }
     const fromBlocks = blocks.slice();
-    const broken = reorgBreaksCheckpoint(fromBlocks, accepted);
+    const broken = reorgBreaksCheckpoint(fromBlocks, accepted, checkpointOpts);
     if (broken) {
       return {
         ok: false,
         reason: 'reorg_checkpoint',
         height: broken.height,
         hash: broken.hash,
+        tip: tip(),
+      };
+    }
+    const sealBreak = reorgBreaksVaultSeal(fromBlocks, accepted, vaultSeal);
+    if (sealBreak) {
+      return {
+        ok: false,
+        reason: 'reorg_vault_seal',
+        height: sealBreak.height,
+        hash: sealBreak.hash,
         tip: tip(),
       };
     }
@@ -1173,7 +1299,21 @@ export function createStore(dir, {
     listPublicVortices: vortice.listPublic,
     on,
     emit,
-    getpolicy: () => policyView(policyState),
+    getpolicy: () => {
+      const p = policyView(policyState);
+      const v = vaultSealView();
+      return {
+        ...p,
+        vault_seal_height: v.height,
+        vault_seal_hash: v.hash,
+        vault_seal_commitment: v.commitment,
+        vault_seal_ancestry: v.ancestry,
+        vault_seal_banner: v.banner,
+        blank_fork: v.blankFork,
+      };
+    },
+    vaultSeal: () => (vaultSeal ? { ...vaultSeal } : null),
+    vaultSealView,
     getchaintips,
     getreorgs: () => reorgs.slice(),
     fluxset: () => ({
