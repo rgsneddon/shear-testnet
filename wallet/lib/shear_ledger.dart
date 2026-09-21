@@ -1067,9 +1067,14 @@ class ShearLedger {
   }
 
   void applyTipHex(String headerHex, {required int sealedHeight}) {
+    if (sealedHeight < 1) {
+      // Height 0 / empty fake tip must not overwrite a remembered header.
+      _advanceSealed(sealedHeight);
+      return;
+    }
     final raw = headerFromHex(headerHex);
     if (raw == null) {
-      if (sealedHeight >= 1) tipHeight = sealedHeight + 1;
+      tipHeight = sealedHeight + 1;
       _advanceSealed(sealedHeight);
       return;
     }
@@ -1635,7 +1640,11 @@ class ShearLedger {
       final hex = json['header']?.toString() ?? '';
       final genesis = pool!.genesisHex ?? await pool!.fetchGenesisHex();
       if (genesis != null && genesis.isNotEmpty) bindChainGenesis(genesis);
-      applyTipHex(hex, sealedHeight: sealed);
+      if (isUsableTipStats(json)) {
+        applyTipHex(hex, sealedHeight: sealed);
+      } else {
+        applyTipHex('', sealedHeight: 0);
+      }
       final raw = json['networkAvgBlockTimeMs'] ?? json['avgBlockTimeMs'];
       final avg = raw is num ? raw.round() : int.tryParse('$raw');
       if (avg != null && avg >= 0) applyAvgBlockTimeMs(avg);
@@ -3001,7 +3010,7 @@ class ShearPoolClient {
   Future<void> _provePinned() async {
     try {
       final stats = await _getRawFirst(const ['/stats', '/api/stats']);
-      if (stats == null) return;
+      if (stats == null || !isUsableTipStats(stats)) return;
       final tip = (stats['height'] as num?)?.toInt() ?? 0;
       if (tip < 1) return;
       _pinnedTip = tip;

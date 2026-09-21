@@ -103,7 +103,7 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.41"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.42"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
@@ -111,11 +111,11 @@ void main() {
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.41"'), isTrue);
+    expect(winMain.contains('L"Shear 0.42"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.41"'), isTrue);
+    expect(winRc.contains('"Shear 0.42"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.41"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.42"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -1428,8 +1428,8 @@ void main() {
         reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.41.0+58'));
-    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.41'"));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.42.0+59'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.42'"));
   });
 
   test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
@@ -1578,6 +1578,13 @@ void main() {
     });
     expect(ledger.sealedHeight, 930);
     expect(File('lib/main.dart').readAsStringSync(), contains('restoreSealedTip'));
+    final zeros = List.filled(256, '0').join();
+    ledger.applyTipHex(zeros, sealedHeight: 0);
+    expect(ledger.sealedHeight, 930);
+    expect(ledger.displayHeight, 930);
+    expect(isUsableTipStats(const {}), isFalse);
+    expect(isUsableTipStats({'height': 0}), isFalse);
+    expect(isUsableTipStats({'height': 1}), isTrue);
   });
 
   test('scanSealedVouts and parseHistoryPayload are Isolate.run sendable', () async {
@@ -2200,7 +2207,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.41');
+    expect(kWalletVersion, '0.42');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -2662,8 +2669,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.41');
-    expect(kWalletVersion, '0.41');
+    expect(app.title, 'Shear 0.42');
+    expect(kWalletVersion, '0.42');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -5009,8 +5016,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.41 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.41');
+  test('kWalletVersion == 0.42 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.42');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -5318,6 +5325,66 @@ void main() {
       await sync.followTip();
       expect(sync.sampledTip, h, reason: 'followTip must track source tip without restart');
     }
+  });
+
+  test('followTip refuses height-0 / empty fake stats as current tip and follows a live same-genesis source', () async {
+    String hdr(int b) => List.filled(128, b).map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+    final g = hdr(0x55);
+    final empty = _PoolLive(headerHex: '', height: 0);
+    final live = _PoolLive(headerHex: g, height: 40);
+    live.headerAtHeight[1] = g;
+    final emptyServer = await _fakePool(live: empty);
+    final liveServer = await _fakePool(live: live);
+    addTearDown(() => emptyServer.close(force: true));
+    addTearDown(() => liveServer.close(force: true));
+    final emptyUrl = 'http://127.0.0.1:${emptyServer.port}';
+    final liveUrl = 'http://127.0.0.1:${liveServer.port}';
+    expect(isUsableTipStats(const <String, dynamic>{}), isFalse);
+    expect(isUsableTipStats({'height': 0, 'header': ''}), isFalse);
+    expect(isUsableTipStats({'height': 40, 'magic': 'shear-testnet-v4'}), isTrue);
+    final sync = ShearReadSync(
+      seeds: [emptyUrl, liveUrl],
+      http: _realHttp(),
+      jitter: Duration.zero,
+    );
+    await sync.followTip();
+    expect(sync.liveBase, liveUrl, reason: 'height-0 empty stats must not win over a live same-genesis seed');
+    expect(sync.sampledTip, 40);
+    expect(sync.sampledTip, isNot(0));
+    live.height = 0;
+    live.headerHex = '';
+    await sync.followTip();
+    expect(sync.sampledTip, 40, reason: 'height-0 must not overwrite a remembered tip');
+    expect(sync.sampledTip, isNot(0));
+    live.height = 47;
+    live.headerHex = g;
+    await sync.followTip();
+    expect(sync.liveBase, liveUrl);
+    expect(sync.sampledTip, 47, reason: 'live same-genesis height ≥ 1 must be followed');
+  });
+
+  test('syncTip does not paint height-0 / empty stats as current tip', () async {
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 10);
+    live.headerAtHeight[1] = hex;
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool);
+    await ledger.syncTip();
+    expect(ledger.sealedHeight, 10);
+    expect(ledger.displayHeight, 10);
+    live.height = 0;
+    live.headerHex = '';
+    await ledger.syncTip();
+    expect(ledger.sealedHeight, 10, reason: 'empty / height-0 stats must not become current tip');
+    expect(ledger.displayHeight, 10);
+    live.height = 18;
+    live.headerHex = hex;
+    await ledger.syncTip();
+    expect(ledger.sealedHeight, 18);
+    expect(ledger.displayHeight, 18);
   });
 
   testWidgets('0.20 lock card still present after 6s; vote at π; no claim-hashes', (tester) async {
