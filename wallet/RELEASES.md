@@ -23,7 +23,7 @@ Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) at
 
 ## 0.46 (current)
 
-Reserve hop fee collates a sealed note when Continuum spendable already covers 0.05 SHE plus the levy. An empty or incomplete note book no longer claims that cover. Pool HTML and other non-JSON bodies surface as `pool returned HTML` (or `http_N` when the status is not JSON), not a FormatException. A successful Reserve lock shows **Sent — please wait 6 confirmations**. Lock, vote, and withdraw still post the sealed public-nanos vout. Fee stays **0.05 SHE**. ShearK pin stays **2.5**. Do not recut 0.45. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.46-MAC-HANDOFF.md`).
+Reserve hop fee collates a sealed note when Continuum spendable already covers 0.05 SHE plus the levy. An empty or incomplete note book no longer claims that cover. Pool HTML and other non-JSON bodies surface as `pool returned an error page (http_N)`, not a FormatException. A successful Reserve lock shows **Sent — please wait 6 confirmations**. Lock, vote, and withdraw still post the sealed public-nanos vout. Fee stays **0.05 SHE**. ShearK pin stays **2.5**. Do not recut 0.45. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.46-MAC-HANDOFF.md`).
 
 ## 0.45
 
