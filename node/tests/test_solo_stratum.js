@@ -12,6 +12,7 @@ import {
   parseSoloLogin,
   createSoloStratum,
   applySoloSubmit,
+  soloSubmitAck,
 } from '../src/solo_stratum.js';
 import { createStore } from '../src/node.js';
 import { setNonce, headerFromHex } from '../../crypto/header.js';
@@ -233,8 +234,31 @@ describe('solo submit share vs block', () => {
     assert.doesNotMatch(soloSrc, /from ['"].*pool\/src/);
     assert.match(soloSrc, /applySoloSubmit/);
     assert.match(soloSrc, /evaluateSoloSubmit/);
+    assert.match(soloSrc, /soloSubmitAck/);
+    assert.match(soloSrc, /BLOCKFOUND/);
     assert.match(soloSrc, /destBoundShareHash/);
     assert.match(soloSrc, /got\?\.ok && got\.block/);
+    const poolSrc = fs.readFileSync(path.join(here, '../../pool/src/pool.js'), 'utf8');
+    assert.match(poolSrc, /result: \{ status: 'OK', hash: scored\.hash, block: sealedBlock \}/);
+  });
+
+  it('soloSubmitAck JSON is block true only after a seal', () => {
+    const hash = 'ab'.repeat(32);
+    const sealed = JSON.stringify(soloSubmitAck(2, { ok: true, block: true, hash }));
+    assert.match(sealed, /"status":"OK"/);
+    assert.match(sealed, /"block":true/);
+    assert.match(sealed, new RegExp(`"hash":"${hash}"`));
+    assert.equal(JSON.parse(sealed).result.block, true);
+    const share = JSON.stringify(soloSubmitAck(3, { ok: true, block: false, hash }));
+    assert.match(share, /"block":false/);
+    assert.doesNotMatch(share, /"block":true/);
+    assert.equal(JSON.parse(share).result.block, false);
+    const rejected = JSON.stringify(soloSubmitAck(4, {
+      ok: false, reason: 'prev', block: true, hash,
+    }));
+    assert.match(rejected, /"error":"prev"/);
+    assert.doesNotMatch(rejected, /"status":"OK"/);
+    assert.doesNotMatch(rejected, /"block":true/);
   });
 
   it('dest-bound shareBits=8 that misses blockBits is OK and does not append', { timeout: 180_000 }, async () => {
@@ -268,6 +292,7 @@ describe('solo submit share vs block', () => {
       }
       const text = stripAnsi(out);
       assert.match(text, /accepted=[1-9]/, text.slice(-800));
+      assert.equal(/BLOCKFOUND!!!/.test(text), false, text.slice(-800));
       assert.equal(/reject pow/.test(text), false, text.slice(-800));
       assert.equal(store.tip()?.height || 0, heightBefore);
       assert.equal(store.blocks.length, nBefore);
@@ -308,8 +333,89 @@ describe('solo submit share vs block', () => {
       }, 30_000);
       assert.equal(reply.error, undefined, reply.error);
       assert.equal(reply.result?.status, 'OK');
+      assert.equal(reply.result?.block, true);
+      assert.equal(reply.result?.hash, found.hash);
       assert.equal(store.tip()?.height, heightBefore + 1);
       assert.equal(store.blocks.length, nBefore + 1);
+    } finally {
+      try { sock?.destroy(); } catch { /* ignore */ }
+      stratum.close();
+    }
+  });
+
+  it('dest-bound share that misses blockBits ACKs block false', { timeout: 180_000 }, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-share-ack-'));
+    const store = createStore(dir);
+    const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1', restampMs: 0 });
+    const bound = await stratum.listen();
+    const dest = destMiner();
+    let sock;
+    try {
+      const heightBefore = store.tip()?.height || 0;
+      const nBefore = store.blocks.length;
+      const logged = await loginSolo(bound.port, dest, SHARE_FLOOR_BITS);
+      sock = logged.sock;
+      const job = logged.msg.job;
+      const found = await findDestShareNotBlock({
+        headerHex: job.header,
+        dest,
+        shareBits: Number(job.shareBits),
+        blockBits: Number(job.blockBits || job.bits),
+      });
+      const reply = await submitAndReply(sock, {
+        id: 2,
+        method: 'submit',
+        params: {
+          jobId: job.jobId,
+          nonce: String(found.nonce),
+          hash: found.hash,
+        },
+      });
+      assert.equal(reply.error, undefined, reply.error);
+      assert.equal(reply.result?.status, 'OK');
+      assert.equal(reply.result?.block, false);
+      assert.equal(reply.result?.hash, found.hash);
+      assert.equal(store.tip()?.height || 0, heightBefore);
+      assert.equal(store.blocks.length, nBefore);
+    } finally {
+      try { sock?.destroy(); } catch { /* ignore */ }
+      stratum.close();
+    }
+  });
+
+  it('block-bits hit whose append is rejected is an error, not OK', { timeout: 180_000 }, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-seal-fail-'));
+    const store = createStore(dir);
+    const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1', restampMs: 0 });
+    const bound = await stratum.listen();
+    const dest = destMiner();
+    let sock;
+    try {
+      const heightBefore = store.tip()?.height || 0;
+      const nBefore = store.blocks.length;
+      const logged = await loginSolo(bound.port, dest, SHARE_FLOOR_BITS);
+      sock = logged.sock;
+      const job = logged.msg.job;
+      const found = await findBlockHit({
+        headerHex: job.header,
+        bits: Number(job.blockBits || job.bits),
+        max: 3_000_000n,
+      });
+      store.submitHeader = () => ({ ok: false, reason: 'prev' });
+      const reply = await submitAndReply(sock, {
+        id: 2,
+        method: 'submit',
+        params: {
+          jobId: job.jobId,
+          nonce: String(found.nonce),
+          hash: found.hash,
+        },
+      });
+      assert.equal(reply.error, 'prev');
+      assert.notEqual(reply.result?.status, 'OK');
+      assert.equal(reply.result, undefined);
+      assert.equal(store.tip()?.height || 0, heightBefore);
+      assert.equal(store.blocks.length, nBefore);
     } finally {
       try { sock?.destroy(); } catch { /* ignore */ }
       stratum.close();

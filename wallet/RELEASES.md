@@ -27,7 +27,7 @@ Reserve hop fee collates a sealed note when Continuum spendable already covers 0
 
 ## 0.45
 
-Privacy hop fee crypto (range proof + BP+/ADMIT) runs off the UI isolate. Android shows **Paying hop fee…** then **Connecting Privacy hop…**. Handshake budget is 15s and 3 tries. A VPN permission grant resumes connect without paying the 0.05 SHE fee again in the same session. Fee and connect failures snack the real reason and leave the hop off or in error. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. Reserve lock, vote, and withdraw post the sealed public-nanos vout the pool verifies. ShearK pin stays **2.5**. Do not recut 0.44. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.45-MAC-HANDOFF.md`).
+Privacy hop fee crypto (range proof + BP+/ADMIT) runs off the UI isolate. Android shows **Paying hop fee…** then **Connecting Privacy hop…**. Handshake budget is 15s and 3 tries. A VPN permission grant resumes connect without paying the 0.05 SHE fee again in the same session. Fee and connect failures snack the real reason and leave the hop off or in error. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. Reserve lock, vote, and withdraw post the sealed public-nanos vout the pool verifies. ShearK pin stays **2.5**. Do not recut 0.44. Android `.apk` and the Windows zip packed on Windows. Linux and Arch zips packed on the Helsinki pack host. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.45-MAC-HANDOFF.md`).
 
 ## 0.44
 
