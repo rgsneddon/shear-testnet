@@ -1,3 +1,9 @@
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
 #include "flutter_window.h"
 
 #include <optional>
@@ -7,9 +13,6 @@
 #include <flutter/standard_method_codec.h>
 
 #include "flutter/generated_plugin_registrant.h"
-
-#include <winsock2.h>
-#include <ws2tcpip.h>
 
 #pragma comment(lib, "ws2_32.lib")
 
