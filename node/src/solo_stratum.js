@@ -116,6 +116,26 @@ export function applySoloSubmit({ store, jobId, nonce, claimed, dest } = {}) {
   return { ok: false, reason: got?.reason || 'reject', hash: judged.hash, block: true };
 }
 
+/**
+ * Submit ACK. ShearK prints BLOCKFOUND!!! and increments blocks= only when
+ * this JSON contains "block": true (or 1). Share-only accepts send
+ * block:false. Shape matches the public pool: { status:'OK', hash, block }.
+ * A block-bits hit whose append was rejected is an error, never status OK.
+ */
+export function soloSubmitAck(id, got) {
+  if (!got?.ok) {
+    return { id, error: String(got?.reason || 'reject') };
+  }
+  return {
+    id,
+    result: {
+      status: 'OK',
+      hash: got.hash,
+      block: got.block === true,
+    },
+  };
+}
+
 export function createSoloStratum({
   store,
   port = Number(process.env.SHEAR_STRATUM || process.env.SHEAR_STRATUM_PORT || SOLO_STRATUM_PORT) || SOLO_STRATUM_PORT,
@@ -196,9 +216,19 @@ export function createSoloStratum({
             claimed: powHash,
             dest: session.dest,
           });
+          if (!got?.ok && got?.block) {
+            try {
+              console.error(JSON.stringify({
+                event: 'solo_seal_failed',
+                reason: String(got?.reason || 'reject'),
+                jobId,
+                hash: got?.hash || '',
+              }));
+            } catch { /* ignore */ }
+          }
           try {
-            if (got?.ok) sock.write(line({ id: msg.id, result: { status: 'OK' } }));
-            else sock.write(line({ id: msg.id, error: got?.reason || 'reject' }));
+            // ShearK BLOCKFOUND!!! / blocks++ reads result.block on this ACK.
+            sock.write(line(soloSubmitAck(msg.id, got)));
           } catch { /* ignore */ }
           if (got?.ok && got.block) {
             const job = issueJob(session.dest);
