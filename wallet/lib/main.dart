@@ -31,7 +31,7 @@ import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
 import 'shear_privacy_hop.dart';
 
-const kWalletVersion = '0.43';
+const kWalletVersion = '0.44';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
@@ -1975,7 +1975,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(flowSendAdvisoryOf(e))),
+          SnackBar(content: Text(hopFeeAdvisoryOf(e))),
         );
       }
       return;
@@ -2080,7 +2080,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     } catch (e) {
       if (mounted) {
         _snack.currentState?.showSnackBar(
-          SnackBar(content: Text(flowSendAdvisoryOf(e))),
+          SnackBar(content: Text(hopFeeAdvisoryOf(e))),
         );
       }
       return;
@@ -2307,6 +2307,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         kind: 'vote',
         programId: kReserveProgram,
         privacyHopUp: hop.isUp,
+        allowPublicHttp: hop.isUp || _reserveUnprivateOk,
         restFrame: ident.address,
         paymentCode: ident.paymentCode,
         choice: choice,
@@ -2316,7 +2317,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(flowSendAdvisoryOf(e))),
+          SnackBar(content: Text(hopFeeAdvisoryOf(e))),
         );
       }
       return;
@@ -2354,12 +2355,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final draft = _reserveVoteDraft ?? p.vote;
     final yours = _panel(context, [
             const Text('The Reserve', style: TextStyle(fontWeight: FontWeight.w700)),
-            if (!widget.skipPoolSync &&
+            if ((!widget.skipPoolSync || widget.enforceReserveHopGate) &&
                 ledger.pool != null &&
                 !localSendReady(ledger.pool!.baseUrl) &&
                 !hop.isUp)
               Text(
-                'Connect Privacy hop to hide your IP, then Send. Public pool HTTP is not used without the hop.',
+                reservePublicWaitCopy(unprivateConfirmed: _reserveUnprivateOk),
                 key: const Key('reserve-local-wait'),
                 style: TextStyle(color: shearMutedOf(context)),
               ),

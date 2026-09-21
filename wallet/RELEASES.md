@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.43 (current)
+## 0.44 (current)
+
+Reserve hop fee failures show the node reason instead of **not sent - try again**. Confirmed **Send without privacy hop** is not rewritten to the public-node IP warning (`allowPublicHttp` is honoured on submit). Vote uses the same allow. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. ShearK pin stays **2.5**. Do not recut 0.43. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.44-MAC-HANDOFF.md`).
+
+## 0.43
 
 Optional Reserve Privacy hop: one tap pays **0.05 SHE** to the pool fee dest `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6` (ssa1, never she1), then connects residual SHEAR-HOP / EU at `77.42.35.12:44044`. With hop up, Reserve Send does not need a local Shear node. Hop is optional — **Send without privacy hop** confirms **I already use a VPN / I accept exposing my IP**. Android VpnService is the residual dataplane. Light-sync tip display stays. Do not recut 0.42. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.43-MAC-HANDOFF.md`).
 

@@ -334,14 +334,61 @@ String flowSendAdvisoryOf(Object error) {
   return kErrSendGeneric;
 }
 
-StateError _sendHumanError(String? reason, String? baseUrl, {bool hopUp = false}) {
-  final why = reason ?? 'send failed';
+/// Submit snack that keeps the reason body. Hop-fee pay uses this so a pool
+/// rejection is not collapsed to [kErrSendGeneric].
+String hopFeeAdvisoryOf(Object error) {
+  if (error is StateError) {
+    final m = error.message.trim();
+    return m.isEmpty ? kErrSendGeneric : m;
+  }
+  if (error is ArgumentError) {
+    final m = error.message?.toString().trim() ?? '';
+    if (m.isNotEmpty) return m;
+  }
+  var msg = error.toString().trim();
+  const prefixes = <String>[
+    'Bad state: ',
+    'Invalid argument(s): ',
+    'Exception: ',
+  ];
+  for (final p in prefixes) {
+    if (msg.startsWith(p)) {
+      msg = msg.substring(p.length).trim();
+      break;
+    }
+  }
+  return msg.isEmpty ? kErrSendGeneric : msg;
+}
+
+/// Public alias of [_sendHumanError] for unit tests.
+StateError sendHumanError(
+  String? reason,
+  String? baseUrl, {
+  bool hopUp = false,
+  bool allowPublicHttp = false,
+}) =>
+    _sendHumanError(
+      reason,
+      baseUrl,
+      hopUp: hopUp,
+      allowPublicHttp: allowPublicHttp,
+    );
+
+StateError _sendHumanError(
+  String? reason,
+  String? baseUrl, {
+  bool hopUp = false,
+  bool allowPublicHttp = false,
+}) {
+  final why = (reason == null || reason.trim().isEmpty) ? 'send failed' : reason.trim();
   if (why == 'admit_link_tag' || why == 'admit') {
     return StateError(kErrNoteSpent);
   }
   if (why == 'range_proof' || why == 'commit_sum') return StateError(kErrRangeProof);
   final url = baseUrl ?? '';
-  if (url.contains('pool.shear.digital') && !hopUp) {
+  // Hop up, or an explicit public-HTTP allow (hop fee, confirmed unprivate),
+  // keeps the server reason. Do not rewrite those to the IP-leak advisory.
+  if (url.contains('pool.shear.digital') && !hopUp && !allowPublicHttp) {
     return StateError(kErrPublicHttp);
   }
   return StateError(why);
@@ -2810,6 +2857,7 @@ class ShearLedger {
           json['reason']?.toString(),
           pool?.baseUrl,
           hopUp: privacyHopUp,
+          allowPublicHttp: allowPublicHttp,
         );
         final why = json['reason']?.toString() ?? '';
         if (why != 'admit' && why != 'admit_membership') break;

@@ -28,6 +28,15 @@ const kUnprivateConfirmLabel = 'I already use a VPN / I accept exposing my IP';
 const kUnprivateConfirmHelper =
     'Skip Shear privacy hop. If you are not already on a VPN, the public node may see your device IP.';
 
+const kReserveHopWaitCopy =
+    'Connect Privacy hop to hide your IP, then Send. Public pool HTTP is not used without the hop.';
+
+const kUnprivateUnlockedBanner =
+    'Unprivate send unlocked — public node may see your IP unless you already use a VPN';
+
+String reservePublicWaitCopy({required bool unprivateConfirmed}) =>
+    unprivateConfirmed ? kUnprivateUnlockedBanner : kReserveHopWaitCopy;
+
 enum PrivacyHopState { off, connecting, up, error }
 
 String privacyHopStateLabel(PrivacyHopState s) {
