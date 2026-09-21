@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
 
+import 'windows_sxs_manifest.dart';
+
 /// Inspects a built windows zip when one exists. Testnet is not gated on Windows.
 File _shippedWindowsZip() {
   final candidates = <File>[
@@ -97,6 +99,79 @@ void main() {
       expect(base, isNot(equals('Shear-Miner.exe'.toLowerCase())));
       expect(base, isNot(equals('ShearK-Miner.exe'.toLowerCase())));
     }
+  });
+
+  test('shipped runner.exe.manifest is schema-legal Win32 fusion XML', () {
+    final xml = File('windows/runner/runner.exe.manifest').readAsStringSync();
+    checkFusionManifestLegal(xml);
+    expect(fusionWindowsSettingNames(xml), containsAll(['dpiAwareness', 'dpiAware']));
+    expect(fusionWindowsSettingNames(xml), isNot(contains('webcam')));
+  });
+
+  test('PR #24 webcam fusion windowsSettings is rejected as illegal SxS', () {
+    expect(fusionWindowsSettingNames(kPr24IllegalWebcamFusionXml), contains('webcam'));
+    expect(
+      () => checkFusionManifestLegal(kPr24IllegalWebcamFusionXml),
+      throwsA(isA<StateError>()),
+    );
+    expect(kLegalFusionWindowsSettings.contains('webcam'), isFalse);
+  });
+
+  test('packed shear_wallet.exe RT_MANIFEST is schema-legal fusion XML', () {
+    final zip = _shippedWindowsZip();
+    if (!zip.existsSync()) {
+      return;
+    }
+    final py = Process.runSync(_pythonBin(), [
+      '-c',
+      r'''
+import re, sys, zipfile, xml.etree.ElementTree as ET
+z = zipfile.ZipFile(sys.argv[1])
+names = z.namelist()
+exe_name = next(n for n in names if n.replace("\\","/").rstrip("/").split("/")[-1] == "shear_wallet.exe")
+blob = z.read(exe_name)
+# Embedded RT_MANIFEST is UTF-8 XML in .rsrc.
+m = re.search(br"<\?xml\b[^>]*\?>\s*<assembly\b.*?</assembly>", blob, re.S)
+if not m:
+    m = re.search(br"<assembly\b[^>]*manifestVersion.*?</assembly>", blob, re.S)
+if not m:
+    sys.stderr.write("no fusion XML in packed shear_wallet.exe\n")
+    sys.exit(2)
+xml = m.group(0).decode("utf-8")
+print(xml)
+root = ET.fromstring(xml)
+# ElementTree expands xmlns; collect windowsSettings children local names.
+illegal = []
+settings = []
+def local(tag):
+    return tag.rsplit("}", 1)[-1]
+for el in root.iter():
+    if local(el.tag) == "windowsSettings":
+        for child in list(el):
+            settings.append(local(child.tag))
+legal = {
+    "dpiAwareness", "dpiAware", "activeCodePage", "longPathAware",
+    "gdiScaling", "heapType", "disableTheming", "disableWindowFiltering",
+    "printerDriverIsolation",
+}
+for name in settings:
+    if name not in legal:
+        illegal.append(name)
+print("SETTINGS", ",".join(settings))
+if "webcam" in settings or illegal:
+    sys.stderr.write("illegal fusion windowsSettings: %s\n" % (illegal or settings))
+    sys.exit(3)
+if "dpiAwareness" not in settings:
+    sys.stderr.write("missing dpiAwareness\n")
+    sys.exit(4)
+''',
+      zip.path,
+    ]);
+    expect(py.exitCode, 0, reason: 'packed RT_MANIFEST SxS parse failed: ${py.stderr}\n${py.stdout}');
+    final out = py.stdout.toString();
+    expect(out.toLowerCase(), isNot(contains('<webcam')));
+    expect(out, contains('dpiAwareness'));
+    checkFusionManifestLegal(out.split('SETTINGS').first);
   });
 
   File _zipAt(String name) {

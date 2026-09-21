@@ -38,6 +38,8 @@ import 'package:ristretto255/ristretto255.dart' as r255;
 import 'package:shear_wallet/shear_ed25519.dart';
 import 'package:crypto/crypto.dart';
 
+import 'windows_sxs_manifest.dart';
+
 const kGatePassword = 'correct-horse';
 
 /// Fake seal without the 64-bit Dart range proof (minutes on Windows).
@@ -105,7 +107,7 @@ void main() {
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
-    expect(File('windows/runner/runner.exe.manifest').readAsStringSync(), contains('webcam'));
+    checkFusionManifestLegal(File('windows/runner/runner.exe.manifest').readAsStringSync());
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
@@ -120,6 +122,22 @@ void main() {
     expect(activity.contains('FlutterActivity()'), isFalse);
     expect(main.path.contains('${Platform.pathSeparator}debug${Platform.pathSeparator}'), isFalse);
     expect(main.path.contains('${Platform.pathSeparator}profile${Platform.pathSeparator}'), isFalse);
+  });
+
+  test('shipped runner.exe.manifest is schema-legal Win32 fusion XML', () {
+    final xml = File('windows/runner/runner.exe.manifest').readAsStringSync();
+    checkFusionManifestLegal(xml);
+    expect(fusionWindowsSettingNames(xml), contains('dpiAwareness'));
+    expect(fusionWindowsSettingNames(xml), isNot(contains('webcam')));
+    expect(kLegalFusionWindowsSettings.contains('webcam'), isFalse);
+  });
+
+  test('PR #24 webcam fusion windowsSettings is rejected as illegal SxS', () {
+    expect(fusionWindowsSettingNames(kPr24IllegalWebcamFusionXml), contains('webcam'));
+    expect(
+      () => checkFusionManifestLegal(kPr24IllegalWebcamFusionXml),
+      throwsA(isA<StateError>()),
+    );
   });
 
   test('new identity is shear1 with a stable view key after persist/reload', () async {
