@@ -121,6 +121,18 @@ Uint8List _as32(dynamic v) {
   return Uint8List(32);
 }
 
+/// Nanos the pool hashes: valueProof.v when set, otherwise nanos.
+int claimedVoutNanos(Map<String, dynamic> o) {
+  final vp = o['valueProof'];
+  if (vp is Map) {
+    final v = vp['v'];
+    if (v is num) return v.round();
+  }
+  final n = o['nanos'];
+  if (n is num) return n.round();
+  return 0;
+}
+
 Uint8List spendPackDigest({
   required String from,
   required List<Map<String, dynamic>> vout,
@@ -168,7 +180,7 @@ Uint8List spendPackDigest({
     final sealed = o['commit'] != null && !publicNanos;
     vouts.add({
       'dest20': dest20,
-      'nanos': sealed ? 0 : ((o['nanos'] as int?) ?? 0),
+      'nanos': sealed ? 0 : claimedVoutNanos(o),
       'kind': _kindByte((o['kind'] as String?) ?? kind),
     });
   }

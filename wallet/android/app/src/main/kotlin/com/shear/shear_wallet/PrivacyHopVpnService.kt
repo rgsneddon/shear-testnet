@@ -28,6 +28,8 @@ class PrivacyHopVpnService : VpnService() {
             ACTION_CONNECT -> {
                 val host = intent.getStringExtra(EXTRA_HOST) ?: HOP_HOST
                 val port = intent.getIntExtra(EXTRA_PORT, HOP_PORT)
+                val timeoutMs = intent.getIntExtra(EXTRA_TIMEOUT_MS, HOP_HANDSHAKE_TIMEOUT_MS)
+                val attempts = intent.getIntExtra(EXTRA_ATTEMPTS, HOP_HANDSHAKE_ATTEMPTS)
                 try {
                     startForeground(NOTIFICATION_ID, buildNotification(connecting = true))
                 } catch (e: Exception) {
@@ -36,7 +38,7 @@ class PrivacyHopVpnService : VpnService() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                startTunnel(host, port)
+                startTunnel(host, port, timeoutMs, attempts)
                 return START_STICKY
             }
             ACTION_DISCONNECT -> {
@@ -77,7 +79,7 @@ class PrivacyHopVpnService : VpnService() {
         return priv to pub
     }
 
-    private fun startTunnel(host: String, port: Int) {
+    private fun startTunnel(host: String, port: Int, timeoutMs: Int, attempts: Int) {
         if (!running.compareAndSet(false, true)) return
         connecting = true
         lastError = null
@@ -99,7 +101,7 @@ class PrivacyHopVpnService : VpnService() {
                 RptTrafficShape.applyPrivacyScale(false)
                 RptObfuscation.applyPrivacyScale(false)
                 val engine = RptClientEngine(clientPriv, nodePub)
-                val session = engine.handshake(sock, host, port, timeoutMs = 60000, attempts = 5)
+                val session = engine.handshake(sock, host, port, timeoutMs = timeoutMs, attempts = attempts)
                 val builder = Builder()
                     .setSession("Shear Privacy hop")
                     .setMtu(1280)
@@ -263,10 +265,15 @@ class PrivacyHopVpnService : VpnService() {
     companion object {
         const val HOP_HOST = "77.42.35.12"
         const val HOP_PORT = 44044
+        const val HOP_HANDSHAKE_TIMEOUT_MS = 15_000
+        const val HOP_HANDSHAKE_ATTEMPTS = 3
+        const val HOP_SESSION_WAIT_MS = 20_000
         const val ACTION_CONNECT = "com.shear.shear_wallet.HOP_CONNECT"
         const val ACTION_DISCONNECT = "com.shear.shear_wallet.HOP_DISCONNECT"
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
+        const val EXTRA_TIMEOUT_MS = "timeoutMs"
+        const val EXTRA_ATTEMPTS = "attempts"
         private const val NOTIFICATION_ID = 0x5348
 
         @Volatile var isSessionActive: Boolean = false

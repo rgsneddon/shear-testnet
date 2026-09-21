@@ -55,6 +55,85 @@ bool noteBytesEq(Uint8List a, Uint8List b) {
   return true;
 }
 
+bool _flowCryptoOnCaller() =>
+    debugNativeSpendProver != null || debugNativeSealNote != null;
+
+/// Seal Flow vouts (range proof + admit pub). Production hop-fee pay calls this
+/// via [Isolate.run] so the UI isolate can keep pumping frames.
+Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
+  final spendSeed = input['spendSeed'] as Uint8List;
+  final destTo = (input['destTo'] as String?) ?? '';
+  final src = (input['src'] as String?) ?? '';
+  final changeDest = input['changeDest'] as String?;
+  final fallbackBase = input['admitBase'] as Uint8List?;
+  final spec = <Map<String, dynamic>>[
+    for (final raw in (input['vouts'] as List? ?? const []))
+      if (raw is Map) Map<String, dynamic>.from(raw),
+  ];
+  final sealed = <Map<String, dynamic>>[];
+  for (final o in spec) {
+    final kind = (o['kind'] as String?) ?? 'send';
+    if (kind == 'dummy') {
+      var note = nativeSealNote(0, dest20: randomBytes(20), kind: 'dummy');
+      note = attachAdmitPub(note);
+      sealed.add(note);
+      continue;
+    }
+    final addr = (o['address'] as String?) ?? destTo;
+    final n = (o['nanos'] as int?) ?? 0;
+    final d20 = hash20FromAddress(addr);
+    var note = nativeSealNote(n, dest20: d20, kind: kind);
+    if (addr.isNotEmpty) note['address'] = addr;
+    final B = admitBaseFromAddress(addr) ??
+        ((addr == src || addr == changeDest) ? fallbackBase : null);
+    note = attachAdmitPub(
+      note,
+      admitBase: B != null ? pointFrom(B) : null,
+      spendSeed: B == null ? spendSeed : null,
+    );
+    sealed.add(note);
+  }
+  return {'vouts': sealed};
+}
+
+/// BP+ / ADMIT prove. Same off-isolate rule as [sealFlowSpendVouts].
+Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) {
+  final spendSeed = input['spendSeed'] as Uint8List;
+  final spentNote = Map<String, dynamic>.from(input['spentNote'] as Map);
+  final pubs = <Uint8List>[
+    for (final p in (input['pubs'] as List? ?? const []))
+      if (p is Uint8List) p,
+  ];
+  final vin = <Map<String, dynamic>>[
+    for (final raw in (input['vin'] as List? ?? const []))
+      if (raw is Map) Map<String, dynamic>.from(raw),
+  ];
+  final vout = <Map<String, dynamic>>[
+    for (final raw in (input['vout'] as List? ?? const []))
+      if (raw is Map) Map<String, dynamic>.from(raw),
+  ];
+  final body = <String, dynamic>{'vin': vin, 'vout': vout};
+  proveFlowSpend(body, spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
+  return {
+    'admitProof': body['admit_proof'],
+    'spendTag': body['spendTag'],
+  };
+}
+
+Future<Map<String, dynamic>> _sealFlowOffUi(Map<String, dynamic> input) {
+  if (_flowCryptoOnCaller()) {
+    return Future<Map<String, dynamic>>.value(sealFlowSpendVouts(input));
+  }
+  return Isolate.run(() => sealFlowSpendVouts(input));
+}
+
+Future<Map<String, dynamic>> _proveFlowOffUi(Map<String, dynamic> input) {
+  if (_flowCryptoOnCaller()) {
+    return Future<Map<String, dynamic>>.value(reproveFlowSpendWire(input));
+  }
+  return Isolate.run(() => reproveFlowSpendWire(input));
+}
+
 /// Pure CPU scan of compacted vouts. Full-sync calls this via [Isolate.run].
 /// Returns `{notes, hashFolds}` maps — no ledger mutation.
 Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
@@ -294,6 +373,21 @@ List<Map<String, dynamic>> _postedVout(List<Map<String, dynamic>> vouts) {
   return vouts.map(compactSealedVout).toList();
 }
 
+/// Reserve lock/vote/withdraw out, same seal as pool `sealedReserveVout`.
+/// Public nanos + dest20 + noteCommitOfDest20, with `commit` so wallet_api
+/// keeps this body instead of minting a fresh seal after the spend sig.
+Map<String, dynamic> sealedReserveVout(String to, int nanos, String kind) {
+  final d20 = hash20FromAddress(to);
+  if (d20 == null) return {'address': to, 'nanos': nanos, 'kind': kind};
+  final note = sealCoinbaseNote(nanos, dest20: d20, kind: kind);
+  note['address'] = to;
+  final vp = note['valueProof'];
+  if (vp is Map) {
+    note['valueProof'] = {...Map<String, dynamic>.from(vp), 'v': nanos};
+  }
+  return note;
+}
+
 String formatShe(num she) {
   if (!she.isFinite) return '0.000000000';
   final trunc = (she * 1e9).truncateToDouble() / 1e9;
@@ -313,6 +407,7 @@ const kErrPublicHttp = 'node not running — sends would use the public node and
 const kErrSyncTip = 'node not at tip — wait for sync';
 const kErrSendGeneric = 'not sent - try again';
 const kErrShortShe1 = 'paste full she1 from Receive (not fingerprint)';
+const kErrLockUnsigned = 'lock signature rejected';
 
 /// Flow send catch: map known failures; keep generic for unknown.
 String flowSendAdvisoryOf(Object error) {
@@ -366,12 +461,14 @@ StateError sendHumanError(
   String? baseUrl, {
   bool hopUp = false,
   bool allowPublicHttp = false,
+  String? kind,
 }) =>
     _sendHumanError(
       reason,
       baseUrl,
       hopUp: hopUp,
       allowPublicHttp: allowPublicHttp,
+      kind: kind,
     );
 
 StateError _sendHumanError(
@@ -379,12 +476,17 @@ StateError _sendHumanError(
   String? baseUrl, {
   bool hopUp = false,
   bool allowPublicHttp = false,
+  String? kind,
 }) {
   final why = (reason == null || reason.trim().isEmpty) ? 'send failed' : reason.trim();
   if (why == 'admit_link_tag' || why == 'admit') {
     return StateError(kErrNoteSpent);
   }
   if (why == 'range_proof' || why == 'commit_sum') return StateError(kErrRangeProof);
+  if (why == 'unsigned' &&
+      (kind == 'lock' || kind == 'vote' || kind == 'withdraw')) {
+    return StateError(kErrLockUnsigned);
+  }
   final url = baseUrl ?? '';
   // Hop up, or an explicit public-HTTP allow (hop fee, confirmed unprivate),
   // keeps the server reason. Do not rewrite those to the IP-leak advisory.
@@ -2712,29 +2814,18 @@ class ShearLedger {
         'noteCommit': _noteBytes(spent['noteCommit'])!,
         'r': _noteBytes(spent['r'])!,
       };
-      final sealed = <Map<String, dynamic>>[];
-      for (final o in vouts) {
-        final kind = (o['kind'] as String?) ?? 'send';
-        if (kind == 'dummy') {
-          var note = nativeSealNote(0, dest20: randomBytes(20), kind: 'dummy');
-          note = attachAdmitPub(note);
-          sealed.add(note);
-          continue;
-        }
-        final addr = (o['address'] as String?) ?? destTo;
-        final n = (o['nanos'] as int?) ?? 0;
-        final d20 = hash20FromAddress(addr);
-        var note = nativeSealNote(n, dest20: d20, kind: kind);
-        if (addr.isNotEmpty) note['address'] = addr;
-        final B = admitBaseFromAddress(addr) ??
-            ((addr == src || addr == changeDest) ? (admitBase ?? _admitBaseOf(paymentCode)) : null);
-        note = attachAdmitPub(
-          note,
-          admitBase: B != null ? pointFrom(B) : null,
-          spendSeed: B == null ? spendSeed : null,
-        );
-        sealed.add(note);
-      }
+      final sealedBuilt = await _sealFlowOffUi({
+        'spendSeed': spendSeed,
+        'destTo': destTo,
+        'src': src,
+        'changeDest': changeDest,
+        'admitBase': admitBase ?? _admitBaseOf(paymentCode),
+        'vouts': [for (final o in vouts) Map<String, dynamic>.from(o)],
+      });
+      final sealed = <Map<String, dynamic>>[
+        for (final raw in (sealedBuilt['vouts'] as List))
+          Map<String, dynamic>.from(raw as Map),
+      ];
       vouts
         ..clear()
         ..addAll(sealed);
@@ -2781,10 +2872,28 @@ class ShearLedger {
           'pubs': pubs.map(_bytesHex).toList(),
         }));
       }
-      final body = <String, dynamic>{'vin': vin, 'vout': vouts};
-      proveFlowSpend(body, spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
-      admitProof = Map<String, dynamic>.from(body['admit_proof'] as Map);
+      final proved = await _proveFlowOffUi({
+        'vin': vin,
+        'vout': vouts,
+        'spendSeed': spendSeed,
+        'spentNote': spentNote,
+        'pubs': pubs,
+      });
+      admitProof = Map<String, dynamic>.from(proved['admitProof'] as Map);
       spent['spent'] = true;
+    }
+    if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw') {
+      final sealedReserve = <Map<String, dynamic>>[
+        for (final o in vouts)
+          sealedReserveVout(
+            (o['address'] as String?) ?? destTo,
+            (o['nanos'] as int?) ?? (sendKind == 'vote' ? 0 : nanos),
+            (o['kind'] as String?) ?? sendKind,
+          ),
+      ];
+      vouts
+        ..clear()
+        ..addAll(sealedReserve);
     }
     final postedVin = _postedVin(vin);
     final postedVout = _postedVout(vouts);
@@ -2847,9 +2956,14 @@ class ShearLedger {
             'noteCommit': _noteBytes(spent['noteCommit'])!,
             'r': _noteBytes(spent['r'])!,
           };
-          final body = <String, dynamic>{'vin': vin, 'vout': vouts};
-          proveFlowSpend(body, spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
-          admitProof = Map<String, dynamic>.from(body['admit_proof'] as Map);
+          final proved = await _proveFlowOffUi({
+            'vin': vin,
+            'vout': vouts,
+            'spendSeed': spendSeed,
+            'spentNote': spentNote,
+            'pubs': pubs,
+          });
+          admitProof = Map<String, dynamic>.from(proved['admitProof'] as Map);
         }
         json = await postOnce();
         if (json['ok'] == true && json['tx'] is Map) break;
@@ -2858,6 +2972,7 @@ class ShearLedger {
           pool?.baseUrl,
           hopUp: privacyHopUp,
           allowPublicHttp: allowPublicHttp,
+          kind: sendKind,
         );
         final why = json['reason']?.toString() ?? '';
         if (why != 'admit' && why != 'admit_membership') break;

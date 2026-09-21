@@ -13,6 +13,19 @@ const kPrivacyHopChannel = 'shear/privacy_hop';
 const kPrivacyHopSessionName = 'SHEAR-HOP / EU';
 const kPrivacyHopButtonLabel = 'Privacy hop';
 
+/// Android VpnService handshake budget. Kotlin `HOP_HANDSHAKE_TIMEOUT_MS` matches.
+const kPrivacyHopHandshakeTimeoutMs = 15000;
+
+/// HELLO attempts. Kotlin `HOP_HANDSHAKE_ATTEMPTS` matches. Never above 3.
+const kPrivacyHopHandshakeAttempts = 3;
+
+/// Session poll after the service starts. Above the handshake budget so TUN
+/// setup can finish, and well under the old 70s wait.
+const kPrivacyHopSessionWaitMs = 20000;
+
+const kHopProgressPaying = 'Paying hop fee…';
+const kHopProgressConnecting = 'Connecting Privacy hop…';
+
 /// Fixed hop click fee. Lands on [kPoolFeeDest] (ssa1), never she1.
 const kPrivacyHopFeeShe = 0.05;
 const kPrivacyHopFeeDest = kPoolFeeDest;
@@ -141,6 +154,8 @@ class PrivacyHopController extends ChangeNotifier {
         'fullTunnel': true,
         'sessionName': kPrivacyHopSessionName,
         'label': kPrivacyHopLabel,
+        'timeoutMs': kPrivacyHopHandshakeTimeoutMs,
+        'attempts': kPrivacyHopHandshakeAttempts,
       });
       final map = raw is Map<String, dynamic>
           ? raw

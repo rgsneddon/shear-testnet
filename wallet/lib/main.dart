@@ -31,7 +31,7 @@ import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
 import 'shear_privacy_hop.dart';
 
-const kWalletVersion = '0.44';
+const kWalletVersion = '0.45';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
@@ -80,6 +80,8 @@ class ShearWalletApp extends StatefulWidget {
     this.skipPoolSync = false,
     this.privacyHop,
     this.enforceReserveHopGate = false,
+    this.postReserveLock = false,
+    this.hopFeePay,
   });
 
   final ShearSession? session;
@@ -111,6 +113,12 @@ class ShearWalletApp extends StatefulWidget {
   final PrivacyHopController? privacyHop;
   /// Tests: apply the Reserve hop/unprivate Send gate even when [skipPoolSync] is set.
   final bool enforceReserveHopGate;
+  /// Tests: post Reserve lock to [ledger.pool] even when [skipPoolSync] is set.
+  final bool postReserveLock;
+
+  /// Test hook. Production pays the hop fee with [ShearLedger.send], whose
+  /// seal/prove runs in [Isolate.run]. A slow hook must not run in the confirm turn.
+  final Future<void> Function()? hopFeePay;
 
   @override
   ShearWalletAppState createState() => ShearWalletAppState();
@@ -177,6 +185,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   late final List<ScrollController> _tabScroll;
   final _depositsScroll = ScrollController();
   bool _reserveUnprivateOk = false;
+  /// Hop fee already posted this process. VPN grant / retry must not pay again.
+  bool _hopFeePaidSession = false;
+  bool _hopBusy = false;
+  String? _hopProgress;
 
   void _onHop() {
     if (mounted) setState(() {});
@@ -1059,18 +1071,50 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           ),
         ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          if (!kIsWeb && Platform.isMacOS && isEphemeralMacosLaunchPath(_exe))
-            MaterialBanner(
-              backgroundColor: Theme.of(context).bannerTheme.backgroundColor,
-              content: Text(
-                macosMoveBody,
-                style: Theme.of(context).bannerTheme.contentTextStyle,
+          Column(
+            children: [
+              if (!kIsWeb && Platform.isMacOS && isEphemeralMacosLaunchPath(_exe))
+                MaterialBanner(
+                  backgroundColor: Theme.of(context).bannerTheme.backgroundColor,
+                  content: Text(
+                    macosMoveBody,
+                    style: Theme.of(context).bannerTheme.contentTextStyle,
+                  ),
+                  actions: const [SizedBox.shrink()],
+                ),
+              Expanded(child: pages[tab]()),
+            ],
+          ),
+          if (_hopProgress != null)
+            Positioned.fill(
+              child: AbsorbPointer(
+                child: ColoredBox(
+                  color: const Color(0x66000000),
+                  child: Center(
+                    child: Card(
+                      key: const Key('reserve-hop-progress'),
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            const SizedBox(width: 16),
+                            Text(_hopProgress!, key: const Key('reserve-hop-progress-text')),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-              actions: const [SizedBox.shrink()],
             ),
-          Expanded(child: pages[tab]()),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -1963,7 +2007,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         from: from,
         to: dest,
         amount: she,
-        local: ledger.pool == null || widget.skipPoolSync,
+        local: ledger.pool == null || (widget.skipPoolSync && !widget.postReserveLock),
         kind: 'lock',
         programId: kReserveProgram,
         restFrame: ident.address,
@@ -2003,7 +2047,35 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (mounted) setState(() {});
   }
 
+  /// One frame of budget so the pay/connect card paints before fee crypto or Connect.
+  Future<void> _yieldUiFrame() => Future<void>.delayed(const Duration(milliseconds: 1));
+
+  Future<void> _payHopFee(ShearIdentity ident, double need) async {
+    final hook = widget.hopFeePay;
+    if (hook != null) {
+      await hook();
+      return;
+    }
+    final from = ledger.spendFrom(
+      ident.address,
+      paymentCode: ident.paymentCode,
+      amount: need,
+    );
+    // Seal + BP+/ADMIT inside send run on a worker isolate (see _sealFlowOffUi).
+    await ledger.send(
+      from: from,
+      to: kPrivacyHopFeeDest,
+      amount: kPrivacyHopFeeShe,
+      local: ledger.pool == null || widget.skipPoolSync,
+      restFrame: ident.address,
+      paymentCode: ident.paymentCode,
+      spendSeed: hexToBytes(ident.seedHex),
+      allowPublicHttp: true,
+    );
+  }
+
   Future<void> _reserveHopToggle(BuildContext context, ShearIdentity ident) async {
+    if (_hopBusy) return;
     if (hop.isUp || hop.isConnecting) {
       await hop.disconnect();
       return;
@@ -2014,82 +2086,94 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       );
       return;
     }
-    final depth = await _mempoolDepthNow();
-    final feeNanos = (kPrivacyHopFeeShe * kUnitsPerShe).round();
-    final feeL = levyNanos(feeNanos, depth: depth);
-    final need = kPrivacyHopFeeShe + feeL / kUnitsPerShe;
-    if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < need) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-            'Not enough Continuum spendable for hop fee 0.05 SHE + tx fee ${formatShe(feeL / kUnitsPerShe)} SHE',
-          ),
-        ));
+    var need = kPrivacyHopFeeShe;
+    if (!_hopFeePaidSession) {
+      final depth = await _mempoolDepthNow();
+      final feeNanos = (kPrivacyHopFeeShe * kUnitsPerShe).round();
+      final feeL = levyNanos(feeNanos, depth: depth);
+      need = kPrivacyHopFeeShe + feeL / kUnitsPerShe;
+      if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < need) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+              'Not enough Continuum spendable for hop fee 0.05 SHE + tx fee ${formatShe(feeL / kUnitsPerShe)} SHE',
+            ),
+          ));
+        }
+        return;
       }
-      return;
-    }
-    final go = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        key: const Key('reserve-hop-fee-confirm'),
-        title: const Text(kPrivacyHopFeeConfirmTitle),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(kPrivacyHopFeeConfirmBody),
-            const SizedBox(height: 8),
-            Text(
-              _txFeeAdvice(feeNanos, oneFeeTo: 'pay the Privacy hop fee', depth: depth),
-              key: const Key('reserve-hop-fee-levy'),
+      final go = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          key: const Key('reserve-hop-fee-confirm'),
+          title: const Text(kPrivacyHopFeeConfirmTitle),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(kPrivacyHopFeeConfirmBody),
+              const SizedBox(height: 8),
+              Text(
+                _txFeeAdvice(feeNanos, oneFeeTo: 'pay the Privacy hop fee', depth: depth),
+                key: const Key('reserve-hop-fee-levy'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              key: const Key('reserve-hop-fee-cancel'),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              key: const Key('reserve-hop-fee-accept'),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Pay 0.05 SHE'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            key: const Key('reserve-hop-fee-cancel'),
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            key: const Key('reserve-hop-fee-accept'),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Pay 0.05 SHE'),
-          ),
-        ],
-      ),
-    );
-    if (go != true || !mounted) return;
+      );
+      if (go != true || !mounted) return;
+    }
+    setState(() => _hopBusy = true);
     try {
-      final from = ledger.spendFrom(
-        ident.address,
-        paymentCode: ident.paymentCode,
-        amount: need,
-      );
-      await ledger.send(
-        from: from,
-        to: kPrivacyHopFeeDest,
-        amount: kPrivacyHopFeeShe,
-        local: ledger.pool == null || widget.skipPoolSync,
-        restFrame: ident.address,
-        paymentCode: ident.paymentCode,
-        spendSeed: hexToBytes(ident.seedHex),
-        allowPublicHttp: true,
-      );
-    } catch (e) {
-      if (mounted) {
+      if (!_hopFeePaidSession) {
+        setState(() => _hopProgress = kHopProgressPaying);
+        await _yieldUiFrame();
+        if (!mounted) return;
+        try {
+          await _payHopFee(ident, need);
+        } catch (e) {
+          if (mounted) {
+            setState(() => _hopProgress = null);
+            _snack.currentState?.showSnackBar(
+              SnackBar(content: Text(hopFeeAdvisoryOf(e))),
+            );
+          }
+          return;
+        }
+        if (!mounted) return;
+        _hopFeePaidSession = true;
+      }
+      setState(() => _hopProgress = kHopProgressConnecting);
+      await _yieldUiFrame();
+      if (!mounted) return;
+      final ok = await hop.connect();
+      if (!mounted) return;
+      setState(() => _hopProgress = null);
+      if (!ok) {
         _snack.currentState?.showSnackBar(
-          SnackBar(content: Text(hopFeeAdvisoryOf(e))),
+          SnackBar(content: Text(hop.message.isEmpty ? 'Privacy hop unreachable' : hop.message)),
         );
       }
-      return;
-    }
-    final ok = await hop.connect();
-    if (!ok && mounted) {
-      _snack.currentState?.showSnackBar(
-        SnackBar(content: Text(hop.message.isEmpty ? 'Hop did not come up' : hop.message)),
-      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _hopBusy = false;
+          if (!hop.isConnecting) _hopProgress = null;
+        });
+      }
     }
   }
 
@@ -2475,7 +2559,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             Wrap(spacing: 8, runSpacing: 8, children: [
               FilledButton(
                 key: const Key('reserve-privacy-hop'),
-                onPressed: hop.isConnecting ? null : () => _reserveHopToggle(context, ident),
+                onPressed: (hop.isConnecting || _hopBusy) ? null : () => _reserveHopToggle(context, ident),
                 child: Text(hop.isUp ? 'Disconnect hop' : kPrivacyHopButtonLabel),
               ),
               OutlinedButton(

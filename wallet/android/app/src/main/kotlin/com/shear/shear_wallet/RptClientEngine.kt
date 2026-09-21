@@ -51,15 +51,16 @@ class RptClientEngine(
         socket: DatagramSocket,
         host: String,
         port: Int,
-        timeoutMs: Int = 60000,
-        attempts: Int = 5,
+        timeoutMs: Int = PrivacyHopVpnService.HOP_HANDSHAKE_TIMEOUT_MS,
+        attempts: Int = PrivacyHopVpnService.HOP_HANDSHAKE_ATTEMPTS,
     ): Session {
         // Force IPv4 literal resolution (product node is IPv4-only)
         val endpoint = InetSocketAddress(host, port)
-        // At least 8s per try on mobile (NAT/UDP loss); total budget is timeoutMs
-        val perAttempt = (timeoutMs / attempts.coerceAtLeast(1)).coerceAtLeast(8000)
-        var last: Exception? = null
-        repeat(attempts.coerceAtLeast(1)) { attempt ->
+        // Wall clock stays inside the handshake budget (≤15s, ≤3 tries).
+        val tries = attempts.coerceIn(1, PrivacyHopVpnService.HOP_HANDSHAKE_ATTEMPTS)
+        val budget = timeoutMs.coerceIn(tries * 1000, PrivacyHopVpnService.HOP_HANDSHAKE_TIMEOUT_MS)
+        val perAttempt = budget / tries
+        repeat(tries) {
             try {
                 socket.soTimeout = perAttempt
                 val clientPub = ed25519PublicFromPrivate(clientPrivRaw)
@@ -88,25 +89,16 @@ class RptClientEngine(
                 this.sessionKey = session.sessionKey
                 this.counterOut = 0
                 return session
-            } catch (e: java.net.SocketTimeoutException) {
-                last = e
+            } catch (_: java.net.SocketTimeoutException) {
                 // retry with fresh HELLO (new nonce/eph) on next loop
             } catch (e: Exception) {
-                // Non-timeout parse/crypto errors: do not burn retries uselessly
-                if (e is java.net.SocketTimeoutException) {
-                    last = e
-                } else if (
-                    e.message?.contains("timed out", ignoreCase = true) == true ||
+                val timedOut = e.message?.contains("timed out", ignoreCase = true) == true ||
                     e.message?.contains("timeout", ignoreCase = true) == true
-                ) {
-                    last = e
-                } else {
-                    throw e
-                }
+                if (!timedOut) throw e
             }
         }
-        throw last ?: java.net.SocketTimeoutException(
-            "Poll timed out after $attempts HELLO attempt(s) to $host:$port"
+        throw java.net.SocketTimeoutException(
+            "Privacy hop unreachable ($host:$port) after $tries attempt(s)"
         )
     }
 

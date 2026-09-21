@@ -117,6 +117,23 @@ Map<String, dynamic> proveRange(int v, Scalar r) {
   };
 }
 
+/// Public-nanos seal (coinbase / Reserve). Same shape as `sealCoinbaseNote` in crypto/note.js.
+Map<String, dynamic> sealCoinbaseNote(int v, {Uint8List? dest20, Uint8List? noteCommit, String kind = 'hash'}) {
+  final r = randomScalar();
+  final value = proveValue(v, r);
+  final nc = noteCommit ??
+      (dest20 != null ? noteCommitOfDest20(dest20) : Uint8List(32));
+  return {
+    'kind': kind,
+    'noteCommit': nc,
+    'commit': value['C'],
+    'valueProof': {'R': value['R'], 'z': value['z'], 'v': v},
+    'r': scalarBytes(r),
+    'nanos': v,
+    if (dest20 != null) 'dest20': dest20,
+  };
+}
+
 Map<String, dynamic> sealNote(int v, {Uint8List? dest20, Uint8List? noteCommit, String kind = 'send'}) {
   final r = randomScalar();
   final value = proveValue(v, r);
@@ -189,6 +206,12 @@ Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
   if (o['rEph'] != null) row['rEph'] = o['rEph'];
   if (o['rCt'] != null) row['rCt'] = o['rCt'];
   if (o['dest20'] != null) row['dest20'] = o['dest20'];
+  if (kind == 'lock' || kind == 'vote' || kind == 'withdraw' || kind == 'vortice-register') {
+    final addr = o['address'];
+    if (addr is String && addr.isNotEmpty) row['address'] = addr;
+    final n = o['nanos'];
+    if (n is num) row['nanos'] = n.round();
+  }
   final coinbaseMoney = kind == 'hash' || kind == 'pot' || kind == 'finder-fee' || kind == 'reserve-fee';
   if (coinbaseMoney) {
     final vp = row['valueProof'];

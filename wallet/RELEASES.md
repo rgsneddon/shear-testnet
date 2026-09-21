@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.44 (current)
+## 0.45 (current)
+
+Privacy hop fee crypto (range proof + BP+/ADMIT) runs off the UI isolate. Android shows **Paying hop fee…** then **Connecting Privacy hop…**. Handshake budget is 15s and 3 tries. A VPN permission grant resumes connect without paying the 0.05 SHE fee again in the same session. Fee and connect failures snack the real reason and leave the hop off or in error. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. Reserve lock, vote, and withdraw post the sealed public-nanos vout the pool verifies. ShearK pin stays **2.5**. Do not recut 0.44. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.45-MAC-HANDOFF.md`).
+
+## 0.44
 
 Reserve hop fee failures show the node reason instead of **not sent - try again**. Confirmed **Send without privacy hop** is not rewritten to the public-node IP warning (`allowPublicHttp` is honoured on submit). Vote uses the same allow. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. ShearK pin stays **2.5**. Do not recut 0.43. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.44-MAC-HANDOFF.md`).
 
