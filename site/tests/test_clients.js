@@ -69,13 +69,14 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /text-indent:\.12em/);
     assert.doesNotMatch(html, /shear-wallet-0\.38-macos\.dmg/);
     assert.doesNotMatch(html, /shear-wallet-0\.31-windows\.zip/);
-    assert.match(html, /shear-wallet-0\.40-android\.apk/);
-    assert.match(html, /releases\/download\/0\.40\/shear-wallet-0\.40-windows\.zip/);
+    assert.match(html, /shear-wallet-0\.41-android\.apk/);
+    assert.match(html, /releases\/download\/0\.41\/shear-wallet-0\.41-windows\.zip/);
+    assert.doesNotMatch(html, /releases\/download\/0\.40/);
     assert.doesNotMatch(html, /releases\/download\/0\.39/);
     assert.doesNotMatch(html, /releases\/download\/0\.36/);
     assert.match(html, /macOS — coming soon/);
-    assert.match(html, /shear-wallet-0\.40-linux\.zip/);
-    assert.match(html, /shear-wallet-0\.40-archlinux\.zip/);
+    assert.match(html, /shear-wallet-0\.41-linux\.zip/);
+    assert.match(html, /shear-wallet-0\.41-archlinux\.zip/);
     assert.doesNotMatch(html, /shear-wallet-0\.26-/);
     assert.doesNotMatch(html, /releases\/tag\/0\.26/);
     assert.doesNotMatch(html, /shear-wallet-0\.24-/);
@@ -101,12 +102,12 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /shear-wallet-0\.9-/);
     assert.match(html, /data-pack="wallet-macos"/);
     assert.match(html, /data-pack="wallet-windows"/);
-    assert.match(html, /shear-wallet-0\.40-windows\.zip/);
+    assert.match(html, /shear-wallet-0\.41-windows\.zip/);
     assert.match(html, /data-pack="wallet-android"/);
     assert.match(html, /data-pack="wallet-linux"/);
     assert.match(html, /data-pack="wallet-archlinux"/);
     assert.match(html, /id="pack-advisory"/);
-    assert.match(html, /wallet <strong>0\.40<\/strong>/);
+    assert.match(html, /wallet <strong>0\.41<\/strong>/);
     assert.doesNotMatch(html, /shear-wallet-0\.8-/);
     assert.match(html, /rgsneddon\/shear-testnet/);
     assert.doesNotMatch(html, /github\.com\/rgsneddon\/shear"/);
@@ -142,7 +143,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-pack="miner-windows"/);
   });
 
-  it('WALLET nav on MAIN MEMPOOL POOL EXPLORER pins 0.40 and refuses older tags', () => {
+  it('WALLET nav on MAIN MEMPOOL POOL EXPLORER pins 0.41 and refuses older tags', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const pages = {
       main: html,
@@ -156,7 +157,8 @@ describe('shear.digital client buttons', () => {
       whitepaper: fs.readFileSync(path.join(here, '../whitepaper/index.html'), 'utf8'),
     };
     for (const [name, page] of Object.entries(pages)) {
-      assert.match(page, /releases\/tag\/0\.40/, `${name} WALLET must pin 0.40`);
+      assert.match(page, /releases\/tag\/0\.41/, `${name} WALLET must pin 0.41`);
+      assert.doesNotMatch(page, /releases\/tag\/0\.40/, `${name} must not pin 0.40 as current`);
       assert.doesNotMatch(page, /releases\/tag\/0\.39/, `${name} must not pin 0.39 as current`);
       assert.doesNotMatch(page, /shear-wallet-0\.39-/, `${name} must not offer 0.39 packs`);
       assert.doesNotMatch(page, /releases\/tag\/0\.38/, `${name} must not pin 0.38 as current`);
@@ -310,6 +312,9 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /git clone https:\/\/github\.com\/rgsneddon\/shear-testnet\.git/);
     assert.match(html, /crypto\/native/);
     assert.match(html, /ShearK-Miner <strong>2\.5<\/strong>/);
+    assert.match(html, /Continuum GUI <strong>0\.41<\/strong>/);
+    assert.doesNotMatch(html, /Continuum GUI <strong>0\.40<\/strong>/);
+    assert.doesNotMatch(html, /Continuum GUI 0\.40/);
     assert.match(html, /near the public tip/);
     assert.match(html, /Copy dest/);
     assert.match(html, /ssa1\.worker/);
@@ -365,9 +370,9 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /The Reserve/);
     assert.match(admin, /pool\.shear\.digital:1111/);
     assert.match(admin, /ShearK-Miner 2\.5/);
-    assert.match(admin, /shear-wallet-0\.40-/);
-    assert.match(admin, /shear-wallet-0\.40-windows\.zip/);
-    assert.match(admin, /shear-wallet-0\.40-android\.apk/);
+    assert.match(admin, /shear-wallet-0\.41-/);
+    assert.match(admin, /shear-wallet-0\.41-windows\.zip/);
+    assert.match(admin, /shear-wallet-0\.41-android\.apk/);
     assert.match(admin, /Mainnet shear-v1 is not live/);
     assert.match(admin, /A launch date is not decided/);
     assert.doesNotMatch(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);

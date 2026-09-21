@@ -3,6 +3,9 @@
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <!-- Webcam for Flow Scan receive QR (mobile_scanner). Unpackaged Win32 still
+           prompts via Windows privacy; this names the capability for packaged runs. -->
+      <webcam xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">true</webcam>
     </windowsSettings>
   </application>
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">

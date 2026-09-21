@@ -23,12 +23,14 @@ import 'shear_export.dart';
 import 'shear_qr.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:file_picker/file_picker.dart';
 import 'shear_social.dart';
 import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_tip_tick.dart';
+import 'shear_read_sync.dart';
 
-const kWalletVersion = '0.40';
+const kWalletVersion = '0.41';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
@@ -72,6 +74,7 @@ class ShearWalletApp extends StatefulWidget {
     this.importSrc,
     this.openUrl,
     this.scanQr,
+    this.pickQrImage,
     this.startUnlocked = false,
     this.skipPoolSync = false,
   });
@@ -94,6 +97,9 @@ class ShearWalletApp extends StatefulWidget {
   final Future<bool> Function(Uri url)? openUrl;
   /// Test hook. Production opens the device camera to scan a Continuum receive QR.
   final Future<String?> Function()? scanQr;
+  /// Test hook for Scan QR image pick. Production uses FilePicker then
+  /// [decodeReceiveQrImage] (Windows has no mobile_scanner plugin).
+  final Future<Uint8List?> Function()? pickQrImage;
   /// Tests: session already sealed and identity in memory.
   final bool startUnlocked;
   /// Tests: skip unlock HTTP so the sign-pull dialog can be driven without a hung pool.
@@ -463,6 +469,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   @visibleForTesting
   Future<void> unlockBiometricsNow() => _unlockBiometric();
 
+  /// Same path as the lock-gate Set password / Unlock buttons. Argon2id cannot complete in FakeAsync.
+  @visibleForTesting
+  Future<void> setPasswordNow() => _setPassword(unlockCtrl.text, confirmCtrl.text);
+
+  @visibleForTesting
+  Future<void> unlockNow() => _unlock(unlockCtrl.text);
+
   /// Same path as the lock-gate and Closure Import buttons.
   @visibleForTesting
   Future<void> importShewallNow() => _importShewall();
@@ -631,6 +644,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           final full = shouldFullSyncCredits(
             hasPendingReceive: thin,
             historyBehindTip: ledger.historyBehindTip,
+            openCollatePending: !ledger.openCollated,
           );
           if (!_creditBusy) {
             _creditBusy = true;
@@ -1076,12 +1090,23 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   Future<void> _scanReceiveQr(BuildContext context) async {
     String? raw;
-    if (widget.scanQr != null) {
-      raw = await widget.scanQr!();
-    } else {
-      raw = await Navigator.of(context).push<String>(
-        MaterialPageRoute(builder: (_) => const _ScanReceiveQrPage()),
-      );
+    try {
+      if (widget.scanQr != null) {
+        raw = await widget.scanQr!();
+      } else {
+        raw = await Navigator.of(context).push<String>(
+          MaterialPageRoute(
+            builder: (_) => ScanReceiveQrPage(pickImage: widget.pickQrImage),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Camera failed: ${flowSendAdvisoryOf(e)}')),
+        );
+      }
+      return;
     }
     if (raw == null || raw.isEmpty) return;
     final got = parseReceiveQr(raw);
@@ -1337,11 +1362,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       const SizedBox(height: 12),
       Text('Receive ID', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
       const SizedBox(height: 6),
-      SelectableText(ident.paymentCode),
+      SelectableText(ident.paymentCodeFull, key: const Key('receive-she1-full')),
       const SizedBox(height: 8),
       OutlinedButton(
         key: const Key('copy-id'),
-        onPressed: () => Clipboard.setData(ClipboardData(text: ident.paymentCode)),
+        onPressed: () => Clipboard.setData(ClipboardData(text: ident.paymentCodeFull)),
         child: const Text('Copy ID'),
       ),
       const SizedBox(height: 12),
@@ -1361,7 +1386,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               key: const Key('receive-qr'),
               size: const Size(168, 168),
               painter: QrPainter(
-                data: encodeReceiveQr(ident.paymentCode),
+                data: encodeReceiveQr(ident.paymentCodeFull),
                 version: QrVersions.auto,
                 gapless: true,
               ),
@@ -1863,6 +1888,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
+    if (!widget.skipPoolSync && ledger.pool != null && !localSendReady(ledger.pool!.baseUrl)) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(kErrPublicHttp)),
+        );
+      }
+      return;
+    }
     ledger.rememberVaultDest(dest);
     final from = ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: need);
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -1881,7 +1914,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       );
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(flowSendAdvisoryOf(e))),
+        );
       }
       return;
     }
@@ -2070,6 +2105,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
+    if (!widget.skipPoolSync && ledger.pool != null && !localSendReady(ledger.pool!.baseUrl)) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(kErrPublicHttp)),
+        );
+      }
+      return;
+    }
     final now = DateTime.now().millisecondsSinceEpoch;
     final from = ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: voteL / kUnitsPerShe);
     try {
@@ -2088,7 +2131,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       );
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(flowSendAdvisoryOf(e))),
+        );
       }
       return;
     }
@@ -2125,6 +2170,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final draft = _reserveVoteDraft ?? p.vote;
     final yours = _panel(context, [
             const Text('The Reserve', style: TextStyle(fontWeight: FontWeight.w700)),
+            if (!widget.skipPoolSync &&
+                ledger.pool != null &&
+                !localSendReady(ledger.pool!.baseUrl))
+              Text(
+                'Waiting for local node at 127.0.0.1:18332. Public pool HTTP is not used for deposits.',
+                key: const Key('reserve-local-wait'),
+                style: TextStyle(color: shearMutedOf(context)),
+              ),
             const Text(
               'The Reserve is Shear governance. Lock over π SHE into your portal. '
               'The first qualifying stake opens a 400-day epoch. '
@@ -2432,7 +2485,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (pool == null) return;
     try {
       final dest = _reserveDestOf(ident);
-      if (dest != null) {
+      if (dest != null && localSendReady(pool.baseUrl)) {
         final p = reserve.portal(dest);
         final keepStaked = p.staked;
         final keepIdle = p.idle;
@@ -2596,34 +2649,131 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 }
 
-class _ScanReceiveQrPage extends StatefulWidget {
-  const _ScanReceiveQrPage();
-
-  @override
-  State<_ScanReceiveQrPage> createState() => _ScanReceiveQrPageState();
+/// Live camera on Android/iOS/macOS. Windows/Linux have no mobile_scanner
+/// plugin — Scan QR picks an image and [decodeReceiveQrImage] reads it.
+bool scanQrUsesLiveCamera() {
+  if (kIsWeb) return true;
+  return Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
 }
 
-class _ScanReceiveQrPageState extends State<_ScanReceiveQrPage> {
+class ScanReceiveQrPage extends StatefulWidget {
+  const ScanReceiveQrPage({super.key, this.pickImage});
+
+  /// Production: FilePicker. Tests inject PNG bytes of a receive QR.
+  final Future<Uint8List?> Function()? pickImage;
+
+  @override
+  State<ScanReceiveQrPage> createState() => ScanReceiveQrPageState();
+}
+
+class ScanReceiveQrPageState extends State<ScanReceiveQrPage> {
   var _done = false;
+  MobileScannerController? _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    if (scanQrUsesLiveCamera()) {
+      _controller = MobileScannerController();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  Future<Uint8List?> _readPickedImage() async {
+    if (widget.pickImage != null) return widget.pickImage!();
+    final r = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
+    if (r == null || r.files.isEmpty) return null;
+    final f = r.files.single;
+    if (f.bytes != null && f.bytes!.isNotEmpty) return f.bytes;
+    final path = f.path;
+    if (path == null || path.isEmpty) return null;
+    return File(path).readAsBytes();
+  }
+
+  Future<void> _pickQrImage() async {
+    if (_done) return;
+    final bytes = await _readPickedImage();
+    if (bytes == null || bytes.isEmpty) return;
+    final got = decodeReceiveQrImage(bytes);
+    if (got != null) {
+      if (!mounted) return;
+      _done = true;
+      Navigator.pop(context, got);
+      return;
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Not a Shear receive QR.')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final live = scanQrUsesLiveCamera() && _controller != null;
     return Scaffold(
-      appBar: AppBar(title: const Text('Scan receive QR')),
-      body: MobileScanner(
-        onDetect: (barcodes) {
-          if (_done) return;
-          for (final b in barcodes.barcodes) {
-            final raw = b.rawValue;
-            if (raw == null || raw.isEmpty) continue;
-            final got = parseReceiveQr(raw);
-            if (got == null) continue;
-            _done = true;
-            Navigator.pop(context, got);
-            return;
-          }
-        },
+      key: const Key('scan-qr-page'),
+      appBar: AppBar(
+        title: const Text('Scan receive QR'),
+        actions: [
+          IconButton(
+            key: const Key('scan-qr-pick'),
+            tooltip: 'Choose QR image',
+            onPressed: _pickQrImage,
+            icon: const Icon(Icons.photo_library_outlined),
+          ),
+        ],
       ),
+      body: live
+          ? MobileScanner(
+              controller: _controller,
+              errorBuilder: (context, error) => Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    'Allow camera so Shear can scan a receive QR. ${error.errorCode}',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+              onDetect: (barcodes) {
+                if (_done) return;
+                for (final b in barcodes.barcodes) {
+                  final raw = b.rawValue;
+                  if (raw == null || raw.isEmpty) continue;
+                  final got = parseReceiveQr(raw);
+                  if (got == null) continue;
+                  _done = true;
+                  Navigator.pop(context, got);
+                  return;
+                }
+              },
+            )
+          : Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Windows has no live camera plugin. Choose a photo of a Continuum receive QR.',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton(
+                      key: const Key('scan-qr-pick-button'),
+                      onPressed: _pickQrImage,
+                      child: const Text('Choose QR image'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
     );
   }
 }
