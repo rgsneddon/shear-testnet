@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.41 (current)
+## 0.42 (current)
+
+Built-in light sync: height 0 / empty fake stats never become the current tip. When a live same-genesis source reports height ≥ 1, Continuum follows that tip via header + compact-block catch-up (not the old FlyClient sampler). ADMITv2 / sealed-vin / compactTx stay unweakened; viewKey stays out of query strings. Do not recut 0.41. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.42-MAC-HANDOFF.md`).
+
+## 0.41
 
 ShearView collates the owner pending + recent confirmed set on wallet open (not only post-open deltas). Continuum Receive Copy ID / QR is the full payable she1. Flow maps a short she1 fingerprint to a clear advisory. Windows Flow Scan QR opens the camera/scanner page (webcam capability). Reserve/Flow spends wait for local RPC and never send via public pool HTTP. Do not recut 0.40. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.41-MAC-HANDOFF.md`).
 

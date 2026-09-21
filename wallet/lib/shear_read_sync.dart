@@ -46,6 +46,15 @@ bool isLiveBookStats(Map<String, dynamic> stats) {
 /// Kept for call sites; same as [isLiveBookStats].
 bool isV3BookStats(Map<String, dynamic> stats) => isLiveBookStats(stats);
 
+/// True when /stats can be used as the current chain tip.
+/// Height 0 and empty fake payloads never become the tip.
+bool isUsableTipStats(Map<String, dynamic>? stats) {
+  if (stats == null || stats.isEmpty) return false;
+  final raw = stats['height'];
+  final tip = raw is num ? raw.toInt() : int.tryParse('$raw') ?? 0;
+  return tip >= 1;
+}
+
 /// Header page size matching node `HEADERS_PAGE`.
 const kNodeSyncHeaderPage = 2000;
 
@@ -219,10 +228,17 @@ class ShearReadSync {
       base = await findLiveNode(keepOnMiss: liveBase != null);
     }
     if (base == null) return;
-    final stats = await _getFirst(base, const ['/stats', '/api/stats']);
-    if (stats == null) {
-      noteFailure();
-      return;
+    var stats = await _getFirst(base, const ['/stats', '/api/stats']);
+    if (stats == null || !isUsableTipStats(stats)) {
+      // Height 0 / empty fake stats cannot pin as the current tip.
+      // Re-rank to a live same-genesis seed at height ≥ 1.
+      base = await findLiveNode(keepOnMiss: false);
+      if (base == null) return;
+      stats = await _getFirst(base, const ['/stats', '/api/stats']);
+      if (stats == null || !isUsableTipStats(stats)) {
+        noteFailure();
+        return;
+      }
     }
     _failures = 0;
     _backoffUntil = null;
@@ -428,6 +444,7 @@ class ShearReadSync {
     final stats = await _getFirst(base, const ['/stats', '/api/stats']);
     if (stats == null) return null;
     if (!isV3BookStats(stats)) return null;
+    if (!isUsableTipStats(stats)) return null;
     final tip = (stats['height'] as num?)?.toInt() ?? 0;
     if (tip < 1) return null;
     var genesis = await _genesisOf(base);
