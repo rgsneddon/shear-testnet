@@ -7,6 +7,82 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
+#include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/time.h>
+
+static gboolean g_hop_up = FALSE;
+
+static void privacy_hop_method_cb(FlMethodChannel* channel,
+                                  FlMethodCall* method_call,
+                                  gpointer user_data) {
+  const gchar* method = fl_method_call_get_name(method_call);
+  g_autoptr(FlValue) out = fl_value_new_map();
+  if (g_strcmp0(method, "connect") == 0) {
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) {
+      fl_value_set_string_take(out, "ok", fl_value_new_bool(FALSE));
+      fl_value_set_string_take(out, "connected", fl_value_new_bool(FALSE));
+      fl_value_set_string_take(
+          out, "message", fl_value_new_string("UDP socket failed"));
+      fl_method_call_respond_success(method_call, out, nullptr);
+      return;
+    }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(44044);
+    inet_pton(AF_INET, "77.42.35.12", &addr.sin_addr);
+    const char magic[] = "RPT2";
+    sendto(s, magic, 4, 0, (struct sockaddr*)&addr, sizeof(addr));
+    struct timeval tv;
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    char buf[64];
+    int n = recvfrom(s, buf, sizeof(buf), 0, nullptr, nullptr);
+    close(s);
+    g_hop_up = FALSE;
+    fl_value_set_string_take(out, "ok", fl_value_new_bool(FALSE));
+    fl_value_set_string_take(out, "connected", fl_value_new_bool(FALSE));
+    fl_value_set_string_take(out, "fullTunnelActive", fl_value_new_bool(FALSE));
+    fl_value_set_string_take(
+        out, "message",
+        fl_value_new_string(
+            n > 0
+                ? "SHEAR-HOP / EU is reachable on UDP 44044. Linux TUN residual "
+                  "HELLO is not in this cut — use Privacy hop on Android, or "
+                  "Send without privacy hop."
+                : "No residual HELLO reply from SHEAR-HOP / EU. Use Privacy hop "
+                  "on Android, or Send without privacy hop."));
+    fl_method_call_respond_success(method_call, out, nullptr);
+    return;
+  }
+  if (g_strcmp0(method, "disconnect") == 0) {
+    g_hop_up = FALSE;
+    fl_value_set_string_take(out, "ok", fl_value_new_bool(TRUE));
+    fl_value_set_string_take(out, "connected", fl_value_new_bool(FALSE));
+    fl_value_set_string_take(out, "message", fl_value_new_string("Disconnected"));
+    fl_method_call_respond_success(method_call, out, nullptr);
+    return;
+  }
+  if (g_strcmp0(method, "status") == 0) {
+    fl_value_set_string_take(out, "ok", fl_value_new_bool(g_hop_up));
+    fl_value_set_string_take(out, "connected", fl_value_new_bool(g_hop_up));
+    fl_value_set_string_take(out, "fullTunnelActive", fl_value_new_bool(g_hop_up));
+    fl_value_set_string_take(
+        out, "message",
+        fl_value_new_string(g_hop_up ? "SHEAR-HOP / EU up" : "Hop off"));
+    fl_method_call_respond_success(method_call, out, nullptr);
+    return;
+  }
+  fl_method_call_respond_not_implemented(method_call, nullptr);
+}
+
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
@@ -45,11 +121,11 @@ static void my_application_activate(GApplication* application) {
   if (use_header_bar) {
     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
     gtk_widget_show(GTK_WIDGET(header_bar));
-    gtk_header_bar_set_title(header_bar, "Shear 0.42");
+    gtk_header_bar_set_title(header_bar, "Shear 0.43");
     gtk_header_bar_set_show_close_button(header_bar, TRUE);
     gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
   } else {
-    gtk_window_set_title(window, "Shear 0.42");
+    gtk_window_set_title(window, "Shear 0.43");
   }
 
   gtk_window_set_default_size(window, 1280, 720);
@@ -83,6 +159,15 @@ static void my_application_activate(GApplication* application) {
   gtk_widget_realize(GTK_WIDGET(view));
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
+  {
+    FlEngine* engine = fl_view_get_engine(view);
+    g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
+    g_autoptr(FlMethodChannel) hop = fl_method_channel_new(
+        fl_engine_get_binary_messenger(engine), "shear/privacy_hop",
+        FL_METHOD_CODEC(codec));
+    fl_method_channel_set_method_call_handler(hop, privacy_hop_method_cb,
+                                              nullptr, nullptr);
+  }
 
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }

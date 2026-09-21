@@ -334,14 +334,14 @@ String flowSendAdvisoryOf(Object error) {
   return kErrSendGeneric;
 }
 
-StateError _sendHumanError(String? reason, String? baseUrl) {
+StateError _sendHumanError(String? reason, String? baseUrl, {bool hopUp = false}) {
   final why = reason ?? 'send failed';
   if (why == 'admit_link_tag' || why == 'admit') {
     return StateError(kErrNoteSpent);
   }
   if (why == 'range_proof' || why == 'commit_sum') return StateError(kErrRangeProof);
   final url = baseUrl ?? '';
-  if (url.contains('pool.shear.digital')) {
+  if (url.contains('pool.shear.digital') && !hopUp) {
     return StateError(kErrPublicHttp);
   }
   return StateError(why);
@@ -2465,6 +2465,8 @@ class ShearLedger {
     int? epochStartMs,
     String? change,
     Uint8List? spendSeed,
+    bool privacyHopUp = false,
+    bool allowPublicHttp = false,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
     if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
@@ -2483,7 +2485,11 @@ class ShearLedger {
     } else if (!isDestAddress(to) && sendKind == 'send') {
       throw ArgumentError('bad_send');
     }
-    if (!local && pool != null && !localSendReady(pool!.baseUrl)) {
+    if (!local &&
+        pool != null &&
+        !localSendReady(pool!.baseUrl) &&
+        !privacyHopUp &&
+        !allowPublicHttp) {
       throw StateError(kErrPublicHttp);
     }
     if (sendKind == 'send' && destTo == from) {
@@ -2769,7 +2775,11 @@ class ShearLedger {
         }
         json = await postOnce();
         if (json['ok'] == true && json['tx'] is Map) break;
-        lastErr = _sendHumanError(json['reason']?.toString(), pool?.baseUrl);
+        lastErr = _sendHumanError(
+          json['reason']?.toString(),
+          pool?.baseUrl,
+          hopUp: privacyHopUp,
+        );
         final why = json['reason']?.toString() ?? '';
         if (why != 'admit' && why != 'admit_membership') break;
       }

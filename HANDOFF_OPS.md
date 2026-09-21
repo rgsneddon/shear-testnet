@@ -3,7 +3,7 @@
 **Written:** 2026-09-17T19:20Z from the Mac (`/Users/russellsneddon/shear`). HEAD **`f63c1e1`+** (dest-P bind `03fe7fe` is in this history).  
 **Canonical GitHub tree:** https://github.com/rgsneddon/shear-testnet  
 **Working branch:** `main`  
-**This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Pins are **0.42** (wallet) and ShearK **2.5**. Pin **0.42**. Do not recut older tags. The MacBook cuts **macOS only** (`CONTINUUM-0.42-MAC-HANDOFF.md`). This Windows box packs APK, Windows zip, Linux/Arch, and site pins.
+**This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Pins are **0.43** (wallet) and ShearK **2.5**. Pin **0.43**. Do not recut older tags. The MacBook cuts **macOS only** (`CONTINUUM-0.43-MAC-HANDOFF.md`). This Windows box packs APK, Windows zip, Linux/Arch, and site pins.
 
 Other Shear GitHub repos (`rgsneddon/shear`, `rgsneddon/shear-wallet`, `rgsneddon/shear-pool`) are being deleted. Clone **this** repo only, plus **ShearK**.
 
@@ -34,12 +34,12 @@ Private inventory (optional): `gh repo clone rgsneddon/handoff %USERPROFILE%\han
 | Book / magic | `shear-testnet-v4` |
 | ADMIT | ADMITv2 (Pasta arity-32 CDS; Membership, not Multiple) |
 | Fingerprint | `shear-book-law-2` … `ADMIT=ADMITv2\|RANGE=bpplus\|LEVY=weight\|NETWORK=shear-testnet-v4\|BITS=q16.16\|ASERT_TAU_MS=25920000\|ASERT_HARDEN=2\|ASERT_EASE=2` |
-| Wallet | **0.42** (`wallet/lib/main.dart` `kWalletVersion`) |
+| Wallet | **0.43** (`wallet/lib/main.dart` `kWalletVersion`) |
 | Miner | **ShearK 2.5** — https://github.com/rgsneddon/ShearK/releases/tag/2.5 |
 | SHARE_BIND | `rx+noteCommit` |
 | Mainnet | **blocked**. Launch date is not decided. Do **not** set `SHEAR_MAINNET_EMIT=1`. Operator is **not** cutting over. |
 
-Wallet zip on **this** repo: https://github.com/rgsneddon/shear-testnet/releases/tag/0.42  
+Wallet zip on **this** repo: https://github.com/rgsneddon/shear-testnet/releases/tag/0.43  
 Miner zip: https://github.com/rgsneddon/ShearK/releases/tag/2.5 (`ShearK-Miner-2.5-windows.zip` is this box’s job if still missing).
 
 ---
@@ -59,7 +59,7 @@ Tree on every box: `/opt/shear-v4`. Data: `/var/lib/shear/testnet-v4`. Magic rem
 
 Windows SSH key is `~\.ssh\id_ed25519` (this box). Mac key name remains `id_ed25519_restore_privacy_eu`.
 
-Linux/Arch wallet zips are packed **on 77.42.91.84** (`wallet/pack/pack_linux_de.sh` with `SHEAR_WALLET=/opt/shear-v4/wallet`). Windows zip + Android APK are packed on this Windows box. macOS `.dmg` is MacBook-only (`CONTINUUM-0.42-MAC-HANDOFF.md`).
+Linux/Arch wallet zips are packed **on 77.42.91.84** (`wallet/pack/pack_linux_de.sh` with `SHEAR_WALLET=/opt/shear-v4/wallet`). Windows zip + Android APK are packed on this Windows box. macOS `.dmg` is MacBook-only (`CONTINUUM-0.43-MAC-HANDOFF.md`).
 
 `/stats` on pool `:8088` prints `missing`; use **`/api/stats`**.
 
@@ -99,9 +99,9 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 ## 5) Next work on Windows (priority)
 
-1. Pack **wallet 0.42** Windows/Android on this box onto tag `0.42`. Linux/Arch on `77.42.91.84`. Darwin cannot `flutter build windows`.
-2. **Android 0.42 APK is packed on this Windows box** (Flutter + Android SDK 36 + Eclipse Temurin JDK 17). See §6a. Do not wait for the Mac for Android.
-3. **Apple-only artifacts stay a MacBook cut** (`CONTINUUM-0.42-MAC-HANDOFF.md`): Continuum 0.42 `.dmg` + CLI, iOS if cutting, ShearK-Miner 2.5 macOS zip. Do not recut 0.41.
+1. Pack **wallet 0.43** Windows/Android on this box onto tag `0.43`. Linux/Arch on `77.42.91.84`. Darwin cannot `flutter build windows`.
+2. **Android 0.43 APK is packed on this Windows box** (Flutter + Android SDK 36 + Eclipse Temurin JDK 17). See §6a. Do not wait for the Mac for Android.
+3. **Apple-only artifacts stay a MacBook cut** (`CONTINUUM-0.43-MAC-HANDOFF.md`): Continuum 0.43 `.dmg` + CLI, iOS if cutting, ShearK-Miner 2.5 macOS zip. Do not recut 0.42.
 4. If `ShearK-Miner-2.5-windows.zip` is still missing, pack it on **`rgsneddon/ShearK`** tag `2.5` (PE + `example.bat`). Do not recut 2.4/2.3.
 5. Keep mainnet blocked. No `SHEAR_MAINNET_EMIT=1` without `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`.
 
@@ -111,7 +111,7 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 - Linux node: `make -C crypto/native` on the box. Never copy a macOS `.node` to Linux.
 - p2pnode2 (Ubuntu 26.04) has no gcc — copy Linux `shearadmit.node` from P2pnode.
-- Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.42**. `--build-name=0.42.0` / pubspec `0.42.0+59`.
+- Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.43**. `--build-name=0.43.0` / pubspec `0.43.0+60`.
 - Pool HTTP: `/api/stats`, not `/stats`.
 - Operator admin vhost is **not** in git.
 - Stratum fleet: `SHEAR_STRATUM_BIND=127.0.0.1` and `SHEAR_STRATUM_AUTH=1` (or TLS in front of loopback). Reload with `deploy/reload-stratum-units.sh`. Checklist: `deploy/STRATUM_CHECKLIST.md`. Confirm `/api/stats` `stratumBind≠0.0.0.0` and `loginAuth≠dest-only` when AUTH is on; `alerts.stratumDrift` fires on non-loopback ∧ AUTH≠1. Do not enable dest-ban without ownership once AUTH is on. Do not invent TLS certs.
@@ -126,17 +126,17 @@ set ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
 set ANDROID_SDK_ROOT=%ANDROID_HOME%
 cd /d %USERPROFILE%\shear-testnet\wallet
 flutter pub get
-flutter build apk --release --build-name=0.42.0 --build-number=59
-copy /Y build\app\outputs\flutter-apk\app-release.apk dist\shear-wallet-0.42-android.apk
-copy /Y build\app\outputs\flutter-apk\app-release.apk ..\dist\shear-wallet-0.42-android.apk
-gh release upload 0.42 dist\shear-wallet-0.42-android.apk --repo rgsneddon/shear-testnet --clobber
+flutter build apk --release --build-name=0.43.0 --build-number=60
+copy /Y build\app\outputs\flutter-apk\app-release.apk dist\shear-wallet-0.43-android.apk
+copy /Y build\app\outputs\flutter-apk\app-release.apk ..\dist\shear-wallet-0.43-android.apk
+gh release upload 0.43 dist\shear-wallet-0.43-android.apk --repo rgsneddon/shear-testnet --clobber
 ```
 
-Fat APK only (`flutter build apk`, not `--split-per-abi`). `applicationId` `com.shear.shear_wallet`. Uninstall any old debug-signed build before sideload. Tag `0.42` has `shear-wallet-0.42-android.apk`.
+Fat APK only (`flutter build apk`, not `--split-per-abi`). `applicationId` `com.shear.shear_wallet`. Uninstall any old debug-signed build before sideload. Tag `0.43` has `shear-wallet-0.43-android.apk`.
 
 ### 6b) MacBook — Apple parts only
 
-The Windows box cannot produce notarized macOS, iOS, or a Darwin ShearK binary. Full Apple cut list (wallet `.dmg` + CLI, iOS if cutting, **ShearK-Miner 2.5 macOS zip**): [`CONTINUUM-0.42-MAC-HANDOFF.md`](CONTINUUM-0.42-MAC-HANDOFF.md).
+The Windows box cannot produce notarized macOS, iOS, or a Darwin ShearK binary. Full Apple cut list (wallet `.dmg` + CLI, iOS if cutting, **ShearK-Miner 2.5 macOS zip**): [`CONTINUUM-0.43-MAC-HANDOFF.md`](CONTINUUM-0.43-MAC-HANDOFF.md).
 
 ---
 
@@ -144,7 +144,7 @@ The Windows box cannot produce notarized macOS, iOS, or a Darwin ShearK binary. 
 
 - Invent a mainnet genesis datetime.
 - Dual-stack ADMITv1 + ADMITv2.
-- Recut an older wallet or ShearK tag. Pins are **0.42** and **2.5**.
+- Recut an older wallet or ShearK tag. Pins are **0.43** and **2.5**.
 
 ## 7) Stratum live stats vs tip units
 
@@ -178,7 +178,7 @@ Off-host vault (Windows, outside git): `C:\Users\rgsne\Desktop\SHEAR-SECRETS\` c
 - Hostname: re-cert or DNS-retire `docs.shear.digital` + `whitepaper.shear.digital`; then HSTS + baseline headers (separate ops). In-repo copy now points at `https://shear.digital/docs/` and `https://shear.digital/whitepaper/`.
 - Concentration: keep `alerts.concentration`; bring a second hasher — no multi-party security claims at `topDest=100%`.
 - Seed hygiene: 0600 datadir restore; hex off git/units; watch first signed π auto-pay after `confirmedNeed=30` (path ready; `signed=true` live).
-- Soak checklist (watch, not code): Continuum 0.42 on live worker Copy dest — mine → ≥6 conf → ShearView row → Resistance; fail release if empty after sealed hash notes. ASERT settle claim only after ≥288 blocks. Thin |J| until ≥10k.
+- Soak checklist (watch, not code): Continuum 0.43 on live worker Copy dest — mine → ≥6 conf → ShearView row → Resistance; fail release if empty after sealed hash notes. ASERT settle claim only after ≥288 blocks. Thin |J| until ≥10k.
 - W7 (this tree): fork verify uses a trial vault clone at the fork root + `applyReserveBlock` per accepted fork block (VS-R1); owner history always `destProofOpen(homeDest)` and notes ingest before empty ShearView. Leave `wallet_api` previewWithdraw-only, biometrics unlock-token, prove stdin/FFI, TOTP mutate gate.
 
 ### Restore one-liner (after a datadir wipe)
@@ -204,7 +204,7 @@ If seed missing: do **not** restart dest-only. Restore both vault files, `chmod 
 
 ### Coordinated shear-testnet-v4 datadir wipe
 
-Magic stays **`shear-testnet-v4`**. Keep Continuum pin 0.42 / ShearK 2.5. Wipe every datadir together, restore the pool ident from the Desktop vault onto the pool box, start the three P2P nodes, then the pool.
+Magic stays **`shear-testnet-v4`**. Keep Continuum pin 0.43 / ShearK 2.5. Wipe every datadir together, restore the pool ident from the Desktop vault onto the pool box, start the three P2P nodes, then the pool.
 
 | Order | Box | IP | Stop | Data |
 |------|-----|----|------|------|

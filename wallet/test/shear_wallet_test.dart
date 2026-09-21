@@ -28,6 +28,7 @@ import 'package:shear_wallet/shear_qr.dart';
 import 'package:shear_wallet/shear_social.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_levy.dart';
+import 'package:shear_wallet/shear_privacy_hop.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_tip_tick.dart';
 import 'package:shear_wallet/shear_admit.dart';
@@ -103,7 +104,7 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.42"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.43"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
@@ -111,11 +112,11 @@ void main() {
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.42"'), isTrue);
+    expect(winMain.contains('L"Shear 0.43"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.42"'), isTrue);
+    expect(winRc.contains('"Shear 0.43"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.42"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.43"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -635,6 +636,89 @@ void main() {
       fail('public HTTP must not send');
     } catch (e) {
       expect(flowSendAdvisoryOf(e), kErrPublicHttp);
+    }
+  });
+
+  test('Privacy hop pins SHEAR-HOP / EU on 77.42.35.12:44044', () {
+    expect(kPrivacyHopHost, '77.42.35.12');
+    expect(kPrivacyHopPort, 44044);
+    expect(kPrivacyHopLabel, 'SHEAR-HOP / EU');
+    expect(kPrivacyHopButtonLabel, 'Privacy hop');
+  });
+
+  test('Reserve send gate: hop optional; public HTTP refused unless hop up or informed', () {
+    expect(
+      reserveVaultSendReady(skipPoolSync: true, poolUrl: kPublicPoolHttp, hop: PrivacyHopState.off),
+      isTrue,
+    );
+    expect(
+      reserveVaultSendReady(skipPoolSync: false, poolUrl: kPublicPoolHttp, hop: PrivacyHopState.off),
+      isFalse,
+    );
+    expect(
+      reserveVaultSendReady(skipPoolSync: false, poolUrl: kPublicPoolHttp, hop: PrivacyHopState.connecting),
+      isFalse,
+    );
+    expect(
+      reserveVaultSendReady(skipPoolSync: false, poolUrl: kPublicPoolHttp, hop: PrivacyHopState.up),
+      isTrue,
+    );
+    expect(
+      reserveVaultSendReady(skipPoolSync: false, poolUrl: kLocalNodeRpc, hop: PrivacyHopState.off),
+      isTrue,
+    );
+  });
+
+  test('send still refuses public pool HTTP without hop or informed allow', () async {
+    final id = createIdentity();
+    final pool = ShearPoolClient(
+      baseUrl: kPublicPoolHttp,
+      http: HttpClient()..connectionTimeout = const Duration(milliseconds: 50),
+    );
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.confirmRound(address: dest, pot: 2, height: 2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    final to = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    try {
+      await ledger.send(
+        from: dest,
+        to: to,
+        amount: 0.1,
+        local: false,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        privacyHopUp: false,
+      );
+      fail('public HTTP must not send');
+    } catch (e) {
+      expect(flowSendAdvisoryOf(e), kErrPublicHttp);
+    }
+  });
+
+  test('hop-up skips the public-IP gate; public pool without hop still refuses', () async {
+    final id = createIdentity();
+    final pool = ShearPoolClient(
+      baseUrl: kPublicPoolHttp,
+      http: HttpClient()..connectionTimeout = const Duration(milliseconds: 50),
+    );
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final to = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    try {
+      await ledger.send(
+        from: from,
+        to: to,
+        amount: 0.05,
+        local: false,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        privacyHopUp: true,
+      );
+      fail('empty wallet must not send');
+    } catch (e) {
+      expect(e.toString(), contains('insufficient'));
+      expect(flowSendAdvisoryOf(e), isNot(kErrPublicHttp));
     }
   });
 
@@ -1428,8 +1512,8 @@ void main() {
         reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.42.0+59'));
-    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.42'"));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.43.0+60'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.43'"));
   });
 
   test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
@@ -2207,7 +2291,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.42');
+    expect(kWalletVersion, '0.43');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -2669,8 +2753,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.42');
-    expect(kWalletVersion, '0.42');
+    expect(app.title, 'Shear 0.43');
+    expect(kWalletVersion, '0.43');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -4249,6 +4333,179 @@ void main() {
     expect(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode), closeTo(1, 1e-12));
   });
 
+  test('Privacy hop pins SHEAR-HOP / EU on 77.42.35.12:44044', () {
+    expect(kPrivacyHopHost, '77.42.35.12');
+    expect(kPrivacyHopPort, 44044);
+    expect(kPrivacyHopLabel, 'SHEAR-HOP / EU');
+    expect(kPrivacyHopButtonLabel, 'Privacy hop');
+  });
+
+  test('Reserve send gate: hop up unlocks public-pool Send; hop down refuses', () {
+    expect(
+      reserveVaultSendReady(
+        skipPoolSync: false,
+        poolUrl: kPublicPoolHttp,
+        hop: PrivacyHopState.off,
+      ),
+      isFalse,
+    );
+    expect(
+      reserveVaultSendReady(
+        skipPoolSync: false,
+        poolUrl: kPublicPoolHttp,
+        hop: PrivacyHopState.up,
+      ),
+      isTrue,
+    );
+    expect(
+      reserveVaultSendReady(
+        skipPoolSync: true,
+        enforceHopGate: true,
+        poolUrl: kPublicPoolHttp,
+        hop: PrivacyHopState.off,
+      ),
+      isFalse,
+    );
+    expect(
+      reserveVaultSendReady(
+        skipPoolSync: true,
+        poolUrl: kPublicPoolHttp,
+        hop: PrivacyHopState.off,
+      ),
+      isTrue,
+    );
+    expect(kPrivacyHopHost, '77.42.35.12');
+    expect(kPrivacyHopPort, 44044);
+    expect(kPrivacyHopLabel, 'SHEAR-HOP / EU');
+    expect(kPrivacyHopFeeShe, 0.05);
+    expect(kPoolFeeDest, 'ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6');
+    expect(poolFeeDest(), kPoolFeeDest);
+    expect(privacyHopFeeDestOk(kPrivacyHopFeeDest), isTrue);
+    expect(privacyHopFeeDestOk('she1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'), isFalse);
+    expect(
+      reserveVaultSendReady(
+        skipPoolSync: false,
+        poolUrl: kPublicPoolHttp,
+        hop: PrivacyHopState.off,
+        unprivateConfirmed: true,
+      ),
+      isTrue,
+    );
+    expect(kUnprivateConfirmLabel, 'I already use a VPN / I accept exposing my IP');
+    expect(
+      kUnprivateConfirmHelper,
+      contains('If you are not already on a VPN, the public node may see your device IP'),
+    );
+  });
+
+  test('send refuses public pool HTTP without hop', () async {
+    final id = createIdentity();
+    final pool = ShearPoolClient(
+      baseUrl: kPublicPoolHttp,
+      http: HttpClient()..connectionTimeout = const Duration(milliseconds: 50),
+    );
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.confirmRound(address: dest, pot: 2, height: 2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    try {
+      await ledger.send(
+        from: dest,
+        to: destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!,
+        amount: 0.1,
+        local: false,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+      );
+      fail('public HTTP must not send');
+    } catch (e) {
+      expect(flowSendAdvisoryOf(e), kErrPublicHttp);
+    }
+  });
+
+  testWidgets('Reserve Privacy hop one-tap unlocks Send after 0.05 fee',
+      (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-reserve-hop-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final ledger = ShearLedger();
+    ledger.viewSecret = ident.viewKey;
+    ledger.confirmRound(
+      address: ledger.homeDest(ident.address, paymentCode: ident.paymentCode),
+      pot: 10,
+      height: 20,
+    );
+    ledger.settleTo(30);
+    final hop = PrivacyHopController(mock: true);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      reserve: ShearReserve(),
+      startUnlocked: true,
+      skipPoolSync: true,
+      enforceReserveHopGate: true,
+      privacyHop: hop,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-privacy-hop')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-send-unprivate')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-hop-status')), findsOneWidget);
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
+    await tester.ensureVisible(find.byKey(const Key('reserve-privacy-hop')));
+    await tester.tap(find.byKey(const Key('reserve-privacy-hop')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(hop.isUp, isTrue);
+    expect(find.text('Disconnect hop'), findsOneWidget);
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
+  });
+
+  testWidgets('Reserve unprivate confirm uses already-on-VPN copy then unlocks Send', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-reserve-unprivate-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final ledger = ShearLedger();
+    ledger.viewSecret = ident.viewKey;
+    ledger.confirmRound(
+      address: ledger.homeDest(ident.address, paymentCode: ident.paymentCode),
+      pot: 10,
+      height: 20,
+    );
+    ledger.settleTo(30);
+    final hop = PrivacyHopController(mock: true);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      reserve: ShearReserve(),
+      startUnlocked: true,
+      skipPoolSync: true,
+      enforceReserveHopGate: true,
+      privacyHop: hop,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
+    await tester.ensureVisible(find.byKey(const Key('reserve-send-unprivate')));
+    await tester.tap(find.byKey(const Key('reserve-send-unprivate')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-unprivate-confirm')), findsOneWidget);
+    expect(find.text(kUnprivateConfirmLabel), findsOneWidget);
+    expect(find.text(kUnprivateConfirmHelper), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
+    await tester.pump();
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
+    expect(hop.isUp, isFalse);
+  });
+
   testWidgets('Vortex deploys a third-party dapp only after a valid vort1. key download', (tester) async {
     final dir = Directory.systemTemp.createTempSync('shear-vortice-ui-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -5016,8 +5273,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.42 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.42');
+  test('kWalletVersion == 0.43 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.43');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
