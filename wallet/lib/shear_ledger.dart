@@ -1051,6 +1051,12 @@ class ShearLedger {
   String freezeReason = '';
   /// One-line Continuum banner when frozen. Empty when not frozen.
   String freezeBanner = '';
+  /// True when the connected tip includes the Reserve vault seal (or no seal yet).
+  bool vaultSealAncestry = true;
+  /// Divergent pre-seal fork: Continuum paints a blank pot.
+  bool blankFork = false;
+  /// One-line Continuum banner when the tip lacks vault-seal ancestry. Empty otherwise.
+  String vaultSealBanner = '';
   final List<({String dest, double amount, int height})> _immature = [];
 
   /// Read lag-1 continuity from a 128-byte tip header. Next dest uses sealedHeight+1.
@@ -1547,6 +1553,26 @@ class ShearLedger {
       freezeBanner =
           'Credits frozen ($reason): confirmations elevated to $confirmedNeed.';
     }
+    applyVaultSeal(json);
+  }
+
+  /// Blank-fork Reserve view. Independent of credits freeze.
+  void applyVaultSeal(Map<String, dynamic> json) {
+    if (json.containsKey('vault_seal_ancestry')) {
+      vaultSealAncestry = json['vault_seal_ancestry'] == true;
+    }
+    if (json.containsKey('blank_fork')) {
+      blankFork = json['blank_fork'] == true;
+    } else if (json.containsKey('vault_seal_ancestry')) {
+      blankFork = json['vault_seal_ancestry'] != true;
+    }
+    if (json.containsKey('vault_seal_banner')) {
+      vaultSealBanner = json['vault_seal_banner']?.toString() ?? '';
+    }
+    if (vaultSealAncestry && !blankFork) {
+      vaultSealBanner = '';
+    }
+    if (blankFork) vaultLockedNanos = 0;
   }
 
   /// Disconnect orphaned heights; rows bounce to pending.
@@ -1631,6 +1657,7 @@ class ShearLedger {
           'freeze_banner': json['freeze_banner'],
         });
       }
+      applyVaultSeal(json);
       final sealed = (json['height'] as num?)?.toInt() ?? 0;
       final hex = json['header']?.toString() ?? '';
       final genesis = pool!.genesisHex ?? await pool!.fetchGenesisHex();
@@ -1649,9 +1676,13 @@ class ShearLedger {
       take('hashBonusNanos', (n) => liveHashBonusNanos = n);
       take('extraMintedNanos', (n) => extraMintedNanos = n);
       take('mintBankNanos', (n) => extraMintedNanos = n);
-      take('lockedNanos', (n) => vaultLockedNanos = n);
-      if (json['reserveVaultNanos'] is num) {
-        vaultLockedNanos = (json['reserveVaultNanos'] as num).round();
+      if (blankFork) {
+        vaultLockedNanos = 0;
+      } else {
+        take('lockedNanos', (n) => vaultLockedNanos = n);
+        if (json['reserveVaultNanos'] is num) {
+          vaultLockedNanos = (json['reserveVaultNanos'] as num).round();
+        }
       }
       take('potEmittedNanos', (n) => potEmittedNanos = n);
       take('hashBonusEmittedNanos', (n) => hashBonusEmittedNanos = n);

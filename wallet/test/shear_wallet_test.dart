@@ -1141,6 +1141,78 @@ void main() {
     expect(find.byKey(const Key('continuum-freeze-banner')), findsNothing);
   });
 
+  test('blank-fork policy zeros the painted vault and sets the seal banner', () {
+    final ledger = ShearLedger();
+    ledger.vaultLockedNanos = 99;
+    ledger.applyPolicy({
+      'frozen': false,
+      'vault_seal_ancestry': false,
+      'blank_fork': true,
+      'vault_seal_banner':
+          'This tip diverged before the Reserve vault seal (height 1000). The vault on this fork is blank.',
+    });
+    expect(ledger.blankFork, isTrue);
+    expect(ledger.vaultSealAncestry, isFalse);
+    expect(ledger.vaultLockedNanos, 0);
+    expect(ledger.vaultSealBanner, contains('height 1000'));
+    expect(ledger.vaultSealBanner, contains('blank'));
+    ledger.applyPolicy({
+      'frozen': false,
+      'vault_seal_ancestry': true,
+      'blank_fork': false,
+      'vault_seal_banner': '',
+    });
+    expect(ledger.blankFork, isFalse);
+    expect(ledger.vaultSealAncestry, isTrue);
+    expect(ledger.vaultSealBanner, isEmpty);
+  });
+
+  testWidgets('Continuum vault-seal banner shows on a blank-fork tip and stays hidden on sealed ancestry', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-vault-seal-banner-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ledger = ShearLedger();
+    ledger.applyVaultSeal({
+      'vault_seal_ancestry': false,
+      'blank_fork': true,
+      'vault_seal_banner':
+          'This tip diverged before the Reserve vault seal (height 1000). The vault on this fork is blank.',
+    });
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('continuum-vault-seal-banner')), findsOneWidget);
+    expect(find.textContaining('vault seal'), findsOneWidget);
+  });
+
+  testWidgets('Continuum vault-seal banner is hidden when ancestry holds', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-vault-seal-banner-off-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ShearLedger(),
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('continuum-vault-seal-banner')), findsNothing);
+  });
+
   test('shewall.bin password seal restores address and balances; JSON refused', () async {
     final id = createIdentity();
     final ledger = ShearLedger();

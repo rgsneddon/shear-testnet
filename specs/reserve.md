@@ -18,3 +18,9 @@ First Vortex dapp. Not the general contract surface (that is Vortex).
 Oracle: The Reserve oracle (`shear-reserve-oracle-v1`) is coded into every node. It **may** propose observed annual bps into an epoch freeze. It **must not** move the pot schedule, mint mid-epoch at a live knob, or accept unbounded/stale/equivocating rates. Freeze is consensus-checked (max 10000 bps, max step 100 bps, max age 14d, no second freeze for the same epoch). A bad feed cannot reorg blocks or steal the pot. Mainnet has no operator override switch.
 
 Hardcoded program id: `shear-reserve-v1`. This is the **only** Vortex dapp whose `mint` is consensus-legal. Third-party staking products must pre-fund (top up) staker rewards from SHE already in circulation.
+
+## Checkpoint-bound vault
+
+The Reserve is bound to the same reorg freeze as bootstrap (height **1000**, then every **400**). `vaultSeal` is a minimal commitment of locked portals plus that checkpoint hash (and the genesis hash). `verifyReservePayout` / withdraw / mint on a fork that does not include the seal fail (`blank_vault`). Fork verify replays a trial vault from the LCA along the fork path, never the tip `reserveVault`. A trial that broke seal ancestry is `emptyVault`.
+
+Adopt of a heavier history that lacks seal ancestry is refused (`reorg_vault_seal` / `reorg_checkpoint`) and does **not** replay or wipe the tip vault. A shallow reorg *above* the seal keeps the portals. Continuum shows a banner when the tip lacks seal ancestry and paints a blank pot on that fork. Tip height below 1000: no seal yet, no banner.

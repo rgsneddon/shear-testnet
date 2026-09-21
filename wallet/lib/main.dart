@@ -973,8 +973,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
   }
 
-  int get _continuumVaultNanos =>
-      reserve.totalLockedNanos > 0 ? reserve.totalLockedNanos : (ledger.vaultLockedNanos ?? 0);
+  int get _continuumVaultNanos {
+    if (ledger.blankFork || ledger.vaultSealBanner.isNotEmpty) return 0;
+    return reserve.totalLockedNanos > 0 ? reserve.totalLockedNanos : (ledger.vaultLockedNanos ?? 0);
+  }
 
   int get _continuumExtraMintedNanos =>
       reserve.mintBankNanos > 0 ? reserve.mintBankNanos : (ledger.extraMintedNanos ?? 0);
@@ -1532,6 +1534,20 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   ? ledger.freezeBanner
                   : 'Credits frozen (${ledger.freezeReason.isEmpty ? 'policy' : ledger.freezeReason}): confirmations elevated to ${ledger.confirmedNeed}.',
               key: const Key('continuum-freeze-banner'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.error,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (ledger.blankFork || ledger.vaultSealBanner.isNotEmpty) ...[
+            Text(
+              ledger.vaultSealBanner.isNotEmpty
+                  ? ledger.vaultSealBanner
+                  : 'This tip diverged before the Reserve vault seal. The vault on this fork is blank.',
+              key: const Key('continuum-vault-seal-banner'),
               style: TextStyle(
                 color: Theme.of(context).colorScheme.error,
                 fontSize: 13,
@@ -2498,7 +2514,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           if (p.idle < keepIdle) p.idle = keepIdle;
         }
         if (keepJoined && p.nanos >= kPiSheNanos) p.joined = true;
-        ledger.vaultLockedNanos = reserve.totalLockedNanos;
+        if (!ledger.blankFork) {
+          ledger.vaultLockedNanos = reserve.totalLockedNanos;
+        } else {
+          ledger.vaultLockedNanos = 0;
+        }
         ledger.extraMintedNanos = reserve.mintBankNanos;
       }
     } catch (_) {}
