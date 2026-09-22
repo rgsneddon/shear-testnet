@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.47 (current)
+## 0.48 (current)
+
+Tip sync asks local RPC, local pool, and the public pool together, with a 5s budget on each seed. A refused loopback no longer hides the live height. `shear_wallet --print-tip <file>` writes that height and exits. Reserve stays the unprivate VPN / IP confirm. There is no privacy hop. Public tag **0.48** (store `0.48.0+70`). ShearK pin stays **2.5**. Tag 0.47 packs were not replaced. macOS `.dmg` stays the MacBook handoff (`CONTINUUM-0.46-MAC-HANDOFF.md`).
+
+## 0.47
 
 Reserve send is the unprivate path. Vortex says a send shows your IP to the node and to use a VPN. Confirm **I already use a VPN / I accept exposing my IP**, then Send. There is no Shear privacy hop. A lock the chain accepts shows **Sent — please wait 6 confirmations**. Public tag **0.47** (store `0.47.0+68` on the release; tree display may read `0.47.1`). ShearK pin stays **2.5**. Tag 0.46 packs were not replaced. macOS `.dmg` stays the MacBook handoff (`CONTINUUM-0.46-MAC-HANDOFF.md`).
 

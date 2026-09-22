@@ -76,7 +76,7 @@ function sectionSolo() {
     '       npm run solo',
     '     Bare node node/src/node.js is validator-only (no stratum).',
     '     npm run pool is the public-pool operator stack — not solo.',
-    '  3. CLI (first-class) or Continuum 0.47:',
+    '  3. CLI (first-class) or Continuum 0.48:',
     '       dart run bin/shear.dart dest --rpc http://127.0.0.1:18332',
     '       dart run bin/shear.dart balance',
     '       dart run bin/shear.dart history',
