@@ -27,13 +27,19 @@ const kHopProgressPaying = 'Paying hop fee…';
 const kHopProgressConnecting = 'Connecting Privacy hop…';
 
 /// Fixed hop click fee. Lands on [kPoolFeeDest] (ssa1), never she1.
-const kPrivacyHopFeeShe = 0.05;
+/// One number for every platform that runs this wallet.
+const kPrivacyHopFeeShe = 0.001;
 const kPrivacyHopFeeDest = kPoolFeeDest;
 
-const kPrivacyHopFeeConfirmTitle = 'Pay 0.05 SHE for Privacy hop';
-const kPrivacyHopFeeConfirmBody =
-    'Send 0.05 SHE to the pool fee dest, then connect SHEAR-HOP / EU. '
+String get kPrivacyHopFeeSheText => '$kPrivacyHopFeeShe SHE';
+
+String get kPrivacyHopFeeConfirmTitle => 'Pay $kPrivacyHopFeeSheText for Privacy hop';
+
+String get kPrivacyHopFeeConfirmBody =>
+    'Send $kPrivacyHopFeeSheText to the pool fee dest, then connect SHEAR-HOP / EU. '
     'The hop fee uses the public node. Reserve Send then goes through the hop.';
+
+String get kPrivacyHopFeePayLabel => 'Pay $kPrivacyHopFeeSheText';
 
 const kUnprivateSendLabel = 'Send without privacy hop';
 const kUnprivateConfirmTitle = 'Send without Shear privacy hop';
@@ -41,8 +47,12 @@ const kUnprivateConfirmLabel = 'I already use a VPN / I accept exposing my IP';
 const kUnprivateConfirmHelper =
     'Skip Shear privacy hop. If you are not already on a VPN, the public node may see your device IP.';
 
+/// Standing Reserve warning. A send to the vault uses the public node.
+const kReserveIpDisclaimer =
+    'Sending to the Reserve shows your IP to the node. Use a VPN.';
+
 const kReserveHopWaitCopy =
-    'Connect Privacy hop to hide your IP, then Send. Public pool HTTP is not used without the hop.';
+    'Confirm you use a VPN, or accept the node seeing your IP, before Send.';
 
 const kUnprivateUnlockedBanner =
     'Unprivate send unlocked — public node may see your IP unless you already use a VPN';

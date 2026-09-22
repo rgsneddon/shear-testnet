@@ -11,7 +11,20 @@ final valExtra = utf8Bytes('shear-note-val-v1');
 final bitExtra = utf8Bytes('shear-note-bit-v1');
 final consExtra = utf8Bytes('shear-note-cons-v1');
 
-final Element noteH = hashToRistretto(utf8Bytes('shear-note-H-v1'), noteDst);
+/// Consensus note H. Native bpplus maps SHA-512("shear-bpplus-v2" || tag)
+/// with from_uniform_bytes. IETF hash-to-curve is a different point, and the
+/// chain then treats the lock as zero nanos (bad_amount).
+Element consensusNoteH() {
+  final wide = sha512.convert([
+    ...utf8Bytes('shear-bpplus-v2'),
+    ...utf8Bytes('shear-note-H-v1'),
+  ]).bytes;
+  final p = Element.newElement();
+  p.fromUniformBytes(Uint8List.fromList(wide));
+  return p;
+}
+
+final Element noteH = consensusNoteH();
 final Uint8List noteHBytes = pointBytes(noteH);
 final Uint8List ristrettoGBytes = pointBytes(ristrettoG());
 final Uint8List ristrettoIdBytes = Uint8List(32);

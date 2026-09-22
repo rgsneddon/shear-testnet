@@ -5,7 +5,7 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { sha512 } from '@noble/hashes/sha2.js';
-import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
+import { RistrettoPoint } from '@noble/curves/ed25519.js';
 import { bytesToNumberLE } from '@noble/curves/utils.js';
 import { nativeLoaded, noteH, nativeProveRange, nativeVerifyRange } from './native_admit.js';
 
@@ -16,12 +16,21 @@ export const NOTE_DST = Buffer.from('shear-note-v1');
 export const NOTE_COMMIT_PERSONAL = Buffer.from('shear-note-commit-v1');
 
 export const G = Point.BASE;
+/** Consensus H: SHA-512("shear-bpplus-v2" || "shear-note-H-v1"), ristretto from_uniform_bytes. */
+function consensusNoteH() {
+  const wide = sha512(Buffer.concat([
+    Buffer.from('shear-bpplus-v2'),
+    Buffer.from('shear-note-H-v1'),
+  ]));
+  return Point.hashToCurve(wide);
+}
+
 function loadH() {
   if (nativeLoaded()) {
     const b = noteH();
     if (b && b.length === 32) return Point.fromBytes(b);
   }
-  return ristretto255_hasher.hashToCurve(Buffer.from('shear-note-H-v1'), { DST: NOTE_DST });
+  return consensusNoteH();
 }
 export const H = loadH();
 

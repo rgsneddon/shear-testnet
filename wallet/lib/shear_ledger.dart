@@ -2182,8 +2182,9 @@ class ShearLedger {
     }
   }
 
-  /// Pull Continuum from the silent mining dest and current Flow dest.
-  /// Mining credits land on the silent dest. Do not query every historical dest.
+  /// Pull Continuum for this wallet's own money dests.
+  /// A payment from someone else counts. A mining payout is not required.
+  /// Do not query every historical dest.
   Future<double> syncCredits(String restFrame, {String? paymentCode, bool openMemos = false}) async {
     if (pool == null) {
       _openCollated = true;

@@ -23,6 +23,13 @@ describe('Pedersen notes', () => {
     assert.ok(!G.equals(H));
   });
 
+  it('note H is the consensus bpplus point', () => {
+    assert.equal(
+      Buffer.from(H.toBytes()).toString('hex'),
+      'feea2914bda937d74acc1efa93bf1094f65ae709628a7aad9d1b913b6c80c301',
+    );
+  });
+
   it('seals two hasher notes; mint sum matches units; dest20 is not the commit', () => {
     const dA = Buffer.alloc(20, 1);
     const dB = Buffer.alloc(20, 2);
