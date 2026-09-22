@@ -36,13 +36,32 @@ describe('pool UI/API cannot vanish on restart', () => {
     const poolUnit = fs.readFileSync(path.join(root, 'deploy/shear-pool.service'), 'utf8');
     assert.match(poolUnit, /SHEAR_DATA=\/var\/lib\/shear\/testnet-v4/);
     assert.doesNotMatch(poolUnit, /testnet-v4-pool/);
-    assert.match(poolUnit, /p2p\.shear\.digital:30303/);
-    assert.match(poolUnit, /r2r\.shear\.digital:30303/);
-    assert.match(poolUnit, /b2b\.shear\.digital:30303/);
+    assert.match(poolUnit, /SHEAR_P2P_IPC=127\.0\.0\.1:30313/);
+    assert.doesNotMatch(poolUnit, /SHEAR_P2P_PORT=30303/);
+    assert.doesNotMatch(poolUnit, /SHEAR_P2P_BIND=/);
+    assert.match(poolUnit, /pool\/src\/main\.js/);
     assert.doesNotMatch(poolUnit, /77\.42\.91\.84/);
     assert.doesNotMatch(poolUnit, /157\.180\.70\.110/);
     assert.doesNotMatch(poolUnit, /2\.28\.8\.89/);
     assert.doesNotMatch(poolUnit, /178\.156\.222\.223/);
+    const sideUnit = fs.readFileSync(path.join(root, 'deploy/shear-p2p.service'), 'utf8');
+    const nodeUnit = fs.readFileSync(path.join(root, 'deploy/shear-node.service'), 'utf8');
+    for (const unit of [sideUnit, nodeUnit]) {
+      assert.match(unit, /--mode=p2p-sync/);
+      assert.match(unit, /SHEAR_P2P_PORT=30303/);
+      assert.match(unit, /p2p\.shear\.digital:30303/);
+      assert.match(unit, /r2r\.shear\.digital:30303/);
+      assert.match(unit, /b2b\.shear\.digital:30303/);
+      assert.doesNotMatch(unit, /pool\/src\/main/);
+      assert.doesNotMatch(unit, /SHEAR_HTTP=8088/);
+      assert.doesNotMatch(unit, /SHEAR_STRATUM=1111/);
+      assert.doesNotMatch(unit, /77\.42\.91\.84/);
+      assert.doesNotMatch(unit, /157\.180\.70\.110/);
+      assert.doesNotMatch(unit, /2\.28\.8\.89/);
+      assert.doesNotMatch(unit, /178\.156\.222\.223/);
+    }
+    assert.match(sideUnit, /SHEAR_P2P_IPC=127\.0\.0\.1:30313/);
+    assert.match(sideUnit, /SHEAR_DATA=\/var\/lib\/shear\/testnet-v4-p2p/);
     const p2pNgx = fs.readFileSync(path.join(root, 'deploy/nginx-p2p.shear.digital.conf'), 'utf8');
     const r2rNgx = fs.readFileSync(path.join(root, 'deploy/nginx-r2r.shear.digital.conf'), 'utf8');
     const b2bNgx = fs.readFileSync(path.join(root, 'deploy/nginx-b2b.shear.digital.conf'), 'utf8');

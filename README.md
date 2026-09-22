@@ -102,7 +102,9 @@ export SHEAR_RPC_BIND=127.0.0.1
 export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
 
 node node/src/node.js
-# validator only (no stratum). Solo mining:
+# validator only (no stratum). Pool hosts and fleet peers run the P2P sidecar:
+# node node/src/node.js --mode=p2p-sync
+# Solo mining:
 # npm run solo
 # or: node node/src/node.js --solo
 # or: node node/src/node.js --help
@@ -110,7 +112,7 @@ node node/src/node.js
 
 RPC stays on **loopback**. Wallet/CLI talks to `http://127.0.0.1:18332`. Optional systemd unit: `deploy/shear-node.service`.
 
-Solo is **node + thin stratum + CLI + ShearK**. `npm run pool` is the public-pool operator stack — do not use it as the beginner solo path. Export all three `SHEAR_SEEDS` in the **same shell** as `npm run solo`. Outbound to those seeds is required; opening inbound `30303` alone does not sync. Status `height=0 want=0 ibd=false` is an empty tip that is **not** fetching and has no live peer ahead — `ibd=true` while catching up (outstanding getblocks, syncing, or a live peer tip is taller), not merely `want>0`. Mid-IBD `unsigned@N` then `prev`: pull tip, rebuild native, `SHEAR_GETBLOCK_BATCH=1` — do not wipe. Check `nc -vz p2p.shear.digital 30303`. Full copy/paste: https://shear.digital#solo-sync-stuck
+Solo is **node + thin stratum + CLI + ShearK**. `npm run pool` is the public-pool operator stack — do not use it as the beginner solo path. The pool process serves HTTP `:8088` and stratum `:1111` only. P2P `:30303` is a sibling: `node node/src/node.js --mode=p2p-sync` (`deploy/shear-p2p.service` beside the pool, `deploy/shear-node.service` on fleet peers). Solo stays `npm run solo` on this same entry (validator, loopback RPC, thin stratum on `127.0.0.1`). Export all three `SHEAR_SEEDS` in the **same shell** as `npm run solo`. Outbound to those seeds is required; opening inbound `30303` alone does not sync. Status `height=0 want=0 ibd=false` is an empty tip that is **not** fetching and has no live peer ahead — `ibd=true` while catching up (outstanding getblocks, syncing, or a live peer tip is taller), not merely `want>0`. Mid-IBD `unsigned@N` then `prev`: pull tip, rebuild native, `SHEAR_GETBLOCK_BATCH=1` — do not wipe. Check `nc -vz p2p.shear.digital 30303`. Full copy/paste: https://shear.digital#solo-sync-stuck
 
 IBD: headers then a window of getblocks (default 16 in flight). First checkpoint at height **1000**, then every **400**. Heavier fork that replaces a checkpoint hash is rejected (`reorg_checkpoint`).
 

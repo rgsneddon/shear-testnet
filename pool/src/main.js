@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createPool, stratumDriftShouldRefuse } from './pool.js';
 import { isShearAddress } from '../../crypto/address.js';
 import { bootPoolOperator } from './pool_ident.js';
-import { createP2p, P2P_PORT, SEED_RETRY_MS } from '../../node/src/p2p.js';
+import { attachPoolIpc, parseIpcAddr, P2P_IPC_PORT } from '../../node/src/p2p_ipc.js';
 import { MAGIC_TESTNET, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { SHARE_BITS_V2_START } from './share_vardiff.js';
 import { assertHashBackend, hashBackendKind } from '../../crypto/shear_hash.js';
@@ -62,44 +62,50 @@ const pool = createPool({
   bits: Number(process.env.SHEAR_BITS || GENESIS_BITS_PACKED),
 });
 await pool.listen();
-const p2pPort = Number(process.env.SHEAR_P2P_PORT ?? P2P_PORT);
-let p2pBound = 0;
-let p2pNet = null;
-if (p2pPort > 0) {
-  const p2p = createP2p({
-    store: pool.store,
-    port: p2pPort,
-    host: process.env.SHEAR_P2P_BIND || '0.0.0.0',
-  });
-  const bound = await p2p.listen();
-  pool.setP2p(p2p);
-  p2pNet = p2p;
-  p2pBound = bound.port;
-  const seeds = (process.env.SHEAR_SEEDS || '').split(',').map((s) => s.trim()).filter(Boolean);
-  await p2p.dialSeeds(seeds);
-  const seedTimer = setInterval(() => {
-    p2p.dialSeeds(seeds);
-  }, SEED_RETRY_MS);
-  if (typeof seedTimer.unref === 'function') seedTimer.unref();
-}
+// P2P listen, ShearHash, and getblock encode stay in the sidecar process.
+const ipcAddr = parseIpcAddr(process.env.SHEAR_P2P_IPC || `127.0.0.1:${P2P_IPC_PORT}`);
+let remotePeers = 0;
+const ipc = await attachPoolIpc({
+  store: pool.store,
+  port: ipcAddr.port,
+  onPeers(n) { remotePeers = Number(n) || 0; },
+  onApplied() {
+    try { pool.paintStatsSnap(); } catch { /* stats timer retries */ }
+  },
+});
+const p2pShim = {
+  liveOnline: () => remotePeers,
+  syncedOnline: () => remotePeers,
+  publishWork(rows) { ipc.send({ type: 'ipc_work', magic: MAGIC_TESTNET, rows: rows || [] }); },
+};
+pool.setP2p(p2pShim);
+pool.store.on('tip', () => {
+  try { pool.paintStatsSnap(); } catch { /* stats timer retries */ }
+});
+const httpPort = pool.httpServer.address().port;
+const stratumPort = pool.stratum.address().port;
 console.log(JSON.stringify({
   ok: true,
   event: 'boot',
-  stratum: 1111,
-  http: pool.httpServer.address().port,
-  p2p: p2pBound,
+  role: 'pool',
+  stratum: stratumPort,
+  http: httpPort,
+  p2p: 0,
+  ipc: ipc.port,
   miner,
   magic: MAGIC_TESTNET,
   hashBackend: hashBackendKind() || 'missing',
   height: pool.store.tip()?.height || 0,
+  admit: 'ADMITv2',
 }));
 watchNodeStatus({
   store: pool.store,
-  p2p: p2pNet,
+  p2p: p2pShim,
   extra: () => ({
-    stratum: 1111,
-    http: pool.httpServer.address().port,
-    p2p: p2pBound,
+    stratum: stratumPort,
+    http: httpPort,
+    p2p: 0,
+    ipc: ipc.port,
     miners: pool.miners?.size || 0,
     accepted: Number(pool.stats?.accepted || 0),
     rejected: Number(pool.stats?.rejected || 0),

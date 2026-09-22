@@ -47,12 +47,15 @@ v3 and v4 are different books. Do not reuse a `shear-testnet-v3` datadir.
 
 ```bash
 sudo cp deploy/shear-pool.service /etc/systemd/system/shear-pool.service
+sudo cp deploy/shear-p2p.service /etc/systemd/system/shear-p2p.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now shear-pool.service
+sudo systemctl enable --now shear-pool.service shear-p2p.service
 sudo journalctl -u shear-pool -f
 ```
 
-You should see a JSON line with `"magic":"shear-testnet-v4"`, `"stratum":1111`, `"http":8088`.
+The pool unit does not bind `:30303`. `shear-p2p.service` (`node node/src/node.js --mode=p2p-sync`) owns P2P and feeds verified blocks to the pool on `127.0.0.1:30313`. Fleet peers run `deploy/shear-node.service` in that same p2p-sync mode, not this pool process. Solo localhost stratum stays `npm run solo`.
+
+You should see a JSON line with `"magic":"shear-testnet-v4"`, `"stratum":1111`, `"http":8088`, `"p2p":0`.
 
 Optional environment (drop-in `/etc/systemd/system/shear-pool.service.d/local.conf`):
 
@@ -65,8 +68,8 @@ Optional environment (drop-in `/etc/systemd/system/shear-pool.service.d/local.co
 | `SHEAR_ALERT_CONCENTRATION` | `/api/stats` `alerts.concentration` threshold (default 0.5) |
 | `SHEAR_ALERT_SHARE_BLOCK` | `/api/stats` `alerts.shareBlock` threshold (default 10000) |
 | `SHEAR_HTTP` | Loopback HTTP (default 8088) |
-| `SHEAR_P2P_PORT` | Public P2P (default 30303). `0` disables |
-| `SHEAR_SEEDS` | Comma-separated `host:port` peers |
+| `SHEAR_P2P_IPC` | Localhost TCP to the P2P sidecar (default `127.0.0.1:30313`). The pool does not bind `:30303` |
+| `SHEAR_SEEDS` | Used by the sidecar, not by the pool process |
 | `SHEAR_ADMIN_HOST` | Dedicated admin hostname (required in prod examples; first-run is deny-by-default when unset) |
 | `SHEAR_POOL_MINER` | Pool dest (`ssa1…`) if you do not want a generated ident |
 

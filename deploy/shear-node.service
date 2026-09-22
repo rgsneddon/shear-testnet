@@ -1,5 +1,5 @@
 [Unit]
-Description=Shear testnet-v4 node (ADMITv2, P2P 30303)
+Description=Shear testnet-v4 P2P sidecar (ADMITv2, owns :30303, no pool HTTP/stratum)
 After=network.target
 
 [Service]
@@ -14,7 +14,7 @@ Environment=SHEAR_RPC_BIND=127.0.0.1
 # Public seeds are hostnames only. Never raw fleet IPs in this unit.
 Environment=SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
 Environment=SHEAR_REORG_HALT_DEPTH=0
-ExecStart=/usr/bin/node node/src/node.js
+ExecStart=/usr/bin/node node/src/node.js --mode=p2p-sync
 Restart=on-failure
 RestartSec=3
 
