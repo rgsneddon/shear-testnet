@@ -3,10 +3,15 @@
 set -euo pipefail
 WALLET="${SHEAR_WALLET:-/opt/shear-v3/wallet}"
 FLUTTER_ROOT="${FLUTTER_ROOT:-/opt/flutter}"
-VER="$(sed -n "s/^const kWalletVersion = '\\(.*\\)';/\\1/p" "$WALLET/lib/main.dart" | head -1)"
+VER_FULL="$(sed -n "s/^const kWalletVersion = '\\(.*\\)';/\\1/p" "$WALLET/lib/main.dart" | head -1)"
+# Public zip and Arch pkgver are major.minor. Display may be major.minor.patch.
+case "$VER_FULL" in
+  *.*.*) VER="${VER_FULL%.*}" ;;
+  *) VER="$VER_FULL" ;;
+esac
 BUILD_NUMBER="${BUILD_NUMBER:-49}"
 # Flutter file version is x.y.z+N. Public zip pin stays two-part $VER.
-FLUTTER_NAME="$VER"
+FLUTTER_NAME="$VER_FULL"
 case "$FLUTTER_NAME" in
   *.*.*) ;;
   *.*) FLUTTER_NAME="${FLUTTER_NAME}.0" ;;

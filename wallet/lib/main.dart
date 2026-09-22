@@ -31,7 +31,7 @@ import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
 import 'shear_privacy_hop.dart';
 
-const kWalletVersion = '0.47.1';
+const kWalletVersion = '0.48.0';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
@@ -58,7 +58,21 @@ const kExplains = [
   'Password and backup. Encrypts shewall.bin so you can restore this wallet on another install.',
 ];
 
-void main() {
+Future<void> main(List<String> args) async {
+  final tipFlag = args.indexOf('--print-tip');
+  if (tipFlag >= 0) {
+    final report = await continuumTipReport();
+    final body = 'pin=$kWalletVersion\n$report\n';
+    final out = tipFlag + 1 < args.length ? args[tipFlag + 1] : '';
+    if (out.isNotEmpty && !out.startsWith('-')) {
+      final f = File(out);
+      f.parent.createSync(recursive: true);
+      f.writeAsStringSync(body);
+    }
+    stdout.writeln(body.trimRight());
+    final height = RegExp(r'displayHeight=(\d+)').firstMatch(report);
+    exit((int.tryParse(height?.group(1) ?? '') ?? 0) >= 1 ? 0 : 2);
+  }
   runApp(ShearWalletApp(demoTx: kDebugMode, biometrics: DeviceBiometrics()));
 }
 

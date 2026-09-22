@@ -3843,3 +3843,24 @@ class ShearPoolClient {
   Future<Map<String, dynamic>> reservePortal(String dest) =>
       _get('/api/vault/reserve?dest=$dest');
 }
+
+/// Tip lines the Windows binary prints for `--print-tip`.
+/// Default seeds are the local RPC, local pool, and the public pool.
+/// A refused loopback must not hide a live same-genesis height.
+Future<String> continuumTipReport({List<String>? seeds, HttpClient? http}) async {
+  final clientHttp = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8));
+  final sync = ShearReadSync(seeds: seeds, jitter: Duration.zero, http: clientHttp);
+  final client = ShearPoolClient(http: clientHttp, sync: sync);
+  final ledger = ShearLedger(pool: client);
+  await ledger.syncTip();
+  return [
+    'magic=$kBookMagic',
+    'followTip.liveBase=${sync.liveBase}',
+    'followTip.sampledTip=${sync.sampledTip}',
+    'syncTip.liveBase=${client.baseUrl}',
+    'syncTip.liveTip=${client.liveTip}',
+    'sealedHeight=${ledger.sealedHeight}',
+    'displayHeight=${ledger.displayHeight}',
+    'tipHeight=${ledger.tipHeight}',
+  ].join('\n');
+}
