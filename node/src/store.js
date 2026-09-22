@@ -676,17 +676,22 @@ export function createStore(dir, {
       magic: MAGIC_TESTNET,
       trustedPowHash: verifyOpts.trustedPowHash || null,
       skipSharePow: !!verifyOpts.skipSharePow,
+      offLoopPow: !!verifyOpts.offLoopPow,
       parentFluxset: liveFlux,
       parentSpendTags: liveFlux.spendTags,
       poolDest: verifyOpts.poolDest
         || block.poolDest
         || (block.miner && isDestAddress(block.miner) ? block.miner : null),
     });
-    for (const tx of (block.txs || []).slice(1)) {
-      const pay = payoutOnTip(tx);
-      if (!pay.ok) return pay;
-    }
-    return settleCheck(check, (okCheck) => completeAppend(okCheck, block));
+    const after = (c) => {
+      for (const tx of (block.txs || []).slice(1)) {
+        const pay = payoutOnTip(tx);
+        if (!pay.ok) return pay;
+      }
+      return settleCheck(c, (okCheck) => completeAppend(okCheck, block));
+    };
+    if (check && typeof check.then === 'function') return check.then(after);
+    return after(check);
   }
 
   function completeAppend(check, block) {
@@ -889,7 +894,7 @@ export function createStore(dir, {
     return { trialVault: trial, lca, blankFork: false };
   }
 
-  function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null, trialVault = null) {
+  function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null, trialVault = null, verifyOpts = {}) {
     const vault = trialVault || reserveVault;
     const prev = i === 0 ? null : {
       hash: accepted[i - 1].hash,
@@ -917,6 +922,7 @@ export function createStore(dir, {
       spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, parentH, accepted, rows)),
       committedBps: Number(vault.epochBps ?? 264),
       reserveState: vault,
+      offLoopPow: !!verifyOpts.offLoopPow,
     });
   }
 
@@ -944,14 +950,14 @@ export function createStore(dir, {
     return { ok: true, accepted };
   }
 
-  async function verifyForkAsync(fork) {
+  async function verifyForkAsync(fork, verifyOpts = {}) {
     const accepted = [];
     const trialSpent = new Set();
     let trialSession = null;
     const { trialVault, lca, blankFork } = trialVaultForFork(fork);
     for (let i = 0; i < fork.length; i += 1) {
       const check = await Promise.resolve(
-        verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession, trialVault),
+        verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession, trialVault, verifyOpts),
       );
       if (check.evmSession) trialSession = check.evmSession;
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
@@ -1040,7 +1046,9 @@ export function createStore(dir, {
     return afterSpent();
   }
 
-  function ingest(fork) {
+  let offLoopGate = Promise.resolve();
+
+  function ingestInner(fork, verifyOpts = {}) {
     if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
     const t = tip();
     let decoded;
@@ -1053,11 +1061,11 @@ export function createStore(dir, {
       ? decoded.prevBlockHash.equals(Buffer.from(t.hash))
       : decoded.prevBlockHash.equals(GENESIS_PREV);
     if (extendsTip) {
-      if (fork.some((b) => blockNeedsEvm(b?.txs || []))) {
+      if (verifyOpts.offLoopPow || fork.some((b) => blockNeedsEvm(b?.txs || []))) {
         return (async () => {
           let last = null;
           for (const b of fork) {
-            const got = await Promise.resolve(append(b));
+            const got = await Promise.resolve(append(b, verifyOpts));
             if (!got.ok) return last || got;
             last = got;
           }
@@ -1066,13 +1074,24 @@ export function createStore(dir, {
       }
       let last = null;
       for (const b of fork) {
-        const got = append(b);
+        const got = append(b, verifyOpts);
         if (!got.ok) return last || got;
         last = got;
       }
       return last;
     }
+    if (verifyOpts.offLoopPow) {
+      return verifyForkAsync(fork, verifyOpts).then((v) => finishAdopt(v));
+    }
     return adopt(fork);
+  }
+
+  function ingest(fork, verifyOpts = {}) {
+    if (!verifyOpts?.offLoopPow) return ingestInner(fork, verifyOpts || {});
+    const run = () => ingestInner(fork, verifyOpts);
+    const queued = offLoopGate.then(run, run);
+    offLoopGate = queued.then(() => {}, () => {});
+    return queued;
   }
 
   function dest20Equals(row20, want) {
@@ -1267,6 +1286,13 @@ export function createStore(dir, {
     blocks,
     explorer,
     tip,
+    chainWorkHex() {
+      try {
+        return `0x${chainWorkOf(blocks).toString(16)}`;
+      } catch {
+        return '0x0';
+      }
+    },
     append,
     verifyFork,
     adopt,

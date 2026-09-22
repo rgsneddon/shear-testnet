@@ -1,5 +1,6 @@
 import { potSubsidyAt, chainGenesisMs as genesisMsOf } from '../../crypto/pot_sched.js';
 import { shearHash, meetsTarget, hashHex } from '../../crypto/shear_hash.js';
+import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import { encodeHeader, decodeHeader, setNonce, VERSION } from '../../crypto/header.js';
 import { merkleRoot, EMPTY_ROOT } from '../../crypto/merkle.js';
 import {
@@ -41,6 +42,8 @@ import {
   dest20OfShare,
   noteCommitOfShare,
   sortShares,
+  stashSharePow,
+  dropSharePowKeys,
 } from '../../crypto/share_batch.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import {
@@ -70,7 +73,7 @@ import {
   asU8,
   pointFrom,
 } from '../../crypto/note.js';
-import { packTx, packDigest } from '../../crypto/pack.js';
+import { packTx, packDigest, unpackShareBatch } from '../../crypto/pack.js';
 import { buildDualTree, spendB } from '../../crypto/clearing.js';
 import {
   nextBaseFee,
@@ -694,27 +697,126 @@ export function phaseBGate() {
 
 export { blockNeedsEvm };
 
-function verifyBlockConsensus(block, prev, {
-  buried = false,
-  spentB = null,
-  tipHeight = 0,
-  hashBonusNanos = HASH_BONUS_NANOS,
-  spendableOf = null,
-  mtpTimestamps = null,
-  nowMs = null,
-  committedBps = null,
-  reserveState = null,
-  poolDest = null,
-  seenDigests = null,
-  evmSession = null,
-  evmHistory = null,
-  trustedPowHash = null,
-  skipSharePow = false,
-  parentFluxset = null,
-  parentSpendTags = null,
-  genesisMs = 0,
-  magic = MAGIC_TESTNET,
-} = {}) {
+const preparedHeaderPow = new Map();
+
+function headerPowKey(header) {
+  return Buffer.from(header).toString('hex');
+}
+
+function stashPreparedHeader(header, hash) {
+  preparedHeaderPow.set(headerPowKey(header), Buffer.from(hash));
+}
+
+function takePreparedHeader(header) {
+  const key = headerPowKey(header);
+  const found = preparedHeaderPow.get(key);
+  if (!found) return null;
+  preparedHeaderPow.delete(key);
+  return found;
+}
+
+function dropPreparedHeader(header) {
+  preparedHeaderPow.delete(headerPowKey(header));
+}
+
+/**
+ * Hash the header and each share header on the worker before the sync
+ * verifier runs. The sync verifier still checks targets; this only moves
+ * RandomX off the accept thread. trustedPowHash is never invented here.
+ */
+async function prepareOffLoopPow(block, prev, { skipSharePow = false } = {}) {
+  if (!block?.header) return { ok: false, reason: 'no_header' };
+  const h = Buffer.from(block.header);
+  let decoded;
+  try {
+    decoded = decodeHeader(h);
+  } catch {
+    return { ok: false, reason: 'bad_header' };
+  }
+  if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
+  const wantPrev = prev?.hash ? Buffer.from(prev.hash) : GENESIS_PREV;
+  if (!decoded.prevBlockHash.equals(wantPrev)) return { ok: false, reason: 'prev' };
+  const shareHeaders = [];
+  if (!skipSharePow && prev?.header && Array.isArray(block.shareBatch) && block.shareBatch.length) {
+    let rows = [];
+    try {
+      rows = unpackShareBatch(block.shareBatch);
+    } catch {
+      rows = [];
+    }
+    const parent = Buffer.from(prev.header);
+    for (const s of rows) {
+      try {
+        shareHeaders.push(setNonce(parent, BigInt(s?.nonce || 0)));
+      } catch { /* sync verifier reports the bad row */ }
+    }
+  }
+  const todo = [h, ...shareHeaders];
+  let hashes;
+  try {
+    hashes = await Promise.all(todo.map((hdr) => hashHeaderOffLoop(hdr)));
+  } catch {
+    return { ok: false, reason: 'pow' };
+  }
+  stashPreparedHeader(h, hashes[0]);
+  const shareKeys = [];
+  for (let i = 0; i < shareHeaders.length; i += 1) {
+    shareKeys.push(stashSharePow(shareHeaders[i], hashes[i + 1]));
+  }
+  return {
+    ok: true,
+    cleanup() {
+      dropPreparedHeader(h);
+      dropSharePowKeys(shareKeys);
+    },
+  };
+}
+
+function verifyBlockConsensus(block, prev, opts = {}) {
+  if (opts.offLoopPow && !opts.trustedPowHash) {
+    return prepareOffLoopPow(block, prev, { skipSharePow: !!opts.skipSharePow }).then((ready) => {
+      if (!ready.ok) return ready;
+      let result;
+      try {
+        result = verifyBlockConsensus(block, prev, { ...opts, offLoopPow: false });
+      } catch (err) {
+        ready.cleanup?.();
+        throw err;
+      }
+      if (result && typeof result.then === 'function') {
+        return result.then((out) => {
+          ready.cleanup?.();
+          return out;
+        }, (err) => {
+          ready.cleanup?.();
+          throw err;
+        });
+      }
+      ready.cleanup?.();
+      return result;
+    });
+  }
+  const {
+    buried = false,
+    spentB = null,
+    tipHeight = 0,
+    hashBonusNanos = HASH_BONUS_NANOS,
+    spendableOf = null,
+    mtpTimestamps = null,
+    nowMs = null,
+    committedBps = null,
+    reserveState = null,
+    poolDest = null,
+    seenDigests = null,
+    evmSession = null,
+    evmHistory = null,
+    trustedPowHash = null,
+    skipSharePow = false,
+    parentFluxset = null,
+    parentSpendTags = null,
+    genesisMs = 0,
+    magic = MAGIC_TESTNET,
+  } = opts;
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
   let decoded;
@@ -727,8 +829,9 @@ function verifyBlockConsensus(block, prev, {
   if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
   const wantPrev = prev?.hash ? Buffer.from(prev.hash) : GENESIS_PREV;
   if (!decoded.prevBlockHash.equals(wantPrev)) return { ok: false, reason: 'prev' };
-  // Local pool already hashed this header off-thread. Re-running RandomX
-  // on the event loop stalls HTTP/stratum. P2P and tests omit this and hash.
+  // Local pool already hashed this header off-thread and passes trustedPowHash.
+  // P2P omits that field. It stashes a worker ShearHash, then this branch
+  // still checks the target. A missing stash hashes here (local mine / tests).
   let hash;
   if (trustedPowHash) {
     hash = Buffer.from(trustedPowHash);
@@ -736,7 +839,8 @@ function verifyBlockConsensus(block, prev, {
       return { ok: false, reason: 'pow' };
     }
   } else {
-    hash = shearHash(h);
+    const prepared = takePreparedHeader(h);
+    hash = prepared || shearHash(h);
     if (!meetsTarget(hash, decoded.bits)) return { ok: false, reason: 'pow' };
   }
   const txs = Array.isArray(block.txs) ? block.txs : [];
@@ -1223,6 +1327,14 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
  */
 export function verifyBlock(block, prev, opts = {}) {
   const consensus = verifyBlockConsensus(block, prev, opts);
+  if (consensus && typeof consensus.then === 'function') {
+    return consensus.then((done) => {
+      if (!done?.ok) return done;
+      const txs = Array.isArray(block?.txs) ? block.txs : [];
+      if (!blockNeedsEvm(txs)) return { ...done, evmRan: false };
+      return verifyBlockEvm(done, block, opts);
+    });
+  }
   if (!consensus.ok) return consensus;
   const txs = Array.isArray(block?.txs) ? block.txs : [];
   if (!blockNeedsEvm(txs)) return { ...consensus, evmRan: false };

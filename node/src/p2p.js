@@ -58,6 +58,115 @@ export const GETBLOCK_BATCH = 16;
 export function getblockBatch() {
   return Math.max(1, Math.min(64, Number(process.env.SHEAR_GETBLOCK_BATCH || GETBLOCK_BATCH) || GETBLOCK_BATCH));
 }
+/**
+ * Global cap on overlapping P2P block verifies and on off-loop ShearHash.
+ * Keep equal to crypto/hash_offloop.js P2P_VERIFY_CAP.
+ */
+export const P2P_VERIFY_CAP = 2;
+/** Full block encodes served per event-loop turn. The rest wait and still send. */
+export const GETBLOCK_SERVE_PER_TURN = 1;
+
+let verifyActive = 0;
+let verifyMaxActive = 0;
+let verifyQueued = 0;
+let verifyMaxQueued = 0;
+let verifyStarted = 0;
+let verifyCompleted = 0;
+const verifyWaiters = [];
+
+export function p2pVerifyCap() {
+  return P2P_VERIFY_CAP;
+}
+
+export function p2pVerifyStats() {
+  return {
+    cap: P2P_VERIFY_CAP,
+    active: verifyActive,
+    maxActive: verifyMaxActive,
+    queued: verifyQueued,
+    maxQueued: verifyMaxQueued,
+    started: verifyStarted,
+    completed: verifyCompleted,
+  };
+}
+
+export function resetP2pVerifyStats() {
+  verifyMaxActive = verifyActive;
+  verifyMaxQueued = verifyQueued;
+  verifyStarted = 0;
+  verifyCompleted = 0;
+}
+
+function scheduleP2pVerify(fn) {
+  return new Promise((resolve, reject) => {
+    const launch = () => {
+      verifyActive += 1;
+      verifyStarted += 1;
+      if (verifyActive > verifyMaxActive) verifyMaxActive = verifyActive;
+      let runChain;
+      runChain = verifyOrder.then(() => new Promise((r) => setImmediate(r)).then(fn));
+      verifyOrder = runChain.then(() => {}, () => {});
+      runChain.then(resolve, reject).finally(() => {
+        verifyActive -= 1;
+        verifyCompleted += 1;
+        const next = verifyWaiters.shift();
+        if (!next) return;
+        verifyQueued -= 1;
+        next();
+      });
+    };
+    if (verifyActive < P2P_VERIFY_CAP) {
+      launch();
+      return;
+    }
+    verifyQueued += 1;
+    if (verifyQueued > verifyMaxQueued) verifyMaxQueued = verifyQueued;
+    verifyWaiters.push(launch);
+  });
+}
+
+let verifyOrder = Promise.resolve();
+
+export function parseChainWork(v) {
+  if (typeof v === 'bigint') return v >= 0n ? v : null;
+  if (v == null) return null;
+  const s = String(v).trim().toLowerCase();
+  if (!s) return null;
+  try {
+    if (s.startsWith('0x')) return BigInt(s);
+    if (/^[0-9]+$/.test(s)) return BigInt(s);
+    if (/^[0-9a-f]+$/.test(s)) return BigInt(`0x${s}`);
+  } catch { /* not work */ }
+  return null;
+}
+
+/** Ahead only from a taller height or explicit heavier work. Hash inequality is not ahead. */
+export function peerTipAheadOf({
+  localHeight = 0,
+  localWork = null,
+  peerHeight = null,
+  peerWork = null,
+} = {}) {
+  const peerH = Number(peerHeight);
+  const localH = Number(localHeight) || 0;
+  if (Number.isFinite(peerH) && peerH > localH) return true;
+  const pw = parseChainWork(peerWork);
+  const lw = parseChainWork(localWork);
+  if (pw != null && lw != null && pw > lw) return true;
+  return false;
+}
+
+/** Best catch-up peer: heavier work when both announce it, otherwise greater height. */
+export function catchupPeerBetter(a, b) {
+  const aw = parseChainWork(a?.work);
+  const bw = parseChainWork(b?.work);
+  if (aw != null && bw != null && aw !== bw) return aw > bw;
+  const aH = Number.isFinite(Number(a?.height)) ? Number(a.height) : -1;
+  const bH = Number.isFinite(Number(b?.height)) ? Number(b.height) : -1;
+  if (aH !== bH) return aH > bH;
+  if (aw != null && bw == null) return true;
+  return false;
+}
 /** Seed redial so a dropped peer cannot leave a node stuck forever. */
 export const SEED_RETRY_MS = 3_000;
 /** Drop a hung getblock window so IBD cannot stall after a peer crash. */
@@ -371,10 +480,13 @@ export function createP2p({
   const linking = new Set();
   const seenTx = new Set();
   const peerBans = new Map();
-  let ingestChain = Promise.resolve();
   const originInvSize = new Map();
   const fluffTimers = new Map();
   const inflightBlocks = new Set();
+  const getblockServeQ = [];
+  let getblockServeTimer = null;
+  let getblockServeSent = 0;
+  let getblockServeMaxBacklog = 0;
   let server = null;
   let peerSeq = 0;
 
@@ -408,15 +520,34 @@ export function createP2p({
     });
   }
 
+  function localWorkHex() {
+    try {
+      if (typeof store.chainWorkHex === 'function') return store.chainWorkHex();
+    } catch { /* ignore */ }
+    return '';
+  }
+
   function peerTipAhead(rec) {
     if (!rec) return false;
-    const local = localTipHash();
-    const localH = Number(store.tip()?.height || 0);
-    const peerHash = String(rec.hash || '');
-    const peerH = Number(rec.height);
-    const behindHeight = Number.isFinite(peerH) && peerH > localH;
-    const hashAhead = Boolean(peerHash) && peerHash !== local;
-    return behindHeight || hashAhead;
+    return peerTipAheadOf({
+      localHeight: Number(store.tip()?.height || 0),
+      localWork: localWorkHex(),
+      peerHeight: rec.height,
+      peerWork: rec.work,
+    });
+  }
+
+  function bestAheadSock() {
+    let bestSock = null;
+    let bestRec = null;
+    for (const [sock, rec] of peers) {
+      if (!peerTipAhead(rec)) continue;
+      if (!bestRec || catchupPeerBetter(rec, bestRec)) {
+        bestSock = sock;
+        bestRec = rec;
+      }
+    }
+    return bestSock;
   }
 
   function alreadyLinked(host, p) {
@@ -435,11 +566,13 @@ export function createP2p({
 
   function tipMsg() {
     const t = store.tip();
+    const work = localWorkHex();
     return {
       type: 'tip',
       magic,
       height: t?.height || 0,
       hash: t ? Buffer.from(t.hash).toString('hex') : '',
+      work: work || '0x0',
     };
   }
 
@@ -448,6 +581,7 @@ export function createP2p({
     rec.remote = peerRemoteKey(sock) || rec.remote;
     if (msg && msg.hash != null) rec.hash = wireHash(msg.hash) || String(msg.hash);
     if (msg && Number.isFinite(Number(msg.height))) rec.height = Number(msg.height);
+    if (msg && msg.work != null && String(msg.work) !== '') rec.work = String(msg.work);
     peers.set(sock, rec);
   }
 
@@ -540,11 +674,11 @@ export function createP2p({
     return locatorHashes(store.blocks || []);
   }
 
-  function requestHeaders(sock) {
+  function beginHeaders(sock) {
     const rec = peers.get(sock);
-    if (!rec) return;
-    if (rec.syncing) return;
+    if (!rec || rec.syncing) return;
     if (!peerTipAhead(rec)) return;
+    if (bestAheadSock() !== sock) return;
     rec.syncing = true;
     send(sock, {
       type: 'getheaders',
@@ -554,9 +688,36 @@ export function createP2p({
     });
   }
 
+  let catchupScheduled = false;
+  function scheduleCatchup() {
+    if (catchupScheduled) return;
+    catchupScheduled = true;
+    setImmediate(() => {
+      catchupScheduled = false;
+      const best = bestAheadSock();
+      for (const [sock, rec] of peers) {
+        if (sock === best) continue;
+        if (rec?.syncing && !(rec.pending && rec.pending.size)) rec.syncing = false;
+      }
+      if (best) beginHeaders(best);
+    });
+  }
+
+  function requestHeaders(sock) {
+    const rec = peers.get(sock);
+    if (!rec || rec.syncing) return;
+    if (!peerTipAhead(rec)) return;
+    scheduleCatchup();
+  }
+
   function pumpGetblocks(sock) {
     const rec = peers.get(sock);
     if (!rec) return;
+    const best = bestAheadSock();
+    if (best !== sock) {
+      if (!(rec.pending && rec.pending.size)) rec.syncing = false;
+      return;
+    }
     if (!Array.isArray(rec.want)) rec.want = [];
     if (!rec.pending) rec.pending = new Set();
     if (!rec.failed) rec.failed = new Set();
@@ -565,7 +726,7 @@ export function createP2p({
     while (rec.pending.size < getblockBatch() && rec.want.length) {
       const hash = rec.want.shift();
       if (!hash || have.has(hash) || rec.failed.has(hash) || rec.pending.has(hash)) continue;
-      if (inflightBlocks.has(hash)) continue;
+      if (rec.verifying?.has(hash) || inflightBlocks.has(hash)) continue;
       rec.pending.add(hash);
       inflightBlocks.add(hash);
       rec.pendingAt = Date.now();
@@ -573,9 +734,37 @@ export function createP2p({
       send(sock, { type: 'getblock', magic, hash });
     }
     if (rec.pending.size) return;
+    if (rec.verifying && rec.verifying.size) return;
     rec.syncing = false;
     rec.pending = null;
     requestHeaders(sock);
+  }
+
+  function flushGetblockServe() {
+    getblockServeTimer = null;
+    let n = 0;
+    while (n < GETBLOCK_SERVE_PER_TURN && getblockServeQ.length) {
+      const job = getblockServeQ.shift();
+      n += 1;
+      if (!job?.sock || job.sock.destroyed) continue;
+      send(job.sock, { type: 'block', magic, block: encodeWireBlock(job.block) });
+      getblockServeSent += 1;
+    }
+    if (getblockServeQ.length) scheduleGetblockServe();
+  }
+
+  function scheduleGetblockServe() {
+    if (getblockServeTimer) return;
+    getblockServeTimer = setTimeout(flushGetblockServe, 0);
+    if (typeof getblockServeTimer.unref === 'function') getblockServeTimer.unref();
+  }
+
+  function enqueueGetblockServe(sock, block) {
+    getblockServeQ.push({ sock, block });
+    if (getblockServeQ.length > getblockServeMaxBacklog) {
+      getblockServeMaxBacklog = getblockServeQ.length;
+    }
+    scheduleGetblockServe();
   }
 
   function handle(sock, msg) {
@@ -666,11 +855,13 @@ export function createP2p({
       for (const h of msg.headers || []) {
         const hash = wireHash(h.hash);
         if (!hash || have.has(hash) || rec.failed.has(hash) || queued.has(hash)) continue;
+        if (rec.verifying?.has(hash)) continue;
         rec.want.push(hash);
         queued.add(hash);
         added += 1;
       }
       if (!added && !rec.want.length && !(rec.pending && rec.pending.size)) {
+        if (rec.verifying && rec.verifying.size) return;
         rec.syncing = false;
         rec.pending = null;
         requestHeaders(sock);
@@ -684,6 +875,7 @@ export function createP2p({
           local: store.tip()?.height || 0,
         }));
       } catch { /* ignore */ }
+      if (rec.verifying && rec.verifying.size) return;
       pumpGetblocks(sock);
       return;
     }
@@ -698,7 +890,7 @@ export function createP2p({
           height: b?.height || 0,
         }));
       } catch { /* ignore */ }
-      if (b) send(sock, { type: 'block', magic, block: encodeWireBlock(b) });
+      if (b) enqueueGetblockServe(sock, b);
       return;
     }
     if (msg.type === 'block' || msg.type === 'blocks') {
@@ -723,23 +915,34 @@ export function createP2p({
       const lastHash = last ? wireHash(last.hash) : '';
       if (lastHash) inflightBlocks.delete(lastHash);
       const haveNow = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
+      if (lastHash && haveNow.has(lastHash)) {
+        if (recNow) {
+          recNow.pending?.delete(lastHash);
+          recNow.verifying?.delete(lastHash);
+          pumpGetblocks(sock);
+        }
+        return;
+      }
+      const verifyKey = fork?.[0]?.header ? Buffer.from(fork[0].header).toString('hex') : lastHash;
+      if (verifyKey && recNow?.verifying?.has(verifyKey)) return;
       if (recNow) {
         if (!recNow.pending) recNow.pending = new Set();
         if (!recNow.failed) recNow.failed = new Set();
+        if (!recNow.verifying) recNow.verifying = new Set();
         if (lastHash) recNow.pending.delete(lastHash);
-        pumpGetblocks(sock);
+        if (verifyKey) {
+          recNow.verifying.add(verifyKey);
+          recNow.syncing = true;
+        }
       }
-      if (lastHash && haveNow.has(lastHash)) {
-        return;
-      }
-      const job = ingestChain.then(() => {
+      const job = scheduleP2pVerify(() => {
         const before = store.tip();
-        return Promise.resolve(store.ingest(fork)).then((got) => ({ got, before }));
+        return Promise.resolve(store.ingest(fork, { offLoopPow: true })).then((got) => ({ got, before }));
       });
-      ingestChain = job.then(() => {}, () => {});
       job.then(({ got, before }) => {
         const rec = peers.get(sock);
         if (rec) {
+          rec.verifying?.delete(verifyKey);
           if (!rec.failed) rec.failed = new Set();
           if (!got?.ok && lastHash) {
             const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
@@ -777,8 +980,10 @@ export function createP2p({
       }).catch((err) => {
         const rec = peers.get(sock);
         if (rec) {
+          rec.verifying?.delete(verifyKey);
           rec.syncing = false;
           rec.pending = null;
+          pumpGetblocks(sock);
         }
         try {
           console.error(JSON.stringify({
@@ -936,6 +1141,11 @@ export function createP2p({
   }
 
   function close() {
+    if (getblockServeTimer) {
+      clearTimeout(getblockServeTimer);
+      getblockServeTimer = null;
+    }
+    getblockServeQ.length = 0;
     for (const t of fluffTimers.values()) clearTimeout(t);
     fluffTimers.clear();
     for (const s of sockets) {
@@ -997,6 +1207,9 @@ export function createP2p({
     peers,
     syncedOnline,
     liveOnline,
+    getblockServeBacklog: () => getblockServeQ.length,
+    getblockServeSent: () => getblockServeSent,
+    getblockServeMaxBacklog: () => getblockServeMaxBacklog,
     originInvSetSize: (id) => Number(originInvSize.get(String(id || '')) || 0),
     get port() { return server?.address()?.port ?? port; },
     get listening() { return Boolean(server?.listening); },
