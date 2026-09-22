@@ -2196,11 +2196,13 @@ class ShearLedger {
       await syncTip();
     } catch (_) {}
     final dests = syncDests(restFrame, paymentCode: paymentCode);
+    final reconstructed = <String, double>{};
     for (final d in dests) {
       if (!isDestAddress(d)) continue;
       try {
         final json = await pool!.balance(d);
         applyPoolSnapshot(d, json, beforeHeight: before, tipSealed: _sealedHeight);
+        if (!_isProgramVaultDest(d)) reconstructed[payKey(d)] = spendable(d);
       } catch (_) {}
     }
     _markSettled(_sealedHeight, before);
@@ -2250,6 +2252,16 @@ class ShearLedger {
       try {
         await syncHistory(key, openMemos: openMemos);
       } catch (_) {}
+    }
+    // The pool reconstruct is the spendable book. A notes scan of those same
+    // funds must not be added on top of it. Vault dests stay out of the sum.
+    for (final e in reconstructed.entries) {
+      if (_isProgramVaultDest(e.key)) {
+        _spendable.remove(e.key);
+        continue;
+      }
+      final piled = spendable(e.key);
+      if (piled > e.value + 1e-12) _spendable[e.key] = e.value;
     }
     _openCollated = true;
     return spendableOwned(restFrame, paymentCode: paymentCode);
@@ -2770,16 +2782,26 @@ class ShearLedger {
     return rows;
   }
 
-  /// Pool-custodial pot still confirming toward π auto-pay, plus in-flight
-  /// pool-withdraw landings. Display only — not Continuum spendable.
+  /// Pool-custodial pot still confirming toward π auto-pay.
+  /// One source: the pull-book figure, or an in-flight pool-withdraw that the
+  /// pull-book does not already hold. The same SHE is not added twice.
+  /// Display only — not Continuum spendable. Miner-page totals are not this.
   double owedTowardPi(String restFrame, {String? paymentCode}) {
-    var n = _owedPiDisplay;
+    final book = _owedPiDisplay > 0 ? _owedPiDisplay : 0.0;
+    var withdraw = 0.0;
+    var pot = 0.0;
     for (final t in pendingTxs(restFrame)) {
-      if (t.kind == 'pool-withdraw') n += t.amount;
-      final pot = t.pot ?? 0;
-      if (pot > 0) n += pot;
+      if (t.kind == 'pool-withdraw' && t.amount > 0) withdraw += t.amount;
+      final rowPot = t.pot ?? 0;
+      if (rowPot > 0) pot += rowPot;
     }
-    return n;
+    if (book > 0 && withdraw > 0) {
+      if (withdraw <= book + 1e-9) return book;
+      return withdraw;
+    }
+    if (book > 0) return book;
+    if (withdraw > 0) return withdraw;
+    return pot;
   }
 
   double _owedPiDisplay = 0;

@@ -45,14 +45,14 @@ List<String> _zipNames(File zip) {
 }
 
 void main() {
-  test('kWalletVersion public pin is two-part 0.47 (not 0.14.0)', () {
-    expect(kWalletVersion, '0.47');
+  test('kWalletVersion displayed patch is 0.47.1 (not 0.14.0)', () {
+    expect(kWalletVersion, '0.47.1');
     final zipPy = File('pack/zip_windows.py').readAsStringSync();
     expect(zipPy, contains('kWalletVersion'));
     expect(zipPy, contains('shear-wallet-{PUBLIC_PIN}-windows.zip'));
-    expect(kWalletVersion.split('.').length, 2);
-    expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
-    expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
+    expect(kWalletVersion.split('.').length, 3);
+    expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
+    expect(kWalletVersion, isNot('0.14.0'));
     final linux = File('pack/build_linux.sh').readAsStringSync();
     expect(linux, contains('--build-name='));
     expect(linux, isNot(contains('--build-name=0.14')));

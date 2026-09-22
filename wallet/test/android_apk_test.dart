@@ -32,7 +32,7 @@ String? _aapt() {
 
 void main() {
   test('0.47 APK is a fat installable package (applicationId, versionCode > 52, INTERNET)', () {
-    expect(kWalletVersion, '0.47');
+    expect(kWalletVersion, '0.47.1');
     final apk = _apk();
     if (!apk.existsSync()) return;
     expect(apk.lengthSync(), greaterThan(10 * 1024 * 1024));

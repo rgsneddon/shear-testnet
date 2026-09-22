@@ -31,7 +31,7 @@ import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
 import 'shear_privacy_hop.dart';
 
-const kWalletVersion = '0.47';
+const kWalletVersion = '0.47.1';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
@@ -1423,12 +1423,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
     final pending = ledger.pendingTxs(ident.address);
     final owedPi = ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode);
+    final reserveDest = _reserveDestOf(ident);
+    final inReserveNanos = reserveDest == null ? 0 : reserve.portal(reserveDest).nanos;
     final path1 = ledger.path1Observation();
     final fluxSec = (path1.targetIntervalMs / 1000).round();
     final dt = path1.observedIntervalMs;
     final spendPane = <Widget>[
       Text(
         '${formatShe(spend)} SHE',
+        key: const Key('continuum-spendable'),
         style: TextStyle(
           fontSize: 28,
           fontWeight: FontWeight.w700,
@@ -1436,6 +1439,27 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         ),
       ),
       Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
+      if (inReserveNanos > 0) ...[
+        const SizedBox(height: 8),
+        TextButton(
+          key: const Key('continuum-in-reserve'),
+          style: TextButton.styleFrom(
+            padding: EdgeInsets.zero,
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            alignment: Alignment.centerLeft,
+          ),
+          onPressed: () => setState(() => tab = kTabs.indexOf('Vortex')),
+          child: Text(
+            'In Reserve  ${formatShe(inReserveNanos / kUnitsPerShe)} SHE  ·  The Reserve',
+            style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface),
+          ),
+        ),
+        Text(
+          'Locked in The Reserve (Resistance portal). Not Continuum spendable.',
+          style: TextStyle(color: shearMutedOf(context), fontSize: 12),
+        ),
+      ],
       if (owedPi > 0) ...[
         const SizedBox(height: 8),
         Text(
@@ -1444,7 +1468,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface),
         ),
         Text(
-          'Pool-custodial pot until 30 confirms, then auto-pays at ${formatShe(kPiShe)} SHE. Not Continuum spendable yet.',
+          'Pool-custodial pot until 30 confirms, then auto-pays at ${formatShe(kPiShe)} SHE. Not Continuum spendable yet. Miner-page numbers are not Continuum spendable.',
           style: TextStyle(color: shearMutedOf(context), fontSize: 12),
         ),
       ],
@@ -1931,6 +1955,27 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   String? _reserveDestOf(ShearIdentity ident) =>
       vaultDest(ident.address, viewKey: ledger.viewSecret ?? ident.viewKey);
+
+  /// Lock rows this wallet already holds, so a thin vault map can replay
+  /// this portal's principal instead of painting staked=0.
+  List<Map<String, dynamic>> _reserveLockRows(String dest) {
+    final pid = portalIdFromDest(dest);
+    final rows = <Map<String, dynamic>>[];
+    for (final t in ledger.transactions) {
+      if (t.kind != 'lock' && t.kind != 'withdraw') continue;
+      if (t.amount <= 0 && t.kind == 'lock') continue;
+      final to = t.to;
+      if (to != dest && portalIdFromDest(to) != pid) continue;
+      rows.add({
+        'id': t.id,
+        'kind': t.kind,
+        'portalId': pid,
+        'dest': to.isNotEmpty ? to : dest,
+        'nanos': (t.amount * kUnitsPerShe).round(),
+      });
+    }
+    return rows;
+  }
 
   String _txFeeAdvice(int amountNanos, {required String oneFeeTo, int? depth}) {
     final L = levyNanos(amountNanos, depth: depth ?? _mempoolDepth);
@@ -2818,9 +2863,19 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         final keepStaked = p.staked;
         final keepIdle = p.idle;
         final keepJoined = p.joined;
-        final json = await pool.reservePortal(dest);
+        final json = Map<String, dynamic>.from(await pool.reservePortal(dest));
         if (json['ok'] == false) return;
+        final locks = _reserveLockRows(dest);
+        if (locks.isNotEmpty) {
+          final prior = json['locks'];
+          json['locks'] = [
+            if (prior is List) ...prior,
+            ...locks,
+          ];
+        }
         reserve.applyRemotePortal(dest, json);
+        // Pool can lag the lock that was just signed. The notice is not the
+        // only guard: applyRemotePortal keeps principal the snapshot credits.
         if (_reserveLockNotice != null) {
           if (p.staked < keepStaked) p.staked = keepStaked;
           if (p.idle < keepIdle) p.idle = keepIdle;

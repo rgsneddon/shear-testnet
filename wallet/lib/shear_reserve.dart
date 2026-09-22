@@ -228,11 +228,109 @@ class ShearReserve {
     p.voteEpoch = (json['voteEpoch'] as num?)?.toInt() ?? p.voteEpoch;
   }
 
+  /// Absolute principal. A second apply of the same credit does not add.
+  void _assignPrincipal(ReservePortal p, int principal) {
+    if (principal < 0) principal = 0;
+    if (p.nanos == principal) return;
+    p.staked = principal;
+    p.idle = 0;
+  }
+
+  /// Chain lock/withdraw rows for this portal only. Ids are applied once.
+  /// A thin remote map must not turn the two 10 SHE locks into a 40 SHE vault:
+  /// the replay is their net, and it cannot exceed program [totalLockedNanos].
+  int? _replayLockPrincipal(String dest, Map<String, dynamic> json) {
+    final raw = json['locks'] ?? json['lockRows'];
+    if (raw is! List || raw.isEmpty) return null;
+    final pid = portalIdFromDest(dest);
+    final seen = <String>{};
+    var sum = 0;
+    var saw = false;
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final row = Map<String, dynamic>.from(item);
+      final kind = (row['kind'] ?? 'lock').toString();
+      if (kind != 'lock' && kind != 'withdraw') continue;
+      final rowPid = (row['portalId'] ?? '').toString().toLowerCase();
+      final rowDest = (row['dest'] ?? row['to'] ?? '').toString();
+      final mine = rowPid == pid ||
+          rowDest == dest ||
+          (rowDest.isNotEmpty && portalIdFromDest(rowDest) == pid);
+      if (!mine) continue;
+      final id = (row['id'] ?? row['txid'] ?? '').toString();
+      if (id.isNotEmpty && !seen.add(id)) continue;
+      var n = 0;
+      if (row['nanos'] is num) {
+        n = (row['nanos'] as num).round();
+      } else if (row['amount'] is num) {
+        n = ((row['amount'] as num) * kUnitsPerShe).round();
+      }
+      if (kind == 'withdraw') n = -n;
+      if (n == 0) continue;
+      saw = true;
+      sum += n;
+    }
+    if (!saw) return null;
+    if (sum < 0) sum = 0;
+    final locked = (json['totalLockedNanos'] as num?)?.round();
+    if (locked != null && locked >= 0 && sum > locked) sum = locked;
+    return sum;
+  }
+
+  /// Principal the snapshot names for this portal. Network totalLockedNanos
+  /// with no portal id is not this wallet's stake.
+  int? _attributedPrincipal(String dest, Map<String, dynamic> json) {
+    final pid = portalIdFromDest(dest);
+    final named = (json['portalId'] ?? '').toString().toLowerCase();
+    final namedDest = (json['dest'] ?? '').toString();
+    if (named != pid && namedDest != dest) return null;
+    final flagged = json['credited'] == true || json['attributed'] == true;
+    final explicit = json['attributedNanos'] ?? json['principalNanos'];
+    if (explicit is num) {
+      final n = explicit.round();
+      if (n > 0 && (flagged || json.containsKey('attributedNanos') || json.containsKey('principalNanos'))) {
+        return n;
+      }
+    }
+    if (!flagged) return null;
+    final locked = (json['totalLockedNanos'] as num?)?.round() ?? 0;
+    if (locked > 0) return locked;
+    return null;
+  }
+
   /// Node Join/Reserve VAULT read. Not a public vortice.
+  ///
+  /// A remote staked=0 idle=0 clears a portal that has no credit. It does not
+  /// erase principal the snapshot attributes to this vault dest / portalId,
+  /// or that this portal's own chain locks replay on a thin map.
   void applyRemotePortal(String dest, Map<String, dynamic> json) {
     final p = portal(dest);
-    p.staked = (json['staked'] as num?)?.toInt() ?? p.staked;
-    p.idle = (json['idle'] as num?)?.toInt() ?? p.idle;
+    final hasStaked = json['staked'] is num;
+    final hasIdle = json['idle'] is num;
+    if (hasStaked || hasIdle) {
+      final remoteStaked = hasStaked ? (json['staked'] as num).round() : p.staked;
+      final remoteIdle = hasIdle ? (json['idle'] as num).round() : p.idle;
+      if (remoteStaked + remoteIdle > 0) {
+        p.staked = remoteStaked;
+        p.idle = remoteIdle;
+      } else {
+        final replay = _replayLockPrincipal(dest, json);
+        final attributed = _attributedPrincipal(dest, json);
+        if (replay != null) {
+          if (replay > 0) {
+            _assignPrincipal(p, replay);
+          } else {
+            p.staked = 0;
+            p.idle = 0;
+          }
+        } else if (attributed != null && attributed > 0) {
+          _assignPrincipal(p, attributed);
+        } else {
+          p.staked = 0;
+          p.idle = 0;
+        }
+      }
+    }
     p.remoteAccrued = (json['accrued'] as num?)?.toInt();
     p.claimableRewards = (json['claimable'] as num?)?.toInt() ?? p.claimableRewards;
     if (json['joined'] == true || p.nanos >= kPiSheNanos) p.joined = true;
