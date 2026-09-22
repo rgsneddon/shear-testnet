@@ -2858,7 +2858,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (pool == null) return;
     try {
       final dest = _reserveDestOf(ident);
-      if (dest != null && localSendReady(pool.baseUrl)) {
+      // A read. The phone's live base is often the public pool, and that
+      // snapshot is what replays a thin staked=0 back to this portal's locks.
+      if (dest != null) {
         final p = reserve.portal(dest);
         final keepStaked = p.staked;
         final keepIdle = p.idle;
