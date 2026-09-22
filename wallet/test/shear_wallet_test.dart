@@ -6332,6 +6332,30 @@ void main() {
     expect(sync.sampledTip, 47, reason: 'live same-genesis height ≥ 1 must be followed');
   });
 
+  test('followTip reaches a live same-genesis seed while another seed hangs', () async {
+    String hdr(int b) => List.filled(128, b).map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+    final g = hdr(0x66);
+    final live = _PoolLive(headerHex: g, height: 42);
+    live.headerAtHeight[1] = g;
+    final hang = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    hang.listen((req) {});
+    final liveServer = await _fakePool(live: live);
+    addTearDown(() => hang.close(force: true));
+    addTearDown(() => liveServer.close(force: true));
+    final sync = ShearReadSync(
+      seeds: [
+        'http://127.0.0.1:${hang.port}',
+        'http://127.0.0.1:${liveServer.port}',
+      ],
+      http: _realHttp(),
+      jitter: Duration.zero,
+    );
+    await sync.followTip();
+    expect(sync.sampledTip, 42, reason: 'a hanging seed must not hide a live height ≥ 1');
+    expect(sync.liveBase, 'http://127.0.0.1:${liveServer.port}');
+    expect(sync.sampledTip, isNot(0));
+  });
+
   test('syncTip does not paint height-0 / empty stats as current tip', () async {
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
