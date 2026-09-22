@@ -137,6 +137,31 @@ function shareJobKey(header) {
 /** Process-local: floor shares the pool already hashed live. Not on the wire. */
 const liveSharePow = new Set();
 
+/**
+ * Digests ShearHash already computed off the accept thread for this process.
+ * P2P stashes them, then the verifier still checks the floor. Not a skip,
+ * and not a wire field.
+ */
+const preparedSharePow = new Map();
+
+export function stashSharePow(header, hash) {
+  const key = Buffer.from(header).toString('hex');
+  preparedSharePow.set(key, Buffer.from(hash));
+  return key;
+}
+
+export function takeSharePow(header) {
+  const key = Buffer.from(header).toString('hex');
+  const found = preparedSharePow.get(key);
+  if (!found) return null;
+  preparedSharePow.delete(key);
+  return found;
+}
+
+export function dropSharePowKeys(keys) {
+  for (const key of keys || []) preparedSharePow.delete(key);
+}
+
 export function rememberLiveSharePow(parentHeader, nonce) {
   const job = shareJobKey(parentHeader);
   if (!job) return;
@@ -197,7 +222,9 @@ export function verifyShareBatch({
       if (!nc || Buffer.from(nc).length !== 32) {
         return { ok: false, reason: 'miner_addr' };
       }
-      const hash = shearHash(header);
+      // P2P may have hashed this header on a worker. The floor check stays here.
+      const prepared = takeSharePow(header);
+      const hash = prepared || shearHash(header);
       const bound = destBoundShareHash(hash, nc);
       if (!meetsTarget(bound, floorBits)) {
         return { ok: false, reason: 'share_pow' };

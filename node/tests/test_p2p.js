@@ -508,7 +508,10 @@ describe('p2p gossip', () => {
     assert.match(src, /function ibdBusy/);
     assert.match(src, /if \(ibdBusy\(\)\) return;/);
     assert.match(src, /function peerTipAhead/);
+    assert.match(src, /function peerTipAheadOf/);
     assert.match(src, /peerH > localH/);
+    assert.doesNotMatch(src, /hashAhead/);
+    assert.doesNotMatch(src, /peerHash !== local/);
     assert.match(src, /maxPeers/);
     assert.match(src, /SHEAR_MAX_PEERS/);
   });
