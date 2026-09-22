@@ -1,4 +1,4 @@
-# Shear wallet 0.47
+# Shear wallet 0.46
 
 GUI (Flutter) and CLI. Same identity, same encrypted `shewall.bin`, same book magic `shear-testnet-v4`.
 
@@ -12,14 +12,14 @@ Pool: `pool.shear.digital:1111` (cleartext TCP unless TLS is in front). Magic: `
 
 Continuum is spendable, pending transfers until six confirmations, and Copy ID. Already-confirmed SHE loads from a local node (`127.0.0.1:18332`) on unlock. Open-round hashes stay pending until the next sealed block. Shearview lists your landings (height, from/to, date, amount, snippet); tap a row for full Resistance detail. Hashbonus sits inside the block row. The pot is pool-custodial until 30 confirms, then auto-pays at π. This wallet does not mine. Public pool HTTP submit is an advanced toggle.
 
-Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.47
+Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.46
 
 | Platform | Install |
 |----------|---------|
-| Windows | Unzip `shear-wallet-0.47-windows.zip`, run `shear_wallet.exe` |
-| Linux | Unzip `shear-wallet-0.47-linux.zip`, run `./shear_wallet` |
-| Arch | Unzip `shear-wallet-0.47-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
-| Android | Sideload `shear-wallet-0.47-android.apk` (`com.shear.shear_wallet`). Uninstall any old debug-signed build first |
+| Windows | Unzip `shear-wallet-0.46-windows.zip`, run `shear_wallet.exe` |
+| Linux | Unzip `shear-wallet-0.46-linux.zip`, run `./shear_wallet` |
+| Arch | Unzip `shear-wallet-0.46-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
+| Android | Sideload `shear-wallet-0.46-android.apk` (`com.shear.shear_wallet`). Uninstall any old debug-signed build first |
 | macOS | `.dmg` is packed on the MacBook only — see `CONTINUUM-0.46-MAC-HANDOFF.md` until the asset 200s |
 
 ## CLI
@@ -43,6 +43,6 @@ GUI-only: theme toggle, biometrics, camera QR. Everything else has a CLI command
 
 Use the **release** zip/APK from GitHub. A `flutter run` debug build is much hotter on CPU/fans; idle Continuum in a release pack stays quiet while still following the live tip.
 
-Idle 0.47 polls the tip every ~4s when nothing moved; 1s only when the tip, a pending receive, or history is behind.
+Idle 0.46 polls the tip every ~4s when nothing moved; 1s only when the tip, a pending receive, or history is behind.
 
 Mainnet `shear-v1` is not live and is not yet scheduled. `shear --network shear-v1` prints `clock_wait`.
