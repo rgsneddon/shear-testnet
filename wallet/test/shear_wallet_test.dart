@@ -6946,6 +6946,26 @@ void main() {
     expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(pot, 1e-9));
     expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), isNot(closeTo(pot * 2, 1e-6)));
 
+    final bigger = ShearLedger()..bindIdentity(id);
+    bigger.applyPoolSnapshot(
+      dest,
+      {'balance': 1, 'pending': 0, 'owedPi': pot, 'confirmingPot': pot},
+      beforeHeight: 0,
+      tipSealed: 1,
+    );
+    bigger.mergeChainTx(ShearTx(
+      id: 'auto-bigger',
+      from: 'pool',
+      to: dest,
+      amount: pot * 3,
+      kind: 'pool-withdraw',
+      confirmed: false,
+      pot: pot * 3,
+    ));
+    expect(bigger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(pot, 1e-9));
+    expect(bigger.owedTowardPi(id.address, paymentCode: id.paymentCode), isNot(closeTo(pot * 3, 1e-6)));
+    expect(bigger.owedTowardPi(id.address, paymentCode: id.paymentCode), isNot(closeTo(pot * 4, 1e-6)));
+
     final fresh = ShearLedger()..bindIdentity(id);
     fresh.mergeChainTx(ShearTx(
       id: 'auto-only',
@@ -6954,8 +6974,87 @@ void main() {
       amount: pot,
       kind: 'pool-withdraw',
       confirmed: false,
+      pot: pot,
     ));
     expect(fresh.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(pot, 1e-9));
+    expect(fresh.owedTowardPi(id.address, paymentCode: id.paymentCode), isNot(closeTo(pot * 2, 1e-6)));
+
+    final potOnly = ShearLedger()..bindIdentity(id);
+    potOnly.applyTipHex(List.filled(64, 'ab').join(), sealedHeight: 2);
+    potOnly.mergeChainTx(ShearTx(
+      id: 'bf-pot',
+      from: 'coinbase',
+      to: dest,
+      amount: pot,
+      kind: 'blockfound',
+      height: 2,
+      confirmed: true,
+      pot: pot,
+    ));
+    expect(potOnly.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(pot, 1e-9));
+  });
+
+  test('history that omits lock ids keeps them for a thin portal replay', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final mailbox = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final dest = vaultDest(id.address, viewKey: id.viewKey)!;
+    const principal = 20 * kUnitsPerShe;
+    ledger.mergeChainTx(ShearTx(
+      id: 'lock-1790031484491-vout-0',
+      from: mailbox,
+      to: dest,
+      amount: 10,
+      kind: 'lock',
+      height: 1241,
+      confirmed: true,
+    ));
+    ledger.mergeChainTx(ShearTx(
+      id: 'lock-1790032740613-vout-0',
+      from: mailbox,
+      to: dest,
+      amount: 10,
+      kind: 'lock',
+      height: 1253,
+      confirmed: true,
+    ));
+    ledger.adoptLiveHistory(mailbox, [
+      ShearTx(
+        id: 'auto-payout-overnight',
+        from: 'pool',
+        to: mailbox,
+        amount: 3.14,
+        kind: 'pool-withdraw',
+        height: 1261,
+        confirmed: true,
+      ),
+    ]);
+    final locks = ledger.transactions.where((t) => t.kind == 'lock').toList();
+    expect(locks.map((t) => t.id), containsAll([
+      'lock-1790031484491-vout-0',
+      'lock-1790032740613-vout-0',
+    ]));
+    final vault = ShearReserve();
+    final rows = [
+      for (final t in locks)
+        {
+          'id': t.id,
+          'kind': 'lock',
+          'portalId': portalIdFromDest(dest),
+          'nanos': (t.amount * kUnitsPerShe).round(),
+        },
+    ];
+    final thin = <String, dynamic>{
+      'staked': 0,
+      'idle': 0,
+      'totalLockedNanos': principal,
+      'locks': rows,
+    };
+    vault.applyRemotePortal(dest, thin);
+    expect(vault.portal(dest).nanos, principal);
+    vault.applyRemotePortal(dest, thin);
+    expect(vault.portal(dest).nanos, principal);
+    expect(vault.portal(dest).nanos, isNot(40 * kUnitsPerShe));
   });
 
   test('syncCredits spendable matches the pool reconstruct and does not add the same notes', () async {
@@ -7001,63 +7100,133 @@ void main() {
     final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
     const principal = 20 * kUnitsPerShe;
     final vault = ShearReserve();
-    expect(vault.deposit(dest: dest, she: 20, nowMs: 1), isNull);
+    expect(vault.portal(dest).nanos, 0);
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-    final live = _PoolLive(headerHex: hex, height: 4, balance: 8);
+    final probe = ShearLedger()..bindIdentity(ident);
+    final mailbox = probe.homeDest(ident.address, paymentCode: ident.paymentCode);
+    final live = _PoolLive(
+      headerHex: hex,
+      height: 8,
+      balance: 8,
+      pending: 40,
+      owner: mailbox,
+    );
+    live.owedPi = 2.5;
+    // Live /api/vault/reserve shape: staked 0, network total, no credited flag.
     live.reservePortal = {
       'ok': true,
+      'public': false,
       'staked': 0,
       'idle': 0,
+      'accrued': 0,
       'totalLockedNanos': principal,
-      'portalId': portalIdFromDest(dest),
-      'credited': true,
+      'totalStakedNanos': principal,
       'liveHashBonusNanos': 7,
     };
+    live.history = [
+      {
+        'id': 'auto-payout-overnight',
+        'from': 'pool',
+        'to': mailbox,
+        'amount': 1,
+        'kind': 'pool-withdraw',
+        'height': 3,
+        'confirmed': true,
+      },
+    ];
     late HttpServer server;
     late ShearPoolClient pool;
-    late Map<String, dynamic> remote;
     await tester.runAsync(() async {
       server = await _fakePool(live: live);
       pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
-      remote = await pool.reservePortal(dest);
     });
     addTearDown(() => server.close(force: true));
     final ledger = ShearLedger(pool: pool)..bindIdentity(ident);
-    expect(remote['staked'], 0);
-    vault.applyRemotePortal(dest, remote);
-    expect(vault.portal(dest).nanos, principal);
-    expect(vault.liveHashBonusNanos, 7);
+    ledger.mergeChainTx(ShearTx(
+      id: 'lock-1790031484491-vout-0',
+      from: mailbox,
+      to: dest,
+      amount: 10,
+      kind: 'lock',
+      height: 2,
+      confirmed: true,
+    ));
+    ledger.mergeChainTx(ShearTx(
+      id: 'lock-1790032740613-vout-0',
+      from: mailbox,
+      to: dest,
+      amount: 10,
+      kind: 'lock',
+      height: 3,
+      confirmed: true,
+    ));
+    // Same book as the fake genesis. A first bind with no remembered genesis
+    // would drop these rows; a reopen on this book must keep them.
+    ledger.restoreChainGenesis(hex);
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ledger,
       reserve: vault,
       startUnlocked: true,
-      skipPoolSync: true,
+      skipPoolSync: false,
     ));
-    await tester.pump();
-    await tester.pump();
+    for (var n = 0; n < 100 && vault.portal(dest).nanos != principal; n++) {
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      });
+      await tester.pump();
+    }
+    expect(find.byType(NavigationBar), findsOneWidget);
+    expect(live.historyHits, greaterThan(0), reason: 'unlock must sync history against the fake');
+    expect(
+      ledger.transactions.where((t) => t.kind == 'lock').map((t) => t.id),
+      containsAll([
+        'lock-1790031484491-vout-0',
+        'lock-1790032740613-vout-0',
+      ]),
+    );
+    expect(vault.portal(dest).nanos, principal);
+    expect(vault.portal(dest).staked + vault.portal(dest).idle, principal);
+    expect(vault.liveHashBonusNanos, 7);
+    expect(find.byKey(const Key('reserve-locked-in')), findsNothing);
+    final spendShown = tester.widget<Text>(find.byKey(const Key('continuum-spendable'))).data;
+    expect(spendShown, '${formatShe(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode))} SHE');
+    expect(spendShown, isNot('${formatShe(40)} SHE'));
+    expect(spendShown, isNot('${formatShe(28)} SHE'));
+    expect(find.byKey(const Key('continuum-in-reserve')), findsOneWidget);
+    expect(find.textContaining('In Reserve  ${formatShe(20)} SHE'), findsOneWidget);
+    expect(find.textContaining('Not Continuum spendable'), findsWidgets);
+    expect(find.byKey(const Key('continuum-owed-pi')), findsOneWidget);
+    expect(find.textContaining('Owed toward π  ${formatShe(2.5)} SHE'), findsOneWidget);
+    expect(find.textContaining('Owed toward π  ${formatShe(5)} SHE'), findsNothing);
     await tester.tap(find.text('Vortex'));
     await tester.pump();
     expect(find.byKey(const Key('reserve-yours-sums-box')), findsOneWidget);
     expect(find.text('Your sums'), findsOneWidget);
     expect(find.text('Staked  ${formatShe(20)} SHE'), findsOneWidget);
     expect(find.text('Staked  ${formatShe(0)} SHE'), findsNothing);
+    expect(find.text('Staked  ${formatShe(40)} SHE'), findsNothing);
+    expect(find.byKey(const Key('reserve-locked-in')), findsNothing);
     expect(find.textContaining(formatHashBonusShe(7)), findsWidgets);
     late Map<String, dynamic> again;
     await tester.runAsync(() async {
       again = await pool.reservePortal(dest);
     });
+    expect(again['staked'], 0);
+    again['locks'] = [
+      {'id': 'lock-1790031484491-vout-0', 'kind': 'lock', 'portalId': portalIdFromDest(dest), 'nanos': 10 * kUnitsPerShe},
+      {'id': 'lock-1790032740613-vout-0', 'kind': 'lock', 'portalId': portalIdFromDest(dest), 'nanos': 10 * kUnitsPerShe},
+    ];
     vault.applyRemotePortal(dest, again);
-    await tester.tap(find.text('Continuum'));
+    vault.applyRemotePortal(dest, again);
     await tester.pump();
-    await tester.tap(find.text('Vortex'));
-    await tester.pump();
-    expect(find.text('Staked  ${formatShe(20)} SHE'), findsOneWidget);
     expect(vault.portal(dest).nanos, principal);
+    expect(find.text('Staked  ${formatShe(20)} SHE'), findsOneWidget);
+    expect(find.text('Staked  ${formatShe(40)} SHE'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
-    await tester.pump(const Duration(seconds: 2));
-  });
+    await tester.pump(const Duration(seconds: 9));
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   testWidgets('Continuum shows In Reserve and a single owed-pi figure', (tester) async {
     _tallContinuum(tester);
