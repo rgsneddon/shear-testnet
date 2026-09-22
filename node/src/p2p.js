@@ -750,6 +750,16 @@ export function createP2p({
       send(job.sock, { type: 'block', magic, block: encodeWireBlock(job.block) });
       getblockServeSent += 1;
     }
+    if (n > 0) {
+      try {
+        console.error(JSON.stringify({
+          event: 'p2p_getblock_serve',
+          n,
+          left: getblockServeQ.length,
+          cap: GETBLOCK_SERVE_PER_TURN,
+        }));
+      } catch { /* ignore */ }
+    }
     if (getblockServeQ.length) scheduleGetblockServe();
   }
 
@@ -941,6 +951,16 @@ export function createP2p({
       });
       job.then(({ got, before }) => {
         const rec = peers.get(sock);
+        if (!got?.ok) {
+          try {
+            console.error(JSON.stringify({
+              event: 'p2p_ingest',
+              ok: false,
+              reason: got?.reason || 'fail',
+              height: last?.height,
+            }));
+          } catch { /* ignore */ }
+        }
         if (rec) {
           rec.verifying?.delete(verifyKey);
           if (!rec.failed) rec.failed = new Set();
@@ -948,14 +968,6 @@ export function createP2p({
             const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
             if (got?.reason === 'prev' && !have.has(lastHash)) requeuePrevHash(rec, lastHash);
             else if (isFinalIngestFail(got?.reason)) rec.failed.add(lastHash);
-            try {
-              console.error(JSON.stringify({
-                event: 'p2p_ingest',
-                ok: false,
-                reason: got?.reason || 'fail',
-                height: last?.height,
-              }));
-            } catch { /* ignore */ }
           }
           if (!got?.ok && recordIngestFail(rec, got?.reason)) {
             const until = Date.now() + P2P_BAN_MS;

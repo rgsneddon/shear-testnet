@@ -27,6 +27,7 @@ import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS } from '../../crypto/rese
 import { createStore } from './store.js';
 import { applyLatestBootstrap } from './bootstrap.js';
 import { createP2p, P2P_PORT, SEED_RETRY_MS } from './p2p.js';
+import { attachSidecarIpc } from './p2p_ipc.js';
 import { PHASE_B_GATE } from './chain.js';
 import { createRpc, RPC_PORT } from './rpc.js';
 import { createSoloStratum, SOLO_STRATUM_PORT, SOLO_STRATUM_BIND } from './solo_stratum.js';
@@ -79,13 +80,30 @@ export const DEFAULT_SEEDS = [
   'b2b.shear.digital:30303',
 ];
 
+/** Unset SHEAR_SEEDS keeps the hostname defaults. An empty value dials nobody. */
+export function resolveSeedList(seeds) {
+  if (Array.isArray(seeds)) return seeds.map((s) => String(s).trim()).filter(Boolean);
+  if (seeds == null) {
+    if (process.env.SHEAR_SEEDS == null) return DEFAULT_SEEDS.slice();
+    return String(process.env.SHEAR_SEEDS).split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  return String(seeds).split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+export function isP2pSyncArg(argv = process.argv) {
+  const args = argv.slice(2);
+  if (args.includes('--mode=p2p-sync')) return true;
+  const i = args.indexOf('--mode');
+  return i >= 0 && args[i + 1] === 'p2p-sync';
+}
+
 export async function startNode({
   dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4'),
   p2pPort = Number(process.env.SHEAR_P2P_PORT || P2P_PORT),
   p2pBind = process.env.SHEAR_P2P_BIND || '0.0.0.0',
   rpcPort = Number(process.env.SHEAR_RPC_PORT || RPC_PORT),
   rpcBind = process.env.SHEAR_RPC_BIND || '127.0.0.1',
-  seeds = (process.env.SHEAR_SEEDS || DEFAULT_SEEDS.join(',')).split(',').map((s) => s.trim()).filter(Boolean),
+  seeds = undefined,
   fluffDelayMs = null,
   network = process.env.SHEAR_NETWORK || MAGIC_TESTNET,
   fastSync = process.argv.includes('--fast-sync')
@@ -116,7 +134,7 @@ export async function startNode({
   const bound = await p2p.listen();
   const rpc = createRpc({ store, p2p, port: rpcPort, host: rpcBind });
   const rpcBound = await rpc.listen();
-  const seedList = Array.isArray(seeds) ? seeds : [];
+  const seedList = resolveSeedList(seeds);
   await p2p.dialSeeds(seedList);
   const seedTimer = setInterval(() => {
     p2p.dialSeeds(seedList);
@@ -147,6 +165,21 @@ export async function startNode({
   };
 }
 
+/** P2P sync sidecar. Owns :30303. No pool HTTP and no stratum. */
+export async function startP2pSync(opts = {}) {
+  const started = await startNode({ ...opts, solo: false });
+  if (!started?.p2p || started.emit === false) return { ...started, mode: 'p2p-sync', ipc: null };
+  const ipcSpec = String(opts.ipc || process.env.SHEAR_P2P_IPC || '').trim();
+  if (!ipcSpec) return { ...started, mode: 'p2p-sync', ipc: null };
+  const ipc = attachSidecarIpc({ store: started.store, p2p: started.p2p, addr: ipcSpec });
+  const origClose = started.p2p.close.bind(started.p2p);
+  started.p2p.close = () => {
+    try { ipc.close(); } catch { /* ignore */ }
+    origClose();
+  };
+  return { ...started, mode: 'p2p-sync', ipc };
+}
+
 export { printHelp, helpTopics, nodeStatus, printNodeStatus };
 
 function parseHelpTopic(argv) {
@@ -168,7 +201,14 @@ async function main() {
   for (let i = 0; i < args.length; i += 1) {
     const a = args[i];
     if (a === 'help' || helpTopics().includes(a)) continue;
-    if (['--help', '-h', '--print-config', '--fast-sync', '--status', '--solo'].includes(a)) continue;
+    if (['--help', '-h', '--print-config', '--fast-sync', '--status', '--solo', '--mode=p2p-sync'].includes(a)) continue;
+    if (a === '--mode') {
+      const next = args[i + 1];
+      if (next === 'p2p-sync') {
+        i += 1;
+        continue;
+      }
+    }
     if (a.startsWith('--bootstrap=')) continue;
     if (a === '--bootstrap') {
       i += 1;
@@ -215,9 +255,69 @@ async function main() {
     const manifest = applyLatestBootstrap(dataDir, bootFrom);
     console.error(JSON.stringify({ event: 'bootstrap_applied', ...manifest }));
   }
-  const started = await startNode({
-    seeds: (process.env.SHEAR_SEEDS || DEFAULT_SEEDS.join(',')).split(',').map((s) => s.trim()).filter(Boolean),
-  });
+  if (isP2pSyncArg(argv)) {
+    const started = await startP2pSync();
+    if (started.emit === false) {
+      console.log(JSON.stringify({
+        ok: true,
+        event: 'boot',
+        mode: 'p2p-sync',
+        magic: started.magic,
+        emit: false,
+        reason: 'clock_wait',
+        genesis: started.genesis,
+        hashTxLive: HASH_TX_LIVE,
+        admit: 'ADMITv2',
+        mainnet: true,
+        p2p: 0,
+        stratum: null,
+        solo: false,
+      }));
+      return;
+    }
+    const tip = started.store.tip();
+    const live = typeof started.store.fluxset === 'function' ? started.store.fluxset() : null;
+    let hashBackend = hashBackendKind() || 'missing';
+    try {
+      assertHashBackend();
+    } catch (e) {
+      console.error(JSON.stringify({ event: 'shearhash', ok: false, error: String(e?.message || e) }));
+    }
+    console.log(JSON.stringify({
+      ok: true,
+      event: 'boot',
+      role: 'sidecar',
+      mode: 'p2p-sync',
+      p2p: started.bound.port,
+      rpc: started.rpcBound?.port,
+      ipc: String(process.env.SHEAR_P2P_IPC || ''),
+      stratum: null,
+      solo: false,
+      bind: started.bound.host,
+      magic: MAGIC_TESTNET,
+      phaseBGate: PHASE_B_GATE,
+      height: tip?.height || 0,
+      hash: tip ? Buffer.from(tip.hash).toString('hex') : '',
+      mainnet: false,
+      emit: true,
+      hashTxLive: HASH_TX_LIVE,
+      admit: 'ADMITv2',
+      jroot: live?.jroot ? Buffer.from(live.jroot).toString('hex') : '',
+      hashBackend,
+    }));
+    watchNodeStatus({
+      store: started.store,
+      p2p: started.p2p,
+      extra: () => ({
+        mode: 'p2p-sync',
+        p2p: started.bound.port,
+        rpc: started.rpcBound?.port,
+        hashBackend: hashBackendKind() || 'missing',
+      }),
+    });
+    return;
+  }
+  const started = await startNode();
   if (started.emit === false) {
     console.log(JSON.stringify({
       ok: true,

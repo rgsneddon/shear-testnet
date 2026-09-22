@@ -43,7 +43,7 @@ describe('shear-node CLI help', () => {
     const solo = run(['--help', 'solo']);
     assert.equal(solo.status, 0, solo.stderr);
     assert.match(solo.stdout, /YOUR_SSA1\.solo/);
-    assert.match(solo.stdout, /Continuum 0\.41/);
+    assert.match(solo.stdout, /Continuum 0\.46/);
     assert.doesNotMatch(solo.stdout, /Continuum 0\.40/);
     const bad = run(['--not-a-flag']);
     assert.equal(bad.status, 2);

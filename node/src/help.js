@@ -6,6 +6,7 @@ function sectionRun() {
   return [
     'Run:',
     '  node node/src/node.js                 start validator (P2P + loopback RPC)',
+    '  node node/src/node.js --mode=p2p-sync P2P sidecar: owns :30303, no pool HTTP, no stratum',
     '  node node/src/node.js --solo          validator + thin local stratum 127.0.0.1:1111',
     '  npm run solo                          same as --solo (not the public pool)',
     '  node node/src/node.js --fast-sync     skip archival bodies (peers still verify PoW)',
@@ -26,6 +27,8 @@ function sectionEnv() {
     '  SHEAR_NETWORK       shear-testnet-v4 (this book). shear-v1 waits for genesis.',
     '  SHEAR_P2P_PORT      default 30303',
     '  SHEAR_P2P_BIND      default 0.0.0.0',
+    '  SHEAR_P2P_IPC       pool-to-sidecar localhost TCP (default 127.0.0.1:30313). Not a peer port.',
+    '                      Empty SHEAR_SEEDS dials nobody. Unset keeps the hostname defaults.',
     '  SHEAR_RPC_PORT      default 18332',
     '  SHEAR_RPC_BIND      default 127.0.0.1 (loopback — do not bind RPC public)',
     '  SHEAR_SEEDS         comma host:port',
@@ -93,6 +96,10 @@ function sectionP2p() {
   return [
     'P2P:',
     '  Listen :30303. Seeds are hostnames only.',
+    '  The public pool process does not bind :30303. Run --mode=p2p-sync beside it.',
+    '  That sidecar verifies blocks and feeds them over SHEAR_P2P_IPC (127.0.0.1 only).',
+    '  Fleet peers run --mode=p2p-sync (store + P2P + loopback RPC), not the pool.',
+    '  Solo --solo still serves 127.0.0.1 stratum from this same entry.',
     '  IBD: ibd=true while want/pending/retryPrev/syncing is busy, or a live peer height is above this tip.',
     '  p2p_ingest reason=merkle is a sealed-block mismatch — do not skip verify.',
     '  p2p_ingest reason=prev is a parent miss; the node retries. It is not a ban.',
