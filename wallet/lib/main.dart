@@ -31,7 +31,7 @@ import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
 import 'shear_privacy_hop.dart';
 
-const kWalletVersion = '0.46';
+const kWalletVersion = '0.47';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
@@ -713,6 +713,36 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     _accrualTick = Timer.periodic(kWalletHotPoll, (_) { unawaited(tick()); });
   }
 
+  /// Vortex opens the Reserve send. Read this wallet's own dest balances the
+  /// moment the tab is chosen. SHE may have been paid in by someone else;
+  /// a mining payout is not required. Same path on every platform.
+  Future<void>? _vortexWarm;
+
+  Future<void> _warmVortexBalance() async {
+    final ident = id;
+    if (!mounted || ident == null || !unlocked || widget.skipPoolSync || ledger.pool == null) {
+      return;
+    }
+    if (_vortexWarm != null) return;
+    final run = () async {
+      try {
+        await ledger.syncBalancesOnly(ident.address, paymentCode: ident.paymentCode);
+        _rememberLedger();
+      } catch (_) {}
+      try {
+        final pressure = await ledger.pool!.mempoolPressure();
+        _mempoolDepth = (pressure['depth'] as num?)?.toInt() ?? _mempoolDepth;
+      } catch (_) {}
+      if (mounted) setState(() {});
+    }();
+    _vortexWarm = run;
+    try {
+      await run;
+    } finally {
+      if (identical(_vortexWarm, run)) _vortexWarm = null;
+    }
+  }
+
   /// Deprecated: pool auto-pays π SHE to miner ssa1. Wallet pull is gone.
   Future<void> _pollPull(ShearIdentity ident) async {
     assert(ident.paymentCode.isNotEmpty || ident.paymentCode.isEmpty);
@@ -1121,7 +1151,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: tab,
-        onDestinationSelected: (i) => setState(() => tab = i),
+        onDestinationSelected: (i) {
+          setState(() => tab = i);
+          if (kTabs[i] == 'Vortex') unawaited(_warmVortexBalance());
+        },
         destinations: [
           for (var i = 0; i < kTabs.length; i++)
             NavigationDestination(
@@ -2064,33 +2097,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       await hook();
       return;
     }
-    final local = ledger.pool == null || widget.skipPoolSync;
-    var from = ledger.spendFrom(
+    final from = ledger.spendFrom(
       ident.address,
       paymentCode: ident.paymentCode,
       amount: need,
     );
-    if (!local) {
-      // Spendable SHE can be a balance snapshot while the sealed note book is
-      // still empty. Pull notes first. One note must cover the fee.
-      await ledger.collateSpendNotes(
-        dest: from,
-        restFrame: ident.address,
-        paymentCode: ident.paymentCode,
-      );
-      final covered = ledger.destCoveringSpend(
-        ident.address,
-        paymentCode: ident.paymentCode,
-        needShe: need,
-      );
-      if (covered == null) throw StateError(kErrNoSealedNote);
-      from = covered;
-    }
-    // Seal + BP+/ADMIT inside send run on a worker isolate (see _sealFlowOffUi).
+    // Spendable covers the fee. Do not scan the note book or wait for one
+    // sealed note. Same path on every platform.
     await ledger.send(
       from: from,
       to: kPrivacyHopFeeDest,
       amount: kPrivacyHopFeeShe,
+      kind: 'hop-fee',
       local: ledger.pool == null || widget.skipPoolSync,
       restFrame: ident.address,
       paymentCode: ident.paymentCode,
@@ -2121,7 +2139,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(
-              'Not enough Continuum spendable for hop fee 0.05 SHE + tx fee ${formatShe(feeL / kUnitsPerShe)} SHE',
+              'Not enough Continuum spendable for hop fee $kPrivacyHopFeeSheText + tx fee ${formatShe(feeL / kUnitsPerShe)} SHE',
             ),
           ));
         }
@@ -2132,12 +2150,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         barrierDismissible: false,
         builder: (ctx) => AlertDialog(
           key: const Key('reserve-hop-fee-confirm'),
-          title: const Text(kPrivacyHopFeeConfirmTitle),
+          title: Text(kPrivacyHopFeeConfirmTitle),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(kPrivacyHopFeeConfirmBody),
+              Text(kPrivacyHopFeeConfirmBody),
               const SizedBox(height: 8),
               Text(
                 _txFeeAdvice(feeNanos, oneFeeTo: 'pay the Privacy hop fee', depth: depth),
@@ -2154,7 +2172,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             FilledButton(
               key: const Key('reserve-hop-fee-accept'),
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Pay 0.05 SHE'),
+              child: Text(kPrivacyHopFeePayLabel),
             ),
           ],
         ),
@@ -2580,18 +2598,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               key: const Key('reserve-lock-levy'),
             ),
             const SizedBox(height: 8),
-            Text(
-              hop.statusLine(),
-              key: const Key('reserve-hop-status'),
-              style: TextStyle(color: shearMutedOf(context)),
+            const Text(
+              kReserveIpDisclaimer,
+              key: Key('reserve-ip-disclaimer'),
             ),
             const SizedBox(height: 8),
             Wrap(spacing: 8, runSpacing: 8, children: [
-              FilledButton(
-                key: const Key('reserve-privacy-hop'),
-                onPressed: (hop.isConnecting || _hopBusy) ? null : () => _reserveHopToggle(context, ident),
-                child: Text(hop.isUp ? 'Disconnect hop' : kPrivacyHopButtonLabel),
-              ),
               OutlinedButton(
                 key: const Key('reserve-send-unprivate'),
                 onPressed: _reserveUnprivateOk ? null : () => _reserveUnprivateConfirm(context),

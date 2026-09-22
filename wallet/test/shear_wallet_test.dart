@@ -87,6 +87,53 @@ void _tallContinuum(WidgetTester tester) {
   addTearDown(tester.view.resetDevicePixelRatio);
 }
 
+class _VortexBalancePool extends ShearPoolClient {
+  _VortexBalancePool()
+      : super(
+          baseUrl: 'http://127.0.0.1:9',
+          http: HttpClient()..connectionTimeout = const Duration(milliseconds: 50),
+        );
+
+  int balanceHits = 0;
+  final List<String> queried = [];
+  /// Per-dest chain balance. Empty means this dest was not paid.
+  final Map<String, double> balances = {};
+
+  @override
+  Future<void> followLive() async {}
+
+  @override
+  Future<String?> fetchGenesisHex() async => 'ab' * 32;
+
+  @override
+  Future<Map<String, dynamic>> stats() async => {
+        'ok': true,
+        'height': 12,
+        'header': '00' * 80,
+      };
+
+  @override
+  Future<Map<String, dynamic>> balance(String address) async {
+    balanceHits += 1;
+    queried.add(address);
+    final she = balances[address] ?? 0;
+    return {'ok': true, 'balance': she, 'height': 12};
+  }
+
+  @override
+  Future<Map<String, dynamic>> notes(String address) async => {'ok': true, 'notes': <dynamic>[]};
+
+  @override
+  Future<Map<String, dynamic>> history(String address, {String? viewKey, String? open}) async =>
+      {'ok': true, 'txs': <dynamic>[], 'amountsOnly': true};
+
+  @override
+  Future<Map<String, dynamic>> reservePortal(String dest) async => {'ok': true};
+
+  @override
+  Future<Map<String, dynamic>> mempoolPressure() async => {'depth': 0};
+}
+
 void main() {
   test('release AndroidManifest grants INTERNET; debug/profile overlays are not the shipped grant', () {
     final main = File('android/app/src/main/AndroidManifest.xml');
@@ -104,7 +151,7 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.46"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.47"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
@@ -112,11 +159,11 @@ void main() {
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.46"'), isTrue);
+    expect(winMain.contains('L"Shear 0.47"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.46"'), isTrue);
+    expect(winRc.contains('"Shear 0.47"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.46"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.47"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -774,7 +821,7 @@ void main() {
     expect(reservePublicWaitCopy(unprivateConfirmed: false), kReserveHopWaitCopy);
     expect(reservePublicWaitCopy(unprivateConfirmed: true), kUnprivateUnlockedBanner);
     expect(kUnprivateUnlockedBanner, contains('Unprivate send unlocked'));
-    expect(kPrivacyHopFeeShe, 0.05);
+    expect(kPrivacyHopFeeShe, 0.001);
     expect(kPrivacyHopFeeDest, kPoolFeeDest);
     expect(kPoolFeeDest, startsWith('ssa1q4ke8'));
   });
@@ -1867,8 +1914,8 @@ void main() {
         reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.46.0+63'));
-    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.46'"));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.47.0+68'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.47'"));
   });
 
   test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
@@ -2646,7 +2693,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.46');
+    expect(kWalletVersion, '0.47');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isFalse);
@@ -3108,8 +3155,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.46');
-    expect(kWalletVersion, '0.46');
+    expect(app.title, 'Shear 0.47');
+    expect(kWalletVersion, '0.47');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -4258,6 +4305,71 @@ void main() {
     expect(Theme.of(tester.element(find.byType(TextField).first)).inputDecorationTheme.fillColor, shearField);
   });
 
+  testWidgets('Vortex tab reads pool balance as soon as it is selected', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-vortex-bal-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final pool = _VortexBalancePool();
+    addTearDown(pool.close);
+    final ledger = ShearLedger(pool: pool);
+    ledger.bindIdentity(ident);
+    // Not a miner: the mailbox is empty. SHE sits on a receive dest someone else paid.
+    final mailbox = ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
+    final received = ledger.allocateReceiveDest(ident.address, paymentCode: ident.paymentCode);
+    expect(received, isNot(mailbox));
+    final mine = ledger.syncDests(ident.address, paymentCode: ident.paymentCode);
+    expect(mine, containsAll([mailbox, received]));
+    pool.balances[mailbox] = 0;
+    pool.balances[received] = 10.5;
+    final other = createIdentity();
+    final otherLedger = ShearLedger()..bindIdentity(other);
+    final foreign = otherLedger.syncDests(other.address, paymentCode: other.paymentCode);
+    expect(mine.intersection(foreign), isEmpty);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      startUnlocked: true,
+      skipPoolSync: false,
+    ));
+    await tester.pump();
+    // Unlock seals the session (argon2) after the balance read. Fake pump time
+    // does not finish that seal, so advance real time and then paint.
+    for (var n = 0; n < 40 && find.byType(NavigationBar).evaluate().isEmpty; n++) {
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      });
+      await tester.pump();
+    }
+    expect(
+      find.byType(NavigationBar),
+      findsOneWidget,
+      reason: tester.widgetList<Text>(find.byType(Text)).map((t) => t.data).join(' | '),
+    );
+    final before = pool.balanceHits;
+    final mark = pool.queried.length;
+    await tester.tap(find.byType(NavigationDestination).at(kTabs.indexOf('Vortex')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(pool.balanceHits, greaterThan(before));
+    final fresh = pool.queried.sublist(mark).toSet();
+    expect(fresh, mine);
+    expect(pool.queried.toSet().intersection(foreign), isEmpty);
+    expect(ledger.spendable(mailbox), 0);
+    expect(ledger.spendable(received), 10.5);
+    expect(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode), 10.5);
+    final typed = 10.0;
+    expect(
+      ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: typed),
+      received,
+    );
+    expect(find.text('The Reserve'), findsWidgets);
+    // The live accrual tick arms an 8s tip timeout. Drop the shell and let it fire.
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 9));
+  });
+
   testWidgets('Resistance has no Mine/Stop and does not hash in the wallet', (tester) async {
     final dir = Directory.systemTemp.createTempSync('shear-nomine-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -4734,7 +4846,7 @@ void main() {
     expect(kPrivacyHopHost, '77.42.35.12');
     expect(kPrivacyHopPort, 44044);
     expect(kPrivacyHopLabel, 'SHEAR-HOP / EU');
-    expect(kPrivacyHopFeeShe, 0.05);
+    expect(kPrivacyHopFeeShe, 0.001);
     expect(kPoolFeeDest, 'ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6');
     expect(poolFeeDest(), kPoolFeeDest);
     expect(privacyHopFeeDestOk(kPrivacyHopFeeDest), isTrue);
@@ -4780,10 +4892,10 @@ void main() {
     }
   });
 
-  testWidgets('Reserve Privacy hop one-tap unlocks Send after 0.05 fee',
+  testWidgets('Reserve has no Privacy hop and unprivate confirm unlocks Send',
       (tester) async {
     _tallContinuum(tester);
-    final dir = Directory.systemTemp.createTempSync('shear-reserve-hop-');
+    final dir = Directory.systemTemp.createTempSync('shear-reserve-nohop-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
     final ident = session.identity!;
@@ -4809,21 +4921,18 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    expect(find.byKey(const Key('reserve-privacy-hop')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-privacy-hop')), findsNothing);
+    expect(find.byKey(const Key('reserve-ip-disclaimer')), findsOneWidget);
+    expect(find.text(kReserveIpDisclaimer), findsOneWidget);
+    expect(find.text('Privacy hop'), findsNothing);
     expect(find.byKey(const Key('reserve-send-unprivate')), findsOneWidget);
-    expect(find.byKey(const Key('reserve-hop-status')), findsOneWidget);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
-    await tester.ensureVisible(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.tap(find.byKey(const Key('reserve-privacy-hop')));
+    await tester.ensureVisible(find.byKey(const Key('reserve-send-unprivate')));
+    await tester.tap(find.byKey(const Key('reserve-send-unprivate')));
     await tester.pump();
-    expect(find.byKey(const Key('reserve-hop-fee-confirm')), findsOneWidget);
-    expect(find.text(kPrivacyHopFeeConfirmTitle), findsOneWidget);
-    expect(find.textContaining('0.05 SHE'), findsWidgets);
-    await tester.tap(find.byKey(const Key('reserve-hop-fee-accept')));
+    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 200));
-    expect(hop.isUp, isTrue);
-    expect(find.text('Disconnect hop'), findsOneWidget);
+    expect(hop.isUp, isFalse);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
   });
 
@@ -4852,186 +4961,12 @@ void main() {
     expect(ledgerSrc, contains('Isolate.run(() => reproveFlowSpendWire(input))'));
     final ui = File('lib/main.dart').readAsStringSync();
     expect(ui, contains('allowPublicHttp: true'));
-    expect(ui, contains('_hopFeePaidSession'));
-    expect(ui, contains('kHopProgressPaying'));
-    expect(ui, contains('kHopProgressConnecting'));
-    expect(kPrivacyHopFeeShe, 0.05);
+    expect(ui.contains('reserve-privacy-hop'), isFalse);
+    expect(ui, contains('kReserveIpDisclaimer'));
+    expect(ui.contains('kPrivacyHopButtonLabel'), isFalse);
+    expect(kPrivacyHopFeeShe, 0.001);
     expect(privacyHopFeeDestOk(kPrivacyHopFeeDest), isTrue);
     expect(kPrivacyHopFeeDest, 'ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6');
-  });
-
-  testWidgets('hop toggle does not call send synchronously on a slow fee', (tester) async {
-    _tallContinuum(tester);
-    final dir = Directory.systemTemp.createTempSync('shear-reserve-hop-slow-');
-    final session = ShearSession(store: File('${dir.path}/session.json'));
-    await _sealSession(tester, session);
-    final ident = session.identity!;
-    final ledger = ShearLedger();
-    ledger.viewSecret = ident.viewKey;
-    ledger.confirmRound(
-      address: ledger.homeDest(ident.address, paymentCode: ident.paymentCode),
-      pot: 10,
-      height: 20,
-    );
-    ledger.settleTo(30);
-    var calls = 0;
-    final gate = Completer<void>();
-    final hop = PrivacyHopController(mock: true);
-    await tester.pumpWidget(ShearWalletApp(
-      session: session,
-      ledger: ledger,
-      reserve: ShearReserve(),
-      startUnlocked: true,
-      skipPoolSync: true,
-      enforceReserveHopGate: true,
-      privacyHop: hop,
-      hopFeePay: () async {
-        calls += 1;
-        await gate.future;
-      },
-    ));
-    await tester.pump();
-    await tester.pump();
-    await tester.tap(find.text('Vortex'));
-    await tester.pump();
-    await tester.ensureVisible(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.tap(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('reserve-hop-fee-accept')));
-    await tester.pump();
-    expect(calls, 0);
-    expect(find.text(kHopProgressPaying), findsOneWidget);
-    expect(hop.isUp, isFalse);
-    await tester.pump(const Duration(milliseconds: 1));
-    expect(calls, 1);
-    expect(hop.isUp, isFalse);
-    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-privacy-hop'))).onPressed, isNull);
-    await tester.pump(const Duration(milliseconds: 50));
-    expect(calls, 1);
-    expect(find.text(kHopProgressPaying), findsOneWidget);
-    expect(hop.state, PrivacyHopState.off);
-    gate.complete();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 20));
-    expect(hop.isUp, isTrue);
-    expect(calls, 1);
-    expect(find.text(kHopProgressPaying), findsNothing);
-    expect(find.text('Disconnect hop'), findsOneWidget);
-
-    await tester.ensureVisible(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.tap(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.pump();
-    expect(hop.isUp, isFalse);
-    await tester.tap(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.pump();
-    expect(find.byKey(const Key('reserve-hop-fee-confirm')), findsNothing);
-    expect(calls, 1);
-    await tester.pump(const Duration(milliseconds: 20));
-    expect(calls, 1);
-    expect(hop.isUp, isTrue);
-  });
-
-  testWidgets('hop fee failure shows the node reason and leaves hop off', (tester) async {
-    _tallContinuum(tester);
-    final dir = Directory.systemTemp.createTempSync('shear-reserve-hop-fail-');
-    final session = ShearSession(store: File('${dir.path}/session.json'));
-    await _sealSession(tester, session);
-    final ident = session.identity!;
-    final ledger = ShearLedger();
-    ledger.viewSecret = ident.viewKey;
-    ledger.confirmRound(
-      address: ledger.homeDest(ident.address, paymentCode: ident.paymentCode),
-      pot: 10,
-      height: 20,
-    );
-    ledger.settleTo(30);
-    final hop = PrivacyHopController(mock: true);
-    await tester.pumpWidget(ShearWalletApp(
-      session: session,
-      ledger: ledger,
-      reserve: ShearReserve(),
-      startUnlocked: true,
-      skipPoolSync: true,
-      enforceReserveHopGate: true,
-      privacyHop: hop,
-      hopFeePay: () async {
-        throw StateError('fee_rejected');
-      },
-    ));
-    await tester.pump();
-    await tester.pump();
-    await tester.tap(find.text('Vortex'));
-    await tester.pump();
-    await tester.ensureVisible(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.tap(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('reserve-hop-fee-accept')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 20));
-    expect(find.text('fee_rejected'), findsOneWidget);
-    expect(find.text('no_note'), findsNothing);
-    expect(hop.isUp, isFalse);
-    expect(hop.state, PrivacyHopState.off);
-    expect(find.text(kHopProgressPaying), findsNothing);
-    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
-    expect(find.byKey(const Key('reserve-send-unprivate')), findsOneWidget);
-  });
-
-  testWidgets('connect failure keeps the session fee and retries without paying again', (tester) async {
-    _tallContinuum(tester);
-    final dir = Directory.systemTemp.createTempSync('shear-reserve-hop-retry-');
-    final session = ShearSession(store: File('${dir.path}/session.json'));
-    await _sealSession(tester, session);
-    final ident = session.identity!;
-    final ledger = ShearLedger();
-    ledger.viewSecret = ident.viewKey;
-    ledger.confirmRound(
-      address: ledger.homeDest(ident.address, paymentCode: ident.paymentCode),
-      pot: 10,
-      height: 20,
-    );
-    ledger.settleTo(30);
-    var pays = 0;
-    var connects = 0;
-    final hop = PrivacyHopController(connectImpl: () async {
-      connects += 1;
-      return connects > 1;
-    });
-    await tester.pumpWidget(ShearWalletApp(
-      session: session,
-      ledger: ledger,
-      reserve: ShearReserve(),
-      startUnlocked: true,
-      skipPoolSync: true,
-      enforceReserveHopGate: true,
-      privacyHop: hop,
-      hopFeePay: () async {
-        pays += 1;
-      },
-    ));
-    await tester.pump();
-    await tester.pump();
-    await tester.tap(find.text('Vortex'));
-    await tester.pump();
-    await tester.ensureVisible(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.tap(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('reserve-hop-fee-accept')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 30));
-    expect(pays, 1);
-    expect(connects, 1);
-    expect(hop.state, PrivacyHopState.error);
-    expect(find.text('Hop did not come up'), findsWidgets);
-    expect(hop.isUp, isFalse);
-    await tester.tap(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.pump();
-    expect(find.byKey(const Key('reserve-hop-fee-confirm')), findsNothing);
-    expect(pays, 1);
-    await tester.pump(const Duration(milliseconds: 30));
-    expect(pays, 1);
-    expect(connects, 2);
-    expect(hop.isUp, isTrue);
   });
 
   test('Reserve lock spend digest matches a sealed commit vout, not a plain address', () {
@@ -5192,44 +5127,6 @@ void main() {
     final postedOut = Map<String, dynamic>.from((posts.last['vout'] as List).first as Map);
     expect(postedOut['kind'], 'lock');
     expect(postedOut['commit'], isNotNull);
-  });
-
-  testWidgets('Reserve hop fee cancel leaves Send gated', (tester) async {
-    _tallContinuum(tester);
-    final dir = Directory.systemTemp.createTempSync('shear-reserve-hop-cancel-');
-    final session = ShearSession(store: File('${dir.path}/session.json'));
-    await _sealSession(tester, session);
-    final ident = session.identity!;
-    final ledger = ShearLedger();
-    ledger.viewSecret = ident.viewKey;
-    ledger.confirmRound(
-      address: ledger.homeDest(ident.address, paymentCode: ident.paymentCode),
-      pot: 10,
-      height: 20,
-    );
-    ledger.settleTo(30);
-    final hop = PrivacyHopController(mock: true);
-    await tester.pumpWidget(ShearWalletApp(
-      session: session,
-      ledger: ledger,
-      reserve: ShearReserve(),
-      startUnlocked: true,
-      skipPoolSync: true,
-      enforceReserveHopGate: true,
-      privacyHop: hop,
-    ));
-    await tester.pump();
-    await tester.pump();
-    await tester.tap(find.text('Vortex'));
-    await tester.pump();
-    await tester.ensureVisible(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.tap(find.byKey(const Key('reserve-privacy-hop')));
-    await tester.pump();
-    expect(find.byKey(const Key('reserve-hop-fee-confirm')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('reserve-hop-fee-cancel')));
-    await tester.pump();
-    expect(hop.isUp, isFalse);
-    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
   });
 
   testWidgets('Reserve unprivate confirm uses already-on-VPN copy then unlocks Send', (tester) async {
@@ -6088,8 +5985,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.46 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.46');
+  test('kWalletVersion == 0.47 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.47');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
