@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.46 (current)
+## 0.47 (current)
+
+Reserve send is the unprivate path. Vortex says a send shows your IP to the node and to use a VPN. Confirm **I already use a VPN / I accept exposing my IP**, then Send. There is no Shear privacy hop. A lock the chain accepts shows **Sent — please wait 6 confirmations**. Public tag **0.47** (store `0.47.0+68` on the release; tree display may read `0.47.1`). ShearK pin stays **2.5**. Tag 0.46 packs were not replaced. macOS `.dmg` stays the MacBook handoff (`CONTINUUM-0.46-MAC-HANDOFF.md`).
+
+## 0.46
 
 Reserve hop fee collates a sealed note when Continuum spendable already covers 0.05 SHE plus the levy. An empty or incomplete note book no longer claims that cover. Pool HTML and other non-JSON bodies surface as `pool returned an error page (http_N)`, not a FormatException. A successful Reserve lock shows **Sent — please wait 6 confirmations**. Lock, vote, and withdraw still post the sealed public-nanos vout. Fee stays **0.05 SHE**. ShearK pin stays **2.5**. Do not recut 0.45. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.46-MAC-HANDOFF.md`).
 

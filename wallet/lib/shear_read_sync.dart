@@ -212,6 +212,11 @@ class ShearReadSync {
   /// "looking for a node" or drop Shearview history.
   static const dropAfterFailures = 3;
 
+  /// One seed must not spend the whole tip budget. A refused Windows loopback
+  /// connect is about two seconds, and two paths on two dead locals used to
+  /// expire [kWalletTipTimeout] before the public network was asked.
+  static const probeBudget = Duration(seconds: 5);
+
   /// Headers 1…tip + compact blocks + jroot from the local (or configured) node.
   /// Re-ranks same-genesis seeds so a lagging local RPC cannot pin below the live tip.
   Future<void> followTip() async {
@@ -274,9 +279,12 @@ class ShearReadSync {
       }
     }
     final probes = <String, ({int height, String genesis})>{};
-    for (final seed in seeds) {
+    final found = await Future.wait(seeds.map((seed) async {
       final p = await _probe(seed);
-      if (p != null) probes[seed] = p;
+      return MapEntry(seed, p);
+    }));
+    for (final e in found) {
+      if (e.value != null) probes[e.key] = e.value!;
     }
     if (probes.isEmpty) {
       if (keepOnMiss && liveBase != null) return liveBase;
@@ -441,6 +449,14 @@ class ShearReadSync {
   }
 
   Future<({int height, String genesis})?> _probe(String base) async {
+    try {
+      return await _probeBody(base).timeout(probeBudget);
+    } on TimeoutException {
+      return null;
+    }
+  }
+
+  Future<({int height, String genesis})?> _probeBody(String base) async {
     final stats = await _getFirst(base, const ['/stats', '/api/stats']);
     if (stats == null) return null;
     if (!isV3BookStats(stats)) return null;
