@@ -140,6 +140,9 @@ describe('noteCommitSpendableNanos', () => {
     assert.equal(noteCommitSpendableNanos([block], poolDest, matureTip), rest);
     const leafPot = paysFromALeaves(block.aLeaves).filter((p) => p.kind === 'pot');
     assert.ok(leafPot.some((p) => p.nanos === rest));
+    const custodyLeaves = paysFromALeaves(block.aLeaves, { custodialPot: true });
+    assert.equal(custodyLeaves.some((p) => p.kind === 'pot'), false);
+    assert.ok(custodyLeaves.some((p) => p.kind === 'hash' && p.nanos === hashNanos));
     assert.equal(noteCommitSpendableNanos([block], hasher, matureTip), hashNanos);
   });
 

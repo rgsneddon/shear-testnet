@@ -148,8 +148,10 @@ export function sealedExplorerRows(block) {
     });
     if (custodialPot) {
       // Hash leaves only. Pot rows from Tree-A would PROP the block pot onto hasher commits.
-      const hashOnly = paysFromALeaves(block.aLeaves || [], { hashBonusNanos: HASH_BONUS_NANOS })
-        .filter((p) => p.kind === 'hash');
+      const hashOnly = paysFromALeaves(block.aLeaves || [], {
+        hashBonusNanos: HASH_BONUS_NANOS,
+        custodialPot: true,
+      });
       if (hashOnly.length) pays = [...pays, ...hashOnly];
     } else if (!paysBound) {
       const recovered = paysFromALeaves(block.aLeaves || [], { hashBonusNanos: HASH_BONUS_NANOS });

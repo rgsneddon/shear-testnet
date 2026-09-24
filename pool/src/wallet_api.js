@@ -31,7 +31,7 @@ import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, open
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, spentNoteCommits, noteCommitSpendableNanos, sealedPotIsCustody } from '../../crypto/coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, spentNoteCommits, sealedPotIsCustody } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
@@ -219,7 +219,7 @@ export function reconstructOwner(store, address) {
       const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
       const pool = b.poolDest || '';
       const custodialPot = !!(pool && sealedPotIsCustody(b, pool, potNanos));
-      const leafPays = paysFromALeaves(b.aLeaves || [], { hashBonusNanos: bonus });
+      const leafPays = paysFromALeaves(b.aLeaves || [], { hashBonusNanos: bonus, custodialPot });
       const pays = custodialPot
         ? [
             ...expectedCoinbasePays(b.shareBatch || [], {
@@ -261,19 +261,8 @@ export function reconstructOwner(store, address) {
     }
     nanos -= dests.reduce((a, d) => a + mempoolDebitNanos(mempool, d), 0);
   }
-  let notes = 0;
-  for (const d of dests) {
-    notes += noteCommitSpendableNanos(store.blocks || [], d, tipH, {
-      hashBonusNanos: bonus,
-    });
-    notes -= mempoolDebitNanos(mempool, d);
-  }
-  // Fail-closed note commits may fill an empty explorer reconstruction
-  // (hidden hash pays). They must not raise a positive reconstruction:
-  // that raise was pot-after-fee invent on the hasher (N × 0.99 SHE,
-  // 4× → 3.96, 8× → 7.92). Solo notes still include the prop pot, so a
-  // solo gap where history is empty still adopts them below.
-  if (nanos <= 0 && notes > 0) nanos = notes;
+  // Note-commit sums do not override this reconstruction. `notes > nanos`
+  // copied N × (pot − fee) onto the hasher (8 × 0.99 SHE = 7.92).
   if (nanos < 0) nanos = 0;
   return { ...rec, spendableNanos: nanos, spendable: nanosToShe(nanos) };
 }
@@ -1050,7 +1039,17 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           let nanos;
           if (tx.coinbase) {
             const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
-            const pays = expectedCoinbasePays(b.shareBatch || [], {
+            const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
+            const custodyDest = b.poolDest || '';
+            const custodialPot = !!(custodyDest && sealedPotIsCustody(b, custodyDest, potNanos));
+            const pays = expectedCoinbasePays(b.shareBatch || [], custodialPot ? {
+              miner: b.miner,
+              poolDest: custodyDest,
+              hashBonusNanos: bonus,
+              potNanos,
+              custodialPot: true,
+              feeDest: poolFeeDest(),
+            } : {
               miner: b.miner,
               poolDest,
               hashBonusNanos: bonus,
@@ -1060,6 +1059,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
             if (nanos == null) {
               nanos = matchSealedCoinbaseVout(o, paysFromALeaves(b.aLeaves || [], {
                 hashBonusNanos: bonus,
+                custodialPot,
               })).nanos || undefined;
             }
           }

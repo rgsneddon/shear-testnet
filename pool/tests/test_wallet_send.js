@@ -221,6 +221,35 @@ describe('wallet fluxset RPC', () => {
     };
     assert.equal(reconstructOwner(store, hasher).spendableNanos, NANOS_PER_SHE);
   });
+
+  it('eight pot-after-fee misses do not raise a positive hash reconstruction', () => {
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const pool = spendDestOf(newIdentity().spendPub);
+    const hashNanos = 256;
+    const rest = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
+    const want = noteCommitOfDest20(hash20FromAddress(hasher));
+    const blocks = Array.from({ length: 8 }, (_, i) => ({
+      height: i + 1,
+      hash: Buffer.alloc(32, 0x30 + i),
+      miner: hasher,
+      poolDest: pool,
+      aLeaves: [{ noteCommit: Buffer.alloc(32, 9), count: 256 }],
+      txs: [{
+        coinbase: true,
+        vout: [{ kind: 'pot', noteCommit: want, nanos: 0, commit: Buffer.alloc(32, 4) }],
+      }],
+    }));
+    const rec = reconstructOwner({
+      historyFor: () => [{
+        id: 'hash-1', to: hasher, from: 'coinbase', nanos: hashNanos, height: 2, kind: 'hash',
+      }],
+      blocks,
+      tip: () => ({ height: 8 + SPENDABLE_CONFIRMATIONS }),
+      mempool: [],
+    }, hasher);
+    assert.equal(rec.spendableNanos, hashNanos);
+    assert.notEqual(rec.spendableNanos, rest * 8);
+  });
 });
 
 describe('pool send reconstruct and Join vault', () => {

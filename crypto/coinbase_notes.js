@@ -129,9 +129,11 @@ export function expectedCoinbasePays(shareBatch, {
   return out;
 }
 
-/** Rebuild hash/pot pays from Tree-A leaf counts when compact shareBatch dropped dests. */
+/** Rebuild hash/pot pays from Tree-A leaf counts when compact shareBatch dropped dests.
+ * Custody is hash-only: the pot stays on the pool dest, not on hasher leaves. */
 export function paysFromALeaves(aLeaves, {
   hashBonusNanos = HASH_BONUS_NANOS,
+  custodialPot = false,
 } = {}) {
   hashBonusNanos = hashBonusUnitNanos(hashBonusNanos);
   const leaves = (Array.isArray(aLeaves) ? aLeaves : []).filter((l) => Number(l?.count) > 0);
@@ -147,6 +149,7 @@ export function paysFromALeaves(aLeaves, {
       });
     }
   }
+  if (custodialPot) return out;
   const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
   const rest = BLOCK_SUBSIDY_NANOS - fee;
   let paid = 0;
@@ -248,7 +251,6 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
     const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
     const pool = b.poolDest || '';
     const custodialPot = !!(pool && sealedPotIsCustody(b, pool, potNanos));
-    const leafPays = paysFromALeaves(b.aLeaves || [], { hashBonusNanos });
     const pays = [
       ...expectedCoinbasePays(b.shareBatch || [], {
         miner: b.miner,
@@ -258,8 +260,7 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
         custodialPot,
         feeDest: custodialPot ? poolFeeDest() : '',
       }),
-      // Custody: hash pays only. Pot PROP from Tree-A must not land on hasher commits.
-      ...(custodialPot ? leafPays.filter((p) => p.kind === 'hash') : leafPays),
+      ...paysFromALeaves(b.aLeaves || [], { hashBonusNanos, custodialPot }),
     ];
     for (const tx of b.txs || []) {
       for (const o of tx.vout || []) {
