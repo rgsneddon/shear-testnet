@@ -60,7 +60,7 @@ flutter build linux --release --build-name=0.49.0 --build-number=71
 
 ## What changed
 
-Live `GET /api/wallet/balance?address=<hasher ssa1>` is dust (Σ hash notes) after pool `378017d` (PR #39, on top of `b35c5f4`). Continuum 0.48 still invented:
+Live `GET /api/wallet/balance?address=<hasher ssa1>` is dust (Σ hash notes, about `0.000102` SHE) on pool `c02f787` (PR #39 `378017d` and PR #40). Continuum 0.48 still invented:
 
 - Sealed note scan preferred a fatter `amount` over `nanos` (pot-after-fee on a hash vout).
 - Those hash folds were queued and `settleTo` added them on the next tip, after a good snapshot.
@@ -69,7 +69,7 @@ Live `GET /api/wallet/balance?address=<hasher ssa1>` is dust (Σ hash notes) aft
 
 0.49 pins Spendable to the balance that actually landed. Owed-π / confirming pot stay on the owed line. A missed pull does not replace the pin and does not count as sync done. In Reserve is untouched.
 
-Pool `378017d` reads the custody pot from the sealed note when `poolDest` was never stored, and drops the amount-only vout match that painted N×0.99 onto the hasher. `GET /api/wallet/balance` is `balance` plus a separate `owedPi` / `confirmingPot`. Continuum Spendable is `spendableOwned`, the sum of those balance writes. It does not read admin `custodyDisplay` or the pool dest's pot. The accrual tick repaints when that owned sum changes, including when a sibling dest is corrected and the mailbox figure stays put.
+Pool `c02f787` reads the custody pot from the sealed note when `poolDest` was never stored, drops the amount-only vout match, and replaces a painted coinbase credit once sealed notes exist (PR #40). A positive explorer sum no longer skips that walk. `GET /api/wallet/balance` is `balance` plus a separate `owedPi` / `confirmingPot`. Continuum Spendable is `spendableOwned`, the sum of those balance writes. It does not read admin `custodyDisplay` or the pool dest's pot. The accrual tick repaints when that owned sum changes, including when a sibling dest is corrected and the mailbox figure stays put.
 
 A pool-green balance is not Continuum-green until `applyPoolSnapshot` wrote that balance onto the mining ssa1. Force-sync is done only then. One 504 is retried once. A second miss is not done.
 
@@ -89,7 +89,7 @@ Reserve (35 SHE, the honest lock) stays on the portal. This cut does not debit i
 
 Invent must not return (G1–G9). Pool green is not Continuum green.
 
-- G1. Pool reconstruct is honest (`378017d`). Spendable does not read `custodyDisplay`.
+- G1. Pool reconstruct is honest (`c02f787`, PR #39 and #40). Spendable does not read `custodyDisplay`.
 - G2. `creditSyncLanded` is true only when this sweep's `applyPoolSnapshot` wrote the mining dest (and every other attempted dest).
 - G3. A 504, timeout, or HTML body is retried once and is not sync done. Unlock persists only after that write. A later miss does not climb the pin.
 - G4. Once any dest has a landed book, `settleTo` does not ADD a sibling slot. An orphaned height does not debit or re-queue a pinned dest. Dropped dests lose their book entry.
