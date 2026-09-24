@@ -7494,6 +7494,126 @@ void main() {
     expect(missedLedger.spendable(missedChange), closeTo(0.5, 1e-12));
   });
 
+  test('invent cannot return: retry, home write, empty book, orphan, rollup, unpinned', () async {
+    const dust = 9.78e-5;
+    const pot = 0.99;
+    final id = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 40, balance: dust);
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+
+    final once = ShearLedger(pool: pool)..bindIdentity(id);
+    final dest = once.homeDest(id.address, paymentCode: id.paymentCode);
+    final change = once.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
+    live.owner = dest;
+    live.destBalances[dest] = dust;
+    live.destBalances[change] = 0;
+    live.failBalanceTimes = 1;
+    once.rememberSpendable(dest, pot * 8);
+    final retried = await once.forceSync(id.address, paymentCode: id.paymentCode);
+    expect(once.creditSyncLanded, isTrue);
+    expect(once.openCollated, isTrue);
+    expect(retried, closeTo(dust, 1e-12));
+    expect(once.spendable(dest), closeTo(dust, 1e-12));
+    expect(live.balanceHits, greaterThan(1));
+
+    live.failBalance = true;
+    final missed = await once.forceSync(id.address, paymentCode: id.paymentCode);
+    expect(once.creditSyncLanded, isFalse);
+    expect(once.openCollated, isFalse);
+    expect(missed, closeTo(dust, 1e-12));
+    expect(once.spendable(dest), isNot(closeTo(pot, 1e-6)));
+    live.failBalance = false;
+
+    final homeMiss = ShearLedger(pool: pool)..bindIdentity(id);
+    final home = homeMiss.homeDest(id.address, paymentCode: id.paymentCode);
+    final sib = homeMiss.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
+    live.failBalanceAddrs.add(home);
+    live.destBalances[home] = dust;
+    live.destBalances[sib] = 0.5;
+    homeMiss.rememberSpendable(home, pot * 8);
+    homeMiss.rememberSpendable(sib, pot * 8);
+    final partial = await homeMiss.forceSync(id.address, paymentCode: id.paymentCode);
+    expect(homeMiss.creditSyncLanded, isFalse);
+    expect(homeMiss.openCollated, isFalse);
+    expect(partial, isNot(closeTo(pot * 8, 1e-6)));
+    expect(homeMiss.spendable(home), isNot(closeTo(pot * 8, 1e-6)));
+    expect(homeMiss.spendableOwned(id.address, paymentCode: id.paymentCode), isNot(closeTo(pot * 16, 1e-6)));
+    live.failBalanceAddrs.clear();
+
+    final emptyBook = ShearLedger(pool: pool)..bindIdentity(id);
+    final mailbox = emptyBook.homeDest(id.address, paymentCode: id.paymentCode);
+    applyUserArchive(emptyBook, {
+      'dests': [mailbox],
+      'txs': [
+        {
+          'id': 'blockfound:3:$mailbox',
+          'from': 'coinbase',
+          'to': mailbox,
+          'amount': pot * 12,
+          'kind': 'blockfound',
+          'height': 3,
+          'confirmed': true,
+          'pot': pot * 12,
+          'hashAmount': dust,
+        },
+      ],
+    });
+    expect(emptyBook.exportedPoolBook(), isEmpty);
+    expect(emptyBook.spendable(mailbox), closeTo(0, 1e-12));
+    expect(emptyBook.spendableOwned(id.address, paymentCode: id.paymentCode), isNot(closeTo(pot * 12, 1e-6)));
+
+    final pinned = ShearLedger(pool: pool)..bindIdentity(id);
+    final pinDest = pinned.homeDest(id.address, paymentCode: id.paymentCode);
+    pinned.applyPoolSnapshot(
+      pinDest,
+      {'balance': dust, 'pending': 0},
+      beforeHeight: 0,
+      tipSealed: 40,
+    );
+    pinned.mergeChainTx(ShearTx(
+      id: 'orphan-pot',
+      from: 'coinbase',
+      to: pinDest,
+      amount: pot,
+      kind: 'blockfound',
+      height: 4,
+      confirmed: true,
+      pot: pot,
+      hashAmount: dust,
+    ));
+    pinned.bounceHeights([4]);
+    expect(pinned.spendable(pinDest), closeTo(dust, 1e-12));
+    final rolled = rollupExplorerTxs(pinned.transactions);
+    final block = rolled.where((t) => t.kind == 'blockfound');
+    expect(block, isNotEmpty);
+    expect(block.first.amount, greaterThan(dust));
+    expect(pinned.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(dust, 1e-12));
+    pinned.confirmRound(address: change, pot: pot, height: 30);
+    pinned.settleTo(40);
+    expect(pinned.spendable(pinDest), closeTo(dust, 1e-12));
+    expect(pinned.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(dust, 1e-12));
+    expect(pinned.spendableOwned(id.address, paymentCode: id.paymentCode), isNot(closeTo(dust + pot, 1e-6)));
+
+    pinned.rememberNote({
+      'address': pinDest,
+      'dest': pinDest,
+      'amount': pot,
+      'commit': Uint8List(32),
+      'r': Uint8List(32),
+    });
+    await pinned.collateSpendNotes(restFrame: id.address, paymentCode: id.paymentCode, bindSpendable: true);
+    expect(pinned.spendable(pinDest), closeTo(dust, 1e-12));
+
+    final before = pinned.spendable(pinDest);
+    pinned.creditReserve(to: pinDest, amount: 1.5, height: 40);
+    expect(pinned.spendable(pinDest), closeTo(before, 1e-12));
+    expect(pinned.exportedPoolBook()[pinDest], closeTo(dust, 1e-12));
+  });
+
   test('owedTowardPi keeps the mailbox pull-book when another dest reports 0', () async {
     final id = createIdentity();
     final header = Uint8List(128);
@@ -8231,6 +8351,8 @@ class _PoolLive {
   bool failHistory = false;
   /// When set, /api/wallet/balance answers 504 and must not count as a sync.
   bool failBalance = false;
+  /// Fail this many balance pulls, then answer. One retry must still land.
+  int failBalanceTimes = 0;
   /// Per-address 504. A sibling miss must not make the sweep done.
   final Set<String> failBalanceAddrs = {};
   String lastHistoryOpen = '';
@@ -8360,6 +8482,14 @@ Future<HttpServer> _fakePool({
     } else if (req.uri.path == '/api/wallet/balance') {
       state.balanceHits += 1;
       final addr = req.uri.queryParameters['address'] ?? '';
+      if (state.failBalanceTimes > 0) {
+        state.failBalanceTimes -= 1;
+        req.response.statusCode = 504;
+        req.response.headers.contentType = ContentType.html;
+        req.response.write('<html><body>504 Gateway Timeout</body></html>');
+        await req.response.close();
+        return;
+      }
       if (state.failBalance || state.failBalanceAddrs.contains(addr)) {
         req.response.statusCode = 504;
         req.response.headers.contentType = ContentType.html;

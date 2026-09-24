@@ -615,7 +615,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         await ledger
             .forceSync(id!.address, paymentCode: id!.paymentCode)
             .timeout(const Duration(seconds: 8));
-        if (ledger.creditSyncLanded || ledger.exportedPoolBook().isNotEmpty) {
+        // A timeout or a 504 is not a book. Persist only after the mining
+        // dest's live balance actually wrote, so an empty-book unlock cannot
+        // save a history sum.
+        if (ledger.creditSyncLanded) {
           _rememberLedger();
           await session.persist();
         }

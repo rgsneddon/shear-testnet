@@ -267,6 +267,10 @@ void applyUserArchive(ShearLedger ledger, Map<String, dynamic> archive) {
     ledger.restorePoolBook(book);
     return;
   }
+  // Empty book under a pool: do not sum explorer/history pots into Spendable.
+  // The first landed /api/wallet/balance is the book. Solo (no pool) still
+  // sums so a shewall restore of pot + hash bonus keeps working.
+  if (ledger.pool != null) return;
   final sums = <String, double>{};
   for (final t in txs) {
     if (!t.confirmed) continue;
@@ -325,7 +329,10 @@ ShearIdentity importShewall(
   if (archive != null) {
     applyUserArchive(ledger, archive);
     final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-    if (spend > ledger.spendableOwned(id.address, paymentCode: id.paymentCode)) {
+    // Header nanos are a solo raise. Under a pool they are an unpinned
+    // soft-reconstruct and must not outrank a later balance write.
+    if (ledger.pool == null &&
+        spend > ledger.spendableOwned(id.address, paymentCode: id.paymentCode)) {
       ledger.rememberSpendable(home, spend);
     }
     final vortRaw = archive['vortices'];

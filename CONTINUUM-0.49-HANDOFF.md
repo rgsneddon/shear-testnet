@@ -60,7 +60,7 @@ flutter build linux --release --build-name=0.49.0 --build-number=71
 
 ## What changed
 
-Live `GET /api/wallet/balance?address=<hasher ssa1>` is already dust (~9.78e-5 SHE) on pool `b35c5f4`. Continuum 0.48 still invented:
+Live `GET /api/wallet/balance?address=<hasher ssa1>` is dust (Σ hash notes) after pool `378017d` (PR #39, on top of `b35c5f4`). Continuum 0.48 still invented:
 
 - Sealed note scan preferred a fatter `amount` over `nanos` (pot-after-fee on a hash vout).
 - Those hash folds were queued and `settleTo` added them on the next tip, after a good snapshot.
@@ -69,9 +69,11 @@ Live `GET /api/wallet/balance?address=<hasher ssa1>` is already dust (~9.78e-5 S
 
 0.49 pins Spendable to the balance that actually landed. Owed-π / confirming pot stay on the owed line. A missed pull does not replace the pin and does not count as sync done. In Reserve is untouched.
 
-Pool `b35c5f4` `reconstructOwner` already returns the hasher's mature notes. It does not paint pot-after-fee onto that dest. `GET /api/wallet/balance` is `balance` plus a separate `owedPi` / `confirmingPot`. Continuum Spendable is `spendableOwned`, the sum of those balance writes. It does not read admin `custodyDisplay` or the pool dest's pot. The accrual tick repaints when that owned sum changes, including when a sibling dest is corrected and the mailbox figure stays put.
+Pool `378017d` reads the custody pot from the sealed note when `poolDest` was never stored, and drops the amount-only vout match that painted N×0.99 onto the hasher. `GET /api/wallet/balance` is `balance` plus a separate `owedPi` / `confirmingPot`. Continuum Spendable is `spendableOwned`, the sum of those balance writes. It does not read admin `custodyDisplay` or the pool dest's pot. The accrual tick repaints when that owned sum changes, including when a sibling dest is corrected and the mailbox figure stays put.
 
-Fail-closed bars for this cut (pool custody). `bindSpendable` is not the fix; a landed book ignores it.
+A pool-green balance is not Continuum-green until `applyPoolSnapshot` wrote that balance onto the mining ssa1. Force-sync is done only then. One 504 is retried once. A second miss is not done.
+
+Fail-closed bars for this cut (pool custody). `bindSpendable` is not the fix; a landed book ignores it. This is not a UI clamp and not a hardcoded dust floor.
 
 - FC-CC1. `applyPoolSnapshot` overwrites `_spendable[dest]` with `json.balance`. It does not max or merge a cached invent.
 - FC-CC2. A 504, timeout, or HTML body is not force-sync done. `creditSyncLanded` is true only when every owned dest's live balance wrote in that sweep.
@@ -83,7 +85,37 @@ Fail-closed bars for this cut (pool custody). `bindSpendable` is not the fix; a 
 Reserve (35 SHE, the honest lock) stays on the portal. This cut does not debit it to chase Spendable.
 
 - Sign on Reserve withdraw does not call `creditReserve` and does not clear the portal. Continuum posts `kind: withdraw` and adds principal plus interest only after the pool returns that withdraw tx. A local or refused post leaves both books as they were. The CLI `claim` command does not settle the portal.
-- An archive with no `poolBook` debits confirmed locks from the source dest and does not pay the vault dest back into Spendable. When `poolBook` is present, history is not summed.
+- An archive with no `poolBook` debits confirmed locks from the source dest and does not pay the vault dest back into Spendable when the ledger has no pool. When `poolBook` is present, history is not summed. When a pool is attached and the book is empty, history is not summed either — Spendable stays 0 until a balance writes.
+
+Invent must not return (G1–G9). Pool green is not Continuum green.
+
+- G1. Pool reconstruct is honest (`378017d`). Spendable does not read `custodyDisplay`.
+- G2. `creditSyncLanded` is true only when this sweep's `applyPoolSnapshot` wrote the mining dest (and every other attempted dest).
+- G3. A 504, timeout, or HTML body is retried once and is not sync done. Unlock persists only after that write. A later miss does not climb the pin.
+- G4. Once any dest has a landed book, `settleTo` does not ADD a sibling slot. An orphaned height does not debit or re-queue a pinned dest. Dropped dests lose their book entry.
+- G5. Owed-π, In Reserve, and Spendable stay separate. A pinned `creditReserve` records the tx and does not raise the pin.
+- G6. Solo (no pool) still settles, sums an archive, and restores a shewall header.
+- G7. This handoff is the bar. ShearView rollup (`pot + hash`) stays on the row. It is not Spendable.
+- G8. Reject a UI clamp, `bindSpendable`, or dust-before-fix as the cut. Under a pool, note sums and a shewall header do not soft-reconstruct Spendable.
+- G9. Reject shipping while Spendable can diverge from the landed `/api/wallet/balance`.
+
+## Android APK 0.49.0+71
+
+This cloud VM has no Android SDK, so the APK is not in the tree and tag `0.49` is not uploaded from here. Pack on a Windows or Linux host that already has the SDK, after this PR is merged:
+
+```
+cd wallet
+flutter build apk --release --build-name=0.49.0 --build-number=71
+```
+
+`build-number` 71 is `versionCode` (must be greater than 70). `build-name` 0.49.0 is `versionName`. Output: `wallet/build/app/outputs/flutter-apk/app-release.apk`. Copy it to `shear-wallet-0.49-android.apk`. Uninstall the old sideload `com.shear.shear_wallet` before installing.
+
+After CoS merges, upload onto `rgsneddon/shear-testnet` (not `rgsneddon/shear-wallet`):
+
+```
+gh release create 0.49 --repo rgsneddon/shear-testnet --title "Continuum 0.49" --notes-file CONTINUUM-0.49-HANDOFF.md
+gh release upload 0.49 shear-wallet-0.49-android.apk --repo rgsneddon/shear-testnet --clobber
+```
 
 ## Acceptance
 
