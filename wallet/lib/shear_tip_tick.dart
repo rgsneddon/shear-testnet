@@ -14,6 +14,27 @@ bool walletPollIsHot({
 }) =>
     tipMoved || pendingReceive || historyBehindTip;
 
+/// Continuum repaints when the owned Spendable sum changes.
+///
+/// That sum is what the pane shows. The she1 mailbox figure can stay put
+/// while a sibling dest is overwritten, and owed-π is a separate line.
+bool continuumFrameDirty({
+  required int sealed,
+  required int lastSealed,
+  required int ownedUnits,
+  required int lastOwnedUnits,
+  required int owedUnits,
+  required int lastOwedUnits,
+  required int pendingCount,
+  required int lastPendingCount,
+  required bool tipMoved,
+}) =>
+    sealed != lastSealed ||
+    ownedUnits != lastOwnedUnits ||
+    owedUnits != lastOwedUnits ||
+    pendingCount != lastPendingCount ||
+    tipMoved;
+
 bool walletShouldPoll({
   required DateTime lastPoll,
   required DateTime now,

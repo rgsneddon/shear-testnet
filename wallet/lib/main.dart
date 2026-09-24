@@ -183,6 +183,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   DateTime _lastVault = DateTime.fromMillisecondsSinceEpoch(0);
   int _lastPaintSealed = -1;
   int _lastPaintSpendable = 0;
+  int _lastPaintOwed = 0;
   int _lastPaintPending = 0;
   Map<String, dynamic>? _pullOffer;
   bool _pullPrompting = false;
@@ -713,15 +714,24 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               _creditBusy = false;
             }
           }
-          final spendUnits = (ledger.spendable(ident.address) * 1e9).round();
+          final ownedUnits = (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) * kUnitsPerShe).round();
+          final owedUnits = (ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode) * kUnitsPerShe).round();
           final pendingN = ledger.pendingTxs(ident.address).length;
-          final dirty = ledger.sealedHeight != _lastPaintSealed
-              || spendUnits != _lastPaintSpendable
-              || pendingN != _lastPaintPending
-              || tipMoved;
+          final dirty = continuumFrameDirty(
+            sealed: ledger.sealedHeight,
+            lastSealed: _lastPaintSealed,
+            ownedUnits: ownedUnits,
+            lastOwnedUnits: _lastPaintSpendable,
+            owedUnits: owedUnits,
+            lastOwedUnits: _lastPaintOwed,
+            pendingCount: pendingN,
+            lastPendingCount: _lastPaintPending,
+            tipMoved: tipMoved,
+          );
           if (dirty && mounted) {
             _lastPaintSealed = ledger.sealedHeight;
-            _lastPaintSpendable = spendUnits;
+            _lastPaintSpendable = ownedUnits;
+            _lastPaintOwed = owedUnits;
             _lastPaintPending = pendingN;
             setState(() {});
           }

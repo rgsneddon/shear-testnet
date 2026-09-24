@@ -69,6 +69,8 @@ Live `GET /api/wallet/balance?address=<hasher ssa1>` is already dust (~9.78e-5 S
 
 0.49 pins Spendable to the balance that actually landed. Owed-π / confirming pot stay on the owed line. A missed pull does not replace the pin and does not count as sync done. In Reserve is untouched.
 
+Pool `b35c5f4` `reconstructOwner` already returns the hasher's mature notes. It does not paint pot-after-fee onto that dest. `GET /api/wallet/balance` is `balance` plus a separate `owedPi` / `confirmingPot`. Continuum Spendable is `spendableOwned`, the sum of those balance writes. It does not read admin `custodyDisplay` or the pool dest's pot. The accrual tick repaints when that owned sum changes, including when a sibling dest is corrected and the mailbox figure stays put.
+
 Fail-closed bars for this cut (pool custody). `bindSpendable` is not the fix; a landed book ignores it.
 
 - FC-CC1. `applyPoolSnapshot` overwrites `_spendable[dest]` with `json.balance`. It does not max or merge a cached invent.

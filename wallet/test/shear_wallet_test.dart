@@ -2007,6 +2007,52 @@ void main() {
     expect(mainSrc, contains('runTipAccrualTick'));
     expect(File('lib/shear_tip_tick.dart').readAsStringSync(), contains('finally'));
     expect(walletPollIsHot(tipMoved: false, pendingReceive: false, historyBehindTip: false), isFalse);
+    const dustUnits = 9780;
+    const inventUnits = 792000000000;
+    expect(
+      continuumFrameDirty(
+        sealed: 12,
+        lastSealed: 12,
+        ownedUnits: dustUnits,
+        lastOwnedUnits: inventUnits,
+        owedUnits: 35 * kUnitsPerShe,
+        lastOwedUnits: 35 * kUnitsPerShe,
+        pendingCount: 0,
+        lastPendingCount: 0,
+        tipMoved: false,
+      ),
+      isTrue,
+      reason: 'a sibling overwrite must repaint even when the mailbox figure did not move',
+    );
+    expect(
+      continuumFrameDirty(
+        sealed: 12,
+        lastSealed: 12,
+        ownedUnits: dustUnits,
+        lastOwnedUnits: dustUnits,
+        owedUnits: 35 * kUnitsPerShe,
+        lastOwedUnits: 35 * kUnitsPerShe,
+        pendingCount: 0,
+        lastPendingCount: 0,
+        tipMoved: false,
+      ),
+      isFalse,
+    );
+    expect(
+      continuumFrameDirty(
+        sealed: 12,
+        lastSealed: 12,
+        ownedUnits: dustUnits,
+        lastOwnedUnits: dustUnits,
+        owedUnits: 35 * kUnitsPerShe,
+        lastOwedUnits: 0,
+        pendingCount: 0,
+        lastPendingCount: 0,
+        tipMoved: false,
+      ),
+      isTrue,
+      reason: 'owed-π is its own line and must not be folded into Spendable to show up',
+    );
     expect(walletPollIsHot(tipMoved: true, pendingReceive: false, historyBehindTip: false), isTrue);
     final t0 = DateTime.fromMillisecondsSinceEpoch(0);
     expect(
