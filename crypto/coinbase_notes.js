@@ -3,7 +3,7 @@
  * Public dest20+nanos stay off the sealed vout; Tree-A units still imply values.
  */
 import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS, hashBonusUnitNanos } from './asert.js';
-import { isDestAddress, hash20FromAddress } from './address.js';
+import { isDestAddress, hash20FromAddress, encodeDest } from './address.js';
 import { aLeavesFromShares, destOfShare, noteCommitOfShare } from './share_batch.js';
 import { noteCommitOfDest20, verifySealedNote, asU8 } from './note.js';
 import { poolFeeDest } from './levy.js';
@@ -45,6 +45,70 @@ export function sealedPotIsCustody(block, poolDest, potNanos = BLOCK_SUBSIDY_NAN
     }
   }
   return false;
+}
+
+function coinbaseVouts(block) {
+  for (const tx of block?.txs || []) {
+    if (tx?.coinbase) return Array.isArray(tx.vout) ? tx.vout : [];
+  }
+  return [];
+}
+
+function pushHasherNote(set, raw) {
+  try {
+    const b = Buffer.from(asU8(raw));
+    if (b.length === 32) set.add(b.toString('hex'));
+  } catch { /* ignore */ }
+}
+
+/** noteCommits that belong to hasher leaves (shareBatch or Tree-A), not the pool pot. */
+function hasherNoteSet(block) {
+  const set = new Set();
+  for (const s of block?.shareBatch || []) pushHasherNote(set, noteCommitOfShare(s));
+  for (const leaf of block?.aLeaves || []) {
+    if (leaf?.noteCommit) pushHasherNote(set, leaf.noteCommit);
+    try {
+      const d20 = Buffer.from(asU8(leaf?.dest20));
+      if (d20.length >= 20) pushHasherNote(set, noteCommitOfDest20(d20.subarray(0, 20)));
+    } catch { /* ignore */ }
+  }
+  return set;
+}
+
+/**
+ * Pool dest that holds the sealed pot-after-fee.
+ * `block.poolDest` is not on chain.bin, compactChainBlock, or the wire, so a
+ * missing hint must still be read from the pot note itself. A pot whose
+ * noteCommit is a hasher leaf is solo prop, not custody.
+ */
+export function custodyPoolDestOf(block, potNanos = BLOCK_SUBSIDY_NANOS) {
+  const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
+  const hinted = block?.poolDest && isDestAddress(block.poolDest) ? block.poolDest : '';
+  if (hinted && sealedPotIsCustody(block, hinted, pot)) return hinted;
+  const rest = pot - Math.floor(pot * POOL_FEE_BPS / 10000);
+  if (!(rest > 0)) return '';
+  const hasher = hasherNoteSet(block);
+  for (const o of coinbaseVouts(block)) {
+    const kind = String(o?.kind || 'pot');
+    if (kind === 'hash' || kind === 'pool-fee' || kind === 'finder-fee' || kind === 'reserve-fee') continue;
+    if (!o?.commit || !verifySealedNote(o, rest)) continue;
+    let nc = '';
+    try {
+      const b = Buffer.from(asU8(o.noteCommit));
+      if (b.length === 32) nc = b.toString('hex');
+    } catch { nc = ''; }
+    if (!nc || hasher.has(nc)) continue;
+    let d20 = null;
+    try {
+      const b = Buffer.from(asU8(o.dest20));
+      if (b.length >= 20) d20 = b.subarray(0, 20);
+    } catch { d20 = null; }
+    if (!d20) continue;
+    let addr = '';
+    try { addr = encodeDest(d20); } catch { addr = ''; }
+    if (addr && isDestAddress(addr)) return addr;
+  }
+  return '';
 }
 
 export function expectedCoinbasePays(shareBatch, {
@@ -190,13 +254,8 @@ export function matchSealedCoinbaseVout(o, pays) {
     if (!hit) continue;
     if (verifySealedNote(o, p.nanos)) return { address: p.address, nanos: p.nanos, kind };
   }
-  for (const p of pays || []) {
-    if ((p.kind || 'pot') !== kind) continue;
-    if (!p.nanos) continue;
-    if (verifySealedNote(o, p.nanos)) {
-      return { address: p.address || '', nanos: p.nanos, kind };
-    }
-  }
+  // Amount-only match paints pot-after-fee onto whichever hasher prop equals
+  // the sealed pot (sole hasher → 0.99 SHE) even though the noteCommit is the pool.
   return { address: '', nanos: 0, kind };
 }
 
@@ -249,8 +308,8 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
     const h = Number(b?.height) || 0;
     if (!(h > 0 && (tip - h + 1) >= need)) continue;
     const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
-    const pool = b.poolDest || '';
-    const custodialPot = !!(pool && sealedPotIsCustody(b, pool, potNanos));
+    const pool = custodyPoolDestOf(b, potNanos);
+    const custodialPot = !!pool;
     const pays = [
       ...expectedCoinbasePays(b.shareBatch || [], {
         miner: b.miner,
