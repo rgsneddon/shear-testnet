@@ -1855,6 +1855,17 @@ class ShearLedger {
     if (amount > spendable(address)) _spendable[address] = amount;
   }
 
+  /// Archive restore net. Unlike [rememberSpendable], a lock debit can lower
+  /// the figure. A live pool book is left as it was.
+  void assignArchiveSpendable(String address, double amount) {
+    if (address.isEmpty || _poolBookPins(address)) return;
+    final key = payKey(address);
+    if (_isProgramVaultDest(key)) return;
+    final she = amount <= 0 ? 0.0 : amount;
+    _spendable[key] = she;
+    if (she > 0) _dests.add(key);
+  }
+
   bool _poolBookPins(String address) {
     if (address.isEmpty) return false;
     if (_poolBook.containsKey(address)) return true;
@@ -2967,7 +2978,11 @@ class ShearLedger {
     if (amount <= 0) throw ArgumentError('amount');
     if (isShearAddress(to)) throw ArgumentError('rest_frame');
     final key = payKey(to);
-    _spendable[key] = spendable(key) + amount;
+    final next = spendable(key) + amount;
+    _spendable[key] = next;
+    // An accepted reserve withdraw is part of the book until the next live
+    // balance write replaces it. A 504 must not strip that landing.
+    if (_poolBookPins(key)) _poolBook[key] = next;
     _dests.add(key);
     final tx = ShearTx(
       id: 'reserve-${DateTime.now().millisecondsSinceEpoch}',
@@ -3104,12 +3119,18 @@ class ShearLedger {
     final nanos = sendKind == 'vote' ? 0 : (amount * kUnitsPerShe).round();
     final levy = taxed ? levyNanos(nanos, depth: depth) : 0;
     final needShe = (sendKind == 'vote' ? 0.0 : amount) + levy / kUnitsPerShe;
-    if (spendable(src) < needShe && restFrame != null) {
+    // A Reserve withdraw pays the portal out to Continuum. It is not a spend
+    // of the current Spendable book, and it must not post unless the pool
+    // accepts the withdraw tx (the local branch refuses).
+    final portalWithdraw = sendKind == 'withdraw';
+    if (!portalWithdraw && spendable(src) < needShe && restFrame != null) {
       if (spendableOwned(restFrame, paymentCode: paymentCode) >= needShe) {
         src = spendFrom(restFrame, paymentCode: paymentCode, amount: needShe);
       }
     }
-    if (spendable(src) < needShe) {
+    // A withdraw is not covered by local notes. Raising the vault dest from
+    // a note sum before the pool accepts would invent Spendable on a refusal.
+    if (!portalWithdraw && spendable(src) < needShe) {
       var fromNotes = 0.0;
       for (final n in _notes) {
         if (n['spent'] == true) continue;
@@ -3121,7 +3142,7 @@ class ShearLedger {
         _spendable[src] = fromNotes;
       }
     }
-    if (spendable(src) < needShe) throw StateError('insufficient');
+    if (!portalWithdraw && spendable(src) < needShe) throw StateError('insufficient');
     Map<String, dynamic>? spent;
     Map<String, dynamic>? chosen;
     var fundedShe = spendable(src);
@@ -3439,15 +3460,17 @@ class ShearLedger {
         throw lastErr ?? StateError('send failed');
       }
       final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
-      _spendable[src] = (json['fromBalance'] as num?)?.toDouble()
-          ?? (spendable(src) - needShe);
-      final parkedAmt = (json['changeBalance'] as num?)?.toDouble();
-      if (changeDest != null && parkedAmt != null && parkedAmt > 1e-18) {
-        _spendable[src] = 0;
-        _spendable[changeDest] = spendable(changeDest) + parkedAmt;
-        _dests.add(changeDest);
-      } else {
-        _parkChange(src, changeDest);
+      if (!portalWithdraw) {
+        _spendable[src] = (json['fromBalance'] as num?)?.toDouble()
+            ?? (spendable(src) - needShe);
+        final parkedAmt = (json['changeBalance'] as num?)?.toDouble();
+        if (changeDest != null && parkedAmt != null && parkedAmt > 1e-18) {
+          _spendable[src] = 0;
+          _spendable[changeDest] = spendable(changeDest) + parkedAmt;
+          _dests.add(changeDest);
+        } else {
+          _parkChange(src, changeDest);
+        }
       }
       final tx = ShearTx(
         id: raw.id,
@@ -3465,6 +3488,7 @@ class ShearLedger {
       _txs.add(tx);
       return tx;
     }
+    if (portalWithdraw) throw StateError('withdraw_needs_pool');
     _spendable[src] = spendable(src) - needShe;
     _parkChange(src, changeDest);
     final tx = ShearTx(

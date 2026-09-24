@@ -78,6 +78,11 @@ Fail-closed bars for this cut (pool custody). `bindSpendable` is not the fix; a 
 - FC-CC5. A shewall/archive that contains `poolBook` does not sum landing history into Spendable. `rememberSpendable` cannot raise a pinned dest.
 - FC-CC6. One sweep overwrites every owned dest that answered, and zeroes an owned dest that has no live write and no prior pin. A sibling 504 does not leave that dest's invent in the sum, and does not mark the sweep done.
 
+Reserve (35 SHE, the honest lock) stays on the portal. This cut does not debit it to chase Spendable.
+
+- Sign on Reserve withdraw does not call `creditReserve` and does not clear the portal. Continuum posts `kind: withdraw` and adds principal plus interest only after the pool returns that withdraw tx. A local or refused post leaves both books as they were. The CLI `claim` command does not settle the portal.
+- An archive with no `poolBook` debits confirmed locks from the source dest and does not pay the vault dest back into Spendable. When `poolBook` is present, history is not summed.
+
 ## Acceptance
 
 Hasher mining dest only:

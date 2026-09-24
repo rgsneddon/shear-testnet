@@ -498,16 +498,22 @@ class ShearReserve {
     };
   }
 
-  /// Settle a finished epoch into Continuum spendable (principal + extra-minted interest).
+  /// Settle a finished epoch into Continuum only after the pool accepted a
+  /// withdraw tx. Sign alone must not credit Spendable or clear the portal.
   Map<String, int>? withdrawTo(
     ShearLedger ledger, {
     required String dest,
     required String payout,
     required int nowMs,
+    ShearTx? acceptedTx,
   }) {
+    if (acceptedTx == null || acceptedTx.kind != 'withdraw' || acceptedTx.id.isEmpty) {
+      return null;
+    }
     final out = withdraw(dest: dest, nowMs: nowMs, payout: payout);
     if (out == null) return null;
-    ledger.creditReserve(to: payout, amount: (out['principal']! + out['interest']!) / kUnitsPerShe);
+    final settled = (out['principal']! + out['interest']!) / kUnitsPerShe;
+    ledger.creditReserve(to: payout, amount: settled, height: acceptedTx.height);
     return out;
   }
 

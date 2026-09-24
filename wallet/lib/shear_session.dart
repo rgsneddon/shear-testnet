@@ -269,12 +269,21 @@ void applyUserArchive(ShearLedger ledger, Map<String, dynamic> archive) {
   }
   final sums = <String, double>{};
   for (final t in txs) {
-    if (!t.confirmed || t.to.isEmpty) continue;
-    if (t.kind == 'send') continue;
+    if (!t.confirmed) continue;
+    // A lock left Continuum. Restore must debit the source and must not
+    // pay the vault dest back into Spendable (that is the dual-show).
+    if (t.kind == 'lock') {
+      if (t.from.isNotEmpty && t.amount > 0) {
+        sums[t.from] = (sums[t.from] ?? 0) - t.amount;
+      }
+      continue;
+    }
+    if (t.kind == 'send' || t.kind == 'withdraw' || t.kind == 'vote') continue;
+    if (t.to.isEmpty) continue;
     sums[t.to] = (sums[t.to] ?? 0) + t.amount;
   }
   for (final e in sums.entries) {
-    ledger.rememberSpendable(e.key, e.value);
+    ledger.assignArchiveSpendable(e.key, e.value);
   }
 }
 

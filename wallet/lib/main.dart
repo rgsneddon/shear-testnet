@@ -2355,7 +2355,49 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    final out = reserve.withdrawTo(ledger, dest: dest, payout: to, nowMs: now);
+    final portalNanos = reserve.portal(dest).nanos;
+    final claimable = reserve.portal(dest).claimableRewards;
+    final postShe = (portalNanos > 0 ? portalNanos : claimable) / kUnitsPerShe;
+    if (postShe <= 0) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(reserveEpochStillOpenCopy())),
+        );
+      }
+      return;
+    }
+    // Continuum does not gain the portal, and the portal is not cleared,
+    // until the pool accepts a withdraw tx.
+    ShearTx tx;
+    try {
+      tx = await ledger.send(
+        from: dest,
+        to: to,
+        amount: postShe,
+        local: ledger.pool == null,
+        kind: 'withdraw',
+        programId: kReserveProgram,
+        restFrame: ident.address,
+        paymentCode: ident.paymentCode,
+        spendSeed: hexToBytes(ident.seedHex),
+        allowPublicHttp: hop.isUp || _reserveUnprivateOk,
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(hopFeeAdvisoryOf(e))),
+        );
+      }
+      return;
+    }
+    if (tx.kind != 'withdraw') return;
+    final out = reserve.withdrawTo(
+      ledger,
+      dest: dest,
+      payout: to,
+      nowMs: now,
+      acceptedTx: tx,
+    );
     if (out == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

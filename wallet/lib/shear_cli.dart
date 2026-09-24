@@ -958,27 +958,26 @@ int _printRewards(IOSink out, ShearReserve reserve, String dest, int now, _Flags
 Future<int> _claimRewards(
   IOSink out,
   IOSink err,
-  ShearSession session,
-  ShearIdentity id,
-  ShearLedger ledger,
-  ShearReserve reserve,
   String dest,
   int now,
   _Flags flags,
 ) async {
   final payout = flags['payout'] ?? dest;
-  final got = reserve.withdrawTo(ledger, dest: dest, payout: payout, nowMs: now);
-  if (got == null) {
-    err.writeln('nothing to claim — no staked principal or accrued rewards');
-    return 1;
+  // No local credit. Continuum Sign posts the withdraw and credits only
+  // after the pool accepts the tx. Reserve principal stays on the portal.
+  final reason = 'withdraw_needs_pool';
+  if (flags.json) {
+    out.writeln(jsonEncode({
+      'ok': false,
+      'reason': reason,
+      'dest': dest,
+      'payout': payout,
+      'nowMs': now,
+    }));
+  } else {
+    err.writeln('claim needs a pool-accepted withdraw tx for $dest onto $payout — Continuum Sign posts it; this command does not credit Spendable locally');
   }
-  session.rememberedReserve = _portalSnap(reserve, dest, now);
-  await session.persist();
-  final she = (got['payout'] ?? 0) / kUnitsPerShe;
-  out.writeln(flags.json
-      ? jsonEncode({'ok': true, 'payoutDest': payout, ...got, 'payoutShe': formatShe(she)})
-      : 'claimed  principal=${got['principal']}  interest=${got['interest']}  onto $payout');
-  return 0;
+  return 1;
 }
 
 Future<int> _rewards(IOSink out, IOSink err, _Flags flags, Map<String, String> env) async {
@@ -991,7 +990,7 @@ Future<int> _rewards(IOSink out, IOSink err, _Flags flags, Map<String, String> e
   final dest = ledger.currentDest(id.address, paymentCode: id.paymentCode);
   final now = DateTime.now().millisecondsSinceEpoch;
   if (flags['claim'] == '1' || flags.rest.contains('claim')) {
-    return _claimRewards(out, err, session, id, ledger, reserve, dest, now, flags);
+    return _claimRewards(out, err, dest, now, flags);
   }
   return _printRewards(out, reserve, dest, now, flags);
 }

@@ -4538,7 +4538,28 @@ void main() {
     final lockL = levyNanos(kPiSheNanos) / kUnitsPerShe;
     expect(afterLock, closeTo(10 - kPiShe - lockL, 1e-12));
     expect(r.withdrawTo(ledger, dest: vault, payout: continuum, nowMs: t0 + kReserveEpochMs ~/ 2), isNull);
-    final out = r.withdrawTo(ledger, dest: vault, payout: continuum, nowMs: t0 + kReserveEpochMs);
+    expect(
+      r.withdrawTo(ledger, dest: vault, payout: continuum, nowMs: t0 + kReserveEpochMs),
+      isNull,
+      reason: 'Sign without a pool-accepted withdraw tx must not credit Continuum or clear the portal',
+    );
+    expect(ledger.spendable(continuum), closeTo(afterLock, 1e-12));
+    expect(r.portal(vault).nanos, kPiSheNanos);
+    final accepted = ShearTx(
+      id: 'withdraw-accepted',
+      from: vault,
+      to: continuum,
+      amount: kPiShe,
+      kind: 'withdraw',
+      confirmed: false,
+    );
+    final out = r.withdrawTo(
+      ledger,
+      dest: vault,
+      payout: continuum,
+      nowMs: t0 + kReserveEpochMs,
+      acceptedTx: accepted,
+    );
     expect(out, isNotNull);
     expect(out!['interest']! > 0, isTrue);
     expect(out['principal'], kPiSheNanos);
@@ -4547,6 +4568,43 @@ void main() {
     expect(ledger.spendable(continuum), closeTo(10 - kPiShe - lockL + paid, 1e-12));
     expect(ledger.ownerHistory(alice.address).where((t) => t.kind == 'reserve').single.to, continuum);
     expect(r.portal(vault).nanos, 0);
+  });
+
+  test('local Reserve withdraw does not credit Continuum or clear the portal', () async {
+    final alice = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(alice);
+    final continuum = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
+    ledger.confirmRound(address: continuum, pot: 10, height: 1);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    final vault = vaultDest(alice.address, viewKey: alice.viewKey)!;
+    const t0 = 1700000000000;
+    final r = ShearReserve();
+    expect(r.deposit(dest: vault, she: kPiShe, nowMs: t0, payout: continuum), isNull);
+    ledger.rememberNote({
+      'address': vault,
+      'dest': vault,
+      'amount': 40,
+      'nanos': 1,
+      'kind': 'hash',
+    });
+    final before = ledger.spendable(continuum);
+    await expectLater(
+      ledger.send(
+        from: vault,
+        to: continuum,
+        amount: kPiShe,
+        local: true,
+        kind: 'withdraw',
+        programId: kReserveProgram,
+        restFrame: alice.address,
+        paymentCode: alice.paymentCode,
+      ),
+      throwsA(isA<StateError>().having((e) => e.message, 'message', 'withdraw_needs_pool')),
+    );
+    expect(ledger.spendable(continuum), closeTo(before, 1e-12));
+    expect(ledger.spendable(vault), closeTo(0, 1e-12));
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(before, 1e-12));
+    expect(r.portal(vault).nanos, kPiSheNanos);
   });
 
   test('Reserve lock above spendable is refused and does not credit the portal', () async {
@@ -7335,6 +7393,36 @@ void main() {
     expect(archived.spendable(dest), closeTo(dust, 1e-12));
     expect(archived.spendable(change), closeTo(0, 1e-12));
     expect(archived.spendable(change), isNot(closeTo(invented, 1e-6)));
+
+    final locked = ShearLedger()..bindIdentity(id);
+    const lockedShe = 4.0;
+    applyUserArchive(locked, {
+      'dests': [dest],
+      'txs': [
+        {
+          'id': 'cb-lock',
+          'from': 'coinbase',
+          'to': dest,
+          'amount': 10,
+          'kind': 'coinbase',
+          'height': 2,
+          'confirmed': true,
+        },
+        {
+          'id': 'lock-1',
+          'from': dest,
+          'to': change,
+          'amount': lockedShe,
+          'kind': 'lock',
+          'height': 3,
+          'confirmed': true,
+        },
+      ],
+    });
+    expect(locked.spendable(dest), closeTo(10 - lockedShe, 1e-9));
+    expect(locked.spendable(change), closeTo(0, 1e-12));
+    expect(locked.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(10 - lockedShe, 1e-9));
+    expect(locked.spendableOwned(id.address, paymentCode: id.paymentCode), isNot(closeTo(10, 1e-6)));
 
     final missedLedger = ShearLedger(pool: pool)..bindIdentity(id);
     final missedChange = missedLedger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
