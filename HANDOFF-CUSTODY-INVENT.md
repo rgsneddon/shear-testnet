@@ -9,12 +9,13 @@ What #37 did not change:
 - Unbound amount match in `matchSealedCoinbaseVout`.
 - `historyFor` treating a painted `to` as ownership even when sealed `toDest20` is someone else.
 - Custody detection when `poolDest` was never stored.
+- A later stored row whose `toDest20` was overwritten to the hasher, or whose `toDest20` is missing, while `noteCommit` is still the pool. `to` / `toDest20` still spent N × 0.99 onto the hasher. Chain.bin boot itself was already Σ hash notes.
 
 This fix:
 
 - Reads the pool dest from the sealed pot note when `poolDest` is missing. A pot whose noteCommit is a hasher leaf stays solo.
 - Drops the amount-only match. A pay has to bind the vout noteCommit.
-- `historyFor` does not spend a row to an address whose sealed dest20 is a different dest. The pool still receives that pot.
+- `historyFor` does not spend a coinbase or hash row to an address whose sealed noteCommit is someone else. A painted `to`, a missing `toDest20`, or a `toDest20` overwritten to the hasher all lose to the note. The pool still receives that pot.
 - Note-commit scan can raise a short explorer figure up to Σ sealed notes. It cannot invent N × 0.99.
 
 Solo pot prop when the seal’s noteCommit is the miner is unchanged. HASH_BONUS, pot schedule, ASERT, and book-law fingerprint are unchanged.

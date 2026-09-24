@@ -24,6 +24,7 @@ import { emptyVault } from '../../crypto/reserve_vault.js';
 import { isPinnedProgram, listPublicVortices, mintVorticeDeployKey } from '../../crypto/vortex.js';
 import { handleWalletApi, reconstructOwner } from '../src/wallet_api.js';
 import { sealedExplorerRows } from '../../crypto/chronoflux.js';
+import { writeChainBin } from '../../crypto/chainbin.js';
 import { createStore } from '../../node/src/store.js';
 
 function url(path) {
@@ -275,7 +276,47 @@ describe('wallet fluxset RPC', () => {
     assert.equal(live.spendableNanos, n * hashNanos);
     assert.notEqual(live.spendableNanos, rest * n);
     assert.equal(reconstructOwner(store, pool).spendableNanos, n * rest);
+
+    // Already-indexed poison: `to` painted, sealed noteCommit still the pool,
+    // and toDest20 either missing (legacy explorer) or overwritten to the hasher.
+    for (const paintDest20 of [null, hash20FromAddress(hasher)]) {
+      store.explorer.length = 0;
+      for (const b of found) {
+        for (const r of sealedExplorerRows(b)) {
+          if (r.kind !== 'hash' && r.nanos === rest) {
+            const row = { ...r, to: hasher };
+            if (paintDest20) row.toDest20 = paintDest20;
+            else delete row.toDest20;
+            store.explorer.push(row);
+          } else {
+            store.explorer.push(r);
+          }
+        }
+      }
+      const poisoned = reconstructOwner(store, hasher);
+      assert.equal(poisoned.spendableNanos, n * hashNanos, `paintDest20=${paintDest20 ? 'hasher' : 'absent'}`);
+      assert.notEqual(poisoned.spendableNanos, rest * n);
+      assert.equal(reconstructOwner(store, pool).spendableNanos, n * rest);
+    }
     fs.rmSync(dir, { recursive: true, force: true });
+
+    // chain.bin boot: no poolDest, no miner, share dests stripped, aLeaves are dest20+count.
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-invent-bin-'));
+    const packed = found.map((b) => ({
+      ...b,
+      header: Buffer.alloc(128, b.height),
+    }));
+    packed.push({
+      height: tipH,
+      hash: Buffer.alloc(32, 0xef),
+      header: Buffer.alloc(128, 9),
+      txs: [{ coinbase: true, vout: [] }],
+    });
+    writeChainBin(path.join(binDir, 'chain.bin'), packed);
+    const booted = createStore(binDir);
+    assert.equal(reconstructOwner(booted, hasher).spendableNanos, n * hashNanos);
+    assert.equal(reconstructOwner(booted, pool).spendableNanos, n * rest);
+    fs.rmSync(binDir, { recursive: true, force: true });
   });
 
   it('solo reconstruct still props a sealed pot onto the miner', () => {
