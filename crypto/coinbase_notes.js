@@ -111,6 +111,31 @@ export function custodyPoolDestOf(block, potNanos = BLOCK_SUBSIDY_NANOS) {
   return '';
 }
 
+/**
+ * True when a sealed pot-after-fee note is not a hasher leaf.
+ * `poolDest` / dest20 can both be missing (chain.bin, wire) and this still
+ * holds. An empty hasher set is solo, not custody: the pot note is the miner.
+ */
+export function coinbasePotIsCustodial(block, potNanos = BLOCK_SUBSIDY_NANOS) {
+  const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
+  const rest = pot - Math.floor(pot * POOL_FEE_BPS / 10000);
+  if (!(rest > 0)) return false;
+  const hasher = hasherNoteSet(block);
+  if (!hasher.size) return false;
+  for (const o of coinbaseVouts(block)) {
+    const kind = String(o?.kind || 'pot');
+    if (kind === 'hash' || kind === 'pool-fee' || kind === 'finder-fee' || kind === 'reserve-fee') continue;
+    if (!o?.commit || !verifySealedNote(o, rest)) continue;
+    let nc = '';
+    try {
+      const b = Buffer.from(asU8(o.noteCommit));
+      if (b.length === 32) nc = b.toString('hex');
+    } catch { nc = ''; }
+    if (nc && !hasher.has(nc)) return true;
+  }
+  return false;
+}
+
 export function expectedCoinbasePays(shareBatch, {
   miner,
   poolDest,
@@ -297,6 +322,7 @@ export function spentNoteCommits(blocks) {
 export function noteCommitSpendableNanos(blocks, address, tipHeight, {
   hashBonusNanos = HASH_BONUS_NANOS,
   need = SPENDABLE_CONFIRMATIONS,
+  coinbaseOnly = false,
 } = {}) {
   const dest20 = hash20FromAddress(address);
   if (!dest20) return 0;
@@ -322,6 +348,7 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
       ...paysFromALeaves(b.aLeaves || [], { hashBonusNanos, custodialPot }),
     ];
     for (const tx of b.txs || []) {
+      if (coinbaseOnly && !tx?.coinbase) continue;
       for (const o of tx.vout || []) {
         if (!o?.noteCommit || !noteCommitEq(o.noteCommit, want)) continue;
         const hex = noteCommitHex(o.noteCommit);

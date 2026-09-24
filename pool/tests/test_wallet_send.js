@@ -319,6 +319,81 @@ describe('wallet fluxset RPC', () => {
     fs.rmSync(binDir, { recursive: true, force: true });
   });
 
+  it('invent cannot return as height grows when custody misses and mature explorer is already painted', () => {
+    const pool = spendDestOf(newIdentity().spendPub);
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const rest = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
+    const hashNanos = 256;
+    const leafNc = noteCommitOfDest20(hash20FromAddress(hasher));
+    // No poolDest, empty shareBatch, pot dest20 stripped: sealedPotIsCustody misses
+    // and paysFromALeaves would PROP pot-after-fee onto the hasher leaf.
+    const propBlock = (i) => {
+      const pot = sealCoinbaseNote(rest, { dest20: hash20FromAddress(pool), kind: 'pot' });
+      delete pot.dest20;
+      return {
+        height: i + 1,
+        hash: Buffer.from([0x71, i + 1, ...Buffer.alloc(30)]),
+        miner: hasher,
+        shareBatch: [],
+        aLeaves: [{ noteCommit: leafNc, dest20: hash20FromAddress(hasher), count: hashNanos }],
+        txs: [{
+          coinbase: true,
+          vout: [
+            pot,
+            sealCoinbaseNote(hashNanos, { dest20: hash20FromAddress(hasher), kind: 'hash' }),
+          ],
+        }],
+      };
+    };
+    const one = sealedExplorerRows(propBlock(0));
+    assert.equal(one.some((r) => r.to === hasher && r.nanos === rest), false);
+    for (let n = 1; n <= 12; n += 1) {
+      const found = Array.from({ length: n }, (_, i) => propBlock(i));
+      const tipH = n + SPENDABLE_CONFIRMATIONS;
+      const rec = reconstructOwner({
+        blocks: [...found, { height: tipH, hash: Buffer.alloc(32, 0x72), txs: [] }],
+        tip: () => ({ height: tipH }),
+        mempool: [],
+      }, hasher);
+      assert.equal(rec.spendableNanos, n * hashNanos, `prop N=${n}`);
+      assert.notEqual(rec.spendableNanos, n * rest);
+      assert.ok(rec.spendableNanos < rest);
+      assert.equal(reconstructOwner({
+        blocks: [...found, { height: tipH, hash: Buffer.alloc(32, 0x72), txs: [] }],
+        tip: () => ({ height: tipH }),
+        mempool: [],
+      }, pool).spendableNanos, n * rest);
+    }
+
+    // Painted `to` with nanos = 0.99 and no noteCommit: matureSpendable > 0, which
+    // used to skip the custodial walk. Balance must stay Σ hash notes as N grows.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-invent-grow-'));
+    const store = createStore(dir);
+    for (let n = 1; n <= 12; n += 1) {
+      const b = propBlock(n + 20);
+      b.height = n;
+      store.blocks.push(b);
+      for (const r of sealedExplorerRows(b)) {
+        if (r.nanos === rest) {
+          const painted = { ...r, to: hasher, height: n };
+          delete painted.noteCommit;
+          delete painted.toDest20;
+          store.explorer.push(painted);
+        } else {
+          store.explorer.push({ ...r, height: n });
+        }
+      }
+      const tipH = n + SPENDABLE_CONFIRMATIONS;
+      store.blocks.push({ height: tipH, hash: Buffer.alloc(32, 0x73), txs: [] });
+      const got = reconstructOwner(store, hasher);
+      assert.equal(got.spendableNanos, n * hashNanos, `painted grow N=${n}`);
+      assert.notEqual(got.spendableNanos, n * rest);
+      assert.equal(reconstructOwner(store, pool).spendableNanos, n * rest);
+      store.blocks.pop();
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('solo reconstruct still props a sealed pot onto the miner', () => {
     const hasher = spendDestOf(newIdentity().spendPub);
     const potVout = sealCoinbaseNote(NANOS_PER_SHE, { dest20: hash20FromAddress(hasher), kind: 'pot' });
