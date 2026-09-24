@@ -69,6 +69,15 @@ Live `GET /api/wallet/balance?address=<hasher ssa1>` is already dust (~9.78e-5 S
 
 0.49 pins Spendable to the balance that actually landed. Owed-π / confirming pot stay on the owed line. A missed pull does not replace the pin and does not count as sync done. In Reserve is untouched.
 
+Fail-closed bars for this cut (pool custody). `bindSpendable` is not the fix; a landed book ignores it.
+
+- FC-CC1. `applyPoolSnapshot` overwrites `_spendable[dest]` with `json.balance`. It does not max or merge a cached invent.
+- FC-CC2. A 504, timeout, or HTML body is not force-sync done. `creditSyncLanded` is true only when every owned dest's live balance wrote in that sweep.
+- FC-CC3. Sealed nanos win over a fatter note `amount`. After the sweep, Spendable equals the live balances, not the local note book.
+- FC-CC4. Under a pool, `/api/wallet/balance` is the spendable authority. Hash folds and `settleTo` do not add a second pot reconstruct onto a pinned dest.
+- FC-CC5. A shewall/archive that contains `poolBook` does not sum landing history into Spendable. `rememberSpendable` cannot raise a pinned dest.
+- FC-CC6. One sweep overwrites every owned dest that answered, and zeroes an owned dest that has no live write and no prior pin. A sibling 504 does not leave that dest's invent in the sum, and does not mark the sweep done.
+
 ## Acceptance
 
 Hasher mining dest only:

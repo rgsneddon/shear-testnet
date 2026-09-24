@@ -2080,6 +2080,8 @@ class ShearLedger {
     for (final d in dests) {
       if (!isDestAddress(d)) continue;
       final key = payKey(d);
+      // A landed pool balance is the book. Note sums must not replace it.
+      if (_poolBookPins(key)) continue;
       _spendable[key] = inventoriedNoteShe(key, sum: true);
     }
   }
@@ -2214,11 +2216,6 @@ class ShearLedger {
     _ingestIncoming(json);
     if (writeOwed) _takeOwed(json);
     if (!isDestAddress(address)) return false;
-    _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
-    if (beforeHeight > 0 && tipSealed > beforeHeight) {
-      confirmRound(address: address, pot: 0, height: beforeHeight + 1);
-      settleTo(tipSealed);
-    }
     if (_isProgramVaultDest(address)) {
       _dropProgramVaults();
       return false;
@@ -2230,9 +2227,18 @@ class ShearLedger {
       _dropProgramVaults();
       return false;
     }
+    // FC-CC1: the live balance overwrites. A local settle must not merge on top.
     if (live > 0) rememberDest(key);
     _poolBook[key] = live;
     _spendable[key] = live;
+    _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
+    if (beforeHeight > 0 && tipSealed > beforeHeight) {
+      confirmRound(address: address, pot: 0, height: beforeHeight + 1);
+      settleTo(tipSealed);
+      // confirmRound/settleTo can credit an unpinned sibling. This dest stays
+      // on the balance that just landed.
+      _spendable[key] = live;
+    }
     return true;
   }
 
@@ -2249,11 +2255,12 @@ class ShearLedger {
 
   /// Balance sweep. Owed-π is the max pull-book figure across dests, applied
   /// after the loop so a change dest's 0 does not clear the mailbox.
-  /// [landed] counts dests whose balance pinned the book. A thrown pull does not.
-  Future<({double max, bool saw, int landed})> _balancesFor(Iterable<String> dests, {required int before}) async {
+  /// [keys] are dests whose live balance overwrote the book. A thrown pull
+  /// is not in that set.
+  Future<({double max, bool saw, Set<String> keys})> _balancesFor(Iterable<String> dests, {required int before}) async {
     var maxOwed = 0.0;
     var saw = false;
-    var landed = 0;
+    final keys = <String>{};
     for (final d in dests) {
       if (!isDestAddress(d)) continue;
       try {
@@ -2270,11 +2277,57 @@ class ShearLedger {
           tipSealed: _sealedHeight,
           writeOwed: false,
         )) {
-          landed++;
+          keys.add(payKey(d));
         }
       } catch (_) {}
     }
-    return (max: maxOwed, saw: saw, landed: landed);
+    return (max: maxOwed, saw: saw, keys: keys);
+  }
+
+  /// After a balance sweep, every owned dest is the live write or not invent.
+  ///
+  /// A dest the pool answered equals that balance (overwrite, not max).
+  /// A dest with a prior pin keeps that pin when this pull missed — a 504
+  /// does not count as done and does not climb. A dest with neither a live
+  /// write nor a pin is zeroed so a settleTo sibling or a history sum cannot
+  /// sit in Spendable.
+  void _finishCustodySweep({
+    required Iterable<String> attempted,
+    required Set<String> landed,
+  }) {
+    final attempt = <String>{
+      for (final d in attempted)
+        if (isDestAddress(d) && !_isProgramVaultDest(d)) payKey(d),
+    };
+    creditSyncLanded = attempt.isNotEmpty && attempt.every(landed.contains);
+    // A foreign dest (pool payout source, dropped by keepOwnedDests) is not
+    // an owned book. Do not resurrect its pin into Spendable.
+    final stray = <String>{
+      for (final k in _spendable.keys)
+        if (isDestAddress(k) && !attempt.contains(payKey(k))) payKey(k),
+      for (final k in _poolBook.keys)
+        if (!attempt.contains(k)) k,
+    };
+    for (final k in stray) {
+      _spendable.remove(k);
+      _poolBook.remove(k);
+    }
+    for (final key in attempt) {
+      if (_isProgramVaultDest(key)) continue;
+      if (landed.contains(key)) {
+        final live = _poolBook[key];
+        if (live != null) _spendable[key] = live;
+        continue;
+      }
+      if (_poolBook.containsKey(key)) {
+        final pin = _poolBook[key]!;
+        final cur = _spendable[key];
+        if (cur == null || cur > pin + 1e-12) _spendable[key] = pin;
+        continue;
+      }
+      _spendable[key] = 0;
+      _poolBook[key] = 0;
+    }
   }
 
   /// Pull Continuum for this wallet's own money dests.
@@ -2291,14 +2344,8 @@ class ShearLedger {
       await syncTip();
     } catch (_) {}
     final dests = syncDests(restFrame, paymentCode: paymentCode);
-    final reconstructed = <String, double>{};
     final owedSweep = await _balancesFor(dests, before: before);
-    creditSyncLanded = owedSweep.landed > 0;
     _finishOwedSweep(owedSweep.max, saw: owedSweep.saw);
-    for (final d in dests) {
-      if (!isDestAddress(d) || _isProgramVaultDest(d)) continue;
-      reconstructed[payKey(d)] = spendable(d);
-    }
     _markSettled(_sealedHeight, before);
     final histSeen = <String>{};
     for (final d in dests) {
@@ -2347,17 +2394,9 @@ class ShearLedger {
         await syncHistory(key, openMemos: openMemos);
       } catch (_) {}
     }
-    // The pool reconstruct is the spendable book. A notes scan of those same
-    // funds must not be added on top of it. Vault dests stay out of the sum.
-    for (final e in reconstructed.entries) {
-      if (_isProgramVaultDest(e.key)) {
-        _spendable.remove(e.key);
-        continue;
-      }
-      final piled = spendable(e.key);
-      if (piled > e.value + 1e-12) _spendable[e.key] = e.value;
-    }
-    _clampToPoolBook();
+    // One authority: the balances this sweep actually wrote. Notes and history
+    // rows are not a second reconstruct.
+    _finishCustodySweep(attempted: dests, landed: owedSweep.keys);
     if (creditSyncLanded || dests.isEmpty) _openCollated = true;
     return spendableOwned(restFrame, paymentCode: paymentCode);
   }
@@ -2372,10 +2411,9 @@ class ShearLedger {
     } catch (_) {}
     final dests = syncDests(restFrame, paymentCode: paymentCode);
     final owedSweep = await _balancesFor(dests, before: before);
-    creditSyncLanded = owedSweep.landed > 0;
     _finishOwedSweep(owedSweep.max, saw: owedSweep.saw);
     _markSettled(_sealedHeight, before);
-    _clampToPoolBook();
+    _finishCustodySweep(attempted: dests, landed: owedSweep.keys);
     return spendableOwned(restFrame, paymentCode: paymentCode);
   }
 

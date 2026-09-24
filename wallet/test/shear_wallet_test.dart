@@ -7276,6 +7276,90 @@ void main() {
     expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(35, 1e-9));
   });
 
+  test('custody sweep overwrites every owned dest; a sibling 504 is not done', () async {
+    const dust = 9.78e-5;
+    const invented = 0.99 * 8;
+    final id = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 20, balance: dust);
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final change = ledger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
+    expect(change, isNot(dest));
+    live.owner = dest;
+    live.destBalances[dest] = dust;
+    live.destBalances[change] = 0;
+    ledger.rememberSpendable(dest, invented);
+    ledger.rememberSpendable(change, invented);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(invented * 2, 1e-9));
+
+    final got = await ledger.forceSync(id.address, paymentCode: id.paymentCode);
+    expect(ledger.creditSyncLanded, isTrue);
+    expect(got, closeTo(dust, 1e-12));
+    expect(ledger.spendable(dest), closeTo(dust, 1e-12));
+    expect(ledger.spendable(change), closeTo(0, 1e-12));
+    expect(ledger.spendable(change), isNot(closeTo(invented, 1e-6)));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(dust, 1e-12));
+
+    ledger.spendSeed = hexToBytes(id.seedHex);
+    final noted = await ledger.collateSpendNotes(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      bindSpendable: true,
+    );
+    expect(noted, isTrue);
+    expect(ledger.spendable(dest), closeTo(dust, 1e-12));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), isNot(closeTo(invented, 1e-6)));
+
+    final archived = ShearLedger()..bindIdentity(id);
+    applyUserArchive(archived, {
+      'dests': [dest, change],
+      'txs': [
+        {
+          'id': 'blockfound:3:$change',
+          'from': 'coinbase',
+          'to': change,
+          'amount': invented,
+          'kind': 'blockfound',
+          'height': 3,
+          'confirmed': true,
+          'pot': invented,
+        },
+      ],
+      'poolBook': {dest: dust},
+    });
+    expect(archived.spendable(dest), closeTo(dust, 1e-12));
+    expect(archived.spendable(change), closeTo(0, 1e-12));
+    expect(archived.spendable(change), isNot(closeTo(invented, 1e-6)));
+
+    final missedLedger = ShearLedger(pool: pool)..bindIdentity(id);
+    final missedChange = missedLedger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
+    expect(missedChange, isNot(dest));
+    live.failBalanceAddrs.add(missedChange);
+    live.destBalances[missedChange] = 0.5;
+    missedLedger.rememberSpendable(dest, invented);
+    missedLedger.rememberSpendable(missedChange, invented);
+    expect(missedLedger.spendable(missedChange), closeTo(invented, 1e-9));
+    final missed = await missedLedger.forceSync(id.address, paymentCode: id.paymentCode);
+    expect(missedLedger.creditSyncLanded, isFalse);
+    expect(missed, closeTo(dust, 1e-12));
+    expect(missedLedger.spendable(dest), closeTo(dust, 1e-12));
+    expect(missedLedger.spendable(missedChange), closeTo(0, 1e-12));
+    expect(missedLedger.spendable(missedChange), isNot(closeTo(invented, 1e-6)));
+    expect(missedLedger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(dust, 1e-12));
+
+    live.failBalanceAddrs.clear();
+    final landed = await missedLedger.forceSync(id.address, paymentCode: id.paymentCode);
+    expect(missedLedger.creditSyncLanded, isTrue);
+    expect(landed, closeTo(dust + 0.5, 1e-12));
+    expect(missedLedger.spendable(dest), closeTo(dust, 1e-12));
+    expect(missedLedger.spendable(missedChange), closeTo(0.5, 1e-12));
+  });
+
   test('owedTowardPi keeps the mailbox pull-book when another dest reports 0', () async {
     final id = createIdentity();
     final header = Uint8List(128);
@@ -8013,6 +8097,8 @@ class _PoolLive {
   bool failHistory = false;
   /// When set, /api/wallet/balance answers 504 and must not count as a sync.
   bool failBalance = false;
+  /// Per-address 504. A sibling miss must not make the sweep done.
+  final Set<String> failBalanceAddrs = {};
   String lastHistoryOpen = '';
   int balanceHits = 0;
   int historyHits = 0;
@@ -8139,14 +8225,14 @@ Future<HttpServer> _fakePool({
       }));
     } else if (req.uri.path == '/api/wallet/balance') {
       state.balanceHits += 1;
-      if (state.failBalance) {
+      final addr = req.uri.queryParameters['address'] ?? '';
+      if (state.failBalance || state.failBalanceAddrs.contains(addr)) {
         req.response.statusCode = 504;
         req.response.headers.contentType = ContentType.html;
         req.response.write('<html><body>504 Gateway Timeout</body></html>');
         await req.response.close();
         return;
       }
-      final addr = req.uri.queryParameters['address'] ?? '';
       final incoming = state.incoming.where((r) => r['to'] == addr || payoutDest(r['to']?.toString() ?? '') == addr).toList();
       req.response.write(jsonEncode({
         'balance': state.reconstructed(addr),

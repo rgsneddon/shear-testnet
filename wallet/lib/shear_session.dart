@@ -260,6 +260,13 @@ void applyUserArchive(ShearLedger ledger, Map<String, dynamic> archive) {
   ledger.restoreDests(dests);
   final g = archive['chainGenesis']?.toString() ?? '';
   ledger.restoreSealedTip((archive['sealedHeight'] as num?)?.toInt() ?? 0, genesis: g);
+  final book = archive['poolBook'];
+  if (book is Map) {
+    // A saved reconstruct is the book. Landing history must not ratchet
+    // Spendable above it, including onto a dest the book does not list.
+    ledger.restorePoolBook(book);
+    return;
+  }
   final sums = <String, double>{};
   for (final t in txs) {
     if (!t.confirmed || t.to.isEmpty) continue;
@@ -269,8 +276,6 @@ void applyUserArchive(ShearLedger ledger, Map<String, dynamic> archive) {
   for (final e in sums.entries) {
     ledger.rememberSpendable(e.key, e.value);
   }
-  final book = archive['poolBook'];
-  if (book is Map) ledger.restorePoolBook(book);
 }
 
 Uint8List exportShewall({
