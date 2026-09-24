@@ -21,11 +21,11 @@ import {
   sealedVinLinkField,
 } from './chronoflux.js';
 import { lockTx, voteTx, portalIdFromDest } from './reserve_vault.js';
-import { newIdentity, hash20FromAddress, admitBaseFromAddress, freshStealthDest } from './address.js';
+import { newIdentity, hash20FromAddress, admitBaseFromAddress, freshStealthDest, spendDestOf } from './address.js';
 import { vaultDest, destForLogin } from './flow_sheet.js';
 import { verifySealedNote, reviveBytes, sealCoinbaseNote, noteCommitOfDest20 } from './note.js';
 import { attachAdmitPub } from './admit.js';
-import { PI_SHE_NANOS, GENESIS_BITS_PACKED } from './asert.js';
+import { PI_SHE_NANOS, GENESIS_BITS_PACKED, NANOS_PER_SHE, POOL_FEE_BPS } from './asert.js';
 import { digestTx, buildTemplate, verifyBlock, GENESIS_PREV } from '../node/src/chain.js';
 import { poolWithdrawTx } from './levy.js';
 import { attachDummyOuts } from './dummy.js';
@@ -427,5 +427,30 @@ describe('chronoflux prune + collate', () => {
     assert.ok(hashRow);
     assert.ok(hashRow.toDest20);
     assert.equal(hashRow.nanos, nanos);
+  });
+
+  it('custody explorer rows pay pot to the pool dest and hash only to the hasher', () => {
+    const poolDest = spendDestOf(newIdentity().spendPub);
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const rest = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
+    const hashNanos = 256;
+    const potVout = sealCoinbaseNote(rest, { dest20: hash20FromAddress(poolDest), kind: 'pot' });
+    const hashVout = sealCoinbaseNote(hashNanos, { dest20: hash20FromAddress(hasher), kind: 'hash' });
+    const rows = sealedExplorerRows({
+      height: 4,
+      hash: Buffer.alloc(32, 0x5a),
+      miner: poolDest,
+      poolDest,
+      shareBatch: [{ dest: hasher, dest20: hash20FromAddress(hasher), nonce: 1n, lz: 8 }],
+      aLeaves: [{ noteCommit: noteCommitOfDest20(hash20FromAddress(hasher)), count: hashNanos }],
+      txs: [{ coinbase: true, vout: [potVout, hashVout] }],
+    });
+    const potRow = rows.find((r) => r.kind === 'coinbase');
+    const hashRow = rows.find((r) => r.kind === 'hash');
+    assert.equal(potRow.to, poolDest);
+    assert.equal(potRow.nanos, rest);
+    assert.equal(hashRow.to, hasher);
+    assert.equal(hashRow.nanos, hashNanos);
+    assert.equal(rows.some((r) => r.to === hasher && r.nanos === rest), false);
   });
 });

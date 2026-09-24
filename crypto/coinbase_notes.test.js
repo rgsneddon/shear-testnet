@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS, POOL_FEE_BPS } from './asert.js';
 import { newIdentity, spendDestOf, hash20FromAddress } from './address.js';
 import { noteCommitOfDest20, sealCoinbaseNote } from './note.js';
-import { expectedCoinbasePays, noteCommitSpendableNanos } from './coinbase_notes.js';
+import { expectedCoinbasePays, noteCommitSpendableNanos, paysFromALeaves } from './coinbase_notes.js';
 import { custodyPotShares } from '../node/src/chain.js';
 
 function shareOf(dest, nonce) {
@@ -88,27 +88,59 @@ describe('noteCommitSpendableNanos', () => {
     assert.equal(noteCommitSpendableNanos(blocks, dest, matureTip), 0);
   });
 
-  it('recovers custody pot after fee when miner is another dest and nanos are hidden', () => {
+  it('sealed match-miss is fail-closed — eight pot-after-fee quanta stay 0, not 7.92 SHE', () => {
     const pool = spendDestOf(newIdentity().spendPub);
     const hasher = spendDestOf(newIdentity().spendPub);
-    const want = noteCommitOfDest20(hash20FromAddress(pool));
-    const matureTip = 2 + SPENDABLE_CONFIRMATIONS - 1;
-    const blocks = [{
-      height: 2,
+    const poolNc = noteCommitOfDest20(hash20FromAddress(pool));
+    const hasherNc = noteCommitOfDest20(hash20FromAddress(hasher));
+    const rest = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
+    const blocks = Array.from({ length: 8 }, (_, i) => ({
+      height: i + 1,
       miner: hasher,
+      poolDest: pool,
       aLeaves: [{ noteCommit: Buffer.alloc(32, 9), count: 256 }],
       txs: [{
         coinbase: true,
         vout: [
-          { kind: 'pot', noteCommit: want, nanos: 0 },
-          { kind: 'hash', noteCommit: want, nanos: 0 },
+          { kind: 'pot', noteCommit: poolNc, nanos: 0, commit: Buffer.alloc(32, 1) },
+          { kind: 'hash', noteCommit: hasherNc, nanos: 0, commit: Buffer.alloc(32, 2) },
         ],
       }],
-    }];
-    const got = noteCommitSpendableNanos(blocks, pool, matureTip);
-    const pot = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * 0.01);
-    assert.equal(got, pot + 256);
+    }));
+    const matureTip = 8 + SPENDABLE_CONFIRMATIONS;
+    assert.equal(noteCommitSpendableNanos(blocks, pool, matureTip), 0);
     assert.equal(noteCommitSpendableNanos(blocks, hasher, matureTip), 0);
+    assert.equal(rest * 8, 792_000_000_000);
+    assert.notEqual(noteCommitSpendableNanos(blocks, hasher, matureTip), rest * 8);
+  });
+
+  it('custody credits sealed hash pays to the hasher and pot-after-fee to the pool', () => {
+    const poolDest = spendDestOf(newIdentity().spendPub);
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const rest = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
+    const hashNanos = 256;
+    const potVout = sealCoinbaseNote(rest, {
+      dest20: hash20FromAddress(poolDest),
+      kind: 'pot',
+    });
+    const hashVout = sealCoinbaseNote(hashNanos, {
+      dest20: hash20FromAddress(hasher),
+      kind: 'hash',
+    });
+    const block = {
+      height: 2,
+      miner: poolDest,
+      poolDest,
+      shareBatch: [shareOf(hasher, 1)],
+      aLeaves: [{ noteCommit: noteCommitOfDest20(hash20FromAddress(hasher)), count: hashNanos }],
+      txs: [{ coinbase: true, vout: [potVout, hashVout] }],
+    };
+    const matureTip = 2 + SPENDABLE_CONFIRMATIONS - 1;
+    assert.equal(noteCommitSpendableNanos([block], hasher, matureTip), hashNanos);
+    assert.equal(noteCommitSpendableNanos([block], poolDest, matureTip), rest);
+    const leafPot = paysFromALeaves(block.aLeaves).filter((p) => p.kind === 'pot');
+    assert.ok(leafPot.some((p) => p.nanos === rest));
+    assert.equal(noteCommitSpendableNanos([block], hasher, matureTip), hashNanos);
   });
 
   it('credits sealed custodyPotShares rest to poolDest, not the 1% fee, when hasher dests differ', () => {
@@ -147,5 +179,21 @@ describe('expectedCoinbasePays custodialPot', () => {
     });
     assert.equal(custody.find((p) => p.kind === 'pot' && p.address === pool)?.nanos, rest);
     assert.equal(custody.find((p) => p.kind === 'pot' && p.address === hasher), undefined);
+  });
+
+  it('solo seal still props the pot onto the miner', () => {
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const potVout = sealCoinbaseNote(NANOS_PER_SHE, {
+      dest20: hash20FromAddress(hasher),
+      kind: 'pot',
+    });
+    const block = {
+      height: 2,
+      miner: hasher,
+      shareBatch: [shareOf(hasher, 1)],
+      txs: [{ coinbase: true, vout: [potVout] }],
+    };
+    const matureTip = 2 + SPENDABLE_CONFIRMATIONS - 1;
+    assert.equal(noteCommitSpendableNanos([block], hasher, matureTip), NANOS_PER_SHE);
   });
 });

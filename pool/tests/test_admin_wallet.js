@@ -6,8 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
-import { noteCommitOfDest20 } from '../../crypto/note.js';
+import { NANOS_PER_SHE, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { sealCoinbaseNote } from '../../crypto/note.js';
 import { reconstructOwner } from '../src/wallet_api.js';
 import { destOpeningFromView } from '../../crypto/address.js';
 import { levyNanos, poolFeeDest, containsShe1 } from '../../crypto/levy.js';
@@ -257,17 +257,26 @@ describe('operator admin fee wallet', () => {
     const hasherId = newIdentity();
     const poolDest = destForLogin(poolId.address, { viewKey: poolId.viewKey, height: 1 });
     const hasher = destForLogin(hasherId.address, { viewKey: hasherId.viewKey, height: 1 });
-    const want = noteCommitOfDest20(hash20FromAddress(poolDest));
+    const rest = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
+    const fee = Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
+    const feeDest = poolFeeDest();
     const store = {
       blocks: [{
         height: 2,
-        miner: hasher,
-        aLeaves: [{ noteCommit: Buffer.alloc(32, 3), count: 256 }],
+        hash: Buffer.alloc(32, 0x63),
+        miner: poolDest,
+        poolDest,
+        shareBatch: [{
+          dest: hasher,
+          dest20: hash20FromAddress(hasher),
+          nonce: 1n,
+          lz: 8,
+        }],
         txs: [{
           coinbase: true,
           vout: [
-            { kind: 'pot', noteCommit: want, nanos: 0 },
-            { kind: 'hash', noteCommit: want, nanos: 0 },
+            sealCoinbaseNote(rest, { dest20: hash20FromAddress(poolDest), kind: 'pot' }),
+            sealCoinbaseNote(fee, { dest20: hash20FromAddress(feeDest), kind: 'pool-fee' }),
           ],
         }],
       }],
@@ -275,8 +284,8 @@ describe('operator admin fee wallet', () => {
       mempool: [],
     };
     const rec = reconstructOwner(store, poolDest);
-    const pot = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * 0.01);
-    assert.equal(rec.spendableNanos, pot + 256);
+    assert.equal(rec.spendableNanos, rest);
+    assert.equal(reconstructOwner(store, hasher).spendableNanos, 0);
     const prevHost = process.env.SHEAR_ADMIN_HOST;
     process.env.SHEAR_ADMIN_HOST = ADMIN_HOST;
     try {

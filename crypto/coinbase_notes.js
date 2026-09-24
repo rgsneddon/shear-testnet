@@ -248,6 +248,7 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
     const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
     const pool = b.poolDest || '';
     const custodialPot = !!(pool && sealedPotIsCustody(b, pool, potNanos));
+    const leafPays = paysFromALeaves(b.aLeaves || [], { hashBonusNanos });
     const pays = [
       ...expectedCoinbasePays(b.shareBatch || [], {
         miner: b.miner,
@@ -257,7 +258,8 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
         custodialPot,
         feeDest: custodialPot ? poolFeeDest() : '',
       }),
-      ...paysFromALeaves(b.aLeaves || [], { hashBonusNanos }),
+      // Custody: hash pays only. Pot PROP from Tree-A must not land on hasher commits.
+      ...(custodialPot ? leafPays.filter((p) => p.kind === 'hash') : leafPays),
     ];
     for (const tx of b.txs || []) {
       for (const o of tx.vout || []) {
@@ -267,35 +269,16 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
         let n = Number(o.nanos || 0);
         if (tx.coinbase) {
           const matched = matchSealedCoinbaseVout(o, pays);
-          if (matched.nanos) n = matched.nanos;
-          else {
-            const hit = pays.find((p) => p.noteCommit && noteCommitEq(p.noteCommit, o.noteCommit))
-              || pays.find((p) => {
-                const d = hash20FromAddress(p.address);
-                return d && Buffer.from(d).equals(Buffer.from(dest20));
-              });
-            const hitN = Math.floor(Number(hit?.nanos || 0));
-            if (hit && hitN > 0 && verifySealedNote(o, hitN)) n = hitN;
+          if (o.commit) {
+            if (matched.nanos) n = matched.nanos;
             else {
+              // Sealed match miss is fail-closed. Do not invent pot-after-fee
+              // (0.99 SHE) or the whole-block hash sum.
               const sealedV = Math.floor(Number(o.valueProof?.v != null ? o.valueProof.v : 0));
-              if (sealedV > 0 && verifySealedNote(o, sealedV)) n = sealedV;
-              else if (isDestAddress(b.miner) && hash20FromAddress(b.miner)
-                && Buffer.from(hash20FromAddress(b.miner)).equals(Buffer.from(dest20))
-                && String(o.kind || 'pot') !== 'hash'
-                && String(o.kind || '') !== 'pool-fee') {
-                n = BLOCK_SUBSIDY_NANOS - Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
-              }
+              n = (sealedV > 0 && verifySealedNote(o, sealedV)) ? sealedV : 0;
             }
-          }
-          if (!n) {
-            const kind = String(o.kind || 'pot');
-            const pot = BLOCK_SUBSIDY_NANOS;
-            const fee = Math.floor(pot * POOL_FEE_BPS / 10000);
-            if (kind === 'pool-fee' || kind === 'finder-fee' || kind === 'reserve-fee') n = fee;
-            else if (kind === 'hash') {
-              const unit = hashBonusUnitNanos(hashBonusNanos);
-              n = (b.aLeaves || []).reduce((a, l) => a + Math.max(0, Math.floor(Number(l.count) || 0)), 0) * unit;
-            } else n = pot - fee;
+          } else {
+            n = matched.nanos || 0;
           }
         }
         if (n > 0) nanos += n;
