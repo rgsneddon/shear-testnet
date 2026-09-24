@@ -308,6 +308,26 @@ export function fundedDebit(tx) {
   return { from, nanos, amount, fee, change: extra };
 }
 
+const COINBASE_EXPLORER_KINDS = new Set(['coinbase', 'hash', 'pot', 'pool-fee']);
+
+/**
+ * Coinbase credit follows sealed notes once any exist. A positive explorer
+ * sum must not keep a prop (N × pot-after-fee) that the notes do not contain.
+ * When the note scan is empty, explorer coinbase stands (unsealed history).
+ */
+export function reconcileSpendable(rows, address, tipHeight, noteNanos, need = SPENDABLE_CONFIRMATIONS) {
+  const all = matureSpendableNanos(rows, address, tipHeight, need);
+  const note = Math.max(0, Math.floor(Number(noteNanos) || 0));
+  if (!(note > 0)) return all;
+  const cb = matureSpendableNanos(
+    (rows || []).filter((r) => COINBASE_EXPLORER_KINDS.has(String(r?.kind || ''))),
+    address,
+    tipHeight,
+    need,
+  );
+  return (all - cb) + note;
+}
+
 /** Unclamped. Credits mature incoming only; debits every sealed outgoing. */
 export function matureSpendableNanos(rows, address, tipHeight, need = SPENDABLE_CONFIRMATIONS) {
   const addr = String(address || '');
