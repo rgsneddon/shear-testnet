@@ -1811,11 +1811,10 @@ class ShearLedger {
   /// Move immature credits into spendable once the committing block is accepted.
   void settleTo(int tip) {
     if (tip > _sealedHeight) _sealedHeight = tip;
-    // A non-empty pool book means a balance already landed. Further settles
-    // must not ADD onto the mining dest or a sibling slot. Mature rows are
-    // still consumed so they are not applied later. Solo, and a pool client
-    // that has not landed a balance yet, still credit.
-    final custody = pool != null && _poolBook.isNotEmpty;
+    // A pool client is custody. Local pot and hash folds are not Spendable
+    // until applyPoolSnapshot overwrites with json.balance. Mature rows are
+    // still consumed so they are not applied later. Solo (no pool) still credits.
+    final custody = pool != null;
     final keep = <({String dest, double amount, int height})>[];
     for (final row in _immature) {
       if (!creditsFrozen && confirmationsOf(row.height, tip) >= spendableConfirmations) {
@@ -1866,10 +1865,9 @@ class ShearLedger {
   }
 
   void rememberSpendable(String address, double amount) {
-    if (_poolBookPins(address)) return;
-    // After any dest has a landed balance, a local raise is an unpinned
-    // soft-reconstruct. Change parking writes the map directly.
-    if (pool != null && _poolBook.isNotEmpty) return;
+    // Up-only is a solo restore. Under a pool it re-applies archive invent
+    // before the first balance write. Change parking writes the map directly.
+    if (pool != null || _poolBookPins(address)) return;
     if (amount > spendable(address)) _spendable[address] = amount;
   }
 
@@ -1981,7 +1979,16 @@ class ShearLedger {
     } catch (_) {
       creditSyncLanded = false;
       _clampToPoolBook();
-      return _poolBookPins(address) ? spendable(address) : prev;
+      // A miss must not hand back the pre-pull invent. A prior pin stays.
+      // An unpinned dest is pinned at 0 so the next live write can replace it.
+      if (!_poolBookPins(address)) {
+        final key = payKey(address);
+        if (isDestAddress(key) && !_isProgramVaultDest(key)) {
+          _spendable[key] = 0;
+          _poolBook[key] = 0;
+        }
+      }
+      return spendable(address);
     }
   }
 

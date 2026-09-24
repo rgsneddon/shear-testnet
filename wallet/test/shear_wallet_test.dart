@@ -134,6 +134,19 @@ class _VortexBalancePool extends ShearPoolClient {
   Future<Map<String, dynamic>> mempoolPressure() async => {'depth': 0};
 }
 
+/// Land an honest pool balance. A pooled ledger does not fund Spendable from
+/// confirmRound pot; tests that post a send land the figure the pool would write.
+void landCustodyBalance(ShearLedger ledger, String dest, double she) {
+  final tip = ledger.sealedHeight > 0 ? ledger.sealedHeight : 1;
+  final wrote = ledger.applyPoolSnapshot(
+    dest,
+    {'balance': she, 'pending': 0, 'incoming': <Map<String, dynamic>>[]},
+    beforeHeight: 0,
+    tipSealed: tip,
+  );
+  expect(wrote, isTrue, reason: 'custody tests fund Spendable only by a balance write');
+}
+
 void main() {
   test('release AndroidManifest grants INTERNET; debug/profile overlays are not the shipped grant', () {
     final main = File('android/app/src/main/AndroidManifest.xml');
@@ -834,6 +847,7 @@ void main() {
     final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     ledger.confirmRound(address: from, pot: 2, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations);
+    landCustodyBalance(ledger, from, 2);
     final vault = vaultDest(id.address, viewKey: id.viewKey)!;
     try {
       await ledger.send(
@@ -918,6 +932,7 @@ void main() {
     final vault = vaultDest(id.address, viewKey: id.viewKey)!;
     ledger.confirmRound(address: from, pot: 1, height: 1);
     ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    landCustodyBalance(ledger, from, 1);
     await ledger.send(
       from: from,
       to: vault,
@@ -975,6 +990,7 @@ void main() {
       startIndex: 0,
     );
     expect(ledger.notes, isNotEmpty);
+    landCustodyBalance(ledger, dest, 1);
     final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
     await expectLater(
       ledger.send(
@@ -987,7 +1003,7 @@ void main() {
       ),
       throwsA(isA<StateError>().having((e) => e.message, 'msg', contains('no_note'))),
     );
-    expect(ledger.spendable(dest) + 1e-18, lessThan(0.25));
+    expect(ledger.spendable(dest), closeTo(1, 1e-12));
     expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
   });
 
@@ -1017,6 +1033,7 @@ void main() {
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.confirmRound(address: dest, pot: 1, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    landCustodyBalance(ledger, dest, 1);
     expect(ledger.notes, isEmpty);
     expect(
       ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
@@ -1039,7 +1056,7 @@ void main() {
     expect(ledger.notes, isNotEmpty);
   });
 
-  test('empty note inventory stops spendable from claiming a hop-fee cover', () async {
+  test('empty note inventory refuses the hop fee and keeps the landed balance', () async {
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
     final posts = <Map<String, dynamic>>[];
@@ -1048,6 +1065,7 @@ void main() {
     final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     ledger.confirmRound(address: dest, pot: 2, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    landCustodyBalance(ledger, dest, 2);
     expect(ledger.spendable(dest), greaterThanOrEqualTo(kPrivacyHopFeeShe));
     final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'cd' * 32)!;
     await expectLater(
@@ -1067,7 +1085,7 @@ void main() {
       )),
     );
     expect(posts, isEmpty);
-    expect(ledger.spendable(dest) + 1e-18, lessThan(kPrivacyHopFeeShe));
+    expect(ledger.spendable(dest), closeTo(2, 1e-12));
     expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
     expect(hopFeeAdvisoryOf(StateError('no_note')), isNot('no_note'));
   });
@@ -1093,6 +1111,7 @@ void main() {
     final vault = vaultDest(id.address, viewKey: id.viewKey)!;
     ledger.confirmRound(address: from, pot: 2, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+    landCustodyBalance(ledger, from, 2);
     await expectLater(
       ledger.send(
         from: from,
@@ -1133,6 +1152,7 @@ void main() {
     final vault = vaultDest(id.address, viewKey: id.viewKey)!;
     ledger.confirmRound(address: from, pot: 2, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations);
+    landCustodyBalance(ledger, from, 2);
     await ledger.send(
       from: from,
       to: vault,
@@ -5123,6 +5143,7 @@ void main() {
     final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     ledger.confirmRound(address: home, pot: 10, height: 20);
     ledger.settleTo(30);
+    landCustodyBalance(ledger, home, 10);
     final vault = vaultDest(id.address, viewKey: id.viewKey)!;
     final from = ledger.spendFrom(id.address, paymentCode: id.paymentCode, amount: 1);
     await ledger.send(
@@ -5194,12 +5215,14 @@ void main() {
     final pool = _RecordingPool(posts, baseUrl: kPublicPoolHttp);
     final ledger = ShearLedger(pool: pool);
     ledger.viewSecret = ident.viewKey;
+    final home = ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
     ledger.confirmRound(
-      address: ledger.homeDest(ident.address, paymentCode: ident.paymentCode),
+      address: home,
       pot: 10,
       height: 20,
     );
     ledger.settleTo(30);
+    landCustodyBalance(ledger, home, 10);
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ledger,
@@ -5480,6 +5503,7 @@ void main() {
     aliceL.creditHash(from, hashes: 0);
     aliceL.confirmRound(address: from, pot: 1, height: 1);
     aliceL.settleTo(1 + ShearLedger.spendableConfirmations);
+    landCustodyBalance(aliceL, from, 1);
     expect(aliceL.spendable(from), closeTo(1, 1e-12));
     expect(aliceL.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(1, 1e-12));
     // Taxed send pays Phase B L on top of the amount (1 SHE empty L = 0.0002).
@@ -6517,8 +6541,10 @@ void main() {
     _tallContinuum(tester);
     final opened = await _open018(tester);
     final ident = opened.session.identity!;
-    opened.ledger.confirmRound(address: opened.ledger.homeDest(ident.address, paymentCode: ident.paymentCode), pot: 10, height: 20);
+    final home = opened.ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
+    opened.ledger.confirmRound(address: home, pot: 10, height: 20);
     opened.ledger.settleTo(30);
+    landCustodyBalance(opened.ledger, home, 10);
     final from = opened.ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: 1);
     opened.live.owner = from;
     opened.live.balance = 10;
@@ -6902,8 +6928,10 @@ void main() {
     addTearDown(() => server.close(force: true));
     final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
     final ledger = ShearLedger(pool: pool)..viewSecret = id.viewKey;
-    ledger.confirmRound(address: ledger.homeDest(id.address, paymentCode: id.paymentCode), pot: 1, height: 1);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.confirmRound(address: home, pot: 1, height: 1);
     ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    landCustodyBalance(ledger, home, 1);
     final from = ledger.spendFrom(id.address, paymentCode: id.paymentCode, amount: levyNanos(0) / kUnitsPerShe);
     await ledger.send(
       from: from,
@@ -7337,6 +7365,8 @@ void main() {
     final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.rememberSpendable(dest, invented);
+    expect(ledger.spendable(dest), closeTo(0, 1e-12));
+    ledger.assignArchiveSpendable(dest, invented);
     ledger.mergeChainTx(ShearTx(
       id: 'cached-pot',
       from: 'coinbase',
@@ -7407,6 +7437,9 @@ void main() {
     live.destBalances[change] = 0;
     ledger.rememberSpendable(dest, invented);
     ledger.rememberSpendable(change, invented);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(0, 1e-12));
+    ledger.assignArchiveSpendable(dest, invented);
+    ledger.assignArchiveSpendable(change, invented);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(invented * 2, 1e-9));
 
     final got = await ledger.forceSync(id.address, paymentCode: id.paymentCode);
@@ -7485,6 +7518,9 @@ void main() {
     live.destBalances[missedChange] = 0.5;
     missedLedger.rememberSpendable(dest, invented);
     missedLedger.rememberSpendable(missedChange, invented);
+    expect(missedLedger.spendable(missedChange), closeTo(0, 1e-12));
+    missedLedger.assignArchiveSpendable(dest, invented);
+    missedLedger.assignArchiveSpendable(missedChange, invented);
     expect(missedLedger.spendable(missedChange), closeTo(invented, 1e-9));
     final missed = await missedLedger.forceSync(id.address, paymentCode: id.paymentCode);
     expect(missedLedger.creditSyncLanded, isFalse);
@@ -7500,6 +7536,34 @@ void main() {
     expect(landed, closeTo(dust + 0.5, 1e-12));
     expect(missedLedger.spendable(dest), closeTo(dust, 1e-12));
     expect(missedLedger.spendable(missedChange), closeTo(0.5, 1e-12));
+  });
+
+  test('custody confirmRound pot does not fund Spendable before or after a dust write', () async {
+    const dust = 9.78e-5;
+    const pot = 0.99;
+    final id = createIdentity();
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final live = _PoolLive(headerHex: hex, height: 40, balance: dust);
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    live.owner = dest;
+    ledger.confirmRound(address: dest, pot: pot * 8, height: 2);
+    ledger.settleTo(2 + ShearLedger.spendableConfirmations);
+    expect(ledger.spendable(dest), closeTo(0, 1e-12));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), isNot(closeTo(pot * 8, 1e-6)));
+    final got = await ledger.forceSync(id.address, paymentCode: id.paymentCode);
+    expect(ledger.creditSyncLanded, isTrue);
+    expect(got, closeTo(dust, 1e-12));
+    expect(ledger.spendable(dest), closeTo(dust, 1e-12));
+    ledger.confirmRound(address: dest, pot: pot, height: 30);
+    ledger.settleTo(40);
+    ledger.rememberSpendable(dest, pot * 12);
+    expect(ledger.spendable(dest), closeTo(dust, 1e-12));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(dust, 1e-12));
   });
 
   test('invent cannot return: retry, home write, empty book, orphan, rollup, unpinned', () async {

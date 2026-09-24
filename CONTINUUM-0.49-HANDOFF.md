@@ -66,6 +66,15 @@ Live `GET /api/wallet/balance?address=<hasher ssa1>` is dust (Σ hash notes, abo
 - Those hash folds were queued and `settleTo` added them on the next tip, after a good snapshot.
 - Unlock summed cached blockfound rows (pot + hash) back into Spendable. `rememberSpendable` only ever raised that number.
 - A 504 / timeout / HTML body was swallowed and treated as a finished sync, so the invent was what got saved.
+- The 0.48 sweep then stored that swallowed figure as `reconstructed` and only clamped later notes down toward it, while still marking the collate open.
+
+The 0.48.0+70 tree (`06fa261`) is the map those line numbers came from. PR #37 did not change `wallet/`. On 0.49 those sites are the functions below, not the old line numbers.
+
+- Balance writes fail closed. One retry, then a miss is not sync done. Unlock persists only when `creditSyncLanded`. `syncSpendable` on a miss does not return the pre-pull figure; an unpinned dest is pinned at 0.
+- `rememberSpendable` does nothing while a pool is attached. `applyUserArchive` returns without summing history when a pool is attached and the archive has no `poolBook`.
+- A finished sweep overwrites every attempted dest from the live book and drops orphan invent keys that were not in the attempt.
+- There is no reconstructed soft-clamp. `applyPoolSnapshot` writes `json.balance` and does not keep a swallowed invent as the ceiling.
+- `settleTo` treats `pool != null` as custody. Local pot and hash folds are consumed and not added to Spendable, including before the first balance write. Solo (no pool) still credits.
 
 0.49 pins Spendable to the balance that actually landed. Owed-π / confirming pot stay on the owed line. A missed pull does not replace the pin and does not count as sync done. In Reserve is untouched.
 
@@ -80,8 +89,8 @@ Fail-closed bars for this cut (pool custody). `bindSpendable` is not the fix; a 
 - FC-CC1. `applyPoolSnapshot` overwrites `_spendable[dest]` with `json.balance`. It does not max or merge a cached invent.
 - FC-CC2. A 504, timeout, or HTML body is not force-sync done. `creditSyncLanded` is true only when every owned dest's live balance wrote in that sweep.
 - FC-CC3. Sealed nanos win over a fatter note `amount`. After the sweep, Spendable equals the live balances, not the local note book.
-- FC-CC4. Under a pool, `/api/wallet/balance` is the spendable authority. Hash folds and `settleTo` do not add a second pot reconstruct onto a pinned dest.
-- FC-CC5. A shewall/archive that contains `poolBook` does not sum landing history into Spendable. `rememberSpendable` cannot raise a pinned dest.
+- FC-CC4. Under a pool, `/api/wallet/balance` is the spendable authority. `settleTo` does not fund Spendable from local pot or hash folds, before or after the first write.
+- FC-CC5. A shewall/archive that contains `poolBook` does not sum landing history into Spendable. `rememberSpendable` does nothing while a pool is attached, and cannot raise a pinned dest.
 - FC-CC6. One sweep overwrites every owned dest that answered, and zeroes an owned dest that has no live write and no prior pin. A sibling 504 does not leave that dest's invent in the sum, and does not mark the sweep done.
 
 Reserve (35 SHE, the honest lock) stays on the portal. This cut does not debit it to chase Spendable.
@@ -94,7 +103,7 @@ Invent must not return (G1–G9). Pool green is not Continuum green.
 - G1. Pool reconstruct is honest (`c02f787`, PR #39 and #40). Spendable does not read `custodyDisplay`.
 - G2. `creditSyncLanded` is true only when this sweep's `applyPoolSnapshot` wrote the mining dest (and every other attempted dest).
 - G3. A 504, timeout, or HTML body is retried once and is not sync done. Unlock persists only after that write. A later miss does not climb the pin.
-- G4. Once any dest has a landed book, `settleTo` does not ADD a sibling slot. An orphaned height does not debit or re-queue a pinned dest. Dropped dests lose their book entry.
+- G4. While a pool is attached, `settleTo` does not ADD local pot onto any dest, including before the first write. An orphaned height does not debit or re-queue a pinned dest. Dropped dests lose their book entry.
 - G5. Owed-π, In Reserve, and Spendable stay separate. A pinned `creditReserve` records the tx and does not raise the pin.
 - G6. Solo (no pool) still settles, sums an archive, and restores a shewall header.
 - G7. This handoff is the bar. ShearView rollup (`pot + hash`) stays on the row. It is not Spendable.
