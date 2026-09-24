@@ -7418,6 +7418,92 @@ void main() {
     expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(35, 1e-9));
   });
 
+  test('hasher Spendable is the hash-note sum, stays under circulation, and invent cannot return', () async {
+    // Honest book is Σ sealed hash-note nanos, not a painted dust constant,
+    // not N×0.99, not the miner HUD, and not Owed / In Reserve.
+    const noteNanos = <int>[1, 3, 7, 11];
+    final sumNanos = noteNanos.fold<int>(0, (n, q) => n + q);
+    final hashShe = sumNanos / kUnitsPerShe;
+    const potAfterFee = 0.99;
+    final invented = potAfterFee * 4;
+    const height = 1874;
+    final circNanos = height * kUnitsPerShe;
+    final hud = 5000 * kHashBonusShe;
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final probe = ShearLedger()..bindIdentity(id);
+    final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
+    final d20 = hash20FromAddress(dest)!;
+    final notes = <Map<String, dynamic>>[];
+    for (final q in noteNanos) {
+      var row = _sealNoteNoRange(q, dest20: d20, kind: 'hash');
+      row = attachAdmitPub(row, admitBase: pointFrom(admitBaseBytes(seed)));
+      final compact = compactSealedVout(row);
+      compact['height'] = 6;
+      compact['amount'] = potAfterFee;
+      compact['nanos'] = q;
+      notes.add(compact);
+    }
+    expect(hashShe, closeTo(sumNanos * kHashBonusShe, 1e-18));
+    expect(hashShe, lessThan(1));
+    expect(sumNanos, lessThanOrEqualTo(circNanos));
+
+    final live = _PoolLive(headerHex: hex, height: height, balance: hashShe, owner: dest, pending: hud);
+    live.headerAtHeight[1] = hex;
+    live.circulatingNanos = circNanos;
+    live.owedPi = 35;
+    live.notes = notes;
+    live.history = [
+      for (var i = 0; i < 8; i++)
+        {
+          'id': 'blockfound:${i + 1}:$dest',
+          'from': 'coinbase',
+          'to': dest,
+          'amount': potAfterFee,
+          'hashAmount': kHashBonusShe,
+          'pot': potAfterFee,
+          'kind': 'blockfound',
+          'height': i + 1,
+          'confirmed': true,
+        },
+    ];
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    ledger.assignArchiveSpendable(dest, invented);
+    ledger.assignArchiveSpendable(dest, potAfterFee * 8);
+    expect(ledger.spendable(dest), closeTo(potAfterFee * 8, 1e-9));
+
+    final got = await ledger.forceSync(id.address, paymentCode: id.paymentCode);
+    expect(ledger.creditSyncLanded, isTrue);
+    expect(got, closeTo(hashShe, 1e-18));
+    expect(ledger.spendable(dest), closeTo(hashShe, 1e-18));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(hashShe, 1e-18));
+    expect(ledger.circulatingNanos, circNanos);
+    expect(ledger.extraMintedNanos, 0);
+    expect((ledger.spendable(dest) * kUnitsPerShe).round(), lessThanOrEqualTo(ledger.circulatingNanos!));
+    expect(ledger.spendable(dest), isNot(closeTo(invented, 1e-6)));
+    expect(ledger.spendable(dest), isNot(closeTo(potAfterFee * 8, 1e-6)));
+    expect(ledger.spendable(dest), isNot(closeTo(hashShe + hud, 1e-12)));
+    expect(ledger.spendable(dest), isNot(closeTo(hashShe + 35, 1e-6)));
+    expect(ledger.pending(dest), closeTo(hud, 1e-18));
+    expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(35, 1e-9));
+
+    ledger.confirmRound(address: dest, pot: potAfterFee * 4, height: 30);
+    ledger.settleTo(height);
+    ledger.rememberSpendable(dest, potAfterFee * 8);
+    expect(ledger.spendable(dest), closeTo(hashShe, 1e-18));
+    final again = await ledger.forceSync(id.address, paymentCode: id.paymentCode);
+    expect(ledger.creditSyncLanded, isTrue);
+    expect(again, closeTo(hashShe, 1e-18));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(hashShe, 1e-18));
+    expect((ledger.spendableOwned(id.address, paymentCode: id.paymentCode) * kUnitsPerShe).round(),
+        lessThanOrEqualTo(circNanos));
+  });
+
   test('custody sweep overwrites every owned dest; a sibling 504 is not done', () async {
     const dust = 9.78e-5;
     const invented = 0.99 * 8;
@@ -8414,6 +8500,8 @@ class _PoolLive {
   double balance;
   double pending;
   int avgBlockTimeMs;
+  /// Sealed supply from /api/stats. Omitted when null so older fixtures stay quiet.
+  int? circulatingNanos;
   String? owner;
   List<Map<String, dynamic>> incoming;
   List<Map<String, dynamic>> history;
@@ -8499,6 +8587,7 @@ Future<HttpServer> _fakePool({
         'totalIdleNanos': portal['totalIdleNanos'] ?? 0,
         'votes': portal['votes'] ?? {'increase': 0, 'decrease': 0, 'hold': 0},
         'hashBonusNanos': portal['liveHashBonusNanos'] ?? 1,
+        if (state.circulatingNanos != null) 'circulatingNanos': state.circulatingNanos,
       }));
     } else if (req.uri.path == '/api/explorer/header' || req.uri.path == '/header') {
       state.headerHits += 1;

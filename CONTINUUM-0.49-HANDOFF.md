@@ -136,9 +136,9 @@ Hasher mining dest only:
 
 1. Install **0.49.0** (window title `Shear 0.49.0`), not the 0.48 zip.
 2. Unlock and wait until tip sync shows the live height.
-3. `GET https://pool.shear.digital/api/wallet/balance?address=<dest above>` `balance` is the honest dust (hash notes + any real pool-withdraw, not pot-class SHE).
-4. Continuum **Spendable** matches that balance (about `0.000097800` SHE while the dest is still dust). It must not show N × ~0.99 SHE.
-5. **Owed toward π** may be non-zero. It is not added into Spendable.
+3. `GET https://pool.shear.digital/api/wallet/balance?address=<dest above>` `balance` is Σ sealed hash-note nanos on that dest, plus any real pool-withdraw landing. While the dest is still only hash notes, that sum is dust-scale (about `0.000102` SHE). It is not a painted dust constant and not N × ~0.99.
+4. Continuum **Spendable** matches that sum, and that sum is at or under circulating supply (about one SHE per sealed height, Extra minted 0). Matching the miner HUD, painting a dust floor, or folding Owed toward π or In Reserve is not this check.
+5. **Owed toward π** may be non-zero. It is not added into Spendable. In Reserve is not added either.
 6. Lock the app, unlock again (or let the next poll run). Spendable stays on that balance. A hung pool (504) must not jump it back to the pot sum.
 7. In Reserve, if it already shows an honest lock (for example 35 SHE), leave it. That figure is not Continuum Spendable.
 8. Do not compare Spendable to the miner hashbonus HUD.
