@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity, destOpeningFromView, spendDestOf, hash20FromAddress } from '../../crypto/address.js';
-import { noteCommitOfDest20 } from '../../crypto/note.js';
+import { noteCommitOfDest20, sealCoinbaseNote } from '../../crypto/note.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
@@ -14,6 +14,7 @@ import {
   JOIN_KIND_GENESIS,
   NANOS_PER_SHE,
   PI_SHE_NANOS,
+  POOL_FEE_BPS,
   SPENDABLE_CONFIRMATIONS,
 } from '../../crypto/asert.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
@@ -154,6 +155,100 @@ describe('wallet fluxset RPC', () => {
     }];
     const rec = reconstructOwner(store, dest);
     assert.ok(rec.spendableNanos >= 2 * NANOS_PER_SHE, JSON.stringify(rec));
+  });
+
+  it('custody reconstruct pays the hasher hash only; pool holds the pot; match-miss invent is 0', () => {
+    const poolDest = spendDestOf(newIdentity().spendPub);
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const rest = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
+    const hashNanos = 256;
+    const potVout = sealCoinbaseNote(rest, { dest20: hash20FromAddress(poolDest), kind: 'pot' });
+    const hashVout = sealCoinbaseNote(hashNanos, { dest20: hash20FromAddress(hasher), kind: 'hash' });
+    const matureTip = 2 + SPENDABLE_CONFIRMATIONS;
+    const store = {
+      blocks: [{
+        height: 2,
+        hash: Buffer.alloc(32, 0x61),
+        miner: poolDest,
+        poolDest,
+        shareBatch: [{ dest: hasher, dest20: hash20FromAddress(hasher), nonce: 1n, lz: 8 }],
+        aLeaves: [{ noteCommit: noteCommitOfDest20(hash20FromAddress(hasher)), count: hashNanos }],
+        txs: [{ coinbase: true, vout: [potVout, hashVout] }],
+      }],
+      tip: () => ({ height: matureTip }),
+      mempool: [],
+    };
+    const hasherRec = reconstructOwner(store, hasher);
+    const poolRec = reconstructOwner(store, poolDest);
+    assert.equal(hasherRec.spendableNanos, hashNanos);
+    assert.equal(poolRec.spendableNanos, rest);
+    assert.ok(hasherRec.spendableNanos < rest);
+
+    const want = noteCommitOfDest20(hash20FromAddress(hasher));
+    const missBlocks = Array.from({ length: 8 }, (_, i) => ({
+      height: i + 1,
+      hash: Buffer.alloc(32, 0x70 + i),
+      miner: hasher,
+      poolDest,
+      aLeaves: [{ noteCommit: Buffer.alloc(32, 9), count: 256 }],
+      txs: [{
+        coinbase: true,
+        vout: [{ kind: 'pot', noteCommit: want, nanos: 0, commit: Buffer.alloc(32, 3) }],
+      }],
+    }));
+    const miss = reconstructOwner({
+      blocks: missBlocks,
+      tip: () => ({ height: 8 + SPENDABLE_CONFIRMATIONS }),
+      mempool: [],
+    }, hasher);
+    assert.equal(miss.spendableNanos, 0);
+    assert.notEqual(miss.spendableNanos, rest * 8);
+  });
+
+  it('solo reconstruct still props a sealed pot onto the miner', () => {
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const potVout = sealCoinbaseNote(NANOS_PER_SHE, { dest20: hash20FromAddress(hasher), kind: 'pot' });
+    const store = {
+      blocks: [{
+        height: 2,
+        hash: Buffer.alloc(32, 0x62),
+        miner: hasher,
+        shareBatch: [{ dest: hasher, dest20: hash20FromAddress(hasher), nonce: 1n, lz: 8 }],
+        txs: [{ coinbase: true, vout: [potVout] }],
+      }],
+      tip: () => ({ height: 2 + SPENDABLE_CONFIRMATIONS }),
+      mempool: [],
+    };
+    assert.equal(reconstructOwner(store, hasher).spendableNanos, NANOS_PER_SHE);
+  });
+
+  it('eight pot-after-fee misses do not raise a positive hash reconstruction', () => {
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const pool = spendDestOf(newIdentity().spendPub);
+    const hashNanos = 256;
+    const rest = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
+    const want = noteCommitOfDest20(hash20FromAddress(hasher));
+    const blocks = Array.from({ length: 8 }, (_, i) => ({
+      height: i + 1,
+      hash: Buffer.alloc(32, 0x30 + i),
+      miner: hasher,
+      poolDest: pool,
+      aLeaves: [{ noteCommit: Buffer.alloc(32, 9), count: 256 }],
+      txs: [{
+        coinbase: true,
+        vout: [{ kind: 'pot', noteCommit: want, nanos: 0, commit: Buffer.alloc(32, 4) }],
+      }],
+    }));
+    const rec = reconstructOwner({
+      historyFor: () => [{
+        id: 'hash-1', to: hasher, from: 'coinbase', nanos: hashNanos, height: 2, kind: 'hash',
+      }],
+      blocks,
+      tip: () => ({ height: 8 + SPENDABLE_CONFIRMATIONS }),
+      mempool: [],
+    }, hasher);
+    assert.equal(rec.spendableNanos, hashNanos);
+    assert.notEqual(rec.spendableNanos, rest * 8);
   });
 });
 

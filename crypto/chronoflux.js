@@ -19,7 +19,7 @@
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS, BLOCK_SUBSIDY_NANOS } from './asert.js';
 import { shareRowJson } from './pack.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves } from './coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, sealedPotIsCustody } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8 } from './note.js';
 import { hash20FromAddress } from './address.js';
@@ -123,11 +123,21 @@ export function sealedExplorerRows(block) {
   const txs = Array.isArray(block?.txs) ? block.txs : [];
   const cb = txs[0];
   if (cb?.coinbase && Array.isArray(cb.vout)) {
-    let pays = expectedCoinbasePays(block.shareBatch || [], {
+    const potNanos = Number(block.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
+    const custodyDest = block.poolDest || '';
+    const custodialPot = !!(custodyDest && sealedPotIsCustody(block, custodyDest, potNanos));
+    let pays = expectedCoinbasePays(block.shareBatch || [], custodialPot ? {
+      miner: block.miner,
+      poolDest: custodyDest,
+      hashBonusNanos: HASH_BONUS_NANOS,
+      potNanos,
+      custodialPot: true,
+      feeDest: poolFeeDest(),
+    } : {
       miner: block.miner,
       poolDest: poolFeeDest(),
       hashBonusNanos: HASH_BONUS_NANOS,
-      potNanos: Number(block.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS,
+      potNanos,
     });
     const paysBound = (pays || []).some((p) => {
       try {
@@ -136,7 +146,14 @@ export function sealedExplorerRows(block) {
         return false;
       }
     });
-    if (!paysBound) {
+    if (custodialPot) {
+      // Hash leaves only. Pot rows from Tree-A would PROP the block pot onto hasher commits.
+      const hashOnly = paysFromALeaves(block.aLeaves || [], {
+        hashBonusNanos: HASH_BONUS_NANOS,
+        custodialPot: true,
+      });
+      if (hashOnly.length) pays = [...pays, ...hashOnly];
+    } else if (!paysBound) {
       const recovered = paysFromALeaves(block.aLeaves || [], { hashBonusNanos: HASH_BONUS_NANOS });
       if (recovered.length) pays = [...pays, ...recovered];
     }

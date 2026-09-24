@@ -22,6 +22,7 @@ import {
   mempoolPressure,
   mempoolDepthBytes,
   poolPayoutDest,
+  poolFeeDest,
   poolWithdrawTx,
   verifyPoolWithdrawOffchain,
   containsShe1,
@@ -30,7 +31,7 @@ import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, open
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, spentNoteCommits, noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, spentNoteCommits, sealedPotIsCustody } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
@@ -215,36 +216,53 @@ export function reconstructOwner(store, address) {
     }).filter(Boolean);
     const spent = spentNoteCommits(store.blocks || []);
     for (const b of store.blocks || []) {
-      const pays = [
-        ...expectedCoinbasePays(b.shareBatch || [], {
-          miner: b.miner,
-          hashBonusNanos: bonus,
-          potNanos: Number(b.blockSubsidyNanos) || undefined,
-        }),
-        ...paysFromALeaves(b.aLeaves || [], { hashBonusNanos: bonus }),
-      ];
+      const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
+      const pool = b.poolDest || '';
+      const custodialPot = !!(pool && sealedPotIsCustody(b, pool, potNanos));
+      const leafPays = paysFromALeaves(b.aLeaves || [], { hashBonusNanos: bonus, custodialPot });
+      const pays = custodialPot
+        ? [
+            ...expectedCoinbasePays(b.shareBatch || [], {
+              miner: b.miner,
+              poolDest: pool,
+              hashBonusNanos: bonus,
+              potNanos,
+              custodialPot: true,
+              feeDest: poolFeeDest(),
+            }),
+            ...leafPays.filter((p) => p.kind === 'hash'),
+          ]
+        : [
+            ...expectedCoinbasePays(b.shareBatch || [], {
+              miner: b.miner,
+              hashBonusNanos: bonus,
+              potNanos: Number(b.blockSubsidyNanos) || undefined,
+            }),
+            ...leafPays,
+          ];
       for (const tx of b.txs || []) {
         for (const o of tx.vout || []) {
           if (!o?.noteCommit || !wants.length) continue;
           const nc = Buffer.from(asU8(o.noteCommit));
           if (nc.length === 32 && spent.has(nc.toString('hex'))) continue;
           if (!wants.some((w) => w.equals(nc))) continue;
-          let n = Number(o.nanos || 0);
-          if (tx.coinbase) n = matchSealedCoinbaseVout(o, pays).nanos || n;
+          let n = 0;
+          if (tx.coinbase) {
+            const matched = matchSealedCoinbaseVout(o, pays);
+            // Unsealed vouts report their explicit nanos. A sealed miss stays 0
+            // — do not keep a public nanos lie or invent pot-after-fee.
+            n = matched.nanos || 0;
+          } else {
+            n = Number(o.nanos || 0);
+          }
           if (isSpendableHeight(b.height, tipH) && n > 0) nanos += n;
         }
       }
     }
     nanos -= dests.reduce((a, d) => a + mempoolDebitNanos(mempool, d), 0);
   }
-  let notes = 0;
-  for (const d of dests) {
-    notes += noteCommitSpendableNanos(store.blocks || [], d, tipH, {
-      hashBonusNanos: bonus,
-    });
-    notes -= mempoolDebitNanos(mempool, d);
-  }
-  if (notes > nanos) nanos = notes;
+  // Note-commit sums do not override this reconstruction. `notes > nanos`
+  // copied N × (pot − fee) onto the hasher (8 × 0.99 SHE = 7.92).
   if (nanos < 0) nanos = 0;
   return { ...rec, spendableNanos: nanos, spendable: nanosToShe(nanos) };
 }
@@ -1021,7 +1039,17 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           let nanos;
           if (tx.coinbase) {
             const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
-            const pays = expectedCoinbasePays(b.shareBatch || [], {
+            const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
+            const custodyDest = b.poolDest || '';
+            const custodialPot = !!(custodyDest && sealedPotIsCustody(b, custodyDest, potNanos));
+            const pays = expectedCoinbasePays(b.shareBatch || [], custodialPot ? {
+              miner: b.miner,
+              poolDest: custodyDest,
+              hashBonusNanos: bonus,
+              potNanos,
+              custodialPot: true,
+              feeDest: poolFeeDest(),
+            } : {
               miner: b.miner,
               poolDest,
               hashBonusNanos: bonus,
@@ -1031,6 +1059,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
             if (nanos == null) {
               nanos = matchSealedCoinbaseVout(o, paysFromALeaves(b.aLeaves || [], {
                 hashBonusNanos: bonus,
+                custodialPot,
               })).nanos || undefined;
             }
           }
