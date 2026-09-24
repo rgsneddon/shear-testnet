@@ -151,7 +151,7 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.48.0"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.49.0"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
@@ -159,11 +159,11 @@ void main() {
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.48.0"'), isTrue);
+    expect(winMain.contains('L"Shear 0.49.0"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.48.0"'), isTrue);
+    expect(winRc.contains('"Shear 0.49.0"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.48.0"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.49.0"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -1914,8 +1914,8 @@ void main() {
         reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.48.0+70'));
-    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.48.0'"));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.49.0+71'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.49.0'"));
   });
 
   test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
@@ -2693,7 +2693,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.48.0');
+    expect(kWalletVersion, '0.49.0');
     expect(kWalletVersion.split('.').length, 3);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(kWalletVersion, isNot('0.47'));
@@ -3155,8 +3155,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.48.0');
-    expect(kWalletVersion, '0.48.0');
+    expect(app.title, 'Shear 0.49.0');
+    expect(kWalletVersion, '0.49.0');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -5985,8 +5985,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.48.0 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.48.0');
+  test('kWalletVersion == 0.49.0 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.49.0');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -7170,6 +7170,112 @@ void main() {
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), isNot(closeTo(noteShe, 1e-6)));
   });
 
+  test('custody hasher forceSync does not return pot invent after a dust snapshot', () async {
+    const dust = 9.78e-5;
+    const pot = 0.99;
+    const pots = 8;
+    final invented = pot * pots;
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final probe = ShearLedger()..bindIdentity(id);
+    final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
+    final d20 = hash20FromAddress(dest)!;
+    final nanos = (dust * kUnitsPerShe).round();
+
+    final offline = ShearLedger()..bindIdentity(id);
+    var lie = _sealNoteNoRange(nanos, dest20: d20, kind: 'hash');
+    lie = attachAdmitPub(lie, admitBase: pointFrom(admitBaseBytes(seed)));
+    final lieRow = compactSealedVout(lie);
+    lieRow['height'] = 4;
+    lieRow['amount'] = pot;
+    lieRow['nanos'] = nanos;
+    offline.ingestSealedVouts([lieRow], spendSeed: seed, dest: dest);
+    offline.settleTo(4 + ShearLedger.spendableConfirmations - 1);
+    expect(offline.spendable(dest), closeTo(nanos / kUnitsPerShe, 1e-12));
+    expect(offline.spendable(dest), isNot(closeTo(pot, 1e-6)));
+
+    final live = _PoolLive(headerHex: hex, height: 20, balance: dust, owner: dest, pending: 40);
+    live.headerAtHeight[1] = hex;
+    live.owedPi = 35;
+    live.history = [
+      for (var i = 0; i < pots; i++)
+        {
+          'id': 'blockfound:${i + 1}:$dest',
+          'from': 'coinbase',
+          'to': dest,
+          'amount': pot + dust,
+          'hashAmount': dust,
+          'pot': pot,
+          'kind': 'blockfound',
+          'height': i + 1,
+          'confirmed': true,
+        },
+    ];
+    var hash = _sealNoteNoRange(nanos, dest20: d20, kind: 'hash');
+    hash = attachAdmitPub(hash, admitBase: pointFrom(admitBaseBytes(seed)));
+    final hashRow = compactSealedVout(hash);
+    hashRow['height'] = 6;
+    hashRow['amount'] = pot;
+    hashRow['nanos'] = nanos;
+    live.notes = [hashRow];
+    final server = await _fakePool(live: live);
+    addTearDown(() => server.close(force: true));
+    final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    ledger.rememberSpendable(dest, invented);
+    ledger.mergeChainTx(ShearTx(
+      id: 'cached-pot',
+      from: 'coinbase',
+      to: dest,
+      amount: invented,
+      kind: 'blockfound',
+      height: 3,
+      confirmed: true,
+      pot: invented,
+    ));
+    expect(ledger.spendable(dest), closeTo(invented, 1e-9));
+
+    final got = await ledger.forceSync(id.address, paymentCode: id.paymentCode);
+    expect(ledger.creditSyncLanded, isTrue);
+    expect(got, closeTo(dust, 1e-12));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(dust, 1e-12));
+    expect(ledger.spendable(dest), isNot(closeTo(invented, 1e-6)));
+    expect(ledger.spendable(dest), isNot(closeTo(dust + 35, 1e-6)));
+    expect(ledger.spendable(dest), isNot(closeTo(dust + 40, 1e-6)));
+    expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(35, 1e-9));
+
+    ledger.rememberSpendable(dest, invented);
+    ledger.settleTo(80);
+    ledger.applyTipHex(hex, sealedHeight: 40);
+    expect(ledger.spendable(dest), closeTo(dust, 1e-12));
+
+    ledger.applyPoolSnapshot(
+      dest,
+      {'balance': dust, 'pending': 40, 'owedPi': 35, 'confirmingPot': 35},
+      beforeHeight: 20,
+      tipSealed: 40,
+    );
+    expect(ledger.spendable(dest), closeTo(dust, 1e-12));
+    expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(35, 1e-9));
+
+    final resumed = ShearLedger()..bindIdentity(id);
+    applyUserArchive(resumed, ledgerUserArchive(ledger));
+    expect(resumed.spendable(dest), closeTo(dust, 1e-12));
+    resumed.rememberSpendable(dest, invented);
+    resumed.settleTo(90);
+    expect(resumed.spendable(dest), closeTo(dust, 1e-12));
+    expect(resumed.spendableOwned(id.address, paymentCode: id.paymentCode), isNot(closeTo(invented, 1e-6)));
+
+    live.failBalance = true;
+    final again = await ledger.forceSync(id.address, paymentCode: id.paymentCode);
+    expect(ledger.creditSyncLanded, isFalse);
+    expect(again, closeTo(dust, 1e-12));
+    expect(ledger.spendable(dest), closeTo(dust, 1e-12));
+    expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(35, 1e-9));
+  });
+
   test('owedTowardPi keeps the mailbox pull-book when another dest reports 0', () async {
     final id = createIdentity();
     final header = Uint8List(128);
@@ -7905,6 +8011,8 @@ class _PoolLive {
   bool amountsOnly = false;
   bool destProof = true;
   bool failHistory = false;
+  /// When set, /api/wallet/balance answers 504 and must not count as a sync.
+  bool failBalance = false;
   String lastHistoryOpen = '';
   int balanceHits = 0;
   int historyHits = 0;
@@ -8031,6 +8139,13 @@ Future<HttpServer> _fakePool({
       }));
     } else if (req.uri.path == '/api/wallet/balance') {
       state.balanceHits += 1;
+      if (state.failBalance) {
+        req.response.statusCode = 504;
+        req.response.headers.contentType = ContentType.html;
+        req.response.write('<html><body>504 Gateway Timeout</body></html>');
+        await req.response.close();
+        return;
+      }
       final addr = req.uri.queryParameters['address'] ?? '';
       final incoming = state.incoming.where((r) => r['to'] == addr || payoutDest(r['to']?.toString() ?? '') == addr).toList();
       req.response.write(jsonEncode({

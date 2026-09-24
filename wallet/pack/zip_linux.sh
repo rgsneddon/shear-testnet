@@ -8,8 +8,8 @@ mkdir -p "$DIST"
 test -x "$BUNDLE/shear_wallet"
 # Wallet zip is GUI only. Official miner is a separate GitHub release.
 
-linux_out="$DIST/shear-wallet-0.30-linux.zip"
-arch_out="$DIST/shear-wallet-0.30-archlinux.zip"
+linux_out="$DIST/shear-wallet-0.49-linux.zip"
+arch_out="$DIST/shear-wallet-0.49-archlinux.zip"
 rm -f "$linux_out" "$arch_out"
 
 python3 - <<PY
@@ -24,12 +24,12 @@ def add_tree(z, root):
             p = os.path.join(dp, fn)
             z.write(p, os.path.relpath(p, root))
 
-linux_out = os.path.join(dist, "shear-wallet-0.30-linux.zip")
+linux_out = os.path.join(dist, "shear-wallet-0.49-linux.zip")
 with zipfile.ZipFile(linux_out, "w", zipfile.ZIP_DEFLATED) as z:
     add_tree(z, bundle)
 print("wrote", linux_out, os.path.getsize(linux_out))
 
-arch_out = os.path.join(dist, "shear-wallet-0.30-archlinux.zip")
+arch_out = os.path.join(dist, "shear-wallet-0.49-archlinux.zip")
 with zipfile.ZipFile(arch_out, "w", zipfile.ZIP_DEFLATED) as z:
     z.write(pkgbuild, "PKGBUILD")
     add_tree(z, bundle)

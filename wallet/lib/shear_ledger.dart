@@ -224,15 +224,23 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       }
     }
     final kind = (o['kind'] as String?) ?? 'pot';
-    num? amt = o['amount'] as num?;
-    if (amt == null && o['nanos'] is num) {
-      amt = (o['nanos'] as num) / kUnitsPerShe;
-    }
-    if (amt == null) {
+    // Sealed nanos / valueProof.v is the note. A fatter `amount` (pot-after-fee
+    // painted onto a hash vout) must not win — that max is how invent stuck.
+    double? sealedShe;
+    var haveSealed = false;
+    if (o['nanos'] is num) {
+      haveSealed = true;
+      sealedShe = (o['nanos'] as num).toDouble() / kUnitsPerShe;
+    } else {
       final vp = o['valueProof'];
       if (vp is Map && vp['v'] is num) {
-        amt = (vp['v'] as num) / kUnitsPerShe;
+        haveSealed = true;
+        sealedShe = (vp['v'] as num).toDouble() / kUnitsPerShe;
       }
+    }
+    num? amt = haveSealed ? sealedShe : null;
+    if (!haveSealed && o['amount'] is num) {
+      amt = o['amount'] as num;
     }
     if (amt == null) {
       final h = (o['height'] as num?)?.toInt();
@@ -893,6 +901,12 @@ class ShearLedger {
 
   final ShearPoolClient? pool;
   final Map<String, double> _spendable = {};
+  /// Last successful pool `/api/wallet/balance` per dest. This is the Spendable
+  /// book. Local folds, cached tx sums, and a missed pull must not raise it.
+  final Map<String, double> _poolBook = {};
+  /// True only when the latest credit sync applied a balance snapshot.
+  /// A 504 / timeout / HTML body is not a completed sync.
+  bool creditSyncLanded = false;
   /// Owned sealed notes (commit, noteCommit, r, prev, index, admit x). Reserve vault excepted.
   final List<Map<String, dynamic>> _notes = [];
   List<Map<String, dynamic>> get notes => List.unmodifiable(_notes);
@@ -1015,7 +1029,10 @@ class ShearLedger {
           hashAmount: she,
         ));
       }
-      if (h > 0) {
+      // Hash folds update ShearView. They are not a second reconstruct.
+      // Once a pool snapshot pins this dest, settling the fold would add the
+      // note on top of a balance that already counted it — or add a pot lie.
+      if (h > 0 && !_poolBookPins(matched)) {
         _immature.add((dest: matched, amount: she, height: h));
       }
     }
@@ -1785,7 +1802,11 @@ class ShearLedger {
     final keep = <({String dest, double amount, int height})>[];
     for (final row in _immature) {
       if (!creditsFrozen && confirmationsOf(row.height, tip) >= spendableConfirmations) {
-        _spendable[row.dest] = (_spendable[row.dest] ?? 0) + row.amount;
+        // A pinned dest already has its reconstruct. Adding the immature row
+        // back is how pot-class SHE returned after a good sync.
+        if (!_poolBookPins(row.dest)) {
+          _spendable[row.dest] = (_spendable[row.dest] ?? 0) + row.amount;
+        }
         if (row.height > _settledHeight) _settledHeight = row.height;
       } else {
         keep.add(row);
@@ -1830,7 +1851,37 @@ class ShearLedger {
   }
 
   void rememberSpendable(String address, double amount) {
+    if (_poolBookPins(address)) return;
     if (amount > spendable(address)) _spendable[address] = amount;
+  }
+
+  bool _poolBookPins(String address) {
+    if (address.isEmpty) return false;
+    if (_poolBook.containsKey(address)) return true;
+    final key = payKey(address);
+    return key != address && _poolBook.containsKey(key);
+  }
+
+  /// Drop local raises that climbed above the last pool reconstruct.
+  void _clampToPoolBook() {
+    for (final e in _poolBook.entries) {
+      final cur = _spendable[e.key];
+      if (cur != null && cur > e.value + 1e-12) _spendable[e.key] = e.value;
+    }
+  }
+
+  Map<String, double> exportedPoolBook() => Map<String, double>.from(_poolBook);
+
+  void restorePoolBook(Map<dynamic, dynamic> raw) {
+    for (final e in raw.entries) {
+      final key = e.key.toString();
+      final v = e.value;
+      if (!isDestAddress(key) || v is! num || v < 0) continue;
+      if (_isProgramVaultDest(key)) continue;
+      final she = v.toDouble();
+      _poolBook[key] = she;
+      _spendable[key] = she;
+    }
   }
 
   Future<void> syncTip() async {
@@ -1893,14 +1944,23 @@ class ShearLedger {
       final before = _settledHeight;
       await syncTip();
       final json = await pool!.balance(address);
-      applyPoolSnapshot(address, json, beforeHeight: before, tipSealed: _sealedHeight);
+      creditSyncLanded = applyPoolSnapshot(address, json, beforeHeight: before, tipSealed: _sealedHeight);
       _markSettled(_sealedHeight, before);
       await syncHistory(address);
+      _clampToPoolBook();
       return spendable(address);
     } catch (_) {
-      return prev;
+      creditSyncLanded = false;
+      _clampToPoolBook();
+      return _poolBookPins(address) ? spendable(address) : prev;
     }
   }
+
+  /// Unlock / manual resync. Same book as [syncCredits]. A missed balance
+  /// (504, timeout, HTML) does not count as done and does not publish a
+  /// local pot fold as Spendable.
+  Future<double> forceSync(String restFrame, {String? paymentCode, bool openMemos = false}) =>
+      syncCredits(restFrame, paymentCode: paymentCode, openMemos: openMemos);
 
   double spendableOwned(String restFrame, {String? paymentCode}) {
     spendPub ??= decodePaymentCode(paymentCode ?? '')?['spendPub'];
@@ -1915,14 +1975,18 @@ class ShearLedger {
   }
 
   double _noteSheOf(Map<String, dynamic> note, double fallback) {
+    final nanos = note['nanos'];
+    if (nanos is num) {
+      final she = nanos.toDouble() / kUnitsPerShe;
+      if (she >= 0) return she;
+    }
+    final vp = note['valueProof'];
+    if (vp is Map && vp['v'] is num) {
+      final she = (vp['v'] as num).toDouble() / kUnitsPerShe;
+      if (she >= 0) return she;
+    }
     final amt = note['amount'];
     if (amt is num && amt > 0) return amt.toDouble();
-    final nanos = note['nanos'];
-    if (nanos is num && nanos > 0) return nanos.toDouble() / kUnitsPerShe;
-    final vp = note['valueProof'];
-    if (vp is Map && vp['v'] is num && (vp['v'] as num) > 0) {
-      return (vp['v'] as num).toDouble() / kUnitsPerShe;
-    }
     return fallback;
   }
 
@@ -2138,6 +2202,40 @@ class ShearLedger {
   /// Reconstructed [balance] is already-confirmed spendable at the tip, including
   /// first boot when local sealed height was 0. Open-round [pending] + [incoming]
   /// stay pending until sealed height advances by one from a known height.
+  /// [owedPi] / [confirmingPot] are display-only and are not added to Spendable.
+  /// Returns true when a non-negative balance pinned the dest book.
+  bool applyPoolSnapshot(
+    String address,
+    Map<String, dynamic> json, {
+    required int beforeHeight,
+    required int tipSealed,
+    bool writeOwed = true,
+  }) {
+    _ingestIncoming(json);
+    if (writeOwed) _takeOwed(json);
+    if (!isDestAddress(address)) return false;
+    _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
+    if (beforeHeight > 0 && tipSealed > beforeHeight) {
+      confirmRound(address: address, pot: 0, height: beforeHeight + 1);
+      settleTo(tipSealed);
+    }
+    if (_isProgramVaultDest(address)) {
+      _dropProgramVaults();
+      return false;
+    }
+    final live = (json['balance'] as num?)?.toDouble();
+    if (live == null || live < 0) return false;
+    final key = payKey(address);
+    if (_isProgramVaultDest(key)) {
+      _dropProgramVaults();
+      return false;
+    }
+    if (live > 0) rememberDest(key);
+    _poolBook[key] = live;
+    _spendable[key] = live;
+    return true;
+  }
+
   void _takeOwed(Map<String, dynamic> json) {
     final owed = json['owedPi'] ?? json['confirmingPot'];
     if (owed is num && owed >= 0) _owedPiDisplay = owed.toDouble();
@@ -2149,42 +2247,13 @@ class ShearLedger {
     if (saw) _owedPiDisplay = owedMax;
   }
 
-  void applyPoolSnapshot(
-    String address,
-    Map<String, dynamic> json, {
-    required int beforeHeight,
-    required int tipSealed,
-    bool writeOwed = true,
-  }) {
-    _ingestIncoming(json);
-    if (writeOwed) _takeOwed(json);
-    if (!isDestAddress(address)) return;
-    _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
-    if (beforeHeight > 0 && tipSealed > beforeHeight) {
-      confirmRound(address: address, pot: 0, height: beforeHeight + 1);
-      settleTo(tipSealed);
-    }
-    if (_isProgramVaultDest(address)) {
-      _dropProgramVaults();
-      return;
-    }
-    final live = (json['balance'] as num?)?.toDouble();
-    if (live != null && live >= 0) {
-      final key = address;
-      if (_isProgramVaultDest(key)) {
-        _dropProgramVaults();
-        return;
-      }
-      if (live > 0) rememberDest(key);
-      _spendable[key] = live;
-    }
-  }
-
   /// Balance sweep. Owed-π is the max pull-book figure across dests, applied
   /// after the loop so a change dest's 0 does not clear the mailbox.
-  Future<({double max, bool saw})> _balancesFor(Iterable<String> dests, {required int before}) async {
+  /// [landed] counts dests whose balance pinned the book. A thrown pull does not.
+  Future<({double max, bool saw, int landed})> _balancesFor(Iterable<String> dests, {required int before}) async {
     var maxOwed = 0.0;
     var saw = false;
+    var landed = 0;
     for (final d in dests) {
       if (!isDestAddress(d)) continue;
       try {
@@ -2194,16 +2263,18 @@ class ShearLedger {
           saw = true;
           if (owed > maxOwed) maxOwed = owed.toDouble();
         }
-        applyPoolSnapshot(
+        if (applyPoolSnapshot(
           d,
           json,
           beforeHeight: before,
           tipSealed: _sealedHeight,
           writeOwed: false,
-        );
+        )) {
+          landed++;
+        }
       } catch (_) {}
     }
-    return (max: maxOwed, saw: saw);
+    return (max: maxOwed, saw: saw, landed: landed);
   }
 
   /// Pull Continuum for this wallet's own money dests.
@@ -2222,6 +2293,7 @@ class ShearLedger {
     final dests = syncDests(restFrame, paymentCode: paymentCode);
     final reconstructed = <String, double>{};
     final owedSweep = await _balancesFor(dests, before: before);
+    creditSyncLanded = owedSweep.landed > 0;
     _finishOwedSweep(owedSweep.max, saw: owedSweep.saw);
     for (final d in dests) {
       if (!isDestAddress(d) || _isProgramVaultDest(d)) continue;
@@ -2285,7 +2357,8 @@ class ShearLedger {
       final piled = spendable(e.key);
       if (piled > e.value + 1e-12) _spendable[e.key] = e.value;
     }
-    _openCollated = true;
+    _clampToPoolBook();
+    if (creditSyncLanded || dests.isEmpty) _openCollated = true;
     return spendableOwned(restFrame, paymentCode: paymentCode);
   }
 
@@ -2299,8 +2372,10 @@ class ShearLedger {
     } catch (_) {}
     final dests = syncDests(restFrame, paymentCode: paymentCode);
     final owedSweep = await _balancesFor(dests, before: before);
+    creditSyncLanded = owedSweep.landed > 0;
     _finishOwedSweep(owedSweep.max, saw: owedSweep.saw);
     _markSettled(_sealedHeight, before);
+    _clampToPoolBook();
     return spendableOwned(restFrame, paymentCode: paymentCode);
   }
 
@@ -2567,7 +2642,9 @@ class ShearLedger {
       moved = true;
     }
     if (!moved) return;
-    if (s != 0) _spendable[bound] = (_spendable[bound] ?? 0) + s;
+    if (s != 0 && !_poolBookPins(bound)) {
+      _spendable[bound] = (_spendable[bound] ?? 0) + s;
+    }
     if (p != 0) _pending[bound] = (_pending[bound] ?? 0) + p;
     _dests.remove(flow);
     _dests.add(bound);
@@ -3002,7 +3079,7 @@ class ShearLedger {
         final amt = n['amount'];
         if (amt is num) fromNotes += amt.toDouble();
       }
-      if (fromNotes >= needShe) {
+      if (fromNotes >= needShe && !_poolBookPins(src)) {
         _spendable[src] = fromNotes;
       }
     }
@@ -3086,6 +3163,7 @@ class ShearLedger {
         }
         for (final key in keys) {
           if (!isDestAddress(key)) continue;
+          if (_poolBookPins(key)) continue;
           _spendable[key] = inventoriedNoteShe(key, sum: true);
         }
         throw StateError(hadLocal ? 'no_note' : kErrNoSealedNote);

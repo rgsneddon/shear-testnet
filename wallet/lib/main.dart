@@ -31,7 +31,7 @@ import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
 import 'shear_privacy_hop.dart';
 
-const kWalletVersion = '0.48.0';
+const kWalletVersion = '0.49.0';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
@@ -597,6 +597,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         if (session.rememberedChainGenesis != null)
           'chainGenesis': session.rememberedChainGenesis,
         'txs': session.rememberedTxs,
+        if (session.rememberedPoolBook.isNotEmpty) 'poolBook': session.rememberedPoolBook,
       });
     }
     if (session.rememberedReserve != null) {
@@ -611,10 +612,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       } catch (_) {}
       try {
         await ledger
-            .syncCredits(id!.address, paymentCode: id!.paymentCode)
+            .forceSync(id!.address, paymentCode: id!.paymentCode)
             .timeout(const Duration(seconds: 8));
-        _rememberLedger();
-        await session.persist();
+        if (ledger.creditSyncLanded || ledger.exportedPoolBook().isNotEmpty) {
+          _rememberLedger();
+          await session.persist();
+        }
       } catch (_) {}
     }
     try {
@@ -694,11 +697,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             _creditBusy = true;
             try {
               if (full) {
-                await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
+                await ledger.forceSync(ident.address, paymentCode: ident.paymentCode);
               } else {
                 await ledger.syncBalancesOnly(ident.address, paymentCode: ident.paymentCode);
               }
-              _rememberLedger();
+              if (ledger.creditSyncLanded || ledger.exportedPoolBook().isNotEmpty) {
+                _rememberLedger();
+              }
               final persistAt = DateTime.now();
               if (persistAt.difference(_lastPersist) >= const Duration(seconds: 15)) {
                 _lastPersist = persistAt;
@@ -1027,6 +1032,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     session.rememberedDestIndex = ledger.destIndex;
     session.rememberedSealedHeight = ledger.sealedHeight;
     session.rememberedChainGenesis = ledger.chainGenesis;
+    session.rememberedPoolBook = ledger.exportedPoolBook();
     session.rememberedTxs = [
       for (final t in ledger.transactions)
         if (t.kind != 'sample') t.toJson(),

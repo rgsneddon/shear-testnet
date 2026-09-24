@@ -15,7 +15,7 @@ APP="$WALLET/build/macos/Build/Products/Release/$APPNAME.app"
 
 cd "$WALLET"
 if [ "${PACK_REBUILD:-}" = "1" ] || [ ! -d "$APP" ]; then
-  flutter build macos --release --build-name=$VER --build-number="${BUILD_NUMBER:-50}"
+  flutter build macos --release --build-name=$VER --build-number="${BUILD_NUMBER:-71}"
 fi
 test -d "$APP"
 # Bundle libsodium so AdmitV1 prove is native (Dart BigInt field is minutes at live n).

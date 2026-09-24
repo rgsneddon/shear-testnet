@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.48 (current)
+## 0.49 (current)
+
+Custody hasher Spendable is the last successful pool reconstruct (sealed hash notes plus real pool-withdraw landings). A fatter note `amount`, a cached blockfound pot, or a 504 does not put pot-class SHE back onto that dest. Owed-π stays display-only. Public tag **0.49** (store `0.49.0+71`). Download: https://github.com/rgsneddon/shear-testnet/releases/tag/0.49 — see `CONTINUUM-0.49-HANDOFF.md`. ShearK pin stays **2.5**. Tag 0.48 packs were not replaced. macOS `.dmg` stays the MacBook handoff (`CONTINUUM-0.46-MAC-HANDOFF.md`).
+
+## 0.48
 
 Tip sync asks local RPC, local pool, and the public pool together, with a 5s budget on each seed. A refused loopback no longer hides the live height. `shear_wallet --print-tip <file>` writes that height and exits. Reserve stays the unprivate VPN / IP confirm. There is no privacy hop. Public tag **0.48** (store `0.48.0+70`). ShearK pin stays **2.5**. Tag 0.47 packs were not replaced. macOS `.dmg` stays the MacBook handoff (`CONTINUUM-0.46-MAC-HANDOFF.md`).
 

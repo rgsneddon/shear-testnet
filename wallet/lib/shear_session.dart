@@ -49,6 +49,7 @@ class ShearSession {
   int rememberedSealedHeight = 0;
   String? rememberedChainGenesis;
   Map<String, dynamic>? rememberedReserve;
+  Map<String, double> rememberedPoolBook = const {};
   List<Vortice> deployedVortices = const [];
   bool sealed = false;
   Map<String, dynamic>? _envelope;
@@ -158,6 +159,7 @@ class ShearSession {
           'chainGenesis': rememberedChainGenesis,
         'txs': rememberedTxs,
         if (rememberedReserve != null) 'reserve': rememberedReserve,
+        if (rememberedPoolBook.isNotEmpty) 'poolBook': rememberedPoolBook,
         'vortices': deployedVortices.map((v) => v.toJson()).toList(),
       };
 
@@ -171,6 +173,7 @@ class ShearSession {
     rememberedSealedHeight = 0;
     rememberedChainGenesis = null;
     rememberedReserve = null;
+    rememberedPoolBook = const {};
     deployedVortices = const [];
     final pw = password ?? _password;
     if (pw != null && pw.isNotEmpty) {
@@ -197,6 +200,15 @@ class ShearSession {
         .map((e) => Map<String, dynamic>.from(e))
         .toList();
     rememberedReserve = j['reserve'] is Map ? Map<String, dynamic>.from(j['reserve'] as Map) : null;
+    final book = <String, double>{};
+    final rawBook = j['poolBook'];
+    if (rawBook is Map) {
+      for (final e in rawBook.entries) {
+        final v = e.value;
+        if (v is num && v >= 0) book[e.key.toString()] = v.toDouble();
+      }
+    }
+    rememberedPoolBook = book;
     deployedVortices = ((j['vortices'] as List?) ?? const [])
         .whereType<Map>()
         .map((e) => Vortice.fromJson(Map<String, dynamic>.from(e)))
@@ -227,6 +239,7 @@ Map<String, dynamic> ledgerUserArchive(ShearLedger ledger) {
       for (final t in ledger.transactions)
         if (t.kind != 'sample') t.toJson(),
     ],
+    if (ledger.exportedPoolBook().isNotEmpty) 'poolBook': ledger.exportedPoolBook(),
   };
 }
 
@@ -256,6 +269,8 @@ void applyUserArchive(ShearLedger ledger, Map<String, dynamic> archive) {
   for (final e in sums.entries) {
     ledger.rememberSpendable(e.key, e.value);
   }
+  final book = archive['poolBook'];
+  if (book is Map) ledger.restorePoolBook(book);
 }
 
 Uint8List exportShewall({

@@ -1,4 +1,4 @@
-# Shear wallet 0.48
+# Shear wallet 0.49
 
 GUI (Flutter) and CLI. Same identity, same encrypted `shewall.bin`, same book magic `shear-testnet-v4`.
 
@@ -6,20 +6,20 @@ Tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure. The Reserve lives
 
 Backup file: encrypted `shewall.bin`. Offer `she1` when someone pays you. Incoming coin lands on a revolving `ssa1` dest. Rest-frame `shear1` stays in Closure.
 
-Mine with **Copy dest**: the Continuum `ssa1` shown on screen (Copy dest copies that mailbox; it does not mint a new one). Log ShearK in as `ssa1.worker`. Hash bonus (no 1% fee) and your pot share accumulate; the public pool auto-pays that `ssa1` at π SHE.
+Mine with **Copy dest**: the Continuum `ssa1` shown on screen (Copy dest copies that mailbox; it does not mint a new one). Log ShearK in as `ssa1.worker`. Hash bonus lands on that ssa1 after 6 confirmations. The block pot stays pool-custodial until it auto-pays at π SHE. Continuum Spendable is the pool reconstruct for that dest.
 
 Pool: `pool.shear.digital:1111` (cleartext TCP unless TLS is in front). Magic: `shear-testnet-v4`.
 
 Continuum is spendable, pending transfers until six confirmations, and Copy ID. Already-confirmed SHE loads from a local node (`127.0.0.1:18332`) on unlock. Open-round hashes stay pending until the next sealed block. Shearview lists your landings (height, from/to, date, amount, snippet); tap a row for full Resistance detail. Hashbonus sits inside the block row. The pot is pool-custodial until 30 confirms, then auto-pays at π. This wallet does not mine. Public pool HTTP submit is an advanced toggle.
 
-Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.48
+Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.49
 
 | Platform | Install |
 |----------|---------|
-| Windows | Unzip `shear-wallet-0.48-windows.zip`, run `shear_wallet.exe` |
-| Linux | Unzip `shear-wallet-0.48-linux.zip`, run `./shear_wallet` |
-| Arch | Unzip `shear-wallet-0.48-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
-| Android | Sideload `shear-wallet-0.48-android.apk` (`com.shear.shear_wallet`). Uninstall any old debug-signed build first |
+| Windows | Unzip `shear-wallet-0.49-windows.zip`, run `shear_wallet.exe` |
+| Linux | Unzip `shear-wallet-0.49-linux.zip`, run `./shear_wallet` |
+| Arch | Unzip `shear-wallet-0.49-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
+| Android | Sideload `shear-wallet-0.49-android.apk` (`com.shear.shear_wallet`). Uninstall any old debug-signed build first |
 | macOS | `.dmg` is packed on the MacBook only — see `CONTINUUM-0.46-MAC-HANDOFF.md` until the asset 200s |
 
 ## CLI
@@ -43,6 +43,6 @@ GUI-only: theme toggle, biometrics, camera QR. Everything else has a CLI command
 
 Use the **release** zip/APK from GitHub. A `flutter run` debug build is much hotter on CPU/fans; idle Continuum in a release pack stays quiet while still following the live tip.
 
-Idle 0.48 polls the tip every ~4s when nothing moved; 1s only when the tip, a pending receive, or history is behind.
+Idle 0.49 polls the tip every ~4s when nothing moved; 1s only when the tip, a pending receive, or history is behind.
 
 Mainnet `shear-v1` is not live and is not yet scheduled. `shear --network shear-v1` prints `clock_wait`.
