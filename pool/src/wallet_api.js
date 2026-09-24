@@ -31,7 +31,7 @@ import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, open
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, spentNoteCommits, sealedPotIsCustody } from '../../crypto/coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, spentNoteCommits, custodyPoolDestOf, noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
@@ -217,8 +217,8 @@ export function reconstructOwner(store, address) {
     const spent = spentNoteCommits(store.blocks || []);
     for (const b of store.blocks || []) {
       const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
-      const pool = b.poolDest || '';
-      const custodialPot = !!(pool && sealedPotIsCustody(b, pool, potNanos));
+      const pool = custodyPoolDestOf(b, potNanos);
+      const custodialPot = !!pool;
       const leafPays = paysFromALeaves(b.aLeaves || [], { hashBonusNanos: bonus, custodialPot });
       const pays = custodialPot
         ? [
@@ -261,8 +261,17 @@ export function reconstructOwner(store, address) {
     }
     nanos -= dests.reduce((a, d) => a + mempoolDebitNanos(mempool, d), 0);
   }
-  // Note-commit sums do not override this reconstruction. `notes > nanos`
-  // copied N × (pot − fee) onto the hasher (8 × 0.99 SHE = 7.92).
+  // Explorer rows can omit nanos (public history) or, before the unbound-match
+  // fix, paint pot-after-fee onto a hasher `to`. The note-commit scan is the
+  // sealed sum: hash notes for a custody hasher, pot-after-fee for the pool.
+  // It must not exceed that sum — amount-only match is gone — so it may
+  // raise a short explorer figure up to Σ notes, not N × 0.99.
+  let noteNanos = 0;
+  for (const d of dests) {
+    noteNanos += noteCommitSpendableNanos(store.blocks || [], d, tipH, { hashBonusNanos: bonus });
+    noteNanos -= mempoolDebitNanos(mempool, d);
+  }
+  if (noteNanos > nanos) nanos = noteNanos;
   if (nanos < 0) nanos = 0;
   return { ...rec, spendableNanos: nanos, spendable: nanosToShe(nanos) };
 }
@@ -1040,8 +1049,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           if (tx.coinbase) {
             const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
             const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
-            const custodyDest = b.poolDest || '';
-            const custodialPot = !!(custodyDest && sealedPotIsCustody(b, custodyDest, potNanos));
+            const custodyDest = custodyPoolDestOf(b, potNanos);
+            const custodialPot = !!custodyDest;
             const pays = expectedCoinbasePays(b.shareBatch || [], custodialPot ? {
               miner: b.miner,
               poolDest: custodyDest,

@@ -378,7 +378,9 @@ export function createStore(dir, {
   bootVault();
 
   function destSpendableNanos(addr, tipH, chain = blocks, rows = explorer) {
-    const fromExplorer = matureSpendableNanos(rows, addr, tipH);
+    // Live explorer rows may still have a painted `to`. historyFor keeps the sealed dest20.
+    const owned = rows === explorer ? historyFor(addr) : rows;
+    const fromExplorer = matureSpendableNanos(owned, addr, tipH);
     const fromNotes = noteCommitSpendableNanos(chain, addr, tipH, {
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
     });
@@ -1103,20 +1105,57 @@ export function createStore(dir, {
     }
   }
 
+  function noteCommitAgrees(rowNc, wantNc) {
+    if (!wantNc || rowNc == null || rowNc === '') return null;
+    try {
+      const nc = Buffer.from(asU8(rowNc));
+      if (nc.length !== 32) return null;
+      return nc.equals(Buffer.from(wantNc));
+    } catch {
+      return null;
+    }
+  }
+
+  // Pot and hash rows are sealed to a noteCommit. A painted `to` or `toDest20`
+  // must not spend that row to a different dest (sole hasher ← N × 0.99).
+  function coinbaseLike(r) {
+    const k = String(r?.kind || '');
+    return k === 'coinbase' || k === 'hash' || k === 'pot' || k === 'pool-fee';
+  }
+
   function historyFor(address) {
     const addr = String(address || '').trim();
     const h20 = hash20FromAddress(addr);
     const wantNc = h20 ? noteCommitOfDest20(h20) : null;
+    const toOwns = (r) => {
+      if (r.to !== addr) return false;
+      if (coinbaseLike(r) && noteCommitAgrees(r.noteCommit, wantNc) === false) return false;
+      if (h20 && r.toDest20 && !dest20Equals(r.toDest20, h20)) return false;
+      return true;
+    };
+    const fromOwns = (r) => {
+      if (r.from !== addr) return false;
+      if (h20 && r.fromDest20 && !dest20Equals(r.fromDest20, h20)) return false;
+      return true;
+    };
+    const toDestOwns = (r) => {
+      if (!h20 || !dest20Equals(r.toDest20, h20)) return false;
+      if (coinbaseLike(r) && noteCommitAgrees(r.noteCommit, wantNc) === false) return false;
+      return true;
+    };
     return explorer.filter((r) => {
-      if (r.to === addr || r.from === addr) return true;
-      if (h20 && (dest20Equals(r.fromDest20, h20) || dest20Equals(r.toDest20, h20))) return true;
-      if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc)) return true;
+      if (toOwns(r) || fromOwns(r)) return true;
+      if (h20 && dest20Equals(r.fromDest20, h20)) return true;
+      if (toDestOwns(r)) return true;
+      if (noteCommitAgrees(r.noteCommit, wantNc) === true) return true;
       return false;
     }).map((r) => {
       let row = r;
-      if (h20 && dest20Equals(r.fromDest20, h20) && !r.from) row = { ...row, from: addr };
-      if (h20 && dest20Equals(r.toDest20, h20) && !r.to) row = { ...row, to: addr };
-      if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc) && !row.to) {
+      const ncOk = noteCommitAgrees(r.noteCommit, wantNc) === true;
+      if (h20 && dest20Equals(r.fromDest20, h20)) row = { ...row, from: addr };
+      if (h20 && dest20Equals(r.toDest20, h20) && !(coinbaseLike(r) && noteCommitAgrees(r.noteCommit, wantNc) === false)) {
+        row = { ...row, to: addr };
+      } else if (ncOk) {
         row = { ...row, to: addr };
       }
       return row;
@@ -1124,7 +1163,7 @@ export function createStore(dir, {
   }
 
   function spendableNanos(address) {
-    return explorerSpendable(explorer, address);
+    return explorerSpendable(historyFor(address), address);
   }
 
   const viewByAddress = new Map();
