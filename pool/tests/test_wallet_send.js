@@ -1,9 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { newIdentity, destOpeningFromView, spendDestOf, hash20FromAddress } from '../../crypto/address.js';
 import { noteCommitOfDest20, sealCoinbaseNote } from '../../crypto/note.js';
 import { signSpendTx } from '../../crypto/spend.js';
-import { levyNanos } from '../../crypto/levy.js';
+import { levyNanos, poolFeeDest } from '../../crypto/levy.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { lockTx, voteTx } from '../../crypto/reserve_vault.js';
@@ -20,6 +23,8 @@ import {
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { isPinnedProgram, listPublicVortices, mintVorticeDeployKey } from '../../crypto/vortex.js';
 import { handleWalletApi, reconstructOwner } from '../src/wallet_api.js';
+import { sealedExplorerRows } from '../../crypto/chronoflux.js';
+import { createStore } from '../../node/src/store.js';
 
 function url(path) {
   return new URL(`http://127.0.0.1${path}`);
@@ -203,6 +208,74 @@ describe('wallet fluxset RPC', () => {
     }, hasher);
     assert.equal(miss.spendableNanos, 0);
     assert.notEqual(miss.spendableNanos, rest * 8);
+  });
+
+  it('custody hasher reconstruct stays Σ hash notes as blocks accrue, with poolDest absent', () => {
+    const pool = spendDestOf(newIdentity().spendPub);
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const rest = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
+    const hashNanos = 256;
+    const feeDest = poolFeeDest();
+    // chain.bin, compactChainBlock, and the wire drop poolDest. Share dests remain
+    // on the in-memory block that indexSealed sees. That is the shape #37 missed.
+    const blocksFor = (n, salt = 1) => Array.from({ length: n }, (_, i) => ({
+      height: i + 1,
+      hash: Buffer.from([salt, i + 1, ...Buffer.alloc(30)]),
+      miner: hasher,
+      shareBatch: [{ dest: hasher, dest20: hash20FromAddress(hasher), nonce: BigInt(i + 1), lz: 8 }],
+      aLeaves: [{
+        noteCommit: noteCommitOfDest20(hash20FromAddress(hasher)),
+        dest20: hash20FromAddress(hasher),
+        count: hashNanos,
+      }],
+      txs: [{
+        coinbase: true,
+        vout: [
+          sealCoinbaseNote(rest, { dest20: hash20FromAddress(pool), kind: 'pot' }),
+          sealCoinbaseNote(Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000), {
+            dest20: hash20FromAddress(feeDest),
+            kind: 'pool-fee',
+          }),
+          sealCoinbaseNote(hashNanos, { dest20: hash20FromAddress(hasher), kind: 'hash' }),
+        ],
+      }],
+    }));
+    const storeFor = (n) => {
+      const found = blocksFor(n, n);
+      const tipH = n + SPENDABLE_CONFIRMATIONS;
+      return {
+        blocks: [...found, { height: tipH, hash: Buffer.alloc(32, 0xee), txs: [] }],
+        tip: () => ({ height: tipH }),
+        mempool: [],
+      };
+    };
+    for (const n of [4, 12]) {
+      const rec = reconstructOwner(storeFor(n), hasher);
+      const poolRec = reconstructOwner(storeFor(n), pool);
+      assert.equal(rec.spendableNanos, n * hashNanos, `N=${n} hasher`);
+      assert.equal(poolRec.spendableNanos, n * rest, `N=${n} pool`);
+      assert.notEqual(rec.spendableNanos, n * rest);
+      assert.ok(rec.spendableNanos < rest);
+    }
+
+    const n = 12;
+    const found = blocksFor(n, 0x3c);
+    const tipH = n + SPENDABLE_CONFIRMATIONS;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-invent-'));
+    const store = createStore(dir);
+    store.blocks.push(...found, { height: tipH, hash: Buffer.alloc(32, 0xef), txs: [] });
+    // Pre-fix index: pot row `to` painted onto the hasher, sealed dest20 still the pool.
+    for (const b of found) {
+      for (const r of sealedExplorerRows(b)) {
+        const painted = r.kind !== 'hash' && r.nanos === rest ? { ...r, to: hasher } : r;
+        store.explorer.push(painted);
+      }
+    }
+    const live = reconstructOwner(store, hasher);
+    assert.equal(live.spendableNanos, n * hashNanos);
+    assert.notEqual(live.spendableNanos, rest * n);
+    assert.equal(reconstructOwner(store, pool).spendableNanos, n * rest);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('solo reconstruct still props a sealed pot onto the miner', () => {

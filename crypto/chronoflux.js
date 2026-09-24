@@ -19,7 +19,7 @@
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS, BLOCK_SUBSIDY_NANOS } from './asert.js';
 import { shareRowJson } from './pack.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, sealedPotIsCustody } from './coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8 } from './note.js';
 import { hash20FromAddress } from './address.js';
@@ -124,8 +124,9 @@ export function sealedExplorerRows(block) {
   const cb = txs[0];
   if (cb?.coinbase && Array.isArray(cb.vout)) {
     const potNanos = Number(block.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
-    const custodyDest = block.poolDest || '';
-    const custodialPot = !!(custodyDest && sealedPotIsCustody(block, custodyDest, potNanos));
+    // poolDest is not stored on chain.bin or the wire. Read custody from the sealed pot.
+    const custodyDest = custodyPoolDestOf(block, potNanos);
+    const custodialPot = !!custodyDest;
     let pays = expectedCoinbasePays(block.shareBatch || [], custodialPot ? {
       miner: block.miner,
       poolDest: custodyDest,

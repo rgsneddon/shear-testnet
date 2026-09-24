@@ -378,7 +378,9 @@ export function createStore(dir, {
   bootVault();
 
   function destSpendableNanos(addr, tipH, chain = blocks, rows = explorer) {
-    const fromExplorer = matureSpendableNanos(rows, addr, tipH);
+    // Live explorer rows may still have a painted `to`. historyFor keeps the sealed dest20.
+    const owned = rows === explorer ? historyFor(addr) : rows;
+    const fromExplorer = matureSpendableNanos(owned, addr, tipH);
     const fromNotes = noteCommitSpendableNanos(chain, addr, tipH, {
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
     });
@@ -1107,16 +1109,27 @@ export function createStore(dir, {
     const addr = String(address || '').trim();
     const h20 = hash20FromAddress(addr);
     const wantNc = h20 ? noteCommitOfDest20(h20) : null;
+    // A painted `to` (pot-after-fee on the hasher) must not win over the sealed dest20.
+    const toOwns = (r) => {
+      if (r.to !== addr) return false;
+      if (h20 && r.toDest20 && !dest20Equals(r.toDest20, h20)) return false;
+      return true;
+    };
+    const fromOwns = (r) => {
+      if (r.from !== addr) return false;
+      if (h20 && r.fromDest20 && !dest20Equals(r.fromDest20, h20)) return false;
+      return true;
+    };
     return explorer.filter((r) => {
-      if (r.to === addr || r.from === addr) return true;
+      if (toOwns(r) || fromOwns(r)) return true;
       if (h20 && (dest20Equals(r.fromDest20, h20) || dest20Equals(r.toDest20, h20))) return true;
       if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc)) return true;
       return false;
     }).map((r) => {
       let row = r;
-      if (h20 && dest20Equals(r.fromDest20, h20) && !r.from) row = { ...row, from: addr };
-      if (h20 && dest20Equals(r.toDest20, h20) && !r.to) row = { ...row, to: addr };
-      if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc) && !row.to) {
+      if (h20 && dest20Equals(r.fromDest20, h20)) row = { ...row, from: addr };
+      if (h20 && dest20Equals(r.toDest20, h20)) row = { ...row, to: addr };
+      else if (wantNc && r.noteCommit && Buffer.from(r.noteCommit).equals(wantNc) && !row.to) {
         row = { ...row, to: addr };
       }
       return row;
@@ -1124,7 +1137,7 @@ export function createStore(dir, {
   }
 
   function spendableNanos(address) {
-    return explorerSpendable(explorer, address);
+    return explorerSpendable(historyFor(address), address);
   }
 
   const viewByAddress = new Map();
