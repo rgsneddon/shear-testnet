@@ -73,6 +73,8 @@ Pool `c02f787` reads the custody pot from the sealed note when `poolDest` was ne
 
 A pool-green balance is not Continuum-green until `applyPoolSnapshot` wrote that balance onto the mining ssa1. Force-sync is done only then. One 504 is retried once. A second miss is not done.
 
+There is no Sync button. 0.48 and 0.49 force-sync only from unlock and the accrual tick. Both call `forceSync`, which is done only when `applyPoolSnapshot` overwrote `_spendable` on the mining ssa1 with `json.balance`. An unlock that hits the 8s timeout, or a 504 after that one retry, leaves `creditSyncLanded` false. The hero then stays on the last landed book, or on 0 when nothing has written, and shows "Live balance has not written yet. This is not a finished sync." The next accrual tick can write. That line is not a button and not a clamp. In Reserve and Owed toward π stay on their own labels.
+
 Fail-closed bars for this cut (pool custody). `bindSpendable` is not the fix; a landed book ignores it. This is not a UI clamp and not a hardcoded dust floor.
 
 - FC-CC1. `applyPoolSnapshot` overwrites `_spendable[dest]` with `json.balance`. It does not max or merge a cached invent.

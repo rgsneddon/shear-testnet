@@ -1453,7 +1453,16 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   Widget _continuum(BuildContext context, ShearIdentity ident) {
-    final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
+    final poolAttached = ledger.pool != null && !widget.skipPoolSync;
+    // Before any landed write, do not paint a local settle or archive sum.
+    // After a write, the hero is that book (a send may sit below the pin).
+    final spend = poolAttached && ledger.exportedPoolBook().isEmpty
+        ? 0.0
+        : ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
+    final unsynced = continuumUnsyncedLine(
+      poolAttached: poolAttached,
+      creditSyncLanded: ledger.creditSyncLanded,
+    );
     final pending = ledger.pendingTxs(ident.address);
     final owedPi = ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode);
     final reserveDest = _reserveDestOf(ident);
@@ -1472,6 +1481,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         ),
       ),
       Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
+      if (unsynced != null) ...[
+        const SizedBox(height: 8),
+        Text(
+          unsynced,
+          key: const Key('continuum-unsynced'),
+          style: TextStyle(color: shearMutedOf(context), fontSize: 12),
+        ),
+      ],
       if (inReserveNanos > 0) ...[
         const SizedBox(height: 8),
         TextButton(
@@ -1505,7 +1522,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           style: TextStyle(color: shearMutedOf(context), fontSize: 12),
         ),
       ],
-      if (spend == 0 && pending.isEmpty) ...[
+      if (spend == 0 && pending.isEmpty && unsynced == null) ...[
         const SizedBox(height: 8),
         Text(
           'Sync a local node at 127.0.0.1:18332. Fallback sync https://pool.shear.digital if local RPC is down; pool HUD is not spendable. Hashbonus on Copy dest is protocol-spendable after 6 confs unless credits are frozen. The pot auto-pays at π SHE (${formatShe(kPiShe)}) after 30 confs — miner-page numbers are not Continuum spendable. This book starts empty until your first landing.',

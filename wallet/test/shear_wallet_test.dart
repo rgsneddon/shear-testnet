@@ -2053,6 +2053,14 @@ void main() {
       isTrue,
       reason: 'owed-π is its own line and must not be folded into Spendable to show up',
     );
+    expect(
+      continuumUnsyncedLine(poolAttached: true, creditSyncLanded: false),
+      'Live balance has not written yet. This is not a finished sync.',
+    );
+    expect(continuumUnsyncedLine(poolAttached: true, creditSyncLanded: true), isNull);
+    expect(continuumUnsyncedLine(poolAttached: false, creditSyncLanded: false), isNull);
+    expect(File('lib/main.dart').readAsStringSync(), contains("key: const Key('continuum-unsynced')"));
+    expect(File('lib/main.dart').readAsStringSync(), isNot(contains('Sync now')));
     expect(walletPollIsHot(tipMoved: true, pendingReceive: false, historyBehindTip: false), isTrue);
     final t0 = DateTime.fromMillisecondsSinceEpoch(0);
     expect(
