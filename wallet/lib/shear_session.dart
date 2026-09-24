@@ -49,6 +49,7 @@ class ShearSession {
   int rememberedSealedHeight = 0;
   String? rememberedChainGenesis;
   Map<String, dynamic>? rememberedReserve;
+  Map<String, double> rememberedPoolBook = const {};
   List<Vortice> deployedVortices = const [];
   bool sealed = false;
   Map<String, dynamic>? _envelope;
@@ -158,6 +159,7 @@ class ShearSession {
           'chainGenesis': rememberedChainGenesis,
         'txs': rememberedTxs,
         if (rememberedReserve != null) 'reserve': rememberedReserve,
+        if (rememberedPoolBook.isNotEmpty) 'poolBook': rememberedPoolBook,
         'vortices': deployedVortices.map((v) => v.toJson()).toList(),
       };
 
@@ -171,6 +173,7 @@ class ShearSession {
     rememberedSealedHeight = 0;
     rememberedChainGenesis = null;
     rememberedReserve = null;
+    rememberedPoolBook = const {};
     deployedVortices = const [];
     final pw = password ?? _password;
     if (pw != null && pw.isNotEmpty) {
@@ -197,6 +200,15 @@ class ShearSession {
         .map((e) => Map<String, dynamic>.from(e))
         .toList();
     rememberedReserve = j['reserve'] is Map ? Map<String, dynamic>.from(j['reserve'] as Map) : null;
+    final book = <String, double>{};
+    final rawBook = j['poolBook'];
+    if (rawBook is Map) {
+      for (final e in rawBook.entries) {
+        final v = e.value;
+        if (v is num && v >= 0) book[e.key.toString()] = v.toDouble();
+      }
+    }
+    rememberedPoolBook = book;
     deployedVortices = ((j['vortices'] as List?) ?? const [])
         .whereType<Map>()
         .map((e) => Vortice.fromJson(Map<String, dynamic>.from(e)))
@@ -227,6 +239,7 @@ Map<String, dynamic> ledgerUserArchive(ShearLedger ledger) {
       for (final t in ledger.transactions)
         if (t.kind != 'sample') t.toJson(),
     ],
+    if (ledger.exportedPoolBook().isNotEmpty) 'poolBook': ledger.exportedPoolBook(),
   };
 }
 
@@ -247,14 +260,34 @@ void applyUserArchive(ShearLedger ledger, Map<String, dynamic> archive) {
   ledger.restoreDests(dests);
   final g = archive['chainGenesis']?.toString() ?? '';
   ledger.restoreSealedTip((archive['sealedHeight'] as num?)?.toInt() ?? 0, genesis: g);
+  final book = archive['poolBook'];
+  if (book is Map) {
+    // A saved reconstruct is the book. Landing history must not ratchet
+    // Spendable above it, including onto a dest the book does not list.
+    ledger.restorePoolBook(book);
+    return;
+  }
+  // Empty book under a pool: do not sum explorer/history pots into Spendable.
+  // The first landed /api/wallet/balance is the book. Solo (no pool) still
+  // sums so a shewall restore of pot + hash bonus keeps working.
+  if (ledger.pool != null) return;
   final sums = <String, double>{};
   for (final t in txs) {
-    if (!t.confirmed || t.to.isEmpty) continue;
-    if (t.kind == 'send') continue;
+    if (!t.confirmed) continue;
+    // A lock left Continuum. Restore must debit the source and must not
+    // pay the vault dest back into Spendable (that is the dual-show).
+    if (t.kind == 'lock') {
+      if (t.from.isNotEmpty && t.amount > 0) {
+        sums[t.from] = (sums[t.from] ?? 0) - t.amount;
+      }
+      continue;
+    }
+    if (t.kind == 'send' || t.kind == 'withdraw' || t.kind == 'vote') continue;
+    if (t.to.isEmpty) continue;
     sums[t.to] = (sums[t.to] ?? 0) + t.amount;
   }
   for (final e in sums.entries) {
-    ledger.rememberSpendable(e.key, e.value);
+    ledger.assignArchiveSpendable(e.key, e.value);
   }
 }
 
@@ -296,7 +329,10 @@ ShearIdentity importShewall(
   if (archive != null) {
     applyUserArchive(ledger, archive);
     final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-    if (spend > ledger.spendableOwned(id.address, paymentCode: id.paymentCode)) {
+    // Header nanos are a solo raise. Under a pool they are an unpinned
+    // soft-reconstruct and must not outrank a later balance write.
+    if (ledger.pool == null &&
+        spend > ledger.spendableOwned(id.address, paymentCode: id.paymentCode)) {
       ledger.rememberSpendable(home, spend);
     }
     final vortRaw = archive['vortices'];

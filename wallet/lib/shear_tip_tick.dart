@@ -14,6 +14,39 @@ bool walletPollIsHot({
 }) =>
     tipMoved || pendingReceive || historyBehindTip;
 
+/// Continuum repaints when the owned Spendable sum changes.
+///
+/// That sum is what the pane shows. The she1 mailbox figure can stay put
+/// while a sibling dest is overwritten, and owed-π is a separate line.
+/// Under a pool, a missed pull is not a finished sync.
+///
+/// There is no Sync button. Unlock and the accrual tick are the only
+/// writers. This line is the soft block after the one balance retry fails.
+String? continuumUnsyncedLine({
+  required bool poolAttached,
+  required bool creditSyncLanded,
+}) {
+  if (!poolAttached || creditSyncLanded) return null;
+  return 'Live balance has not written yet. This is not a finished sync.';
+}
+
+bool continuumFrameDirty({
+  required int sealed,
+  required int lastSealed,
+  required int ownedUnits,
+  required int lastOwnedUnits,
+  required int owedUnits,
+  required int lastOwedUnits,
+  required int pendingCount,
+  required int lastPendingCount,
+  required bool tipMoved,
+}) =>
+    sealed != lastSealed ||
+    ownedUnits != lastOwnedUnits ||
+    owedUnits != lastOwedUnits ||
+    pendingCount != lastPendingCount ||
+    tipMoved;
+
 bool walletShouldPoll({
   required DateTime lastPoll,
   required DateTime now,

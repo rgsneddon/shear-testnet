@@ -31,7 +31,7 @@ import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
 import 'shear_privacy_hop.dart';
 
-const kWalletVersion = '0.48.0';
+const kWalletVersion = '0.49.0';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
@@ -183,6 +183,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   DateTime _lastVault = DateTime.fromMillisecondsSinceEpoch(0);
   int _lastPaintSealed = -1;
   int _lastPaintSpendable = 0;
+  int _lastPaintOwed = 0;
   int _lastPaintPending = 0;
   Map<String, dynamic>? _pullOffer;
   bool _pullPrompting = false;
@@ -597,6 +598,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         if (session.rememberedChainGenesis != null)
           'chainGenesis': session.rememberedChainGenesis,
         'txs': session.rememberedTxs,
+        if (session.rememberedPoolBook.isNotEmpty) 'poolBook': session.rememberedPoolBook,
       });
     }
     if (session.rememberedReserve != null) {
@@ -611,10 +613,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       } catch (_) {}
       try {
         await ledger
-            .syncCredits(id!.address, paymentCode: id!.paymentCode)
+            .forceSync(id!.address, paymentCode: id!.paymentCode)
             .timeout(const Duration(seconds: 8));
-        _rememberLedger();
-        await session.persist();
+        // A timeout or a 504 is not a book. Persist only after the mining
+        // dest's live balance actually wrote, so an empty-book unlock cannot
+        // save a history sum.
+        if (ledger.creditSyncLanded) {
+          _rememberLedger();
+          await session.persist();
+        }
       } catch (_) {}
     }
     try {
@@ -694,11 +701,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             _creditBusy = true;
             try {
               if (full) {
-                await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
+                await ledger.forceSync(ident.address, paymentCode: ident.paymentCode);
               } else {
                 await ledger.syncBalancesOnly(ident.address, paymentCode: ident.paymentCode);
               }
-              _rememberLedger();
+              if (ledger.creditSyncLanded || ledger.exportedPoolBook().isNotEmpty) {
+                _rememberLedger();
+              }
               final persistAt = DateTime.now();
               if (persistAt.difference(_lastPersist) >= const Duration(seconds: 15)) {
                 _lastPersist = persistAt;
@@ -708,15 +717,24 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               _creditBusy = false;
             }
           }
-          final spendUnits = (ledger.spendable(ident.address) * 1e9).round();
+          final ownedUnits = (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) * kUnitsPerShe).round();
+          final owedUnits = (ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode) * kUnitsPerShe).round();
           final pendingN = ledger.pendingTxs(ident.address).length;
-          final dirty = ledger.sealedHeight != _lastPaintSealed
-              || spendUnits != _lastPaintSpendable
-              || pendingN != _lastPaintPending
-              || tipMoved;
+          final dirty = continuumFrameDirty(
+            sealed: ledger.sealedHeight,
+            lastSealed: _lastPaintSealed,
+            ownedUnits: ownedUnits,
+            lastOwnedUnits: _lastPaintSpendable,
+            owedUnits: owedUnits,
+            lastOwedUnits: _lastPaintOwed,
+            pendingCount: pendingN,
+            lastPendingCount: _lastPaintPending,
+            tipMoved: tipMoved,
+          );
           if (dirty && mounted) {
             _lastPaintSealed = ledger.sealedHeight;
-            _lastPaintSpendable = spendUnits;
+            _lastPaintSpendable = ownedUnits;
+            _lastPaintOwed = owedUnits;
             _lastPaintPending = pendingN;
             setState(() {});
           }
@@ -1027,6 +1045,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     session.rememberedDestIndex = ledger.destIndex;
     session.rememberedSealedHeight = ledger.sealedHeight;
     session.rememberedChainGenesis = ledger.chainGenesis;
+    session.rememberedPoolBook = ledger.exportedPoolBook();
     session.rememberedTxs = [
       for (final t in ledger.transactions)
         if (t.kind != 'sample') t.toJson(),
@@ -1434,7 +1453,16 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   Widget _continuum(BuildContext context, ShearIdentity ident) {
-    final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
+    final poolAttached = ledger.pool != null && !widget.skipPoolSync;
+    // Before any landed write, do not paint a local settle or archive sum.
+    // After a write, the hero is that book (a send may sit below the pin).
+    final spend = poolAttached && ledger.exportedPoolBook().isEmpty
+        ? 0.0
+        : ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
+    final unsynced = continuumUnsyncedLine(
+      poolAttached: poolAttached,
+      creditSyncLanded: ledger.creditSyncLanded,
+    );
     final pending = ledger.pendingTxs(ident.address);
     final owedPi = ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode);
     final reserveDest = _reserveDestOf(ident);
@@ -1453,6 +1481,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         ),
       ),
       Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
+      if (unsynced != null) ...[
+        const SizedBox(height: 8),
+        Text(
+          unsynced,
+          key: const Key('continuum-unsynced'),
+          style: TextStyle(color: shearMutedOf(context), fontSize: 12),
+        ),
+      ],
       if (inReserveNanos > 0) ...[
         const SizedBox(height: 8),
         TextButton(
@@ -1486,7 +1522,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           style: TextStyle(color: shearMutedOf(context), fontSize: 12),
         ),
       ],
-      if (spend == 0 && pending.isEmpty) ...[
+      if (spend == 0 && pending.isEmpty && unsynced == null) ...[
         const SizedBox(height: 8),
         Text(
           'Sync a local node at 127.0.0.1:18332. Fallback sync https://pool.shear.digital if local RPC is down; pool HUD is not spendable. Hashbonus on Copy dest is protocol-spendable after 6 confs unless credits are frozen. The pot auto-pays at π SHE (${formatShe(kPiShe)}) after 30 confs — miner-page numbers are not Continuum spendable. This book starts empty until your first landing.',
@@ -2349,7 +2385,49 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    final out = reserve.withdrawTo(ledger, dest: dest, payout: to, nowMs: now);
+    final portalNanos = reserve.portal(dest).nanos;
+    final claimable = reserve.portal(dest).claimableRewards;
+    final postShe = (portalNanos > 0 ? portalNanos : claimable) / kUnitsPerShe;
+    if (postShe <= 0) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(reserveEpochStillOpenCopy())),
+        );
+      }
+      return;
+    }
+    // Continuum does not gain the portal, and the portal is not cleared,
+    // until the pool accepts a withdraw tx.
+    ShearTx tx;
+    try {
+      tx = await ledger.send(
+        from: dest,
+        to: to,
+        amount: postShe,
+        local: ledger.pool == null,
+        kind: 'withdraw',
+        programId: kReserveProgram,
+        restFrame: ident.address,
+        paymentCode: ident.paymentCode,
+        spendSeed: hexToBytes(ident.seedHex),
+        allowPublicHttp: hop.isUp || _reserveUnprivateOk,
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(hopFeeAdvisoryOf(e))),
+        );
+      }
+      return;
+    }
+    if (tx.kind != 'withdraw') return;
+    final out = reserve.withdrawTo(
+      ledger,
+      dest: dest,
+      payout: to,
+      nowMs: now,
+      acceptedTx: tx,
+    );
     if (out == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
