@@ -27,11 +27,11 @@ import {
   verifyPoolWithdrawOffchain,
   containsShe1,
 } from '../../crypto/levy.js';
-import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, matureSpendableNanos, mempoolDebitNanos } from '../../crypto/spend.js';
+import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, spentNoteCommits, custodyPoolDestOf, noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
@@ -203,75 +203,20 @@ export function reconstructOwner(store, address) {
   const rec = rowsToHistory(rows, dests, tipH);
   const mempool = store?.mempool || [];
   const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
+  // #37 ran the honest vout walk only when matureSpendableNanos was ≤ 0.
+  // Hash dust or one painted 0.99 made that sum positive and skipped the walk,
+  // so N × pot-after-fee stayed. Once sealed coinbase notes exist they replace
+  // explorer coinbase credit. A zero note scan still keeps unsealed history.
   let nanos = 0;
   for (const d of dests) {
     const destRows = typeof store?.historyFor === 'function' ? store.historyFor(d) : rows;
-    nanos += matureSpendableNanos(destRows, d, tipH);
+    const noteNanos = noteCommitSpendableNanos(store.blocks || [], d, tipH, {
+      hashBonusNanos: bonus,
+      coinbaseOnly: true,
+    });
+    nanos += reconcileSpendable(destRows, d, tipH, noteNanos);
     nanos -= mempoolDebitNanos(mempool, d);
   }
-  if (nanos <= 0) {
-    const wants = dests.map((d) => {
-      const h = hash20FromAddress(d);
-      return h ? noteCommitOfDest20(h) : null;
-    }).filter(Boolean);
-    const spent = spentNoteCommits(store.blocks || []);
-    for (const b of store.blocks || []) {
-      const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
-      const pool = custodyPoolDestOf(b, potNanos);
-      const custodialPot = !!pool;
-      const leafPays = paysFromALeaves(b.aLeaves || [], { hashBonusNanos: bonus, custodialPot });
-      const pays = custodialPot
-        ? [
-            ...expectedCoinbasePays(b.shareBatch || [], {
-              miner: b.miner,
-              poolDest: pool,
-              hashBonusNanos: bonus,
-              potNanos,
-              custodialPot: true,
-              feeDest: poolFeeDest(),
-            }),
-            ...leafPays.filter((p) => p.kind === 'hash'),
-          ]
-        : [
-            ...expectedCoinbasePays(b.shareBatch || [], {
-              miner: b.miner,
-              hashBonusNanos: bonus,
-              potNanos: Number(b.blockSubsidyNanos) || undefined,
-            }),
-            ...leafPays,
-          ];
-      for (const tx of b.txs || []) {
-        for (const o of tx.vout || []) {
-          if (!o?.noteCommit || !wants.length) continue;
-          const nc = Buffer.from(asU8(o.noteCommit));
-          if (nc.length === 32 && spent.has(nc.toString('hex'))) continue;
-          if (!wants.some((w) => w.equals(nc))) continue;
-          let n = 0;
-          if (tx.coinbase) {
-            const matched = matchSealedCoinbaseVout(o, pays);
-            // Unsealed vouts report their explicit nanos. A sealed miss stays 0
-            // — do not keep a public nanos lie or invent pot-after-fee.
-            n = matched.nanos || 0;
-          } else {
-            n = Number(o.nanos || 0);
-          }
-          if (isSpendableHeight(b.height, tipH) && n > 0) nanos += n;
-        }
-      }
-    }
-    nanos -= dests.reduce((a, d) => a + mempoolDebitNanos(mempool, d), 0);
-  }
-  // Explorer rows can omit nanos (public history) or, before the unbound-match
-  // fix, paint pot-after-fee onto a hasher `to`. The note-commit scan is the
-  // sealed sum: hash notes for a custody hasher, pot-after-fee for the pool.
-  // It must not exceed that sum — amount-only match is gone — so it may
-  // raise a short explorer figure up to Σ notes, not N × 0.99.
-  let noteNanos = 0;
-  for (const d of dests) {
-    noteNanos += noteCommitSpendableNanos(store.blocks || [], d, tipH, { hashBonusNanos: bonus });
-    noteNanos -= mempoolDebitNanos(mempool, d);
-  }
-  if (noteNanos > nanos) nanos = noteNanos;
   if (nanos < 0) nanos = 0;
   return { ...rec, spendableNanos: nanos, spendable: nanosToShe(nanos) };
 }

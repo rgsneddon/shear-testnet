@@ -19,7 +19,7 @@
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS, BLOCK_SUBSIDY_NANOS } from './asert.js';
 import { shareRowJson } from './pack.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf } from './coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, coinbasePotIsCustodial } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8 } from './note.js';
 import { hash20FromAddress } from './address.js';
@@ -124,10 +124,11 @@ export function sealedExplorerRows(block) {
   const cb = txs[0];
   if (cb?.coinbase && Array.isArray(cb.vout)) {
     const potNanos = Number(block.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
-    // poolDest is not stored on chain.bin or the wire. Read custody from the sealed pot.
+    // poolDest is not stored on chain.bin or the wire. A pot note that is not a
+    // hasher leaf is custody even when dest20 was stripped, so Tree-A must not PROP.
     const custodyDest = custodyPoolDestOf(block, potNanos);
-    const custodialPot = !!custodyDest;
-    let pays = expectedCoinbasePays(block.shareBatch || [], custodialPot ? {
+    const custodialPot = !!custodyDest || coinbasePotIsCustodial(block, potNanos);
+    let pays = expectedCoinbasePays(block.shareBatch || [], custodialPot && custodyDest ? {
       miner: block.miner,
       poolDest: custodyDest,
       hashBonusNanos: HASH_BONUS_NANOS,
@@ -148,7 +149,15 @@ export function sealedExplorerRows(block) {
       }
     });
     if (custodialPot) {
-      // Hash leaves only. Pot rows from Tree-A would PROP the block pot onto hasher commits.
+      // Drop solo pot props. paysFromALeaves would put pot-after-fee on hasher leaves
+      // whenever sealedPotIsCustody missed (no stored poolDest).
+      const feeDest = poolFeeDest();
+      pays = (pays || []).filter((p) => {
+        const k = p.kind || 'pot';
+        if (k === 'hash') return true;
+        if (!custodyDest) return false;
+        return p.address === custodyDest || p.address === feeDest;
+      });
       const hashOnly = paysFromALeaves(block.aLeaves || [], {
         hashBonusNanos: HASH_BONUS_NANOS,
         custodialPot: true,

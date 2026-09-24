@@ -39,7 +39,7 @@ import {
 } from '../../crypto/vault_seal.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest, verifyPoolWithdrawBound } from '../../crypto/spend.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest, verifyPoolWithdrawBound } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin, appendChainBin } from '../../crypto/chainbin.js';
 import {
@@ -378,13 +378,14 @@ export function createStore(dir, {
   bootVault();
 
   function destSpendableNanos(addr, tipH, chain = blocks, rows = explorer) {
-    // Live explorer rows may still have a painted `to`. historyFor keeps the sealed dest20.
+    // A positive explorer sum must not skip the sealed coinbase notes.
+    // Math.max(explorer, notes) kept N × 0.99 once any painted row matched `to`.
     const owned = rows === explorer ? historyFor(addr) : rows;
-    const fromExplorer = matureSpendableNanos(owned, addr, tipH);
-    const fromNotes = noteCommitSpendableNanos(chain, addr, tipH, {
+    const noteNanos = noteCommitSpendableNanos(chain, addr, tipH, {
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
+      coinbaseOnly: true,
     });
-    return Math.max(fromExplorer, fromNotes);
+    return reconcileSpendable(owned, addr, tipH, noteNanos);
   }
 
   const vortice = createVorticeCatalog(dir);
