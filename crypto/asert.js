@@ -131,7 +131,7 @@ export function asertEaseMax(magic = MAGIC_TESTNET) {
   return String(magic) === MAGIC_MAINNET ? ASERT_EASE_MAX_MAINNET : ASERT_EASE_MAX_TESTNET;
 }
 /** Display/tag version for wallet, node, and pool. Two-part only (`*.*`, never `0.1.0`). Start 0.1; later 0.10+ legal. Never 1.* unless the operator says so. */
-export const PRODUCT_VERSION = '0.4';
+export const PRODUCT_VERSION = '0.51';
 /** Official C miner display/tag version. Two-part only (`*.*`). Operator set Shear-Miner to 1.1 (fee-free). 1.0 keeps the built-in fee. */
 export const MINER_VERSION = '1.1';
 /** Hash bonus commits on accept. Not env. */

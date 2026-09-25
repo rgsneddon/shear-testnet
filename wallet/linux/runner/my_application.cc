@@ -36,7 +36,7 @@ static void privacy_hop_method_cb(FlMethodChannel* channel,
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(44044);
-    inet_pton(AF_INET, "77.42.35.12", &addr.sin_addr);
+    inet_pton(AF_INET, "77.42.91.84", &addr.sin_addr);
     const char magic[] = "RPT2";
     sendto(s, magic, 4, 0, (struct sockaddr*)&addr, sizeof(addr));
     struct timeval tv;
@@ -121,11 +121,11 @@ static void my_application_activate(GApplication* application) {
   if (use_header_bar) {
     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
     gtk_widget_show(GTK_WIDGET(header_bar));
-    gtk_header_bar_set_title(header_bar, "Shear 0.48.0");
+    gtk_header_bar_set_title(header_bar, "Shear 0.51.0");
     gtk_header_bar_set_show_close_button(header_bar, TRUE);
     gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
   } else {
-    gtk_window_set_title(window, "Shear 0.48.0");
+    gtk_window_set_title(window, "Shear 0.51.0");
   }
 
   gtk_window_set_default_size(window, 1280, 720);

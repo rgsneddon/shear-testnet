@@ -13,8 +13,24 @@ String? parseReceiveQr(String raw) {
   var s = raw.trim();
   if (s.startsWith('shear:')) s = s.substring(6).trim();
   if (s.startsWith('shear1:')) s = s.substring(7).trim();
-  if (isPaymentCode(s) || isDestAddress(s)) return s;
+  if (isPaymentFingerprint(s)) return null;
+  if (isFullPaymentCode(s) || isDestAddress(s)) return s;
   return null;
+}
+
+/// Failed parse leaves [currentTo] alone.
+String applyReceiveQrTo(String currentTo, String raw) {
+  final got = parseReceiveQr(raw);
+  if (got == null) return currentTo;
+  return got;
+}
+
+String? receiveQrFailCopy(String raw) {
+  if (parseReceiveQr(raw) != null) return null;
+  var s = raw.trim();
+  if (s.startsWith('shear:')) s = s.substring(6).trim();
+  if (isPaymentFingerprint(s)) return 'Not a payable Shear receive code (fingerprint only)';
+  return 'Not a Shear receive QR.';
 }
 
 /// PNG of a receive QR. Windows Scan QR decodes this via [decodeReceiveQrImage]

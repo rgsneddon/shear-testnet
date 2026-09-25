@@ -6,6 +6,7 @@ import net from 'node:net';
 import { isDestAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { isInitialBlockDownload } from './status.js';
 import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
 import { setNonce } from '../../crypto/header.js';
 import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
@@ -21,7 +22,7 @@ function line(obj) {
 export function parseSoloLogin(login) {
   const s = String(login || '').trim();
   const dest = s.split('.')[0];
-  const worker = s.split('.').slice(1).join('.') || 'solo';
+  const worker = s.includes('.') ? s.split('.').slice(1).join('.') : '';
   if (!isDestAddress(dest)) return { ok: false, reason: 'need_dest' };
   return { ok: true, dest, worker, login: s };
 }
@@ -89,7 +90,13 @@ export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest } = {}) 
 }
 
 /** Share-bits hit: OK, no append. Block-bits hit: existing submitHeader/append. */
-export function applySoloSubmit({ store, jobId, nonce, claimed, dest } = {}) {
+/** True only when no live peer is ahead and sync queues are idle. */
+export function soloMaySeal({ height = 0, peers } = {}) {
+  if (!peers) return true;
+  return !isInitialBlockDownload({ height, peers });
+}
+
+export function applySoloSubmit({ store, jobId, nonce, claimed, dest, peers } = {}) {
   const judged = evaluateSoloSubmit({ store, jobId, nonce, claimed, dest });
   if (!judged.ok) return judged;
   if (!judged.block) {
@@ -103,6 +110,11 @@ export function applySoloSubmit({ store, jobId, nonce, claimed, dest } = {}) {
       }));
     } catch { /* ignore */ }
     return judged;
+  }
+  const tip = typeof store.tip === 'function' ? store.tip() : null;
+  const height = Number(tip?.height) || 0;
+  if (!soloMaySeal({ height, peers })) {
+    return { ok: false, reason: 'syncing', hash: judged.hash, block: true };
   }
   const got = store.submitHeader({
     jobId,
@@ -141,6 +153,7 @@ export function createSoloStratum({
   port = Number(process.env.SHEAR_STRATUM || process.env.SHEAR_STRATUM_PORT || SOLO_STRATUM_PORT) || SOLO_STRATUM_PORT,
   host = process.env.SHEAR_STRATUM_BIND || SOLO_STRATUM_BIND,
   restampMs = SOLO_JOB_RESTAMP_MS,
+  peers = null,
 } = {}) {
   const sockets = new Set();
   let lastJob = null;
@@ -215,6 +228,7 @@ export function createSoloStratum({
             nonce,
             claimed: powHash,
             dest: session.dest,
+            peers: typeof peers === 'function' ? peers() : peers,
           });
           if (!got?.ok && got?.block) {
             try {

@@ -13,6 +13,7 @@ import {
   createSoloStratum,
   applySoloSubmit,
   soloSubmitAck,
+  soloMaySeal,
 } from '../src/solo_stratum.js';
 import { createStore } from '../src/node.js';
 import { setNonce, headerFromHex } from '../../crypto/header.js';
@@ -159,6 +160,13 @@ describe('thin solo stratum', () => {
     assert.equal(ok.ok, true);
     assert.equal(ok.dest, dest);
     assert.equal(ok.worker, 'solo');
+    const bare = parseSoloLogin(dest);
+    assert.equal(bare.ok, true);
+    assert.equal(bare.worker, '');
+    const ahead = new Map([['peer', { height: 100 }]]);
+    assert.equal(soloMaySeal({ height: 70, peers: ahead }), false);
+    assert.equal(soloMaySeal({ height: 100, peers: ahead }), true);
+    assert.equal(soloMaySeal({ height: 70 }), true);
     assert.equal(parseSoloLogin('not-a-dest.solo').ok, false);
   });
 

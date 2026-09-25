@@ -46,6 +46,9 @@ class Vortice {
 }
 
 const reserveVortice = Vortice(id: reserveProgram, name: 'The Reserve', pinned: true);
+
+/// Lean Continuum ships the Reserve only. Rx and rpMail install by pasted vort1.
+List<Vortice> leanContinuumVortices() => const [reserveVortice];
 /// Reserved dead id. Not a chip. Impersonation keys must still fail.
 const joinVortice = Vortice(id: joinProgram, name: 'The Join', pinned: true);
 const joinWatchVortice = Vortice(id: joinWatchProgram, name: '', pinned: true);

@@ -263,7 +263,7 @@ class PrivacyHopVpnService : VpnService() {
     }
 
     companion object {
-        const val HOP_HOST = "77.42.35.12"
+        const val HOP_HOST = "77.42.91.84"
         const val HOP_PORT = 44044
         const val HOP_HANDSHAKE_TIMEOUT_MS = 15_000
         const val HOP_HANDSHAKE_ATTEMPTS = 3

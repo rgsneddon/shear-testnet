@@ -29,9 +29,12 @@ export function latestPaths(dir) {
   };
 }
 
-/** First public snapshot at the 1000-conf prune, then every 400 blocks. */
-export const BOOTSTRAP_FIRST_HEIGHT = 1000;
-export const BOOTSTRAP_EVERY_BLOCKS = 400;
+/** Reorg freeze. Not the snapshot ladder. */
+export const CHECKPOINT_FIRST_HEIGHT = 1000;
+export const CHECKPOINT_EVERY_BLOCKS = 400;
+/** Public snapshot cadence only. A start does not pull one. */
+export const BOOTSTRAP_FIRST_HEIGHT = 200;
+export const BOOTSTRAP_EVERY_BLOCKS = 200;
 /** @deprecated internal lag; public cadence is FIRST + EVERY */
 export const BOOTSTRAP_LAG_BLOCKS = 0;
 
@@ -56,8 +59,8 @@ function hexOf(h) {
 export function reorgBreaksCheckpoint(fromBlocks, toBlocks, opts = {}) {
   const from = Array.isArray(fromBlocks) ? fromBlocks : [];
   const to = Array.isArray(toBlocks) ? toBlocks : [];
-  const first = Math.max(1, Math.floor(Number(opts.first ?? BOOTSTRAP_FIRST_HEIGHT)));
-  const every = Math.max(1, Math.floor(Number(opts.every ?? BOOTSTRAP_EVERY_BLOCKS)));
+  const first = Math.max(1, Math.floor(Number(opts.first ?? CHECKPOINT_FIRST_HEIGHT)));
+  const every = Math.max(1, Math.floor(Number(opts.every ?? CHECKPOINT_EVERY_BLOCKS)));
   const tipH = Number(from.at(-1)?.height || 0);
   const cpH = bootstrapCheckpoint(tipH, first, every);
   if (cpH < first) return null;
