@@ -283,10 +283,10 @@ describe('explorer dests', () => {
     assert.doesNotMatch(page, /Recent transfers/);
     assert.match(page, /id="net-grid"/);
     assert.match(page, /Circulating Shear/);
-    assert.match(page, /Shear minted by Reserve/);
+    assert.match(page, /Nodes online/);
     assert.match(page, /VAULT/);
     assert.match(page, /id="ex-circ-she"/);
-    assert.match(page, /id="ex-reserve-minted"/);
+    assert.match(page, /id="ex-nodes-online"/);
     assert.match(page, /id="ex-reserve-vault"/);
     assert.match(page, /stats\.circulatingNanos/);
     assert.match(page, /stats\.reserveVaultNanos/);

@@ -301,12 +301,13 @@ export function createPullBook(dir) {
     if (!skipCooldown && v.lastPullMs && now < v.nextPullMs) {
       return { ok: false, reason: 'cooldown', nextPullMs: v.nextPullMs };
     }
-    if (!(v.confirmedNanos > 0)) return { ok: false, reason: 'none_confirmed' };
+    const unpaid = v.pendingNanos;
+    if (!(unpaid > 0)) return { ok: false, reason: 'none_confirmed' };
     const want = amountNanos == null
-      ? v.confirmedNanos
+      ? unpaid
       : Math.floor(Number(amountNanos) || 0);
     if (!(want > 0)) return { ok: false, reason: 'none_confirmed' };
-    if (want > v.confirmedNanos) return { ok: false, reason: 'over_unpaid' };
+    if (want > unpaid) return { ok: false, reason: 'over_unpaid' };
     const dest = destOf(key);
     state.pulled.push({
       tag: key,
@@ -458,8 +459,11 @@ export function createPullBook(dir) {
     for (const tag of tags()) {
       const dest = destOf(tag);
       const v = view(tag, { tipHeight, need });
-      const gate = shouldAutoPayout({ confirmedNanos: v.confirmedNanos, dest });
-      if (gate.ok) out.push({ tag, dest: gate.dest, nanos: gate.nanos });
+      // One π lot when the unpaid pot has reached π. The 4s sweep pays that
+      // lot, then waits until newly mined credit reaches π again.
+      const owed = v.pendingNanos;
+      const gate = shouldAutoPayout({ confirmedNanos: owed, dest });
+      if (gate.ok) out.push({ tag, dest: gate.dest, nanos: AUTO_PAYOUT_MIN_NANOS });
     }
     return out;
   }

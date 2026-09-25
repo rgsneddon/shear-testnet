@@ -72,6 +72,7 @@ Optional environment (drop-in `/etc/systemd/system/shear-pool.service.d/local.co
 | `SHEAR_SEEDS` | Used by the sidecar, not by the pool process |
 | `SHEAR_ADMIN_HOST` | Dedicated admin hostname (required in prod examples; first-run is deny-by-default when unset) |
 | `SHEAR_POOL_MINER` | Pool dest (`ssa1…`) if you do not want a generated ident |
+| `SHEAR_PAYOUT_SWEEP_MS` | How often the pool pays miners who have accrued at least π SHE. The shipped unit sets `4000` (one π lot per miner per tick). |
 
 ## nginx
 

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { levyNanos } from './levy.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, verifyReservePortalOpen } from './spend.js';
+import { fundedDebit, matureSpendableNanos, reconcileSpendable, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, verifyReservePortalOpen } from './spend.js';
 import { newIdentity, destOpeningFromView, hash20FromAddress, silentPay, ed25519SeedOf, stealthSpendPrivate, recognizeSilentDest, ed25519PrivateFromSeed, ed25519RawPub, encodeDest } from './address.js';
 import { destCommitFromSpendPub } from './stealth_ed25519.js';
 import { generateKeyPairSync, createPublicKey, verify } from 'node:crypto';
@@ -93,6 +93,25 @@ describe('funded spend / no double-spend', () => {
     assert.equal(matureSpendableNanos([coinbase], dest, 5, SPENDABLE_CONFIRMATIONS), 0);
     assert.equal(matureSpendableNanos([coinbase], dest, 6, SPENDABLE_CONFIRMATIONS), 10 * NANOS_PER_SHE);
     assert.equal(matureSpendableNanos(rows, dest, 10, SPENDABLE_CONFIRMATIONS), 7 * NANOS_PER_SHE);
+  });
+
+  it('empty note walk keeps hash and payments and drops pot coinbase and pool-fee', () => {
+    const pot = 99_000_000_000;
+    const hash = 256;
+    const fee = 1_000_000_000;
+    const pay = 5 * NANOS_PER_SHE;
+    const rows = [
+      { from: 'coinbase', to: dest, nanos: pot, height: 1, kind: 'pot' },
+      { from: 'coinbase', to: dest, nanos: hash, height: 1, kind: 'hash' },
+      { from: 'coinbase', to: dest, nanos: fee, height: 1, kind: 'pool-fee' },
+      { from: 'coinbase', to: dest, nanos: NANOS_PER_SHE, height: 1, kind: 'coinbase' },
+      { from: other, to: dest, nanos: pay, height: 1, kind: 'send' },
+    ];
+    const tip = 1 + SPENDABLE_CONFIRMATIONS;
+    const empty = reconcileSpendable(rows, dest, tip, 0);
+    assert.equal(empty, hash + pay + NANOS_PER_SHE);
+    assert.equal(reconcileSpendable(rows, dest, tip, hash), hash + pay);
+    assert.notEqual(empty, pot + hash + fee + NANOS_PER_SHE + pay);
   });
 
   it('rejects two spends of the same mature coins in one body', () => {

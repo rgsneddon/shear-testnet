@@ -47,7 +47,7 @@ import { createPullBook, PULL_COOLDOWN_MS, AUTO_PAYOUT_MIN_NANOS } from './pull_
 import { buildAutoPayoutTx, potCreditAfterFeeNanos, redactSsa1 } from './auto_payout.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
-import { potSharesFromBatch, hashBonusByMiner, custodyPotShares } from '../../node/src/chain.js';
+import { potSharesFromBatch, hashBonusByMiner } from '../../node/src/chain.js';
 import { sortShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
 import { explorerRecentTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
@@ -338,7 +338,7 @@ export function serializeMinerRow(m) {
 
 export function publicWorkerTag(login) {
   const raw = String(login || '').trim();
-  const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
+  const worker = raw.split('.').slice(1).filter(Boolean).join('.');
   return createHash('sha256')
     .update('shear-worker-tag-v1')
     .update(parseLogin(raw))
@@ -351,9 +351,9 @@ export function publicWorkerTag(login) {
 /** Login suffix after dest. Public; not the silent ID. Worker names are not bloomed. */
 export function publicWorkerName(login) {
   const raw = String(login || '').trim();
-  const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
+  const worker = raw.split('.').slice(1).filter(Boolean).join('.');
   const clean = worker.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
-  return clean || 'worker';
+  return clean;
 }
 
 /** Public labels: swap rude tokens for flower names. Longest match first. */
@@ -447,13 +447,13 @@ export function admitClient(params) {
     return { ok: true, login: dest, workerKey: raw || dest, payoutDest: '', ramAlias: true };
   }
   const payout = hasherPayoutDest(dest, { dest: params?.dest || params?.payout });
-  const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
+  const worker = raw.split('.').slice(1).filter(Boolean).join('.');
   if (isPaymentCode(dest)) {
     if (!payout) return { ok: true, login: dest, workerKey: raw || dest, payoutDest: '', ramAlias: true };
     return {
       ok: true,
       login: payout,
-      workerKey: `${payout}.${worker}`,
+      workerKey: worker ? `${payout}.${worker}` : payout,
       payoutDest: payout,
       ramAlias: true,
     };
@@ -1653,23 +1653,22 @@ export function createPool({
     // disagrees with shareBatch whenever the connected dest changed, and
     // verifyBlock then rejects every block-quality share (pot_prop).
     const wantPot = wantLivePot();
-    const potShares = poolPay
-      ? custodyPotShares(poolPay, wantPot)
-      : (lag1Shares.length
-        ? potSharesFromBatch(lag1Shares, poolPay, wantPot)
-        : splitPot(
-          potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
-          poolPay,
-          wantPot,
-        ));
+    // Pay each hasher ssa1 its share of the pot in this coinbase. The pool
+    // dest receives only the 1% fee. Do not hold the pot for a later book payout.
+    const potShares = lag1Shares.length
+      ? potSharesFromBatch(lag1Shares, poolPay, wantPot)
+      : splitPot(
+        potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
+        poolPay,
+        wantPot,
+      );
     // she1 login may have no dest yet (dest arrives as owned ssa1). The header
     // still issues; shareBatch credit stays hasher dests only.
     const payout = potShares[0]?.address || hasherPay || poolPay || poolFeeDest();
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     const chainLen = (store.blocks || []).length;
-    // Hashbonus is per-hasher dest (omit hashBonusCustodyDest). Pot stays
-    // custodial on poolPay for 30-conf → π auto-payout. Do not conflate.
+    // Hashbonus and pot both pay the hasher ssa1 in this block. Pool dest is the fee only.
     const { job, tpl } = store.template({
       miner: payout,
       samples,

@@ -1,6 +1,6 @@
 @echo off
 REM ShearK-Miner 2.5 (ShearHash-v3 light) — Windows
-REM Pool: pool.shear.digital:1111  (shear-testnet-v4)
+REM Pool: pool.shear.digital:1111  (shear-testnet-v5)
 REM
 REM Paid login is an ssa1 dest the wallet exported (Copy dest), then .worker.
 REM she1 without --dest is unpaid. Never use shear1.

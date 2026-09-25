@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { PI_SHE_NANOS, NANOS_PER_SHE, POOL_FEE_BPS, BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS } from '../../crypto/asert.js';
 import {
@@ -23,7 +23,7 @@ import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { bootPoolOperator } from '../src/pool_ident.js';
 import { poolWithdrawTx } from '../../crypto/levy.js';
-import { hash20FromAddress, spendDestOf } from '../../crypto/address.js';
+import { spendDestOf } from '../../crypto/address.js';
 import { sealCoinbaseNote } from '../../crypto/note.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { custodyPotShares } from '../../node/src/chain.js';
@@ -498,5 +498,103 @@ describe('auto payout at π SHE to miner ssa1', () => {
     assert.match(html, /autoPayoutLastError/);
     assert.match(html, /why === 'insufficient' \|\| why === 'unsigned'/);
     assert.doesNotMatch(html, /SHEAR_POOL_SPEND_SEED/);
+  });
+
+  it('pays one pi lot every sweep once accrued, then waits for the next pi', () => {
+    const dest = ssa1();
+    const tag = publicMinerTag(dest);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-payout-lot-'));
+    const book = createPullBook(dir);
+    const blockPot = 99000000000;
+    for (let h = 1; h <= 8; h += 1) {
+      book.creditRound(
+        [{ tag, dest, count: 1 }],
+        { height: h, nanos: blockPot, hashByDest: new Map() },
+      );
+    }
+    const owed = 8 * blockPot;
+    const due = book.dueAuto({ tipHeight: 8, need: 30 });
+    assert.equal(due.length, 1);
+    assert.equal(due[0].nanos, PI_SHE_NANOS);
+    assert.ok(owed > PI_SHE_NANOS * 2);
+    const first = book.takeConfirmed(tag, {
+      tipHeight: 8,
+      need: 30,
+      amountNanos: due[0].nanos,
+      skipCooldown: true,
+    });
+    assert.equal(first.ok, true);
+    assert.equal(first.nanos, PI_SHE_NANOS);
+    const secondDue = book.dueAuto({ tipHeight: 8, need: 30 });
+    assert.equal(secondDue.length, 1);
+    assert.equal(secondDue[0].nanos, PI_SHE_NANOS);
+    book.takeConfirmed(tag, {
+      tipHeight: 8,
+      need: 30,
+      amountNanos: secondDue[0].nanos,
+      skipCooldown: true,
+    });
+    assert.equal(book.dueAuto({ tipHeight: 8, need: 30 }).length, 0);
+    book.creditRound(
+      [{ tag, dest, count: 1 }],
+      { height: 9, nanos: blockPot, hashByDest: new Map() },
+    );
+    assert.equal(book.dueAuto({ tipHeight: 9, need: 30 }).length, 0);
+  });
+
+  it('Sum paid stays 0 after a book pull and advances only when the chain output lands', async () => {
+    const dest = ssa1();
+    const tag = publicMinerTag(dest);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-landed-pay-'));
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 8,
+      bits: 16,
+    });
+    await new Promise((resolve, reject) => {
+      pool.httpServer.listen(0, '127.0.0.1', resolve);
+      pool.httpServer.on('error', reject);
+    });
+    const httpPort = pool.httpServer.address().port;
+    pool.store.tip = () => ({ height: 40 });
+    pool.store.getpolicy = () => ({ operational: { pool_merchant: 6 } });
+    assert.equal(pool.pullBook.creditRound(
+      [{ tag, dest, count: 10 }],
+      { height: 1, nanos: PI_SHE_NANOS, hashByDest: new Map() },
+    ).ok, true);
+    const taken = pool.pullBook.takeConfirmed(tag, {
+      tipHeight: 40,
+      need: 6,
+      amountNanos: PI_SHE_NANOS,
+      skipCooldown: true,
+    });
+    assert.equal(taken.ok, true);
+    const before = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`).then((r) => r.json());
+    assert.equal(before.sentNanos, 0);
+    pool.store.blocks.push({
+      height: 40,
+      txs: [{
+        kind: 'pool-withdraw',
+        vout: [{
+          kind: 'pool-withdraw',
+          dest20: hash20FromAddress(dest),
+          valueProof: { v: PI_SHE_NANOS },
+        }],
+      }],
+    });
+    const after = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`).then((r) => r.json());
+    assert.equal(after.sentNanos, PI_SHE_NANOS);
+    pool.pullBook.takeConfirmed(tag, {
+      tipHeight: 40,
+      need: 6,
+      amountNanos: 1,
+      skipCooldown: true,
+    });
+    const still = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`).then((r) => r.json());
+    assert.equal(still.sentNanos, PI_SHE_NANOS);
+    pool.close();
   });
 });

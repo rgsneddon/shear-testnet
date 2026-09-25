@@ -142,7 +142,7 @@ Wallet **0.48** syncs a local node at `127.0.0.1:18332` (headers + compact block
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure.
 CLI covers the same functions (`dart run bin/shear.dart help`), including sign, The Reserve vote/rewards, vort1 create/register, and Closure backup/restore.
-Backup: encrypted `shewall.bin` (same file in GUI and CLI; v1 files still open and reseal to v2). Hash samples collate per hasher dest and prune after 1000 confirmations; sealed transfers stay for the explorer. Optional bootstrap: [boot.shear.digital](https://boot.shear.digital) at height 1000, then every 400 blocks.
+Backup: encrypted `shewall.bin` (same file in GUI and CLI; v1 files still open and reseal to v2). Hash samples collate per hasher dest and prune after 1000 confirmations; sealed transfers stay for the explorer. Optional bootstrap: [boot.shear.digital](https://boot.shear.digital) at height 200, then every 200 blocks.
 
 ## Secrets
 

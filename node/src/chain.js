@@ -482,6 +482,7 @@ export function coinbaseTx({
 }) {
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const bonuses = hashBonusByMiner(samples, hashBonusNanos, shareBatch);
+  const batchEmpty = !Array.isArray(shareBatch) || shareBatch.length === 0;
   const vout = [];
   const custody = allowedHashBonusCustodyDest(hashBonusCustodyDest);
   let shares = potShares && potShares.length ? potShares : null;
@@ -513,6 +514,11 @@ export function coinbaseTx({
       }));
     }
   } else {
+    // Solo (and any seal with no share batch) still mints the finder's floor
+    // hashbonus in this block. It is not a pool credit.
+    if (batchEmpty && isDestAddress(miner) && !bonuses.has(miner)) {
+      bonuses.set(miner, unitsForShare() * hashBonusUnitNanos(hashBonusNanos));
+    }
     for (const [address, nanos] of bonuses) {
       const pay = destOf(address);
       if (!isDestAddress(pay)) continue;
@@ -964,6 +970,26 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         const T = wantPot + wantBonus;
         const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
         if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
+      } else if (!shareBatch.length) {
+        const floor = unitsForShare() * liveUnit;
+        const finder = hinted && isDestAddress(hinted) ? hinted : '';
+        const finderNc = finder ? ncHex(noteCommitOfDest20(hash20FromAddress(finder))) : '';
+        if (hashVouts.length === 0) {
+          bonusNanos = 0;
+        } else if (
+          hashVouts.length === 1
+          && finderNc
+          && ncHex(hashVouts[0].noteCommit) === finderNc
+          && verifySealedNote(hashVouts[0], floor)
+        ) {
+          bonusNanos = floor;
+        } else {
+          return { ok: false, reason: 'hash_bonus' };
+        }
+        potNanos = wantPot;
+        const T = wantPot + bonusNanos;
+        const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
+        if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       } else {
       for (const leaf of leaves) {
         const nc = ncHex(leaf.noteCommit);
@@ -1020,7 +1046,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       potNanos = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
       bonusNanos = hashVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
       if (potNanos !== wantPot) return { ok: false, reason: 'pot_sched' };
-      if (bonusNanos !== provenUnits * liveUnit) return { ok: false, reason: 'hash_bonus' };
+      const floorFinder = !shareBatch.length ? unitsForShare() * liveUnit : 0;
+      if (shareBatch.length) {
+        if (bonusNanos !== provenUnits * liveUnit) return { ok: false, reason: 'hash_bonus' };
+      } else if (bonusNanos !== 0 && bonusNanos !== floorFinder) {
+        return { ok: false, reason: 'hash_bonus' };
+      }
       const paid = new Map();
       for (const o of hashVouts) {
         paid.set(o.address, (paid.get(o.address) || 0) + Number(o.nanos || 0));
@@ -1029,7 +1060,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         if ((paid.get(dest) || 0) !== units * liveUnit) return { ok: false, reason: 'hash_bonus' };
       }
       for (const dest of paid.keys()) {
-        if (!provenByDest.has(dest)) return { ok: false, reason: 'hash_bonus' };
+        const finderFloor = floorFinder > 0 && dest === hinted && paid.size === 1 && (paid.get(dest) || 0) === floorFinder;
+        if (!provenByDest.has(dest) && !finderFloor) return { ok: false, reason: 'hash_bonus' };
       }
       const maxFee = Math.floor(wantPot * POOL_FEE_MAX_BPS / 10000);
       const hasherSet = new Set(provenByDest.keys());
@@ -1098,16 +1130,24 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const base = Number(decoded.baseFee || 1n);
   let fees = 0;
   const spent = spentB instanceof Set ? spentB : new Set(spentB || []);
-  const history = Array.isArray(evmHistory) && evmHistory.length ? evmHistory : (prev ? [prev] : []);
-  const rebuilt = fluxsetFromBlocks(history);
-  const live = Array.isArray(parentFluxset)
-    ? {
-        pubs: parentFluxset,
-        commits: rebuilt.commits,
-        spendTags: parentSpendTags instanceof Set ? parentSpendTags : new Set(parentSpendTags || rebuilt.spendTags || []),
-        jroot: rebuilt.jroot,
-      }
-    : (parentFluxset?.pubs ? parentFluxset : rebuilt);
+  // A live parent fluxset already has every earlier height. Do not walk the
+  // chain again. Rebuild only when this block has no parent state.
+  const haveLive = parentFluxset && !Array.isArray(parentFluxset) && Array.isArray(parentFluxset.pubs);
+  let live;
+  if (haveLive) {
+    live = parentFluxset;
+  } else {
+    const history = Array.isArray(evmHistory) && evmHistory.length ? evmHistory : (prev ? [prev] : []);
+    const rebuilt = fluxsetFromBlocks(history);
+    live = Array.isArray(parentFluxset)
+      ? {
+          pubs: parentFluxset,
+          commits: rebuilt.commits,
+          spendTags: parentSpendTags instanceof Set ? parentSpendTags : new Set(parentSpendTags || rebuilt.spendTags || []),
+          jroot: rebuilt.jroot,
+        }
+      : rebuilt;
+  }
   const pubs = (live.pubs || []).slice();
   const commits = (live.commits || []).slice();
   const spentTags = new Set(live.spendTags || []);

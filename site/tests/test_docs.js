@@ -183,7 +183,7 @@ describe('whitepaper.shear.digital', () => {
     assert.doesNotMatch(src, /pin 0\.32/);
     assert.doesNotMatch(src, /pin 0\.37/);
     assert.match(src, /ShearK-Miner 2\.5/);
-    assert.match(src, /pin 0\.46/);
+    assert.match(src, /pin 0\.48/);
     assert.equal(pdf.includes(Buffer.from('The Join')), false);
     const hay = pdfHaystack(pdf);
     assert.equal(hay.includes(Buffer.from('shear-testnet-v3')), false);
@@ -194,7 +194,7 @@ describe('whitepaper.shear.digital', () => {
     assert.equal(hay.includes(utf16be('ShearK-Miner 1.6')), false);
     assert.equal(hay.includes(Buffer.from('wallet 0.32')) || hay.includes(utf16be('wallet 0.32')) || hay.includes(utf16be('pin 0.32')), false);
     assert.equal(pdf.includes(Buffer.from('shear-testnet-v4')), true);
-    assert.equal(pdf.includes(Buffer.from('wallet-0.46')), true);
+    assert.equal(pdf.includes(Buffer.from('wallet-0.48')), true);
     assert.equal(pdf.includes(Buffer.from('ShearK-2.5')), true);
     assert.doesNotMatch(content, /The Join/);
     assert.doesNotMatch(content, /join1\./);

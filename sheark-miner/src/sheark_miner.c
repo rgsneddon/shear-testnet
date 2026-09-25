@@ -216,14 +216,15 @@ static int build_login(const char *user) {
   const char *dot = strchr(user, '.');
   size_t alen = dot ? (size_t)(dot - user) : strlen(user);
   if (!is_shear_login(user, alen)) return 0;
-  const char *worker = DEFAULT_WORKER;
-  char wbuf[40];
-  if (dot) {
-    snprintf(wbuf, sizeof(wbuf), "%s", dot + 1);
-    if (!valid_worker(wbuf)) return 0;
-    worker = wbuf;
+  if (!dot) {
+    snprintf(g_login, sizeof(g_login), "%.*s", (int)alen, user);
+    g_user = g_login;
+    return 1;
   }
-  snprintf(g_login, sizeof(g_login), "%.*s.%s", (int)alen, user, worker);
+  char wbuf[40];
+  snprintf(wbuf, sizeof(wbuf), "%s", dot + 1);
+  if (!valid_worker(wbuf)) return 0;
+  snprintf(g_login, sizeof(g_login), "%.*s.%s", (int)alen, user, wbuf);
   g_user = g_login;
   return 1;
 }

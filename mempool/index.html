@@ -138,6 +138,12 @@
       border:1px solid var(--card-line); margin:0; white-space:pre-wrap;
     }
     @media (max-width: 1024px) {
+      header.top-banner {
+        grid-template-columns: 1fr auto;
+        overflow: visible;
+        padding: 6px 12px;
+        gap: 10px;
+      }
       .hud { grid-template-columns:1fr; overflow:hidden; }
       .col { max-height: 34vh; }
       .col.mid { order:-1; max-height: none; }

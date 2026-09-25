@@ -298,8 +298,9 @@ describe('pool honesty: clientHashes cannot inflate units', () => {
       shareBatch: [],
     });
     const split = coinbaseSplit(cb, { shareBatch: [], miner: potMiner });
-    assert.equal(split.hashNanos, 0);
+    assert.equal(split.hashNanos, (2 ** SHARE_FLOOR_BITS) * HASH_BONUS_NANOS);
+    assert.equal(split.hashByMiner[potMiner], (2 ** SHARE_FLOOR_BITS) * HASH_BONUS_NANOS);
     assert.equal(split.potNanos, BLOCK_SUBSIDY_NANOS);
-    assert.equal(cb.vout.some((o) => o.kind === 'hash'), false);
+    assert.equal(cb.vout.filter((o) => o.kind === 'hash').length, 1);
   });
 });

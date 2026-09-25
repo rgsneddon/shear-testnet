@@ -1,6 +1,6 @@
 # Shear wallet 0.48
 
-GUI (Flutter) and CLI. Same identity, same encrypted `shewall.bin`, same book magic `shear-testnet-v4`.
+GUI (Flutter) and CLI. Same identity, same encrypted `shewall.bin`, same book magic `shear-testnet-v5`.
 
 Tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure. The Reserve lives under Vortex.
 
@@ -8,7 +8,7 @@ Backup file: encrypted `shewall.bin`. Offer `she1` when someone pays you. Incomi
 
 Mine with **Copy dest**: the Continuum `ssa1` shown on screen (Copy dest copies that mailbox; it does not mint a new one). Log ShearK in as `ssa1.worker`. Hash bonus (no 1% fee) and your pot share accumulate; the public pool auto-pays that `ssa1` at π SHE.
 
-Pool: `pool.shear.digital:1111` (cleartext TCP unless TLS is in front). Magic: `shear-testnet-v4`.
+Pool: `pool.shear.digital:1111` (cleartext TCP unless TLS is in front). Magic: `shear-testnet-v5`.
 
 Continuum is spendable, pending transfers until six confirmations, and Copy ID. Already-confirmed SHE loads from a local node (`127.0.0.1:18332`) on unlock. Open-round hashes stay pending until the next sealed block. Shearview lists your landings (height, from/to, date, amount, snippet); tap a row for full Resistance detail. Hashbonus sits inside the block row. The pot is pool-custodial until 30 confirms, then auto-pays at π. This wallet does not mine. Public pool HTTP submit is an advanced toggle.
 

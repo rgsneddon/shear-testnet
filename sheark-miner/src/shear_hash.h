@@ -11,8 +11,8 @@
 #define SHEAR_ALGO "ShearHash"
 #define SHEAR_CLIENT "ShearHash"
 #define SHEAR_MINER_NAME "ShearK-Miner"
-#define SHEAR_VERSION "2.5"
-#define SHEAR_MAGIC "shear-testnet-v4"
+#define SHEAR_VERSION "2.6"
+#define SHEAR_MAGIC "shear-testnet-v5"
 #define SHEAR_RX_CACHE_MIB 128
 
 #ifdef __cplusplus

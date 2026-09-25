@@ -159,6 +159,10 @@ describe('thin solo stratum', () => {
     assert.equal(ok.ok, true);
     assert.equal(ok.dest, dest);
     assert.equal(ok.worker, 'solo');
+    const bare = parseSoloLogin(dest);
+    assert.equal(bare.ok, true);
+    assert.equal(bare.dest, dest);
+    assert.equal(bare.worker, '');
     assert.equal(parseSoloLogin('not-a-dest.solo').ok, false);
   });
 

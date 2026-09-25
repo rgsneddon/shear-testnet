@@ -36,18 +36,18 @@
 <body>
   <div class="wrap">
     <h1>Latest bootstrap</h1>
-    <p class="muted">One file pair. First published at height 1000, then overwritten every 400 blocks. Not a history. Magic <code>shear-testnet-v4</code>.</p>
+    <p class="muted">One file pair. First published at height 200, then overwritten every 200 blocks. Not a history. Magic <code>shear-testnet-v5</code>.</p>
     <div class="card">
       <p id="status">Checking latest.json…</p>
       <p>
         <a class="btn" id="dl-json" href="/latest.json" aria-disabled="true">latest.json</a>
         <a class="btn" id="dl-bin" href="/latest.bin" aria-disabled="true">latest.bin</a>
       </p>
-      <p class="muted">Default sync is still full archival IBD. Bootstrap is opt-in. One file pair: first published at height <strong>1000</strong>, then overwritten every <strong>400</strong> blocks (1400, 1800, …). Not every block. The last 1000 blocks still IBD from the live seed.</p>
+      <p class="muted">Default sync is still full archival IBD. Bootstrap is opt-in. One file pair: first published at height <strong>200</strong>, then overwritten every <strong>200</strong> blocks (400, 600, …). Not every block. The last 1000 blocks still IBD from the live seed.</p>
     </div>
 
     <h2>What this is</h2>
-    <p>After 1000 confirmations the node drops Flow <em>samples</em> and share rows. Sealed transactions, coinbase vouts, headers, and merkle stay. This host overwrites <code>latest.json</code> + <code>latest.bin</code> at height 1000, then every 400 blocks (1400, 1800, …) — not on every prune. Older snapshots are not kept.</p>
+    <p>After 1000 confirmations the node drops Flow <em>samples</em> and share rows. Sealed transactions, coinbase vouts, headers, and merkle stay. This host overwrites <code>latest.json</code> + <code>latest.bin</code> at height 200, then every 200 blocks (400, 600, …) — not on every prune. Older snapshots are not kept.</p>
     <p class="warn">Do not use a bootstrap from anywhere except this page. A fake snapshot is a different book. After apply, your node must still reach the live tip hash on <code>shear.digital:30303</code>.</p>
 
     <h2>How to apply</h2>
@@ -66,13 +66,13 @@ cp latest.bin "$SHEAR_DATA/bootstrap/latest.bin"
 cp latest.json "$SHEAR_DATA/bootstrap/latest.json"
 
 node node/src/node.js</pre>
-    <p>Same binary, same ports (P2P 30303, RPC 18332 loopback), same magic <code>shear-testnet-v4</code>. It does not mine. It dials <code>shear.digital:30303</code> and IBDs only what is still unpruned (about the last 1000 blocks). Merkle still runs. Share-batch POW is skipped only where the local book already has 1000 confirmations <em>and</em> <code>samplesPruned</code> — a peer flag alone is not enough.</p>
+    <p>Same binary, same ports (P2P 30303, RPC 18332 loopback), same magic <code>shear-testnet-v5</code>. It does not mine. It dials <code>shear.digital:30303</code> and IBDs only what is still unpruned (about the last 1000 blocks). Merkle still runs. Share-batch POW is skipped only where the local book already has 1000 confirmations <em>and</em> <code>samplesPruned</code> — a peer flag alone is not enough.</p>
     <p class="muted">Current source also accepts <code>node node/src/node.js --bootstrap="$PWD"</code> as a one-line copy. You do not need that flag if you copy <code>latest.bin</code> yourself.</p>
 
     <h2>If apply refuses</h2>
     <ul>
       <li><code>bootstrap_datadir_not_empty</code> — you still have a chain.jsonl/bin. Use a new directory.</li>
-      <li><code>bootstrap_magic</code> — not <code>shear-testnet-v4</code>. Wrong book.</li>
+      <li><code>bootstrap_magic</code> — not <code>shear-testnet-v5</code>. Wrong book.</li>
       <li><code>bootstrap_dropped_txs</code> — snapshot lost sealed txs. Do not use it. Full IBD instead.</li>
       <li>Tip hash never matches the seed — throw the datadir away and IBD from empty. Do not dual-magic.</li>
     </ul>

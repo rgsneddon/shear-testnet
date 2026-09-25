@@ -7,10 +7,13 @@ import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import {
   writeLatestBootstrap,
   applyLatestBootstrap,
+  adoptNewerBootstrap,
   latestPaths,
   shouldPublishBootstrap,
   bootstrapCheckpoint,
   reorgBreaksCheckpoint,
+  CHECKPOINT_FIRST_HEIGHT,
+  CHECKPOINT_EVERY_BLOCKS,
 } from '../src/bootstrap.js';
 
 function prunedBlock(height, hashByte) {
@@ -30,77 +33,107 @@ function prunedBlock(height, hashByte) {
   };
 }
 
+function chainOf(n, hashByte = 1) {
+  const out = [];
+  for (let h = 1; h <= n; h += 1) out.push(prunedBlock(h, (hashByte + h) % 255 || 1));
+  return out;
+}
+
 describe('latest-only prune bootstrap', () => {
-  it('overwrites latest.json/bin and refuses a dirty datadir', () => {
+  it('publishes a contiguous 200 ladder, applies on an empty dir, and leaves a returning tip alone', () => {
     const src = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-src-'));
-    const first = [];
-    for (let h = 1; h <= 3; h += 1) first.push(prunedBlock(h, h));
-    first.push({
-      height: 1008,
-      hash: Buffer.alloc(32, 9),
-      header: Buffer.alloc(128, 9),
-      rootA: Buffer.alloc(32, 1),
-      rootB: Buffer.alloc(32, 2),
-      samplesPruned: false,
-      txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
-      shareBatch: [{ nonce: '1' }],
-    });
-    assert.equal(writeLatestBootstrap(src, first.slice(0, 3)), null);
-    const m1 = writeLatestBootstrap(src, first);
-    assert.equal(m1.latest, true);
-    assert.equal(m1.magic, MAGIC_TESTNET);
-    assert.equal(m1.height, 3);
-    assert.equal(m1.n, 3);
+    assert.equal(writeLatestBootstrap(src, chainOf(199)), null);
+    const gappy = [prunedBlock(1, 1), prunedBlock(2, 2), prunedBlock(3, 3), prunedBlock(1008, 9)];
+    assert.equal(writeLatestBootstrap(src, gappy), null);
+
+    const m200 = writeLatestBootstrap(src, chainOf(250));
+    assert.equal(m200.latest, true);
+    assert.equal(m200.magic, MAGIC_TESTNET);
+    assert.equal(m200.height, 200);
+    assert.equal(m200.n, 200);
+    assert.equal(m200.every, 200);
+    assert.equal(m200.checkpoint, 200);
     const p = latestPaths(src);
     assert.equal(fs.existsSync(p.json), true);
     assert.equal(fs.existsSync(p.bin), true);
     const names = fs.readdirSync(p.dir).filter((n) => !n.endsWith('.tmp'));
     assert.deepEqual(names.sort(), ['latest.bin', 'latest.json']);
 
-    const second = first.filter((b) => Number(b.height) !== 1008);
-    second.push(prunedBlock(4, 4));
-    second.push({
-      height: 1009,
-      hash: Buffer.alloc(32, 10),
-      header: Buffer.alloc(128, 10),
-      rootA: Buffer.alloc(32, 1),
-      rootB: Buffer.alloc(32, 2),
-      samplesPruned: false,
-      txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
-      shareBatch: [{ nonce: '1' }],
-    });
-    const m2 = writeLatestBootstrap(src, second);
-    assert.equal(m2.height, 4);
-    assert.equal(m2.n, 4);
+    const m400 = writeLatestBootstrap(src, chainOf(400));
+    assert.equal(m400.height, 400);
+    assert.equal(m400.n, 400);
+    assert.equal(m400.checkpoint, 400);
     const names2 = fs.readdirSync(p.dir).filter((n) => !n.endsWith('.tmp'));
     assert.deepEqual(names2.sort(), ['latest.bin', 'latest.json']);
     const man = JSON.parse(fs.readFileSync(p.json, 'utf8'));
     assert.equal(man.latest, true);
-    assert.equal(man.height, 4);
+    assert.equal(man.height, 400);
 
     const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-dst-'));
     const applied = applyLatestBootstrap(dest, src);
-    assert.equal(applied.height, 4);
+    assert.equal(applied.height, 400);
     assert.equal(fs.existsSync(path.join(dest, 'chain.bin')), true);
     assert.throws(() => applyLatestBootstrap(dest, src), /bootstrap_datadir_not_empty/);
+    const again = adoptNewerBootstrap(dest, src);
+    assert.equal(again.applied, false);
+    assert.equal(again.reason, 'local_ahead');
+    assert.equal(again.height, 400);
+    assert.equal(again.bootstrap, 400);
+
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-fresh-'));
+    const firstAdopt = adoptNewerBootstrap(fresh, src);
+    assert.equal(firstAdopt.applied, true);
+    assert.equal(firstAdopt.height, 400);
+    const secondAdopt = adoptNewerBootstrap(fresh, src);
+    assert.equal(secondAdopt.applied, false);
+    assert.equal(secondAdopt.reason, 'local_ahead');
+
+    const shortSrc = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-short-'));
+    assert.equal(writeLatestBootstrap(shortSrc, chainOf(200)).height, 200);
+    const behind = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-behind-'));
+    assert.equal(applyLatestBootstrap(behind, shortSrc).height, 200);
+    fs.writeFileSync(path.join(behind, 'chain.jsonl'), '{}\n');
+    fs.writeFileSync(path.join(behind, 'explorer.jsonl'), '{}\n');
+    const jumped = adoptNewerBootstrap(behind, src);
+    assert.equal(jumped.applied, true);
+    assert.equal(jumped.height, 400);
+    assert.equal(fs.existsSync(path.join(behind, 'chain.jsonl')), false);
+    assert.equal(fs.existsSync(path.join(behind, 'explorer.jsonl')), false);
+
+    const foreignDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-foreign-'));
+    assert.equal(writeLatestBootstrap(foreignDir, chainOf(200, 40)).height, 200);
+    const refused = adoptNewerBootstrap(dest, foreignDir);
+    assert.equal(refused.applied, false);
+    assert.equal(refused.reason, 'genesis');
+    const kept = JSON.parse(fs.readFileSync(latestPaths(dest).json, 'utf8'));
+    assert.equal(kept.height, 400);
   });
 
-  it('publishes at 1000 then every 400 blocks, not every height', () => {
-    assert.equal(bootstrapCheckpoint(999), 0);
+  it('publishes at 200 then every 200 blocks, not every height', () => {
+    assert.equal(bootstrapCheckpoint(199), 0);
+    assert.equal(bootstrapCheckpoint(200), 200);
+    assert.equal(bootstrapCheckpoint(399), 200);
+    assert.equal(bootstrapCheckpoint(400), 400);
+    assert.equal(bootstrapCheckpoint(999), 800);
     assert.equal(bootstrapCheckpoint(1000), 1000);
-    assert.equal(bootstrapCheckpoint(1008), 1000);
-    assert.equal(bootstrapCheckpoint(1399), 1000);
+    assert.equal(bootstrapCheckpoint(1399), 1200);
     assert.equal(bootstrapCheckpoint(1400), 1400);
-    assert.equal(bootstrapCheckpoint(1800), 1800);
-    assert.equal(shouldPublishBootstrap(999, 0), false);
-    assert.equal(shouldPublishBootstrap(1000, 0), true);
-    assert.equal(shouldPublishBootstrap(1008, 1000), false);
-    assert.equal(shouldPublishBootstrap(1400, 1000), true);
+    assert.equal(shouldPublishBootstrap(199, 0), false);
+    assert.equal(shouldPublishBootstrap(200, 0), true);
+    assert.equal(shouldPublishBootstrap(399, 200), false);
+    assert.equal(shouldPublishBootstrap(400, 200), true);
+    assert.equal(shouldPublishBootstrap(1400, 1200), true);
     assert.equal(shouldPublishBootstrap(1400, 1400), false);
   });
 
-  it('refuses a reorg that replaces the 1000-then-400 checkpoint hash', () => {
+  it('keeps the reorg freeze at 1000 then every 400 while snapshots publish every 200', () => {
+    assert.equal(CHECKPOINT_FIRST_HEIGHT, 1000);
+    assert.equal(CHECKPOINT_EVERY_BLOCKS, 400);
     const h = (n) => Buffer.alloc(32, n);
+    const below = Array.from({ length: 250 }, (_, i) => ({ height: i + 1, hash: h((i + 1) % 255) }));
+    const replace200 = below.map((b) => (b.height >= 200 ? { ...b, hash: h(9) } : b));
+    assert.equal(reorgBreaksCheckpoint(below, replace200), null);
+    assert.equal(bootstrapCheckpoint(250), 200);
     const from = Array.from({ length: 1008 }, (_, i) => ({ height: i + 1, hash: h((i + 1) % 255) }));
     const shallow = from.map((b) => (b.height >= 1005 ? { ...b, hash: h(9) } : b));
     assert.equal(reorgBreaksCheckpoint(from, shallow), null);
@@ -123,8 +156,8 @@ describe('latest-only prune bootstrap', () => {
     assert.match(html, /chain\.bin/);
     assert.match(html, /not a history/i);
     assert.match(html, /No node rewrite/);
-    assert.match(html, /first published at height <strong>1000<\/strong>/i);
-    assert.match(html, /overwritten every <strong>400<\/strong> blocks/i);
+    assert.match(html, /first published at height <strong>200<\/strong>/i);
+    assert.match(html, /overwritten every <strong>200<\/strong> blocks/i);
     assert.match(html, /not on every prune/i);
     assert.equal(/Overwritten at every prune/i.test(html), false);
     assert.equal(html.includes('FAST_SYNC=1'), false);

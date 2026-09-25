@@ -47,7 +47,7 @@ void RegisterPrivacyHopChannel(flutter::FlutterEngine* engine) {
           sockaddr_in addr{};
           addr.sin_family = AF_INET;
           addr.sin_port = htons(44044);
-          inet_pton(AF_INET, "77.42.35.12", &addr.sin_addr);
+          inet_pton(AF_INET, "77.42.91.84", &addr.sin_addr);
           // Residual RPT2 HELLO is the Android VpnService / WinTUN dataplane.
           // Desktop attach: UDP 44044 must be reachable on the dedicated hop VPS.
           const char magic[] = "RPT2";

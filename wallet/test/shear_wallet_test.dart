@@ -151,7 +151,7 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.48.0"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.51.0"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
@@ -159,11 +159,11 @@ void main() {
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.48.0"'), isTrue);
+    expect(winMain.contains('L"Shear 0.51.0"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.48.0"'), isTrue);
+    expect(winRc.contains('"Shear 0.51.0"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.48.0"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.51.0"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -686,8 +686,8 @@ void main() {
     }
   });
 
-  test('Privacy hop pins SHEAR-HOP / EU on 77.42.35.12:44044', () {
-    expect(kPrivacyHopHost, '77.42.35.12');
+  test('Privacy hop pins SHEAR-HOP / EU on 77.42.91.84:44044', () {
+    expect(kPrivacyHopHost, '77.42.91.84');
     expect(kPrivacyHopPort, 44044);
     expect(kPrivacyHopLabel, 'SHEAR-HOP / EU');
     expect(kPrivacyHopButtonLabel, 'Privacy hop');
@@ -797,8 +797,8 @@ void main() {
     );
     expect(hopFeeAdvisoryOf(StateError(kErrPoolHtml)), kErrPoolHtml);
     expect(hopFeeAdvisoryOf(StateError(kErrPoolHtml)).toLowerCase(), isNot(contains('<html')));
-    expect(kReserveLockSent, 'Sent — please wait 6 confirmations');
-    expect(kReserveLockSent, contains('please'));
+    expect(kReserveLockSent, 'Deposit submitted — wait 6 confirmations');
+    expect(kReserveLockSent, contains('wait 6 confirmations'));
     expect(kReserveLockSent, isNot(contains('plesse')));
     expect(
       reserveVaultSendReady(
@@ -807,7 +807,7 @@ void main() {
         hop: PrivacyHopState.off,
         unprivateConfirmed: true,
       ),
-      isTrue,
+      isFalse,
     );
     expect(
       reserveVaultSendReady(
@@ -821,7 +821,7 @@ void main() {
     expect(reservePublicWaitCopy(unprivateConfirmed: false), kReserveHopWaitCopy);
     expect(reservePublicWaitCopy(unprivateConfirmed: true), kUnprivateUnlockedBanner);
     expect(kUnprivateUnlockedBanner, contains('Unprivate send unlocked'));
-    expect(kPrivacyHopFeeShe, 0.001);
+    expect(kPrivacyHopFeeShe, 0);
     expect(kPrivacyHopFeeDest, kPoolFeeDest);
     expect(kPoolFeeDest, startsWith('ssa1q4ke8'));
   });
@@ -1020,13 +1020,13 @@ void main() {
     expect(ledger.notes, isEmpty);
     expect(
       ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
-      greaterThanOrEqualTo(kPrivacyHopFeeShe),
+      greaterThanOrEqualTo(0.001),
     );
     final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
     await ledger.send(
       from: dest,
       to: bob,
-      amount: kPrivacyHopFeeShe,
+      amount: 0.001,
       restFrame: id.address,
       paymentCode: id.paymentCode,
       spendSeed: seed,
@@ -1035,7 +1035,7 @@ void main() {
     expect(pool.notesHits, greaterThan(0));
     expect(posts, isNotEmpty);
     expect(posts.single['to'], kPrivacyHopFeeDest == bob ? bob : bob);
-    expect(posts.single['amount'], kPrivacyHopFeeShe);
+    expect(posts.single['amount'], 0.001);
     expect(ledger.notes, isNotEmpty);
   });
 
@@ -1048,13 +1048,13 @@ void main() {
     final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     ledger.confirmRound(address: dest, pot: 2, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
-    expect(ledger.spendable(dest), greaterThanOrEqualTo(kPrivacyHopFeeShe));
+    expect(ledger.spendable(dest), greaterThanOrEqualTo(0.001));
     final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'cd' * 32)!;
     await expectLater(
       ledger.send(
         from: dest,
         to: bob,
-        amount: kPrivacyHopFeeShe,
+        amount: 0.001,
         restFrame: id.address,
         paymentCode: id.paymentCode,
         spendSeed: seed,
@@ -1067,7 +1067,7 @@ void main() {
       )),
     );
     expect(posts, isEmpty);
-    expect(ledger.spendable(dest) + 1e-18, lessThan(kPrivacyHopFeeShe));
+    expect(ledger.spendable(dest) + 1e-18, lessThan(0.001));
     expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
     expect(hopFeeAdvisoryOf(StateError('no_note')), isNot('no_note'));
   });
@@ -1509,7 +1509,7 @@ void main() {
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(1));
   });
 
-  testWidgets('Continuum freeze banner shows reason and elevated confirms when frozen', (tester) async {
+  testWidgets('Continuum does not show the pool credits freeze exclamation', (tester) async {
     _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-freeze-banner-');
     addTearDown(() {
@@ -1532,8 +1532,9 @@ void main() {
     ));
     await tester.pump();
     await tester.pump();
-    expect(find.byKey(const Key('continuum-freeze-banner')), findsOneWidget);
-    expect(find.text('Credits frozen (h_ratio): confirmations elevated to 60.'), findsOneWidget);
+    expect(find.byKey(const Key('continuum-freeze-banner')), findsNothing);
+    expect(find.text('Credits frozen (h_ratio): confirmations elevated to 60.'), findsNothing);
+    expect(find.textContaining('confirmations elevated'), findsNothing);
   });
 
   testWidgets('Continuum freeze banner is hidden when not frozen', (tester) async {
@@ -1901,7 +1902,7 @@ void main() {
     expect(sync.seeds.first.contains('127.0.0.1'), isTrue);
     expect(sync.seeds, contains(kLocalNodeRpc));
     expect(sync.seeds.contains(kPublicPoolHttp), isTrue);
-    expect(kBookMagic, 'shear-testnet-v4');
+    expect(kBookMagic, 'shear-testnet-v5');
     expect(kWalletDefaultSeed, contains('127.0.0.1'));
     expect(kWalletDefaultSeed.contains('pool.shear.digital'), isFalse);
     final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
@@ -1914,8 +1915,8 @@ void main() {
         reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.48.0+70'));
-    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.48.0'"));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.51.0+73'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.51.0'"));
   });
 
   test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
@@ -2693,7 +2694,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.48.0');
+    expect(kWalletVersion, '0.51.0');
     expect(kWalletVersion.split('.').length, 3);
     expect(RegExp(r'^\d+\.\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(kWalletVersion, isNot('0.47'));
@@ -3155,8 +3156,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.48.0');
-    expect(kWalletVersion, '0.48.0');
+    expect(app.title, 'Shear 0.51.0');
+    expect(kWalletVersion, '0.51.0');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -4514,7 +4515,7 @@ void main() {
     expect(dump.contains('oracleBps'), isTrue);
   });
 
-  test('Reserve withdraw extra-mints interest onto Continuum spendable', () async {
+  test('Reserve withdraw sign does not credit Continuum before a sealed payout', () async {
     final alice = createIdentity();
     final ledger = ShearLedger()..bindIdentity(alice);
     final continuum = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
@@ -4542,10 +4543,8 @@ void main() {
     expect(out, isNotNull);
     expect(out!['interest']! > 0, isTrue);
     expect(out['principal'], kPiSheNanos);
-    final paid = (out['principal']! + out['interest']!) / kUnitsPerShe;
-    expect(ledger.spendable(continuum), closeTo(afterLock + paid, 1e-12));
-    expect(ledger.spendable(continuum), closeTo(10 - kPiShe - lockL + paid, 1e-12));
-    expect(ledger.ownerHistory(alice.address).where((t) => t.kind == 'reserve').single.to, continuum);
+    expect(ledger.spendable(continuum), closeTo(afterLock, 1e-12));
+    expect(ledger.ownerHistory(alice.address).where((t) => t.kind == 'reserve'), isEmpty);
     expect(r.portal(vault).nanos, 0);
   });
 
@@ -4802,8 +4801,8 @@ void main() {
     expect(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode), closeTo(1, 1e-12));
   });
 
-  test('Privacy hop pins SHEAR-HOP / EU on 77.42.35.12:44044', () {
-    expect(kPrivacyHopHost, '77.42.35.12');
+  test('Privacy hop pins SHEAR-HOP / EU on 77.42.91.84:44044', () {
+    expect(kPrivacyHopHost, '77.42.91.84');
     expect(kPrivacyHopPort, 44044);
     expect(kPrivacyHopLabel, 'SHEAR-HOP / EU');
     expect(kPrivacyHopButtonLabel, 'Privacy hop');
@@ -4843,10 +4842,10 @@ void main() {
       ),
       isTrue,
     );
-    expect(kPrivacyHopHost, '77.42.35.12');
+    expect(kPrivacyHopHost, '77.42.91.84');
     expect(kPrivacyHopPort, 44044);
     expect(kPrivacyHopLabel, 'SHEAR-HOP / EU');
-    expect(kPrivacyHopFeeShe, 0.001);
+    expect(kPrivacyHopFeeShe, 0);
     expect(kPoolFeeDest, 'ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6');
     expect(poolFeeDest(), kPoolFeeDest);
     expect(privacyHopFeeDestOk(kPrivacyHopFeeDest), isTrue);
@@ -4858,7 +4857,7 @@ void main() {
         hop: PrivacyHopState.off,
         unprivateConfirmed: true,
       ),
-      isTrue,
+      isFalse,
     );
     expect(kUnprivateConfirmLabel, 'I already use a VPN / I accept exposing my IP');
     expect(
@@ -4964,7 +4963,7 @@ void main() {
     expect(ui.contains('reserve-privacy-hop'), isFalse);
     expect(ui, contains('kReserveIpDisclaimer'));
     expect(ui.contains('kPrivacyHopButtonLabel'), isFalse);
-    expect(kPrivacyHopFeeShe, 0.001);
+    expect(kPrivacyHopFeeShe, 0);
     expect(privacyHopFeeDestOk(kPrivacyHopFeeDest), isTrue);
     expect(kPrivacyHopFeeDest, 'ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6');
   });
@@ -5985,8 +5984,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.48.0 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.48.0');
+  test('kWalletVersion == 0.51.0 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.51.0');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -6054,6 +6053,8 @@ void main() {
     expect(walletHonestyText(live: true, proven: 2, wanted: 5), '40% synchronising · 5');
     expect(walletSyncPercent(proven: 2, wanted: 5), 40);
     expect(walletHonestyText(live: true, proven: 5, wanted: 5), 'synchronised · 5');
+    expect(walletAtTip('synchronised · 5'), isTrue);
+    expect(walletAtTip('40% synchronising · 5'), isFalse);
     expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 0), 'connecting…');
     expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1), 'looking for a node…');
     expect(walletHonestyText(live: false, proven: 0, wanted: 0, failures: 1, height: 921), 'reconnecting · 921');
@@ -6075,13 +6076,13 @@ void main() {
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     final v3 = _PoolLive(headerHex: hex, height: 2306, magic: 'shear-testnet-v3');
-    final v4 = _PoolLive(headerHex: hex, height: 16, magic: 'shear-testnet-v4');
+    final v4 = _PoolLive(headerHex: hex, height: 16, magic: 'shear-testnet-v5');
     final v3s = await _fakePool(live: v3);
     final v4s = await _fakePool(live: v4);
     addTearDown(() => v3s.close(force: true));
     addTearDown(() => v4s.close(force: true));
     expect(isLiveBookStats({'magic': 'shear-testnet-v3'}), isFalse);
-    expect(isLiveBookStats({'magic': 'shear-testnet-v4'}), isTrue);
+    expect(isLiveBookStats({'magic': 'shear-testnet-v5'}), isTrue);
     final sync = ShearReadSync(
       seeds: ['http://127.0.0.1:${v3s.port}', 'http://127.0.0.1:${v4s.port}'],
       http: _realHttp(),
@@ -6100,7 +6101,7 @@ void main() {
     );
     final reset = ShearIdentity.fromJson(v3, reset: true);
     expect(reset.address, id.address);
-    expect(id.toJson()['network'], 'shear-testnet-v4');
+    expect(id.toJson()['network'], 'shear-testnet-v5');
   });
 
   test('upgraded wallet drops leftover pre-reset txs; live history is the book', () async {
@@ -6310,7 +6311,7 @@ void main() {
     final liveUrl = 'http://127.0.0.1:${liveServer.port}';
     expect(isUsableTipStats(const <String, dynamic>{}), isFalse);
     expect(isUsableTipStats({'height': 0, 'header': ''}), isFalse);
-    expect(isUsableTipStats({'height': 40, 'magic': 'shear-testnet-v4'}), isTrue);
+    expect(isUsableTipStats({'height': 40, 'magic': 'shear-testnet-v5'}), isTrue);
     final sync = ShearReadSync(
       seeds: [emptyUrl, liveUrl],
       http: _realHttp(),
@@ -6367,7 +6368,7 @@ void main() {
       seeds: ['http://127.0.0.1:${server.port}'],
       http: _realHttp(),
     );
-    expect(report, contains('magic=shear-testnet-v4'));
+    expect(report, contains('magic=shear-testnet-v5'));
     expect(report, contains('followTip.sampledTip=53'));
     expect(report, contains('displayHeight=53'));
     expect(report, contains('sealedHeight=53'));
@@ -7356,15 +7357,18 @@ void main() {
     expect(vault.liveHashBonusNanos, 7);
     expect(find.byKey(const Key('reserve-locked-in')), findsNothing);
     final spendShown = tester.widget<Text>(find.byKey(const Key('continuum-spendable'))).data;
-    expect(spendShown, '${formatShe(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode))} SHE');
+    final owedShown = ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode);
+    expect(
+      spendShown,
+      '${formatShe(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) + owedShown)} SHE',
+    );
     expect(spendShown, isNot('${formatShe(40)} SHE'));
     expect(spendShown, isNot('${formatShe(28)} SHE'));
     expect(find.byKey(const Key('continuum-in-reserve')), findsOneWidget);
     expect(find.textContaining('In Reserve  ${formatShe(20)} SHE'), findsOneWidget);
     expect(find.textContaining('Not Continuum spendable'), findsWidgets);
-    expect(find.byKey(const Key('continuum-owed-pi')), findsOneWidget);
-    expect(find.textContaining('Owed toward π  ${formatShe(2.5)} SHE'), findsOneWidget);
-    expect(find.textContaining('Owed toward π  ${formatShe(5)} SHE'), findsNothing);
+    expect(find.byKey(const Key('continuum-owed-pi')), findsNothing);
+    expect(find.textContaining('Owed toward π'), findsNothing);
     await tester.tap(find.text('Vortex'));
     await tester.pump();
     expect(find.byKey(const Key('reserve-yours-sums-box')), findsOneWidget);
@@ -7491,7 +7495,7 @@ void main() {
     await tester.pump(const Duration(seconds: 9));
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  testWidgets('Continuum shows In Reserve and a single owed-pi figure', (tester) async {
+  testWidgets('Continuum rolls owed toward pi into Spendable', (tester) async {
     _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-in-reserve-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -7532,18 +7536,17 @@ void main() {
     await tester.pump();
     await tester.pump();
     final shown = tester.widget<Text>(find.byKey(const Key('continuum-spendable'))).data;
-    expect(shown, '${formatShe(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode))} SHE');
+    expect(shown, '${formatShe(spend + owed)} SHE');
     expect(shown, isNot('${formatShe(minerPending)} SHE'));
     expect(shown, isNot('${formatShe(spend + 20)} SHE'));
     expect(find.byKey(const Key('continuum-in-reserve')), findsOneWidget);
     expect(find.textContaining('In Reserve  ${formatShe(20)} SHE'), findsOneWidget);
     expect(find.textContaining('The Reserve'), findsWidgets);
     expect(find.textContaining('Resistance'), findsWidgets);
-    expect(find.byKey(const Key('continuum-owed-pi')), findsOneWidget);
-    expect(find.textContaining('Owed toward π  ${formatShe(owed)} SHE'), findsOneWidget);
-    expect(find.textContaining('Owed toward π  ${formatShe(owed * 2)} SHE'), findsNothing);
+    expect(find.byKey(const Key('continuum-owed-pi')), findsNothing);
+    expect(find.textContaining('Owed toward π'), findsNothing);
+    expect(shown, '${formatShe(spend + owed)} SHE');
     expect(find.textContaining('Not Continuum spendable'), findsWidgets);
-    expect(find.textContaining('Miner-page numbers are not Continuum spendable'), findsWidgets);
     await tester.tap(find.byKey(const Key('continuum-in-reserve')));
     await tester.pump();
     expect(find.text('Your sums'), findsOneWidget);
@@ -7885,7 +7888,7 @@ class _PoolLive {
     this.balance = 10,
     this.pending = 0,
     this.avgBlockTimeMs = 90000,
-    this.magic = 'shear-testnet-v4',
+    this.magic = 'shear-testnet-v5',
     this.owner,
     List<Map<String, dynamic>>? incoming,
     List<Map<String, dynamic>>? history,

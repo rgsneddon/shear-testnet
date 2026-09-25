@@ -6,7 +6,7 @@ import 'shear_levy.dart';
 import 'shear_read_sync.dart';
 
 /// Residual hop daemon for Continuum Reserve (restore-privacy RPT2).
-const kPrivacyHopHost = '77.42.35.12';
+const kPrivacyHopHost = '77.42.91.84';
 const kPrivacyHopPort = 44044;
 const kPrivacyHopLabel = 'SHEAR-HOP / EU';
 const kPrivacyHopChannel = 'shear/privacy_hop';
@@ -28,7 +28,7 @@ const kHopProgressConnecting = 'Connecting Privacy hop…';
 
 /// Fixed hop click fee. Lands on [kPoolFeeDest] (ssa1), never she1.
 /// One number for every platform that runs this wallet.
-const kPrivacyHopFeeShe = 0.001;
+const kPrivacyHopFeeShe = 0.0;
 const kPrivacyHopFeeDest = kPoolFeeDest;
 
 String get kPrivacyHopFeeSheText => '$kPrivacyHopFeeShe SHE';
@@ -85,7 +85,9 @@ bool reserveSendReady({
   if (skipPoolSync && !enforceHopGate) return true;
   if (localSendReady(poolUrl)) return true;
   if (hopUp) return true;
-  return unprivateConfirmed;
+  // Unprivate is not a happy-path send. The parameter stays so old call sites compile.
+  if (unprivateConfirmed) return false;
+  return false;
 }
 
 bool reserveVaultSendReady({
@@ -113,6 +115,38 @@ bool privacyHopFeeDestOk(String dest) {
 
 bool hopFeeDestIsSsa1(String dest) => privacyHopFeeDestOk(dest);
 
+const kErrPrivacyVpn = 'Couldn’t reach Shear Privacy VPN — try again';
+
+/// Probe-up is not a TUN. Desktop must not claim the IP is masked.
+bool privacyHopClaimsIpMask({
+  required bool tunUp,
+  required bool probeOnly,
+}) =>
+    tunUp && !probeOnly;
+
+class PublicSendGate {
+  const PublicSendGate({required this.sendBlocked, required this.claimsIpMask, this.error});
+  final bool sendBlocked;
+  final bool claimsIpMask;
+  final String? error;
+}
+
+PublicSendGate publicSendGate({
+  required bool vpnMode,
+  required bool tunUp,
+  required bool probeOnly,
+  required bool localReady,
+}) {
+  if (!vpnMode) {
+    return PublicSendGate(sendBlocked: !localReady, claimsIpMask: false, error: localReady ? null : kErrPrivacyVpn);
+  }
+  final mask = privacyHopClaimsIpMask(tunUp: tunUp, probeOnly: probeOnly);
+  if (!mask) {
+    return const PublicSendGate(sendBlocked: true, claimsIpMask: false, error: kErrPrivacyVpn);
+  }
+  return const PublicSendGate(sendBlocked: false, claimsIpMask: true);
+}
+
 class PrivacyHopController extends ChangeNotifier {
   PrivacyHopController({
     this.mock = false,
@@ -130,7 +164,31 @@ class PrivacyHopController extends ChangeNotifier {
   String message = '';
   String? vpnIp;
 
-  bool get isUp => state == PrivacyHopState.up;
+  /// Real VpnService / TUN. A UDP HELLO does not set this.
+  bool tunVerified = false;
+
+  /// Reachable sibling without a verified TUN. Must not open a public send.
+  bool probeOnly = false;
+
+  bool get isUp => state == PrivacyHopState.up && tunVerified && !probeOnly;
+
+  /// Desktop UDP HELLO. Leaves the public send blocked.
+  void noteProbeOnly() {
+    tunVerified = false;
+    probeOnly = true;
+    state = PrivacyHopState.error;
+    message = kErrPrivacyVpn;
+    notifyListeners();
+  }
+
+  /// Test and Android TUN stand-in. Probe-only must not call this.
+  void noteTunUp() {
+    tunVerified = true;
+    probeOnly = false;
+    state = PrivacyHopState.up;
+    message = '$kPrivacyHopLabel up';
+    notifyListeners();
+  }
   bool get isConnecting => state == PrivacyHopState.connecting;
 
   String statusLine() => message.isNotEmpty ? message : privacyHopStateLabel(state);
@@ -146,15 +204,15 @@ class PrivacyHopController extends ChangeNotifier {
     final impl = connectImpl;
     if (impl != null) {
       final ok = await impl();
+      tunVerified = ok;
+      probeOnly = !ok;
       state = ok ? PrivacyHopState.up : PrivacyHopState.error;
-      message = ok ? '$kPrivacyHopLabel up' : 'Hop did not come up';
+      message = ok ? '$kPrivacyHopLabel up' : kErrPrivacyVpn;
       notifyListeners();
       return ok;
     }
     if (mock) {
-      state = PrivacyHopState.up;
-      message = '$kPrivacyHopLabel up';
-      notifyListeners();
+      noteTunUp();
       return true;
     }
     try {
@@ -172,9 +230,10 @@ class PrivacyHopController extends ChangeNotifier {
           : raw is Map
               ? Map<String, dynamic>.from(raw)
               : <String, dynamic>{};
-      final ok = map['ok'] == true &&
-          (map['connected'] == true || map['fullTunnelActive'] == true);
-      if (ok) {
+      final tun = map['fullTunnelActive'] == true;
+      tunVerified = tun;
+      probeOnly = !tun;
+      if (tun) {
         state = PrivacyHopState.up;
         final ip = map['vpnIp']?.toString().trim();
         if (ip != null && ip.isNotEmpty) vpnIp = ip;
@@ -187,16 +246,20 @@ class PrivacyHopController extends ChangeNotifier {
       state = PrivacyHopState.error;
       message = (map['message'] as String?)?.trim().isNotEmpty == true
           ? map['message'] as String
-          : 'Privacy hop did not connect';
+          : kErrPrivacyVpn;
       notifyListeners();
       return false;
     } on MissingPluginException {
+      tunVerified = false;
+      probeOnly = true;
       state = PrivacyHopState.error;
       message =
           'Privacy hop native channel missing on this build. Android uses VpnService.';
       notifyListeners();
       return false;
     } on PlatformException catch (e) {
+      tunVerified = false;
+      probeOnly = true;
       state = PrivacyHopState.error;
       message = e.message ?? e.code;
       notifyListeners();
@@ -211,15 +274,15 @@ class PrivacyHopController extends ChangeNotifier {
       } catch (_) {}
     }
     state = PrivacyHopState.off;
+    tunVerified = false;
+    probeOnly = false;
     message = 'Privacy hop off';
     vpnIp = null;
     notifyListeners();
   }
 
   void mockUp() {
-    state = PrivacyHopState.up;
-    message = '$kPrivacyHopLabel up';
-    notifyListeners();
+    noteTunUp();
   }
 }
 

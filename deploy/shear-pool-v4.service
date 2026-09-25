@@ -14,6 +14,8 @@ Environment=SHEAR_STRATUM_AUTH=1
 Environment=SHEAR_HTTP=8088
 Environment=SHEAR_SHARE_BITS=8
 Environment=SHEAR_ADMIN_HOST=mypool.site
+# In-process payout sweep: every 4s, one π SHE lot once a miner has accrued π.
+Environment=SHEAR_PAYOUT_SWEEP_MS=4000
 ExecStart=/usr/bin/node pool/src/main.js
 Restart=on-failure
 RestartSec=3

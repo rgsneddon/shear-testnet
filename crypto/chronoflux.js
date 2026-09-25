@@ -19,10 +19,10 @@
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS, BLOCK_SUBSIDY_NANOS } from './asert.js';
 import { shareRowJson } from './pack.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, coinbasePotIsCustodial } from './coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, coinbasePotIsCustodial, sealedPotIsCustody } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8 } from './note.js';
-import { hash20FromAddress } from './address.js';
+import { hash20FromAddress, encodeDest } from './address.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
 
@@ -126,7 +126,8 @@ export function sealedExplorerRows(block) {
     const potNanos = Number(block.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
     // poolDest is not stored on chain.bin or the wire. A pot note that is not a
     // hasher leaf is custody even when dest20 was stripped, so Tree-A must not PROP.
-    const custodyDest = custodyPoolDestOf(block, potNanos);
+    const hintCustody = sealedPotIsCustody(block, block?.poolDest, potNanos);
+    const custodyDest = hintCustody ? block.poolDest : custodyPoolDestOf(block, potNanos);
     const custodialPot = !!custodyDest || coinbasePotIsCustodial(block, potNanos);
     let pays = expectedCoinbasePays(block.shareBatch || [], custodialPot && custodyDest ? {
       miner: block.miner,
@@ -170,11 +171,12 @@ export function sealedExplorerRows(block) {
     cb.vout.forEach((o, i) => {
       const hit = matchSealedCoinbaseVout(o, pays);
       const toDest20 = dest20Buf(o.dest20) || (hit.address ? dest20Buf(hash20FromAddress(hit.address)) : null);
+      const sealedTo = toDest20 ? encodeDest(toDest20) : '';
       rows.push({
         id: `${hid}-${o.kind || 'cb'}-${i}`,
         kind: o.kind === 'hash' ? 'hash' : (o.kind === 'lock' || o.kind === 'vote' || o.kind === 'withdraw' ? o.kind : 'coinbase'),
         from: 'coinbase',
-        to: hit.address || o.address || '',
+        to: sealedTo || hit.address || o.address || '',
         nanos: hit.nanos || Number(o.valueProof?.v != null ? o.valueProof.v : (o.nanos || 0)),
         height,
         confirmed: true,
@@ -199,10 +201,16 @@ export function sealedExplorerRows(block) {
       const o = vouts[i];
       const kind = o.kind || tx.kind || (tx.mint ? 'reserve' : 'transfer');
       const to = o.address || (i === 0 ? tx.to : '');
-      const claimed = Number(o.valueProof?.v != null ? o.valueProof.v : (o.nanos != null ? o.nanos : (
+      let claimed = Number(o.valueProof?.v != null ? o.valueProof.v : (o.nanos != null ? o.nanos : (
         String(o.kind || '') === 'dummy' ? 0
           : (i === 0 ? tx.nanos || 0 : tx.changeNanos || 0)
       )));
+      if (kind === 'pool-withdraw' && !o.commit) {
+        // Miner HUD reads valueProof.v off the output itself. That stamp is
+        // not a sealed note, and this chain repeats one amount on every
+        // withdraw. Painting it here made Continuum spendable invent pot.
+        claimed = Number(o.nanos || 0);
+      }
       const nanos = o.commit
         ? (verifySealedNote(o, claimed) ? claimed : 0)
         : claimed;

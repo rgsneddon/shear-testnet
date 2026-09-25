@@ -118,6 +118,9 @@ String walletHonestyText({
   return '$pct% synchronising…';
 }
 
+/// The wallet's own sync label is at the tip. A sidecar status line is not required.
+bool walletAtTip(String honesty) => honesty.startsWith('synchronised');
+
 class ShearReadSync {
   ShearReadSync({
     List<String>? seeds,

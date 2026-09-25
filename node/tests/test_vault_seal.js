@@ -14,7 +14,12 @@ import { newIdentity, destOpeningFromView, freshStealthDest, ed25519SeedOf } fro
 import { signSpendTx } from '../../crypto/spend.js';
 import { bindWeightFee } from '../../crypto/levy.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
-import { BOOTSTRAP_FIRST_HEIGHT, BOOTSTRAP_EVERY_BLOCKS } from '../src/bootstrap.js';
+import {
+  BOOTSTRAP_FIRST_HEIGHT,
+  BOOTSTRAP_EVERY_BLOCKS,
+  CHECKPOINT_FIRST_HEIGHT,
+  CHECKPOINT_EVERY_BLOCKS,
+} from '../src/bootstrap.js';
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
 function spendBox(id) {
@@ -93,8 +98,10 @@ describe('checkpoint-bound Reserve on the store', () => {
     assert.equal(p.blank_fork, false);
     assert.equal(p.vault_seal_height, 0);
     assert.equal(store.vaultSeal(), null);
-    assert.equal(BOOTSTRAP_FIRST_HEIGHT, 1000);
-    assert.equal(BOOTSTRAP_EVERY_BLOCKS, 400);
+    assert.equal(BOOTSTRAP_FIRST_HEIGHT, 200);
+    assert.equal(BOOTSTRAP_EVERY_BLOCKS, 200);
+    assert.equal(CHECKPOINT_FIRST_HEIGHT, 1000);
+    assert.equal(CHECKPOINT_EVERY_BLOCKS, 400);
   });
 
   it('shallow reorg above the seal keeps portals; pre-seal heavier fork is refused and the pot stays', { timeout: 600_000 }, async () => {

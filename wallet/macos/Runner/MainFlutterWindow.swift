@@ -55,7 +55,7 @@ class MainFlutterWindow: NSWindow {
     var addr = sockaddr_in()
     addr.sin_family = sa_family_t(AF_INET)
     addr.sin_port = in_port_t(44044).bigEndian
-    inet_pton(AF_INET, "77.42.35.12", &addr.sin_addr)
+    inet_pton(AF_INET, "77.42.91.84", &addr.sin_addr)
     var magic: [CChar] = [82, 80, 84, 50] // RPT2
     _ = magic.withUnsafeBufferPointer { buf in
       withUnsafePointer(to: &addr) { ap in

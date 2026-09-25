@@ -85,6 +85,11 @@ static void cpu_relax(void) {
 #endif
 }
 
+static void rx_rd(void) {
+  pthread_once(&g_rx_once, rx_lock_init);
+  pthread_rwlock_rdlock(&g_rx);
+}
+
 static void rx_wr(void) {
   pthread_once(&g_rx_once, rx_lock_init);
   pthread_rwlock_wrlock(&g_rx);
@@ -357,6 +362,16 @@ int shear_hash_set_backend(const char *name) {
     label = "interpreter";
   }
   exclusive_begin();
+  /* A second call from another isolate (the P2P hash worker) or from
+   * shear_hash.js after NAPI init must not rebuild. flags_interpreter()
+   * always asks for huge pages; after that alloc falls back, g_flags no
+   * longer matches `next`, and the old check dropped the live cache while
+   * a VM still pointed at it. That is the Windows access violation
+   * (exit 0xC0000005) once the worker loads the addon. */
+  if (g_cache && g_backend && strcmp(g_backend, label) == 0) {
+    rx_un();
+    return 0;
+  }
   if (next != g_flags) {
     drop_cache_locked();
     g_flags = next;
@@ -615,23 +630,31 @@ int shear_bind(const unsigned char header[SHEAR_HEADER_LEN]) {
   RxTls *tls = tls_slot();
   if (!tls) return -1;
   shear_key(header, k);
+  /* rdlock covers the set_cache refresh. A writer bumps g_gen and then
+   * rewrites the cache under wrlock; refreshing here without the lock
+   * stamped that new gen and hashed the cache mid-init (node SEGV in
+   * randomx_calculate_hash). */
+  rx_rd();
   unsigned gen = atomic_load_explicit(&g_gen, memory_order_acquire);
   unsigned epoch = atomic_load_explicit(&g_epoch, memory_order_acquire);
   int tid = tls->tid;
-  if (g_vms[tid] && g_have && tls->gen == gen && tls->epoch == epoch && memcmp(g_k, k, 32) == 0) {
+  if (tid >= 0 && tid < SHEAR_MAX_VM && g_vms[tid] && g_have && tls->gen == gen && tls->epoch == epoch && memcmp(g_k, k, 32) == 0) {
     tls->vm = g_vms[tid];
     tls->primed = 0;
+    rx_un();
     return 0;
   }
-  if (g_vms[tid] && g_have && memcmp(g_k, k, 32) == 0) {
+  if (tid >= 0 && tid < SHEAR_MAX_VM && g_vms[tid] && g_have && memcmp(g_k, k, 32) == 0) {
     if (g_flags & RANDOMX_FLAG_FULL_MEM) randomx_vm_set_dataset(g_vms[tid], g_dataset);
     else randomx_vm_set_cache(g_vms[tid], g_cache);
     tls->vm = g_vms[tid];
     tls->gen = gen;
     tls->epoch = epoch;
     tls->primed = 0;
+    rx_un();
     return 0;
   }
+  rx_un();
 
   rx_wr();
   if (!g_have || memcmp(g_k, k, 32) != 0) {
@@ -678,12 +701,16 @@ void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[
       memset(out, 0, 32);
       return;
     }
+    rx_rd();
     unsigned gen = 0;
     randomx_vm *vm = hot_vm(tls, &gen);
-    if (!vm) continue;
-    if (hash_enter(gen, vm, tls->tid) != 0) continue;
+    if (!vm || hash_enter(gen, vm, tls->tid) != 0) {
+      rx_un();
+      continue;
+    }
     randomx_calculate_hash(vm, header, SHEAR_HEADER_LEN, out);
     hash_leave();
+    rx_un();
     tls->primed = 0;
     return;
   }
@@ -693,15 +720,17 @@ int shear_hash_first(const unsigned char header[SHEAR_HEADER_LEN]) {
   RxTls *tls = tls_slot();
   if (!tls) return -1;
   if (shear_bind(header) != 0) return -1;
+  rx_rd();
   unsigned gen = 0;
   randomx_vm *vm = hot_vm(tls, &gen);
-  if (!vm) return -1;
-  if (hash_enter(gen, vm, tls->tid) != 0) {
+  if (!vm || hash_enter(gen, vm, tls->tid) != 0) {
+    rx_un();
     tls->primed = 0;
     return -1;
   }
   randomx_calculate_hash_first(vm, header, SHEAR_HEADER_LEN);
   hash_leave();
+  rx_un();
   tls->primed = 1;
   return 0;
 }
@@ -711,22 +740,22 @@ int shear_hash_next(const unsigned char header[SHEAR_HEADER_LEN], unsigned char 
   if (!tls || !tls->primed) return -1;
   unsigned char k[32];
   shear_key(header, k);
+  rx_rd();
   if (!g_have || memcmp(g_k, k, 32) != 0) {
+    rx_un();
     tls->primed = 0;
     return -1;
   }
   unsigned gen = 0;
   randomx_vm *vm = hot_vm(tls, &gen);
-  if (!vm) {
-    tls->primed = 0;
-    return -1;
-  }
-  if (hash_enter(gen, vm, tls->tid) != 0) {
+  if (!vm || hash_enter(gen, vm, tls->tid) != 0) {
+    rx_un();
     tls->primed = 0;
     return -1;
   }
   randomx_calculate_hash_next(vm, header, SHEAR_HEADER_LEN, out);
   hash_leave();
+  rx_un();
   tls->primed = 1;
   return 0;
 }

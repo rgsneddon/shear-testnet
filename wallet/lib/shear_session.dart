@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
+import 'shear_closure.dart';
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
 import 'shear_lock.dart';
@@ -42,6 +43,8 @@ class ShearSession {
   final File store;
   ShearIdentity? identity;
   bool biometricsEnabled = false;
+  /// Committed Closure send path. Not written as continuumSendPath.
+  String closureSendMode = kClosureModeVpn;
   List<String> rememberedDests = const [];
   List<Map<String, dynamic>> rememberedTxs = const [];
   int rememberedDestCount = 1;
@@ -150,6 +153,7 @@ class ShearSession {
   Map<String, dynamic> _plainBody() => {
         ...identity!.toJson(),
         'biometricsEnabled': biometricsEnabled,
+        'closureSendMode': closureSendMode,
         'dests': rememberedDests.where((d) => d.startsWith('ssa1')).toList(),
         'destCount': rememberedDestCount,
         'destIndex': rememberedDestIndex,
@@ -184,6 +188,7 @@ class ShearSession {
   void _applyPlain(Map<String, dynamic> j) {
     identity = ShearIdentity.fromJson(j);
     biometricsEnabled = j['biometricsEnabled'] == true;
+    closureSendMode = _closureFromPlain(j);
     rememberedDests = ((j['dests'] as List?) ?? const [])
         .map((e) => e.toString())
         .where((d) => d.startsWith('ssa1'))
@@ -203,6 +208,19 @@ class ShearSession {
         .where((v) => v.id.isNotEmpty && !isPinnedProgram(v.id) && !isReservedProgram(v.id))
         .toList();
   }
+}
+
+String _closureFromPlain(Map<String, dynamic> j) {
+  final stored = j['closureSendMode']?.toString();
+  final legacy = (stored == null || stored.isEmpty)
+      ? j['continuumSendPath']?.toString()
+      : stored;
+  final raw = (legacy == null || legacy.isEmpty) && j['fullNode'] == true
+      ? 'fullNode'
+      : legacy;
+  return closureModeStored(
+    closureModeFromStored(raw, android: Platform.isAndroid),
+  );
 }
 
 Uint8List _hexBytes(String hex) {
@@ -247,15 +265,7 @@ void applyUserArchive(ShearLedger ledger, Map<String, dynamic> archive) {
   ledger.restoreDests(dests);
   final g = archive['chainGenesis']?.toString() ?? '';
   ledger.restoreSealedTip((archive['sealedHeight'] as num?)?.toInt() ?? 0, genesis: g);
-  final sums = <String, double>{};
-  for (final t in txs) {
-    if (!t.confirmed || t.to.isEmpty) continue;
-    if (t.kind == 'send') continue;
-    sums[t.to] = (sums[t.to] ?? 0) + t.amount;
-  }
-  for (final e in sums.entries) {
-    ledger.rememberSpendable(e.key, e.value);
-  }
+  // Landing history is not spendable. syncCredits or the shewall header is.
 }
 
 Uint8List exportShewall({

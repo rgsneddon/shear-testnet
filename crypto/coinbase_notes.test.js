@@ -1,10 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS, POOL_FEE_BPS } from './asert.js';
+import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS, POOL_FEE_BPS, HASH_BONUS_NANOS, BLOCK_SUBSIDY_NANOS } from './asert.js';
 import { newIdentity, spendDestOf, hash20FromAddress } from './address.js';
 import { noteCommitOfDest20, sealCoinbaseNote } from './note.js';
 import { expectedCoinbasePays, noteCommitSpendableNanos, paysFromALeaves } from './coinbase_notes.js';
+import { sealedExplorerRows } from './chronoflux.js';
+import { aLeavesFromShares } from './share_batch.js';
 import { custodyPotShares } from '../node/src/chain.js';
+import { handleWalletApi, reconstructOwner } from '../pool/src/wallet_api.js';
+import { poolFeeDest } from './levy.js';
 
 function shareOf(dest, nonce) {
   return { dest, dest20: hash20FromAddress(dest), nonce: BigInt(nonce), lz: 8 };
@@ -161,6 +165,221 @@ describe('noteCommitSpendableNanos', () => {
     assert.notEqual(got, fee);
     assert.equal(noteCommitSpendableNanos([block], hasherA, matureTip), 0);
     assert.equal(noteCommitSpendableNanos([block], hasherB, matureTip), 0);
+  });
+});
+
+function custodyHasherBlock() {
+  const pool = spendDestOf(newIdentity().spendPub);
+  const hasher = spendDestOf(newIdentity().spendPub);
+  const share = shareOf(hasher, 1);
+  const leaves = aLeavesFromShares([share]);
+  const hashNanos = leaves.reduce((a, l) => a + l.count, 0) * HASH_BONUS_NANOS;
+  const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
+  const rest = BLOCK_SUBSIDY_NANOS - fee;
+  const potVout = custodyPotShares(pool).map((s) => sealCoinbaseNote(s.nanos, {
+    dest20: hash20FromAddress(s.address),
+    kind: s.kind || 'pot',
+  }));
+  const block = {
+    height: 2,
+    hash: Buffer.alloc(32, 11),
+    miner: pool,
+    poolDest: pool,
+    shareBatch: [share],
+    aLeaves: leaves,
+    txs: [{
+      coinbase: true,
+      vout: [
+        ...potVout,
+        sealCoinbaseNote(hashNanos, { dest20: hash20FromAddress(hasher), kind: 'hash' }),
+      ],
+    }],
+  };
+  return { pool, hasher, hashNanos, rest, block };
+}
+
+describe('custody reconstruct does not invent pot onto the hasher', () => {
+  it('note spendable, explorer rows, and reconstructOwner keep hash on the hasher and pot on the pool', () => {
+    const { pool, hasher, hashNanos, rest, block } = custodyHasherBlock();
+    const matureTip = 2 + SPENDABLE_CONFIRMATIONS - 1;
+    assert.equal(noteCommitSpendableNanos([block], hasher, matureTip), hashNanos);
+    assert.equal(noteCommitSpendableNanos([block], pool, matureTip), rest);
+    assert.ok(hashNanos > 0);
+    assert.ok(hashNanos < rest);
+
+    const rows = sealedExplorerRows(block);
+    const hasherRows = rows.filter((r) => r.to === hasher);
+    const poolRows = rows.filter((r) => r.to === pool);
+    assert.equal(hasherRows.reduce((a, r) => a + r.nanos, 0), hashNanos);
+    assert.equal(hasherRows.some((r) => r.nanos === rest), false);
+    assert.equal(poolRows.reduce((a, r) => a + r.nanos, 0), rest);
+
+    const store = {
+      blocks: [block],
+      mempool: [],
+      tip: () => ({ height: matureTip }),
+      owedPi: 50 * NANOS_PER_SHE,
+      confirmingPot: 40 * NANOS_PER_SHE,
+      pending: 30 * NANOS_PER_SHE,
+    };
+    assert.equal(reconstructOwner(store, hasher).spendableNanos, hashNanos);
+    assert.equal(reconstructOwner(store, pool).spendableNanos, rest);
+
+    const pullBook = {
+      viewByDest: () => ({ pendingNanos: 25 * NANOS_PER_SHE }),
+    };
+    const miners = new Map([
+      ['w.1', { login: hasher, roundActualHashes: 1000, hashes: 1000 }],
+    ]);
+    const bal = handleWalletApi(
+      new URL(`http://127.0.0.1/api/wallet/balance?address=${hasher}`),
+      'GET',
+      {},
+      { store, miners, pullBook },
+    );
+    assert.equal(bal.status, 200);
+    assert.equal(bal.json.balance, hashNanos / NANOS_PER_SHE);
+    assert.equal(bal.json.reconstructed, hashNanos / NANOS_PER_SHE);
+    assert.equal(bal.json.owedPi, 25);
+    assert.equal(bal.json.confirmingPot, 25);
+    assert.ok(bal.json.balance < bal.json.owedPi);
+  });
+
+  it('solo non-custody still props the pot onto the miner leaf', () => {
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const share = shareOf(hasher, 3);
+    const leaves = aLeavesFromShares([share]);
+    const hashNanos = leaves.reduce((a, l) => a + l.count, 0) * HASH_BONUS_NANOS;
+    const d20 = hash20FromAddress(hasher);
+    const block = {
+      height: 2,
+      hash: Buffer.alloc(32, 12),
+      miner: hasher,
+      shareBatch: [share],
+      aLeaves: leaves,
+      txs: [{
+        coinbase: true,
+        vout: [
+          sealCoinbaseNote(hashNanos, { dest20: d20, kind: 'hash' }),
+          sealCoinbaseNote(BLOCK_SUBSIDY_NANOS, { dest20: d20, kind: 'pot' }),
+        ],
+      }],
+    };
+    const matureTip = 2 + SPENDABLE_CONFIRMATIONS - 1;
+    assert.equal(noteCommitSpendableNanos([block], hasher, matureTip), hashNanos + BLOCK_SUBSIDY_NANOS);
+    const rows = sealedExplorerRows(block);
+    assert.equal(rows.reduce((a, r) => a + r.nanos, 0), hashNanos + BLOCK_SUBSIDY_NANOS);
+    const store = { blocks: [block], mempool: [], tip: () => ({ height: matureTip }) };
+    assert.equal(reconstructOwner(store, hasher).spendableNanos, hashNanos + BLOCK_SUBSIDY_NANOS);
+  });
+
+  it('does not spend an unverified pool-withdraw valueProof stamp', () => {
+    const pool = spendDestOf(newIdentity().spendPub);
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const hasher20 = hash20FromAddress(hasher);
+    const pay = 396000000000;
+    const hashNanos = 256;
+    const block = {
+      height: 2,
+      hash: Buffer.alloc(32, 21),
+      miner: hasher,
+      poolDest: pool,
+      txs: [
+        {
+          coinbase: true,
+          vout: [sealCoinbaseNote(hashNanos, { dest20: hasher20, kind: 'hash' })],
+        },
+        {
+          kind: 'pool-withdraw',
+          vout: [{
+            kind: 'pool-withdraw',
+            dest20: hasher20,
+            valueProof: { v: pay },
+          }],
+        },
+      ],
+    };
+    const matureTip = 2 + SPENDABLE_CONFIRMATIONS - 1;
+    const store = { blocks: [block], mempool: [], tip: () => ({ height: matureTip }) };
+    assert.equal(reconstructOwner(store, hasher).spendableNanos, hashNanos);
+    const painted = [{
+      to: hasher,
+      kind: 'pool-withdraw',
+      nanos: pay,
+      height: 2,
+    }];
+    const again = {
+      blocks: [block],
+      mempool: [],
+      tip: () => ({ height: matureTip }),
+      historyFor: () => painted,
+    };
+    assert.equal(reconstructOwner(again, hasher).spendableNanos, hashNanos);
+    assert.equal(reconstructOwner(store, pool).spendableNanos, 0);
+  });
+
+  it('missing poolDest keeps pot on the sealed pool dest20 and hash on the hasher', () => {
+    const pool = spendDestOf(newIdentity().spendPub);
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const share = shareOf(hasher, 4);
+    const leaves = aLeavesFromShares([share]);
+    const hashNanos = leaves.reduce((a, l) => a + l.count, 0) * HASH_BONUS_NANOS;
+    const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
+    const rest = BLOCK_SUBSIDY_NANOS - fee;
+    const pool20 = hash20FromAddress(pool);
+    const hasher20 = hash20FromAddress(hasher);
+    const block = {
+      height: 2,
+      hash: Buffer.alloc(32, 13),
+      miner: hasher,
+      shareBatch: [share],
+      aLeaves: leaves,
+      txs: [{
+        coinbase: true,
+        vout: [
+          sealCoinbaseNote(rest, { dest20: pool20, kind: 'pot' }),
+          sealCoinbaseNote(fee, { dest20: hash20FromAddress(poolFeeDest()), kind: 'pool-fee' }),
+          sealCoinbaseNote(hashNanos, { dest20: hasher20, kind: 'hash' }),
+        ],
+      }],
+    };
+    const matureTip = 2 + SPENDABLE_CONFIRMATIONS - 1;
+    assert.equal(noteCommitSpendableNanos([block], hasher, matureTip), hashNanos);
+    assert.equal(noteCommitSpendableNanos([block], pool, matureTip), rest);
+    const rows = sealedExplorerRows(block);
+    const onHasher = rows.filter((r) => r.to === hasher);
+    const onPool = rows.filter((r) => r.to === pool);
+    assert.equal(onHasher.reduce((a, r) => a + Number(r.nanos || 0), 0), hashNanos);
+    assert.equal(onHasher.some((r) => r.nanos === rest), false);
+    assert.equal(onPool.reduce((a, r) => a + Number(r.nanos || 0), 0), rest);
+    const store = { blocks: [block], mempool: [], tip: () => ({ height: matureTip }) };
+    assert.equal(reconstructOwner(store, hasher).spendableNanos, hashNanos);
+    assert.equal(reconstructOwner(store, pool).spendableNanos, rest);
+    const hidden = rows.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      height: r.height,
+      amountHidden: true,
+      noteCommit: r.noteCommit,
+      toDest20: r.toDest20,
+    }));
+    const historyFor = (addr) => {
+      const h20 = hash20FromAddress(addr);
+      const want = h20 ? noteCommitOfDest20(h20) : null;
+      return hidden.filter((r) => {
+        if (h20 && r.toDest20 && Buffer.from(r.toDest20).equals(Buffer.from(h20))) return true;
+        if (want && r.noteCommit && Buffer.from(r.noteCommit).equals(want)) return true;
+        return false;
+      }).map((r) => ({ ...r, to: addr }));
+    };
+    const liveStore = {
+      blocks: [block],
+      mempool: [],
+      tip: () => ({ height: matureTip }),
+      historyFor,
+    };
+    assert.equal(reconstructOwner(liveStore, hasher).spendableNanos, hashNanos);
+    assert.equal(reconstructOwner(liveStore, pool).spendableNanos, rest);
   });
 });
 

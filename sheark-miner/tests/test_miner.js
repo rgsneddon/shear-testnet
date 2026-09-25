@@ -76,7 +76,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.version, '2.5');
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.headerBytes, 128);
-    assert.equal(j.magic, 'shear-testnet-v4');
+    assert.equal(j.magic, 'shear-testnet-v5');
     assert.equal(j.rxMode, 'light');
     assert.equal(j.rxCacheMiB, 128);
     assert.equal(j.feePct, 0);
@@ -106,10 +106,10 @@ describe('ShearK-Miner', () => {
     assert.match(help.stdout, /--backend jit/);
     const srcEx = fs.readFileSync(path.join(root, 'example.sh'), 'utf8');
     const bat = fs.readFileSync(path.join(root, 'example.bat'), 'utf8');
-    assert.match(srcEx, /shear-testnet-v4/);
+    assert.match(srcEx, /shear-testnet-v5/);
     assert.equal(srcEx.includes('shear-testnet-v2'), false);
     assert.equal(srcEx.includes('shear-testnet-v3'), false);
-    assert.match(bat, /shear-testnet-v4/);
+    assert.match(bat, /shear-testnet-v5/);
     assert.equal(bat.includes('shear-testnet-v2'), false);
     assert.equal(bat.includes('shear-testnet-v3'), false);
     assert.match(srcEx, /--user YOUR_SSA1\.worker/);
@@ -418,7 +418,7 @@ describe('ShearK-Miner', () => {
       win], { encoding: 'utf8' });
     assert.equal(bat.status, 0, bat.stderr);
     assert.match(bat.stdout, /ShearK-Miner-2\.4-windows\.zip/);
-    assert.match(bat.stdout, /shear-testnet-v4/);
+    assert.match(bat.stdout, /shear-testnet-v5/);
     assert.match(bat.stdout, /--user YOUR_SSA1\.worker/);
     assert.match(bat.stdout, /--backend jit-full/);
   });

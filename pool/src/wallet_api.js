@@ -27,7 +27,7 @@ import {
   verifyPoolWithdrawOffchain,
   containsShe1,
 } from '../../crypto/levy.js';
-import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
+import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, matureSpendableNanos, mempoolDebitNanos } from '../../crypto/spend.js';
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
@@ -214,9 +214,22 @@ export function reconstructOwner(store, address) {
       hashBonusNanos: bonus,
       coinbaseOnly: true,
     });
-    nanos += reconcileSpendable(destRows, d, tipH, noteNanos);
+    const ownedNanos = noteCommitSpendableNanos(store.blocks || [], d, tipH, {
+      hashBonusNanos: bonus,
+      coinbaseOnly: false,
+    });
+    const payNotes = Math.max(0, ownedNanos - noteNanos);
+    const paintedWithdraws = matureSpendableNanos(
+      (destRows || []).filter((r) => String(r?.kind || '') === 'pool-withdraw'),
+      d,
+      tipH,
+    );
+    nanos += reconcileSpendable(destRows, d, tipH, noteNanos)
+      + payNotes
+      - Math.min(paintedWithdraws, payNotes);
     nanos -= mempoolDebitNanos(mempool, d);
   }
+
   if (nanos < 0) nanos = 0;
   return { ...rec, spendableNanos: nanos, spendable: nanosToShe(nanos) };
 }

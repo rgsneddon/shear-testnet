@@ -261,7 +261,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/2.5" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.48" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.50" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -281,16 +281,16 @@
       <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
     </div>
     <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.48</strong> · miner <strong>2.5</strong>
+      wallet <strong>0.50</strong> · miner <strong>2.5</strong>
     </p>
     <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
     <nav class="client-row" id="client-downloads" aria-label="Latest clients">
       <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.48">WALLET</a>
+        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.50">WALLET</a>
         <div class="client-menu" id="menu-wallet">
           <span data-pack="wallet-macos" class="coming-soon">macOS — coming soon</span>
           <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.48/shear-wallet-0.48-windows.zip">Windows</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.48/shear-wallet-0.48-android.apk">Android</a>
+          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.50/shear-wallet-0.50-android.apk">Android</a>
           <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.48/shear-wallet-0.48-linux.zip">Linux</a>
           <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.48/shear-wallet-0.48-archlinux.zip">Arch</a>
         </div>
@@ -324,7 +324,7 @@
         <p>Each found block mints the scheduled pot (1.00 SHE in epoch 0, then −0.01 SHE per epoch to a 0.20 SHE floor). On the public pool, hash bonus (no 1% fee) and your pot share accumulate and auto-pay to your miner <code>ssa1</code> at π SHE. The per-hash unit is never 0.</p>
         <p>Pool: <a href="https://pool.shear.digital">pool.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
         <p>Explorer: <a href="https://explorer.shear.digital">explorer.shear.digital</a></p>
-        <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v4</p>
+        <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v5</p>
         <p class="pulse">live · testnet</p>
       </section>
       <section class="panel-card" id="network-continuity">
@@ -393,7 +393,7 @@
     </div>
     <section class="panel-card guide-wide" id="wallet-start">
       <h2>Start a wallet from scratch</h2>
-      <p>Current pin is <strong>0.48</strong>. Use the WALLET button above and pick your system. Magic <code>shear-testnet-v4</code> / ADMITv2. Hashbonus is on-chain to Copy dest after 6 confs; the pot auto-pays at π after 30 confs — Continuum is not instant while those clocks run. If Continuum stays 0 after 6+ confs while the pool shows sent, treat that as a wallet/sync bug. Docs live under <a href="https://shear.digital/docs/">https://shear.digital/docs/</a> (typed docs.shear.digital may fail TLS).</p>
+      <p>Current pin is <strong>0.50</strong> on Android. Windows, Linux, and Arch zips on this page are still the 0.48 packs. Magic <code>shear-testnet-v5</code> / ADMITv2. Hashbonus is on-chain to Copy dest after 6 confs; the pot auto-pays at π after 30 confs — Continuum is not instant while those clocks run. If Continuum stays 0 after 6+ confs while the pool shows sent, treat that as a wallet/sync bug. Docs live under <a href="https://shear.digital/docs/">https://shear.digital/docs/</a> (typed docs.shear.digital may fail TLS).</p>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
         <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
@@ -480,7 +480,28 @@ test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall No
 make -C crypto/native</pre>
             <button type="button" data-copy="solo-nodeinc-fedora">Copy</button>
           </div>
-          <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
+          <p>Then continue with clone / RandomX / <code>crypto/native</code> below. On Fedora, build <code>crypto/native</code> on this machine. A <code>shearhash.node</code> copied from Ubuntu will not load.</p>
+          <p>Deploy the node with the unit already in the repo. It dials any and all seeds and listens for Continuum on <code>127.0.0.1:18332</code>. This is not <code>npm run pool</code>.</p>
+          <div class="copy-row">
+            <pre id="fedora-node-deploy">sudo mkdir -p /opt/shear-v4 /var/lib/shear/testnet-v4
+sudo chown "$USER":"$USER" /opt/shear-v4 /var/lib/shear/testnet-v4
+git clone https://github.com/rgsneddon/shear-testnet.git /opt/shear-v4
+cd /opt/shear-v4
+git checkout main
+npm ci
+cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
+cmake --build crypto/randomx/build -j"$(nproc)"
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)")"
+test -f "$NODE_INC/node_api.h"
+make -C crypto/native
+node node/src/node.js --print-config
+sudo cp deploy/shear-node.service /etc/systemd/system/shear-node.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now shear-node
+journalctl -u shear-node -n 20 --no-pager</pre>
+            <button type="button" data-copy="fedora-node-deploy">Copy</button>
+          </div>
+          <p>You are done when a status line shows <code>hashBackend=native</code>, <code>peers</code> at least 1, and <code>ibd=false</code> with the height holding still. While the height is still climbing, <code>ibd=true</code> is the normal catch-up, not a failure. The number on pool.shear.digital is the pool’s own book. Your node follows the public peers. Those two heights are not the same reading. Do not wipe <code>/var/lib/shear/testnet-v4</code> because the pool page is taller. Add every seed you have; the node is not limited to one host.</p>
         </div>
         <div class="os-tabpanel" role="tabpanel" id="solo-pane-arch" aria-labelledby="solo-tab-arch" data-os="arch" hidden>
           <p>Arch Linux. <code>base-devel</code> plus nodejs, npm, cmake, openssl. Repo <code>rust</code> is enough; rustup is optional.</p>
@@ -618,12 +639,12 @@ make -C crypto/native
 node node/src/node.js --print-config</pre>
         <button type="button" data-copy="solo-node">Copy</button>
       </div>
-      <p><code>--print-config</code> must show <code>"magic":"shear-testnet-v4"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
+      <p><code>--print-config</code> must show <code>"magic":"shear-testnet-v5"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
       <h3>2. Validating node (not the full pool)</h3>
       <p>Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). <code>SHEAR_SEEDS</code> must list <strong>all three</strong> seeds in the <strong>same shell</strong> as the node. Outbound TCP to those seeds is required; opening inbound firewall <code>30303</code> alone does <strong>not</strong> sync. Do <strong>not</strong> <code>npm run pool</code> — that is the public-pool operator stack (HTTP dashboard, auto-payout, pool fee).</p>
       <div class="copy-row">
         <pre id="solo-run">export SHEAR_DATA="$HOME/.shear/testnet-v4"
-export SHEAR_NETWORK=shear-testnet-v4
+export SHEAR_NETWORK=shear-testnet-v5
 export SHEAR_P2P_PORT=30303
 export SHEAR_RPC_PORT=18332
 export SHEAR_RPC_BIND=127.0.0.1
@@ -678,7 +699,7 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
       <div class="copy-row">
         <pre id="solo-sync-fix"># Outbound must work
 nc -vz p2p.shear.digital 30303
-export SHEAR_NETWORK=shear-testnet-v4
+export SHEAR_NETWORK=shear-testnet-v5
 export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
 export SHEAR_P2P_PORT=30303
 export SHEAR_RPC_PORT=18332
@@ -713,11 +734,11 @@ npm run solo
       else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
       else if (/Mac/i.test(ua)) plat = 'macos';
       var wallet = {
-        macos: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.48',
+        macos: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.50',
         windows: BASE + '/0.48/shear-wallet-0.48-windows.zip',
-        android: BASE + '/0.48/shear-wallet-0.48-android.apk',
+        android: BASE + '/0.50/shear-wallet-0.50-android.apk',
         linux: BASE + '/0.48/shear-wallet-0.48-linux.zip',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.48'
+        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.50'
       };
       var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
       var miner = {

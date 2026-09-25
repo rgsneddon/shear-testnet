@@ -24,6 +24,23 @@ const kUnitsPerShe = 100000000000; // 10^11
 const kBlockPotShe = 1.0;
 /// Fingerprint target interval (TARGET_BLOCK_INTERVAL_MS). Continuum display only.
 const kTargetBlockIntervalMs = 90000;
+
+/// Next owed-toward-π sum becomes spendable after this long.
+const kNextOwedMatureMs = 6000;
+
+/// Milliseconds until [owedShe] matures. A new sum restarts the 6 second clock.
+int owedMatureLeftMs({
+  required double owedShe,
+  required double anchoredShe,
+  required int anchorMs,
+  required int nowMs,
+}) {
+  if (owedShe <= 0) return 0;
+  if (anchorMs <= 0 || owedShe != anchoredShe) return kNextOwedMatureMs;
+  final left = kNextOwedMatureMs - (nowMs - anchorMs);
+  if (left <= 0) return 0;
+  return left;
+}
 /// 0.00000000001 SHE per valid hash.
 const kHashBonusShe = 0.00000000001;
 const kHashBonusVoteDeltaShe = 0.00000000001;
@@ -388,6 +405,111 @@ Map<String, dynamic> sealedReserveVout(String to, int nanos, String kind) {
   return note;
 }
 
+/// Gross sealed average: (potEmitted + hashBonusEmitted) / height. No fee subtract, no 1.0 clamp.
+double? sealedAvgBlockRewardShe({
+  required int potEmittedNanos,
+  required int hashBonusEmittedNanos,
+  required int height,
+}) {
+  if (height <= 0) return null;
+  if (potEmittedNanos < 0 || hashBonusEmittedNanos < 0) return null;
+  return (potEmittedNanos + hashBonusEmittedNanos) / height / kUnitsPerShe;
+}
+
+String avgBlockRewardLabel({
+  required int? potEmittedNanos,
+  required int? hashBonusEmittedNanos,
+  required int height,
+}) {
+  if (potEmittedNanos == null || hashBonusEmittedNanos == null) return '—';
+  final she = sealedAvgBlockRewardShe(
+    potEmittedNanos: potEmittedNanos,
+    hashBonusEmittedNanos: hashBonusEmittedNanos,
+    height: height,
+  );
+  if (she == null) return '—';
+  return '${formatShe(she)} SHE';
+}
+
+/// Circulation row. Wallet-local pots are not a stand-in for network supply.
+String integralQCirculationLabel(int? circulatingNanos) {
+  if (circulatingNanos == null || circulatingNanos <= 0) return '—';
+  return '${formatShe(circulatingNanos / kUnitsPerShe)} SHE (circulation)';
+}
+
+class LockFundingPlan {
+  const LockFundingPlan({
+    required this.sources,
+    required this.from,
+    required this.consolidate,
+    required this.have,
+    required this.need,
+  });
+  final List<String> sources;
+  final String? from;
+  final bool consolidate;
+  final double have;
+  final double need;
+}
+
+LockFundingPlan planLockFunding(
+  ShearLedger ledger, {
+  required String restFrame,
+  String? paymentCode,
+  required double needShe,
+}) {
+  final dests = ledger.moneyDests(restFrame, paymentCode: paymentCode).toList();
+  var have = 0.0;
+  String? cover;
+  final holding = <String>[];
+  for (final d in dests) {
+    final s = ledger.spendable(d);
+    if (s <= 0) continue;
+    have += s;
+    holding.add(d);
+    if (cover == null && s + 1e-12 >= needShe) cover = d;
+  }
+  if (cover != null) {
+    return LockFundingPlan(sources: [cover], from: cover, consolidate: false, have: have, need: needShe);
+  }
+  if (have + 1e-12 >= needShe && holding.isNotEmpty) {
+    return LockFundingPlan(sources: holding, from: null, consolidate: true, have: have, need: needShe);
+  }
+  return LockFundingPlan(sources: const [], from: null, consolidate: false, have: have, need: needShe);
+}
+
+/// Pool balance/status text for a gateway timeout. Other errors are not this.
+bool poolHttp504(Object error) {
+  final msg = error.toString();
+  return msg.contains('http_504') || msg.contains('status 504');
+}
+
+String lockFundingShortfall(LockFundingPlan plan) {
+  if (plan.have + 1e-12 >= plan.need) return '';
+  return 'Not enough Continuum spendable for lock + tx fee — need ${formatShe(plan.need)} SHE, have ${formatShe(plan.have)} SHE';
+}
+
+bool spendableExceedsCirculating({
+  required double spendableShe,
+  required int? circulatingNanos,
+}) {
+  if (circulatingNanos == null || circulatingNanos <= 0) return false;
+  return (spendableShe * kUnitsPerShe).round() > circulatingNanos;
+}
+
+/// Shown on Continuum when the painted Spendable cannot be the real balance.
+const kFundsNotCorrectlyShown = 'Your funds are not correctly shown.';
+
+bool fundsNotCorrectlyShown({
+  required double spendableShe,
+  required int? circulatingNanos,
+}) {
+  return spendableExceedsCirculating(
+    spendableShe: spendableShe,
+    circulatingNanos: circulatingNanos,
+  );
+}
+
 String formatShe(num she) {
   if (!she.isFinite) return '0.000000000';
   final trunc = (she * 1e9).truncateToDouble() / 1e9;
@@ -408,6 +530,20 @@ const kErrSyncTip = 'node not at tip — wait for sync';
 const kErrSendGeneric = 'not sent - try again';
 const kErrShortShe1 = 'paste full she1 from Receive (not fingerprint)';
 const kErrLockUnsigned = 'lock signature rejected';
+
+String voteFailCopy(Object error) {
+  final msg = error.toString().toLowerCase();
+  if (msg.contains('not_voter') || msg.contains('not eligible')) {
+    return 'You’re not eligible to vote from this portal this epoch';
+  }
+  if (msg.contains('vote_locked') || msg.contains('sealed')) {
+    return 'Vote already sealed for this epoch';
+  }
+  if (msg.contains('unsigned') || msg.contains('lock signature') || msg.contains('bad_vote')) {
+    return 'Vote could not be signed — check Continuum fee and portal, then try again';
+  }
+  return error.toString();
+}
 /// Hop-fee picker had no single sealed note that can cover the fee.
 /// One Flow input spends one note; several smaller notes are not combined.
 const kErrNoSealedNote =
@@ -415,9 +551,46 @@ const kErrNoSealedNote =
 /// Pool answered with an HTML error page (or other non-JSON). Never surface FormatException.
 const kErrPoolHtml = 'pool returned HTML';
 
+const kFlowMiningRefuse =
+    'Can’t spend from your mining mailbox — Continuum will use a spend note instead.';
+
+/// Flow vin. A covering dest other than the mining mailbox.
+/// Throws [kFlowMiningRefuse] when the only covering dest is that mailbox.
+String flowSpendFrom(ShearLedger ledger, {
+  required String restFrame,
+  String? paymentCode,
+  required double amount,
+}) {
+  final home = ledger.homeDest(restFrame, paymentCode: paymentCode);
+  final cover = ledger.spendFrom(
+    restFrame,
+    paymentCode: paymentCode,
+    amount: amount,
+    requireCover: true,
+  );
+  if (cover.isNotEmpty && cover != home) return cover;
+  String? best;
+  var bestShe = -1.0;
+  for (final d in ledger.moneyDests(restFrame, paymentCode: paymentCode)) {
+    if (d == home) continue;
+    final she = ledger.spendable(d);
+    if (she + 1e-12 < amount) continue;
+    if (she > bestShe) {
+      best = d;
+      bestShe = she;
+    }
+  }
+  if (best != null) return best;
+  if (cover == home) throw StateError(kFlowMiningRefuse);
+  throw StateError('insufficient');
+}
+
 /// Flow send catch: map known failures; keep generic for unknown.
 String flowSendAdvisoryOf(Object error) {
   final msg = error.toString();
+  if (msg.contains(kFlowMiningRefuse) || msg.contains('mining mailbox')) {
+    return kFlowMiningRefuse;
+  }
   if (msg.contains(kErrShortShe1) ||
       msg.contains('not fingerprint') ||
       msg.contains('payment fingerprint')) {
@@ -1171,6 +1344,13 @@ class ShearLedger {
   int? _prevHeaderTimestampMs;
   /// Network circulating supply from pool /api/stats. Continuum Integral Q.
   int? circulatingNanos;
+
+  /// Positive supply only. A 0 from a thin stats body must not wipe a live figure.
+  void applyCirculatingNanos(Object? raw) {
+    if (raw is! num) return;
+    final n = raw.round();
+    if (n > 0) circulatingNanos = n;
+  }
   /// Network-wide stats from /api/stats (Continuum right-hand box).
   int? networkHashrate;
   int? liveHashBonusNanos;
@@ -1830,7 +2010,10 @@ class ShearLedger {
   }
 
   void rememberSpendable(String address, double amount) {
-    if (amount > spendable(address)) _spendable[address] = amount;
+    if (_isProgramVaultDest(address) || _isProgramVaultDest(payKey(address))) return;
+    final key = isDestAddress(address) ? address : payKey(address);
+    if (!isDestAddress(key)) return;
+    if (amount > spendable(key)) _spendable[key] = amount;
   }
 
   Future<void> syncTip() async {
@@ -1860,8 +2043,7 @@ class ShearLedger {
       final raw = json['networkAvgBlockTimeMs'] ?? json['avgBlockTimeMs'];
       final avg = raw is num ? raw.round() : int.tryParse('$raw');
       if (avg != null && avg >= 0) applyAvgBlockTimeMs(avg);
-      final circ = json['circulatingNanos'];
-      if (circ is num && circ >= 0) circulatingNanos = circ.round();
+      applyCirculatingNanos(json['circulatingNanos']);
       void take(String k, void Function(int) set) {
         final v = json[k];
         if (v is num && v >= 0) set(v.round());
@@ -1892,12 +2074,13 @@ class ShearLedger {
     try {
       final before = _settledHeight;
       await syncTip();
-      final json = await pool!.balance(address);
+      final json = await _balanceWithOne504Retry(address);
       applyPoolSnapshot(address, json, beforeHeight: before, tipSealed: _sealedHeight);
       _markSettled(_sealedHeight, before);
       await syncHistory(address);
       return spendable(address);
-    } catch (_) {
+    } catch (e) {
+      if (poolHttp504(e)) rethrow;
       return prev;
     }
   }
@@ -1905,11 +2088,14 @@ class ShearLedger {
   double spendableOwned(String restFrame, {String? paymentCode}) {
     spendPub ??= decodePaymentCode(paymentCode ?? '')?['spendPub'];
     _dropProgramVaults();
+    final seen = <String>{};
     var n = 0.0;
-    for (final d in ownedAddresses(restFrame, paymentCode: paymentCode)) {
-      if (_isProgramVaultDest(d)) continue;
-      // Pool reconstruct lives in the map. A fatter notes scan is not spendable.
-      n += _spendable[d] ?? 0;
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      if (!isDestAddress(d)) continue;
+      final key = payKey(d);
+      if (!isDestAddress(key) || !seen.add(key)) continue;
+      if (_isProgramVaultDest(key)) continue;
+      n += spendable(key);
     }
     return n;
   }
@@ -2115,12 +2301,42 @@ class ShearLedger {
 
   /// Dest that actually holds reconstructed credits for a spend.
   /// Only dests [isBindable] accepts for the signing key. destAtIndex is not a money path.
-  String spendFrom(String restFrame, {String? paymentCode, required double amount}) {
+  String spendFrom(String restFrame, {String? paymentCode, required double amount, bool requireCover = false}) {
+    final plan = planLockFunding(this, restFrame: restFrame, paymentCode: paymentCode, needShe: amount);
+    if (plan.from != null) return plan.from!;
+    if (requireCover) return '';
     final dests = moneyDests(restFrame, paymentCode: paymentCode).toList();
-    for (final d in dests) {
-      if (spendable(d) >= amount) return d;
-    }
     return dests.isNotEmpty ? dests.first : currentDest(restFrame, paymentCode: paymentCode);
+  }
+
+  String _hopOffMiningMailbox(String home, String restFrame, {String? paymentCode}) {
+    final fresh = allocateReceiveDest(restFrame, paymentCode: paymentCode);
+    final amt = _spendable.remove(home) ?? 0;
+    if (amt > 0) _spendable[fresh] = (_spendable[fresh] ?? 0) + amt;
+    return fresh;
+  }
+
+  /// Fold fragmented Continuum dests into one covering dest. Does not invent SHE.
+  /// A cover that is the mining mailbox is moved to a fresh spend dest first.
+  String consolidateSpendableForLock(String restFrame, {String? paymentCode, required double needShe}) {
+    final plan = planLockFunding(this, restFrame: restFrame, paymentCode: paymentCode, needShe: needShe);
+    final home = homeDest(restFrame, paymentCode: paymentCode);
+    if (plan.from != null && plan.from != home) return plan.from!;
+    final miss = lockFundingShortfall(plan);
+    if (miss.isNotEmpty) throw StateError(miss);
+    if (plan.from == home) return _hopOffMiningMailbox(home, restFrame, paymentCode: paymentCode);
+    var target = plan.sources.first;
+    for (final d in plan.sources) {
+      if (spendable(d) > spendable(target)) target = d;
+    }
+    for (final d in plan.sources) {
+      if (d == target) continue;
+      final amt = _spendable.remove(d) ?? 0;
+      if (amt <= 0) continue;
+      _spendable[target] = (_spendable[target] ?? 0) + amt;
+    }
+    if (target == home) return _hopOffMiningMailbox(home, restFrame, paymentCode: paymentCode);
+    return target;
   }
 
   /// Light dests for a pool pull. Bindable money dests only.
@@ -2180,6 +2396,16 @@ class ShearLedger {
     }
   }
 
+  /// One retry when the pool balance route answers HTTP 504. A second 504 throws.
+  Future<Map<String, dynamic>> _balanceWithOne504Retry(String address) async {
+    try {
+      return await pool!.balance(address);
+    } catch (e) {
+      if (!poolHttp504(e)) rethrow;
+      return await pool!.balance(address);
+    }
+  }
+
   /// Balance sweep. Owed-π is the max pull-book figure across dests, applied
   /// after the loop so a change dest's 0 does not clear the mailbox.
   Future<({double max, bool saw})> _balancesFor(Iterable<String> dests, {required int before}) async {
@@ -2188,7 +2414,7 @@ class ShearLedger {
     for (final d in dests) {
       if (!isDestAddress(d)) continue;
       try {
-        final json = await pool!.balance(d);
+        final json = await _balanceWithOne504Retry(d);
         final owed = json['owedPi'] ?? json['confirmingPot'];
         if (owed is num && owed >= 0) {
           saw = true;
@@ -2201,7 +2427,9 @@ class ShearLedger {
           tipSealed: _sealedHeight,
           writeOwed: false,
         );
-      } catch (_) {}
+      } catch (e) {
+        if (poolHttp504(e)) rethrow;
+      }
     }
     return (max: maxOwed, saw: saw);
   }
@@ -2843,7 +3071,8 @@ class ShearLedger {
     return rows;
   }
 
-  /// Principal + interest from The Reserve, paid to a Continuum dest.
+  /// Local Reserve credit. A Sign click is not a chain payout, so this does
+  /// not move Continuum spendable. The sealed reconstruct is the credit.
   ShearTx creditReserve({
     required String to,
     required double amount,
@@ -2852,19 +3081,15 @@ class ShearLedger {
     if (amount <= 0) throw ArgumentError('amount');
     if (isShearAddress(to)) throw ArgumentError('rest_frame');
     final key = payKey(to);
-    _spendable[key] = spendable(key) + amount;
-    _dests.add(key);
-    final tx = ShearTx(
+    return ShearTx(
       id: 'reserve-${DateTime.now().millisecondsSinceEpoch}',
       from: 'shear-reserve-v1',
       to: key,
       amount: amount,
-      kind: 'reserve',
+      kind: 'withdraw',
       height: height,
-      confirmed: true,
+      confirmed: false,
     );
-    _txs.add(tx);
-    return tx;
   }
 
   final Set<String> _spentTagHex = {};
@@ -2989,7 +3214,19 @@ class ShearLedger {
     final nanos = sendKind == 'vote' ? 0 : (amount * kUnitsPerShe).round();
     final levy = taxed ? levyNanos(nanos, depth: depth) : 0;
     final needShe = (sendKind == 'vote' ? 0.0 : amount) + levy / kUnitsPerShe;
-    if (spendable(src) < needShe && restFrame != null) {
+    if (restFrame != null && (sendKind == 'vote' || sendKind == 'lock')) {
+      final home = homeDest(restFrame, paymentCode: paymentCode);
+      final short = spendable(src) + 1e-12 < needShe;
+      if (src == home || short) {
+        if (spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 >= needShe) {
+          src = consolidateSpendableForLock(
+            restFrame,
+            paymentCode: paymentCode,
+            needShe: needShe,
+          );
+        }
+      }
+    } else if (spendable(src) < needShe && restFrame != null) {
       if (spendableOwned(restFrame, paymentCode: paymentCode) >= needShe) {
         src = spendFrom(restFrame, paymentCode: paymentCode, amount: needShe);
       }

@@ -312,7 +312,7 @@ describe('HTTP stats cannot stall', () => {
     assert.doesNotMatch(paint, /sweepAutoPayouts/);
     assert.doesNotMatch(paint, /queueSend/);
     assert.match(src, /PAYOUT_SWEEP_MS/);
-    assert.ok(PAYOUT_SWEEP_MS >= 5000);
+    assert.equal(PAYOUT_SWEEP_MS, 4000);
     assert.match(src, /runAutoPayoutSweep/);
     assert.match(src, /setImmediate\(flushDirtyJob\)/);
     assert.match(src, /PAYOUT_SWEEP_MAX_ROWS/);
@@ -778,7 +778,7 @@ describe('public miner listing', () => {
     assert.match(miner, /unconfirmedDisplay/);
     assert.match(miner, /setInterval\(tick, 1000\)/);
     assert.match(miner, /value yellow/);
-    assert.match(miner, /All-time sent to ssa1/);
+    assert.match(miner, /Sum paid to ssa1/);
     assert.match(miner, /id="m-sent-label"/);
     assert.match(miner, /id="pull-row"/);
     assert.match(miner, /grid-template-columns: repeat\(4/);
@@ -914,6 +914,7 @@ describe('public miner listing', () => {
     assert.equal(publicWorkerName('ssa1qexample.workiecunt'), 'workiecunt');
     assert.equal(publicWorkerName('ssa1qexample.ShitRig'), 'ShitRig');
     assert.equal(publicWorkerName('ssa1qexample.ok-rig'), 'ok-rig');
+    assert.equal(publicWorkerName('ssa1qexample'), '');
   });
 
   it('isPublicMinerRow lists a connected hasher immediately; .fee stays hidden; linger only after proven work', () => {
@@ -1196,7 +1197,7 @@ describe('public miner listing', () => {
     const view = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`);
     const miner = await view.json();
     assert.equal(miner.ok, true);
-    assert.match(miner.confirmedSentLabel, /^Confirmed sent to ssa1\*{8}/);
+    assert.match(miner.confirmedSentLabel, /^Sum paid to ssa1\*{8}/);
     assert.equal(typeof miner.sentNanos, 'number');
     pool.close();
   });

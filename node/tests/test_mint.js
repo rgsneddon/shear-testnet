@@ -51,7 +51,10 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
       shareBatch: [],
       samples: [{ miner: destA, count: 4000 }, { miner: destB, count: 1000 }],
     });
-    assert.equal(coinbaseSplit(hud, { miner: destA }).hashNanos, 0);
+    const hudSplit = coinbaseSplit(hud, { miner: destA });
+    assert.equal(hudSplit.hashNanos, unit * HASH_BONUS_NANOS);
+    assert.equal(hudSplit.hashByMiner[destA], unit * HASH_BONUS_NANOS);
+    assert.equal(hudSplit.hashByMiner[destB], undefined);
   });
 
   it('counts each meeting share as floor units; HUD samples mint nothing', () => {
@@ -76,7 +79,8 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
       samples: [{ miner: dest, nonce: 'batch', tag: 'fold', count: n }],
     });
     const foldedSplit = coinbaseSplit(folded, { miner: dest });
-    assert.equal(foldedSplit.hashNanos, 0);
+    assert.equal(foldedSplit.hashNanos, unit * HASH_BONUS_NANOS);
+    assert.equal(foldedSplit.hashByMiner[dest], unit * HASH_BONUS_NANOS);
     assert.notEqual(batch.length, 1);
   });
 });
@@ -84,13 +88,18 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
 describe('extra mint allowlist', () => {
   it('accepts The Reserve and rejects any other program', () => {
     const id = newIdentity();
+    const to = freshStealthDest(id).dest;
     assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }), true);
     assert.equal(extraMintAllowed('shear-vault-v1'), false);
     assert.equal(extraMintAllowed(''), false);
-    const ok = extraMint({ programId: RESERVE_PROGRAM, to: id.address, nanos: 10 });
+    const ok = extraMint({ programId: RESERVE_PROGRAM, to, nanos: 10 });
     assert.equal(ok.ok, true);
     assert.equal(ok.kind, 'withdraw');
-    const no = extraMint({ programId: 'third-party-stake', to: id.address, nanos: 10 });
+    assert.equal(ok.to, to);
+    const shear = extraMint({ programId: RESERVE_PROGRAM, to: id.address, nanos: 10 });
+    assert.equal(shear.ok, false);
+    assert.equal(shear.reason, 'shear1');
+    const no = extraMint({ programId: 'third-party-stake', to, nanos: 10 });
     assert.equal(no.ok, false);
     assert.equal(no.reason, 'mint_forbidden');
   });

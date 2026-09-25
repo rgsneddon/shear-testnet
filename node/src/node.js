@@ -25,7 +25,7 @@ import { extraMintAllowed } from '../../crypto/mint.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS } from '../../crypto/reserve_oracle.js';
 import { createStore } from './store.js';
-import { applyLatestBootstrap } from './bootstrap.js';
+import { applyLatestBootstrap, pullLatestBootstrap } from './bootstrap.js';
 import { createP2p, P2P_PORT, SEED_RETRY_MS } from './p2p.js';
 import { attachSidecarIpc } from './p2p_ipc.js';
 import { PHASE_B_GATE } from './chain.js';
@@ -128,6 +128,20 @@ export async function startNode({
     };
   }
   fs.mkdirSync(dataDir, { recursive: true });
+  if (String(process.env.SHEAR_BOOTSTRAP || '1').trim() !== '0') {
+    try {
+      const pulled = await pullLatestBootstrap(dataDir);
+      console.error(JSON.stringify({
+        event: pulled?.applied ? 'bootstrap_pulled' : 'bootstrap_pull_skip',
+        ...(pulled || {}),
+      }));
+    } catch (err) {
+      console.error(JSON.stringify({
+        event: 'bootstrap_pull_miss',
+        reason: String(err && err.message || err),
+      }));
+    }
+  }
   const store = createStore(dataDir, { fastSync: !!fastSync });
   store.reserveVault = store.reserveVault || emptyVault();
   const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET, fluffDelayMs });

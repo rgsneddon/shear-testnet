@@ -160,10 +160,11 @@
     </section>
     <div class="grid" id="net-grid">
       <article class="panel-card"><div class="label">Height</div><div class="value" id="ex-height">0</div></article>
-      <article class="panel-card"><div class="label">Network hashrate</div><div class="value" id="ex-hashrate">0 H/s</div></article>
+      <article class="panel-card"><div class="label">Pool hashrate</div><div class="value" id="ex-hashrate">0 H/s</div></article>
       <article class="panel-card"><div class="label">Last block</div><div class="value" id="ex-updated">—</div></article>
       <article class="panel-card"><div class="label">Circulating Shear</div><div class="value" id="ex-circ-she">—</div></article>
-      <article class="panel-card"><div class="label">Shear minted by Reserve</div><div class="value" id="ex-reserve-minted">—</div></article>
+      <article class="panel-card"><div class="label">Average block reward since genesis</div><div class="value" id="ex-avg-reward">—</div></article>
+      <article class="panel-card"><div class="label">Nodes online</div><div class="value" id="ex-nodes-online">—</div></article>
       <article class="panel-card"><div class="label">VAULT · staked + accruing BPS</div><div class="value" id="ex-reserve-vault">—</div></article>
     </div>
     <section class="panel-card" id="tx-cli-card">
@@ -213,7 +214,7 @@
     </section>
     <section class="panel-card">
       <h2>Circulation</h2>
-      <p class="label">Spendable SHE. Dest tags are not listed as people.</p>
+      <p class="label">Circulating supply. Dest tags are not listed as people.</p>
       <div class="grid">
         <article class="panel-card"><div class="label">Coins in circulation</div><div class="value" id="ex-circulating">—</div></article>
         <article class="panel-card"><div class="label">Emitted</div><div class="value" id="ex-emitted">—</div></article>
@@ -404,14 +405,32 @@
         || 6;
       setText('ex-height', stats.height ?? 0);
       setText('ex-hashrate', fmtRate(stats.hashrate));
-      lastBlockAt = Number(stats.lastFoundAt || 0);
-      setText('ex-updated', lastBlockAt ? fmtSinceBlock(lastBlockAt) : '—');
       const NANOS = 100000000000;
       setText('ex-circ-she', fmtShe(Number(stats.circulatingNanos || 0) / NANOS) + ' SHE');
-      setText('ex-reserve-minted', fmtShe(Number(stats.reserveMintedNanos || stats.extraMintedNanos || 0) / NANOS) + ' SHE');
+      var avgPot = Number(stats.potEmittedNanos);
+      var avgBonus = Number(stats.hashBonusEmittedNanos);
+      var avgH = Number(stats.height) || 0;
+      var avgShe = (avgH > 0 && isFinite(avgPot) && isFinite(avgBonus) && avgPot >= 0 && avgBonus >= 0)
+        ? fmtShe((avgPot + avgBonus) / avgH / NANOS) + ' SHE'
+        : '—';
+      setText('ex-avg-reward', avgShe);
+      setText('ex-nodes-online', String(Math.max(0, Number(stats.nodesOnline) || 0)));
       setText('ex-reserve-vault', fmtShe(Number(stats.reserveVaultNanos || 0) / NANOS) + ' SHE');
       filled = true;
       const hist = await fetchJson('/explorer/recent').catch(function () { return { txs: [] }; });
+      var tipAt = Number(stats.tipAt || stats.tipSealAt || 0);
+      var blockAt = tipAt > 0 ? tipAt : 0;
+      if (!(blockAt > 0)) {
+        var rows = hist.txs || [];
+        for (var bi = 0; bi < rows.length; bi++) {
+          if (rows[bi] && rows[bi].kind === 'block' && Number(rows[bi].at) > 0) {
+            blockAt = Number(rows[bi].at);
+            break;
+          }
+        }
+      }
+      lastBlockAt = blockAt > 0 ? blockAt : 0;
+      setText('ex-updated', lastBlockAt ? fmtSinceBlock(lastBlockAt) : '—');
       const circ = await fetchJson('/explorer/circulation').catch(function () { return { holders: [] }; });
       const recent = orderRecentTxs(hist.txs || []);
       paintTxs(recent, '');

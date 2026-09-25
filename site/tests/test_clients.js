@@ -218,7 +218,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /The Join/);
     assert.doesNotMatch(html, /join1\./);
     assert.match(html, /CPU-only proof-of-work/);
-    assert.match(html, /Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v4/);
+    assert.match(html, /Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v5/);
     assert.match(html, /ShearHash-v3 \(a variant of RandomX\)/);
     assert.doesNotMatch(html, /using the ShearK algorithm/);
     assert.match(html, /1\.00 SHE in epoch 0, then −0\.01 SHE per epoch to a 0\.20 SHE floor/);
@@ -303,6 +303,16 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /brew install git cmake python pkg-config openssl node rust/);
     assert.match(html, /wsl --install -d Ubuntu/);
     assert.match(html, /data-copy="solo-deps-fedora"/);
+    assert.match(html, /id="fedora-node-deploy"/);
+    assert.match(html, /systemctl enable --now shear-node/);
+    assert.match(html, /hashBackend=native/);
+    const fedoraDeploy = html.match(/id="fedora-node-deploy">([\s\S]*?)<\/pre>/);
+    assert.ok(fedoraDeploy, 'fedora-node-deploy copy block');
+    assert.match(fedoraDeploy[1], /deploy\/shear-node\.service/);
+    assert.doesNotMatch(fedoraDeploy[1], /npm run pool/);
+    assert.match(html, /any and all seeds/);
+    assert.doesNotMatch(html, /do not add a fourth seed/);
+    assert.doesNotMatch(html, /only these seeds/);
     assert.match(html, /data-copy="solo-deps-arch"/);
     assert.match(html, /data-copy="solo-deps-suse"/);
     assert.match(html, /data-copy="solo-deps-macos"/);

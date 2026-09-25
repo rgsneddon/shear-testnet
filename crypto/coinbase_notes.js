@@ -4,7 +4,7 @@
  */
 import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS, hashBonusUnitNanos } from './asert.js';
 import { isDestAddress, hash20FromAddress, encodeDest } from './address.js';
-import { aLeavesFromShares, destOfShare, noteCommitOfShare } from './share_batch.js';
+import { aLeavesFromShares, destOfShare, noteCommitOfShare, unitsForShare } from './share_batch.js';
 import { noteCommitOfDest20, verifySealedNote, asU8 } from './note.js';
 import { poolFeeDest } from './levy.js';
 
@@ -188,6 +188,15 @@ export function expectedCoinbasePays(shareBatch, {
   if (!total) {
     if (miner && isDestAddress(miner)) {
       out.push({ address: miner, nanos: pot, kind: 'pot' });
+      const floor = unitsForShare() * hashBonusNanos;
+      if (floor > 0) {
+        out.push({
+          address: miner,
+          nanos: floor,
+          kind: 'hash',
+          noteCommit: noteCommitOfDest20(hash20FromAddress(miner)),
+        });
+      }
     }
     return out;
   }
@@ -318,6 +327,14 @@ export function spentNoteCommits(blocks) {
   return spent;
 }
 
+function sameDest20(field, want) {
+  if (!field || !want) return false;
+  const raw = field.data || field;
+  let buf;
+  try { buf = Buffer.from(raw); } catch { return false; }
+  return buf.length === want.length && buf.equals(Buffer.from(want));
+}
+
 /** Mature coinbase/hash nanos owned by dest when compact explorer `to` is empty. */
 export function noteCommitSpendableNanos(blocks, address, tipHeight, {
   hashBonusNanos = HASH_BONUS_NANOS,
@@ -350,10 +367,23 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
     for (const tx of b.txs || []) {
       if (coinbaseOnly && !tx?.coinbase) continue;
       for (const o of tx.vout || []) {
-        if (!o?.noteCommit || !noteCommitEq(o.noteCommit, want)) continue;
-        const hex = noteCommitHex(o.noteCommit);
-        if (hex && spent.has(hex)) continue;
+        const kind = String(o.kind || tx.kind || '');
+        const byNote = !!(o.noteCommit && noteCommitEq(o.noteCommit, want));
+        const byDest = kind === 'pool-withdraw' && sameDest20(o.dest20, dest20);
+        if (!byNote && !byDest) continue;
+        if (byNote) {
+          const hex = noteCommitHex(o.noteCommit);
+          if (hex && spent.has(hex)) continue;
+        }
         let n = Number(o.nanos || 0);
+        if (!tx.coinbase && !(n > 0)) {
+          const sealedV = Math.floor(Number(
+            o.valueProof?.v != null ? o.valueProof.v : (tx.nanos || 0),
+          ));
+          if (o.commit) {
+            n = (sealedV > 0 && verifySealedNote(o, sealedV)) ? sealedV : 0;
+          }
+        }
         if (tx.coinbase) {
           const matched = matchSealedCoinbaseVout(o, pays);
           if (o.commit) {

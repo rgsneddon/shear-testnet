@@ -28,6 +28,22 @@ const kReserveCutoffDisclaimer =
     'Fewer than $kReserveJoinCutoffDays days remain. New deposits still lock and can unlock a vote, even on a first Reserve deposit. They do not earn stake.';
 const kReserveAccruedLabel = 'Accrued rewards';
 
+/// 1-based epoch day. The first 24h is day 1. Never returns 0.
+int reserveDayOfEpoch({
+  required int epochStartMs,
+  required int nowMs,
+  int days = kReserveEpochDays,
+}) {
+  final span = days < 1 ? 1 : days;
+  if (epochStartMs <= 0) return 1;
+  final elapsed = nowMs - epochStartMs;
+  if (elapsed <= 0) return 1;
+  final raw = (elapsed / 86400000).floor() + 1;
+  if (raw < 1) return 1;
+  if (raw > span) return span;
+  return raw;
+}
+
 String reserveEpochStillOpenCopy([int days = kReserveEpochDays]) =>
     'The epoch is still open. Withdraw after $days days.';
 
@@ -507,7 +523,7 @@ class ShearReserve {
   }) {
     final out = withdraw(dest: dest, nowMs: nowMs, payout: payout);
     if (out == null) return null;
-    ledger.creditReserve(to: payout, amount: (out['principal']! + out['interest']!) / kUnitsPerShe);
+    // Sign does not mint Continuum spendable. The sealed payout is the credit.
     return out;
   }
 
@@ -532,4 +548,55 @@ class ShearReserve {
       };
 
   String publicJson(int nowMs) => jsonEncode(publicView(nowMs));
+}
+
+/// One column of the Reserve ballot. Left to right: −1, hold, +1.
+class ReserveVoteTower {
+  const ReserveVoteTower({
+    required this.id,
+    required this.label,
+    required this.votes,
+    required this.share,
+    required this.filled,
+  });
+
+  final String id;
+  final String label;
+  final int votes;
+
+  /// Height vs the tallest tower this epoch. 0 until the first vote.
+  final double share;
+
+  /// Teal once this choice has a vote. An empty tower stays a gray stub.
+  final bool filled;
+}
+
+int _voteCount(int votes) => votes < 0 ? 0 : votes;
+
+/// Epoch tally from the first vote onward. Not a single cast, and not reset
+/// by painting only the latest choice.
+List<ReserveVoteTower> reserveVoteTowers({
+  required int decrease,
+  required int hold,
+  required int increase,
+}) {
+  final d = _voteCount(decrease);
+  final h = _voteCount(hold);
+  final i = _voteCount(increase);
+  final max = [d, h, i].reduce((a, b) => a > b ? a : b);
+  ReserveVoteTower tower(String id, String label, int votes) {
+    return ReserveVoteTower(
+      id: id,
+      label: label,
+      votes: votes,
+      share: max == 0 ? 0 : votes / max,
+      filled: votes > 0,
+    );
+  }
+
+  return [
+    tower('decrease', '−1', d),
+    tower('hold', 'hold', h),
+    tower('increase', '+1', i),
+  ];
 }

@@ -44,10 +44,11 @@ import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin, appendChainBin } from '../../crypto/chainbin.js';
 import {
   writeLatestBootstrap,
+  shouldPublishBootstrap,
   reorgBreaksCheckpoint,
   bootstrapCheckpoint,
-  BOOTSTRAP_FIRST_HEIGHT,
-  BOOTSTRAP_EVERY_BLOCKS,
+  CHECKPOINT_FIRST_HEIGHT,
+  CHECKPOINT_EVERY_BLOCKS,
 } from './bootstrap.js';
 import { blockWeight } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
@@ -116,8 +117,8 @@ export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
   reorgHaltDepth = Number(process.env.SHEAR_REORG_HALT_DEPTH || 0),
   fastSync = String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
-  firstCheckpoint = BOOTSTRAP_FIRST_HEIGHT,
-  checkpointEvery = BOOTSTRAP_EVERY_BLOCKS,
+  firstCheckpoint = CHECKPOINT_FIRST_HEIGHT,
+  checkpointEvery = CHECKPOINT_EVERY_BLOCKS,
 } = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
@@ -136,8 +137,8 @@ export function createStore(dir, {
   const pause = { reserveInterest: false, poolWithdraw: false };
   const haltDepth = Math.max(0, Math.floor(Number(reorgHaltDepth) || 0));
   const archiveFast = !!fastSync;
-  const sealFirst = Math.max(1, Math.floor(Number(firstCheckpoint) || BOOTSTRAP_FIRST_HEIGHT));
-  const sealEvery = Math.max(1, Math.floor(Number(checkpointEvery) || BOOTSTRAP_EVERY_BLOCKS));
+  const sealFirst = Math.max(1, Math.floor(Number(firstCheckpoint) || CHECKPOINT_FIRST_HEIGHT));
+  const sealEvery = Math.max(1, Math.floor(Number(checkpointEvery) || CHECKPOINT_EVERY_BLOCKS));
   const checkpointOpts = { first: sealFirst, every: sealEvery };
   let evmSession = null;
   let vaultSeal = null;

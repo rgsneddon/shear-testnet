@@ -41,7 +41,7 @@ import {
 import { DEFAULT_SEEDS } from '../src/node.js';
 import { mineTemplate } from '../src/chain.js';
 import { printConfig, startNode, createStore } from '../src/node.js';
-import { countSyncedOnline, countLiveOnline, isFinalIngestFail, recordIngestFail, requeuePrevHash, drainRetryPrev } from '../src/p2p.js';
+import { countSyncedOnline, countLiveOnline, isFinalIngestFail, recordIngestFail, requeuePrevHash, drainRetryPrev, queueMissingParent, headerPrevHash } from '../src/p2p.js';
 
 function destMiner() {
   return encodeDest(Buffer.alloc(20, 5));
@@ -136,6 +136,17 @@ describe('p2p gossip', () => {
     drainRetryPrev(rec);
     assert.deepEqual(rec.want, ['child']);
     assert.deepEqual(rec.retryPrev, []);
+    const parent = 'ab'.repeat(32);
+    const hdr = Buffer.alloc(80);
+    Buffer.from(parent, 'hex').copy(hdr, 4);
+    assert.equal(headerPrevHash(hdr), parent);
+    assert.equal(headerPrevHash(Buffer.alloc(80)), '');
+    const behind = { want: ['tip'], pending: new Set(), retryPrev: [] };
+    queueMissingParent(behind, 'child', parent);
+    assert.equal(behind.want[0], parent);
+    assert.deepEqual(behind.retryPrev, ['child']);
+    queueMissingParent(behind, 'child', parent);
+    assert.equal(behind.want.filter((h) => h === parent).length, 1);
     const mk = fs.readFileSync(new URL('../../crypto/native/Makefile', import.meta.url), 'utf8');
     assert.match(mk, /-z,noexecstack/);
   });

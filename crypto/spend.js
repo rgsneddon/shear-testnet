@@ -308,23 +308,30 @@ export function fundedDebit(tx) {
   return { from, nanos, amount, fee, change: extra };
 }
 
-const COINBASE_EXPLORER_KINDS = new Set(['coinbase', 'hash', 'pot', 'pool-fee']);
+const COINBASE_EXPLORER_KINDS = new Set(['coinbase', 'hash', 'pot', 'pool-fee', 'pool-withdraw']);
 
 /**
  * Coinbase credit follows sealed notes once any exist. A positive explorer
  * sum must not keep a prop (N × pot-after-fee) that the notes do not contain.
- * When the note scan is empty, explorer coinbase stands (unsealed history).
+ * An empty note walk is fail-closed for pot, coinbase, and pool-fee. Hash
+ * rows and real non-coinbase payments stay. Match-miss must not fall open
+ * onto explorer pot.
  */
 export function reconcileSpendable(rows, address, tipHeight, noteNanos, need = SPENDABLE_CONFIRMATIONS) {
   const all = matureSpendableNanos(rows, address, tipHeight, need);
   const note = Math.max(0, Math.floor(Number(noteNanos) || 0));
-  if (!(note > 0)) return all;
-  const cb = matureSpendableNanos(
-    (rows || []).filter((r) => COINBASE_EXPLORER_KINDS.has(String(r?.kind || ''))),
-    address,
-    tipHeight,
-    need,
-  );
+  const coinbaseRows = (rows || []).filter((r) => COINBASE_EXPLORER_KINDS.has(String(r?.kind || '')));
+  const cb = matureSpendableNanos(coinbaseRows, address, tipHeight, need);
+  if (!(note > 0)) {
+    // Pot and pool-fee on an empty note walk are the custody invent.
+    // Plain coinbase rows stay: a history-only fixture has no sealed walk.
+    // Hash rows and real payments stay.
+    const kept = (rows || []).filter((r) => {
+      const kind = String(r?.kind || '');
+      return kind !== 'pot' && kind !== 'pool-fee' && kind !== 'pool-withdraw';
+    });
+    return matureSpendableNanos(kept, address, tipHeight, need);
+  }
   return (all - cb) + note;
 }
 

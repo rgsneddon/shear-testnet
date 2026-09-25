@@ -21,7 +21,7 @@ function line(obj) {
 export function parseSoloLogin(login) {
   const s = String(login || '').trim();
   const dest = s.split('.')[0];
-  const worker = s.split('.').slice(1).join('.') || 'solo';
+  const worker = s.includes('.') ? s.split('.').slice(1).join('.') : '';
   if (!isDestAddress(dest)) return { ok: false, reason: 'need_dest' };
   return { ok: true, dest, worker, login: s };
 }

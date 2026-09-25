@@ -270,7 +270,7 @@ window.SHEAR_DOCS = {
     title: 'Hash bonus',
     crumb: 'mining / hash bonus',
     html:
-      '<p>Each proven floor share mints <strong>1 unit = 10<sup>−11</sup> SHE</strong> (256 units per floor share at eight bits) onto the hasher dest that produced it, on the next sealed block. The block finder receives that dest’s own bonus and leaves every other dest’s bonus untouched. Public pages show nine fractional digits, so a single hash looks like dust; the unit is still written into the payout.</p>' +
+      '<p>Each proven floor share mints <strong>1 unit = 10<sup>−11</sup> SHE</strong> (256 units per floor share at eight bits) onto the hasher dest that produced it, on the next sealed network block. The block finder receives their own hashbonus and allows every other dest’s bonus to be sent on the same blockfind. Public pages show nine fractional digits, so a single hash looks like dust; the unit is still written into the payout.</p>' +
       '<p>The Reserve vote may raise or lower that unit by one, or leave it. The 1 SHE pot is not on the ballot.</p>'
   };
 
