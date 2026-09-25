@@ -432,6 +432,30 @@ export function requeuePrevHash(rec, hash) {
   return rec;
 }
 
+export function headerPrevHash(header) {
+  let buf = null;
+  if (Buffer.isBuffer(header)) buf = header;
+  else if (typeof header === 'string' && /^[0-9a-f]+$/i.test(header) && header.length >= 72) {
+    buf = Buffer.from(header, 'hex');
+  }
+  if (!buf || buf.length < 36) return '';
+  const hex = Buffer.from(buf).subarray(4, 36).toString('hex');
+  if (!hex || /^0+$/.test(hex)) return '';
+  return hex;
+}
+
+/** On a prev miss, fetch the parent before the child is retried. */
+export function queueMissingParent(rec, childHash, parentHash) {
+  requeuePrevHash(rec, childHash);
+  const parent = String(parentHash || '').toLowerCase();
+  if (!rec || !parent || /^0+$/.test(parent)) return rec;
+  rec.want = Array.isArray(rec.want) ? rec.want : [];
+  rec.pending = rec.pending instanceof Set ? rec.pending : new Set();
+  if (rec.pending.has(parent) || rec.want.includes(parent)) return rec;
+  rec.want.unshift(parent);
+  return rec;
+}
+
 export function drainRetryPrev(rec) {
   if (!rec) return rec;
   rec.retryPrev = Array.isArray(rec.retryPrev) ? rec.retryPrev : [];
@@ -966,7 +990,9 @@ export function createP2p({
           if (!rec.failed) rec.failed = new Set();
           if (!got?.ok && lastHash) {
             const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
-            if (got?.reason === 'prev' && !have.has(lastHash)) requeuePrevHash(rec, lastHash);
+            if (got?.reason === 'prev' && !have.has(lastHash)) {
+              queueMissingParent(rec, lastHash, headerPrevHash(last?.header));
+            }
             else if (isFinalIngestFail(got?.reason)) rec.failed.add(lastHash);
           }
           if (!got?.ok && recordIngestFail(rec, got?.reason)) {

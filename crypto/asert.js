@@ -102,8 +102,10 @@ export const MAGIC_TESTNET_V1 = 'shear-testnet-v1';
 export const MAGIC_TESTNET_V2 = 'shear-testnet-v2';
 export const MAGIC_TESTNET_V3 = 'shear-testnet-v3';
 export const MAGIC_TESTNET_V4 = 'shear-testnet-v4';
-/** ADMITv2 privacy-class book. v3 is frozen off this tree. */
-export const MAGIC_TESTNET = MAGIC_TESTNET_V4;
+/** DINS pot+hash book. v4 is the previous lag-1 chain and is not this magic. */
+export const MAGIC_TESTNET_V5 = 'shear-testnet-v5';
+/** ADMITv2 privacy-class book. v4 is frozen off this tree. */
+export const MAGIC_TESTNET = MAGIC_TESTNET_V5;
 export const MAGIC_MAINNET = 'shear-v1';
 /** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
 export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
@@ -248,7 +250,8 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'ADMIT_ARITY=32',
     'ADMIT_K=1',
     'ADMIT_LEAF=shear-admit-leaf-v2',
-    'LAG1_SHAREBATCH=1',
+    'DINS=pot+hash',
+    'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,
     'BITS=q16.16',
     `ASERT_TAU_MS=${ASERT_HALFLIFE_MS}`,
