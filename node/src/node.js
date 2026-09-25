@@ -157,7 +157,12 @@ export async function startNode({
   let stratum = null;
   let stratumBound = null;
   if (solo) {
-    stratum = createSoloStratum({ store, port: stratumPort, host: stratumBind });
+    stratum = createSoloStratum({
+      store,
+      port: stratumPort,
+      host: stratumBind,
+      peers: () => p2p.peers,
+    });
     stratumBound = await stratum.listen();
   }
   const origClose = p2p.close.bind(p2p);
