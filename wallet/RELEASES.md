@@ -35,19 +35,19 @@ Reserve hop fee collates a sealed note when Continuum spendable already covers 0
 
 ## 0.45
 
-Privacy hop fee crypto (range proof + BP+/ADMIT) runs off the UI isolate. Android shows **Paying hop fee…** then **Connecting Privacy hop…**. Handshake budget is 15s and 3 tries. A VPN permission grant resumes connect without paying the 0.05 SHE fee again in the same session. Fee and connect failures snack the real reason and leave the hop off or in error. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. Reserve lock, vote, and withdraw post the sealed public-nanos vout the pool verifies. ShearK pin stays **2.5**. Do not recut 0.44. Android `.apk` and the Windows zip packed on Windows. Linux and Arch zips packed on the Helsinki pack host. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.45-MAC-HANDOFF.md`).
+Privacy hop fee crypto (range proof + BP+/ADMIT) runs off the UI isolate. Android shows **Paying hop fee…** then **Connecting Privacy hop…**. Handshake budget is 15s and 3 tries. A VPN permission grant resumes connect without paying the 0.05 SHE fee again in the same session. Fee and connect failures snack the real reason and leave the hop off or in error. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. Reserve lock, vote, and withdraw post the sealed public-nanos vout the pool verifies. ShearK pin stays **2.5**. Do not recut 0.44. Android `.apk` and the Windows zip packed on Windows. Linux and Arch zips packed on the Helsinki pack host. macOS `.dmg` was cut on the MacBook for that pin.
 
 ## 0.44
 
-Reserve hop fee failures show the node reason instead of **not sent - try again**. Confirmed **Send without privacy hop** is not rewritten to the public-node IP warning (`allowPublicHttp` is honoured on submit). Vote uses the same allow. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. ShearK pin stays **2.5**. Do not recut 0.43. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.44-MAC-HANDOFF.md`).
+Reserve hop fee failures show the node reason instead of **not sent - try again**. Confirmed **Send without privacy hop** is not rewritten to the public-node IP warning (`allowPublicHttp` is honoured on submit). Vote uses the same allow. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. ShearK pin stays **2.5**. Do not recut 0.43. Android `.apk` packed on Windows. macOS `.dmg` was cut on the MacBook for that pin.
 
 ## 0.43
 
-Optional Reserve Privacy hop: one tap pays **0.05 SHE** to the pool fee dest `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6` (ssa1, never she1), then connects residual SHEAR-HOP / EU at `77.42.35.12:44044`. With hop up, Reserve Send does not need a local Shear node. Hop is optional — **Send without privacy hop** confirms **I already use a VPN / I accept exposing my IP**. Android VpnService is the residual dataplane. Light-sync tip display stays. Do not recut 0.42. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.43-MAC-HANDOFF.md`).
+Optional Reserve Privacy hop: one tap pays **0.05 SHE** to the pool fee dest `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6` (ssa1, never she1), then connects residual SHEAR-HOP / EU at `77.42.35.12:44044`. With hop up, Reserve Send does not need a local Shear node. Hop is optional — **Send without privacy hop** confirms **I already use a VPN / I accept exposing my IP**. Android VpnService is the residual dataplane. Light-sync tip display stays. Do not recut 0.42. Android `.apk` packed on Windows. macOS `.dmg` was cut on the MacBook for that pin.
 
 ## 0.42
 
-Built-in light sync: height 0 / empty fake stats never become the current tip. When a live same-genesis source reports height ≥ 1, Continuum follows that tip via header + compact-block catch-up (not the old FlyClient sampler). ADMITv2 / sealed-vin / compactTx stay unweakened; viewKey stays out of query strings. Do not recut 0.41. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`CONTINUUM-0.42-MAC-HANDOFF.md`).
+Built-in light sync: height 0 / empty fake stats never become the current tip. When a live same-genesis source reports height ≥ 1, Continuum follows that tip via header + compact-block catch-up (not the old FlyClient sampler). ADMITv2 / sealed-vin / compactTx stay unweakened; viewKey stays out of query strings. Do not recut 0.41. Android `.apk` packed on Windows. macOS `.dmg` was cut on the MacBook for that pin.
 
 ## 0.41
 
