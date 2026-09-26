@@ -49,22 +49,23 @@
     </div>
     <section class="panel-card">
       <h1>Shear</h1>
-      <p>ADMITv2 membership over this book's notes, with confidential amounts. PoW elects the tip. Continuity-settled. Coin <strong>SHE</strong>. Algo <strong>ShearHash-v3</strong> (RandomX light, CPU). Network today is <code>shear-testnet-v4</code>.</p>
+      <p>ADMITv2 membership over this book's notes, with confidential amounts. PoW elects the tip. Continuity-settled. Coin <strong>SHE</strong>. Algo <strong>ShearHash-v3</strong> (RandomX light, CPU). Network today is <code>shear-testnet-v5</code>.</p>
       <p>No premine, no ICO. SHE is created when blocks are found. You hash, or you are paid by someone who already holds coin.</p>
       <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. While this book has fewer than 10,000 notes the membership set is thin.</p>
-      <p>Each found block mints 1 SHE among hasher dests that produced proven work. Each of those dests receives its own hash bonus on the next sealed block. Mine with Copy dest (<code>ssa1.worker</code>).</p>
+      <p>Each found block mints 1 SHE among hasher dests that produced proven work. Each of those dests receives its own hash bonus on the next sealed block. Mine with Copy dest (a bare <code>ssa1</code>). A typed suffix is optional.</p>
       <p>Site <a href="https://shear.digital">shear.digital</a> · Pool <a href="https://pool.shear.digital">pool.shear.digital</a> · Explorer <a href="https://explorer.shear.digital">explorer.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
     </section>
     <section class="panel-card" id="wallet">
       <h2>Install the wallet</h2>
-      <p>Current pin is <strong>0.48</strong>. This app does not mine. Install only from the official tag. Magic <code>shear-testnet-v4</code> / ADMITv2.</p>
-      <p><a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.48">github.com/rgsneddon/shear-testnet/releases/tag/0.48</a></p>
+      <p>Current pin is Continuum <strong>0.53</strong> for Android, Windows, Linux, Arch, and Fedora. This app does not mine. Install only from the official tag. Magic <code>shear-testnet-v5</code> / ADMITv2.</p>
+      <p><a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.53">github.com/rgsneddon/shear-testnet/releases/tag/0.53</a></p>
       <ul>
         <li>macOS — coming soon</li>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.48/shear-wallet-0.48-windows.zip">Windows</a></li>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.48/shear-wallet-0.48-android.apk">Android</a></li>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.48/shear-wallet-0.48-linux.zip">Linux</a></li>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.48/shear-wallet-0.48-archlinux.zip">Arch</a></li>
+        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.53/shear-wallet-0.53-windows.zip">Windows</a></li>
+        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.53/shear-wallet-0.53-android.apk">Android</a></li>
+        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.53/shear-wallet-0.53-linux.zip">Linux</a></li>
+        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.53/shear-wallet-0.53-archlinux.zip">Arch</a></li>
+        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.53/shear-wallet-0.53-fedora.zip">Fedora</a></li>
       </ul>
       <ol>
         <li>On a Mac, open the disk image, drag Shear into Applications, eject, then launch from Applications. Do not keep running it from the image, a zip, or Downloads.</li>
@@ -76,14 +77,14 @@
     </section>
     <section class="panel-card" id="mine">
       <h2>How to mine</h2>
-      <p>Official miner is <strong>ShearK-Miner 2.5</strong>. CPU only. Log in with wallet <strong>Copy dest</strong> (<code>ssa1</code>).</p>
-      <p><a href="https://github.com/rgsneddon/ShearK/releases/tag/2.5">github.com/rgsneddon/ShearK/releases/tag/2.5</a></p>
+      <p>Official miner is <strong>ShearK-Miner 2.6</strong>. CPU only. Log in with wallet <strong>Copy dest</strong> (<code>ssa1</code>). A bare address stays bare.</p>
+      <p><a href="https://github.com/rgsneddon/ShearK/releases/tag/2.6">github.com/rgsneddon/ShearK/releases/tag/2.6</a></p>
       <ol>
         <li>Download the Windows or Linux zip. Unpack. On Windows double-click <code>example.bat</code> after you paste your dest.</li>
         <li>Run a self-test: <code>./ShearK-Miner --selftest</code></li>
         <li>Start hashing:
-          <br/><code>./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --backend jit --threads 8</code></li>
-        <li><code>--user</code> is one string: the <code>ssa1</code> dest the wallet exported (Copy dest), a dot, then a worker name for this machine. <code>she1</code> without <code>--dest</code> is unpaid.</li>
+          <br/><code>./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1 --backend jit --threads 8</code></li>
+        <li><code>--user</code> is the <code>ssa1</code> from Copy dest. A typed suffix is optional and pays the same address. <code>she1</code> without <code>--dest</code> is unpaid.</li>
       </ol>
       <p>Each found block mints <strong>1 SHE</strong> (the pot), split by proven work among hasher dests. Each dest that hashed that round receives <strong>0.00000000001 SHE</strong> per proven floor share on the next sealed block. The public pool may take 1% of the pot only. Hash bonuses pay in full to those dests.</p>
     </section>
@@ -104,7 +105,7 @@
       Pool <a href="https://pool.shear.digital">pool.shear.digital</a> · <code>pool.shear.digital:1111</code><br/>
       Explorer <a href="https://explorer.shear.digital">explorer.shear.digital</a><br/>
       Mempool <a href="https://mempool.shear.digital">mempool.shear.digital</a></p>
-      <p>This is testnet. Balances can vanish. Network is <code>shear-testnet-v4</code>. ADMITv2 membership, confidential amounts. While the book has fewer than 10,000 notes the membership set is thin. Mainnet <code>shear-v1</code> is not live. A launch date is not decided.</p>
+      <p>This is testnet. Balances can vanish. Network is <code>shear-testnet-v5</code>. ADMITv2 membership, confidential amounts. While the book has fewer than 10,000 notes the membership set is thin. Mainnet <code>shear-v1</code> is not live. A launch date is not decided.</p>
     </section>
   </div>
 </body>

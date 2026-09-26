@@ -303,9 +303,9 @@
       <a class="nav-btn is-on" href="/">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.5" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.48" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.53" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -349,16 +349,16 @@
           <label class="label" for="threads">CPU threads</label><br/>
           <input id="threads" name="threads" type="number" min="1" max="256" value="4" step="1"/>
         </p>
-        <p class="mine-dl label">Miner 2.5:
-          <a href="https://github.com/rgsneddon/ShearK/releases/download/2.5/ShearK-Miner-2.5-linux.zip">Linux</a>
+        <p class="mine-dl label">Miner 2.6:
+          <a href="https://github.com/rgsneddon/ShearK/releases/download/2.6/ShearK-Miner-2.6-linux.zip">Linux</a>
           ·
-          <a href="https://github.com/rgsneddon/ShearK/releases/download/2.5/ShearK-Miner-2.5-windows.zip">Windows</a>
+          <a href="https://github.com/rgsneddon/ShearK/releases/download/2.6/ShearK-Miner-2.6-windows.zip">Windows</a>
         </p>
         <div class="cmd-row">
-          <pre id="mine-cmd">ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --threads 4</pre>
+          <pre id="mine-cmd">ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1 --threads 4</pre>
           <button type="submit" id="copy-cmd">Copy command</button>
         </div>
-        <p class="label" id="cmd-hint">Login is the dest the wallet exported as <code>ssa1.worker</code>. <code>she1</code> without dest is unpaid. Never <code>shear1</code>.</p>
+        <p class="label" id="cmd-hint">Login is the dest the wallet exported as a bare <code>ssa1</code>. A typed suffix is optional. <code>she1</code> without dest is unpaid. Never <code>shear1</code>.</p>
         <p class="label" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
         </form>
       </section>
@@ -405,7 +405,7 @@
         </div>
       </article>
       <article class="panel-card"><div class="label">Uptime</div><div class="value" id="uptime">0s</div></article>
-      <article class="panel-card"><div class="label">Last block</div>
+      <article class="panel-card"><div class="label">Last Block (pool)</div>
         <div class="value last-block-box" id="updated">
           <div class="last-block-track">
             <div class="last-block-mid"></div>
@@ -483,7 +483,7 @@
       const addr = (document.getElementById('addr').value || '').trim();
       const worker = (document.getElementById('worker').value || '').trim() || 'worker';
       const t = Math.max(1, Math.min(256, Number(document.getElementById('threads').value) || 4));
-      let user = 'YOUR_SSA1.worker';
+      let user = 'YOUR_SSA1';
       if (addr) {
         const w = worker.replace(/[^a-zA-Z0-9_-]/g, '') || 'worker';
         user = addr.indexOf('.') >= 0 ? addr : addr + '.' + w;

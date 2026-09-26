@@ -240,7 +240,14 @@ void main() {
     expect(side.sendBlocked, isTrue);
     expect(side.sendBlockedCopy, 'Wait until your local node is synced to the tip before sending.');
     expect(started.single['SHEAR_SOLO'], '0');
-    expect(started.single['args'], '--bootstrap=$kClosureBootstrap');
+    expect(started.single['args'], '');
+    expect(started.single['args'], isNot(contains('bootstrap')));
+    expect(kLocalNodeModeCopy.toLowerCase(), isNot(contains('auto bootstrap')));
+    expect(kLocalNodeFullModeCopy.toLowerCase(), isNot(contains('auto bootstrap')));
+    expect(localNodeMatchesSeeker(nodeHeight: 0, ibd: false, seekerTip: 4), isFalse);
+    expect(localNodeMatchesSeeker(nodeHeight: 4, ibd: true, seekerTip: 4), isFalse);
+    expect(localNodeMatchesSeeker(nodeHeight: 3, ibd: false, seekerTip: 4), isFalse);
+    expect(localNodeMatchesSeeker(nodeHeight: 4, ibd: false, seekerTip: 4), isTrue);
     expect(observeLocalTip('status height=0 hash=- peers=0 want=1 ibd=true hashBackend=native'), isFalse);
     expect(observeLocalTip('{"event":"status","height":4,"ibd":true,"peers":1}'), isFalse);
     const atTip = 'status height=4 hash=abcd peers=1 want=0 ibd=false hashBackend=native';

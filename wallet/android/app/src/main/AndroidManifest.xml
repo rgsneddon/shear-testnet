@@ -9,7 +9,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <application
-        android:label="Shear 0.52.0"
+        android:label="Shear 0.53.0"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

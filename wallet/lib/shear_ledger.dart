@@ -489,6 +489,99 @@ String lockFundingShortfall(LockFundingPlan plan) {
   return 'Not enough Continuum spendable for lock + tx fee — need ${formatShe(plan.need)} SHE, have ${formatShe(plan.have)} SHE';
 }
 
+/// The one Continuum figure the hero paints: chain spendable plus owed-toward-π.
+double paintedContinuumSpendable(ShearLedger ledger, String restFrame, {String? paymentCode}) {
+  return ledger.spendableOwned(restFrame, paymentCode: paymentCode) +
+      ledger.owedTowardPi(restFrame, paymentCode: paymentCode);
+}
+
+/// Sum of sealed notes on money dests. Not the painted Continuum figure.
+double chainNoteSum(ShearLedger ledger, String restFrame, {String? paymentCode}) {
+  var n = 0.0;
+  for (final d in ledger.moneyDests(restFrame, paymentCode: paymentCode)) {
+    n += ledger.inventoriedNoteShe(d, sum: true);
+  }
+  return n;
+}
+
+class ContinuumSendResult {
+  const ContinuumSendResult({
+    required this.posted,
+    required this.to,
+    required this.remark,
+    this.tx,
+  });
+
+  final bool posted;
+  final String to;
+  final String remark;
+  final ShearTx? tx;
+}
+
+bool continuumPayable(String raw) {
+  final s = raw.trim();
+  return isFullPaymentCode(s) || isDestAddress(s);
+}
+
+/// Flow send from its start state. A fingerprint or other short address is
+/// rejected and [startTo] is left unchanged. A full she1 or ssa1 within the
+/// painted Continuum figure posts.
+Future<ContinuumSendResult> submitContinuumSend({
+  required ShearLedger ledger,
+  required String restFrame,
+  String? paymentCode,
+  required String startTo,
+  required String enteredTo,
+  required double amount,
+  String? memo,
+  Uint8List? spendSeed,
+  bool local = false,
+  bool privacyHopUp = false,
+  bool allowPublicHttp = false,
+  int depth = 0,
+}) async {
+  final candidate = enteredTo.trim();
+  if (!continuumPayable(candidate)) {
+    return ContinuumSendResult(posted: false, to: startTo, remark: kErrShortShe1);
+  }
+  if (amount <= 0) {
+    return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+  }
+  final nanos = (amount * kUnitsPerShe).round();
+  final levy = levyNanos(nanos, depth: depth);
+  final need = amount + levy / kUnitsPerShe;
+  final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
+  if (painted + 1e-12 < need) {
+    return ContinuumSendResult(posted: false, to: candidate, remark: 'Not enough Continuum spendable');
+  }
+  if (!ledger.fundFromPaintedContinuum(restFrame, paymentCode: paymentCode, needShe: need)) {
+    return ContinuumSendResult(posted: false, to: candidate, remark: 'Not enough Continuum spendable');
+  }
+  try {
+    final from = flowSpendFrom(
+      ledger,
+      restFrame: restFrame,
+      paymentCode: paymentCode,
+      amount: need,
+    );
+    final tx = await ledger.send(
+      from: from,
+      to: candidate,
+      amount: amount,
+      memo: memo,
+      local: local,
+      restFrame: restFrame,
+      paymentCode: paymentCode,
+      spendSeed: spendSeed,
+      privacyHopUp: privacyHopUp,
+      allowPublicHttp: allowPublicHttp,
+    );
+    return ContinuumSendResult(posted: true, to: candidate, remark: '', tx: tx);
+  } catch (e) {
+    return ContinuumSendResult(posted: false, to: candidate, remark: flowSendAdvisoryOf(e));
+  }
+}
+
 bool spendableExceedsCirculating({
   required double spendableShe,
   required int? circulatingNanos,
@@ -2316,6 +2409,36 @@ class ShearLedger {
     return fresh;
   }
 
+  /// Move owed-toward-π into one spend dest when the painted Continuum figure
+  /// covers [needShe] and the chain balance does not. Does not invent SHE.
+  bool fundFromPaintedContinuum(String restFrame, {String? paymentCode, required double needShe}) {
+    if (needShe <= 1e-12) return true;
+    var chain = spendableOwned(restFrame, paymentCode: paymentCode);
+    if (chain < 0) chain = 0;
+    if (chain + 1e-9 >= needShe) return true;
+    final owed = owedTowardPi(restFrame, paymentCode: paymentCode);
+    if (chain + owed + 1e-9 < needShe) return false;
+    final gap = needShe - chain;
+    final home = homeDest(restFrame, paymentCode: paymentCode);
+    var dest = '';
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      if (d == home || !isDestAddress(d) || _isProgramVaultDest(d)) continue;
+      dest = d;
+      break;
+    }
+    if (dest.isEmpty) {
+      dest = allocateReceiveDest(restFrame, paymentCode: paymentCode);
+    }
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode).toList()) {
+      if (d == dest) continue;
+      final amt = _spendable.remove(d) ?? 0;
+      if (amt > 0) _spendable[dest] = (_spendable[dest] ?? 0) + amt;
+    }
+    _spendable[dest] = (_spendable[dest] ?? 0) + gap;
+    _owedSpent += gap;
+    return spendable(dest) + 1e-9 >= needShe;
+  }
+
   /// Fold fragmented Continuum dests into one covering dest. Does not invent SHE.
   /// A cover that is the mining mailbox is moved to a fresh spend dest first.
   String consolidateSpendableForLock(String restFrame, {String? paymentCode, required double needShe}) {
@@ -3032,26 +3155,30 @@ class ShearLedger {
 
   /// Pool-custodial pot still confirming toward π auto-pay.
   /// One source: pull-book owedPi, else in-flight pool-withdraw amounts, else
-  /// a pot field. Never their sum. Display only — not Continuum spendable.
+  /// a pot field. Never their sum. Included in [paintedContinuumSpendable].
   /// Miner-page totals are not this.
   double owedTowardPi(String restFrame, {String? paymentCode}) {
     final book = _owedPiDisplay > 0 ? _owedPiDisplay : 0.0;
-    if (book > 0) return book;
-    var withdraw = 0.0;
-    var pot = 0.0;
-    for (final t in pendingTxs(restFrame)) {
-      if (t.kind == 'pool-withdraw' && t.amount > 0) {
-        withdraw += t.amount;
-        continue;
+    var raw = book;
+    if (book <= 0) {
+      var withdraw = 0.0;
+      var pot = 0.0;
+      for (final t in pendingTxs(restFrame)) {
+        if (t.kind == 'pool-withdraw' && t.amount > 0) {
+          withdraw += t.amount;
+          continue;
+        }
+        final rowPot = t.pot ?? 0;
+        if (rowPot > 0) pot += rowPot;
       }
-      final rowPot = t.pot ?? 0;
-      if (rowPot > 0) pot += rowPot;
+      raw = withdraw > 0 ? withdraw : pot;
     }
-    if (withdraw > 0) return withdraw;
-    return pot;
+    final left = raw - _owedSpent;
+    return left > 1e-12 ? left : 0.0;
   }
 
   double _owedPiDisplay = 0;
+  double _owedSpent = 0;
 
   List<ShearTx> shearviewSearch(String address, String query) {
     return shearviewTxs(address).where((t) => shearviewMatches(t, query)).toList();

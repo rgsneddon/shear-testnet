@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('shear-theme');
+        if (t !== 'dark' && t !== 'light') {
+          t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Shear Node — shear-testnet-v5</title>
+  <meta name="description" content="Build and run a Shear validating node for shear-testnet-v5. Multi-OS deps including Fedora/RHEL, Debian, Arch, openSUSE, macOS, Windows/WSL." />
+  <link rel="icon" href="../brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="../css/site.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <style>
+    .os-tabs { margin: 1rem 0 1.5rem; }
+    .os-tablist { display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:.85rem; }
+    .os-tablist button {
+      font: inherit; font-size:.78rem; font-weight:750; letter-spacing:.04em; text-transform:uppercase;
+      padding:.45rem .75rem; border-radius:999px; cursor:pointer;
+      border:1px solid var(--hairline-strong); background:var(--surface-2); color:var(--text-dim);
+    }
+    .os-tablist button[aria-selected="true"] {
+      background:var(--accent-dim); color:var(--accent); border-color:var(--accent);
+    }
+    .os-tabpanel {
+      background:var(--surface); border:1px solid var(--hairline-strong);
+      border-radius:var(--radius-lg); padding:1.1rem 1.2rem 1.25rem;
+    }
+    .os-tabpanel[hidden] { display:none !important; }
+    .os-tabpanel > p { color:var(--text-dim); font-size:.92rem; }
+    .copy-row {
+      display:grid; grid-template-columns:1fr auto; gap:.5rem; align-items:start;
+      margin:.55rem 0 .85rem;
+    }
+    .copy-row pre {
+      margin:0; padding:.85rem 1rem; overflow:auto;
+      background:var(--bg-elev); border:1px solid var(--hairline);
+      border-radius:var(--radius); color:var(--accent);
+      font:12.5px/1.45 var(--mono); white-space:pre-wrap; word-break:break-word;
+    }
+    .copy-row button {
+      font:inherit; font-size:.75rem; font-weight:750; letter-spacing:.04em; text-transform:uppercase;
+      padding:.45rem .7rem; border-radius:8px; cursor:pointer; height:fit-content;
+      border:1px solid var(--hairline-strong); background:var(--surface-2); color:var(--text);
+    }
+    .copy-row button:hover { border-color:var(--accent); color:var(--accent); }
+    .build-steps h3 { margin:1.5rem 0 .5rem; font-size:1.05rem; }
+    .build-steps > p { color:var(--text-dim); }
+    .honest { border-left:3px solid var(--warn); padding-left:1rem; }
+</style>
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="NODE" data-brand-base="../brand/" data-testnet-pill="1"></div>
+  <script src="../shared/shear-chrome.js"></script>
+
+  <div class="banner" role="status">
+    <strong>Build from source.</strong> No prebuilt node binary on releases
+    <span class="sep">·</span>
+    magic shear-testnet-v5 · tip Continuum 0.53
+  </div>
+
+  <main>
+    <div class="wrap page-hero">
+      <p class="section-label">Validating node</p>
+      <h1>Run a Shear node</h1>
+      <p class="lede">Clone <code>shear-testnet</code>, build RandomX + <code>crypto/native</code>, sync to tip. Optional thin solo stratum. Continuum wallet downloads are on <a href="/wallet/">WALLET</a> — this page is the node.</p>
+    </div>
+
+    <section class="wrap section-sm">
+      <div class="panel honest">
+        <h3>What is downloadable?</h3>
+        <p style="margin:0">GitHub <code>shear-testnet</code> release <strong>0.53</strong> ships <em>wallet</em> assets only (Linux / Windows / Arch / Android). The full node is <strong>build-from-source</strong> via the repo path <a href="https://github.com/rgsneddon/shear-testnet/tree/main/node" rel="noopener">tree/main/node</a>. Do not expect a node.zip on the release page.</p>
+      </div>
+    </section>
+
+    <section class="wrap section">
+      <p class="section-label">0 · OS dependencies</p>
+      <h2 style="margin:0 0 .35rem">Copy/paste install panes</h2>
+      <p>Full validating node for <strong>shear-testnet-v5</strong>. There is <strong>no prebuilt node binary</strong> on GitHub releases — you clone and build from <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">rgsneddon/shear-testnet</a> (tip Continuum wallet is <strong>0.53</strong>; node lives at <code>node/</code> in that tree).</p>
+<p>Beginner path (from tip site): OS deps → clone → RandomX + <code>crypto/native</code> → validating node → optional <code>npm run solo</code> (thin stratum on 127.0.0.1:1111). Continuum GUI is optional for RPC. Never <code>npm run pool</code> unless you are operating the public pool.</p>
+<p>Commands below are lifted from tip <code>site/index.html</code> <code>#solo-mine</code> — do not invent alternate package lines.</p>
+      <div class="os-tabs" id="solo-os-tabs">
+        <div class="os-tablist" role="tablist" aria-label="OS dependencies">
+          <button type="button" role="tab" id="solo-tab-debian" aria-controls="solo-pane-debian" aria-selected="true" tabindex="0" data-os="debian">Debian / Ubuntu</button>
+          <button type="button" role="tab" id="solo-tab-fedora" aria-controls="solo-pane-fedora" aria-selected="false" tabindex="-1" data-os="fedora">Fedora / RHEL</button>
+          <button type="button" role="tab" id="solo-tab-arch" aria-controls="solo-pane-arch" aria-selected="false" tabindex="-1" data-os="arch">Arch</button>
+          <button type="button" role="tab" id="solo-tab-suse" aria-controls="solo-pane-suse" aria-selected="false" tabindex="-1" data-os="suse">openSUSE</button>
+          <button type="button" role="tab" id="solo-tab-macos" aria-controls="solo-pane-macos" aria-selected="false" tabindex="-1" data-os="macos">macOS</button>
+          <button type="button" role="tab" id="solo-tab-windows" aria-controls="solo-pane-windows" aria-selected="false" tabindex="-1" data-os="windows">Windows</button>
+        </div>
+        <div class="os-tabpanel" role="tabpanel" id="solo-pane-debian" aria-labelledby="solo-tab-debian" data-os="debian">
+          <p>Debian / Ubuntu x86_64. Node 20 from NodeSource; rustup for native ADMITv2.</p>
+          <div class="copy-row">
+            <pre id="solo-deps">sudo apt-get update
+sudo apt-get install -y git curl build-essential cmake python3 pkg-config libssl-dev
+# Node 20+
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+# Rust (native ADMITv2 / BP+)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"</pre>
+            <button type="button" data-copy="solo-deps">Copy</button>
+          </div>
+          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource / nodejs-devel), not a headerless binary.</p>
+          <div class="copy-row">
+            <pre id="solo-headers-debian">node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
+            <button type="button" data-copy="solo-headers-debian">Copy</button>
+          </div>
+          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
+          <div class="copy-row">
+            <pre id="solo-nodeinc-debian"># Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native</pre>
+            <button type="button" data-copy="solo-nodeinc-debian">Copy</button>
+          </div>
+          <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
+        </div>
+        <div class="os-tabpanel" role="tabpanel" id="solo-pane-fedora" aria-labelledby="solo-tab-fedora" data-os="fedora" hidden>
+          <p>Fedora / RHEL. Development Tools, cmake, openssl-devel, NodeSource 20 rpm, rustup.</p>
+          <div class="copy-row">
+            <pre id="solo-deps-fedora">sudo dnf groupinstall -y "Development Tools"
+sudo dnf install -y git curl cmake python3 pkgconf-pkg-config openssl-devel
+# Node 20+
+curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+sudo dnf install -y nodejs
+# Rust (native ADMITv2 / BP+)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"</pre>
+            <button type="button" data-copy="solo-deps-fedora">Copy</button>
+          </div>
+          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource / nodejs-devel), not a headerless binary.</p>
+          <div class="copy-row">
+            <pre id="solo-headers-fedora">node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
+            <button type="button" data-copy="solo-headers-fedora">Copy</button>
+          </div>
+          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
+          <div class="copy-row">
+            <pre id="solo-nodeinc-fedora"># Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native</pre>
+            <button type="button" data-copy="solo-nodeinc-fedora">Copy</button>
+          </div>
+          <p>Then continue with clone / RandomX / <code>crypto/native</code> below. Build <code>crypto/native</code> on this Fedora machine. A <code>shearhash.node</code> copied from Ubuntu will not load.</p>
+          <p>Deploy with the unit in the repo. It dials any and all seeds and listens for Continuum on <code>127.0.0.1:18332</code>. Do not <code>npm run pool</code>.</p>
+          <div class="copy-row">
+            <pre id="fedora-node-deploy">sudo mkdir -p /opt/shear-v4 /var/lib/shear/testnet-v5
+sudo chown "$USER":"$USER" /opt/shear-v4 /var/lib/shear/testnet-v5
+git clone https://github.com/rgsneddon/shear-testnet.git /opt/shear-v4
+cd /opt/shear-v4
+git checkout 0.53
+npm ci
+cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
+cmake --build crypto/randomx/build -j"$(nproc)"
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)")"
+test -f "$NODE_INC/node_api.h"
+make -C crypto/native
+node node/src/node.js --print-config
+sudo cp deploy/shear-node.service /etc/systemd/system/shear-node.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now shear-node
+journalctl -u shear-node -n 20 --no-pager</pre>
+            <button type="button" data-copy="fedora-node-deploy">Copy</button>
+          </div>
+          <p>You are done when a status line shows <code>hashBackend=native</code>, <code>peers</code> at least 1, and <code>ibd=false</code> with the height holding still. While the height is still climbing, <code>ibd=true</code> is catch-up, not a failure. The number on pool.shear.digital is the pool’s own book. Your node follows the public peers. Those two heights are not the same reading. Do not wipe <code>/var/lib/shear/testnet-v5</code> because the pool page is taller. Add every seed you have; the node is not limited to one host.</p>
+        </div>
+        <div class="os-tabpanel" role="tabpanel" id="solo-pane-arch" aria-labelledby="solo-tab-arch" data-os="arch" hidden>
+          <p>Arch Linux. <code>base-devel</code> plus nodejs, npm, cmake, openssl. Repo <code>rust</code> is enough; rustup is optional.</p>
+          <div class="copy-row">
+            <pre id="solo-deps-arch">sudo pacman -Syu --needed base-devel git curl cmake python pkgconf openssl nodejs npm rust
+# optional rustup instead of repo rust:
+# curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+# . "$HOME/.cargo/env"</pre>
+            <button type="button" data-copy="solo-deps-arch">Copy</button>
+          </div>
+          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource / nodejs-devel), not a headerless binary.</p>
+          <div class="copy-row">
+            <pre id="solo-headers-arch">node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
+            <button type="button" data-copy="solo-headers-arch">Copy</button>
+          </div>
+          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
+          <div class="copy-row">
+            <pre id="solo-nodeinc-arch"># Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native</pre>
+            <button type="button" data-copy="solo-nodeinc-arch">Copy</button>
+          </div>
+          <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
+        </div>
+        <div class="os-tabpanel" role="tabpanel" id="solo-pane-suse" aria-labelledby="solo-tab-suse" data-os="suse" hidden>
+          <p>openSUSE. C/C++ devel pattern, cmake, openssl-devel, Node 20, rustup.</p>
+          <div class="copy-row">
+            <pre id="solo-deps-suse">sudo zypper install -t pattern devel_C_C++
+sudo zypper install -y git curl cmake gcc gcc-c++ openssl-devel python3 pkg-config
+# Node 20+
+curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+sudo zypper install -y nodejs
+# Rust (native ADMITv2 / BP+)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"</pre>
+            <button type="button" data-copy="solo-deps-suse">Copy</button>
+          </div>
+          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource / nodejs-devel), not a headerless binary.</p>
+          <div class="copy-row">
+            <pre id="solo-headers-suse">node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
+            <button type="button" data-copy="solo-headers-suse">Copy</button>
+          </div>
+          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
+          <div class="copy-row">
+            <pre id="solo-nodeinc-suse"># Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native</pre>
+            <button type="button" data-copy="solo-nodeinc-suse">Copy</button>
+          </div>
+          <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
+        </div>
+        <div class="os-tabpanel" role="tabpanel" id="solo-pane-macos" aria-labelledby="solo-tab-macos" data-os="macos" hidden>
+          <p>macOS with Homebrew. Build RandomX and <code>crypto/native</code> on this Mac. Never copy a Darwin <code>.node</code> onto Linux.</p>
+          <div class="copy-row">
+            <pre id="solo-deps-macos">xcode-select --install
+brew install git cmake python pkg-config openssl node rust
+export NODE_INC="$(brew --prefix node)/include/node"</pre>
+            <button type="button" data-copy="solo-deps-macos">Copy</button>
+          </div>
+          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (Homebrew <code>node</code> includes them). On cmake below, use <code>-j"$(sysctl -n hw.ncpu)"</code> instead of <code>nproc</code>.</p>
+          <div class="copy-row">
+            <pre id="solo-headers-macos">node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
+            <button type="button" data-copy="solo-headers-macos">Copy</button>
+          </div>
+          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
+          <div class="copy-row">
+            <pre id="solo-nodeinc-macos"># Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native</pre>
+            <button type="button" data-copy="solo-nodeinc-macos">Copy</button>
+          </div>
+          <p>Then continue with clone / RandomX / <code>crypto/native</code> below. Miner unzip + <code>./ShearK-Miner</code> is the macOS / Linux login block in step 3.</p>
+        </div>
+        <div class="os-tabpanel" role="tabpanel" id="solo-pane-windows" aria-labelledby="solo-tab-windows" data-os="windows" hidden>
+          <p>Build the node in <strong>WSL2 Ubuntu</strong> (or on a Linux box). Run <code>ShearK-Miner.exe</code> on Windows against <code>127.0.0.1:1111</code> (WSL localhost / port forward) or the public pool. SmartScreen may warn — More info → Run anyway, or unblock the zip. Never copy a Darwin <code>.node</code> onto Linux or into WSL.</p>
+          <div class="copy-row">
+            <pre id="solo-deps-windows">wsl --install -d Ubuntu
+wsl -d Ubuntu
+# inside Ubuntu, paste the Debian / Ubuntu deps block, then clone / RandomX / native below
+sudo apt-get update
+sudo apt-get install -y git curl build-essential cmake python3 pkg-config libssl-dev
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"</pre>
+            <button type="button" data-copy="solo-deps-windows">Copy</button>
+          </div>
+          <p>Headers check (inside WSL) — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource), not a headerless binary.</p>
+          <div class="copy-row">
+            <pre id="solo-headers-windows">node -v   # need 20+
+node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
+ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
+            <button type="button" data-copy="solo-headers-windows">Copy</button>
+          </div>
+          <p>NODE_INC recovery (inside WSL) — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
+          <div class="copy-row">
+            <pre id="solo-nodeinc-windows"># Prefer Node's own prefix; fall back to find near the node binary
+export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
+echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
+test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
+make -C crypto/native</pre>
+            <button type="button" data-copy="solo-nodeinc-windows">Copy</button>
+          </div>
+          <p>After <code>npm run solo</code> in WSL, on Windows:</p>
+          <div class="copy-row">
+            <pre id="solo-deps-windows-miner">ShearK-Miner.exe --selftest
+ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1 --threads 8</pre>
+            <button type="button" data-copy="solo-deps-windows-miner">Copy</button>
+          </div>
+          <p>Public pool instead: <code>ShearK-Miner.exe --pool pool.shear.digital:1111 --user YOUR_SSA1 --threads 8</code>. A typed <code>YOUR_SSA1.suffix</code> is optional. Then continue with clone / RandomX / <code>crypto/native</code> below (in WSL).</p>
+        </div>
+      </div>
+      <div class="build-steps">
+        <h3>1. Clone, RandomX, crypto/native</h3>
+      <p>Same as README “Build your own node”. Run the Headers check in your OS tab first. If make still fails on <code>node_api.h</code>, use that tab’s NODE_INC recovery (do not <code>find /usr</code> into an empty <code>NODE_INC=.</code>).</p>
+      <div class="copy-row">
+        <pre id="solo-node">git clone https://github.com/rgsneddon/shear-testnet.git
+cd shear-testnet
+git checkout 0.53
+npm ci
+cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
+cmake --build crypto/randomx/build -j"$(nproc)"
+make -C crypto/native
+node node/src/node.js --print-config</pre>
+        <button type="button" data-copy="solo-node">Copy</button>
+      </div>
+      <p><code>--print-config</code> must show <code>"magic":"shear-testnet-v5"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
+      
+        <h3>2. Validating node (not the full pool)</h3>
+      <p>Release <strong>0.53</strong>. Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). Put <code>SHEAR_SEEDS</code> in the <strong>same shell</strong> as the node. Outbound TCP to those seeds is required; opening inbound firewall <code>30303</code> alone does <strong>not</strong> sync. Startup does <strong>not</strong> pull a bootstrap. Leave <code>SHEAR_BOOTSTRAP</code> unset or <code>0</code>. Do <strong>not</strong> <code>npm run pool</code> — that is the public-pool operator stack.</p>
+      <div class="copy-row">
+        <pre id="solo-run">export SHEAR_DATA="$HOME/.shear/testnet-v5"
+export SHEAR_NETWORK=shear-testnet-v5
+export SHEAR_P2P_PORT=30303
+export SHEAR_P2P_BIND=0.0.0.0
+export SHEAR_RPC_PORT=18332
+export SHEAR_RPC_BIND=127.0.0.1
+export SHEAR_BOOTSTRAP=0
+export SHEAR_REORG_HALT_DEPTH=0
+export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
+node node/src/node.js</pre>
+        <button type="button" data-copy="solo-run">Copy</button>
+      </div>
+      
+        <h3>3. Thin solo stratum</h3>
+      <p>Same shell, only after the node height has caught the public tip. <code>npm run solo</code> is <code>node node/src/node.js --solo</code>: validator + stratum on <code>127.0.0.1:1111</code>. A solo block found while any peer is ahead is refused (<code>syncing</code>) and is not sealed. A bare <code>ssa1</code> is the login. A typed <code>ssa1.suffix</code> is optional and pays the same address.</p>
+      <div class="copy-row">
+        <pre id="solo-stratum">export SHEAR_STRATUM=1111
+export SHEAR_STRATUM_BIND=127.0.0.1
+npm run solo</pre>
+        <button type="button" data-copy="solo-stratum">Copy</button>
+      </div>
+      
+        <h3>Next</h3>
+        <p>For CLI Copy dest / ShearK solo login, see tip docs or the <a href="/miner/">miner hub</a>. Pool operators use a different stack — do not <code>npm run pool</code> for a personal node.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="/miner/">Miner hub →</a>
+          <a class="btn btn-soft" href="/wallet/">Continuum 0.53 →</a>
+          <a class="btn btn-ghost" href="/docs/#/node">Docs · Run a node →</a>
+          <a class="btn btn-ghost" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" rel="noopener">GitHub node/ ↗</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div data-shear-foot data-wallet-fallback="0.53" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
+      <nav>
+        <a href="/">Main</a>
+        <a href="/miner/">Miner</a>
+        <a href="/wallet/">Wallet</a>
+        <a href="/docs/">Docs</a>
+      </nav>
+    </div>
+  </footer>
+  <script src="../js/site.js"></script>
+  <script>
+  (function () {
+    var root = document.getElementById('solo-os-tabs');
+    if (!root) return;
+    var tabs = [].slice.call(root.querySelectorAll('[role="tab"]'));
+    var panes = [].slice.call(root.querySelectorAll('[role="tabpanel"]'));
+    function select(os) {
+      tabs.forEach(function (t) {
+        var on = t.getAttribute('data-os') === os;
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+        t.tabIndex = on ? 0 : -1;
+      });
+      panes.forEach(function (p) {
+        var on = p.getAttribute('data-os') === os;
+        if (on) p.removeAttribute('hidden');
+        else p.setAttribute('hidden', '');
+      });
+    }
+    tabs.forEach(function (t) {
+      t.addEventListener('click', function () { select(t.getAttribute('data-os')); });
+    });
+    document.querySelectorAll('[data-copy]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-copy');
+        var el = document.getElementById(id);
+        if (!el) return;
+        var text = el.textContent;
+        function ok() {
+          var prev = btn.textContent;
+          btn.textContent = 'Copied';
+          setTimeout(function () { btn.textContent = prev; }, 1200);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(ok).catch(function () {
+            var ta = document.createElement('textarea');
+            ta.value = text; document.body.appendChild(ta); ta.select();
+            try { document.execCommand('copy'); ok(); } catch (e) {}
+            document.body.removeChild(ta);
+          });
+        }
+      });
+    });
+  })();
+</script>
+  <script src="../shared/site-identity.js"></script>
+</body>
+</html>

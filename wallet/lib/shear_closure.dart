@@ -86,7 +86,11 @@ bool noteSidecarLine(ShearNodeSidecar side, String line) {
 bool closureArmsStratum(ClosureSendMode mode, {required bool android}) =>
     closureStratumPort(mode, android: android) == 1111;
 
-const kClosureBootstrap = 'https://boot.shear.digital';
+/// Local-node mode copy. The GUI node syncs from peers. It does not auto-bootstrap.
+const kLocalNodeModeCopy =
+    'Run a local Shear node in Continuum. Syncs from peers. No solo mining stratum.';
+const kLocalNodeFullModeCopy =
+    'For solo mining. Syncs from peers. Exposes localhost stratum for ShearK.';
 
 String closureChipLabel(ClosureSendMode mode) {
   switch (mode) {
@@ -135,9 +139,14 @@ Map<String, String> closureSpawnEnv(
 }
 
 List<String> closureSpawnArgs({required bool emptyDatadir, required ClosureSendMode mode}) {
-  if (mode == ClosureSendMode.shearPrivacyVpn) return const [];
-  if (emptyDatadir) return ['--bootstrap=$kClosureBootstrap'];
-  return const ['--no-bootstrap'];
+  // Empty datadir and every send mode sync from peers. No bootstrap URL.
+  if (emptyDatadir ||
+      mode == ClosureSendMode.shearPrivacyVpn ||
+      mode == ClosureSendMode.localNode ||
+      mode == ClosureSendMode.localNodeFull) {
+    return const [];
+  }
+  return const [];
 }
 
 /// Shared tip node beside Continuum, or [override] when set.

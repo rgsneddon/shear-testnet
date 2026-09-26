@@ -25,7 +25,6 @@ import { extraMintAllowed } from '../../crypto/mint.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS } from '../../crypto/reserve_oracle.js';
 import { createStore } from './store.js';
-import { applyLatestBootstrap } from './bootstrap.js';
 import { createP2p, P2P_PORT, SEED_RETRY_MS } from './p2p.js';
 import { attachSidecarIpc } from './p2p_ipc.js';
 import { PHASE_B_GATE } from './chain.js';
@@ -187,6 +186,41 @@ export async function startP2pSync(opts = {}) {
 
 export { printHelp, helpTopics, nodeStatus, printNodeStatus };
 
+/**
+ * Startup decision for the node the GUI wallet starts.
+ * An empty datadir, SHEAR_BOOTSTRAP=1, and a bootstrap URL are ignored.
+ * This does not pull or apply a snapshot and does not throw bootstrap_missing.
+ * The light-seeker that follows the live tip is a separate wallet path.
+ */
+export function resolveGuiBootstrap({
+  argv = [],
+  env = {},
+  emptyDatadir = false,
+  pullLatest = () => {
+    throw new Error('bootstrap_pulled');
+  },
+  applyLatest = () => {
+    throw new Error('bootstrap_missing');
+  },
+} = {}) {
+  const args = Array.isArray(argv) ? argv : [];
+  const flagged = args.includes('--bootstrap')
+    || args.some((a) => String(a).startsWith('--bootstrap='));
+  const fromArg = args.find((a) => String(a).startsWith('--bootstrap='));
+  const url = String(fromArg || (env && env.SHEAR_BOOTSTRAP_URL) || '')
+    .replace(/^--bootstrap=/, '')
+    .trim();
+  const envOn = String((env && env.SHEAR_BOOTSTRAP) || '').trim() === '1';
+  const triggersIgnored = {
+    emptyDatadir: emptyDatadir === true,
+    env: envOn,
+    url: flagged || url.length > 0,
+  };
+  void pullLatest;
+  void applyLatest;
+  return { pull: false, apply: false, missing: false, triggersIgnored };
+}
+
 function parseHelpTopic(argv) {
   const args = argv.slice(2);
   if (args[0] === 'help') return args[1] || '';
@@ -214,7 +248,7 @@ async function main() {
         continue;
       }
     }
-    if (a.startsWith('--bootstrap=')) continue;
+    if (a === '--no-bootstrap' || a.startsWith('--bootstrap=')) continue;
     if (a === '--bootstrap') {
       i += 1;
       continue;
@@ -250,15 +284,22 @@ async function main() {
     printNodeStatus({ store, extra: { hashBackend: hashBackendKind() || 'missing' } });
     return;
   }
-  const bootArg = process.argv.find((a) => a.startsWith('--bootstrap='))
-    || (process.argv.includes('--bootstrap')
-      ? process.argv[process.argv.indexOf('--bootstrap') + 1]
-      : '');
-  const bootFrom = String(bootArg || '').replace(/^--bootstrap=/, '').trim();
-  if (bootFrom) {
-    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4');
-    const manifest = applyLatestBootstrap(dataDir, bootFrom);
-    console.error(JSON.stringify({ event: 'bootstrap_applied', ...manifest }));
+  const dataDirForBoot = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4');
+  const emptyDatadir = !fs.existsSync(path.join(dataDirForBoot, 'chain.bin'))
+    && !fs.existsSync(path.join(dataDirForBoot, 'chain.jsonl'));
+  const boot = resolveGuiBootstrap({
+    argv,
+    env: process.env,
+    emptyDatadir,
+    pullLatest: () => {
+      throw new Error('bootstrap_pulled');
+    },
+    applyLatest: () => {
+      throw new Error('bootstrap_missing');
+    },
+  });
+  if (boot.pull || boot.apply || boot.missing) {
+    throw new Error(boot.missing ? 'bootstrap_missing' : 'bootstrap_pulled');
   }
   if (isP2pSyncArg(argv)) {
     const started = await startP2pSync();

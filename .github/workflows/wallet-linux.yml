@@ -105,13 +105,16 @@ jobs:
 
           linux = os.path.join(dist, f"shear-wallet-{pin}-linux.zip")
           arch = os.path.join(dist, f"shear-wallet-{pin}-archlinux.zip")
+          fedora = os.path.join(dist, f"shear-wallet-{pin}-fedora.zip")
           with zipfile.ZipFile(linux, "w", zipfile.ZIP_DEFLATED) as z:
               add_tree(z, bundle)
           with zipfile.ZipFile(arch, "w", zipfile.ZIP_DEFLATED) as z:
               z.write(pkgbuild, "PKGBUILD")
               add_tree(z, bundle)
+          shutil.copyfile(linux, fedora)
           assert_wallet_zip(linux, arch=False)
           assert_wallet_zip(arch, arch=True)
+          assert_wallet_zip(fedora, arch=False)
           print("LINUX_PACK_OK", pin)
           PY
       - uses: actions/upload-artifact@v4
@@ -120,3 +123,4 @@ jobs:
           path: |
             dist/shear-wallet-${{ inputs.pin }}-linux.zip
             dist/shear-wallet-${{ inputs.pin }}-archlinux.zip
+            dist/shear-wallet-${{ inputs.pin }}-fedora.zip

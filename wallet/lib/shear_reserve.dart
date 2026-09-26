@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
+import 'shear_levy.dart';
 
 const kReserveProgram = 'shear-reserve-v1';
 const kReserveOracleId = 'shear-reserve-oracle-v1';
@@ -548,6 +550,85 @@ class ShearReserve {
       };
 
   String publicJson(int nowMs) => jsonEncode(publicView(nowMs));
+}
+
+class ReserveDepositResult {
+  const ReserveDepositResult({required this.posted, required this.remark, this.tx});
+
+  final bool posted;
+  final String remark;
+  final ShearTx? tx;
+}
+
+/// Reserve deposit the vault control posts. Funded from the painted Continuum
+/// figure (chain spendable plus owed-toward-π), including the tx fee.
+Future<ReserveDepositResult> postReserveDeposit({
+  required ShearLedger ledger,
+  required ShearReserve reserve,
+  required String restFrame,
+  String? paymentCode,
+  required String dest,
+  required double she,
+  required int depth,
+  Uint8List? spendSeed,
+  bool local = true,
+}) async {
+  if (she <= 0 || !isDestAddress(dest)) {
+    return const ReserveDepositResult(posted: false, remark: 'bad_amount');
+  }
+  final lockNanos = (she * kUnitsPerShe).round();
+  final lockL = levyNanos(lockNanos, depth: depth);
+  final need = she + lockL / kUnitsPerShe;
+  final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
+  LockFundingPlan shortPlan() => LockFundingPlan(
+        sources: const [],
+        from: null,
+        consolidate: false,
+        have: painted,
+        need: need,
+      );
+  if (painted + 1e-12 < need) {
+    return ReserveDepositResult(posted: false, remark: lockFundingShortfall(shortPlan()));
+  }
+  if (!ledger.fundFromPaintedContinuum(restFrame, paymentCode: paymentCode, needShe: need)) {
+    return ReserveDepositResult(posted: false, remark: lockFundingShortfall(shortPlan()));
+  }
+  final plan = planLockFunding(ledger, restFrame: restFrame, paymentCode: paymentCode, needShe: need);
+  final miss = lockFundingShortfall(plan);
+  if (miss.isNotEmpty) {
+    return ReserveDepositResult(posted: false, remark: miss);
+  }
+  try {
+    final from = ledger.consolidateSpendableForLock(
+      restFrame,
+      paymentCode: paymentCode,
+      needShe: need,
+    );
+    final tx = await ledger.send(
+      from: from,
+      to: dest,
+      amount: she,
+      local: local,
+      kind: 'lock',
+      programId: kReserveProgram,
+      restFrame: restFrame,
+      paymentCode: paymentCode,
+      spendSeed: spendSeed,
+      allowPublicHttp: true,
+    );
+    final err = reserve.deposit(
+      dest: dest,
+      she: she,
+      nowMs: DateTime.now().millisecondsSinceEpoch,
+      payout: from,
+    );
+    if (err != null) {
+      return ReserveDepositResult(posted: false, remark: err, tx: tx);
+    }
+    return ReserveDepositResult(posted: true, remark: '', tx: tx);
+  } catch (e) {
+    return ReserveDepositResult(posted: false, remark: '$e');
+  }
 }
 
 /// One column of the Reserve ballot. Left to right: −1, hold, +1.

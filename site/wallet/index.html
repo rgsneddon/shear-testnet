@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('shear-theme');
+        if (t !== 'dark' && t !== 'light') {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Continuum Wallet — Shear</title>
+  <meta name="description" content="Continuum 0.53 — the Shear wallet. Confidential amounts. Copy ID. Copy dest. She is Private." />
+  <link rel="icon" href="../brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="../css/site.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <link rel="stylesheet" href="../css/saas-dark.css" />
+  <style>
+    .wallet-hero {
+      position: relative;
+      padding: 3.5rem 0 2.5rem;
+      overflow: hidden;
+    }
+    .wallet-hero::before {
+      content: "";
+      position: absolute;
+      inset: -20% -10% auto;
+      height: 28rem;
+      background:
+        radial-gradient(ellipse 55% 60% at 50% 40%, rgba(94,234,212,.22), transparent 70%),
+        radial-gradient(ellipse 35% 45% at 78% 30%, rgba(56,120,200,.16), transparent 65%),
+        radial-gradient(ellipse 30% 40% at 18% 55%, rgba(168,85,247,.10), transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    html[data-theme="light"] .wallet-hero::before {
+      background:
+        radial-gradient(ellipse 55% 60% at 50% 40%, rgba(15,118,110,.16), transparent 70%),
+        radial-gradient(ellipse 35% 45% at 78% 30%, rgba(37,99,235,.10), transparent 65%);
+    }
+    .wallet-hero .wrap { position: relative; z-index: 1; text-align: center; max-width: 920px; }
+    .wallet-kicker {
+      display: inline-flex; align-items: center; gap: .5rem;
+      font-size: .72rem; font-weight: 800; letter-spacing: .16em; text-transform: uppercase;
+      color: var(--accent); margin: 0 0 1.1rem;
+    }
+    .wallet-kicker::before, .wallet-kicker::after {
+      content: ""; width: 2rem; height: 1px; background: var(--accent); opacity: .55;
+    }
+    .wallet-manifesto {
+      margin: 0 auto 1rem;
+      font-size: clamp(1.55rem, 4.2vw, 2.65rem);
+      font-weight: 850;
+      line-height: 1.12;
+      letter-spacing: -0.02em;
+      max-width: 18ch;
+      background: linear-gradient(135deg, #f8fffc 0%, #5eead4 45%, #7dd3fc 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      text-wrap: balance;
+    }
+    html[data-theme="light"] .wallet-manifesto {
+      background: linear-gradient(135deg, #0f172a 0%, #0f766e 50%, #0369a1 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .wallet-sub {
+      font-family: "Great Vibes", "Segoe Script", cursive;
+      font-size: clamp(1.6rem, 3.5vw, 2.2rem);
+      color: var(--text-dim);
+      margin: 0 0 1.15rem;
+      font-weight: 400;
+    }
+    .wallet-lede {
+      max-width: 38rem; margin: 0 auto 1.75rem;
+      color: var(--text-dim); font-size: 1.05rem; line-height: 1.6;
+    }
+    .wallet-cta { display: flex; flex-wrap: wrap; gap: .75rem; justify-content: center; }
+    .feat-grid {
+      display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 1rem; margin-top: 1rem;
+    }
+    @media (max-width: 800px) { .feat-grid { grid-template-columns: 1fr; } }
+    .feat {
+      background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-lg);
+      padding: 1.15rem 1.2rem;
+    }
+    .feat h3 { margin: 0 0 .4rem; font-size: .95rem; }
+    .feat p { margin: 0; color: var(--text-dim); font-size: .88rem; }
+    .dl-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1rem; }
+    .dl-card {
+      background: var(--surface); border: 1px solid var(--hairline-strong);
+      border-radius: var(--radius-lg); padding: 1.2rem 1.25rem;
+      display: flex; flex-direction: column; gap: .55rem;
+      transition: border-color .15s, box-shadow .15s, transform .15s;
+    }
+    .dl-card:hover {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent-dim), 0 12px 40px rgba(0,0,0,.25);
+      transform: translateY(-2px);
+      text-decoration: none;
+    }
+    .dl-card h3 { margin: 0; font-size: 1.02rem; color: var(--text); }
+    .dl-card p { margin: 0; color: var(--text-dim); font-size: .86rem; flex: 1; }
+    .dl-meta { font-family: var(--mono); font-size: .72rem; color: var(--text-mute); }
+    .soon {
+      opacity: .72; border-style: dashed;
+    }
+    .soon:hover { transform: none; box-shadow: none; border-color: var(--hairline-strong); }
+    .vs-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+    @media (max-width:700px){ .vs-grid { grid-template-columns:1fr; } }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet"/>
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="WALLET" data-brand-base="../brand/" data-testnet-pill="1"></div>
+  <script src="../shared/shear-chrome.js"></script>
+
+  <div class="banner" role="status">
+    <strong>Testnet Continuum 0.53.</strong> Mainnet not live · launch date not decided
+    <span class="sep">·</span>
+    Windows SmartScreen may flag unsigned builds
+  </div>
+
+  <section class="wallet-hero">
+    <div class="wrap">
+      <p class="wallet-kicker">Continuum · tip pin 0.53</p>
+      <h1 class="wallet-manifesto">THIS IS IT, THIS IS THE CONTINUUM OF CRYPTOCURRENCIES</h1>
+      <p class="wallet-sub">She is Private</p>
+      <p class="wallet-lede">
+        Confidential amounts. Copy ID when someone pays you. Copy dest when you mine.
+        Six tabs. One password. Node-synced — not a browser toy.
+      </p>
+      <div class="wallet-cta">
+        <a class="btn btn-primary" href="#downloads">Download Continuum 0.53</a>
+        <a class="btn btn-soft" href="/get-started.html">Get started →</a>
+        <a class="btn btn-ghost" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.53" rel="noopener">Release ↗</a>
+      </div>
+    </div>
+  </section>
+
+  <main>
+    <section class="wrap section-sm">
+      <div class="feat-grid">
+        <article class="feat">
+          <h3>Confidential amounts</h3>
+          <p>ADMITv2 membership. Offer <code>she1</code>. Incoming coin lands on revolving <code>ssa1</code>. Rest-frame stays in Closure.</p>
+        </article>
+        <article class="feat">
+          <h3>Copy ID · Copy dest</h3>
+          <p>Copy ID for payments. Copy dest for mining login. Continuum is the product story — ShearK is only the hasher.</p>
+        </article>
+        <article class="feat">
+          <h3>Node-sync Continuum</h3>
+          <p>Talks to a local node at <code>127.0.0.1:18332</code>. Six-slice pending pie. Spendable after Continuity (6 confirms).</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="wrap section" id="downloads">
+      <p class="section-label">Downloads</p>
+      <h2 style="margin:0 0 .35rem">Continuum <span style="color:var(--accent)">0.53</span></h2>
+      <p style="color:var(--text-dim);margin:0 0 1rem">Verified assets from GitHub release tag <code>0.53</code> (Russell’s living tip). No macOS binary on this tag yet — build from source or watch the release page.</p>
+      <div class="dl-grid">
+        <a class="dl-card" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.53/shear-wallet-0.53-linux.zip" rel="noopener">
+          <h3>Linux</h3>
+          <p>Unzip and launch. Do not keep running from Downloads forever — move it somewhere stable.</p>
+          <div class="dl-meta">shear-wallet-0.53-linux.zip</div>
+          <span class="btn btn-primary" style="align-self:flex-start;pointer-events:none">Download</span>
+        </a>
+        <a class="dl-card" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.53/shear-wallet-0.53-windows.zip" rel="noopener">
+          <h3>Windows</h3>
+          <p>Unzip the archive. SmartScreen may warn — prefer this official URL; More info → Run anyway if needed.</p>
+          <div class="dl-meta">shear-wallet-0.53-windows.zip</div>
+          <span class="btn btn-primary" style="align-self:flex-start;pointer-events:none">Download</span>
+        </a>
+        <a class="dl-card" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.53/shear-wallet-0.53-archlinux.zip" rel="noopener">
+          <h3>Arch Linux</h3>
+          <p>Arch-oriented package of the same Continuum tip pin.</p>
+          <div class="dl-meta">shear-wallet-0.53-archlinux.zip</div>
+          <span class="btn btn-primary" style="align-self:flex-start;pointer-events:none">Download</span>
+        </a>
+        <a class="dl-card" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.53/shear-wallet-0.53-fedora.zip" rel="noopener">
+          <h3>Fedora</h3>
+          <p>Fedora-native Continuum build. Unzip and launch. Do not use the Ubuntu zip on Fedora.</p>
+          <div class="dl-meta">shear-wallet-0.53-fedora.zip</div>
+          <span class="btn btn-primary" style="align-self:flex-start;pointer-events:none">Download</span>
+        </a>
+        <a class="dl-card" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.53/shear-wallet-0.53-android.apk" rel="noopener">
+          <h3>Android APK</h3>
+          <p>Sideload the APK. Fingerprint / face unlock stays on-device.</p>
+          <div class="dl-meta">shear-wallet-0.53-android.apk</div>
+          <span class="btn btn-primary" style="align-self:flex-start;pointer-events:none">Download</span>
+        </a>
+        <div class="dl-card soon">
+          <h3>macOS</h3>
+          <p><strong>No .dmg / zip on tag 0.53 yet.</strong> Watch the release page, or build Continuum from the shear-testnet tree.</p>
+          <div class="dl-meta">coming soon on tip releases</div>
+          <a class="btn btn-ghost" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.53" rel="noopener">Open release ↗</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section">
+      <p class="section-label">Know the difference</p>
+      <div class="vs-grid">
+        <div class="panel preferred">
+          <span class="badge">This page</span>
+          <h3>Continuum = wallet</h3>
+          <p>Balances, Flow send/receive, Resistance, Vortex, Shearview, Closure. Password + <code>shewall.bin</code>. Does <strong>not</strong> mine.</p>
+          <div class="cta-row" style="margin-top:1rem">
+            <a class="btn btn-primary" href="/get-started.html">Get-started flow →</a>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>ShearK = miner</h3>
+          <p>CPU hasher only. Separate download. Login is Continuum <strong>Copy dest</strong> as <code>ssa1.worker</code>.</p>
+          <div class="cta-row" style="margin-top:1rem">
+            <a class="btn btn-soft" href="/miner/">Miner hub →</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section-sm">
+      <div class="panel">
+        <h3>Source · tip pin</h3>
+        <p style="margin:0 0 .75rem">Repo <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">rgsneddon/shear-testnet</a> · wallet path under the tip tree · release <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.53" rel="noopener">0.53</a>. Network magic <code data-shear-network>shear-testnet-v5</code>. For a full node beside Continuum, see <a href="/node/">NODE</a>.</p>
+        <div class="cta-row">
+          <a class="btn btn-ghost" href="/docs/#/wallet">Docs · Wallet →</a>
+          <a class="btn btn-ghost" href="/docs/#/continuum">Docs · Continuum →</a>
+          <a class="btn btn-ghost" href="https://github.com/rgsneddon/shear-testnet/archive/refs/tags/0.53.zip" rel="noopener">Source zip ↗</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div data-shear-foot data-wallet-fallback="0.53" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
+      <nav>
+        <a href="/">Main</a>
+        <a href="/get-started.html">Get started</a>
+        <a href="/miner/">Miner</a>
+        <a href="/docs/">Docs</a>
+      </nav>
+    </div>
+  </footer>
+  <script src="../js/site.js"></script>
+  <script src="../shared/site-identity.js"></script>
+</body>
+</html>

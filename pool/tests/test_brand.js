@@ -56,8 +56,17 @@ describe('brand pages', () => {
   });
 
   it('site, pool, explorer, and mempool have pack wordmark, favicon, and dark/light swap', () => {
+    const home = read('site/index.html');
+    assert.match(home, /css\/saas-dark\.css/);
+    assert.match(home, /data-theme="dark"/);
+    assert.match(home, /theme-img-light/);
+    assert.match(home, /theme-img-dark/);
+    assert.match(home, /05c-wordmark-nevia-light-transparent\.png/);
+    assert.match(home, /05d-wordmark-nevia-dark-transparent\.png/);
+    assert.match(home, /favicon/);
+    assert.match(home, /She Is Private/);
+    assert.doesNotMatch(home, /--bg: #eef3f8/);
     const pages = [
-      read('site/index.html'),
       read('pool/public/index.html'),
       read('pool/public/explorer.html'),
       read('mempool/index.html'),
@@ -128,11 +137,10 @@ describe('brand pages', () => {
     assert.match(pool, /overflow-wrap:\s*anywhere/);
     assert.match(pool, /table-layout:\s*fixed/);
     const site = read('site/index.html');
-    assert.match(site, /max-width:\s*72rem/);
-    assert.match(site, />MAIN</);
-    assert.match(site, /id="shear-hero"/);
-    assert.match(site, /SHEAR_light\.png/);
-    assert.match(site, /SHEAR_dark\.png/);
+    assert.match(site, /css\/saas-dark\.css/);
+    assert.match(site, /data-theme="dark"/);
+    assert.match(site, /data-active="MAIN"/);
+    assert.doesNotMatch(site, /--bg: #eef3f8/);
     assert.equal(fs.existsSync(path.join(root, 'site/brand/SHEAR_light.png')), true);
     assert.equal(fs.existsSync(path.join(root, 'site/brand/SHEAR_dark.png')), true);
     const light = pngSize(bytes('site/brand/SHEAR_light.png'));
@@ -153,14 +161,20 @@ describe('brand pages', () => {
     const poolHtml = read('pool/public/index.html');
     const explorerHtml = read('pool/public/explorer.html');
     const mempoolHtml = read('mempool/index.html');
-    assert.match(siteHtml, /class="nav-btn is-on"[^>]*>MAIN</);
+    assert.match(siteHtml, /data-active="MAIN"/);
+    assert.match(siteHtml, /css\/saas-dark\.css/);
     assert.match(poolHtml, /class="nav-btn is-on"[^>]*>POOL</);
     assert.match(explorerHtml, /class="nav-btn is-on"[^>]*>EXPLORER</);
     assert.match(mempoolHtml, /class="nav-btn is-on"[^>]*>MEMPOOL</);
-    for (const page of [siteHtml, poolHtml, explorerHtml, mempoolHtml]) {
+    assert.match(siteHtml, /releases\/tag\/0\.53/);
+    assert.match(siteHtml, /rgsneddon\/ShearK/);
+    assert.doesNotMatch(siteHtml, /theme\.js\?v=15/);
+    for (const page of [poolHtml, explorerHtml, mempoolHtml]) {
       assert.match(page, /rgsneddon\/shear-testnet/);
       assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
-      assert.match(page, /releases\/tag\/0\.40|shear-wallet-0\.40/);
+      assert.match(page, /releases\/tag\/0\.53/);
+      assert.doesNotMatch(page, /releases\/tag\/0\.52/);
+      assert.doesNotMatch(page, /releases\/tag\/0\.40|shear-wallet-0\.40/);
       assert.doesNotMatch(page, /releases\/tag\/0\.39|shear-wallet-0\.39/);
       assert.doesNotMatch(page, /releases\/tag\/0\.38|shear-wallet-0\.38/);
       assert.doesNotMatch(page, /releases\/tag\/0\.36|shear-wallet-0\.36/);
@@ -178,8 +192,8 @@ describe('brand pages', () => {
     assert.match(poolHtml, /id="mine-form"/);
     assert.match(poolHtml, /id="addr"/);
     assert.match(poolHtml, /id="copy-cmd"/);
-    assert.match(poolHtml, /ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker/);
-    assert.match(poolHtml, /ShearK-Miner-2\.5-linux\.zip/);
+    assert.match(poolHtml, /ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1/);
+    assert.match(poolHtml, /ShearK-Miner-2\.6-linux\.zip/);
     assert.doesNotMatch(poolHtml, /Private by default/);
     assert.doesNotMatch(poolHtml, /Proof of work only/);
     assert.doesNotMatch(poolHtml, /shewall\.json/);
@@ -187,7 +201,7 @@ describe('brand pages', () => {
     assert.match(explorerHtml, /Great Vibes/);
     assert.match(explorerHtml, /class="she-private-lockup">She is Private</);
     assert.match(read('pool/public/miner.html'), /Shear miner · ShearHash-v3/);
-    assert.match(siteHtml, /Algo: ShearHash-v3/);
+    assert.match(siteHtml, /ShearHash-v3/);
     assert.match(css, /\.top-banner\s*\{[\s\S]*?background:\s*var\(--banner\)/);
     assert.match(css, /grid-template-columns:\s*1fr auto 1fr/);
     assert.match(css, /header\.top-banner\s*\{\s*grid-template-columns:\s*1fr auto/);
@@ -220,8 +234,11 @@ describe('brand pages', () => {
   });
 
   it('pages use Segoe UI like the GNFP sites, not Nevia or Urema', () => {
+    const home = read('site/index.html');
+    assert.match(home, /css\/saas-dark\.css/);
+    assert.doesNotMatch(home, /urema\.css/);
+    assert.doesNotMatch(home, /nevia\.css/);
     const pages = [
-      read('site/index.html'),
       read('pool/public/index.html'),
       read('pool/public/explorer.html'),
     ];
@@ -374,8 +391,11 @@ describe('sticky public navbar', () => {
     assert.match(siteCss, /height: 36px; justify-content: center; padding: 0 10px/);
     const poolHtml = read('pool/public/index.html');
     assert.doesNotMatch(poolHtml, /\.reserve-chip \{[\s\S]*?\n    \}\n    \}\n/);
+    const home = read('site/index.html');
+    assert.match(home, /css\/saas-dark\.css/);
+    assert.match(home, /data-active="MAIN"/);
+    assert.doesNotMatch(home, /--bg: #eef3f8/);
     for (const rel of [
-      'site/index.html',
       'pool/public/index.html',
       'pool/public/explorer.html',
       'pool/public/miner.html',
@@ -399,7 +419,6 @@ describe('sticky public navbar', () => {
 
   it('pins .top-banner on every public Shear page', () => {
     const pages = [
-      'site/index.html',
       'pool/public/index.html',
       'pool/public/explorer.html',
       'pool/public/miner.html',

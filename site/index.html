@@ -1,883 +1,232 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <script src="/brand/theme.js?v=15"></script>
-  <title>Shear — testnet</title>
-  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
-  <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=30"/>
-  <style>
-    :root {
-      --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
-      --cyan: #0088a8; --blue: #1a6fb5; --green: #1a9a4a; --radius: 0px;
-    }
-    * { box-sizing: border-box; }
-    html, body { margin:0; font:15px/1.4 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
-    .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
-    h1, h2, .label { font-family:"Segoe UI",system-ui,sans-serif; }
-    h1 { font-size:1.28rem; font-weight:800; margin:0 0 8px; }
-    h2 { font-size:1.12rem; font-weight:800; margin:0 0 8px; }
-    p { margin:0 0 8px; overflow-wrap:anywhere; }
-    .panel-card {
-      border: 1px solid transparent; border-radius: var(--radius); padding: 10px 12px; margin: 8px 0;
-      background: linear-gradient(165deg, var(--card) 0%, var(--bg) 58%) padding-box,
-        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-      background-origin: border-box; background-clip: padding-box, border-box;
-    }
-    .guide-grid {
-      display: grid; grid-template-columns: 1fr; gap: 12px; margin: 16px 0 0; align-items: stretch;
-    }
-    @media (min-width: 980px) {
-      .guide-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    }
-    .guide-grid .panel-card { margin: 0; padding: 16px 18px; }
-    .guide-wide { margin: 12px 0 0; padding: 16px 18px; }
-    .guide-grid h2, .guide-wide h2 { margin: 0 0 10px; font-size: 1.05rem; }
-    .guide-grid h3, .guide-wide h3 {
-      font-size: .78rem; letter-spacing: .05em; text-transform: uppercase;
-      color: var(--cyan); margin: 14px 0 6px; font-weight: 800;
-    }
-    .guide-grid h3:first-of-type, .guide-wide h3:first-of-type { margin-top: 2px; }
-    .guide-grid p, .guide-wide p { margin: 0 0 10px; line-height: 1.55; }
-    .guide-wide ol { margin: 0 0 4px; padding-left: 1.15rem; }
-    .guide-wide li { margin: 0 0 9px; line-height: 1.55; }
-    .copy-row { display:flex; align-items:stretch; gap:8px; margin:0 0 12px; }
-    .copy-row pre {
-      flex:1; margin:0; padding:10px 12px; overflow:auto;
-      background:var(--code); color:var(--ink); font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
-      white-space:pre-wrap; word-break:break-word;
-    }
-    .copy-row button {
-      flex:0 0 auto; cursor:pointer; padding:0 12px; font-weight:750; letter-spacing:.04em;
-      text-transform:uppercase; font-size:.72rem; color:var(--cyan);
-      border:1px solid var(--blue); background:var(--input);
-    }
-    .os-tablist {
-      display:flex; flex-wrap:wrap; gap:6px; margin:0 0 12px;
-    }
-    .os-tablist [role="tab"] {
-      cursor:pointer; padding:8px 12px; font-weight:750; letter-spacing:.04em;
-      text-transform:uppercase; font-size:.72rem; color:var(--cyan);
-      border:1px solid var(--blue); background:var(--input);
-    }
-    .os-tablist [role="tab"][aria-selected="true"] {
-      color:#fff; background:var(--blue); border-color:var(--cyan);
-    }
-    .os-tabpanel[hidden] { display:none; }
-    .os-tabpanel > p:last-child { margin-bottom:0; }
-    .sched { width: 100%; border-collapse: collapse; margin: 4px 0 12px; font-size: .88rem; }
-    .sched th, .sched td {
-      text-align: left; padding: .45rem .2rem; vertical-align: top;
-      border-bottom: 1px solid rgba(26,111,181,.18);
-    }
-    .sched th {
-      color: var(--muted); font-size: .7rem; letter-spacing: .05em;
-      text-transform: uppercase; font-weight: 700; width: 38%;
-    }
-    .sched td { font-weight: 600; }
-    .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; }
-    a { color:var(--cyan); }
-    code { background:var(--code); padding:.2em .45em; color:var(--green); }
-    .top-banner {
-      display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
-      border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
-      position:sticky; top:0; z-index:40;
-    }
-
-    a.nav-btn {
-      display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
-      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
-      border:1px solid transparent;
-      background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
-        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-      background-origin:border-box; background-clip:padding-box, border-box;
-    }
-    .hero {
-      width:100%; margin:0 0 16px; overflow:hidden; line-height:0; aspect-ratio:3 / 1;
-    }
-    .hero img {
-      width:100%; height:100%; object-fit:cover; object-position:center;
-    }
-    .pulse { color:var(--green); font-size:.8rem; }
-    .pack-advisory {
-      text-align:center; color:var(--muted); font-size:.85rem; line-height:1.45;
-      margin:8px 12px 10px; letter-spacing:.02em;
-    }
-    .client-row {
-      display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin:4px 0 12px;
-      position:relative; z-index:8; overflow:visible;
-    }
-    .client-dd { position:relative; display:flex; flex-direction:column; align-items:stretch; }
-    .client-row .client-dd > a.nav-btn {
-      display:inline-flex; align-items:center; justify-content:center;
-      text-align:center; height:72px; min-width:12rem; padding:0 28px;
-      font-size:1.15rem; letter-spacing:.12em; text-indent:.12em; font-weight:800;
-    }
-    .client-menu {
-      display:none; position:absolute; top:100%; left:0; right:0; z-index:40;
-      flex-direction:column; gap:0; padding:6px 0;
-      border:1px solid transparent;
-      background: linear-gradient(165deg, var(--card) 0%, var(--bg) 58%) padding-box,
-        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-      background-origin:border-box; background-clip:padding-box, border-box;
-      box-shadow: 0 10px 24px rgba(6,20,31,.18);
-    }
-    .client-menu a, .client-menu .coming-soon {
-      display:block; padding:10px 14px; color:var(--ink); text-decoration:none;
-      font-weight:700; font-size:.9rem; letter-spacing:.04em; text-align:left;
-    }
-    .client-menu .coming-soon { color:var(--muted); font-weight:650; cursor:default; }
-    .client-menu a:hover { color:var(--cyan); background:rgba(26,111,181,.08); }
-    html[data-theme="dark"] .client-menu {
-      background: linear-gradient(165deg, #1a3a5c 0%, #132a4a 58%) padding-box,
-        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-      background-origin:border-box; background-clip:padding-box, border-box;
-      box-shadow: 0 10px 24px rgba(0,0,0,.45);
-    }
-    html[data-theme="dark"] .client-menu a:hover { background: rgba(79,216,232,.12); }
-    @media (prefers-color-scheme: dark) {
-      html:not([data-theme="light"]) .client-menu {
-        background: linear-gradient(165deg, #1a3a5c 0%, #132a4a 58%) padding-box,
-          linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-        background-origin:border-box; background-clip:padding-box, border-box;
-        box-shadow: 0 10px 24px rgba(0,0,0,.45);
-      }
-      html:not([data-theme="light"]) .client-menu a:hover { background: rgba(79,216,232,.12); }
-    }
-    .client-dd:hover .client-menu, .client-dd:focus-within .client-menu { display:flex; }
-    @media (max-width: 640px) {
-      .client-dd { width:100%; }
-      .client-row .client-dd > a.nav-btn { min-width:100%; height:64px; font-size:1.05rem; }
-    }
-    #testnet-banner {
-      display:block; text-align:center; margin:4px 0 16px; padding:18px 12px;
-      color:var(--cyan);
-      border:1px solid transparent;
-      background: linear-gradient(165deg, #ffffff 0%, #f4f8fc 58%) padding-box,
-        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-      background-origin:border-box; background-clip:padding-box, border-box;
-    }
-    #testnet-banner .tn-word {
-      font-size:2.6rem; font-weight:900; letter-spacing:.42em; text-indent:.42em;
-      text-transform:uppercase; line-height:1;
-    }
-    #testnet-banner .tn-launch {
-      margin:10px 0 0; font-size:.95rem; font-weight:750; letter-spacing:.04em; line-height:1.4;
-    }
-    #testnet-banner .tn-count {
-      margin:8px 0 0; font-size:1.35rem; font-weight:800; letter-spacing:.14em;
-      font-variant-numeric: tabular-nums;
-    }
-    html[data-theme="dark"] #testnet-banner {
-      color:#ffe14a;
-      text-shadow: 0 0 10px rgba(255,225,74,.95), 0 0 22px rgba(255,225,74,.5);
-      background: linear-gradient(165deg, #1a3a5c 0%, #132a4a 58%) padding-box,
-        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-      background-origin:border-box; background-clip:padding-box, border-box;
-    }
-    @media (prefers-color-scheme: dark) {
-      html:not([data-theme="light"]) #testnet-banner {
-        color:#ffe14a;
-        text-shadow: 0 0 10px rgba(255,225,74,.95), 0 0 22px rgba(255,225,74,.5);
-        background: linear-gradient(165deg, #1a3a5c 0%, #132a4a 58%) padding-box,
-          linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-        background-origin:border-box; background-clip:padding-box, border-box;
-      }
-    }
-    @media (max-width: 640px) {
-      #testnet-banner { padding:14px 8px; }
-      #testnet-banner .tn-word { font-size:1.6rem; letter-spacing:.28em; text-indent:.28em; }
-      #testnet-banner .tn-count { font-size:1.1rem; letter-spacing:.08em; }
-    }
-    .intro-split {
-      display:grid; grid-template-columns:1fr; gap:12px; margin:8px 0 0; align-items:stretch;
-    }
-    @media (min-width: 860px) {
-      .intro-split { grid-template-columns: 1fr 1fr; }
-    }
-    .intro-split > .panel-card {
-      margin:0; display:flex; flex-direction:column; height:100%;
-    }
-    .she-private {
-      flex: 1 1 auto;
-      margin: 2px 0 8px;
-      padding: 2px 0 6px;
-      min-height: 2.2rem;
-    }
-    .she-private-lockup {
-      display: block;
-      font-family: "Great Vibes", "Snell Roundhand", "Apple Chancery", "Segoe Script", cursive;
-      font-size: clamp(1.55rem, 2.8vw, 2.2rem);
-      font-weight: 400;
-      font-style: normal;
-      line-height: 1.2;
-      letter-spacing: .04em;
-      text-align: left;
-      white-space: nowrap;
-      color: #0d2b55;
-    }
-    html[data-theme="dark"] .she-private-lockup { color: #c9d3de; }
-    @media (prefers-color-scheme: dark) {
-      html:not([data-theme="light"]) .she-private-lockup { color: #c9d3de; }
-    }
-    @media (max-width: 640px) {
-      .she-private { min-height: 2rem; padding: 2px 0 4px; }
-      .she-private-lockup { font-size: clamp(1.35rem, 6.4vw, 1.75rem); }
-    }
-    .cont-row {
-      display:grid; grid-template-columns: 9.2rem minmax(0, 1fr); gap:2px 12px;
-      padding:9px 0; border-bottom:1px solid rgba(26,111,181,.16); align-items:baseline;
-    }
-    .cont-row:last-child { border-bottom:0; }
-    .cont-row .label { margin:0; }
-    .cont-row .value { color:var(--cyan); font-weight:700; font-size:.95rem; }
-    .cont-row p {
-      grid-column:1 / -1; margin:2px 0 0; color:var(--muted); font-size:.82rem;
-      line-height:1.4; font-weight:500;
-    }
-    #network-continuity h2 { margin-bottom:6px; }
-    #network-continuity > .lede { color:var(--muted); margin-bottom:10px; }
-  </style>
-</head>
-<body>
-  <header class="top-banner">
-    <div class="banner-brand">
-      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
-        src="/brand/05c-wordmark-nevia-light-transparent.png"
-        data-light="/brand/05c-wordmark-nevia-light-transparent.png"
-        data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
-      <img class="banner-wordmark theme-img-dark" alt=""
-        src="/brand/05d-wordmark-nevia-dark-transparent.png"/>
-    </div>
-    <nav class="nav" id="shear-nav">
-      <a class="nav-btn is-on" href="/">MAIN</a>
-      <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
-      <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
-      <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/2.5" target="_blank" rel="noopener">MINER</a>
-      <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.48" target="_blank" rel="noopener">WALLET</a>
-      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
-    </nav>
-    <div class="banner-tools">
-      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
-        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
-        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
-      </button>
-      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
-    </div>
-  </header>
-  <div class="wrap">
-    <div class="hero">
-      <img id="shear-hero" class="theme-img-light" alt="Shear"
-        src="/brand/SHEAR_light.png"
-        data-light="/brand/SHEAR_light.png"
-        data-dark="/brand/SHEAR_dark.png"/>
-      <img class="theme-img-dark" alt="" src="/brand/SHEAR_dark.png"/>
-    </div>
-    <p class="pack-advisory" id="pack-advisory">
-      wallet <strong>0.48</strong> · miner <strong>2.5</strong>
-    </p>
-    <p class="pack-advisory" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
-    <nav class="client-row" id="client-downloads" aria-label="Latest clients">
-      <div class="client-dd">
-        <a class="nav-btn" id="dl-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.48">WALLET</a>
-        <div class="client-menu" id="menu-wallet">
-          <span data-pack="wallet-macos" class="coming-soon">macOS — coming soon</span>
-          <a data-pack="wallet-windows" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.48/shear-wallet-0.48-windows.zip">Windows</a>
-          <a data-pack="wallet-android" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.48/shear-wallet-0.48-android.apk">Android</a>
-          <a data-pack="wallet-linux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.48/shear-wallet-0.48-linux.zip">Linux</a>
-          <a data-pack="wallet-archlinux" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.48/shear-wallet-0.48-archlinux.zip">Arch</a>
-        </div>
-      </div>
-      <div class="client-dd">
-        <a class="nav-btn" id="dl-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/2.5">MINER</a>
-        <div class="client-menu" id="menu-miner">
-          <a data-pack="miner-windows" href="https://github.com/rgsneddon/ShearK/releases/download/2.5/ShearK-Miner-2.5-windows.zip">Windows</a>
-          <a data-pack="miner-linux" href="https://github.com/rgsneddon/ShearK/releases/download/2.5/ShearK-Miner-2.5-linux.zip">Linux</a>
-        </div>
-      </div>
-      <div class="client-dd">
-        <a class="nav-btn" id="dl-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node">NODE</a>
-        <div class="client-menu" id="menu-node">
-          <a href="https://github.com/rgsneddon/shear-testnet/tree/main/node">node source</a>
-          <a href="https://github.com/rgsneddon/shear-testnet/archive/refs/heads/main.zip">full tree zip</a>
-        </div>
-      </div>
-    </nav>
-    <div id="testnet-banner" role="status">
-      <div class="tn-word">TESTNET</div>
-      <div class="tn-launch">Testnet is the privacy-class book. Mainnet shear-v1 is not live. A launch date is not decided.</div>
-      <div class="tn-count" id="mainnet-countdown">not live</div>
-    </div>
-    <div class="intro-split" id="intro-split">
-      <section class="panel-card">
-        <h1>Shear</h1>
-        <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
-        <p>ADMITv2 membership over this book's notes, with confidential amounts. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
-        <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>) that the book writes. Rest-frame <code>shear1</code> stays in Closure. While this book has fewer than 10,000 notes the membership set is thin.</p>
-        <p>Each found block mints the scheduled pot (1.00 SHE in epoch 0, then −0.01 SHE per epoch to a 0.20 SHE floor). On the public pool, hash bonus (no 1% fee) and your pot share accumulate and auto-pay to your miner <code>ssa1</code> at π SHE. The per-hash unit is never 0.</p>
-        <p>Pool: <a href="https://pool.shear.digital">pool.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
-        <p>Explorer: <a href="https://explorer.shear.digital">explorer.shear.digital</a></p>
-        <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v4</p>
-        <p class="pulse">live · testnet</p>
-      </section>
-      <section class="panel-card" id="network-continuity">
-        <h2>Network continuity</h2>
-        <p class="lede">Emissions and circulation stats of the Shear network</p>
-        <div class="cont-row">
-          <div class="label">Closure quantum</div>
-          <div class="value" id="nc-quantum">1 SHE</div>
-          <p>Each found block closes exactly one coin, forever.</p>
-        </div>
-        <div class="cont-row">
-          <div class="label">Target flux</div>
-          <div class="value" id="nc-flux">1 SHE / 90 s</div>
-          <p>The network aims to find a block about every ninety seconds.</p>
-        </div>
-        <div class="cont-row">
-          <div class="label">Observed interval</div>
-          <div class="value" id="nc-observed">—</div>
-          <p>Average time between sealed blocks, as they have actually arrived.</p>
-        </div>
-        <div class="cont-row">
-          <div class="label">Integral Q</div>
-          <div class="value" id="nc-integral">—</div>
-          <p>Total circulation of Shear coins</p>
-        </div>
-      </section>
-    </div>
-    <div class="guide-grid">
-      <section class="panel-card" id="emission">
-        <h2>How SHE is created</h2>
-        <p>No premine, no ICO. SHE is created via CPU-only proof-of-work on a Nakamoto consensus using ShearHash-v3 (a variant of RandomX). There is no snapshot, no inherited allocation, and no claim window. The first coins exist when the first blocks are found.</p>
-        <table class="sched">
-          <tr><th>Block pot</th><td>1.00 SHE in epoch 0, then −0.01 SHE per epoch to a 0.20 SHE floor (4-day testnet / 400-day mainnet epochs)</td></tr>
-          <tr><th>Hash bonus</th><td>0.00000000001 SHE for each accepted hash, paid to the hasher dest that produced it</td></tr>
-          <tr><th>Staked SHE</th><td>Staking may occur in The Reserve vortice at a variable rate to reward participants in Shear's community governance model</td></tr>
-        </table>
-        <h3>The pot</h3>
-        <p>Shear’s block subsidy starts at <strong>1 SHE</strong> per block and declines by <strong>0.01 SHE</strong> at each Vortex epoch (<strong>400 days on mainnet</strong>; this testnet uses <strong>4-day</strong> epochs to verify the machinery), down to a permanent <strong>0.20 SHE</strong> security tail. The pot schedule is consensus law and cannot be voted away. The 1 SHE (or current scheduled) pot is split proportionally to each miner's proven work in that round (PROP, minus any pool fee). Hash bonuses stay community-governed forever and are paid in full to the hasher dest that produced them.</p>
-        <h3>Each hash</h3>
-        <p>Your accepted hashes are yours. Finding the block does not let anyone take another person’s bonus. Each hasher dest is paid separately. Public pages show eight decimal places, so a single hash looks like dust; the extra unit is still written into the payout.</p>
-        <p>Shear developers do not sell SHE. You hash, or you are paid by someone who already holds coin. Testnet balances can vanish; treat them as a practice run before mainnet.</p>
-      </section>
-      <section class="panel-card" id="governance">
-        <h2>Community Governance</h2>
-        <p>The Reserve is a vortice, enabling holders to take part in Shear governance, this is the only contract in which extra SHE may be created on the chain, outwith mining it. You open The Reserve from the Vortex tab in the wallet and the first qualifying stake submitted by any user opens the inaugural epoch (4 days on this testnet; 400 days on mainnet).</p>
-        <h3>Who may take part</h3>
-        <p>Everyone with a wallet may lock over 3.14 SHE (π) into your own portal as a stake. That minimum sum entitles one vote per wallet for the current epoch. Inside the last 99 days of any epoch, new deposits still lock and can vote, but they do not earn stake. Stake in the first 300 days of an epoch to earn interest; late deposits still vote.</p>
-        <h3>What a vote may move</h3>
-        <p>Voting takes place to either raise the hash bonus to miners by one unit, lower it by one unit, or leave it. That unit is 0.00000000001 SHE. The pot schedule is not on the ballot. Reserve interest is set by a hardened on-node oracle at each epoch rollover (bounded, fail-closed, cannot move the pot). Each wallet may vote once per epoch. Public tallies show the three piles. They do not name who voted.</p>
-        <h3>The Reserve Oracle</h3>
-        <p>The staking rate on every user's qualifying stake is a <strong>400-day APR</strong>. Daily credits sit in your portal until epoch-end <strong>Withdraw + Sign</strong>. Last-99-day deposits unlock a vote but earn no stake. Idle SHE earns nothing. Current rate: <strong id="oracle-rate">…</strong></p>
-        <p>When an epoch concludes, principal and those daily credits return to Continuum after a signed Withdraw. Miss that window and previous-epoch rewards stay claimable at any time; a new epoch does not confiscate them. Vote at π SHE.</p>
-      </section>
-      <section class="panel-card" id="vortex">
-        <h2>Vortex and Vortices</h2>
-        <p>Vortex is a tab in the wallet. It is a drawer of smart programs that run on Shear. Each of those programs is a vortice.</p>
-        <h3>Already installed</h3>
-        <p><strong>The Reserve</strong> is already here. Stake, votes, and interest live in community governance.</p>
-        <h3>Adding another</h3>
-        <p>Anyone can publish a vortice but you host it off-chain. To install any 3rd party vortice, you must use the author's <code>vort1.</code> key. Simply 'add new vortice', paste that key. The wallet fetches the program, checks the pin, and installs it on your device. You never type a web address, and you never pick from a list. No key, no program.</p>
-        <h3>What they can do</h3>
-        <p>A third-party vortice may have the ability to move SHE you already have, keep a vault, or pay rewards it has funded itself. Please be careful to verify the safety of any 3rd party vortice. If the hosted file changes, the old key stops working; a new body needs a new key.</p>
-        <h3>What they must not</h3>
-        <p>They cannot create new SHE. They cannot ask for your wallet password or your backup file. They cannot raise or lower the 1 SHE pot. The author must keep serving the pinned bytes of a vortice for as long as they want the key to work.</p>
-      </section>
-    </div>
-    <section class="panel-card guide-wide" id="wallet-start">
-      <h2>Start a wallet from scratch</h2>
-      <p>Current pin is <strong>0.48</strong>. Use the WALLET button above and pick your system. Magic <code>shear-testnet-v4</code> / ADMITv2. Hashbonus is on-chain to Copy dest after 6 confs; the pot auto-pays at π after 30 confs — Continuum is not instant while those clocks run. If Continuum stays 0 after 6+ confs while the pool shows sent, treat that as a wallet/sync bug. Docs live under <a href="https://shear.digital/docs/">https://shear.digital/docs/</a> (typed docs.shear.digital may fail TLS).</p>
-      <ol>
-        <li>On a Mac, open the disk image, drag Shear into Applications, eject the image, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip the archive and open the app. On Android, install the APK.</li>
-        <li>The first screen asks you to choose a password of at least eight characters, then type it again. Tap <strong>Set password</strong>. That creates the wallet. There is nothing to copy onto paper.</li>
-        <li>You will enter that password each time you open the app. If it is lost, the wallet cannot be opened. Where the phone or computer offers a fingerprint or face unlock, that only works on this device.</li>
-        <li>Continuum shows your spendable balance and your <code>she1</code>. Copy that <code>she1</code> when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code> dest that you do not hand out. Never share a <code>shear1</code> string.</li>
-        <li>Open Closure and tap <strong>Export shewall.bin</strong>. Keep that file with the password. Together they restore the same wallet on another machine.</li>
-        <li>This app does not mine. To hash, run ShearK-Miner against <code>pool.shear.digital:1111</code> and log in with Copy dest (<code>ssa1.worker</code>).</li>
-      </ol>
-      <p>This is testnet. Install only from the buttons on this page or the official release tag.</p>
-    </section>
-    <section class="panel-card guide-wide" id="solo-mine">
-      <h2>Solo mine</h2>
-      <p>ShearK-Miner <strong>2.5</strong>, CPU only. Solo is <strong>node + thin local stratum + CLI (or Continuum 0.48) + ShearK</strong> — not the full public pool. Log in with <strong>Copy dest</strong> (<code>ssa1.solo</code>). Your node finds the block: you keep the <strong>live epoch pot</strong> (starts at 1.00 SHE, falls 0.01 SHE per Vortex epoch to a 0.20 SHE floor) plus the hash bonus on that dest. No pool fee, no pool dashboard, no auto-payout custody.</p>
-      <p>Beginner path: OS deps → clone → RandomX + <code>crypto/native</code> → validating node → <code>npm run solo</code> (thin stratum on 127.0.0.1:1111) → CLI Copy dest → ShearK → confirm accepts. Continuum GUI 0.48 is optional. Never <code>npm run pool</code> for solo.</p>
-      <p>Solo must be near the public tip before mining. A lagging local height is a sync issue, not a miner or shareBits problem — catch up first (see stuck-sync below); do not wipe the datadir.</p>
-      <h3>0. OS dependencies — copy/paste</h3>
-      <p>Pick your OS. Each pane is a copy/paste install. Then continue with clone / RandomX / <code>crypto/native</code> below. Do not copy a macOS/Darwin <code>.node</code> onto Linux.</p>
-      <div class="os-tabs" id="solo-os-tabs">
-        <div class="os-tablist" role="tablist" aria-label="OS dependencies">
-          <button type="button" role="tab" id="solo-tab-debian" aria-controls="solo-pane-debian" aria-selected="true" tabindex="0" data-os="debian">Debian / Ubuntu</button>
-          <button type="button" role="tab" id="solo-tab-fedora" aria-controls="solo-pane-fedora" aria-selected="false" tabindex="-1" data-os="fedora">Fedora / RHEL</button>
-          <button type="button" role="tab" id="solo-tab-arch" aria-controls="solo-pane-arch" aria-selected="false" tabindex="-1" data-os="arch">Arch</button>
-          <button type="button" role="tab" id="solo-tab-suse" aria-controls="solo-pane-suse" aria-selected="false" tabindex="-1" data-os="suse">openSUSE</button>
-          <button type="button" role="tab" id="solo-tab-macos" aria-controls="solo-pane-macos" aria-selected="false" tabindex="-1" data-os="macos">macOS</button>
-          <button type="button" role="tab" id="solo-tab-windows" aria-controls="solo-pane-windows" aria-selected="false" tabindex="-1" data-os="windows">Windows</button>
-        </div>
-        <div class="os-tabpanel" role="tabpanel" id="solo-pane-debian" aria-labelledby="solo-tab-debian" data-os="debian">
-          <p>Debian / Ubuntu x86_64. Node 20 from NodeSource; rustup for native ADMITv2.</p>
-          <div class="copy-row">
-            <pre id="solo-deps">sudo apt-get update
-sudo apt-get install -y git curl build-essential cmake python3 pkg-config libssl-dev
-# Node 20+
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-# Rust (native ADMITv2 / BP+)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-. "$HOME/.cargo/env"</pre>
-            <button type="button" data-copy="solo-deps">Copy</button>
-          </div>
-          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource / nodejs-devel), not a headerless binary.</p>
-          <div class="copy-row">
-            <pre id="solo-headers-debian">node -v   # need 20+
-node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
-ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
-            <button type="button" data-copy="solo-headers-debian">Copy</button>
-          </div>
-          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
-          <div class="copy-row">
-            <pre id="solo-nodeinc-debian"># Prefer Node's own prefix; fall back to find near the node binary
-export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
-echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
-test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
-make -C crypto/native</pre>
-            <button type="button" data-copy="solo-nodeinc-debian">Copy</button>
-          </div>
-          <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
-        </div>
-        <div class="os-tabpanel" role="tabpanel" id="solo-pane-fedora" aria-labelledby="solo-tab-fedora" data-os="fedora" hidden>
-          <p>Fedora / RHEL. Development Tools, cmake, openssl-devel, NodeSource 20 rpm, rustup.</p>
-          <div class="copy-row">
-            <pre id="solo-deps-fedora">sudo dnf groupinstall -y "Development Tools"
-sudo dnf install -y git curl cmake python3 pkgconf-pkg-config openssl-devel
-# Node 20+
-curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
-sudo dnf install -y nodejs
-# Rust (native ADMITv2 / BP+)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-. "$HOME/.cargo/env"</pre>
-            <button type="button" data-copy="solo-deps-fedora">Copy</button>
-          </div>
-          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource / nodejs-devel), not a headerless binary.</p>
-          <div class="copy-row">
-            <pre id="solo-headers-fedora">node -v   # need 20+
-node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
-ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
-            <button type="button" data-copy="solo-headers-fedora">Copy</button>
-          </div>
-          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
-          <div class="copy-row">
-            <pre id="solo-nodeinc-fedora"># Prefer Node's own prefix; fall back to find near the node binary
-export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
-echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
-test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
-make -C crypto/native</pre>
-            <button type="button" data-copy="solo-nodeinc-fedora">Copy</button>
-          </div>
-          <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
-        </div>
-        <div class="os-tabpanel" role="tabpanel" id="solo-pane-arch" aria-labelledby="solo-tab-arch" data-os="arch" hidden>
-          <p>Arch Linux. <code>base-devel</code> plus nodejs, npm, cmake, openssl. Repo <code>rust</code> is enough; rustup is optional.</p>
-          <div class="copy-row">
-            <pre id="solo-deps-arch">sudo pacman -Syu --needed base-devel git curl cmake python pkgconf openssl nodejs npm rust
-# optional rustup instead of repo rust:
-# curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-# . "$HOME/.cargo/env"</pre>
-            <button type="button" data-copy="solo-deps-arch">Copy</button>
-          </div>
-          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource / nodejs-devel), not a headerless binary.</p>
-          <div class="copy-row">
-            <pre id="solo-headers-arch">node -v   # need 20+
-node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
-ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
-            <button type="button" data-copy="solo-headers-arch">Copy</button>
-          </div>
-          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
-          <div class="copy-row">
-            <pre id="solo-nodeinc-arch"># Prefer Node's own prefix; fall back to find near the node binary
-export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
-echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
-test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
-make -C crypto/native</pre>
-            <button type="button" data-copy="solo-nodeinc-arch">Copy</button>
-          </div>
-          <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
-        </div>
-        <div class="os-tabpanel" role="tabpanel" id="solo-pane-suse" aria-labelledby="solo-tab-suse" data-os="suse" hidden>
-          <p>openSUSE. C/C++ devel pattern, cmake, openssl-devel, Node 20, rustup.</p>
-          <div class="copy-row">
-            <pre id="solo-deps-suse">sudo zypper install -t pattern devel_C_C++
-sudo zypper install -y git curl cmake gcc gcc-c++ openssl-devel python3 pkg-config
-# Node 20+
-curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
-sudo zypper install -y nodejs
-# Rust (native ADMITv2 / BP+)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-. "$HOME/.cargo/env"</pre>
-            <button type="button" data-copy="solo-deps-suse">Copy</button>
-          </div>
-          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource / nodejs-devel), not a headerless binary.</p>
-          <div class="copy-row">
-            <pre id="solo-headers-suse">node -v   # need 20+
-node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
-ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
-            <button type="button" data-copy="solo-headers-suse">Copy</button>
-          </div>
-          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
-          <div class="copy-row">
-            <pre id="solo-nodeinc-suse"># Prefer Node's own prefix; fall back to find near the node binary
-export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
-echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
-test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
-make -C crypto/native</pre>
-            <button type="button" data-copy="solo-nodeinc-suse">Copy</button>
-          </div>
-          <p>Then continue with clone / RandomX / <code>crypto/native</code> below.</p>
-        </div>
-        <div class="os-tabpanel" role="tabpanel" id="solo-pane-macos" aria-labelledby="solo-tab-macos" data-os="macos" hidden>
-          <p>macOS with Homebrew. Build RandomX and <code>crypto/native</code> on this Mac. Never copy a Darwin <code>.node</code> onto Linux.</p>
-          <div class="copy-row">
-            <pre id="solo-deps-macos">xcode-select --install
-brew install git cmake python pkg-config openssl node rust
-export NODE_INC="$(brew --prefix node)/include/node"</pre>
-            <button type="button" data-copy="solo-deps-macos">Copy</button>
-          </div>
-          <p>Headers check — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (Homebrew <code>node</code> includes them). On cmake below, use <code>-j"$(sysctl -n hw.ncpu)"</code> instead of <code>nproc</code>.</p>
-          <div class="copy-row">
-            <pre id="solo-headers-macos">node -v   # need 20+
-node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
-ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
-            <button type="button" data-copy="solo-headers-macos">Copy</button>
-          </div>
-          <p>NODE_INC recovery — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
-          <div class="copy-row">
-            <pre id="solo-nodeinc-macos"># Prefer Node's own prefix; fall back to find near the node binary
-export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
-echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
-test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
-make -C crypto/native</pre>
-            <button type="button" data-copy="solo-nodeinc-macos">Copy</button>
-          </div>
-          <p>Then continue with clone / RandomX / <code>crypto/native</code> below. Miner unzip + <code>./ShearK-Miner</code> is the macOS / Linux login block in step 3.</p>
-        </div>
-        <div class="os-tabpanel" role="tabpanel" id="solo-pane-windows" aria-labelledby="solo-tab-windows" data-os="windows" hidden>
-          <p>Build the node in <strong>WSL2 Ubuntu</strong> (or on a Linux box). Run <code>ShearK-Miner.exe</code> on Windows against <code>127.0.0.1:1111</code> (WSL localhost / port forward) or the public pool. SmartScreen may warn — More info → Run anyway, or unblock the zip. Never copy a Darwin <code>.node</code> onto Linux or into WSL.</p>
-          <div class="copy-row">
-            <pre id="solo-deps-windows">wsl --install -d Ubuntu
-wsl -d Ubuntu
-# inside Ubuntu, paste the Debian / Ubuntu deps block, then clone / RandomX / native below
-sudo apt-get update
-sudo apt-get install -y git curl build-essential cmake python3 pkg-config libssl-dev
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-. "$HOME/.cargo/env"</pre>
-            <button type="button" data-copy="solo-deps-windows">Copy</button>
-          </div>
-          <p>Headers check (inside WSL) — runtime Node is not enough; <code>ls</code> must show <code>node_api.h</code>. If it fails, install Node <em>with headers</em> (NodeSource), not a headerless binary.</p>
-          <div class="copy-row">
-            <pre id="solo-headers-windows">node -v   # need 20+
-node -e "console.log(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))"
-ls "$(node -e "process.stdout.write(require('path').join(process.config.variables.node_prefix||'/usr','include/node'))")/node_api.h"</pre>
-            <button type="button" data-copy="solo-headers-windows">Copy</button>
-          </div>
-          <p>NODE_INC recovery (inside WSL) — do <strong>not</strong> <code>find /usr</code> only if empty (that sets <code>NODE_INC=.</code> and fails again with bare <code>-I.</code>):</p>
-          <div class="copy-row">
-            <pre id="solo-nodeinc-windows"># Prefer Node's own prefix; fall back to find near the node binary
-export NODE_INC="$(node -e "const fs=require('fs');const p=require('path');const base=process.config.variables.node_prefix||'/usr';const d=p.join(base,'include/node');if(fs.existsSync(p.join(d,'node_api.h'))){process.stdout.write(d);process.exit(0)}process.exit(1)" 2>/dev/null || dirname "$(find "$(dirname "$(dirname "$(readlink -f "$(which node)")")")" /usr/local /usr -name node_api.h 2>/dev/null | head -1)")"
-echo "NODE_INC=$NODE_INC"   # must be a real directory, NOT . or empty
-test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall Node with devel/include"; exit 1; }
-make -C crypto/native</pre>
-            <button type="button" data-copy="solo-nodeinc-windows">Copy</button>
-          </div>
-          <p>After <code>npm run solo</code> in WSL, on Windows:</p>
-          <div class="copy-row">
-            <pre id="solo-deps-windows-miner">ShearK-Miner.exe --selftest
-ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
-            <button type="button" data-copy="solo-deps-windows-miner">Copy</button>
-          </div>
-          <p>Public pool instead: <code>ShearK-Miner.exe --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --threads 8</code>. Then continue with clone / RandomX / <code>crypto/native</code> below (in WSL).</p>
-        </div>
-      </div>
-      <h3>1. Clone, RandomX, crypto/native</h3>
-      <p>Same as README “Build your own node”. Run the Headers check in your OS tab first. If make still fails on <code>node_api.h</code>, use that tab’s NODE_INC recovery (do not <code>find /usr</code> into an empty <code>NODE_INC=.</code>).</p>
-      <div class="copy-row">
-        <pre id="solo-node">git clone https://github.com/rgsneddon/shear-testnet.git
-cd shear-testnet
-git checkout main
-npm ci
-cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
-cmake --build crypto/randomx/build -j"$(nproc)"
-make -C crypto/native
-node node/src/node.js --print-config</pre>
-        <button type="button" data-copy="solo-node">Copy</button>
-      </div>
-      <p><code>--print-config</code> must show <code>"magic":"shear-testnet-v4"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
-      <h3>2. Validating node (not the full pool)</h3>
-      <p>Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). <code>SHEAR_SEEDS</code> must list <strong>all three</strong> seeds in the <strong>same shell</strong> as the node. Outbound TCP to those seeds is required; opening inbound firewall <code>30303</code> alone does <strong>not</strong> sync. Do <strong>not</strong> <code>npm run pool</code> — that is the public-pool operator stack (HTTP dashboard, auto-payout, pool fee).</p>
-      <div class="copy-row">
-        <pre id="solo-run">export SHEAR_DATA="$HOME/.shear/testnet-v4"
-export SHEAR_NETWORK=shear-testnet-v4
-export SHEAR_P2P_PORT=30303
-export SHEAR_RPC_PORT=18332
-export SHEAR_RPC_BIND=127.0.0.1
-export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
-node node/src/node.js</pre>
-        <button type="button" data-copy="solo-run">Copy</button>
-      </div>
-      <h3>3. Thin solo stratum</h3>
-      <p>Same shell. <code>npm run solo</code> is <code>node node/src/node.js --solo</code>: validator + stratum on <code>127.0.0.1:1111</code>. No pool admin, no sweep auto-payouts, no pool fee split. Finder keeps pot + hash bonus on Copy dest.</p>
-      <div class="copy-row">
-        <pre id="solo-stratum">export SHEAR_STRATUM=1111
-export SHEAR_STRATUM_BIND=127.0.0.1
-npm run solo</pre>
-        <button type="button" data-copy="solo-stratum">Copy</button>
-      </div>
-      <h3>4. CLI (first-class) — Copy dest</h3>
-      <p>Continuum GUI <strong>0.48</strong> is optional. The CLI talks to local RPC:</p>
-      <div class="copy-row">
-        <pre id="solo-cli">cd wallet
-dart run bin/shear.dart dest --rpc http://127.0.0.1:18332
-dart run bin/shear.dart balance
-dart run bin/shear.dart history</pre>
-        <button type="button" data-copy="solo-cli">Copy</button>
-      </div>
-      <p><code>shear dest</code> prints the stable mining mailbox (Copy dest). Wallet 0.48 also syncs that node at <code>http://127.0.0.1:18332</code>. RPC stays on loopback.</p>
-      <h3>5. ShearK 2.5 + Copy dest login</h3>
-      <p>Download miner <strong>2.5</strong> from the MINER button (not an older pin). Unzip. CLI <code>dest</code> or Continuum → <strong>Copy dest</strong> copies the <code>ssa1</code> on screen (it does not mint a new mailbox). ShearK login is that string plus a worker name.</p>
-      <p>macOS / Linux:</p>
-      <div class="copy-row">
-        <pre id="solo-unix">./ShearK-Miner --selftest
-./ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
-        <button type="button" data-copy="solo-unix">Copy</button>
-      </div>
-      <p>Windows:</p>
-      <div class="copy-row">
-        <pre id="solo-win">ShearK-Miner.exe --selftest
-ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8</pre>
-        <button type="button" data-copy="solo-win">Copy</button>
-      </div>
-      <p>Confirm the miner prints accepted shares (not <code>native_missing</code> / <code>hash_failed</code>). Hash bonus is 10<sup>−11</sup> SHE per accepted hash, sealed onto that dest on the next block, Continuum-spendable after <strong>6 confirms</strong>. Solo finder keeps the pot (no pool custody / π auto-pay). CLI <code>history</code> / wallet ShearView lists landings (height, from/to, date, amount). Reuse the same mining mailbox so blocks stay linked. Amounts are confidential.</p>
-      <h3>Hazards / trip-ups</h3>
-      <ul>
-        <li><strong>Wrong dest</strong> — login must be Continuum/CLI Copy dest, the <code>ssa1</code> shown on screen. A rotated Flow receive dest will not show mining credits on the mailbox you are staring at.</li>
-        <li><strong>Do not install the full pool</strong> — <code>npm run pool</code> is for operators of pool.shear.digital. Solo is <code>npm run solo</code> (thin stratum on the node).</li>
-        <li><strong>Cleartext stratum</strong> — <code>127.0.0.1:1111</code> is local. Public <code>pool.shear.digital:1111</code> is <strong>cleartext TCP</strong> unless TLS sits in front.</li>
-        <li><strong>Missing node_api.h</strong> — Node version alone is not enough; need <code>include/node/node_api.h</code>. Bare <code>-I.</code> in the make line means <code>NODE_INC</code> was empty. Fix headers, then rebuild. Prefer Node 20 LTS from NodeSource if unsure.</li>
-        <li><strong>macOS/Darwin <code>.node</code> on Linux</strong> — never copy <code>shearhash.node</code> / <code>shearadmit.node</code> from a Mac onto Linux. Build RandomX + <code>make -C crypto/native</code> on the Linux box.</li>
-        <li><strong>IBD unsigned@N then prev storms</strong> — do <strong>not</strong> wipe the datadir. Pull tip, rebuild native, set <code>SHEAR_GETBLOCK_BATCH=1</code> temporarily, keep three <code>SHEAR_SEEDS</code> in the same shell as <code>npm run solo</code>.</li>
-      </ul>
-      <h3 id="solo-sync-stuck">Stuck at height=0 / want=0 / ibd=false — or unsigned@N + prev</h3>
-      <p><code>height=0</code> is an empty tip. <code>want=0</code> means the node is not fetching blocks. <code>ibd=false</code> at an empty tip with no live peer ahead is <strong>not</strong> “synced” — <code>ibd=true</code> while catching up (queues, syncing, or a live peer tip is taller), not merely while <code>want&gt;0</code>. Opening inbound <code>30303</code> without outbound to the seeds leaves you at this status. Mid-IBD <code>p2p_ingest reason=unsigned</code> then <code>prev</code> storms: pull tip + rebuild native; do not reset the chain.</p>
-      <div class="copy-row">
-        <pre id="solo-sync-fix"># Outbound must work
-nc -vz p2p.shear.digital 30303
-export SHEAR_NETWORK=shear-testnet-v4
-export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
-export SHEAR_P2P_PORT=30303
-export SHEAR_RPC_PORT=18332
-export SHEAR_RPC_BIND=127.0.0.1
-export SHEAR_STRATUM=1111
-export SHEAR_STRATUM_BIND=127.0.0.1
-export SHEAR_GETBLOCK_BATCH=1
-make -C crypto/native
-# same shell as the node — never npm run pool:
-npm run solo
-# Expect status ibd=true while behind a live peer tip or want>0; then height climbing; stderr p2p_headers missing>0
-# Do not wipe ~/.shear/testnet-v4 unless CoS says so after a fix</pre>
-        <button type="button" data-copy="solo-sync-fix">Copy</button>
-      </div>
-      <p>If <code>nc</code> fails → egress/DNS, not the node. If a peer’s tip equals yours (both height 0) → you need a seed that is <em>ahead</em>, not another empty solo.</p>
-      <h3>Mine on the public pool instead</h3>
-      <p>Optional. Skip the local node and hash on the official stratum (cleartext unless TLS is configured). This is <em>not</em> solo. On the public pool the pot is custodial until <strong>30 confirms</strong>, then auto-pays at π SHE.</p>
-      <div class="copy-row">
-        <pre id="solo-pool">./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --threads 8</pre>
-        <button type="button" data-copy="solo-pool">Copy</button>
-      </div>
-    </section>
-  </div>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>
     (function () {
-      var BASE = 'https://github.com/rgsneddon/shear-testnet/releases/download';
-      var ua = navigator.userAgent || '';
-      var plat = 'macos';
-      if (/Android/i.test(ua)) plat = 'android';
-      else if (/iPhone|iPad|iPod/i.test(ua)) plat = 'ios';
-      else if (/Windows/i.test(ua)) plat = 'windows';
-      else if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) plat = 'linux';
-      else if (/Mac/i.test(ua)) plat = 'macos';
-      var wallet = {
-        macos: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.48',
-        windows: BASE + '/0.48/shear-wallet-0.48-windows.zip',
-        android: BASE + '/0.48/shear-wallet-0.48-android.apk',
-        linux: BASE + '/0.48/shear-wallet-0.48-linux.zip',
-        ios: 'https://github.com/rgsneddon/shear-testnet/releases/tag/0.48'
-      };
-      var SHEARK = 'https://github.com/rgsneddon/ShearK/releases';
-      var miner = {
-        macos: SHEARK + '/tag/2.5',
-        windows: SHEARK + '/download/2.5/ShearK-Miner-2.5-windows.zip',
-        linux: SHEARK + '/download/2.5/ShearK-Miner-2.5-linux.zip',
-        android: SHEARK + '/tag/2.5',
-        ios: SHEARK + '/tag/2.5'
-      };
-      var node = 'https://github.com/rgsneddon/shear-testnet/tree/main/node';
-      function bind(id, href) {
-        var a = document.getElementById(id);
-        if (!a) return;
-        a.href = href;
-        if (href.indexOf('http') === 0) { a.target = '_blank'; a.rel = 'noopener'; }
-      }
-      bind('dl-wallet', wallet[plat] || wallet.macos);
-      bind('dl-miner', miner[plat] || miner.macos);
-      bind('dl-node', node);
-      bind('nav-wallet', wallet[plat] || wallet.macos);
-      bind('nav-miner', miner[plat] || miner.macos);
-      bind('nav-node', node);
-      window.shearLatestClients = { platform: plat, wallet: wallet[plat], miner: miner[plat], node: node };
-      (function countdown() {
-        var el = document.getElementById('mainnet-countdown');
-        if (!el) return;
-        el.textContent = 'not live';
-      })();
-      (function networkContinuity() {
-        function setText(id, text) {
-          var el = document.getElementById(id);
-          if (el) el.textContent = text;
+      try {
+        var t = localStorage.getItem('shear-theme');
+        if (t !== 'dark' && t !== 'light') {
+          t = 'dark';
         }
-        function fmtShe(n) {
-          var v = Number(n) || 0;
-          if (!Number.isFinite(v)) return '0 SHE';
-          if (Math.abs(v - Math.round(v)) < 1e-9) return Math.round(v).toLocaleString('en-GB') + ' SHE';
-          return v.toFixed(8).replace(/0+$/, '').replace(/\.$/, '') + ' SHE';
-        }
-        function fmtCirc(nanos) {
-          var n = Math.round(Number(nanos) || 0);
-          if (!Number.isFinite(n) || n <= 0) return '0 SHE';
-          var whole = Math.floor(n / 100000000000);
-          var frac = n % 100000000000;
-          var head = whole.toLocaleString('en-GB');
-          if (!frac) return head + ' SHE';
-          var tail = String(frac).padStart(11, '0').replace(/0+$/, '');
-          return head + '.' + tail + ' SHE';
-        }
-        function fmtSecs(ms) {
-          var s = Number(ms) / 1000;
-          if (!Number.isFinite(s) || s <= 0) return '—';
-          return s.toFixed(1) + ' s';
-        }
-        function paint(j) {
-          if (!j || j.ok === false) return;
-          var pot = Number(j.blockSubsidyNanos) / 100000000000;
-          if (!Number.isFinite(pot) || pot <= 0) pot = 1;
-          var targetMs = Number(j.targetBlockIntervalMs) || 90000;
-          var height = Number(j.height) || 0;
-          var observed = j.avgBlockTimeMs || j.networkAvgBlockTimeMs;
-          setText('nc-quantum', fmtShe(pot));
-          setText('nc-flux', fmtShe(pot) + ' / ' + Math.round(targetMs / 1000) + ' s');
-          setText('nc-observed', fmtSecs(observed));
-          var circNanos = Number(j.circulatingNanos);
-          if (Number.isFinite(circNanos) && circNanos >= 0) {
-            setText('nc-integral', fmtCirc(circNanos));
-          } else {
-            setText('nc-integral', fmtShe(height * pot));
-          }
-        }
-        function tick() {
-          fetch('/api/stats?_=' + Date.now(), { cache: 'no-store' })
-            .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
-            .then(paint)
-            .catch(function () {});
-        }
-        tick();
-        setInterval(tick, 1000);
-      })();
-      document.querySelectorAll('button[data-copy]').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          var el = document.getElementById(btn.getAttribute('data-copy'));
-          if (!el) return;
-          var text = el.textContent || '';
-          var done = function () { btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = 'Copy'; }, 1200); };
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(done).catch(function () {});
-          }
-        });
-      });
-      (function osTabs() {
-        var root = document.getElementById('solo-os-tabs');
-        if (!root) return;
-        var tabs = [].slice.call(root.querySelectorAll('[role="tab"]'));
-        var panes = [].slice.call(root.querySelectorAll('[role="tabpanel"]'));
-        var ids = tabs.map(function (t) { return t.getAttribute('data-os'); });
-        function osFromHash() {
-          var h = (location.hash || '').replace(/^#/, '');
-          var q = new URLSearchParams(location.search).get('solo-os');
-          if (q && ids.indexOf(q) >= 0) return q;
-          if (h.indexOf('solo-mine=') === 0) {
-            var v = h.slice('solo-mine='.length);
-            if (ids.indexOf(v) >= 0) return v;
-          }
-          if (h.indexOf('solo-os-') === 0) {
-            var o = h.slice('solo-os-'.length);
-            if (ids.indexOf(o) >= 0) return o;
-          }
-          return ids[0];
-        }
-        function select(os, push) {
-          if (ids.indexOf(os) < 0) os = ids[0];
-          tabs.forEach(function (tab) {
-            var on = tab.getAttribute('data-os') === os;
-            tab.setAttribute('aria-selected', on ? 'true' : 'false');
-            tab.tabIndex = on ? 0 : -1;
-          });
-          panes.forEach(function (pane) {
-            var on = pane.getAttribute('data-os') === os;
-            if (on) pane.removeAttribute('hidden');
-            else pane.setAttribute('hidden', '');
-          });
-          if (push) {
-            try { history.replaceState(null, '', '#solo-mine=' + os); } catch (e) {}
-          }
-        }
-        tabs.forEach(function (tab, i) {
-          tab.addEventListener('click', function () { select(tab.getAttribute('data-os'), true); });
-          tab.addEventListener('keydown', function (ev) {
-            var k = ev.key;
-            var next = i;
-            if (k === 'ArrowRight' || k === 'ArrowDown') next = (i + 1) % tabs.length;
-            else if (k === 'ArrowLeft' || k === 'ArrowUp') next = (i - 1 + tabs.length) % tabs.length;
-            else if (k === 'Home') next = 0;
-            else if (k === 'End') next = tabs.length - 1;
-            else if (k === 'Enter' || k === ' ') { select(tab.getAttribute('data-os'), true); ev.preventDefault(); return; }
-            else return;
-            ev.preventDefault();
-            tabs[next].focus();
-            select(tabs[next].getAttribute('data-os'), true);
-          });
-        });
-        select(osFromHash(), false);
-        window.addEventListener('hashchange', function () { select(osFromHash(), false); });
-      })();
-      var rateEl = document.getElementById('oracle-rate');
-      if (rateEl) {
-        fetch('/reserve/latest.json', { cache: 'no-store' })
-          .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
-          .then(function (j) {
-            var bps = Number(j && (j.meanBps != null ? j.meanBps : (j.annualBps != null ? j.annualBps : j.medianBps)));
-            var p = Number.isFinite(bps) ? bps / 100 : Number(j && (j.meanPercent != null ? j.meanPercent : j.medianPercent));
-            if (!Number.isFinite(p)) return;
-            var label = (j && j.label) ? j.label + ' ' : '';
-            rateEl.textContent = label + p.toFixed(2) + '% 400-day APR';
-          })
-          .catch(function () { rateEl.textContent = '—'; });
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
       }
     })();
   </script>
+  <title>Shear — She is Private</title>
+  <meta name="description" content="Shear ADMITv2 testnet: confidential amounts, CPU PoW, Continuity-settled." />
+  <link rel="icon" href="brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="css/site.css" />
+  <link rel="stylesheet" href="shared/shear-chrome.css" />
+  <link rel="stylesheet" href="css/saas-dark.css" />
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="MAIN" data-brand-base="brand/"></div>
+  <script src="shared/shear-chrome.js"></script>
+
+<div class="banner" role="status">
+    <strong>Testnet only.</strong> Mainnet is not live · launch date not decided
+    <span class="banner-extra"><span class="sep">·</span> Windows miner may trigger SmartScreen (unsigned build)</span>
+  </div>
+
+  <main>
+    <section class="scroll-hero" id="scroll-hero" aria-label="Continuum hero">
+      <div class="scroll-hero-stage">
+        <div class="scroll-hero-visuals" id="scroll-hero-visuals" aria-hidden="true">
+          <div class="cui-panel cui-a">
+            <div class="cui-top"><span class="cui-app">Continuum</span><span class="cui-ver">0.53</span></div>
+            <div class="cui-label">Spendable</div>
+            <div class="cui-bal">63.649 <span>SHE</span></div>
+            <div class="cui-row"><span>In Reserve</span><span>35.000</span></div>
+            <div class="cui-pills"><span>Window</span><span>Sealed</span><span class="on">Spendable</span></div>
+          </div>
+          <div class="cui-panel cui-b">
+            <div class="cui-top"><span class="cui-app">Receive</span><span class="cui-chip">she1</span></div>
+            <div class="cui-qr" role="img" aria-label="Shear logarithmic lattice">
+              <img src="brand/mempool-lattice-receive.png" alt="" width="240" height="240" decoding="async" />
+            </div>
+            <div class="cui-mono">she1q…private</div>
+            <div class="cui-row soft"><span>Copy dest</span><span class="cui-chip">ssa1</span></div>
+          </div>
+          <div class="cui-panel cui-c">
+            <div class="cui-top"><span class="cui-app">Vortex</span><span class="cui-chip">Reserve</span></div>
+            <div class="cui-label">Epoch stake</div>
+            <div class="cui-bal sm">π unlocks 1 vote</div>
+            <div class="cui-bars"><i></i><i></i><i class="hi"></i></div>
+            <div class="cui-row soft"><span>Ballot</span><span>hashbonus ±1</span></div>
+          </div>
+          <div class="cui-panel cui-d terminal">
+            <div class="terminal-chrome">
+              <span class="terminal-dot"></span>
+              <span class="terminal-dot"></span>
+              <span class="terminal-dot"></span>
+              <span class="terminal-title">shear · tip proof</span>
+            </div>
+            <div class="terminal-body">
+              <div><span class="prompt">$</span> <span class="dim">magic</span> <span class="hi" data-shear-network>shear-testnet-v5</span></div>
+              <div><span class="key">algo</span> <span class="val">ShearHash-v3</span></div>
+              <div><span class="key">wallet</span> <span class="val">Continuum 0.53</span></div>
+              <div><span class="key">miner</span> <span class="val">ShearK 2.6</span></div>
+              <div><span class="key">stratum</span> <span class="hi">:1111</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="scroll-hero-fade" aria-hidden="true"></div>
+        <div class="scroll-hero-copy wrap">
+          <div class="hero-tag">ADMITv2 · <span data-shear-network>shear-testnet-v5</span></div>
+          <h1>
+            <span class="title-word" aria-label="Shear">
+              <img class="hero-wordmark theme-img-light" src="brand/05c-wordmark-nevia-light-transparent.png" alt="Shear" width="280" height="72" decoding="async" />
+              <img class="hero-wordmark theme-img-dark" src="brand/05d-wordmark-nevia-dark-transparent.png" alt="" width="280" height="72" decoding="async" />
+            </span>
+            <span class="sub">She Is Private</span>
+          </h1>
+          <p class="lede">
+            Confidential amounts on <strong>ADMITv2</strong>. CPU proof-of-work tip,
+            <strong>Continuity-settled</strong>, live on testnet — not mainnet.
+          </p>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="get-started.html">Get wallet</a>
+            <a class="btn btn-soft" href="https://pool.shear.digital" rel="noopener">Mine on pool</a>
+            <a class="btn btn-ghost" href="docs/index.html">Docs</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section-sm">
+      <div class="link-strip">
+        <a class="link-chip" href="https://pool.shear.digital" rel="noopener">Pool <span class="ext">↗</span></a>
+        <a class="link-chip" href="https://explorer.shear.digital" rel="noopener">Explorer <span class="ext">↗</span></a>
+        <a class="link-chip" href="/docs/">Docs</a>
+        <a class="link-chip" href="https://github.com/rgsneddon/shear-testnet" rel="noopener">GitHub <span class="ext">↗</span></a>
+      </div>
+    </section>
+
+    <section class="wrap section">
+      <p class="section-label">Surface</p>
+      <div class="section-head">
+        <h2>Built as a private ledger tip</h2>
+      </div>
+      <div class="bento">
+        <article class="card span-3">
+          <div class="card-kicker">Addresses</div>
+          <h3>Private notes</h3>
+          <p>Three prefixes. Spend keys stay local. Never paste a Closure key into a miner or chat.</p>
+          <ul class="addr-list">
+            <li><span class="tag">she1</span> receive</li>
+            <li><span class="tag">ssa1</span> dest / pool</li>
+            <li><span class="tag">shear1</span> Closure — never share</li>
+          </ul>
+          <a class="learn" href="docs/index.html">Learn more →</a>
+        </article>
+
+        <article class="card span-3">
+          <div class="card-kicker">Issuance</div>
+          <h3>How SHE is created</h3>
+          <p>No premine. No ICO. CPU PoW only — scheduled pot plus a hash bonus for work that lands.</p>
+          <a class="learn" href="network.html">Network schedule →</a>
+        </article>
+
+        <article class="card span-4">
+          <div class="card-kicker">Continuity</div>
+          <h3>Settlement pulse</h3>
+          <p>Quantum and flux are protocol targets. Observed is average block time; Integral Q is circulating SHE.</p>
+          <div class="stat-row">
+            <div class="stat"><div class="label">Closure quantum</div><div class="value" id="nc-quantum">1 SHE</div></div>
+            <div class="stat"><div class="label">Target flux</div><div class="value" id="nc-flux">1 SHE / 90 s</div></div>
+            <div class="stat"><div class="label">Observed</div><div class="value" id="nc-observed">—</div></div>
+            <div class="stat"><div class="label">Integral Q</div><div class="value" id="nc-integral">—</div></div>
+          </div>
+          <a class="learn" href="network.html">Continuity cards →</a>
+        </article>
+
+        <article class="card span-2">
+          <div class="card-kicker">Votes</div>
+          <h3>Governance</h3>
+          <p>Reserve, π, hashbonus ±1. Pot is not on the ballot.</p>
+          <a class="learn" href="governance.html">Tease →</a>
+        </article>
+
+        <article class="card span-2">
+          <div class="card-kicker">Mixing</div>
+          <h3>Vortex</h3>
+          <p>Privacy path for notes. Spec and status live in docs.</p>
+          <a class="learn" href="docs/index.html">Docs →</a>
+        </article>
+
+        <article class="card span-4">
+          <div class="card-kicker">Hashpower</div>
+          <h3>Mine</h3>
+          <p>Pool (stratum + Copy dest) for most miners. Solo for operators who run a full node. Mining is ShearK — separate from the wallet.</p>
+          <a class="learn" href="mine.html">Pool vs solo →</a>
+        </article>
+      </div>
+    </section>
+
+    <section class="wrap section">
+      <p class="section-label">FAQ</p>
+      <h2 style="margin-bottom:1rem">Short answers</h2>
+      <div class="faq" role="list">
+        <div class="faq-item open" role="listitem">
+          <button class="faq-q" type="button" aria-expanded="true">Testnet vs mainnet?<span class="chev">▾</span></button>
+          <div class="faq-a">You are on <strong data-shear-network>shear-testnet-v5</strong>. Mainnet is not live and no launch date is set. Treat balances as disposable.</div>
+        </div>
+        <div class="faq-item" role="listitem">
+          <button class="faq-q" type="button" aria-expanded="false">Is Continuum instant?<span class="chev">▾</span></button>
+          <div class="faq-a">No. Hashbonus typically needs ~6 confirmations. Pot / π settlement is on the order of ~30. Wait for Continuity before spending.</div>
+        </div>
+        <div class="faq-item" role="listitem">
+          <button class="faq-q" type="button" aria-expanded="false">Windows SmartScreen warning?<span class="chev">▾</span></button>
+          <div class="faq-a">Unsigned ShearK builds can trip SmartScreen. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip → Properties → Unblock, then run.</div>
+        </div>
+        <div class="faq-item" role="listitem">
+          <button class="faq-q" type="button" aria-expanded="false">Where are the full docs?<span class="chev">▾</span></button>
+          <div class="faq-a">Official docs: <a href="https://shear.digital/docs/" rel="noopener">https://shear.digital/docs/</a>. This preview keeps pages short; deep solo OS deps live there.</div>
+        </div>
+        <div class="faq-item" role="listitem">
+          <button class="faq-q" type="button" aria-expanded="false">Pool or solo?<span class="chev">▾</span></button>
+          <div class="faq-a">Most people use the pool (stratum at <code>pool.shear.digital:1111</code>). Solo needs a synced node and is documented under Mine → docs.</div>
+        </div>
+        <div class="faq-item" role="listitem">
+          <button class="faq-q" type="button" aria-expanded="false">Can I share my shear1 address?<span class="chev">▾</span></button>
+          <div class="faq-a"><strong>No.</strong> <code>shear1</code> is Closure — never share it. Use <code>she1</code> to receive and <code>ssa1</code> as a mining destination.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section">
+      <div class="cta-block">
+        <h2>Start on testnet</h2>
+        <p>Wallet first. Mining second. Docs when you need depth.</p>
+        <div class="cta-row" style="justify-content:center">
+          <a class="btn btn-primary" href="get-started.html">Get wallet</a>
+          <a class="btn btn-ghost" href="https://pool.shear.digital" rel="noopener">Open pool</a>
+        </div>
+        <p class="honesty">Honest line: testnet balances can vanish on reset. Do not treat SHE on v5 as money.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div data-shear-foot data-wallet-fallback="0.53" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
+      <nav>
+        <a href="network.html">Network</a>
+        <a href="governance.html">Governance</a>
+        <a href="mine.html">Mine</a>
+        <a href="docs/index.html">Docs</a>
+        <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.53" rel="noopener">Wallet 0.53</a>
+        <a href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" rel="noopener">Miner 2.6</a>
+        <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+  <script src="js/site.js"></script>
+  <script src="shared/site-identity.js"></script>
 </body>
 </html>

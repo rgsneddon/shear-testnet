@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('shear-theme');
+        if (t !== 'dark' && t !== 'light') {
+          t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>ShearK Miner 2.6 — Shear</title>
+  <meta name="description" content="Download ShearK-Miner 2.6 for Linux and Windows. ShearHash-v3 · shear-testnet-v5 · stratum pool.shear.digital:1111." />
+  <link rel="icon" href="../brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="../css/site.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <link rel="stylesheet" href="../css/saas-dark.css" />
+  <style>
+    .dl-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1rem; margin-top:1.25rem; }
+    .dl-card { background:var(--surface); border:1px solid var(--hairline-strong); border-radius:var(--radius-lg); padding:1.25rem 1.35rem; display:flex; flex-direction:column; gap:.65rem; }
+    .dl-card h3 { margin:0; font-size:1.05rem; }
+    .dl-card p { margin:0; color:var(--text-dim); font-size:.9rem; }
+    .dl-meta { font-family:var(--mono); font-size:.78rem; color:var(--text-mute); }
+    .pin-row { display:flex; flex-wrap:wrap; gap:.5rem; margin-top:.85rem; }
+    .pin-chip { font-size:.72rem; font-weight:750; letter-spacing:.04em; text-transform:uppercase; padding:.35rem .65rem; border-radius:999px; background:var(--accent-dim); color:var(--accent); border:1px solid var(--hairline); }
+    .warn-panel { border-color: rgba(240,180,41,.35); background: var(--warn-dim); }
+    .warn-panel h3 { color: var(--warn); }
+  </style>
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="MINER" data-brand-base="../brand/" data-testnet-pill="1"></div>
+  <script src="../shared/shear-chrome.js"></script>
+
+  <div class="banner" role="status">
+    <strong>Testnet only.</strong> ShearK 2.6 · ShearHash-v3 · shear-testnet-v5
+    <span class="sep">·</span>
+    Windows SmartScreen may flag unsigned builds
+  </div>
+
+  <main>
+    <div class="wrap page-hero">
+      <p class="section-label">CPU hasher</p>
+      <h1>ShearK Miner <span style="color:var(--accent)">2.6</span></h1>
+      <p class="lede">Official ShearHash-v3 miner. Point it at the public pool or your local solo stratum. Continuum wallet is separate — download that on <a href="/wallet/">WALLET</a>.</p>
+      <div class="pin-row">
+        <span class="pin-chip">Pin 2.6</span>
+        <span class="pin-chip">ShearHash-v3</span>
+        <span class="pin-chip" data-shear-network>shear-testnet-v5</span>
+        <span class="pin-chip">stratum :1111</span>
+      </div>
+    </div>
+
+    <section class="wrap section">
+      <p class="section-label">Downloads</p>
+      <h2 style="margin:0 0 .35rem">OS packages</h2>
+      <p style="color:var(--text-dim);margin:0 0 0.5rem">Verified GitHub release assets for tag <code>2.6</code>. Always run <code>--selftest</code> once on a new machine.</p>
+      <div class="dl-grid">
+        <article class="dl-card">
+          <h3>Linux x86_64</h3>
+          <p>ZIP with <code>ShearK-Miner</code> binary. Unzip, chmod, selftest, then connect.</p>
+          <div class="dl-meta">ShearK-Miner-2.6-linux.zip</div>
+          <a class="btn btn-primary" href="https://github.com/rgsneddon/ShearK/releases/download/2.6/ShearK-Miner-2.6-linux.zip" rel="noopener">Download Linux</a>
+        </article>
+        <article class="dl-card">
+          <h3>Windows x86_64</h3>
+          <p><code>ShearK-Miner.exe</code>. SmartScreen may warn on unsigned builds — More info → Run anyway.</p>
+          <div class="dl-meta">ShearK-Miner-2.6-windows.zip</div>
+          <a class="btn btn-primary" href="https://github.com/rgsneddon/ShearK/releases/download/2.6/ShearK-Miner-2.6-windows.zip" rel="noopener">Download Windows</a>
+        </article>
+      </div>
+    </section>
+
+    <section class="wrap section-sm">
+      <div class="panel warn-panel">
+        <h3>Windows SmartScreen</h3>
+        <p style="margin:0">ShearK Windows builds are currently unsigned. SmartScreen / Defender may flag the ZIP or EXE. Prefer the official GitHub release URL above. If prompted: More info → Run anyway, or unblock the zip properties. Do not download ShearK from third-party mirrors.</p>
+      </div>
+    </section>
+
+    <section class="wrap section">
+      <div class="chooser">
+        <div class="panel preferred">
+          <span class="badge">Pool path</span>
+          <h3>Start mining on pool</h3>
+          <p>Get an <code>ssa1</code> Copy dest from Continuum or the pool UI, then:</p>
+          <div class="code-line">./ShearK-Miner --selftest</div>
+          <div class="code-line" style="margin-top:.5rem">./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1 --threads 8</div>
+          <p style="margin:.75rem 0 0;color:var(--text-dim);font-size:.9rem">Windows: use <code>ShearK-Miner.exe</code> with the same flags. 2.6 keeps a bare <code>ssa1</code>. A typed <code>YOUR_SSA1.suffix</code> is optional and pays the same address. Stratum is cleartext TCP unless TLS sits in front.</p>
+          <div class="cta-row" style="margin-top:1rem">
+            <a class="btn btn-primary" href="https://pool.shear.digital" rel="noopener">Open pool →</a>
+            <a class="btn btn-ghost" href="https://pool.shear.digital" rel="noopener">Live pool ↗</a>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Solo path</h3>
+          <p>Run a validating node + thin stratum, then point ShearK at localhost.</p>
+          <div class="code-line">./ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1 --threads 8</div>
+          <div class="cta-row" style="margin-top:1rem">
+            <a class="btn btn-soft" href="/node/">Node hub →</a>
+            <a class="btn btn-ghost" href="/docs/#/sheark">Docs · ShearK →</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section">
+      <div class="panel">
+        <h3>Source / code</h3>
+        <p>Repo <a href="https://github.com/rgsneddon/ShearK" rel="noopener">rgsneddon/ShearK</a> · release tag <a href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" rel="noopener">2.6</a>. Default backend <code>jit-full</code> (2 GiB dataset). Abort on restamp; verify claimed digest. One login — no miner-fee dual-login.</p>
+        <div class="cta-row" style="margin-top:.85rem">
+          <a class="btn btn-ghost" href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" rel="noopener">Release notes ↗</a>
+          <a class="btn btn-ghost" href="https://github.com/rgsneddon/ShearK/archive/refs/tags/2.6.zip" rel="noopener">Source zip ↗</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div data-shear-foot data-wallet-fallback="0.53" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
+      <nav>
+        <a href="/">Main</a>
+        <a href="https://pool.shear.digital" rel="noopener">Pool</a>
+        <a href="/wallet/">Wallet</a>
+        <a href="/node/">Node</a>
+      </nav>
+    </div>
+  </footer>
+  <script src="../js/site.js"></script>
+  <script src="../shared/site-identity.js"></script>
+</body>
+</html>

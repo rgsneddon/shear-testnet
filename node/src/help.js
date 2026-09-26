@@ -10,7 +10,7 @@ function sectionRun() {
     '  node node/src/node.js --solo          validator + thin local stratum 127.0.0.1:1111',
     '  npm run solo                          same as --solo (not the public pool)',
     '  node node/src/node.js --fast-sync     skip archival bodies (peers still verify PoW)',
-    '  node node/src/node.js --bootstrap=PATH|URL',
+    '  Startup does not pull or apply a bootstrap snapshot.',
     '  node node/src/node.js --status        print height/hash/jroot/peers from datadir and exit',
     '  node node/src/node.js --print-config  JSON pin (magic, admit, mainnet=false)',
     '  node node/src/node.js --help | -h | help [topic]',
@@ -112,8 +112,9 @@ function sectionP2p() {
 function sectionBootstrap() {
   return [
     'Bootstrap:',
-    '  node node/src/node.js --bootstrap=/path/or/url',
-    '  Latest-only prune snapshot. Default IBD stays full archival.',
+    '  Startup does not pull or apply a snapshot.',
+    '  An empty datadir, SHEAR_BOOTSTRAP=1, and a bootstrap URL are ignored.',
+    '  Latest-only prune files are not installed on start.',
     '  SHEAR_FAST_SYNC=1 skips archival bodies on this node only.',
   ];
 }

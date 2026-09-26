@@ -36,7 +36,7 @@ import 'shear_closure.dart';
 import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 
-const kWalletVersion = '0.52.0';
+const kWalletVersion = '0.53.0';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
@@ -159,6 +159,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   bool _bioStored = false;
   int tab = 0;
   final flowTo = TextEditingController();
+  String _flowAcceptedTo = '';
   final flowAmt = TextEditingController();
   final flowMemo = TextEditingController();
   final unlockCtrl = TextEditingController();
@@ -1573,9 +1574,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   Widget _continuum(BuildContext context, ShearIdentity ident) {
-    final chainSpend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
     final owedPi = ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode);
-    final spend = chainSpend + owedPi;
+    final spend = paintedContinuumSpendable(ledger, ident.address, paymentCode: ident.paymentCode);
     final pending = ledger.pendingTxs(ident.address);
     final reserveDest = _reserveDestOf(ident);
     final inReserveNanos = reserveDest == null ? 0 : reserve.portal(reserveDest).nanos;
@@ -2016,39 +2016,34 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             });
             return;
           }
-          try {
-            final amount = double.parse(flowAmt.text);
-            final from = flowSpendFrom(
-              ledger,
-              restFrame: ident.address,
-              paymentCode: ident.paymentCode,
-              amount: amount,
-            );
-            final tun = hop.tunVerified && !hop.probeOnly;
-            final tx = await ledger.send(
-              from: from,
-              to: flowTo.text.trim(),
-              amount: amount,
-              memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
-              restFrame: ident.address,
-              paymentCode: ident.paymentCode,
-              spendSeed: hexToBytes(ident.seedHex),
-              privacyHopUp: tun,
-            );
-            _ingestTx(ident, tx);
-            _focusedTxId = tx.id;
-            setState(() {
+          final amount = double.tryParse(flowAmt.text) ?? 0;
+          final tun = hop.tunVerified && !hop.probeOnly;
+          final result = await submitContinuumSend(
+            ledger: ledger,
+            restFrame: ident.address,
+            paymentCode: ident.paymentCode,
+            startTo: _flowAcceptedTo,
+            enteredTo: flowTo.text,
+            amount: amount,
+            memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
+            spendSeed: hexToBytes(ident.seedHex),
+            privacyHopUp: tun,
+            depth: _mempoolDepth,
+          );
+          if (!mounted) return;
+          setState(() {
+            flowTo.text = result.to;
+            if (result.posted && result.tx != null) {
+              _flowAcceptedTo = result.to;
+              _ingestTx(ident, result.tx!);
+              _focusedTxId = result.tx!.id;
               _flowSendAdvisory = 'sent';
               _flowSendOk = true;
-            });
-          } catch (e) {
-            if (mounted) {
-              setState(() {
-                _flowSendAdvisory = flowSendAdvisoryOf(e);
-                _flowSendOk = false;
-              });
+            } else {
+              _flowSendAdvisory = result.remark.isEmpty ? kErrSendGeneric : result.remark;
+              _flowSendOk = false;
             }
-          }
+          });
         },
         child: const Text('Send'),
       ),
@@ -2273,11 +2268,17 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final lockNanos = (she * kUnitsPerShe).round();
     final lockL = levyNanos(lockNanos, depth: depth);
     final need = she + lockL / kUnitsPerShe;
-    if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < need) {
+    final painted = paintedContinuumSpendable(ledger, ident.address, paymentCode: ident.paymentCode);
+    if (painted + 1e-12 < need) {
+      final remark = lockFundingShortfall(LockFundingPlan(
+        sources: const [],
+        from: null,
+        consolidate: false,
+        have: painted,
+        need: need,
+      ));
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Not enough Continuum spendable for lock + tx fee ${formatShe(lockL / kUnitsPerShe)} SHE'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(remark)));
       }
       return;
     }
@@ -2423,62 +2424,31 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     required double levyShe,
   }) async {
     ledger.rememberVaultDest(dest);
-    final plan = planLockFunding(
-      ledger,
-      restFrame: ident.address,
-      paymentCode: ident.paymentCode,
-      needShe: need,
-    );
-    final short = lockFundingShortfall(plan);
-    if (short.isNotEmpty) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(short)));
-      }
-      return;
-    }
-    if (plan.consolidate && mounted) {
+    if (mounted) {
       setState(() => _reserveDepositProgress = 'Consolidating Continuum notes for Deposit…');
       await _yieldUiFrame();
     }
-    final from = ledger.consolidateSpendableForLock(
-      ident.address,
+    final result = await postReserveDeposit(
+      ledger: ledger,
+      reserve: reserve,
+      restFrame: ident.address,
       paymentCode: ident.paymentCode,
-      needShe: need,
+      dest: dest,
+      she: she,
+      depth: _mempoolDepth,
+      spendSeed: hexToBytes(ident.seedHex),
+      local: ledger.pool == null || (widget.skipPoolSync && !widget.postReserveLock),
     );
-    final now = DateTime.now().millisecondsSinceEpoch;
-    late final dynamic tx;
-    final tun = hop.tunVerified && !hop.probeOnly;
-    try {
-      tx = await ledger.send(
-        from: from,
-        to: dest,
-        amount: she,
-        local: ledger.pool == null || (widget.skipPoolSync && !widget.postReserveLock),
-        kind: 'lock',
-        programId: kReserveProgram,
-        restFrame: ident.address,
-        paymentCode: ident.paymentCode,
-        spendSeed: hexToBytes(ident.seedHex),
-        privacyHopUp: tun,
-        allowPublicHttp: true,
-      );
-    } catch (e) {
+    if (!result.posted || result.tx == null) {
       if (mounted) setState(() => _reserveDepositProgress = null);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(hopFeeAdvisoryOf(e))),
+          SnackBar(content: Text(result.remark.isEmpty ? 'Not enough Continuum spendable' : result.remark)),
         );
       }
       return;
     }
-    final err = reserve.deposit(dest: dest, she: she, nowMs: now, payout: from);
-    if (err != null) {
-      if (mounted) setState(() => _reserveDepositProgress = null);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
-      }
-      return;
-    }
+    final tx = result.tx!;
     final p = reserve.portal(dest);
     _reserveLockHold?.cancel();
     _reserveLockDismissable = false;
@@ -3363,7 +3333,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         value: ClosureSendMode.localNode,
         groupValue: sidecar.pending,
         title: const Text('Local Node (no stratum)'),
-        subtitle: const Text('Run a local Shear node in Continuum. Auto bootstrap, then sync. No solo mining stratum.'),
+        subtitle: const Text(kLocalNodeModeCopy),
         onChanged: (v) => setState(() => sidecar.select(v!)),
       ),
       if (kIsWeb || !Platform.isAndroid)
@@ -3373,7 +3343,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           value: ClosureSendMode.localNodeFull,
           groupValue: sidecar.pending,
           title: const Text('Local Node (full)'),
-          subtitle: const Text('For solo mining. Auto bootstrap, then sync. Exposes localhost stratum for ShearK.'),
+          subtitle: const Text(kLocalNodeFullModeCopy),
           onChanged: (v) => setState(() => sidecar.select(v!)),
         ),
       FilledButton(
