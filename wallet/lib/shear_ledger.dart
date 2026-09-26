@@ -621,12 +621,15 @@ Future<ContinuumSendResult> submitContinuumSend({
     return ContinuumSendResult(posted: false, to: candidate, remark: 'Not enough Continuum spendable');
   }
   try {
-    final from = flowSpendFrom(
-      ledger,
-      restFrame: restFrame,
-      paymentCode: paymentCode,
-      amount: need,
-    );
+    final paintedFrom = ledger.paintedFundDest;
+    final from = gap > 1e-12 && isDestAddress(paintedFrom)
+        ? paintedFrom
+        : flowSpendFrom(
+            ledger,
+            restFrame: restFrame,
+            paymentCode: paymentCode,
+            amount: need,
+          );
     final tx = await ledger.send(
       from: from,
       to: candidate,
@@ -2493,7 +2496,11 @@ class ShearLedger {
       ..clear()
       ..addAll(mark.spendable);
     _owedSpent = mark.owedSpent;
+    _paintedFundDest = '';
   }
+
+  /// Dest the last painted fold posted from. Empty after a restore.
+  String get paintedFundDest => _paintedFundDest;
 
   void _moveSpendableOnto(String dest) {
     if (!isDestAddress(dest)) return;
@@ -2512,6 +2519,7 @@ class ShearLedger {
   /// Returns the owed gap folded in, 0 when chain spendable already covers,
   /// or null when the painted figure is short.
   double? fundFromPaintedContinuum(String restFrame, {String? paymentCode, required double needShe}) {
+    _paintedFundDest = '';
     if (needShe <= 1e-12) return 0;
     var chain = spendableOwned(restFrame, paymentCode: paymentCode);
     if (chain < 0) chain = 0;
@@ -2520,11 +2528,18 @@ class ShearLedger {
     if (chain + owed + 1e-9 < needShe) return null;
     final gap = needShe - chain;
     final home = homeDest(restFrame, paymentCode: paymentCode);
+    // The pool's pull book is dest-scoped. Fold onto the dest that reported
+    // the owed figure so the lock and the send are looked up there.
     var dest = '';
-    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
-      if (d == home || !isDestAddress(d) || _isProgramVaultDest(d)) continue;
-      dest = d;
-      break;
+    if (isDestAddress(_owedPiDest) && !_isProgramVaultDest(_owedPiDest)) {
+      dest = _owedPiDest;
+    }
+    if (dest.isEmpty) {
+      for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+        if (d == home || !isDestAddress(d) || _isProgramVaultDest(d)) continue;
+        dest = d;
+        break;
+      }
     }
     if (dest.isEmpty) {
       dest = allocateReceiveDest(restFrame, paymentCode: paymentCode);
@@ -2536,6 +2551,7 @@ class ShearLedger {
     }
     _spendable[dest] = (_spendable[dest] ?? 0) + gap;
     _owedSpent += gap;
+    _paintedFundDest = dest;
     if (spendable(dest) + 1e-9 < needShe) return null;
     return gap;
   }
@@ -2548,7 +2564,10 @@ class ShearLedger {
     if (plan.from != null && plan.from != home) return plan.from!;
     final miss = lockFundingShortfall(plan);
     if (miss.isNotEmpty) throw StateError(miss);
-    if (plan.from == home) return _hopOffMiningMailbox(home, restFrame, paymentCode: paymentCode);
+    if (plan.from == home) {
+      if (_paintedFundDest == home && spendable(home) + 1e-9 >= needShe) return home;
+      return _hopOffMiningMailbox(home, restFrame, paymentCode: paymentCode);
+    }
     var target = plan.sources.first;
     for (final d in plan.sources) {
       if (spendable(d) > spendable(target)) target = d;
@@ -2559,7 +2578,10 @@ class ShearLedger {
       if (amt <= 0) continue;
       _spendable[target] = (_spendable[target] ?? 0) + amt;
     }
-    if (target == home) return _hopOffMiningMailbox(home, restFrame, paymentCode: paymentCode);
+    if (target == home) {
+      if (_paintedFundDest == home && spendable(home) + 1e-9 >= needShe) return home;
+      return _hopOffMiningMailbox(home, restFrame, paymentCode: paymentCode);
+    }
     return target;
   }
 
@@ -2578,15 +2600,21 @@ class ShearLedger {
   /// Reconstructed [balance] is already-confirmed spendable at the tip, including
   /// first boot when local sealed height was 0. Open-round [pending] + [incoming]
   /// stay pending until sealed height advances by one from a known height.
-  void _takeOwed(Map<String, dynamic> json) {
+  void _takeOwed(Map<String, dynamic> json, String address) {
     final owed = json['owedPi'] ?? json['confirmingPot'];
     if (owed is num && owed >= 0) _owedPiDisplay = owed.toDouble();
+    if (owed is num && owed > 0 && isDestAddress(address) && !_isProgramVaultDest(address)) {
+      _owedPiDest = address;
+    }
   }
 
   /// One pull-book figure for the whole sweep. A later dest that reports 0
   /// must not wipe the mailbox's positive owed-π.
-  void _finishOwedSweep(double owedMax, {required bool saw}) {
+  void _finishOwedSweep(double owedMax, {required bool saw, String dest = ''}) {
     if (saw) _owedPiDisplay = owedMax;
+    if (saw && owedMax > 0 && isDestAddress(dest) && !_isProgramVaultDest(dest)) {
+      _owedPiDest = dest;
+    }
   }
 
   void applyPoolSnapshot(
@@ -2597,7 +2625,7 @@ class ShearLedger {
     bool writeOwed = true,
   }) {
     _ingestIncoming(json);
-    if (writeOwed) _takeOwed(json);
+    if (writeOwed) _takeOwed(json, address);
     if (!isDestAddress(address)) return;
     _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
     if (beforeHeight > 0 && tipSealed > beforeHeight) {
@@ -2632,9 +2660,10 @@ class ShearLedger {
 
   /// Balance sweep. Owed-π is the max pull-book figure across dests, applied
   /// after the loop so a change dest's 0 does not clear the mailbox.
-  Future<({double max, bool saw})> _balancesFor(Iterable<String> dests, {required int before}) async {
+  Future<({double max, bool saw, String dest})> _balancesFor(Iterable<String> dests, {required int before}) async {
     var maxOwed = 0.0;
     var saw = false;
+    var maxDest = '';
     for (final d in dests) {
       if (!isDestAddress(d)) continue;
       try {
@@ -2642,7 +2671,10 @@ class ShearLedger {
         final owed = json['owedPi'] ?? json['confirmingPot'];
         if (owed is num && owed >= 0) {
           saw = true;
-          if (owed > maxOwed) maxOwed = owed.toDouble();
+          if (owed > maxOwed) {
+            maxOwed = owed.toDouble();
+            maxDest = d;
+          }
         }
         applyPoolSnapshot(
           d,
@@ -2655,7 +2687,7 @@ class ShearLedger {
         if (poolHttp504(e)) rethrow;
       }
     }
-    return (max: maxOwed, saw: saw);
+    return (max: maxOwed, saw: saw, dest: maxDest);
   }
 
   /// Pull Continuum for this wallet's own money dests.
@@ -2674,7 +2706,7 @@ class ShearLedger {
     final dests = syncDests(restFrame, paymentCode: paymentCode);
     final reconstructed = <String, double>{};
     final owedSweep = await _balancesFor(dests, before: before);
-    _finishOwedSweep(owedSweep.max, saw: owedSweep.saw);
+    _finishOwedSweep(owedSweep.max, saw: owedSweep.saw, dest: owedSweep.dest);
     for (final d in dests) {
       if (!isDestAddress(d) || _isProgramVaultDest(d)) continue;
       reconstructed[payKey(d)] = spendable(d);
@@ -2751,7 +2783,7 @@ class ShearLedger {
     } catch (_) {}
     final dests = syncDests(restFrame, paymentCode: paymentCode);
     final owedSweep = await _balancesFor(dests, before: before);
-    _finishOwedSweep(owedSweep.max, saw: owedSweep.saw);
+    _finishOwedSweep(owedSweep.max, saw: owedSweep.saw, dest: owedSweep.dest);
     _markSettled(_sealedHeight, before);
     return spendableOwned(restFrame, paymentCode: paymentCode);
   }
@@ -3337,6 +3369,8 @@ class ShearLedger {
 
   double _owedPiDisplay = 0;
   double _owedSpent = 0;
+  String _owedPiDest = '';
+  String _paintedFundDest = '';
 
   List<ShearTx> shearviewSearch(String address, String query) {
     return shearviewTxs(address).where((t) => shearviewMatches(t, query)).toList();

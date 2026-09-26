@@ -38,12 +38,15 @@ void main() {
       ..connectionTimeout = const Duration(seconds: 20);
   }
 
-  Future<_Gate> openGate(String owedShe) async {
+  Future<_Gate> openGate(String owedShe, {required String dest}) async {
     final proc = await Process.start(
       'node',
       ['pool/tests/painted_gate_server.mjs'],
       workingDirectory: repoRoot(),
-      environment: {'SHEAR_PAINTED_OWED_SHE': owedShe},
+      environment: {
+        'SHEAR_PAINTED_OWED_SHE': owedShe,
+        'SHEAR_PAINTED_OWED_DEST': dest,
+      },
     );
     final out = StringBuffer();
     final err = StringBuffer();
@@ -66,12 +69,13 @@ void main() {
   }
 
   test('reserve deposit posts from the painted figure when notes do not cover', () async {
-    final gate = await openGate('22.58');
+    final id = createIdentity();
+    final home = (ShearLedger()..bindIdentity(id)).homeDest(id.address, paymentCode: id.paymentCode);
+    final gate = await openGate('22.58', dest: home);
     addTearDown(() async {
       gate.http.close(force: true);
       gate.proc.kill();
     });
-    final id = createIdentity();
     final pool = ShearPoolClient(
       baseUrl: 'http://127.0.0.1:${gate.port}',
       http: gate.http,
@@ -112,6 +116,7 @@ void main() {
     expect(posted.tx, isNotNull);
     expect(posted.tx!.id, startsWith('lock-'));
     expect(posted.tx!.kind, 'lock');
+    expect(posted.tx!.from, home);
     expect(ledger.transactions.where((t) => t.kind == 'lock').length, before + 1);
     expect(reserve.portal(dest).nanos, greaterThan(0));
     expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), lessThan(22.58));
@@ -150,12 +155,13 @@ void main() {
   });
 
   test('a refused pool post restores the painted figure', () async {
-    final gate = await openGate('0');
+    final id = createIdentity();
+    final home = (ShearLedger()..bindIdentity(id)).homeDest(id.address, paymentCode: id.paymentCode);
+    final gate = await openGate('0', dest: home);
     addTearDown(() async {
       gate.http.close(force: true);
       gate.proc.kill();
     });
-    final id = createIdentity();
     final pool = ShearPoolClient(
       baseUrl: 'http://127.0.0.1:${gate.port}',
       http: gate.http,
@@ -224,12 +230,13 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 4)));
 
   test('continuum send and receive use the full payable address', () async {
-    final gate = await openGate('22.58');
+    final alice = createIdentity();
+    final home = (ShearLedger()..bindIdentity(alice)).homeDest(alice.address, paymentCode: alice.paymentCode);
+    final gate = await openGate('22.58', dest: home);
     addTearDown(() async {
       gate.http.close(force: true);
       gate.proc.kill();
     });
-    final alice = createIdentity();
     final bob = createIdentity();
     final pool = ShearPoolClient(
       baseUrl: 'http://127.0.0.1:${gate.port}',
@@ -278,6 +285,7 @@ void main() {
     expect(she.tx, isNotNull);
     expect(she.tx!.id, startsWith('tx-'));
     expect(she.tx!.kind, 'send');
+    expect(she.tx!.from, home);
     final bobBook = ShearLedger()..bindIdentity(bob);
     final ssa = bobBook.homeDest(bob.address, paymentCode: bob.paymentCode);
     expect(isDestAddress(ssa), isTrue);

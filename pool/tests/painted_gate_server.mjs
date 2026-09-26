@@ -5,6 +5,7 @@ import path from 'node:path';
 import { NANOS_PER_SHE } from '../../crypto/asert.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { createStore } from '../../node/src/store.js';
+import { createPullBook } from '../src/pull_book.js';
 import { handleWalletApi } from '../src/wallet_api.js';
 
 const chainNanos = Math.round(0.02 * NANOS_PER_SHE);
@@ -27,11 +28,17 @@ const store = {
   vortice: { issued: Object.create(null) },
 };
 
-const pullBook = {
-  viewByDest() {
-    return { pendingNanos: owedNanos };
-  },
-};
+const pullBook = createPullBook(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-painted-book-')));
+const owedDest = String(process.env.SHEAR_PAINTED_OWED_DEST || '').trim();
+if (owedDest && owedNanos > 0) {
+  const credited = pullBook.creditRound(
+    [{ tag: 'painted-gate', dest: owedDest, count: 1 }],
+    { height: 1, nanos: owedNanos },
+  );
+  if (!credited || credited.ok === false) {
+    process.stderr.write(`painted credit failed ${JSON.stringify(credited)}\n`);
+  }
+}
 
 const chain = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-painted-gate-')));
 let n = 0;
