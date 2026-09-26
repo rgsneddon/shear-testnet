@@ -1,7 +1,8 @@
 /**
  * Checkpoint-bound Reserve seal.
  * The sealed-ancestry chain keeps the pot. A fork that diverged before the
- * freeze (h=1000, then every 400) gets a blank vault and cannot unlock it.
+ * freeze (h=1000, then every 400) gets no vault. The Reserve stays on the
+ * master chain, rebuilt from genesis.
  * Tip below the first checkpoint has no seal yet.
  */
 import { createHash } from 'node:crypto';
@@ -108,14 +109,7 @@ export function vaultSealBanner({
   if (tip < f) return '';
   if (ancestry !== false) return '';
   const h = Math.floor(Number(seal?.height) || f);
-  return `This tip diverged before the Reserve vault seal (height ${h}). The vault on this fork is blank.`;
-}
-
-export function blankForkVault(oracle) {
-  const v = emptyVault();
-  v.blankFork = true;
-  if (oracle) v.oracle = JSON.parse(JSON.stringify(oracle));
-  return v;
+  return `This tip diverged before the Reserve vault seal (height ${h}). This fork has no Reserve vault.`;
 }
 
 export { hexOf as vaultSealHex };

@@ -87,10 +87,12 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
         { address: destA, nanos: change, kind: 'send' },
       ],
     }, { spent });
+    const liveJ = fluxsetFromBlocks([parent]);
     proveFlowSpend(sendTx, {
       spendSeed: idA.spendSeed || ed25519SeedOf(idA.privateKey),
       spentNote: spent,
-      pubs: fluxsetFromBlocks([parent]).pubs,
+      pubs: liveJ.pubs,
+      commits: liveJ.commits,
     });
     const lock = lockTx({ from: destA, to: destA, nanos: lockNanos, id: 'reserve-lock' });
     lock.fee = levyNeed(lock, [sendTx]);

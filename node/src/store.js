@@ -39,7 +39,7 @@ import {
 } from '../../crypto/vault_seal.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest, verifyPoolWithdrawBound } from '../../crypto/spend.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
 import { writeChainBin, readChainBin, appendChainBin } from '../../crypto/chainbin.js';
 import {
@@ -320,7 +320,7 @@ export function createStore(dir, {
   }
 
   function payoutOnTip(tx) {
-    if (vaultSeal && !tipHasSealAncestry()) return { ok: false, reason: 'blank_vault' };
+    if (vaultSeal && !tipHasSealAncestry()) return { ok: false, reason: 'no_vault' };
     return verifyReservePayout(reserveVault, tx);
   }
 
@@ -755,7 +755,9 @@ export function createStore(dir, {
     return seen;
   }
 
-  function queueTx(tx) {
+  function queueTx(tx, opts = {}) {
+    const owedRaw = Number(opts && opts.paintedOwedNanos);
+    const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     tx = reviveTx(tx);
     if (pause.reserveInterest && tx?.mint && String(tx.kind || '') !== 'lock' && String(tx.kind || '') !== 'vote') {
       return { ok: false, reason: 'paused' };
@@ -776,9 +778,19 @@ export function createStore(dir, {
     if (id && mempool.some((m) => String(m.id) === id)) {
       return { ok: true, tx, duplicate: true };
     }
+    const debitNow = fundedDebit(tx);
+    const chainHave = debitNow
+      ? destSpendableNanos(debitNow.from, Number(t?.height || 0)) - mempoolDebitNanos(mempool, debitNow.from)
+      : 0;
+    // Owed nanos come from the pool pull book, not from the tx. A note vin never qualifies.
+    const paintedHold = !!(debitNow
+      && paintedSpendSig(tx)
+      && chainHave < debitNow.nanos
+      && chainHave + paintedOwedNanos >= debitNow.nanos);
     if (flowNeedsDummy(tx)) {
       const proof = tx.admit_proof;
-      if (!proof) return { ok: false, reason: 'admit_membership' };
+      if (!proof && !paintedHold) return { ok: false, reason: 'admit_membership' };
+      if (proof) {
       const live = liveFlux;
       const rlen = Array.isArray(proof.r) ? proof.r.length : -1;
       const n = (live.pubs || []).length;
@@ -824,12 +836,14 @@ export function createStore(dir, {
           return { ok: false, reason: 'admit_link_tag' };
         }
       }
+      }
     }
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
     const debit = fundedDebit(tx);
     if (debit && !noteBound) {
       const tipH = Number(t?.height || 0);
-      const have = destSpendableNanos(debit.from, tipH) - mempoolDebitNanos(mempool, debit.from);
+      const haveChain = destSpendableNanos(debit.from, tipH) - mempoolDebitNanos(mempool, debit.from);
+      const have = paintedHold ? haveChain + paintedOwedNanos : haveChain;
       if (have < debit.nanos) {
         console.error(JSON.stringify({
           event: 'insufficient',
@@ -866,6 +880,7 @@ export function createStore(dir, {
       fluxset: live,
       spendTags: live.spendTags,
       commits: live.commits,
+      paintedHold,
     });
     if (got.ok && got.tx && !got.duplicate) {
       emit('tx', got.tx);
@@ -881,13 +896,11 @@ export function createStore(dir, {
     return trial;
   }
 
-  /** Trial from LCA along the fork. Break seal ancestry → emptyVault, never tip reserveVault. */
+  /** Trial from LCA along a fork that still has the seal. A fork with no seal ancestry gets no vault. */
   function trialVaultForFork(fork) {
     const list = Array.isArray(fork) ? fork : [];
     if (vaultSeal && !chainHasSealAncestry(list, vaultSeal)) {
-      const trial = trialVaultAtForkRoot();
-      trial.blankFork = true;
-      return { trialVault: trial, lca: 0, blankFork: true };
+      return { trialVault: null, lca: 0, noVault: true };
     }
     const trial = trialVaultAtForkRoot();
     const lca = commonPrefixLen(blocks, list);
@@ -895,11 +908,12 @@ export function createStore(dir, {
       const b = blocks[i];
       applyReserveBlock({ state: trial, block: b, nowMs: blockTimeMs(b) });
     }
-    return { trialVault: trial, lca, blankFork: false };
+    return { trialVault: trial, lca, noVault: false };
   }
 
   function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null, trialVault = null, verifyOpts = {}) {
-    const vault = trialVault || reserveVault;
+    const noVault = verifyOpts.noVault === true;
+    const vault = noVault ? null : (trialVault || reserveVault);
     const prev = i === 0 ? null : {
       hash: accepted[i - 1].hash,
       header: accepted[i - 1].header,
@@ -920,11 +934,11 @@ export function createStore(dir, {
     return verifyBlock(fork[i], prev, {
       spentB: trialSpent,
       tipHeight: Number(fork[fork.length - 1]?.height || fork.length),
-      hashBonusNanos: Number(vault.liveHashBonusNanos || 1),
+      hashBonusNanos: Number(vault?.liveHashBonusNanos || 1),
       evmSession: trialSession,
       evmHistory: trialSession ? [] : accepted,
       spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, parentH, accepted, rows)),
-      committedBps: Number(vault.epochBps ?? 264),
+      committedBps: Number(vault?.epochBps ?? 264),
       reserveState: vault,
       offLoopPow: !!verifyOpts.offLoopPow,
     });
@@ -935,9 +949,9 @@ export function createStore(dir, {
     if (needs) return verifyForkAsync(fork);
     const accepted = [];
     const trialSpent = new Set();
-    const { trialVault, lca, blankFork } = trialVaultForFork(fork);
+    const { trialVault, lca, noVault } = trialVaultForFork(fork);
     for (let i = 0; i < fork.length; i += 1) {
-      const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault);
+      const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, { noVault: !!noVault });
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
       const lean = leanBlock({
         ...fork[i],
@@ -947,7 +961,7 @@ export function createStore(dir, {
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
       });
       accepted.push(lean);
-      if (!blankFork && i >= lca) {
+      if (!noVault && trialVault && i >= lca) {
         applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
       }
     }
@@ -958,10 +972,11 @@ export function createStore(dir, {
     const accepted = [];
     const trialSpent = new Set();
     let trialSession = null;
-    const { trialVault, lca, blankFork } = trialVaultForFork(fork);
+    const { trialVault, lca, noVault } = trialVaultForFork(fork);
+    const opts = { ...verifyOpts, noVault: !!noVault };
     for (let i = 0; i < fork.length; i += 1) {
       const check = await Promise.resolve(
-        verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession, trialVault, verifyOpts),
+        verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession, trialVault, opts),
       );
       if (check.evmSession) trialSession = check.evmSession;
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
@@ -973,7 +988,7 @@ export function createStore(dir, {
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
       });
       accepted.push(lean);
-      if (!blankFork && i >= lca) {
+      if (!noVault && trialVault && i >= lca) {
         applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
       }
     }
@@ -1253,6 +1268,18 @@ export function createStore(dir, {
       };
       if (pause.reserveInterest && tx.mint) continue;
       if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
+      // Chain notes do not cover a painted spend, so it stays queued and out of the block.
+      if (paintedSpendSig(tx)) {
+        const held = fundedDebit(tx);
+        const boundVin = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
+        if (held && !boundVin) {
+          const have = destSpendableNanos(held.from, Number(t?.height || 0));
+          if (have < held.nanos) {
+            keep.push(m);
+            continue;
+          }
+        }
+      }
       const live = liveFlux;
       const got = admitMempool(book, tx, {
         baseFee: baseFeeNow,

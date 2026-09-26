@@ -10,7 +10,6 @@ import {
   chainHasSealAncestry,
   reorgBreaksVaultSeal,
   vaultSealBanner,
-  blankForkVault,
 } from './vault_seal.js';
 import { BOOTSTRAP_FIRST_HEIGHT, BOOTSTRAP_EVERY_BLOCKS, bootstrapCheckpoint, reorgBreaksCheckpoint } from '../node/src/bootstrap.js';
 
@@ -126,43 +125,40 @@ describe('seal ancestry and adopt guard', () => {
   });
 });
 
-describe('blank-fork vault semantics', () => {
-  it('withdraw and payout fail on a blank trial; public view paints zeros', () => {
+describe('fork has no vault', () => {
+  it('a fork does not mint a vault and the master pot stays', () => {
     const id = newIdentity();
     const dest = destOf(id);
     const live = emptyVault();
     const t0 = 1_700_000_000_000;
     assert.equal(deposit({ state: live, dest, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
-    const trial = blankForkVault(live.oracle);
-    assert.equal(trial.blankFork, true);
-    assert.equal(Number(trial.totalLockedNanos), 0);
     const tx = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'w1' });
     tx.nowMs = t0 + 500 * 86_400_000;
-    const pay = verifyReservePayout(trial, tx);
+    const pay = verifyReservePayout(null, tx);
     assert.equal(pay.ok, false);
-    assert.equal(pay.reason, 'blank_vault');
-    const w = withdraw({ state: trial, dest, nowMs: tx.nowMs });
+    assert.equal(pay.reason, 'no_vault');
+    const w = withdraw({ state: null, dest, nowMs: tx.nowMs });
     assert.equal(w.ok, false);
-    assert.equal(w.reason, 'blank_vault');
+    assert.equal(w.reason, 'no_vault');
     const applied = applyReserveBlock({
-      state: trial,
+      state: null,
       block: { txs: [tx] },
       nowMs: tx.nowMs,
     });
     assert.deepEqual(applied, []);
-    const view = publicVaultView(trial, t0);
-    assert.equal(view.blankFork, true);
-    assert.equal(view.totalLockedNanos, 0);
-    assert.equal(view.vaultNanos, 0);
     assert.equal(Number(live.totalLockedNanos), PI_SHE_NANOS);
+    const view = publicVaultView(live, t0);
+    assert.equal(view.blankFork, false);
+    assert.equal(Number(view.totalLockedNanos), PI_SHE_NANOS);
   });
 
-  it('banner is empty until the first freeze; then names the seal height', () => {
+  it('banner is empty until the first freeze; then says the fork has no vault', () => {
     const seal = makeVaultSeal({ height: 1000, hash: Buffer.alloc(32, 1), commitment: 'c' });
     assert.equal(vaultSealBanner({ seal, ancestry: true, tipHeight: 1200 }), '');
     const line = vaultSealBanner({ seal, ancestry: false, tipHeight: 1200 });
     assert.match(line, /height 1000/);
-    assert.match(line, /blank/i);
+    assert.match(line, /no Reserve vault/);
+    assert.doesNotMatch(line, /blank/i);
     assert.equal(vaultSealBanner({ seal, ancestry: false, tipHeight: 0 }), '');
   });
 });

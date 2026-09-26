@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { randomScalar, commit, pointBytes } from './note.js';
-import { admitPub, admitProve, admitVerify, jroot, emptyFluxset, applyBlockToFluxset, fluxsetFromBlocks } from './admit.js';
+import { randomScalar, commit, pointBytes, sealCoinbaseNote } from './note.js';
+import { newIdentity } from './address.js';
+import { admitPub, admitProve, admitVerify, jroot, emptyFluxset, applyBlockToFluxset, fluxsetFromBlocks, attachAdmitPub, proveFlowSpend } from './admit.js';
 import { nativeLoaded, nativeMaxProof, nativeArity } from './native_admit.js';
 
 const SIB = 32 * 32;
@@ -40,6 +41,44 @@ describe('ADMITv2 fluxset membership', () => {
     const otherRoot = Buffer.from(jroot({ pubs: pubs.slice(0, 4), commits: commits.slice(0, 4) }));
     assert.equal(root.length, 32);
     assert.equal(root.equals(otherRoot), false);
+  });
+
+  it('proveFlowSpend uses the fluxset commit column and does not copy the spent commit', () => {
+    const seed = newIdentity().spendSeed;
+    const pot = attachAdmitPub(
+      sealCoinbaseNote(5, { dest20: Buffer.alloc(20, 3), kind: 'pot' }),
+      { spendSeed: seed },
+    );
+    const hash = attachAdmitPub(
+      sealCoinbaseNote(9, { dest20: Buffer.alloc(20, 4), kind: 'hash' }),
+      { spendSeed: seed },
+    );
+    const pubs = [pot.admitPub, hash.admitPub];
+    const commits = [pot.commit, hash.commit];
+    const bare = () => ({ kind: 'send', vin: [{}], vout: [{ kind: 'send' }] });
+    const dropped = proveFlowSpend(bare(), { spendSeed: seed, spentNote: pot, pubs });
+    assert.equal(dropped.admit_proof, undefined);
+    const copied = proveFlowSpend(bare(), {
+      spendSeed: seed,
+      spentNote: pot,
+      pubs,
+      commits: [pot.commit, pot.commit],
+    });
+    const jr = jroot({ pubs, commits });
+    if (copied.admit_proof) {
+      assert.equal(admitVerify(copied.admit_proof, { pubs, commits }, {
+        jroot: jr,
+        cTilde: copied.admit_proof.cTilde,
+        spendTag: copied.admit_proof.spendTag,
+      }), false);
+    }
+    const proved = proveFlowSpend(bare(), { spendSeed: seed, spentNote: pot, pubs, commits });
+    assert.ok(proved.admit_proof, 'real commit column proves');
+    assert.equal(admitVerify(proved.admit_proof, { pubs, commits }, {
+      jroot: jr,
+      cTilde: proved.admit_proof.cTilde,
+      spendTag: proved.admit_proof.spendTag,
+    }), true);
   });
 
   it('native verify rejects from-scratch non-member, self-minted C̃, mixed dest/C siblings', () => {

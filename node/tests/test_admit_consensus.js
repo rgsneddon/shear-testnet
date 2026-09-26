@@ -11,6 +11,7 @@ import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js'
 import { levyNanos } from '../../crypto/levy.js';
 import { admitProve, admitScalarFromSeed, fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
 import { signSpendTx } from '../../crypto/spend.js';
+import { setHashBackend } from '../../crypto/shear_hash.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { createStore } from '../src/store.js';
 import {
@@ -20,26 +21,33 @@ import {
   GENESIS_PREV,
 } from '../src/chain.js';
 
-function shareBitsOf(bits) {
-  const n = Number(bits) || 0;
-  return n >= 65536 ? Math.max(4, Math.floor(n / 65536)) : Math.max(4, n);
-}
-
 function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: shareBitsOf(tpl.bits) });
-  assert.ok(found && found.block, 'pow');
-  return {
-    header: found.header,
-    txs: tpl.txs,
-    samples: tpl.samples,
-    miner: tpl.miner,
-    aLeaves: tpl.aLeaves,
-    bLeaves: tpl.bLeaves,
-    rootA: tpl.rootA,
-    rootB: tpl.rootB,
-    weight: tpl.weight,
-    hash: found.hash,
-  };
+  // Interpreter ShearHash-v3 is a few hashes per second. Light JIT is the same
+  // digest, so a 12-bit header finishes inside this cap instead of the old
+  // 3_000_000-try walk. blockOnly ignores share hits. Verify stays on interpreter.
+  const backend = setHashBackend('jit');
+  if (backend !== 'jit') {
+    setHashBackend('interpreter');
+    assert.fail(`admit miner needs jit, got ${backend}`);
+  }
+  try {
+    const found = mineTemplate(tpl, { maxTries: 32_768, blockOnly: true });
+    assert.ok(found && found.block, 'pow');
+    return {
+      header: found.header,
+      txs: tpl.txs,
+      samples: tpl.samples,
+      miner: tpl.miner,
+      aLeaves: tpl.aLeaves,
+      bLeaves: tpl.bLeaves,
+      rootA: tpl.rootA,
+      rootB: tpl.rootB,
+      weight: tpl.weight,
+      hash: found.hash,
+    };
+  } finally {
+    setHashBackend('interpreter');
+  }
 }
 
 function identityDest() {
@@ -110,7 +118,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       return tx;
     };
 
-    const honest = proveFlowSpend(mkSend(), { spendSeed, spentNote: spent, pubs: live.pubs });
+    const honest = proveFlowSpend(mkSend(), { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
     signSpendTx(honest, key);
     const honestTpl = buildTemplate({
       prev: okP.hash,
@@ -149,11 +157,15 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
 
     const sampled = mkSend({ id: 'sampled' });
     const subset = live.pubs.slice(0, 1);
+    const subsetC = live.commits.slice(0, 1);
     sampled.admit_proof = admitProve({
       x: admitScalarFromSeed(spendSeed, spent),
       index: 0,
       pubs: subset,
+      commits: subsetC,
+      c: spent.commit,
     });
+    assert.ok(sampled.admit_proof, 'a one-leaf subset still proves, against a different tree');
     signSpendTx(sampled, key);
     const sampledTpl = buildTemplate({
       prev: okP.hash,
@@ -190,7 +202,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent: fakeIn });
-    proveFlowSpend(attack, { spendSeed, spentNote: spent, pubs: live.pubs });
+    proveFlowSpend(attack, { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
     signSpendTx(attack, key);
     const attackTpl = buildTemplate({
       prev: okP.hash,
@@ -265,18 +277,21 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       x: admitScalarFromSeed(spendSeed, spent),
       index: 0,
       pubs: [live.pubs[0], live.pubs[0]],
+      commits: [live.commits[0], live.commits[0]],
+      c: spent.commit,
     });
+    assert.ok(sampled.admit_proof, 'a duplicated leaf still proves, against a different tree');
     signSpendTx(sampled, key);
     const sampQ = store.queueTx(sampled);
     assert.equal(sampQ.ok, false);
     assert.equal(sampQ.reason, 'admit_membership');
 
-    const honest = proveFlowSpend(body(), { spendSeed, spentNote: spent, pubs: live.pubs });
+    const honest = proveFlowSpend(body(), { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
     signSpendTx(honest, key);
     const okQ = store.queueTx(honest);
     assert.equal(okQ.ok, true, okQ.reason);
 
-    const reuse = proveFlowSpend(body(), { spendSeed, spentNote: spent, pubs: live.pubs });
+    const reuse = proveFlowSpend(body(), { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
     reuse.admit_proof.spendTag = honest.admit_proof.spendTag;
     reuse.spendTag = honest.spendTag;
     signSpendTx(reuse, key);
@@ -344,7 +359,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
-    proveFlowSpend(honest, { spendSeed, spentNote: spent, pubs: live.pubs });
+    proveFlowSpend(honest, { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
     signSpendTx(honest, key);
     const hexed = JSON.parse(JSON.stringify(honest, (_, v) => (
       Buffer.isBuffer(v) || v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v
@@ -414,7 +429,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
-    proveFlowSpend(body, { spendSeed, spentNote: spent, pubs: live.pubs });
+    proveFlowSpend(body, { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
     for (const o of body.vout) o.rangeProof = true;
     signSpendTx(body, key);
     const stubTpl = buildTemplate({
@@ -451,7 +466,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
-    proveFlowSpend(honest, { spendSeed, spentNote: spent, pubs: live.pubs });
+    proveFlowSpend(honest, { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
     honest.admit_proof.members = ['decoy-list'];
     const sealed = compactTx(honest);
     assert.equal(sealed.admit_proof.members, undefined);

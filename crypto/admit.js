@@ -341,13 +341,17 @@ export function proveFlowSpend(tx, { spendSeed, spentNote, pubs, commits }) {
   const x = admitScalarFromSeed(spendSeed, spentNote);
   const index = fluxsetIndexOf(pubs, spendSeed, spentNote);
   if (index < 0) return tx;
-  const liveCommits = commits || (pubs || []).map(() => spentNote.commit);
+  const ps = Array.isArray(pubs) ? pubs : [];
+  const cs = Array.isArray(commits) ? commits : [];
+  // J is the pair (P_i, C_i). Copying the spent commit onto every leaf
+  // proves a different tree than the one the node verifies.
+  if (cs.length !== ps.length || cs.length === 0) return tx;
   const tReuse = tx.vin?.[0]?.t != null ? scalarFrom(tx.vin[0].t) : undefined;
   const proof = admitProve({
     x,
     index,
-    pubs,
-    commits: liveCommits,
+    pubs: ps,
+    commits: cs,
     c: spentNote.commit,
     t: tReuse,
   });

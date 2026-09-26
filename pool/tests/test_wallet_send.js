@@ -84,6 +84,7 @@ describe('wallet fluxset RPC', () => {
       ...storeWith(),
       fluxset: () => ({
         pubs: [Buffer.alloc(32, 1)],
+        commits: [Buffer.alloc(32, 7)],
         spendTags: new Set(['aa']),
         jroot: root,
       }),
@@ -95,12 +96,13 @@ describe('wallet fluxset RPC', () => {
     assert.equal(got.json.jroot, root.toString('hex'));
     assert.equal(got.json.noteCount, 1);
     assert.equal(got.json.spendTagCount, 1);
-    assert.equal(got.json.pubs, undefined);
+    assert.deepEqual(got.json.pubs, [Buffer.alloc(32, 1).toString('hex')]);
+    assert.deepEqual(got.json.commits, [Buffer.alloc(32, 7).toString('hex')]);
+    assert.equal(got.json.commits.length, got.json.pubs.length);
     assert.equal(got.json.spendTags, undefined);
     const body = JSON.stringify(got.json);
     assert.equal(body.includes('viewKey'), false);
     assert.equal(body.includes('she1'), false);
-    assert.equal(body.includes('"pubs"'), false);
     assert.equal(body.includes('"spendTags"'), false);
     assert.equal(body.includes('aa'), false);
     const jr = handleWalletApi(url('/api/wallet/jroot'), 'GET', {}, { store });
@@ -583,6 +585,219 @@ describe('pool send reconstruct and Join vault', () => {
     }, { store, miners: new Map(), queueSend: (t) => posted.push(t) && t });
     assert.equal(skipLevy.status, 400);
     assert.equal(skipLevy.json.reason, 'bad_kind');
+  });
+
+  it('painted Continuum lock and send post when chain notes do not cover', () => {
+    const alice = newIdentity();
+    const silent = spendDestOf(alice.spendPub);
+    const bob = spendDestOf(newIdentity().spendPub);
+    const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
+    const chainNanos = Math.round(0.02 * NANOS_PER_SHE);
+    const rows = [{
+      id: 'cb-thin',
+      from: 'coinbase',
+      to: silent,
+      nanos: chainNanos,
+      height: 10,
+      kind: 'coinbase',
+    }];
+    const store = storeWith({ rows });
+    const posted = [];
+    const queueSend = (t) => {
+      const tx = { id: `painted-${posted.length + 1}`, ...t };
+      posted.push(tx);
+      return tx;
+    };
+    const thinBook = {
+      viewByDest() {
+        return { pendingNanos: Math.round(0.01 * NANOS_PER_SHE) };
+      },
+    };
+    const shortSend = spendSig({ from: silent, to: bob, amount: 1, identity: alice });
+    const denySend = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      from: silent,
+      to: bob,
+      amount: 1,
+      sig: shortSend.sig,
+      spendPub: shortSend.spendPub,
+      vout: shortSend.vout,
+      vin: shortSend.vin,
+    }, { store, miners: new Map(), queueSend, pullBook: thinBook });
+    assert.equal(denySend.status, 400);
+    assert.equal(denySend.json.reason, 'insufficient');
+    assert.equal(posted.length, 0);
+
+    const pullBook = {
+      viewByDest() {
+        return { pendingNanos: Math.round(22.58 * NANOS_PER_SHE) };
+      },
+    };
+    const ctx = { store, miners: new Map(), queueSend, pullBook };
+    const signedLock = spendSig({ from: silent, to: vault, amount: 3.2, identity: alice, kind: 'lock' });
+    const lock = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      from: silent,
+      to: vault,
+      amount: 3.2,
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      sig: signedLock.sig,
+      spendPub: signedLock.spendPub,
+      vout: signedLock.vout,
+    }, ctx);
+    assert.equal(lock.status, 200, lock.json.reason);
+    assert.equal(lock.json.ok, true);
+    assert.equal(lock.json.tx.kind, 'lock');
+    assert.equal(lock.json.tx.programId, RESERVE_PROGRAM);
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].kind, 'lock');
+    assert.ok(lock.json.fromBalance >= 0);
+    assert.ok(lock.json.fromBalance < 0.02);
+
+    const signed = spendSig({ from: silent, to: bob, amount: 1, identity: alice });
+    const send = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      from: silent,
+      to: bob,
+      amount: 1,
+      sig: signed.sig,
+      spendPub: signed.spendPub,
+      vout: signed.vout,
+      vin: signed.vin,
+      excess: signed.excess,
+    }, ctx);
+    assert.equal(send.status, 200, send.json.reason);
+    assert.equal(send.json.ok, true);
+    assert.equal(send.json.tx.kind, 'send');
+    assert.equal(posted.length, 2);
+    assert.equal(posted[1].admit_proof, undefined);
+    assert.ok(send.json.fromBalance >= 0);
+  });
+
+  it('painted lock and send are admitted by queueTx and stay out of the block', () => {
+    const alice = newIdentity();
+    const silent = spendDestOf(alice.spendPub);
+    const bob = spendDestOf(newIdentity().spendPub);
+    const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
+    const chainNanos = Math.round(0.02 * NANOS_PER_SHE);
+    const owed = Math.round(4 * NANOS_PER_SHE);
+    const rows = [{
+      id: 'cb-thin',
+      from: 'coinbase',
+      to: silent,
+      nanos: chainNanos,
+      height: 10,
+      kind: 'coinbase',
+    }];
+    const apiStore = storeWith({ rows });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-painted-queue-'));
+    const chain = createStore(dir);
+    const pullBook = {
+      viewByDest() {
+        return { pendingNanos: owed };
+      },
+    };
+    const queueSend = (draft, meta) => {
+      const owedRaw = Number(meta && meta.paintedOwedNanos);
+      const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
+      const tx = { ...draft, id: draft.id || `tx-${chain.mempool.length + 1}` };
+      const got = chain.queueTx(tx, paintedOwedNanos > 0 ? { paintedOwedNanos } : {});
+      if (!got || got.ok === false) return got;
+      return got.tx || tx;
+    };
+    const ctx = { store: apiStore, miners: new Map(), queueSend, pullBook };
+
+    const bare = lockTx({ from: silent, to: vault, nanos: Math.round(3.2 * NANOS_PER_SHE), id: 'bare-lock' });
+    bare.fee = levyNanos(bare.nanos);
+    signSpendTx(bare, alice.privateKey);
+    const noOwed = chain.queueTx(bare);
+    assert.equal(noOwed.ok, false);
+    assert.equal(noOwed.reason, 'insufficient');
+    assert.equal(chain.mempool.length, 0);
+
+    const boundNanos = Math.round(0.2 * NANOS_PER_SHE);
+    const bound = {
+      id: 'note-bound-painted',
+      kind: 'send',
+      from: silent,
+      to: bob,
+      nanos: boundNanos,
+      fee: levyNanos(boundNanos),
+      vin: [{ address: silent, commit: Buffer.alloc(32, 4) }],
+      vout: [
+        { ...sealCoinbaseNote(boundNanos, { dest20: hash20FromAddress(bob), kind: 'send' }), address: bob },
+        sealCoinbaseNote(0, { dest20: Buffer.alloc(20, 8), kind: 'dummy' }),
+      ],
+    };
+    signSpendTx(bound, alice.privateKey);
+    const noteMiss = chain.queueTx(bound, { paintedOwedNanos: Math.round(100 * NANOS_PER_SHE) });
+    assert.equal(noteMiss.ok, false);
+    assert.equal(noteMiss.reason, 'admit_membership');
+    assert.equal(chain.mempool.length, 0);
+
+    const signedLock = spendSig({ from: silent, to: vault, amount: 3.2, identity: alice, kind: 'lock' });
+    const lock = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      from: silent,
+      to: vault,
+      amount: 3.2,
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      sig: signedLock.sig,
+      spendPub: signedLock.spendPub,
+      vout: signedLock.vout,
+    }, ctx);
+    assert.equal(lock.status, 200, lock.json.reason);
+    assert.equal(lock.json.tx.kind, 'lock');
+    assert.equal(chain.mempool.filter((m) => m.kind === 'lock').length, 1);
+
+    const sendNanos = Math.round(0.2 * NANOS_PER_SHE);
+    const sendBody = {
+      kind: 'send',
+      from: silent,
+      to: bob,
+      nanos: sendNanos,
+      fee: levyNanos(sendNanos),
+      amount: 0.2,
+      vin: [{ address: silent }],
+      vout: [
+        { ...sealCoinbaseNote(sendNanos, { dest20: hash20FromAddress(bob), kind: 'send' }), address: bob },
+        sealCoinbaseNote(0, { dest20: Buffer.alloc(20, 9), kind: 'dummy' }),
+      ],
+    };
+    signSpendTx(sendBody, alice.privateKey);
+    const send = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      from: silent,
+      to: bob,
+      amount: 0.2,
+      sig: sendBody.sig,
+      spendPub: sendBody.spendPub,
+      vin: sendBody.vin,
+      vout: sendBody.vout,
+    }, ctx);
+    assert.equal(send.status, 200, send.json.reason);
+    assert.equal(send.json.tx.kind, 'send');
+    assert.equal(send.json.tx.id.startsWith('tx-'), true);
+    assert.equal(chain.mempool.filter((m) => m.kind === 'send').length, 1);
+    assert.equal(chain.mempool.some((m) => m.admit_proof), false);
+
+    const { tpl } = chain.template({ miner: silent });
+    const packed = new Set((tpl.txs || []).map((t) => t.id));
+    for (const m of chain.mempool) {
+      assert.equal(packed.has(m.id), false, m.id);
+    }
+    assert.equal(chain.mempool.length, 2);
+
+    const again = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      from: silent,
+      to: vault,
+      amount: 3.2,
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      sig: signedLock.sig,
+      spendPub: signedLock.spendPub,
+      vout: signedLock.vout,
+    }, ctx);
+    assert.equal(again.status, 400);
+    assert.equal(again.json.reason, 'insufficient');
+    assert.equal(chain.mempool.filter((m) => m.kind === 'lock').length, 1);
   });
 
   it('Reserve vote accepts a signed hold and refuses unsigned', () => {

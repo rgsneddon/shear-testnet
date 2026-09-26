@@ -68,10 +68,12 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
+    const liveJ = fluxsetFromBlocks([parent]);
     proveFlowSpend(honest, {
       spendSeed,
       spentNote: spent,
-      pubs: fluxsetFromBlocks([parent]).pubs,
+      pubs: liveJ.pubs,
+      commits: liveJ.commits,
     });
     const honestTpl = buildTemplate({
       prev: okP.hash,

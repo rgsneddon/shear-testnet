@@ -49,6 +49,7 @@ import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
 import { potSharesFromBatch, hashBonusByMiner, custodyPotShares } from '../../node/src/chain.js';
 import { sortShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
+import { pullBookHashLeg } from '../../crypto/share_dag.js';
 import { explorerRecentTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
@@ -2064,7 +2065,7 @@ export function createPool({
             {
               height: sealedH,
               nanos: potCreditAfterFeeNanos(wantLivePot()),
-              hashByDest: hashPays,
+              hashByDest: pullBookHashLeg(hashPays),
               hashUnit: unit,
               finderTag: publicMinerTag(session?.login || session?.workerKey),
             },
@@ -2700,11 +2701,13 @@ export function createPool({
     return sent;
   }
 
-  function queueSend(t) {
+  function queueSend(t, meta) {
     const id = t.id || `send-${Date.now()}`;
     const tx = { id, ...t };
+    const owedRaw = Number(meta && meta.paintedOwedNanos);
+    const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     if (typeof store.queueTx === 'function') {
-      const got = store.queueTx(tx);
+      const got = store.queueTx(tx, paintedOwedNanos > 0 ? { paintedOwedNanos } : {});
       if (!got.ok) return got;
       jobDirty = true;
       setImmediate(flushDirtyJob);

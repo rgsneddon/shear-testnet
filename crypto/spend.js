@@ -216,6 +216,50 @@ export function flowSendNeedsOpen(tx) {
   return true;
 }
 
+function vinCarriesNote(tx) {
+  if (!Array.isArray(tx?.vin)) return false;
+  for (const v of tx.vin) {
+    if (!v || typeof v !== 'object') continue;
+    if (v.commit || v.noteCommit) return true;
+    if (v.prev == null) continue;
+    try {
+      const p = Buffer.from(asU8(v.prev));
+      if (p.length > 0 && p.some((b) => b !== 0)) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Signed painted spend: sealed outs, no note vin, no admit proof.
+ * A note spend carries a vin commit or an admit proof and is not this.
+ */
+export function paintedSpendSig(tx) {
+  if (!tx || tx.coinbase || tx.admit_proof || tx.spendTag) return false;
+  if (vinCarriesNote(tx)) return false;
+  if (!verifySpendSig(tx)) return false;
+  const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+  if (kind !== 'send' && kind !== 'lock' && kind !== 'withdraw') return false;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  if (!outs.length) return false;
+  let money = 0;
+  let dummies = 0;
+  for (const o of outs) {
+    const k = String(o?.kind || '');
+    if (k === 'dummy') {
+      dummies += 1;
+      if (!o?.commit) return false;
+      continue;
+    }
+    if (!o?.commit) return false;
+    money += 1;
+  }
+  if (money < 1) return false;
+  if (kind === 'send' && dummies < 1) return false;
+  return true;
+}
+
 /** Operator dest20 on sealed vin (or fat from/address). */
 export function poolWithdrawOperatorDest20(tx) {
   const v = tx?.vin?.[0];

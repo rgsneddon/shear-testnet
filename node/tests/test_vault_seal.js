@@ -62,12 +62,15 @@ function vaultSnap(v) {
 }
 
 describe('store.js vault-seal control flow', () => {
-  it('adopt refuses a seal-breaking fork before replayVault; trial uses emptyVault on blank forks', () => {
+  it('adopt refuses a seal-breaking fork before replayVault; that fork gets no vault', () => {
     const src = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
     assert.match(src, /function trialVaultForFork\(/);
     assert.match(src, /function trialVaultAtForkRoot\(/);
+    const forkFn = src.split('function trialVaultForFork')[1]?.split('function verifyOneForkBlock')[0] || '';
+    assert.match(forkFn, /noVault: true/);
+    assert.doesNotMatch(forkFn, /emptyVault\(/);
+    assert.doesNotMatch(forkFn, /blankFork = true/);
     assert.match(src, /cloneVault\(emptyVault\(\)\)/);
-    assert.match(src, /trial\.blankFork = true/);
     assert.match(src, /reorgBreaksVaultSeal\(/);
     assert.match(src, /reason: 'reorg_vault_seal'/);
     const adopt = src.split('function finishAdopt')[1]?.split('function ingest')[0] || '';

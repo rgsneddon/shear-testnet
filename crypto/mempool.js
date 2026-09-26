@@ -9,7 +9,7 @@ import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
 import { asU8, verifyRange } from './note.js';
 import { sealedVinLinkField } from './chronoflux.js';
-import { verifyPoolWithdrawBound } from './spend.js';
+import { paintedSpendSig, verifyPoolWithdrawBound } from './spend.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
@@ -65,6 +65,7 @@ export function admitMempool(pool, tx, opts = {}) {
   if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
     return { ok: false, reason: 'dummy_outs' };
   }
+  const paintedHold = opts.paintedHold === true && paintedSpendSig(tx);
   if (moneyNeedsRange(tx)) {
     for (const o of (tx.vout || [])) {
       if (!o?.commit) return { ok: false, reason: 'range_proof' };
@@ -72,14 +73,14 @@ export function admitMempool(pool, tx, opts = {}) {
       if (o.rangeProof && !verifyRange(o.commit, o.rangeProof)) {
         return { ok: false, reason: 'range_proof' };
       }
-      if (flowNeedsDummy(tx) && !o.rangeProof) return { ok: false, reason: 'range_proof' };
+      if (flowNeedsDummy(tx) && !o.rangeProof && !paintedHold) return { ok: false, reason: 'range_proof' };
     }
   }
   if (flowNeedsDummy(tx)) {
     const live = opts.fluxset && !Array.isArray(opts.fluxset)
       ? opts.fluxset
       : { pubs: opts.fluxset || opts.pubs || [], commits: opts.commits || [] };
-    if (Array.isArray(live.pubs) && live.pubs.length) {
+    if (Array.isArray(live.pubs) && live.pubs.length && !paintedHold) {
       const proof = tx.admit_proof;
       if (!proof) return { ok: false, reason: 'admit_membership' };
       const cTilde = proof.cTilde || tx.vin?.[0]?.commit;

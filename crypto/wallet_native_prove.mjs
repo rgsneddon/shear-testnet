@@ -59,15 +59,19 @@ if (op === 'prove_spend') {
     noteCommit: unhex(req.spentNote?.noteCommit),
     r: req.spentNote?.r ? unhex(req.spentNote.r) : undefined,
   };
-  const pubs = (req.pubs || []).map(unhex);
-  const commits = (req.commits || []).map(unhex);
+  const pubs = (req.pubs || []).map(unhex).filter(Boolean);
+  const commits = (req.commits || []).map(unhex).filter(Boolean);
+  if (!pubs.length || commits.length !== pubs.length) {
+    process.stdout.write(JSON.stringify({ ok: false, reason: 'admit_commits' }));
+    process.exit(4);
+  }
   const x = admitScalarFromSeed(spendSeed, spentNote);
   const index = Number.isInteger(req.index) ? req.index : fluxsetIndexOf(pubs, spendSeed, spentNote);
   const proof = admitProve({
     x,
     index,
     pubs,
-    commits: commits.length ? commits : pubs.map(() => spentNote.commit),
+    commits,
     c: spentNote.commit,
     t: req.t != null ? scalarFrom(unhex(req.t)) : randomScalar(),
   });

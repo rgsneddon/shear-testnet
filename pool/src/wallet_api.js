@@ -914,6 +914,21 @@ export function mempoolLattice(store, limitOrOpts = 24) {
   };
 }
 
+/** Chain notes plus owed-toward-π. The painted Continuum figure, in nanos. */
+function paintedSpendableNanos(store, pullBook, address, chainNanos) {
+  const chain = Math.max(0, Number(chainNanos) || 0);
+  let tipHeight = 0;
+  try {
+    const tip = typeof store?.tip === 'function' ? store.tip() : null;
+    tipHeight = Number(tip?.height || 0) || 0;
+  } catch {
+    tipHeight = 0;
+  }
+  const owedShe = Number(owedPiFromPullBook(pullBook, address, { tipHeight, need: 30 }).owedPi) || 0;
+  const owed = Math.round(owedShe * NANOS_PER_SHE);
+  return chain + (Number.isFinite(owed) && owed > 0 ? owed : 0);
+}
+
 /** Dest-scoped owed-π / confirming pot from the pull-book (credits still below π). */
 export function owedPiFromPullBook(pullBook, address, { tipHeight = 0, need = 30 } = {}) {
   if (!pullBook || typeof pullBook.viewByDest !== 'function' || !isDestAddress(address)) {
@@ -949,15 +964,28 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (path === '/api/wallet/jroot') {
       return { status: 200, json: { ok: true, jroot: root.toString('hex') } };
     }
-    const pubs = (live.pubs || []).map((p) => {
-      try {
-        return Buffer.from(typeof p?.toBytes === 'function' ? p.toBytes() : p).toString('hex');
-      } catch {
-        return '';
+    const pubs = [];
+    const commits = [];
+    const srcPubs = live.pubs || [];
+    const srcCommits = live.commits || [];
+    if (srcPubs.length === srcCommits.length) {
+      for (let i = 0; i < srcPubs.length; i += 1) {
+        let p = '';
+        let c = '';
+        try {
+          p = Buffer.from(typeof srcPubs[i]?.toBytes === 'function' ? srcPubs[i].toBytes() : srcPubs[i]).toString('hex');
+        } catch { p = ''; }
+        try {
+          c = Buffer.from(srcCommits[i]).toString('hex');
+        } catch { c = ''; }
+        if (p.length !== 64 || c.length !== 64) continue;
+        pubs.push(p);
+        commits.push(c);
       }
-    }).filter(Boolean);
+    }
     const spendTags = [...(live.spendTags || [])];
-    // Public pool HTTP is count-only |J| until soak ≥10k notes. Full pubs stay on local RPC.
+    // J is the pair (admit pub, note commit) in one order. A count with no
+    // commit column cannot be proved.
     return {
       status: 200,
       json: {
@@ -965,6 +993,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         jroot: root.toString('hex'),
         noteCount: pubs.length,
         spendTagCount: spendTags.length,
+        pubs,
+        commits,
       },
     };
   }
@@ -1210,13 +1240,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     const rec = reconstructOwner(store, from);
     const nanos = isVote ? 0 : Math.round(amount * NANOS_PER_SHE);
+    const paintedNanos = paintedSpendableNanos(store, pullBook, from, rec.spendableNanos);
     const sealedSend = kindIn === 'send'
       && body.admit_proof
       && Array.isArray(body.vin) && body.vin.length
       && Array.isArray(body.vout) && body.vout.length
       && (body.sig || body.signature)
       && body.spendPub;
-    if (!isVote && !isWithdraw && !sealedSend && rec.spendableNanos < nanos) {
+    if (!isVote && !isWithdraw && !sealedSend && paintedNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const memoCt = body.memoCt || null;
@@ -1228,7 +1259,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const taxed = levyTaxed({ kind, programId });
     const depth = mempoolDepthBytes(store?.mempool || []);
     const fee = taxed ? levyNanos(nanos, { depth }) : 0;
-    if (!isVote && !isWithdraw && !sealedSend && rec.spendableNanos < nanos + fee) {
+    if (!isVote && !isWithdraw && !sealedSend && paintedNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const rawChange = String(body.change || '').trim();
@@ -1290,7 +1321,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       return { status: 400, json: { ok: false, reason: 'dummy_outs' } };
     }
     if (kind === 'send' && !draft.admit_proof) {
-      return { status: 400, json: { ok: false, reason: 'admit_membership' } };
+      const paintedCovers = paintedNanos >= nanos + fee;
+      if (!(paintedCovers && verifySpendSig(draft))) {
+        return { status: 400, json: { ok: false, reason: 'admit_membership' } };
+      }
     }
     if (flowSendNeedsOpen(draft) && !verifySpendSig(draft)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
@@ -1298,7 +1332,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (reserveNeedsPortalOpen(draft) && !verifyReservePortalOpen(draft)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
-    const tx = queueSend(draft);
+    const owedOnly = Math.max(0, paintedNanos - Math.max(0, Math.floor(Number(rec.spendableNanos) || 0)));
+    const tx = queueSend(draft, { paintedOwedNanos: owedOnly });
     if (tx && typeof tx === 'object' && tx.ok === false) {
       return { status: 400, json: { ok: false, reason: tx.reason || 'queue_failed' } };
     }
@@ -1314,7 +1349,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           id: tx.id, from, to, amount, kind, programId: programId || undefined, confirmed: false, memo: !!memoCt,
           ...(parked ? { change: changeDest } : {}),
         },
-        fromBalance: parked ? 0 : nanosToShe(rec.spendableNanos - nanos - fee),
+        fromBalance: parked ? 0 : nanosToShe(Math.max(0, rec.spendableNanos - nanos - fee)),
         ...(parked ? { changeBalance: nanosToShe(leftover) } : {}),
         log: submitLine,
       },
