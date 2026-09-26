@@ -915,7 +915,7 @@ export function mempoolLattice(store, limitOrOpts = 24) {
 }
 
 /** Chain notes plus owed-toward-π. The painted Continuum figure, in nanos. */
-function paintedSpendableNanos(store, pullBook, address, chainNanos) {
+export function paintedSpendableNanos(store, pullBook, address, chainNanos) {
   const chain = Math.max(0, Number(chainNanos) || 0);
   let tipHeight = 0;
   try {

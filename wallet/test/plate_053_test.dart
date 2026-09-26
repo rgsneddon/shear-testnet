@@ -198,8 +198,26 @@ void main() {
       enteredTo: payload,
       amount: 0.2,
       spendSeed: hexToBytes(id.seedHex),
+      local: false,
     );
     expect(send.posted, isFalse, reason: send.remark);
+    expect(ledger.transactions.where((t) => t.kind == 'send'), isEmpty);
+    expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(owedBefore, 1e-9));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(chainBefore, 1e-9));
+    final bobBook = ShearLedger()..bindIdentity(bob);
+    final ssa = bobBook.homeDest(bob.address, paymentCode: bob.paymentCode);
+    expect(isDestAddress(ssa), isTrue);
+    final ssaReject = await submitContinuumSend(
+      ledger: ledger,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      startTo: '',
+      enteredTo: ssa,
+      amount: 0.2,
+      spendSeed: hexToBytes(id.seedHex),
+      local: false,
+    );
+    expect(ssaReject.posted, isFalse, reason: ssaReject.remark);
     expect(ledger.transactions.where((t) => t.kind == 'send'), isEmpty);
     expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(owedBefore, 1e-9));
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(chainBefore, 1e-9));
@@ -253,6 +271,7 @@ void main() {
       enteredTo: payload,
       amount: amount,
       spendSeed: hexToBytes(alice.seedHex),
+      local: false,
     );
     expect(she.posted, isTrue, reason: '${she.remark}\n${debugLastContinuumSendError}\n${gate.err}');
     expect(she.to, payload);
@@ -270,6 +289,7 @@ void main() {
       enteredTo: ssa,
       amount: amount,
       spendSeed: hexToBytes(alice.seedHex),
+      local: false,
     );
     expect(ssaSend.posted, isTrue, reason: '${ssaSend.remark}\n${debugLastContinuumSendError}\n${gate.err}');
     expect(ssaSend.to, ssa);

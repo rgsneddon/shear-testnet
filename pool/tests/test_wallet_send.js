@@ -22,7 +22,7 @@ import {
 } from '../../crypto/asert.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { isPinnedProgram, listPublicVortices, mintVorticeDeployKey } from '../../crypto/vortex.js';
-import { handleWalletApi, reconstructOwner } from '../src/wallet_api.js';
+import { handleWalletApi, paintedSpendableNanos, reconstructOwner } from '../src/wallet_api.js';
 import { sealedExplorerRows } from '../../crypto/chronoflux.js';
 import { writeChainBin } from '../../crypto/chainbin.js';
 import { createStore } from '../../node/src/store.js';
@@ -653,6 +653,12 @@ describe('pool send reconstruct and Join vault', () => {
     assert.ok(lock.json.fromBalance >= 0);
     assert.ok(lock.json.fromBalance < 0.02);
 
+    const rec = reconstructOwner(store, silent);
+    const needNanos = Math.round(1 * NANOS_PER_SHE);
+    const fee = levyNanos(needNanos, { depth: 0 });
+    const painted = paintedSpendableNanos(store, pullBook, silent, rec.spendableNanos);
+    assert.ok(rec.spendableNanos < needNanos + fee);
+    assert.ok(painted >= needNanos + fee);
     const signed = spendSig({ from: silent, to: bob, amount: 1, identity: alice });
     const send = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from: silent,
