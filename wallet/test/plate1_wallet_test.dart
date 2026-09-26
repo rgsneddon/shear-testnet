@@ -245,7 +245,11 @@ void main() {
     expect(observeLocalTip('{"event":"status","height":4,"ibd":true,"peers":1}'), isFalse);
     const atTip = 'status height=4 hash=abcd peers=1 want=0 ibd=false hashBackend=native';
     expect(observeLocalTip(atTip), isTrue);
-    expect(noteSidecarLine(side, atTip), isTrue);
+    side.seekerTip = 80;
+    expect(noteSidecarLine(side, atTip), isFalse);
+    expect(side.honest, isFalse, reason: 'local height 4 is behind the light-seeker tip');
+    side.seekerTip = 4;
+    expect(side.takeOverIfMatched(), isTrue);
     expect(side.honest, isTrue);
     expect(side.sendBlocked, isFalse);
     expect(noteSidecarLine(side, atTip), isFalse);

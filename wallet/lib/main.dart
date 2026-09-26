@@ -36,7 +36,7 @@ import 'shear_closure.dart';
 import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 
-const kWalletVersion = '0.51.0';
+const kWalletVersion = '0.52.0';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
@@ -172,6 +172,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       widget.privacyHop ?? PrivacyHopController();
   late final ShearNodeSidecar sidecar;
   Process? _nodeProc;
+  final _nodeConsoleScroll = ScrollController();
   int vortexTab = 0;
   List<Vortice> vortices = leanContinuumVortices();
   final Set<String> openedMemos = {};
@@ -225,22 +226,31 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final proc = await Process.start(
       binary,
       args,
+      workingDirectory: (sidecar.workDir != null && sidecar.workDir!.isNotEmpty) ? sidecar.workDir : null,
       environment: {...Platform.environment, ...env},
       mode: ProcessStartMode.normal,
     );
     _nodeProc = proc;
     void take(String line) {
       if (!mounted || line.isEmpty) return;
+      sidecar.seekerTip = ledger.pool?.liveTip ?? ledger.displayHeight;
       final firstHonest = noteSidecarLine(sidecar, line);
-      if (firstHonest) {
-        setState(() {});
-        _showLocalNodeSynced();
-        return;
-      }
-      if (tab == 2) setState(() {});
+      setState(() {});
+      _pinNodeConsole();
+      if (firstHonest) _showLocalNodeSynced();
     }
     proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(take);
     proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen(take);
+  }
+
+  void _pinNodeConsole() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_nodeConsoleScroll.hasClients) return;
+      final max = _nodeConsoleScroll.position.maxScrollExtent;
+      if (max > 0 && _nodeConsoleScroll.offset != max) {
+        _nodeConsoleScroll.jumpTo(max);
+      }
+    });
   }
 
   Future<void> _stopSharedNode() async {
@@ -257,18 +267,21 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       override: Platform.environment['SHEAR_NODE_DATA'],
       besideDir: beside,
     );
+    final packed = resolvePackagedNode(
+      override: Platform.environment['SHEAR_NODE_BIN'],
+      besideDir: beside,
+    );
     sidecar = ShearNodeSidecar(
       android: !kIsWeb && Platform.isAndroid,
       storedMode: widget.session?.closureSendMode,
-      nodeBinary: resolveSharedNodeBinary(
-        override: Platform.environment['SHEAR_NODE_BIN'],
-        besideDir: beside,
-      ),
+      nodeBinary: packed?.binary,
       dataDir: dataDir,
       datadirEmpty: () => closureDatadirEmpty(dataDir),
       startProcess: _startSharedNode,
       onStop: _stopSharedNode,
-    );
+    )
+      ..nodeScript = packed?.script
+      ..workDir = packed?.workDir;
     _tabScroll = List.generate(kTabs.length, (_) => ScrollController());
     hop.addListener(_onHop);
     _boot();
@@ -293,6 +306,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     _accrualTick?.cancel();
     _preloginTick?.cancel();
     _nodeProc?.kill();
+    _nodeConsoleScroll.dispose();
     _reserveLockHold?.cancel();
     super.dispose();
   }
@@ -776,10 +790,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               || pendingN != _lastPaintPending
               || tipMoved
               || owedShe > 0;
-          if (walletAtTip(_syncLabel) &&
-              sidecar.committed != ClosureSendMode.shearPrivacyVpn &&
-              !sidecar.honest) {
-            sidecar.markSynced();
+          sidecar.seekerTip = ledger.pool?.liveTip ?? ledger.displayHeight;
+          if (sidecar.takeOverIfMatched()) {
+            if (mounted) {
+              setState(() {});
+              _showLocalNodeSynced();
+            }
           }
           if (dirty && mounted) {
             _lastPaintSealed = ledger.sealedHeight;
@@ -2057,6 +2073,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   Widget _resistance(BuildContext context) {
+    if (sidecar.showResistanceConsole) _pinNodeConsole();
     final dark = Theme.of(context).brightness == Brightness.dark;
     final bg = dark ? kCliDarkBg : kCliLightBg;
     final fg = dark ? kCliDarkFg : kCliLightFg;
@@ -2170,6 +2187,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                     key: const Key('resistance-node-console-scroll'),
                     height: 12 * 1.2 * 9,
                     child: SingleChildScrollView(
+                      controller: _nodeConsoleScroll,
                       child: sidecar.log.isEmpty
                           ? Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
@@ -2191,7 +2209,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                               ],
                             )
                           : SelectableText(
-                              sidecar.log.join('\n'),
+                              (sidecar.log.length > 80
+                                      ? sidecar.log.sublist(sidecar.log.length - 80)
+                                      : sidecar.log)
+                                  .join('\n'),
                               key: const Key('resistance-node-console-log'),
                               style: TextStyle(color: fg, fontFamily: 'Courier', fontSize: 12, height: 1.2),
                             ),

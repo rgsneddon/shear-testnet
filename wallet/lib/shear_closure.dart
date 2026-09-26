@@ -38,37 +38,49 @@ int? closureStratumPort(ClosureSendMode mode, {required bool android}) {
   return null;
 }
 
-/// True when a sidecar status line says this node is past IBD at a real height.
-/// Matches node `printNodeStatus`: JSON `event=status` and the `status height=` line.
-bool observeLocalTip(String line) {
+/// Parsed node `printNodeStatus` line. Null when the line is not a status row.
+({int height, bool ibd})? parseLocalNodeStatus(String line) {
   final t = line.trim();
-  if (t.isEmpty) return false;
+  if (t.isEmpty) return null;
   if (t.startsWith('{')) {
     try {
       final decoded = jsonDecode(t);
       if (decoded is Map && decoded['event']?.toString() == 'status') {
         final raw = decoded['height'];
         final height = raw is num ? raw.toInt() : int.tryParse('$raw') ?? 0;
-        return decoded['ibd'] == false && height > 0;
+        return (height: height, ibd: decoded['ibd'] == true);
       }
     } catch (_) {}
-    return false;
+    return null;
   }
-  if (!t.startsWith('status ')) return false;
+  if (!t.startsWith('status ')) return null;
   final ibd = RegExp(r'\bibd=(true|false)\b').firstMatch(t);
   final height = RegExp(r'\bheight=(\d+)\b').firstMatch(t);
-  if (ibd == null || height == null || ibd.group(1) != 'false') return false;
-  return (int.tryParse(height.group(1)!) ?? 0) > 0;
+  if (ibd == null || height == null) return null;
+  return (height: int.tryParse(height.group(1)!) ?? 0, ibd: ibd.group(1) == 'true');
 }
 
-/// Log one sidecar line and mark synced when [observeLocalTip] says the node is at tip.
-/// True only on the false→true transition, which is when the UI shows the sync dialog.
+/// True when a sidecar status line says this node is past IBD at a real height.
+/// Matches node `printNodeStatus`: JSON `event=status` and the `status height=` line.
+bool observeLocalTip(String line) {
+  final st = parseLocalNodeStatus(line);
+  return st != null && !st.ibd && st.height > 0;
+}
+
+/// Local node may take the wallet only when its tip has caught the light seeker.
+bool localNodeMatchesSeeker({required int nodeHeight, required bool ibd, required int seekerTip}) {
+  return !ibd && nodeHeight > 0 && seekerTip > 0 && nodeHeight >= seekerTip;
+}
+
+/// Log one sidecar line. The wallet switches to full-node mode only when the
+/// node's tip matches the light-seeker tip. True only on that false→true edge.
 bool noteSidecarLine(ShearNodeSidecar side, String line) {
   side.addLog(line);
-  if (!observeLocalTip(line)) return false;
-  final was = side.honest;
-  side.markSynced();
-  return side.honest && !was;
+  final st = parseLocalNodeStatus(line);
+  if (st == null) return false;
+  side.reportedHeight = st.height;
+  side.reportedIbd = st.ibd;
+  return side.takeOverIfMatched();
 }
 
 bool closureArmsStratum(ClosureSendMode mode, {required bool android}) =>
@@ -140,6 +152,37 @@ String? resolveSharedNodeBinary({String? override, String? besideDir}) {
   return null;
 }
 
+/// Node runtime plus the Shear entry script shipped inside the wallet zip.
+class PackagedNode {
+  const PackagedNode({required this.binary, this.script, this.workDir});
+
+  final String binary;
+  final String? script;
+  final String? workDir;
+}
+
+/// Prefer `runtime/node` + `node/src/node.js` next to the wallet executable.
+/// A lone `shear-node` file is still accepted for older layouts.
+PackagedNode? resolvePackagedNode({String? override, String? besideDir}) {
+  if (override != null && override.isNotEmpty) {
+    return PackagedNode(binary: override, workDir: besideDir);
+  }
+  if (besideDir == null || besideDir.isEmpty) return null;
+  final sep = Platform.pathSeparator;
+  final script = '$besideDir${sep}node${sep}src${sep}node.js';
+  if (File(script).existsSync()) {
+    for (final name in ['runtime${sep}node.exe', 'runtime${sep}node']) {
+      final path = '$besideDir$sep$name';
+      if (File(path).existsSync()) {
+        return PackagedNode(binary: path, script: script, workDir: besideDir);
+      }
+    }
+  }
+  final legacy = resolveSharedNodeBinary(besideDir: besideDir);
+  if (legacy == null) return null;
+  return PackagedNode(binary: legacy, workDir: besideDir);
+}
+
 String closureNodeDataDir({String? override, required String besideDir}) {
   if (override != null && override.isNotEmpty) return override;
   return '$besideDir${Platform.pathSeparator}shear-node-data';
@@ -182,6 +225,35 @@ class ShearNodeSidecar {
   final bool Function()? datadirEmpty;
   final ClosureProcessStart? startProcess;
   final Future<void> Function()? onStop;
+
+  /// Set when [nodeBinary] is a Node runtime and the Shear entry is [nodeScript].
+  String? nodeScript;
+  String? workDir;
+
+  /// Last status line from the local node, compared with [seekerTip].
+  int reportedHeight = 0;
+  bool reportedIbd = true;
+  int seekerTip = 0;
+
+  /// True once, when the local node first catches the light-seeker tip.
+  bool takeOverIfMatched() {
+    if (committed == ClosureSendMode.shearPrivacyVpn) return false;
+    final matched = localNodeMatchesSeeker(
+      nodeHeight: reportedHeight,
+      ibd: reportedIbd,
+      seekerTip: seekerTip,
+    );
+    if (!matched) {
+      if (honest) {
+        honest = false;
+        progress = 'Local node is behind the light-seeker tip.';
+      }
+      return false;
+    }
+    if (honest) return false;
+    markSynced();
+    return true;
+  }
 
   ClosureSendMode committed = ClosureSendMode.shearPrivacyVpn;
   ClosureSendMode pending = ClosureSendMode.shearPrivacyVpn;
@@ -255,10 +327,15 @@ class ShearNodeSidecar {
     if (nodeBinary == null || nodeBinary!.isEmpty || startProcess == null) {
       running = false;
       honest = false;
-      progress = 'Local node binary was not found beside Continuum.';
+      progress = 'Local node binary was not found beside Continuum. '
+          'Extract the wallet zip so runtime/node.exe (Linux: runtime/node) and node/src/node.js sit next to the wallet.';
       return progress;
     }
-    await startProcess!(nodeBinary!, lastEnv, lastArgs);
+    final spawnArgs = <String>[
+      if (nodeScript != null && nodeScript!.isNotEmpty) nodeScript!,
+      ...lastArgs,
+    ];
+    await startProcess!(nodeBinary!, lastEnv, spawnArgs);
     running = true;
     honest = false;
     return progress;

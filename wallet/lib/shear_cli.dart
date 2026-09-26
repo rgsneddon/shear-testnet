@@ -13,7 +13,7 @@ import 'shear_shewall.dart';
 import 'shear_vortex.dart';
 
 /// Public wallet pin. Keep in lock-step with [kWalletVersion] in main.dart.
-const kCliVersion = '0.51.0';
+const kCliVersion = '0.52.0';
 
 /// GUI surface each command covers. Tests assert this map stays complete.
 const kCliGuiCoverage = <String, String>{

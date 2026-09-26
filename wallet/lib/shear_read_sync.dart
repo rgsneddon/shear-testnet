@@ -231,10 +231,10 @@ class ShearReadSync {
   }
 
   Future<void> _followTipBody() async {
-    var base = liveBase;
-    if (base == null || !honest) {
-      base = await findLiveNode(keepOnMiss: liveBase != null);
-    }
+    // The light seeker follows the tallest same-genesis tip. A full node that
+    // is still syncing must not pin receives to its shorter local height.
+    final ranked = await findLiveNode(keepOnMiss: liveBase != null);
+    var base = ranked ?? liveBase;
     if (base == null) return;
     var stats = await _getFirst(base, const ['/stats', '/api/stats']);
     if (stats == null || !isUsableTipStats(stats)) {
