@@ -2257,6 +2257,12 @@ class ShearLedger {
       if (_isProgramVaultDest(key)) continue;
       n += spendable(key);
     }
+    // A round credited on the shear1 rest-frame has no ssa1 yet. It stays
+    // spendable here instead of disappearing from the Continuum figure.
+    if (!isDestAddress(restFrame)) {
+      final parked = _spendable[restFrame] ?? 0;
+      if (parked > 0) n += parked;
+    }
     return n;
   }
 
@@ -2973,30 +2979,47 @@ class ShearLedger {
     return false;
   }
 
-  /// Local rest-frame credits were stored on destForLogin before spendPub was
-  /// known. Fold them onto destCommit so the signed dest matches the key.
+  /// A credit parked on destForLogin, or on the shear1 rest-frame itself,
+  /// moves onto destCommit once the spend pub is known. Spendable coins stay
+  /// spendable. Coins still under 6 confirmations stay confirming.
   void _foldFlowDest(String restFrame, {String? paymentCode}) {
     final pub = _spendPubOf(paymentCode);
     if (pub == null || pub.length != 32) return;
     final bound = encodeDestAddress(destCommitFromSpendPub(pub), _admitBaseOf(paymentCode));
+    if (!isDestAddress(bound)) return;
+    final fromKeys = <String>{};
+    if (restFrame.isNotEmpty && !isDestAddress(restFrame) && restFrame != bound) {
+      fromKeys.add(restFrame);
+    }
     final flow = destForLogin(
       restFrame,
       height: tipHeight,
       continuityRoot: lag1Root,
       viewKey: viewSecret,
     );
-    if (flow == null || flow == bound || _stealthShared.containsKey(flow)) return;
-    if (destMatchesSpendPub(flow, pub)) return;
-    final s = _spendable.remove(flow) ?? 0;
-    final p = _pending.remove(flow) ?? 0;
+    if (flow != null &&
+        flow != bound &&
+        flow != restFrame &&
+        !_stealthShared.containsKey(flow) &&
+        !destMatchesSpendPub(flow, pub)) {
+      fromKeys.add(flow);
+    }
+    if (fromKeys.isEmpty) return;
+    var s = 0.0;
+    var p = 0.0;
+    for (final key in fromKeys) {
+      s += _spendable.remove(key) ?? 0;
+      p += _pending.remove(key) ?? 0;
+      _dests.remove(key);
+    }
     var moved = s != 0 || p != 0;
     for (var i = 0; i < _txs.length; i++) {
       final t = _txs[i];
-      if (t.to != flow && t.from != flow) continue;
+      if (!fromKeys.contains(t.to) && !fromKeys.contains(t.from)) continue;
       _txs[i] = ShearTx(
         id: t.id,
-        from: t.from == flow ? bound : t.from,
-        to: t.to == flow ? bound : t.to,
+        from: fromKeys.contains(t.from) ? bound : t.from,
+        to: fromKeys.contains(t.to) ? bound : t.to,
         amount: t.amount,
         kind: t.kind,
         height: t.height,
@@ -3012,10 +3035,23 @@ class ShearLedger {
       );
       moved = true;
     }
+    if (_immature.isNotEmpty) {
+      final next = <({String dest, double amount, int height})>[];
+      for (final row in _immature) {
+        if (fromKeys.contains(row.dest)) {
+          next.add((dest: bound, amount: row.amount, height: row.height));
+          moved = true;
+        } else {
+          next.add(row);
+        }
+      }
+      _immature
+        ..clear()
+        ..addAll(next);
+    }
     if (!moved) return;
     if (s != 0) _spendable[bound] = (_spendable[bound] ?? 0) + s;
     if (p != 0) _pending[bound] = (_pending[bound] ?? 0) + p;
-    _dests.remove(flow);
     _dests.add(bound);
   }
 
