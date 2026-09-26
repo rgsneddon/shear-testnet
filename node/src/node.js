@@ -191,6 +191,13 @@ export async function startP2pSync(opts = {}) {
 
 export { printHelp, helpTopics, nodeStatus, printNodeStatus };
 
+/** A book already has blocks when chain.bin or chain.jsonl is present. */
+export function datadirIsEmpty(dataDir) {
+  const dir = String(dataDir || '');
+  return !fs.existsSync(path.join(dir, 'chain.bin'))
+    && !fs.existsSync(path.join(dir, 'chain.jsonl'));
+}
+
 /**
  * Empty datadir and bootstrap forced on: install the published snapshot once.
  * A datadir that already has blocks keeps that tip and syncs forward.
@@ -325,8 +332,7 @@ async function main() {
     return;
   }
   const dataDirForBoot = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4');
-  const emptyDatadir = !fs.existsSync(path.join(dataDirForBoot, 'chain.bin'))
-    && !fs.existsSync(path.join(dataDirForBoot, 'chain.jsonl'));
+  const emptyDatadir = datadirIsEmpty(dataDirForBoot);
   const boot = await resolveGuiBootstrap({
     argv,
     env: process.env,

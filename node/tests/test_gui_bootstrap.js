@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { resolveGuiBootstrap } from '../src/node.js';
+import { datadirIsEmpty, resolveGuiBootstrap } from '../src/node.js';
 import {
   writeLatestBootstrap,
   applyLatestBootstrap,
@@ -68,11 +68,12 @@ describe('wallet node bootstrap', () => {
   it('empty datadir with bootstrap forced applies once; a recorded tip does not', async () => {
     const { src, manifest } = snapshotFixture();
     const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-dest-'));
+    assert.equal(datadirIsEmpty(dest), true);
     let pulls = 0;
     const decision = await resolveGuiBootstrap({
       argv: ['node', 'node/src/node.js'],
       env: { SHEAR_BOOTSTRAP: '1' },
-      emptyDatadir: true,
+      emptyDatadir: datadirIsEmpty(dest),
       pullLatest() {
         pulls += 1;
         return src;
@@ -89,12 +90,13 @@ describe('wallet node bootstrap', () => {
     const installed = readChainBin(path.join(dest, 'chain.bin'));
     assert.equal(installed.at(-1).height, manifest.height);
     const before = fs.readFileSync(path.join(dest, 'chain.bin'));
+    assert.equal(datadirIsEmpty(dest), false);
 
     let pullsAgain = 0;
     const again = await resolveGuiBootstrap({
       argv: ['node', 'node/src/node.js', '--bootstrap=https://boot.shear.digital/latest'],
       env: { SHEAR_BOOTSTRAP: '1', SHEAR_BOOTSTRAP_URL: 'https://boot.shear.digital' },
-      emptyDatadir: false,
+      emptyDatadir: datadirIsEmpty(dest),
       pullLatest() {
         pullsAgain += 1;
         throw new Error('bootstrap_pulled');
@@ -156,6 +158,29 @@ describe('wallet node bootstrap', () => {
     assert.equal(dirty.apply, false);
     assert.equal(dirty.resume, true);
     assert.deepEqual(fs.readFileSync(path.join(dest, 'chain.bin')), before);
+
+    const jsonlOnly = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-jsonl-'));
+    fs.writeFileSync(path.join(jsonlOnly, 'chain.jsonl'), '{"height":12}\n');
+    assert.equal(datadirIsEmpty(jsonlOnly), false);
+    let jsonlPulls = 0;
+    const jsonlResume = await resolveGuiBootstrap({
+      argv: ['node', 'node/src/node.js'],
+      env: { SHEAR_BOOTSTRAP: '1', SHEAR_BOOTSTRAP_URL: 'https://boot.shear.digital' },
+      emptyDatadir: datadirIsEmpty(jsonlOnly),
+      pullLatest() {
+        jsonlPulls += 1;
+        throw new Error('bootstrap_pulled');
+      },
+      applyLatest() {
+        throw new Error('bootstrap_missing');
+      },
+    });
+    assert.equal(jsonlPulls, 0);
+    assert.equal(jsonlResume.pull, false);
+    assert.equal(jsonlResume.apply, false);
+    assert.equal(jsonlResume.resume, true);
+    assert.equal(jsonlResume.missing, false);
+    assert.equal(fs.readFileSync(path.join(jsonlOnly, 'chain.jsonl'), 'utf8'), '{"height":12}\n');
   });
 
   it('pullPublishedBootstrap stores a pair an empty datadir can apply', async () => {
