@@ -302,6 +302,64 @@ void main() {
     expect(phone.listenPort, isNull);
   });
 
+  test('Resistance Start arms one full node and Stop returns to the privacy hop', () async {
+    var calls = 0;
+    final side = ShearNodeSidecar(
+      android: false,
+      nodeBinary: 'node',
+      dataDir: '/tmp/shear-node',
+      emptyDatadir: true,
+      startProcess: (binary, env, args) async {
+        calls += 1;
+      },
+    );
+    final first = await side.startResistanceNode();
+    expect(first, 'Restarting local node for new send path…');
+    expect(calls, 1);
+    expect(side.committed, ClosureSendMode.localNodeFull);
+    expect(side.running, isTrue);
+    expect(side.listenPort, 1111);
+    expect(side.lastEnv['SHEAR_SOLO'], '1');
+    expect(side.lastEnv['SHEAR_STRATUM'], '1111');
+    expect(side.lastEnv['SHEAR_STRATUM_BIND'], '127.0.0.1');
+    expect(side.lastEnv.containsKey('SHEAR_FAST_SYNC'), isFalse);
+    expect(side.lastArgs, isEmpty);
+    await side.startResistanceNode();
+    expect(calls, 1);
+    expect(side.running, isTrue);
+    expect(await side.stopResistanceNode(), 'Shear Privacy VPN — light wallet active');
+    expect(calls, 1);
+    expect(side.committed, ClosureSendMode.shearPrivacyVpn);
+    expect(side.running, isFalse);
+    expect(side.listenPort, isNull);
+    expect(side.showResistanceConsole, isFalse);
+
+    var phoneCalls = 0;
+    final phone = ShearNodeSidecar(
+      android: true,
+      nodeBinary: 'node',
+      dataDir: '/tmp/shear-node',
+      emptyDatadir: true,
+      startProcess: (binary, env, args) async {
+        phoneCalls += 1;
+      },
+    );
+    await phone.startResistanceNode();
+    expect(phoneCalls, 1);
+    expect(phone.committed, ClosureSendMode.localNode);
+    expect(phone.pending, ClosureSendMode.localNode);
+    expect(phone.listenPort, isNull);
+    expect(phone.lastEnv.containsKey('SHEAR_STRATUM'), isFalse);
+    expect(phone.lastEnv['SHEAR_FAST_SYNC'], '1');
+    expect(phone.lastEnv['SHEAR_SOLO'], '0');
+    await phone.startResistanceNode();
+    expect(phoneCalls, 1);
+    await phone.stopResistanceNode();
+    expect(phone.committed, ClosureSendMode.shearPrivacyVpn);
+    expect(phone.running, isFalse);
+    expect(phoneCalls, 1);
+  });
+
   test('closureSendMode round-trips and does not write continuumSendPath', () async {
     final dir = Directory.systemTemp.createTempSync('closure-mode-');
     addTearDown(() {
@@ -609,6 +667,88 @@ void main() {
     expect(hop.isUp, isFalse);
     expect(find.byKey(const Key('wallet-mode-connect-bare')), findsOneWidget);
     expect(find.text('CONNECT BARE'), findsOneWidget);
+    expect(find.text('Privacy hop'), findsNothing);
+  });
+
+  testWidgets('Resistance Start and Stop stay on the heading', (tester) async {
+    tester.view.physicalSize = const Size(800, 2800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final dir = Directory.systemTemp.createTempSync('plate1-resistance-start-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await tester.runAsync(() async {
+      await session.loadOrCreate();
+      await session.setPassword('test-pass-1');
+    });
+    final hop = PrivacyHopController(connectImpl: () async => true);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ShearLedger(),
+      startUnlocked: true,
+      skipPoolSync: true,
+      privacyHop: hop,
+    ));
+    await tester.pump();
+    await tester.pump();
+    final resistanceTab = find.descendant(
+      of: find.byType(NavigationBar),
+      matching: find.text('Resistance'),
+    );
+    await tester.tap(resistanceTab);
+    await tester.pump();
+    expect(find.byKey(const Key('resistance-start')), findsOneWidget);
+    expect(find.byKey(const Key('resistance-stop')), findsOneWidget);
+    expect(find.byKey(const Key('resistance-node-console')), findsNothing);
+    expect(find.text('Privacy hop'), findsNothing);
+    await tester.tap(find.byKey(const Key('resistance-start')));
+    await tester.pump();
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pump();
+    expect(find.byKey(const Key('wallet-mode-full-node')), findsOneWidget);
+    expect(find.text('FULL NODE MODE'), findsOneWidget);
+    expect(find.byKey(const Key('resistance-node-console')), findsOneWidget);
+    expect(hop.isUp, isFalse);
+    await tester.tap(find.byKey(const Key('resistance-stop')));
+    await tester.pump();
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pump();
+    expect(find.byKey(const Key('wallet-mode-vpn-hop')), findsOneWidget);
+    expect(find.text('VPN HOP MODE'), findsOneWidget);
+    expect(find.byKey(const Key('resistance-node-console')), findsNothing);
+    expect(find.byKey(const Key('resistance-start')), findsOneWidget);
+    expect(find.byKey(const Key('resistance-stop')), findsOneWidget);
+    expect(find.text('Privacy hop'), findsNothing);
+    expect(hop.isUp, isFalse);
+    await tester.tap(find.text('Closure'));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('settings-vpn-tunnel')));
+    await tester.tap(find.descendant(
+      of: find.byKey(const Key('settings-vpn-tunnel')),
+      matching: find.byType(Switch),
+    ));
+    await tester.pump();
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pump();
+    expect(hop.isUp, isTrue);
+    expect(find.byKey(const Key('wallet-mode-vpn-hop')), findsOneWidget);
+    await tester.tap(find.descendant(
+      of: find.byType(NavigationBar),
+      matching: find.text('Resistance'),
+    ));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('resistance-start')));
+    await tester.pump();
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pump();
+    expect(hop.isUp, isFalse);
+    expect(find.byKey(const Key('wallet-mode-full-node')), findsOneWidget);
+    await tester.tap(find.text('Closure'));
+    await tester.pump();
+    expect(tester.widget<SwitchListTile>(find.byKey(const Key('settings-vpn-tunnel'))).value, isFalse);
     expect(find.text('Privacy hop'), findsNothing);
   });
 

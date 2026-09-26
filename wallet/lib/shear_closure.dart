@@ -383,4 +383,20 @@ class ShearNodeSidecar {
     honest = false;
     return progress;
   }
+
+  /// Resistance Start. Desktop commits local-node-full (stratum 127.0.0.1:1111).
+  /// Android [select] coerces that to local node and does not arm stratum.
+  /// A full node that is already running is not spawned again.
+  Future<String> startResistanceNode() async {
+    select(ClosureSendMode.localNodeFull);
+    if (running && committed == pending) return progress;
+    return apply();
+  }
+
+  /// Resistance Stop. Leaves the light wallet on Shear Privacy VPN.
+  /// The device tunnel stays a separate tick; this does not open it.
+  Future<String> stopResistanceNode() async {
+    select(ClosureSendMode.shearPrivacyVpn);
+    return apply();
+  }
 }

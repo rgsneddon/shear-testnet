@@ -2121,13 +2121,30 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              'Resistance  η  —  Tx detail',
-              style: TextStyle(
-                color: fg,
-                fontFamily: 'Courier',
-                fontWeight: FontWeight.w700,
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Resistance  η  —  Tx detail',
+                    style: TextStyle(
+                      color: fg,
+                      fontFamily: 'Courier',
+                      fontWeight: FontWeight.w700,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                TextButton(
+                  key: const Key('resistance-start'),
+                  onPressed: () => _resistanceStart(context),
+                  child: Text('Start', style: TextStyle(color: fg, fontFamily: 'Courier')),
+                ),
+                TextButton(
+                  key: const Key('resistance-stop'),
+                  onPressed: () => _resistanceStop(context),
+                  child: Text('Stop', style: TextStyle(color: fg, fontFamily: 'Courier')),
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             if (header.isNotEmpty) ...[
@@ -3375,6 +3392,29 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ]);
     }
     return _card(kids);
+  }
+
+  Future<void> _resistanceStart(BuildContext context) async {
+    if (_vpnTunnelOn) {
+      await hop.disconnect();
+      _vpnTunnelOn = false;
+    }
+    await _applyResistancePath(context, sidecar.startResistanceNode);
+  }
+
+  Future<void> _resistanceStop(BuildContext context) async {
+    await _applyResistancePath(context, sidecar.stopResistanceNode);
+  }
+
+  Future<void> _applyResistancePath(BuildContext context, Future<String> Function() run) async {
+    final msg = await run();
+    session.closureSendMode = closureModeStored(sidecar.committed);
+    if (!widget.skipPoolSync) await session.persist();
+    if (!mounted || !context.mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg.isEmpty ? 'Send path applied' : msg)),
+    );
   }
 
   /// Tick joins the device tunnel and forces privacy-hop sends.
