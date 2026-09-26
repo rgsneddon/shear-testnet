@@ -26,7 +26,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const src = fs.readFileSync(fileURLToPath(new URL('./reserve_evm.js', import.meta.url)), 'utf8');
     assert.match(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET \}/);
     assert.match(src, /shearMagicBytes\(network = MAGIC_TESTNET\)/);
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v4');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v5');
   });
 
   it('deploys, takes a π lock, lets a late first deposit vote, and enacts +1', async () => {

@@ -34,6 +34,7 @@ contract Reserve {
     bytes32 public constant SHEAR_TESTNET = keccak256(bytes("shear-testnet-v2"));
     bytes32 public constant SHEAR_TESTNET_V3 = keccak256(bytes("shear-testnet-v3"));
     bytes32 public constant SHEAR_TESTNET_V4 = keccak256(bytes("shear-testnet-v4"));
+    bytes32 public constant SHEAR_TESTNET_V5 = keccak256(bytes("shear-testnet-v5"));
     bytes32 public constant SHEAR_TESTNET_V1 = keccak256(bytes("shear-testnet-v1"));
     bytes32 public constant SHEAR_MAINNET = keccak256(bytes("shear-v1"));
     bytes32 public constant PROGRAM_ID = keccak256(bytes("shear-reserve-v1"));
@@ -110,7 +111,7 @@ contract Reserve {
         if (id == 1 || id == 56 || id == 137 || id == 10 || id == 42161 || id == 43114 || id == 8453) {
             revert NotShear();
         }
-        if (magic != SHEAR_TESTNET && magic != SHEAR_TESTNET_V3 && magic != SHEAR_TESTNET_V4 && magic != SHEAR_TESTNET_V1 && magic != SHEAR_MAINNET) revert NotShear();
+        if (magic != SHEAR_TESTNET && magic != SHEAR_TESTNET_V3 && magic != SHEAR_TESTNET_V4 && magic != SHEAR_TESTNET_V5 && magic != SHEAR_TESTNET_V1 && magic != SHEAR_MAINNET) revert NotShear();
     }
 
     function epochDaysOf() public view returns (uint256) {

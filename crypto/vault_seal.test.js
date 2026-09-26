@@ -11,7 +11,7 @@ import {
   reorgBreaksVaultSeal,
   vaultSealBanner,
 } from './vault_seal.js';
-import { BOOTSTRAP_FIRST_HEIGHT, BOOTSTRAP_EVERY_BLOCKS, bootstrapCheckpoint, reorgBreaksCheckpoint } from '../node/src/bootstrap.js';
+import { CHECKPOINT_FIRST_HEIGHT, CHECKPOINT_EVERY_BLOCKS, bootstrapCheckpoint, reorgBreaksCheckpoint } from '../node/src/bootstrap.js';
 
 function destOf(id) {
   return vaultDest(id.address, { viewKey: id.viewKey });
@@ -58,12 +58,12 @@ describe('vault seal commitment', () => {
 
 describe('seal ancestry and adopt guard', () => {
   it('tip below 1000 has no seal; ancestry is vacuously true', () => {
-    assert.equal(bootstrapCheckpoint(999), 0);
-    assert.equal(bootstrapCheckpoint(1000), 1000);
-    assert.equal(bootstrapCheckpoint(1399), 1000);
-    assert.equal(bootstrapCheckpoint(1400), 1400);
-    assert.equal(BOOTSTRAP_FIRST_HEIGHT, 1000);
-    assert.equal(BOOTSTRAP_EVERY_BLOCKS, 400);
+    assert.equal(bootstrapCheckpoint(999, CHECKPOINT_FIRST_HEIGHT, CHECKPOINT_EVERY_BLOCKS), 0);
+    assert.equal(bootstrapCheckpoint(1000, CHECKPOINT_FIRST_HEIGHT, CHECKPOINT_EVERY_BLOCKS), 1000);
+    assert.equal(bootstrapCheckpoint(1399, CHECKPOINT_FIRST_HEIGHT, CHECKPOINT_EVERY_BLOCKS), 1000);
+    assert.equal(bootstrapCheckpoint(1400, CHECKPOINT_FIRST_HEIGHT, CHECKPOINT_EVERY_BLOCKS), 1400);
+    assert.equal(CHECKPOINT_FIRST_HEIGHT, 1000);
+    assert.equal(CHECKPOINT_EVERY_BLOCKS, 400);
     assert.equal(chainHasSealAncestry(chain(999), null), true);
     assert.equal(reorgBreaksVaultSeal(chain(999), chain(1000, 2), null), null);
     assert.equal(vaultSealBanner({ seal: null, ancestry: true, tipHeight: 999 }), '');
