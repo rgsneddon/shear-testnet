@@ -157,7 +157,7 @@
   <script src="../shared/shear-chrome.js"></script>
 
   <div class="banner" role="status">
-    <strong>Testnet Continuum 0.54.</strong> Mainnet not live · launch date not decided
+    <strong>Testnet Continuum 0.54.</strong> Mainnet not live · <span id="mainnet-countdown" data-until="2026-10-01T00:00:00+01:00">countdown to 1st October 2026</span>
     <span class="sep">·</span>
     Windows SmartScreen may flag unsigned builds
   </div>
@@ -288,5 +288,28 @@
   </footer>
   <script src="../js/site.js"></script>
   <script src="../shared/site-identity.js"></script>
+  <script>
+    (function () {
+      var el = document.getElementById('mainnet-countdown');
+      if (!el) return;
+      var until = Date.parse(el.getAttribute('data-until') || '');
+      if (!until) return;
+      function pad(n) { return (n < 10 ? '0' : '') + n; }
+      function tick() {
+        var left = until - Date.now();
+        if (!(left > 0)) {
+          el.textContent = '1st October 2026';
+          return;
+        }
+        var sec = Math.floor(left / 1000);
+        var days = Math.floor(sec / 86400);
+        var hours = Math.floor((sec % 86400) / 3600);
+        var mins = Math.floor((sec % 3600) / 60);
+        el.textContent = 'countdown to 1st October 2026 · ' + days + 'd ' + pad(hours) + 'h ' + pad(mins) + 'm ' + pad(sec % 60) + 's';
+      }
+      tick();
+      setInterval(tick, 1000);
+    })();
+  </script>
 </body>
 </html>

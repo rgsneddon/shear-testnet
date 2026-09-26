@@ -58,7 +58,7 @@
   <script src="shared/shear-chrome.js"></script>
 
 <div class="banner" role="status">
-    <strong>Testnet only.</strong> Mainnet is not live · launch date not decided
+    <strong>Testnet only.</strong> Mainnet is not live · <span id="mainnet-countdown" data-until="2026-10-01T00:00:00+01:00">countdown to 1st October 2026</span>
     <span class="banner-extra"><span class="sep">·</span> Windows miner may trigger SmartScreen (unsigned build)</span>
   </div>
 
@@ -203,7 +203,7 @@
       <div class="faq" role="list">
         <div class="faq-item open" role="listitem">
           <button class="faq-q" type="button" aria-expanded="true">Testnet vs mainnet?<span class="chev">▾</span></button>
-          <div class="faq-a">You are on <strong data-shear-network>shear-testnet-v5</strong>. Mainnet is not live and no launch date is set. Treat balances as disposable.</div>
+          <div class="faq-a">You are on <strong data-shear-network>shear-testnet-v5</strong>. Mainnet is not live and the public countdown is 1st October 2026. Treat balances as disposable.</div>
         </div>
         <div class="faq-item" role="listitem">
           <button class="faq-q" type="button" aria-expanded="false">Is Continuum instant?<span class="chev">▾</span></button>
@@ -257,5 +257,28 @@
   </footer>
   <script src="js/site.js"></script>
   <script src="shared/site-identity.js"></script>
+  <script>
+    (function () {
+      var el = document.getElementById('mainnet-countdown');
+      if (!el) return;
+      var until = Date.parse(el.getAttribute('data-until') || '');
+      if (!until) return;
+      function pad(n) { return (n < 10 ? '0' : '') + n; }
+      function tick() {
+        var left = until - Date.now();
+        if (!(left > 0)) {
+          el.textContent = '1st October 2026';
+          return;
+        }
+        var sec = Math.floor(left / 1000);
+        var days = Math.floor(sec / 86400);
+        var hours = Math.floor((sec % 86400) / 3600);
+        var mins = Math.floor((sec % 3600) / 60);
+        el.textContent = 'countdown to 1st October 2026 · ' + days + 'd ' + pad(hours) + 'h ' + pad(mins) + 'm ' + pad(sec % 60) + 's';
+      }
+      tick();
+      setInterval(tick, 1000);
+    })();
+  </script>
 </body>
 </html>

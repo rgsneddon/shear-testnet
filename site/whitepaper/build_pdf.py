@@ -164,7 +164,7 @@ def main() -> None:
         pdf,
         "The public sites — shear.digital, pool.shear.digital, explorer.shear.digital, mempool.shear.digital — "
         "are the face of the testnet. Live magic is shear-testnet-v5. Mainnet shear-v1 is not live "
-        "and a launch date is not decided. "
+        "and the public countdown is 1st October 2026. "
         "Testnet balances can vanish. Treat them as a practice run.",
     )
 

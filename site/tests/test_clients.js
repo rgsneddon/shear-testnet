@@ -163,7 +163,8 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /shear-wallet-0\.54-windows\.zip/);
     assert.match(admin, /shear-wallet-0\.54-android\.apk/);
     assert.match(admin, /Mainnet shear-v1 is not live/);
-    assert.match(admin, /A launch date is not decided/);
+    assert.match(admin, /The public countdown is 1st October 2026/);
+    assert.doesNotMatch(admin, /A launch date is not decided/);
     assert.doesNotMatch(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
     assert.doesNotMatch(admin, /2026-09-18T21:00:00\+01:00/);
     assert.doesNotMatch(admin, /11th September 2026/);
