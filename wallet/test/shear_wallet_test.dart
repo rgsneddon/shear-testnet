@@ -2752,7 +2752,7 @@ void main() {
     expect(dartMain.contains("Key('receive-qr')"), isTrue);
     expect(dartMain.contains("Key('show-qr')"), isTrue);
     expect(dartMain.contains("Key('unlock-biometrics')"), isTrue);
-    expect(dartMain.contains('SHE (circulation)'), isTrue);
+    expect(dartMain.contains('integralQCirculationLabel(ledger.circulatingNanos)'), isTrue);
     expect(dartMain.contains('Show QR code'), isTrue);
     expect(dartMain.contains("Key('scan-qr')"), isTrue);
     expect(dartMain.contains('ident.paymentCodeFull'), isTrue);
@@ -2762,11 +2762,12 @@ void main() {
     expect(dartMain.contains('_ScanReceiveQrPage'), isFalse);
     expect(dartMain.contains('decodeReceiveQrImage'), isTrue);
     expect(dartMain.contains('MobileScanner'), isTrue);
-    expect(dartMain.contains('localSendReady(ledger.pool'), isTrue);
     expect(dartMain.contains("Key('bio-seal')"), isTrue);
     expect(dartMain.contains('Sign pool pull'), isFalse);
     expect(dartMain.contains('_pollPull'), isTrue);
     final dartLedger = File('lib/shear_ledger.dart').readAsStringSync();
+    expect(dartLedger.contains('SHE (circulation)'), isTrue);
+    expect(dartLedger.contains('localSendReady(pool!.baseUrl)'), isTrue);
     expect(dartLedger.contains('signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos)'), isTrue);
     expect(dartLedger.contains('fetchPendingPull'), isTrue);
     const origin = 'https://dapp.example/stake-pool-a.json';
