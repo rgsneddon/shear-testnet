@@ -31,6 +31,11 @@ import { PHASE_B_GATE } from './chain.js';
 import { createRpc, RPC_PORT } from './rpc.js';
 import { createSoloStratum, SOLO_STRATUM_PORT, SOLO_STRATUM_BIND } from './solo_stratum.js';
 import { mintVorticeDeployKey, parseVorticeKey, VORTICE_KEY_PREFIX } from '../../crypto/vortex.js';
+import {
+  applyLatestBootstrap,
+  pullPublishedBootstrap,
+  DEFAULT_BOOTSTRAP_URL,
+} from './bootstrap.js';
 
 const VERSION = PRODUCT_VERSION;
 
@@ -187,38 +192,73 @@ export async function startP2pSync(opts = {}) {
 export { printHelp, helpTopics, nodeStatus, printNodeStatus };
 
 /**
- * Startup decision for the node the GUI wallet starts.
- * An empty datadir, SHEAR_BOOTSTRAP=1, and a bootstrap URL are ignored.
- * This does not pull or apply a snapshot and does not throw bootstrap_missing.
+ * Empty datadir and bootstrap forced on: install the published snapshot once.
+ * A datadir that already has blocks keeps that tip and syncs forward.
+ * A missing snapshot does not wipe a book. The node still starts.
  * The light-seeker that follows the live tip is a separate wallet path.
  */
-export function resolveGuiBootstrap({
+export async function resolveGuiBootstrap({
   argv = [],
   env = {},
   emptyDatadir = false,
   pullLatest = () => {
-    throw new Error('bootstrap_pulled');
+    throw new Error('bootstrap_missing');
   },
   applyLatest = () => {
     throw new Error('bootstrap_missing');
   },
 } = {}) {
   const args = Array.isArray(argv) ? argv : [];
-  const flagged = args.includes('--bootstrap')
-    || args.some((a) => String(a).startsWith('--bootstrap='));
   const fromArg = args.find((a) => String(a).startsWith('--bootstrap='));
+  const flagged = args.includes('--bootstrap') || Boolean(fromArg);
   const url = String(fromArg || (env && env.SHEAR_BOOTSTRAP_URL) || '')
     .replace(/^--bootstrap=/, '')
     .trim();
   const envOn = String((env && env.SHEAR_BOOTSTRAP) || '').trim() === '1';
-  const triggersIgnored = {
+  const seen = {
     emptyDatadir: emptyDatadir === true,
     env: envOn,
     url: flagged || url.length > 0,
   };
-  void pullLatest;
-  void applyLatest;
-  return { pull: false, apply: false, missing: false, triggersIgnored };
+  const forced = envOn || flagged || url.length > 0;
+  if (emptyDatadir !== true) {
+    return { pull: false, apply: false, missing: false, resume: true, seen };
+  }
+  if (!forced) {
+    return { pull: false, apply: false, missing: false, resume: false, seen };
+  }
+  const target = url || DEFAULT_BOOTSTRAP_URL;
+  let fromDir;
+  try {
+    fromDir = await pullLatest(target);
+  } catch (err) {
+    return {
+      pull: false,
+      apply: false,
+      missing: true,
+      resume: false,
+      seen,
+      reason: String(err?.message || err),
+    };
+  }
+  try {
+    const manifest = await applyLatest(fromDir);
+    return {
+      pull: true,
+      apply: true,
+      missing: false,
+      resume: false,
+      seen,
+      url: target,
+      height: Number(manifest?.height || 0),
+    };
+  } catch (err) {
+    const reason = String(err?.message || err);
+    if (reason.includes('bootstrap_datadir_not_empty')) {
+      return { pull: true, apply: false, missing: false, resume: true, seen, reason };
+    }
+    return { pull: true, apply: false, missing: true, resume: false, seen, reason };
+  }
 }
 
 function parseHelpTopic(argv) {
@@ -287,19 +327,32 @@ async function main() {
   const dataDirForBoot = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4');
   const emptyDatadir = !fs.existsSync(path.join(dataDirForBoot, 'chain.bin'))
     && !fs.existsSync(path.join(dataDirForBoot, 'chain.jsonl'));
-  const boot = resolveGuiBootstrap({
+  const boot = await resolveGuiBootstrap({
     argv,
     env: process.env,
     emptyDatadir,
-    pullLatest: () => {
-      throw new Error('bootstrap_pulled');
+    pullLatest: async (url) => {
+      const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-pull-'));
+      try {
+        await pullPublishedBootstrap(url, stage);
+        return stage;
+      } catch (err) {
+        fs.rmSync(stage, { recursive: true, force: true });
+        throw err;
+      }
     },
-    applyLatest: () => {
-      throw new Error('bootstrap_missing');
+    applyLatest: (fromDir) => {
+      try {
+        return applyLatestBootstrap(dataDirForBoot, fromDir);
+      } finally {
+        fs.rmSync(fromDir, { recursive: true, force: true });
+      }
     },
   });
-  if (boot.pull || boot.apply || boot.missing) {
-    throw new Error(boot.missing ? 'bootstrap_missing' : 'bootstrap_pulled');
+  if (boot.missing) {
+    console.error(JSON.stringify({ event: 'bootstrap', ok: false, reason: 'bootstrap_missing' }));
+  } else if (boot.apply) {
+    console.log(JSON.stringify({ event: 'bootstrap', ok: true, applied: true, height: boot.height || 0 }));
   }
   if (isP2pSyncArg(argv)) {
     const started = await startP2pSync();

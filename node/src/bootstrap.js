@@ -32,7 +32,7 @@ export function latestPaths(dir) {
 /** Reorg freeze. Not the snapshot ladder. */
 export const CHECKPOINT_FIRST_HEIGHT = 1000;
 export const CHECKPOINT_EVERY_BLOCKS = 400;
-/** Public snapshot cadence only. A start does not pull one. */
+/** Public snapshot cadence. An empty datadir applies one snapshot when bootstrap is forced. A book that already has blocks does not. */
 export const BOOTSTRAP_FIRST_HEIGHT = 200;
 export const BOOTSTRAP_EVERY_BLOCKS = 200;
 /** @deprecated internal lag; public cadence is FIRST + EVERY */
@@ -153,4 +153,34 @@ export function applyLatestBootstrap(dataDir, fromDir) {
   fs.writeFileSync(dest.json, `${JSON.stringify(manifest)}\n`);
   writeChainBin(chainBin, blocks);
   return manifest;
+}
+
+/** Public pair. Wallets fetch this only for an empty book. */
+export const DEFAULT_BOOTSTRAP_URL = 'https://boot.shear.digital';
+
+export function bootstrapBaseUrl(url) {
+  let base = String(url || DEFAULT_BOOTSTRAP_URL).trim();
+  if (!base) base = DEFAULT_BOOTSTRAP_URL;
+  base = base.replace(/\/+$/, '');
+  base = base.replace(/\/latest\.json$/i, '');
+  base = base.replace(/\/latest$/i, '');
+  return base;
+}
+
+/** Download latest.json and latest.bin into destDir/bootstrap. Does not touch chain.bin. */
+export async function pullPublishedBootstrap(url, destDir, fetchImpl = globalThis.fetch) {
+  const base = bootstrapBaseUrl(url);
+  const fetchFn = fetchImpl || globalThis.fetch;
+  if (typeof fetchFn !== 'function') throw new Error('bootstrap_missing');
+  const jsonRes = await fetchFn(`${base}/latest.json`);
+  if (!jsonRes?.ok) throw new Error('bootstrap_missing');
+  const jsonBuf = Buffer.from(await jsonRes.arrayBuffer());
+  const binRes = await fetchFn(`${base}/latest.bin`);
+  if (!binRes?.ok) throw new Error('bootstrap_missing');
+  const binBuf = Buffer.from(await binRes.arrayBuffer());
+  const dir = path.join(destDir, 'bootstrap');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'latest.json'), jsonBuf);
+  fs.writeFileSync(path.join(dir, 'latest.bin'), binBuf);
+  return destDir;
 }

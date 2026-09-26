@@ -2119,11 +2119,12 @@ class ShearLedger {
   }
 
   /// Move immature credits into spendable once the committing block is accepted.
+  /// Six confirmations is the fingerprint floor. A freeze banner does not hold them.
   void settleTo(int tip) {
     if (tip > _sealedHeight) _sealedHeight = tip;
     final keep = <({String dest, double amount, int height})>[];
     for (final row in _immature) {
-      if (!creditsFrozen && confirmationsOf(row.height, tip) >= spendableConfirmations) {
+      if (confirmationsOf(row.height, tip) >= spendableConfirmations) {
         _spendable[row.dest] = (_spendable[row.dest] ?? 0) + row.amount;
         if (row.height > _settledHeight) _settledHeight = row.height;
       } else {
@@ -2135,7 +2136,7 @@ class ShearLedger {
       ..addAll(keep);
     for (var i = 0; i < _txs.length; i++) {
       final h = _txs[i].height ?? 0;
-      if (!creditsFrozen && confirmationsOf(h, tip) >= spendableConfirmations) {
+      if (confirmationsOf(h, tip) >= spendableConfirmations) {
         _txs[i] = _txs[i].copyWith(confirmed: true);
       }
     }
@@ -3247,6 +3248,33 @@ class ShearLedger {
     return rows;
   }
 
+  /// Coins still arriving: incoming rows with fewer than 6 confirmations.
+  /// Not added into Spendable. A row already counted as immature is not summed twice.
+  double unconfirmedIncomingShe(String restFrame, {String? paymentCode}) {
+    final keys = ownedAddresses(restFrame, paymentCode: paymentCode).toSet();
+    const incoming = {'receive', 'coinbase', 'blockfound', 'pool-withdraw', 'withdraw'};
+    var n = 0.0;
+    final covered = <String>{};
+    for (final t in _txs) {
+      if (!incoming.contains(t.kind) || t.amount <= 1e-12) continue;
+      final dest = payKey(t.to);
+      if (!keys.contains(t.to) && !keys.contains(dest)) continue;
+      final h = t.height ?? 0;
+      if (h >= 1 && confirmationsOf(h) >= spendableConfirmations) continue;
+      n += t.amount;
+      covered.add('$dest|$h|${t.amount}');
+      covered.add('${t.to}|$h|${t.amount}');
+    }
+    for (final row in _immature) {
+      if (!keys.contains(row.dest) || row.amount <= 1e-12) continue;
+      if (confirmationsOf(row.height) >= spendableConfirmations) continue;
+      final mark = '${row.dest}|${row.height}|${row.amount}';
+      if (covered.contains(mark)) continue;
+      n += row.amount;
+    }
+    return n > 1e-12 ? n : 0.0;
+  }
+
   /// Pool-custodial pot still confirming toward π auto-pay.
   /// One source: pull-book owedPi, else in-flight pool-withdraw amounts, else
   /// a pot field. Never their sum. Included in [paintedContinuumSpendable].
@@ -4150,25 +4178,37 @@ class ShearPoolClient {
     }
   }
 
+  Future<Map<String, dynamic>> _postOnce(String base, String path, Map<String, dynamic> body) async {
+    final req = await _http.postUrl(Uri.parse('$base$path'));
+    req.persistentConnection = false;
+    req.headers.contentType = ContentType.json;
+    final payload = utf8.encode(jsonEncode(body));
+    final dump = Platform.environment['SHEAR_DUMP_SEND'];
+    if (dump != null && dump.isNotEmpty && path.contains('send')) {
+      File(dump).writeAsBytesSync(payload);
+    }
+    req.contentLength = payload.length;
+    req.add(payload);
+    final res = await req.close();
+    final text = await utf8.decodeStream(res);
+    return _decodePoolBody(res.statusCode, res.headers.contentType?.mimeType, text);
+  }
+
   Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body) async {
     await _ensureBase();
+    final first = _pinned ?? walletSendBase(baseUrl);
     try {
-      final req = await _http.postUrl(Uri.parse('$baseUrl$path'));
-      req.persistentConnection = false;
-      req.headers.contentType = ContentType.json;
-      final payload = utf8.encode(jsonEncode(body));
-      final dump = Platform.environment['SHEAR_DUMP_SEND'];
-      if (dump != null && dump.isNotEmpty && path.contains('send')) {
-        File(dump).writeAsBytesSync(payload);
-      }
-      req.contentLength = payload.length;
-      req.add(payload);
-      final res = await req.close();
-      final text = await utf8.decodeStream(res);
-      return _decodePoolBody(res.statusCode, res.headers.contentType?.mimeType, text);
+      return await _postOnce(first, path, body);
     } on FormatException {
       if (_pinned == null) _sync?.noteFailure();
       throw StateError(kErrPoolHtml);
+    } on SocketException {
+      if (_pinned != null || isPublicPoolHttp(first)) {
+        if (_pinned == null) _sync?.noteFailure();
+        rethrow;
+      }
+      if (_sync != null) _sync!.liveBase = kPublicPoolHttp;
+      return _postOnce(kPublicPoolHttp, path, body);
     } catch (_) {
       if (_pinned == null) _sync?.noteFailure();
       rethrow;

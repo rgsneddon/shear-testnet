@@ -1594,8 +1594,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   Widget _continuum(BuildContext context, ShearIdentity ident) {
-    final owedPi = ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode);
-    final spend = paintedContinuumSpendable(ledger, ident.address, paymentCode: ident.paymentCode);
+    final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
+    final unconfirmed = ledger.unconfirmedIncomingShe(ident.address, paymentCode: ident.paymentCode);
     final pending = ledger.pendingTxs(ident.address);
     final reserveDest = _reserveDestOf(ident);
     final inReserveNanos = reserveDest == null ? 0 : reserve.portal(reserveDest).nanos;
@@ -1613,10 +1613,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         ),
       ),
       Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
-      if (owedPi > 0)
+      if (unconfirmed > 0)
         Text(
-          'Next sum spendable in ${(_owedMatureLeftMs(owedPi) / 1000).ceil()}s',
-          key: const Key('continuum-owed-mature'),
+          'Unconfirmed  ${formatShe(unconfirmed)} SHE',
+          key: const Key('continuum-unconfirmed'),
           style: TextStyle(color: shearMutedOf(context), fontSize: 13),
         ),
       if (fundsNotCorrectlyShown(
@@ -1659,7 +1659,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (spend == 0 && pending.isEmpty) ...[
         const SizedBox(height: 8),
         Text(
-          'Sync a local node at 127.0.0.1:18332. Fallback sync https://pool.shear.digital if local RPC is down; pool HUD is not spendable. Hashbonus on Copy dest is protocol-spendable after 6 confs. Spendable includes confirmed SHE and owed-toward-π that has reached payout. This book starts empty until your first landing.',
+          'Sync a local node at 127.0.0.1:18332. Fallback sync https://pool.shear.digital if local RPC is down; pool HUD is not spendable. Spendable is coins with 6 confirmations. Unconfirmed is coins still arriving. This book starts empty until your first landing.',
           key: const Key('continuum-empty-honesty'),
           style: TextStyle(color: shearMutedOf(context), fontSize: 12),
         ),
@@ -2147,6 +2147,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               ],
             ),
             const SizedBox(height: 8),
+            Text(
+              sidecar.progress.isEmpty
+                  ? 'Start continues from the saved tip. Stop saves the current tip.'
+                  : sidecar.progress,
+              key: const Key('resistance-sync-height'),
+              style: TextStyle(color: fg, fontFamily: 'Courier', fontSize: 12, height: 1.35),
+            ),
+            const SizedBox(height: 8),
             if (header.isNotEmpty) ...[
               SelectableText(
                 header,
@@ -2257,35 +2265,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   ),
                 ],
               ),
-            Column(
-              key: const Key('resistance-vpn-console'),
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'VPN tunnel',
-                  key: const Key('resistance-vpn-console-title'),
-                  style: TextStyle(color: fg, fontFamily: 'Courier', fontWeight: FontWeight.w700),
-                ),
-                SizedBox(
-                  key: const Key('resistance-vpn-console-scroll'),
-                  height: 12 * 1.2 * 9,
-                  child: SingleChildScrollView(
-                    controller: _vpnConsoleScroll,
-                    child: hop.log.isEmpty
-                        ? Text(
-                            'Waiting for VPN tunnel…',
-                            key: const Key('resistance-vpn-console-empty'),
-                            style: TextStyle(color: fg, fontFamily: 'Courier', fontSize: 12, height: 1.2),
-                          )
-                        : SelectableText(
-                            (hop.log.length > 80 ? hop.log.sublist(hop.log.length - 80) : hop.log).join('\n'),
-                            key: const Key('resistance-vpn-console-log'),
-                            style: TextStyle(color: fg, fontFamily: 'Courier', fontSize: 12, height: 1.2),
-                          ),
-                  ),
-                ),
-              ],
-            ),
           ],
         ),
       ),
@@ -2473,19 +2452,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   bool get _reserveSendReady {
     final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
-    if (unprivateAmountPermitted(she)) return true;
-    if (sidecar.committed != ClosureSendMode.shearPrivacyVpn &&
-        sidecar.committed != ClosureSendMode.connectBare) {
+    if (!unprivateAmountPermitted(she)) return false;
+    if (sidecar.committed == ClosureSendMode.localNode) {
       return sidecar.honest || walletAtTip(_syncLabel);
     }
-    final tun = hop.tunVerified && !hop.probeOnly;
-    return reserveVaultSendReady(
-      skipPoolSync: widget.skipPoolSync,
-      enforceHopGate: widget.enforceReserveHopGate,
-      poolUrl: ledger.pool?.baseUrl,
-      hop: tun ? PrivacyHopState.up : PrivacyHopState.off,
-      unprivateConfirmed: _reserveUnprivateOk,
-    );
+    return true;
   }
 
   Future<void> _reserveLockPosted(
@@ -2908,12 +2879,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final draft = _reserveVoteDraft ?? p.vote;
     final yours = _panel(context, [
             const Text('The Reserve', style: TextStyle(fontWeight: FontWeight.w700)),
-            if ((!widget.skipPoolSync || widget.enforceReserveHopGate) &&
-                ledger.pool != null &&
-                !localSendReady(ledger.pool!.baseUrl) &&
-                !hop.isUp)
+            if (sidecar.committed == ClosureSendMode.localNode && sidecar.sendBlocked)
               Text(
-                reservePublicWaitCopy(unprivateConfirmed: _reserveUnprivateOk),
+                sidecar.sendBlockedCopy,
                 key: const Key('reserve-local-wait'),
                 style: TextStyle(color: shearMutedOf(context)),
               ),
@@ -3038,11 +3006,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 key: const Key('reserve-send'),
                 onPressed: _reserveSendReady ? () => _reserveSend(context, ident) : null,
                 child: const Text('Deposit sum'),
-              ),
-              TextButton(
-                key: const Key('reserve-send-unprivate'),
-                onPressed: () => _reserveUnprivateConfirm(context),
-                child: const Text(kUnprivateSendLabel),
               ),
               if ((p.nanos > 0 && reserve.epochIsOver(now)) || p.claimableRewards > 0)
                 FilledButton(
@@ -3462,7 +3425,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
       const SizedBox(height: 16),
       Text('Send path', key: const Key('closure-send-path'), style: const TextStyle(fontWeight: FontWeight.w700)),
-      const Text('Applies to every Continuum send. Choose one, then Apply.'),
+      const Text('Two paths. Choose one, then Apply.'),
       RadioListTile<ClosureSendMode>(
         key: const Key('closure-send-path-bare'),
         contentPadding: EdgeInsets.zero,
@@ -3473,33 +3436,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         onChanged: (v) => setState(() => sidecar.select(v!)),
       ),
       RadioListTile<ClosureSendMode>(
-        key: const Key('closure-send-path-vpn'),
-        contentPadding: EdgeInsets.zero,
-        value: ClosureSendMode.shearPrivacyVpn,
-        groupValue: sidecar.pending,
-        title: const Text('Shear Privacy VPN'),
-        subtitle: const Text('Light wallet. Mask your Continuum IP from the public node. Zero VPN fee.'),
-        onChanged: (v) => setState(() => sidecar.select(v!)),
-      ),
-      RadioListTile<ClosureSendMode>(
         key: const Key('closure-send-path-local'),
         contentPadding: EdgeInsets.zero,
         value: ClosureSendMode.localNode,
         groupValue: sidecar.pending,
-        title: const Text('Local Node (no stratum)'),
+        title: const Text('Run node'),
         subtitle: const Text(kLocalNodeModeCopy),
         onChanged: (v) => setState(() => sidecar.select(v!)),
       ),
-      if (kIsWeb || !Platform.isAndroid)
-        RadioListTile<ClosureSendMode>(
-          key: const Key('closure-send-path-full'),
-          contentPadding: EdgeInsets.zero,
-          value: ClosureSendMode.localNodeFull,
-          groupValue: sidecar.pending,
-          title: const Text('Local Node (full)'),
-          subtitle: const Text(kLocalNodeFullModeCopy),
-          onChanged: (v) => setState(() => sidecar.select(v!)),
-        ),
       FilledButton(
         key: const Key('closure-apply'),
         onPressed: () async {
@@ -3519,38 +3463,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         },
         child: const Text('Apply'),
       ),
-      if (sidecar.showSoloMine) ...[
-        const SizedBox(height: 8),
-        const Text('Solo mine', key: Key('closure-solo-mine')),
-        const Text('Point ShearK / solo stratum at this wallet node:'),
-        const SelectableText('127.0.0.1:1111', key: Key('closure-solo-mine-endpoint')),
-        const Text('Loopback only. Stratum is not exposed on the public internet.'),
-        TextButton(
-          key: const Key('closure-solo-mine-copy'),
-          onPressed: () async {
-            await Clipboard.setData(const ClipboardData(text: '127.0.0.1:1111'));
-            if (!context.mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied')));
-          },
-          child: const Text('Copy'),
-        ),
-      ],
       const SizedBox(height: 16),
       const Text('Settings', style: TextStyle(fontWeight: FontWeight.w700)),
-      SwitchListTile(
-        key: const Key('settings-vpn-tunnel'),
-        contentPadding: EdgeInsets.zero,
-        title: const Text('Click to join the VPN tunnel'),
-        subtitle: Text(
-          _vpnTunnelOn
-              ? (hop.vpnIp != null && hop.vpnIp!.isNotEmpty
-                  ? 'Device tunnel ${hop.vpnIp}. IPv4 and IPv6. Stays up until you uncheck, close the wallet, or apply a full node.'
-                  : 'Waiting for this device to approve the tunnel. IPv4 and IPv6. Extended controls stay off.')
-              : 'IPv4 and IPv6 only. Extended controls stay off. This device asks you to approve the tunnel. Uncheck to disconnect and return to Connect bare.',
-        ),
-        value: _vpnTunnelOn,
-        onChanged: (on) => _setVpnTunnel(on),
-      ),
       SwitchListTile(
         key: const Key('settings-biometrics'),
         contentPadding: EdgeInsets.zero,

@@ -30,6 +30,27 @@ bool isPublicPoolHttp(String? url) {
 /// Tip sync may use public HTTP. Reserve/Flow spends must not.
 bool localSendReady(String? url) => isLocalRpcUrl(url) && !isPublicPoolHttp(url);
 
+/// Ports a user node or the local pool listens on.
+/// An ephemeral socket such as 127.0.0.1:57299 is not a send target.
+bool isWalletSendSeed(String? url) {
+  if (url == null || url.isEmpty) return false;
+  if (isPublicPoolHttp(url)) return true;
+  final u = Uri.tryParse(url);
+  if (u == null) return false;
+  final host = u.host.toLowerCase();
+  if (host != '127.0.0.1' && host != 'localhost' && host != '::1') return false;
+  return u.port == 18332 || u.port == 8088;
+}
+
+/// Where a send is posted. A refused ephemeral loopback is not used.
+String walletSendBase(String? url) {
+  if (isWalletSendSeed(url)) {
+    final s = url!.trim();
+    return s.endsWith('/') ? s.substring(0, s.length - 1) : s;
+  }
+  return kPublicPoolHttp;
+}
+
 /// True only for the live ADMITv2 book. A leftover v3/v2 node is dropped.
 bool isLiveBookStats(Map<String, dynamic> stats) {
   final blob = [

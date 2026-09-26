@@ -11,7 +11,10 @@ import {
   shouldPublishBootstrap,
   bootstrapCheckpoint,
   reorgBreaksCheckpoint,
+  CHECKPOINT_FIRST_HEIGHT,
+  CHECKPOINT_EVERY_BLOCKS,
 } from '../src/bootstrap.js';
+import { publishOnce, bootstrapPublishIntervalMs, BOOTSTRAP_PUBLISH_INTERVAL_MS } from '../src/publish_bootstrap.js';
 
 function prunedBlock(height, hashByte) {
   return {
@@ -85,18 +88,23 @@ describe('latest-only prune bootstrap', () => {
     assert.throws(() => applyLatestBootstrap(dest, src), /bootstrap_datadir_not_empty/);
   });
 
-  it('publishes at 1000 then every 400 blocks, not every height', () => {
-    assert.equal(bootstrapCheckpoint(999), 0);
-    assert.equal(bootstrapCheckpoint(1000), 1000);
-    assert.equal(bootstrapCheckpoint(1008), 1000);
-    assert.equal(bootstrapCheckpoint(1399), 1000);
-    assert.equal(bootstrapCheckpoint(1400), 1400);
-    assert.equal(bootstrapCheckpoint(1800), 1800);
-    assert.equal(shouldPublishBootstrap(999, 0), false);
-    assert.equal(shouldPublishBootstrap(1000, 0), true);
-    assert.equal(shouldPublishBootstrap(1008, 1000), false);
-    assert.equal(shouldPublishBootstrap(1400, 1000), true);
-    assert.equal(shouldPublishBootstrap(1400, 1400), false);
+  it('snapshot cadence is 200 and the reorg freeze stays 1000 then 400', () => {
+    assert.equal(bootstrapCheckpoint(199), 0);
+    assert.equal(bootstrapCheckpoint(200), 200);
+    assert.equal(bootstrapCheckpoint(399), 200);
+    assert.equal(bootstrapCheckpoint(400), 400);
+    assert.equal(shouldPublishBootstrap(199, 0), false);
+    assert.equal(shouldPublishBootstrap(200, 0), true);
+    assert.equal(shouldPublishBootstrap(399, 200), false);
+    assert.equal(shouldPublishBootstrap(400, 200), true);
+    assert.equal(shouldPublishBootstrap(400, 400), false);
+    const freeze = [CHECKPOINT_FIRST_HEIGHT, CHECKPOINT_EVERY_BLOCKS];
+    assert.equal(bootstrapCheckpoint(999, ...freeze), 0);
+    assert.equal(bootstrapCheckpoint(1000, ...freeze), 1000);
+    assert.equal(bootstrapCheckpoint(1008, ...freeze), 1000);
+    assert.equal(bootstrapCheckpoint(1399, ...freeze), 1000);
+    assert.equal(bootstrapCheckpoint(1400, ...freeze), 1400);
+    assert.equal(bootstrapCheckpoint(1800, ...freeze), 1800);
   });
 
   it('refuses a reorg that replaces the 1000-then-400 checkpoint hash', () => {
@@ -128,5 +136,24 @@ describe('latest-only prune bootstrap', () => {
     assert.match(html, /not on every prune/i);
     assert.equal(/Overwritten at every prune/i.test(html), false);
     assert.equal(html.includes('FAST_SYNC=1'), false);
+    assert.match(html, /shear-testnet-v5/);
+  });
+
+  it('publisher leaves the chain alone when chain.bin is absent', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-miss-'));
+    const got = publishOnce({ dataDir: dir, publishDir: path.join(dir, 'out') });
+    assert.equal(got.ok, false);
+    assert.equal(got.reason, 'no_chain');
+    assert.equal(fs.existsSync(path.join(dir, 'chain.bin')), false);
+    assert.equal(fs.existsSync(path.join(dir, 'out', 'latest.bin')), false);
+  });
+
+  it('republishes the latest snapshot every 6 seconds', () => {
+    assert.equal(BOOTSTRAP_PUBLISH_INTERVAL_MS, 6000);
+    assert.equal(bootstrapPublishIntervalMs({}), 6000);
+    assert.equal(bootstrapPublishIntervalMs({ SHEAR_BOOT_INTERVAL_MS: '6000' }), 6000);
+    assert.equal(bootstrapPublishIntervalMs({ SHEAR_BOOT_INTERVAL_MS: '1000' }), 6000);
+    const unit = fs.readFileSync(new URL('../../deploy/shear-bootstrap-publish.service', import.meta.url), 'utf8');
+    assert.match(unit, /SHEAR_BOOT_INTERVAL_MS=6000/);
   });
 });

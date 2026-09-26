@@ -636,6 +636,13 @@ void main() {
     expect(localSendReady(kLocalNodeRpc), isTrue);
     expect(kWalletDefaultSeed, contains('127.0.0.1'));
     expect(kWalletDefaultSeed.contains('pool.shear.digital'), isFalse);
+    expect(isWalletSendSeed('http://127.0.0.1:57299'), isFalse);
+    expect(walletSendBase('http://127.0.0.1:57299'), kPublicPoolHttp);
+    expect(isWalletSendSeed('http://127.0.0.1:18332'), isTrue);
+    expect(isWalletSendSeed('http://127.0.0.1:8088'), isTrue);
+    expect(isWalletSendSeed(kPublicPoolHttp), isTrue);
+    expect(walletSendBase('http://127.0.0.1:18332'), 'http://127.0.0.1:18332');
+    expect(walletSendBase('http://127.0.0.1:8088/'), 'http://127.0.0.1:8088');
   });
 
   test('Flow send of short she1 fingerprint maps to full-she1 advisory, not generic not-sent', () async {
@@ -1482,7 +1489,7 @@ void main() {
     expect(ledger.policyAvailable(id.address, paymentCode: id.paymentCode), 1);
   });
 
-  test('getpolicy freeze holds Continuum pending past 6; reorg bounces rows', () {
+  test('getpolicy freeze does not hold Continuum past 6; reorg bounces rows', () {
     final id = createIdentity();
     final ledger = ShearLedger();
     expect(ledger.confirmedNeed, 30);
@@ -1498,14 +1505,19 @@ void main() {
     expect(ledger.freezeBanner, contains('elevated'));
     expect(ledger.confirmedNeed, 60);
     ledger.confirmRound(address: id.address, pot: 1, height: 1);
-    ledger.settleTo(12);
+    expect(ledger.unconfirmedIncomingShe(id.address, paymentCode: id.paymentCode), 1);
+    ledger.settleTo(5);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+    expect(ledger.unconfirmedIncomingShe(id.address, paymentCode: id.paymentCode), 1);
+    ledger.settleTo(6);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 1);
+    expect(ledger.unconfirmedIncomingShe(id.address, paymentCode: id.paymentCode), 0);
+    ledger.settleTo(12);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 1);
     ledger.applyPolicy({'frozen': false, 'operational': {'pool_merchant': 30}});
     expect(ledger.creditsFrozen, isFalse);
     expect(ledger.freezeBanner, isEmpty);
     expect(ledger.confirmedNeed, 30);
-    ledger.settleTo(12);
-    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 1);
     ledger.bounceHeights([1]);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(1));
   });
@@ -4892,7 +4904,7 @@ void main() {
     }
   });
 
-  testWidgets('Reserve has no Privacy hop and unprivate confirm unlocks Send',
+  testWidgets('Reserve has no Privacy hop and a positive amount unlocks Deposit',
       (tester) async {
     _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-reserve-nohop-');
@@ -4925,12 +4937,9 @@ void main() {
     expect(find.byKey(const Key('reserve-ip-disclaimer')), findsOneWidget);
     expect(find.text(kReserveIpDisclaimer), findsOneWidget);
     expect(find.text('Privacy hop'), findsNothing);
-    expect(find.byKey(const Key('reserve-send-unprivate')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
-    await tester.ensureVisible(find.byKey(const Key('reserve-send-unprivate')));
-    await tester.tap(find.byKey(const Key('reserve-send-unprivate')));
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
+    await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
     await tester.pump();
     expect(hop.isUp, isFalse);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
@@ -5072,7 +5081,7 @@ void main() {
     expect(verified['sealOk'], true);
   });
 
-  testWidgets('unprivate Reserve Sign posts a sealed lock without unsigned', (tester) async {
+  testWidgets('Reserve Sign posts a sealed lock without unsigned', (tester) async {
     _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-reserve-lock-ui-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -5103,14 +5112,11 @@ void main() {
     expect(find.text('Vortex'), findsOneWidget);
     await tester.tap(find.text('Vortex'));
     await tester.pump();
+    expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
-    await tester.ensureVisible(find.byKey(const Key('reserve-send-unprivate')));
-    await tester.tap(find.byKey(const Key('reserve-send-unprivate')));
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
+    await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
     await tester.pump();
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
-    await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
     await tester.ensureVisible(find.byKey(const Key('reserve-send')));
     await tester.tap(find.byKey(const Key('reserve-send')));
     await tester.pump();
@@ -5129,7 +5135,7 @@ void main() {
     expect(postedOut['commit'], isNotNull);
   });
 
-  testWidgets('Reserve unprivate confirm uses already-on-VPN copy then unlocks Send', (tester) async {
+  testWidgets('Reserve deposit on Connect bare does not ask for a VPN', (tester) async {
     _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-reserve-unprivate-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -5157,20 +5163,17 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Vortex'));
     await tester.pump();
+    expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
+    expect(find.byKey(const Key('reserve-unprivate-confirm')), findsNothing);
+    expect(find.text(kReserveIpDisclaimer), findsOneWidget);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
-    await tester.ensureVisible(find.byKey(const Key('reserve-send-unprivate')));
-    await tester.tap(find.byKey(const Key('reserve-send-unprivate')));
-    await tester.pump();
-    expect(find.byKey(const Key('reserve-unprivate-confirm')), findsOneWidget);
-    expect(find.text(kUnprivateConfirmLabel), findsOneWidget);
-    expect(find.text(kUnprivateConfirmHelper), findsOneWidget);
-    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
+    await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
     await tester.pump();
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
     expect(hop.isUp, isFalse);
   });
 
-  testWidgets('Reserve unprivate banner replaces the hop-wait line', (tester) async {
+  testWidgets('Reserve on Connect bare has no hop-wait line', (tester) async {
     _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-reserve-unprivate-banner-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -5203,17 +5206,13 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    expect(find.byKey(const Key('reserve-local-wait')), findsOneWidget);
-    expect(find.text(kReserveHopWaitCopy), findsOneWidget);
+    expect(find.byKey(const Key('reserve-local-wait')), findsNothing);
+    expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
+    expect(find.text(kReserveHopWaitCopy), findsNothing);
     expect(find.text(kUnprivateUnlockedBanner), findsNothing);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
-    await tester.ensureVisible(find.byKey(const Key('reserve-send-unprivate')));
-    await tester.tap(find.byKey(const Key('reserve-send-unprivate')));
+    await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
     await tester.pump();
-    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
-    await tester.pump();
-    expect(find.text(kUnprivateUnlockedBanner), findsOneWidget);
-    expect(find.text(kReserveHopWaitCopy), findsNothing);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
     expect(hop.isUp, isFalse);
   });

@@ -113,6 +113,22 @@ function potIdsOf(block) {
   return ids;
 }
 
+/** Wallet-readable tip. Stop saves this height; Start reads it and syncs forward. */
+export function writeTipFile(dir, tip) {
+  const height = Math.max(0, Math.floor(Number(tip?.height || 0)));
+  let hash = '';
+  if (tip?.hash != null && tip.hash !== '') {
+    hash = Buffer.isBuffer(tip.hash) || tip.hash instanceof Uint8Array
+      ? Buffer.from(tip.hash).toString('hex')
+      : String(tip.hash);
+  }
+  const tipPath = path.join(dir, 'tip.json');
+  const tmp = `${tipPath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify({ height, hash })}\n`);
+  fs.renameSync(tmp, tipPath);
+  return { height, hash };
+}
+
 export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
   reorgHaltDepth = Number(process.env.SHEAR_REORG_HALT_DEPTH || 0),
@@ -377,6 +393,7 @@ export function createStore(dir, {
   }
 
   bootVault();
+  writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
 
   function destSpendableNanos(addr, tipH, chain = blocks, rows = explorer) {
     // A positive explorer sum must not skip the sealed coinbase notes.
@@ -396,6 +413,7 @@ export function createStore(dir, {
     const row = archiveFast ? pruneSamples(block) : block;
     appendChainBin(binFile, row);
     fs.appendFileSync(file, `${JSON.stringify(toRow(row))}\n`);
+    writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
   }
 
   function rewriteChain() {
@@ -405,6 +423,7 @@ export function createStore(dir, {
     const body = blocks.map((b) => JSON.stringify(toRow(b))).join('\n');
     fs.writeFileSync(tmpJson, body ? `${body}\n` : '');
     fs.renameSync(tmpJson, file);
+    writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
   }
 
   function tip() {

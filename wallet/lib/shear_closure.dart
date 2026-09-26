@@ -8,25 +8,20 @@ const kClosureModeVpn = 'shearPrivacyVpn';
 const kClosureModeLocal = 'localNode';
 const kClosureModeFull = 'localNodeFull';
 
-/// Connect bare is the new-session default. A missing or empty stored mode
-/// opens bare. An explicit VPN string stays on the hop. Unknown text stays
-/// on VPN so a corrupt value is not dropped onto a public send.
-/// Legacy fullNode becomes local-node-full on desktop and local node on Android.
+/// Connect bare is the new-session default. Stored hop and full-node values
+/// fold into the two 0.55 paths: bare, or the one syncing node.
 ClosureSendMode closureModeFromStored(String? raw, {required bool android}) {
   switch (raw) {
     case kClosureModeLocal:
-      return ClosureSendMode.localNode;
     case kClosureModeFull:
     case 'fullNode':
-      return android ? ClosureSendMode.localNode : ClosureSendMode.localNodeFull;
-    case kClosureModeVpn:
-      return ClosureSendMode.shearPrivacyVpn;
+      return ClosureSendMode.localNode;
     case kClosureModeBare:
+    case kClosureModeVpn:
     case null:
     case '':
-      return ClosureSendMode.connectBare;
     default:
-      return ClosureSendMode.shearPrivacyVpn;
+      return ClosureSendMode.connectBare;
   }
 }
 
@@ -43,10 +38,8 @@ String closureModeStored(ClosureSendMode mode) {
   }
 }
 
-/// B does not listen. C desktop is loopback 1111. Android never arms stratum.
+/// The wallet node does not listen for miners. Stratum stays on the fleet.
 int? closureStratumPort(ClosureSendMode mode, {required bool android}) {
-  if (android) return null;
-  if (mode == ClosureSendMode.localNodeFull) return 1111;
   return null;
 }
 
@@ -105,18 +98,62 @@ const kDesktopNodeMissingCopy =
 
 /// The Android pack does not ship a node runtime. Do not tell the user to extract the desktop zip.
 const kAndroidNodeMissingCopy =
-    'This Android pack does not include a node runtime, so a local node cannot start on the phone. '
-    'Continuum stays on Shear Privacy VPN. The light seeker still follows the live tip.';
+    'This Android pack does not include a node runtime, so Run node cannot start on the phone. '
+    'Continuum stays on Connect bare. The light seeker still follows the live tip.';
 
-/// Local-node mode copy. The GUI node syncs from peers. It does not auto-bootstrap.
+/// One wallet node. Start resumes from the saved tip. Stop leaves that tip on disk.
 const kLocalNodeModeCopy =
-    'Run a local Shear node in Continuum. Syncs from peers. No solo mining stratum.';
-const kLocalNodeFullModeCopy =
-    'For solo mining. Syncs from peers. Exposes localhost stratum for ShearK.';
+    'Run one node beside the wallet. It requests each next block in order until the tip. '
+    'Start resumes from the saved height. Stop saves that height and leaves the book. No stratum.';
+const kLocalNodeFullModeCopy = kLocalNodeModeCopy;
 
-/// Default send path. No hop lookup and no node process.
+/// The VPN tunnel is deprecated. Connect bare pushes a signed send. Nodes verify it.
 const kConnectBareCopy =
-    'Does not look for the privacy hop and does not start a node. Sends of any amount post to the pool.';
+    'Connect bare. You push a signed send. Each node verifies it on the book it holds. '
+    'DINS-DAG and the ADMITv2 fluxset keep that spend private. No tunnel and no node on this device.';
+
+/// Published snapshot. Used only when the wallet node datadir is empty.
+const kPublicBootstrapUrl = 'https://boot.shear.digital';
+
+const kResistanceEmptyCopy =
+    'Empty book. Installing the published snapshot once, then requesting each next block until the tip.';
+
+String resistanceResumeCopy(int height) {
+  if (height > 0) {
+    return 'Resuming from height $height. Requesting each next block until the tip.';
+  }
+  return 'Resuming from the blocks already stored. Requesting each next block until the tip.';
+}
+
+String resistanceStopCopy(int height) {
+  if (height > 0) {
+    return 'Saved tip height $height. The book stays. Start continues from that height.';
+  }
+  return 'Stopped. No tip was saved yet. The book stays.';
+}
+
+const kNodeTipFileName = 'tip.json';
+
+int readSavedNodeTip(String dataDir) {
+  if (dataDir.isEmpty) return 0;
+  final f = File('$dataDir${Platform.pathSeparator}$kNodeTipFileName');
+  if (!f.existsSync()) return 0;
+  try {
+    final raw = jsonDecode(f.readAsStringSync());
+    final h = raw is Map ? raw['height'] : null;
+    if (h is int && h > 0) return h;
+    if (h is num && h > 0) return h.toInt();
+  } catch (_) {}
+  return 0;
+}
+
+void writeSavedNodeTip(String dataDir, int height) {
+  if (dataDir.isEmpty || height < 1) return;
+  final dir = Directory(dataDir);
+  if (!dir.existsSync()) dir.createSync(recursive: true);
+  File('${dir.path}${Platform.pathSeparator}$kNodeTipFileName')
+      .writeAsStringSync('${jsonEncode({'height': height})}\n');
+}
 
 String closureChipLabel(ClosureSendMode mode) {
   switch (mode) {
@@ -125,9 +162,8 @@ String closureChipLabel(ClosureSendMode mode) {
     case ClosureSendMode.shearPrivacyVpn:
       return 'VPN HOP MODE';
     case ClosureSendMode.localNode:
-      return 'LOCAL NODE';
     case ClosureSendMode.localNodeFull:
-      return 'FULL NODE MODE';
+      return 'RUN NODE';
   }
 }
 
@@ -144,32 +180,28 @@ String closureChipKey(ClosureSendMode mode) {
   }
 }
 
-/// Spawn environment for the shared tip node. Desktop C does not set FAST_SYNC.
+/// Spawn environment for the wallet node. Bootstrap is set only for an empty book.
 Map<String, String> closureSpawnEnv(
   ClosureSendMode mode, {
   required bool android,
   required String dataDir,
+  bool emptyDatadir = false,
 }) {
-  final env = <String, String>{
+  return <String, String>{
     'SHEAR_RPC_BIND': '127.0.0.1',
     'SHEAR_RPC_PORT': '18332',
     'SHEAR_DATA': dataDir,
     'SHEAR_MAX_PEERS': android ? '8' : '16',
-    'SHEAR_GETBLOCK_BATCH': android ? '4' : '8',
+    'SHEAR_GETBLOCK_BATCH': '1',
+    'SHEAR_SOLO': '0',
+    'SHEAR_FAST_SYNC': '1',
+    if (emptyDatadir) 'SHEAR_BOOTSTRAP': '1',
+    if (emptyDatadir) 'SHEAR_BOOTSTRAP_URL': kPublicBootstrapUrl,
   };
-  if (mode == ClosureSendMode.localNodeFull && !android) {
-    env['SHEAR_SOLO'] = '1';
-    env['SHEAR_STRATUM'] = '1111';
-    env['SHEAR_STRATUM_BIND'] = '127.0.0.1';
-    return env;
-  }
-  env['SHEAR_SOLO'] = '0';
-  env['SHEAR_FAST_SYNC'] = '1';
-  return env;
 }
 
 List<String> closureSpawnArgs({required bool emptyDatadir, required ClosureSendMode mode}) {
-  // Empty datadir and every send mode sync from peers. No bootstrap URL.
+  // Args stay empty. An empty book carries the snapshot URL in the environment.
   if (emptyDatadir ||
       mode == ClosureSendMode.connectBare ||
       mode == ClosureSendMode.shearPrivacyVpn ||
@@ -310,15 +342,14 @@ class ShearNodeSidecar {
   final List<String> log = [];
 
   void select(ClosureSendMode mode) {
-    pending = android && mode == ClosureSendMode.localNodeFull
+    pending = mode == ClosureSendMode.localNode || mode == ClosureSendMode.localNodeFull
         ? ClosureSendMode.localNode
-        : mode;
+        : ClosureSendMode.connectBare;
   }
 
-  bool get showResistanceConsole =>
-      committed == ClosureSendMode.localNode || committed == ClosureSendMode.localNodeFull;
+  bool get showResistanceConsole => committed == ClosureSendMode.localNode;
 
-  bool get showSoloMine => !android && committed == ClosureSendMode.localNodeFull;
+  bool get showSoloMine => false;
 
   bool get sendBlocked => !_noNode && !honest;
 
@@ -345,18 +376,16 @@ class ShearNodeSidecar {
 
   /// Commits [pending]. Apply→A stops the sidecar immediately. B↔C restarts.
   Future<String> apply() async {
-    final next = android && pending == ClosureSendMode.localNodeFull
+    final next = pending == ClosureSendMode.localNode || pending == ClosureSendMode.localNodeFull
         ? ClosureSendMode.localNode
-        : pending;
+        : ClosureSendMode.connectBare;
     final prev = committed;
-    if (next == ClosureSendMode.connectBare || next == ClosureSendMode.shearPrivacyVpn) {
+    if (next == ClosureSendMode.connectBare) {
       await stop();
       committed = next;
       lastEnv = {};
       lastArgs = const [];
-      progress = next == ClosureSendMode.connectBare
-          ? kConnectBareCopy
-          : 'Shear Privacy VPN — light wallet active';
+      progress = kConnectBareCopy;
       return progress;
     }
     if (prev != next) {
@@ -364,8 +393,8 @@ class ShearNodeSidecar {
       await stop();
     }
     committed = next;
-    lastEnv = closureSpawnEnv(next, android: android, dataDir: dataDir);
     final empty = datadirEmpty?.call() ?? emptyDatadir;
+    lastEnv = closureSpawnEnv(next, android: android, dataDir: dataDir, emptyDatadir: empty);
     lastArgs = closureSpawnArgs(emptyDatadir: empty, mode: next);
     listenPort = closureStratumPort(next, android: android);
     if (nodeBinary == null || nodeBinary!.isEmpty || startProcess == null) {
@@ -384,19 +413,28 @@ class ShearNodeSidecar {
     return progress;
   }
 
-  /// Resistance Start. Desktop commits local-node-full (stratum 127.0.0.1:1111).
-  /// Android [select] coerces that to local node and does not arm stratum.
-  /// A full node that is already running is not spawned again.
+  /// Resistance Start. Resume the saved tip and request each later block. No tunnel.
   Future<String> startResistanceNode() async {
-    select(ClosureSendMode.localNodeFull);
-    if (running && committed == pending) return progress;
-    return apply();
+    select(ClosureSendMode.localNode);
+    final empty = datadirEmpty?.call() ?? emptyDatadir;
+    final saved = reportedHeight > 0 ? reportedHeight : readSavedNodeTip(dataDir);
+    if (running && committed == pending) {
+      progress = empty && saved < 1 ? kResistanceEmptyCopy : resistanceResumeCopy(saved);
+      return progress;
+    }
+    final msg = await apply();
+    if (!running) return msg;
+    progress = empty ? kResistanceEmptyCopy : resistanceResumeCopy(saved);
+    return progress;
   }
 
-  /// Resistance Stop. Leaves the light wallet on Shear Privacy VPN.
-  /// The device tunnel stays a separate tick; this does not open it.
+  /// Resistance Stop. Save the current tip and leave the book on disk. No tunnel.
   Future<String> stopResistanceNode() async {
-    select(ClosureSendMode.shearPrivacyVpn);
-    return apply();
+    final saved = reportedHeight > 0 ? reportedHeight : readSavedNodeTip(dataDir);
+    if (saved > 0) writeSavedNodeTip(dataDir, saved);
+    select(ClosureSendMode.connectBare);
+    await apply();
+    progress = resistanceStopCopy(saved);
+    return progress;
   }
 }

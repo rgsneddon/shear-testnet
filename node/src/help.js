@@ -10,7 +10,8 @@ function sectionRun() {
     '  node node/src/node.js --solo          validator + thin local stratum 127.0.0.1:1111',
     '  npm run solo                          same as --solo (not the public pool)',
     '  node node/src/node.js --fast-sync     skip archival bodies (peers still verify PoW)',
-    '  Startup does not pull or apply a bootstrap snapshot.',
+    '  An empty datadir with SHEAR_BOOTSTRAP=1 or a bootstrap URL installs the published snapshot once, then syncs forward.',
+    '  A datadir that already has blocks resumes from that tip and syncs to the network tip.',
     '  node node/src/node.js --status        print height/hash/jroot/peers from datadir and exit',
     '  node node/src/node.js --print-config  JSON pin (magic, admit, mainnet=false)',
     '  node node/src/node.js --help | -h | help [topic]',
@@ -112,9 +113,10 @@ function sectionP2p() {
 function sectionBootstrap() {
   return [
     'Bootstrap:',
-    '  Startup does not pull or apply a snapshot.',
-    '  An empty datadir, SHEAR_BOOTSTRAP=1, and a bootstrap URL are ignored.',
-    '  Latest-only prune files are not installed on start.',
+    '  An empty datadir with SHEAR_BOOTSTRAP=1 or SHEAR_BOOTSTRAP_URL installs the published snapshot once.',
+    '  A datadir that already holds chain.bin or chain.jsonl resumes from that tip.',
+    '  The snapshot is not applied again. The node then requests each later block until the network tip.',
+    '  Default URL is https://boot.shear.digital (latest.json and latest.bin).',
     '  SHEAR_FAST_SYNC=1 skips archival bodies on this node only.',
   ];
 }

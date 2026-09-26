@@ -42,15 +42,15 @@ String get kPrivacyHopFeeConfirmBody =>
 
 String get kPrivacyHopFeePayLabel => 'Pay $kPrivacyHopFeeSheText';
 
-const kUnprivateSendLabel = 'Send without privacy hop';
+const kUnprivateSendLabel = 'Deposit on Connect bare';
 const kUnprivateConfirmTitle = 'Send without Shear privacy hop';
 const kUnprivateConfirmLabel = 'I already use a VPN / I accept exposing my IP';
 const kUnprivateConfirmHelper =
     'Skip Shear privacy hop. If you are not already on a VPN, the public node may see your device IP.';
 
-/// Standing Reserve warning. A send to the vault uses the public node.
+/// Standing Reserve note. Connect bare is already covered by the fluxset.
 const kReserveIpDisclaimer =
-    'Sending to the Reserve shows your IP to the node. Use a VPN.';
+    'Connect bare is private. DINS-DAG and the ADMITv2 fluxset cover this deposit. A tunnel is not required.';
 
 const kReserveHopWaitCopy =
     'Confirm you use a VPN, or accept the node seeing your IP, before Send.';
