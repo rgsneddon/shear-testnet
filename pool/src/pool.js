@@ -326,6 +326,31 @@ export function publicMinerTag(login) {
   return `m${hex}`;
 }
 
+/** Proven hashes from every miner this open round. One hash is one nano. */
+export function networkRoundHashesOf(miners, openRows = []) {
+  const seen = new Set();
+  let n = 0;
+  const book = miners && typeof miners.values === 'function'
+    ? [...miners.values()]
+    : (Array.isArray(miners) ? miners : []);
+  for (const m of book) {
+    const login = String(m?.workerKey || m?.login || '');
+    if (!m || isCminerFeeLogin(login) || /\.fee$/i.test(login)) continue;
+    const count = Math.floor(Number(roundActualHashes(m)) || 0);
+    if (count < 1) continue;
+    n += count;
+    seen.add(publicMinerTag(m.login || m.workerKey));
+  }
+  for (const r of openRows || []) {
+    const tag = String(r?.tag || '').trim().toLowerCase();
+    const count = Math.floor(Number(r?.count) || 0);
+    if (!/^m[0-9a-f]{8}$/.test(tag) || count < 1 || seen.has(tag)) continue;
+    seen.add(tag);
+    n += count;
+  }
+  return n;
+}
+
 /** Serialized miner row for disk/dashboard. dest20-derived tag + hashrate only. */
 export function serializeMinerRow(m) {
   const pay = String(m?.payoutDest || '');
@@ -1587,6 +1612,7 @@ export function createPool({
         c.varWindowAt = Date.now();
       }
     }
+    if (typeof store.clearOpenRound === 'function') store.clearOpenRound();
     const job = issueJob(shareBits, { force: true });
     broadcastJob(job);
     return job;
@@ -2086,6 +2112,7 @@ export function createPool({
             c.varWindowAt = Date.now();
           }
         }
+        if (typeof store.clearOpenRound === 'function') store.clearOpenRound();
         const base = issueJob(shareBits, { force: true });
         broadcastJob(base);
         nextJob = true;
@@ -2411,6 +2438,10 @@ export function createPool({
       miners: workers.length,
       threads: workers.reduce((a, m) => a + (m.threads || 0), 0),
       hashrate: workers.reduce((a, m) => a + (Number(m.hashrate) || 0), 0),
+      networkRoundHashes: networkRoundHashesOf(
+        miners,
+        typeof store.openRoundRows === 'function' ? store.openRoundRows() : [],
+      ),
       blocks: stats.blocks,
       blocksSession: stats.blocks,
       blocksLifetime: typeof pullBook.sealsLifetime === 'function' ? pullBook.sealsLifetime() : 0,

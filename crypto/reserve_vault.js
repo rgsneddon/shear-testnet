@@ -548,7 +548,8 @@ export function reserveAction(tx) {
 export function verifyReservePayout(state, tx) {
   const act = reserveAction(tx);
   if (!act) return { ok: true };
-  if (state?.blankFork) return { ok: false, reason: 'blank_vault' };
+  if (!state) return { ok: false, reason: 'no_vault' };
+  if (state.blankFork) return { ok: false, reason: 'blank_vault' };
   if (act.kind === KIND_LOCK) {
     if (!(act.nanos > 0)) return { ok: false, reason: 'bad_amount' };
     if (act.dest && isShearAddress(act.dest)) return { ok: false, reason: 'shear1' };
@@ -581,7 +582,7 @@ export function verifyReservePayout(state, tx) {
 
 /** Honour Reserve lock / vote / withdraw txs already sealed in a block. */
 export function applyReserveBlock({ state, block, nowMs }) {
-  if (state?.blankFork) return [];
+  if (!state || state.blankFork) return [];
   const txs = Array.isArray(block?.txs) ? block.txs : [];
   const results = [];
   // First block whose time is past the epoch collates votes into the live
@@ -689,7 +690,8 @@ export function enact({ state, nowMs } = {}) {
 }
 
 export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId } = {}) {
-  if (state?.blankFork) return { ok: false, reason: 'blank_vault' };
+  if (!state) return { ok: false, reason: 'no_vault' };
+  if (state.blankFork) return { ok: false, reason: 'blank_vault' };
   const id = portalKey(portalId || dest);
   if (!id) return { ok: false, reason: 'bad_dest' };
   if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {

@@ -10,6 +10,7 @@ import {
   SHARE_STEM_MAX_HOPS,
   addShare,
   createShareDag,
+  pullBookHashLeg,
   sealDag,
   sealShareDag,
   soleMint,
@@ -52,7 +53,7 @@ describe('DINS spike sim', () => {
     assert.equal(openRound.paid.includes('open'), false);
   });
 
-  it('DINS enable flag stays off and trustedShareBatch stays absent', () => {
+  it('DINS is on, the node does not grow a new block rule, and the pull book drops the second hash leg', () => {
     const roots = ['crypto', 'node/src', 'pool/src'];
     const bad = [];
     for (const root of roots) {
@@ -64,15 +65,20 @@ describe('DINS spike sim', () => {
         if (name === 'share_dag_sim.test.js') continue;
         const text = fs.readFileSync(file, 'utf8');
         if (/trustedShareBatch/.test(text)) bad.push(`${root}/${name}:trustedShareBatch`);
-        if (/\bDINS_ENABLED\s*=\s*true\b/.test(text)) bad.push(`${root}/${name}:DINS_ENABLED`);
-        if (/\bdinsEnabled\s*=\s*true\b/.test(text)) bad.push(`${root}/${name}:dinsEnabled`);
-        if ((root === 'pool/src' || root === 'node/src') && /sealShareDag|share_dag/.test(text)) {
-          bad.push(`${root}/${name}:sealShareDag`);
+        if (root === 'node/src' && /sealShareDag|share_dag|DINS_ENABLED/.test(text)) {
+          bad.push(`${root}/${name}:node-rule`);
         }
       }
     }
     assert.deepEqual(bad, []);
-    assert.equal(DINS_ENABLED, false);
+    assert.equal(DINS_ENABLED, true);
+    const pool = fs.readFileSync(new URL('../pool/src/pool.js', import.meta.url), 'utf8');
+    assert.match(pool, /pullBookHashLeg\(hashPays\)/);
+    assert.doesNotMatch(pool, /hashByDest:\s*hashPays/);
+    const leg = pullBookHashLeg(new Map([['ssa1', HASH_BONUS_NANOS]]));
+    assert.equal(leg.size, 0);
+    const off = pullBookHashLeg(new Map([['ssa1', HASH_BONUS_NANOS]]), false);
+    assert.equal(off.get('ssa1'), HASH_BONUS_NANOS);
   });
 
   it('pays foreign blue the same from either sealer and refuses a double hash mint', () => {

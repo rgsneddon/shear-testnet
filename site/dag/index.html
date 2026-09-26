@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="description" content="DINS-DAG settlement for shear-testnet-v5. Blue-set shares, one pot-plus-hash mint, no second hash leg."/>
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>DINS-DAG · shear-testnet-v5</title>
+  <link rel="icon" href="https://shear.digital/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="icon" href="https://shear.digital/brand/favicon.ico"/>
+  <link rel="stylesheet" href="https://shear.digital/css/site.css"/>
+  <link rel="stylesheet" href="https://shear.digital/shared/shear-chrome.css"/>
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css"/>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin:0; max-width:100%; background:var(--bg); color:var(--text); }
+    body { min-height:100vh; display:flex; flex-direction:column; font:15px/1.45 "Segoe UI",system-ui,sans-serif; }
+    a { color:var(--accent); }
+    .top-banner {
+      display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
+      border-bottom:1px solid rgba(232, 200, 114, 0.28); background:var(--bg);
+      position:sticky; top:0; z-index:40;
+    }
+    .banner-wordmark { height:36px; width:auto; display:block; }
+    .banner-brand { display:flex; align-items:center; justify-self:start; }
+    a.nav-btn {
+      display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--accent); text-decoration:none;
+      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
+      border:1px solid rgba(180, 210, 230, 0.16); border-radius:10px; background:var(--surface);
+    }
+    .nav { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
+    .banner-tools { justify-self:end; }
+    .stage { position:relative; flex:1; min-height:760px; background:#07090c; overflow:hidden; }
+    canvas#dag { position:absolute; inset:0; width:100%; height:100%; display:block; }
+    .overlay { position:relative; z-index:2; padding:22px 16px 0; pointer-events:none; }
+    .overlay a { pointer-events:auto; }
+    h1 {
+      margin:0; text-align:center; font-family:Georgia,"Palatino Linotype",serif; font-weight:700;
+      font-size:clamp(2rem, 4vw, 3.4rem); letter-spacing:.04em; color:#f3e2b0;
+      text-shadow:0 0 24px rgba(255, 210, 74, 0.35);
+    }
+    .lede { margin:8px auto 0; max-width:46rem; text-align:center; color:#c9d3de; font-size:.92rem; }
+    .frames {
+      pointer-events:auto; margin:16px auto 0; max-width:54rem; display:grid; gap:10px;
+      grid-template-columns:repeat(auto-fit, minmax(8.2rem, 1fr));
+    }
+    .frame {
+      border:1px solid rgba(232, 200, 114, 0.72); background:rgba(7, 9, 12, 0.78);
+      padding:8px 10px; min-height:4.6rem;
+    }
+    .frame .k { display:block; color:#e8c872; font-size:.68rem; letter-spacing:.08em; text-transform:uppercase; font-weight:750; }
+    .frame .v { display:block; margin-top:4px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+    .legend { margin:12px auto 0; max-width:46rem; text-align:center; color:#8b9aab; font-size:.78rem; }
+    .sw { display:inline-block; width:.7rem; height:.7rem; border-radius:50%; margin:0 .2rem 0 .55rem; vertical-align:middle; }
+    .sw.diamond { width:.55rem; height:.55rem; border-radius:1px; transform:rotate(45deg); }
+    #live-line { margin:8px 0 0; text-align:center; color:#5eead4; font-size:.8rem; letter-spacing:.04em; }
+    @media (max-width: 800px) {
+      .top-banner { grid-template-columns:1fr; }
+      .banner-tools { justify-self:start; }
+      .stage { min-height:980px; }
+      .frames { grid-template-columns:1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top-banner">
+    <div class="banner-brand">
+      <a href="https://shear.digital/" aria-label="Shear home">
+        <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+          src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+          data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+          data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+        <img class="banner-wordmark theme-img-dark" alt=""
+          src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      </a>
+    </div>
+    <nav class="nav" id="shear-nav" aria-label="Product">
+      <a class="nav-btn" href="https://shear.digital">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
+      <a class="nav-btn" href="https://dag.shear.digital/">DAG</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.54" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
+    </nav>
+    <div class="banner-tools"></div>
+  </header>
+  <div class="stage">
+    <canvas id="dag" aria-label="Live DINS-DAG lattice and node globe"></canvas>
+    <div class="overlay">
+      <h1>DINS-DAG</h1>
+      <p class="lede">Eligible shares are the blue set, sorted by identity. The mint is the spine pot plus the hash nanos, once. That work is not paid a second time from a pull-book hash leg. Continuum 0.54. ShearK 2.6. Book <code>shear-testnet-v5</code>. DAG is a link in the client navbar. <a href="https://shear.digital/docs/#/dins-dag">DINS-DAG docs</a> · <a href="https://shear.digital/whitepaper/">whitepaper</a>.</p>
+      <div class="frames">
+        <article class="frame"><span class="k">Book height</span><span class="v" id="f-height">—</span></article>
+        <article class="frame"><span class="k">Network tip</span><span class="v" id="f-tip">—</span></article>
+        <article class="frame"><span class="k">Confirming</span><span class="v" id="f-conf">—</span></article>
+        <article class="frame"><span class="k">Nodes online</span><span class="v" id="f-nodes">—</span></article>
+        <article class="frame"><span class="k">Blue shares</span><span class="v" id="f-blue">—</span></article>
+      </div>
+      <p class="legend"><span class="sw" style="background:#ffd24a"></span>sealed lattice r = ln(1 + n) <span class="sw" style="background:#c46bff"></span>confirming <span class="sw" style="background:#39ff6a"></span>tip <span class="sw" style="background:#4fd8e8"></span>pool workers <span class="sw diamond" style="background:#3d7bff"></span>blue shares</p>
+      <p id="live-line">connecting · shear-testnet-v5</p>
+    </div>
+  </div>
+  <script type="module">
+    import { blueShareModel, orbitWorkers } from './blue_shares.js';
+    var canvas = document.getElementById('dag');
+    var ctx = canvas.getContext('2d');
+    var motion = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var view = { height: 0, blocks: [], workers: 0, nodes: 0, magic: 'shear-testnet-v5', tipAt: 0, tipId: '', ok: false, flash: 0, blueTotal: 0, blueIdentities: 0, blueGlyphs: [], orbit: [], blueFlash: 0 };
+    function headerTipMs(hex) {
+      var s = String(hex || '');
+      if (s.length < 216) return 0;
+      var n = 0;
+      var mul = 1;
+      for (var i = 0; i < 6; i++) {
+        var byte = parseInt(s.slice(200 + i * 2, 202 + i * 2), 16);
+        if (byte !== byte) return 0;
+        n += byte * mul;
+        mul *= 256;
+      }
+      var hi = parseInt(s.slice(212, 216), 16);
+      if (hi !== hi || hi !== 0) return 0;
+      if (n < 1000000000000 || n > 20000000000000) return 0;
+      return n;
+    }
+    function ageText(at) {
+      if (!at) return '—';
+      var sec = Math.max(0, Math.floor((Date.now() - Number(at)) / 1000));
+      var h = Math.floor(sec / 3600);
+      var m = Math.floor((sec % 3600) / 60);
+      var s = sec % 60;
+      function pad(v) { return (v < 10 ? '0' : '') + v; }
+      return pad(h) + ':' + pad(m) + ':' + pad(s);
+    }
+    function shortId(id) {
+      var s = String(id || '');
+      return s ? s.slice(0, 8) + '…' : '—';
+    }
+    function setText(id, value) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }
+    function paintReadout() {
+      var blocks = view.blocks || [];
+      var confirming = 0;
+      var sealed = 0;
+      for (var i = 0; i < blocks.length; i++) {
+        var c = Number(blocks[i].confirmations) || 0;
+        if (c >= 6) sealed += 1;
+        else if (c > 0) confirming += 1;
+      }
+      setText('f-height', view.height > 0 ? ('#' + view.height) : '—');
+      setText('f-tip', view.height > 0 ? ('#' + view.height + ' · ' + shortId(view.tipId) + ' · ' + ageText(view.tipAt)) : '—');
+      setText('f-conf', view.ok ? (confirming + ' in view · ' + sealed + ' sealed') : '—');
+      setText('f-nodes', view.ok ? (view.nodes + ' online · ' + view.workers + ' pool workers') : '—');
+      var identWord = view.blueIdentities === 1 ? ' identity' : ' identities';
+      setText('f-blue', view.ok ? (view.blueTotal + ' open · ' + view.blueIdentities + identWord) : '—');
+      var line = document.getElementById('live-line');
+      if (!line) return;
+      line.textContent = view.ok
+        ? ('live · ' + view.magic + ' · #' + view.height + ' · ' + view.nodes + ' nodes · ' + view.blueTotal + ' blue shares')
+        : ('offline · retrying · ' + (view.magic || 'shear-testnet-v5'));
+    }
+    function fit() {
+      var rect = canvas.getBoundingClientRect();
+      var dpr = Math.min(2, window.devicePixelRatio || 1);
+      var w = Math.max(1, Math.floor(rect.width * dpr));
+      var h = Math.max(1, Math.floor(rect.height * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      return { w: w, h: h };
+    }
+    function spiral(n, spin, scale) {
+      var rad = Math.log(1 + n) * scale;
+      var th = n * 0.46 + spin;
+      return { x: rad * Math.cos(th), y: rad * Math.sin(th) };
+    }
+    function dot(x, y, r, color, alpha) {
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    function diamond(x, y, r, color, alpha) {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x + r * 0.78, y);
+      ctx.lineTo(x, y + r);
+      ctx.lineTo(x - r * 0.78, y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    function draw(now) {
+      var box = fit();
+      var w = box.w;
+      var h = box.h;
+      var spin = motion ? now * 0.00012 : 0;
+      ctx.clearRect(0, 0, w, h);
+      var sky = ctx.createRadialGradient(w * 0.5, h * 0.42, 20, w * 0.5, h * 0.5, Math.max(w, h) * 0.7);
+      sky.addColorStop(0, '#10182a');
+      sky.addColorStop(1, '#07090c');
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, w, h);
+      var blocks = (view.blocks || []).slice().sort(function (a, b) {
+        return Number(b.height) - Number(a.height);
+      });
+      var sealed = [];
+      var rings = [];
+      var tip = null;
+      for (var i = 0; i < blocks.length; i++) {
+        var b = blocks[i];
+        var conf = Number(b.confirmations) || 0;
+        if (!tip || Number(b.height) > Number(tip.height)) tip = b;
+        if (conf >= 6) sealed.push(b);
+        else if (conf >= 2) rings.push(b);
+      }
+      rings.sort(function (a, b) { return Number(a.confirmations) - Number(b.confirmations); });
+      var originX = w * 0.24;
+      var originY = h * 0.46;
+      var scale = Math.min(w, h) * 0.062;
+      ctx.beginPath();
+      for (var step = 0; step <= 90; step++) {
+        var p = spiral(0.35 + step * 0.16, spin, scale);
+        var x = originX + p.x;
+        var y = originY + p.y * 0.92;
+        if (step === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = 'rgba(79, 216, 232, 0.35)';
+      ctx.lineWidth = Math.max(1, w / 900);
+      ctx.stroke();
+      var prev = null;
+      for (var s = 0; s < sealed.length; s++) {
+        var n = s + 1;
+        var sp = spiral(n, spin, scale);
+        var sx = originX + sp.x;
+        var sy = originY + sp.y * 0.92;
+        if (prev) {
+          ctx.beginPath();
+          ctx.moveTo(prev.x, prev.y);
+          ctx.lineTo(sx, sy);
+          ctx.strokeStyle = 'rgba(255, 210, 74, 0.45)';
+          ctx.stroke();
+        }
+        dot(sx, sy, Math.max(3, w / 280), '#ffd24a', 0.95);
+        dot(sx, sy, Math.max(8, w / 120), '#ffd24a', 0.18);
+        prev = { x: sx, y: sy };
+      }
+      var blues = view.blueGlyphs || [];
+      var bluePulse = (view.blueFlash && now - view.blueFlash < 1200) ? 1.4 : 1;
+      var bprev = prev;
+      for (var bs = 0; bs < blues.length; bs++) {
+        var bn = sealed.length + bs + 1;
+        var bp = spiral(bn, spin, scale);
+        var bx = originX + bp.x;
+        var by = originY + bp.y * 0.92;
+        if (bprev) {
+          ctx.beginPath();
+          ctx.moveTo(bprev.x, bprev.y);
+          ctx.lineTo(bx, by);
+          ctx.strokeStyle = 'rgba(61, 123, 255, 0.7)';
+          ctx.lineWidth = Math.max(1.25, w / 700);
+          ctx.stroke();
+        }
+        diamond(bx, by, Math.max(4.5, w / 240) * bluePulse, '#3d7bff', 0.98);
+        diamond(bx, by, Math.max(10, w / 100) * bluePulse, '#3d7bff', 0.2);
+        bprev = { x: bx, y: by };
+      }
+      var fx = w * 0.76;
+      var tipY = h * 0.58;
+      var mouthY = h * 0.22;
+      ctx.beginPath();
+      ctx.moveTo(fx - w * 0.12, mouthY);
+      ctx.lineTo(fx, tipY);
+      ctx.lineTo(fx + w * 0.12, mouthY);
+      ctx.strokeStyle = 'rgba(196, 107, 255, 0.35)';
+      ctx.stroke();
+      for (var r = 0; r < rings.length; r++) {
+        var u = (r + 1) / (rings.length + 1);
+        var y = tipY - u * (tipY - mouthY);
+        var rx = (18 + u * Math.min(w, h) * 0.11);
+        var ry = rx * 0.34;
+        ctx.beginPath();
+        ctx.ellipse(fx, y, rx, ry, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(196, 107, 255, 0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        var ang = spin * 2 + r;
+        dot(fx + Math.cos(ang) * rx, y + Math.sin(ang) * ry, 3.5, '#c46bff', 0.95);
+      }
+      for (var bs2 = 0; bs2 < blues.length; bs2++) {
+        var bu = (bs2 + 1) / (blues.length + 1);
+        var by2 = tipY - bu * (tipY - mouthY);
+        var brx = 18 + bu * Math.min(w, h) * 0.11;
+        var bang = spin * 2.2 + (bs2 / Math.max(blues.length, 1)) * Math.PI * 2;
+        diamond(fx + Math.cos(bang) * brx, by2 + Math.sin(bang) * brx * 0.34, 4.4 * bluePulse, '#3d7bff', 0.98);
+      }
+      var orbit = view.orbit || [];
+      var outer = Math.min(w, h) * 0.12;
+      var nOrbit = Math.min(orbit.length, 64);
+      for (var m = 0; m < nOrbit; m++) {
+        var wa = spin * 1.6 + (m / Math.max(nOrbit, 1)) * Math.PI * 2;
+        var ox = fx + Math.cos(wa) * outer;
+        var oy = mouthY + Math.sin(wa) * outer * 0.34;
+        if (orbit[m].blue) {
+          diamond(ox, oy, 5.2 * bluePulse, '#3d7bff', 0.98);
+          diamond(ox, oy, 11, '#3d7bff', 0.28);
+        } else {
+          dot(ox, oy, 4, '#4fd8e8', 0.95);
+        }
+      }
+      var pulse = 0.55 + 0.45 * Math.sin(now * 0.004);
+      if (view.flash && now - view.flash < 1200) pulse = 1;
+      dot(fx, tipY, 5 + pulse * 4, '#39ff6a', 1);
+      dot(fx, tipY, 18 + pulse * 10, '#39ff6a', 0.2);
+      var gx = w * 0.5;
+      var gy = h * 0.86;
+      var R = Math.min(w * 0.3, h * 0.14);
+      var squash = 0.72;
+      var glow = ctx.createRadialGradient(gx, gy, R * 0.05, gx, gy, R);
+      glow.addColorStop(0, 'rgba(255, 210, 74, 0.9)');
+      glow.addColorStop(0.2, 'rgba(79, 216, 232, 0.28)');
+      glow.addColorStop(1, 'rgba(7, 9, 12, 0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.ellipse(gx, gy, R, R * squash, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(232, 200, 114, 0.45)';
+      ctx.lineWidth = 1;
+      for (var ring = 1; ring <= 3; ring++) {
+        ctx.beginPath();
+        ctx.ellipse(gx, gy, R * ring / 3, R * squash * ring / 3, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.save();
+      ctx.translate(gx, gy);
+      ctx.rotate(spin);
+      ctx.beginPath();
+      for (var spoke = 0; spoke < 24; spoke++) {
+        var a = spoke * Math.PI / 12;
+        ctx.moveTo(0, 0);
+        ctx.lineTo(Math.cos(a) * R, Math.sin(a) * R * squash);
+      }
+      ctx.strokeStyle = 'rgba(79, 216, 232, 0.28)';
+      ctx.stroke();
+      ctx.restore();
+      var lights = Math.max(0, view.nodes | 0);
+      for (var node = 0; node < lights && node < 96; node++) {
+        var na = spin * 1.35 + node * 2.399963;
+        var nr = R * (0.22 + (node % 5) * 0.14);
+        dot(gx + Math.cos(na) * nr, gy + Math.sin(na) * nr * squash, 3.2, '#f6e7b4', 1);
+        dot(gx + Math.cos(na) * nr, gy + Math.sin(na) * nr * squash, 8, '#4fd8e8', 0.35);
+      }
+    }
+    function frame(now) {
+      draw(now);
+      requestAnimationFrame(frame);
+    }
+    async function poll() {
+      try {
+        var res = await fetch('https://explorer.shear.digital/api/stats', { cache: 'no-store' });
+        if (!res.ok) throw new Error('stats');
+        var stats = await res.json();
+        var blocks = (stats.recentTxs || []).filter(function (row) {
+          return row && row.kind === 'block' && Number(row.height) > 0;
+        });
+        var height = Math.max(0, Math.floor(Number(stats.height) || 0));
+        for (var i = 0; i < blocks.length; i++) height = Math.max(height, Math.floor(Number(blocks[i].height) || 0));
+        var tipId = '';
+        for (var j = 0; j < blocks.length; j++) {
+          if (Number(blocks[j].height) === height) tipId = String(blocks[j].id || '');
+        }
+        var grew = view.height > 0 && height > view.height;
+        var model = blueShareModel(stats.workers, stats.shareBits);
+        var grewBlue = view.ok && model.total > view.blueTotal;
+        view = {
+          height: height,
+          blocks: blocks,
+          workers: (stats.workers || []).filter(function (w) { return w && w.connected; }).length,
+          nodes: Math.max(0, Math.floor(Number(stats.nodesOnline) || 0)),
+          magic: stats.magic || stats.network || 'shear-testnet-v5',
+          tipAt: headerTipMs(stats.header),
+          tipId: tipId,
+          ok: true,
+          flash: grew ? performance.now() : view.flash,
+          blueTotal: model.total,
+          blueIdentities: model.identities,
+          blueGlyphs: model.glyphs,
+          orbit: orbitWorkers(stats.workers),
+          blueFlash: grewBlue ? performance.now() : view.blueFlash,
+        };
+      } catch (err) {
+        view.ok = false;
+      }
+      paintReadout();
+    }
+    requestAnimationFrame(frame);
+    poll();
+    setInterval(poll, 2000);
+    setInterval(paintReadout, 1000);
+  </script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-# Shear wallet 0.53
+# Shear wallet 0.54
 
 GUI (Flutter) and CLI. Same identity, same encrypted `shewall.bin`, same book magic `shear-testnet-v5`.
 
@@ -12,15 +12,15 @@ Pool: `pool.shear.digital:1111` (cleartext TCP unless TLS is in front). Magic: `
 
 Continuum is spendable, pending transfers until six confirmations, and Copy ID. Already-confirmed SHE loads from a local node (`127.0.0.1:18332`) on unlock. Open-round hashes stay pending until the next sealed block. Shearview lists your landings (height, from/to, date, amount, snippet); tap a row for full Resistance detail. Hashbonus sits inside the block row. The pot is pool-custodial until 30 confirms, then auto-pays at π. This wallet does not mine. Public pool HTTP submit is an advanced toggle.
 
-Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.53
+Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.54
 
 | Platform | Install |
 |----------|---------|
-| Windows | Unzip `shear-wallet-0.53-windows.zip`, run `shear_wallet.exe` |
-| Linux | Unzip `shear-wallet-0.53-linux.zip`, run `./shear_wallet` |
-| Arch | Unzip `shear-wallet-0.53-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
-| Fedora | Unzip `shear-wallet-0.53-fedora.zip`, run `./shear_wallet` |
-| Android | Sideload `shear-wallet-0.53-android.apk` (`com.shear.shear_wallet`). Uninstall any old debug-signed build first |
+| Windows | Unzip `shear-wallet-0.54-windows.zip`, run `shear_wallet.exe` |
+| Linux | Unzip `shear-wallet-0.54-linux.zip`, run `./shear_wallet` |
+| Arch | Unzip `shear-wallet-0.54-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
+| Fedora | Unzip `shear-wallet-0.54-fedora.zip`, run `./shear_wallet` |
+| Android | Sideload `shear-wallet-0.54-android.apk` (`com.shear.shear_wallet`). Uninstall any old debug-signed build first |
 | macOS | `.dmg` is packed on the MacBook only — see `CONTINUUM-0.46-MAC-HANDOFF.md` until the asset 200s |
 
 ## CLI

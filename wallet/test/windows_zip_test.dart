@@ -45,8 +45,8 @@ List<String> _zipNames(File zip) {
 }
 
 void main() {
-  test('kWalletVersion displayed patch is 0.53.0 (not 0.14.0)', () {
-    expect(kWalletVersion, '0.53.0');
+  test('kWalletVersion displayed patch is 0.54.0 (not 0.14.0)', () {
+    expect(kWalletVersion, '0.54.0');
     final zipPy = File('pack/zip_windows.py').readAsStringSync();
     expect(zipPy, contains('kWalletVersion'));
     expect(zipPy, contains('shear-wallet-{PUBLIC_PIN}-windows.zip'));

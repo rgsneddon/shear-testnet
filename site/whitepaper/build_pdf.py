@@ -115,7 +115,7 @@ def main() -> None:
     pdf.set_font("ShearSerif", "", 12)
     pdf.multi_cell(0, 6, "Shear project", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font("ShearSerif", "I", 11)
-    pdf.multi_cell(0, 6, "shear.digital  ·  Version 2.0 (testnet)  ·  Network magic shear-testnet-v4", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.multi_cell(0, 6, "shear.digital  ·  Version 2.0 (testnet)  ·  Network magic shear-testnet-v5", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(4)
 
     pdf.set_font("ShearSerif", "B", 11)
@@ -126,17 +126,18 @@ def main() -> None:
         "Shear is a CPU-mined ledger whose coin, SHE, is created when a block is found and not before. "
         "There is no premine and no sale of SHE by the developers. Privacy is the default: the rest-frame "
         "identity never appears on the book; holders offer a silent ID and the chain writes revolving dests. "
-        "Proof of work is ShearHash-v3, a RandomX light-mode parameterisation. A found block closes exactly "
-        "one SHE. Each hasher dest that produced proven work receives its own hash bonus on the next sealed block. The only programme "
-        "allowed to mint extra SHE is The Reserve, a vortice in which holders lock coin, vote on that hash bonus, "
-        "and earn a 400-day stake. This note states the project’s goals and the architecture that carries them.",
+        "Proof of work is ShearHash-v3, a RandomX light-mode parameterisation. A found block pays the epoch pot "
+        "plus a per-dest hash bonus. DINS-DAG is that settlement: one mint, the spine pot plus hash nanos, once per "
+        "eligible share. The only programme allowed to mint extra SHE is The Reserve. On this testnet a Reserve epoch "
+        "is 4 days. Mainnet’s epoch length is 400 days, and mainnet is not live. This note states the goals and the "
+        "architecture of shear-testnet-v5.",
     )
 
     pdf.set_font("ShearSerif", "", 10)
     pdf.multi_cell(
         0,
         5,
-        "Keywords: Shear, SHE, ShearHash-v3, RandomX, continuity-tethered Flow, Vortex, vort1, The Reserve, CPU mining",
+        "Keywords: Shear, SHE, shear-testnet-v5, DINS-DAG, ShearHash-v3, RandomX, continuity-tethered Flow, Vortex, vort1, The Reserve, CPU mining",
         new_x=XPos.LMARGIN,
         new_y=YPos.NEXT,
     )
@@ -153,7 +154,7 @@ def main() -> None:
             "PoW elects the tip. Coin comes from hashing, not from an allocation, an auction, or a snapshot of some other book.",
             "CPU only. ShearHash-v3 is RandomX light.",
             "Private dests, confidential amounts. ADMITv2 membership over this book’s notes. Rest-frame shear1 stays in Closure. Holders offer she1. Settled dests are ssa1.",
-            "One coin per block. The pot is 1 SHE. Votes leave the pot in place. The Reserve oracle leaves the pot in place.",
+            "The pot starts at 1.00 SHE and steps down 0.01 SHE each epoch to a 0.20 SHE floor. Votes do not move it. The Reserve oracle does not move it. Testnet epochs are 4 days. Mainnet epochs would be 400 days. Mainnet is not live.",
             "Each hasher dest keeps its own bonus. Finding the block leaves every other dest’s hashes with that dest.",
             "Programmes may move coin you already have. They may not print SHE, other than The Reserve’s interest.",
             "No catalog of third-party programmes. A vortice is installed with a vort1 deploy key, or it is not installed.",
@@ -162,7 +163,7 @@ def main() -> None:
     body(
         pdf,
         "The public sites — shear.digital, pool.shear.digital, explorer.shear.digital, mempool.shear.digital — "
-        "are the face of the testnet. Live magic is shear-testnet-v4. Mainnet shear-v1 is not live "
+        "are the face of the testnet. Live magic is shear-testnet-v5. Mainnet shear-v1 is not live "
         "and a launch date is not decided. "
         "Testnet balances can vanish. Treat them as a practice run.",
     )
@@ -209,61 +210,83 @@ def main() -> None:
         "The official hasher is ShearK-Miner 2.6.",
     )
 
-    h2(pdf, "2.4  Emissions")
+    h2(pdf, "2.4  DINS-DAG")
     body(
         pdf,
-        "Three paths, and they do not stand in for each other. First, the block pot: exactly 1 SHE in the coinbase. "
-        "Solo, the finder takes it. On the public pool it is split by proven work in that round (PROP); the pool may "
-        "keep one percent of the pot. Second, the hash bonus: one protocol unit, 10^-11 SHE, for each proven floor share, "
-        "paid to the hasher dest that produced it on the next sealed block. Public pages show nine fractional digits so a single hash looks like dust; "
-        "the unit is still written. Third, The Reserve: interest on staked SHE at the oracle rate, minted only by "
-        "programme id shear-reserve-v1. Any other vortice that wants to pay rewards must top them up from coin already "
-        "in circulation.",
+        "DINS-DAG is how shear-testnet-v5 settles a round. The consensus fingerprint of this book carries "
+        "DINS=pot+hash and ROOTA=pot-spine+dag-fluxset. Eligible shares are the blue set, sorted by share identity. "
+        "Arrival order is stored and is not membership. Each eligible share is counted once. The mint on that seal is "
+        "the spine pot plus the hash nanos of those shares. The same work is not paid again from a second hash leg. "
+        "A share that belongs in the blue set is not dropped to favour some other set.",
+    )
+    body(
+        pdf,
+        "That mint is what miners receive on this testnet. The epoch pot is in the coinbase. The hash bonus is paid "
+        "to the hasher dest on the next sealed block. DAG is a link in the client navbar. "
+        "The rule is the book’s, and it is the settlement this testnet runs.",
     )
 
-    h2(pdf, "2.5  Flow and levy")
+    h2(pdf, "2.5  Emissions")
+    body(
+        pdf,
+        "Three paths, and they do not stand in for each other. First, the block pot: 1.00 SHE in epoch 0, then "
+        "0.01 SHE less each epoch until a 0.20 SHE floor. Solo, the finder takes the pot. On the public pool it is "
+        "split by proven work in that round (PROP). The pool fee on that pot is 1 percent (100 bps). The fingerprint "
+        "caps a pool fee at 3 percent (300 bps). Second, the hash bonus: one protocol unit, 10^-11 SHE, for each proven "
+        "floor share, paid to the hasher dest that produced it. Public pages show nine fractional digits, so a single "
+        "hash looks like dust; the unit is still written. Third, The Reserve: interest on staked SHE at the oracle rate, "
+        "minted only by programme id shear-reserve-v1. Any other vortice that wants to pay rewards must top them up from "
+        "coin already in circulation. DINS-DAG is the single mint of the first path and the second. It does not replace "
+        "Reserve interest, and Reserve interest does not replace it.",
+    )
+
+    h2(pdf, "2.6  Flow and levy")
     body(
         pdf,
         "Continuity-tethered Flow is how SHE moves between dests. A send quotes a levy L from current mempool depth. "
         "L_base is the greater of 100 units and two basis points of the amount; surge rises with waiting bytes. Lock "
         "and vote in The Reserve pay the same levy. Withdraw of Reserve principal does not. The Continuum dest pays L. "
-        "Empty-mempool floor is 100 units.",
+        "Empty-mempool floor is 100 units. The levy cap is 0.001 SHE. The levy splits evenly between the finder and "
+        "The Reserve fee bank.",
     )
 
-    h2(pdf, "2.6  Wallet")
+    h2(pdf, "2.7  Wallet")
     body(
         pdf,
-        "The wallet is a six-tab app, pin 0.53. Continuum is spendable balance, silent ID, and the six-slice pending pie. "
+        "The wallet is a six-tab app, pin 0.54. Continuum is spendable balance, silent ID, and the six-slice pending pie. "
         "Flow is send and receive. Resistance is Tx detail. Vortex is where programmes live. Shearview is "
         "the holder’s own explorer. Closure holds the rest-frame string and the shewall.bin export. The file plus "
         "the password restore the same wallet. There is no paper seed. Lose the password and the file does not open. "
-        "Sync is a local node at 127.0.0.1:18332: headers, compact blocks, and the tree root. The old height sampler is not the send, balance, or history path. Pool HTTP submit is an advanced toggle.",
+        "Sync is a local node at 127.0.0.1:18332: headers, compact blocks, and the tree root. The old height sampler is not the send, balance, or history path. Pool HTTP submit is an advanced toggle. "
+        "The Continuum GUI does not download or apply a bootstrap snapshot.",
     )
 
-    h2(pdf, "2.7  Vortex, vortices, and vort1")
+    h2(pdf, "2.8  Vortex, vortices, and vort1")
     body(
         pdf,
         "Vortex is a drawer, not a chain of contracts you browse. Each programme in it is a vortice. The Reserve is "
         "already installed. Anyone else hosts their own bytes. A Shear node mints a vort1 deploy key that names the "
         "origin URL and pins a hash of those exact bytes. The holder pastes the key; the wallet fetches the origin, "
         "checks the pin, and deploys locally. No key, no programme. If the hosted file changes, the old key stops "
-        "working. Third-party vortices cannot mint SHE, cannot ask for a password, and cannot move the 1 SHE pot.",
+        "working. Third-party vortices cannot mint SHE, cannot ask for a password, and cannot move the block pot.",
     )
 
-    h2(pdf, "2.8  The Reserve")
+    h2(pdf, "2.9  The Reserve")
     body(
         pdf,
         "The Reserve is the first vortice and the only one allowed to mint. A holder locks SHE into a personal portal. "
-        "π SHE (about 3.14159265358 SHE) unlocks one vote for the current 400-day epoch. The first qualifying deposit "
-        "opens the inaugural epoch; it is not started by an operator clock. Staked principal earns the oracle’s 400-day "
-        "APR. Idle coin earns nothing. Inside the last 99 days, new deposits still lock and may vote, but they sit idle. "
+        "π SHE (about 3.14159265358 SHE) unlocks one vote for the current epoch. On this testnet an epoch is 4 days. "
+        "The mainnet length is 400 days, and mainnet is not live. The first qualifying deposit "
+        "opens the inaugural epoch; it is not started by an operator clock. Staked principal earns the oracle rate for "
+        "the epoch. Idle coin earns nothing. Inside the last day of a testnet epoch (the last 99 days of a 400-day epoch), "
+        "new deposits still lock and may vote, but they sit idle. "
         "A vote may raise the hash bonus by one unit, lower it by one unit, or leave it. The pot is not on the ballot. "
         "Each portal votes once. At epoch end the unique plurality of the three piles moves the live bonus, or a tie "
         "leaves it. Principal and accrued interest return to Continuum on a signed withdraw. Miss the window and "
         "previous-epoch rewards stay claimable; a new epoch does not confiscate them.",
     )
 
-    h2(pdf, "2.9  Pool, explorer, node")
+    h2(pdf, "2.10  Pool, explorer, node")
     body(
         pdf,
         "The public pool is stratum in front of a validating node, not the ledger. Jobs are full 128-byte header "
@@ -271,14 +294,14 @@ def main() -> None:
         "Login is Copy dest as a bare ssa1. A typed suffix is optional. The explorer paints confirmed blocks, kinds, and proof-ok — no dest safari, no amount column. Ciphertext "
         "and rest-frame strings stay off that page. A node is the book: append, verify, P2P, and the GATE that lets "
         "native Flow and pinned Reserve bytecode land in the same block model. "
-        "Shipped P2P seeds are p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303, magic shear-testnet-v4. Wallet 0.53 reads a local node at 127.0.0.1:18332. "
+        "Shipped P2P seeds are p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303, magic shear-testnet-v5. Wallet 0.54 reads a local node at 127.0.0.1:18332. "
         "After 1000 confirmations, sample rows prune; sealed txs stay. An optional latest-only snapshot is published at height 1000, then every 400 blocks.",
     )
 
     h1(pdf, "3.  Publication")
     body(
         pdf,
-        "This is a testnet preprint. Constants here match the live fingerprint: 1 SHE pot, 10^-11 SHE per proven floor share "
+        "This is a testnet preprint for shear-testnet-v5. Constants here match the live fingerprint: epoch pot from 1.00 SHE down to a 0.20 SHE floor, DINS-DAG as one pot-plus-hash mint, 10^-11 SHE per proven floor share "
         "paid per hasher dest, six-confirmation spendable floor, ASERT 90 s, ShearHash-v3 light, chain id 2701 for pool withdraw signatures. How-to pages — "
         "installing the wallet, pointing ShearK at the pool, opening The Reserve, minting a vort1 key — live at "
         "shear.digital/docs. The clients are the WALLET, MINER, and NODE buttons on shear.digital.",
@@ -299,7 +322,7 @@ def main() -> None:
         5,
         "Correspondence: shear.digital. Software under the MIT License, Copyright 2026 Shear. "
         "RandomX is vendored from tevador/RandomX v1.2.3 (BSD). Official miner ShearK-Miner 2.6. "
-        "Wallet pin at publication: 0.53.",
+        "Wallet pin at publication: 0.54.",
         new_x=XPos.LMARGIN,
         new_y=YPos.NEXT,
     )
@@ -307,7 +330,7 @@ def main() -> None:
     pdf.set_title("Shear: Continuity-settled Proof of Work")
     pdf.set_author("Shear")
     pdf.set_subject("Testnet whitepaper")
-    pdf.set_keywords("shear-testnet-v4 ADMITv2 wallet-0.53 ShearK-2.5, ShearHash-v3, Vortex, vort1, The Reserve")
+    pdf.set_keywords("shear-testnet-v5 ADMITv2 wallet-0.54 ShearK-2.6 DINS-DAG ShearHash-v3 Vortex vort1 The Reserve")
     pdf.set_creator("Shear whitepaper builder")
     OUT.write_bytes(pdf.output())
     print("wrote", OUT, OUT.stat().st_size)

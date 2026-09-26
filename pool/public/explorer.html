@@ -140,7 +140,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.53" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.54" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -160,7 +160,7 @@
     </section>
     <div class="grid" id="net-grid">
       <article class="panel-card"><div class="label">Height</div><div class="value" id="ex-height">0</div></article>
-      <article class="panel-card"><div class="label">Pool hashrate</div><div class="value" id="ex-hashrate">0 H/s</div></article>
+      <article class="panel-card"><div class="label">ONGOING HASHBONUS WORK</div><div class="value" id="ex-hashrate">0.000000000</div></article>
       <article class="panel-card"><div class="label">Last block</div><div class="value" id="ex-updated">—</div></article>
       <article class="panel-card"><div class="label">Circulating Shear</div><div class="value" id="ex-circ-she">—</div></article>
       <article class="panel-card"><div class="label">Average block reward since genesis</div><div class="value" id="ex-avg-reward">—</div></article>
@@ -225,6 +225,8 @@
   <script>
     const API_BASE = '/api';
     let lastBlockAt = 0;
+    let lastBlockHeight = 0;
+    let lastBlockId = '';
     let filled = false;
     function fmtShe(n) {
       const v = Number(n);
@@ -234,6 +236,29 @@
       const s = trunc.toFixed(8);
       if (/^-?\d+\.00000000$/.test(s)) return String(Math.trunc(trunc));
       return s;
+    }
+    function ongoingHashbonusHashes(stats) {
+      if (stats && Number.isFinite(Number(stats.networkRoundHashes))) {
+        return Math.max(0, Math.floor(Number(stats.networkRoundHashes)));
+      }
+      var rows = stats && stats.workers;
+      var n = 0;
+      if (rows && rows.length) {
+        for (var i = 0; i < rows.length; i++) {
+          var w = rows[i];
+          var h = Number(w && (w.roundHashes != null ? w.roundHashes : w.provenHashes));
+          if (h === h && h > 0) n += Math.floor(h);
+        }
+      }
+      return n;
+    }
+    function fmtHashNanos(hashes) {
+      var v = Math.floor(Number(hashes) || 0);
+      if (!(v > 0)) v = 0;
+      var whole = Math.floor(v / 1000000000);
+      var frac = String(v % 1000000000);
+      while (frac.length < 9) frac = '0' + frac;
+      return whole + '.' + frac;
     }
     function fmtRate(n) {
       const v = Number(n) || 0;
@@ -251,6 +276,56 @@
       const m = Math.floor((sec % 3600) / 60);
       const s = sec % 60;
       return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    }
+    // Tip header timestamp is the little-endian u64 at byte 100.
+    function headerTipMs(hex) {
+      var s = String(hex || '');
+      if (s.length < 216) return 0;
+      var n = 0;
+      var mul = 1;
+      for (var i = 0; i < 6; i++) {
+        var byte = parseInt(s.slice(200 + i * 2, 202 + i * 2), 16);
+        if (byte !== byte) return 0;
+        n += byte * mul;
+        mul *= 256;
+      }
+      var hi = parseInt(s.slice(212, 216), 16);
+      if (hi !== hi || hi !== 0) return 0;
+      if (n < 1000000000000 || n > 20000000000000) return 0;
+      return n;
+    }
+    function networkTipBlock(stats, rows) {
+      var tipH = Math.max(0, Math.floor(Number(stats && stats.height) || 0));
+      var bestH = 0;
+      var bestAt = 0;
+      var bestId = '';
+      var list = rows || [];
+      for (var i = 0; i < list.length; i++) {
+        var row = list[i];
+        if (!row || row.kind !== 'block') continue;
+        var h = Math.floor(Number(row.height) || 0);
+        if (h <= bestH) continue;
+        bestH = h;
+        bestAt = Number(row.at) || 0;
+        bestId = String(row.id || '');
+      }
+      var height = Math.max(tipH, bestH);
+      var headerAt = headerTipMs(stats && stats.header);
+      var at = 0;
+      if (height > 0 && height === tipH && headerAt > 0) at = headerAt;
+      if (!(at > 0) && height > 0 && height === bestH && bestAt > 0) at = bestAt;
+      return { height: height, at: at, id: bestH === height ? bestId : '' };
+    }
+    function paintLastBlock() {
+      var el = document.getElementById('ex-updated');
+      if (!el) return;
+      var age = lastBlockAt ? fmtSinceBlock(lastBlockAt) : '';
+      var text = lastBlockHeight > 0
+        ? ('#' + lastBlockHeight + (age ? ' · ' + age : ''))
+        : (age || '—');
+      el.textContent = text;
+      if (lastBlockId) el.title = 'network tip #' + lastBlockHeight + ' ' + lastBlockId;
+      else el.removeAttribute('title');
     }
     function setText(id, value) {
       const el = document.getElementById(id);
@@ -404,7 +479,7 @@
         || Number(stats.policy && stats.policy.consensus_min)
         || 6;
       setText('ex-height', stats.height ?? 0);
-      setText('ex-hashrate', fmtRate(stats.hashrate));
+      setText('ex-hashrate', fmtHashNanos(ongoingHashbonusHashes(stats)));
       const NANOS = 100000000000;
       setText('ex-circ-she', fmtShe(Number(stats.circulatingNanos || 0) / NANOS) + ' SHE');
       var avgPot = Number(stats.potEmittedNanos);
@@ -418,19 +493,11 @@
       setText('ex-reserve-vault', fmtShe(Number(stats.reserveVaultNanos || 0) / NANOS) + ' SHE');
       filled = true;
       const hist = await fetchJson('/explorer/recent').catch(function () { return { txs: [] }; });
-      var tipAt = Number(stats.tipAt || stats.tipSealAt || 0);
-      var blockAt = tipAt > 0 ? tipAt : 0;
-      if (!(blockAt > 0)) {
-        var rows = hist.txs || [];
-        for (var bi = 0; bi < rows.length; bi++) {
-          if (rows[bi] && rows[bi].kind === 'block' && Number(rows[bi].at) > 0) {
-            blockAt = Number(rows[bi].at);
-            break;
-          }
-        }
-      }
-      lastBlockAt = blockAt > 0 ? blockAt : 0;
-      setText('ex-updated', lastBlockAt ? fmtSinceBlock(lastBlockAt) : '—');
+      var tip = networkTipBlock(stats, hist.txs || []);
+      lastBlockHeight = tip.height > 0 ? tip.height : 0;
+      lastBlockAt = tip.at > 0 ? tip.at : 0;
+      lastBlockId = tip.id || '';
+      paintLastBlock();
       const circ = await fetchJson('/explorer/circulation').catch(function () { return { holders: [] }; });
       const recent = orderRecentTxs(hist.txs || []);
       paintTxs(recent, '');
@@ -473,7 +540,7 @@
     const initialTx = txIdFromPath();
     if (initialTx) openTx(initialTx);
     setInterval(function () {
-      if (lastBlockAt) setText('ex-updated', fmtSinceBlock(lastBlockAt));
+      if (lastBlockAt || lastBlockHeight) paintLastBlock();
       if (!filled) return;
       if (hasSearchQuery()) runSearch().catch(function () {});
       else loadRecent().catch(function () {});

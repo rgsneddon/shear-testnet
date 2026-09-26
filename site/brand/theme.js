@@ -4,17 +4,22 @@
     return /(^|\.)shear\.digital$/.test(location.hostname || '');
   }
   function cookieGet() {
+    var found = '';
     var parts = String(document.cookie || '').split(';');
     for (var i = 0; i < parts.length; i++) {
       var p = parts[i].trim();
-      if (p.indexOf(KEY + '=') === 0) {
+      if (p.indexOf(KEY + '=') !== 0) continue;
+      try {
         var v = decodeURIComponent(p.slice(KEY.length + 1));
-        if (v === 'dark' || v === 'light') return v;
-      }
+        if (v === 'dark' || v === 'light') found = v;
+      } catch (e) {}
     }
-    return '';
+    return found;
   }
   function cookieSet(t) {
+    var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+    document.cookie = clear;
+    if (location.protocol === 'https:') document.cookie = clear + '; Secure';
     var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
     if (onShearHost()) bits += '; Domain=.shear.digital';
     if (location.protocol === 'https:') bits += '; Secure';

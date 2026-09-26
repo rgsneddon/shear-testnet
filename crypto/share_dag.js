@@ -1,9 +1,10 @@
 /**
- * Offline model of DINS Variant B. The flag stays off until Russell GO.
+ * DINS Variant B. Russell enabled this for the published whitepaper (2026-09-26).
  * Membership is the blue set, never arrival order.
  * One mint: spine pot plus hash nanos, once per eligible share.
+ * Hash nanos stay on the seal leaves. The pull book does not pay that work again.
  */
-export const DINS_ENABLED = false;
+export const DINS_ENABLED = true;
 
 /** Separate from payment STEM_MAX_HOPS / FLUFF_*. Do not retune those. */
 export const SHARE_STEM_MAX_HOPS = 3;
@@ -77,4 +78,25 @@ export function soleMint({ enabled, pullBookHashNanos = 0, leafHashNanos = 0 } =
     return { ok: true, pullBookHashNanos: 0, leafHashNanos: leaves };
   }
   return { ok: true, pullBookHashNanos: book, leafHashNanos: 0 };
+}
+
+/**
+ * Hash leg passed into the pull book.
+ * DINS on: the coinbase leaves already carry this hash, so the book gets none.
+ */
+export function pullBookHashLeg(hashByDest, enabled = DINS_ENABLED) {
+  if (!enabled) return hashByDest instanceof Map ? hashByDest : new Map();
+  let leaves = 0;
+  if (hashByDest instanceof Map) {
+    for (const n of hashByDest.values()) leaves += Math.max(0, Math.floor(Number(n) || 0));
+  }
+  if (leaves > 0) {
+    const mint = soleMint({
+      enabled: true,
+      pullBookHashNanos: leaves,
+      leafHashNanos: leaves,
+    });
+    if (!mint.ok) return new Map();
+  }
+  return new Map();
 }

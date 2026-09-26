@@ -10,16 +10,17 @@ const html = fs.readFileSync(
 );
 
 describe('shear.digital client buttons', () => {
-  it('home stays on the SaaS dark theme and pins Continuum 0.53', () => {
+  it('home stays on the SaaS dark theme and pins Continuum 0.54', () => {
     assert.match(html, /data-theme="dark"/);
+    assert.match(html, /Domain=\.shear\.digital/);
     assert.match(html, /css\/saas-dark\.css/);
     assert.match(html, /shared\/shear-chrome\.js/);
     assert.match(html, /data-active="MAIN"/);
     assert.match(html, /She Is Private/);
     assert.match(html, /ADMITv2/);
-    assert.match(html, /Continuum 0\.53/);
+    assert.match(html, /Continuum 0\.54/);
     assert.match(html, /ShearK 2\.6/);
-    assert.match(html, /releases\/tag\/0\.53/);
+    assert.match(html, /releases\/tag\/0\.54/);
     assert.match(html, /releases\/tag\/2\.6/);
     assert.doesNotMatch(html, /--bg: #eef3f8/);
     assert.doesNotMatch(html, /Owed toward/);
@@ -35,19 +36,20 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /Continuum 0\.51/);
     const wallet = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../wallet/index.html'), 'utf8');
     assert.match(wallet, /css\/saas-dark\.css/);
-    assert.match(wallet, /shear-wallet-0\.53-windows\.zip/);
-    assert.match(wallet, /shear-wallet-0\.53-linux\.zip/);
-    assert.match(wallet, /shear-wallet-0\.53-archlinux\.zip/);
-    assert.match(wallet, /shear-wallet-0\.53-fedora\.zip/);
-    assert.match(wallet, /shear-wallet-0\.53-android\.apk/);
+    assert.match(wallet, /shear-wallet-0\.54-windows\.zip/);
+    assert.match(wallet, /shear-wallet-0\.54-linux\.zip/);
+    assert.match(wallet, /shear-wallet-0\.54-archlinux\.zip/);
+    assert.match(wallet, /shear-wallet-0\.54-fedora\.zip/);
+    assert.match(wallet, /shear-wallet-0\.54-android\.apk/);
     assert.doesNotMatch(wallet, /shear-wallet-0\.51-/);
     assert.doesNotMatch(wallet, /shear-wallet-0\.48-/);
-    assert.match(wallet, /releases\/download\/0\.53\/shear-wallet-0\.53-windows\.zip/);
-    assert.match(wallet, /releases\/download\/0\.53\/shear-wallet-0\.53-linux\.zip/);
-    assert.match(wallet, /releases\/download\/0\.53\/shear-wallet-0\.53-archlinux\.zip/);
-    assert.match(wallet, /releases\/download\/0\.53\/shear-wallet-0\.53-fedora\.zip/);
-    assert.match(wallet, /releases\/download\/0\.53\/shear-wallet-0\.53-android\.apk/);
+    assert.match(wallet, /releases\/download\/0\.54\/shear-wallet-0\.54-windows\.zip/);
+    assert.match(wallet, /releases\/download\/0\.54\/shear-wallet-0\.54-linux\.zip/);
+    assert.match(wallet, /releases\/download\/0\.54\/shear-wallet-0\.54-archlinux\.zip/);
+    assert.match(wallet, /releases\/download\/0\.54\/shear-wallet-0\.54-fedora\.zip/);
+    assert.match(wallet, /releases\/download\/0\.54\/shear-wallet-0\.54-android\.apk/);
     assert.match(wallet, /data-theme="dark"/);
+    assert.match(wallet, /Domain=\.shear\.digital/);
     assert.doesNotMatch(wallet, /--bg: #eef3f8/);
     assert.doesNotMatch(wallet, /shear-wallet-0\.52-/);
     assert.doesNotMatch(wallet, /releases\/download\/0\.52/);
@@ -58,7 +60,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /data-wallet-fallback="0\.52"/);
   });
 
-  it('WALLET nav on MAIN MEMPOOL POOL EXPLORER pins 0.53 and refuses older tags', () => {
+  it('WALLET nav on MAIN MEMPOOL POOL EXPLORER pins 0.54 and refuses older tags', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const pages = {
       main: html,
@@ -72,7 +74,7 @@ describe('shear.digital client buttons', () => {
       whitepaper: fs.readFileSync(path.join(here, '../whitepaper/index.html'), 'utf8'),
     };
     for (const [name, page] of Object.entries(pages)) {
-      assert.match(page, /releases\/tag\/0\.53/, `${name} WALLET must pin 0.53`);
+      assert.match(page, /releases\/tag\/0\.54/, `${name} WALLET must pin 0.54`);
       assert.doesNotMatch(page, /releases\/tag\/0\.52/, `${name} must not pin 0.52 as current`);
       assert.doesNotMatch(page, /releases\/download\/0\.52/, `${name} must not download 0.52`);
       assert.doesNotMatch(page, /shear-wallet-0\.52-/, `${name} must not offer 0.52 packs`);
@@ -157,9 +159,9 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /ShearK-Miner 2\.6/);
     assert.match(admin, /A typed suffix is optional/);
     assert.doesNotMatch(admin, /YOUR_SSA1\.solo/);
-    assert.match(admin, /shear-wallet-0\.53-/);
-    assert.match(admin, /shear-wallet-0\.53-windows\.zip/);
-    assert.match(admin, /shear-wallet-0\.53-android\.apk/);
+    assert.match(admin, /shear-wallet-0\.54-/);
+    assert.match(admin, /shear-wallet-0\.54-windows\.zip/);
+    assert.match(admin, /shear-wallet-0\.54-android\.apk/);
     assert.match(admin, /Mainnet shear-v1 is not live/);
     assert.match(admin, /A launch date is not decided/);
     assert.doesNotMatch(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);

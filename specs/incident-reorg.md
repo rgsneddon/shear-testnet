@@ -9,7 +9,7 @@ Network: `shear-testnet-v3`. Policy, not a second fork-choice. No operator `setT
 3. **No “roll back to height H” binary.** There is no `setTip`. `reorg_halt_depth` (default 0 / off) may refuse to *apply* a deeper reorg and stay on the current public tip; it is not a rewind tool.
 4. **Keep mining the valid public branch.** Pool rebuilds the open round from the new parent. Orphaned pot is not paid twice.
 5. **If the attacker’s *valid* heavier branch is adopted, that history won.** Accept it or cut new magic. Mixed tips are two coins.
-6. **Vault seal.** A fork that diverged **before** the frozen checkpoint (h=1000, then every 400) does not receive the Reserve. Honest nodes refuse that adopt (`reorg_checkpoint` / `reorg_vault_seal`) and keep the sealed pot. The competing fork’s trial vault is blank. Continuum banners a blank-fork tip; it does not paint the sealed pot onto it. Tip below 1000 has no seal yet.
+6. **Vault seal.** A fork that diverged **before** the frozen checkpoint (h=1000, then every 400) does not receive a Reserve vault. Honest nodes refuse that adopt (`reorg_checkpoint` / `reorg_vault_seal`) and keep the sealed pot on the master chain. Continuum banners that the fork has no vault; it does not paint the sealed pot onto it. Tip below 1000 has no seal yet.
 7. **After:** raise policy N, publish heights + orphaned txids (`getreorgs`), rotate hot withdraw keys, check prune (1000) vs attack depth.
 
 ## Watcher

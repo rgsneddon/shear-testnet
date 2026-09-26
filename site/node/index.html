@@ -5,9 +5,38 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>
     (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
       try {
-        var t = localStorage.getItem('shear-theme');
+        var t = readCookie();
         if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
           t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
         }
         document.documentElement.setAttribute('data-theme', t);
@@ -67,7 +96,7 @@
   <div class="banner" role="status">
     <strong>Build from source.</strong> No prebuilt node binary on releases
     <span class="sep">·</span>
-    magic shear-testnet-v5 · tip Continuum 0.53
+    magic shear-testnet-v5 · tip Continuum 0.54
   </div>
 
   <main>
@@ -80,14 +109,14 @@
     <section class="wrap section-sm">
       <div class="panel honest">
         <h3>What is downloadable?</h3>
-        <p style="margin:0">GitHub <code>shear-testnet</code> release <strong>0.53</strong> ships <em>wallet</em> assets only (Linux / Windows / Arch / Android). The full node is <strong>build-from-source</strong> via the repo path <a href="https://github.com/rgsneddon/shear-testnet/tree/main/node" rel="noopener">tree/main/node</a>. Do not expect a node.zip on the release page.</p>
+        <p style="margin:0">GitHub <code>shear-testnet</code> release <strong>0.54</strong> ships <em>wallet</em> assets only (Linux / Windows / Arch / Android). The full node is <strong>build-from-source</strong> via the repo path <a href="https://github.com/rgsneddon/shear-testnet/tree/main/node" rel="noopener">tree/main/node</a>. Do not expect a node.zip on the release page.</p>
       </div>
     </section>
 
     <section class="wrap section">
       <p class="section-label">0 · OS dependencies</p>
       <h2 style="margin:0 0 .35rem">Copy/paste install panes</h2>
-      <p>Full validating node for <strong>shear-testnet-v5</strong>. There is <strong>no prebuilt node binary</strong> on GitHub releases — you clone and build from <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">rgsneddon/shear-testnet</a> (tip Continuum wallet is <strong>0.53</strong>; node lives at <code>node/</code> in that tree).</p>
+      <p>Full validating node for <strong>shear-testnet-v5</strong>. There is <strong>no prebuilt node binary</strong> on GitHub releases — you clone and build from <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">rgsneddon/shear-testnet</a> (tip Continuum wallet is <strong>0.54</strong>; node lives at <code>node/</code> in that tree).</p>
 <p>Beginner path (from tip site): OS deps → clone → RandomX + <code>crypto/native</code> → validating node → optional <code>npm run solo</code> (thin stratum on 127.0.0.1:1111). Continuum GUI is optional for RPC. Never <code>npm run pool</code> unless you are operating the public pool.</p>
 <p>Commands below are lifted from tip <code>site/index.html</code> <code>#solo-mine</code> — do not invent alternate package lines.</p>
       <div class="os-tabs" id="solo-os-tabs">
@@ -166,7 +195,7 @@ make -C crypto/native</pre>
 sudo chown "$USER":"$USER" /opt/shear-v4 /var/lib/shear/testnet-v5
 git clone https://github.com/rgsneddon/shear-testnet.git /opt/shear-v4
 cd /opt/shear-v4
-git checkout 0.53
+git checkout 0.54
 npm ci
 cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
 cmake --build crypto/randomx/build -j"$(nproc)"
@@ -311,7 +340,7 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1 --threads 8</pre>
       <div class="copy-row">
         <pre id="solo-node">git clone https://github.com/rgsneddon/shear-testnet.git
 cd shear-testnet
-git checkout 0.53
+git checkout 0.54
 npm ci
 cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
 cmake --build crypto/randomx/build -j"$(nproc)"
@@ -322,7 +351,7 @@ node node/src/node.js --print-config</pre>
       <p><code>--print-config</code> must show <code>"magic":"shear-testnet-v5"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
       
         <h3>2. Validating node (not the full pool)</h3>
-      <p>Release <strong>0.53</strong>. Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). Put <code>SHEAR_SEEDS</code> in the <strong>same shell</strong> as the node. Outbound TCP to those seeds is required; opening inbound firewall <code>30303</code> alone does <strong>not</strong> sync. Startup does <strong>not</strong> pull a bootstrap. Leave <code>SHEAR_BOOTSTRAP</code> unset or <code>0</code>. Do <strong>not</strong> <code>npm run pool</code> — that is the public-pool operator stack.</p>
+      <p>Release <strong>0.54</strong>. Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). Put <code>SHEAR_SEEDS</code> in the <strong>same shell</strong> as the node. Outbound TCP to those seeds is required; opening inbound firewall <code>30303</code> alone does <strong>not</strong> sync. Startup does <strong>not</strong> pull a bootstrap. Leave <code>SHEAR_BOOTSTRAP</code> unset or <code>0</code>. Do <strong>not</strong> <code>npm run pool</code> — that is the public-pool operator stack.</p>
       <div class="copy-row">
         <pre id="solo-run">export SHEAR_DATA="$HOME/.shear/testnet-v5"
 export SHEAR_NETWORK=shear-testnet-v5
@@ -350,7 +379,7 @@ npm run solo</pre>
         <p>For CLI Copy dest / ShearK solo login, see tip docs or the <a href="/miner/">miner hub</a>. Pool operators use a different stack — do not <code>npm run pool</code> for a personal node.</p>
         <div class="cta-row">
           <a class="btn btn-primary" href="/miner/">Miner hub →</a>
-          <a class="btn btn-soft" href="/wallet/">Continuum 0.53 →</a>
+          <a class="btn btn-soft" href="/wallet/">Continuum 0.54 →</a>
           <a class="btn btn-ghost" href="/docs/#/node">Docs · Run a node →</a>
           <a class="btn btn-ghost" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" rel="noopener">GitHub node/ ↗</a>
         </div>
@@ -360,7 +389,7 @@ npm run solo</pre>
 
   <footer class="footer">
     <div class="wrap footer-inner">
-      <div data-shear-foot data-wallet-fallback="0.53" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
+      <div data-shear-foot data-wallet-fallback="0.54" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
       <nav>
         <a href="/">Main</a>
         <a href="/miner/">Miner</a>

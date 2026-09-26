@@ -1,17 +1,60 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="description" content="Shear whitepaper: continuity-settled proof of work. Testnet preprint."/>
-  <script src="/brand/theme.js?v=15"></script>
+  <meta name="description" content="Shear whitepaper for shear-testnet-v5. DINS-DAG settles pot plus hash nanos. Continuity-settled proof of work."/>
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
   <title>Shear: Continuity-settled Proof of Work · whitepaper</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=30"/>
+  <link rel="stylesheet" href="/css/site.css"/>
+  <link rel="stylesheet" href="/shared/shear-chrome.css"/>
+  <link rel="stylesheet" href="/css/saas-dark.css"/>
   <style>
     * { box-sizing: border-box; }
-    html, body { margin:0; max-width:100%; overflow-x:hidden; font:15px/1.4 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    html, body { margin:0; max-width:100%; overflow-x:hidden; font:15px/1.4 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--text); }
     .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
     h1 { font-size:1.45rem; font-weight:800; margin:0 0 8px; line-height:1.25; overflow-wrap:anywhere; }
     h2 { font-size:.78rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:0 0 10px; font-weight:800; }
@@ -19,26 +62,22 @@
     a { color:var(--cyan); }
     .top-banner {
       display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
-      border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
+      border-bottom:1px solid rgba(180, 210, 230, 0.16); background:var(--bg);
       position:sticky; top:0; z-index:40;
     }
 
     .banner-wordmark { height:36px; width:auto; max-width:none; display:block; }
     .banner-brand { display:flex; align-items:center; justify-self:start; min-width:unset; }
     a.nav-btn {
-      display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
+      display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--accent); text-decoration:none;
       font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
-      border:1px solid transparent;
-      background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
-        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-      background-origin:border-box; background-clip:padding-box, border-box;
+      border:1px solid rgba(180, 210, 230, 0.16); border-radius:10px;
+      background:var(--surface);
     }
     .wrap, .record, .paper-frame, .files { min-width:0; max-width:100%; }
     .record {
-      border: 1px solid transparent; padding: 18px 20px; margin: 8px 0 16px; max-width:100%; overflow-x:hidden;
-      background: linear-gradient(165deg, var(--card) 0%, var(--bg) 58%) padding-box,
-        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-      background-origin: border-box; background-clip: padding-box, border-box;
+      border: 1px solid rgba(180, 210, 230, 0.16); border-radius:14px; padding: 18px 20px; margin: 8px 0 16px; max-width:100%; overflow-x:hidden;
+      background:var(--surface);
     }
     .chips { display:flex; flex-wrap:wrap; gap:8px; margin: 0 0 14px; }
     .chip {
@@ -50,7 +89,7 @@
     .meta .k { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; font-weight:700; }
     .meta .v { font-weight:650; overflow-wrap:anywhere; min-width:0; }
     .files {
-      margin: 16px 0 0; padding: 12px 14px; background:var(--input); border:1px solid rgba(26,111,181,.25); max-width:100%;
+      margin: 16px 0 0; padding: 12px 14px; background:var(--bg-elev); border:1px solid rgba(180, 210, 230, 0.16); border-radius:10px; max-width:100%;
     }
     .files a.dl {
       display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
@@ -61,7 +100,7 @@
     .files .size { color:var(--muted); font-size:.8rem; font-weight:600; }
     .preview-label { margin: 18px 0 8px; }
     .paper-frame {
-      background: #5a6570;
+      background: var(--bg);
       padding: 18px 12px 28px;
       max-width:100%;
       overflow-x:auto;
@@ -74,8 +113,8 @@
     }
     .lede { color:var(--muted); max-width: 48rem; overflow-wrap:anywhere; }
     .stale-banner {
-      margin: 12px 0 0; padding: 12px 14px; border: 2px solid #c45c26; background: #fff4e8;
-      color: #5a2e12; font-weight: 750; overflow-wrap: anywhere;
+      margin: 12px 0 0; padding: 12px 14px; border: 1px solid rgba(240, 180, 41, 0.35); background: rgba(240, 180, 41, 0.12);
+      color: #f0b429; font-weight: 750; overflow-wrap: anywhere; border-radius:10px;
     }
     html[data-theme="dark"] .stale-banner { background:#2a160c; color:#f0c9a8; border-color:#e08a4c; }
     @media (max-width: 640px) {
@@ -104,7 +143,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.53" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.54" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -124,17 +163,18 @@
         <span class="chip">Version 2.0</span>
       </div>
       <h1>Shear: Continuity-settled Proof of Work</h1>
-      <p class="lede">Shear project · 13 September 2026 · <code>shear-testnet-v5</code>. HTML is canonical.</p>
-      <p class="stale-banner" id="pdf-stale">HTML is canonical. This PDF preview is regenerated from the same Version 2.0 cut (ADMITv2, wallet 0.53, ShearK 2.6, <code>shear-testnet-v5</code>).</p>
+      <p class="lede">Shear project · 26 September 2026 · <code>shear-testnet-v5</code>. HTML is canonical.</p>
+      <p class="stale-banner" id="pdf-stale">HTML is canonical. This PDF is the same Version 2.0 cut for shear-testnet-v5 (ADMITv2, DINS-DAG, wallet 0.54, ShearK 2.6, <code>shear-testnet-v5</code>).</p>
       <div class="meta">
         <div class="k">Publication date</div><div class="v">11 September 2026</div>
         <div class="k">Resource type</div><div class="v">Publication / Preprint</div>
         <div class="k">License</div><div class="v">MIT (software). This note may be copied with the project.</div>
-        <div class="k">Keywords</div><div class="v">ShearHash-v3, RandomX, Flow, Vortex, vort1, The Reserve, CPU mining</div>
+        <div class="k">Keywords</div><div class="v">shear-testnet-v5, DINS-DAG, ShearHash-v3, RandomX, Flow, Vortex, vort1, The Reserve, CPU mining</div>
         <div class="k">How-to</div><div class="v"><a href="https://shear.digital/docs/">shear.digital/docs</a></div>
       </div>
       <h2 style="margin-top:18px">Description</h2>
-      <p>Shear is a CPU-mined ledger whose coin, SHE, is created when a block is found and not before. There is no premine and no sale of SHE by the developers. Holders offer a silent ID; the chain writes revolving dests; amounts are confidential. ADMITv2 membership proves a spend is one of this book’s notes without naming which. Proof of work is ShearHash-v3. A found block closes exactly one SHE. Each hasher dest that produced proven work in that round receives its own hash bonus on the next sealed block. While this book has fewer than 10,000 notes the membership set is thin. This preprint states the project’s goals and the architecture that carries them.</p>
+      <p>Shear is a CPU-mined ledger whose coin, SHE, is created when a block is found and not before. There is no premine and no sale of SHE by the developers. Holders offer a silent ID; the chain writes revolving dests; amounts are confidential. ADMITv2 membership proves a spend is one of this book’s notes without naming which. Proof of work is ShearHash-v3. The live book is <code>shear-testnet-v5</code>. Mainnet is not live, and a launch date is not decided.</p>
+      <p>DINS-DAG is how this testnet settles a round. Eligible shares are the blue set, sorted by identity. Arrival order is not membership. Each eligible share is counted once. The mint is the spine pot plus the hash nanos of those shares, and that work is not paid a second time. The epoch pot starts at 1.00 SHE and steps down 0.01 SHE each 4-day testnet epoch to a 0.20 SHE floor. The hash bonus is one protocol unit, 10<sup>−11</sup> SHE, paid to the hasher dest that produced proven work. Public pages show nine fractional digits, so one hash looks like dust. The wallet pin on this page is Continuum 0.54. ShearK-Miner is 2.6.</p>
       <div class="files" id="files">
         <a class="dl" href="shear-whitepaper.pdf" download>
           <span class="name">shear-whitepaper.pdf</span>

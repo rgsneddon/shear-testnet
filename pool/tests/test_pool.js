@@ -871,6 +871,7 @@ describe('public miner listing', () => {
     const feeIdx = dash.indexOf('id="fee-note"');
     assert.ok(bannerIdx >= 0 && feeIdx > bannerIdx, 'TESTNET banner must sit above the fee disclaimer');
     assert.match(dash.slice(bannerIdx, feeIdx), />TESTNET</);
+    assert.match(dash.slice(bannerIdx, feeIdx), /tn-beta">BETA</);
     assert.match(dash, /#testnet-banner/);
     const grid = dash.match(/id="stat-grid"[\s\S]*?id="updated"/);
     assert.ok(grid, 'stat-grid');

@@ -16,6 +16,7 @@ import {
   applyMinerSelfRate,
   foldPublicMinerViews,
   resetMinerRoundDisplay,
+  networkRoundHashesOf,
   liveRoundHashes,
   roundActualHashes,
   sortMinersByHashrate,
@@ -347,6 +348,20 @@ describe('folded-row inventory', () => {
     assert.equal(liveRoundHashes(m), 600);
     assert.equal(roundActualHashes(m), 256);
     assert.equal(clientHashCreditForbidden(), true);
+  });
+
+  it('network round hashes sum every miner and ignore a fee login', () => {
+    const miners = [
+      { login: 'ssa1qalice.solo', roundHashes: 256, clientHashes: 9e12 },
+      { login: 'ssa1qbob.solo', roundHashes: 512, clientHashes: 9e12 },
+      { login: 'ssa1qfee.fee', workerKey: 'ssa1qfee.fee', roundHashes: 1000 },
+      { login: 'ssa1qidle.solo', roundHashes: 0, clientHashes: 9e12 },
+    ];
+    assert.equal(networkRoundHashesOf(miners), 768);
+    resetMinerRoundDisplay(miners[0]);
+    resetMinerRoundDisplay(miners[1]);
+    assert.equal(networkRoundHashesOf(miners, [{ tag: 'mdeadbeef', count: 256 }]), 256);
+    assert.equal(networkRoundHashesOf(miners, [{ tag: 'not-a-tag', count: 99 }]), 0);
   });
 
   it('pool HUD hashes/dt matches the miner hashrate formula; mint stays proven', () => {

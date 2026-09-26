@@ -5,9 +5,38 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>
     (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
       try {
-        var t = localStorage.getItem('shear-theme');
+        var t = readCookie();
         if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
           t = 'dark';
         }
         document.documentElement.setAttribute('data-theme', t);
@@ -38,7 +67,7 @@
       <div class="scroll-hero-stage">
         <div class="scroll-hero-visuals" id="scroll-hero-visuals" aria-hidden="true">
           <div class="cui-panel cui-a">
-            <div class="cui-top"><span class="cui-app">Continuum</span><span class="cui-ver">0.53</span></div>
+            <div class="cui-top"><span class="cui-app">Continuum</span><span class="cui-ver">0.54</span></div>
             <div class="cui-label">Spendable</div>
             <div class="cui-bal">63.649 <span>SHE</span></div>
             <div class="cui-row"><span>In Reserve</span><span>35.000</span></div>
@@ -69,7 +98,7 @@
             <div class="terminal-body">
               <div><span class="prompt">$</span> <span class="dim">magic</span> <span class="hi" data-shear-network>shear-testnet-v5</span></div>
               <div><span class="key">algo</span> <span class="val">ShearHash-v3</span></div>
-              <div><span class="key">wallet</span> <span class="val">Continuum 0.53</span></div>
+              <div><span class="key">wallet</span> <span class="val">Continuum 0.54</span></div>
               <div><span class="key">miner</span> <span class="val">ShearK 2.6</span></div>
               <div><span class="key">stratum</span> <span class="hi">:1111</span></div>
             </div>
@@ -214,13 +243,13 @@
 
   <footer class="footer">
     <div class="wrap footer-inner">
-      <div data-shear-foot data-wallet-fallback="0.53" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
+      <div data-shear-foot data-wallet-fallback="0.54" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
       <nav>
         <a href="network.html">Network</a>
         <a href="governance.html">Governance</a>
         <a href="mine.html">Mine</a>
         <a href="docs/index.html">Docs</a>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.53" rel="noopener">Wallet 0.53</a>
+        <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.54" rel="noopener">Wallet 0.54</a>
         <a href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" rel="noopener">Miner 2.6</a>
         <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">GitHub</a>
       </nav>

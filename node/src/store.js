@@ -1223,6 +1223,10 @@ export function createStore(dir, {
     }
   }
 
+  function clearOpenRound() {
+    openRound.clear();
+  }
+
   function openRoundRows() {
     const now = Date.now();
     const out = [];
@@ -1373,6 +1377,7 @@ export function createStore(dir, {
     queueTx,
     noteOpenRound,
     openRoundRows,
+    clearOpenRound,
     hashHex,
     headerHash,
     historyFor,

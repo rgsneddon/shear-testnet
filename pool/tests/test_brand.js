@@ -131,6 +131,8 @@ describe('brand pages', () => {
     assert.match(theme, /nav-osadmin/);
     assert.doesNotMatch(theme, /textContent = 'OSadmin'/);
     const siteTheme = read('site/brand/theme.js');
+    assert.match(siteTheme, /function cookieGet\(\) \{[\s\S]*?var found = ''[\s\S]*?found = v[\s\S]*?return found;\s*\}/);
+    assert.match(siteTheme, /function cookieSet\(t\) \{[\s\S]*?Max-Age=0[\s\S]*?document\.cookie = clear[\s\S]*?document\.cookie = bits;\s*\}/);
     assert.equal(siteTheme, theme);
     const pool = read('pool/public/index.html');
     assert.match(pool, /table-wrap/);
@@ -166,13 +168,15 @@ describe('brand pages', () => {
     assert.match(poolHtml, /class="nav-btn is-on"[^>]*>POOL</);
     assert.match(explorerHtml, /class="nav-btn is-on"[^>]*>EXPLORER</);
     assert.match(mempoolHtml, /class="nav-btn is-on"[^>]*>MEMPOOL</);
-    assert.match(siteHtml, /releases\/tag\/0\.53/);
+    assert.match(siteHtml, /releases\/tag\/0\.54/);
+    assert.doesNotMatch(siteHtml, /releases\/tag\/0\.53/);
     assert.match(siteHtml, /rgsneddon\/ShearK/);
     assert.doesNotMatch(siteHtml, /theme\.js\?v=15/);
     for (const page of [poolHtml, explorerHtml, mempoolHtml]) {
       assert.match(page, /rgsneddon\/shear-testnet/);
       assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
-      assert.match(page, /releases\/tag\/0\.53/);
+      assert.match(page, /releases\/tag\/0\.54/);
+      assert.doesNotMatch(page, /releases\/tag\/0\.53/);
       assert.doesNotMatch(page, /releases\/tag\/0\.52/);
       assert.doesNotMatch(page, /releases\/tag\/0\.40|shear-wallet-0\.40/);
       assert.doesNotMatch(page, /releases\/tag\/0\.39|shear-wallet-0\.39/);
@@ -188,6 +192,9 @@ describe('brand pages', () => {
     assert.doesNotMatch(poolHtml, /grid-template-columns:\s*1fr 3fr/);
     assert.match(poolHtml, /class="she-private-lockup">She is Private</);
     assert.match(poolHtml, /ADMITv2 membership/);
+    assert.match(poolHtml, /DINS-DAG/);
+    assert.match(poolHtml, /blue set/);
+    assert.match(poolHtml, /spine pot plus the hash nanos, once/);
     assert.match(poolHtml, /PoW elects the tip/);
     assert.match(poolHtml, /id="mine-form"/);
     assert.match(poolHtml, /id="addr"/);
