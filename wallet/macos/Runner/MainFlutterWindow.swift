@@ -25,6 +25,7 @@ class MainFlutterWindow: NSWindow {
             "ok": false,
             "connected": false,
             "fullTunnelActive": false,
+            "deviceApproval": false,
             "message": message,
           ])
         }
@@ -69,11 +70,11 @@ class MainFlutterWindow: NSWindow {
     var buf = [CChar](repeating: 0, count: 64)
     let n = recvfrom(fd, &buf, buf.count, 0, nil, nil)
     close(fd)
-    // UDP reachability is not a residual session. Packet Tunnel HELLO is a MacBook cut.
+    // UDP reachability is not a device tunnel. macOS must approve a Packet Tunnel.
     done(
       false,
       n > 0
-        ? "SHEAR-HOP / EU is reachable on UDP 44044. macOS Packet Tunnel residual HELLO is a MacBook cut — use Privacy hop on Android, or a local Shear node."
-        : "No residual HELLO reply from SHEAR-HOP / EU. Use Privacy hop on Android, or a local Shear node.")
+        ? "Device VPN approval was not granted. SHEAR-HOP / EU is reachable on UDP 44044. macOS Packet Tunnel approval is a MacBook cut — use the Android VPN prompt, or a local Shear node."
+        : "Device VPN approval was not granted. No residual HELLO reply from SHEAR-HOP / EU. Use the Android VPN prompt, or a local Shear node.")
   }
 }

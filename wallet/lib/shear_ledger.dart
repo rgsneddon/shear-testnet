@@ -72,8 +72,20 @@ bool noteBytesEq(Uint8List a, Uint8List b) {
   return true;
 }
 
+/// Plate tests set this. flutter_tester deadlocks inside [Isolate.run]
+/// before the native prover starts, so seal runs on the caller instead.
+bool sealFlowOnCaller = false;
+
+/// Last exception from [submitContinuumSend], for plate tests.
+/// [flowSendAdvisoryOf] still collapses the remark the user sees.
+Object? debugLastContinuumSendError;
+
 bool _flowCryptoOnCaller() =>
-    debugNativeSpendProver != null || debugNativeSealNote != null;
+    sealFlowOnCaller ||
+    debugFlowCryptoOnCaller ||
+    debugNativeSpendProver != null ||
+    debugNativeSealNote != null ||
+    Platform.environment['FLUTTER_TEST'] == 'true';
 
 /// Seal Flow vouts (range proof + admit pub). Production hop-fee pay calls this
 /// via [Isolate.run] so the UI isolate can keep pumping frames.
@@ -130,7 +142,17 @@ Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) {
       if (raw is Map) Map<String, dynamic>.from(raw),
   ];
   final body = <String, dynamic>{'vin': vin, 'vout': vout};
-  proveFlowSpend(body, spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
+  final commits = <Uint8List>[
+    for (final raw in (input['commits'] as List? ?? const []))
+      if (raw is Uint8List) raw,
+  ];
+  proveFlowSpend(
+    body,
+    spendSeed: spendSeed,
+    spentNote: spentNote,
+    pubs: pubs,
+    commits: commits,
+  );
   return {
     'admitProof': body['admit_proof'],
     'spendTag': body['spendTag'],
@@ -405,6 +427,34 @@ Map<String, dynamic> sealedReserveVout(String to, int nanos, String kind) {
   return note;
 }
 
+/// Painted Continuum send has no flux-set note, so it cannot run native
+/// range/ADMIT prove (`admit_native_required`). Commit each out, including
+/// one dummy, the way the pool's spend-sig path keeps the body. No admit proof.
+List<Map<String, dynamic>> sealPaintedSpendVouts(List<Map<String, dynamic>> spec) {
+  final out = <Map<String, dynamic>>[];
+  for (final o in spec) {
+    final kind = (o['kind'] as String?) ?? 'send';
+    final n = (o['nanos'] as int?) ?? 0;
+    final Uint8List d20;
+    if (kind == 'dummy') {
+      d20 = randomBytes(20);
+    } else {
+      final addr = (o['address'] as String?) ?? '';
+      final hashed = hash20FromAddress(addr);
+      if (hashed == null) continue;
+      d20 = hashed;
+    }
+    final note = sealCoinbaseNote(n, dest20: d20, kind: kind);
+    final addr = o['address'];
+    if (addr is String && addr.isNotEmpty) note['address'] = addr;
+    out.add(note);
+  }
+  if (!out.any((o) => (o['kind'] as String?) == 'dummy')) {
+    out.add(sealCoinbaseNote(0, dest20: randomBytes(20), kind: 'dummy'));
+  }
+  return out;
+}
+
 /// Gross sealed average: (potEmitted + hashBonusEmitted) / height. No fee subtract, no 1.0 clamp.
 double? sealedAvgBlockRewardShe({
   required int potEmittedNanos,
@@ -518,6 +568,15 @@ class ContinuumSendResult {
   final ShearTx? tx;
 }
 
+/// Spendable map plus owed already counted inside it, so a failed post can
+/// put the painted figure back.
+class PaintedBookMark {
+  const PaintedBookMark(this.spendable, this.owedSpent);
+
+  final Map<String, double> spendable;
+  final double owedSpent;
+}
+
 bool continuumPayable(String raw) {
   final s = raw.trim();
   return isFullPaymentCode(s) || isDestAddress(s);
@@ -554,7 +613,11 @@ Future<ContinuumSendResult> submitContinuumSend({
   if (painted + 1e-12 < need) {
     return ContinuumSendResult(posted: false, to: candidate, remark: 'Not enough Continuum spendable');
   }
-  if (!ledger.fundFromPaintedContinuum(restFrame, paymentCode: paymentCode, needShe: need)) {
+  debugLastContinuumSendError = null;
+  final mark = ledger.markPaintedBook();
+  final gap = ledger.fundFromPaintedContinuum(restFrame, paymentCode: paymentCode, needShe: need);
+  if (gap == null) {
+    ledger.restorePaintedBook(mark);
     return ContinuumSendResult(posted: false, to: candidate, remark: 'Not enough Continuum spendable');
   }
   try {
@@ -575,9 +638,12 @@ Future<ContinuumSendResult> submitContinuumSend({
       spendSeed: spendSeed,
       privacyHopUp: privacyHopUp,
       allowPublicHttp: allowPublicHttp,
+      paintedCover: gap > 1e-12,
     );
     return ContinuumSendResult(posted: true, to: candidate, remark: '', tx: tx);
   } catch (e) {
+    debugLastContinuumSendError = e;
+    ledger.restorePaintedBook(mark);
     return ContinuumSendResult(posted: false, to: candidate, remark: flowSendAdvisoryOf(e));
   }
 }
@@ -2409,15 +2475,42 @@ class ShearLedger {
     return fresh;
   }
 
+  /// Copy of chain spendable and the owed already folded into it.
+  PaintedBookMark markPaintedBook() => PaintedBookMark(
+        Map<String, double>.from(_spendable),
+        _owedSpent,
+      );
+
+  void restorePaintedBook(PaintedBookMark mark) {
+    _spendable
+      ..clear()
+      ..addAll(mark.spendable);
+    _owedSpent = mark.owedSpent;
+  }
+
+  void _moveSpendableOnto(String dest) {
+    if (!isDestAddress(dest)) return;
+    var moved = 0.0;
+    for (final key in _spendable.keys.toList()) {
+      if (key == dest) continue;
+      final amt = _spendable.remove(key) ?? 0;
+      if (amt > 0) moved += amt;
+    }
+    if (moved > 0) _spendable[dest] = (_spendable[dest] ?? 0) + moved;
+    _dests.add(dest);
+  }
+
   /// Move owed-toward-π into one spend dest when the painted Continuum figure
   /// covers [needShe] and the chain balance does not. Does not invent SHE.
-  bool fundFromPaintedContinuum(String restFrame, {String? paymentCode, required double needShe}) {
-    if (needShe <= 1e-12) return true;
+  /// Returns the owed gap folded in, 0 when chain spendable already covers,
+  /// or null when the painted figure is short.
+  double? fundFromPaintedContinuum(String restFrame, {String? paymentCode, required double needShe}) {
+    if (needShe <= 1e-12) return 0;
     var chain = spendableOwned(restFrame, paymentCode: paymentCode);
     if (chain < 0) chain = 0;
-    if (chain + 1e-9 >= needShe) return true;
+    if (chain + 1e-9 >= needShe) return 0;
     final owed = owedTowardPi(restFrame, paymentCode: paymentCode);
-    if (chain + owed + 1e-9 < needShe) return false;
+    if (chain + owed + 1e-9 < needShe) return null;
     final gap = needShe - chain;
     final home = homeDest(restFrame, paymentCode: paymentCode);
     var dest = '';
@@ -2436,7 +2529,8 @@ class ShearLedger {
     }
     _spendable[dest] = (_spendable[dest] ?? 0) + gap;
     _owedSpent += gap;
-    return spendable(dest) + 1e-9 >= needShe;
+    if (spendable(dest) + 1e-9 < needShe) return null;
+    return gap;
   }
 
   /// Fold fragmented Continuum dests into one covering dest. Does not invent SHE.
@@ -3235,8 +3329,8 @@ class ShearLedger {
     }
   }
 
-  Future<List<Uint8List>> _fluxsetPubs() async {
-    if (pool == null) return const [];
+  Future<({List<Uint8List> pubs, List<Uint8List> commits})> _fluxColumns() async {
+    if (pool == null) return (pubs: const <Uint8List>[], commits: const <Uint8List>[]);
     try {
       final live = await pool!.fluxset();
       _spentTagHex.clear();
@@ -3251,15 +3345,23 @@ class ShearLedger {
           }
         }
       }
-      final raw = live['pubs'];
-      if (raw is! List) return const [];
-      return raw
-          .map((p) => _noteBytes(p))
-          .whereType<Uint8List>()
-          .where((p) => p.length == 32)
-          .toList();
+      final rawPubs = live['pubs'];
+      final rawCommits = live['commits'];
+      if (rawPubs is! List || rawCommits is! List || rawPubs.length != rawCommits.length) {
+        return (pubs: const <Uint8List>[], commits: const <Uint8List>[]);
+      }
+      final pubs = <Uint8List>[];
+      final commits = <Uint8List>[];
+      for (var i = 0; i < rawPubs.length; i++) {
+        final p = _noteBytes(rawPubs[i]);
+        final c = _noteBytes(rawCommits[i]);
+        if (p == null || c == null || p.length != 32 || c.length != 32) continue;
+        pubs.add(p);
+        commits.add(c);
+      }
+      return (pubs: pubs, commits: commits);
     } catch (_) {
-      return const [];
+      return (pubs: const <Uint8List>[], commits: const <Uint8List>[]);
     }
   }
 
@@ -3280,6 +3382,7 @@ class ShearLedger {
     Uint8List? spendSeed,
     bool privacyHopUp = false,
     bool allowPublicHttp = false,
+    bool paintedCover = false,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
     if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
@@ -3331,7 +3434,10 @@ class ShearLedger {
       }
     }
     var depth = 0;
-    if (pool != null && !local) {
+    // Painted funding already reserved the levy at the caller's depth. A
+    // mempool-depth surge here asks for more SHE than that reserve and the
+    // pool fee (floor) does not charge it, so the second send looks short.
+    if (pool != null && !local && !paintedCover) {
       try {
         final pressure = await pool!.mempoolPressure();
         depth = (pressure['depth'] as num?)?.toInt() ?? 0;
@@ -3358,6 +3464,12 @@ class ShearLedger {
         src = spendFrom(restFrame, paymentCode: paymentCode, amount: needShe);
       }
     }
+    if (src != from &&
+        spendable(src) + 1e-12 < needShe &&
+        restFrame != null &&
+        spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 >= needShe) {
+      _moveSpendableOnto(src);
+    }
     if (spendable(src) < needShe) {
       var fromNotes = 0.0;
       for (final n in _notes) {
@@ -3375,11 +3487,14 @@ class ShearLedger {
     Map<String, dynamic>? chosen;
     var fundedShe = spendable(src);
     List<Uint8List> livePubs = const [];
-    if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local) {
+    List<Uint8List> liveCommits = const [];
+    if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local && !paintedCover) {
       // One sealed note must cover needShe. Summing several smaller notes into
       // one Flow vin is out of scope. Pull the pool note list when the local
       // book has no covering note.
-      livePubs = await _fluxsetPubs();
+      final cols = await _fluxColumns();
+      livePubs = cols.pubs;
+      liveCommits = cols.commits;
       Map<String, dynamic>? pick(String fromDest, {bool ignoreConfs = false}) =>
           _pickSpendNote(
             fromDest,
@@ -3511,7 +3626,17 @@ class ShearLedger {
     Map<String, dynamic>? admitProof;
     dynamic excess;
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local) {
-      if (chosen == null) throw StateError('no_note');
+      if (chosen == null && paintedCover) {
+        final sealed = sealPaintedSpendVouts([
+          for (final o in vouts) Map<String, dynamic>.from(o),
+        ]);
+        vouts
+          ..clear()
+          ..addAll(sealed);
+      } else if (chosen == null) {
+        throw StateError('no_note');
+      }
+      if (chosen != null) {
       final note = chosen!;
       final spentNote = {
         'kind': (note['kind'] as String?) ?? 'pot',
@@ -3568,8 +3693,13 @@ class ShearLedger {
       ];
       excess = kernelExcess(vouts, vin);
       var pubs = livePubs;
-      if (pubs.isEmpty) pubs = await _fluxsetPubs();
-      if (pubs.isEmpty) throw StateError('fluxset');
+      var commits = liveCommits;
+      if (pubs.isEmpty || commits.length != pubs.length) {
+        final again = await _fluxColumns();
+        pubs = again.pubs;
+        commits = again.commits;
+      }
+      if (pubs.isEmpty || commits.length != pubs.length) throw StateError('fluxset');
       final dumpPubs = Platform.environment['SHEAR_DUMP_PUBS'];
       if (dumpPubs != null && dumpPubs.isNotEmpty) {
         File(dumpPubs).writeAsStringSync(jsonEncode({
@@ -3583,9 +3713,11 @@ class ShearLedger {
         'spendSeed': spendSeed,
         'spentNote': spentNote,
         'pubs': pubs,
+        'commits': commits,
       });
       admitProof = Map<String, dynamic>.from(proved['admitProof'] as Map);
       note['spent'] = true;
+      }
     }
     if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw') {
       final sealedReserve = <Map<String, dynamic>>[
@@ -3654,8 +3786,10 @@ class ShearLedger {
       for (var attempt = 0; attempt < 3; attempt++) {
         final retryNote = chosen;
         if (attempt > 0 && sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && retryNote != null) {
-          final pubs = await _fluxsetPubs();
-          if (pubs.isEmpty) throw StateError('fluxset');
+          final again = await _fluxColumns();
+          final pubs = again.pubs;
+          final commits = again.commits;
+          if (pubs.isEmpty || commits.length != pubs.length) throw StateError('fluxset');
           final spentNote = {
             'kind': (retryNote['kind'] as String?) ?? 'pot',
             'commit': _noteBytes(retryNote['commit'])!,
@@ -3668,6 +3802,7 @@ class ShearLedger {
             'spendSeed': spendSeed,
             'spentNote': spentNote,
             'pubs': pubs,
+            'commits': commits,
           });
           admitProof = Map<String, dynamic>.from(proved['admitProof'] as Map);
         }
@@ -3687,8 +3822,10 @@ class ShearLedger {
         throw lastErr ?? StateError('send failed');
       }
       final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
-      _spendable[src] = (json['fromBalance'] as num?)?.toDouble()
-          ?? (spendable(src) - needShe);
+      final reported = (json['fromBalance'] as num?)?.toDouble();
+      var nextBal = reported ?? (spendable(src) - needShe);
+      if (nextBal < 0) nextBal = 0;
+      _spendable[src] = nextBal;
       final parkedAmt = (json['changeBalance'] as num?)?.toDouble();
       if (changeDest != null && parkedAmt != null && parkedAmt > 1e-18) {
         _spendable[src] = 0;

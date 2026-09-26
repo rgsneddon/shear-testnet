@@ -50,15 +50,17 @@ static void privacy_hop_method_cb(FlMethodChannel* channel,
     fl_value_set_string_take(out, "ok", fl_value_new_bool(FALSE));
     fl_value_set_string_take(out, "connected", fl_value_new_bool(FALSE));
     fl_value_set_string_take(out, "fullTunnelActive", fl_value_new_bool(FALSE));
+    fl_value_set_string_take(out, "deviceApproval", fl_value_new_bool(FALSE));
     fl_value_set_string_take(
         out, "message",
         fl_value_new_string(
             n > 0
-                ? "SHEAR-HOP / EU is reachable on UDP 44044. Linux TUN residual "
-                  "HELLO is not in this cut — use Privacy hop on Android, or "
-                  "Send without privacy hop."
-                : "No residual HELLO reply from SHEAR-HOP / EU. Use Privacy hop "
-                  "on Android, or Send without privacy hop."));
+                ? "Device VPN approval was not granted. SHEAR-HOP / EU is "
+                  "reachable on UDP 44044. Linux TUN approval is not in this "
+                  "cut — use the Android VPN prompt, or Send without privacy hop."
+                : "Device VPN approval was not granted. No residual HELLO reply "
+                  "from SHEAR-HOP / EU. Use the Android VPN prompt, or Send "
+                  "without privacy hop."));
     fl_method_call_respond_success(method_call, out, nullptr);
     return;
   }

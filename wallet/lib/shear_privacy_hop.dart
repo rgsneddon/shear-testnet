@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'shear_identity.dart';
 import 'shear_levy.dart';
 import 'shear_read_sync.dart';
+import 'shear_vpn_profile.dart';
 
 /// Residual hop daemon for Continuum Reserve (restore-privacy RPT2).
 const kPrivacyHopHost = '77.42.91.84';
@@ -85,10 +86,12 @@ bool reserveSendReady({
   if (skipPoolSync && !enforceHopGate) return true;
   if (localSendReady(poolUrl)) return true;
   if (hopUp) return true;
-  // Unprivate is not a happy-path send. The parameter stays so old call sites compile.
-  if (unprivateConfirmed) return false;
+  if (unprivateConfirmed) return true;
   return false;
 }
+
+/// Any finite positive SHE amount. No magnitude ceiling.
+bool unprivateAmountPermitted(double she) => she.isFinite && she > 0;
 
 bool reserveVaultSendReady({
   required bool skipPoolSync,
@@ -170,7 +173,16 @@ class PrivacyHopController extends ChangeNotifier {
   /// Reachable sibling without a verified TUN. Must not open a public send.
   bool probeOnly = false;
 
+  /// Resistance CLI lines for the device tunnel. Capped.
+  final List<String> log = [];
+
   bool get isUp => state == PrivacyHopState.up && tunVerified && !probeOnly;
+
+  void _log(String line) {
+    if (line.isEmpty) return;
+    log.add(line);
+    if (log.length > 80) log.removeAt(0);
+  }
 
   /// Desktop UDP HELLO. Leaves the public send blocked.
   void noteProbeOnly() {
@@ -178,15 +190,26 @@ class PrivacyHopController extends ChangeNotifier {
     probeOnly = true;
     state = PrivacyHopState.error;
     message = kErrPrivacyVpn;
+    _log(message);
     notifyListeners();
   }
 
   /// Test and Android TUN stand-in. Probe-only must not call this.
-  void noteTunUp() {
+  void noteTunUp({String? vpnAddress}) {
     tunVerified = true;
     probeOnly = false;
     state = PrivacyHopState.up;
+    final ip = vpnAddress?.trim();
+    if (ip != null && ip.isNotEmpty) vpnIp = ip;
     message = '$kPrivacyHopLabel up';
+    _log(vpnIp != null && vpnIp!.isNotEmpty ? 'device tunnel up $vpnIp' : 'device tunnel up');
+    notifyListeners();
+  }
+
+  /// A privacy-hop send while the device tunnel is up.
+  void noteDeviceSend() {
+    final ip = vpnIp;
+    _log(ip != null && ip.isNotEmpty ? 'send via device tunnel $ip' : 'send via device tunnel');
     notifyListeners();
   }
   bool get isConnecting => state == PrivacyHopState.connecting;
@@ -196,10 +219,15 @@ class PrivacyHopController extends ChangeNotifier {
   Future<bool> connect({
     String host = kPrivacyHopHost,
     int port = kPrivacyHopPort,
+    ShearVpnProfile? profile,
   }) async {
     if (isUp) return true;
+    final use = profile ?? ShearVpnProfile();
     state = PrivacyHopState.connecting;
-    message = 'Connecting $kPrivacyHopLabel…';
+    message = 'Waiting for device VPN approval…';
+    _log('Waiting for device VPN approval');
+    _log(use.extendedOn ? 'extended controls on' : 'extended controls off');
+    _log('${use.ipv4 ? 'ipv4' : ''} ${use.ipv6 ? 'ipv6' : ''}'.trim());
     notifyListeners();
     final impl = connectImpl;
     if (impl != null) {
@@ -208,6 +236,7 @@ class PrivacyHopController extends ChangeNotifier {
       probeOnly = !ok;
       state = ok ? PrivacyHopState.up : PrivacyHopState.error;
       message = ok ? '$kPrivacyHopLabel up' : kErrPrivacyVpn;
+      _log(ok ? 'device tunnel up' : message);
       notifyListeners();
       return ok;
     }
@@ -224,13 +253,16 @@ class PrivacyHopController extends ChangeNotifier {
         'label': kPrivacyHopLabel,
         'timeoutMs': kPrivacyHopHandshakeTimeoutMs,
         'attempts': kPrivacyHopHandshakeAttempts,
+        ...use.connectArgs,
       });
       final map = raw is Map<String, dynamic>
           ? raw
           : raw is Map
               ? Map<String, dynamic>.from(raw)
               : <String, dynamic>{};
-      final tun = map['fullTunnelActive'] == true;
+      final declared = map.containsKey('deviceApproval');
+      final approved = !declared || map['deviceApproval'] == true;
+      final tun = map['fullTunnelActive'] == true && approved;
       tunVerified = tun;
       probeOnly = !tun;
       if (tun) {
@@ -240,6 +272,7 @@ class PrivacyHopController extends ChangeNotifier {
         message = (map['message'] as String?)?.trim().isNotEmpty == true
             ? map['message'] as String
             : '$kPrivacyHopLabel up';
+        _log(vpnIp != null && vpnIp!.isNotEmpty ? 'device tunnel up $vpnIp' : 'device tunnel up');
         notifyListeners();
         return true;
       }
@@ -247,6 +280,7 @@ class PrivacyHopController extends ChangeNotifier {
       message = (map['message'] as String?)?.trim().isNotEmpty == true
           ? map['message'] as String
           : kErrPrivacyVpn;
+      _log(message);
       notifyListeners();
       return false;
     } on MissingPluginException {
@@ -278,6 +312,7 @@ class PrivacyHopController extends ChangeNotifier {
     probeOnly = false;
     message = 'Privacy hop off';
     vpnIp = null;
+    _log('VPN tunnel off');
     notifyListeners();
   }
 

@@ -44,7 +44,8 @@ class ShearSession {
   ShearIdentity? identity;
   bool biometricsEnabled = false;
   /// Committed Closure send path. Not written as continuumSendPath.
-  String closureSendMode = kClosureModeVpn;
+  /// A new session opens on Connect bare. A stored VPN string still restores the hop.
+  String closureSendMode = kClosureModeBare;
   List<String> rememberedDests = const [];
   List<Map<String, dynamic>> rememberedTxs = const [];
   int rememberedDestCount = 1;

@@ -63,21 +63,25 @@ void RegisterPrivacyHopChannel(flutter::FlutterEngine* engine) {
           closesocket(s);
           WSACleanup();
           // UDP reachability is not a residual session. Do not mark hop up
-          // without WinTUN + authorized HELLO (Android VpnService path).
+          // without WinTUN + the device VPN approval (Android VpnService path).
           g_hop_up = false;
           flutter::EncodableMap fail_map(
               {{flutter::EncodableValue("ok"), flutter::EncodableValue(false)},
                {flutter::EncodableValue("connected"), flutter::EncodableValue(false)},
                {flutter::EncodableValue("fullTunnelActive"),
                 flutter::EncodableValue(false)},
+               {flutter::EncodableValue("deviceApproval"),
+                flutter::EncodableValue(false)},
                {flutter::EncodableValue("message"),
                 flutter::EncodableValue(
                     n > 0
-                        ? "SHEAR-HOP / EU is reachable on UDP 44044. Windows "
-                          "WinTUN residual HELLO is not in this cut — use "
-                          "Privacy hop on Android, or a local Shear node."
-                        : "No residual HELLO reply from SHEAR-HOP / EU. Use "
-                          "Privacy hop on Android, or a local Shear node.")}});
+                        ? "Device VPN approval was not granted. SHEAR-HOP / EU "
+                          "is reachable on UDP 44044. Windows WinTUN approval "
+                          "is not in this cut — use the Android VPN prompt, "
+                          "or a local Shear node."
+                        : "Device VPN approval was not granted. No residual "
+                          "HELLO reply from SHEAR-HOP / EU. Use the Android "
+                          "VPN prompt, or a local Shear node.")}});
           result->Success(flutter::EncodableValue(fail_map));
           return;
         }

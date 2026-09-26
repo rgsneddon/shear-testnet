@@ -560,6 +560,16 @@ class ReserveDepositResult {
   final ShearTx? tx;
 }
 
+/// Same local flag the vault Deposit button passes. Production attaches a pool
+/// and leaves skip-pool and post-reserve-lock off, so the lock is posted.
+bool reserveLockPostsLocal({
+  required bool hasPool,
+  required bool skipPoolSync,
+  required bool postReserveLock,
+}) {
+  return !hasPool || (skipPoolSync && !postReserveLock);
+}
+
 /// Reserve deposit the vault control posts. Funded from the painted Continuum
 /// figure (chain spendable plus owed-toward-π), including the tx fee.
 Future<ReserveDepositResult> postReserveDeposit({
@@ -590,12 +600,16 @@ Future<ReserveDepositResult> postReserveDeposit({
   if (painted + 1e-12 < need) {
     return ReserveDepositResult(posted: false, remark: lockFundingShortfall(shortPlan()));
   }
-  if (!ledger.fundFromPaintedContinuum(restFrame, paymentCode: paymentCode, needShe: need)) {
+  final mark = ledger.markPaintedBook();
+  final gap = ledger.fundFromPaintedContinuum(restFrame, paymentCode: paymentCode, needShe: need);
+  if (gap == null) {
+    ledger.restorePaintedBook(mark);
     return ReserveDepositResult(posted: false, remark: lockFundingShortfall(shortPlan()));
   }
   final plan = planLockFunding(ledger, restFrame: restFrame, paymentCode: paymentCode, needShe: need);
   final miss = lockFundingShortfall(plan);
   if (miss.isNotEmpty) {
+    ledger.restorePaintedBook(mark);
     return ReserveDepositResult(posted: false, remark: miss);
   }
   try {
@@ -615,6 +629,7 @@ Future<ReserveDepositResult> postReserveDeposit({
       paymentCode: paymentCode,
       spendSeed: spendSeed,
       allowPublicHttp: true,
+      paintedCover: gap > 1e-12,
     );
     final err = reserve.deposit(
       dest: dest,
@@ -627,6 +642,7 @@ Future<ReserveDepositResult> postReserveDeposit({
     }
     return ReserveDepositResult(posted: true, remark: '', tx: tx);
   } catch (e) {
+    ledger.restorePaintedBook(mark);
     return ReserveDepositResult(posted: false, remark: '$e');
   }
 }

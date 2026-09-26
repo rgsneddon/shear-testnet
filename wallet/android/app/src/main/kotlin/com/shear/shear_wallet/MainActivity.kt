@@ -14,6 +14,10 @@ class MainActivity : FlutterFragmentActivity() {
     private var pendingPort = PrivacyHopVpnService.HOP_PORT
     private var pendingTimeout = PrivacyHopVpnService.HOP_HANDSHAKE_TIMEOUT_MS
     private var pendingAttempts = PrivacyHopVpnService.HOP_HANDSHAKE_ATTEMPTS
+    private var pendingIpv4 = true
+    private var pendingIpv6 = true
+    private var pendingTrafficShape = false
+    private var pendingObfuscation = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -27,7 +31,11 @@ class MainActivity : FlutterFragmentActivity() {
                             ?: PrivacyHopVpnService.HOP_HANDSHAKE_TIMEOUT_MS
                         val attempts = call.argument<Int>("attempts")
                             ?: PrivacyHopVpnService.HOP_HANDSHAKE_ATTEMPTS
-                        startHop(host, port, timeoutMs, attempts, result)
+                        val ipv4 = call.argument<Boolean>("ipv4") ?: true
+                        val ipv6 = call.argument<Boolean>("ipv6") ?: true
+                        val trafficShape = call.argument<Boolean>("trafficShape") ?: false
+                        val outerObfuscation = call.argument<Boolean>("outerObfuscation") ?: false
+                        startHop(host, port, timeoutMs, attempts, ipv4, ipv6, trafficShape, outerObfuscation, result)
                     }
                     "disconnect" -> {
                         val i = Intent(this, PrivacyHopVpnService::class.java)
@@ -38,6 +46,8 @@ class MainActivity : FlutterFragmentActivity() {
                                 "ok" to true,
                                 "connected" to false,
                                 "connecting" to false,
+                                "fullTunnelActive" to false,
+                                "deviceApproval" to false,
                                 "message" to "Privacy hop off",
                             ),
                         )
@@ -53,12 +63,21 @@ class MainActivity : FlutterFragmentActivity() {
         port: Int,
         timeoutMs: Int,
         attempts: Int,
+        ipv4: Boolean,
+        ipv6: Boolean,
+        trafficShape: Boolean,
+        outerObfuscation: Boolean,
         result: MethodChannel.Result,
     ) {
         pendingHost = host
         pendingPort = port
         pendingTimeout = timeoutMs
         pendingAttempts = attempts
+        pendingIpv4 = ipv4
+        pendingIpv6 = ipv6
+        pendingTrafficShape = trafficShape
+        pendingObfuscation = outerObfuscation
+        // System VPN permission dialog. The user approves the tunnel here.
         val prep = VpnService.prepare(this)
         if (prep != null) {
             // System VPN permission dialog. Return without blocking; resume on grant.
@@ -67,17 +86,30 @@ class MainActivity : FlutterFragmentActivity() {
             startActivityForResult(prep, REQ_VPN)
             return
         }
-        launchService(host, port, timeoutMs, attempts)
+        launchService(host, port, timeoutMs, attempts, ipv4, ipv6, trafficShape, outerObfuscation)
         waitForSession(result)
     }
 
-    private fun launchService(host: String, port: Int, timeoutMs: Int, attempts: Int) {
+    private fun launchService(
+        host: String,
+        port: Int,
+        timeoutMs: Int,
+        attempts: Int,
+        ipv4: Boolean,
+        ipv6: Boolean,
+        trafficShape: Boolean,
+        outerObfuscation: Boolean,
+    ) {
         val i = Intent(this, PrivacyHopVpnService::class.java)
         i.action = PrivacyHopVpnService.ACTION_CONNECT
         i.putExtra(PrivacyHopVpnService.EXTRA_HOST, host)
         i.putExtra(PrivacyHopVpnService.EXTRA_PORT, port)
         i.putExtra(PrivacyHopVpnService.EXTRA_TIMEOUT_MS, timeoutMs)
         i.putExtra(PrivacyHopVpnService.EXTRA_ATTEMPTS, attempts)
+        i.putExtra(PrivacyHopVpnService.EXTRA_IPV4, ipv4)
+        i.putExtra(PrivacyHopVpnService.EXTRA_IPV6, ipv6)
+        i.putExtra(PrivacyHopVpnService.EXTRA_TRAFFIC_SHAPE, trafficShape)
+        i.putExtra(PrivacyHopVpnService.EXTRA_OBFUSCATION, outerObfuscation)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             startForegroundService(i)
         } else {
@@ -128,10 +160,21 @@ class MainActivity : FlutterFragmentActivity() {
             "ok" to up,
             "connected" to up,
             "fullTunnelActive" to up,
+            "deviceApproval" to up,
             "connecting" to connecting,
             "vpnIp" to ip,
             "message" to msg,
         )
+    }
+
+    override fun onDestroy() {
+        val i = Intent(this, PrivacyHopVpnService::class.java)
+        i.action = PrivacyHopVpnService.ACTION_DISCONNECT
+        try {
+            startService(i)
+        } catch (_: Exception) {
+        }
+        super.onDestroy()
     }
 
     @Deprecated("prepare VPN")
@@ -147,12 +190,23 @@ class MainActivity : FlutterFragmentActivity() {
                     "ok" to false,
                     "connected" to false,
                     "connecting" to false,
+                    "fullTunnelActive" to false,
+                    "deviceApproval" to false,
                     "message" to "VPN permission denied",
                 ),
             )
             return
         }
-        launchService(pendingHost, pendingPort, pendingTimeout, pendingAttempts)
+        launchService(
+            pendingHost,
+            pendingPort,
+            pendingTimeout,
+            pendingAttempts,
+            pendingIpv4,
+            pendingIpv6,
+            pendingTrafficShape,
+            pendingObfuscation,
+        )
         waitForSession(pending)
     }
 

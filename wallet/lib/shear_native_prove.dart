@@ -9,9 +9,14 @@ typedef NativeSpendProver = Map<String, dynamic>? Function({
   required Uint8List spendSeed,
   required Map<String, dynamic> spentNote,
   required List<Uint8List> pubs,
+  List<Uint8List>? commits,
 });
 
 NativeSpendProver? debugNativeSpendProver;
+
+/// Tests set this so Flow seal runs on the caller. flutter_tester deadlocks
+/// on [Isolate.run] around the native prover.
+bool debugFlowCryptoOnCaller = false;
 
 typedef NativeNoteSealer = Map<String, dynamic> Function(int v, {Uint8List? dest20, String kind});
 NativeNoteSealer? debugNativeSealNote;
@@ -47,6 +52,7 @@ Map<String, dynamic>? nativeProveFlowSpend({
   required Uint8List spendSeed,
   required Map<String, dynamic> spentNote,
   required List<Uint8List> pubs,
+  List<Uint8List>? commits,
 }) {
   final override = debugNativeSpendProver;
   if (override != null) {
@@ -66,6 +72,7 @@ Map<String, dynamic>? nativeProveFlowSpend({
           : spentNote['noteCommit'],
     },
     'pubs': pubs.map(_hex).toList(),
+    'commits': (commits ?? const <Uint8List>[]).map(_hex).toList(),
   }), flush: true);
   if (!Platform.isWindows) {
     try { Process.runSync('chmod', ['600', tmp.path]); } catch (_) {}

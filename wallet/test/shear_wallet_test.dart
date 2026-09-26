@@ -28,6 +28,7 @@ import 'package:shear_wallet/shear_qr.dart';
 import 'package:shear_wallet/shear_social.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_levy.dart';
+import 'package:shear_wallet/shear_closure.dart';
 import 'package:shear_wallet/shear_privacy_hop.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_tip_tick.dart';
@@ -454,7 +455,7 @@ void main() {
   });
 
   test('tracks owned notes and POSTs a sealed Flow body (vin, vout, admit_proof, sig, spendPub)', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs}) => {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
       'admit_proof': true,
       'v': 2,
       'spendTag': Uint8List(32)..[0] = 1,
@@ -807,7 +808,7 @@ void main() {
         hop: PrivacyHopState.off,
         unprivateConfirmed: true,
       ),
-      isFalse,
+      isTrue,
     );
     expect(
       reserveVaultSendReady(
@@ -940,7 +941,7 @@ void main() {
   });
 
   test('send skips notes whose spendTag is already in the live fluxset', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs}) => {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
       'admit_proof': true,
       'v': 2,
       'spendTag': Uint8List(32)..[0] = 1,
@@ -992,7 +993,7 @@ void main() {
   });
 
   test('hop fee collates a sealed note when spendable covers but the book was empty', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs}) => {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
       'admit_proof': true,
       'v': 2,
       'spendTag': Uint8List(32)..[0] = 1,
@@ -1153,7 +1154,7 @@ void main() {
   });
 
   test('sealed send change is the spent note leftover, not dest-balance of extra notes', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs}) => {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
       'admit_proof': true,
       'v': 2,
       'spendTag': Uint8List(32)..[0] = 1,
@@ -1564,13 +1565,13 @@ void main() {
       'vault_seal_ancestry': false,
       'blank_fork': true,
       'vault_seal_banner':
-          'This tip diverged before the Reserve vault seal (height 1000). The vault on this fork is blank.',
+          'This tip diverged before the Reserve vault seal (height 1000). This fork has no Reserve vault.',
     });
     expect(ledger.blankFork, isTrue);
     expect(ledger.vaultSealAncestry, isFalse);
     expect(ledger.vaultLockedNanos, 0);
     expect(ledger.vaultSealBanner, contains('height 1000'));
-    expect(ledger.vaultSealBanner, contains('blank'));
+    expect(ledger.vaultSealBanner, contains('no Reserve vault'));
     ledger.applyPolicy({
       'frozen': false,
       'vault_seal_ancestry': true,
@@ -1595,7 +1596,7 @@ void main() {
       'vault_seal_ancestry': false,
       'blank_fork': true,
       'vault_seal_banner':
-          'This tip diverged before the Reserve vault seal (height 1000). The vault on this fork is blank.',
+          'This tip diverged before the Reserve vault seal (height 1000). This fork has no Reserve vault.',
     });
     await tester.pumpWidget(ShearWalletApp(
       session: session,
@@ -4857,7 +4858,7 @@ void main() {
         hop: PrivacyHopState.off,
         unprivateConfirmed: true,
       ),
-      isFalse,
+      isTrue,
     );
     expect(kUnprivateConfirmLabel, 'I already use a VPN / I accept exposing my IP');
     expect(
@@ -5214,6 +5215,60 @@ void main() {
     expect(find.text(kUnprivateUnlockedBanner), findsOneWidget);
     expect(find.text(kReserveHopWaitCopy), findsNothing);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
+    expect(hop.isUp, isFalse);
+  });
+
+  testWidgets('Connect bare posts a large send without the VPN string', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-bare-large-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    expect(session.closureSendMode, kClosureModeBare);
+    final ident = session.identity!;
+    final posts = <Map<String, dynamic>>[];
+    final pool = _RecordingPool(posts, baseUrl: kPublicPoolHttp);
+    addTearDown(pool.close);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(ident);
+    ledger.viewSecret = ident.viewKey;
+    final home = ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
+    ledger.applyPoolSnapshot(
+      home,
+      {'balance': 0.02, 'owedPi': 20000},
+      beforeHeight: 0,
+      tipSealed: 0,
+    );
+    final bob = createIdentity();
+    final bobBook = ShearLedger()..bindIdentity(bob);
+    final to = bobBook.homeDest(bob.address, paymentCode: bob.paymentCode);
+    final hop = PrivacyHopController()..noteProbeOnly();
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      startUnlocked: true,
+      skipPoolSync: true,
+      enforceReserveHopGate: true,
+      privacyHop: hop,
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('wallet-mode-connect-bare')), findsOneWidget);
+    expect(find.text('CONNECT BARE'), findsOneWidget);
+    await tester.tap(find.text('Flow'));
+    await tester.pump();
+    await tester.enterText(find.widgetWithText(TextField, 'To (full she1 payment code or ssa1)'), to);
+    await tester.enterText(find.byKey(const Key('flow-amount')), '10000');
+    await tester.tap(find.byKey(const Key('flow-send')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text(kErrPrivacyVpn), findsNothing);
+    final advisory = find.byKey(const Key('flow-send-advisory'));
+    final advisoryText = advisory.evaluate().isEmpty
+        ? 'no advisory'
+        : (tester.widget(advisory) is Text ? (tester.widget(advisory) as Text).data : tester.widget(advisory).runtimeType.toString());
+    expect(find.text('sent'), findsOneWidget, reason: advisoryText);
+    expect(posts, isNotEmpty);
+    expect(posts.last['amount'], 10000);
+    expect(posts.last['kind'], 'send');
     expect(hop.isUp, isFalse);
   });
 
@@ -7685,9 +7740,12 @@ class _RecordingPool extends ShearPoolClient {
 
   @override
   Future<Map<String, dynamic>> fluxset() async {
+    final pubHex = pubs.map((p) => p.map((b) => b.toRadixString(16).padLeft(2, '0')).join()).toList();
     return {
       'ok': true,
-      'pubs': pubs.map((p) => p.map((b) => b.toRadixString(16).padLeft(2, '0')).join()).toList(),
+      'pubs': pubHex,
+      // J is (P, C). A count of pubs with no commit column is not a fluxset.
+      'commits': List<String>.filled(pubHex.length, '00' * 32),
       'spendTags': spendTags,
     };
   }
@@ -7877,6 +7935,7 @@ class _PublicReadPool extends ShearPoolClient {
   Future<Map<String, dynamic>> fluxset() async => {
         'ok': true,
         'pubs': <dynamic>[],
+        'commits': <dynamic>[],
         'spendTags': <dynamic>[],
       };
 }

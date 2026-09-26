@@ -30,16 +30,21 @@ class PrivacyHopVpnService : VpnService() {
                 val port = intent.getIntExtra(EXTRA_PORT, HOP_PORT)
                 val timeoutMs = intent.getIntExtra(EXTRA_TIMEOUT_MS, HOP_HANDSHAKE_TIMEOUT_MS)
                 val attempts = intent.getIntExtra(EXTRA_ATTEMPTS, HOP_HANDSHAKE_ATTEMPTS)
+                val ipv4 = intent.getBooleanExtra(EXTRA_IPV4, true)
+                val ipv6 = intent.getBooleanExtra(EXTRA_IPV6, true)
+                val trafficShape = intent.getBooleanExtra(EXTRA_TRAFFIC_SHAPE, false)
+                val outerObfuscation = intent.getBooleanExtra(EXTRA_OBFUSCATION, false)
                 try {
                     startForeground(NOTIFICATION_ID, buildNotification(connecting = true))
                 } catch (e: Exception) {
                     lastError = "Foreground service failed: ${e.message}"
                     isSessionActive = false
+                    stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                startTunnel(host, port, timeoutMs, attempts)
-                return START_STICKY
+                startTunnel(host, port, timeoutMs, attempts, ipv4, ipv6, trafficShape, outerObfuscation)
+                return START_NOT_STICKY
             }
             ACTION_DISCONNECT -> {
                 stopTunnel()
@@ -79,7 +84,16 @@ class PrivacyHopVpnService : VpnService() {
         return priv to pub
     }
 
-    private fun startTunnel(host: String, port: Int, timeoutMs: Int, attempts: Int) {
+    private fun startTunnel(
+        host: String,
+        port: Int,
+        timeoutMs: Int,
+        attempts: Int,
+        ipv4: Boolean,
+        ipv6: Boolean,
+        trafficShape: Boolean,
+        outerObfuscation: Boolean,
+    ) {
         if (!running.compareAndSet(false, true)) return
         connecting = true
         lastError = null
@@ -98,24 +112,32 @@ class PrivacyHopVpnService : VpnService() {
             val sock = DatagramSocket()
             try {
                 protect(sock)
-                RptTrafficShape.applyPrivacyScale(false)
-                RptObfuscation.applyPrivacyScale(false)
+                RptTrafficShape.applyPrivacyScale(trafficShape)
+                RptObfuscation.applyPrivacyScale(outerObfuscation)
                 val engine = RptClientEngine(clientPriv, nodePub)
                 val session = engine.handshake(sock, host, port, timeoutMs = timeoutMs, attempts = attempts)
                 val builder = Builder()
                     .setSession("Shear Privacy hop")
                     .setMtu(1280)
-                    .addAddress(session.vpnIp, 32)
                     .addDnsServer("10.88.0.1")
-                    .addRoute("0.0.0.0", 0)
+                if (ipv4) {
+                    builder.addAddress(session.vpnIp, 32)
+                    builder.addRoute("0.0.0.0", 0)
+                }
+                if (ipv6) {
+                    builder.addAddress("fd70:5ea4:0:1::2", 128)
+                    builder.addRoute("::", 0)
+                }
                 try {
                     builder.allowFamily(OsConstants.AF_INET)
                 } catch (_: Exception) {
                 }
                 try {
-                    builder.addDisallowedApplication(packageName)
+                    builder.allowFamily(OsConstants.AF_INET6)
                 } catch (_: Exception) {
                 }
+                // The wallet and the rest of the device use this tunnel.
+                // Hop sockets are protect()'d so the tunnel UDP does not loop.
                 val pfd = builder.establish()
                 if (pfd == null) {
                     lastError = "VPN permission blocked TUN"
@@ -274,6 +296,10 @@ class PrivacyHopVpnService : VpnService() {
         const val EXTRA_PORT = "port"
         const val EXTRA_TIMEOUT_MS = "timeoutMs"
         const val EXTRA_ATTEMPTS = "attempts"
+        const val EXTRA_IPV4 = "ipv4"
+        const val EXTRA_IPV6 = "ipv6"
+        const val EXTRA_TRAFFIC_SHAPE = "trafficShape"
+        const val EXTRA_OBFUSCATION = "outerObfuscation"
         private const val NOTIFICATION_ID = 0x5348
 
         @Volatile var isSessionActive: Boolean = false

@@ -1,13 +1,17 @@
 import 'dart:convert';
 import 'dart:io';
 
-enum ClosureSendMode { shearPrivacyVpn, localNode, localNodeFull }
+enum ClosureSendMode { connectBare, shearPrivacyVpn, localNode, localNodeFull }
 
+const kClosureModeBare = 'connectBare';
 const kClosureModeVpn = 'shearPrivacyVpn';
 const kClosureModeLocal = 'localNode';
 const kClosureModeFull = 'localNodeFull';
 
-/// Default A. Legacy fullNode becomes C on desktop and B on Android.
+/// Connect bare is the new-session default. A missing or empty stored mode
+/// opens bare. An explicit VPN string stays on the hop. Unknown text stays
+/// on VPN so a corrupt value is not dropped onto a public send.
+/// Legacy fullNode becomes local-node-full on desktop and local node on Android.
 ClosureSendMode closureModeFromStored(String? raw, {required bool android}) {
   switch (raw) {
     case kClosureModeLocal:
@@ -15,6 +19,12 @@ ClosureSendMode closureModeFromStored(String? raw, {required bool android}) {
     case kClosureModeFull:
     case 'fullNode':
       return android ? ClosureSendMode.localNode : ClosureSendMode.localNodeFull;
+    case kClosureModeVpn:
+      return ClosureSendMode.shearPrivacyVpn;
+    case kClosureModeBare:
+    case null:
+    case '':
+      return ClosureSendMode.connectBare;
     default:
       return ClosureSendMode.shearPrivacyVpn;
   }
@@ -22,6 +32,8 @@ ClosureSendMode closureModeFromStored(String? raw, {required bool android}) {
 
 String closureModeStored(ClosureSendMode mode) {
   switch (mode) {
+    case ClosureSendMode.connectBare:
+      return kClosureModeBare;
     case ClosureSendMode.shearPrivacyVpn:
       return kClosureModeVpn;
     case ClosureSendMode.localNode:
@@ -86,14 +98,30 @@ bool noteSidecarLine(ShearNodeSidecar side, String line) {
 bool closureArmsStratum(ClosureSendMode mode, {required bool android}) =>
     closureStratumPort(mode, android: android) == 1111;
 
+/// Desktop zip layout. Android has no node.exe beside the app.
+const kDesktopNodeMissingCopy =
+    'Local node binary was not found beside Continuum. '
+    'Extract the wallet zip so runtime/node.exe (Linux: runtime/node) and node/src/node.js sit next to the wallet.';
+
+/// The Android pack does not ship a node runtime. Do not tell the user to extract the desktop zip.
+const kAndroidNodeMissingCopy =
+    'This Android pack does not include a node runtime, so a local node cannot start on the phone. '
+    'Continuum stays on Shear Privacy VPN. The light seeker still follows the live tip.';
+
 /// Local-node mode copy. The GUI node syncs from peers. It does not auto-bootstrap.
 const kLocalNodeModeCopy =
     'Run a local Shear node in Continuum. Syncs from peers. No solo mining stratum.';
 const kLocalNodeFullModeCopy =
     'For solo mining. Syncs from peers. Exposes localhost stratum for ShearK.';
 
+/// Default send path. No hop lookup and no node process.
+const kConnectBareCopy =
+    'Does not look for the privacy hop and does not start a node. Sends of any amount post to the pool.';
+
 String closureChipLabel(ClosureSendMode mode) {
   switch (mode) {
+    case ClosureSendMode.connectBare:
+      return 'CONNECT BARE';
     case ClosureSendMode.shearPrivacyVpn:
       return 'VPN HOP MODE';
     case ClosureSendMode.localNode:
@@ -105,6 +133,8 @@ String closureChipLabel(ClosureSendMode mode) {
 
 String closureChipKey(ClosureSendMode mode) {
   switch (mode) {
+    case ClosureSendMode.connectBare:
+      return 'wallet-mode-connect-bare';
     case ClosureSendMode.shearPrivacyVpn:
       return 'wallet-mode-vpn-hop';
     case ClosureSendMode.localNode:
@@ -141,6 +171,7 @@ Map<String, String> closureSpawnEnv(
 List<String> closureSpawnArgs({required bool emptyDatadir, required ClosureSendMode mode}) {
   // Empty datadir and every send mode sync from peers. No bootstrap URL.
   if (emptyDatadir ||
+      mode == ClosureSendMode.connectBare ||
       mode == ClosureSendMode.shearPrivacyVpn ||
       mode == ClosureSendMode.localNode ||
       mode == ClosureSendMode.localNodeFull) {
@@ -210,7 +241,8 @@ typedef ClosureProcessStart = Future<void> Function(
   List<String> args,
 );
 
-/// Continuum sidecar. Mode A does not keep a node. B has no stratum. C desktop listens on 1111.
+/// Continuum sidecar. Connect bare and VPN keep no node. Local node has no
+/// stratum. Local-node-full on desktop listens on 1111. Android never arms it.
 class ShearNodeSidecar {
   ShearNodeSidecar({
     this.android = false,
@@ -244,9 +276,12 @@ class ShearNodeSidecar {
   bool reportedIbd = true;
   int seekerTip = 0;
 
+  bool get _noNode =>
+      committed == ClosureSendMode.connectBare || committed == ClosureSendMode.shearPrivacyVpn;
+
   /// True once, when the local node first catches the light-seeker tip.
   bool takeOverIfMatched() {
-    if (committed == ClosureSendMode.shearPrivacyVpn) return false;
+    if (_noNode) return false;
     final matched = localNodeMatchesSeeker(
       nodeHeight: reportedHeight,
       ibd: reportedIbd,
@@ -264,8 +299,8 @@ class ShearNodeSidecar {
     return true;
   }
 
-  ClosureSendMode committed = ClosureSendMode.shearPrivacyVpn;
-  ClosureSendMode pending = ClosureSendMode.shearPrivacyVpn;
+  ClosureSendMode committed = ClosureSendMode.connectBare;
+  ClosureSendMode pending = ClosureSendMode.connectBare;
   bool honest = false;
   bool running = false;
   int? listenPort;
@@ -285,8 +320,7 @@ class ShearNodeSidecar {
 
   bool get showSoloMine => !android && committed == ClosureSendMode.localNodeFull;
 
-  bool get sendBlocked =>
-      committed != ClosureSendMode.shearPrivacyVpn && !honest;
+  bool get sendBlocked => !_noNode && !honest;
 
   String get sendBlockedCopy =>
       'Wait until your local node is synced to the tip before sending.';
@@ -297,7 +331,7 @@ class ShearNodeSidecar {
   }
 
   void markSynced() {
-    if (committed == ClosureSendMode.shearPrivacyVpn) return;
+    if (_noNode) return;
     honest = true;
     progress = '';
   }
@@ -315,13 +349,14 @@ class ShearNodeSidecar {
         ? ClosureSendMode.localNode
         : pending;
     final prev = committed;
-    if (next == ClosureSendMode.shearPrivacyVpn) {
-      progress = 'Switching to Shear Privacy VPN… Stopping local node…';
+    if (next == ClosureSendMode.connectBare || next == ClosureSendMode.shearPrivacyVpn) {
       await stop();
       committed = next;
       lastEnv = {};
       lastArgs = const [];
-      progress = 'Shear Privacy VPN — light wallet active';
+      progress = next == ClosureSendMode.connectBare
+          ? kConnectBareCopy
+          : 'Shear Privacy VPN — light wallet active';
       return progress;
     }
     if (prev != next) {
@@ -336,8 +371,7 @@ class ShearNodeSidecar {
     if (nodeBinary == null || nodeBinary!.isEmpty || startProcess == null) {
       running = false;
       honest = false;
-      progress = 'Local node binary was not found beside Continuum. '
-          'Extract the wallet zip so runtime/node.exe (Linux: runtime/node) and node/src/node.js sit next to the wallet.';
+      progress = android ? kAndroidNodeMissingCopy : kDesktopNodeMissingCopy;
       return progress;
     }
     final spawnArgs = <String>[

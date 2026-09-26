@@ -103,10 +103,18 @@ Map<String, dynamic> proveFlowSpend(
   required Uint8List spendSeed,
   required Map<String, dynamic> spentNote,
   required List<Uint8List> pubs,
+  List<Uint8List>? commits,
 }) {
   final index = fluxsetIndexOf(pubs, spendSeed, spentNote);
   if (index < 0) throw StateError('not_in_fluxset');
-  final proof = nativeProveFlowSpend(spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
+  final cs = commits ?? const <Uint8List>[];
+  if (cs.length != pubs.length) throw StateError('admit_native_required');
+  final proof = nativeProveFlowSpend(
+    spendSeed: spendSeed,
+    spentNote: spentNote,
+    pubs: pubs,
+    commits: cs,
+  );
   if (proof == null || proof['v'] != 2 || proof['r'] != null) {
     throw StateError('admit_native_required');
   }
