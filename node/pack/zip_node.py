@@ -51,6 +51,13 @@ def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=
         for fn in fns:
             if fn.endswith((".obj", ".o", ".pdb", ".ilk")):
                 continue
+            if fn.endswith(".node"):
+                host_win = sys.platform.startswith("win")
+                flavor = os.environ.get("SHEAR_NODE_FLAVOR", "")
+                if host_win and flavor not in ("windows", ""):
+                    continue
+                if (not host_win) and flavor == "windows":
+                    continue
             p = os.path.join(dp, fn)
             rel = os.path.relpath(p, root).replace("\\", "/")
             z.write(p, f"{arc_prefix}/{rel}")
@@ -88,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     if flavor not in FLAVORS:
         sys.exit(f"flavor must be one of {', '.join(FLAVORS)}")
     pin = product_version()
+    os.environ["SHEAR_NODE_FLAVOR"] = flavor
     os.makedirs(DIST, exist_ok=True)
     name = f"shear-node-{pin}-{flavor}.zip"
     out = os.path.join(DIST, name)
