@@ -14,7 +14,7 @@ String? parseReceiveQr(String raw) {
   if (s.startsWith('shear:')) s = s.substring(6).trim();
   if (s.startsWith('shear1:')) s = s.substring(7).trim();
   if (isPaymentFingerprint(s)) return null;
-  if (isFullPaymentCode(s) || isDestAddress(s)) return s;
+  if (isFullPaymentCode(s) || isDestAddress(s) || isShearAddress(s)) return s;
   return null;
 }
 

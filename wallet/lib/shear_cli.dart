@@ -659,7 +659,7 @@ Future<int> _receive(IOSink out, _Flags flags, Map<String, String> env) async {
 Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env) async {
   final to = flags['to'];
   final amtRaw = flags['amount'];
-  if (to == null || to.isEmpty) throw const FormatException('send needs --to she1… or ssa1…');
+  if (to == null || to.isEmpty) throw const FormatException('send needs --to she1… or ssa1… or shear1…');
   if (amtRaw == null) throw const FormatException('send needs --amount');
   final amount = double.parse(amtRaw);
   final session = _session(flags);

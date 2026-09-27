@@ -524,6 +524,29 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(SPENDABLE_CONFIRMATIONS, 6);
   });
 
+  it('unsigned send cannot spend painted owed-π; reconstructOwner is the book', () => {
+    const alice = newIdentity();
+    const silent = spendDestOf(alice.spendPub);
+    const bob = spendDestOf(newIdentity().spendPub);
+    const store = storeWith({ rows: [] });
+    const pullBook = {
+      viewByDest() {
+        return { pendingNanos: Math.round(22 * NANOS_PER_SHE) };
+      },
+    };
+    const rec = reconstructOwner(store, silent);
+    const painted = paintedSpendableNanos(store, pullBook, silent, rec.spendableNanos);
+    assert.equal(rec.spendableNanos, 0);
+    assert.ok(painted > NANOS_PER_SHE);
+    const deny = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      from: silent,
+      to: bob,
+      amount: 1,
+    }, { store, miners: new Map(), pullBook, queueSend: () => ({ id: 'nope' }) });
+    assert.equal(deny.status, 400);
+    assert.equal(deny.json.reason, 'insufficient');
+  });
+
   it('Reserve lock spends spendable Continuum and refuses when spendable is short', () => {
     const alice = newIdentity();
     const silent = spendDestOf(alice.spendPub);
@@ -644,14 +667,9 @@ describe('pool send reconstruct and Join vault', () => {
       spendPub: signedLock.spendPub,
       vout: signedLock.vout,
     }, ctx);
-    assert.equal(lock.status, 200, lock.json.reason);
-    assert.equal(lock.json.ok, true);
-    assert.equal(lock.json.tx.kind, 'lock');
-    assert.equal(lock.json.tx.programId, RESERVE_PROGRAM);
-    assert.equal(posted.length, 1);
-    assert.equal(posted[0].kind, 'lock');
-    assert.ok(lock.json.fromBalance >= 0);
-    assert.ok(lock.json.fromBalance < 0.02);
+    assert.equal(lock.status, 400);
+    assert.equal(lock.json.reason, 'insufficient');
+    assert.equal(posted.length, 0);
 
     const rec = reconstructOwner(store, silent);
     const needNanos = Math.round(1 * NANOS_PER_SHE);
@@ -670,12 +688,9 @@ describe('pool send reconstruct and Join vault', () => {
       vin: signed.vin,
       excess: signed.excess,
     }, ctx);
-    assert.equal(send.status, 200, send.json.reason);
-    assert.equal(send.json.ok, true);
-    assert.equal(send.json.tx.kind, 'send');
-    assert.equal(posted.length, 2);
-    assert.equal(posted[1].admit_proof, undefined);
-    assert.ok(send.json.fromBalance >= 0);
+    assert.equal(send.status, 400, send.json.reason);
+    assert.equal(send.json.reason, 'insufficient');
+    assert.equal(posted.length, 0);
   });
 
   it('painted lock and send are admitted by queueTx and stay out of the block', () => {
@@ -750,9 +765,9 @@ describe('pool send reconstruct and Join vault', () => {
       spendPub: signedLock.spendPub,
       vout: signedLock.vout,
     }, ctx);
-    assert.equal(lock.status, 200, lock.json.reason);
-    assert.equal(lock.json.tx.kind, 'lock');
-    assert.equal(chain.mempool.filter((m) => m.kind === 'lock').length, 1);
+    assert.equal(lock.status, 400);
+    assert.equal(lock.json.reason, 'insufficient');
+    assert.equal(chain.mempool.filter((m) => m.kind === 'lock').length, 0);
 
     const sendNanos = Math.round(0.2 * NANOS_PER_SHE);
     const sendBody = {
@@ -778,18 +793,16 @@ describe('pool send reconstruct and Join vault', () => {
       vin: sendBody.vin,
       vout: sendBody.vout,
     }, ctx);
-    assert.equal(send.status, 200, send.json.reason);
-    assert.equal(send.json.tx.kind, 'send');
-    assert.equal(send.json.tx.id.startsWith('tx-'), true);
-    assert.equal(chain.mempool.filter((m) => m.kind === 'send').length, 1);
-    assert.equal(chain.mempool.some((m) => m.admit_proof), false);
+    assert.equal(send.status, 400, send.json.reason);
+    assert.equal(send.json.reason, 'insufficient');
+    assert.equal(chain.mempool.filter((m) => m.kind === 'send').length, 0);
 
     const { tpl } = chain.template({ miner: silent });
     const packed = new Set((tpl.txs || []).map((t) => t.id));
     for (const m of chain.mempool) {
       assert.equal(packed.has(m.id), false, m.id);
     }
-    assert.equal(chain.mempool.length, 2);
+    assert.equal(chain.mempool.length, 0);
 
     const again = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from: silent,
@@ -803,7 +816,7 @@ describe('pool send reconstruct and Join vault', () => {
     }, ctx);
     assert.equal(again.status, 400);
     assert.equal(again.json.reason, 'insufficient');
-    assert.equal(chain.mempool.filter((m) => m.kind === 'lock').length, 1);
+    assert.equal(chain.mempool.filter((m) => m.kind === 'lock').length, 0);
   });
 
   it('Reserve vote accepts a signed hold and refuses unsigned', () => {

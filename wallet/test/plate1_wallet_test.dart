@@ -162,6 +162,7 @@ void main() {
     final dest = ledgerDest(id);
     expect(parseReceiveQr(full), full);
     expect(parseReceiveQr(dest), dest);
+    expect(parseReceiveQr(id.address), id.address);
     expect(isPaymentFingerprint(finger), isTrue);
     expect(parseReceiveQr(finger), isNull);
     const prior = 'ssa1untouched';
@@ -526,7 +527,7 @@ void main() {
     expect(find.byKey(const Key('settings-vpn-tunnel')), findsNothing);
     await tester.tap(find.text('Flow'));
     await tester.pump();
-    await tester.enterText(find.widgetWithText(TextField, 'To (full she1 payment code or ssa1)'), bob);
+    await tester.enterText(find.widgetWithText(TextField, 'To (she1, ssa1, or shear1)'), bob);
     await tester.enterText(find.byKey(const Key('flow-amount')), '1');
     final before = ledger.transactions.length;
     await tester.tap(find.byKey(const Key('flow-send')));

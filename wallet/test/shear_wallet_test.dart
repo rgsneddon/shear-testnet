@@ -1707,20 +1707,72 @@ void main() {
     expect(shearAuthOptions(macos: false).biometricOnly, isTrue);
   });
 
-  test('encodeReceiveQr is she1; parseReceiveQr accepts she1, ssa1, shear: prefix, rejects junk', () {
+  test('encodeReceiveQr is she1; parseReceiveQr accepts she1, ssa1, shear1, shear: prefix, rejects junk', () {
     final id = createIdentity();
     expect(id.paymentCode.startsWith('she1'), isTrue);
     expect(encodeReceiveQr(id.paymentCode), id.paymentCode);
-    expect(parseReceiveQr(id.paymentCode), id.paymentCode);
-    expect(parseReceiveQr('shear:${id.paymentCode}'), id.paymentCode);
-    expect(parseReceiveQr('  shear:${id.paymentCode}  '), id.paymentCode);
+    expect(parseReceiveQr(id.paymentCodeFull), id.paymentCodeFull);
+    expect(parseReceiveQr('shear:${id.paymentCodeFull}'), id.paymentCodeFull);
+    expect(parseReceiveQr(id.paymentCode), isNull);
     final dest = destForLogin(id.address, height: 1, viewKey: id.viewKey)!;
     expect(dest.startsWith('ssa1'), isTrue);
     expect(parseReceiveQr(dest), dest);
     expect(parseReceiveQr('shear:$dest'), dest);
     expect(parseReceiveQr('not-a-qr'), isNull);
-    expect(parseReceiveQr(id.address), isNull);
+    expect(parseReceiveQr(id.address), id.address);
     expect(parseReceiveQr(''), isNull);
+  });
+
+  test('ssa1, she1, and own shear1 pay destCommit dests; book never records rest-frame', () async {
+    final alice = createIdentity();
+    final bob = createIdentity();
+    final seed = Uint8List.fromList([
+      for (var i = 0; i < 32; i++)
+        int.parse(alice.seedHex.substring(i * 2, i * 2 + 2), radix: 16),
+    ]);
+    final pub = ed25519PublicFromSeed(seed);
+    final home = encodeDestAddress(destCommitFromSpendPub(pub));
+    expect(isDestAddress(home), isTrue);
+    expect(payableChainDest(home), home);
+    final silent = payableChainDest(alice.paymentCodeFull);
+    expect(silent, isNotNull);
+    expect(isDestAddress(silent!), isTrue);
+    expect(silent.startsWith('ssa1'), isTrue);
+    expect(payableChainDest(alice.address, spendPub: pub), home);
+    expect(payableChainDest(bob.address), isNull);
+    expect(isShearAddress(home), isFalse);
+
+    final ledger = ShearLedger()..bindIdentity(alice);
+    final mailbox = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
+    final fromDest = ledger.newDest(alice.address, paymentCode: alice.paymentCode);
+    ledger.rememberSpendable(fromDest, 2);
+    final tx = await ledger.send(
+      from: fromDest,
+      to: alice.address,
+      amount: 1,
+      local: true,
+      restFrame: alice.address,
+      paymentCode: alice.paymentCode,
+      spendSeed: seed,
+    );
+    expect(isDestAddress(tx.to), isTrue);
+    expect(isShearAddress(tx.to), isFalse);
+    expect(isPaymentCode(tx.to), isFalse);
+    expect(tx.to, mailbox);
+    try {
+      await ledger.send(
+        from: fromDest,
+        to: bob.address,
+        amount: 0.1,
+        local: true,
+        restFrame: alice.address,
+        paymentCode: alice.paymentCode,
+        spendSeed: seed,
+      );
+      fail('foreign shear1 must not go on the book');
+    } catch (e) {
+      expect(flowSendAdvisoryOf(e), kErrPayIdentity);
+    }
   });
 
   test('new session biometrics default off; persist only stores true', () async {
@@ -3636,7 +3688,7 @@ void main() {
     final scanY = tester.getBottomLeft(find.byKey(const Key('scan-qr'))).dy;
     final amtY = tester.getTopLeft(find.byKey(const Key('flow-amount'))).dy;
     expect(amtY, greaterThan(scanY + 8));
-    await tester.enterText(find.widgetWithText(TextField, 'To (full she1 payment code or ssa1)'), bob);
+    await tester.enterText(find.widgetWithText(TextField, 'To (she1, ssa1, or shear1)'), bob);
     await tester.enterText(find.byKey(const Key('flow-amount')), '0.2');
     await tester.tap(find.byKey(const Key('flow-send')));
     await tester.pump();
@@ -3666,7 +3718,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Flow'));
     await tester.pump();
-    await tester.enterText(find.widgetWithText(TextField, 'To (full she1 payment code or ssa1)'), ident.paymentCode);
+    await tester.enterText(find.widgetWithText(TextField, 'To (she1, ssa1, or shear1)'), ident.paymentCode);
     await tester.enterText(find.byKey(const Key('flow-amount')), '0.1');
     await tester.tap(find.byKey(const Key('flow-send')));
     await tester.pump();
@@ -3719,10 +3771,10 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Flow'));
     await tester.pump();
-    await tester.enterText(find.widgetWithText(TextField, 'To (full she1 payment code or ssa1)'), spent);
+    await tester.enterText(find.widgetWithText(TextField, 'To (she1, ssa1, or shear1)'), spent);
     await tester.pump();
     expect(find.byKey(const Key('spent-dest-warn')), findsOneWidget);
-    await tester.enterText(find.widgetWithText(TextField, 'To (full she1 payment code or ssa1)'), '');
+    await tester.enterText(find.widgetWithText(TextField, 'To (she1, ssa1, or shear1)'), '');
     await tester.pump();
     await tester.tap(find.byKey(const Key('scan-qr')));
     await tester.pump();
@@ -5292,7 +5344,7 @@ void main() {
     expect(find.text('CONNECT BARE'), findsOneWidget);
     await tester.tap(find.text('Flow'));
     await tester.pump();
-    await tester.enterText(find.widgetWithText(TextField, 'To (full she1 payment code or ssa1)'), to);
+    await tester.enterText(find.widgetWithText(TextField, 'To (she1, ssa1, or shear1)'), to);
     await tester.enterText(find.byKey(const Key('flow-amount')), '10000');
     await tester.tap(find.byKey(const Key('flow-send')));
     await tester.pump();
@@ -5875,7 +5927,7 @@ void main() {
     await tester.pump();
     await tester.pump();
     final toField = find.byWidgetPredicate((w) =>
-        w is TextField && w.decoration is InputDecoration && (w.decoration as InputDecoration).labelText == 'To (full she1 payment code or ssa1)');
+        w is TextField && w.decoration is InputDecoration && (w.decoration as InputDecoration).labelText == 'To (she1, ssa1, or shear1)');
     expect(tester.widget<TextField>(toField).controller!.text, she1);
 
     scanned = dest;
@@ -5942,7 +5994,7 @@ void main() {
     await tester.pump();
     expect(find.byType(ScanReceiveQrPage), findsNothing);
     final toField = find.byWidgetPredicate((w) =>
-        w is TextField && w.decoration is InputDecoration && (w.decoration as InputDecoration).labelText == 'To (full she1 payment code or ssa1)');
+        w is TextField && w.decoration is InputDecoration && (w.decoration as InputDecoration).labelText == 'To (she1, ssa1, or shear1)');
     expect(tester.widget<TextField>(toField).controller!.text, she1);
   });
 

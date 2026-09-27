@@ -1982,7 +1982,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Widget _flow(BuildContext context, ShearIdentity ident) {
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('Copy the full she1 payment code. Short fingerprint cannot be paid. Never shear1.'),
+      const Text('Pay she1, ssa1, or shear1. The book only records an ssa1 dest. Coins settle on destCommit after 6 confirms.'),
       SelectableText(_offerReceiveDest(ident), key: const Key('flow-receive-dest')),
       const SizedBox(height: 8),
       OutlinedButton(
@@ -1995,7 +1995,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       const SizedBox(height: 8),
       TextField(
         controller: flowTo,
-        decoration: const InputDecoration(labelText: 'To (full she1 payment code or ssa1)'),
+        decoration: const InputDecoration(labelText: 'To (she1, ssa1, or shear1)'),
         onChanged: (v) => setState(() => _noteFlowTo(v)),
       ),
       if (_spentDestWarn != null) ...[
@@ -2105,7 +2105,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         return Text('Flow levy (empty mempool) ${formatShe(L / kUnitsPerShe)} SHE. Hash bonuses stay on the found block.');
       }),
       const Text(
-        'Receive: copy the full she1 payment code. Short fingerprint cannot be paid. Chain dests are one-time ssa1. Never share shear1. Memo plaintext opens only with the stealth shared secret.',
+        'Receive: she1 (silent pay), ssa1 dest, or shear1 identity. Chain dests are ssa1 only. Spendable is node-verified notes after 6 confirms. Memo plaintext opens only with the stealth shared secret.',
       ),
     ]);
   }

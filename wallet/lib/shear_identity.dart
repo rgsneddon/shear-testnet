@@ -114,6 +114,22 @@ bool isDestAddress(String s) {
   return bech32Hrp(t) == 'ssa' && _bech32BodyOk(t);
 }
 
+/// User-facing payee → on-chain dest. she1/shear1 never go on the book.
+/// ssa1 is itself. Full she1 is a one-time silent dest. shear1 is destCommit
+/// only when [spendPub] is that identity's (self / bound wallet).
+String? payableChainDest(String raw, {Uint8List? spendPub, Uint8List? admitBase}) {
+  var s = raw.trim();
+  if (s.startsWith('shear:')) s = s.substring(6).trim();
+  if (s.startsWith('shear1:')) s = s.substring(7).trim();
+  if (isDestAddress(s)) return s;
+  if (isPaymentFingerprint(s)) return null;
+  if (isFullPaymentCode(s)) return silentPay(s)?.dest;
+  if (isShearAddress(s) && spendPub != null && spendPub.length == 32) {
+    return encodeDestAddress(destCommitFromSpendPub(spendPub), admitBase);
+  }
+  return null;
+}
+
 String identityOfLogin(String login) => login.trim().split('.').first;
 
 bool isMineLogin(String s) {

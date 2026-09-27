@@ -1252,14 +1252,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     const rec = reconstructOwner(store, from);
     const nanos = isVote ? 0 : Math.round(amount * NANOS_PER_SHE);
-    const paintedNanos = paintedSpendableNanos(store, pullBook, from, rec.spendableNanos);
+    const chainNanos = rec.spendableNanos;
     const sealedSend = kindIn === 'send'
       && body.admit_proof
       && Array.isArray(body.vin) && body.vin.length
       && Array.isArray(body.vout) && body.vout.length
       && (body.sig || body.signature)
       && body.spendPub;
-    if (!isVote && !isWithdraw && !sealedSend && paintedNanos < nanos) {
+    if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const memoCt = body.memoCt || null;
@@ -1271,7 +1271,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const taxed = levyTaxed({ kind, programId });
     const depth = mempoolDepthBytes(store?.mempool || []);
     const fee = taxed ? levyNanos(nanos, { depth }) : 0;
-    if (!isVote && !isWithdraw && !sealedSend && paintedNanos < nanos + fee) {
+    if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const rawChange = String(body.change || '').trim();
@@ -1333,8 +1333,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       return { status: 400, json: { ok: false, reason: 'dummy_outs' } };
     }
     if (kind === 'send' && !draft.admit_proof) {
-      const paintedCovers = paintedNanos >= nanos + fee;
-      if (!(paintedCovers && verifySpendSig(draft))) {
+      const chainCovers = chainNanos >= nanos + fee;
+      if (!(chainCovers && verifySpendSig(draft))) {
         return { status: 400, json: { ok: false, reason: 'admit_membership' } };
       }
     }
@@ -1344,8 +1344,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (reserveNeedsPortalOpen(draft) && !verifyReservePortalOpen(draft)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
-    const owedOnly = Math.max(0, paintedNanos - Math.max(0, Math.floor(Number(rec.spendableNanos) || 0)));
-    const tx = queueSend(draft, { paintedOwedNanos: owedOnly });
+    const tx = queueSend(draft, { paintedOwedNanos: 0 });
     if (tx && typeof tx === 'object' && tx.ok === false) {
       return { status: 400, json: { ok: false, reason: tx.reason || 'queue_failed' } };
     }

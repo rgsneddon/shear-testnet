@@ -691,6 +691,7 @@ const kErrPublicHttp = 'node not running — sends would use the public node and
 const kErrSyncTip = 'node not at tip — wait for sync';
 const kErrSendGeneric = 'not sent - try again';
 const kErrShortShe1 = 'paste full she1 from Receive (not fingerprint)';
+const kErrPayIdentity = 'pay this identity with their full she1 or ssa1 dest';
 const kErrLockUnsigned = 'lock signature rejected';
 
 String voteFailCopy(Object error) {
@@ -752,6 +753,9 @@ String flowSendAdvisoryOf(Object error) {
   final msg = error.toString();
   if (msg.contains(kFlowMiningRefuse) || msg.contains('mining mailbox')) {
     return kFlowMiningRefuse;
+  }
+  if (msg.contains(kErrPayIdentity) || msg.contains('pay this identity')) {
+    return kErrPayIdentity;
   }
   if (msg.contains(kErrShortShe1) ||
       msg.contains('not fingerprint') ||
@@ -2260,12 +2264,6 @@ class ShearLedger {
       if (_isProgramVaultDest(key)) continue;
       n += spendable(key);
     }
-    // A round credited on the shear1 rest-frame has no ssa1 yet. It stays
-    // spendable here instead of disappearing from the Continuum figure.
-    if (!isDestAddress(restFrame)) {
-      final parked = _spendable[restFrame] ?? 0;
-      if (parked > 0) n += parked;
-    }
     return n;
   }
 
@@ -3495,7 +3493,7 @@ class ShearLedger {
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
     if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
-    if (isShearAddress(from) || isShearAddress(to)) {
+    if (isShearAddress(from)) {
       throw ArgumentError('rest_frame');
     }
     var destTo = to;
@@ -3507,8 +3505,17 @@ class ShearLedger {
       pay = silentPay(to);
       if (pay == null) throw ArgumentError('bad_send');
       destTo = pay.dest;
+    } else if (isShearAddress(to) && sendKind == 'send') {
+      if (restFrame != null && to.trim() == restFrame.trim()) {
+        destTo = currentDest(restFrame, paymentCode: paymentCode);
+      } else {
+        throw StateError(kErrPayIdentity);
+      }
     } else if (!isDestAddress(to) && sendKind == 'send') {
       throw ArgumentError('bad_send');
+    }
+    if (isShearAddress(destTo) || isPaymentCode(destTo)) {
+      throw ArgumentError('rest_frame');
     }
     if (!local &&
         pool != null &&
