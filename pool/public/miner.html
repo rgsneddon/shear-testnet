@@ -240,14 +240,13 @@
     </section>
     <section class="panel-card">
       <h2>Accounting</h2>
-      <p>Per sealed block. Block rwd is your share of the pot after the pool fee. Hash bonus is fee-free and shown to 11 decimals. Pool fee is this pool’s cut of your pot share (0–3% cap; this pool takes 1%). Total earned is block rwd + hash bonus. Latest 10 rows sit in view; older heights scroll.</p>
+      <p>Per sealed block. Block rwd is your share of the pot after the pool fee. Pool fee is this pool’s cut of your pot share (0–3% cap; this pool takes 1%). Total earned is the block reward. Latest 10 rows sit in view; older heights scroll.</p>
       <div class="acct-scroll">
       <table id="accounting">
         <thead>
           <tr>
             <th>HEIGHT</th>
             <th>BLOCK RWD</th>
-            <th>HASHBONUS</th>
             <th>POOL FEE</th>
             <th>TOTAL EARNED</th>
           </tr>
@@ -262,7 +261,6 @@
           <tr>
             <th>TOTALS</th>
             <th>BLOCK RWD</th>
-            <th>HASHBONUS</th>
             <th>POOL FEE</th>
             <th>TOTAL EARNED</th>
           </tr>
@@ -271,9 +269,8 @@
           <tr>
             <td class="mono">all heights</td>
             <td id="tot-block">0.00000000</td>
-            <td class="mono" id="tot-hash">0.00000000000</td>
             <td id="tot-fee">0.00000000</td>
-            <td id="tot-earned">0.00000000000</td>
+            <td id="tot-earned">0.00000000</td>
           </tr>
         </tbody>
       </table>
@@ -396,21 +393,18 @@
         ab.innerHTML = rows.map(function (r) {
           return '<tr><td class="mono">' + (r.height || 0) +
             '</td><td>' + fmtSheNanos(r.blockRwdNanos, 8) +
-            '</td><td class="mono">' + fmtSheNanos(r.hashBonusNanos, 11) +
             '</td><td>' + fmtSheNanos(r.poolFeeNanos, 8) +
-            '</td><td>' + fmtSheNanos(r.totalNanos, 11) + '</td></tr>';
-        }).join('') || '<tr><td colspan="5">No sealed credits yet.</td></tr>';
-        let totB = 0, totH = 0, totF = 0, totT = 0;
+            '</td><td>' + fmtSheNanos(r.totalNanos, 8) + '</td></tr>';
+        }).join('') || '<tr><td colspan="4">No sealed credits yet.</td></tr>';
+        let totB = 0, totF = 0, totT = 0;
         for (let i = 0; i < rows.length; i += 1) {
           totB += Number(rows[i].blockRwdNanos) || 0;
-          totH += Number(rows[i].hashBonusNanos) || 0;
           totF += Number(rows[i].poolFeeNanos) || 0;
           totT += Number(rows[i].totalNanos) || 0;
         }
         set('tot-block', fmtSheNanos(totB, 8));
-        set('tot-hash', fmtSheNanos(totH, 11));
         set('tot-fee', fmtSheNanos(totF, 8));
-        set('tot-earned', fmtSheNanos(totT, 11));
+        set('tot-earned', fmtSheNanos(totT, 8));
       }
     }
     function tick() {

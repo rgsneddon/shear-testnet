@@ -2489,6 +2489,19 @@ export function createPool({
     ));
   }
 
+  function publicMinerLedger(rows) {
+    return (Array.isArray(rows) ? rows : []).map((r) => {
+      const block = Math.floor(Number(r?.blockRwdNanos) || 0);
+      const fee = Math.floor(Number(r?.poolFeeNanos) || 0);
+      return {
+        height: Number(r?.height) || 0,
+        blockRwdNanos: block,
+        poolFeeNanos: fee,
+        totalNanos: block,
+      };
+    });
+  }
+
   function minerPublicJson(tag, now = Date.now()) {
     const rows = minerByTag(tag, now);
     const tipH = Number(store.tip?.()?.height || 0);
@@ -2556,7 +2569,7 @@ export function createPool({
       lastPullMs: pull.lastPullMs,
       nextPullMs: pull.nextPullMs,
       cooldownMs: PULL_COOLDOWN_MS,
-      ledger: typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : [],
+      ledger: publicMinerLedger(typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : []),
       ...(autoPayoutLastError && autoPayoutLastError.tag === tag
         ? { autoPayoutLastError }
         : {}),

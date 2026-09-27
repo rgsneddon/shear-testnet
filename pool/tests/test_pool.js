@@ -805,11 +805,12 @@ describe('public miner listing', () => {
     assert.match(miner, /id="accounting"/);
     assert.match(miner, />HEIGHT</);
     assert.match(miner, />BLOCK RWD</);
-    assert.match(miner, />HASHBONUS</);
+    assert.doesNotMatch(miner, />HASHBONUS</);
     assert.match(miner, />POOL FEE</);
     assert.match(miner, />TOTAL EARNED</);
     assert.match(miner, /fmtSheNanos/);
-    assert.match(miner, /hashBonusNanos, 11/);
+    assert.doesNotMatch(miner, /hashBonusNanos, 11/);
+    assert.doesNotMatch(miner, /id="tot-hash"/);
     const accountingAt = miner.indexOf('id="accounting"');
     const totalsAt = miner.indexOf('id="acct-totals"');
     const backBoxAt = miner.indexOf('id="back-pool-box"');
@@ -1199,6 +1200,42 @@ describe('public miner listing', () => {
     assert.equal(miner.ok, true);
     assert.match(miner.confirmedSentLabel, /^Confirmed sent to ssa1\*{8}/);
     assert.equal(typeof miner.sentNanos, 'number');
+    pool.close();
+  });
+
+  it('public miner JSON omits hash bonus amounts and totals the block reward', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-miner-private-hash-'));
+    const id = newIdentity();
+    const dest = freshStealthDest(id).dest;
+    const tag = publicMinerTag(dest);
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+      shareBits: 8,
+      bits: 16,
+    });
+    await new Promise((resolve, reject) => {
+      pool.httpServer.listen(0, '127.0.0.1', resolve);
+      pool.httpServer.on('error', reject);
+    });
+    const httpPort = pool.httpServer.address().port;
+    const hashByDest = new Map([[dest, 11]]);
+    assert.equal(pool.pullBook.creditRound(
+      [{ tag, dest, count: 10 }],
+      { height: 4, nanos: 100000000000, hashByDest },
+    ).ok, true);
+    const internal = pool.pullBook.ledger(tag);
+    assert.equal(internal[0].hashBonusNanos, 11);
+    assert.equal(internal[0].totalNanos, internal[0].blockRwdNanos + 11);
+    const page = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`).then((r) => r.json());
+    assert.equal(page.ok, true);
+    assert.equal(page.ledger.length, 1);
+    assert.equal(Object.hasOwn(page.ledger[0], 'hashBonusNanos'), false);
+    assert.equal(page.ledger[0].totalNanos, page.ledger[0].blockRwdNanos);
+    assert.equal(page.ledger[0].blockRwdNanos, 100000000000);
+    assert.equal(JSON.stringify(page).includes('hashBonusNanos'), false);
     pool.close();
   });
 });
