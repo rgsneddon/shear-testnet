@@ -1,7 +1,7 @@
 import net from 'node:net';
 import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { shareRowJson } from '../../crypto/pack.js';
-import { compactTx } from '../../crypto/chronoflux.js';
+import { compactTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
 
@@ -316,6 +316,8 @@ export function encodeWireBlock(b) {
     bLeaves: b.bLeaves,
     rootA: b.rootA,
     rootB: b.rootB,
+    samplesPruned: !!b.samplesPruned,
+    bLeavesPruned: !!b.bLeavesPruned,
   };
 }
 
@@ -332,7 +334,47 @@ export function decodeWireBlock(w) {
     bLeaves: reviveDeep(w.bLeaves),
     rootA: reviveDeep(w.rootA),
     rootB: reviveDeep(w.rootB),
+    samplesPruned: !!w.samplesPruned,
+    bLeavesPruned: !!w.bLeavesPruned,
   };
+}
+
+/**
+ * IBD requests the next height after the local tip, never a later child.
+ * Headers may include a long run; only height local+1 whose prev matches is wanted.
+ */
+export function nextSequentialHeader({
+  headers = [],
+  localHeight = 0,
+  localHash = '',
+  have,
+  failed,
+  pending,
+} = {}) {
+  const wantH = Math.max(0, Number(localHeight) || 0) + 1;
+  const prev = String(localHash || '').toLowerCase();
+  const haveSet = have instanceof Set ? have : new Set(have || []);
+  const failSet = failed instanceof Set ? failed : new Set(failed || []);
+  const pendSet = pending instanceof Set ? pending : new Set(pending || []);
+  for (const h of headers || []) {
+    if (Number(h?.height) !== wantH) continue;
+    const hash = wireHash(h.hash);
+    if (!hash) continue;
+    if (haveSet.has(hash) || failSet.has(hash) || pendSet.has(hash)) continue;
+    if (prev) {
+      const p = headerPrevHash(h.header);
+      if (p && p !== prev) continue;
+    }
+    return { hash, height: wantH };
+  }
+  return null;
+}
+
+/** Peer-advertised book height, used so pruned IBD is not verified as a live tip. */
+export function advertisedPeerTip(rec, fallback = 0) {
+  const n = Number(rec?.height);
+  if (Number.isFinite(n) && n > 0) return n;
+  return Math.max(0, Number(fallback) || 0);
 }
 
 function hexify(v) {
@@ -408,7 +450,7 @@ export function lineHasIpBesideIdentity(line) {
  * A missing local hasher is not a bad block — do not poison genesis. */
 export function isFinalIngestFail(reason) {
   const r = String(reason || '');
-  if (r === 'prev') return false;
+  if (r === 'prev' || r === 'hash_bonus') return false;
   if (/native[_ ]addon[_ ]missing|native_missing/i.test(r)) return false;
   return true;
 }
@@ -880,21 +922,22 @@ export function createP2p({
       const rec = peers.get(sock) || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
       rec.remote = peerRemoteKey(sock) || rec.remote;
       if (!rec.failed) rec.failed = new Set();
+      if (!rec.pending) rec.pending = new Set();
       peers.set(sock, rec);
+      const tip = store.tip();
+      const localH = Number(tip?.height || 0);
+      const localHash = tip?.hash ? hexHash(tip.hash) : '';
       const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
-      if (!Array.isArray(rec.want)) rec.want = [];
-      const queued = new Set(rec.want);
-      if (rec.pending) for (const h of rec.pending) queued.add(h);
-      let added = 0;
-      for (const h of msg.headers || []) {
-        const hash = wireHash(h.hash);
-        if (!hash || have.has(hash) || rec.failed.has(hash) || queued.has(hash)) continue;
-        if (rec.verifying?.has(hash)) continue;
-        rec.want.push(hash);
-        queued.add(hash);
-        added += 1;
-      }
-      if (!added && !rec.want.length && !(rec.pending && rec.pending.size)) {
+      const next = nextSequentialHeader({
+        headers: msg.headers || [],
+        localHeight: localH,
+        localHash,
+        have,
+        failed: rec.failed,
+        pending: rec.pending,
+      });
+      rec.want = next ? [next.hash] : [];
+      if (!rec.want.length && !(rec.pending && rec.pending.size)) {
         if (rec.verifying && rec.verifying.size) return;
         rec.syncing = false;
         rec.pending = null;
@@ -906,7 +949,8 @@ export function createP2p({
           event: 'p2p_headers',
           n: (msg.headers || []).length,
           missing: rec.want.length + (rec.pending ? rec.pending.size : 0),
-          local: store.tip()?.height || 0,
+          local: localH,
+          next: next?.height || 0,
         }));
       } catch { /* ignore */ }
       if (rec.verifying && rec.verifying.size) return;
@@ -947,6 +991,22 @@ export function createP2p({
       }
       const recNow = peers.get(sock);
       const lastHash = last ? wireHash(last.hash) : '';
+      if (process.env.SHEAR_P2P_FOLLOW_IPC === '1') {
+        const tip = store.tip();
+        const tipHash = tip?.hash ? Buffer.from(tip.hash).toString('hex') : '';
+        const prev = headerPrevHash(last?.header);
+        if (!tipHash || prev !== tipHash) {
+          try {
+            console.error(JSON.stringify({
+              event: 'p2p_ingest',
+              ok: false,
+              reason: 'follow_ipc',
+              height: last?.height,
+            }));
+          } catch { /* ignore */ }
+          return;
+        }
+      }
       if (lastHash) inflightBlocks.delete(lastHash);
       const haveNow = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
       if (lastHash && haveNow.has(lastHash)) {
@@ -971,7 +1031,21 @@ export function createP2p({
       }
       const job = scheduleP2pVerify(() => {
         const before = store.tip();
-        return Promise.resolve(store.ingest(fork, { offLoopPow: true })).then((got) => ({ got, before }));
+        const networkTip = Math.max(
+          advertisedPeerTip(recNow, 0),
+          Number(last?.height || 0),
+          Number(before?.height || 0),
+        );
+        const blocks = fork.map((b) => {
+          const h = Number(b?.height || 0);
+          const shares = Array.isArray(b.shareBatch) ? b.shareBatch.length : 0;
+          if (b.samplesPruned || shares || !shouldPruneSamples(h, networkTip)) return b;
+          return { ...b, samplesPruned: true };
+        });
+        return Promise.resolve(store.ingest(blocks, {
+          offLoopPow: true,
+          tipHeight: networkTip,
+        })).then((got) => ({ got, before }));
       });
       job.then(({ got, before }) => {
         const rec = peers.get(sock);
@@ -992,8 +1066,9 @@ export function createP2p({
             const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
             if (got?.reason === 'prev' && !have.has(lastHash)) {
               queueMissingParent(rec, lastHash, headerPrevHash(last?.header));
-            }
-            else if (isFinalIngestFail(got?.reason)) rec.failed.add(lastHash);
+            } else if (got?.reason === 'hash_bonus' && !have.has(lastHash)) {
+              requeuePrevHash(rec, lastHash);
+            } else if (isFinalIngestFail(got?.reason)) rec.failed.add(lastHash);
           }
           if (!got?.ok && recordIngestFail(rec, got?.reason)) {
             const until = Date.now() + P2P_BAN_MS;

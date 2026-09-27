@@ -1073,6 +1073,15 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
     }
   }
+  if (skipFlow) {
+    if (confidential) {
+      const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
+      if (!money.length) return { ok: false, reason: 'pot' };
+    } else {
+      const potSum = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
+      if (potSum !== wantPot) return { ok: false, reason: 'pot_sched' };
+    }
+  }
   const aLeaves = (shareLeaves && shareLeaves.length)
     ? shareLeaves
     : (shareBatch.length && Array.isArray(block.aLeaves) && block.aLeaves.length

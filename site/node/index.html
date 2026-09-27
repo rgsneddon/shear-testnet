@@ -96,27 +96,36 @@
   <div class="banner" role="status">
     <strong>Build from source.</strong> No prebuilt node binary on releases
     <span class="sep">·</span>
-    magic shear-testnet-v5 · tip Continuum 0.55.2
+    magic shear-testnet-v5 · node 0.56 · sequential IBD
   </div>
 
   <main>
     <div class="wrap page-hero">
       <p class="section-label">Validating node</p>
       <h1>Run a Shear node</h1>
-      <p class="lede">Clone <code>shear-testnet</code>, build RandomX + <code>crypto/native</code>, sync to tip. Optional thin solo stratum. Continuum wallet downloads are on <a href="/wallet/">WALLET</a> — this page is the node.</p>
+      <p class="lede">Clone <code>shear-testnet</code>, build RandomX + <code>crypto/native</code>, run the node. It syncs height 1, 2, 3, … to the tip and stays there. No automatic bootstrap. Optional <code>--solo</code> stratum after <code>ibd=false</code>. Continuum downloads are on <a href="/wallet/">WALLET</a>.</p>
     </div>
 
     <section class="wrap section-sm">
       <div class="panel honest">
-        <h3>What is downloadable?</h3>
-        <p style="margin:0">GitHub <code>shear-testnet</code> release <strong>0.55.2</strong> ships <em>wallet</em> assets only (Linux / Windows / Arch / Android). The full node is <strong>build-from-source</strong> via the repo path <a href="https://github.com/rgsneddon/shear-testnet/tree/main/node" rel="noopener">tree/main/node</a>. Do not expect a node.zip on the release page.</p>
+        <h3>Prebuilt node (unzip and run)</h3>
+        <p>GitHub release <strong>0.56</strong> ships a portable node for each OS. Unzip, run <code>shear-node.cmd</code> (Windows) or <code>./shear-node.sh</code> (Linux / Arch / Fedora / OpenSUSE / macOS). It syncs height 1, 2, 3, … to the tip. No automatic bootstrap. Pass <code>--solo</code> only after <code>ibd=false</code> if you want local stratum. The node verifies every transaction (ADMITv2) and the mining mint (DINS-DAG pot plus hash bonus).</p>
+        <p class="cta-row" style="margin:0.8rem 0 0;display:flex;flex-wrap:wrap;gap:8px">
+          <a class="btn btn-primary" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.56/shear-node-0.56-windows.zip">Windows zip</a>
+          <a class="btn btn-soft" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.56/shear-node-0.56-linux.zip">Linux zip</a>
+          <a class="btn btn-soft" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.56/shear-node-0.56-archlinux.zip">Arch zip</a>
+          <a class="btn btn-soft" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.56/shear-node-0.56-fedora.zip">Fedora zip</a>
+          <a class="btn btn-soft" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.56/shear-node-0.56-opensuse.zip">OpenSUSE zip</a>
+          <a class="btn btn-soft" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.56/shear-node-0.56-macos.zip">macOS zip</a>
+        </p>
+        <p style="margin:0.8rem 0 0">Optional snapshot: <a href="https://boot.shear.digital">boot.shear.digital</a> (<code>latest.json</code> + <code>latest.bin</code>), empty datadir only, <code>--bootstrap</code>.</p>
       </div>
     </section>
 
     <section class="wrap section">
       <p class="section-label">0 · OS dependencies</p>
-      <h2 style="margin:0 0 .35rem">Copy/paste install panes</h2>
-      <p>Full validating node for <strong>shear-testnet-v5</strong>. There is <strong>no prebuilt node binary</strong> on GitHub releases — you clone and build from <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">rgsneddon/shear-testnet</a> (tip Continuum wallet is <strong>0.55.2</strong>; node lives at <code>node/</code> in that tree).</p>
+      <h2 style="margin:0 0 .35rem">Build from source</h2>
+      <p>Full validating node for <strong>shear-testnet-v5</strong>. There is <strong>no prebuilt node binary</strong> on GitHub releases — you clone and build from <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">rgsneddon/shear-testnet</a> <code>main</code> (node pin <strong>0.56</strong>; node lives at <code>node/</code> in that tree).</p>
 <p>Beginner path (from tip site): OS deps → clone → RandomX + <code>crypto/native</code> → validating node → optional <code>npm run solo</code> (thin stratum on 127.0.0.1:1111). Continuum GUI is optional for RPC. Never <code>npm run pool</code> unless you are operating the public pool.</p>
 <p>Commands below are lifted from tip <code>site/index.html</code> <code>#solo-mine</code> — do not invent alternate package lines.</p>
       <div class="os-tabs" id="solo-os-tabs">
@@ -195,7 +204,6 @@ make -C crypto/native</pre>
 sudo chown "$USER":"$USER" /opt/shear-v4 /var/lib/shear/testnet-v5
 git clone https://github.com/rgsneddon/shear-testnet.git /opt/shear-v4
 cd /opt/shear-v4
-git checkout 0.55.2
 npm ci
 cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
 cmake --build crypto/randomx/build -j"$(nproc)"
@@ -340,7 +348,6 @@ ShearK-Miner.exe --pool 127.0.0.1:1111 --user YOUR_SSA1 --threads 8</pre>
       <div class="copy-row">
         <pre id="solo-node">git clone https://github.com/rgsneddon/shear-testnet.git
 cd shear-testnet
-git checkout 0.55.2
 npm ci
 cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
 cmake --build crypto/randomx/build -j"$(nproc)"
@@ -348,10 +355,10 @@ make -C crypto/native
 node node/src/node.js --print-config</pre>
         <button type="button" data-copy="solo-node">Copy</button>
       </div>
-      <p><code>--print-config</code> must show <code>"magic":"shear-testnet-v5"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
+      <p><code>--print-config</code> must show <code>"version":"0.56"</code>, <code>"magic":"shear-testnet-v5"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
       
         <h3>2. Validating node (not the full pool)</h3>
-      <p>Release <strong>0.55.2</strong>. Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). Put <code>SHEAR_SEEDS</code> in the <strong>same shell</strong> as the node. Outbound TCP to those seeds is required; opening inbound firewall <code>30303</code> alone does <strong>not</strong> sync. An empty book applies the snapshot once; a recorded tip resumes and does not pull. Do <strong>not</strong> <code>npm run pool</code> — that is the public-pool operator stack.</p>
+      <p>Pin <strong>0.56</strong>. Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). It does <strong>not</strong> pull a bootstrap. An empty book starts at genesis and requests height 1, 2, 3, … until the tip; a recorded tip resumes. Put <code>SHEAR_SEEDS</code> in the <strong>same shell</strong>. Outbound TCP to those seeds is required. Optional snapshot: download <code>latest.json</code> + <code>latest.bin</code> from <a href="https://boot.shear.digital">boot.shear.digital</a> and pass <code>--bootstrap</code> on an empty datadir. Do <strong>not</strong> <code>npm run pool</code>.</p>
       <div class="copy-row">
         <pre id="solo-run">export SHEAR_DATA="$HOME/.shear/testnet-v5"
 export SHEAR_NETWORK=shear-testnet-v5
@@ -359,15 +366,13 @@ export SHEAR_P2P_PORT=30303
 export SHEAR_P2P_BIND=0.0.0.0
 export SHEAR_RPC_PORT=18332
 export SHEAR_RPC_BIND=127.0.0.1
-export SHEAR_BOOTSTRAP=1
-export SHEAR_REORG_HALT_DEPTH=0
 export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
 node node/src/node.js</pre>
         <button type="button" data-copy="solo-run">Copy</button>
       </div>
       
         <h3>3. Thin solo stratum</h3>
-      <p>Same shell, only after the node height has caught the public tip. <code>npm run solo</code> is <code>node node/src/node.js --solo</code>: validator + stratum on <code>127.0.0.1:1111</code>. A solo block found while any peer is ahead is refused (<code>syncing</code>) and is not sealed. A bare <code>ssa1</code> is the login. A typed <code>ssa1.suffix</code> is optional and pays the same address.</p>
+      <p>Same shell, only after status shows <code>ibd=false</code> at the public tip. <code>npm run solo</code> is <code>node node/src/node.js --solo</code>: validator + stratum on <code>127.0.0.1:1111</code>. While the node is still catching up, miner login is refused (<code>syncing</code>) and no job that can seal is issued. A bare <code>ssa1</code> is the login. A typed <code>ssa1.suffix</code> is optional and pays the same address.</p>
       <div class="copy-row">
         <pre id="solo-stratum">export SHEAR_STRATUM=1111
 export SHEAR_STRATUM_BIND=127.0.0.1
@@ -379,7 +384,7 @@ npm run solo</pre>
         <p>For CLI Copy dest / ShearK solo login, see tip docs or the <a href="/miner/">miner hub</a>. Pool operators use a different stack — do not <code>npm run pool</code> for a personal node.</p>
         <div class="cta-row">
           <a class="btn btn-primary" href="/miner/">Miner hub →</a>
-          <a class="btn btn-soft" href="/wallet/">Continuum 0.55.2 →</a>
+          <a class="btn btn-soft" href="/wallet/">Continuum →</a>
           <a class="btn btn-ghost" href="/docs/#/node">Docs · Run a node →</a>
           <a class="btn btn-ghost" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" rel="noopener">GitHub node/ ↗</a>
         </div>

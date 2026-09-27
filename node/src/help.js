@@ -10,8 +10,9 @@ function sectionRun() {
     '  node node/src/node.js --solo          validator + thin local stratum 127.0.0.1:1111',
     '  npm run solo                          same as --solo (not the public pool)',
     '  node node/src/node.js --fast-sync     skip archival bodies (peers still verify PoW)',
-    '  An empty datadir with SHEAR_BOOTSTRAP=1 or a bootstrap URL installs the published snapshot once, then syncs forward.',
+    '  Default start never pulls a bootstrap. Empty datadir syncs height 1, 2, 3, … to the tip.',
     '  A datadir that already has blocks resumes from that tip and syncs to the network tip.',
+    '  Optional: SHEAR_BOOTSTRAP=1 or --bootstrap=URL on an empty book installs boot.shear.digital once.',
     '  node node/src/node.js --status        print height/hash/jroot/peers from datadir and exit',
     '  node node/src/node.js --print-config  JSON pin (magic, admit, mainnet=false)',
     '  node node/src/node.js --help | -h | help [topic]',
@@ -24,8 +25,8 @@ function sectionRun() {
 function sectionEnv() {
   return [
     'Env:',
-    '  SHEAR_DATA          datadir (default ~/.shear/testnet-v4)',
-    '  SHEAR_NETWORK       shear-testnet-v4 (this book). shear-v1 waits for genesis.',
+    '  SHEAR_DATA          datadir (default ~/.shear/testnet-v5)',
+    '  SHEAR_NETWORK       shear-testnet-v5 (this book). shear-v1 waits for genesis.',
     '  SHEAR_P2P_PORT      default 30303',
     '  SHEAR_P2P_BIND      default 0.0.0.0',
     '  SHEAR_P2P_IPC       pool-to-sidecar localhost TCP (default 127.0.0.1:30313). Not a peer port.',
@@ -71,13 +72,13 @@ function sectionSolo() {
     '       cmake --build crypto/randomx/build -j"$(nproc)"',
     '       make -C crypto/native',
     '  2. Validating node + thin local stratum (NOT npm run pool):',
-    '       export SHEAR_NETWORK=shear-testnet-v4',
+    '       export SHEAR_NETWORK=shear-testnet-v5',
     '       export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303',
     '       export SHEAR_RPC_BIND=127.0.0.1',
     '       npm run solo',
     '     Bare node node/src/node.js is validator-only (no stratum).',
     '     npm run pool is the public-pool operator stack — not solo.',
-    '  3. CLI (first-class) or Continuum 0.48:',
+    '  3. CLI (first-class) or Continuum 0.56:',
     '       dart run bin/shear.dart dest --rpc http://127.0.0.1:18332',
     '       dart run bin/shear.dart balance',
     '       dart run bin/shear.dart history',
@@ -106,17 +107,17 @@ function sectionP2p() {
     '  p2p_ingest reason=prev is a parent miss; the node retries. It is not a ban.',
     '  p2p_ingest reason=unsigned on a sealed compact block is a node bug — pull tip, rebuild native.',
     '  Do not wipe a mid-IBD datadir unless CoS says so after a fix.',
-    '  Magic stays shear-testnet-v4. Do not start sheark-v4-afk.',
+    '  Magic stays shear-testnet-v5. Do not start sheark-v4-afk.',
   ];
 }
 
 function sectionBootstrap() {
   return [
     'Bootstrap:',
-    '  An empty datadir with SHEAR_BOOTSTRAP=1 or SHEAR_BOOTSTRAP_URL installs the published snapshot once.',
+    '  Default start does not pull or apply a snapshot. Sync is sequential from the local tip (genesis if empty).',
+    '  Optional manual import: SHEAR_BOOTSTRAP=1 or --bootstrap=https://boot.shear.digital on an empty datadir.',
+    '  latest.json + latest.bin from boot.shear.digital. Magic shear-testnet-v5. Empty datadir only.',
     '  A datadir that already holds chain.bin or chain.jsonl resumes from that tip.',
-    '  The snapshot is not applied again. The node then requests each later block until the network tip.',
-    '  Default URL is https://boot.shear.digital (latest.json and latest.bin).',
     '  SHEAR_FAST_SYNC=1 skips archival bodies on this node only.',
   ];
 }

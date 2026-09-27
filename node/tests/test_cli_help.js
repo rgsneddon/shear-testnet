@@ -24,6 +24,8 @@ describe('shear-node CLI help', () => {
     assert.match(full, /SHEAR_DATA/);
     assert.match(full, /clock_wait/);
     assert.match(full, /p2p\.shear\.digital:30303/);
+    assert.match(full, /never pulls a bootstrap/);
+    assert.doesNotMatch(full, /Empty datadir with SHEAR_BOOTSTRAP=1 or a bootstrap URL installs the published snapshot once, then syncs forward/);
     assert.match(full, /make -C crypto\/native/);
     assert.match(full, /--status/);
     assert.match(full, /GET \/stats/);
@@ -43,7 +45,7 @@ describe('shear-node CLI help', () => {
     const solo = run(['--help', 'solo']);
     assert.equal(solo.status, 0, solo.stderr);
     assert.match(solo.stdout, /YOUR_SSA1\.solo/);
-    assert.match(solo.stdout, /Continuum 0\.46/);
+    assert.match(solo.stdout, /Continuum 0\.56/);
     assert.doesNotMatch(solo.stdout, /Continuum 0\.40/);
     const bad = run(['--not-a-flag']);
     assert.equal(bad.status, 2);

@@ -102,7 +102,7 @@ export function isP2pSyncArg(argv = process.argv) {
 }
 
 export async function startNode({
-  dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4'),
+  dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v5'),
   p2pPort = Number(process.env.SHEAR_P2P_PORT || P2P_PORT),
   p2pBind = process.env.SHEAR_P2P_BIND || '0.0.0.0',
   rpcPort = Number(process.env.SHEAR_RPC_PORT || RPC_PORT),
@@ -199,10 +199,10 @@ export function datadirIsEmpty(dataDir) {
 }
 
 /**
- * Empty datadir and bootstrap forced on: install the published snapshot once.
- * A datadir that already has blocks keeps that tip and syncs forward.
+ * Manual bootstrap only. Default start never pulls boot.shear.digital.
+ * SHEAR_BOOTSTRAP=1 or --bootstrap=URL on an empty datadir applies the
+ * published pair once. A book that already has blocks resumes that tip.
  * A missing snapshot does not wipe a book. The node still starts.
- * The light-seeker that follows the live tip is a separate wallet path.
  */
 export async function resolveGuiBootstrap({
   argv = [],
@@ -324,14 +324,14 @@ async function main() {
     return;
   }
   if (argv.includes('--status')) {
-    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4');
+    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v5');
     const store = createStore(dataDir, {
       fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
     });
     printNodeStatus({ store, extra: { hashBackend: hashBackendKind() || 'missing' } });
     return;
   }
-  const dataDirForBoot = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4');
+  const dataDirForBoot = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v5');
   const emptyDatadir = datadirIsEmpty(dataDirForBoot);
   const boot = await resolveGuiBootstrap({
     argv,

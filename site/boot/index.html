@@ -1,86 +1,190 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="description" content="Optional Shear bootstrap snapshot for shear-testnet-v5. Download latest.json and latest.bin. Nodes sync from genesis by default."/>
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+      window.toggleShearTheme = function () {
+        var cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+        var next = cur === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        try { localStorage.setItem(KEY, next); } catch (e4) {}
+        writeCookie(next);
+      };
+      window.toggleShearNav = function () {
+        var nav = document.getElementById('shear-nav');
+        var btn = document.getElementById('nav-toggle');
+        if (!nav || !btn) return;
+        var open = btn.getAttribute('aria-expanded') === 'true';
+        btn.setAttribute('aria-expanded', open ? 'false' : 'true');
+        nav.classList.toggle('is-open', !open);
+      };
+    })();
+  </script>
   <title>Shear bootstrap — latest prune snapshot</title>
-  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=30"/>
+  <link rel="icon" href="https://shear.digital/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="icon" href="https://shear.digital/brand/favicon.ico"/>
+  <link rel="stylesheet" href="https://shear.digital/css/site.css"/>
+  <link rel="stylesheet" href="https://shear.digital/shared/shear-chrome.css"/>
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css"/>
   <style>
-    :root { --bg:#0e141b; --card:#141b24; --ink:#e7eef6; --muted:#9eb0c3; --cyan:#7fd3e8; }
     * { box-sizing: border-box; }
-    html, body { margin:0; font:15px/1.45 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    html, body { margin:0; max-width:100%; overflow-x:hidden; font:15px/1.45 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--text); }
+    .top-banner {
+      display:grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items:center; gap:10px;
+      width:100%; min-height:44px; padding:6px 12px;
+      border-bottom:1px solid rgba(180, 210, 230, 0.16); background:var(--bg);
+      position:sticky; top:0; z-index:40;
+    }
+    .banner-wordmark { height:36px; width:auto; display:block; }
+    .banner-brand { display:flex; align-items:center; justify-self:start; }
+    .nav { display:flex; flex-wrap:wrap; overflow:visible; gap:8px; justify-content:center; }
+    a.nav-btn {
+      display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px;
+      color:var(--accent); text-decoration:none;
+      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
+      border:1px solid rgba(180, 210, 230, 0.16); border-radius:10px; background:var(--surface);
+    }
+    a.nav-btn.is-on { border-color:var(--accent); }
+    .banner-tools { justify-self:end; }
     .wrap { width:100%; max-width:44rem; margin:0 auto; padding:20px 14px 64px; }
     h1 { font-size:1.35rem; font-weight:800; margin:0 0 8px; }
-    h2 { font-size:1.08rem; font-weight:800; margin:22px 0 8px; }
-    p, li { color:var(--ink); }
+    h2 { font-size:.78rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:22px 0 8px; font-weight:800; }
+    p, li { color:var(--text); overflow-wrap:anywhere; }
     .muted { color:var(--muted); }
     .card {
-      border:1px solid transparent; padding:14px 16px; margin:12px 0;
-      background: linear-gradient(165deg, var(--card) 0%, var(--bg) 58%) padding-box,
-        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-      background-origin: border-box; background-clip: padding-box, border-box;
+      border:1px solid rgba(180, 210, 230, 0.16); border-radius:14px; padding:14px 16px; margin:12px 0;
+      background:var(--surface);
     }
     code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }
-    pre { background:#0d2137; color:#e8f4ff; padding:12px 14px; overflow:auto; }
-    a { color:var(--cyan); }
+    pre { background:var(--bg-elev); color:var(--accent); padding:12px 14px; overflow:auto; border-radius:10px; border:1px solid rgba(180, 210, 230, 0.16); }
+    a { color:var(--accent); }
     .btn {
       display:inline-block; margin:6px 8px 6px 0; padding:10px 14px; font-weight:700;
-      color:#fff; background:#0d2137; text-decoration:none;
+      color:#fff; background:var(--accent-dim); text-decoration:none; border-radius:10px; border:1px solid var(--accent);
     }
     .btn[aria-disabled="true"] { opacity:.45; pointer-events:none; }
-    .warn { color:#8a3b00; }
+    .warn { color:#f0c9a8; }
     #status { font-variant-numeric: tabular-nums; }
+    @media (max-width: 800px) {
+      .top-banner { grid-template-columns:1fr; }
+      .banner-tools { justify-self:start; }
+    }
   </style>
 </head>
 <body>
+  <header class="top-banner">
+    <div class="banner-brand">
+      <a href="https://shear.digital/" aria-label="Shear home">
+        <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+          src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+          data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+          data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+        <img class="banner-wordmark theme-img-dark" alt=""
+          src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      </a>
+    </div>
+    <nav class="nav" id="shear-nav" aria-label="Product">
+      <a class="nav-btn" href="https://shear.digital">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
+      <a class="nav-btn" href="https://dag.shear.digital/">DAG</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" target="_blank" rel="noopener">MINER</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.55.2" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
+    </nav>
+    <div class="banner-tools">
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
+    </div>
+  </header>
   <div class="wrap">
     <h1>Latest bootstrap</h1>
-    <p class="muted">One file pair. First published at height 1000, then overwritten every 400 blocks. Not a history. Magic <code>shear-testnet-v5</code>.</p>
+    <p class="muted">Optional. Nodes do not pull this automatically. They sync height 1, 2, 3, … to the tip. Magic <code>shear-testnet-v5</code>. One file pair, overwritten on the snapshot ladder (first at height 200, then every 200 blocks).</p>
     <div class="card">
       <p id="status">Checking latest.json…</p>
       <p>
         <a class="btn" id="dl-json" href="/latest.json" aria-disabled="true">latest.json</a>
         <a class="btn" id="dl-bin" href="/latest.bin" aria-disabled="true">latest.bin</a>
       </p>
-      <p class="muted">Default sync is still full archival IBD. Bootstrap is opt-in. One file pair: first published at height <strong>1000</strong>, then overwritten every <strong>400</strong> blocks (1400, 1800, …). Not every block. The last 1000 blocks still IBD from the live seed.</p>
+      <p class="muted">Sealed transactions stay. Share-row bodies may already be pruned. After apply, the node still verifies every later block — ADMITv2 spends and DINS-DAG pot plus hash-bonus accounting — through the live tip.</p>
     </div>
 
     <h2>What this is</h2>
-    <p>After 1000 confirmations the node drops Flow <em>samples</em> and share rows. Sealed transactions, coinbase vouts, headers, and merkle stay. This host overwrites <code>latest.json</code> + <code>latest.bin</code> at height 1000, then every 400 blocks (1400, 1800, …) — not on every prune. Older snapshots are not kept.</p>
-    <p class="warn">Do not use a bootstrap from anywhere except this page. A fake snapshot is a different book. After apply, your node must still reach the live tip hash on <code>shear.digital:30303</code>. The file magic is <code>shear-testnet-v5</code>.</p>
+    <p>A pruned prefix of the live book: headers, coinbase, sealed transfers. Not a history of snapshots. Empty datadir only. A fake file is a different book.</p>
+    <p class="warn">Use only this host. After apply, the node must still reach the live tip hash on the public seeds (<code>p2p.shear.digital:30303</code>, <code>r2r.shear.digital:30303</code>, <code>b2b.shear.digital:30303</code>).</p>
 
-    <h2>How to apply</h2>
-    <p>No node rewrite. A stock <code>node node/src/node.js</code> already loads <code>$SHEAR_DATA/chain.bin</code> and then IBDs from the seed. Bootstrap is that file. Empty datadir only — do not pour this onto a chain you already have.</p>
+    <h2>How to apply (manual)</h2>
+    <p>Default <code>node node/src/node.js</code> never hooks a bootstrap. To import this pair onto an empty datadir:</p>
     <pre>mkdir -p ~/shear-bootstrap
 cd ~/shear-bootstrap
 curl -fsSO https://boot.shear.digital/latest.json
 curl -fsSO https://boot.shear.digital/latest.bin
-python3 -m json.tool latest.json
 
-export SHEAR_DATA="$HOME/.shear/bootstrap-apply"
+export SHEAR_DATA="$HOME/.shear/testnet-v5"
 rm -rf "$SHEAR_DATA"
-mkdir -p "$SHEAR_DATA/bootstrap"
-cp latest.bin "$SHEAR_DATA/chain.bin"
-cp latest.bin "$SHEAR_DATA/bootstrap/latest.bin"
-cp latest.json "$SHEAR_DATA/bootstrap/latest.json"
-
-node node/src/node.js</pre>
-    <p>Same binary, same ports (P2P 30303, RPC 18332 loopback), same magic <code>shear-testnet-v5</code>. It does not mine. It dials <code>shear.digital:30303</code> and IBDs only what is still unpruned (about the last 1000 blocks). Merkle still runs. Share-batch POW is skipped only where the local book already has 1000 confirmations <em>and</em> <code>samplesPruned</code> — a peer flag alone is not enough.</p>
-    <p class="muted">Current source also accepts <code>node node/src/node.js --bootstrap="$PWD"</code> as a one-line copy. You do not need that flag if you copy <code>latest.bin</code> yourself.</p>
+node node/src/node.js --bootstrap="$PWD"</pre>
+    <p>Same binary, P2P 30303, RPC 18332 loopback, magic <code>shear-testnet-v5</code>. Then it requests each later height until the tip. Mining (<code>--solo</code>) is refused until <code>ibd=false</code>.</p>
 
     <h2>If apply refuses</h2>
     <ul>
-      <li><code>bootstrap_datadir_not_empty</code> — you still have a chain.jsonl/bin. Use a new directory.</li>
-      <li><code>bootstrap_magic</code> — not <code>shear-testnet-v5</code>. Wrong book.</li>
-      <li><code>bootstrap_dropped_txs</code> — snapshot lost sealed txs. Do not use it. Full IBD instead.</li>
-      <li>Tip hash never matches the seed — throw the datadir away and IBD from empty. Do not dual-magic.</li>
+      <li><code>bootstrap_datadir_not_empty</code> — you still have chain.bin or chain.jsonl. Use a new directory.</li>
+      <li><code>bootstrap_magic</code> — not <code>shear-testnet-v5</code>.</li>
+      <li><code>bootstrap_dropped_txs</code> — snapshot lost sealed txs. Full IBD from genesis instead.</li>
     </ul>
 
     <h2>Full IBD (default)</h2>
-    <pre>export SHEAR_DATA="$HOME/.shear/bootstrap-apply"
+    <pre>export SHEAR_DATA="$HOME/.shear/testnet-v5"
+export SHEAR_NETWORK=shear-testnet-v5
+export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
 node node/src/node.js</pre>
-    <p class="muted">No <code>--bootstrap</code>. No <code>SHEAR_FAST_SYNC</code>. That is the stock user node.</p>
+    <p class="muted">No <code>--bootstrap</code>. No automatic pull. Sequential sync from genesis, then stay at the tip.</p>
   </div>
   <script>
     async function load() {
@@ -97,7 +201,7 @@ node node/src/node.js</pre>
         j.removeAttribute('aria-disabled');
         b.removeAttribute('aria-disabled');
       } catch (e) {
-        el.textContent = 'Latest snapshot is not published yet. It appears when the live book first prunes (height 1001). Full IBD still works.';
+        el.textContent = 'Latest snapshot is not published yet. Full sequential IBD still works without it.';
       }
     }
     load();

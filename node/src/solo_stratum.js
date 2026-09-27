@@ -90,10 +90,50 @@ export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest } = {}) 
 }
 
 /** Share-bits hit: OK, no append. Block-bits hit: existing submitHeader/append. */
-/** True only when no live peer is ahead and sync queues are idle. */
-export function soloMaySeal({ height = 0, peers } = {}) {
-  if (!peers) return true;
-  return !isInitialBlockDownload({ height, peers });
+/**
+ * True only when this tip is the one peers already share.
+ * A taller peer means we are still syncing. A peer at this height with another
+ * hash is a split tip: sealing there forks the chain. A shorter peer vetoes
+ * only when nobody agrees with our chain. No peer map (unit harness) stays open.
+ */
+export function soloMaySeal({ height = 0, hash = '', peers, blockHashAt } = {}) {
+  if (!peers || typeof peers.values !== 'function') return true;
+  if (isInitialBlockDownload({ height, peers })) return false;
+  const localH = Number(height) || 0;
+  const localHash = String(hash || '').toLowerCase();
+  let agreed = false;
+  let saw = false;
+  for (const rec of peers.values()) {
+    const peerH = Number(rec?.height);
+    const peerHash = String(rec?.hash || '').toLowerCase();
+    if (!peerHash || !Number.isFinite(peerH)) continue;
+    saw = true;
+    if (peerH > localH) return false;
+    if (peerH === localH) {
+      if (localHash && peerHash !== localHash) return false;
+      agreed = true;
+      continue;
+    }
+    if (typeof blockHashAt !== 'function') continue;
+    const ours = String(blockHashAt(peerH) || '').toLowerCase();
+    if (ours && ours === peerHash) agreed = true;
+  }
+  if (saw && !agreed) return false;
+  return true;
+}
+
+function tipHex(block) {
+  if (!block?.hash) return '';
+  try { return Buffer.from(block.hash).toString('hex').toLowerCase(); } catch { return ''; }
+}
+
+function hashAtHeight(store, height) {
+  const want = Number(height);
+  const blocks = store?.blocks || [];
+  for (const b of blocks) {
+    if (Number(b?.height) === want) return tipHex(b);
+  }
+  return '';
 }
 
 export function applySoloSubmit({ store, jobId, nonce, claimed, dest, peers } = {}) {
@@ -113,7 +153,12 @@ export function applySoloSubmit({ store, jobId, nonce, claimed, dest, peers } = 
   }
   const tip = typeof store.tip === 'function' ? store.tip() : null;
   const height = Number(tip?.height) || 0;
-  if (!soloMaySeal({ height, peers })) {
+  if (!soloMaySeal({
+    height,
+    hash: tipHex(tip),
+    peers,
+    blockHashAt: (h) => hashAtHeight(store, h),
+  })) {
     return { ok: false, reason: 'syncing', hash: judged.hash, block: true };
   }
   const got = store.submitHeader({
@@ -160,7 +205,18 @@ export function createSoloStratum({
   let lastMiner = '';
   let restamp = null;
 
+  function sealOk() {
+    const tip = typeof store.tip === 'function' ? store.tip() : null;
+    return soloMaySeal({
+      height: Number(tip?.height) || 0,
+      hash: tipHex(tip),
+      peers: typeof peers === 'function' ? peers() : peers,
+      blockHashAt: (h) => hashAtHeight(store, h),
+    });
+  }
+
   function issueJob(miner, shareBits = SHARE_FLOOR_BITS) {
+    if (!sealOk()) return null;
     const dest = destForLogin(miner) || miner;
     const { job } = store.template({ miner: dest, shareBits });
     lastJob = job;
@@ -204,6 +260,10 @@ export function createSoloStratum({
           session = { dest: adm.dest, worker: adm.worker, login: adm.login };
           const shareBits = Number(params.shareBits) || SHARE_FLOOR_BITS;
           const job = issueJob(adm.dest, shareBits);
+          if (!job) {
+            try { sock.write(line({ id: msg.id, error: 'syncing' })); } catch { /* ignore */ }
+            continue;
+          }
           try {
             sock.write(line({
               id: msg.id,
@@ -246,7 +306,7 @@ export function createSoloStratum({
           } catch { /* ignore */ }
           if (got?.ok && got.block) {
             const job = issueJob(session.dest);
-            pushJob(job, job.shareBits || SHARE_FLOOR_BITS);
+            if (job) pushJob(job, job.shareBits || SHARE_FLOOR_BITS);
           }
           continue;
         }
@@ -268,6 +328,7 @@ export function createSoloStratum({
             if (!lastMiner || !sockets.size) return;
             try {
               const job = issueJob(lastMiner);
+              if (!job) return;
               pushJob(job, job.shareBits || SHARE_FLOOR_BITS);
             } catch { /* ignore */ }
           }, interval);

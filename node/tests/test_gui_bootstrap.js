@@ -244,8 +244,8 @@ describe('wallet node bootstrap', () => {
     const main = fs.readFileSync(path.join(root, 'wallet/lib/main.dart'), 'utf8');
     assert.equal(closure.includes('--bootstrap='), false);
     assert.match(closure, /kPublicBootstrapUrl = 'https:\/\/boot\.shear\.digital'/);
-    assert.match(closure, /if \(emptyDatadir\) 'SHEAR_BOOTSTRAP': '1'/);
-    assert.match(closure, /if \(emptyDatadir\) 'SHEAR_BOOTSTRAP_URL': kPublicBootstrapUrl/);
+    assert.equal(closure.includes("'SHEAR_BOOTSTRAP': '1'"), false);
+    assert.equal(closure.includes("'SHEAR_BOOTSTRAP_URL': kPublicBootstrapUrl"), false);
     assert.match(closure, /bool emptyDatadir = false/);
     assert.match(closure, /kLocalNodeModeCopy =/);
     assert.match(closure, /requests each next block in order until the tip/);

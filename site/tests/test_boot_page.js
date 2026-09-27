@@ -1,0 +1,52 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const boot = fs.readFileSync(path.join(here, '../boot/index.html'), 'utf8');
+const node = fs.readFileSync(path.join(here, '../node/index.html'), 'utf8');
+
+function navLabels(html) {
+  return [...html.matchAll(/<a class="nav-btn"[^>]*>([^<]+)<\/a>/g)].map((m) => m[1]);
+}
+
+describe('boot.shear.digital page', () => {
+  it('is SaaS dark with pool-style navbar including DAG and downloadable latest pair', () => {
+    assert.match(boot, /data-theme="dark"/);
+    assert.match(boot, /Domain=\.shear\.digital/);
+    assert.match(boot, /saas-dark\.css/);
+    assert.match(boot, /href="\/latest\.json"/);
+    assert.match(boot, /href="\/latest\.bin"/);
+    assert.match(boot, /id="dl-json"/);
+    assert.match(boot, /id="dl-bin"/);
+    assert.match(boot, /shear-testnet-v5/);
+    assert.match(boot, /never hooks a bootstrap|do not pull this automatically|does not pull a bootstrap|never pull/i);
+    assert.doesNotMatch(boot, /applies the snapshot once; a recorded tip resumes and does not pull/);
+    assert.doesNotMatch(boot, /#eef3f8/);
+    assert.match(boot, /href="https:\/\/dag\.shear\.digital\/"/);
+    assert.match(boot, /href="https:\/\/vortices\.shear\.digital\/"/);
+    assert.deepEqual(navLabels(boot), [
+      'MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS',
+    ]);
+  });
+});
+
+describe('shear.digital/node page', () => {
+  it('documents sequential blank-to-tip sync, prebuilt zips for every OS, and build-from-source', () => {
+    assert.match(node, /data-theme="dark"/);
+    assert.match(node, /sequential|height 1, 2, 3/);
+    assert.match(node, /ibd=false/);
+    assert.match(node, /--solo/);
+    assert.doesNotMatch(node, /export SHEAR_BOOTSTRAP=1/);
+    assert.match(node, /boot\.shear\.digital/);
+    assert.match(node, /0\.56/);
+    for (const flavor of ['windows', 'linux', 'archlinux', 'fedora', 'opensuse', 'macos']) {
+      assert.match(node, new RegExp(`shear-node-0\\.56-${flavor}\\.(zip|dmg)`));
+    }
+    assert.match(node, /cmake -S crypto\/randomx/);
+    assert.match(node, /make -C crypto\/native/);
+    assert.match(node, /node node\/src\/node\.js/);
+  });
+});

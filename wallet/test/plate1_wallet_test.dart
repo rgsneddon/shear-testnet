@@ -265,8 +265,8 @@ void main() {
     expect(side.sendBlocked, isTrue);
     expect(side.sendBlockedCopy, 'Wait until your local node is synced to the tip before sending.');
     expect(started.single['SHEAR_SOLO'], '0');
-    expect(started.single['SHEAR_BOOTSTRAP'], '1');
-    expect(started.single['SHEAR_BOOTSTRAP_URL'], kPublicBootstrapUrl);
+    expect(started.single.containsKey('SHEAR_BOOTSTRAP'), isFalse);
+    expect(started.single.containsKey('SHEAR_BOOTSTRAP_URL'), isFalse);
     expect(started.single['args'], '');
     expect(started.single['args'], isNot(contains('bootstrap')));
     expect(kLocalNodeModeCopy.toLowerCase(), isNot(contains('auto bootstrap')));
@@ -332,8 +332,8 @@ void main() {
     expect(side.listenPort, isNull);
     expect(side.lastEnv['SHEAR_SOLO'], '0');
     expect(side.lastEnv['SHEAR_GETBLOCK_BATCH'], '1');
-    expect(side.lastEnv['SHEAR_BOOTSTRAP'], '1');
-    expect(side.lastEnv['SHEAR_BOOTSTRAP_URL'], kPublicBootstrapUrl);
+    expect(side.lastEnv.containsKey('SHEAR_BOOTSTRAP'), isFalse);
+    expect(side.lastEnv.containsKey('SHEAR_BOOTSTRAP_URL'), isFalse);
     expect(side.lastEnv.containsKey('SHEAR_STRATUM'), isFalse);
     expect(side.lastEnv['SHEAR_FAST_SYNC'], '1');
     expect(side.lastArgs, isEmpty);
@@ -366,7 +366,7 @@ void main() {
     expect(phone.lastEnv.containsKey('SHEAR_STRATUM'), isFalse);
     expect(phone.lastEnv['SHEAR_FAST_SYNC'], '1');
     expect(phone.lastEnv['SHEAR_SOLO'], '0');
-    expect(phone.lastEnv['SHEAR_BOOTSTRAP'], '1');
+    expect(phone.lastEnv.containsKey('SHEAR_BOOTSTRAP'), isFalse);
     await phone.startResistanceNode();
     expect(phoneCalls, 1);
     await phone.stopResistanceNode();

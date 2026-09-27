@@ -117,6 +117,7 @@ describe('p2p gossip', () => {
 
   it('retries prev misses and does not blacklist them as final', () => {
     assert.equal(isFinalIngestFail('prev'), false);
+    assert.equal(isFinalIngestFail('hash_bonus'), false);
     assert.equal(isFinalIngestFail('native_missing'), false);
     assert.equal(isFinalIngestFail('ShearHash-v3 native addon missing and ShearK-Miner not built'), false);
     assert.equal(isFinalIngestFail('merkle'), true);
@@ -303,7 +304,8 @@ describe('p2p gossip', () => {
     assert.equal(cfg.p2p, P2P_PORT);
     assert.equal(cfg.p2p, 30303);
     assert.equal(cfg.magic, MAGIC_TESTNET);
-    assert.equal(cfg.magic, 'shear-testnet-v4');
+    assert.equal(cfg.magic, 'shear-testnet-v5');
+    assert.equal(cfg.version, '0.56');
     assert.equal(cfg.mainnet, false);
     assert.equal(cfg.phaseBGate, true);
     assert.equal(cfg.rpc, 18332);

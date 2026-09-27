@@ -666,7 +666,17 @@ export function createStore(dir, {
     }
     const prev = tip();
     const parentH = prev ? prev.height : 0;
-    const check = verifyBlock(block, prev ? {
+    const incomingH = Number(block.height || (prev ? prev.height + 1 : 1));
+    const tipHeight = Math.max(
+      prev ? prev.height + 1 : 1,
+      incomingH,
+      Number(verifyOpts.tipHeight || 0),
+    );
+    const shareN = Array.isArray(block.shareBatch) ? block.shareBatch.length : 0;
+    const toVerify = (block.samplesPruned || shareN || !shouldPruneSamples(incomingH, tipHeight))
+      ? block
+      : { ...block, samplesPruned: true };
+    const check = verifyBlock(toVerify, prev ? {
       hash: prev.hash,
       header: prev.header,
       height: prev.height,
@@ -677,7 +687,7 @@ export function createStore(dir, {
       weight: prev.weight,
     } : null, {
       spentB,
-      tipHeight: prev ? prev.height + 1 : 1,
+      tipHeight,
       hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
       evmSession,
       evmHistory: blocks,

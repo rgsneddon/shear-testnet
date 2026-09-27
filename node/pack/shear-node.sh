@@ -1,0 +1,17 @@
+#!/bin/sh
+# Portable Shear node. Same entry as `node node/src/node.js`.
+set -e
+ROOT="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+if [ -x "$ROOT/runtime/node" ]; then
+  NODEBIN="$ROOT/runtime/node"
+elif [ -x "$ROOT/runtime/node.exe" ]; then
+  NODEBIN="$ROOT/runtime/node.exe"
+else
+  NODEBIN="${NODEBIN:-node}"
+fi
+export SHEAR_DATA="${SHEAR_DATA:-$HOME/.shear/testnet-v5}"
+export SHEAR_NETWORK="${SHEAR_NETWORK:-shear-testnet-v5}"
+export SHEAR_SEEDS="${SHEAR_SEEDS:-p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303}"
+export SHEAR_RPC_BIND="${SHEAR_RPC_BIND:-127.0.0.1}"
+cd "$ROOT"
+exec "$NODEBIN" "$ROOT/node/src/node.js" "$@"

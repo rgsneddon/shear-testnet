@@ -9,7 +9,7 @@ const kClosureModeLocal = 'localNode';
 const kClosureModeFull = 'localNodeFull';
 
 /// Connect bare is the new-session default. Stored hop and full-node values
-/// fold into the two 0.55 paths: bare, or the one syncing node.
+/// fold into the two 0.56 paths: bare, or the one syncing node.
 ClosureSendMode closureModeFromStored(String? raw, {required bool android}) {
   switch (raw) {
     case kClosureModeLocal:
@@ -116,7 +116,7 @@ const kConnectBareCopy =
 const kPublicBootstrapUrl = 'https://boot.shear.digital';
 
 const kResistanceEmptyCopy =
-    'Empty book. Installing the published snapshot once, then requesting each next block until the tip.';
+    'Empty book. Syncing from genesis, each next height until the tip.';
 
 String resistanceResumeCopy(int height) {
   if (height > 0) {
@@ -195,13 +195,11 @@ Map<String, String> closureSpawnEnv(
     'SHEAR_GETBLOCK_BATCH': '1',
     'SHEAR_SOLO': '0',
     'SHEAR_FAST_SYNC': '1',
-    if (emptyDatadir) 'SHEAR_BOOTSTRAP': '1',
-    if (emptyDatadir) 'SHEAR_BOOTSTRAP_URL': kPublicBootstrapUrl,
   };
 }
 
 List<String> closureSpawnArgs({required bool emptyDatadir, required ClosureSendMode mode}) {
-  // Args stay empty. An empty book carries the snapshot URL in the environment.
+  // Args stay empty. Bootstrap is never auto-applied; users import boot.shear.digital by hand.
   if (emptyDatadir ||
       mode == ClosureSendMode.connectBare ||
       mode == ClosureSendMode.shearPrivacyVpn ||

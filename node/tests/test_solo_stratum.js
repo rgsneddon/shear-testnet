@@ -163,11 +163,43 @@ describe('thin solo stratum', () => {
     const bare = parseSoloLogin(dest);
     assert.equal(bare.ok, true);
     assert.equal(bare.worker, '');
-    const ahead = new Map([['peer', { height: 100 }]]);
-    assert.equal(soloMaySeal({ height: 70, peers: ahead }), false);
-    assert.equal(soloMaySeal({ height: 100, peers: ahead }), true);
+    const ahead = new Map([['peer', { height: 100, hash: 'ab'.repeat(32) }]]);
+    assert.equal(soloMaySeal({ height: 70, hash: 'cd'.repeat(32), peers: ahead }), false);
+    assert.equal(soloMaySeal({ height: 100, hash: 'ab'.repeat(32), peers: ahead }), true);
     assert.equal(soloMaySeal({ height: 70 }), true);
     assert.equal(parseSoloLogin('not-a-dest.solo').ok, false);
+  });
+
+  it('login is rejected while a live peer is ahead, and a job is issued at matching tip', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-tip-gate-'));
+    const store = createStore(dir);
+    const dest = destMiner();
+    const peers = new Map([[1, { height: 9, hash: 'ab'.repeat(32) }]]);
+    const stratum = createSoloStratum({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      restampMs: 0,
+      peers: () => peers,
+    });
+    const bound = await stratum.listen();
+    let aheadSock;
+    let tipSock;
+    try {
+      const ahead = await loginSolo(bound.port, dest, SHARE_FLOOR_BITS);
+      aheadSock = ahead.sock;
+      assert.equal(ahead.msg.error, 'syncing');
+      assert.equal(ahead.msg.job, undefined);
+      peers.set(1, { height: 0, hash: '' });
+      const atTip = await loginSolo(bound.port, dest, SHARE_FLOOR_BITS);
+      tipSock = atTip.sock;
+      assert.equal(atTip.msg.error, undefined);
+      assert.ok(atTip.msg.job?.jobId);
+    } finally {
+      try { aheadSock?.destroy(); } catch { /* ignore */ }
+      try { tipSock?.destroy(); } catch { /* ignore */ }
+      stratum.close();
+    }
   });
 
   it('startNode({ solo: true }) boots stratum without pool/main.js', async () => {
