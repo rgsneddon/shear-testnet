@@ -131,6 +131,6 @@ If `gh release view 0.55` says the release is missing, stop and leave the zip on
 - Reset the chain, delete `chain.bin`, or bounce `shear-pool` or the bootstrap publisher.
 - scp a whole HTML file onto shear.digital, or reload nginx for a pin string.
 - Treat `wallet/pubspec.lock` drift from a Mac `flutter pub get` as a plate change. Do not commit a downgrade of `matcher`, `meta`, `test_api`, or `vector_math`.
-- Set `wallet/pack/archlinux/PKGBUILD` `pkgver` above `0.54` unless `shear-wallet-0.55-linux.zip` is actually on release `0.55`.
+- Set `wallet/pack/archlinux/PKGBUILD` `pkgver` back to `0.54`. `shear-wallet-0.55-linux.zip` is on release `0.55`, and `pkgver` is `0.55`.
 
 One macOS compile line is separate from the plates: under Xcode 27, `MainFlutterWindow.swift` must call `Darwin.close(fd)` because `NSWindow.close` shadows the socket call. Windows does not need that line to link the PE. If it is on `main` when you pull, leave it.
