@@ -37,7 +37,7 @@ import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 import 'shear_vpn_profile.dart';
 
-const kWalletVersion = '0.55.1';
+const kWalletVersion = '0.55.2';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
