@@ -8,7 +8,7 @@ import { SAMPLE_PRUNE_CONFIRMATIONS, GENESIS_BITS_PACKED } from '../../crypto/as
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { buildTemplate, verifyBlock, digestTx, GENESIS_PREV } from '../src/chain.js';
-import { createStore } from '../src/node.js';
+import { createStore, startNode } from '../src/node.js';
 import {
   nextSequentialHeader,
   advertisedPeerTip,
@@ -162,5 +162,71 @@ describe('sequential IBD', () => {
     assert.match(src, /requeuePrevHash\(rec, lastHash\)/);
     assert.match(src, /tipHeight: networkTip/);
     assert.equal(isFinalIngestFail('hash_bonus'), false);
+  });
+
+  it('createP2p getblock stays on height H after a hash_bonus ingest fail', { timeout: 30_000 }, async () => {
+    const dest = destMiner();
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-p2p-a-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-p2p-b-'));
+    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const origErr = console.error;
+    const gets = [];
+    const ingests = [];
+    const pages = [];
+    try {
+      assert.equal(mineOne(a.store, dest).ok, true);
+      assert.equal(mineOne(a.store, dest).ok, true);
+      assert.equal(a.store.tip().height, 2);
+      const origIngest = b.store.ingest.bind(b.store);
+      let failH = 1;
+      b.store.ingest = (blocks, opts = {}) => {
+        const h = Number(blocks?.[0]?.height || 0);
+        if (h === 1 && failH > 0) {
+          failH -= 1;
+          return { ok: false, reason: 'hash_bonus', height: 1 };
+        }
+        const hash = blocks?.[0]?.hash;
+        const trusted = hash ? Buffer.from(hash) : null;
+        return origIngest(blocks, { ...opts, trustedPowHash: trusted, skipSharePow: true });
+      };
+      console.error = (...args) => {
+        const s = String(args[0] || '');
+        try {
+          const ev = JSON.parse(s);
+          if (ev.event === 'p2p_headers') pages.push(ev);
+          if (ev.event === 'p2p_getblock' && ev.found) gets.push(Number(ev.height) || 0);
+          if (ev.event === 'p2p_ingest') ingests.push(ev);
+        } catch { /* ignore */ }
+        origErr.apply(console, args);
+      };
+      await b.p2p.connect('127.0.0.1', a.bound.port);
+      const t0 = Date.now();
+      while (Date.now() - t0 < 20_000) {
+        if (ingests.some((e) => e.ok === false && e.reason === 'hash_bonus' && e.height === 1)
+          && gets.filter((h) => h === 1).length >= 2) {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      assert.ok(pages.length >= 1, 'need a headers page');
+      assert.equal(pages[0].missing, 1);
+      assert.equal(pages[0].next, 1);
+      const failAt = ingests.findIndex((e) => e.ok === false && e.reason === 'hash_bonus' && e.height === 1);
+      assert.ok(failAt >= 0, `need hash_bonus at H=1, saw ${JSON.stringify(ingests)}`);
+      assert.ok(gets[0] === 1, `first getblock must be H=1, saw ${gets.join(',')}`);
+      const afterFailGets = gets.slice(0, gets.findIndex((h, i) => i > 0 && h === 2) === -1 ? gets.length : gets.findIndex((h, i) => i > 0 && h === 2));
+      assert.ok(afterFailGets.filter((h) => h === 1).length >= 2, `next getblock after hash_bonus must still be H, saw ${gets.join(',')}`);
+      assert.equal(gets.includes(2) && gets.indexOf(2) < gets.indexOf(1), false);
+      const second = gets.findIndex((h, i) => i > 0 && h === 1);
+      const firstTwo = gets.findIndex((h) => h === 2);
+      if (firstTwo >= 0) assert.ok(second >= 0 && second < firstTwo, `H=2 before retry of H=1: ${gets.join(',')}`);
+    } finally {
+      console.error = origErr;
+      a.p2p.close();
+      b.p2p.close();
+      await a.rpc?.close?.();
+      await b.rpc?.close?.();
+    }
   });
 });

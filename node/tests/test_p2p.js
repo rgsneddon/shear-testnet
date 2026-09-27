@@ -745,16 +745,43 @@ describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
     }
   });
 
-  it('one headers page queues every missing hash; IBD does not refetch headers each height', async () => {
+  it('one headers page queues only the next sequential hash; IBD does not refetch headers each height', async () => {
     const dest = destMiner();
     const want = 3;
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hdrq-a-'));
     const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
     try {
-      for (let i = 0; i < want; i += 1) mineChainOne(a.store, dest);
+      for (let i = 0; i < want; i += 1) {
+        const parent = a.store.tip();
+        const now = parent
+          ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
+          : Date.now();
+        const { tpl } = a.store.template({ miner: dest, shareBits: 4, now });
+        const pow = Buffer.alloc(32);
+        pow[1] = i + 1;
+        const mined = a.store.append({
+          header: tpl.header,
+          txs: tpl.txs,
+          samples: tpl.samples,
+          miner: dest,
+          shareBatch: tpl.shareBatch || [],
+          aLeaves: tpl.aLeaves,
+          bLeaves: tpl.bLeaves,
+          rootA: tpl.rootA,
+          rootB: tpl.rootB,
+          weight: tpl.weight,
+        }, { trustedPowHash: pow, skipSharePow: true });
+        assert.equal(mined.ok, true, mined.reason);
+      }
       assert.equal(a.store.tip().height, want);
       const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hdrq-b-'));
       const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+      const origIngest = b.store.ingest.bind(b.store);
+      b.store.ingest = (blocks, opts = {}) => {
+        const h = blocks?.[0]?.hash;
+        const trusted = h ? Buffer.from(h) : null;
+        return origIngest(blocks, { ...opts, trustedPowHash: trusted, skipSharePow: true });
+      };
       const pages = [];
       const orig = console.error;
       console.error = (...args) => {
@@ -767,12 +794,13 @@ describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
       };
       try {
         await b.p2p.connect('127.0.0.1', a.bound.port);
-        const ok = await waitFor(() => tipsEqual(a, b), 30_000);
+        const ok = await waitFor(() => tipsEqual(a, b), 15_000);
         assert.equal(ok, true, `queued IBD stuck at ${b.store.tip()?.height || 0}`);
         assert.equal(b.store.tip().height, want);
         assert.ok(pages.length >= 1, 'need a headers page');
-        assert.ok(pages.length <= 2, `refetched headers every block (${pages.length})`);
-        assert.equal(pages[0].missing, want);
+        assert.ok(pages.length <= want + 1, `refetched headers every block (${pages.length})`);
+        assert.equal(pages[0].missing, 1);
+        assert.equal(pages[0].next, 1);
       } finally {
         console.error = orig;
         b.p2p.close();
