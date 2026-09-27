@@ -32,15 +32,11 @@ MINER_BASENAMES = {
 }
 
 def public_pin() -> str:
-    """Zip and tag are major.minor. The in-app string may add a patch."""
+    """Asset name is the full kWalletVersion, so 0.55.1 does not reuse the 0.55 zip."""
     with open(MAIN_DART, encoding="utf-8") as f:
         for line in f:
             if "kWalletVersion" in line and "=" in line:
-                raw = line.split("'")[1]
-                parts = raw.split(".")
-                if len(parts) >= 3:
-                    return ".".join(parts[:2])
-                return raw
+                return line.split("'")[1]
     return os.environ.get("SHEAR_WALLET_PIN", "0.32")
 
 

@@ -4226,6 +4226,46 @@ void main() {
     expect(find.byKey(const Key('confirm-pie-in-late')), findsNothing);
   });
 
+  testWidgets('tapping a pending row opens that transaction in Shearview', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-pend-sv-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    final ident = session.identity!;
+    final ledger = ShearLedger()..viewSecret = ident.viewKey;
+    final dest = ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
+    final peer = createIdentity();
+    final from = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
+    ledger.creditReceive(to: dest, amount: 0.4, from: from, id: 'in-early');
+    ledger.mergeChainTx(ShearTx(
+      id: 'send-ahead',
+      from: dest,
+      to: from,
+      amount: 0.15,
+      kind: 'send',
+      height: 80,
+      confirmed: false,
+    ));
+    expect(ledger.pendingTxs(ident.address).any((t) => t.id == 'send-ahead'), isTrue);
+    await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('pending-row-in-early')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('pending-row-in-early')));
+    await tester.pump();
+    expect(find.text('Shearview  S_{μν}'), findsOneWidget);
+    expect(find.byKey(const Key('shearview-row-in-early')), findsOneWidget);
+    expect(find.byKey(const Key('shearview-row-send-ahead')), findsNothing);
+    await tester.tap(find.text('Continuum'));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('pending-row-send-ahead')));
+    await tester.pump();
+    expect(find.byKey(const Key('shearview-row-send-ahead')), findsOneWidget);
+    expect(find.byKey(const Key('shearview-row-in-early')), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 2));
+  });
+
   testWidgets('Shearview search keeps matching txs and drops the rest', (tester) async {
     final dir = Directory.systemTemp.createTempSync('shear-search-');
     final session = ShearSession(store: File('${dir.path}/session.json'));

@@ -1,16 +1,16 @@
 # MacBook handoff — cut Continuum 0.55.1 (Apple only)
 
-**You cut 0.55.1.** The Apple disk image only. Windows, Android, Linux, Arch, and Fedora are not this machine. This cut is not 0.56. Do not create tag `0.56`.
+**You cut 0.55.1.** The Apple disk image only. Windows, Android, Linux, Arch, and Fedora are not this machine. Pin the same label Windows uses: Continuum **0.55.1**. Do not pin 0.56. Do not leave the Apple build on 0.55. Do not create tag `0.56`.
 
 **Repo:** https://github.com/rgsneddon/shear-testnet
 **This file:** https://github.com/rgsneddon/shear-testnet/blob/main/MACBOOK-HANDOFF.md
 **Branch:** `main`
-**Tag to create:** `0.55.1` on the commit that contains this handoff
+**Tag:** `0.55.1` already exists and already has `shear-wallet-0.55.1-macos.dmg`. Do not move it. Do not move `0.55`.
 **Release name:** Continuum 0.55.1
 **Do not move:** `0.52`, `0.53`, `0.54`, `0.55`
 **Do not create:** `0.56`
 **Do not build here:** Windows zip, Android apk, Linux zip, Arch zip, Fedora zip
-**Do not edit the live site.** `0.55` stays the public pin until the 0.55.1 assets exist. SaaS dark stays. Do not restyle pages.
+**Do not edit the live site.** Windows points shear.digital at 0.55.1 and links a button only when that file is on the release. SaaS dark stays. Do not restyle pages.
 
 Developer ID: `Russell Sneddon (SFCBP95595)`. An unsigned disk image is Gatekeeper-blocked. Do not ship a zip of the `.app`.
 
@@ -41,6 +41,8 @@ Historical testnet blocks that sealed the whole pot to the pool still verify. Do
 
 Mainnet is prepped and **not** emitting. `docs/MAINNET.md` is the note. Genesis stays `2026-09-18T21:00:00+01:00`. Do not set `SHEAR_MAINNET_EMIT`. The 1 October 2026 date is a display countdown, not genesis and not emit.
 
+A pending Continuum row opens that transfer in Shearview.
+
 ---
 
 ## Leave these alone
@@ -69,7 +71,7 @@ flutter build macos --release --build-name=0.55.1 --build-number=79
 bash pack_macos.sh
 ```
 
-Create the release, then upload only the disk image:
+If tag `0.55.1` does not exist yet, create the release and upload only the disk image:
 
 ```bash
 gh release create 0.55.1 dist/shear-wallet-0.55.1-macos.dmg \
@@ -78,4 +80,4 @@ gh release create 0.55.1 dist/shear-wallet-0.55.1-macos.dmg \
   --notes "Continuum 0.55.1. Apple disk image. Miner pot-after-fee and hash bonus seal to the hasher dest. The pool dest receives only the 1% fee. Mainnet emit stays off."
 ```
 
-If tag `0.55.1` already exists, upload with `gh release upload 0.55.1` and do not move the tag. Do not create tag `0.56`. Do not attach Windows, Android, or Linux files from this machine.
+Tag `0.55.1` already exists. If you rebuild the disk image, upload with `gh release upload 0.55.1` and do not move the tag. Do not create tag `0.56`. Do not attach Windows, Android, or Linux files from this machine.

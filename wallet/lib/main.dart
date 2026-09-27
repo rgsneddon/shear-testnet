@@ -1813,40 +1813,43 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final pendingPane = <Widget>[
       Text('Pending', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
       Text(
-        'Each pending transfer stays on this list. One pie wedge per confirmation; at ${ShearLedger.spendableConfirmations} confs the row drops and the coins are spendable. Hash rewards sit inside a found block, not as their own rows.',
+        'Each pending transfer stays on this list. Tap a row to open it in Shearview. One pie wedge per confirmation; at ${ShearLedger.spendableConfirmations} confs the row drops and the coins are spendable. Hash rewards sit inside a found block, not as their own rows.',
         style: TextStyle(color: shearMutedOf(context), fontSize: 12),
       ),
       for (final t in pending)
-        Padding(
+        InkWell(
           key: ValueKey('pending-row-${t.id}'),
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              ConfirmPie(
-                key: Key('confirm-pie-${t.id}'),
-                filled: ledger.confirmationsOf(t.height ?? 0),
-                size: 28,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '${continuumPendingRemark(t, outgoing: ledger.isOutgoingTx(ident.address, t))}  ${formatShe(t.amount)} SHE',
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                    Text(
-                      '${ledger.confirmationsOf(t.height ?? 0).clamp(0, ShearLedger.continuumConfirmations)}/${ShearLedger.continuumConfirmations} conf  ${t.from} → ${t.to}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: shearMutedOf(context), fontSize: 11),
-                    ),
-                  ],
+          onTap: () => _openPendingInShearview(t),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                ConfirmPie(
+                  key: Key('confirm-pie-${t.id}'),
+                  filled: ledger.confirmationsOf(t.height ?? 0),
+                  size: 28,
                 ),
-              ),
-            ],
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${continuumPendingRemark(t, outgoing: ledger.isOutgoingTx(ident.address, t))}  ${formatShe(t.amount)} SHE',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      Text(
+                        '${ledger.confirmationsOf(t.height ?? 0).clamp(0, ShearLedger.continuumConfirmations)}/${ShearLedger.continuumConfirmations} conf  ${t.from} → ${t.to}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: shearMutedOf(context), fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
     ];
@@ -1902,8 +1905,26 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     });
   }
 
+  void _openPendingInShearview(ShearTx t) {
+    setState(() {
+      shearviewQuery.text = t.id;
+      _focusedTxId = t.id;
+      tab = kTabs.indexOf('Shearview');
+    });
+  }
+
+  /// Shearview rows for the current search, plus a pending row the search
+  /// names when that transfer is not yet in the sealed landing list.
+  List<ShearTx> _shearviewRows(String address) {
+    final query = shearviewQuery.text;
+    final hist = ledger.shearviewSearch(address, query);
+    final have = hist.map((t) => t.id).toSet();
+    final extra = ledger.pendingTxs(address).where((t) => !have.contains(t.id) && shearviewMatches(t, query));
+    return [...extra, ...hist];
+  }
+
   Widget _shearview(BuildContext context, ShearIdentity ident) {
-    final hist = ledger.shearviewSearch(ident.address, shearviewQuery.text);
+    final hist = _shearviewRows(ident.address);
     return _card([
       const Text('Shearview  S_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
       Text(
@@ -1928,6 +1949,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           key: Key('shearview-row-${t.id}'),
           dense: true,
           isThreeLine: true,
+          selected: t.id == _focusedTxId,
           title: Text(_shearviewTitle(ident.address, t)),
           subtitle: Text(
             t.kind == 'receive' && t.memo && openedMemos.contains(t.id) && t.memoPlain != null

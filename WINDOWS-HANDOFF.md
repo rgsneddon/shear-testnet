@@ -1,6 +1,6 @@
 # Windows handoff — FINAL PLATE laws the Mac did not refute
 
-**Read this file and apply it.** The 0.55 pack steps below are done. Continuum **0.55.1** is the next cut. The Mac creates tag `0.55.1` and the Apple disk image. Do not create tag `0.55.1` or `0.56` from Windows. Do not move tags `0.52`, `0.53`, `0.54`, or `0.55`. See `MACBOOK-HANDOFF.md`.
+**Read this file and apply it.** The 0.55 pack steps below are done. Continuum **0.55.1** is the public pin, the same pin the Mac shipped. Tag `0.55.1` and `shear-wallet-0.55.1-macos.dmg` are already on GitHub. Do not create tag `0.56`. Do not move tags `0.52`, `0.53`, `0.54`, or `0.55`. See `MACBOOK-HANDOFF.md`.
 
 **This file:** https://github.com/rgsneddon/shear-testnet/blob/main/WINDOWS-HANDOFF.md
 **Mac pin note:** https://github.com/rgsneddon/shear-testnet/blob/main/MACBOOK-HANDOFF.md
@@ -86,7 +86,7 @@ Do not restore a hop server. Do not put ShearK inside the wallet zip.
 
 ## Apply on this box
 
-The publication clone `C:\Users\rgsne\shear-pool-node` was dirty on top of `82aa362` with a **0.56** draft. Discard that draft. Do not commit it. Do not point a link at `releases/tag/0.56`.
+The publication clone now carries Continuum **0.55.1**. Do not discard that tree. Do not point a link at `releases/tag/0.56`. Do not point a download at a 0.55.1 asset until that file is on the GitHub release.
 
 ```
 cd /d %USERPROFILE%\shear-testnet
@@ -110,7 +110,7 @@ python wallet\pack\zip_windows.py
 
 Zip root is `shear_wallet.exe`. No miner inside. Title string is Shear **0.55.0**.
 
-The 0.55 upload is done. Do not create tag **0.55.1** or **0.56** from this box. Do not move tags **0.52**, **0.53**, **0.54**, or **0.55**.
+The 0.55 upload is done. Tag **0.55.1** already exists. Do not create it again and do not create tag **0.56**. Do not move tags **0.52**, **0.53**, **0.54**, or **0.55**. A later Windows zip for this pin uploads onto tag **0.55.1**.
 
 ```
 gh release upload 0.55 wallet\dist\shear-wallet-0.55-windows.zip --repo rgsneddon/shear-testnet --clobber
@@ -122,9 +122,9 @@ If `gh release view 0.55` says the release is missing, stop and leave the zip on
 
 ## This box does not do
 
-- Rebuild the macOS disk image. The Mac packs `shear-wallet-0.55.1-macos.dmg`.
+- Rebuild the macOS disk image. The Mac already packed `shear-wallet-0.55.1-macos.dmg` and the pin is **0.55.1**.
 - `flutter build macos` or notarize.
-- Put a product version inside `consensusFingerprint()`. `0.55.1` stays out of it, as `0.56` and `0.55` do.
+- Put a product version inside `consensusFingerprint()`. `0.55.1` stays out of it, as `0.55` and `0.56` did. Node `PRODUCT_VERSION` stays the two-part `0.55`.
 - Restore the Reddit button.
 - Change `HASH_BONUS_NANOS`, the 256 share floor, or spendable depth (`isSpendableHeight(100, 105)` stays true).
 - Reset the chain, delete `chain.bin`, or bounce `shear-pool` or the bootstrap publisher.
