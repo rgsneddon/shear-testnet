@@ -96,7 +96,7 @@ def main() -> int:
             node_exe = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs", "node.exe")
             if os.path.isfile(node_exe):
                 z.write(node_exe, "runtime/node.exe")
-            print("bundled SHEAR-NODEv6 beside Continuum")
+            print("bundled SHEAR-NODEv7 beside Continuum")
 
     size = os.path.getsize(out)
     names = zipfile.ZipFile(out).namelist()
@@ -109,7 +109,7 @@ def main() -> int:
     if EXE_NAME not in names:
         sys.exit(f"missing {EXE_NAME} at zip root")
     if "node/src/node.js" not in names:
-        sys.exit("Continuum zip must include node/src/node.js (SHEAR-NODEv6 sidecar)")
+        sys.exit("Continuum zip must include node/src/node.js (SHEAR-NODEv7 sidecar)")
     if "runtime/node.exe" not in names:
         sys.exit("Continuum zip must include runtime/node.exe")
     banned = []

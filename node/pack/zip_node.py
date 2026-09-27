@@ -41,7 +41,7 @@ def product_version() -> str:
         for line in f:
             if "PRODUCT_VERSION" in line and "=" in line and "export const" in line:
                 return line.split("'")[1]
-    return os.environ.get("SHEAR_NODE_PIN", "6.0")
+    return os.environ.get("SHEAR_NODE_PIN", "7.0")
 
 
 def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=None) -> None:
@@ -63,6 +63,12 @@ def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=
                 continue
             rel = os.path.relpath(p, root).replace("\\", "/")
             z.write(p, f"{arc_prefix}/{rel}")
+
+
+def write_crlf_launcher(z: zipfile.ZipFile, src: str, arcname: str) -> None:
+    """Windows cmd.exe treats LF-only .cmd/.bat as one line and the window flash-closes."""
+    data = open(src, "rb").read().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    z.writestr(arcname, data)
 
 
 def copy_runtime(staging: str, flavor: str) -> str | None:
@@ -97,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     if flavor not in FLAVORS:
         sys.exit(f"flavor must be one of {', '.join(FLAVORS)}")
     pin = product_version()
-    pack_label = os.environ.get("SHEAR_NODE_PACK_LABEL", "v6")
+    pack_label = os.environ.get("SHEAR_NODE_PACK_LABEL", "v7")
     os.environ["SHEAR_NODE_FLAVOR"] = flavor
     os.makedirs(DIST, exist_ok=True)
     name = f"shear-node-{pack_label}-{flavor}.zip"
@@ -107,9 +113,9 @@ def main(argv: list[str] | None = None) -> int:
 
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         if flavor == "windows":
-            z.write(os.path.join(PACK, "shear-node.cmd"), "shear-node.cmd")
+            write_crlf_launcher(z, os.path.join(PACK, "shear-node.cmd"), "shear-node.cmd")
             bat = os.path.join(PACK, "shear-node.bat")
-            z.write(bat if os.path.isfile(bat) else os.path.join(PACK, "shear-node.cmd"), "shear-node.bat")
+            write_crlf_launcher(z, bat if os.path.isfile(bat) else os.path.join(PACK, "shear-node.cmd"), "shear-node.bat")
         else:
             z.write(os.path.join(PACK, "shear-node.sh"), "shear-node.sh")
         z.write(os.path.join(REPO, "package.json"), "package.json")
@@ -144,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             if os.path.isdir(runtime):
                 add_filtered_tree(z, runtime, "runtime", skip_dirs={".git"})
         readme = (
-            f"SHEAR-NODEv6 ({flavor})  node pin {pin}\n"
+            f"SHEAR-NODEv7 ({flavor})  node pin {pin}\n"
             "Windows: double-click shear-node.cmd or shear-node.bat. The window stays open.\n"
             "Unix: chmod +x shear-node.sh && ./shear-node.sh\n"
             "It syncs from genesis (or the saved tip) to the live tip. No automatic bootstrap.\n"

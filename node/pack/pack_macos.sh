@@ -1,12 +1,12 @@
 #!/bin/sh
-# MacBook: portable SHEAR-NODEv6 zip (not the Continuum .dmg).
+# MacBook: portable SHEAR-NODEv7 zip (not the Continuum .dmg).
 #   sh node/pack/pack_macos.sh
-# Upload dist/shear-node-v6-macos.zip onto GitHub release v6.
+# Upload dist/shear-node-v7-macos.zip onto GitHub release v7.
 set -e
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 test -f crypto/asert.js
-LABEL=v6
+LABEL=v7
 cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
 cmake --build crypto/randomx/build -j"$(sysctl -n hw.ncpu)"
 make -C crypto/native

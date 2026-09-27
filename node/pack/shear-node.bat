@@ -1,6 +1,18 @@
 @echo off
 setlocal EnableExtensions
-title SHEAR-NODEv6
+title SHEAR-NODEv7
+
+rem Explorer double-click runs cmd /c and closes the window on any early exit.
+rem Re-enter under cmd /k so the console stays open. Tests set SHEAR_NODE_NOPAUSE=1.
+if /i "%SHEAR_NODE_NOPAUSE%"=="1" goto :run
+if defined SHEAR_NODE_KEEP goto :run
+echo(%cmdcmdline%) | find /I "%~f0" >nul
+if errorlevel 1 goto :run
+set "SHEAR_NODE_KEEP=1"
+cmd /k call "%~f0" %*
+exit /b 0
+
+:run
 cd /d "%~dp0" || (
   echo Could not enter "%~dp0"
   goto :hold
@@ -46,7 +58,7 @@ if not defined SHEAR_NETWORK set "SHEAR_NETWORK=shear-testnet-v5"
 if not defined SHEAR_SEEDS set "SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303"
 if not defined SHEAR_RPC_BIND set "SHEAR_RPC_BIND=127.0.0.1"
 
-echo Starting SHEAR-NODEv6
+echo Starting SHEAR-NODEv7
 echo Data   %SHEAR_DATA%
 echo Using  %NODEBIN%
 echo Script %SCRIPT%

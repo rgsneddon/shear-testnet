@@ -1,0 +1,2 @@
+node/pack/*.cmd text eol=crlf
+node/pack/*.bat text eol=crlf

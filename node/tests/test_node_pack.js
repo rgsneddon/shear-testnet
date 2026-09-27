@@ -38,24 +38,28 @@ describe('portable node packs', () => {
     assert.match(cmd, /pause/i);
     assert.match(cmd, /SHEAR_NODE_NOPAUSE/);
     assert.match(cmd, /Shear node stopped/);
+    assert.match(cmd, /SHEAR-NODEv7/);
     assert.doesNotMatch(cmd, /SHEAR_BOOTSTRAP=1/);
     assert.doesNotMatch(sh, /SHEAR_BOOTSTRAP=1/);
     assert.match(py, /FLAVORS = \("windows", "linux", "archlinux", "fedora", "opensuse", "macos"\)/);
+    assert.match(py, /write_crlf_launcher/);
     assert.match(mac, /zip_node\.py macos/);
-    assert.match(handoff, /shear-node-v6-macos\.zip/);
+    assert.match(handoff, /shear-node-v7-macos\.zip/);
     assert.match(handoff, /opensuse/i);
-    assert.equal(PRODUCT_VERSION, '6.0');
+    assert.equal(PRODUCT_VERSION, '7.0');
     assert.match(py, /shear-node-\{pack_label\}-\{flavor\}\.zip/);
     assert.match(cmd, /pause/i);
     const bat = fs.readFileSync(path.join(root, 'node/pack/shear-node.bat'), 'utf8');
     assert.match(bat, /pause/i);
+    assert.match(bat, /SHEAR_NODE_NOPAUSE/);
+    assert.match(bat, /SHEAR-NODEv7/);
     assert.match(bat, /node\\src\\node\.js/);
   });
 
   it('zip_node.py writes a windows zip that contains the launcher and node entry', () => {
     const r = runPython(['node/pack/zip_node.py', 'windows'], { SHEAR_NODE_PACK_DEPS: '0' });
     assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-    const zipPath = path.join(root, 'dist', 'shear-node-v6-windows.zip');
+    const zipPath = path.join(root, 'dist', 'shear-node-v7-windows.zip');
     assert.equal(fs.existsSync(zipPath), true, zipPath);
     const listed = runPython([
       '-c',
@@ -64,11 +68,24 @@ describe('portable node packs', () => {
     ]);
     assert.equal(listed.status, 0, listed.stderr);
     assert.match(listed.stdout, /shear-node\.cmd/);
+    assert.match(listed.stdout, /shear-node\.bat/);
     assert.match(listed.stdout, /node\/src\/node\.js/);
     assert.match(listed.stdout, /pool\/src\/wallet_api\.js/);
     assert.match(listed.stdout, /pool\/src\/hash_credit\.js/);
     assert.match(listed.stdout, /pool\/src\/withdraw_state\.js/);
     assert.match(listed.stdout, /contracts\/Reserve\.json/);
     assert.doesNotMatch(listed.stdout, /SHEAR_BOOTSTRAP=1/);
+    const crlf = runPython([
+      '-c',
+      'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]);\n'
+      + 'cmd=z.read("shear-node.cmd"); bat=z.read("shear-node.bat");\n'
+      + 'assert cmd.count(b"\\n")==cmd.count(b"\\r\\n") and cmd.count(b"\\r\\n")>0;\n'
+      + 'assert bat.count(b"\\n")==bat.count(b"\\r\\n") and bat.count(b"\\r\\n")>0;\n'
+      + 'assert b"SHEAR-NODEv7" in cmd and b"pause" in cmd.lower();\n'
+      + 'print("crlf-ok")',
+      zipPath,
+    ]);
+    assert.equal(crlf.status, 0, `${crlf.stdout}\n${crlf.stderr}`);
+    assert.match(crlf.stdout, /crlf-ok/);
   });
 });

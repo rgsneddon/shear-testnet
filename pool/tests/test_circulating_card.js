@@ -17,11 +17,11 @@ describe('Circulating Shear card on the shipped explorer page', () => {
     assert.equal(fmtCircShe(1), '0.00000000001 SHE');
   });
 
-  it('wallet href is releases/tag/0.55.2, ONGOING HASHBONUS WORK stays, light --bg is not restored', () => {
-    assert.match(page, /releases\/tag\/0\.55\.2/);
+  it('wallet href is releases/tag/0.56, ONGOING HASHBONUS WORK stays, light --bg is not restored', () => {
+    assert.match(page, /releases\/tag\/0\.56/);
     assert.doesNotMatch(page, /releases\/tag\/0\.55(?!\.)/);
-    assert.equal(page.includes('releases/tag/0.56'), false);
-    assert.equal(page.includes('0.56'), false);
+    assert.equal(page.includes('releases/tag/0.56'), true);
+    assert.equal(page.includes('0.56'), true);
     assert.match(page, /ONGOING HASHBONUS WORK/);
     assert.match(page, /id="ex-hashrate"/);
     assert.match(page, /\/brand\/theme\.css/);

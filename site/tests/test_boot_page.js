@@ -41,13 +41,13 @@ describe('shear.digital/node page', () => {
     assert.match(node, /--solo/);
     assert.doesNotMatch(node, /export SHEAR_BOOTSTRAP=1/);
     assert.match(node, /boot\.shear\.digital/);
-    assert.match(node, /SHEAR-NODEv6|node 6\.0|version":"6\.0"|pin <strong>6\.0/);
+    assert.match(node, /SHEAR-NODEv7|node 7\.0|version":"7\.0"|pin <strong>7\.0/);
     assert.doesNotMatch(node, /shear-node-0\.56-/);
     for (const flavor of ['windows', 'linux', 'archlinux', 'fedora', 'opensuse']) {
-      assert.match(node, new RegExp(`shear-node-v6-${flavor}\\.zip`));
+      assert.match(node, new RegExp(`shear-node-v7-${flavor}\\.zip`));
     }
-    assert.doesNotMatch(node, /shear-node-v6-macos\.(zip|dmg)/);
-    assert.doesNotMatch(node, /shear-node-6\.0-/);
+    assert.doesNotMatch(node, /shear-node-v7-macos\.(zip|dmg)/);
+    assert.doesNotMatch(node, /shear-node-7\.0-/);
     assert.doesNotMatch(node, /No prebuilt node binary on releases/);
     assert.match(node, /cmake -S crypto\/randomx/);
     assert.match(node, /make -C crypto\/native/);

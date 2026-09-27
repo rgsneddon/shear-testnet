@@ -10,7 +10,7 @@ const html = fs.readFileSync(
 );
 
 describe('shear.digital client buttons', () => {
-  it('home stays on the SaaS dark theme and pins Continuum 0.55.2', () => {
+  it('home stays on the SaaS dark theme and pins Continuum 0.56', () => {
     assert.match(html, /data-theme="dark"/);
     assert.match(html, /Domain=\.shear\.digital/);
     assert.match(html, /css\/saas-dark\.css/);
@@ -18,18 +18,18 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-active="MAIN"/);
     assert.match(html, /She Is Private/);
     assert.match(html, /ADMITv2/);
-    assert.match(html, /Continuum 0\.55\.2/);
-    assert.doesNotMatch(html, /Continuum 0\.55(?!\.2)/);
-    assert.match(html, /cui-ver">0\.55\.2</);
+    assert.match(html, /Continuum 0\.56/);
+    assert.doesNotMatch(html, /Continuum 0\.55/);
+    assert.match(html, /cui-ver">0\.56</);
     assert.match(html, /ShearK 2\.6/);
-    assert.match(html, /releases\/tag\/0\.55\.2/);
-    assert.match(html, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-macos\.dmg/);
-    assert.match(html, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-windows\.zip/);
-    assert.match(html, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-android\.apk/);
-    assert.match(html, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-linux\.zip/);
-    assert.match(html, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-archlinux\.zip/);
-    assert.match(html, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-fedora\.zip/);
-    assert.doesNotMatch(html, /0\.55\.2\.1/);
+    assert.match(html, /releases\/tag\/0\.56/);
+    assert.match(html, /releases\/download\/0\.56\/shear-wallet-0\.56-macos\.dmg/);
+    assert.match(html, /releases\/download\/0\.56\/shear-wallet-0\.56-windows\.zip/);
+    assert.match(html, /releases\/download\/0\.56\/shear-wallet-0\.56-android\.apk/);
+    assert.match(html, /releases\/download\/0\.56\/shear-wallet-0\.56-linux\.zip/);
+    assert.match(html, /releases\/download\/0\.56\/shear-wallet-0\.56-archlinux\.zip/);
+    assert.match(html, /releases\/download\/0\.56\/shear-wallet-0\.56-fedora\.zip/);
+    assert.doesNotMatch(html, /0\.56\.1/);
     assert.doesNotMatch(html, /0\.55\.1\.1/);
     assert.doesNotMatch(html, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(html, /releases\/download\/0\.55\//);
@@ -48,19 +48,19 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /Continuum 0\.51/);
     const wallet = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../wallet/index.html'), 'utf8');
     assert.match(wallet, /css\/saas-dark\.css/);
-    assert.match(wallet, /shear-wallet-0\.55\.2-windows\.zip/);
-    assert.match(wallet, /shear-wallet-0\.55\.2-linux\.zip/);
-    assert.match(wallet, /shear-wallet-0\.55\.2-archlinux\.zip/);
-    assert.match(wallet, /shear-wallet-0\.55\.2-fedora\.zip/);
-    assert.match(wallet, /shear-wallet-0\.55\.2-android\.apk/);
+    assert.match(wallet, /shear-wallet-0\.56-windows\.zip/);
+    assert.match(wallet, /shear-wallet-0\.56-linux\.zip/);
+    assert.match(wallet, /shear-wallet-0\.56-archlinux\.zip/);
+    assert.match(wallet, /shear-wallet-0\.56-fedora\.zip/);
+    assert.match(wallet, /shear-wallet-0\.56-android\.apk/);
     assert.doesNotMatch(wallet, /shear-wallet-0\.51-/);
     assert.doesNotMatch(wallet, /shear-wallet-0\.48-/);
-    assert.match(wallet, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-windows\.zip/);
-    assert.match(wallet, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-linux\.zip/);
-    assert.match(wallet, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-archlinux\.zip/);
-    assert.match(wallet, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-fedora\.zip/);
-    assert.match(wallet, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-android\.apk/);
-    assert.match(wallet, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-macos\.dmg/);
+    assert.match(wallet, /releases\/download\/0\.56\/shear-wallet-0\.56-windows\.zip/);
+    assert.match(wallet, /releases\/download\/0\.56\/shear-wallet-0\.56-linux\.zip/);
+    assert.match(wallet, /releases\/download\/0\.56\/shear-wallet-0\.56-archlinux\.zip/);
+    assert.match(wallet, /releases\/download\/0\.56\/shear-wallet-0\.56-fedora\.zip/);
+    assert.match(wallet, /releases\/download\/0\.56\/shear-wallet-0\.56-android\.apk/);
+    assert.match(wallet, /releases\/download\/0\.56\/shear-wallet-0\.56-macos\.dmg/);
     assert.doesNotMatch(wallet, /shear-wallet-0\.55\.1-macos\.dmg/);
     assert.doesNotMatch(wallet, /releases\/download\/0\.55\.1\//);
     assert.doesNotMatch(wallet, /shear-wallet-0\.55-/);
@@ -78,7 +78,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /data-wallet-fallback="0\.52"/);
   });
 
-  it('WALLET nav on MAIN MEMPOOL POOL EXPLORER pins 0.55.2 and refuses older tags', () => {
+  it('WALLET nav on MAIN MEMPOOL POOL EXPLORER pins 0.56 and refuses older tags', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const pages = {
       main: html,
@@ -92,7 +92,7 @@ describe('shear.digital client buttons', () => {
       whitepaper: fs.readFileSync(path.join(here, '../whitepaper/index.html'), 'utf8'),
     };
     for (const [name, page] of Object.entries(pages)) {
-      assert.match(page, /releases\/tag\/0\.55\.2/, `${name} WALLET must pin 0.55.2`);
+      assert.match(page, /releases\/tag\/0\.56/, `${name} WALLET must pin 0.56`);
       assert.doesNotMatch(page, /releases\/tag\/0\.55(?!\.)/, `${name} must not pin bare 0.55`);
       assert.doesNotMatch(page, /releases\/tag\/0\.52/, `${name} must not pin 0.52 as current`);
       assert.doesNotMatch(page, /releases\/download\/0\.52/, `${name} must not download 0.52`);
@@ -178,9 +178,9 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /ShearK-Miner 2\.6/);
     assert.match(admin, /A typed suffix is optional/);
     assert.doesNotMatch(admin, /YOUR_SSA1\.solo/);
-    assert.match(admin, /shear-wallet-0\.55\.2-windows\.zip/);
-    assert.match(admin, /shear-wallet-0\.55\.2-android\.apk/);
-    assert.match(admin, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-macos\.dmg/);
+    assert.match(admin, /shear-wallet-0\.56-windows\.zip/);
+    assert.match(admin, /shear-wallet-0\.56-android\.apk/);
+    assert.match(admin, /releases\/download\/0\.56\/shear-wallet-0\.56-macos\.dmg/);
     assert.doesNotMatch(admin, /shear-wallet-0\.55\.1-macos\.dmg/);
     assert.doesNotMatch(admin, /shear-wallet-0\.55-/);
     assert.doesNotMatch(admin, /releases\/download\/0\.55\//);
