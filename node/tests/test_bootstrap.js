@@ -128,15 +128,16 @@ describe('latest-only prune bootstrap', () => {
     assert.match(html, /boot\.shear\.digital/);
     assert.match(html, /latest\.json/);
     assert.match(html, /latest\.bin/);
-    assert.match(html, /chain\.bin/);
+    assert.match(html, /do not pull this automatically/i);
+    assert.match(html, /height 1, 2, 3/);
     assert.match(html, /not a history/i);
-    assert.match(html, /No node rewrite/);
-    assert.match(html, /first published at height <strong>1000<\/strong>/i);
-    assert.match(html, /overwritten every <strong>400<\/strong> blocks/i);
-    assert.match(html, /not on every prune/i);
+    assert.match(html, /first at height 200/i);
+    assert.match(html, /every 200 blocks/i);
+    assert.doesNotMatch(html, /No node rewrite/);
     assert.equal(/Overwritten at every prune/i.test(html), false);
     assert.equal(html.includes('FAST_SYNC=1'), false);
     assert.match(html, /shear-testnet-v5/);
+    assert.match(html, /never hooks a bootstrap/i);
   });
 
   it('publisher leaves the chain alone when chain.bin is absent', () => {

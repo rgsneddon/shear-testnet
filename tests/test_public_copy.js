@@ -153,7 +153,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(main, /Continuum GUI <strong>0\.40<\/strong>/);
     assert.doesNotMatch(main, /Continuum GUI 0\.40/);
     const help = read('node/src/help.js');
-    assert.match(help, /Continuum 0\.48/);
+    assert.match(help, /Continuum 0\.56/);
+    assert.doesNotMatch(help, /Continuum 0\.48/);
     assert.doesNotMatch(help, /Continuum 0\.40/);
     assert.doesNotMatch(main, /shear-wallet-0\.38-macos\.dmg/);
     const nodePage = read('site/node/index.html');
@@ -225,19 +226,16 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /Pin \*\*0\.41\*\*/);
   });
 
-  it('MacBook handoff is Apple-only 0.46 + ShearK 2.5 macOS; old handoff files are gone', () => {
+  it('MacBook handoff is Apple-only SHEAR-NODEv6 + Continuum 0.56; old underscore files are gone', () => {
     assert.equal(fs.existsSync(path.join(root, 'MACBOOK_HANDOFF.md')), false);
     assert.equal(fs.existsSync(path.join(root, 'WINDOWS_HANDOFF.md')), false);
-    const md = read('CONTINUUM-0.46-MAC-HANDOFF.md');
+    const md = read('NODE-MACBOOK-HANDOFF.md');
     assert.match(md, /https:\/\/github\.com\/rgsneddon\/shear-testnet/);
-    assert.match(md, /blob\/main\/CONTINUUM-0\.46-MAC-HANDOFF\.md/);
-    assert.match(md, /releases\/tag\/0\.46/);
+    assert.match(md, /shear-node-v6-macos\.zip/);
+    assert.match(md, /shear-wallet-0\.56-macos\.dmg/);
+    assert.match(md, /tag \*\*v6\*\*|tag `v6`|GitHub tag \*\*v6\*\*|`v6`/);
+    assert.match(md, /0\.56/);
     assert.match(md, /pack_macos\.sh/);
-    assert.match(md, /shear-wallet-0\.46-macos\.dmg/);
-    assert.match(md, /shear-0\.46-macos/);
-    assert.match(md, /ShearK-Miner-2\.5-macos\.zip/);
-    assert.match(md, /rgsneddon\/ShearK/);
-    assert.match(md, /MacBook only/);
     assert.doesNotMatch(md, /MACBOOK_HANDOFF\.md/);
     assert.doesNotMatch(md, /WINDOWS_HANDOFF\.md/);
   });
