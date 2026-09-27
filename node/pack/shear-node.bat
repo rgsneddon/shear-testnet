@@ -19,7 +19,7 @@ if exist "%ROOT%..\..\node\src\node.js" (
 set "SCRIPT=%ROOT%node\src\node.js"
 if not exist "%SCRIPT%" (
   echo Missing %SCRIPT%
-  echo Unzip the whole shear-node zip, then double-click shear-node.cmd in that folder.
+  echo Unzip the whole shear-node zip, then double-click shear-node.bat in that folder.
   goto :hold
 )
 

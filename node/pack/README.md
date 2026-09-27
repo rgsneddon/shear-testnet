@@ -1,6 +1,6 @@
 # Portable Shear node
 
-Same node as `node node/src/node.js`. Pin is `PRODUCT_VERSION` (0.56).
+Same node as `node node/src/node.js`. Pin is `PRODUCT_VERSION` (6.0, displayed v6). Continuum wallet is 0.56.
 
 Build **on the OS you ship**. Native `shearhash.node` / `shearadmit.node` are not portable across OS.
 

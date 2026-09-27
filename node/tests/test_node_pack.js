@@ -33,19 +33,27 @@ describe('portable node packs', () => {
     assert.match(sh, /node\/src\/node\.js/);
     assert.match(cmd, /SHEAR_NETWORK=shear-testnet-v5/);
     assert.match(sh, /SHEAR_NETWORK:-shear-testnet-v5/);
+    assert.match(cmd, /pause/i);
+    assert.match(cmd, /SHEAR_NODE_NOPAUSE/);
+    assert.match(cmd, /Shear node stopped/);
     assert.doesNotMatch(cmd, /SHEAR_BOOTSTRAP=1/);
     assert.doesNotMatch(sh, /SHEAR_BOOTSTRAP=1/);
     assert.match(py, /FLAVORS = \("windows", "linux", "archlinux", "fedora", "opensuse", "macos"\)/);
     assert.match(mac, /zip_node\.py macos/);
-    assert.match(handoff, /shear-node-0\.56-macos\.zip/);
-    assert.match(handoff, /opensuse/);
-    assert.equal(PRODUCT_VERSION, '0.56');
+    assert.match(handoff, /shear-node-v6-macos\.zip/);
+    assert.match(handoff, /opensuse/i);
+    assert.equal(PRODUCT_VERSION, '6.0');
+    assert.match(py, /shear-node-\{pack_label\}-\{flavor\}\.zip/);
+    assert.match(cmd, /pause/i);
+    const bat = fs.readFileSync(path.join(root, 'node/pack/shear-node.bat'), 'utf8');
+    assert.match(bat, /pause/i);
+    assert.match(bat, /node\\src\\node\.js/);
   });
 
   it('zip_node.py writes a windows zip that contains the launcher and node entry', () => {
     const r = runPython(['node/pack/zip_node.py', 'windows'], { SHEAR_NODE_PACK_DEPS: '0' });
     assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-    const zipPath = path.join(root, 'dist', `shear-node-${PRODUCT_VERSION}-windows.zip`);
+    const zipPath = path.join(root, 'dist', 'shear-node-v6-windows.zip');
     assert.equal(fs.existsSync(zipPath), true, zipPath);
     const listed = runPython([
       '-c',

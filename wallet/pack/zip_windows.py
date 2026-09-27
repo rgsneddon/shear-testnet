@@ -63,6 +63,33 @@ def main() -> int:
 
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         add_tree(z, BUNDLE)
+        node_root = os.path.abspath(os.path.join(os.path.dirname(MAIN_DART), "..", ".."))
+        node_src = os.path.join(node_root, "node", "src", "node.js")
+        if os.path.isfile(node_src):
+            for dp, dns, fns in os.walk(os.path.join(node_root, "node", "src")):
+                dns[:] = [d for d in dns if d not in {".git", "node_modules"}]
+                for fn in fns:
+                    p = os.path.join(dp, fn)
+                    rel = os.path.relpath(p, node_root).replace("\\", "/")
+                    z.write(p, rel)
+            crypto = os.path.join(node_root, "crypto")
+            if os.path.isdir(crypto):
+                for dp, dns, fns in os.walk(crypto):
+                    dns[:] = [d for d in dns if d not in {"target", "randomx", "node_modules", ".git"}]
+                    for fn in fns:
+                        if fn.endswith((".obj", ".o", ".pdb")):
+                            continue
+                        p = os.path.join(dp, fn)
+                        rel = os.path.relpath(p, node_root).replace("\\", "/")
+                        z.write(p, rel)
+            for extra in ("package.json", "package-lock.json"):
+                p = os.path.join(node_root, extra)
+                if os.path.isfile(p):
+                    z.write(p, extra)
+            node_exe = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs", "node.exe")
+            if os.path.isfile(node_exe):
+                z.write(node_exe, "runtime/node.exe")
+            print("bundled SHEAR-NODEv6 beside Continuum")
 
     size = os.path.getsize(out)
     names = zipfile.ZipFile(out).namelist()
@@ -74,6 +101,10 @@ def main() -> int:
         sys.exit(f"refusing tiny zip {out}")
     if EXE_NAME not in names:
         sys.exit(f"missing {EXE_NAME} at zip root")
+    if "node/src/node.js" not in names:
+        sys.exit("Continuum zip must include node/src/node.js (SHEAR-NODEv6 sidecar)")
+    if "runtime/node.exe" not in names:
+        sys.exit("Continuum zip must include runtime/node.exe")
     banned = []
     for n in names:
         base = n.replace("\\", "/").rstrip("/").split("/")[-1].lower()

@@ -1,44 +1,68 @@
-# MacBook handoff — Shear node 0.56 (Apple only)
+# MacBook handoff — SHEAR-NODEv6 and Continuum 0.56 (Apple only)
 
-**You cut the macOS node zip.** Continuum wallet Apple image stays on tag `0.55.2` until a separate wallet cut. This job is `shear-node-0.56-macos.zip` on GitHub release **0.56**.
+Two Apple files. Do not mix the tags.
 
-**Repo:** https://github.com/rgsneddon/shear-testnet
-**This file:** https://github.com/rgsneddon/shear-testnet/blob/main/NODE-MACBOOK-HANDOFF.md
-**Branch:** `main`
-**Tag:** `0.56` is created from Windows with the non-Mac node zips (windows, linux, archlinux, fedora, opensuse). Do not create tag `0.56` from this machine if it already exists. Do not move `0.52`–`0.55.2`. OpenSUSE is `shear-node-0.56-opensuse.zip`.
-**Release name:** Shear node 0.56
-**Do not build here:** Windows / Linux / Arch / Fedora / OpenSUSE node zips, or any Continuum wallet pack.
-**Do not edit the live site** except if Windows already pointed shear.digital/node at 0.56. SaaS dark stays.
+| Product | File | GitHub tag |
+|---|---|---|
+| SHEAR-NODEv6 | `shear-node-v6-macos.zip` | `v6` |
+| CONTINUUMv0.56 | `shear-wallet-0.56-macos.dmg` | `0.56` |
+
+**Repo:** https://github.com/rgsneddon/shear-testnet · **branch:** `main`
+**Do not move:** `0.52`–`0.55.2`
+**Do not build here:** Windows / Linux / Arch / Fedora / OpenSUSE zips or the Android apk
+**Do not restyle the live site.** Pin strings on shear.digital are Continuum **0.56** and node **v6**.
+
+Developer ID: `Russell Sneddon (SFCBP95595)`. An unsigned disk image is Gatekeeper-blocked. `wallet/pack_macos.sh` uses `ditto` so the notarization ticket survives. Do not replace that with `cp -R`.
+
+`PRODUCT_VERSION` in `crypto/asert.js` is **6.0** (SHEAR-NODEv6). Continuum pin is `kWalletVersion = '0.56'`. Do not set `PRODUCT_VERSION` to `0.56`. `consensusFingerprint()` must not contain `6.0`, `0.56`, or `PRODUCT_VERSION`.
 
 ---
 
-## What you are packing
-
-`git pull` on `main`. These must read **0.56** before you build:
-
-- `crypto/asert.js`: `PRODUCT_VERSION = '0.56'`
-- `node/pack/pack_macos.sh` writes `dist/shear-node-0.56-macos.zip`
-
-`consensusFingerprint()` does **not** contain `0.56` or `PRODUCT_VERSION`. Do not edit the fingerprint array.
+## 1. SHEAR-NODEv6
 
 ```bash
 git pull
-cd /path/to/shear-testnet
+grep "PRODUCT_VERSION" crypto/asert.js
+# must print: export const PRODUCT_VERSION = '6.0';
 sh node/pack/pack_macos.sh
 ```
 
-That builds RandomX + `crypto/native` on this Mac, then zips `shear-node.sh` + `node/src` + `crypto`. Native addons must be Darwin. Never copy a Linux `.node` into this zip.
-
-Upload (no `--clobber` unless Windows asks):
+Writes `dist/shear-node-v6-macos.zip`. Windows creates tag `v6`. If `gh release view v6 --repo rgsneddon/shear-testnet` is missing, stop.
 
 ```bash
-gh release upload 0.56 dist/shear-node-0.56-macos.zip --repo rgsneddon/shear-testnet
+gh release upload v6 dist/shear-node-v6-macos.zip --repo rgsneddon/shear-testnet
 ```
 
-If `gh release view 0.56 --repo rgsneddon/shear-testnet` does not list the release, stop. Windows creates tag `0.56` with the other node zips.
+No `--clobber` unless Windows asks. Native addons must be Darwin.
 
 ---
 
-## What the user runs
+## 2. CONTINUUMv0.56
 
-Unzip. `chmod +x shear-node.sh`. `./shear-node.sh`. Optional `./shear-node.sh --solo` only after `ibd=false`. No automatic bootstrap. Manual snapshot: https://boot.shear.digital
+```bash
+grep kWalletVersion wallet/lib/main.dart
+# must print: const kWalletVersion = '0.56';
+
+cd wallet
+BUILD_NUMBER=81 SYNC_POOL_WALLET=0 PACK_REBUILD=1 bash pack_macos.sh
+```
+
+Writes `wallet/dist/shear-wallet-0.56-macos.dmg`. The sidecar node inside Continuum is SHEAR-NODEv6 (`node/src/node.js`). Empty book does **not** auto-pull a bootstrap.
+
+Windows creates tag `0.56` with the non-Mac wallet assets. If `gh release view 0.56 --repo rgsneddon/shear-testnet` is missing, stop.
+
+```bash
+gh release upload 0.56 dist/shear-wallet-0.56-macos.dmg --repo rgsneddon/shear-testnet
+```
+
+No `--clobber`. Do not attach Windows, Android, Linux, Arch, Fedora, or OpenSUSE files from this machine.
+
+---
+
+## Leave these alone
+
+- Reddit stays removed. Discord, Telegram, and X stay.
+- Spendable depth stays 6. Hash bonus unit stays 1 nano.
+- Public pages stay SaaS dark.
+- Do not bounce `shear-pool`. Do not delete `chain.bin`.
+- `SYNC_POOL_WALLET=0`.

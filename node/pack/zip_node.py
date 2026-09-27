@@ -41,7 +41,7 @@ def product_version() -> str:
         for line in f:
             if "PRODUCT_VERSION" in line and "=" in line and "export const" in line:
                 return line.split("'")[1]
-    return os.environ.get("SHEAR_NODE_PIN", "0.56")
+    return os.environ.get("SHEAR_NODE_PIN", "6.0")
 
 
 def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=None) -> None:
@@ -97,9 +97,10 @@ def main(argv: list[str] | None = None) -> int:
     if flavor not in FLAVORS:
         sys.exit(f"flavor must be one of {', '.join(FLAVORS)}")
     pin = product_version()
+    pack_label = os.environ.get("SHEAR_NODE_PACK_LABEL", "v6")
     os.environ["SHEAR_NODE_FLAVOR"] = flavor
     os.makedirs(DIST, exist_ok=True)
-    name = f"shear-node-{pin}-{flavor}.zip"
+    name = f"shear-node-{pack_label}-{flavor}.zip"
     out = os.path.join(DIST, name)
     if os.path.exists(out):
         os.remove(out)
@@ -107,6 +108,8 @@ def main(argv: list[str] | None = None) -> int:
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         if flavor == "windows":
             z.write(os.path.join(PACK, "shear-node.cmd"), "shear-node.cmd")
+            bat = os.path.join(PACK, "shear-node.bat")
+            z.write(bat if os.path.isfile(bat) else os.path.join(PACK, "shear-node.cmd"), "shear-node.bat")
         else:
             z.write(os.path.join(PACK, "shear-node.sh"), "shear-node.sh")
         z.write(os.path.join(REPO, "package.json"), "package.json")
@@ -130,10 +133,12 @@ def main(argv: list[str] | None = None) -> int:
             if os.path.isdir(runtime):
                 add_filtered_tree(z, runtime, "runtime", skip_dirs={".git"})
         readme = (
-            f"Shear node {pin} ({flavor})\n"
-            "Unzip and run shear-node.cmd (Windows) or ./shear-node.sh.\n"
+            f"SHEAR-NODEv6 ({flavor})  node pin {pin}\n"
+            "Windows: double-click shear-node.cmd or shear-node.bat. The window stays open.\n"
+            "Unix: chmod +x shear-node.sh && ./shear-node.sh\n"
+            "It syncs from genesis (or the saved tip) to the live tip. No automatic bootstrap.\n"
             "Pass --solo for local stratum after ibd=false.\n"
-            "Magic shear-testnet-v5. No automatic bootstrap.\n"
+            "Magic shear-testnet-v5. Continuum wallet is 0.56.\n"
             "If node_modules is missing: npm ci once in this folder, then run the launcher.\n"
         )
         z.writestr("README.txt", readme)
