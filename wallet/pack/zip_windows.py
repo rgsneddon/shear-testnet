@@ -6,6 +6,7 @@ Wallet zip is GUI only. Official miner is a separate GitHub release.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import zipfile
 
@@ -96,6 +97,13 @@ def main() -> int:
             node_exe = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs", "node.exe")
             if os.path.isfile(node_exe):
                 z.write(node_exe, "runtime/node.exe")
+            gcc = shutil.which("gcc")
+            mingw = os.path.dirname(os.path.abspath(gcc)) if gcc else ""
+            for dll in ("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"):
+                src = os.path.join(mingw, dll)
+                if not os.path.isfile(src):
+                    sys.exit(f"Continuum sidecar needs MinGW {dll} beside gcc")
+                z.write(src, f"runtime/{dll}")
             print("bundled SHEAR-NODEv7 beside Continuum")
 
     size = os.path.getsize(out)
@@ -112,6 +120,11 @@ def main() -> int:
         sys.exit("Continuum zip must include node/src/node.js (SHEAR-NODEv7 sidecar)")
     if "runtime/node.exe" not in names:
         sys.exit("Continuum zip must include runtime/node.exe")
+    if "crypto/native/shearhash.node" not in names:
+        sys.exit("Continuum zip must include crypto/native/shearhash.node")
+    for dll in ("runtime/libgcc_s_seh-1.dll", "runtime/libstdc++-6.dll", "runtime/libwinpthread-1.dll"):
+        if dll not in names:
+            sys.exit(f"Continuum zip must include {dll}")
     banned = []
     for n in names:
         base = n.replace("\\", "/").rstrip("/").split("/")[-1].lower()

@@ -230,11 +230,19 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   Future<void> _startSharedNode(String binary, Map<String, String> env, List<String> args) async {
     _nodeProc?.kill();
+    final merged = <String, String>{...Platform.environment, ...env};
+    final work = sidecar.workDir;
+    if (work != null && work.isNotEmpty) {
+      final delim = Platform.isWindows ? ';' : ':';
+      final extra =
+          '$work${Platform.pathSeparator}runtime$delim$work${Platform.pathSeparator}crypto${Platform.pathSeparator}native';
+      merged['PATH'] = '$extra$delim${merged['PATH'] ?? ''}';
+    }
     final proc = await Process.start(
       binary,
       args,
-      workingDirectory: (sidecar.workDir != null && sidecar.workDir!.isNotEmpty) ? sidecar.workDir : null,
-      environment: {...Platform.environment, ...env},
+      workingDirectory: (work != null && work.isNotEmpty) ? work : null,
+      environment: merged,
       mode: ProcessStartMode.normal,
     );
     _nodeProc = proc;

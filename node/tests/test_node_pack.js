@@ -39,6 +39,8 @@ describe('portable node packs', () => {
     assert.match(cmd, /SHEAR_NODE_NOPAUSE/);
     assert.match(cmd, /Shear node stopped/);
     assert.match(cmd, /SHEAR-NODEv7/);
+    assert.match(cmd, /crypto\\native/);
+    assert.match(cmd, /libgcc_s_seh-1\.dll|PATH=%ROOT%runtime/);
     assert.doesNotMatch(cmd, /SHEAR_BOOTSTRAP=1/);
     assert.doesNotMatch(sh, /SHEAR_BOOTSTRAP=1/);
     assert.match(py, /FLAVORS = \("windows", "linux", "archlinux", "fedora", "opensuse", "macos"\)/);
@@ -74,6 +76,10 @@ describe('portable node packs', () => {
     assert.match(listed.stdout, /pool\/src\/hash_credit\.js/);
     assert.match(listed.stdout, /pool\/src\/withdraw_state\.js/);
     assert.match(listed.stdout, /contracts\/Reserve\.json/);
+    assert.match(listed.stdout, /crypto\/native\/shearhash\.node/);
+    assert.match(listed.stdout, /runtime\/libgcc_s_seh-1\.dll/);
+    assert.match(listed.stdout, /runtime\/libstdc\+\+-6\.dll/);
+    assert.match(listed.stdout, /runtime\/libwinpthread-1\.dll/);
     assert.doesNotMatch(listed.stdout, /SHEAR_BOOTSTRAP=1/);
     const crlf = runPython([
       '-c',

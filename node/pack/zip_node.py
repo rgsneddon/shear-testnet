@@ -65,6 +65,30 @@ def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=
             z.write(p, f"{arc_prefix}/{rel}")
 
 
+def mingw_bin_dir() -> str:
+    gcc = shutil.which("gcc")
+    if gcc:
+        return os.path.dirname(os.path.abspath(gcc))
+    return ""
+
+
+def write_mingw_runtime(z: zipfile.ZipFile) -> None:
+    """shearhash.node is a MinGW N-API addon. Those DLLs must sit next to node.exe."""
+    bindir = mingw_bin_dir()
+    needed = ("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll")
+    missing = [n for n in needed if not os.path.isfile(os.path.join(bindir, n))] if bindir else list(needed)
+    if missing:
+        sys.exit(
+            "Windows node zip needs MinGW runtime "
+            + ", ".join(needed)
+            + " beside gcc (PATH gcc="
+            + (shutil.which("gcc") or "missing")
+            + ")"
+        )
+    for name in needed:
+        z.write(os.path.join(bindir, name), f"runtime/{name}")
+
+
 def write_crlf_launcher(z: zipfile.ZipFile, src: str, arcname: str) -> None:
     """Windows cmd.exe treats LF-only .cmd/.bat as one line and the window flash-closes."""
     data = open(src, "rb").read().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
@@ -149,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
             copy_runtime(REPO, flavor)
             if os.path.isdir(runtime):
                 add_filtered_tree(z, runtime, "runtime", skip_dirs={".git"})
+        if flavor == "windows":
+            write_mingw_runtime(z)
         readme = (
             f"SHEAR-NODEv7 ({flavor})  node pin {pin}\n"
             "Windows: double-click shear-node.cmd or shear-node.bat. The window stays open.\n"
@@ -169,6 +195,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit("missing shear-node.cmd")
     if flavor != "windows" and "shear-node.sh" not in names:
         sys.exit("missing shear-node.sh")
+    if "crypto/native/shearhash.node" not in names:
+        sys.exit("missing crypto/native/shearhash.node — pack this flavor on that OS")
+    if flavor == "windows":
+        for dll in ("runtime/libgcc_s_seh-1.dll", "runtime/libstdc++-6.dll", "runtime/libwinpthread-1.dll"):
+            if dll not in names:
+                sys.exit(f"missing {dll}")
     print("ok", name, "pin", pin, "flavor", flavor)
     return 0
 

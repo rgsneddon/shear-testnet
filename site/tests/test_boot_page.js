@@ -42,6 +42,7 @@ describe('shear.digital/node page', () => {
     assert.doesNotMatch(node, /export SHEAR_BOOTSTRAP=1/);
     assert.match(node, /boot\.shear\.digital/);
     assert.match(node, /SHEAR-NODEv7|node 7\.0|version":"7\.0"|pin <strong>7\.0/);
+    assert.doesNotMatch(node, /Node v6|node 6\.0|shear-node-v6/);
     assert.doesNotMatch(node, /shear-node-0\.56-/);
     for (const flavor of ['windows', 'linux', 'archlinux', 'fedora', 'opensuse']) {
       assert.match(node, new RegExp(`shear-node-v7-${flavor}\\.zip`));
