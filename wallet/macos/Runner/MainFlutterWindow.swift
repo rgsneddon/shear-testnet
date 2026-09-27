@@ -69,7 +69,8 @@ class MainFlutterWindow: NSWindow {
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
     var buf = [CChar](repeating: 0, count: 64)
     let n = recvfrom(fd, &buf, buf.count, 0, nil, nil)
-    close(fd)
+    // NSWindow.close shadows Darwin.close under the Xcode 27 Foundation overlay.
+    Darwin.close(fd)
     // UDP reachability is not a device tunnel. macOS must approve a Packet Tunnel.
     done(
       false,

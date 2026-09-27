@@ -170,4 +170,81 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(supply.circulatingNanos, supply.potNanos + supply.hashNanos);
     assert.ok(supply.circulatingNanos > supply.potNanos);
   });
+
+  it('empty-aLeaves + empty-shareBatch + one confidential-0 hash vout returns 256', () => {
+    const block = {
+      height: 8,
+      aLeaves: [],
+      shareBatch: [],
+      txs: [{
+        coinbase: true,
+        vout: [
+          { kind: 'pot', nanos: 0 },
+          { kind: 'hash', nanos: 0, commit: Buffer.alloc(32, 9), noteCommit: Buffer.alloc(32, 3) },
+        ],
+      }],
+    };
+    const got = hashBonusEmittedOfBlock(block, HASH_BONUS_NANOS);
+    assert.equal(HASH_BONUS_NANOS, 1);
+    assert.equal(unitsForShare(), 256);
+    assert.equal(got, 256);
+    assert.equal(got, unitsForShare() * HASH_BONUS_NANOS);
+  });
+
+  it('networkSupply returns pot + hash + extra − burned and omits pull-book credit and open-round count', () => {
+    const hdr = (ms) => encodeHeader({
+      prevBlockHash: Buffer.alloc(32),
+      merkleRoot: Buffer.alloc(32),
+      continuityRoot: Buffer.alloc(32),
+      timestamp: BigInt(ms),
+      bits: 16,
+    });
+    const pot = 1_000_000_000_00;
+    const extra = 777;
+    const burned = 40;
+    const pullCredit = 1_000_000_000;
+    const openRound = 4096;
+    const staked = 50_000;
+    const block = {
+      height: 9,
+      header: hdr(1_700_000_000_000),
+      aLeaves: [],
+      shareBatch: [],
+      txs: [{
+        coinbase: true,
+        vout: [
+          { kind: 'pot', nanos: pot },
+          { kind: 'hash', nanos: 0, commit: Buffer.alloc(32, 4), noteCommit: Buffer.alloc(32, 5) },
+        ],
+      }],
+    };
+    const vault = emptyVault();
+    vault.mintBankNanos = BigInt(extra);
+    vault.totalLockedNanos = BigInt(staked);
+    vault.portals.stake = { staked: BigInt(staked), idle: 0n, claimableRewards: 0n };
+    const store = {
+      blocks: [block],
+      tip: () => block,
+      reserveVault: vault,
+      pullBook: { hashCreditsNanos: pullCredit },
+      openRoundHashes: openRound,
+      networkRoundHashes: openRound,
+      explorer: [
+        { kind: 'burn', nanos: burned },
+        { kind: 'hash', nanos: pullCredit },
+      ],
+    };
+    const supply = networkSupply(store);
+    const want = pot + 256 + extra - burned;
+    assert.equal(supply.hashNanos, 256);
+    assert.equal(supply.potNanos, pot);
+    assert.equal(supply.extraMintNanos, extra);
+    assert.equal(supply.burnedNanos, burned);
+    assert.equal(supply.circulatingNanos, want);
+    assert.equal(supply.circulatingNanos, supply.potNanos + supply.hashNanos + supply.extraMintNanos - supply.burnedNanos);
+    assert.equal(supply.lockedNanos, staked);
+    assert.notEqual(supply.circulatingNanos, want + pullCredit);
+    assert.notEqual(supply.circulatingNanos, want + openRound);
+    assert.notEqual(supply.circulatingNanos, want + staked);
+  });
 });

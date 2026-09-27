@@ -140,7 +140,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.54" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.55" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -236,6 +236,16 @@
       const s = trunc.toFixed(8);
       if (/^-?\d+\.00000000$/.test(s)) return String(Math.trunc(trunc));
       return s;
+    }
+    function fmtCircShe(nanos) {
+      var n = Number(nanos);
+      if (!Number.isFinite(n)) return '0.00000000000 SHE';
+      var neg = n < 0;
+      var v = Math.abs(Math.trunc(n));
+      var whole = Math.floor(v / 100000000000);
+      var frac = String(v % 100000000000);
+      while (frac.length < 11) frac = '0' + frac;
+      return (neg ? '-' : '') + String(whole) + '.' + frac + ' SHE';
     }
     function ongoingHashbonusHashes(stats) {
       if (stats && Number.isFinite(Number(stats.networkRoundHashes))) {
@@ -481,7 +491,7 @@
       setText('ex-height', stats.height ?? 0);
       setText('ex-hashrate', fmtHashNanos(ongoingHashbonusHashes(stats)));
       const NANOS = 100000000000;
-      setText('ex-circ-she', fmtShe(Number(stats.circulatingNanos || 0) / NANOS) + ' SHE');
+      setText('ex-circ-she', fmtCircShe(stats.circulatingNanos));
       var avgPot = Number(stats.potEmittedNanos);
       var avgBonus = Number(stats.hashBonusEmittedNanos);
       var avgH = Number(stats.height) || 0;

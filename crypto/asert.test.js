@@ -286,7 +286,8 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(formatShe(1e-11), '0.00000000');
     assert.equal(formatShe(1e-8), '0.00000001');
     assert.equal(formatShe(1e-9), '0.00000000');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v4');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v5');
+    assert.equal(MAGIC_TESTNET_V4, 'shear-testnet-v4');
     assert.equal(MAGIC_TESTNET_V1, 'shear-testnet-v1');
     assert.equal(MAGIC_TESTNET_V2, 'shear-testnet-v2');
     assert.equal(MAGIC_TESTNET_V3, 'shear-testnet-v3');

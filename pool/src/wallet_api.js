@@ -619,7 +619,14 @@ export function searchExplorerTxs(store, q = {}) {
   return txs;
 }
 
-/** Hash-bonus nanos minted in one sealed block. Compact shares drop dest; Tree-A counts remain. */
+function confidentialZeroNanos(o) {
+  if (!o || o.commit == null || o.commit === false || o.commit === '') return false;
+  return Math.floor(Number(o.nanos) || 0) === 0;
+}
+
+/** Hash-bonus nanos minted in one sealed block. Compact shares drop dest; Tree-A counts remain.
+ * Empty aLeaves and an empty shareBatch with one confidential hash vout (plaintext nanos 0)
+ * is the sealed finder floor at unitsForShare(). */
 export function hashBonusEmittedOfBlock(block, unit = HASH_BONUS_NANOS) {
   const u = hashBonusUnitNanos(unit);
   let n = 0;
@@ -639,10 +646,15 @@ export function hashBonusEmittedOfBlock(block, unit = HASH_BONUS_NANOS) {
       }),
       ...paysFromALeaves(block.aLeaves || [], { hashBonusNanos: u }),
     ];
+    const hashVouts = [];
     for (const o of cb.vout) {
       if (String(o.kind || '') !== 'hash') continue;
+      hashVouts.push(o);
       const hit = matchSealedCoinbaseVout(o, pays);
       n += Math.max(0, Math.floor(Number(hit.nanos || o.nanos || 0)));
+    }
+    if (n === 0 && hashVouts.length === 1 && confidentialZeroNanos(hashVouts[0])) {
+      n = unitsForShare() * u;
     }
   }
   return n;
