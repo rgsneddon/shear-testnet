@@ -1,15 +1,16 @@
-# MacBook handoff — cut Continuum 0.56 (Apple only)
+# MacBook handoff — cut Continuum 0.55.1 (Apple only)
 
-**You cut 0.56.** The Apple disk image only. Windows, Android, Linux, Arch, and Fedora are not this machine.
+**You cut 0.55.1.** The Apple disk image only. Windows, Android, Linux, Arch, and Fedora are not this machine. This cut is not 0.56. Do not create tag `0.56`.
 
 **Repo:** https://github.com/rgsneddon/shear-testnet
 **This file:** https://github.com/rgsneddon/shear-testnet/blob/main/MACBOOK-HANDOFF.md
 **Branch:** `main`
-**Tag to create:** `0.56` on the commit that contains this handoff
-**Release name:** Continuum 0.56.0
+**Tag to create:** `0.55.1` on the commit that contains this handoff
+**Release name:** Continuum 0.55.1
 **Do not move:** `0.52`, `0.53`, `0.54`, `0.55`
+**Do not create:** `0.56`
 **Do not build here:** Windows zip, Android apk, Linux zip, Arch zip, Fedora zip
-**Do not edit the live site.** `0.55` stays the public pin until the 0.56 assets exist. SaaS dark stays. Do not restyle pages.
+**Do not edit the live site.** `0.55` stays the public pin until the 0.55.1 assets exist. SaaS dark stays. Do not restyle pages.
 
 Developer ID: `Russell Sneddon (SFCBP95595)`. An unsigned disk image is Gatekeeper-blocked. Do not ship a zip of the `.app`.
 
@@ -17,16 +18,18 @@ Developer ID: `Russell Sneddon (SFCBP95595)`. An unsigned disk image is Gatekeep
 
 ## What you are packing
 
-`git pull` on `main`. These must read 0.56 before you build:
+`git pull` on `main`. These must read 0.55.1 before you build:
 
-- `wallet/lib/main.dart`: `kWalletVersion = '0.56.0'`
-- `wallet/lib/shear_cli.dart`: `kCliVersion = '0.56.0'`
-- `wallet/pubspec.yaml`: `version: 0.56.0+78`
-- `crypto/asert.js`: `PRODUCT_VERSION = '0.56'`
+- `wallet/lib/main.dart`: `kWalletVersion = '0.55.1'`
+- `wallet/lib/shear_cli.dart`: `kCliVersion = '0.55.1'`
+- `wallet/pubspec.yaml`: `version: 0.55.1+79`
+- `crypto/asert.js`: `PRODUCT_VERSION = '0.55'`
 
-`consensusFingerprint()` does **not** contain `0.56`, `0.55`, `0.54`, `0.53`, `0.52`, or `PRODUCT_VERSION`. Do not edit the fingerprint array. A wallet release does not change it.
+`PRODUCT_VERSION` stays two-part. The wallet pin is `0.55.1`. Do not set `PRODUCT_VERSION` to `0.55.1` or `0.56`.
 
-`wallet/pack_macos.sh` names the file from the full `kWalletVersion`, so a stock run writes `shear-wallet-0.56.0-macos.dmg`. The release asset is `shear-wallet-0.56-macos.dmg`. Rename before upload.
+`consensusFingerprint()` does **not** contain `0.55.1`, `0.56`, `0.55`, `0.54`, `0.53`, `0.52`, or `PRODUCT_VERSION`. Do not edit the fingerprint array. A wallet release does not change it.
+
+`wallet/pack_macos.sh` names the file from the full `kWalletVersion`, so a stock run writes `shear-wallet-0.55.1-macos.dmg`. That is the release asset. Do not rename it to `shear-wallet-0.55-macos.dmg`. That name is release `0.55`.
 
 ---
 
@@ -59,21 +62,20 @@ From a clean `main`:
 
 ```bash
 grep kWalletVersion wallet/lib/main.dart
-# must print: const kWalletVersion = '0.56.0';
+# must print: const kWalletVersion = '0.55.1';
 
 cd wallet
-flutter build macos --release --build-name=0.56.0 --build-number=78
+flutter build macos --release --build-name=0.55.1 --build-number=79
 bash pack_macos.sh
-mv -f dist/shear-wallet-0.56.0-macos.dmg dist/shear-wallet-0.56-macos.dmg
 ```
 
 Create the release, then upload only the disk image:
 
 ```bash
-gh release create 0.56 dist/shear-wallet-0.56-macos.dmg \
+gh release create 0.55.1 dist/shear-wallet-0.55.1-macos.dmg \
   --repo rgsneddon/shear-testnet \
-  --title "Continuum 0.56.0" \
-  --notes "Continuum 0.56.0. Apple disk image. Miner pot-after-fee and hash bonus seal to the hasher dest. The pool dest receives only the 1% fee. Mainnet emit stays off."
+  --title "Continuum 0.55.1" \
+  --notes "Continuum 0.55.1. Apple disk image. Miner pot-after-fee and hash bonus seal to the hasher dest. The pool dest receives only the 1% fee. Mainnet emit stays off."
 ```
 
-If tag `0.56` already exists, upload with `gh release upload 0.56` and do not move the tag. Do not attach Windows, Android, or Linux files from this machine.
+If tag `0.55.1` already exists, upload with `gh release upload 0.55.1` and do not move the tag. Do not create tag `0.56`. Do not attach Windows, Android, or Linux files from this machine.

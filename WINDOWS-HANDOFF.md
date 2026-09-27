@@ -1,6 +1,6 @@
 # Windows handoff — FINAL PLATE laws the Mac did not refute
 
-**Read this file and apply it.** The 0.55 pack steps below are done. Continuum **0.56** is the next cut. The Mac creates tag `0.56` and the Apple disk image. Do not create that tag from Windows. Do not move tags `0.52`, `0.53`, `0.54`, or `0.55`. See `MACBOOK-HANDOFF.md`.
+**Read this file and apply it.** The 0.55 pack steps below are done. Continuum **0.55.1** is the next cut. The Mac creates tag `0.55.1` and the Apple disk image. Do not create tag `0.55.1` or `0.56` from Windows. Do not move tags `0.52`, `0.53`, `0.54`, or `0.55`. See `MACBOOK-HANDOFF.md`.
 
 **This file:** https://github.com/rgsneddon/shear-testnet/blob/main/WINDOWS-HANDOFF.md
 **Mac pin note:** https://github.com/rgsneddon/shear-testnet/blob/main/MACBOOK-HANDOFF.md
@@ -110,7 +110,7 @@ python wallet\pack\zip_windows.py
 
 Zip root is `shear_wallet.exe`. No miner inside. Title string is Shear **0.55.0**.
 
-The 0.55 upload is done. Do not create tag **0.56** from this box. Do not move tags **0.52**, **0.53**, **0.54**, or **0.55**.
+The 0.55 upload is done. Do not create tag **0.55.1** or **0.56** from this box. Do not move tags **0.52**, **0.53**, **0.54**, or **0.55**.
 
 ```
 gh release upload 0.55 wallet\dist\shear-wallet-0.55-windows.zip --repo rgsneddon/shear-testnet --clobber
@@ -122,9 +122,9 @@ If `gh release view 0.55` says the release is missing, stop and leave the zip on
 
 ## This box does not do
 
-- Rebuild the macOS disk image. The Mac packs `shear-wallet-0.56-macos.dmg`.
+- Rebuild the macOS disk image. The Mac packs `shear-wallet-0.55.1-macos.dmg`.
 - `flutter build macos` or notarize.
-- Put a product version inside `consensusFingerprint()`. `0.56` stays out of it, as `0.55` did.
+- Put a product version inside `consensusFingerprint()`. `0.55.1` stays out of it, as `0.56` and `0.55` do.
 - Restore the Reddit button.
 - Change `HASH_BONUS_NANOS`, the 256 share floor, or spendable depth (`isSpendableHeight(100, 105)` stays true).
 - Reset the chain, delete `chain.bin`, or bounce `shear-pool` or the bootstrap publisher.
