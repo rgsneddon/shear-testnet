@@ -7812,6 +7812,7 @@ class _RecordingPool extends ShearPoolClient {
     dynamic excess,
     Map<String, dynamic>? admitProof,
     String? spendTag,
+    int paintedOwedNanos = 0,
   }) async {
     posts.add({
       'from': from,
@@ -7825,6 +7826,7 @@ class _RecordingPool extends ShearPoolClient {
       'sig': sig,
       'spendPub': spendPub,
       'programId': programId,
+      if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
     });
     return {
       'ok': true,
@@ -7873,8 +7875,9 @@ class _ReasonPool extends ShearPoolClient {
     dynamic excess,
     Map<String, dynamic>? admitProof,
     String? spendTag,
+    int paintedOwedNanos = 0,
   }) async =>
-      {'ok': false, 'reason': reason};
+      {'ok': false, 'reason': paintedOwedNanos < 0 ? 'bad_owed' : reason};
 }
 
 class _MemPullPool extends ShearPoolClient {

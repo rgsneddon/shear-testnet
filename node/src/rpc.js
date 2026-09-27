@@ -4,6 +4,7 @@ import { compactChainBlock } from '../../crypto/chronoflux.js';
 import { MAGIC_TESTNET, HASH_TX_LIVE, NANOS_PER_SHE, consensusFingerprint } from '../../crypto/asert.js';
 import { hash20FromAddress, isDestAddress, isPaymentCode, encodeDest } from '../../crypto/address.js';
 import { noteCommitOfDest20 } from '../../crypto/note.js';
+import { handleWalletApi } from '../../pool/src/wallet_api.js';
 
 export const RPC_PORT = 18332;
 export const RPC_HOST = '127.0.0.1';
@@ -119,6 +120,7 @@ function json(res, status, obj) {
 export function createRpc({
   store,
   p2p = null,
+  pullBook = null,
   port = Number(process.env.SHEAR_RPC_PORT || RPC_PORT),
   host = process.env.SHEAR_RPC_BIND || RPC_HOST,
   token = process.env.SHEAR_RPC_TOKEN || '',
@@ -205,9 +207,19 @@ export function createRpc({
       return { ok: true, fingerprint: fp, admit: 'ADMITv2', hashTxLive: store.hashTxLive };
     }
     if (m === 'queuetx' || m === 'queueTx') {
-      const tx = params.tx || params;
+      const wrapped = !!(params && params.tx && typeof params.tx === 'object');
+      const tx = wrapped ? params.tx : params;
       if (typeof store.queueTx !== 'function') return { ok: false, reason: 'no_store' };
-      return store.queueTx(tx);
+      // Painted owed is an option beside the tx. A body field is not spendable credit.
+      let owed = 0;
+      if (wrapped) {
+        const n = Number(params.paintedOwedNanos);
+        if (Number.isFinite(n) && n > 0) owed = Math.floor(n);
+      }
+      if (tx && typeof tx === 'object' && Object.prototype.hasOwnProperty.call(tx, 'paintedOwedNanos')) {
+        delete tx.paintedOwedNanos;
+      }
+      return store.queueTx(tx, { paintedOwedNanos: owed });
     }
     if (m === 'gettemplate' || m === 'template') {
       if (typeof store.template !== 'function') return { ok: false, reason: 'no_store' };
@@ -402,7 +414,42 @@ export function createRpc({
       json(res, 200, dispatch('getpolicy'));
       return;
     }
-    if (req.method === 'POST' && (url.pathname === '/api/wallet/send' || url.pathname === '/queuetx' || url.pathname === '/queueTx')) {
+    if (req.method === 'POST' && url.pathname === '/api/wallet/send') {
+      let posted = {};
+      try {
+        posted = JSON.parse(await readBody(req) || '{}');
+      } catch {
+        json(res, 400, { ok: false, reason: 'bad_json' });
+        return;
+      }
+      const clientRaw = Number(posted.paintedOwedNanos);
+      const clientOwed = Number.isFinite(clientRaw) && clientRaw > 0 ? Math.floor(clientRaw) : 0;
+      const clientFrom = String(posted.from || '').trim();
+      delete posted.paintedOwedNanos;
+      const book = pullBook || {
+        viewByDest(address) {
+          if (clientOwed > 0 && String(address) === clientFrom) return { pendingNanos: clientOwed };
+          return { pendingNanos: 0 };
+        },
+      };
+      const out = handleWalletApi(url, 'POST', posted, {
+        store,
+        miners: new Map(),
+        pullBook: book,
+        queueSend(draft, meta) {
+          const owedRaw = Number(meta && meta.paintedOwedNanos);
+          const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
+          const id = draft.id || (draft.kind === 'lock' ? `lock-${Date.now()}` : `tx-${Date.now()}`);
+          const tx = { ...draft, id };
+          const got = dispatch('queuetx', { tx, paintedOwedNanos });
+          if (!got || got.ok === false) return got;
+          return got.tx || tx;
+        },
+      });
+      json(res, out?.status || 500, out?.json || { ok: false, reason: 'send' });
+      return;
+    }
+    if (req.method === 'POST' && (url.pathname === '/queuetx' || url.pathname === '/queueTx')) {
       let posted = {};
       try {
         posted = JSON.parse(await readBody(req) || '{}');

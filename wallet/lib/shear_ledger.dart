@@ -2497,10 +2497,14 @@ class ShearLedger {
       ..addAll(mark.spendable);
     _owedSpent = mark.owedSpent;
     _paintedFundDest = '';
+    _paintedFundOwedNanos = 0;
   }
 
   /// Dest the last painted fold posted from. Empty after a restore.
   String get paintedFundDest => _paintedFundDest;
+
+  /// Pull-book owed, in nanos, snapshotted before this fold spends it.
+  int get paintedFundOwedNanos => _paintedFundOwedNanos;
 
   void _moveSpendableOnto(String dest) {
     if (!isDestAddress(dest)) return;
@@ -2520,6 +2524,8 @@ class ShearLedger {
   /// or null when the painted figure is short.
   double? fundFromPaintedContinuum(String restFrame, {String? paymentCode, required double needShe}) {
     _paintedFundDest = '';
+    final owedShe = owedTowardPi(restFrame, paymentCode: paymentCode);
+    _paintedFundOwedNanos = owedShe > 0 ? (owedShe * kUnitsPerShe).round() : 0;
     if (needShe <= 1e-12) return 0;
     var chain = spendableOwned(restFrame, paymentCode: paymentCode);
     if (chain < 0) chain = 0;
@@ -3371,6 +3377,7 @@ class ShearLedger {
   double _owedSpent = 0;
   String _owedPiDest = '';
   String _paintedFundDest = '';
+  int _paintedFundOwedNanos = 0;
 
   List<ShearTx> shearviewSearch(String address, String query) {
     return shearviewTxs(address).where((t) => shearviewMatches(t, query)).toList();
@@ -3876,6 +3883,7 @@ class ShearLedger {
           spendTag: admitProof?['spendTag'] is Uint8List
               ? _bytesHex(admitProof!['spendTag'] as Uint8List)
               : admitProof?['spendTag']?.toString(),
+          paintedOwedNanos: paintedCover ? _paintedFundOwedNanos : 0,
         );
       }
 
@@ -4371,11 +4379,13 @@ class ShearPoolClient {
     dynamic excess,
     Map<String, dynamic>? admitProof,
     String? spendTag,
+    int paintedOwedNanos = 0,
   }) =>
       _post('/api/wallet/send', {
         'from': from,
         'to': to,
         'amount': amount,
+        if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
         if (memoCt != null) 'memoCt': memoCt,
         if (open != null && open.isNotEmpty) 'open': open,
         if (sig != null && sig.isNotEmpty) 'sig': sig,

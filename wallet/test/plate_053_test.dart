@@ -10,6 +10,7 @@ import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_levy.dart';
 import 'package:shear_wallet/shear_native_prove.dart';
 import 'package:shear_wallet/shear_qr.dart';
+import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 
 void main() {
@@ -68,18 +69,74 @@ void main() {
     return _Gate(proc, port, realHttp(), err);
   }
 
+  /// Unpinned client. walletSendBase keeps the GUI node on 127.0.0.1:18332.
+  Future<_Node> openNode() async {
+    final log = File('${Directory.systemTemp.path}${Platform.pathSeparator}shear-painted-queue-${DateTime.now().microsecondsSinceEpoch}.log');
+    final proc = await Process.start(
+      'node',
+      ['node/tests/painted_rpc_server.mjs'],
+      workingDirectory: repoRoot(),
+      environment: {
+        'SHEAR_PAINTED_QUEUE_LOG': log.path,
+        'SHEAR_RPC_PORT': '18332',
+      },
+    );
+    final out = StringBuffer();
+    final err = StringBuffer();
+    proc.stdout.transform(utf8.decoder).listen(out.write);
+    proc.stderr.transform(utf8.decoder).listen(err.write);
+    final deadline = DateTime.now().add(const Duration(seconds: 15));
+    while (!out.toString().contains('PORT ') && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+    }
+    final line = out.toString().split(RegExp(r'\r?\n')).cast<String>().firstWhere(
+          (row) => row.startsWith('PORT '),
+          orElse: () => '',
+        );
+    if (line.isEmpty) {
+      proc.kill();
+      throw StateError('painted rpc did not listen\n$out\n$err');
+    }
+    final port = int.parse(line.split(' ').last.trim());
+    if (port != 18332) {
+      proc.kill();
+      throw StateError('painted rpc listened on $port');
+    }
+    final http = realHttp();
+    final pool = ShearPoolClient(
+      http: http,
+      sync: ShearReadSync(
+        seeds: const ['http://127.0.0.1:18332'],
+        jitter: Duration.zero,
+        http: http,
+      ),
+    );
+    return _Node(proc, log, http, err, pool);
+  }
+
+  List<Map<String, dynamic>> queuedRows(File log) {
+    if (!log.existsSync()) return const [];
+    final rows = <Map<String, dynamic>>[];
+    for (final line in log.readAsLinesSync()) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) continue;
+      final row = jsonDecode(trimmed);
+      if (row is Map) rows.add(Map<String, dynamic>.from(row));
+    }
+    return rows;
+  }
+
   test('reserve deposit posts from the painted figure when notes do not cover', () async {
     final id = createIdentity();
     final home = (ShearLedger()..bindIdentity(id)).homeDest(id.address, paymentCode: id.paymentCode);
-    final gate = await openGate('22.58', dest: home);
+    final node = await openNode();
     addTearDown(() async {
-      gate.http.close(force: true);
-      gate.proc.kill();
+      node.http.close(force: true);
+      node.proc.kill();
     });
-    final pool = ShearPoolClient(
-      baseUrl: 'http://127.0.0.1:${gate.port}',
-      http: gate.http,
-    );
+    final pool = node.pool;
+    expect(pool.isPinned, isFalse);
+    expect(walletSendBase(pool.baseUrl), 'http://127.0.0.1:18332');
     final ledger = bookWithOwed(id, chain: 0.02, owed: 22.58, pool: pool);
     final notes = chainNoteSum(ledger, id.address, paymentCode: id.paymentCode);
     final painted = paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode);
@@ -111,8 +168,8 @@ void main() {
       local: local,
     );
     expect(posted.remark.toLowerCase(), isNot(contains('no spendable')));
-    expect(posted.remark, isNot(contains('Not enough Continuum spendable')), reason: '${posted.remark}\n${gate.err}');
-    expect(posted.posted, isTrue, reason: '${posted.remark}\n${gate.err}');
+    expect(posted.remark, isNot(contains('Not enough Continuum spendable')), reason: '${posted.remark}\n${node.err}\n${node.log.path}');
+    expect(posted.posted, isTrue, reason: '${posted.remark}\n${node.err}\n${queuedRows(node.log)}');
     expect(posted.tx, isNotNull);
     expect(posted.tx!.id, startsWith('lock-'));
     expect(posted.tx!.kind, 'lock');
@@ -121,6 +178,9 @@ void main() {
     expect(reserve.portal(dest).nanos, greaterThan(0));
     expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), lessThan(22.58));
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(need));
+    final queued = queuedRows(node.log);
+    expect(queued.where((row) => row['ok'] == true && row['kind'] == 'lock'), isNotEmpty, reason: '$queued\n${node.err}');
+    expect((queued.firstWhere((row) => row['kind'] == 'lock')['owed'] as num) > 0, isTrue);
   }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('reserve deposit refuses when the painted figure does not cover amount plus fee', () async {
@@ -232,16 +292,15 @@ void main() {
   test('continuum send and receive use the full payable address', () async {
     final alice = createIdentity();
     final home = (ShearLedger()..bindIdentity(alice)).homeDest(alice.address, paymentCode: alice.paymentCode);
-    final gate = await openGate('22.58', dest: home);
+    final node = await openNode();
     addTearDown(() async {
-      gate.http.close(force: true);
-      gate.proc.kill();
+      node.http.close(force: true);
+      node.proc.kill();
     });
     final bob = createIdentity();
-    final pool = ShearPoolClient(
-      baseUrl: 'http://127.0.0.1:${gate.port}',
-      http: gate.http,
-    );
+    final pool = node.pool;
+    expect(pool.isPinned, isFalse);
+    expect(walletSendBase(pool.baseUrl), 'http://127.0.0.1:18332');
     final ledger = bookWithOwed(alice, chain: 0.02, owed: 22.58, pool: pool);
     final payload = encodeReceiveQr(bob.paymentCodeFull);
     expect(payload, bob.paymentCodeFull);
@@ -280,7 +339,7 @@ void main() {
       spendSeed: hexToBytes(alice.seedHex),
       local: false,
     );
-    expect(she.posted, isTrue, reason: '${she.remark}\n${debugLastContinuumSendError}\n${gate.err}');
+    expect(she.posted, isTrue, reason: '${she.remark}\n${debugLastContinuumSendError}\n${node.err}\n${queuedRows(node.log)}');
     expect(she.to, payload);
     expect(she.tx, isNotNull);
     expect(she.tx!.id, startsWith('tx-'));
@@ -299,7 +358,7 @@ void main() {
       spendSeed: hexToBytes(alice.seedHex),
       local: false,
     );
-    expect(ssaSend.posted, isTrue, reason: '${ssaSend.remark}\n${debugLastContinuumSendError}\n${gate.err}');
+    expect(ssaSend.posted, isTrue, reason: '${ssaSend.remark}\n${debugLastContinuumSendError}\n${node.err}\n${queuedRows(node.log)}');
     expect(ssaSend.to, ssa);
     expect(ssaSend.tx!.id, startsWith('tx-'));
     expect(ssaSend.tx!.kind, 'send');
@@ -314,6 +373,9 @@ void main() {
     );
     expect(short.posted, isFalse);
     expect(short.to, payload);
+    final queued = queuedRows(node.log).where((row) => row['ok'] == true && row['kind'] == 'send').toList();
+    expect(queued.length, greaterThanOrEqualTo(2), reason: '${queuedRows(node.log)}\n${node.err}');
+    expect(queued.every((row) => (row['owed'] as num) > 0), isTrue);
   }, timeout: const Timeout(Duration(minutes: 6)));
 
   test('local node spawn has no bootstrap URL and the light seeker stays strict', () {
@@ -342,6 +404,16 @@ class _Gate {
   final int port;
   final HttpClient http;
   final StringBuffer err;
+}
+
+class _Node {
+  _Node(this.proc, this.log, this.http, this.err, this.pool);
+
+  final Process proc;
+  final File log;
+  final HttpClient http;
+  final StringBuffer err;
+  final ShearPoolClient pool;
 }
 
 class _PassthroughHttpOverrides extends HttpOverrides {}
