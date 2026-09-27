@@ -230,10 +230,13 @@ void main() {
     expect(resolveSharedNodeBinary(besideDir: dir.path), bin.path);
     expect(resolveSharedNodeBinary(override: 'from-env', besideDir: dir.path), 'from-env');
     final data = closureNodeDataDir(besideDir: dir.path);
+    expect(data.contains('testnet-v5'), isTrue);
     expect(closureDatadirEmpty(data), isTrue);
-    Directory(data).createSync(recursive: true);
-    File('${data}${Platform.pathSeparator}chain.bin').writeAsBytesSync([0]);
-    expect(closureDatadirEmpty(data), isFalse);
+    final legacy = '${dir.path}${Platform.pathSeparator}shear-node-data';
+    Directory(legacy).createSync(recursive: true);
+    File('${legacy}${Platform.pathSeparator}chain.bin').writeAsBytesSync([0]);
+    expect(closureNodeDataDir(besideDir: dir.path), legacy);
+    expect(closureDatadirEmpty(legacy), isFalse);
   });
 
   test('sidecar Apply arms 1111 only for desktop C and stops on A', () async {

@@ -281,7 +281,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     WidgetsBinding.instance.addObserver(this);
     final beside = File(Platform.resolvedExecutable).parent.path;
     final dataDir = closureNodeDataDir(
-      override: Platform.environment['SHEAR_NODE_DATA'],
+      override: Platform.environment['SHEAR_DATA'] ?? Platform.environment['SHEAR_NODE_DATA'],
       besideDir: beside,
     );
     final packed = resolvePackagedNode(

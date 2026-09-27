@@ -77,6 +77,29 @@ export function printConfig() {
 
 export { createP2p, P2P_PORT, createStore, createRpc, RPC_PORT, mintVorticeDeployKey, parseVorticeKey };
 
+const BOOK_LEAF = 'testnet-v5';
+
+function bookPresent(dir, exists) {
+  return exists(path.join(dir, 'chain.bin')) || exists(path.join(dir, 'chain.jsonl'));
+}
+
+/** Shared book for SHEAR-NODEv6 and Continuum. Windows: %APPDATA%\\Shear\\testnet-v5 (Roaming). */
+export function defaultDataDir({
+  env = process.env,
+  homedir = os.homedir(),
+  platform = process.platform,
+  exists = (p) => fs.existsSync(p),
+} = {}) {
+  const forced = String(env.SHEAR_DATA || '').trim();
+  if (forced) return forced;
+  const posix = path.join(homedir, '.shear', BOOK_LEAF);
+  if (platform !== 'win32') return posix;
+  const app = String(env.APPDATA || '').trim() || path.join(homedir, 'AppData', 'Roaming');
+  const roaming = path.join(app, 'Shear', BOOK_LEAF);
+  if (!bookPresent(roaming, exists) && bookPresent(posix, exists)) return posix;
+  return roaming;
+}
+
 /** ADMITv2 soak tip. Hostnames only — never a raw IP. DNS + static names (not DNS-only). */
 export const DEFAULT_SEEDS = [
   'p2p.shear.digital:30303',
@@ -102,7 +125,7 @@ export function isP2pSyncArg(argv = process.argv) {
 }
 
 export async function startNode({
-  dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v5'),
+  dataDir = defaultDataDir(),
   p2pPort = Number(process.env.SHEAR_P2P_PORT || P2P_PORT),
   p2pBind = process.env.SHEAR_P2P_BIND || '0.0.0.0',
   rpcPort = Number(process.env.SHEAR_RPC_PORT || RPC_PORT),

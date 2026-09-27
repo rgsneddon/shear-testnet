@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { datadirIsEmpty, resolveGuiBootstrap } from '../src/node.js';
+import { datadirIsEmpty, resolveGuiBootstrap, defaultDataDir } from '../src/node.js';
 import {
   writeLatestBootstrap,
   applyLatestBootstrap,
@@ -181,6 +181,34 @@ describe('wallet node bootstrap', () => {
     assert.equal(jsonlResume.resume, true);
     assert.equal(jsonlResume.missing, false);
     assert.equal(fs.readFileSync(path.join(jsonlOnly, 'chain.jsonl'), 'utf8'), '{"height":12}\n');
+  });
+
+  it('defaultDataDir is Roaming Shear/testnet-v5 on Windows and ~/.shear/testnet-v5 on Unix', () => {
+    assert.equal(
+      defaultDataDir({ env: { SHEAR_DATA: 'D:\\book' }, platform: 'win32', homedir: 'C:\\Users\\x' }),
+      'D:\\book',
+    );
+    const win = defaultDataDir({
+      env: { APPDATA: 'C:\\Users\\x\\AppData\\Roaming' },
+      homedir: 'C:\\Users\\x',
+      platform: 'win32',
+      exists: () => false,
+    });
+    assert.equal(win, path.join('C:\\Users\\x\\AppData\\Roaming', 'Shear', 'testnet-v5'));
+    const posix = defaultDataDir({
+      env: {},
+      homedir: '/home/x',
+      platform: 'linux',
+      exists: () => false,
+    });
+    assert.equal(posix, path.join('/home/x', '.shear', 'testnet-v5'));
+    const legacy = defaultDataDir({
+      env: { APPDATA: 'C:\\Users\\x\\AppData\\Roaming' },
+      homedir: 'C:\\Users\\x',
+      platform: 'win32',
+      exists: (p) => String(p).includes(`${path.sep}.shear${path.sep}testnet-v5`) && String(p).endsWith('chain.bin'),
+    });
+    assert.equal(legacy, path.join('C:\\Users\\x', '.shear', 'testnet-v5'));
   });
 
   it('pullPublishedBootstrap stores a pair an empty datadir can apply', async () => {

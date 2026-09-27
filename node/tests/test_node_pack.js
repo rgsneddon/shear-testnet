@@ -32,6 +32,8 @@ describe('portable node packs', () => {
     assert.match(cmd, /node\\src\\node\.js/);
     assert.match(sh, /node\/src\/node\.js/);
     assert.match(cmd, /SHEAR_NETWORK=shear-testnet-v5/);
+    assert.match(cmd, /APPDATA%\\Shear\\testnet-v5/);
+    assert.match(sh, /HOME\/\.shear\/testnet-v5/);
     assert.match(sh, /SHEAR_NETWORK:-shear-testnet-v5/);
     assert.match(cmd, /pause/i);
     assert.match(cmd, /SHEAR_NODE_NOPAUSE/);

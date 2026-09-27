@@ -16,6 +16,8 @@ Two Apple files. Do not mix the tags.
 
 `node/pack/zip_node.py` (what `pack_macos.sh` calls) must ship `node/src`, `crypto`, `pool/src/wallet_api.js`, `pool/src/hash_credit.js`, `pool/src/withdraw_state.js`, and `contracts/Reserve.json`. RPC imports `wallet_api.js`; `reserve_evm.js` reads `Reserve.json` at boot. Without those files the unzipped node exits 1.
 
+Shared book (SHEAR-NODEv6 and Continuum 0.56): macOS/Linux `~/.shear/testnet-v5`. Windows `%APPDATA%\Shear\testnet-v5` (Roaming). One process at a time on :30303 / :18332.
+
 Developer ID: `Russell Sneddon (SFCBP95595)`. An unsigned disk image is Gatekeeper-blocked. `wallet/pack_macos.sh` uses `ditto` so the notarization ticket survives. Do not replace that with `cp -R`.
 
 `PRODUCT_VERSION` in `crypto/asert.js` is **6.0** (SHEAR-NODEv6). Continuum pin is `kWalletVersion = '0.56'`. Do not set `PRODUCT_VERSION` to `0.56`. `consensusFingerprint()` must not contain `6.0`, `0.56`, or `PRODUCT_VERSION`.

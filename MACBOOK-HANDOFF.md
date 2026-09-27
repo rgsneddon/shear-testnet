@@ -36,6 +36,8 @@ crypto/asert.js:          PRODUCT_VERSION = '6.0'
 
 The GUI sidecar is SHEAR-NODEv6 (`runtime/node` + `node/src/node.js`). Empty book does **not** auto-pull `boot.shear.digital`. Users who want a snapshot import it by hand.
 
+Shared book with the standalone node: macOS `~/.shear/testnet-v5`. Windows `%APPDATA%\Shear\testnet-v5` (Roaming). Do not spawn a second node if one is already on 18332.
+
 ---
 
 ## Build Continuum 0.56
