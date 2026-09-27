@@ -66,6 +66,7 @@ describe('portable node packs', () => {
     assert.match(listed.stdout, /pool\/src\/wallet_api\.js/);
     assert.match(listed.stdout, /pool\/src\/hash_credit\.js/);
     assert.match(listed.stdout, /pool\/src\/withdraw_state\.js/);
+    assert.match(listed.stdout, /contracts\/Reserve\.json/);
     assert.doesNotMatch(listed.stdout, /SHEAR_BOOTSTRAP=1/);
   });
 });

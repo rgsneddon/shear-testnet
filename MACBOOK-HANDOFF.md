@@ -68,15 +68,16 @@ cd /path/to/shear-testnet
 sh node/pack/pack_macos.sh
 ```
 
-Writes `dist/shear-node-v6-macos.zip`.
+Writes `dist/shear-node-v6-macos.zip`. The zip must contain `pool/src/wallet_api.js` and `contracts/Reserve.json` (RPC and Reserve pin at boot).
 
 If `gh release view v6 --repo rgsneddon/shear-testnet` does not list the release, stop.
 
 ```bash
-gh release upload v6 dist/shear-node-v6-macos.zip --repo rgsneddon/shear-testnet
+unzip -l dist/shear-node-v6-macos.zip | grep -E 'wallet_api.js|Reserve.json'
+gh release upload v6 dist/shear-node-v6-macos.zip --repo rgsneddon/shear-testnet --clobber
 ```
 
-No `--clobber` unless Windows asks. Native addons must be Darwin.
+Native addons must be Darwin. `--clobber` replaces only the macOS zip.
 
 ---
 

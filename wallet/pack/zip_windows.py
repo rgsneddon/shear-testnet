@@ -82,8 +82,15 @@ def main() -> int:
                         p = os.path.join(dp, fn)
                         rel = os.path.relpath(p, node_root).replace("\\", "/")
                         z.write(p, rel)
-            for extra in ("package.json", "package-lock.json"):
-                p = os.path.join(node_root, extra)
+            for extra in (
+                "package.json",
+                "package-lock.json",
+                "pool/src/wallet_api.js",
+                "pool/src/hash_credit.js",
+                "pool/src/withdraw_state.js",
+                "contracts/Reserve.json",
+            ):
+                p = os.path.join(node_root, extra.replace("/", os.sep))
                 if os.path.isfile(p):
                     z.write(p, extra)
             node_exe = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs", "node.exe")

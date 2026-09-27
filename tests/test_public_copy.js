@@ -236,6 +236,9 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(md, /tag \*\*v6\*\*|tag `v6`|GitHub tag \*\*v6\*\*|`v6`/);
     assert.match(md, /0\.56/);
     assert.match(md, /pack_macos\.sh/);
+    assert.match(md, /blob\/main\/NODE-MACBOOK-HANDOFF\.md/);
+    assert.match(md, /wallet_api\.js/);
+    assert.match(md, /Reserve\.json/);
     assert.doesNotMatch(md, /MACBOOK_HANDOFF\.md/);
     assert.doesNotMatch(md, /WINDOWS_HANDOFF\.md/);
   });

@@ -121,11 +121,12 @@ def main(argv: list[str] | None = None) -> int:
             "crypto",
             skip_dirs={"target", "randomx", "node_modules", ".git"},
         )
-        # node/src/rpc.js imports handleWalletApi; those modules stay in pool/src.
+        # Boot graph outside node/src + crypto: RPC wallet API and Reserve pin.
         for rel in (
             "pool/src/wallet_api.js",
             "pool/src/hash_credit.js",
             "pool/src/withdraw_state.js",
+            "contracts/Reserve.json",
         ):
             src = os.path.join(REPO, rel.replace("/", os.sep))
             if not os.path.isfile(src):

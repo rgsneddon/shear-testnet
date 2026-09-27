@@ -7,10 +7,14 @@ Two Apple files. Do not mix the tags.
 | SHEAR-NODEv6 | `shear-node-v6-macos.zip` | `v6` |
 | CONTINUUMv0.56 | `shear-wallet-0.56-macos.dmg` | `0.56` |
 
+**This file:** https://github.com/rgsneddon/shear-testnet/blob/main/NODE-MACBOOK-HANDOFF.md
+**Also:** https://github.com/rgsneddon/shear-testnet/blob/main/MACBOOK-HANDOFF.md
 **Repo:** https://github.com/rgsneddon/shear-testnet · **branch:** `main`
 **Do not move:** `0.52`–`0.55.2`
 **Do not build here:** Windows / Linux / Arch / Fedora / OpenSUSE zips or the Android apk
 **Do not restyle the live site.** Pin strings on shear.digital are Continuum **0.56** and node **v6**.
+
+`node/pack/zip_node.py` (what `pack_macos.sh` calls) must ship `node/src`, `crypto`, `pool/src/wallet_api.js`, `pool/src/hash_credit.js`, `pool/src/withdraw_state.js`, and `contracts/Reserve.json`. RPC imports `wallet_api.js`; `reserve_evm.js` reads `Reserve.json` at boot. Without those files the unzipped node exits 1.
 
 Developer ID: `Russell Sneddon (SFCBP95595)`. An unsigned disk image is Gatekeeper-blocked. `wallet/pack_macos.sh` uses `ditto` so the notarization ticket survives. Do not replace that with `cp -R`.
 
@@ -27,13 +31,14 @@ grep "PRODUCT_VERSION" crypto/asert.js
 sh node/pack/pack_macos.sh
 ```
 
-Writes `dist/shear-node-v6-macos.zip`. Windows creates tag `v6`. If `gh release view v6 --repo rgsneddon/shear-testnet` is missing, stop.
+Writes `dist/shear-node-v6-macos.zip`. Tag `v6` already exists on GitHub (Windows uploaded the other OS zips). If `gh release view v6 --repo rgsneddon/shear-testnet` is missing, stop.
 
 ```bash
-gh release upload v6 dist/shear-node-v6-macos.zip --repo rgsneddon/shear-testnet
+unzip -l dist/shear-node-v6-macos.zip | grep -E 'wallet_api.js|Reserve.json'
+gh release upload v6 dist/shear-node-v6-macos.zip --repo rgsneddon/shear-testnet --clobber
 ```
 
-No `--clobber` unless Windows asks. Native addons must be Darwin.
+Native addons must be Darwin. `--clobber` replaces only the macOS zip.
 
 ---
 
