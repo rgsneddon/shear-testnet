@@ -1,7 +1,6 @@
 const kDiscordUrl = 'https://discord.gg/AzVtMnSxCe';
 const kTelegramUrl = 'https://t.me/shearprivacy';
 const kXUrl = 'https://x.com/shearprivacy';
-const kRedditUrl = 'https://www.reddit.com/r/shear/';
 
 /// Hosts Continuum may open. No shorteners, no outbound-click wrappers.
 const kSocialHosts = {
@@ -15,9 +14,6 @@ const kSocialHosts = {
   'www.x.com',
   'twitter.com',
   'www.twitter.com',
-  'www.reddit.com',
-  'reddit.com',
-  'old.reddit.com',
 };
 
 /// https only, allowlisted host, no userInfo/query/fragment (utm, fbclid, si, …).

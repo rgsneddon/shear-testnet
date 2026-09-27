@@ -39,9 +39,7 @@ Release `0.54` was published 2026-09-26. Do not rebuild it and do not move its t
 
 ## Do not take the Windows working tree
 
-The Windows publication clone `C:\Users\rgsne\shear-pool-node` is dirty **on top of** `82aa362`. Those edits are **not** on GitHub. They drafted a 0.56 bump (`kWalletVersion` `0.56.0`, `PRODUCT_VERSION` `'0.56'`, `version: 0.56.0+78`, and many `0.54` pin strings rewritten to `0.56`) and they are incomplete: several tests still match `0\.54`, and `crypto/asert.test.js` on disk still expects product `0.55` while `asert.js` in that same tree says `0.56`.
-
-Discard that draft. Do not commit it, do not scp it onto the live site, and do not point a WALLET link at `releases/tag/0.56`. That URL 404s. The explorer file in that dirty tree already has a `0.56` wallet href; the **live** explorer page does not.
+A 0.56 draft on the Windows clone was discarded. It is not on `main`. Do not recreate it. `kWalletVersion` on `main` is `0.55.0`. The only wallet-client change after the 0.55 display build is the Reddit button removal. Do not point a WALLET link at `releases/tag/0.56`.
 
 `git pull` on a fresh Mac clone of `main` is the 0.55 tree plus this handoff. That is the tree to pack.
 
@@ -106,7 +104,7 @@ Do not add pull-book hash credits. Those credits stop at height 1258, are an off
 
 `hashBonusEmittedOfBlock` still misses a sealed empty-batch floor: one hash vout, confidential `nanos` 0, empty `aLeaves`, empty `shareBatch`. Consensus accepts that note at `unitsForShare()` (256 nanos). That hole is real and small. It is not the pull-book gap. Fix it in `pool/src/wallet_api.js` with a regression next to the existing `networkSupply` test before anyone bounces the pool to load it. A page-only change can show the API sum at 11 decimals without a bounce. The floor does not appear in the API until that process loads the fix.
 
-Deploy the explorer card by editing `/var/www/explorer.shear.digital/explorer.html` in place. Do not copy the Windows dirty `pool/public/explorer.html` over it: that file’s WALLET link says `0.56`.
+Deploy the explorer card by editing `/var/www/explorer.shear.digital/explorer.html` in place. Do not replace that live file with a whole copy from the repo. The wallet nav on the live page stays tag `0.54` until the 0.55 release assets exist.
 
 ### 2. Cut the 0.55 packs, then move the public pin
 
@@ -134,9 +132,9 @@ Asset names, same pattern as 0.54:
 
 Do not put `0.55` inside `consensusFingerprint()`. Tests must keep asserting the fingerprint does not contain the product version.
 
-### 3. Reddit button
+### 3. Reddit button — this is the last wallet-client change in the 0.55 pin
 
-On `82aa362` the Continuum row still has Discord, Telegram, X, and Reddit. A removal of the Reddit button exists only in the dirty Windows tree, tangled with the 0.56 draft. It is **not** part of the 0.55 commit. Do not fish it out of that tree by taking the 0.56 version bump with it. If the pin should ship without Reddit, replay that removal as its own change on top of `82aa362` before tagging.
+The Continuum row is Discord, Telegram, and X. The Reddit button is removed. That removal is the last wallet-client change on top of the 0.55 display build. Do not cut 0.56. Do not put the Reddit icon back.
 
 ---
 

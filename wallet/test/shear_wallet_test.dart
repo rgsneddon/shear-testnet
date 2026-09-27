@@ -3228,8 +3228,7 @@ void main() {
   });
 
   test('Continuum social URLs are https with no tracking query, fragment, or userInfo', () {
-    const urls = [kDiscordUrl, kTelegramUrl, kXUrl, kRedditUrl];
-    expect(kRedditUrl, 'https://www.reddit.com/r/shear/');
+    const urls = [kDiscordUrl, kTelegramUrl, kXUrl];
     for (final url in urls) {
       final parsed = Uri.parse(url);
       expect(parsed.scheme, 'https');
@@ -3244,7 +3243,7 @@ void main() {
     }
     expect(
       socialUri('https://www.reddit.com/r/shear/?utm_source=wallet&fbclid=abc&si=1#hot'),
-      Uri.parse('https://www.reddit.com/r/shear/'),
+      isNull,
     );
     expect(
       socialUri('https://x.com/shearprivacy?s=20&t=tracker'),
@@ -3255,7 +3254,7 @@ void main() {
     expect(socialUri('https://user:pass@x.com/shearprivacy'), Uri.parse('https://x.com/shearprivacy'));
   });
 
-  testWidgets('Continuum social buttons open sanitized https URLs, including Reddit', (tester) async {
+  testWidgets('Continuum social buttons open sanitized https URLs', (tester) async {
     final dir = Directory.systemTemp.createTempSync('shear-social-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
@@ -3273,8 +3272,8 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(find.byTooltip('Reddit'), findsOneWidget);
-    for (final name in ['Reddit', 'Discord', 'Telegram', 'X']) {
+    expect(find.byTooltip('Reddit'), findsNothing);
+    for (final name in ['Discord', 'Telegram', 'X']) {
       final icon = find.byTooltip(name);
       await tester.ensureVisible(icon);
       await tester.pump();
@@ -3283,7 +3282,6 @@ void main() {
     }
 
     expect(opened.map((u) => u.toString()).toList(), [
-      'https://www.reddit.com/r/shear/',
       'https://discord.gg/AzVtMnSxCe',
       'https://t.me/shearprivacy',
       'https://x.com/shearprivacy',
@@ -3312,11 +3310,10 @@ void main() {
     expect(find.byTooltip('Discord'), findsOneWidget);
     expect(find.byTooltip('Telegram'), findsOneWidget);
     expect(find.byTooltip('X'), findsOneWidget);
-    expect(find.byTooltip('Reddit'), findsOneWidget);
+    expect(find.byTooltip('Reddit'), findsNothing);
     expect(kDiscordUrl, 'https://discord.gg/AzVtMnSxCe');
     expect(kTelegramUrl, 'https://t.me/shearprivacy');
     expect(kXUrl, 'https://x.com/shearprivacy');
-    expect(kRedditUrl, 'https://www.reddit.com/r/shear/');
     expect(find.textContaining(session.identity!.paymentCodeFull), findsWidgets);
     expect(isFullPaymentCode(session.identity!.paymentCodeFull), isTrue);
     expect(isPaymentFingerprint(session.identity!.paymentCode), isTrue);
