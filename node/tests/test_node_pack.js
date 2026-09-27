@@ -63,6 +63,9 @@ describe('portable node packs', () => {
     assert.equal(listed.status, 0, listed.stderr);
     assert.match(listed.stdout, /shear-node\.cmd/);
     assert.match(listed.stdout, /node\/src\/node\.js/);
+    assert.match(listed.stdout, /pool\/src\/wallet_api\.js/);
+    assert.match(listed.stdout, /pool\/src\/hash_credit\.js/);
+    assert.match(listed.stdout, /pool\/src\/withdraw_state\.js/);
     assert.doesNotMatch(listed.stdout, /SHEAR_BOOTSTRAP=1/);
   });
 });
