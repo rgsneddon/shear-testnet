@@ -10,7 +10,7 @@
 **Do not move:** `0.52`, `0.53`, `0.54`, `0.55`, `0.55.1`
 **Do not create:** `0.56`
 **Do not build here:** Windows zip, Android apk, Linux zip, Arch zip, Fedora zip
-**Do not edit the live site.** Windows points shear.digital at 0.55.2 and leaves the macOS button on `shear-wallet-0.55.1-macos.dmg` until this image is on the release. SaaS dark stays. Do not restyle pages.
+**Do not edit the live site.** Windows points shear.digital at 0.55.2, including the macOS button `shear-wallet-0.55.2-macos.dmg`. SaaS dark stays. Do not restyle pages.
 
 Developer ID: `Russell Sneddon (SFCBP95595)`. An unsigned disk image is Gatekeeper-blocked. Do not ship a zip of the `.app`. `pack_macos.sh` uses `ditto` so the notarization ticket survives. Do not replace that with `cp -R`.
 

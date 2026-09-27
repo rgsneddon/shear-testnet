@@ -92,13 +92,15 @@ describe('shear.digital/docs', () => {
     assert.match(docs, /border-bottom:1px solid rgba\(26,111,181,\.25\)/);
     assert.match(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
     assert.match(docs, /\.banner-wordmark \{ height:36px; width:auto; max-width:none/);
-    assert.match(docs, /content\.js\?v=18/);
+    assert.match(docs, /content\.js\?v=19/);
     assert.match(content, /Remove vortice/);
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);
     assert.match(content, /Wallet pin<\/th><td>0\.55\.2/);
     assert.doesNotMatch(content, /Wallet pin<\/th><td>0\.55</);
     assert.match(content, /Current pin is <strong>0\.55\.2<\/strong>/);
+    assert.match(content, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-macos\.dmg/);
+    assert.doesNotMatch(content, /shear-wallet-0\.55\.1-macos\.dmg/);
     assert.match(content, /releases\/tag\/0\.55\.2/);
     assert.doesNotMatch(content, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(content, /Current pin is <strong>0\.33<\/strong>/);

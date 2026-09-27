@@ -1,6 +1,6 @@
 # Windows handoff — FINAL PLATE laws the Mac did not refute
 
-**Read this file and apply it.** The 0.55 pack steps below are done. Continuum **0.55.2** is the public pin. Tag `0.55.1` stays, including `shear-wallet-0.55.1-macos.dmg`, until the Mac uploads `shear-wallet-0.55.2-macos.dmg` onto tag `0.55.2`. Do not create tag `0.56`. Do not move tags `0.52`, `0.53`, `0.54`, `0.55`, or `0.55.1`. See `MACBOOK-HANDOFF.md`.
+**Read this file and apply it.** The 0.55 pack steps below are done. Continuum **0.55.2** is the public pin. `shear-wallet-0.55.2-macos.dmg` is on tag `0.55.2`. Tag `0.55.1` stays. Do not create tag `0.56`. Do not move tags `0.52`, `0.53`, `0.54`, `0.55`, or `0.55.1`. See `MACBOOK-HANDOFF.md`.
 
 **This file:** https://github.com/rgsneddon/shear-testnet/blob/main/WINDOWS-HANDOFF.md
 **Mac pin note:** https://github.com/rgsneddon/shear-testnet/blob/main/MACBOOK-HANDOFF.md
@@ -86,7 +86,7 @@ Do not restore a hop server. Do not put ShearK inside the wallet zip.
 
 ## Apply on this box
 
-The publication clone now carries Continuum **0.55.2**. Do not discard that tree. Do not point a link at `releases/tag/0.56`. Do not point a download at a 0.55.2 asset until that file is on the GitHub release. The macOS button stays on `shear-wallet-0.55.1-macos.dmg` until that 0.55.2 image is uploaded.
+The publication clone now carries Continuum **0.55.2**. Do not discard that tree. Do not point a link at `releases/tag/0.56`. The macOS button points at `shear-wallet-0.55.2-macos.dmg` on tag `0.55.2`.
 
 ```
 cd /d %USERPROFILE%\shear-testnet
@@ -122,7 +122,7 @@ If `gh release view 0.55` says the release is missing, stop and leave the zip on
 
 ## This box does not do
 
-- Rebuild the macOS disk image. The Mac packs `shear-wallet-0.55.2-macos.dmg` onto tag `0.55.2`. Until that upload, the published image is `shear-wallet-0.55.1-macos.dmg`. Do not move tag `0.55.1`.
+- Rebuild the macOS disk image. That image is `shear-wallet-0.55.2-macos.dmg` on tag `0.55.2`. Do not move tag `0.55.1`.
 - `flutter build macos` or notarize.
 - Put a product version inside `consensusFingerprint()`. `0.55.1` and `0.55.2` stay out of it, as `0.55` and `0.56` did. Node `PRODUCT_VERSION` stays the two-part `0.55`.
 - Restore the Reddit button.

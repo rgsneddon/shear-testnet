@@ -21,7 +21,7 @@ Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.55.2
 | Arch | Unzip `shear-wallet-0.55.2-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
 | Fedora | Unzip `shear-wallet-0.55.2-fedora.zip`, run `./shear_wallet` |
 | Android | Sideload `shear-wallet-0.55.2-android.apk` (`com.shear.shear_wallet`). Uninstall any old debug-signed build first |
-| macOS | Open the published `shear-wallet-0.55.1-macos.dmg` until `shear-wallet-0.55.2-macos.dmg` is on this release. Drag Shear onto Applications, eject, and launch from Applications |
+| macOS | Open `shear-wallet-0.55.2-macos.dmg`. Drag Shear onto Applications, eject, and launch from Applications |
 
 ## CLI
 
