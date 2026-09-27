@@ -44,13 +44,20 @@ import { poolFeeDest, levyNanos, mempoolDepthBytes, poolWithdrawTx, verifyPoolWi
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
 import { createPullBook, PULL_COOLDOWN_MS, AUTO_PAYOUT_MIN_NANOS } from './pull_book.js';
-import { buildAutoPayoutTx, potCreditAfterFeeNanos, redactSsa1 } from './auto_payout.js';
+import {
+  buildAutoPayoutTx,
+  buildPoolFeeSweepTx,
+  potCreditAfterFeeNanos,
+  poolFeePayoutDest,
+  poolFeeSweepNanos,
+  redactSsa1,
+} from './auto_payout.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
-import { potSharesFromBatch, hashBonusByMiner } from '../../node/src/chain.js';
+import { potSharesFromBatch, hashBonusByMiner, custodyPotShares } from '../../node/src/chain.js';
 import { sortShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
-import { explorerRecentTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
+import { explorerRecentTxs, networkSupply, openRoundHashRows, reconstructOwner } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 import {
@@ -1676,16 +1683,18 @@ export function createPool({
     lag1Shares = provenLag1Shares(tipHdr, lag1Shares);
     const live = snapshotRound();
     const potRows = live.map((s) => ({ miner: s.miner, count: Number(s.proven) || 0 })).filter((s) => s.count > 0);
-    // Miner pot and hash bonus seal to the hasher dest. The pool dest receives
-    // only the 1% fee. A pool spend key cannot spend the miner notes.
+    // PROP pot is custodial on the pool dest (auto-paid at π). Hash bonus is
+    // dest-bound on lag-1 shareBatch and seals in the next blockfound.
     const wantPot = wantLivePot();
-    const potShares = lag1Shares.length
-      ? potSharesFromBatch(lag1Shares, poolPay, wantPot)
-      : splitPot(
-        potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
-        poolPay,
-        wantPot,
-      );
+    const potShares = isDestAddress(poolPay)
+      ? custodyPotShares(poolPay, wantPot)
+      : (lag1Shares.length
+        ? potSharesFromBatch(lag1Shares, poolPay, wantPot)
+        : splitPot(
+          potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
+          poolPay,
+          wantPot,
+        ));
     // she1 login may have no dest yet (dest arrives as owned ssa1). The header
     // still issues; shareBatch credit stays hasher dests only. The finder
     // address is the hasher, never the pool fee note.
@@ -1696,7 +1705,7 @@ export function createPool({
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     const chainLen = (store.blocks || []).length;
-    // Hash bonus and pot-after-fee are per-hasher dest. Pool fee only on poolPay.
+    // Hash bonus seals to hasher dests. PROP pot stays on poolPay until π.
     const { job, tpl } = store.template({
       miner: payout,
       samples,
@@ -2740,6 +2749,46 @@ export function createPool({
       if (taken.ok) {
         clearAutoPayoutError();
         sent.push({ ...row, nanos: taken.nanos });
+      }
+    }
+    const feeTo = poolFeePayoutDest();
+    const unpaid = typeof pullBook.unpaidPotNanos === 'function'
+      ? pullBook.unpaidPotNanos({ tipHeight: tipH, need })
+      : 0;
+    const rec = reconstructOwner(store, from);
+    const sweep = poolFeeSweepNanos({
+      spendableNanos: rec.spendableNanos,
+      unpaidMinerPotNanos: unpaid,
+    });
+    if (sweep.ok && spendKey) {
+      if (!feeTo) {
+        console.error(JSON.stringify({
+          event: 'pool_fee_sweep_waiting_dest',
+          nanos: sweep.nanos,
+          keep: sweep.keep,
+          owed: sweep.owed,
+        }));
+      } else {
+        const feeBuilt = buildPoolFeeSweepTx({
+          from,
+          to: feeTo,
+          nanos: sweep.nanos,
+          fee,
+          spendKey,
+        });
+        if (feeBuilt.ok) {
+          const queuedFee = await Promise.resolve(queueSend(feeBuilt.tx));
+          console.error(JSON.stringify({
+            event: 'pool_fee_sweep',
+            ok: !(queuedFee && queuedFee.ok === false),
+            reason: queuedFee && queuedFee.reason,
+            nanos: feeBuilt.nanos,
+            dest: redactSsa1(feeTo),
+          }));
+          if (!(queuedFee && queuedFee.ok === false)) {
+            sent.push({ tag: 'pool-fee', dest: feeTo, nanos: feeBuilt.nanos });
+          }
+        }
       }
     }
     return sent;

@@ -8,10 +8,16 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { PI_SHE_NANOS, NANOS_PER_SHE, POOL_FEE_BPS, BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS } from '../../crypto/asert.js';
 import {
   AUTO_PAYOUT_MIN_NANOS,
+  POOL_FEE_RESERVE_NANOS,
+  POOL_FEE_RESERVE_SHE,
+  POOL_FEE_PAYOUT_DEST_ENV,
   isMinerSsa1,
   redactSsa1,
   shouldAutoPayout,
   buildAutoPayoutTx,
+  buildPoolFeeSweepTx,
+  poolFeePayoutDest,
+  poolFeeSweepNanos,
   potCreditAfterFeeNanos,
   hashCreditNanos,
 } from '../src/auto_payout.js';
@@ -103,6 +109,54 @@ describe('auto payout at π SHE to miner ssa1', () => {
     assert.equal(hash, 256 * HASH_BONUS_NANOS);
     assert.equal(hash, 256);
     assert.equal(hashCreditNanos(256, 0), 256);
+  });
+
+  it('pool fee dest keeps 10 SHE and sweeps surplus to SHEAR_POOL_FEE_PAYOUT_DEST', () => {
+    assert.equal(POOL_FEE_RESERVE_SHE, 10);
+    assert.equal(POOL_FEE_RESERVE_NANOS, 10 * NANOS_PER_SHE);
+    const dest = ssa1();
+    const hold = poolFeeSweepNanos({
+      spendableNanos: 10 * NANOS_PER_SHE,
+      unpaidMinerPotNanos: 0,
+    });
+    assert.equal(hold.ok, false);
+    assert.equal(hold.reason, 'reserve');
+    const owed = 3 * NANOS_PER_SHE;
+    const have = 15 * NANOS_PER_SHE;
+    const sweep = poolFeeSweepNanos({
+      spendableNanos: have,
+      unpaidMinerPotNanos: owed,
+    });
+    assert.equal(sweep.ok, true);
+    assert.equal(sweep.nanos, have - owed - POOL_FEE_RESERVE_NANOS);
+    const prev = process.env[POOL_FEE_PAYOUT_DEST_ENV];
+    delete process.env[POOL_FEE_PAYOUT_DEST_ENV];
+    try {
+      assert.equal(poolFeePayoutDest(), '');
+      process.env[POOL_FEE_PAYOUT_DEST_ENV] = dest;
+      assert.equal(poolFeePayoutDest(), dest.split('.')[0]);
+    } finally {
+      if (prev === undefined) delete process.env[POOL_FEE_PAYOUT_DEST_ENV];
+      else process.env[POOL_FEE_PAYOUT_DEST_ENV] = prev;
+    }
+    const poolBox = spendBox(newIdentity());
+    const built = buildPoolFeeSweepTx({
+      from: poolBox.dest,
+      to: dest,
+      nanos: sweep.nanos,
+      fee: 100,
+      spendKey: poolBox.key,
+    });
+    assert.equal(built.ok, true, built.reason);
+    assert.equal(built.tx.to, dest.split('.')[0]);
+    assert.equal(built.tx.nanos, sweep.nanos);
+    assert.equal(built.tx.poolPaysFee, true);
+    assert.equal(buildPoolFeeSweepTx({
+      from: poolBox.dest,
+      to: poolBox.dest,
+      nanos: sweep.nanos,
+      spendKey: poolBox.key,
+    }).reason, 'bad_fee_dest');
   });
 
   it('auto tx pays the miner in full and marks poolPaysFee', () => {

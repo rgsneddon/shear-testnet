@@ -453,6 +453,14 @@ export function createPullBook(dir) {
       });
   }
 
+  function unpaidPotNanos({ tipHeight = 0, need = SPENDABLE_CONFIRMATIONS } = {}) {
+    let n = 0;
+    for (const tag of tags()) {
+      n += view(tag, { tipHeight, need }).pendingNanos;
+    }
+    return n;
+  }
+
   function dueAuto({ tipHeight = 0, need = SPENDABLE_CONFIRMATIONS } = {}) {
     const out = [];
     for (const tag of tags()) {
@@ -482,7 +490,7 @@ export function createPullBook(dir) {
 
   if (loaded) save();
   return {
-    creditRound, view, viewByDest, takeConfirmed, destOf, bindDest, tags, hasTag, dueAuto, sweepAuto, ledger,
-    sealsLifetime, reconcile,
+    creditRound, view, viewByDest, takeConfirmed, destOf, bindDest, tags, hasTag, dueAuto, unpaidPotNanos,
+    sweepAuto, ledger, sealsLifetime, reconcile,
   };
 }

@@ -305,7 +305,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const sum = shares.reduce((a, s) => a + s.nanos, 0);
     assert.equal(sum, wantPot);
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
-    assert.doesNotMatch(src, /custodyPotShares\(poolPay, wantPot\)/);
+    assert.match(src, /custodyPotShares\(poolPay, wantPot\)/);
     assert.match(src, /potSharesFromBatch\(lag1Shares, poolPay, wantPot\)/);
     assert.match(src, /splitPot\(/);
     assert.match(src, /wantLivePot\(\)/);
@@ -453,6 +453,6 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const owned = signSpendTx(structuredClone(spend), minerKey);
     assert.equal(verifySpendSig(owned), true);
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
-    assert.doesNotMatch(src, /custodyPotShares\(/);
+    assert.match(src, /custodyPotShares\(/);
   });
 });

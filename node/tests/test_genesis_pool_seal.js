@@ -3,12 +3,17 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, freshStealthDest } from '../../crypto/address.js';
-import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
+import { newIdentity, freshStealthDest, hash20FromAddress } from '../../crypto/address.js';
+import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, PI_SHE_NANOS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { splitPot } from '../../pool/src/pool.js';
 import { createStore } from '../src/store.js';
-import { unitsForShare } from '../../crypto/share_batch.js';
-import { verifySealedNote } from '../../crypto/note.js';
+import { unitsForShare, dest20OfShare } from '../../crypto/share_batch.js';
+import { noteCommitOfDest20, verifySealedNote } from '../../crypto/note.js';
+import { custodyPotShares } from '../src/chain.js';
+import { reconstructOwner } from '../../pool/src/wallet_api.js';
+import { createPullBook } from '../../pool/src/pull_book.js';
+import { publicMinerTag } from '../../pool/src/pool.js';
+import { potCreditAfterFeeNanos } from '../../pool/src/auto_payout.js';
 
 function destMiner() {
   return freshStealthDest(newIdentity()).dest;
@@ -49,5 +54,93 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
     for (const o of hashV) {
       assert.equal(verifySealedNote(o, floor), true);
     }
+  });
+
+  it('next seal dest-binds lag-1 hash bonus; PROP pot stays custodial until π', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-payout-legs-'));
+    const store = createStore(dir);
+    const hasher = destMiner();
+    const pool = destMiner();
+    const units = unitsForShare();
+    const g = store.template({
+      miner: hasher,
+      poolDest: pool,
+      shareBatch: [],
+      potShares: custodyPotShares(pool, BLOCK_SUBSIDY_NANOS),
+    });
+    const gGot = store.submitHeader({
+      jobId: g.job.jobId,
+      nonce: 0n,
+      miner: hasher,
+      powHash: '00'.repeat(32),
+    }, { trusted: true });
+    assert.equal(gGot.ok, true, gGot.reason || JSON.stringify(gGot));
+    const parent = store.tip();
+    const share = {
+      dest: hasher,
+      dest20: dest20OfShare({ dest: hasher }),
+      nonce: 1n,
+      lz: SHARE_FLOOR_BITS,
+      verifiedHeader: Buffer.from(parent.header).toString('hex'),
+    };
+    const { job } = store.template({
+      miner: hasher,
+      poolDest: pool,
+      shareBatch: [share],
+      potShares: custodyPotShares(pool, BLOCK_SUBSIDY_NANOS),
+    });
+    const got = store.submitHeader({
+      jobId: job.jobId,
+      nonce: 0n,
+      miner: hasher,
+      powHash: '00'.repeat(32),
+    }, { trusted: true });
+    assert.equal(got.ok, true, String(got?.reason || 'append'));
+    const tip = store.tip();
+    const vout = tip.txs[0].vout || [];
+    const hashV = vout.filter((o) => o.kind === 'hash');
+    const potV = vout.filter((o) => o.kind === 'pot' || o.kind === 'pool-fee');
+    assert.equal(hashV.length, 1);
+    assert.equal(verifySealedNote(hashV[0], units * HASH_BONUS_NANOS), true);
+    assert.equal(
+      Buffer.from(hashV[0].noteCommit).equals(noteCommitOfDest20(hash20FromAddress(hasher))),
+      true,
+    );
+    const poolNc = noteCommitOfDest20(hash20FromAddress(pool));
+    assert.ok(potV.some((o) => Buffer.from(o.noteCommit).equals(poolNc)));
+    assert.equal(
+      potV.some((o) => Buffer.from(o.noteCommit).equals(noteCommitOfDest20(hash20FromAddress(hasher)))),
+      false,
+    );
+
+    const sealedH = Number(tip.height);
+    for (let h = sealedH + 1; h <= sealedH + 6; h += 1) {
+      store.blocks.push({ height: h, txs: [] });
+    }
+    const hashRec = reconstructOwner(store, hasher);
+    const poolRec = reconstructOwner(store, pool);
+    assert.equal(hashRec.spendableNanos, units * HASH_BONUS_NANOS);
+    assert.ok(poolRec.spendableNanos >= potCreditAfterFeeNanos(BLOCK_SUBSIDY_NANOS));
+
+    const book = createPullBook(path.join(dir, 'pull'));
+    const tag = publicMinerTag(hasher);
+    const potShare = potCreditAfterFeeNanos(BLOCK_SUBSIDY_NANOS);
+    assert.equal(book.creditRound(
+      [{ tag, dest: hasher, count: units }],
+      { height: 1, nanos: potShare, hashByDest: new Map() },
+    ).ok, true);
+    assert.equal(book.dueAuto({ tipHeight: 40, need: 6 }).length, 0);
+    assert.equal(book.creditRound(
+      [{ tag, dest: hasher, count: units }],
+      { height: 2, nanos: PI_SHE_NANOS, hashByDest: new Map() },
+    ).ok, true);
+    const due = book.dueAuto({ tipHeight: 40, need: 6 });
+    assert.equal(due.length, 1);
+    assert.equal(due[0].dest, hasher);
+    assert.ok(due[0].nanos >= PI_SHE_NANOS);
+
+    const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
+    assert.match(src, /custodyPotShares\(poolPay, wantPot\)/);
+    assert.match(src, /shareBatch: lag1Shares/);
   });
 });
