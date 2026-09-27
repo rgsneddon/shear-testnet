@@ -2,7 +2,7 @@
 # Portable Shear node. Same entry as `node node/src/node.js`.
 set -e
 ROOT="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
-if [ -x "$ROOT/runtime/node" ]; then
+if [ -x "$ROOT/runtime/node" ] && "$ROOT/runtime/node" -v >/dev/null 2>&1; then
   NODEBIN="$ROOT/runtime/node"
 elif [ -x "$ROOT/runtime/node.exe" ]; then
   NODEBIN="$ROOT/runtime/node.exe"

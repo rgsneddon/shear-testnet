@@ -59,6 +59,8 @@ def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=
                 if (not host_win) and flavor == "windows":
                     continue
             p = os.path.join(dp, fn)
+            if not os.path.isfile(p):
+                continue
             rel = os.path.relpath(p, root).replace("\\", "/")
             z.write(p, f"{arc_prefix}/{rel}")
 
@@ -120,6 +122,13 @@ def main(argv: list[str] | None = None) -> int:
             nm = os.path.join(REPO, "node_modules")
             if os.path.isdir(nm):
                 add_filtered_tree(z, nm, "node_modules", skip_dirs={".git"})
+        runtime = os.path.join(REPO, "runtime")
+        if os.path.isdir(runtime):
+            add_filtered_tree(z, runtime, "runtime", skip_dirs={".git"})
+        else:
+            copy_runtime(REPO, flavor)
+            if os.path.isdir(runtime):
+                add_filtered_tree(z, runtime, "runtime", skip_dirs={".git"})
         readme = (
             f"Shear node {pin} ({flavor})\n"
             "Unzip and run shear-node.cmd (Windows) or ./shear-node.sh.\n"
