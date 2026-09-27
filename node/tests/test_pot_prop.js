@@ -1,7 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { newIdentity, freshStealthDest, hash20FromAddress } from '../../crypto/address.js';
+import { generateKeyPairSync } from 'node:crypto';
+import { newIdentity, freshStealthDest, hash20FromAddress, ed25519RawPub, encodeDest, destCommitFromSpendPub } from '../../crypto/address.js';
+import { signSpendTx, verifySpendSig } from '../../crypto/spend.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SHARE_FLOOR_BITS, GENESIS_BITS_PACKED, bitsForBlock, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { potSubsidyNanos, epochMs } from '../../crypto/pot_sched.js';
@@ -21,7 +23,7 @@ import {
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { coinbaseSplit as mintSplit } from '../../crypto/mint.js';
-import { sealCoinbaseNote, excessOf, noteCommitOfDest20 } from '../../crypto/note.js';
+import { sealCoinbaseNote, excessOf, noteCommitOfDest20, verifySealedNote } from '../../crypto/note.js';
 
 function destOf(id) {
   return freshStealthDest(id).dest;
@@ -303,7 +305,8 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const sum = shares.reduce((a, s) => a + s.nanos, 0);
     assert.equal(sum, wantPot);
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
-    assert.match(src, /custodyPotShares\(poolPay, wantPot\)/);
+    assert.doesNotMatch(src, /custodyPotShares\(poolPay, wantPot\)/);
+    assert.match(src, /potSharesFromBatch\(lag1Shares, poolPay, wantPot\)/);
     assert.match(src, /splitPot\(/);
     assert.match(src, /wantLivePot\(\)/);
     const genesisMs = 1_700_000_000_000;
@@ -397,5 +400,59 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       weight: parent.weight,
     }, { poolDest: pool, trustedPowHash: TRUSTED, skipSharePow: true, genesisMs, nowMs: now, magic: MAGIC_TESTNET });
     assert.equal(got.ok, true, got.reason);
+  });
+
+  it('miner pot and hash notes are spendable only by the miner key', () => {
+    const { privateKey: minerKey } = generateKeyPairSync('ed25519');
+    const { privateKey: poolKey } = generateKeyPairSync('ed25519');
+    const miner = encodeDest(destCommitFromSpendPub(ed25519RawPub(minerKey)));
+    const pool = encodeDest(destCommitFromSpendPub(ed25519RawPub(poolKey)));
+    const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
+    const rest = BLOCK_SUBSIDY_NANOS - fee;
+    const row = { dest20: dest20OfShare({ dest: miner }), dest: miner, nonce: 1n, lz: 8 };
+    const shares = potSharesFromBatch([row], pool, BLOCK_SUBSIDY_NANOS);
+    const tpl = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner,
+      bits: GENESIS_BITS_PACKED,
+      now: 1_700_000_000_000,
+      shareBatch: [row],
+      poolDest: pool,
+      potShares: shares,
+    });
+    const vout = tpl.txs[0].vout || [];
+    const miner20 = hash20FromAddress(miner);
+    const pool20 = hash20FromAddress(pool);
+    const minerNc = noteCommitOfDest20(miner20);
+    const poolNc = noteCommitOfDest20(pool20);
+    const pots = vout.filter((o) => o.kind === 'pot');
+    const hashes = vout.filter((o) => o.kind === 'hash');
+    const minerPot = pots.find((o) => Buffer.from(o.noteCommit).equals(minerNc));
+    const feePot = pots.find((o) => Buffer.from(o.noteCommit).equals(poolNc));
+    assert.ok(minerPot, 'pot-after-fee seals to the miner dest');
+    assert.ok(feePot, 'pool dest receives only the fee note');
+    assert.equal(verifySealedNote(minerPot, rest), true);
+    assert.equal(verifySealedNote(feePot, fee), true);
+    assert.equal(verifySealedNote(feePot, BLOCK_SUBSIDY_NANOS), false);
+    assert.ok(hashes.length >= 1);
+    for (const h of hashes) {
+      assert.ok(Buffer.from(h.noteCommit).equals(minerNc));
+      assert.ok(!Buffer.from(h.noteCommit).equals(poolNc));
+    }
+    const spend = {
+      kind: 'send',
+      from: miner,
+      nanos: rest,
+      fee: 1,
+      vin: [{ address: miner, noteCommit: minerPot.noteCommit }],
+      vout: [{ address: miner, nanos: rest - 1, kind: 'send' }],
+    };
+    const stolen = signSpendTx(structuredClone(spend), poolKey);
+    assert.equal(verifySpendSig(stolen), false);
+    const owned = signSpendTx(structuredClone(spend), minerKey);
+    assert.equal(verifySpendSig(owned), true);
+    const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(src, /custodyPotShares\(/);
   });
 });

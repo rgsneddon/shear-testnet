@@ -47,7 +47,7 @@ import { createPullBook, PULL_COOLDOWN_MS, AUTO_PAYOUT_MIN_NANOS } from './pull_
 import { buildAutoPayoutTx, potCreditAfterFeeNanos, redactSsa1 } from './auto_payout.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
-import { potSharesFromBatch, hashBonusByMiner, custodyPotShares } from '../../node/src/chain.js';
+import { potSharesFromBatch, hashBonusByMiner } from '../../node/src/chain.js';
 import { sortShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
 import { explorerRecentTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
@@ -1676,27 +1676,27 @@ export function createPool({
     lag1Shares = provenLag1Shares(tipHdr, lag1Shares);
     const live = snapshotRound();
     const potRows = live.map((s) => ({ miner: s.miner, count: Number(s.proven) || 0 })).filter((s) => s.count > 0);
-    // Coinbase pot is PROP of proven lag-1 dests. splitPot of the live hasher
-    // disagrees with shareBatch whenever the connected dest changed, and
-    // verifyBlock then rejects every block-quality share (pot_prop).
+    // Miner pot and hash bonus seal to the hasher dest. The pool dest receives
+    // only the 1% fee. A pool spend key cannot spend the miner notes.
     const wantPot = wantLivePot();
-    const potShares = poolPay
-      ? custodyPotShares(poolPay, wantPot)
-      : (lag1Shares.length
-        ? potSharesFromBatch(lag1Shares, poolPay, wantPot)
-        : splitPot(
-          potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
-          poolPay,
-          wantPot,
-        ));
+    const potShares = lag1Shares.length
+      ? potSharesFromBatch(lag1Shares, poolPay, wantPot)
+      : splitPot(
+        potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
+        poolPay,
+        wantPot,
+      );
     // she1 login may have no dest yet (dest arrives as owned ssa1). The header
-    // still issues; shareBatch credit stays hasher dests only.
-    const payout = potShares[0]?.address || hasherPay || poolPay || poolFeeDest();
+    // still issues; shareBatch credit stays hasher dests only. The finder
+    // address is the hasher, never the pool fee note.
+    const payout = hasherPay
+      || potShares.find((s) => s.kind === 'pot')?.address
+      || poolPay
+      || poolFeeDest();
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     const chainLen = (store.blocks || []).length;
-    // Hashbonus is per-hasher dest (omit hashBonusCustodyDest). Pot stays
-    // custodial on poolPay for 30-conf → π auto-payout. Do not conflate.
+    // Hash bonus and pot-after-fee are per-hasher dest. Pool fee only on poolPay.
     const { job, tpl } = store.template({
       miner: payout,
       samples,
