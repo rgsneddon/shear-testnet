@@ -23,6 +23,14 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /cui-ver">0\.55\.2</);
     assert.match(html, /ShearK 2\.6/);
     assert.match(html, /releases\/tag\/0\.55\.2/);
+    assert.match(html, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-macos\.dmg/);
+    assert.match(html, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-windows\.zip/);
+    assert.match(html, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-android\.apk/);
+    assert.match(html, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-linux\.zip/);
+    assert.match(html, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-archlinux\.zip/);
+    assert.match(html, /releases\/download\/0\.55\.2\/shear-wallet-0\.55\.2-fedora\.zip/);
+    assert.doesNotMatch(html, /0\.55\.2\.1/);
+    assert.doesNotMatch(html, /0\.55\.1\.1/);
     assert.doesNotMatch(html, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(html, /releases\/download\/0\.55\//);
     assert.match(html, /releases\/tag\/2\.6/);

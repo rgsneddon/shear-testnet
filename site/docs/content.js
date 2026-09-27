@@ -145,7 +145,13 @@ window.SHEAR_DOCS = {
       '<li>You will enter that password each time. If it is lost, the wallet cannot be opened. Fingerprint or face unlock, where the device offers it, only works on this device.</li>' +
       '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
       '<li>Open Closure and export <code>shewall.bin</code>. Keep that file with the password.</li></ol>' +
-      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.55.2">shear-testnet 0.55.2</a>. 0.54 is the previous public pack pin. 0.55.2 is the fuller Continuum wallet. macOS disk image: <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.55.2/shear-wallet-0.55.2-macos.dmg">shear-wallet-0.55.2-macos.dmg</a>.</p>'
+      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.55.2">shear-testnet 0.55.2</a>. 0.54 is the previous public pack pin. 0.55.2 is the fuller Continuum wallet. ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.55.2/shear-wallet-0.55.2-macos.dmg">shear-wallet-0.55.2-macos.dmg</a> ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.55.2/shear-wallet-0.55.2-windows.zip">shear-wallet-0.55.2-windows.zip</a> ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.55.2/shear-wallet-0.55.2-android.apk">shear-wallet-0.55.2-android.apk</a> ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.55.2/shear-wallet-0.55.2-linux.zip">shear-wallet-0.55.2-linux.zip</a> ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.55.2/shear-wallet-0.55.2-archlinux.zip">shear-wallet-0.55.2-archlinux.zip</a> ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.55.2/shear-wallet-0.55.2-fedora.zip">shear-wallet-0.55.2-fedora.zip</a>.</p>'
   };
 
   P.android = {

@@ -92,7 +92,23 @@ describe('shear.digital/docs', () => {
     assert.match(docs, /border-bottom:1px solid rgba\(26,111,181,\.25\)/);
     assert.match(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
     assert.match(docs, /\.banner-wordmark \{ height:36px; width:auto; max-width:none/);
-    assert.match(docs, /content\.js\?v=19/);
+    assert.match(docs, /content\.js\?v=20/);
+    for (const pack of [
+      'shear-wallet-0.55.2-macos.dmg',
+      'shear-wallet-0.55.2-windows.zip',
+      'shear-wallet-0.55.2-android.apk',
+      'shear-wallet-0.55.2-linux.zip',
+      'shear-wallet-0.55.2-archlinux.zip',
+      'shear-wallet-0.55.2-fedora.zip',
+    ]) {
+      const url = `releases/download/0.55.2/${pack}`;
+      assert.match(docs, new RegExp(url.replace(/[.]/g, '\\.')));
+      assert.match(content, new RegExp(url.replace(/[.]/g, '\\.')));
+    }
+    assert.doesNotMatch(docs, /0\.55\.2\.1/);
+    assert.doesNotMatch(docs, /0\.55\.1\.1/);
+    assert.doesNotMatch(content, /0\.55\.2\.1/);
+    assert.doesNotMatch(content, /0\.55\.1\.1/);
     assert.match(content, /Remove vortice/);
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);
