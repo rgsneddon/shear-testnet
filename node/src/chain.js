@@ -514,11 +514,10 @@ export function coinbaseTx({
       }));
     }
   } else {
-    // Solo (and any seal with no share batch) still mints the finder's floor
-    // hashbonus in this block. It is not a pool credit.
-    if (batchEmpty && isDestAddress(miner) && !bonuses.has(miner)) {
-      bonuses.set(miner, unitsForShare() * hashBonusUnitNanos(hashBonusNanos));
-    }
+    // Hash bonus is DINS-DAG shareBatch units only. An empty batch mints
+    // pot (and pool fee) with no hash notes — the finder floor was a fake
+    // unit that failed pool genesis verify (poolDest ≠ miner).
+    void batchEmpty;
     for (const [address, nanos] of bonuses) {
       const pay = destOf(address);
       if (!isDestAddress(pay)) continue;
@@ -972,16 +971,21 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       } else if (!shareBatch.length) {
         const floor = unitsForShare() * liveUnit;
-        const finder = hinted && isDestAddress(hinted) ? hinted : '';
-        const finderNc = finder ? ncHex(noteCommitOfDest20(hash20FromAddress(finder))) : '';
+        const minerDest = block.miner && isDestAddress(block.miner) ? block.miner : '';
+        const minerNc = minerDest ? ncHex(noteCommitOfDest20(hash20FromAddress(minerDest))) : '';
         if (hashVouts.length === 0) {
           bonusNanos = 0;
-        } else if (
-          hashVouts.length === 1
-          && finderNc
-          && ncHex(hashVouts[0].noteCommit) === finderNc
-          && verifySealedNote(hashVouts[0], floor)
-        ) {
+        } else if (hashVouts.length === 1 && verifySealedNote(hashVouts[0], floor)) {
+          const hashNc = ncHex(hashVouts[0].noteCommit);
+          let voutNc = '';
+          try {
+            const d20 = hashVouts[0].dest20 ? Buffer.from(hashVouts[0].dest20) : null;
+            if (d20 && d20.length === 20) voutNc = ncHex(noteCommitOfDest20(d20));
+          } catch { /* ignore */ }
+          // Finder-floor hash, if present, is the miner dest — never the pool fee dest.
+          if (!((voutNc && hashNc === voutNc) || (minerNc && hashNc === minerNc))) {
+            return { ok: false, reason: 'hash_bonus' };
+          }
           bonusNanos = floor;
         } else {
           return { ok: false, reason: 'hash_bonus' };
