@@ -168,7 +168,7 @@ describe('brand pages', () => {
     assert.match(poolHtml, /class="nav-btn is-on"[^>]*>POOL</);
     assert.match(explorerHtml, /class="nav-btn is-on"[^>]*>EXPLORER</);
     assert.match(mempoolHtml, /class="nav-btn is-on"[^>]*>MEMPOOL</);
-    assert.match(siteHtml, /releases\/tag\/0\.55\.1/);
+    assert.match(siteHtml, /releases\/tag\/0\.55\.2/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.53/);
     assert.match(siteHtml, /rgsneddon\/ShearK/);
@@ -176,7 +176,7 @@ describe('brand pages', () => {
     for (const page of [poolHtml, explorerHtml, mempoolHtml]) {
       assert.match(page, /rgsneddon\/shear-testnet/);
       assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
-      assert.match(page, /releases\/tag\/0\.55\.1/);
+      assert.match(page, /releases\/tag\/0\.55\.2/);
       assert.doesNotMatch(page, /releases\/tag\/0\.55(?!\.)/);
       assert.doesNotMatch(page, /releases\/tag\/0\.53/);
       assert.doesNotMatch(page, /releases\/tag\/0\.52/);

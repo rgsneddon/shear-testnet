@@ -52,8 +52,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /shear1/);
     assert.match(main, /never share/i);
     assert.match(main, /ADMITv2/);
-    assert.match(main, /Continuum 0\.55\.1/);
-    assert.doesNotMatch(main, /Continuum 0\.55(?!\.1)/);
+    assert.match(main, /Continuum 0\.55\.2/);
+    assert.doesNotMatch(main, /Continuum 0\.55(?!\.2)/);
     assert.match(main, /https:\/\/shear\.digital\/docs\//);
     assert.match(main, /pool\.shear\.digital:1111/);
     assert.doesNotMatch(main, /--bg: #eef3f8/);
@@ -89,7 +89,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(paper, /hasher dest that produced proven work/);
 
     const readme = read('README.md');
-    assert.match(readme, /Wallet pin: \*\*0\.55\.1\*\*/);
+    assert.match(readme, /Wallet pin: \*\*0\.55\.2\*\*/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.55\*\*/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.41\*\*/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.40\*\*/);
@@ -97,13 +97,13 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.38\*\*/);
     assert.doesNotMatch(readme, /Wallet \*\*0\.38\*\* syncs/);
     const walletReadme = read('wallet/README.md');
-    assert.match(walletReadme, /releases\/tag\/0\.55\.1/);
+    assert.match(walletReadme, /releases\/tag\/0\.55\.2/);
     assert.doesNotMatch(walletReadme, /releases\/tag\/0\.55(?!\.)/);
-    assert.match(walletReadme, /shear-wallet-0\.55\.1-windows\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.55\.1-linux\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.55\.1-archlinux\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.55\.1-fedora\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.55\.1-android\.apk/);
+    assert.match(walletReadme, /shear-wallet-0\.55\.2-windows\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.55\.2-linux\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.55\.2-archlinux\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.55\.2-fedora\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.55\.2-android\.apk/);
     assert.doesNotMatch(walletReadme, /shear-wallet-0\.55-/);
     assert.doesNotMatch(walletReadme, /shear-wallet-0\.40-/);
     assert.doesNotMatch(walletReadme, /releases\/tag\/0\.39/);
@@ -137,8 +137,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
     assert.match(main, /ShearK 2\.6/);
-    assert.match(main, /Continuum 0\.55\.1/);
-    assert.doesNotMatch(main, /Continuum 0\.55(?!\.1)/);
+    assert.match(main, /Continuum 0\.55\.2/);
+    assert.doesNotMatch(main, /Continuum 0\.55(?!\.2)/);
     assert.doesNotMatch(main, /Continuum 0\.53/);
     assert.doesNotMatch(main, /Continuum 0\.52/);
     assert.doesNotMatch(main, /Continuum 0\.51/);

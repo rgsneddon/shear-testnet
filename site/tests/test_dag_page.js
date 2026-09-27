@@ -22,8 +22,8 @@ describe('dag.shear.digital page', () => {
     assert.match(page, /DINS-DAG/);
     assert.match(page, /blue set, sorted by identity/);
     assert.match(page, /not paid a second time/);
-    assert.match(page, /Continuum 0\.55\.1/);
-    assert.doesNotMatch(page, /Continuum 0\.55(?!\.1)/);
+    assert.match(page, /Continuum 0\.55\.2/);
+    assert.doesNotMatch(page, /Continuum 0\.55(?!\.2)/);
     assert.match(page, /ShearK 2\.6/);
     assert.match(page, /shear-testnet-v5/);
     assert.match(page, /DAG is a link in the client navbar/);

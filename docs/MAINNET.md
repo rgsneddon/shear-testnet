@@ -11,9 +11,9 @@ This tree is prepped for `shear-v1`. **It does not emit yet.**
 - The operator is **not** cutting over. Do not set `SHEAR_MAINNET_EMIT=1`.
 - The 1 October 2026 countdown is a display date. It is not genesis and it does not emit.
 
-## User funds (Continuum 0.55.1)
+## User funds (Continuum 0.55.2)
 
-Mainnet uses the same coinbase rule the 0.55.1 pool builds:
+Mainnet uses the same coinbase rule the pool builds:
 
 - Pot after the 1% fee is sealed to the hasher dests that proved the share batch.
 - Hash bonus is sealed to those same hasher dests. It is not custodial.

@@ -124,20 +124,20 @@ describe('website W-IMPL binds', () => {
     assert.doesNotMatch(mempool, /prettier/);
   });
 
-  it('wallet pin 0.55.1 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
+  it('wallet pin 0.55.2 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
     const paper = read('../../site/whitepaper/index.html');
     const pdf = read('../../site/whitepaper/build_pdf.py');
-    assert.match(explorer, /releases\/tag\/0\.55\.1/);
+    assert.match(explorer, /releases\/tag\/0\.55\.2/);
     assert.doesNotMatch(explorer, /releases\/tag\/0\.55(?!\.)/);
-    assert.match(pool, /releases\/tag\/0\.55\.1/);
+    assert.match(pool, /releases\/tag\/0\.55\.2/);
     assert.doesNotMatch(pool, /releases\/tag\/0\.55(?!\.)/);
-    assert.match(mempool, /releases\/tag\/0\.55\.1/);
+    assert.match(mempool, /releases\/tag\/0\.55\.2/);
     assert.doesNotMatch(mempool, /releases\/tag\/0\.55(?!\.)/);
-    assert.match(pdf, /pin 0\.55\.1/);
-    assert.doesNotMatch(pdf, /pin 0\.55(?!\.1)/);
-    assert.match(pdf, /Wallet pin at publication: 0\.55\.1/);
-    assert.match(pdf, /wallet-0\.55\.1/);
-    assert.doesNotMatch(pdf, /wallet-0\.55(?!\.1)/);
+    assert.match(pdf, /pin 0\.55\.2/);
+    assert.doesNotMatch(pdf, /pin 0\.55(?!\.2)/);
+    assert.match(pdf, /Wallet pin at publication: 0\.55\.2/);
+    assert.match(pdf, /wallet-0\.55\.2/);
+    assert.doesNotMatch(pdf, /wallet-0\.55(?!\.2)/);
     assert.match(paper, /a class="nav-btn"/);
     assert.match(paper, /href="https:\/\/shear\.digital"/);
     assert.doesNotMatch(paper, /prettier/);

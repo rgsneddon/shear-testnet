@@ -32,7 +32,7 @@ MINER_BASENAMES = {
 }
 
 def public_pin() -> str:
-    """Asset name is the full kWalletVersion, so 0.55.1 does not reuse the 0.55 zip."""
+    """Asset name is the full kWalletVersion, so 0.55.2 does not reuse the 0.55 zip."""
     with open(MAIN_DART, encoding="utf-8") as f:
         for line in f:
             if "kWalletVersion" in line and "=" in line:
