@@ -798,6 +798,9 @@ export function createStore(dir, {
       return { ok: true, tx, duplicate: true };
     }
     const debitNow = fundedDebit(tx);
+    // Chain notes minus every queued debit from this dest. paintedOwedNanos is the
+    // pull book's full owed, not the remainder after those debits, so this is the
+    // only subtraction. A remainder posted here would refuse a second painted spend.
     const chainHave = debitNow
       ? destSpendableNanos(debitNow.from, Number(t?.height || 0)) - mempoolDebitNanos(mempool, debitNow.from)
       : 0;

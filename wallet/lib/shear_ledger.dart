@@ -2503,7 +2503,8 @@ class ShearLedger {
   /// Dest the last painted fold posted from. Empty after a restore.
   String get paintedFundDest => _paintedFundDest;
 
-  /// Pull-book owed, in nanos, snapshotted before this fold spends it.
+  /// Undebited pull-book owed, in nanos. queueTx subtracts queued spends once,
+  /// so this stays the full figure rather than the remainder after earlier folds.
   int get paintedFundOwedNanos => _paintedFundOwedNanos;
 
   void _moveSpendableOnto(String dest) {
@@ -2524,8 +2525,11 @@ class ShearLedger {
   /// or null when the painted figure is short.
   double? fundFromPaintedContinuum(String restFrame, {String? paymentCode, required double needShe}) {
     _paintedFundDest = '';
-    final owedShe = owedTowardPi(restFrame, paymentCode: paymentCode);
-    _paintedFundOwedNanos = owedShe > 0 ? (owedShe * kUnitsPerShe).round() : 0;
+    final netShe = owedTowardPi(restFrame, paymentCode: paymentCode);
+    // owedTowardPi is already net of _owedSpent. The pull book is not. Post the
+    // full figure so a later lock or send is not subtracted twice.
+    final grossShe = netShe + (_owedSpent > 0 ? _owedSpent : 0);
+    _paintedFundOwedNanos = grossShe > 1e-12 ? (grossShe * kUnitsPerShe).round() : 0;
     if (needShe <= 1e-12) return 0;
     var chain = spendableOwned(restFrame, paymentCode: paymentCode);
     if (chain < 0) chain = 0;

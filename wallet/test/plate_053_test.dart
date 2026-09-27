@@ -378,6 +378,71 @@ void main() {
     expect(queued.every((row) => (row['owed'] as num) > 0), isTrue);
   }, timeout: const Timeout(Duration(minutes: 6)));
 
+  test('a second painted send queues when remaining owed still covers', () async {
+    const owed = 5.0;
+    const she = 1.9;
+    final need = she + levyNanos((she * kUnitsPerShe).round(), depth: 0) / kUnitsPerShe;
+    expect(owed, greaterThanOrEqualTo(need + need));
+    expect(owed, lessThan((2 * need) + need));
+    final id = createIdentity();
+    final node = await openNode();
+    addTearDown(() async {
+      node.http.close(force: true);
+      node.proc.kill();
+    });
+    final pool = node.pool;
+    expect(pool.isPinned, isFalse);
+    expect(walletSendBase(pool.baseUrl), 'http://127.0.0.1:18332');
+    final ledger = bookWithOwed(id, chain: 0, owed: owed, pool: pool);
+    final notes = chainNoteSum(ledger, id.address, paymentCode: id.paymentCode);
+    final painted = paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode);
+    expect(notes, lessThan(need));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(need));
+    expect(painted, greaterThan(need + need));
+    final local = reserveLockPostsLocal(
+      hasPool: ledger.pool != null,
+      skipPoolSync: false,
+      postReserveLock: false,
+    );
+    expect(local, isFalse);
+    final dest = vaultDest(id.address, viewKey: id.viewKey);
+    expect(dest, isNotNull);
+    final lock = await postReserveDeposit(
+      ledger: ledger,
+      reserve: ShearReserve(),
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      dest: dest!,
+      she: she,
+      depth: 0,
+      spendSeed: hexToBytes(id.seedHex),
+      local: local,
+    );
+    expect(lock.posted, isTrue, reason: '${lock.remark}\n${node.err}\n${queuedRows(node.log)}');
+    final bob = createIdentity();
+    final ssa = (ShearLedger()..bindIdentity(bob)).homeDest(bob.address, paymentCode: bob.paymentCode);
+    expect(isDestAddress(ssa), isTrue);
+    final send = await submitContinuumSend(
+      ledger: ledger,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      startTo: '',
+      enteredTo: ssa,
+      amount: she,
+      spendSeed: hexToBytes(id.seedHex),
+      local: false,
+    );
+    expect(send.posted, isTrue, reason: '${send.remark}\n${debugLastContinuumSendError}\n${node.err}\n${queuedRows(node.log)}');
+    final queued = queuedRows(node.log);
+    final locks = queued.where((row) => row['ok'] == true && row['kind'] == 'lock').toList();
+    final sends = queued.where((row) => row['ok'] == true && row['kind'] == 'send').toList();
+    expect(locks, isNotEmpty, reason: '$queued\n${node.err}');
+    expect(sends, isNotEmpty, reason: '$queued\n${node.err}');
+    expect(locks.every((row) => (row['owed'] as num) > 0), isTrue);
+    expect(sends.every((row) => (row['owed'] as num) > 0), isTrue);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(need));
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
   test('local node spawn has no bootstrap URL and the light seeker stays strict', () {
     for (final mode in ClosureSendMode.values) {
       for (final empty in [true, false]) {
