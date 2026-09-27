@@ -162,6 +162,8 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /shear-wallet-0\.55-/);
     assert.match(admin, /shear-wallet-0\.55-windows\.zip/);
     assert.match(admin, /shear-wallet-0\.55-android\.apk/);
+    assert.match(admin, /shear-wallet-0\.55-macos\.dmg/);
+    assert.doesNotMatch(admin, /macOS — coming soon/);
     assert.match(admin, /Mainnet shear-v1 is not live/);
     assert.match(admin, /The public countdown is 1st October 2026/);
     assert.doesNotMatch(admin, /A launch date is not decided/);
