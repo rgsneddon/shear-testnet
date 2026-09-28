@@ -426,6 +426,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(fp.includes('0.56'), false);
     assert.equal(fp.includes('0.57'), false);
     assert.equal(fp.includes('0.58'), false);
+    assert.equal(fp.includes('0.59'), false);
     assert.equal(fp.includes(PRODUCT_VERSION), false);
     assert.equal(law.minerVersion, '1.1');
     assert.equal(law.shearkMinerVersion, '2.5');

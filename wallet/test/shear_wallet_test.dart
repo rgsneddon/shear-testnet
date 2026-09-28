@@ -152,7 +152,7 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.58"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.59"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
@@ -160,11 +160,11 @@ void main() {
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.58"'), isTrue);
+    expect(winMain.contains('L"Shear 0.59"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.58"'), isTrue);
+    expect(winRc.contains('"Shear 0.59"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.58"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.59"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -1965,8 +1965,8 @@ void main() {
         reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.58.0+83'));
-    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.58'"));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.59.0+84'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.59'"));
   });
 
   test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
@@ -2744,7 +2744,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.58');
+    expect(kWalletVersion, '0.59');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(kWalletVersion, isNot('0.47'));
@@ -3207,8 +3207,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.58');
-    expect(kWalletVersion, '0.58');
+    expect(app.title, 'Shear 0.59');
+    expect(kWalletVersion, '0.59');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -6247,8 +6247,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.58 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.58');
+  test('kWalletVersion == 0.59 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.59');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -7357,6 +7357,110 @@ void main() {
     expect(ledger.transactions.any((t) => t.id == 'recv-young'), isFalse);
     expect(ledger.pendingTxs(id.address).where((t) => t.id == 'recv-young'), isEmpty);
     expect(ledger.pendingTxs(id.address).where((t) => t.kind == 'blockfound' && (t.height ?? 0) == 4), isEmpty);
+  });
+
+  test('one pool payment is one pending row through five confirmations', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    const echoed = 5.592499989;
+    const chain = 5.592499991;
+    ledger.mergeChainTx(ShearTx(
+      id: 'pull-0',
+      from: 'pool',
+      to: dest,
+      amount: echoed,
+      kind: 'pool-withdraw',
+      confirmed: false,
+    ));
+    ledger.mergeChainTx(ShearTx(
+      id: 'pull-1',
+      from: 'pool',
+      to: dest,
+      amount: echoed,
+      kind: 'pool-withdraw',
+      height: 51,
+      confirmed: false,
+    ));
+    ledger.mergeChainTx(ShearTx(
+      id: 'pull-2',
+      from: 'pool',
+      to: dest,
+      amount: echoed,
+      kind: 'pool-withdraw',
+      height: 52,
+      confirmed: false,
+    ));
+    ledger.mergeChainTx(ShearTx(
+      id: 'pool-send-vout-0',
+      from: 'ssa1qpeer',
+      to: dest,
+      amount: chain,
+      kind: 'receive',
+      height: 52,
+      confirmed: false,
+    ));
+    ledger.mergeChainTx(ShearTx(
+      id: 'blockfound:52:$dest',
+      from: 'coinbase',
+      to: dest,
+      amount: 0.000000023,
+      kind: 'blockfound',
+      height: 52,
+      confirmed: false,
+      hashAmount: 0.000000023,
+    ));
+    ledger.applyTipHex(List.filled(64, 'ab').join(), sealedHeight: 52);
+    final pending = ledger.pendingTxs(id.address);
+    final receipts = pending.where((t) => t.kind == 'receive' || t.kind == 'pool-withdraw').toList();
+    expect(receipts, hasLength(1));
+    expect(receipts.single.height, 52);
+    expect(ledger.confirmationsOf(52), 1);
+    expect(
+      ledger.unconfirmedIncomingShe(id.address, paymentCode: id.paymentCode),
+      closeTo(chain + 0.000000023, 1e-9),
+    );
+    expect(pending.where((t) => t.kind == 'blockfound'), hasLength(1));
+    for (var tip = 53; tip <= 56; tip++) {
+      ledger.applyTipHex(List.filled(64, 'cd').join(), sealedHeight: tip);
+      final still = ledger.pendingTxs(id.address).where((t) => t.kind == 'receive' || t.kind == 'pool-withdraw').toList();
+      expect(still, hasLength(1));
+      expect(ledger.confirmationsOf(still.single.height ?? 0), tip - 52 + 1);
+    }
+    ledger.applyTipHex(List.filled(64, 'ef').join(), sealedHeight: 57);
+    expect(ledger.confirmationsOf(52), 6);
+    expect(
+      ledger.pendingTxs(id.address).where((t) => t.kind == 'receive' || t.kind == 'pool-withdraw'),
+      isEmpty,
+    );
+  });
+
+  test('two chain receives of the same amount stay two pending rows', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.mergeChainTx(ShearTx(
+      id: 'pay-a-vout-0',
+      from: 'ssa1qpeer',
+      to: dest,
+      amount: 1.5,
+      kind: 'receive',
+      height: 50,
+      confirmed: false,
+    ));
+    ledger.mergeChainTx(ShearTx(
+      id: 'pay-b-vout-0',
+      from: 'ssa1qpeer',
+      to: dest,
+      amount: 1.5,
+      kind: 'receive',
+      height: 52,
+      confirmed: false,
+    ));
+    ledger.applyTipHex(List.filled(64, 'ab').join(), sealedHeight: 52);
+    final receipts = ledger.pendingTxs(id.address).where((t) => t.kind == 'receive').toList();
+    expect(receipts, hasLength(2));
+    expect(receipts.map((t) => t.height).toSet(), {50, 52});
   });
 
   test('history that omits lock ids keeps them for a thin portal replay', () {

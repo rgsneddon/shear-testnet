@@ -1830,7 +1830,6 @@ class ShearLedger {
       }
     }
     final key = payKey(dest);
-    _pending[key] = (_pending[key] ?? 0) + amount;
     _dests.add(key);
     final tx = ShearTx(
       id: id ?? 'recv-pending-$key-${_txs.length}',
@@ -1840,7 +1839,15 @@ class ShearLedger {
       kind: 'receive',
       confirmed: false,
     );
+    final have = _txs.indexWhere((t) => _sameReceiptMoney(t, tx));
+    if (have >= 0 && (_standInReceipt(tx.id) || _standInReceipt(_txs[have].id) || !_anchorReceipt(tx) || !_anchorReceipt(_txs[have]) || (tx.height ?? 0) == (_txs[have].height ?? 0))) {
+      _txs[have] = _preferReceipt([_txs[have], tx]);
+      _collapseDuplicateReceipts();
+      return _txs[have];
+    }
+    _pending[key] = (_pending[key] ?? 0) + amount;
     _txs.add(tx);
+    _collapseDuplicateReceipts();
     return tx;
   }
 
@@ -1858,6 +1865,125 @@ class ShearLedger {
     _pending[key] = recv + hashAmount;
     if (key != address) _pending[address] = 0;
     _upsertHashPending(key, hashAmount);
+  }
+
+  /// A pool send and the wallet's echo of it. Not a block reward.
+  bool _receiptKind(String kind) => kind == 'receive' || kind == 'pool-withdraw';
+
+  bool _standInReceipt(String id) =>
+      id.startsWith('recv-pending-') ||
+      id.startsWith('note:') ||
+      id.startsWith('note-pending:') ||
+      id.startsWith('round-');
+
+  int _receiptNanos(double she) => (she * kUnitsPerShe).round();
+
+  /// One payment. A withdraw echo can sit a few hundred nanos off the chain send.
+  bool _sameReceiptMoney(ShearTx a, ShearTx b) {
+    if (a.to.isEmpty || b.to.isEmpty) return false;
+    if (payKey(a.to) != payKey(b.to)) return false;
+    if (!_receiptKind(a.kind) || !_receiptKind(b.kind)) return false;
+    return (_receiptNanos(a.amount) - _receiptNanos(b.amount)).abs() <= 1000;
+  }
+
+  bool _anchorReceipt(ShearTx t) =>
+      t.kind == 'receive' && (t.height ?? 0) >= 1 && !_standInReceipt(t.id);
+
+  ShearTx _preferReceipt(List<ShearTx> rows) {
+    final anchors = rows.where(_anchorReceipt).toList();
+    final base = anchors.isNotEmpty
+        ? anchors.reduce((a, b) => (a.height ?? 0) >= (b.height ?? 0) ? a : b)
+        : rows.reduce((a, b) {
+            final ha = a.height ?? 0;
+            final hb = b.height ?? 0;
+            if (ha >= 1 && hb >= 1) return ha <= hb ? a : b;
+            if (ha >= 1) return a;
+            if (hb >= 1) return b;
+            return a;
+          });
+    var height = base.height;
+    if ((height ?? 0) < 1) {
+      for (final t in rows) {
+        final h = t.height ?? 0;
+        if (h >= 1 && (height == null || h < height)) height = h;
+      }
+    }
+    var from = base.from;
+    if (from.isEmpty || from == 'pool' || from == 'pending') {
+      for (final t in rows) {
+        if (t.from.startsWith('ssa1')) {
+          from = t.from;
+          break;
+        }
+      }
+    }
+    return ShearTx(
+      id: base.id,
+      from: from,
+      to: base.to,
+      amount: base.amount,
+      kind: base.kind,
+      height: height,
+      confirmed: rows.any((t) => t.confirmed),
+      memo: rows.any((t) => t.memo),
+      memoPlain: base.memoPlain,
+      memoCt: base.memoCt,
+      rounds: base.rounds,
+      hashAmount: base.hashAmount,
+      threads: base.threads,
+      pot: base.pot,
+      change: base.change,
+      atMs: base.atMs,
+    );
+  }
+
+  /// One row per incoming payment. Two chain receives at different heights stay.
+  void _collapseDuplicateReceipts() {
+    final drop = <int>[];
+    final used = <int>{};
+    for (var i = 0; i < _txs.length; i++) {
+      if (used.contains(i) || !_receiptKind(_txs[i].kind)) continue;
+      final group = <int>[i];
+      for (var j = i + 1; j < _txs.length; j++) {
+        if (_sameReceiptMoney(_txs[i], _txs[j])) group.add(j);
+      }
+      for (final j in group) {
+        used.add(j);
+      }
+      if (group.length < 2) continue;
+      final anchors = group.where((k) => _anchorReceipt(_txs[k])).toList();
+      final anchorHeights = <int>{
+        for (final k in anchors)
+          if ((_txs[k].height ?? 0) >= 1) _txs[k].height!,
+      };
+      if (anchorHeights.length > 1) {
+        final extras = group.where((k) => !_anchorReceipt(_txs[k])).toList();
+        for (final k in extras) {
+          var best = anchors.first;
+          var bestDist = 1 << 30;
+          final h = _txs[k].height ?? 0;
+          for (final a in anchors) {
+            final dist = h < 1 ? 0 : (h - (_txs[a].height ?? 0)).abs();
+            if (dist < bestDist) {
+              bestDist = dist;
+              best = a;
+            }
+          }
+          _txs[best] = _preferReceipt([_txs[best], _txs[k]]);
+          drop.add(k);
+        }
+        continue;
+      }
+      final keep = group.first;
+      _txs[keep] = _preferReceipt([for (final k in group) _txs[k]]);
+      for (final k in group.skip(1)) {
+        drop.add(k);
+      }
+    }
+    drop.sort((a, b) => b.compareTo(a));
+    for (final k in drop) {
+      _txs.removeAt(k);
+    }
   }
 
   /// Merge a chain/history row onto a local tx (same id, or a height-less
@@ -1933,11 +2059,29 @@ class ShearLedger {
       );
       return;
     }
+    if (_receiptKind(tx.kind)) {
+      final have = _txs.indexWhere((t) => _sameReceiptMoney(t, tx));
+      final sameSlot = have >= 0 &&
+          (_standInReceipt(tx.id) ||
+              _standInReceipt(_txs[have].id) ||
+              !_anchorReceipt(tx) ||
+              !_anchorReceipt(_txs[have]) ||
+              (tx.height ?? 0) == (_txs[have].height ?? 0) ||
+              (tx.height ?? 0) < 1 ||
+              (_txs[have].height ?? 0) < 1);
+      if (sameSlot) {
+        _txs[have] = _preferReceipt([_txs[have], tx]);
+        _collapseDuplicateReceipts();
+        if (tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) rememberDest(tx.to);
+        return;
+      }
+    }
     if (tx.kind == 'receive' && (tx.height ?? 0) < 1 && !tx.confirmed) {
       creditReceive(to: tx.to, amount: tx.amount, from: tx.from, id: tx.id);
       return;
     }
     _txs.add(tx);
+    if (_receiptKind(tx.kind)) _collapseDuplicateReceipts();
     if (tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) rememberDest(tx.to);
   }
 
@@ -2020,7 +2164,8 @@ class ShearLedger {
       if (height > _sealedHeight) _sealedHeight = height;
       settleTo(_sealedHeight);
       prune();
-      return existing;
+      _collapseDuplicateReceipts();
+      return _txs.firstWhere((t) => t.id == roundId, orElse: () => existing);
     }
     final bonus = dest == address
         ? (_pending[address] ?? 0)
@@ -2053,7 +2198,9 @@ class ShearLedger {
     }
     settleTo(_sealedHeight);
     prune();
-    return tx;
+    _collapseDuplicateReceipts();
+    final kept = _txs.cast<ShearTx?>().firstWhere((t) => t!.id == roundId, orElse: () => null);
+    return kept ?? tx;
   }
 
   /// Confirmations of a sealed height, counting the including block as 1.
@@ -3360,6 +3507,7 @@ class ShearLedger {
       if (t.kind == 'send' && !t.confirmed && (t.height ?? 0) < 1) return false;
       return true;
     });
+    _collapseDuplicateReceipts();
   }
 
   bool isOutgoingTx(String address, ShearTx t) {
@@ -3401,6 +3549,7 @@ class ShearLedger {
   /// Coins still arriving: incoming rows with fewer than 6 confirmations.
   /// Not added into Spendable. A row already counted as immature is not summed twice.
   double unconfirmedIncomingShe(String restFrame, {String? paymentCode}) {
+    _collapseDuplicateReceipts();
     final keys = ownedAddresses(restFrame, paymentCode: paymentCode).toSet();
     const incoming = {'receive', 'coinbase', 'blockfound', 'pool-withdraw', 'withdraw'};
     var n = 0.0;
@@ -3462,9 +3611,15 @@ class ShearLedger {
   /// Continuum: full blocks still filling the 6-slice pie, plus in-flight
   /// send/receive/pool-withdraw. Hash rewards never list on their own — they sit in the block.
   List<ShearTx> pendingTxs(String address) {
+    _collapseDuplicateReceipts();
     final rows = _ownedRolled(address).where((t) {
       if (t.kind == 'hash' || t.kind == 'sample') return false;
-      if (!t.confirmed && (t.kind == 'send' || t.kind == 'pool-withdraw' || t.kind == 'lock' || t.kind == 'vote')) return true;
+      if (!t.confirmed && t.kind == 'pool-withdraw') {
+        final h = t.height ?? 0;
+        if (h < 1) return true;
+        return confirmationsOf(h) < continuumConfirmations;
+      }
+      if (!t.confirmed && (t.kind == 'send' || t.kind == 'lock' || t.kind == 'vote')) return true;
       final h = t.height ?? 0;
       if (h < 1) return t.kind == 'receive' && !t.confirmed;
       return confirmationsOf(h) < continuumConfirmations;
