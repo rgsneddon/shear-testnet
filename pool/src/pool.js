@@ -46,10 +46,7 @@ import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
 import { createPullBook, PULL_COOLDOWN_MS, AUTO_PAYOUT_MIN_NANOS } from './pull_book.js';
 import {
   buildAutoPayoutTx,
-  buildPoolFeeSweepTx,
   potCreditAfterFeeNanos,
-  poolFeePayoutDest,
-  poolFeeSweepNanos,
   redactSsa1,
 } from './auto_payout.js';
 import { bootPoolOperator } from './pool_ident.js';
@@ -57,7 +54,7 @@ import { createStore } from '../../node/src/store.js';
 import { potSharesFromBatch, hashBonusByMiner, custodyPotShares } from '../../node/src/chain.js';
 import { sortShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
-import { explorerRecentTxs, networkSupply, openRoundHashRows, reconstructOwner } from './wallet_api.js';
+import { explorerRecentTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 import {
@@ -2751,46 +2748,7 @@ export function createPool({
         sent.push({ ...row, nanos: taken.nanos });
       }
     }
-    const feeTo = poolFeePayoutDest();
-    const unpaid = typeof pullBook.unpaidPotNanos === 'function'
-      ? pullBook.unpaidPotNanos({ tipHeight: tipH, need })
-      : 0;
-    const rec = reconstructOwner(store, from);
-    const sweep = poolFeeSweepNanos({
-      spendableNanos: rec.spendableNanos,
-      unpaidMinerPotNanos: unpaid,
-    });
-    if (sweep.ok && spendKey) {
-      if (!feeTo) {
-        console.error(JSON.stringify({
-          event: 'pool_fee_sweep_waiting_dest',
-          nanos: sweep.nanos,
-          keep: sweep.keep,
-          owed: sweep.owed,
-        }));
-      } else {
-        const feeBuilt = buildPoolFeeSweepTx({
-          from,
-          to: feeTo,
-          nanos: sweep.nanos,
-          fee,
-          spendKey,
-        });
-        if (feeBuilt.ok) {
-          const queuedFee = await Promise.resolve(queueSend(feeBuilt.tx));
-          console.error(JSON.stringify({
-            event: 'pool_fee_sweep',
-            ok: !(queuedFee && queuedFee.ok === false),
-            reason: queuedFee && queuedFee.reason,
-            nanos: feeBuilt.nanos,
-            dest: redactSsa1(feeTo),
-          }));
-          if (!(queuedFee && queuedFee.ok === false)) {
-            sent.push({ tag: 'pool-fee', dest: feeTo, nanos: feeBuilt.nanos });
-          }
-        }
-      }
-    }
+    // The fee-wallet sweep is off. Miner π auto-payout above is the only send.
     return sent;
   }
 

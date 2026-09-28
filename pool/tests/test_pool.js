@@ -321,6 +321,13 @@ describe('HTTP stats cannot stall', () => {
     const sweep = src.slice(sweepAt, sweepAt + 1600);
     assert.match(sweep, /setImmediate\(/);
     assert.match(src, /PAYOUT_SWEEP_BUDGET_MS/);
+    const bodyAt = src.indexOf('async function sweepAutoPayouts');
+    const bodyEnd = src.indexOf('function queueSend', bodyAt);
+    assert.ok(bodyAt >= 0 && bodyEnd > bodyAt);
+    const body = src.slice(bodyAt, bodyEnd);
+    assert.match(body, /buildAutoPayoutTx/);
+    assert.match(body, /takeConfirmed/);
+    assert.doesNotMatch(body, /buildPoolFeeSweepTx|poolFeeSweepNanos|poolFeePayoutDest/);
     const reload = fs.readFileSync(new URL('../../deploy/reload-stratum-units.sh', import.meta.url), 'utf8');
     assert.match(reload, /SHEAR_STRATUM_BIND=127\.0\.0\.1/);
     assert.match(reload, /SHEAR_STRATUM_AUTH=1/);
