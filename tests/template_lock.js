@@ -39,7 +39,7 @@ export function fileSha(absPath) {
 }
 
 export function collectCss(repoRoot) {
-  const roots = ['site', 'pool/public', 'pool/admin', 'explorer', 'mempool', 'dag'];
+  const roots = ['site', 'pool/public', 'pool/admin', 'explorer', 'mempool', 'dag', 'vortices'];
   const out = [];
   function walk(relDir) {
     const abs = path.join(repoRoot, relDir);
@@ -57,7 +57,7 @@ export function collectCss(repoRoot) {
 }
 
 export function collectChrome(repoRoot) {
-  const roots = ['site', 'pool/public', 'explorer', 'mempool', 'dag'];
+  const roots = ['site', 'pool/public', 'explorer', 'mempool', 'dag', 'vortices'];
   const names = new Set(['shear-chrome.js', 'theme.js']);
   const out = [];
   function walk(relDir) {

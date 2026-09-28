@@ -83,6 +83,10 @@
     "site/whitepaper/index.html": {
       "skeleton": "d9777561693c2930692ffe9d580b3e9fd78a81d98611b3570fb8493cb4a955ba",
       "style": "cf4add7c1fb7ab54c2195331277b2fdb75150be2b5b33d8f174afbbd3eee9d82"
+    },
+    "vortices/index.html": {
+      "skeleton": "eecab1eed4f60df254ae3212b10244328b3b3ffa85929353d57ead949980c5e1",
+      "style": "15e367088125e2b7b0abb15005e614c5ff4ba287fbe1a921ef05a505265c1ead"
     }
   },
   "css": {

@@ -230,6 +230,14 @@
       "file": "site/whitepaper/index.html"
     },
     {
+      "url": "https://vortices.shear.digital/",
+      "file": "vortices/index.html"
+    },
+    {
+      "url": "https://vortices.shear.digital/index.html",
+      "file": "vortices/index.html"
+    },
+    {
       "url": "https://www.shear.digital/",
       "file": "site/index.html"
     },
