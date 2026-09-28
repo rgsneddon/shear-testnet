@@ -34,7 +34,7 @@ jobs:
         run: |
           flutter config --enable-windows-desktop
           flutter pub get
-          flutter build windows --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }}
+          flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
           dart compile exe bin/shear.dart -o dist-cli/shear.exe
       - name: Zip GUI
         run: python wallet/pack/zip_windows.py
