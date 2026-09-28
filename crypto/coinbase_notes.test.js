@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS, POOL_FEE_BPS } from './asert.js';
 import { newIdentity, spendDestOf, hash20FromAddress } from './address.js';
 import { noteCommitOfDest20, sealCoinbaseNote } from './note.js';
-import { expectedCoinbasePays, noteCommitSpendableNanos, paysFromALeaves } from './coinbase_notes.js';
+import { expectedCoinbasePays, noteCommitSpendableNanos, paysFromALeaves, openedCoinbaseNanos } from './coinbase_notes.js';
 import { custodyPotShares } from '../node/src/chain.js';
 
 function shareOf(dest, nonce) {
@@ -24,6 +24,18 @@ function sealedCustodyBlock({ poolDest, hashers, height = 2 }) {
     txs: [{ coinbase: true, vout }],
   };
 }
+
+describe('openedCoinbaseNanos', () => {
+  it('opens a pool-fee note after compact drops v', () => {
+    const dest = spendDestOf(newIdentity().spendPub);
+    const fee = Math.floor(100_000_000_000 * POOL_FEE_BPS / 10000);
+    const note = sealCoinbaseNote(fee, { dest20: hash20FromAddress(dest), kind: 'pool-fee' });
+    delete note.valueProof.v;
+    assert.equal(note.valueProof.v, undefined);
+    assert.equal(openedCoinbaseNanos(note, 100_000_000_000), fee);
+    assert.notEqual(fee, 0);
+  });
+});
 
 describe('expectedCoinbasePays potNanos', () => {
   it('splits the supplied epoch pot, not the 1 SHE fingerprint', () => {

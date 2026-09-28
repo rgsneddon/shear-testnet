@@ -423,12 +423,13 @@
           if (Number(blocks[j].height) === height) tipId = String(blocks[j].id || '');
         }
         var grew = view.height > 0 && height > view.height;
-        var model = blueShareModel(stats.workers, stats.shareBits);
+        var gossip = Array.isArray(stats.gossipWorkers) ? stats.gossipWorkers : [];
+        var model = blueShareModel(gossip, stats.shareBits);
         var grewBlue = view.ok && model.total > view.blueTotal;
         view = {
           height: height,
           blocks: blocks,
-          workers: (stats.workers || []).filter(function (w) { return w && w.connected; }).length,
+          workers: gossip.filter(function (w) { return w && w.connected; }).length,
           nodes: Math.max(0, Math.floor(Number(stats.nodesOnline) || 0)),
           magic: stats.magic || stats.network || 'shear-testnet-v5',
           tipAt: headerTipMs(stats.header),
@@ -438,7 +439,7 @@
           blueTotal: model.total,
           blueIdentities: model.identities,
           blueGlyphs: model.glyphs,
-          orbit: orbitWorkers(stats.workers),
+          orbit: orbitWorkers(gossip),
           blueFlash: grewBlue ? performance.now() : view.blueFlash,
         };
       } catch (err) {

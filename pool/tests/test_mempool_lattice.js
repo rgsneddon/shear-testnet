@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
+import { networkMempoolWire } from '../../node/src/p2p_ipc.js';
+import { createPool } from '../src/pool.js';
 import { mempoolLattice } from '../src/wallet_api.js';
 
 describe('mempool lattice pending rings', () => {
@@ -92,5 +97,118 @@ describe('mempool lattice pending rings', () => {
     assert.equal(out.pending.find((t) => t.id === 'peer-send').amount, undefined);
     assert.equal(row.amount, undefined);
     assert.doesNotMatch(JSON.stringify(out), /ssa1/);
+  });
+
+  it('network snapshot replaces the pool private list', () => {
+    const dest = encodeDest(Buffer.alloc(20, 4));
+    const store = {
+      blocks: [],
+      tip() { return null; },
+      mempool: [{ id: 'pool-private', kind: 'send', fee: 9, to: dest, vout: [{ address: dest }] }],
+      jobs: new Map(),
+      openRoundRows() { return [{ tag: 'm00112233', count: 3, source: 'local' }]; },
+    };
+    const out = mempoolLattice(store, {
+      miners: new Map(),
+      nodesOnline: 4,
+      networkPending: [{ id: 'net-send', kind: 'send', fee: 4, weight: 3, to: dest }],
+      networkRounds: [{ tag: 'mabcdef01', count: 12, source: 'peer' }],
+    });
+    assert.equal(out.pending.some((t) => t.id === 'pool-private'), false);
+    assert.equal(out.pending.find((t) => t.id === 'net-send').fee, 4);
+    assert.equal(out.pending.find((t) => t.id === 'net-send').weight, 3);
+    assert.equal(out.pending.find((t) => t.id === 'net-send').to, undefined);
+    assert.equal(out.pendingBlock.txs.some((t) => t.tag === 'm00112233'), false);
+    assert.equal(out.pendingBlock.txs.find((t) => t.tag === 'mabcdef01').count, 12);
+    assert.equal(out.nodesOnline, 4);
+    assert.doesNotMatch(JSON.stringify(out), /ssa1/);
+  });
+
+  it('a public snapshot ignores the pool stratum table and private mempool', () => {
+    const dest = encodeDest(Buffer.alloc(20, 8));
+    const store = {
+      blocks: [],
+      tip() { return null; },
+      mempool: [{ id: 'pool-private', kind: 'send', fee: 9, to: dest, vout: [{ address: dest }] }],
+      jobs: new Map(),
+      openRoundRows() { return [{ tag: 'm00112233', count: 3, source: 'local' }]; },
+    };
+    const miners = new Map([
+      ['a', { login: `${dest}.rig`, roundHashes: 40, clientHashes: 40, clientHashesRound0: 0 }],
+    ]);
+    const out = mempoolLattice(store, {
+      miners,
+      networkPending: [],
+      networkRounds: [],
+    });
+    assert.equal(out.pending.length, 0);
+    assert.equal(out.pendingBlock.txs.length, 0);
+    assert.equal(out.pendingBlock.hashes, 0);
+    const direct = mempoolLattice(store, { miners });
+    assert.equal(direct.pending.some((t) => t.id === 'pool-private'), true);
+    assert.equal(direct.pendingBlock.txs.some((t) => t.count === 40), true);
+    assert.equal(direct.pendingBlock.txs.some((t) => t.tag === 'm00112233'), true);
+  });
+
+  it('the sidecar wire carries id, kind, fee, and weight only', () => {
+    const dest = encodeDest(Buffer.alloc(20, 5));
+    const wire = networkMempoolWire({
+      mempool: [{ id: 'net-1', kind: 'lock', fee: 2, to: dest, vout: [{ address: dest, nanos: 9 }] }],
+      openRoundRows() { return [{ tag: 'mabcdef01', count: 5, source: 'peer' }]; },
+    }, {
+      syncedOnline: () => 3,
+      liveOnline: () => 4,
+    });
+    assert.equal(wire.txs[0].id, 'net-1');
+    assert.equal(wire.txs[0].kind, 'lock');
+    assert.equal(wire.txs[0].fee, 2);
+    assert.ok(wire.txs[0].weight >= 1);
+    assert.equal(wire.synced, 3);
+    assert.equal(wire.peers, 4);
+    assert.equal(wire.rounds[0].tag, 'mabcdef01');
+    assert.equal(JSON.stringify(wire).includes(dest), false);
+    assert.doesNotMatch(JSON.stringify(wire), /ssa1|nanos|address/);
+  });
+
+  it('GET /api/mempool paints the network snapshot, not the pool private list', async () => {
+    const dest = encodeDest(Buffer.alloc(20, 6));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-net-mempool-'));
+    const pool = createPool({
+      dataDir: dir,
+      miner: dest,
+      stratumPort: 0,
+      httpPort: 0,
+    });
+    try {
+      const heard = await pool.listen();
+      pool.store.mempool.push({
+        id: 'pool-private',
+        kind: 'send',
+        fee: 9,
+        to: dest,
+        vout: [{ address: dest }],
+      });
+      const hidden = await fetch(`http://127.0.0.1:${heard.httpPort}/api/mempool`).then((r) => r.json());
+      assert.equal(hidden.ok, true);
+      assert.equal(hidden.pending.some((t) => t.id === 'pool-private'), false);
+      pool.setNetworkView({
+        txs: [{ id: 'net-send', kind: 'send', fee: 4, weight: 3, to: dest }],
+        rounds: [{ tag: 'mabcdef01', count: 9, source: 'peer' }],
+        synced: 4,
+      });
+      const shown = await fetch(`http://127.0.0.1:${heard.httpPort}/api/mempool`).then((r) => r.json());
+      assert.equal(shown.pending.some((t) => t.id === 'pool-private'), false);
+      assert.equal(shown.pending.find((t) => t.id === 'net-send').fee, 4);
+      assert.equal(shown.nodesOnline, 4);
+      assert.equal(shown.pendingBlock.txs.find((t) => t.tag === 'mabcdef01').count, 9);
+      assert.equal(JSON.stringify(shown).includes(dest), false);
+      const stats = await fetch(`http://127.0.0.1:${heard.httpPort}/api/stats`).then((r) => r.json());
+      assert.equal(stats.gossipWorkers.length, 1);
+      assert.equal(stats.gossipWorkers[0].miner, 'mabcdef01');
+      assert.equal(stats.gossipWorkers[0].roundHashes, 9);
+      assert.equal(stats.nodesOnline, 4);
+    } finally {
+      pool.close();
+    }
   });
 });

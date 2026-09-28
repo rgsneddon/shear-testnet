@@ -68,7 +68,16 @@ let remotePeers = 0;
 const ipc = await attachPoolIpc({
   store: pool.store,
   port: ipcAddr.port,
-  onPeers(n) { remotePeers = Number(n) || 0; },
+  onPeers(n, msg) {
+    remotePeers = Number(n) || 0;
+    if (msg && Array.isArray(msg.txs)) {
+      pool.setNetworkView({
+        txs: msg.txs,
+        rounds: Array.isArray(msg.rounds) ? msg.rounds : [],
+        synced: msg.synced,
+      });
+    }
+  },
   onApplied() {
     try { pool.paintStatsSnap(); } catch { /* stats timer retries */ }
   },

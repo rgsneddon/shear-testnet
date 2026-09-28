@@ -19,7 +19,7 @@
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS, BLOCK_SUBSIDY_NANOS } from './asert.js';
 import { shareRowJson } from './pack.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, coinbasePotIsCustodial } from './coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, coinbasePotIsCustodial, openedCoinbaseNanos } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8 } from './note.js';
 import { hash20FromAddress } from './address.js';
@@ -175,7 +175,8 @@ export function sealedExplorerRows(block) {
       if (o.commit) {
         const sealedV = Math.floor(Number(o.valueProof?.v != null ? o.valueProof.v : 0));
         if (hit.nanos && verifySealedNote(o, hit.nanos)) nanos = hit.nanos;
-        else nanos = (sealedV > 0 && verifySealedNote(o, sealedV)) ? sealedV : 0;
+        else if (sealedV > 0 && verifySealedNote(o, sealedV)) nanos = sealedV;
+        else nanos = openedCoinbaseNanos(o, potNanos);
       }
       rows.push({
         id: `${hid}-${o.kind || 'cb'}-${i}`,

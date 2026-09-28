@@ -31,7 +31,7 @@ import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, open
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
+import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, noteCommitSpendableNanos, openedCoinbaseNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
@@ -837,8 +837,11 @@ export function mempoolLattice(store, limitOrOpts = 24) {
   const includedIds = new Set(
     tplTxs.filter((t) => t && !t.coinbase).map((t) => String(t.id || '')).filter(Boolean),
   );
-  const pending = (store?.mempool || []).map((m) => {
-    const weight = memoTxWeight(m);
+  const rawPending = Array.isArray(opts.networkPending)
+    ? opts.networkPending
+    : (store?.mempool || []);
+  const pending = rawPending.map((m) => {
+    const weight = Number(m.weight) > 0 ? Number(m.weight) : memoTxWeight(m);
     const fee = Number(m.fee || 0);
     const included = includedIds.size ? includedIds.has(String(m.id || '')) : true;
     const mass = weight * (1 + Math.log1p(Math.max(0, fee)));
@@ -852,11 +855,16 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       priority: (included ? 400 : 0) + mass,
     };
   }).filter((t) => t.id).sort((a, b) => b.priority - a.priority);
+  const gossipRounds = Array.isArray(opts.networkRounds);
   const byTag = new Map();
-  for (const r of openRoundHashRows(opts.miners, opts.hashBonusNanos ?? HASH_BONUS_NANOS)) {
-    byTag.set(r.tag, r);
+  if (!gossipRounds) {
+    for (const r of openRoundHashRows(opts.miners, opts.hashBonusNanos ?? HASH_BONUS_NANOS)) {
+      byTag.set(r.tag, r);
+    }
   }
-  const netRows = typeof store.openRoundRows === 'function' ? store.openRoundRows() : [];
+  const netRows = gossipRounds
+    ? opts.networkRounds
+    : (typeof store.openRoundRows === 'function' ? store.openRoundRows() : []);
   for (const r of netRows) {
     const tag = String(r.tag || '').toLowerCase();
     if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
@@ -951,7 +959,7 @@ export function owedPiFromPullBook(pullBook, address, { tipHeight = 0, need = 30
   return { owedPi: she, confirmingPot: she };
 }
 
-export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, poolOpen, poolIdentity, pullBook } = {}) {
+export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, networkPending, networkRounds, poolOpen, poolIdentity, pullBook } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
   if ((path === '/api/mempoolPressure' || path === '/api/mempoolpressure') && verb === 'GET') {
@@ -964,6 +972,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         miners,
         lastJob,
         nodesOnline,
+        networkPending,
+        networkRounds,
         hashBonusNanos: hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos),
       }),
     };
@@ -1086,6 +1096,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           if (nanos == null && o.valueProof?.v != null) {
             const v = Math.floor(Number(o.valueProof.v));
             if (Number.isFinite(v) && v > 0) nanos = v;
+          }
+          if (!(nanos > 0) && tx.coinbase) {
+            const opened = openedCoinbaseNanos(o, Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS);
+            if (opened > 0) nanos = opened;
           }
           const proofR = proofHex(o.valueProof?.R);
           const proofZ = proofHex(o.valueProof?.z);

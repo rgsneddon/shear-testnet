@@ -38,8 +38,10 @@ describe('dag.shear.digital page', () => {
     assert.match(page, /nodesOnline/);
     assert.match(page, /r = ln\(1 \+ n\)/);
     assert.match(page, /from '\.\/blue_shares\.js'/);
-    assert.match(page, /blueShareModel\(stats\.workers, stats\.shareBits\)/);
-    assert.match(page, /orbitWorkers\(stats\.workers\)/);
+    assert.match(page, /blueShareModel\(gossip, stats\.shareBits\)/);
+    assert.match(page, /orbitWorkers\(gossip\)/);
+    assert.match(page, /stats\.gossipWorkers/);
+    assert.doesNotMatch(page, /blueShareModel\(stats\.workers/);
     assert.match(page, /id="f-blue"/);
     assert.match(page, /#3d7bff/);
     assert.match(page, /blue shares/);

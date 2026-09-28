@@ -6,12 +6,44 @@
  */
 import net from 'node:net';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { txWeight } from '../../crypto/levy.js';
 import { decodeWireBlock, encodeWireBlock } from './p2p.js';
 
 export const P2P_IPC_HOST = '127.0.0.1';
 export const P2P_IPC_PORT = 30313;
 const IPC_MAX_FRAME = 8 * 1024 * 1024;
 const IPC_BACKFILL_MAX = 8;
+
+/** Public lattice fields only. Addresses, seeds, and proofs stay off this wire. */
+export function networkMempoolWire(store, p2p) {
+  const txs = [];
+  for (const m of store?.mempool || []) {
+    const id = String(m?.id || '');
+    if (!id) continue;
+    const vouts = Math.max(1, (m?.vout || []).length || (m?.to ? 1 : 0));
+    const memo = m?.memoCt || m?.memoH ? 1 : 0;
+    const bFlag = m?.kind === 'b-spend' || m?.bFlag ? 1 : 0;
+    txs.push({
+      id,
+      kind: String(m.kind || 'send'),
+      fee: Number(m.fee) || 0,
+      weight: txWeight({ vouts, memoChunks: memo, bFlag }),
+    });
+    if (txs.length >= 4096) break;
+  }
+  const rounds = [];
+  const work = typeof store?.openRoundRows === 'function' ? store.openRoundRows() : [];
+  for (const r of work) {
+    const tag = String(r?.tag || '').toLowerCase();
+    if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
+    const count = Math.floor(Number(r.count) || 0);
+    if (count < 1) continue;
+    rounds.push({ tag, count, source: r.source === 'local' ? 'local' : 'peer' });
+  }
+  const synced = typeof p2p?.syncedOnline === 'function' ? Number(p2p.syncedOnline()) || 0 : 0;
+  const peers = typeof p2p?.liveOnline === 'function' ? Number(p2p.liveOnline()) || 0 : 0;
+  return { txs, rounds, synced, peers };
+}
 
 export function parseIpcAddr(raw, fallbackPort = P2P_IPC_PORT) {
   const s = String(raw || '').trim();
@@ -229,7 +261,7 @@ export function attachPoolIpc({
         return;
       }
       if (msg.type === 'ipc_peers') {
-        if (typeof onPeers === 'function') onPeers(Number(msg.peers) || 0);
+        if (typeof onPeers === 'function') onPeers(Number(msg.peers) || 0, msg);
         return;
       }
       if (msg.type === 'ipc_block') enqueue(msg);
@@ -275,8 +307,15 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
   const enqueue = enqueueApply(store, skip, null);
 
   function sendPeers() {
-    const n = typeof p2p?.liveOnline === 'function' ? Number(p2p.liveOnline()) || 0 : 0;
-    send({ type: 'ipc_peers', magic: MAGIC_TESTNET, peers: n });
+    const view = networkMempoolWire(store, p2p);
+    send({
+      type: 'ipc_peers',
+      magic: MAGIC_TESTNET,
+      peers: view.peers,
+      synced: view.synced,
+      txs: view.txs,
+      rounds: view.rounds,
+    });
   }
 
   const dropped = new Set();

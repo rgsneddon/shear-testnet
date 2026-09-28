@@ -2,7 +2,7 @@
  * Recover dest + nanos for confidential coinbase vouts from shareBatch + proofs.
  * Public dest20+nanos stay off the sealed vout; Tree-A units still imply values.
  */
-import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS, hashBonusUnitNanos } from './asert.js';
+import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, POOL_FEE_BPS, POOL_FEE_MAX_BPS, SPENDABLE_CONFIRMATIONS, hashBonusUnitNanos } from './asert.js';
 import { isDestAddress, hash20FromAddress, encodeDest } from './address.js';
 import { aLeavesFromShares, destOfShare, noteCommitOfShare, unitsForShare } from './share_batch.js';
 import { noteCommitOfDest20, verifySealedNote, asU8 } from './note.js';
@@ -14,6 +14,28 @@ function ncHex(buf) {
   } catch {
     return '';
   }
+}
+
+/**
+ * Coinbase compact drops `v` on a pool-fee note. The commitment still opens
+ * at the sealed amount: the claimed v, this pool's 1%, any fee up to 3%, or
+ * the whole pot.
+ */
+export function openedCoinbaseNanos(vout, potNanos = BLOCK_SUBSIDY_NANOS) {
+  if (!vout?.commit || !vout?.valueProof) return 0;
+  const claimed = Math.floor(Number(vout.valueProof.v != null ? vout.valueProof.v : 0));
+  if (claimed > 0 && verifySealedNote(vout, claimed)) return claimed;
+  const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
+  if (!(pot > 0)) return 0;
+  const prefer = Math.floor(pot * POOL_FEE_BPS / 10000);
+  if (prefer > 0 && verifySealedNote(vout, prefer)) return prefer;
+  const maxFee = Math.floor(pot * POOL_FEE_MAX_BPS / 10000);
+  for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
+    const n = Math.floor(pot * bps / 10000);
+    if (n > 0 && n <= maxFee && n !== prefer && verifySealedNote(vout, n)) return n;
+  }
+  if (verifySealedNote(vout, pot)) return pot;
+  return 0;
 }
 
 function pushPotPay(out, address, nanos, kind, noteCommit) {
@@ -389,10 +411,12 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
           if (o.commit) {
             if (matched.nanos) n = matched.nanos;
             else {
-              // Sealed match miss is fail-closed. Do not invent pot-after-fee
-              // (0.99 SHE) or the whole-block hash sum.
+              // Sealed match miss is fail-closed for a guessed pot. A pool-fee
+              // compact omits v; open the commitment instead of painting 0.
               const sealedV = Math.floor(Number(o.valueProof?.v != null ? o.valueProof.v : 0));
-              n = (sealedV > 0 && verifySealedNote(o, sealedV)) ? sealedV : 0;
+              n = (sealedV > 0 && verifySealedNote(o, sealedV))
+                ? sealedV
+                : openedCoinbaseNanos(o, potNanos);
             }
           } else {
             n = matched.nanos || 0;
