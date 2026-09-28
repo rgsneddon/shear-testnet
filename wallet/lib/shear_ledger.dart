@@ -1246,6 +1246,9 @@ class ShearLedger {
   final Set<String> _proofCheckedDests = {};
   /// External balances written before any value proof opened. Not spendable.
   final Set<String> _unverifiedExternal = {};
+  /// SHE a pool snapshot wrote while no value proof had opened. Subtracted
+  /// from the book so a null cap cannot paint that figure.
+  final Map<String, double> _externalShe = {};
   /// One address that receives coins and that change returns to.
   String? _coinLedger;
   List<Map<String, dynamic>> get notes => List.unmodifiable(_notes);
@@ -1513,6 +1516,7 @@ class ShearLedger {
     _notes.clear();
     _proofCheckedDests.clear();
     _unverifiedExternal.clear();
+    _externalShe.clear();
     _pending.clear();
     _immature.clear();
     _owedPiDisplay = 0;
@@ -2300,11 +2304,21 @@ class ShearLedger {
     final pk = payKey(key);
     if (cap != null) {
       _unverifiedExternal.remove(pk);
+      _externalShe.remove(pk);
       if (book > cap + 1e-12) return cap;
       return book;
     }
-    if (_unverifiedExternal.contains(pk)) return 0;
-    return book;
+    return _bookMinusUnverified(pk, book);
+  }
+
+  /// Null cap: the pool figure is not spendable. A confirmRound credit that
+  /// settled locally is what remains after that figure is removed.
+  double _bookMinusUnverified(String pk, double book) {
+    var external = _externalShe[pk] ?? 0.0;
+    if (external <= 0 && _unverifiedExternal.contains(pk)) external = book;
+    final local = book - external;
+    if (local <= 1e-12) return 0;
+    return local;
   }
 
   /// Null when this dest has not presented a complete value proof.
@@ -2680,8 +2694,10 @@ class ShearLedger {
       final pk = payKey(key);
       if (_verifiedConfirmedShe(pk) == null) {
         _unverifiedExternal.add(pk);
+        _externalShe[pk] = live;
       } else {
         _unverifiedExternal.remove(pk);
+        _externalShe.remove(pk);
       }
     }
   }

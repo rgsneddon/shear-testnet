@@ -4236,6 +4236,25 @@ void main() {
     const goodNanos = 620544;
     const youngNanos = 256;
     const forgedNanos = 50 * kUnitsPerShe;
+    const unverifiedPool = 3738.365814558;
+    ledger.applyPoolSnapshot(
+      dest,
+      {'balance': unverifiedPool},
+      beforeHeight: 0,
+      tipSealed: 0,
+    );
+    expect(ledger.spendable(dest), closeTo(unverifiedPool, 1e-9));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+
+    var bare = _sealNoteNoRange(goodNanos, dest20: d20, kind: 'pot');
+    bare = attachAdmitPub(bare, admitBase: pointFrom(admitBaseBytes(seed)));
+    final vOnly = compactSealedVout(bare);
+    vOnly['height'] = 4;
+    vOnly['valueProof'] = {'v': goodNanos};
+    ledger.ingestSealedVouts([vOnly], spendSeed: seed, dest: dest);
+    ledger.settleTo(4 + ShearLedger.spendableConfirmations - 1);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+
     Map<String, dynamic> seal(int v, int height) {
       var note = _sealNoteNoRange(v, dest20: d20, kind: 'hash');
       note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
@@ -4261,6 +4280,7 @@ void main() {
     final got = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
     expect(got, goodNanos / kUnitsPerShe);
     expect(got, isNot(closeTo(forgedNanos / kUnitsPerShe, 1e-6)));
+    expect(got, isNot(closeTo(unverifiedPool, 1)));
     expect(
       ledger.unconfirmedIncomingShe(id.address, paymentCode: id.paymentCode),
       closeTo(youngNanos / kUnitsPerShe, 1e-18),
@@ -7746,7 +7766,7 @@ void main() {
     final ident = session.identity!;
     final ledger = ShearLedger()..bindIdentity(ident);
     final dest = ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
-    const spend = 8.0;
+    const spend = 3738.365814558;
     const owed = 2.5;
     const minerPending = 40.0;
     ledger.applyTipHex(List.filled(64, 'ab').join(), sealedHeight: 12);

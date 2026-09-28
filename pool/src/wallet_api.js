@@ -1025,6 +1025,30 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         return undefined;
       }
     };
+    // R and z stay on the note. A bare {v} is not a value proof, so it is not
+    // forwarded as one. Hex strings are already encoded; Buffer.from(utf8) would
+    // corrupt them and the wallet would never open the proof.
+    const proofHex = (x) => {
+      if (x == null) return undefined;
+      try {
+        if (typeof x === 'string') {
+          const s = x.trim().toLowerCase();
+          if (/^[0-9a-f]+$/.test(s) && s.length >= 64 && s.length % 2 === 0) return s;
+          return undefined;
+        }
+        if (typeof x?.toBytes === 'function') return Buffer.from(x.toBytes()).toString('hex');
+        if (x && typeof x === 'object' && x.type === 'Buffer' && Array.isArray(x.data)) {
+          return Buffer.from(x.data).toString('hex');
+        }
+        if (Buffer.isBuffer(x) || x instanceof Uint8Array) {
+          const b = Buffer.from(x);
+          return b.length ? b.toString('hex') : undefined;
+        }
+      } catch {
+        return undefined;
+      }
+      return undefined;
+    };
     const notes = [];
     for (const b of store?.blocks || []) {
       const prev = hex(b.hash) || hex(b.header && b.header.length >= 32 ? b.hash : null);
@@ -1063,6 +1087,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
             const v = Math.floor(Number(o.valueProof.v));
             if (Number.isFinite(v) && v > 0) nanos = v;
           }
+          const proofR = proofHex(o.valueProof?.R);
+          const proofZ = proofHex(o.valueProof?.z);
           notes.push({
             kind: o.kind || (tx.coinbase ? 'pot' : 'send'),
             noteCommit: hex(o.noteCommit),
@@ -1079,9 +1105,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
             ...(nanos != null ? {
               nanos,
               amount: nanosToShe(nanos),
-              valueProof: (hex(o.valueProof?.R) && hex(o.valueProof?.z))
-                ? { R: hex(o.valueProof.R), z: hex(o.valueProof.z), v: nanos }
-                : { v: nanos },
+            } : {}),
+            ...(proofR && proofZ && nanos != null ? {
+              valueProof: { R: proofR, z: proofZ, v: nanos },
             } : {}),
           });
         });
