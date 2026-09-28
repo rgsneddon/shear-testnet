@@ -41,15 +41,15 @@
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/index.html": {
-      "skeleton": "b8ead5d65d567673f8690d77a295c76e36d44723016102ebf900783fe47e10d6",
+      "skeleton": "bf016c2f672d27fadb70f353cf0d87a7c8cf3a722614a86688e3827092da75c6",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/admin/index.html": {
-      "skeleton": "a45db1019b34a2a68300367ce01321c3ed701f85d5997852638ff3ab6bb61ee5",
+      "skeleton": "b65dd820ae08faa1d6cb4f4696562e185552e1fe9e22982de7a150155774a2c5",
       "style": "b5f7428c82f4404ce68772b2baea6b226ebd3c746541003832e51ffb3d4c4e86"
     },
     "site/docs/index.html": {
-      "skeleton": "f30cbc4477fe1bc4c6cf409f0c49a921bc09ccd4c8f2b721e6c3f753c88eb875",
+      "skeleton": "1836dfb2dc605dbc6771de14dc25e79545c777c6c65b6cd956168cfbe5340bc6",
       "style": "99e0b7f1f1e516a861f1a34caefc57d2584ebc358bfaa42e4b467d1869edbdbe"
     },
     "site/get-started.html": {
@@ -77,7 +77,7 @@
       "style": "5aae7de3b4d1515b536ef53d3bf66676a1ae9230dc5f9c773e7754d56e2d2fcc"
     },
     "site/wallet/index.html": {
-      "skeleton": "d27f080b7d4d50a65a66f0b0f47218a10cd927ffc2b1f2329a8bc763cd1e15bb",
+      "skeleton": "dcb2da7db469e6a81102217c0bdce3466e4fad2f86cf8cbafedacf738c89b021",
       "style": "4a410ccd78e0094693bde09c7fc8dcf9472c96fa67b4dbd3141e1ef411503ba7"
     },
     "site/whitepaper/index.html": {

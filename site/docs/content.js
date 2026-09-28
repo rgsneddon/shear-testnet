@@ -126,7 +126,7 @@ window.SHEAR_DOCS = {
     title: 'Wallet overview',
     crumb: 'wallet / overview',
     html:
-      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.57</strong> (Windows, Linux, Arch, Fedora, Android, and macOS disk image shear-wallet-0.57-macos.dmg). Sync is a local node at <code>127.0.0.1:18332</code> — not flyclient, not pool HTTP as the only path. Magic <code>shear-testnet-v5</code>.</p>' +
+      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.57</strong> (Windows, Linux, Arch, Fedora, and Android). Sync is a local node at <code>127.0.0.1:18332</code> — not flyclient, not pool HTTP as the only path. Magic <code>shear-testnet-v5</code>.</p>' +
       '<table><tr><th>Continuum</th><td>Spendable balance, <code>she1</code>, six-slice pending pie</td></tr>' +
       '<tr><th>Flow</th><td>Send and receive</td></tr>' +
       '<tr><th>Resistance</th><td>Tx detail</td></tr>' +
@@ -146,7 +146,6 @@ window.SHEAR_DOCS = {
       '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
       '<li>Open Closure and export <code>shewall.bin</code>. Keep that file with the password.</li></ol>' +
       '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.57">shear-testnet 0.57</a>. 0.54 is the previous public pack pin. 0.57 is the fuller Continuum wallet. ' +
-      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.57/shear-wallet-0.57-macos.dmg">shear-wallet-0.57-macos.dmg</a> ' +
       '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.57/shear-wallet-0.57-windows.zip">shear-wallet-0.57-windows.zip</a> ' +
       '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.57/shear-wallet-0.57-android.apk">shear-wallet-0.57-android.apk</a> ' +
       '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.57/shear-wallet-0.57-linux.zip">shear-wallet-0.57-linux.zip</a> ' +

@@ -63,7 +63,7 @@ Windows creates tag `0.57` with the non-Mac wallet assets. If `gh release view 0
 gh release upload 0.57 dist/shear-wallet-0.57-macos.dmg --repo rgsneddon/shear-testnet
 ```
 
-No `--clobber`. Do not attach Windows, Android, Linux, Arch, Fedora, or OpenSUSE files from this machine.
+No `--clobber`. Do not attach Windows, Android, Linux, Arch, Fedora, or OpenSUSE files from this machine. Public pages do not link the disk image until that upload exists. Restore the download href on shear.digital in the same cut.
 
 ---
 

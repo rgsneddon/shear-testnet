@@ -60,7 +60,7 @@ If `gh release view 0.57 --repo rgsneddon/shear-testnet` does not list the relea
 gh release upload 0.57 dist/shear-wallet-0.57-macos.dmg --repo rgsneddon/shear-testnet
 ```
 
-No `--clobber`. Do not attach non-Mac wallet files from this machine.
+No `--clobber`. Do not attach non-Mac wallet files from this machine. Public pages do not link the disk image until that upload exists. Restore the download href on shear.digital in the same cut.
 
 ---
 

@@ -104,9 +104,8 @@ describe('shear.digital/docs', () => {
     assert.match(docs, /shared\/shear-chrome\.js/);
     assert.match(docs, /css\/saas-dark\.css/);
     assert.doesNotMatch(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
-    assert.match(docs, /content\.js\?v=21/);
+    assert.match(docs, /content\.js\?v=22/);
     for (const pack of [
-      'shear-wallet-0.57-macos.dmg',
       'shear-wallet-0.57-windows.zip',
       'shear-wallet-0.57-android.apk',
       'shear-wallet-0.57-linux.zip',
@@ -127,7 +126,8 @@ describe('shear.digital/docs', () => {
     assert.match(content, /Wallet pin<\/th><td>0\.57/);
     assert.doesNotMatch(content, /Wallet pin<\/th><td>0\.55</);
     assert.match(content, /Current pin is <strong>0\.57<\/strong>/);
-    assert.match(content, /releases\/download\/0\.57\/shear-wallet-0\.57-macos\.dmg/);
+    assert.doesNotMatch(content, /releases\/download\/0\.57\/shear-wallet-0\.57-macos\.dmg/);
+    assert.doesNotMatch(docs, /releases\/download\/0\.57\/shear-wallet-0\.57-macos\.dmg/);
     assert.doesNotMatch(content, /shear-wallet-0\.55\.1-macos\.dmg/);
     assert.match(content, /releases\/tag\/0\.57/);
     assert.doesNotMatch(content, /releases\/tag\/0\.55(?!\.)/);
