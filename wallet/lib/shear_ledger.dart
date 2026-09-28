@@ -547,10 +547,10 @@ String lockFundingShortfall(LockFundingPlan plan) {
   return 'Not enough Continuum spendable for lock + tx fee — need ${formatShe(plan.need)} SHE, have ${formatShe(plan.have)} SHE';
 }
 
-/// The one Continuum figure the hero paints: chain spendable plus owed-toward-π.
+/// Verified confirmed coins only. A pool balance, owed-toward-π, and
+/// unconfirmed arrivals stay out of this figure.
 double paintedContinuumSpendable(ShearLedger ledger, String restFrame, {String? paymentCode}) {
-  return ledger.spendableOwned(restFrame, paymentCode: paymentCode) +
-      ledger.owedTowardPi(restFrame, paymentCode: paymentCode);
+  return ledger.spendableOwned(restFrame, paymentCode: paymentCode);
 }
 
 /// Sum of sealed notes on money dests. Not the painted Continuum figure.
@@ -2575,51 +2575,17 @@ class ShearLedger {
     _dests.add(dest);
   }
 
-  /// Move owed-toward-π into one spend dest when the painted Continuum figure
-  /// covers [needShe] and the chain balance does not. Does not invent SHE.
-  /// Returns the owed gap folded in, 0 when chain spendable already covers,
-  /// or null when the painted figure is short.
+  /// Verified confirmed coins only. Owed-toward-π stays at the pool until a
+  /// real payment arrives. Returns 0 when those coins already cover [needShe],
+  /// or null when they do not.
   double? fundFromPaintedContinuum(String restFrame, {String? paymentCode, required double needShe}) {
     _paintedFundDest = '';
-    final netShe = owedTowardPi(restFrame, paymentCode: paymentCode);
-    // owedTowardPi is already net of _owedSpent. The pull book is not. Post the
-    // full figure so a later lock or send is not subtracted twice.
-    final grossShe = netShe + (_owedSpent > 0 ? _owedSpent : 0);
-    _paintedFundOwedNanos = grossShe > 1e-12 ? (grossShe * kUnitsPerShe).round() : 0;
+    _paintedFundOwedNanos = 0;
     if (needShe <= 1e-12) return 0;
     var chain = spendableOwned(restFrame, paymentCode: paymentCode);
     if (chain < 0) chain = 0;
     if (chain + 1e-9 >= needShe) return 0;
-    final owed = owedTowardPi(restFrame, paymentCode: paymentCode);
-    if (chain + owed + 1e-9 < needShe) return null;
-    final gap = needShe - chain;
-    final home = homeDest(restFrame, paymentCode: paymentCode);
-    // The pool's pull book is dest-scoped. Fold onto the dest that reported
-    // the owed figure so the lock and the send are looked up there.
-    var dest = '';
-    if (isDestAddress(_owedPiDest) && !_isProgramVaultDest(_owedPiDest)) {
-      dest = _owedPiDest;
-    }
-    if (dest.isEmpty) {
-      for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
-        if (d == home || !isDestAddress(d) || _isProgramVaultDest(d)) continue;
-        dest = d;
-        break;
-      }
-    }
-    if (dest.isEmpty) {
-      dest = allocateReceiveDest(restFrame, paymentCode: paymentCode);
-    }
-    for (final d in moneyDests(restFrame, paymentCode: paymentCode).toList()) {
-      if (d == dest) continue;
-      final amt = _spendable.remove(d) ?? 0;
-      if (amt > 0) _spendable[dest] = (_spendable[dest] ?? 0) + amt;
-    }
-    _spendable[dest] = (_spendable[dest] ?? 0) + gap;
-    _owedSpent += gap;
-    _paintedFundDest = dest;
-    if (spendable(dest) + 1e-9 < needShe) return null;
-    return gap;
+    return null;
   }
 
   /// Fold fragmented Continuum dests into one covering dest. Does not invent SHE.
@@ -3441,7 +3407,7 @@ class ShearLedger {
 
   /// Pool-custodial pot still confirming toward π auto-pay.
   /// One source: pull-book owedPi, else in-flight pool-withdraw amounts, else
-  /// a pot field. Never their sum. Included in [paintedContinuumSpendable].
+  /// a pot field. Never their sum. Not part of Spendable.
   /// Miner-page totals are not this.
   double owedTowardPi(String restFrame, {String? paymentCode}) {
     final book = _owedPiDisplay > 0 ? _owedPiDisplay : 0.0;

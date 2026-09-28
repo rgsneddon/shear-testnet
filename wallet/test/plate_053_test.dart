@@ -126,9 +126,8 @@ void main() {
     return rows;
   }
 
-  test('reserve deposit posts from the painted figure when notes do not cover', () async {
+  test('reserve deposit does not post from pool owed when notes do not cover', () async {
     final id = createIdentity();
-    final home = (ShearLedger()..bindIdentity(id)).homeDest(id.address, paymentCode: id.paymentCode);
     final node = await openNode();
     addTearDown(() async {
       node.http.close(force: true);
@@ -144,7 +143,8 @@ void main() {
     final need = she + levyNanos((she * kUnitsPerShe).round(), depth: 0) / kUnitsPerShe;
     expect(notes, lessThan(need));
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(need));
-    expect(painted, greaterThan(need));
+    expect(painted, ledger.spendableOwned(id.address, paymentCode: id.paymentCode));
+    expect(painted, lessThan(need));
     expect(ledger.pool, isNotNull);
     final local = reserveLockPostsLocal(
       hasPool: ledger.pool != null,
@@ -167,20 +167,14 @@ void main() {
       spendSeed: hexToBytes(id.seedHex),
       local: local,
     );
-    expect(posted.remark.toLowerCase(), isNot(contains('no spendable')));
-    expect(posted.remark, isNot(contains('Not enough Continuum spendable')), reason: '${posted.remark}\n${node.err}\n${node.log.path}');
-    expect(posted.posted, isTrue, reason: '${posted.remark}\n${node.err}\n${queuedRows(node.log)}');
-    expect(posted.tx, isNotNull);
-    expect(posted.tx!.id, startsWith('lock-'));
-    expect(posted.tx!.kind, 'lock');
-    expect(posted.tx!.from, home);
-    expect(ledger.transactions.where((t) => t.kind == 'lock').length, before + 1);
-    expect(reserve.portal(dest).nanos, greaterThan(0));
-    expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), lessThan(22.58));
+    expect(posted.posted, isFalse);
+    expect(posted.tx, isNull);
+    expect(posted.remark, contains('Not enough Continuum spendable'));
+    expect(ledger.transactions.where((t) => t.kind == 'lock').length, before);
+    expect(reserve.portal(dest).nanos, 0);
+    expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(22.58, 1e-9));
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(need));
-    final queued = queuedRows(node.log);
-    expect(queued.where((row) => row['ok'] == true && row['kind'] == 'lock'), isNotEmpty, reason: '$queued\n${node.err}');
-    expect((queued.firstWhere((row) => row['kind'] == 'lock')['owed'] as num) > 0, isTrue);
+    expect(queuedRows(node.log).where((row) => row['kind'] == 'lock'), isEmpty);
   }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('reserve deposit refuses when the painted figure does not cover amount plus fee', () async {
@@ -249,7 +243,7 @@ void main() {
     );
     expect(refused.posted, isFalse, reason: refused.remark);
     expect(refused.tx, isNull);
-    expect(refused.remark.toLowerCase(), contains('insufficient'));
+    expect(refused.remark, contains('Not enough Continuum spendable'));
     expect(ledger.transactions.where((t) => t.kind == 'lock'), isEmpty);
     expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(owedBefore, 1e-9));
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(chainBefore, 1e-9));
@@ -291,7 +285,6 @@ void main() {
 
   test('continuum send and receive use the full payable address', () async {
     final alice = createIdentity();
-    final home = (ShearLedger()..bindIdentity(alice)).homeDest(alice.address, paymentCode: alice.paymentCode);
     final node = await openNode();
     addTearDown(() async {
       node.http.close(force: true);
@@ -312,7 +305,11 @@ void main() {
     expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), lessThan(need));
     expect(
       paintedContinuumSpendable(ledger, alice.address, paymentCode: alice.paymentCode),
-      greaterThan(need),
+      ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode),
+    );
+    expect(
+      paintedContinuumSpendable(ledger, alice.address, paymentCode: alice.paymentCode),
+      lessThan(need),
     );
     expect(ledger.pool, isNotNull);
     const startTo = '';
@@ -339,12 +336,10 @@ void main() {
       spendSeed: hexToBytes(alice.seedHex),
       local: false,
     );
-    expect(she.posted, isTrue, reason: '${she.remark}\n${debugLastContinuumSendError}\n${node.err}\n${queuedRows(node.log)}');
+    expect(she.posted, isFalse, reason: she.remark);
     expect(she.to, payload);
-    expect(she.tx, isNotNull);
-    expect(she.tx!.id, startsWith('tx-'));
-    expect(she.tx!.kind, 'send');
-    expect(she.tx!.from, home);
+    expect(she.remark, contains('Not enough Continuum spendable'));
+    expect(she.tx, isNull);
     final bobBook = ShearLedger()..bindIdentity(bob);
     final ssa = bobBook.homeDest(bob.address, paymentCode: bob.paymentCode);
     expect(isDestAddress(ssa), isTrue);
@@ -358,10 +353,10 @@ void main() {
       spendSeed: hexToBytes(alice.seedHex),
       local: false,
     );
-    expect(ssaSend.posted, isTrue, reason: '${ssaSend.remark}\n${debugLastContinuumSendError}\n${node.err}\n${queuedRows(node.log)}');
+    expect(ssaSend.posted, isFalse, reason: ssaSend.remark);
     expect(ssaSend.to, ssa);
-    expect(ssaSend.tx!.id, startsWith('tx-'));
-    expect(ssaSend.tx!.kind, 'send');
+    expect(ssaSend.remark, contains('Not enough Continuum spendable'));
+    expect(ssaSend.tx, isNull);
     final short = await submitContinuumSend(
       ledger: ledger,
       restFrame: alice.address,
@@ -373,12 +368,10 @@ void main() {
     );
     expect(short.posted, isFalse);
     expect(short.to, payload);
-    final queued = queuedRows(node.log).where((row) => row['ok'] == true && row['kind'] == 'send').toList();
-    expect(queued.length, greaterThanOrEqualTo(2), reason: '${queuedRows(node.log)}\n${node.err}');
-    expect(queued.every((row) => (row['owed'] as num) > 0), isTrue);
+    expect(queuedRows(node.log).where((row) => row['kind'] == 'send'), isEmpty);
   }, timeout: const Timeout(Duration(minutes: 6)));
 
-  test('a second painted send queues when remaining owed still covers', () async {
+  test('a second send does not queue from remaining pool owed', () async {
     const owed = 5.0;
     const she = 1.9;
     final need = she + levyNanos((she * kUnitsPerShe).round(), depth: 0) / kUnitsPerShe;
@@ -398,7 +391,8 @@ void main() {
     final painted = paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode);
     expect(notes, lessThan(need));
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(need));
-    expect(painted, greaterThan(need + need));
+    expect(painted, ledger.spendableOwned(id.address, paymentCode: id.paymentCode));
+    expect(painted, lessThan(need));
     final local = reserveLockPostsLocal(
       hasPool: ledger.pool != null,
       skipPoolSync: false,
@@ -418,7 +412,8 @@ void main() {
       spendSeed: hexToBytes(id.seedHex),
       local: local,
     );
-    expect(lock.posted, isTrue, reason: '${lock.remark}\n${node.err}\n${queuedRows(node.log)}');
+    expect(lock.posted, isFalse, reason: lock.remark);
+    expect(lock.remark, contains('Not enough Continuum spendable'));
     final bob = createIdentity();
     final ssa = (ShearLedger()..bindIdentity(bob)).homeDest(bob.address, paymentCode: bob.paymentCode);
     expect(isDestAddress(ssa), isTrue);
@@ -432,15 +427,11 @@ void main() {
       spendSeed: hexToBytes(id.seedHex),
       local: false,
     );
-    expect(send.posted, isTrue, reason: '${send.remark}\n${debugLastContinuumSendError}\n${node.err}\n${queuedRows(node.log)}');
-    final queued = queuedRows(node.log);
-    final locks = queued.where((row) => row['ok'] == true && row['kind'] == 'lock').toList();
-    final sends = queued.where((row) => row['ok'] == true && row['kind'] == 'send').toList();
-    expect(locks, isNotEmpty, reason: '$queued\n${node.err}');
-    expect(sends, isNotEmpty, reason: '$queued\n${node.err}');
-    expect(locks.every((row) => (row['owed'] as num) > 0), isTrue);
-    expect(sends.every((row) => (row['owed'] as num) > 0), isTrue);
+    expect(send.posted, isFalse, reason: send.remark);
+    expect(send.remark, contains('Not enough Continuum spendable'));
+    expect(queuedRows(node.log).where((row) => row['kind'] == 'lock' || row['kind'] == 'send'), isEmpty);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(need));
+    expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(owed, 1e-9));
   }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('local node spawn has no bootstrap URL and the light seeker stays strict', () {

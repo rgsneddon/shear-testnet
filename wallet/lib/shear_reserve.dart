@@ -570,8 +570,8 @@ bool reserveLockPostsLocal({
   return !hasPool || (skipPoolSync && !postReserveLock);
 }
 
-/// Reserve deposit the vault control posts. Funded from the painted Continuum
-/// figure (chain spendable plus owed-toward-π), including the tx fee.
+/// Reserve deposit the vault control posts. Funded from verified confirmed
+/// coins, including the tx fee.
 Future<ReserveDepositResult> postReserveDeposit({
   required ShearLedger ledger,
   required ShearReserve reserve,
