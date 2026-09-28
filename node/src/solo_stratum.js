@@ -93,32 +93,28 @@ export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest } = {}) 
 /**
  * True only when this tip is the one peers already share.
  * A taller peer means we are still syncing. A peer at this height with another
- * hash is a split tip: sealing there forks the chain. A shorter peer vetoes
- * only when nobody agrees with our chain. No peer map (unit harness) stays open.
+ * hash is a split tip. A shorter peer is not agreement: sealing on an ancestor
+ * match extends a private fork. Once a tip exists, some peer must advertise
+ * this exact hash. No peer map (unit harness) stays open. Height 0 may seal.
  */
-export function soloMaySeal({ height = 0, hash = '', peers, blockHashAt } = {}) {
+export function soloMaySeal({ height = 0, hash = '', peers } = {}) {
   if (!peers || typeof peers.values !== 'function') return true;
   if (isInitialBlockDownload({ height, peers })) return false;
   const localH = Number(height) || 0;
   const localHash = String(hash || '').toLowerCase();
-  let agreed = false;
-  let saw = false;
+  let matchedTip = false;
+  let splitTip = false;
   for (const rec of peers.values()) {
     const peerH = Number(rec?.height);
     const peerHash = String(rec?.hash || '').toLowerCase();
     if (!peerHash || !Number.isFinite(peerH)) continue;
-    saw = true;
     if (peerH > localH) return false;
-    if (peerH === localH) {
-      if (localHash && peerHash !== localHash) return false;
-      agreed = true;
-      continue;
-    }
-    if (typeof blockHashAt !== 'function') continue;
-    const ours = String(blockHashAt(peerH) || '').toLowerCase();
-    if (ours && ours === peerHash) agreed = true;
+    if (peerH !== localH) continue;
+    if (!localHash || peerHash === localHash) matchedTip = true;
+    else splitTip = true;
   }
-  if (saw && !agreed) return false;
+  if (splitTip) return false;
+  if (localH > 0 && localHash) return matchedTip;
   return true;
 }
 
@@ -216,11 +212,13 @@ export function createSoloStratum({
   }
 
   function issueJob(miner, shareBits = SHARE_FLOOR_BITS) {
-    if (!sealOk()) return null;
     const dest = destForLogin(miner) || miner;
+    // ShearK ignores a login error and stays on this socket. Remember the
+    // dest while sealing is refused so the restamp can push a job later.
+    lastMiner = dest;
+    if (!sealOk()) return null;
     const { job } = store.template({ miner: dest, shareBits });
     lastJob = job;
-    lastMiner = dest;
     return job;
   }
 

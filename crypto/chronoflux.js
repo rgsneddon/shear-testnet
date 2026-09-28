@@ -170,12 +170,19 @@ export function sealedExplorerRows(block) {
     cb.vout.forEach((o, i) => {
       const hit = matchSealedCoinbaseVout(o, pays);
       const toDest20 = dest20Buf(o.dest20) || (hit.address ? dest20Buf(hash20FromAddress(hit.address)) : null);
+      const claimed = Number(o.valueProof?.v != null ? o.valueProof.v : (o.nanos || 0));
+      let nanos = hit.nanos || claimed;
+      if (o.commit) {
+        const sealedV = Math.floor(Number(o.valueProof?.v != null ? o.valueProof.v : 0));
+        if (hit.nanos && verifySealedNote(o, hit.nanos)) nanos = hit.nanos;
+        else nanos = (sealedV > 0 && verifySealedNote(o, sealedV)) ? sealedV : 0;
+      }
       rows.push({
         id: `${hid}-${o.kind || 'cb'}-${i}`,
         kind: o.kind === 'hash' ? 'hash' : (o.kind === 'lock' || o.kind === 'vote' || o.kind === 'withdraw' ? o.kind : 'coinbase'),
         from: 'coinbase',
         to: hit.address || o.address || '',
-        nanos: hit.nanos || Number(o.valueProof?.v != null ? o.valueProof.v : (o.nanos || 0)),
+        nanos,
         height,
         confirmed: true,
         noteCommit: o.noteCommit,

@@ -152,7 +152,7 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.56"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.57"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
@@ -160,11 +160,11 @@ void main() {
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.56"'), isTrue);
+    expect(winMain.contains('L"Shear 0.57"'), isTrue);
     expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.56"'), isTrue);
+    expect(winRc.contains('"Shear 0.57"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.56"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.57"'), isTrue);
     expect(linuxApp.contains('Shear 0.6'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -1980,8 +1980,8 @@ void main() {
         reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.56.0+81'));
-    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.56'"));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.57.0+82'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.57'"));
   });
 
   test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
@@ -2759,7 +2759,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.56');
+    expect(kWalletVersion, '0.57');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(kWalletVersion, isNot('0.47'));
@@ -3222,8 +3222,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.56');
-    expect(kWalletVersion, '0.56');
+    expect(app.title, 'Shear 0.57');
+    expect(kWalletVersion, '0.57');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -4233,6 +4233,53 @@ void main() {
     final view = ledger.shearviewTxs(id.address);
     expect(view.any((t) => t.to == dest && t.amount > 0 && (t.hashAmount ?? 0) > 0), isTrue);
     expect(view.any((t) => t.to.isEmpty), isFalse);
+  });
+
+  test('a real value proof verifies and a swapped v does not', () {
+    const v = 620544;
+    final note = _sealNoteNoRange(v, kind: 'hash');
+    expect(verifySealedNote(note, v), isTrue);
+    expect(verifySealedNote(note, v + 1), isFalse);
+  });
+
+  test('spendableOwned is only the verified confirmed coin', () {
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final ledger = ShearLedger()..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final d20 = hash20FromAddress(dest)!;
+    const goodNanos = 620544;
+    const youngNanos = 256;
+    const forgedNanos = 50 * kUnitsPerShe;
+    Map<String, dynamic> seal(int v, int height) {
+      var note = _sealNoteNoRange(v, dest20: d20, kind: 'hash');
+      note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
+      final row = compactSealedVout(note);
+      row.remove('nanos');
+      row.remove('amount');
+      row['height'] = height;
+      return row;
+    }
+
+    final good = seal(goodNanos, 4);
+    final forged = seal(goodNanos, 4);
+    (forged['valueProof'] as Map)['v'] = forgedNanos;
+    final young = seal(youngNanos, 100);
+    ledger.ingestSealedVouts([good, forged, young], spendSeed: seed, dest: dest);
+    ledger.settleTo(4 + ShearLedger.spendableConfirmations - 1);
+    ledger.applyPoolSnapshot(
+      dest,
+      {'balance': forgedNanos / kUnitsPerShe},
+      beforeHeight: 0,
+      tipSealed: ledger.sealedHeight,
+    );
+    final got = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
+    expect(got, goodNanos / kUnitsPerShe);
+    expect(got, isNot(closeTo(forgedNanos / kUnitsPerShe, 1e-6)));
+    expect(
+      ledger.unconfirmedIncomingShe(id.address, paymentCode: id.paymentCode),
+      closeTo(youngNanos / kUnitsPerShe, 1e-18),
+    );
   });
 
   testWidgets('incoming pie evaporates at spendable confs; leftover pendings continue', (tester) async {
@@ -6128,8 +6175,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.56 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.56');
+  test('kWalletVersion == 0.57 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.57');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);

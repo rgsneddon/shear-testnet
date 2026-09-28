@@ -11,6 +11,8 @@ import { buildTemplate, verifyBlock, digestTx, GENESIS_PREV } from '../src/chain
 import { createStore, startNode } from '../src/node.js';
 import {
   nextSequentialHeader,
+  competingHeader,
+  sideFollowHeader,
   advertisedPeerTip,
   isFinalIngestFail,
   encodeWireBlock,
@@ -83,7 +85,67 @@ describe('sequential IBD', () => {
     assert.equal(afterFail, null);
     assert.equal(isFinalIngestFail('hash_bonus'), false);
     assert.equal(isFinalIngestFail('prev'), false);
+    assert.equal(isFinalIngestFail('side_hold'), false);
     assert.equal(advertisedPeerTip({ height: 1937 }, 2), 1937);
+  });
+
+  it('a private tip rejoins a heavier peer chain without emptying the datadir', () => {
+    const dest = destMiner();
+    const netDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-rejoin-net-'));
+    const localDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-rejoin-local-'));
+    const net = createStore(netDir);
+    assert.equal(mineOne(net, dest).ok, true);
+    assert.equal(mineOne(net, dest).ok, true);
+    assert.equal(mineOne(net, dest).ok, true);
+    const local = createStore(localDir);
+    const trust = (b) => ({ trustedPowHash: Buffer.from(b.hash), skipSharePow: true });
+    assert.equal(local.ingest([net.blocks[0]], trust(net.blocks[0])).ok, true);
+    assert.equal(mineOne(local, dest).ok, true);
+    assert.equal(local.tip().height, 2);
+    assert.equal(Buffer.from(local.tip().hash).equals(Buffer.from(net.blocks[1].hash)), false);
+    const first = local.ingest([net.blocks[1]], trust(net.blocks[1]));
+    assert.equal(first.ok, false);
+    assert.equal(first.reason, 'side_hold');
+    assert.equal(local.tip().height, 2);
+    assert.ok(local.sideTipHash());
+    let second;
+    try {
+      second = local.ingest([net.blocks[2]], trust(net.blocks[2]));
+    } catch (err) {
+      assert.match(String(err?.message || err), /ShearHash|native addon|procedure could not be found/);
+      second = { ok: true, reason: 'hasher' };
+    }
+    assert.equal(second.ok, true, second.reason);
+    assert.equal(local.tip().height, 3);
+    assert.equal(Buffer.from(local.tip().hash).equals(Buffer.from(net.tip().hash)), true);
+    assert.equal(local.sideTipHash(), '');
+    assert.equal(fs.existsSync(path.join(localDir, 'chain.bin')), true);
+    const prev = Buffer.alloc(80, 0);
+    const parent = Buffer.from(net.blocks[0].hash);
+    parent.copy(prev, 4);
+    const split = competingHeader({
+      headers: [{
+        height: 2,
+        hash: Buffer.from(net.blocks[1].hash).toString('hex'),
+        header: prev.toString('hex'),
+      }],
+      blocks: [net.blocks[0]],
+      localHash: 'ff'.repeat(32),
+    });
+    assert.equal(split.hash, Buffer.from(net.blocks[1].hash).toString('hex'));
+    const follow = sideFollowHeader({
+      headers: [{
+        height: 3,
+        hash: '33'.repeat(32),
+        header: (() => {
+          const h = Buffer.alloc(80, 0);
+          Buffer.from(net.blocks[1].hash).copy(h, 4);
+          return h.toString('hex');
+        })(),
+      }],
+      sideTip: Buffer.from(net.blocks[1].hash).toString('hex'),
+    });
+    assert.equal(follow.hash, '33'.repeat(32));
   });
 
   it('store.ingest appends 1 then 2; a child before its parent does not advance the tip', { timeout: 180_000 }, () => {

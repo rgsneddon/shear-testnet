@@ -37,7 +37,7 @@ import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 import 'shear_vpn_profile.dart';
 
-const kWalletVersion = '0.56';
+const kWalletVersion = '0.57';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
@@ -252,7 +252,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final firstHonest = noteSidecarLine(sidecar, line);
       setState(() {});
       _pinNodeConsole();
-      if (firstHonest) _showLocalNodeSynced();
+      if (sidecar.localSyncNoticeDue(caughtTip: firstHonest)) _showLocalNodeSynced();
     }
     proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(take);
     proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen(take);
@@ -821,7 +821,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           if (sidecar.takeOverIfMatched()) {
             if (mounted) {
               setState(() {});
-              _showLocalNodeSynced();
+              if (sidecar.localSyncNoticeDue(caughtTip: true)) _showLocalNodeSynced();
             }
           }
           if (dirty && mounted) {

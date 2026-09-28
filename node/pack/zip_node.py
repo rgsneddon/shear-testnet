@@ -41,7 +41,7 @@ def product_version() -> str:
         for line in f:
             if "PRODUCT_VERSION" in line and "=" in line and "export const" in line:
                 return line.split("'")[1]
-    return os.environ.get("SHEAR_NODE_PIN", "7.0")
+    return os.environ.get("SHEAR_NODE_PIN", "8.0")
 
 
 def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=None) -> None:
@@ -127,7 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     if flavor not in FLAVORS:
         sys.exit(f"flavor must be one of {', '.join(FLAVORS)}")
     pin = product_version()
-    pack_label = os.environ.get("SHEAR_NODE_PACK_LABEL", "v7")
+    major = pin.split(".")[0]
+    pack_label = os.environ.get("SHEAR_NODE_PACK_LABEL", f"v{major}")
     os.environ["SHEAR_NODE_FLAVOR"] = flavor
     os.makedirs(DIST, exist_ok=True)
     name = f"shear-node-{pack_label}-{flavor}.zip"
@@ -176,12 +177,12 @@ def main(argv: list[str] | None = None) -> int:
         if flavor == "windows":
             write_mingw_runtime(z)
         readme = (
-            f"SHEAR-NODEv7 ({flavor})  node pin {pin}\n"
+            f"SHEAR-NODEv{major} ({flavor})  node pin {pin}\n"
             "Windows: double-click shear-node.cmd or shear-node.bat. The window stays open.\n"
             "Unix: chmod +x shear-node.sh && ./shear-node.sh\n"
             "It syncs from genesis (or the saved tip) to the live tip. No automatic bootstrap.\n"
             "Pass --solo for local stratum after ibd=false.\n"
-            "Magic shear-testnet-v5. Continuum wallet is 0.56.\n"
+            "Magic shear-testnet-v5. Continuum wallet is 0.57.\n"
             "If node_modules is missing: npm ci once in this folder, then run the launcher.\n"
         )
         z.writestr("README.txt", readme)

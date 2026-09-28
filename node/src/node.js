@@ -83,7 +83,7 @@ function bookPresent(dir, exists) {
   return exists(path.join(dir, 'chain.bin')) || exists(path.join(dir, 'chain.jsonl'));
 }
 
-/** Shared book for SHEAR-NODEv7 and Continuum. Windows: %APPDATA%\\Shear\\testnet-v5 (Roaming). */
+/** Shared book for SHEAR-NODEv8 and Continuum. Windows: %APPDATA%\\Shear\\testnet-v5 (Roaming). */
 export function defaultDataDir({
   env = process.env,
   homedir = os.homedir(),

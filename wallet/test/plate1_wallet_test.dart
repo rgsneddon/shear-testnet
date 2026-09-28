@@ -312,6 +312,42 @@ void main() {
     expect(phone.listenPort, isNull);
   });
 
+  test('local node synced notice is once per session after a lag and catch-up', () async {
+    ShearNodeSidecar open() {
+      final side = ShearNodeSidecar(
+        android: false,
+        nodeBinary: 'node',
+        dataDir: '/tmp/shear-notice',
+        emptyDatadir: true,
+        startProcess: (binary, env, args) async {},
+      );
+      side.select(ClosureSendMode.localNode);
+      return side;
+    }
+
+    const atTip = 'status height=10 hash=abcd peers=1 want=0 ibd=false hashBackend=native';
+    const behind = 'status height=9 hash=aa peers=1 want=1 ibd=false hashBackend=native';
+    final side = open();
+    await side.apply();
+    side.seekerTip = 10;
+    final first = noteSidecarLine(side, atTip);
+    expect(first, isTrue);
+    expect(side.localSyncNoticeDue(caughtTip: first), isTrue);
+    expect(noteSidecarLine(side, atTip), isFalse);
+    expect(side.localSyncNoticeDue(caughtTip: false), isFalse);
+    expect(noteSidecarLine(side, behind), isFalse);
+    expect(side.honest, isFalse);
+    final again = noteSidecarLine(side, atTip);
+    expect(again, isTrue);
+    expect(side.localSyncNoticeDue(caughtTip: again), isFalse);
+    final fresh = open();
+    await fresh.apply();
+    fresh.seekerTip = 10;
+    final opened = noteSidecarLine(fresh, atTip);
+    expect(opened, isTrue);
+    expect(fresh.localSyncNoticeDue(caughtTip: opened), isTrue);
+  });
+
   test('Resistance Start arms one syncing node and Stop returns to Connect bare', () async {
     var calls = 0;
     final dir = Directory.systemTemp.createTempSync('plate1-empty-start-');

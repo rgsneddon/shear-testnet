@@ -87,6 +87,15 @@ function workOfBlock(block) {
   }
 }
 
+function indexByHex(list, hex) {
+  const want = String(hex || '').toLowerCase();
+  if (!want) return -1;
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (hex32(list[i].hash).toLowerCase() === want) return i;
+  }
+  return -1;
+}
+
 function commonPrefixLen(a, b) {
   const n = Math.min(a.length, b.length);
   let i = 0;
@@ -468,6 +477,53 @@ export function createStore(dir, {
     return best - active;
   }
 
+  const policyStatePath = path.join(dir, 'payout-policy-state.json');
+  function loadPolicyState() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(policyStatePath, 'utf8'));
+      if (!raw || typeof raw !== 'object') return;
+      const base = emptyPolicyState();
+      base.reorgLog = Array.isArray(raw.reorgLog)
+        ? raw.reorgLog.filter((r) => r && Number.isFinite(Number(r.atMs)) && Number.isFinite(Number(r.depth)))
+        : [];
+      base.d_max = Math.max(0, Number(raw.d_max) || 0);
+      base.h_ratio = Number.isFinite(Number(raw.h_ratio)) ? Number(raw.h_ratio) : 1;
+      base.side_lead = Number(raw.side_lead) || 0;
+      base.frozen = !!raw.frozen;
+      base.freezeReason = String(raw.freezeReason || raw.freeze_reason || '');
+      base.quietBlocks = Math.max(0, Math.floor(Number(raw.quietBlocks ?? raw.quiet_blocks) || 0));
+      base.hRatioLow = !!raw.hRatioLow || !!raw.h_ratio_low;
+      base.hRatioRecoverBlocks = Math.max(0, Math.floor(Number(raw.hRatioRecoverBlocks ?? raw.h_ratio_recover_blocks) || 0));
+      base.hRatioPayoutHeld = !!raw.hRatioPayoutHeld
+        || !!raw.h_ratio_payout_held
+        || base.hRatioLow
+        || (base.frozen && base.freezeReason === 'h_ratio');
+      base.reorg_risk = !!raw.reorg_risk;
+      policyState = base;
+    } catch { /* no saved counters yet */ }
+  }
+  function savePolicyState() {
+    const body = JSON.stringify({
+      reorgLog: policyState.reorgLog || [],
+      d_max: policyState.d_max || 0,
+      h_ratio: policyState.h_ratio,
+      side_lead: policyState.side_lead || 0,
+      frozen: !!policyState.frozen,
+      freezeReason: policyState.freezeReason || '',
+      quietBlocks: policyState.quietBlocks || 0,
+      hRatioLow: !!policyState.hRatioLow,
+      hRatioRecoverBlocks: policyState.hRatioRecoverBlocks || 0,
+      hRatioPayoutHeld: !!policyState.hRatioPayoutHeld,
+      reorg_risk: !!policyState.reorg_risk,
+    });
+    try {
+      const tmp = `${policyStatePath}.tmp`;
+      fs.writeFileSync(tmp, body, { mode: 0o600 });
+      fs.chmodSync(tmp, 0o600);
+      fs.renameSync(tmp, policyStatePath);
+    } catch { /* counters remain in memory */ }
+  }
+
   function refreshPolicy({ newBlock = false, reorgDepth = 0, nowMs = Date.now() } = {}) {
     if (reorgDepth > 0) {
       policyState = recordReorg(policyState, { depth: reorgDepth, atMs: nowMs });
@@ -488,6 +544,7 @@ export function createStore(dir, {
         h_ratio: policyState.h_ratio,
       });
     }
+    savePolicyState();
   }
 
   function rebuildSpentB() {
@@ -771,6 +828,7 @@ export function createStore(dir, {
     refreshPolicy({ newBlock: true, nowMs: blockTimeMs(stored) });
     emit('tip', { hash: hex32(stored.hash), height: stored.height });
     if (check.evmSession) evmSession = check.evmSession;
+    clearSide();
     return { ok: true, block: stored, evmSession: check.evmSession || evmSession };
   }
 
@@ -1027,6 +1085,117 @@ export function createStore(dir, {
     return { ok: true, accepted };
   }
 
+  let sideAnchor = -1;
+  let sideBlocks = [];
+
+  function sideTipHash() {
+    if (!sideBlocks.length) return '';
+    return hex32(sideBlocks[sideBlocks.length - 1].hash).toLowerCase();
+  }
+
+  function clearSide() {
+    sideAnchor = -1;
+    sideBlocks = [];
+  }
+
+  function prevHexOf(block) {
+    try {
+      return Buffer.from(decodeHeader(Buffer.from(block.header)).prevBlockHash).toString('hex').toLowerCase();
+    } catch {
+      return '';
+    }
+  }
+
+  function parentView(block) {
+    return {
+      hash: block.hash,
+      header: block.header,
+      height: block.height,
+      rootA: block.rootA,
+      rootB: block.rootB,
+      txs: block.txs,
+      bLeaves: block.bLeaves,
+      weight: block.weight,
+    };
+  }
+
+  function leanVerified(block, check, prev) {
+    return leanBlock({
+      ...block,
+      magic: MAGIC_TESTNET,
+      hash: check.hash,
+      height: prev ? Number(prev.height || 0) + 1 : 1,
+      weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
+    });
+  }
+
+  /** Verify only the new suffix. The prefix already passed when it was appended. */
+  function verifySuffix(fork, parent, history, verifyOpts) {
+    const out = [];
+    let prev = parent;
+    const step = (i) => {
+      if (i >= fork.length) return { ok: true, blocks: out };
+      const check = verifyBlock(fork[i], parentView(prev), {
+        ...verifyOpts,
+        tipHeight: Number(prev?.height || 0) + 1,
+        evmHistory: history.concat(out),
+        parentFluxset: null,
+      });
+      const take = (c) => {
+        if (!c?.ok) return c;
+        const lean = leanVerified(fork[i], c, prev);
+        out.push(lean);
+        prev = lean;
+        return step(i + 1);
+      };
+      if (check && typeof check.then === 'function') return check.then(take);
+      return take(check);
+    };
+    return step(0);
+  }
+
+  /** Keep a competing branch until it has more work, then adopt it in place. */
+  function stageOrAdopt(fork, verifyOpts, anchorIdx) {
+    const prevHex = prevHexOf(fork[0]);
+    let anchor;
+    let parent;
+    let prior;
+    if (sideBlocks.length && prevHex === sideTipHash()) {
+      anchor = sideAnchor;
+      parent = sideBlocks[sideBlocks.length - 1];
+      prior = sideBlocks;
+    } else if (anchorIdx >= 0) {
+      anchor = anchorIdx;
+      parent = blocks[anchor];
+      prior = [];
+    } else {
+      return { ok: false, reason: 'prev', tip: tip() };
+    }
+    const history = blocks.slice(0, anchor + 1).concat(prior);
+    const checked = verifySuffix(fork, parent, history, verifyOpts);
+    const apply = (verified) => {
+      if (!verified?.ok) return verified;
+      const staged = prior.concat(verified.blocks);
+      if (staged.length > 8192) return { ok: false, reason: 'side_hold', tip: tip() };
+      const candidate = blocks.slice(0, anchor + 1).concat(staged);
+      let heavier = false;
+      try {
+        heavier = chainWorkOf(candidate) > chainWorkOf(blocks);
+      } catch {
+        return { ok: false, reason: 'bad_header', tip: tip() };
+      }
+      if (!heavier) {
+        sideAnchor = anchor;
+        sideBlocks = staged;
+        return { ok: false, reason: 'side_hold', tip: tip() };
+      }
+      clearSide();
+      return finishAdopt({ ok: true, accepted: candidate });
+    };
+    if (checked && typeof checked.then === 'function') return checked.then(apply);
+    return apply(checked);
+  }
+
   function adopt(fork) {
     if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
     const verified = verifyFork(fork);
@@ -1131,6 +1300,11 @@ export function createStore(dir, {
       }
       return last;
     }
+    const prevHex = Buffer.from(decoded.prevBlockHash).toString('hex').toLowerCase();
+    const anchorIdx = indexByHex(blocks, prevHex);
+    if (anchorIdx >= 0 || (sideBlocks.length && prevHex === sideTipHash())) {
+      return stageOrAdopt(fork, verifyOpts, anchorIdx);
+    }
     if (verifyOpts.offLoopPow) {
       return verifyForkAsync(fork, verifyOpts).then((v) => finishAdopt(v));
     }
@@ -1212,7 +1386,8 @@ export function createStore(dir, {
   }
 
   function spendableNanos(address) {
-    return explorerSpendable(historyFor(address), address);
+    const tipH = tip()?.height || 0;
+    return destSpendableNanos(address, tipH);
   }
 
   const viewByAddress = new Map();
@@ -1385,6 +1560,9 @@ export function createStore(dir, {
     return append(block, { trustedPowHash: okHash, skipSharePow: !!okHash });
   }
 
+  loadPolicyState();
+  refreshPolicy({ newBlock: false });
+
   return {
     dir,
     blocks,
@@ -1414,6 +1592,7 @@ export function createStore(dir, {
     headerHash,
     historyFor,
     spendableNanos,
+    sideTipHash,
     pruneBuried,
     pruneAfter,
     fastSync: archiveFast,

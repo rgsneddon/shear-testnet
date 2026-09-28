@@ -9,7 +9,7 @@ const kClosureModeLocal = 'localNode';
 const kClosureModeFull = 'localNodeFull';
 
 /// Connect bare is the new-session default. Stored hop and full-node values
-/// fold into the two 0.56 paths: bare, or the one syncing node.
+/// fold into the two 0.57 paths: bare, or the one syncing node.
 ClosureSendMode closureModeFromStored(String? raw, {required bool android}) {
   switch (raw) {
     case kClosureModeLocal:
@@ -253,7 +253,7 @@ PackagedNode? resolvePackagedNode({String? override, String? besideDir}) {
   return PackagedNode(binary: legacy, workDir: besideDir);
 }
 
-/// Shared with SHEAR-NODEv7. Windows: %APPDATA%\\Shear\\testnet-v5 (Roaming).
+/// Shared with SHEAR-NODEv8. Windows: %APPDATA%\\Shear\\testnet-v5 (Roaming).
 String defaultShearBookDir() {
   final data = Platform.environment['SHEAR_DATA'];
   if (data != null && data.isNotEmpty) return data;
@@ -335,6 +335,17 @@ class ShearNodeSidecar {
 
   bool get _noNode =>
       committed == ClosureSendMode.connectBare || committed == ClosureSendMode.shearPrivacyVpn;
+
+  /// Dialog latch for this process. A new sidecar is a new wallet launch.
+  bool _localSyncNoticeOffered = false;
+
+  /// First full tip sync in this session may offer the dialog. A later lag
+  /// that catches the tip again does not. Not stored on disk.
+  bool localSyncNoticeDue({required bool caughtTip}) {
+    if (!caughtTip || _localSyncNoticeOffered) return false;
+    _localSyncNoticeOffered = true;
+    return true;
+  }
 
   /// True once, when the local node first catches the light-seeker tip.
   bool takeOverIfMatched() {

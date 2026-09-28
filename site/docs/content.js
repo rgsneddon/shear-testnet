@@ -82,7 +82,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Spendable</th><td>protocol floor 6 confirmations (policy may freeze credits)</td></tr>' +
       '<tr><th>Levy cap</th><td>0.001 SHE</td></tr>' +
       '<tr><th>Stratum</th><td><code>pool.shear.digital:1111</code></td></tr>' +
-      '<tr><th>Wallet pin</th><td>0.56</td></tr>' +
+      '<tr><th>Wallet pin</th><td>0.57</td></tr>' +
       '<tr><th>Miner pin</th><td>ShearK 2.6</td></tr></table>' +
       '<p>How-to lives in this tree. Docs live under <a href="https://shear.digital/docs/">https://shear.digital/docs/</a> (typed docs.shear.digital may fail TLS). The architecture note is a PDF at <a href="https://shear.digital/whitepaper/">https://shear.digital/whitepaper/</a> — that URL is not in the navbar on purpose.</p>'
   };
@@ -100,7 +100,7 @@ window.SHEAR_DOCS = {
     title: 'Whitepaper',
     crumb: 'start / whitepaper',
     html:
-      '<p>Version 2.0 of the project note: ADMITv2, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve, and DINS-DAG (one pot-plus-hash mint, once per eligible share). Wallet pin 0.56. Live magic <code>shear-testnet-v5</code>.</p>' +
+      '<p>Version 2.0 of the project note: ADMITv2, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve, and DINS-DAG (one pot-plus-hash mint, once per eligible share). Wallet pin 0.57. Live magic <code>shear-testnet-v5</code>.</p>' +
       '<p><a href="https://shear.digital/whitepaper/">https://shear.digital/whitepaper/</a> presents it as a record with a PDF preview. Download <code>shear-whitepaper.pdf</code> from that page. There is no WHITEPAPER button in the site navbar. Typed whitepaper.shear.digital may fail TLS (apex SAN).</p>'
   };
 
@@ -126,7 +126,7 @@ window.SHEAR_DOCS = {
     title: 'Wallet overview',
     crumb: 'wallet / overview',
     html:
-      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.56</strong> (Windows, Linux, Arch, Fedora, Android, and macOS disk image shear-wallet-0.56-macos.dmg). Sync is a local node at <code>127.0.0.1:18332</code> — not flyclient, not pool HTTP as the only path. Magic <code>shear-testnet-v5</code>.</p>' +
+      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.57</strong> (Windows, Linux, Arch, Fedora, Android, and macOS disk image shear-wallet-0.57-macos.dmg). Sync is a local node at <code>127.0.0.1:18332</code> — not flyclient, not pool HTTP as the only path. Magic <code>shear-testnet-v5</code>.</p>' +
       '<table><tr><th>Continuum</th><td>Spendable balance, <code>she1</code>, six-slice pending pie</td></tr>' +
       '<tr><th>Flow</th><td>Send and receive</td></tr>' +
       '<tr><th>Resistance</th><td>Tx detail</td></tr>' +
@@ -145,28 +145,28 @@ window.SHEAR_DOCS = {
       '<li>You will enter that password each time. If it is lost, the wallet cannot be opened. Fingerprint or face unlock, where the device offers it, only works on this device.</li>' +
       '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
       '<li>Open Closure and export <code>shewall.bin</code>. Keep that file with the password.</li></ol>' +
-      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.56">shear-testnet 0.56</a>. 0.54 is the previous public pack pin. 0.56 is the fuller Continuum wallet. ' +
-      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.56/shear-wallet-0.56-macos.dmg">shear-wallet-0.56-macos.dmg</a> ' +
-      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.56/shear-wallet-0.56-windows.zip">shear-wallet-0.56-windows.zip</a> ' +
-      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.56/shear-wallet-0.56-android.apk">shear-wallet-0.56-android.apk</a> ' +
-      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.56/shear-wallet-0.56-linux.zip">shear-wallet-0.56-linux.zip</a> ' +
-      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.56/shear-wallet-0.56-archlinux.zip">shear-wallet-0.56-archlinux.zip</a> ' +
-      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.56/shear-wallet-0.56-fedora.zip">shear-wallet-0.56-fedora.zip</a>.</p>'
+      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.57">shear-testnet 0.57</a>. 0.54 is the previous public pack pin. 0.57 is the fuller Continuum wallet. ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.57/shear-wallet-0.57-macos.dmg">shear-wallet-0.57-macos.dmg</a> ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.57/shear-wallet-0.57-windows.zip">shear-wallet-0.57-windows.zip</a> ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.57/shear-wallet-0.57-android.apk">shear-wallet-0.57-android.apk</a> ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.57/shear-wallet-0.57-linux.zip">shear-wallet-0.57-linux.zip</a> ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.57/shear-wallet-0.57-archlinux.zip">shear-wallet-0.57-archlinux.zip</a> ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.57/shear-wallet-0.57-fedora.zip">shear-wallet-0.57-fedora.zip</a>.</p>'
   };
 
   P.android = {
     title: 'Android APK',
     crumb: 'wallet / android',
     html:
-      '<p>Install <code>shear-wallet-0.56-android.apk</code> from the official 0.56 tag. Package id is <code>com.shear.shear_wallet</code>. The APK is a single fat package (all ABIs), INTERNET granted on the released file, not a split APK. Packed on Windows (Flutter + Android SDK); macOS <code>.dmg</code> stays a MacBook cut.</p>' +
-      '<p>If a phone still says <strong>App not installed</strong>: uninstall the old debug-signed build first, then sideload 0.56. Do not install a Darwin zip or an unsigned copy. Camera and biometrics need the permissions already in the manifest.</p>'
+      '<p>Install <code>shear-wallet-0.57-android.apk</code> from the official 0.57 tag. Package id is <code>com.shear.shear_wallet</code>. The APK is a single fat package (all ABIs), INTERNET granted on the released file, not a split APK. Packed on Windows (Flutter + Android SDK); macOS <code>.dmg</code> stays a MacBook cut.</p>' +
+      '<p>If a phone still says <strong>App not installed</strong>: uninstall the old debug-signed build first, then sideload 0.57. Do not install a Darwin zip or an unsigned copy. Camera and biometrics need the permissions already in the manifest.</p>'
   };
 
   P['node-sync'] = {
     title: 'Node-sync',
     crumb: 'wallet / node-sync',
     html:
-      '<p>0.56 talks to a stock local node on <code>shear-testnet-v5</code>. Default seed is <code>http://127.0.0.1:18332</code>. Headers, compact blocks, and the tree root / jroot come from that node. Flyclient height sampling is not the send, balance, or history path. Hashbonus is dest-owned after 6 confs; the pot auto-pays at π after 30 confs.</p>' +
+      '<p>0.57 talks to a stock local node on <code>shear-testnet-v5</code>. Default seed is <code>http://127.0.0.1:18332</code>. Headers, compact blocks, and the tree root / jroot come from that node. Flyclient height sampling is not the send, balance, or history path. Hashbonus is dest-owned after 6 confs; the pot auto-pays at π after 30 confs.</p>' +
       '<p>Run <code>node node/src/node.js</code> on the same machine (or point the wallet at a node you trust). Public pool HTTP submit stays an advanced toggle with an IP warning. Do not use pool.shear.digital as the only sync path.</p>'
   };
 
@@ -210,9 +210,9 @@ window.SHEAR_DOCS = {
     html:
       '<p>Closure holds the rest-frame <code>shear1</code> and the public <code>she1</code>. Rest-frame never goes on the book. Confirmed SHE settles here. Chain dests are <code>ssa1</code> mailboxes derived from this identity; they do not need to be kept after prune. The <code>she1</code> line on this card is a fingerprint, not a payable address. Receive uses the full <code>she1</code>.</p>' +
       '<p>Settings: unlock with biometrics on this device. Password still encrypts <code>shewall.bin</code>. Export of that file is on this card.</p>' +
-      '<p>Continuum 0.56 send path is chosen here, then <strong>Apply</strong>. It applies to every Continuum send. A new 0.56 session opens on <strong>Connect bare</strong>. A session that already applied a path keeps that path until you change it.</p>' +
+      '<p>Continuum 0.57 send path is chosen here, then <strong>Apply</strong>. It applies to every Continuum send. A new 0.57 session opens on <strong>Connect bare</strong>. A session that already applied a path keeps that path until you change it.</p>' +
       '<table><tr><th>Connect bare</th><td>Default. Does not look for Shear Privacy VPN and does not start a node. Does not claim the IP is masked. Flow and Reserve do not wait on the hop.</td></tr>' +
-      '<tr><th>Shear Privacy VPN</th><td>Light wallet. The hop is there to mask the Continuum IP from the public node. Zero VPN fee. The 0.56 default is Connect bare.</td></tr>' +
+      '<tr><th>Shear Privacy VPN</th><td>Light wallet. The hop is there to mask the Continuum IP from the public node. Zero VPN fee. The 0.57 default is Connect bare.</td></tr>' +
       '<tr><th>Local node (no stratum)</th><td>Runs the node beside Continuum. Syncs from peers. An empty book applies the snapshot once; a recorded tip resumes and does not pull. No solo-mining stratum. The light seeker stays on the live tip until the local node matches that tip.</td></tr>' +
       '<tr><th>Local node (full)</th><td>Desktop solo. Same peer sync, plus stratum at <code>127.0.0.1:1111</code>. Android does not show this control and does not start a phone node: that pack has no node runtime. The light seeker still follows the live tip.</td></tr></table>' +
       '<p>On the Resistance heading, <strong>Start</strong> applies local node (full) on desktop: the node plus stratum <code>127.0.0.1:1111</code>, and it does not arm a second node if one is already running. <strong>Stop</strong> applies Shear Privacy VPN. Those buttons stay on the heading after Stop. Android Start does not arm stratum.</p>'
@@ -252,7 +252,7 @@ window.SHEAR_DOCS = {
     html:
       '<p>Solo means your node finds the block: you keep the live epoch pot plus your hash bonus. OS deps match README (apt, cmake, Node 20, rustup). The pool process must light-verify ShearHash-v3 on that same box. Without <code>crypto/native/shearhash.node</code> (or a 2.6 <code>ShearK-Miner</code> on <code>PATH</code> / <code>SHEARK_MINER</code>), every share comes back <code>native_missing</code>. Never copy a Darwin <code>.node</code> onto Linux. If make misses <code>node_api.h</code>, set <code>NODE_INC</code>.</p>' +
       '<pre>sudo apt-get update\nsudo apt-get install -y git curl build-essential cmake python3 pkg-config libssl-dev\ncurl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -\nsudo apt-get install -y nodejs\ncurl --proto \'=https\' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y\n. "$HOME/.cargo/env"\ngit clone https://github.com/rgsneddon/shear-testnet.git\n' +
-      'cd shear-testnet\ngit checkout 0.56\nnpm ci\n' +
+      'cd shear-testnet\ngit checkout 0.57\nnpm ci\n' +
       'cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native\n' +
       'cmake --build crypto/randomx/build -j"$(nproc)"\n' +
       'make -C crypto/native\n' +
@@ -374,9 +374,9 @@ window.SHEAR_DOCS = {
     title: 'Run a node',
     crumb: 'network / node',
     html:
-      '<p>Release <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.56">0.56</a>. A node is the book. It appends, verifies, speaks P2P, and runs the GATE that lets native Flow and pinned Reserve bytecode land in the same block. Continuum 0.56 reads this node, not flyclient. An empty book applies the snapshot once; a recorded tip resumes and does not pull.</p>' +
+      '<p>Release <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.57">0.57</a>. A node is the book. It appends, verifies, speaks P2P, and runs the GATE that lets native Flow and pinned Reserve bytecode land in the same block. Continuum 0.57 reads this node, not flyclient. An empty book applies the snapshot once; a recorded tip resumes and does not pull.</p>' +
       '<pre>git clone https://github.com/rgsneddon/shear-testnet.git\n' +
-      'cd shear-testnet\ngit checkout 0.56\nnpm ci\n' +
+      'cd shear-testnet\ngit checkout 0.57\nnpm ci\n' +
       'export SHEAR_DATA="$HOME/.shear/testnet-v5"\n' +
       'export SHEAR_NETWORK=shear-testnet-v5\n' +
       'export SHEAR_BOOTSTRAP=1\n' +
@@ -388,7 +388,7 @@ window.SHEAR_DOCS = {
       'export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303\n' +
       'node node/src/node.js</pre>' +
       '<p>Magic <code>shear-testnet-v5</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine until you add <code>--solo</code> after the height has caught the public tip. Build RandomX and <code>crypto/native</code> on that machine. Never copy a macOS <code>shearhash.node</code> onto Linux, or an Ubuntu one onto Fedora.</p>' +
-      '<p>Windows, same release, in PowerShell from the repo root: <code>git checkout 0.56</code>, <code>npm ci</code>, then set <code>$env:SHEAR_DATA</code>, <code>$env:SHEAR_NETWORK</code>, <code>$env:SHEAR_BOOTSTRAP="1"</code>, <code>$env:SHEAR_SEEDS</code> to the same list, and run <code>node node/src/node.js</code>. Arch uses the same shell as Linux.</p>' +
+      '<p>Windows, same release, in PowerShell from the repo root: <code>git checkout 0.57</code>, <code>npm ci</code>, then set <code>$env:SHEAR_DATA</code>, <code>$env:SHEAR_NETWORK</code>, <code>$env:SHEAR_BOOTSTRAP="1"</code>, <code>$env:SHEAR_SEEDS</code> to the same list, and run <code>node node/src/node.js</code>. Arch uses the same shell as Linux.</p>' +
       '<p>Default sync is full archival IBD from those peers. Reorg checkpoints are height 1000, then every 400. Do not set <code>SHEAR_FAST_SYNC</code> on a mining node.</p>' +
       '<p>Tree: <a href="https://github.com/rgsneddon/shear-testnet/tree/main/node">rgsneddon/shear-testnet/node</a>.</p>'
   };
@@ -397,7 +397,7 @@ window.SHEAR_DOCS = {
     title: 'Consensus',
     crumb: 'network / consensus',
     html:
-      '<p>Heaviest valid chain wins. Equal work keeps first-seen. Magic <code>shear-testnet-v5</code> on release 0.56. ADMITv2 membership over this book\'s notes, with confidential amounts. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
+      '<p>Heaviest valid chain wins. Equal work keeps first-seen. Magic <code>shear-testnet-v5</code> on release 0.57. ADMITv2 membership over this book\'s notes, with confidential amounts. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
   };
 
   P.header = {
@@ -465,7 +465,7 @@ window.SHEAR_DOCS = {
     html:
       '<p><code>shear-testnet-v5</code> settles a mining round as DINS-DAG. The book fingerprint carries <code>DINS=pot+hash</code> and <code>ROOTA=pot-spine+dag-fluxset</code>. Eligible shares are the blue set, sorted by identity. Arrival order is not membership. Each eligible share is counted once. A blue share is not dropped to favour another set.</p>' +
       '<p>The mint is the spine pot plus the hash nanos, once. That mint is not paid again from a second hash leg. Miners receive the epoch pot in the coinbase and the hash bonus on the next sealed block. Epoch 0 pot is 1.00 SHE. It steps down 0.01 SHE each 4-day testnet epoch to a 0.20 SHE floor. The hash unit is 10<sup>−11</sup> SHE. Public pages show nine digits.</p>' +
-      '<p>Wallet pin Continuum 0.56. Miner pin ShearK 2.6. DAG is a link in the client navbar. Mainnet is not live.</p>'
+      '<p>Wallet pin Continuum 0.57. Miner pin ShearK 2.6. DAG is a link in the client navbar. Mainnet is not live.</p>'
   };
 
   P.p2p = {

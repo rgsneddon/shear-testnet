@@ -305,7 +305,7 @@ describe('p2p gossip', () => {
     assert.equal(cfg.p2p, 30303);
     assert.equal(cfg.magic, MAGIC_TESTNET);
     assert.equal(cfg.magic, 'shear-testnet-v5');
-    assert.equal(cfg.version, '7.0');
+    assert.equal(cfg.version, '8.0');
     assert.equal(cfg.mainnet, false);
     assert.equal(cfg.phaseBGate, true);
     assert.equal(cfg.rpc, 18332);

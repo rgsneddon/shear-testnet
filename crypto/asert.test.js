@@ -400,7 +400,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(fp.includes('HASH_FN=ShearHash-v3'), true);
     assert.equal(fp.includes('HASH_FN=ShearHash-v2'), false);
     const law = consensusLaw();
-    assert.equal(PRODUCT_VERSION, '7.0');
+    assert.equal(PRODUCT_VERSION, '8.0');
     assert.equal(MINER_VERSION, '1.1');
     assert.equal(SHEARK_MINER_VERSION, '2.5');
     assert.equal(PRODUCT_VERSION.split('.').length, 2);
@@ -412,7 +412,8 @@ describe('hash-tx consensus law', () => {
     assert.equal(/^\d+\.\d+\.\d+$/.test(MINER_VERSION), false);
     assert.equal(/^\d+\.\d+$/.test('0.10'), true);
     assert.equal(/^\d+\.\d+$/.test('0.1.0'), false);
-    assert.equal(law.productVersion, '7.0');
+    assert.equal(law.productVersion, '8.0');
+    assert.equal(fp.includes('8.0'), false);
     assert.equal(fp.includes('7.0'), false);
     assert.equal(fp.includes('6.0'), false);
     assert.equal(fp.includes('0.52'), false);

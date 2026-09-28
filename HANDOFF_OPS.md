@@ -3,7 +3,7 @@
 **Written:** 2026-09-17T19:20Z from the Mac (`/Users/russellsneddon/shear`). HEAD **`f63c1e1`+** (dest-P bind `03fe7fe` is in this history).  
 **Canonical GitHub tree:** https://github.com/rgsneddon/shear-testnet  
 **Working branch:** `main`  
-**This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Pins are **0.48** (wallet) and ShearK **2.5**. Pin **0.48**. Do not recut older tags. The MacBook cuts **macOS only** (`CONTINUUM-0.46-MAC-HANDOFF.md`). This Windows box packs APK, Windows zip, Linux/Arch, and site pins.
+**This file is the Windows start for Shear.** Miner binaries stay in **`rgsneddon/ShearK`**. Pins are **0.48** (wallet) and ShearK **2.5**. Pin **0.48**. Do not recut older tags. The MacBook cuts **macOS only** (`MACBOOK-HANDOFF.md`). This Windows box packs APK, Windows zip, Linux/Arch, and site pins.
 
 Other Shear GitHub repos (`rgsneddon/shear`, `rgsneddon/shear-wallet`, `rgsneddon/shear-pool`) are being deleted. Clone **this** repo only, plus **ShearK**.
 
@@ -59,7 +59,7 @@ Tree on every box: `/opt/shear-v4`. Data: `/var/lib/shear/testnet-v4`. Magic rem
 
 Windows SSH key is `~\.ssh\id_ed25519` (this box). Mac key name remains `id_ed25519_restore_privacy_eu`.
 
-Linux/Arch wallet zips are packed **on 77.42.91.84** (`wallet/pack/pack_linux_de.sh` with `SHEAR_WALLET=/opt/shear-v4/wallet`). Windows zip + Android APK are packed on this Windows box. macOS `.dmg` is MacBook-only (`CONTINUUM-0.46-MAC-HANDOFF.md`).
+Linux/Arch wallet zips are packed **on 77.42.91.84** (`wallet/pack/pack_linux_de.sh` with `SHEAR_WALLET=/opt/shear-v4/wallet`). Windows zip + Android APK are packed on this Windows box. macOS `.dmg` is MacBook-only (`MACBOOK-HANDOFF.md`).
 
 `/stats` on pool `:8088` prints `missing`; use **`/api/stats`**.
 
@@ -101,7 +101,7 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 1. Pack **wallet 0.48** Windows/Android on this box onto tag `0.48`. Linux/Arch on `77.42.91.84`. Darwin cannot `flutter build windows`.
 2. **Android 0.48 APK is packed on this Windows box** (Flutter + Android SDK 36 + Eclipse Temurin JDK 17). See §6a. Do not wait for the Mac for Android.
-3. **Apple-only artifacts stay a MacBook cut** (`CONTINUUM-0.46-MAC-HANDOFF.md`): Continuum 0.48 `.dmg` + CLI, iOS if cutting, ShearK-Miner 2.5 macOS zip. Do not recut 0.45.
+3. **Apple-only artifacts stay a MacBook cut** (`MACBOOK-HANDOFF.md`): Continuum 0.48 `.dmg` + CLI, iOS if cutting, ShearK-Miner 2.5 macOS zip. Do not recut 0.45.
 4. If `ShearK-Miner-2.5-windows.zip` is still missing, pack it on **`rgsneddon/ShearK`** tag `2.5` (PE + `example.bat`). Do not recut 2.4/2.3.
 5. Keep mainnet blocked. No `SHEAR_MAINNET_EMIT=1` without `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`.
 
@@ -136,7 +136,7 @@ Fat APK only (`flutter build apk`, not `--split-per-abi`). `applicationId` `com.
 
 ### 6b) MacBook — Apple parts only
 
-The Windows box cannot produce notarized macOS, iOS, or a Darwin ShearK binary. Full Apple cut list (wallet `.dmg` + CLI, iOS if cutting, **ShearK-Miner 2.5 macOS zip**): [`CONTINUUM-0.46-MAC-HANDOFF.md`](CONTINUUM-0.46-MAC-HANDOFF.md).
+The Windows box cannot produce notarized macOS, iOS, or a Darwin ShearK binary. Full Apple cut list (wallet `.dmg` + CLI, iOS if cutting, **ShearK-Miner 2.5 macOS zip**): [`MACBOOK-HANDOFF.md`](MACBOOK-HANDOFF.md).
 
 ---
 

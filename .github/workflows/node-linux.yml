@@ -1,0 +1,45 @@
+# Linux-family SHEAR-NODEv8 zips. Native addon is built on ubuntu-latest.
+# Arch, Fedora, and OpenSUSE zips use that same Linux addon and the runner's node.
+# Does not upload, and does not move tag v7.
+name: node-linux
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: Node release label (v8)
+        required: true
+        default: 'v8'
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build ShearHash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3
+          cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
+          cmake --build crypto/randomx/build -j"$(nproc)"
+          make -C crypto/native shearhash.node
+      - name: Pack linux, arch, fedora, opensuse
+        env:
+          SHEAR_NODE_PACK_LABEL: ${{ inputs.label }}
+          SHEAR_NODE_PACK_DEPS: '0'
+        run: |
+          for flavor in linux archlinux fedora opensuse; do
+            python3 node/pack/zip_node.py "$flavor"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shear-node-${{ inputs.label }}-linux-family
+          path: |
+            dist/shear-node-${{ inputs.label }}-linux.zip
+            dist/shear-node-${{ inputs.label }}-archlinux.zip
+            dist/shear-node-${{ inputs.label }}-fedora.zip
+            dist/shear-node-${{ inputs.label }}-opensuse.zip

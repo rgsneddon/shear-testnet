@@ -201,7 +201,7 @@ describe('brand pages', () => {
     assert.match(poolHtml, /data-active="POOL"/);
     assert.match(explorerHtml, /class="nav-btn is-on"[^>]*>EXPLORER</);
     assert.match(mempoolHtml, /data-active="MEMPOOL"/);
-    assert.match(siteHtml, /releases\/tag\/0\.56/);
+    assert.match(siteHtml, /releases\/tag\/0\.57/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.55\.2/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.53/);
@@ -221,7 +221,7 @@ describe('brand pages', () => {
       assert.doesNotMatch(page, /releases\/tag\/0\.28|shear-wallet-0\.28/);
     }
     assert.match(explorerHtml, /rgsneddon\/shear-testnet/);
-    assert.match(explorerHtml, /releases\/tag\/0\.56/);
+    assert.match(explorerHtml, /releases\/tag\/0\.57/);
     assert.match(explorerHtml, /rgsneddon\/ShearK/);
     assert.match(explorerHtml, /theme\.js\?v=15/);
     assert.match(poolHtml, /rgsneddon\/ShearK/);

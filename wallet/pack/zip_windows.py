@@ -104,7 +104,7 @@ def main() -> int:
                 if not os.path.isfile(src):
                     sys.exit(f"Continuum sidecar needs MinGW {dll} beside gcc")
                 z.write(src, f"runtime/{dll}")
-            print("bundled SHEAR-NODEv7 beside Continuum")
+            print("bundled SHEAR-NODEv8 beside Continuum")
 
     size = os.path.getsize(out)
     names = zipfile.ZipFile(out).namelist()
@@ -117,7 +117,7 @@ def main() -> int:
     if EXE_NAME not in names:
         sys.exit(f"missing {EXE_NAME} at zip root")
     if "node/src/node.js" not in names:
-        sys.exit("Continuum zip must include node/src/node.js (SHEAR-NODEv7 sidecar)")
+        sys.exit("Continuum zip must include node/src/node.js (SHEAR-NODEv8 sidecar)")
     if "runtime/node.exe" not in names:
         sys.exit("Continuum zip must include runtime/node.exe")
     if "crypto/native/shearhash.node" not in names:

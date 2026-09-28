@@ -167,6 +167,13 @@ describe('thin solo stratum', () => {
     assert.equal(soloMaySeal({ height: 70, hash: 'cd'.repeat(32), peers: ahead }), false);
     assert.equal(soloMaySeal({ height: 100, hash: 'ab'.repeat(32), peers: ahead }), true);
     assert.equal(soloMaySeal({ height: 70 }), true);
+    const behind = new Map([['peer', { height: 99, hash: 'aa'.repeat(32) }]]);
+    assert.equal(soloMaySeal({
+      height: 100,
+      hash: 'bb'.repeat(32),
+      peers: behind,
+      blockHashAt: () => 'aa'.repeat(32),
+    }), false);
     assert.equal(parseSoloLogin('not-a-dest.solo').ok, false);
   });
 
@@ -198,6 +205,55 @@ describe('thin solo stratum', () => {
     } finally {
       try { aheadSock?.destroy(); } catch { /* ignore */ }
       try { tipSock?.destroy(); } catch { /* ignore */ }
+      stratum.close();
+    }
+  });
+
+  it('a miner that logged in while syncing receives a job on that socket once the tip matches', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-resume-'));
+    const store = createStore(dir);
+    const dest = destMiner();
+    const peers = new Map([[1, { height: 9, hash: 'ab'.repeat(32) }]]);
+    const stratum = createSoloStratum({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      restampMs: 40,
+      peers: () => peers,
+    });
+    const bound = await stratum.listen();
+    let sock;
+    try {
+      const ahead = await loginSolo(bound.port, dest, SHARE_FLOOR_BITS);
+      sock = ahead.sock;
+      assert.equal(ahead.msg.error, 'syncing');
+      const jobLine = new Promise((resolve, reject) => {
+        let buf = '';
+        const t = setTimeout(() => reject(new Error('no job after tip match')), 2000);
+        sock.on('data', (chunk) => {
+          buf += chunk.toString('utf8');
+          let idx;
+          while ((idx = buf.indexOf('\n')) >= 0) {
+            const raw = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 1);
+            if (!raw) continue;
+            let msg;
+            try { msg = JSON.parse(raw); } catch { continue; }
+            if (msg.method !== 'job') continue;
+            clearTimeout(t);
+            resolve(msg);
+            return;
+          }
+        });
+      });
+      peers.set(1, { height: 0, hash: '' });
+      const msg = await jobLine;
+      assert.equal(msg.method, 'job');
+      assert.ok(msg.params?.jobId);
+      assert.ok(msg.params?.header);
+      assert.equal(msg.params.shareBind, 'dest');
+    } finally {
+      try { sock?.destroy(); } catch { /* ignore */ }
       stratum.close();
     }
   });

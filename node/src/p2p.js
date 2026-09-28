@@ -447,10 +447,11 @@ export function lineHasIpBesideIdentity(line) {
 }
 
 /** `prev` is a batch-order miss; retry on the next header page. Merkle/pow stay final.
- * A missing local hasher is not a bad block — do not poison genesis. */
+ * A missing local hasher is not a bad block — do not poison genesis.
+ * `side_hold` is a competing branch that is not heavier yet. Keep fetching it. */
 export function isFinalIngestFail(reason) {
   const r = String(reason || '');
-  if (r === 'prev' || r === 'hash_bonus') return false;
+  if (r === 'prev' || r === 'hash_bonus' || r === 'side_hold') return false;
   if (/native[_ ]addon[_ ]missing|native_missing/i.test(r)) return false;
   return true;
 }
@@ -484,6 +485,56 @@ export function headerPrevHash(header) {
   const hex = Buffer.from(buf).subarray(4, 36).toString('hex');
   if (!hex || /^0+$/.test(hex)) return '';
   return hex;
+}
+
+function headerSkipped(hash, have, failed, pending) {
+  const h = String(hash || '').toLowerCase();
+  if (!h) return true;
+  const has = (set) => (set instanceof Set ? set.has(h) : Array.isArray(set) && set.includes(h));
+  return has(have) || has(failed) || has(pending);
+}
+
+/** Next header on a staged competing branch. Its parent is the side tip, not ours. */
+export function sideFollowHeader({
+  headers = [],
+  sideTip = '',
+  have,
+  failed,
+  pending,
+} = {}) {
+  const prevWant = String(sideTip || '').toLowerCase();
+  if (!prevWant) return null;
+  for (const h of headers || []) {
+    const hash = wireHash(h.hash);
+    if (!hash || headerSkipped(hash, have, failed, pending)) continue;
+    const prev = headerPrevHash(h.header);
+    if (prev && prev === prevWant) return { hash, height: Number(h.height) || 0 };
+  }
+  return null;
+}
+
+/**
+ * Header whose parent is already in our chain, and is not our tip.
+ * Sequential IBD skips this. It is how a split tip rejoins a heavier chain.
+ */
+export function competingHeader({
+  headers = [],
+  blocks = [],
+  localHash = '',
+  have,
+  failed,
+  pending,
+} = {}) {
+  const tip = String(localHash || '').toLowerCase();
+  for (const h of headers || []) {
+    const hash = wireHash(h.hash);
+    if (!hash || headerSkipped(hash, have, failed, pending)) continue;
+    const prev = headerPrevHash(h.header);
+    if (!prev || (tip && prev === tip)) continue;
+    if (headerIndexByHash(blocks, prev) < 0) continue;
+    return { hash, height: Number(h.height) || 0 };
+  }
+  return null;
 }
 
 /** On a prev miss, fetch the parent before the child is retried. */
@@ -737,7 +788,10 @@ export function createP2p({
   }
 
   function locators() {
-    return locatorHashes(store.blocks || []);
+    const base = locatorHashes(store.blocks || []);
+    const side = typeof store.sideTipHash === 'function' ? store.sideTipHash() : '';
+    if (!side) return base;
+    return [side, ...base.filter((h) => h !== side)];
   }
 
   function beginHeaders(sock) {
@@ -928,9 +982,25 @@ export function createP2p({
       const localH = Number(tip?.height || 0);
       const localHash = tip?.hash ? hexHash(tip.hash) : '';
       const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
+      const page = msg.headers || [];
+      rec.page = page;
+      const sideTip = typeof store.sideTipHash === 'function' ? store.sideTipHash() : '';
       const next = nextSequentialHeader({
-        headers: msg.headers || [],
+        headers: page,
         localHeight: localH,
+        localHash,
+        have,
+        failed: rec.failed,
+        pending: rec.pending,
+      }) || sideFollowHeader({
+        headers: page,
+        sideTip,
+        have,
+        failed: rec.failed,
+        pending: rec.pending,
+      }) || competingHeader({
+        headers: page,
+        blocks: store.blocks || [],
         localHash,
         have,
         failed: rec.failed,
@@ -1068,6 +1138,15 @@ export function createP2p({
               queueMissingParent(rec, lastHash, headerPrevHash(last?.header));
             } else if (got?.reason === 'hash_bonus' && !have.has(lastHash)) {
               requeuePrevHash(rec, lastHash);
+            } else if (got?.reason === 'side_hold') {
+              const follow = sideFollowHeader({
+                headers: rec.page || [],
+                sideTip: typeof store.sideTipHash === 'function' ? store.sideTipHash() : '',
+                have,
+                failed: rec.failed,
+                pending: rec.pending,
+              });
+              if (follow) rec.want = [follow.hash, ...(rec.want || [])];
             } else if (isFinalIngestFail(got?.reason)) rec.failed.add(lastHash);
           }
           if (!got?.ok && recordIngestFail(rec, got?.reason)) {

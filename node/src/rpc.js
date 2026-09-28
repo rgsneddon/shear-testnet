@@ -67,6 +67,9 @@ function notesForAddress(store, address) {
           kind: o.kind || (tx.coinbase ? 'pot' : 'send'),
           noteCommit: o.noteCommit,
           commit: o.commit,
+          valueProof: o.valueProof
+            ? { R: o.valueProof.R, z: o.valueProof.z, v: o.valueProof.v }
+            : undefined,
           rEph: o.rEph,
           rCt: o.rCt,
           admitPub: o.admitPub,

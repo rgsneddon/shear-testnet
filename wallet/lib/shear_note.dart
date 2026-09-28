@@ -76,6 +76,38 @@ Map<String, Uint8List> proveValue(int v, Scalar r) {
   return {'C': C, 'R': sch['R']!, 'z': sch['z']!};
 }
 
+/// C = v·G + r·H. Same byte backend as [proveValue]. A mismatched v is not a coin.
+bool verifyValue(Uint8List cBytes, int v, Map proof) {
+  try {
+    // noteBits is 64. `1 << 64` is 0 on a 64-bit int, which would reject every coin.
+    if (v < 0 || v.bitLength > noteBits) return false;
+    final r = proof['R'];
+    final z = proof['z'];
+    if (r is! Uint8List || z is! Uint8List) return false;
+    final vg = v == 0 ? ristrettoIdBytes : mulGBytes(scalarBytes(scalarFromInt(v)));
+    final p = subBytes(cBytes, vg);
+    final e = hashToScalar([p, r, valExtra]);
+    final left = mulBytes(noteHBytes, z);
+    final right = addBytes(r, mulBytes(p, scalarBytes(e)));
+    if (left.length != right.length) return false;
+    for (var i = 0; i < left.length; i++) {
+      if (left[i] != right[i]) return false;
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// Value proof must hold. A flat stand-in range blob is not a range proof.
+bool verifySealedNote(Map vout, int v) {
+  final commit = vout['commit'];
+  final proof = vout['valueProof'];
+  if (commit is! Uint8List || proof is! Map) return false;
+  if (!verifyValue(commit, v, proof)) return false;
+  return true;
+}
+
 Map<String, Uint8List> bitOrProveBytes(Uint8List B, int b, Uint8List s) {
   final P0 = B;
   final P1 = subBytes(B, ristrettoGBytes);

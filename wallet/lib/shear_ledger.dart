@@ -188,10 +188,6 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
   final seenHex = <String>{
     ...List<String>.from(input['seenCommitHex'] as List? ?? const []),
   };
-  final txHints = <Map<String, dynamic>>[
-    for (final raw in (input['txHints'] as List? ?? const []))
-      if (raw is Map) Map<String, dynamic>.from(raw),
-  ];
   final dest = input['dest'] as String?;
   final prevIn = input['prev'];
   final prev = prevIn == null
@@ -263,30 +259,11 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       }
     }
     final kind = (o['kind'] as String?) ?? 'pot';
-    num? amt = o['amount'] as num?;
-    if (amt == null && o['nanos'] is num) {
-      amt = (o['nanos'] as num) / kUnitsPerShe;
-    }
-    if (amt == null) {
-      final vp = o['valueProof'];
-      if (vp is Map && vp['v'] is num) {
-        amt = (vp['v'] as num) / kUnitsPerShe;
-      }
-    }
-    if (amt == null) {
-      final h = (o['height'] as num?)?.toInt();
-      for (final t in txHints) {
-        if (h != null && (t['height'] as num?)?.toInt() != h) continue;
-        if (t['to'] != matched) continue;
-        final tk = t['kind']?.toString() ?? '';
-        final same = tk == kind
-            || (kind == 'pot' && tk == 'coinbase')
-            || (kind == 'hash' && tk == 'hash');
-        if (!same) continue;
-        amt = t['amount'] as num?;
-        break;
-      }
-    }
+    final proofChecked = _completeValueProof(o);
+    final verifiedNanos = proofChecked ? _verifiedClaimNanos(o) : null;
+    final num? amt = (verifiedNanos != null && verifiedNanos > 0)
+        ? verifiedNanos / kUnitsPerShe
+        : null;
     notes.add({
       'address': matched,
       'dest': matched,
@@ -301,6 +278,8 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
       if (o['height'] != null) 'height': o['height'],
       if (amt != null) 'amount': amt,
+      if (proofChecked) 'proofChecked': true,
+      if (verifiedNanos != null) 'verified': true,
     });
     seenHex.add(commitHex);
     if (kind == 'hash' && amt != null && !seenCommit) {
@@ -369,6 +348,35 @@ Future<Map<String, dynamic>> parseHistoryPayload(Map<String, dynamic> input) asy
     txs.add(tx.toJson());
   }
   return {'amountsOnly': false, 'txs': txs, 'dests': dests, 'named': named};
+}
+
+/// R and z present. A bare `{v}` claim is not a proof.
+bool _completeValueProof(Map o) {
+  final vp = o['valueProof'];
+  if (vp is! Map) return false;
+  if (_noteBytes(o['commit']) == null) return false;
+  if (_noteBytes(vp['R']) == null || _noteBytes(vp['z']) == null) return false;
+  return vp['v'] is num;
+}
+
+/// Nanos only when the value proof opens that exact claim.
+int? _verifiedClaimNanos(Map o) {
+  final commit = _noteBytes(o['commit']);
+  final vp = o['valueProof'];
+  if (commit == null || vp is! Map) return null;
+  final r = _noteBytes(vp['R']);
+  final z = _noteBytes(vp['z']);
+  final raw = vp['v'];
+  if (r == null || z == null || raw is! num) return null;
+  final v = raw.round();
+  if (v <= 0) return null;
+  if (!verifySealedNote({
+    'commit': commit,
+    'valueProof': {'R': r, 'z': z, 'v': v},
+  }, v)) {
+    return null;
+  }
+  return v;
 }
 
 Uint8List? _noteBytes(dynamic v) {
@@ -1234,6 +1242,8 @@ class ShearLedger {
   final Map<String, double> _spendable = {};
   /// Owned sealed notes (commit, noteCommit, r, prev, index, admit x). Reserve vault excepted.
   final List<Map<String, dynamic>> _notes = [];
+  /// Dests whose notes carried a complete value proof this session.
+  final Set<String> _proofCheckedDests = {};
   List<Map<String, dynamic>> get notes => List.unmodifiable(_notes);
   void rememberNote(Map<String, dynamic> note) {
     final incoming = Map<String, dynamic>.from(note);
@@ -1308,6 +1318,10 @@ class ShearLedger {
         if (n is Map) {
           final row = Map<String, dynamic>.from(n);
           rememberNote(row);
+          if (row['proofChecked'] == true) {
+            final dest = (row['dest'] ?? row['address'])?.toString() ?? '';
+            if (dest.isNotEmpty) _proofCheckedDests.add(payKey(dest));
+          }
           _creditNoteToShearview(row);
         }
       }
@@ -1350,7 +1364,7 @@ class ShearLedger {
           amount: she,
           kind: 'blockfound',
           height: h,
-          confirmed: h < 1 || confirmationsOf(h) >= spendableConfirmations,
+          confirmed: h > 0 && confirmationsOf(h) >= spendableConfirmations,
           hashAmount: she,
         ));
       }
@@ -1493,6 +1507,7 @@ class ShearLedger {
     _txs.clear();
     _spendable.clear();
     _notes.clear();
+    _proofCheckedDests.clear();
     _pending.clear();
     _immature.clear();
     _owedPiDisplay = 0;
@@ -2262,9 +2277,37 @@ class ShearLedger {
       final key = payKey(d);
       if (!isDestAddress(key) || !seen.add(key)) continue;
       if (_isProgramVaultDest(key)) continue;
-      n += spendable(key);
+      n += _shownSpendable(key);
     }
     return n;
+  }
+
+  /// Book balance, never above coins whose value proof opened and that have
+  /// [spendableConfirmations]. A dest with no complete proof keeps the book.
+  double _shownSpendable(String key) {
+    final book = spendable(key);
+    final cap = _verifiedConfirmedShe(key);
+    if (cap == null) return book;
+    if (book > cap + 1e-12) return cap;
+    return book;
+  }
+
+  /// Null when this dest has not presented a complete value proof.
+  double? _verifiedConfirmedShe(String dest) {
+    final key = payKey(dest);
+    if (!_proofCheckedDests.contains(key)) return null;
+    var total = 0.0;
+    for (final n in _notes) {
+      if (n['spent'] == true || n['verified'] != true) continue;
+      if (!_noteOnDest(n, key)) continue;
+      final h = (n['height'] as num?)?.toInt();
+      if (h == null || h < 1) continue;
+      if (confirmationsOf(h) < spendableConfirmations) continue;
+      final she = _noteSheOf(n, 0);
+      if (she <= 0) continue;
+      total += she;
+    }
+    return total;
   }
 
   double _noteSheOf(Map<String, dynamic> note, double fallback) {

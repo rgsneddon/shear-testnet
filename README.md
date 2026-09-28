@@ -9,7 +9,7 @@ This is the **main Shear tree** (`rgsneddon/shear-testnet`): node, crypto, specs
 | [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv2 (`shear-testnet-v4`) |
 | [rgsneddon/ShearK](https://github.com/rgsneddon/ShearK) | Official miner pin + how-to (keep this repo) |
 
-Windows ops start: [`HANDOFF_OPS.md`](HANDOFF_OPS.md). MacBook cuts Apple-only artifacts (Continuum 0.48 `.dmg`/CLI, iOS if cutting, ShearK 2.5 macOS): [`CONTINUUM-0.46-MAC-HANDOFF.md`](CONTINUUM-0.46-MAC-HANDOFF.md).
+Windows ops start: [`HANDOFF_OPS.md`](HANDOFF_OPS.md). MacBook cuts Apple-only artifacts: [`MACBOOK-HANDOFF.md`](MACBOOK-HANDOFF.md).
 
 Offer a silent ID (`she1`) when someone pays you. Incoming coin lands on a revolving dest (`ssa1`) that the book writes. Rest-frame (`shear1`) stays in Closure. While this book has fewer than 10,000 notes the membership set is thin.
 
@@ -18,7 +18,7 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
 - Miner pin: **ShearK-Miner 2.6** — https://github.com/rgsneddon/ShearK/releases/tag/2.6
-- Wallet pin: **0.56** (GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.56
+- Wallet pin: **0.57** (GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.57
 - Stratum: `pool.shear.digital:1111`
 - P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v4`)
 - Site: https://shear.digital
