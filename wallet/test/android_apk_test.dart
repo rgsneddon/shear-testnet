@@ -32,7 +32,7 @@ String? _aapt() {
 
 void main() {
   test('0.48 APK is a fat installable package (applicationId, versionCode > 52, INTERNET)', () {
-    expect(kWalletVersion, '0.57');
+    expect(kWalletVersion, '0.58');
     final apk = _apk();
     if (!apk.existsSync()) return;
     expect(apk.lengthSync(), greaterThan(10 * 1024 * 1024));
@@ -42,7 +42,7 @@ void main() {
     expect(badging.exitCode, 0, reason: badging.stderr.toString());
     final out = badging.stdout.toString();
     expect(out, contains("name='com.shear.shear_wallet'"));
-    expect(RegExp(r"versionName='0\.48\.0'").hasMatch(out), isTrue);
+    expect(RegExp(r"versionName='0\.49\.0'").hasMatch(out), isTrue);
     final code = RegExp(r"versionCode='(\d+)'").firstMatch(out);
     expect(code, isNotNull);
     expect(int.parse(code!.group(1)!), 70);

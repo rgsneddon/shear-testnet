@@ -41,7 +41,7 @@ def product_version() -> str:
         for line in f:
             if "PRODUCT_VERSION" in line and "=" in line and "export const" in line:
                 return line.split("'")[1]
-    return os.environ.get("SHEAR_NODE_PIN", "8.0")
+    return os.environ.get("SHEAR_NODE_PIN", "9.0")
 
 
 def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=None) -> None:
@@ -182,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
             "Unix: chmod +x shear-node.sh && ./shear-node.sh\n"
             "It syncs from genesis (or the saved tip) to the live tip. No automatic bootstrap.\n"
             "Pass --solo for local stratum after ibd=false.\n"
-            "Magic shear-testnet-v5. Continuum wallet is 0.57.\n"
+            "Magic shear-testnet-v5. Continuum wallet is 0.58.\n"
             "If node_modules is missing: npm ci once in this folder, then run the launcher.\n"
         )
         z.writestr("README.txt", readme)

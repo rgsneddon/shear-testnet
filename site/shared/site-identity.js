@@ -6,7 +6,7 @@
 (function (global) {
   'use strict';
 
-  var FALLBACK_WALLET = '0.57';
+  var FALLBACK_WALLET = '0.58';
   var FALLBACK_NET = 'shear-testnet-v5';
   var lastNetwork = FALLBACK_NET;
   var lastWallet = FALLBACK_WALLET;

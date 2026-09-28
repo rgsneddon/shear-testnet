@@ -5,11 +5,11 @@
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/boot/index.html": {
-      "skeleton": "591f7164d9c70f9d7107bd6522c73fad9f8eff11f517f7a5c13c1a55ea9ab731",
+      "skeleton": "38bf5f08eed6e2709755023fb3a775ae040663c010b74e277f8682314c6bc378",
       "style": "fd03a6f669054017d3388c29242d336c0d017096bce274b4ea35e36d3bad3bee"
     },
     "dag/index.html": {
-      "skeleton": "c13ba7096eb923ce049b2d410da46be96dc74508d250918629ac109dad33e36c",
+      "skeleton": "97be244da0367c41877c49d626f88e54ff002953fb8ddaf817473dc3d1a503bf",
       "style": "a2048fb4a26d8242ac3f497cd5d78473bb2de718a2e96aed64e2faa1929d0977"
     },
     "explorer/explorer.html": {
@@ -29,59 +29,59 @@
       "style": "ca379f432346547b65abc24108f59f5a4c4030f3ef39e2bf902446c35ebb2b6a"
     },
     "pool/public/explorer.html": {
-      "skeleton": "5429a32d24eee5592ae92d15ef2d857e4a73cfdd62529a5389370c175c7e7631",
+      "skeleton": "a040de935bca1ace97a781127a7367cb3157b1160dd8124b795090e157b60ccc",
       "style": "177e4abe348422ec84d814a959d99d6829e070d961f8ce8b1f598b034d0cb2be"
     },
     "pool/public/miner.html": {
-      "skeleton": "a19615084e9a279a4e971e7083bae3548c79b81f9f47e18660fbedbea57d5959",
-      "style": "ae339e8570592ad0f14b56930a7f0bc2a5756617cb430dd5a4160c2249b777fd"
+      "skeleton": "34c4624f3fc50acfd4da0e7d133c92ff190f316a6297f5e0ee1f269974c588b6",
+      "style": "5aeba73ecd3bb6995388eae6704472da492ab3473b2f864786d7f9bf17c0ecae"
     },
     "site/r2r/index.html": {
       "skeleton": "afcd825c1a4729af92c0de0a0499bd42fb8606b483e87b04902260a81914854e",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/index.html": {
-      "skeleton": "bf016c2f672d27fadb70f353cf0d87a7c8cf3a722614a86688e3827092da75c6",
+      "skeleton": "5b767fe296cbfe80d06de93965d6db663e1842ccd93a450157f18566da8578e2",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/admin/index.html": {
-      "skeleton": "b65dd820ae08faa1d6cb4f4696562e185552e1fe9e22982de7a150155774a2c5",
+      "skeleton": "1f694295b0f4d38d4804778c7b55421d63d97a1b8726991d0753c3d36718c9ac",
       "style": "b5f7428c82f4404ce68772b2baea6b226ebd3c746541003832e51ffb3d4c4e86"
     },
     "site/docs/index.html": {
-      "skeleton": "1836dfb2dc605dbc6771de14dc25e79545c777c6c65b6cd956168cfbe5340bc6",
+      "skeleton": "b693275f0bd0f89ca0d331eef73c4fee21282cb6c2b09191d2b512ca2fd061aa",
       "style": "99e0b7f1f1e516a861f1a34caefc57d2584ebc358bfaa42e4b467d1869edbdbe"
     },
     "site/get-started.html": {
-      "skeleton": "372883fa588f2e758ac95faeed4450fde1e7b7cb8bf6b520c6394007c9dab2da",
+      "skeleton": "33f6c19c44a65201b5cd6c3e4ee48afabf86f215254777482b51b6134e0dbb2c",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/governance.html": {
-      "skeleton": "e7666c05262251db0df6e8f69845aa094820a7e5ef9ec18092b178692dc9d39b",
+      "skeleton": "14de9f77126af8c56e0252dfbb0ca33be1b61eb3967626497b17dbf260428148",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/mine.html": {
-      "skeleton": "6c391631e37c4a94126831ec9c03557537a4214092f28b4fcd915f0d5c08a5b1",
+      "skeleton": "a19b10e576104baf4fb184660dc3e3bf19c4063d8da48935902bdb442f991fa5",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/miner/index.html": {
-      "skeleton": "b3a4c4b32950ef6f2886edb63119d41cbf8ff3075e4a7aa8faa7ef5ead366f0d",
+      "skeleton": "bb55b2dc39b3ed809dcac4a1b438adef8c3d6d56e20c56606e6a0bd0cd4e4159",
       "style": "0d1a9c3299687be627ef57bdd5c37f7194f42a757440d2a782d80353834e429a"
     },
     "site/network.html": {
-      "skeleton": "7df880cbbf400ba622de8000f90a4e5d355d5dc468bfe6bb50a69d8574532df2",
+      "skeleton": "c4c31a5a84829d9d9637ca130568a2bc239cab19b78d6a4fa32d193f9c75e80c",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/node/index.html": {
-      "skeleton": "f13acea58a552c04b2f27ad1d1d31a79bea2fcfc95fe7cec0b7bf83f7efc8701",
+      "skeleton": "10ca98a41bd7ada5355a5ffcdf55e8a2332ace16a849221e0dc148f87b0174ce",
       "style": "5aae7de3b4d1515b536ef53d3bf66676a1ae9230dc5f9c773e7754d56e2d2fcc"
     },
     "site/wallet/index.html": {
-      "skeleton": "dcb2da7db469e6a81102217c0bdce3466e4fad2f86cf8cbafedacf738c89b021",
+      "skeleton": "d65e61d547a23b39425879a0827359a0fad5e01643775e5672ec7f6003fdabf0",
       "style": "4a410ccd78e0094693bde09c7fc8dcf9472c96fa67b4dbd3141e1ef411503ba7"
     },
     "site/whitepaper/index.html": {
-      "skeleton": "febc7a548403eee502e9aad6e0241e307a5493d15689daf4f6f27d64d26e7f48",
+      "skeleton": "1723ad38da6e956dfbaa579de485d01842abd10f221656f0d5c43b55037176ee",
       "style": "cf4add7c1fb7ab54c2195331277b2fdb75150be2b5b33d8f174afbbd3eee9d82"
     },
     "vortices/index.html": {

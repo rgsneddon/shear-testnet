@@ -9,7 +9,7 @@ const kClosureModeLocal = 'localNode';
 const kClosureModeFull = 'localNodeFull';
 
 /// Connect bare is the new-session default. Stored hop and full-node values
-/// fold into the two 0.57 paths: bare, or the one syncing node.
+/// fold into the two 0.58 paths: bare, or the one syncing node.
 ClosureSendMode closureModeFromStored(String? raw, {required bool android}) {
   switch (raw) {
     case kClosureModeLocal:
@@ -253,7 +253,7 @@ PackagedNode? resolvePackagedNode({String? override, String? besideDir}) {
   return PackagedNode(binary: legacy, workDir: besideDir);
 }
 
-/// Shared with SHEAR-NODEv8. Windows: %APPDATA%\\Shear\\testnet-v5 (Roaming).
+/// Shared with SHEAR-NODEv9. Windows: %APPDATA%\\Shear\\testnet-v5 (Roaming).
 String defaultShearBookDir() {
   final data = Platform.environment['SHEAR_DATA'];
   if (data != null && data.isNotEmpty) return data;

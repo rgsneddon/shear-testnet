@@ -3340,7 +3340,11 @@ class ShearLedger {
     if (live.every((t) => t.to.isEmpty && t.from.isEmpty)) return;
     final liveIds = <String>{for (final t in live) t.id};
     _txs.removeWhere((t) {
-      if ((t.height ?? 0) < 1) return false;
+      final h = t.height ?? 0;
+      if (h < 1) return false;
+      // Still on the Continuum pending pie. A history page that omits this
+      // id must not drop it before 6 confirmations.
+      if (h <= _sealedHeight + 1 && confirmationsOf(h) < spendableConfirmations) return false;
       // Lock/withdraw rows replay portal principal after a thin staked=0 sync.
       // A later history page of payouts must not erase them.
       if (t.kind == 'lock' || t.kind == 'withdraw') return false;

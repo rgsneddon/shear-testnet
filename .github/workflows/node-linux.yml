@@ -1,4 +1,4 @@
-# Linux-family SHEAR-NODEv8 zips. Native addon is built on ubuntu-latest.
+# Linux-family SHEAR-NODEv9 zips. Native addon is built on ubuntu-latest.
 # Arch, Fedora, and OpenSUSE zips use that same Linux addon and the runner's node.
 # Does not upload, and does not move tag v7.
 name: node-linux
@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       label:
-        description: Node release label (v8)
+        description: Node release label (v9)
         required: true
-        default: 'v8'
+        default: 'v9'
 
 jobs:
   linux:

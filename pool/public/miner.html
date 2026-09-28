@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -9,9 +9,15 @@
   <link rel="icon" href="/brand/favicon.ico"/>
   <link rel="stylesheet" href="/brand/theme.css?v=30"/>
   <style>
-    :root {
-      --bg: #eef3f8; --card: #ffffff; --ink: #0d2137; --muted: #5a738c;
-      --cyan: #0088a8; --blue: #1a6fb5; --green: #1a9a4a; --radius: 0px;
+    :root, html[data-theme="dark"] {
+      --bg: #07090c; --card: #11161f; --ink: #e8eef4; --muted: #8b9aab;
+      --cyan: #5eead4; --blue: #5eead4; --green: #5dcc7a; --radius: 0px;
+      --banner: rgba(7,9,12,.92); --input: #0c1016; --code: #0c1016; --gold: #f0b429;
+    }
+    html[data-theme="light"] {
+      --bg: #f4f7fa; --card: #ffffff; --ink: #0f172a; --muted: #475569;
+      --cyan: #0f766e; --blue: #0f766e; --green: #15803d; --radius: 0px;
+      --banner: rgba(255,255,255,.92); --input: #ffffff; --code: #eef2f6; --gold: #b45309;
     }
     * { box-sizing: border-box; }
     html, body { margin:0; font:15px/1.4 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
@@ -21,11 +27,10 @@
     h2 { font-size:1.12rem; font-weight:800; margin:0 0 8px; }
     p { margin:0 0 8px; overflow-wrap:anywhere; }
     .panel-card {
-      border: 1px solid transparent; border-radius: var(--radius); padding: 10px 12px; margin: 8px 0;
-      background: linear-gradient(165deg, #ffffff 0%, #f4f8fc 58%) padding-box,
-        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-      background-origin: border-box; background-clip: padding-box, border-box;
+      border: 1px solid rgba(94,234,212,.22); border-radius: var(--radius); padding: 10px 12px; margin: 8px 0;
+      background: var(--card);
     }
+    html[data-theme="light"] .panel-card { border-color: rgba(15,118,110,.28); }
     .grid { display:grid; gap:8px; width:100%; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 8px 0 16px; }
     .grid .panel-card { margin:0; padding:7px 8px; }
     .grid .split-card { gap: 0; }
@@ -43,7 +48,8 @@
       text-align: center;
       min-width: 0;
     }
-    .split-rule { width: 1px; background: rgba(26,111,181,.28); }
+    .split-rule { width: 1px; background: rgba(94,234,212,.28); }
+    html[data-theme="light"] .split-rule { background: rgba(15,118,110,.28); }
     .pull-row {
       display:grid; gap:8px; width:100%;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -53,7 +59,7 @@
     .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; }
     .payout-err { color:var(--muted); font-size:.75rem; margin:.35rem 0 0; font-weight:500; }
     .value { font-size:.9rem; font-weight:650; margin-top:2px; color:var(--cyan); overflow-wrap:anywhere; }
-    .value.yellow { color:#d4a017; }
+    .value.yellow { color:var(--gold); }
     .withdraw-btn {
       margin-top:6px; padding:.45rem .6rem; cursor:pointer;
       background:var(--input, #fff); color:var(--cyan); border:1px solid var(--blue);
@@ -118,11 +124,10 @@
     a.nav-btn {
       display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
       font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
-      border:1px solid transparent;
-      background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
-        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
-      background-origin:border-box; background-clip:padding-box, border-box;
+      border:1px solid rgba(94,234,212,.22);
+      background: var(--card);
     }
+    html[data-theme="light"] a.nav-btn { border-color: rgba(15,118,110,.28); }
     @media (max-width: 1024px) {
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .pull-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -146,7 +151,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.57" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.58" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">

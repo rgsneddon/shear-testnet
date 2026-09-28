@@ -21,9 +21,9 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.57 (current)
+## 0.58 (current)
 
-Spendable counts a coin only when its sealed value proof verifies and the network has given it 6 confirmations. A pool balance with no opened proof, and a note that carries only `{v}`, stay out of Spendable. A coin the local book confirms at 6 confirmations is included. Unconfirmed coins stay on the unconfirmed line. The local-node synced notice is offered once per wallet session. Public tag **0.57** (store `0.57.0+82`). Node executable release is SHEAR-NODEv8 (tag `v8`). Tag `v7` stays. macOS `.dmg` stays the MacBook handoff (`MACBOOK-HANDOFF.md`). Windows, Linux, Arch, Fedora, and Android ship on the same tag.
+A transfer stays in the Continuum pending section until it has 6 confirmations. A history page that omits its id does not drop it early. Spendable counts a coin only when its sealed value proof verifies and the network has given it 6 confirmations. A pool balance with no opened proof, and a note that carries only `{v}`, stay out of Spendable. A coin the local book confirms at 6 confirmations is included. Unconfirmed coins stay on the unconfirmed line. The local-node synced notice is offered once per wallet session. Public tag **0.58** (store `0.58.0+83`). Node executable release is SHEAR-NODEv9 (tag `v9`). Tags `v7` and `v8` stay. Tag `0.57` stays. macOS `.dmg` stays the MacBook handoff (`MACBOOK-HANDOFF.md`). Windows, Linux, Arch, Fedora, and Android ship on the same tag.
 
 ## 0.48
 
