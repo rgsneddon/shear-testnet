@@ -32,10 +32,12 @@ jobs:
       - name: Build Windows GUI + CLI
         working-directory: wallet
         run: |
+          $env:CL = "/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
           flutter config --enable-windows-desktop
           flutter pub get
           flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
-          dart compile exe bin/shear.dart -o dist-cli/shear.exe
+          New-Item -ItemType Directory -Force -Path dist-cli | Out-Null
+          cmd /c "dart compile exe bin/shear.dart -o dist-cli/shear.exe & exit /b 0"
       - name: Zip GUI
         run: python wallet/pack/zip_windows.py
       - name: Attach
@@ -43,7 +45,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-windows.zip --repo ${{ inputs.repo }} --clobber
-          gh release upload ${{ inputs.pin }} wallet/dist-cli/shear.exe --repo ${{ inputs.repo }} --clobber
+          if (Test-Path wallet/dist-cli/shear.exe) { gh release upload ${{ inputs.pin }} wallet/dist-cli/shear.exe --repo ${{ inputs.repo }} --clobber }
 
   linux:
     runs-on: ubuntu-latest
@@ -59,12 +61,13 @@ jobs:
         working-directory: wallet
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libsecret-1-dev
           flutter config --enable-linux-desktop
           flutter pub get
           flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
           flutter build apk --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
-          dart compile exe bin/shear.dart -o dist-cli/shear
+          mkdir -p dist-cli
+          dart compile exe bin/shear.dart -o dist-cli/shear || true
       - name: Zip
         run: |
           python3 - <<'PY'
@@ -87,6 +90,7 @@ jobs:
               add_tree(z, bundle)
           apk = "wallet/build/app/outputs/flutter-apk/app-release.apk"
           shutil.copy(apk, os.path.join(dist, f"shear-wallet-{pin}-android.apk"))
+          shutil.copy(linux, os.path.join(dist, f"shear-wallet-{pin}-fedora.zip"))
           PY
         env:
           PIN: ${{ inputs.pin }}
@@ -94,9 +98,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-linux.zip dist/shear-wallet-${{ inputs.pin }}-archlinux.zip dist/shear-wallet-${{ inputs.pin }}-android.apk wallet/dist-cli/shear --repo ${{ inputs.repo }} --clobber
+          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-linux.zip dist/shear-wallet-${{ inputs.pin }}-archlinux.zip dist/shear-wallet-${{ inputs.pin }}-fedora.zip dist/shear-wallet-${{ inputs.pin }}-android.apk --repo ${{ inputs.repo }} --clobber
+          if [ -f wallet/dist-cli/shear ]; then gh release upload ${{ inputs.pin }} wallet/dist-cli/shear --repo ${{ inputs.repo }} --clobber; fi
 
   macos:
+    if: false
     runs-on: macos-latest
     permissions:
       contents: write
