@@ -1279,10 +1279,7 @@ void main() {
     await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
     expect(ledger.pendingTxs(id.address).where((t) => t.kind == 'hash'), isEmpty);
     expect(ledger.pending(id.address), 0);
-    expect(
-      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
-      closeTo(0.1 + 0.4 + 7 * kHashBonusShe, 1e-18),
-    );
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
     expect(ledger.ownerHistory(id.address).where((t) => t.id == 'in-1').single.confirmed, isTrue);
     ledger.settleTo(9 + ShearLedger.continuumConfirmations - 1);
     expect(ledger.pendingTxs(id.address), isEmpty);
@@ -1316,10 +1313,7 @@ void main() {
     await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
 
     expect(ledger.sealedHeight, 40);
-    expect(
-      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
-      closeTo(reconstructed, 1e-18),
-    );
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
     expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'hash'), isFalse);
     expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'receive' && t.id == 'in-boot'), isTrue);
     expect(ledger.pending(id.address), closeTo(0.4 + 7 * kHashBonusShe, 1e-18));
@@ -1335,10 +1329,7 @@ void main() {
     expect(ledger.pendingTxs(id.address).where((t) => t.kind == 'hash'), isEmpty);
     expect(ledger.pending(id.address), 0);
     expect(ledger.pendingTxs(id.address).any((t) => t.id == 'in-boot'), isTrue);
-    expect(
-      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
-      closeTo(reconstructed + 0.4 + 7 * kHashBonusShe, 1e-18),
-    );
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
     ledger.settleTo(ledger.sealedHeight + ShearLedger.continuumConfirmations - 1);
     expect(ledger.pendingTxs(id.address), isEmpty);
   });
@@ -1370,10 +1361,7 @@ void main() {
     expect(ledger.settledHeight, 12);
     expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'hash'), isFalse);
     expect(ledger.pendingTxs(id.address).any((t) => t.id == 'in-tip'), isTrue);
-    expect(
-      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
-      closeTo(reconstructed, 1e-18),
-    );
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
 
     live.height = 13;
     live.pending = 0;
@@ -1387,10 +1375,7 @@ void main() {
     await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
     expect(ledger.pending(id.address), 0);
     expect(ledger.pendingTxs(id.address).any((t) => t.id == 'in-tip'), isTrue);
-    expect(
-      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
-      closeTo(reconstructed + 0.4 + 7 * kHashBonusShe, 1e-18),
-    );
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
     ledger.settleTo(ledger.sealedHeight + ShearLedger.continuumConfirmations - 1);
     expect(ledger.pendingTxs(id.address), isEmpty);
   });
@@ -1432,10 +1417,7 @@ void main() {
     live.owner = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
     expect(ledger.sealedHeight, tip);
-    expect(
-      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
-      closeTo(reconstructed, 1e-18),
-    );
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
     expect(ledger.pending(id.address), closeTo(7 * kHashBonusShe, 1e-18));
     final dests = ledger.syncDests(id.address, paymentCode: id.paymentCode);
     expect(dests.length < 8, isTrue);
@@ -1902,16 +1884,19 @@ void main() {
     expect(unlocked.address, id.address);
   });
 
-  test('two Continuum receives yield two dests', () {
+  test('two Continuum receives use the one coin ledger', () {
     final id = createIdentity();
     final ledger = ShearLedger()..bindIdentity(id);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     final a = ledger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
     final b = ledger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
     expect(a.startsWith('ssa1'), isTrue);
-    expect(b.startsWith('ssa1'), isTrue);
-    expect(a, isNot(b));
+    expect(b, a);
+    expect(a, isNot(home));
     expect(isDestAddress(a), isTrue);
-    expect(isDestAddress(b), isTrue);
+    ledger.confirmRound(address: a, pot: 1.5, height: 1);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations - 1);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(1.5, 1e-12));
   });
 
   test('change-to-same-dest cannot be signed in the official sheet', () async {
@@ -3730,7 +3715,7 @@ void main() {
     expect(advisory.style!.color, const Color(0xFFFF3B3B));
   });
 
-  testWidgets('Flow New dest allocates a second receive dest', (tester) async {
+  testWidgets('Flow New dest keeps the one receive address', (tester) async {
     _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-flow-recv-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -3747,7 +3732,7 @@ void main() {
     await tester.tap(find.byKey(const Key('flow-new-dest')));
     await tester.pump();
     final second = tester.widget<SelectableText>(find.byKey(const Key('flow-receive-dest'))).data;
-    expect(second, isNot(first));
+    expect(second, first);
     expect(second!.startsWith('ssa1'), isTrue);
   });
 
@@ -4282,6 +4267,71 @@ void main() {
     );
   });
 
+  test('an unverified pool balance and a v-only note are not spendable', () async {
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final ledger = ShearLedger()..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.applyPoolSnapshot(
+      dest,
+      {'balance': 3738.365814558},
+      beforeHeight: 0,
+      tipSealed: 0,
+    );
+    expect(ledger.spendable(dest), closeTo(3738.365814558, 1e-9));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+
+    final d20 = hash20FromAddress(dest)!;
+    var bare = _sealNoteNoRange(620544, dest20: d20, kind: 'pot');
+    bare = attachAdmitPub(bare, admitBase: pointFrom(admitBaseBytes(seed)));
+    final row = compactSealedVout(bare);
+    row['height'] = 4;
+    row['valueProof'] = {'v': 620544};
+    ledger.ingestSealedVouts([row], spendSeed: seed, dest: dest);
+    ledger.settleTo(4 + ShearLedger.spendableConfirmations - 1);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'cd' * 32)!;
+    await expectLater(
+      ledger.send(
+        from: dest,
+        to: bob,
+        amount: 1,
+        local: true,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+      ),
+      throwsA(isA<StateError>()),
+    );
+  });
+
+  test('a verified confirmed note is spendable after an unverified snapshot', () {
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final ledger = ShearLedger()..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final d20 = hash20FromAddress(dest)!;
+    const goodNanos = 620544;
+    ledger.applyPoolSnapshot(
+      dest,
+      {'balance': 3738.365814558},
+      beforeHeight: 0,
+      tipSealed: 0,
+    );
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+    var note = _sealNoteNoRange(goodNanos, dest20: d20, kind: 'hash');
+    note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
+    final row = compactSealedVout(note);
+    row.remove('nanos');
+    row.remove('amount');
+    row['height'] = 4;
+    ledger.ingestSealedVouts([row], spendSeed: seed, dest: dest);
+    ledger.settleTo(4 + ShearLedger.spendableConfirmations - 1);
+    final got = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
+    expect(got, goodNanos / kUnitsPerShe);
+    expect(got, isNot(closeTo(3738.365814558, 1)));
+  });
+
   testWidgets('incoming pie evaporates at spendable confs; leftover pendings continue', (tester) async {
     _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-pie-');
@@ -4509,7 +4559,7 @@ void main() {
     expect(pool.queried.toSet().intersection(foreign), isEmpty);
     expect(ledger.spendable(mailbox), 0);
     expect(ledger.spendable(received), 10.5);
-    expect(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode), 10.5);
+    expect(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode), 0);
     final typed = 10.0;
     expect(
       ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: typed),
@@ -5804,12 +5854,14 @@ void main() {
     final ledger = ShearLedger()..viewSecret = alice.viewKey;
     final home = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
     ledger.applyPoolSnapshot(home, {'balance': 5.0, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
-    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(5.0, 1e-12));
+    expect(ledger.exportedDests(), contains(home));
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
     final dests = ledger.exportedDests();
     final resumed = ShearLedger()..viewSecret = alice.viewKey;
     resumed.restoreDests(dests);
     resumed.applyPoolSnapshot(home, {'balance': 5.0, 'pending': 0}, beforeHeight: 0, tipSealed: 8);
-    expect(resumed.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(5.0, 1e-12));
+    expect(resumed.exportedDests(), contains(home));
+    expect(resumed.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
   });
 
   test('incoming send from the pool dest does not adopt the pool dest as owned', () async {
@@ -5839,7 +5891,7 @@ void main() {
     final ledger = ShearLedger(pool: pool)..bindIdentity(alice);
     await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
     expect(ledger.exportedDests(), isNot(contains(poolDest)));
-    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(4.0, 1e-12));
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
     expect(ledger.spendable(poolDest), 0);
 
     ledger.restoreDests([poolDest, silent]);
@@ -5847,7 +5899,7 @@ void main() {
     await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
     expect(ledger.exportedDests(), isNot(contains(poolDest)));
     expect(ledger.spendable(poolDest), 0);
-    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(4.0, 1e-12));
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
   });
 
   test('openingForDest is local-only; send does not post opening on the wire', () async {
@@ -7716,7 +7768,7 @@ void main() {
     final vault = ShearReserve();
     expect(vault.deposit(dest: vaultDestAddr, she: 20, nowMs: 1), isNull);
     expect(ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode), closeTo(owed, 1e-9));
-    expect(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode), closeTo(spend, 1e-9));
+    expect(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode), 0);
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ledger,
@@ -7727,8 +7779,9 @@ void main() {
     await tester.pump();
     await tester.pump();
     final shown = tester.widget<Text>(find.byKey(const Key('continuum-spendable'))).data;
-    expect(shown, '${formatShe(spend + owed)} SHE');
+    expect(shown, '${formatShe(0)} SHE');
     expect(shown, isNot('${formatShe(minerPending)} SHE'));
+    expect(shown, isNot('${formatShe(spend + owed)} SHE'));
     expect(shown, isNot('${formatShe(spend + 20)} SHE'));
     expect(find.byKey(const Key('continuum-in-reserve')), findsOneWidget);
     expect(find.textContaining('In Reserve  ${formatShe(20)} SHE'), findsOneWidget);
@@ -7736,7 +7789,7 @@ void main() {
     expect(find.textContaining('Resistance'), findsWidgets);
     expect(find.byKey(const Key('continuum-owed-pi')), findsNothing);
     expect(find.textContaining('Owed toward π'), findsNothing);
-    expect(shown, '${formatShe(spend + owed)} SHE');
+    expect(shown, '${formatShe(0)} SHE');
     expect(find.textContaining('Not Continuum spendable'), findsWidgets);
     await tester.tap(find.byKey(const Key('continuum-in-reserve')));
     await tester.pump();

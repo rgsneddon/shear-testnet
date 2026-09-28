@@ -24,7 +24,7 @@ const kCliGuiCoverage = <String, String>{
   'id': 'Continuum — Copy ID (she1)',
   'dest': 'Continuum — Copy dest (ssa1 mining mailbox)',
   'balance': 'Continuum spendable / pending',
-  'receive': 'fresh stealth ssa1 (not the mining mailbox)',
+  'receive': 'the one spendable address (not the mining mailbox)',
   'send': 'Flow — sign and post a spend',
   'sign': 'Flow / pull / vote / lock — sign with spend key',
   'vote': 'Vortex — The Reserve vote (signed)',
@@ -94,7 +94,7 @@ Commands (GUI surface):
   id                   Continuum — she1 (Copy ID)
   dest                 Continuum — ssa1 mining mailbox (Copy dest)
   balance              Continuum spendable + pending
-  receive              mint a fresh stealth ssa1 (not the mining mailbox)
+  receive              the one spendable address (not the mining mailbox)
   send                 Flow — sign + pay she1 or ssa1
   sign                 sign Flow / pool-pull / Reserve vote / lock
   vote                 The Reserve vote (signed kind=vote)
@@ -331,7 +331,7 @@ shear unlock — open a sealed session
     case 'balance':
       return 'shear balance — spendable and pending SHE (confidential amounts)\n';
     case 'receive':
-      return 'shear receive — mint a fresh stealth ssa1 (not the mining mailbox)\n';
+      return 'shear receive — the one spendable address (not the mining mailbox)\n';
     case 'send':
       return '''
 shear send — Flow
@@ -649,8 +649,10 @@ Future<int> _receive(IOSink out, _Flags flags, Map<String, String> env) async {
   final id = await _needId(session, flags, env);
   final ledger = ShearLedger();
   _bindLedger(ledger, id, session);
-  final dest = ledger.newDest(id.address, paymentCode: id.paymentCode);
-  session.rememberedDests = [...session.rememberedDests, dest];
+  final dest = ledger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
+  if (!session.rememberedDests.contains(dest)) {
+    session.rememberedDests = [...session.rememberedDests, dest];
+  }
   await session.persist();
   out.writeln(flags.json ? jsonEncode({'ok': true, 'dest': dest}) : dest);
   return 0;

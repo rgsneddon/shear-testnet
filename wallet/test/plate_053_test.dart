@@ -328,7 +328,7 @@ void main() {
     expect(finger.posted, isFalse);
     expect(finger.to, startTo);
     expect(finger.remark, kErrShortShe1);
-    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(0.02, 1e-12));
+    expect(ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
     final she = await submitContinuumSend(
       ledger: ledger,
       restFrame: alice.address,

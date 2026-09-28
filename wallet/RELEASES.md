@@ -23,7 +23,7 @@ Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) at
 
 ## 0.57 (current)
 
-Spendable counts a coin only when its sealed value proof verifies and the network has given it 6 confirmations. Unverified or younger coins stay out of Spendable. The local-node synced notice is offered once per wallet session. Public tag **0.57** (store `0.57.0+82`). Node executable release is SHEAR-NODEv8 (tag `v8`). Tag `v7` stays. macOS `.dmg` stays the MacBook handoff (`MACBOOK-HANDOFF.md`). Windows, Linux, Arch, Fedora, and Android ship on the same tag.
+Spendable counts a coin only when its sealed value proof verifies and the network has given it 6 confirmations. A pool balance with no opened proof, and a note that carries only `{v}`, stay out of Spendable. A coin the local book confirms at 6 confirmations is included. Unconfirmed coins stay on the unconfirmed line. The local-node synced notice is offered once per wallet session. Public tag **0.57** (store `0.57.0+82`). Node executable release is SHEAR-NODEv8 (tag `v8`). Tag `v7` stays. macOS `.dmg` stays the MacBook handoff (`MACBOOK-HANDOFF.md`). Windows, Linux, Arch, Fedora, and Android ship on the same tag.
 
 ## 0.48
 

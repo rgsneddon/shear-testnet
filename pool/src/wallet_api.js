@@ -1076,7 +1076,13 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
             index,
             height: b.height,
             coinbase: !!tx.coinbase,
-            ...(nanos != null ? { nanos, amount: nanosToShe(nanos), valueProof: { v: nanos } } : {}),
+            ...(nanos != null ? {
+              nanos,
+              amount: nanosToShe(nanos),
+              valueProof: (hex(o.valueProof?.R) && hex(o.valueProof?.z))
+                ? { R: hex(o.valueProof.R), z: hex(o.valueProof.z), v: nanos }
+                : { v: nanos },
+            } : {}),
           });
         });
       }

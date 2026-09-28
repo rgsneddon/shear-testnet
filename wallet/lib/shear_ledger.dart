@@ -1244,6 +1244,10 @@ class ShearLedger {
   final List<Map<String, dynamic>> _notes = [];
   /// Dests whose notes carried a complete value proof this session.
   final Set<String> _proofCheckedDests = {};
+  /// External balances written before any value proof opened. Not spendable.
+  final Set<String> _unverifiedExternal = {};
+  /// One address that receives coins and that change returns to.
+  String? _coinLedger;
   List<Map<String, dynamic>> get notes => List.unmodifiable(_notes);
   void rememberNote(Map<String, dynamic> note) {
     final incoming = Map<String, dynamic>.from(note);
@@ -1508,6 +1512,7 @@ class ShearLedger {
     _spendable.clear();
     _notes.clear();
     _proofCheckedDests.clear();
+    _unverifiedExternal.clear();
     _pending.clear();
     _immature.clear();
     _owedPiDisplay = 0;
@@ -2279,16 +2284,26 @@ class ShearLedger {
       if (_isProgramVaultDest(key)) continue;
       n += _shownSpendable(key);
     }
+    // confirmRound before a spend pub parks the coin on the shear1 rest-frame.
+    // payKey aliases an ssa once a spend pub exists; that book is already summed.
+    if (!isDestAddress(restFrame) && payKey(restFrame) == restFrame) {
+      n += _shownSpendable(restFrame);
+    }
     return n;
   }
 
-  /// Book balance, never above coins whose value proof opened and that have
-  /// [spendableConfirmations]. A dest with no complete proof keeps the book.
+  /// Verified confirmed coins only. An external balance with no opened value
+  /// proof is not a coin. A later proof caps the book and never raises it.
   double _shownSpendable(String key) {
     final book = spendable(key);
     final cap = _verifiedConfirmedShe(key);
-    if (cap == null) return book;
-    if (book > cap + 1e-12) return cap;
+    final pk = payKey(key);
+    if (cap != null) {
+      _unverifiedExternal.remove(pk);
+      if (book > cap + 1e-12) return cap;
+      return book;
+    }
+    if (_unverifiedExternal.contains(pk)) return 0;
     return book;
   }
 
@@ -2520,7 +2535,7 @@ class ShearLedger {
   }
 
   String _hopOffMiningMailbox(String home, String restFrame, {String? paymentCode}) {
-    final fresh = allocateReceiveDest(restFrame, paymentCode: paymentCode);
+    final fresh = newDest(restFrame, paymentCode: paymentCode);
     final amt = _spendable.remove(home) ?? 0;
     if (amt > 0) _spendable[fresh] = (_spendable[fresh] ?? 0) + amt;
     return fresh;
@@ -2696,6 +2711,12 @@ class ShearLedger {
       }
       if (live > 0) rememberDest(key);
       _spendable[key] = live;
+      final pk = payKey(key);
+      if (_verifiedConfirmedShe(pk) == null) {
+        _unverifiedExternal.add(pk);
+      } else {
+        _unverifiedExternal.remove(pk);
+      }
     }
   }
 
@@ -3205,14 +3226,38 @@ class ShearLedger {
     return currentDest(restFrame, paymentCode: paymentCode);
   }
 
-  /// Continuum receive: always a newly derived ssa1. Two receives → two dests.
-  String allocateReceiveDest(String restFrame, {String? paymentCode}) =>
-      newDest(restFrame, paymentCode: paymentCode);
+  /// The one address receives add to. Stable until the wallet is reset.
+  String coinLedgerDest(String restFrame, {String? paymentCode}) {
+    final have = _coinLedger;
+    if (have != null &&
+        isDestAddress(have) &&
+        !_isProgramVaultDest(have) &&
+        isBindable(have, restFrame: restFrame, paymentCode: paymentCode)) {
+      return have;
+    }
+    final home = homeDest(restFrame, paymentCode: paymentCode);
+    final d = _freshStealthDest(restFrame, paymentCode: paymentCode, from: home);
+    _coinLedger = d;
+    _dests.add(d);
+    return d;
+  }
 
-  /// Send change to a newly derived stealth dest. Never [from] and never the Reserve portal.
+  /// Continuum receive: the one coin-ledger address. A second receive adds to it.
+  String allocateReceiveDest(String restFrame, {String? paymentCode}) =>
+      coinLedgerDest(restFrame, paymentCode: paymentCode);
+
+  /// Change returns to the coin ledger. Never [from] and never the Reserve portal.
   String allocateChangeDest(String restFrame, {String? from, String? portalDest, String? paymentCode}) {
     if (_ownPaymentCode(restFrame, paymentCode: paymentCode) == null) {
       throw ArgumentError('same_dest');
+    }
+    final ledgerDest = _coinLedger;
+    if (ledgerDest != null &&
+        ledgerDest != from &&
+        ledgerDest != portalDest &&
+        isDestAddress(ledgerDest) &&
+        !_isProgramVaultDest(ledgerDest)) {
+      return ledgerDest;
     }
     for (var i = 0; i < 24; i++) {
       final d = _freshStealthDest(restFrame, paymentCode: paymentCode, from: from, portalDest: portalDest);
@@ -3628,6 +3673,21 @@ class ShearLedger {
         restFrame != null &&
         spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 >= needShe) {
       _moveSpendableOnto(src);
+    }
+    if (sendKind == 'send' &&
+        restFrame != null &&
+        change == null &&
+        _coinLedger != null &&
+        src == _coinLedger &&
+        !_ownsSealedOn(src)) {
+      final hopped = _hopOffMiningMailbox(src, restFrame, paymentCode: paymentCode);
+      if (hopped != src) src = hopped;
+    }
+    if (!paintedCover) {
+      final usable = _shownSpendable(src);
+      if (usable + 1e-12 < needShe) throw StateError('insufficient');
+      final pk = payKey(src);
+      if (spendable(pk) > usable + 1e-12) _spendable[pk] = usable;
     }
     if (spendable(src) < needShe) {
       var fromNotes = 0.0;
