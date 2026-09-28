@@ -104,32 +104,32 @@ describe('shear.digital/docs', () => {
     assert.match(docs, /shared\/shear-chrome\.js/);
     assert.match(docs, /css\/saas-dark\.css/);
     assert.doesNotMatch(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
-    assert.match(docs, /content\.js\?v=23/);
+    assert.match(docs, /content\.js\?v=24/);
     for (const pack of [
-      'shear-wallet-0.58-windows.zip',
-      'shear-wallet-0.58-android.apk',
-      'shear-wallet-0.58-linux.zip',
-      'shear-wallet-0.58-archlinux.zip',
-      'shear-wallet-0.58-fedora.zip',
+      'shear-wallet-0.59-windows.zip',
+      'shear-wallet-0.59-android.apk',
+      'shear-wallet-0.59-linux.zip',
+      'shear-wallet-0.59-archlinux.zip',
+      'shear-wallet-0.59-fedora.zip',
     ]) {
-      const url = `releases/download/0.58/${pack}`;
+      const url = `releases/download/0.59/${pack}`;
       assert.match(docs, new RegExp(url.replace(/[.]/g, '\\.')));
       assert.match(content, new RegExp(url.replace(/[.]/g, '\\.')));
     }
-    assert.doesNotMatch(docs, /0\.58\.1/);
+    assert.doesNotMatch(docs, /0\.59\.1/);
     assert.doesNotMatch(docs, /0\.55\.1\.1/);
-    assert.doesNotMatch(content, /0\.58\.1/);
+    assert.doesNotMatch(content, /0\.59\.1/);
     assert.doesNotMatch(content, /0\.55\.1\.1/);
     assert.match(content, /Remove vortice/);
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);
-    assert.match(content, /Wallet pin<\/th><td>0\.58/);
+    assert.match(content, /Wallet pin<\/th><td>0\.59/);
     assert.doesNotMatch(content, /Wallet pin<\/th><td>0\.55</);
-    assert.match(content, /Current pin is <strong>0\.58<\/strong>/);
-    assert.doesNotMatch(content, /releases\/download\/0\.58\/shear-wallet-0\.58-macos\.dmg/);
-    assert.doesNotMatch(docs, /releases\/download\/0\.58\/shear-wallet-0\.58-macos\.dmg/);
+    assert.match(content, /Current pin is <strong>0\.59<\/strong>/);
+    assert.doesNotMatch(content, /releases\/download\/0\.59\/shear-wallet-0\.59-macos\.dmg/);
+    assert.doesNotMatch(docs, /releases\/download\/0\.59\/shear-wallet-0\.59-macos\.dmg/);
     assert.doesNotMatch(content, /shear-wallet-0\.55\.1-macos\.dmg/);
-    assert.match(content, /releases\/tag\/0\.58/);
+    assert.match(content, /releases\/tag\/0\.59/);
     assert.doesNotMatch(content, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(content, /Current pin is <strong>0\.33<\/strong>/);
     assert.doesNotMatch(content, /Wallet pin<\/th><td>0\.33/);
@@ -202,11 +202,11 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /Continuity-settled Proof of Work/);
     assert.match(paper, /HTML is canonical/);
     assert.match(paper, /id="pdf-stale"/);
-    assert.match(paper, /wallet 0\.58/);
+    assert.match(paper, /wallet 0\.59/);
     assert.doesNotMatch(paper, /wallet 0\.55/);
     assert.match(paper, /ShearK 2\.6/);
     assert.doesNotMatch(paper, /The builder still carries older ADMITv1/);
-    assert.match(paper, /releases\/tag\/0\.58/);
+    assert.match(paper, /releases\/tag\/0\.59/);
     assert.doesNotMatch(paper, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(paper, /releases\/tag\/0\.33/);
     assert.match(paper, /Publication/);
@@ -238,7 +238,7 @@ describe('whitepaper.shear.digital', () => {
     assert.doesNotMatch(src, /pin 0\.32/);
     assert.doesNotMatch(src, /pin 0\.37/);
     assert.match(src, /ShearK-Miner 2\.6/);
-    assert.match(src, /pin 0\.58/);
+    assert.match(src, /pin 0\.59/);
     assert.doesNotMatch(src, /pin 0\.55/);
     assert.equal(pdf.includes(Buffer.from('The Join')), false);
     const hay = pdfHaystack(pdf);
@@ -250,7 +250,7 @@ describe('whitepaper.shear.digital', () => {
     assert.equal(hay.includes(utf16be('ShearK-Miner 1.6')), false);
     assert.equal(hay.includes(Buffer.from('wallet 0.32')) || hay.includes(utf16be('wallet 0.32')) || hay.includes(utf16be('pin 0.32')), false);
     assert.equal(pdf.includes(Buffer.from('shear-testnet-v5')), true);
-    assert.equal(pdf.includes(Buffer.from('wallet-0.58')), true);
+    assert.equal(pdf.includes(Buffer.from('wallet-0.59')), true);
     assert.equal(pdf.includes(Buffer.from('ShearK-2.6')), true);
     assert.doesNotMatch(content, /The Join/);
     assert.doesNotMatch(content, /join1\./);
