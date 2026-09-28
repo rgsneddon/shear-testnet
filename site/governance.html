@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Governance — Shear</title>
+  <meta name="description" content="How Shear Reserve voting works: lock π, cast one vote per epoch, move hashbonus by ±1. The 1 SHE pot is not on the ballot." />
+  <link rel="icon" href="brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="css/site.css" />
+  <link rel="stylesheet" href="shared/shear-chrome.css" />
+  <link rel="stylesheet" href="css/saas-dark.css" />
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="MAIN" data-brand-base="brand/"></div>
+  <script src="shared/shear-chrome.js"></script>
+
+<div class="banner" role="status">
+    <strong>Testnet only.</strong> Mainnet is not live · launch date not decided
+  </div>
+
+  <main>
+    <div class="wrap page-hero">
+      <p class="section-label">Governance</p>
+      <h1>How Reserve voting works</h1>
+      <p class="lede">Holders who lock into The Reserve can nudge one mining parameter each epoch. The block pot stays fixed. This page is a plain map — Continuum’s Vortex tab is where you act.</p>
+    </div>
+
+    <section class="wrap section">
+      <div class="grid-3">
+        <div class="panel">
+          <div class="card-kicker">What happens</div>
+          <h3>Epochs, then enact</h3>
+          <p>Time on the Reserve runs in epochs (4 days on this testnet; 400 days planned for mainnet). The first qualifying π lock opens the inaugural epoch — not genesis, and not an operator clock.</p>
+          <p>Through most of the epoch, locked holders can cast a vote. Near the end, new locks may still sit idle for interest, but vote changes stop. When the epoch closes, the tallied choice moves the live hashbonus (or a tie leaves it), then principal and earned interest become withdrawable.</p>
+        </div>
+        <div class="panel">
+          <div class="card-kicker">How you take part</div>
+          <h3>Lock, then vote once</h3>
+          <p>Open Continuum → Vortex → <strong>The Reserve</strong>. Lock SHE into your own portal. About <strong>π SHE</strong> (~3.14159265358) unlocks <strong>one vote</strong> for the current epoch.</p>
+          <p>Each portal votes once. After you seal, the wallet keeps your choice and the other options drop away. A second cast in the same epoch is rejected as already locked. Public tallies show three piles (raise / lower / leave) without naming who voted. Locking and voting each pay a small Flow levy quoted from mempool depth at that step; withdrawing principal is not levied.</p>
+        </div>
+        <div class="panel">
+          <div class="card-kicker">What can change</div>
+          <h3>One knob on the ballot</h3>
+          <ul>
+            <li><strong>Hashbonus unit</strong> — raise by one, lower by one, or leave it. That unit is the extra mint per proven floor share (base is 10<sup>−11</sup> SHE). Plurality at epoch end enacts the move.</li>
+          </ul>
+          <div class="note"><strong>Not on the ballot:</strong> the <strong>1 SHE</strong> block pot. Epoch pot issuance is protocol schedule, not a vote outcome. Third-party Vortex programmes cannot mint SHE or move the pot.</div>
+          <p style="margin-top:0.85rem">The Reserve <strong>oracle</strong> publishes an observed staking APR for the epoch. Nodes freeze it fail-closed for interest mint. That rate is attested input, not something the ballot invents in the wallet UI.</p>
+        </div>
+      </div>
+      <div class="cta-row" style="margin-top:1.5rem">
+        <a class="btn btn-primary" href="wallet/index.html">Open Continuum hub</a>
+        <a class="btn btn-ghost" href="docs/index.html">Reserve docs</a>
+        <a class="btn btn-soft" href="network.html">Network schedule</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div data-shear-foot data-wallet-fallback="0.56" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
+      <nav>
+        <a href="index.html">Home</a>
+        <a href="network.html">Network</a>
+        <a href="docs/index.html">Docs</a>
+      </nav>
+    </div>
+  </footer>
+  <script src="js/site.js"></script>
+  <script src="shared/site-identity.js"></script>
+</body>
+</html>

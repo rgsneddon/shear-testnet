@@ -1,0 +1,281 @@
+{
+  "generatedFrom": "live crawl of shear.digital and public subdomains",
+  "pages": [
+    {
+      "url": "https://b2b.shear.digital/",
+      "file": "site/b2b/index.html"
+    },
+    {
+      "url": "https://b2b.shear.digital/brand/favicon-32.png",
+      "file": "site/b2b/index.html"
+    },
+    {
+      "url": "https://b2b.shear.digital/brand/favicon.ico",
+      "file": "site/b2b/index.html"
+    },
+    {
+      "url": "https://b2b.shear.digital/brand/nevia.css",
+      "file": "site/b2b/index.html"
+    },
+    {
+      "url": "https://b2b.shear.digital/brand/theme.css",
+      "file": "site/b2b/index.html"
+    },
+    {
+      "url": "https://b2b.shear.digital/brand/theme.js",
+      "file": "site/b2b/index.html"
+    },
+    {
+      "url": "https://b2b.shear.digital/brand/urema.css",
+      "file": "site/b2b/index.html"
+    },
+    {
+      "url": "https://b2b.shear.digital/index.html",
+      "file": "site/b2b/index.html"
+    },
+    {
+      "url": "https://boot.shear.digital/",
+      "file": "site/boot/index.html"
+    },
+    {
+      "url": "https://boot.shear.digital/index.html",
+      "file": "site/boot/index.html"
+    },
+    {
+      "url": "https://boot.shear.digital/late",
+      "file": "site/boot/index.html"
+    },
+    {
+      "url": "https://dag.shear.digital/",
+      "file": "dag/index.html"
+    },
+    {
+      "url": "https://dag.shear.digital/index.html",
+      "file": "dag/index.html"
+    },
+    {
+      "url": "https://explorer.shear.digital/",
+      "file": "explorer/explorer.html"
+    },
+    {
+      "url": "https://explorer.shear.digital/explorer",
+      "file": "explorer/explorer.html"
+    },
+    {
+      "url": "https://explorer.shear.digital/explorer.html",
+      "file": "explorer/explorer.html"
+    },
+    {
+      "url": "https://explorer.shear.digital/index.html",
+      "file": "explorer/explorer.html"
+    },
+    {
+      "url": "https://mempool.shear.digital/",
+      "file": "mempool/index.html"
+    },
+    {
+      "url": "https://mempool.shear.digital/index.html",
+      "file": "mempool/index.html"
+    },
+    {
+      "url": "https://p2p.shear.digital/",
+      "file": "site/p2p/index.html"
+    },
+    {
+      "url": "https://p2p.shear.digital/brand/favicon-32.png",
+      "file": "site/p2p/index.html"
+    },
+    {
+      "url": "https://p2p.shear.digital/brand/favicon.ico",
+      "file": "site/p2p/index.html"
+    },
+    {
+      "url": "https://p2p.shear.digital/brand/nevia.css",
+      "file": "site/p2p/index.html"
+    },
+    {
+      "url": "https://p2p.shear.digital/brand/theme.css",
+      "file": "site/p2p/index.html"
+    },
+    {
+      "url": "https://p2p.shear.digital/brand/theme.js",
+      "file": "site/p2p/index.html"
+    },
+    {
+      "url": "https://p2p.shear.digital/brand/urema.css",
+      "file": "site/p2p/index.html"
+    },
+    {
+      "url": "https://p2p.shear.digital/index.html",
+      "file": "site/p2p/index.html"
+    },
+    {
+      "url": "https://pool.shear.digital/",
+      "file": "pool/public/index.html"
+    },
+    {
+      "url": "https://pool.shear.digital/explorer.html",
+      "file": "pool/public/explorer.html"
+    },
+    {
+      "url": "https://pool.shear.digital/index.html",
+      "file": "pool/public/index.html"
+    },
+    {
+      "url": "https://pool.shear.digital/miner.html",
+      "file": "pool/public/miner.html"
+    },
+    {
+      "url": "https://r2r.shear.digital/",
+      "file": "site/r2r/index.html"
+    },
+    {
+      "url": "https://r2r.shear.digital/brand/favicon-32.png",
+      "file": "site/r2r/index.html"
+    },
+    {
+      "url": "https://r2r.shear.digital/brand/favicon.ico",
+      "file": "site/r2r/index.html"
+    },
+    {
+      "url": "https://r2r.shear.digital/brand/nevia.css",
+      "file": "site/r2r/index.html"
+    },
+    {
+      "url": "https://r2r.shear.digital/brand/theme.css",
+      "file": "site/r2r/index.html"
+    },
+    {
+      "url": "https://r2r.shear.digital/brand/theme.js",
+      "file": "site/r2r/index.html"
+    },
+    {
+      "url": "https://r2r.shear.digital/brand/urema.css",
+      "file": "site/r2r/index.html"
+    },
+    {
+      "url": "https://r2r.shear.digital/index.html",
+      "file": "site/r2r/index.html"
+    },
+    {
+      "url": "https://shear.digital/",
+      "file": "site/index.html"
+    },
+    {
+      "url": "https://shear.digital/admin/",
+      "file": "site/admin/index.html"
+    },
+    {
+      "url": "https://shear.digital/admin/index.html",
+      "file": "site/admin/index.html"
+    },
+    {
+      "url": "https://shear.digital/docs/",
+      "file": "site/docs/index.html"
+    },
+    {
+      "url": "https://shear.digital/docs/index.html",
+      "file": "site/docs/index.html"
+    },
+    {
+      "url": "https://shear.digital/get-started.html",
+      "file": "site/get-started.html"
+    },
+    {
+      "url": "https://shear.digital/governance.html",
+      "file": "site/governance.html"
+    },
+    {
+      "url": "https://shear.digital/index.html",
+      "file": "site/index.html"
+    },
+    {
+      "url": "https://shear.digital/mine.html",
+      "file": "site/mine.html"
+    },
+    {
+      "url": "https://shear.digital/miner/",
+      "file": "site/miner/index.html"
+    },
+    {
+      "url": "https://shear.digital/miner/index.html",
+      "file": "site/miner/index.html"
+    },
+    {
+      "url": "https://shear.digital/network.html",
+      "file": "site/network.html"
+    },
+    {
+      "url": "https://shear.digital/node/",
+      "file": "site/node/index.html"
+    },
+    {
+      "url": "https://shear.digital/node/index.html",
+      "file": "site/node/index.html"
+    },
+    {
+      "url": "https://shear.digital/wallet/",
+      "file": "site/wallet/index.html"
+    },
+    {
+      "url": "https://shear.digital/wallet/index.html",
+      "file": "site/wallet/index.html"
+    },
+    {
+      "url": "https://shear.digital/whitepaper/",
+      "file": "site/whitepaper/index.html"
+    },
+    {
+      "url": "https://shear.digital/whitepaper/index.html",
+      "file": "site/whitepaper/index.html"
+    },
+    {
+      "url": "https://www.shear.digital/",
+      "file": "site/index.html"
+    },
+    {
+      "url": "https://www.shear.digital/docs/",
+      "file": "site/docs/index.html"
+    },
+    {
+      "url": "https://www.shear.digital/docs/index.html",
+      "file": "site/docs/index.html"
+    },
+    {
+      "url": "https://www.shear.digital/get-started.html",
+      "file": "site/get-started.html"
+    },
+    {
+      "url": "https://www.shear.digital/governance.html",
+      "file": "site/governance.html"
+    },
+    {
+      "url": "https://www.shear.digital/index.html",
+      "file": "site/index.html"
+    },
+    {
+      "url": "https://www.shear.digital/mine.html",
+      "file": "site/mine.html"
+    },
+    {
+      "url": "https://www.shear.digital/miner/",
+      "file": "site/miner/index.html"
+    },
+    {
+      "url": "https://www.shear.digital/network.html",
+      "file": "site/network.html"
+    },
+    {
+      "url": "https://www.shear.digital/node/",
+      "file": "site/node/index.html"
+    },
+    {
+      "url": "https://www.shear.digital/wallet/",
+      "file": "site/wallet/index.html"
+    },
+    {
+      "url": "https://www.shear.digital/wallet/index.html",
+      "file": "site/wallet/index.html"
+    }
+  ]
+}

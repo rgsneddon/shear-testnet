@@ -2,33 +2,33 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const page = fs.readFileSync(new URL('../public/explorer.html', import.meta.url), 'utf8');
+const page = fs.readFileSync(new URL('../../explorer/explorer.html', import.meta.url), 'utf8');
 
-function loadFmtCircShe() {
-  const fn = page.match(/function fmtCircShe\(nanos\) \{[\s\S]*?\n    \}/);
-  assert.ok(fn, 'fmtCircShe missing from shipped explorer.html');
-  return new Function(`${fn[0]}; return fmtCircShe;`)();
+function loadFmtShe() {
+  const fn = page.match(/function fmtShe\(n\) \{[\s\S]*?\n    \}/);
+  assert.ok(fn, 'fmtShe missing from shipped explorer.html');
+  return new Function(`${fn[0]}; return fmtShe;`)();
 }
 
 describe('Circulating Shear card on the shipped explorer page', () => {
-  it('162100004829440 nanos renders as 1621.00004829440 SHE', () => {
-    const fmtCircShe = loadFmtCircShe();
-    assert.equal(fmtCircShe(162100004829440), '1621.00004829440 SHE');
-    assert.equal(fmtCircShe(1), '0.00000000001 SHE');
+  it('162100004829440 nanos renders through the shipped eight-decimal fmtShe', () => {
+    const fmtShe = loadFmtShe();
+    const nanos = 162100004829440;
+    assert.equal(fmtShe(nanos / 100000000000), '1621.00004829');
+    assert.equal(fmtShe(1 / 100000000000), '0.00000000');
   });
 
-  it('wallet href is releases/tag/0.56, ONGOING HASHBONUS WORK stays, light --bg is not restored', () => {
-    assert.match(page, /releases\/tag\/0\.56/);
+  it('ONGOING HASHBONUS WORK stays on the dark explorer, and light --bg is not restored', () => {
+    assert.match(page, /id="shear-chrome-root" data-active="EXPLORER"/);
     assert.doesNotMatch(page, /releases\/tag\/0\.55(?!\.)/);
-    assert.equal(page.includes('releases/tag/0.56'), true);
-    assert.equal(page.includes('0.56'), true);
+    assert.doesNotMatch(page, /releases\/tag\/0\.52/);
     assert.match(page, /ONGOING HASHBONUS WORK/);
     assert.match(page, /id="ex-hashrate"/);
-    assert.match(page, /\/brand\/theme\.css/);
+    assert.match(page, /shared\/shear-chrome\.css/);
     assert.doesNotMatch(page, /<html[^>]*data-theme="light"/);
     assert.match(page, /html:not\(\[data-theme="light"\]\)/);
     assert.doesNotMatch(page, /--bg:\s*#fff\b/);
     assert.doesNotMatch(page, /--bg:\s*white/);
-    assert.match(page, /fmtCircShe\(stats\.circulatingNanos\)/);
+    assert.match(page, /fmtShe\(Number\(stats\.circulatingNanos \|\| 0\) \/ NANOS\)/);
   });
 });

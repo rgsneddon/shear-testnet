@@ -44,6 +44,13 @@
     treeEl.innerHTML = html;
   }
 
+  
+  function paintLiveNetwork() {
+    if (window.ShearSiteIdentity && typeof window.ShearSiteIdentity.paintNetwork === 'function') {
+      window.ShearSiteIdentity.paintNetwork();
+    }
+  }
+
   function paint() {
     var id = pageId();
     var page = data.pages[id] || data.pages.overview;
@@ -60,6 +67,7 @@
       }
     });
     document.title = page.title + ' · Shear documentation';
+    paintLiveNetwork();
   }
 
   treeEl.addEventListener('toggle', function (ev) {
@@ -70,6 +78,7 @@
 
   renderTree('');
   paint();
+  paintLiveNetwork();
   window.addEventListener('hashchange', paint);
   if (searchEl) {
     searchEl.addEventListener('input', function () {

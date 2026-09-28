@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Network — Shear</title>
+  <meta name="description" content="Shear pot schedule, hash bonus, and Continuity cards on shear-testnet-v5." />
+  <link rel="icon" href="brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="css/site.css" />
+  <link rel="stylesheet" href="shared/shear-chrome.css" />
+  <link rel="stylesheet" href="css/saas-dark.css" />
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="MAIN" data-brand-base="brand/"></div>
+  <script src="shared/shear-chrome.js"></script>
+
+<div class="banner" role="status">
+    <strong>Testnet only.</strong> Mainnet is not live · launch date not decided
+  </div>
+
+  <main>
+    <div class="wrap page-hero">
+      <p class="section-label">Network</p>
+      <h1>Issuance &amp; Continuity</h1>
+      <p class="lede">Pot schedule, hash bonus, and settlement pulse for <strong data-shear-network>shear-testnet-v5</strong>.</p>
+    </div>
+
+    <section class="wrap section">
+      <div class="grid-3">
+        <div class="panel">
+          <div class="card-kicker">Pot</div>
+          <h3>Schedule</h3>
+          <p>Starts at <strong>1.00 SHE</strong> in epoch 0, steps <strong>−0.01</strong> per epoch, floors at <strong>0.20 SHE</strong>.</p>
+          <div class="code-line">1.00 → −0.01/epoch → 0.20</div>
+        </div>
+        <div class="panel">
+          <div class="card-kicker">Work</div>
+          <h3>Hash bonus</h3>
+          <p>Extra issuance for valid work that lands. Typically needs ~<strong>6 confirmations</strong> before Continuum treats it as settled.</p>
+        </div>
+        <div class="panel">
+          <div class="card-kicker">Proof</div>
+          <h3>ShearHash-v3</h3>
+          <p>CPU-oriented PoW on this tip. Miner pin: ShearK. Explorer: <a href="https://explorer.shear.digital" rel="noopener">explorer.shear.digital</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section">
+      <p class="section-label">Continuity</p>
+      <h2 style="margin-bottom:1rem">Settlement cards</h2>
+      <div class="bento">
+        <article class="card span-3">
+          <div class="card-kicker">Target</div>
+          <h3>Closure quantum</h3>
+          <p id="nc-quantum" style="font-family:var(--mono);color:var(--text);font-size:1.25rem;margin:0">1 SHE</p>
+        </article>
+        <article class="card span-3">
+          <div class="card-kicker">Target</div>
+          <h3>Flux</h3>
+          <p id="nc-flux" style="font-family:var(--mono);color:var(--text);font-size:1.25rem;margin:0">1 SHE / 90 s</p>
+        </article>
+        <article class="card span-3">
+          <div class="card-kicker">Live</div>
+          <h3>Observed</h3>
+          <p id="nc-observed" style="font-family:var(--mono);color:var(--text);font-size:1.25rem;margin:0">—</p>
+          <p style="color:var(--text-mute);font-size:0.85rem;margin:0.4rem 0 0">Average block time from found blocks.</p>
+        </article>
+        <article class="card span-3">
+          <div class="card-kicker">Live</div>
+          <h3>Integral Q</h3>
+          <p id="nc-integral" style="font-family:var(--mono);color:var(--text);font-size:1.25rem;margin:0">—</p>
+          <p style="color:var(--text-mute);font-size:0.85rem;margin:0.4rem 0 0">Circulating SHE.</p>
+        </article>
+        <article class="card span-3">
+          <div class="card-kicker">NETWORK</div>
+          <h3>Nodes online</h3>
+          <p id="nc-nodes" style="font-family:var(--mono);color:var(--text);font-size:1.25rem;margin:0">—</p>
+          <p style="color:var(--text-mute);font-size:0.85rem;margin:0.4rem 0 0">Live peers on the network.</p>
+        </article>
+        <article class="card span-3">
+          <div class="card-kicker">ADMITv2</div>
+          <h3>Sealed notes</h3>
+          <p id="nc-notes" style="font-family:var(--mono);color:var(--text);font-size:1.25rem;margin:0">—</p>
+          <p style="color:var(--text-mute);font-size:0.85rem;margin:0.4rem 0 0">Usable outputs in the membership set.</p>
+        </article>
+      </div>
+      <p style="color:var(--text-mute);font-size:0.85rem;margin-top:1rem">
+        Pot / π settlement is slower than hashbonus (~30 order). See FAQ on Home.
+      </p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div data-shear-foot data-wallet-fallback="0.56" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
+      <nav>
+        <a href="index.html">Home</a>
+        <a href="governance.html">Governance</a>
+        <a href="https://explorer.shear.digital" rel="noopener">Explorer</a>
+      </nav>
+    </div>
+  </footer>
+  <script src="js/site.js"></script>
+  <script src="shared/site-identity.js"></script>
+</body>
+</html>

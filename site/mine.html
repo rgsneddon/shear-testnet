@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Mine — Shear</title>
+  <meta name="description" content="Shear mining: pool stratum path vs solo node. ShearK on shear-testnet-v5." />
+  <link rel="icon" href="brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="css/site.css" />
+  <link rel="stylesheet" href="shared/shear-chrome.css" />
+  <link rel="stylesheet" href="css/saas-dark.css" />
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="MAIN" data-brand-base="brand/"></div>
+  <script src="shared/shear-chrome.js"></script>
+
+<div class="banner" role="status">
+    <strong>Testnet only.</strong> Mainnet is not live · launch date not decided
+    <span class="sep">·</span>
+    Windows: SmartScreen may flag unsigned ShearK
+  </div>
+
+  <main>
+    <div class="wrap page-hero">
+      <p class="section-label">Hashpower</p>
+      <h1>Mine</h1>
+      <p class="lede">Choose pool or solo. Miner binary is <strong>ShearK</strong> — separate from Continuum wallet.</p>
+    </div>
+
+    <section class="wrap section">
+      <div class="chooser">
+        <div class="panel preferred">
+          <span class="badge">Recommended</span>
+          <h3>Pool path</h3>
+          <p>Connect ShearK to stratum. Copy your <code>ssa1</code> dest from Continuum or the pool UI.</p>
+          <div class="code-line">pool.shear.digital:1111</div>
+          <ol class="steps">
+            <li>Open <a href="https://pool.shear.digital" rel="noopener">pool.shear.digital</a></li>
+            <li>Paste / Copy dest (<code>ssa1…</code>)</li>
+            <li>Point ShearK at the stratum host:port above</li>
+            <li>Watch shares; wait Continuity for settled SHE</li>
+          </ol>
+          <div class="cta-row" style="margin-top:1rem">
+            <a class="btn btn-primary" href="https://pool.shear.digital" rel="noopener">Open pool →</a>
+            <a class="btn btn-ghost" href="/miner/">ShearK miner →</a>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Solo path</h3>
+          <p>Run a synced node, then solo mine. More ops, same algo.</p>
+          <div class="code-line">npm run solo</div>
+          <ol class="steps">
+            <li>Sync a shear-testnet-v5 node</li>
+            <li>Configure local RPC / mining hooks per docs</li>
+            <li>Run solo miner entry (<code>npm run solo</code> or ShearK solo mode)</li>
+          </ol>
+          <div class="note">Deep solo OS deps and troubleshooting live in official docs — not duplicated here.</div>
+          <div class="cta-row" style="margin-top:1rem">
+            <a class="btn btn-ghost" href="/docs/">Docs →</a>
+            <a class="btn btn-soft" href="https://shear.digital/docs/" rel="noopener">Full docs ↗</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section-sm">
+      <div class="panel">
+        <h3>Tip pins</h3>
+        <p style="margin:0">Algo <strong>ShearHash-v3</strong> · network <strong data-shear-network>shear-testnet-v5</strong> · wallet Continuum <strong>0.56</strong> · stratum <strong>pool.shear.digital:1111</strong></p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div data-shear-foot data-wallet-fallback="0.56" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
+      <nav>
+        <a href="index.html">Home</a>
+        <a href="get-started.html">Wallet</a>
+        <a href="https://pool.shear.digital" rel="noopener">Pool</a>
+      </nav>
+    </div>
+  </footer>
+  <script src="js/site.js"></script>
+  <script src="shared/site-identity.js"></script>
+</body>
+</html>

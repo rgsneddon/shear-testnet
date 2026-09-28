@@ -9,7 +9,8 @@ function read(rel) {
 }
 
 describe('website W-IMPL binds', () => {
-  const explorer = read('../public/explorer.html');
+  const explorer = read('../../explorer/explorer.html');
+  const poolExplorer = read('../public/explorer.html');
   const pool = read('../public/index.html');
   const mempool = read('../../mempool/index.html');
 
@@ -18,11 +19,11 @@ describe('website W-IMPL binds', () => {
     assert.doesNotMatch(explorer, /All network hashrate/);
     assert.doesNotMatch(explorer, /Pool hashrate/);
     assert.match(explorer, /function ongoingHashbonusHashes\(stats\)/);
-    assert.match(explorer, /function fmtHashNanos\(hashes\)/);
+    assert.match(explorer, /function fmtHashNanos\(hashes, unitNanos\)/);
     assert.match(explorer, /networkRoundHashes/);
     assert.match(explorer, /roundHashes/);
     assert.match(explorer, /1000000000/);
-    assert.match(explorer, /setText\('ex-hashrate', fmtHashNanos\(ongoingHashbonusHashes\(stats\)\)\)/);
+    assert.match(explorer, /setText\('ex-hashrate', fmtHashNanos\(ongoingHashbonusHashes\(stats\), stats && stats\.hashBonusNanos\) \+ ' SHE'\)/);
     assert.doesNotMatch(explorer, /fmtRate\(stats\.hashrate\)/);
     assert.doesNotMatch(explorer, /fmtRate\(allNetworkHashrate\(stats\)\)/);
     assert.match(explorer, /Nodes online/);
@@ -102,9 +103,9 @@ describe('website W-IMPL binds', () => {
   it('explorer avg card is the sealed gross pot over height', () => {
     assert.match(explorer, /Average block reward since genesis/);
     assert.match(explorer, /id="ex-avg-reward"/);
-    assert.match(explorer, /\(avgPot \+ avgBonus\) \/ avgH/);
+    assert.match(explorer, /fmtShe\(\(avgPot \+ avgBonus\) \/ avgH \/ NANOS\)/);
     assert.doesNotMatch(explorer, /avgBlockReward/);
-    assert.doesNotMatch(explorer, /avgBlockTime/);
+    assert.doesNotMatch(explorer, /fmtShe\([^)]*avgBlockTime/);
     assert.doesNotMatch(explorer, /POOL_FEE/);
     assert.doesNotMatch(explorer, /Math\.min\(\s*avg/);
   });
@@ -117,7 +118,7 @@ describe('website W-IMPL binds', () => {
   });
 
   it('mempool mobile navbar matches the shared gutter without a restyle', () => {
-    assert.match(mempool, /@media \(max-width: 1024px\) \{[\s\S]*header\.top-banner \{[\s\S]*grid-template-columns: 1fr auto;/);
+    assert.match(mempool, /@media \(max-width: 1024px\) \{[\s\S]*\.hud \{ grid-template-columns:1fr;/);
     assert.match(mempool, /header\.top-banner \{[\s\S]*grid-template-columns: 1fr auto 1fr;/);
     assert.match(mempool, /canvas id="lattice"/);
     assert.match(mempool, /--lattice-bg/);
@@ -127,12 +128,17 @@ describe('website W-IMPL binds', () => {
   it('wallet pin 0.56 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
     const paper = read('../../site/whitepaper/index.html');
     const pdf = read('../../site/whitepaper/build_pdf.py');
-    assert.match(explorer, /releases\/tag\/0\.56/);
+    assert.match(explorer, /id="shear-chrome-root" data-active="EXPLORER"/);
     assert.doesNotMatch(explorer, /releases\/tag\/0\.55(?!\.)/);
-    assert.match(pool, /releases\/tag\/0\.56/);
+    assert.doesNotMatch(explorer, /releases\/tag\/0\.52/);
+    assert.match(poolExplorer, /releases\/tag\/0\.56/);
+    assert.doesNotMatch(poolExplorer, /releases\/tag\/0\.55(?!\.)/);
+    assert.match(pool, /id="shear-chrome-root" data-active="POOL"/);
     assert.doesNotMatch(pool, /releases\/tag\/0\.55(?!\.)/);
-    assert.match(mempool, /releases\/tag\/0\.56/);
+    assert.doesNotMatch(pool, /releases\/tag\/0\.52/);
+    assert.match(mempool, /id="shear-chrome-root" data-active="MEMPOOL"/);
     assert.doesNotMatch(mempool, /releases\/tag\/0\.55(?!\.)/);
+    assert.doesNotMatch(mempool, /releases\/tag\/0\.52/);
     assert.match(pdf, /pin 0\.56/);
     assert.doesNotMatch(pdf, /pin 0\.55(?!\.2)/);
     assert.match(pdf, /Wallet pin at publication: 0\.56/);
@@ -141,8 +147,11 @@ describe('website W-IMPL binds', () => {
     assert.match(paper, /a class="nav-btn"/);
     assert.match(paper, /href="https:\/\/shear\.digital"/);
     assert.doesNotMatch(paper, /prettier/);
-    assert.match(explorer, /id="shear-wordmark"/);
-    assert.match(explorer, /class="top-banner"/);
-    assert.match(pool, /class="top-banner"/);
+    assert.match(read('../../explorer/shared/shear-chrome.js'), /id="shear-wordmark"/);
+    assert.match(explorer, /shear-chrome\.js/);
+    assert.match(poolExplorer, /id="shear-wordmark"/);
+    assert.match(poolExplorer, /class="top-banner"/);
+    assert.match(pool, /\.top-banner \{/);
+    assert.match(pool, /shear-chrome\.js/);
   });
 });

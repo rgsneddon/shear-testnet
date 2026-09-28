@@ -91,8 +91,20 @@ describe('shear.digital client buttons', () => {
       admin: fs.readFileSync(path.join(here, '../admin/index.html'), 'utf8'),
       whitepaper: fs.readFileSync(path.join(here, '../whitepaper/index.html'), 'utf8'),
     };
+    const releasePages = ['main', 'explorer', 'miner', 'poolAdmin', 'admin', 'whitepaper'];
+    const chromePages = ['mempool', 'pool', 'docs'];
+    for (const name of releasePages) {
+      assert.match(pages[name], /releases\/tag\/0\.56/, `${name} WALLET must pin 0.56`);
+      assert.match(pages[name], /ShearK\/releases\/tag\/2\.6/, `${name} MINER must pin 2.6`);
+    }
+    for (const name of chromePages) {
+      assert.match(pages[name], /id="shear-chrome-root"/, `${name} mounts shared chrome`);
+      assert.doesNotMatch(pages[name], /releases\/tag\/0\.\d+/, `${name} leaves the wallet pin off the chrome shell`);
+    }
+    const content = fs.readFileSync(path.join(here, '../docs/content.js'), 'utf8');
+    assert.match(content, /releases\/tag\/0\.56/);
+    assert.match(content, /ShearK\/releases\/tag\/2\.6/);
     for (const [name, page] of Object.entries(pages)) {
-      assert.match(page, /releases\/tag\/0\.56/, `${name} WALLET must pin 0.56`);
       assert.doesNotMatch(page, /releases\/tag\/0\.55(?!\.)/, `${name} must not pin bare 0.55`);
       assert.doesNotMatch(page, /releases\/tag\/0\.52/, `${name} must not pin 0.52 as current`);
       assert.doesNotMatch(page, /releases\/download\/0\.52/, `${name} must not download 0.52`);
@@ -138,7 +150,6 @@ describe('shear.digital client buttons', () => {
       assert.doesNotMatch(page, /shear-wallet-0\.13-/);
       assert.doesNotMatch(page, /shear-wallet-0\.12-/);
       assert.doesNotMatch(page, /shear-wallet-0\.11-/);
-      assert.match(page, /ShearK\/releases\/tag\/2\.6/, `${name} MINER must pin 2.6`);
       assert.doesNotMatch(page, /ShearK\/releases\/tag\/1\.1/, `${name} must not offer miner 1.1`);
       assert.doesNotMatch(page, /ShearK\/releases\/tag\/1\.4/, `${name} must not offer miner 1.4`);
     }

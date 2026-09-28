@@ -67,10 +67,38 @@ describe('brand pages', () => {
     assert.match(home, /She Is Private/);
     assert.doesNotMatch(home, /--bg: #eef3f8/);
     const pages = [
-      read('pool/public/index.html'),
       read('pool/public/explorer.html'),
-      read('mempool/index.html'),
     ];
+    const poolPage = read('pool/public/index.html');
+    const mempoolPage = read('mempool/index.html');
+    for (const [p, active] of [[poolPage, 'POOL'], [mempoolPage, 'MEMPOOL']]) {
+      assert.match(p, new RegExp(`id="shear-chrome-root" data-active="${active}"`));
+      assert.match(p, /shear-chrome\.js/);
+      assert.match(p, /favicon/);
+      assert.equal(/OFFICIAL POOL/.test(p), false);
+      assert.equal(/>SITE</.test(p), false);
+      const banner = bannerBlock(p);
+      assert.match(banner, /background:\s*var\(--banner\)/);
+      assert.equal(/background:\s*#f7fbff/.test(banner), false);
+      if (!p.includes('id="shear-hero"')) {
+        assert.equal(/GNFP|gnfp|feeless/i.test(p), false);
+      }
+    }
+    assert.match(poolPage, /[Ss]he is [Pp]rivate/);
+    assert.equal(/she is quiet/.test(poolPage), false);
+    const chromeSrc = read('site/shared/shear-chrome.js');
+    assert.equal(chromeSrc, read('pool/public/shared/shear-chrome.js'));
+    assert.equal(chromeSrc, read('mempool/shared/shear-chrome.js'));
+    assert.match(chromeSrc, /id="shear-nav"/);
+    assert.match(chromeSrc, /theme-img-light/);
+    assert.match(chromeSrc, /theme-img-dark/);
+    assert.match(chromeSrc, /05c-wordmark-nevia-light-transparent\.png/);
+    assert.match(chromeSrc, /05d-wordmark-nevia-dark-transparent\.png/);
+    assert.match(chromeSrc, /toggleShearTheme|theme-toggle/);
+    const chromeLabels = [...chromeSrc.matchAll(/label:\s*'([^']+)'/g)].map((m) => m[1]);
+    assert.deepEqual(chromeLabels.slice(0, chromeLabels.length / 2), [
+      'MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS',
+    ]);
     for (const p of pages) {
       assert.match(p, /<head>[\s\S]*theme\.js[\s\S]*<\/head>/);
       assert.match(p, /theme-img-light/);
@@ -150,34 +178,40 @@ describe('brand pages', () => {
     assert.deepEqual(light, { w: 1500, h: 500 });
     assert.deepEqual(dark, { w: 1500, h: 500 });
     const css = read('pool/public/brand/theme.css');
-    assert.match(css, /grid-auto-columns:\s*1fr/);
-    assert.match(css, /grid-auto-flow:\s*column/);
     assert.match(css, /html\[data-theme="dark"\]/);
-    assert.match(css, /--banner:\s*#06141f/);
-    assert.match(css, /--gold:\s*#c48a00/);
-    assert.match(css, /--gold:\s*#ffd24a/);
+    assert.match(css, /--bg:\s*#07090c/);
+    assert.match(css, /--banner:\s*rgba\(7,9,12,\.92\)/);
+    assert.match(css, /--gold:\s*#f0b429/);
+    assert.match(css, /--gold:\s*#b45309/);
     assert.match(css, /html,\s*body\s*\{/);
     assert.match(css, /font-size:\s*15px/);
-    assert.match(css, /a\.nav-btn\.is-on\s*\{\s*color:\s*var\(--gold\)/);
+    assert.match(css, /font-family:\s*"Segoe UI"/);
+    const chromeCss = read('site/shared/shear-chrome.css');
+    assert.equal(chromeCss, read('pool/public/shared/shear-chrome.css'));
+    assert.equal(chromeCss, read('mempool/shared/shear-chrome.css'));
+    assert.match(chromeCss, /#shear-chrome-root\s*\{[^}]*position:\s*sticky/);
+    assert.match(chromeCss, /border-radius:\s*999px/);
+    assert.match(chromeCss, /grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto/);
     const siteHtml = read('site/index.html');
     const poolHtml = read('pool/public/index.html');
     const explorerHtml = read('pool/public/explorer.html');
     const mempoolHtml = read('mempool/index.html');
     assert.match(siteHtml, /data-active="MAIN"/);
     assert.match(siteHtml, /css\/saas-dark\.css/);
-    assert.match(poolHtml, /class="nav-btn is-on"[^>]*>POOL</);
+    assert.match(poolHtml, /data-active="POOL"/);
     assert.match(explorerHtml, /class="nav-btn is-on"[^>]*>EXPLORER</);
-    assert.match(mempoolHtml, /class="nav-btn is-on"[^>]*>MEMPOOL</);
-    assert.match(siteHtml, /releases\/tag\/0\.55\.2/);
+    assert.match(mempoolHtml, /data-active="MEMPOOL"/);
+    assert.match(siteHtml, /releases\/tag\/0\.56/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.55(?!\.)/);
+    assert.doesNotMatch(siteHtml, /releases\/tag\/0\.55\.2/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.53/);
+    assert.doesNotMatch(siteHtml, /releases\/tag\/0\.52/);
     assert.match(siteHtml, /rgsneddon\/ShearK/);
     assert.doesNotMatch(siteHtml, /theme\.js\?v=15/);
     for (const page of [poolHtml, explorerHtml, mempoolHtml]) {
-      assert.match(page, /rgsneddon\/shear-testnet/);
       assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
-      assert.match(page, /releases\/tag\/0\.55\.2/);
       assert.doesNotMatch(page, /releases\/tag\/0\.55(?!\.)/);
+      assert.doesNotMatch(page, /releases\/tag\/0\.55\.2/);
       assert.doesNotMatch(page, /releases\/tag\/0\.53/);
       assert.doesNotMatch(page, /releases\/tag\/0\.52/);
       assert.doesNotMatch(page, /releases\/tag\/0\.40|shear-wallet-0\.40/);
@@ -185,9 +219,12 @@ describe('brand pages', () => {
       assert.doesNotMatch(page, /releases\/tag\/0\.38|shear-wallet-0\.38/);
       assert.doesNotMatch(page, /releases\/tag\/0\.36|shear-wallet-0\.36/);
       assert.doesNotMatch(page, /releases\/tag\/0\.28|shear-wallet-0\.28/);
-      assert.match(page, /rgsneddon\/ShearK/);
-      assert.match(page, /theme\.js\?v=15/);
     }
+    assert.match(explorerHtml, /rgsneddon\/shear-testnet/);
+    assert.match(explorerHtml, /releases\/tag\/0\.56/);
+    assert.match(explorerHtml, /rgsneddon\/ShearK/);
+    assert.match(explorerHtml, /theme\.js\?v=15/);
+    assert.match(poolHtml, /rgsneddon\/ShearK/);
     assert.match(poolHtml, /Shear pool · ShearHash-v3/);
     assert.match(poolHtml, /Great Vibes/);
     assert.match(poolHtml, /grid-template-columns:\s*1fr 2fr/);
@@ -211,25 +248,24 @@ describe('brand pages', () => {
     assert.match(explorerHtml, /class="she-private-lockup">She is Private</);
     assert.match(read('pool/public/miner.html'), /Shear miner · ShearHash-v3/);
     assert.match(siteHtml, /ShearHash-v3/);
-    assert.match(css, /\.top-banner\s*\{[\s\S]*?background:\s*var\(--banner\)/);
-    assert.match(css, /grid-template-columns:\s*1fr auto 1fr/);
-    assert.match(css, /header\.top-banner\s*\{\s*grid-template-columns:\s*1fr auto/);
     assert.match(css, /input,\s*select,\s*button\s*\{\s*background:\s*var\(--input\)/);
     assert.match(css, /img\.theme-img-dark/);
     assert.match(css, /html:not\(\[data-theme="light"\]\) img\.theme-img-dark/);
-    assert.match(css, /button\.nav-toggle/);
-    assert.match(css, /@media \(max-width: 1024px\)/);
-    assert.match(css, /icon-moon/);
-    assert.match(css, /icon-sun/);
-    assert.match(css, /justify-self:\s*end/);
-    assert.match(css, /position:\s*absolute/);
-    assert.match(css, /z-index:\s*30/);
+    assert.match(chromeCss, /\.top-banner\s*\{[\s\S]*?background:\s*var\(--shear-chrome-bg\)/);
+    assert.match(chromeCss, /grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto/);
+    assert.match(chromeCss, /button\.nav-toggle/);
+    assert.match(chromeCss, /@media \(max-width: 1024px\)/);
+    assert.match(chromeCss, /icon-moon/);
+    assert.match(chromeCss, /icon-sun/);
+    assert.match(chromeCss, /justify-self:\s*end/);
+    assert.match(chromeCss, /position:\s*absolute/);
+    assert.match(chromeCss, /z-index:\s*30/);
     assert.match(theme, /aria-label/);
     assert.equal(fs.existsSync(path.join(root, 'pool/public/brand/05c-wordmark-nevia-light-transparent.png')), true);
     assert.equal(fs.existsSync(path.join(root, 'pool/public/brand/favicon-32.png')), true);
     const mempool = read('mempool/index.html');
-    assert.match(mempool, /--lattice-bg:\s*#dce6f0/);
-    assert.match(mempool, /html\[data-theme="dark"\]\s*\{[\s\S]*--lattice-bg:\s*#050b18/);
+    assert.match(mempool, /--lattice-bg:\s*#eef2f6/);
+    assert.match(mempool, /html\[data-theme="dark"\]\s*\{[\s\S]*--lattice-bg:\s*#07090c/);
     assert.match(mempool, /function isDark\(/);
     assert.match(mempool, /function palette\(/);
     assert.match(mempool, /cssVar\('--lattice-bg'/);
@@ -372,7 +408,6 @@ describe('mempool pulse', () => {
     assert.match(page, /Empty gold hoop sits wide at the base/);
     assert.match(page, /Open in full screen/);
     assert.match(page, /txCount \+ ' txs'/);
-    assert.match(page, /graphics only, no lettering/);
     assert.match(page, /y: h \* 0\.64/);
     assert.match(page, /\.col\s*\{[^}]*overflow-y:\s*auto/);
     assert.match(page, /\.col\s*\{[^}]*min-height:\s*0/);
@@ -380,7 +415,7 @@ describe('mempool pulse', () => {
     assert.match(page, /html,\s*body\s*\{[^}]*overflow:\s*hidden/);
     const mid = page.match(/\.col\.mid\s*\{[^}]+\}/);
     assert.ok(mid, 'missing .col.mid rule');
-    assert.match(mid[0], /overflow:\s*visible/);
+    assert.match(mid[0], /overflow-y:\s*auto/);
   });
 });
 
@@ -388,9 +423,13 @@ describe('sticky public navbar', () => {
   it('matches explorer.shear.digital equal-column nav boxes across site and pool', () => {
     const siteCss = read('site/brand/theme.css');
     const poolCss = read('pool/public/brand/theme.css');
-    const brandCss = read('brand/theme.css');
-    assert.equal(poolCss, siteCss, 'pool theme.css must match main shear.digital chrome');
-    assert.equal(brandCss, siteCss, 'root brand/theme.css must match main shear.digital chrome');
+    const chromeCss = read('site/shared/shear-chrome.css');
+    assert.equal(read('pool/public/shared/shear-chrome.css'), chromeCss);
+    assert.equal(read('mempool/shared/shear-chrome.css'), chromeCss);
+    assert.equal(read('explorer/shared/shear-chrome.css'), chromeCss);
+    assert.match(poolCss, /--bg:\s*#07090c/);
+    assert.match(poolCss, /Chrome layout\/styles deferred to shared\/shear-chrome\.css/);
+    assert.match(chromeCss, /border-radius:\s*999px/);
     assert.match(siteCss, /\.nav \{\r?\n  display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr;/);
     assert.match(siteCss, /grid-auto-columns:\s*1fr/);
     assert.match(siteCss, /\.top-banner > \.nav \{\r?\n  display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr;/);
@@ -405,12 +444,9 @@ describe('sticky public navbar', () => {
     assert.match(home, /data-active="MAIN"/);
     assert.doesNotMatch(home, /--bg: #eef3f8/);
     for (const rel of [
-      'pool/public/index.html',
       'pool/public/explorer.html',
       'pool/public/miner.html',
-      'site/docs/index.html',
       'site/whitepaper/index.html',
-      'mempool/index.html',
       'pool/admin/index.html',
     ]) {
       const page = read(rel);
@@ -421,6 +457,16 @@ describe('sticky public navbar', () => {
         /\.top-banner\s*>\s*\.nav\s*\{\s*display:\s*inline-grid/,
         `${rel} must not force the full banner nav on small screens`,
       );
+    }
+    for (const rel of [
+      'pool/public/index.html',
+      'site/docs/index.html',
+      'mempool/index.html',
+      'site/index.html',
+    ]) {
+      const page = read(rel);
+      assert.match(page, /id="shear-chrome-root"/, `${rel} mounts shared chrome`);
+      assert.match(page, /shear-chrome\.js/, `${rel} loads shared chrome`);
     }
     assert.match(siteCss, /@media \(max-width: 1024px\)[\s\S]*button\.nav-toggle \{ display: inline-flex; \}/);
     assert.match(siteCss, /@media \(min-width: 1025px\)[\s\S]*button\.nav-toggle \{ display: none; \}/);
@@ -438,11 +484,15 @@ describe('sticky public navbar', () => {
       assert.match(banner, /position:\s*sticky/, `${rel} banner must stay visible`);
       assert.match(banner, /top:\s*0/, `${rel} banner must stick to the top`);
     }
-    for (const rel of ['brand/theme.css', 'site/brand/theme.css', 'pool/public/brand/theme.css']) {
+    for (const rel of ['brand/theme.css', 'site/brand/theme.css']) {
       const css = read(rel);
       const banner = bannerBlock(css);
       assert.match(banner, /position:\s*sticky/, `${rel} shared banner must stay visible`);
       assert.match(banner, /top:\s*0/, `${rel} shared banner must stick to the top`);
     }
+    const chromeCss = read('site/shared/shear-chrome.css');
+    assert.match(chromeCss, /#shear-chrome-root\s*\{[^}]*position:\s*sticky/);
+    assert.match(chromeCss, /#shear-chrome-root\s*\{[^}]*top:\s*0/);
+    assert.equal(read('pool/public/shared/shear-chrome.css'), chromeCss);
   });
 });

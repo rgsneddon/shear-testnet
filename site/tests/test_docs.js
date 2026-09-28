@@ -34,10 +34,20 @@ const app = fs.readFileSync(path.join(here, '../docs/app.js'), 'utf8');
 const paper = fs.readFileSync(path.join(here, '../whitepaper/index.html'), 'utf8');
 const pdf = fs.readFileSync(path.join(here, '../whitepaper/shear-whitepaper.pdf'));
 
+function chromeProductLabels() {
+  const chrome = fs.readFileSync(path.join(here, '../shared/shear-chrome.js'), 'utf8');
+  const block = chrome.match(/if \(local\) \{\s*return \[([\s\S]*?)\];/);
+  assert.ok(block, 'shared chrome must list product links');
+  return [...block[1].matchAll(/label:\s*'([^']+)'/g)].map((m) => m[1]);
+}
+
 function navLabels(html) {
   const nav = html.match(/id="shear-nav"[\s\S]*?<\/nav>/);
-  assert.ok(nav, 'missing shear-nav');
-  return [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
+  if (nav) {
+    return [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
+  }
+  assert.match(html, /id="shear-chrome-root"/, 'missing shear-nav and shear-chrome-root');
+  return chromeProductLabels();
 }
 
 const withDocs = ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'MINER', 'NODE', 'WALLET', 'DOCS'];
@@ -86,12 +96,14 @@ describe('shear.digital/docs', () => {
     assert.match(docs, /details\.tree-folder/);
     assert.match(docs, /summary::before/);
     const labels = navLabels(docs);
-    assert.deepEqual(labels, withDocs);
+    assert.deepEqual(labels, chromeProductLabels());
     assert.equal(labels.includes('WHITEPAPER'), false);
-    assert.match(docs, /class="nav-btn is-on" href="\/">DOCS</);
-    assert.match(docs, /border-bottom:1px solid rgba\(26,111,181,\.25\)/);
-    assert.match(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
-    assert.match(docs, /\.banner-wordmark \{ height:36px; width:auto; max-width:none/);
+    assert.equal(labels.includes('DAG'), true);
+    assert.equal(labels.includes('VORTICES'), true);
+    assert.match(docs, /id="shear-chrome-root" data-active="DOCS"/);
+    assert.match(docs, /shared\/shear-chrome\.js/);
+    assert.match(docs, /css\/saas-dark\.css/);
+    assert.doesNotMatch(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
     assert.match(docs, /content\.js\?v=20/);
     for (const pack of [
       'shear-wallet-0.56-macos.dmg',
@@ -166,10 +178,14 @@ describe('shear.digital/docs', () => {
       path.join(root, 'mempool/index.html'),
       path.join(root, 'pool/admin/index.html'),
     ];
+    const chrome = fs.readFileSync(path.join(here, '../shared/shear-chrome.js'), 'utf8');
+    assert.match(chrome, /https:\/\/shear\.digital\/docs\//);
     for (const f of navFiles) {
       const html = fs.readFileSync(f, 'utf8');
       assert.doesNotMatch(html, /href="https:\/\/docs\.shear\.digital/);
-      assert.match(html, /shear\.digital\/docs\/|href="\/"/);
+      const direct = /shear\.digital\/docs\/|href="\/docs\/"|href="\/"/.test(html);
+      const mounted = /shear-chrome\.js/.test(html);
+      assert.equal(direct || mounted, true, `${f} must link docs or mount shared chrome`);
     }
     assert.doesNotMatch(docs, /href="https:\/\/docs\.shear\.digital/);
     assert.doesNotMatch(paper, /href="https:\/\/docs\.shear\.digital/);

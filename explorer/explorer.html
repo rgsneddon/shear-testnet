@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta http-equiv="Cache-Control" content="no-store"/>
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+<title>Shear explorer · ShearHash-v3</title>
+  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="icon" href="/brand/favicon.ico"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/css/site.css"/>
+  <link rel="stylesheet" href="/shared/shear-chrome.css"/>
+  <style>
+    /* Bridge: legacy pool inline vars ? Dark SaaS (matches shear.digital) */
+    :root, html[data-theme="dark"] {
+      --bg: #07090c; --card: #11161f; --ink: #e8eef4; --muted: #8b9aab;
+      --cyan: #5eead4; --blue: #5eead4; --green: #5dcc7a; --radius: 10px;
+      --banner: rgba(7,9,12,.92); --input: #0c1016; --code: #0c1016; --gold: #f0b429;
+    }
+    html[data-theme="light"] {
+      --bg: #f4f7fa; --card: #ffffff; --ink: #0f172a; --muted: #475569;
+      --cyan: #0f766e; --blue: #0f766e; --green: #15803d; --radius: 10px;
+      --banner: rgba(255,255,255,.92); --input: #ffffff; --code: #eef2f6; --gold: #b45309;
+    }
+  </style>
+  <style>
+    /* light :root neutralized ? tokens from site/pool-theme + bridge */
+    * { box-sizing: border-box; }
+    html, body { margin:0; font:15px/1.4 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { width:100%; max-width:72rem; margin:0 auto; padding:16px 12px 48px; }
+    h1, h2, .label { font-family:"Segoe UI",system-ui,sans-serif; }
+    h1 { font-size:1.28rem; font-weight:800; margin:0 0 8px; }
+    h2 { font-size:1.12rem; font-weight:800; margin:0 0 8px; }
+    p { margin:0 0 8px; overflow-wrap:anywhere; }
+    .panel-card {
+      border: 1px solid transparent; border-radius: var(--radius); padding: 10px 12px; margin: 8px 0;
+      background: var(--card); border: 1px solid rgba(94,234,212,.18);
+      background-origin: border-box; background-clip: padding-box, border-box;
+    }
+    html[data-theme="light"] .panel-card {
+      background: #ffffff;
+      color: #0f172a;
+      border-color: rgba(15, 23, 42, 0.14);
+    }
+    html[data-theme="light"] .panel-card .label { color: #475569; }
+    html[data-theme="light"] .panel-card .value,
+    html[data-theme="light"] .panel-card a { color: #0f766e; }
+    html[data-theme="light"] #ex-txs th,
+    html[data-theme="light"] #ex-txs td { color: #0f172a; }
+    html[data-theme="light"] #ex-txs thead th { background: #ffffff; }
+    .grid { display:grid; gap:8px; width:100%; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 8px 0 16px; }
+    #net-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .cli-box {
+      background: #000; color: #00FF41; font-family: ui-monospace, Courier, monospace;
+      font-size: 14px; line-height: 1.4; padding: 12px; margin: 0;
+      white-space: pre-wrap; overflow-wrap: anywhere; min-height: 12rem; max-height: 28rem; overflow: auto;
+    }
+    .back-ex {
+      display: none; text-align: right; margin: 10px 2px 0;
+      color: var(--muted); font-size: .8rem; text-decoration: none;
+    }
+    .back-ex.is-on { display: block; }
+    .back-ex:hover { color: var(--cyan); }
+    .grid .panel-card { margin:0; padding:7px 8px; }
+    .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; }
+    .value { font-size:.9rem; font-weight:650; margin-top:2px; color:var(--cyan); overflow-wrap:anywhere; }
+    a { color:var(--cyan); }
+    table { width:100%; max-width:100%; border-collapse:collapse; table-layout:fixed; }
+    th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.88rem; overflow-wrap:anywhere; word-break:break-word; }
+    .table-wrap { width:100%; max-width:100%; overflow:visible; }
+    .block-list-scroll {
+      max-height: 22.5rem;
+      overflow-y: auto;
+      overflow-x: auto;
+    }
+    #ex-txs thead th {
+      position: sticky; top: 0; z-index: 1;
+      background: var(--card, #fff);
+    }
+    #ex-txs td:nth-child(1),
+    #ex-txs td:nth-child(3) { white-space: nowrap; }
+    .reserve-chip {
+      display: inline-block; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.04em;
+      text-transform: uppercase; color: #0d5c4d; background: #d4f0e8;
+      padding: 1px 6px; margin-right: 6px;
+    }
+    .mono { font-family: ui-monospace, Consolas, monospace; font-size:.88rem; }
+    .pulse { color:var(--green); font-size:.8rem; }
+    .she-private {
+      margin: 2px 0 8px;
+      padding: 2px 0 6px;
+      min-height: 2.2rem;
+    }
+    .she-private-lockup {
+      display: block;
+      font-family: "Great Vibes", "Snell Roundhand", "Apple Chancery", "Segoe Script", cursive;
+      font-size: clamp(1.55rem, 2.8vw, 2.2rem);
+      font-weight: 400;
+      font-style: normal;
+      line-height: 1.2;
+      letter-spacing: .04em;
+      text-align: left;
+      white-space: nowrap;
+      color: #0d2b55;
+    }
+    html[data-theme="dark"] .she-private-lockup { color: #c9d3de; }
+    @media (prefers-color-scheme: dark) {
+      html:not([data-theme="light"]) .she-private-lockup { color: #c9d3de; }
+    }
+    .stale { color:#b42318; }
+    .top-banner {
+      display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; width:100%; min-height:44px; padding:6px 12px;
+      border-bottom:1px solid rgba(26,111,181,.25); background:var(--banner);
+      position:sticky; top:0; z-index:40;
+    }
+    .wordmark { font-weight:800; letter-spacing:.12em; color:var(--blue); font-size:.85rem; }
+
+    a.nav-btn {
+      display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
+      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
+      border:1px solid transparent;
+      background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
+        linear-gradient(135deg, #4fd8e8, #4a9fe0, #5dcc7a) border-box;
+      background-origin:border-box; background-clip:padding-box, border-box;
+    }
+    input { width:100%; margin:.3rem 0 .6rem; padding:.4rem .5rem; background:var(--input); color:var(--ink); border:1px solid var(--blue); font-size:16px; font-family:"Segoe UI",system-ui,sans-serif; }
+    button {
+      padding:.4rem .7rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue);
+      cursor:pointer; font-size:.85rem; font-weight:700; font-family:"Segoe UI",system-ui,sans-serif;
+    }
+    .search-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:8px; }
+    .search-grid > p { margin:0; }
+    .search-actions { display:flex; gap:8px; align-items:center; margin-top:4px; flex-wrap:wrap; }
+    @media (max-width: 1024px) {
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .search-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 640px) {
+      .she-private { min-height: 2rem; padding: 2px 0 4px; }
+      .she-private-lockup { font-size: clamp(1.35rem, 6.4vw, 1.75rem); }
+    }
+  </style>
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="EXPLORER" data-brand-base="/brand/" data-testnet-pill="1"></div>
+  <script src="/shared/shear-chrome.js"></script>
+
+  <div class="wrap">
+    <section class="panel-card">
+      <h1>Shear explorer</h1>
+      <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
+      <p>Continuity-settled PoW. Wallet pin Continuum 0.56. Confirmed blocks only. Height, time, status, type — no dest, no amount. ADMITv2 membership over this book's notes. While this book has fewer than 10,000 notes the membership set is thin. Offer <code>she1</code> when someone pays you.</p>
+      <p class="pulse" id="live-pulse">live · testnet</p>
+    </section>
+    <div class="grid" id="net-grid">
+      <article class="panel-card"><div class="label">Height</div><div class="value" id="ex-height">0</div></article>
+      <article class="panel-card"><div class="label">ONGOING HASHBONUS WORK</div><div class="value" id="ex-hashrate">0.00000000000</div></article>
+      <article class="panel-card"><div class="label">Last block</div><div class="value" id="ex-updated">—</div></article>
+      <article class="panel-card"><div class="label">Circulating Shear</div><div class="value" id="ex-circ-she">—</div></article>
+      <article class="panel-card"><div class="label">Average block reward since genesis</div><div class="value" id="ex-avg-reward">—</div></article>
+      <article class="panel-card"><div class="label">Nodes online</div><div class="value" id="ex-nodes-online">—</div></article>
+      <article class="panel-card"><div class="label">VAULT · staked + accruing BPS</div><div class="value" id="ex-reserve-vault">—</div></article>
+      <article class="panel-card"><div class="label">Avg block time</div><div class="value" id="ex-avg-block">—</div></article>
+      <article class="panel-card"><div class="label">Spendable after</div><div class="value" id="ex-spendable-conf">—</div></article>
+    </div>
+    <section class="panel-card" id="tx-cli-card">
+      <h2>Resistance  η  —  Tx detail</h2>
+      <p class="label">Public fields only. Open a confirmed block from the list.</p>
+      <pre id="tx-cli" class="cli-box">select a confirmed block</pre>
+      <a class="back-ex" id="back-ex" href="https://explorer.shear.digital/">back to explorer</a>
+    </section>
+    <section class="panel-card" id="tx-search-box">
+      <h2>Search blocks</h2>
+      <p class="label">Find by block number, block id, or a from–to height range.</p>
+      <form id="tx-search">
+        <div class="search-grid">
+          <p><label class="label" for="q-height">Block number</label><br/>
+            <input id="q-height" name="height" inputmode="numeric" autocomplete="off"/></p>
+          <p><label class="label" for="q-id">Block id</label><br/>
+            <input id="q-id" name="id" autocomplete="off"/></p>
+          <p><label class="label" for="q-from">From block</label><br/>
+            <input id="q-from" name="from" inputmode="numeric" autocomplete="off"/></p>
+          <p><label class="label" for="q-to">To block</label><br/>
+            <input id="q-to" name="to" inputmode="numeric" autocomplete="off"/></p>
+        </div>
+        <div class="search-actions">
+          <button type="submit" id="search-go">Search</button>
+          <button type="button" id="search-reset">Clear</button>
+          <span class="label" id="tx-status"></span>
+        </div>
+      </form>
+    </section>
+    <section class="panel-card">
+      <h2>BLOCK LIST - FULL</h2>
+      <p class="label">Every sealed block, newest first. Ten rows in view; scroll for the rest. Reserve lock and vote appear from mempool as (pending). Hash bonuses in the open round stay off this list. Pending drops at 6 confirmations.</p>
+      <div class="table-wrap block-list-scroll" id="ex-tx-wrap">
+      <table id="ex-txs">
+        <thead>
+          <tr>
+            <th>Height</th>
+            <th>Id</th>
+            <th>Time</th>
+            <th>Status</th>
+            <th>Type</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      </div>
+    </section>
+    <section class="panel-card">
+      <h2>Circulation</h2>
+      <p class="label">Circulating supply. Dest tags are not listed as people.</p>
+      <div class="grid">
+        <article class="panel-card"><div class="label">Coins in circulation</div><div class="value" id="ex-circulating">—</div></article>
+        <article class="panel-card"><div class="label">Emitted</div><div class="value" id="ex-emitted">—</div></article>
+        <article class="panel-card"><div class="label">Sealed notes</div><div class="value" id="ex-note-count">—</div></article>
+      </div>
+    </section>
+  </div>
+  <script>
+    const API_BASE = '/api';
+    let lastBlockAt = 0;
+    let lastBlockHeight = 0;
+    let lastBlockId = '';
+    let filled = false;
+    function fmtShe(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return '0.00000000';
+      const trunc = (v < 0 ? Math.ceil(v * 1e8 - 1e-9) : Math.floor(v * 1e8 + 1e-9)) / 1e8;
+      if (trunc === 0 && v !== 0) return (v < 0 ? '-' : '') + '0.00000000';
+      const s = trunc.toFixed(8);
+      if (/^-?\d+\.00000000$/.test(s)) return String(Math.trunc(trunc));
+      return s;
+    }
+    function ongoingHashbonusHashes(stats) {
+      if (stats && Number.isFinite(Number(stats.networkRoundHashes))) {
+        return Math.max(0, Math.floor(Number(stats.networkRoundHashes)));
+      }
+      var rows = stats && stats.workers;
+      var n = 0;
+      if (rows && rows.length) {
+        for (var i = 0; i < rows.length; i++) {
+          var w = rows[i];
+          var h = Number(w && (w.roundHashes != null ? w.roundHashes : w.provenHashes));
+          if (h === h && h > 0) n += Math.floor(h);
+        }
+      }
+      return n;
+    }
+    function fmtHashNanos(hashes, unitNanos) {
+      var units = Math.floor(Number(hashes) || 0);
+      if (!(units > 0)) units = 0;
+      var unit = Math.floor(Number(unitNanos));
+      if (!(unit > 0)) unit = 1;
+      var v = units * unit;
+      var scale = 100000000000;
+      var whole = Math.floor(v / scale);
+      var frac = String(v % scale);
+      while (frac.length < 11) frac = '0' + frac;
+      return whole + '.' + frac;
+    }
+    function fmtRate(n) {
+      const v = Number(n) || 0;
+      if (!Number.isFinite(v) || v <= 0) return '0.0 H/s';
+      const units = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s', 'ZH/s'];
+      let x = v;
+      let i = 0;
+      while (x >= 1000 && i < units.length - 1) { x /= 1000; i += 1; }
+      return (i === 0 ? x.toFixed(1) : x.toFixed(2)) + ' ' + units[i];
+    }
+    function fmtSinceBlock(at) {
+      if (!at) return '—';
+      const sec = Math.max(0, Math.floor((Date.now() - Number(at)) / 1000));
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    }
+    // Tip header timestamp is the little-endian u64 at byte 100.
+    function headerTipMs(hex) {
+      var s = String(hex || '');
+      if (s.length < 216) return 0;
+      var n = 0;
+      var mul = 1;
+      for (var i = 0; i < 6; i++) {
+        var byte = parseInt(s.slice(200 + i * 2, 202 + i * 2), 16);
+        if (byte !== byte) return 0;
+        n += byte * mul;
+        mul *= 256;
+      }
+      var hi = parseInt(s.slice(212, 216), 16);
+      if (hi !== hi || hi !== 0) return 0;
+      if (n < 1000000000000 || n > 20000000000000) return 0;
+      return n;
+    }
+    function networkTipBlock(stats, rows) {
+      var tipH = Math.max(0, Math.floor(Number(stats && stats.height) || 0));
+      var bestH = 0;
+      var bestAt = 0;
+      var bestId = '';
+      var list = rows || [];
+      for (var i = 0; i < list.length; i++) {
+        var row = list[i];
+        if (!row || row.kind !== 'block') continue;
+        var h = Math.floor(Number(row.height) || 0);
+        if (h <= bestH) continue;
+        bestH = h;
+        bestAt = Number(row.at) || 0;
+        bestId = String(row.id || '');
+      }
+      var height = Math.max(tipH, bestH);
+      var headerAt = headerTipMs(stats && stats.header);
+      var at = 0;
+      if (height > 0 && height === tipH && headerAt > 0) at = headerAt;
+      if (!(at > 0) && height > 0 && height === bestH && bestAt > 0) at = bestAt;
+      return { height: height, at: at, id: bestH === height ? bestId : '' };
+    }
+    function paintLastBlock() {
+      var el = document.getElementById('ex-updated');
+      if (!el) return;
+      var age = lastBlockAt ? fmtSinceBlock(lastBlockAt) : '';
+      var text = lastBlockHeight > 0
+        ? ('#' + lastBlockHeight + (age ? ' · ' + age : ''))
+        : (age || '—');
+      el.textContent = text;
+      if (lastBlockId) el.title = 'network tip #' + lastBlockHeight + ' ' + lastBlockId;
+      else el.removeAttribute('title');
+    }
+    function fmtBlockMs(ms) {
+      const v = Number(ms);
+      if (!Number.isFinite(v) || v <= 0) return '—';
+      const sec = v / 1000;
+      if (sec < 60) return sec.toFixed(1) + 's';
+      const m = Math.floor(sec / 60);
+      const s = Math.round(sec % 60);
+      return m + 'm ' + String(s).padStart(2, '0') + 's';
+    }
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const next = String(value);
+      if (el.textContent === next) return;
+      el.textContent = next;
+    }
+    function esc(v) {
+      return String(v ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    }
+    function fetchJson(path, ms) {
+      const ctrl = new AbortController();
+      const t = setTimeout(function () { ctrl.abort(); }, ms || 2500);
+      const sep = String(path || '').indexOf('?') >= 0 ? '&' : '?';
+      return fetch(API_BASE + path + sep + '_=' + Date.now(), {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-store' },
+        signal: ctrl.signal,
+      }).then(function (r) {
+        if (!r.ok) throw new Error('http ' + r.status);
+        return r.json();
+      }).finally(function () { clearTimeout(t); });
+    }
+    function shortId(id) {
+      const s = String(id || '');
+      if (s.length <= 18) return s;
+      return s.slice(0, 10) + '…' + s.slice(-6);
+    }
+    function shortDest(s) {
+      const t = String(s || '');
+      if (!t || /^shear1/i.test(t) || /^she1/i.test(t)) return '';
+      return t.slice(0, 9);
+    }
+    function fmtLocalTs(ms) {
+      const n = Number(ms);
+      if (!Number.isFinite(n) || n <= 0) return '—';
+      const d = new Date(n);
+      if (Number.isNaN(d.getTime())) return '—';
+      function pad(v) { return String(v).padStart(2, '0'); }
+      return pad(d.getDate()) + '-' + pad(d.getMonth() + 1) + '-' + d.getFullYear()
+        + ' : ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+    function txIdFromPath() {
+      const m = String(location.pathname || '').match(/\/tx\/([^/]+)/);
+      return m ? decodeURIComponent(m[1]) : '';
+    }
+    function paintCli(text) {
+      const el = document.getElementById('tx-cli');
+      if (el) el.textContent = text || 'select a confirmed block';
+    }
+    async function openTx(id) {
+      const want = String(id || '').trim();
+      const back = document.getElementById('back-ex');
+      if (back) {
+        if (want) back.classList.add('is-on');
+        else back.classList.remove('is-on');
+      }
+      if (!want) return;
+      try {
+        const got = await fetchJson('/explorer/tx?id=' + encodeURIComponent(want));
+        paintCli(got && got.ok ? got.cli : 'unknown block');
+      } catch {
+        paintCli('unknown block');
+      }
+    }
+    let tipHeight = 0;
+    let spendableNeed = 6;
+    function blockStatus(t, tip, need) {
+      const h = Number(t && t.height) || 0;
+      const tipH = Number(tip != null ? tip : tipHeight) || 0;
+      const n = Math.max(1, Number(need != null ? need : spendableNeed) || 6);
+      const confs = (h >= 1 && tipH >= h) ? (tipH - h + 1) : 0;
+      return confs >= n ? 'confirmed' : 'pending';
+    }
+    function isPendingRow(t) {
+      if (!t) return false;
+      if (t.pending === true) return true;
+      const st = String(t.status || '');
+      if (st === 'pending' || st === '(pending)') return true;
+      const kind = String(t.kind || '');
+      return Number(t.height) === 0 && (kind === 'lock' || kind === 'vote');
+    }
+    function orderRecentTxs(txs, limit) {
+      const list = Array.isArray(txs) ? txs.slice() : [];
+      const pending = [];
+      const sealed = [];
+      for (let i = 0; i < list.length; i += 1) {
+        if (isPendingRow(list[i])) pending.push(list[i]);
+        else sealed.push(list[i]);
+      }
+      sealed.sort(function (a, b) {
+        return Number(b.height) - Number(a.height);
+      });
+      if (limit == null || limit === Infinity) return pending.concat(sealed);
+      const n = Math.max(0, Math.floor(Number(limit) || 0));
+      if (!n) return pending.concat(sealed);
+      return pending.concat(sealed).slice(0, n);
+    }
+    function paintTxs(txs, status) {
+      const body = document.querySelector('#ex-txs tbody');
+      const st = document.getElementById('tx-status');
+      if (st) st.textContent = status || '';
+      if (!body) return;
+      const rows = Array.isArray(txs) ? txs.slice() : [];
+      body.innerHTML = rows.length
+        ? rows.map(function (t) {
+            const href = '/tx/' + encodeURIComponent(t.id);
+            const st = Number(t.height) >= 1
+              ? blockStatus(t, tipHeight, spendableNeed)
+              : (t.status || 'pending');
+            const pendingLabel = st === 'pending' || st === '(pending)' ? '(pending)' : 'confirmed';
+            const heightLabel = Number(t.height) >= 1 ? String(Number(t.height)) : '—';
+            return '<tr><td class="mono">' + esc(heightLabel) + '</td><td class="mono"><a href="' + href + '">' +
+              esc(shortId(t.id)) + '</a></td><td>' +
+              esc(fmtLocalTs(t.at)) + '</td><td>' +
+              esc(pendingLabel) + '</td><td class="mono">' + esc(t.kind || 'block') + '</td></tr>';
+          }).join('')
+        : '<tr><td colspan="5">No sealed blocks yet.</td></tr>';
+    }
+    function queryFromForm() {
+      const q = new URLSearchParams();
+      const height = (document.getElementById('q-height') || {}).value || '';
+      const id = (document.getElementById('q-id') || {}).value || '';
+      const from = (document.getElementById('q-from') || {}).value || '';
+      const to = (document.getElementById('q-to') || {}).value || '';
+      if (String(height).trim()) q.set('height', String(height).trim());
+      if (String(id).trim()) q.set('id', String(id).trim());
+      if (String(from).trim()) q.set('from', String(from).trim());
+      if (String(to).trim()) q.set('to', String(to).trim());
+      return q;
+    }
+    function hasSearchQuery() {
+      const q = queryFromForm();
+      return q.has('height') || q.has('id') || q.has('from') || q.has('to');
+    }
+    function paintHolders(circ) {
+      setText('ex-circulating', fmtShe(circ.circulating) + ' SHE');
+      setText('ex-emitted', fmtShe(circ.emitted) + ' SHE');
+      setText('ex-note-count', circ.noteCount ?? 0);
+    }
+    async function loadRecent() {
+      const stats = await fetchJson('/stats');
+      const pulse = document.getElementById('live-pulse');
+      if (pulse) {
+        pulse.classList.remove('stale');
+        pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v5') + ' · height ' + (stats.height ?? 0);
+      }
+      tipHeight = Number(stats.height) || 0;
+      spendableNeed = Number(stats.spendableConfirmations)
+        || Number(stats.policy && stats.policy.consensus_min)
+        || 6;
+      setText('ex-height', stats.height ?? 0);
+      setText('ex-hashrate', fmtHashNanos(ongoingHashbonusHashes(stats), stats && stats.hashBonusNanos) + ' SHE');
+      const NANOS = 100000000000;
+      setText('ex-circ-she', fmtShe(Number(stats.circulatingNanos || 0) / NANOS) + ' SHE');
+      var avgPot = Number(stats.potEmittedNanos);
+      var avgBonus = Number(stats.hashBonusEmittedNanos);
+      var avgH = Number(stats.height) || 0;
+      var avgShe = (avgH > 0 && isFinite(avgPot) && isFinite(avgBonus) && avgPot >= 0 && avgBonus >= 0)
+        ? fmtShe((avgPot + avgBonus) / avgH / NANOS) + ' SHE'
+        : '—';
+      setText('ex-avg-reward', avgShe);
+      setText('ex-nodes-online', String(Math.max(0, Number(stats.nodesOnline) || 0)));
+      setText('ex-reserve-vault', fmtShe(Number(stats.reserveVaultNanos || 0) / NANOS) + ' SHE');
+      var avgBt = Number(stats.networkAvgBlockTimeMs != null ? stats.networkAvgBlockTimeMs : stats.avgBlockTimeMs);
+      var targetBt = Number(stats.targetBlockIntervalMs) || 90000;
+      setText('ex-avg-block', avgBt > 0 ? (fmtBlockMs(avgBt) + ' (target ' + fmtBlockMs(targetBt) + ')') : '—');
+      var sc = Number(stats.spendableConfirmations)
+        || Number(stats.policy && stats.policy.consensus_min)
+        || Number(stats.policy && stats.policy.bands && stats.policy.bands.consensus_spendable)
+        || spendableNeed
+        || 6;
+      setText('ex-spendable-conf', String(Math.max(0, sc)) + ' conf');
+      filled = true;
+      const hist = await fetchJson('/explorer/recent').catch(function () { return { txs: [] }; });
+      var tip = networkTipBlock(stats, hist.txs || []);
+      lastBlockHeight = tip.height > 0 ? tip.height : 0;
+      lastBlockAt = tip.at > 0 ? tip.at : 0;
+      lastBlockId = tip.id || '';
+      paintLastBlock();
+      const circ = await fetchJson('/explorer/circulation').catch(function () { return { holders: [] }; });
+      const recent = orderRecentTxs(hist.txs || []);
+      paintTxs(recent, '');
+      paintHolders(circ);
+    }
+    async function runSearch(ev) {
+      if (ev) ev.preventDefault();
+      const q = queryFromForm();
+      if (![...q.keys()].length) {
+        await loadRecent();
+        return;
+      }
+      const stats = await fetchJson('/stats').catch(function () { return {}; });
+      tipHeight = Number(stats.height) || tipHeight;
+      spendableNeed = Number(stats.spendableConfirmations)
+        || Number(stats.policy && stats.policy.consensus_min)
+        || spendableNeed
+        || 6;
+      const got = await fetchJson('/explorer/search?' + q.toString());
+      const n = (got.txs || []).length;
+      let status = n + ' block(s)';
+      if (q.get('height')) status = n + ' block(s) at height ' + q.get('height');
+      else if (q.get('id')) status = n + ' block(s) matching id ' + q.get('id');
+      else if (q.get('from') || q.get('to')) status = n + ' block(s) from ' + (q.get('from') || '…') + ' to ' + (q.get('to') || '…');
+      paintTxs(got.txs || [], status);
+    }
+    document.getElementById('tx-search').addEventListener('submit', runSearch);
+    document.getElementById('search-reset').addEventListener('click', function () {
+      ['q-height','q-id','q-from','q-to'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      loadRecent();
+    });
+    loadRecent().catch(function () {
+      const pulse = document.getElementById('live-pulse');
+      if (pulse) { pulse.classList.add('stale'); pulse.textContent = 'offline · retrying'; }
+      setTimeout(loadRecent, 1200);
+    });
+    const initialTx = txIdFromPath();
+    if (initialTx) openTx(initialTx);
+    setInterval(function () {
+      if (lastBlockAt || lastBlockHeight) paintLastBlock();
+      if (!filled) return;
+      if (hasSearchQuery()) runSearch().catch(function () {});
+      else loadRecent().catch(function () {});
+    }, 2000);
+  </script>
+</body>
+</html>

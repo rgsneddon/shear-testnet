@@ -1,19 +1,74 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <script src="/brand/theme.js?v=15"></script>
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
   <title>Shear mempool · logarithmic lattice</title>
-  <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
-  <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="stylesheet" href="/brand/theme.css?v=30"/>
+  <link rel="icon" href="/brand/favicon.ico" sizes="any"/>
+  <link rel="icon" type="image/png" href="/brand/favicon-32.png" sizes="32x32"/>
+  <link rel="stylesheet" href="/css/site.css"/>
+  <link rel="stylesheet" href="/shared/shear-chrome.css"/>
   <style>
+
+    /* Bridge: original mempool used brand theme.css vars; map to site tokens */
+    :root, html[data-theme="dark"] {
+      --bg: #07090c; --ink: #e8eef4; --muted: #8b9aab; --banner: rgba(7,9,12,.92);
+      --green: #5dcc7a; --cyan: #5eead4; --blue: #5eead4;
+    }
+    html[data-theme="dark"] {
+      --bg: #f4f7fa; --ink: #0f172a; --muted: #475569; --banner: rgba(255,255,255,.92);
+      --green: #15803d; --cyan: #0f766e; --blue: #0f766e;
+    }
+    body { margin:0; }
+
+
     :root, html[data-theme="light"] {
-      --lattice-bg: #dce6f0;
-      --lattice-core: #f4f8fc;
-      --lattice-grid: rgba(13, 33, 55, .16);
-      --lattice-rail: rgba(13, 33, 55, .42);
+      --lattice-bg: #eef2f6;
+      --lattice-core: #f4f7fa;
+      --lattice-grid: rgba(15, 23, 42, .08);
+      --lattice-rail: rgba(15, 23, 42, .28);
       --lattice-link: rgba(109, 24, 168, .62);
       --lattice-gold: #c48a00;
       --lattice-cyan: #007a96;
@@ -31,47 +86,48 @@
       --nav-fill-b: #eef5fb;
     }
     html[data-theme="dark"] {
-      --lattice-bg: #050b18;
-      --lattice-core: #0b1c33;
-      --lattice-grid: rgba(90, 140, 190, .12);
-      --lattice-rail: rgba(230, 240, 255, .55);
+      /* Continuum Receive charcoal — not navy void */
+      --lattice-bg: #07090c;
+      --lattice-core: #0a0c10;
+      --lattice-grid: rgba(168, 176, 186, .18);
+      --lattice-rail: rgba(200, 208, 216, .16);
       --lattice-link: rgba(196, 107, 255, .55);
       --lattice-gold: #ffd24a;
       --lattice-cyan: #4fd8e8;
       --lattice-tip: #39ff6a;
-      --card-fill: rgba(6, 14, 28, .78);
-      --card-line: rgba(79, 216, 232, .22);
-      --card-ink: #d6e6f5;
-      --card-muted: #9bb8d0;
+      --card-fill: rgba(10, 12, 16, .90);
+      --card-line: rgba(160, 170, 180, .22);
+      --card-ink: #e2e8f0;
+      --card-muted: #9aa7b5;
       --eq: #f0d27a;
-      --pick: #7ee8f4;
-      --pick-bg: #06141f;
+      --pick: #a8e6cf;
+      --pick-bg: #0a0c10;
       --title: #f4f7fb;
-      --title-glow: rgba(79, 216, 232, .35);
-      --nav-fill-a: #1a3a5c;
-      --nav-fill-b: #132a4a;
+      --title-glow: rgba(93, 204, 122, .16);
+      --nav-fill-a: #12151a;
+      --nav-fill-b: #0a0c10;
     }
     @media (prefers-color-scheme: dark) {
       html:not([data-theme="light"]) {
-        --lattice-bg: #050b18;
-        --lattice-core: #0b1c33;
-        --lattice-grid: rgba(90, 140, 190, .12);
-        --lattice-rail: rgba(230, 240, 255, .55);
+        --lattice-bg: #07090c;
+        --lattice-core: #0a0c10;
+        --lattice-grid: rgba(168, 176, 186, .18);
+        --lattice-rail: rgba(200, 208, 216, .16);
         --lattice-link: rgba(196, 107, 255, .55);
         --lattice-gold: #ffd24a;
         --lattice-cyan: #4fd8e8;
         --lattice-tip: #39ff6a;
-        --card-fill: rgba(6, 14, 28, .78);
-        --card-line: rgba(79, 216, 232, .22);
-        --card-ink: #d6e6f5;
-        --card-muted: #9bb8d0;
+        --card-fill: rgba(10, 12, 16, .90);
+        --card-line: rgba(160, 170, 180, .22);
+        --card-ink: #e2e8f0;
+        --card-muted: #9aa7b5;
         --eq: #f0d27a;
-        --pick: #7ee8f4;
-        --pick-bg: #06141f;
+        --pick: #a8e6cf;
+        --pick-bg: #0a0c10;
         --title: #f4f7fb;
-        --title-glow: rgba(79, 216, 232, .35);
-        --nav-fill-a: #1a3a5c;
-        --nav-fill-b: #132a4a;
+        --title-glow: rgba(93, 204, 122, .16);
+        --nav-fill-a: #12151a;
+        --nav-fill-b: #0a0c10;
       }
     }
     * { box-sizing: border-box; }
@@ -94,39 +150,68 @@
     canvas:active { cursor:grabbing; }
     .hud {
       position:absolute; inset:0; pointer-events:none; display:grid;
-      grid-template-columns: minmax(14rem, 18rem) 1fr minmax(14rem, 18rem);
+      grid-template-columns: minmax(14rem, 18rem) minmax(0, 1fr) minmax(14rem, 18rem);
       padding:18px 12px 12px; gap:10px;
+      min-width:0;
     }
     .col {
       display:flex; flex-direction:column; gap:10px; min-width:0; min-height:0;
+      max-width:100%;
       overflow-y:auto; overflow-x:hidden; max-height:100%; pointer-events:auto;
       padding-bottom:16px;
+      align-items:stretch;
     }
     .col.mid {
-      justify-content:space-between; align-items:center; text-align:center;
-      overflow:visible; pointer-events:none; height:100%; padding-top:8px; padding-bottom:10px;
+      justify-content:flex-start; align-items:center; text-align:center;
+      overflow-x:hidden; overflow-y:auto; pointer-events:none; height:100%;
+      padding-top:8px; padding-bottom:10px;
+      min-width:0; max-width:100%;
+      gap:12px;
     }
+    .col.mid .card { pointer-events:auto; }
     .card {
       pointer-events:auto; padding:10px 12px; color:var(--card-ink);
       background:var(--card-fill); border:1px solid var(--card-line);
       backdrop-filter: blur(6px);
+      min-width:0; max-width:100%;
+      width:100%;
+      height:auto;
+      max-height:none;
+      flex:0 0 auto; /* never shrink — full text depth */
+      box-sizing:border-box;
+      overflow-x:hidden; /* no sideways spill */
+      overflow-y:visible; /* grow with content; never truncate by depth */
+      overflow-wrap:anywhere;
+      word-break:break-word;
+      line-height:1.4;
     }
-    .card h2, .title { margin:0 0 6px; font-weight:800; letter-spacing:.02em; }
+    .card > * { max-width:100%; min-width:0; }
+    .card h2, .title { margin:0 0 6px; font-weight:800; letter-spacing:.02em; line-height:1.25; max-width:100%; }
     .title {
       font-family: Georgia, "Times New Roman", serif; font-size:1.35rem;
       color:var(--title); text-shadow:0 0 18px var(--title-glow);
+      overflow-wrap:anywhere; word-break:break-word;
     }
-    .sub { font-style:italic; color:var(--card-muted); margin:0 0 8px; font-size:.95rem; }
-    .label { color:var(--muted); font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; font-weight:700; }
-    .card p, .card li { margin:0 0 6px; font-size:.85rem; color:var(--card-ink); }
-    .card ul { margin:0; padding-left:1.1rem; }
+    .sub { font-style:italic; color:var(--card-muted); margin:0 0 8px; font-size:.95rem; max-width:100%; overflow-wrap:anywhere; }
+    .label {
+      color:var(--muted); font-size:.72rem; letter-spacing:.06em;
+      text-transform:uppercase; font-weight:700; line-height:1.35; margin-bottom:4px;
+      max-width:100%; overflow-wrap:anywhere;
+    }
+    .card p, .card li {
+      margin:0 0 6px; font-size:.85rem; color:var(--card-ink);
+      line-height:1.45; max-width:100%;
+      overflow-wrap:anywhere; word-break:break-word;
+    }
+    .card ul { margin:0; padding-left:1.1rem; max-width:100%; }
     .eq, .card p .eq, .card li .eq {
       font-family: ui-monospace, Consolas, monospace; color:var(--eq); font-size:.85rem;
+      white-space:normal; overflow-wrap:anywhere; word-break:break-all;
     }
-    .legend { display:flex; flex-direction:column; gap:4px; font-size:.82rem; color:var(--card-ink); }
-    .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
-    .foot { color:var(--card-muted); font-size:.8rem; }
-    #pulse { color:var(--green); font-size:.8rem; }
+    .legend { display:flex; flex-direction:column; gap:4px; font-size:.82rem; color:var(--card-ink); max-width:100%; overflow-wrap:anywhere; }
+    .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; flex-shrink:0; }
+    .foot { color:var(--card-muted); font-size:.8rem; max-width:100%; overflow-wrap:anywhere; }
+    #pulse { color:var(--green); font-size:.8rem; max-width:100%; overflow-wrap:anywhere; }
     #pulse.stale { color:#b42318; }
     html[data-theme="dark"] #pulse.stale { color:#e24b4b; }
     @media (prefers-color-scheme: dark) {
@@ -136,16 +221,12 @@
       min-height:4.2rem; font-family: ui-monospace, Consolas, monospace; font-size:.82rem;
       color:var(--pick); background:var(--pick-bg); padding:.35rem .5rem;
       border:1px solid var(--card-line); margin:0; white-space:pre-wrap;
+      line-height:1.4; overflow-wrap:anywhere; word-break:break-word;
+      max-width:100%; overflow-x:hidden; box-sizing:border-box;
     }
     @media (max-width: 1024px) {
-      header.top-banner {
-        grid-template-columns: 1fr auto;
-        overflow: visible;
-        padding: 6px 12px;
-        gap: 10px;
-      }
-      .hud { grid-template-columns:1fr; overflow:hidden; }
-      .col { max-height: 34vh; }
+      .hud { grid-template-columns:1fr; overflow:hidden; min-width:0; }
+      .col { max-height: min(48vh, 100%); min-width:0; }
       .col.mid { order:-1; max-height: none; }
     }
     .full-btn {
@@ -157,36 +238,19 @@
     html.lattice-full .hud { display: none !important; }
     html.lattice-full, html.lattice-full body { height: 100%; overflow: hidden; }
     html.lattice-full .stage { position: fixed; inset: 0; height: 100%; }
+  
+    /* Preview: allow page scroll if needed; keep stage flex */
+    html, body { height:100%; }
   </style>
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
 </head>
 <body>
-  <header class="top-banner">
-    <div class="banner-brand">
-      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
-        src="/brand/05c-wordmark-nevia-light-transparent.png"
-        data-light="/brand/05c-wordmark-nevia-light-transparent.png"
-        data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
-      <img class="banner-wordmark theme-img-dark" alt=""
-        src="/brand/05d-wordmark-nevia-dark-transparent.png"/>
-    </div>
-    <nav class="nav" id="shear-nav">
-      <a class="nav-btn" href="https://shear.digital">MAIN</a>
-      <a class="nav-btn" href="https://pool.shear.digital">POOL</a>
-      <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
-      <a class="nav-btn is-on" href="/">MEMPOOL</a>
-      <a class="nav-btn" id="nav-miner" href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" target="_blank" rel="noopener">MINER</a>
-      <a class="nav-btn" id="nav-node" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" id="nav-wallet" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.56" target="_blank" rel="noopener">WALLET</a>
-      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
-    </nav>
-    <div class="banner-tools">
-      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
-        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
-        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
-      </button>
-      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
-    </div>
-  </header>
+
+  <div id="shear-chrome-root" data-active="MEMPOOL" data-brand-base="/brand/" data-testnet-pill="1"></div>
+  <script src="/shared/shear-chrome.js"></script>
+
+
+  
   <div class="stage">
     <canvas id="lattice"></canvas>
     <div class="hud">
@@ -201,20 +265,20 @@
             <div><span class="dot" style="background:var(--lattice-tip)"></span>Tip — neon green apex</div>
             <div><span class="dot" style="background:var(--lattice-cyan)"></span>Forming — neon cyan hoop: one seat per miner on the network with Valid hashes &gt; 0 this round. Not sealed hash-bonus vouts.</div>
             <div><span class="dot" style="background:var(--lattice-gold)"></span>Gold hoop — pending Flow sends. Weight sets the level: heavier / nearer inclusion sits closer to the miners</div>
-            <div><span class="dot" style="background:var(--lattice-link)"></span>Confirming rings — purple, below the tip. Each purple hub is a sealed block with its tx count. At 6-conf the block cascades down the curling lattice</div>
-            <div><span class="dot" style="background:var(--lattice-link)"></span>σ-flow filaments — outer rings falling inward</div>
-            <div><span class="dot" style="background:var(--lattice-cyan)"></span>Hover glass — pointer magnifies any neighbourhood</div>
+            <div><span class="dot" style="background:var(--lattice-link)"></span>Confirming rings — purple, below the tip. Each purple hub is a sealed block with its tx count</div>
+            <div><span class="dot" style="background:var(--lattice-link)"></span>σ-flow filaments — links on the Continuum-style grid</div>
+            <div><span class="dot" style="background:var(--lattice-grid)"></span>Field — fine charcoal QR grid · gentle auto-orbit · hover spyglass</div>
           </div>
         </section>
         <section class="card">
           <div class="label">Hover glass</div>
-          <p>Move the pointer over any part of the lattice. A zoom box follows it so you can read nodes, hoops, and filaments up close. Drag still orbits; scroll still zooms the whole stage.</p>
+          <p>Move the pointer over a node to read it in the pick box. Drag orbits the camera; scroll zooms. The field is a Continuum-style grid with a slow auto-orbit; drag to take over, scroll to zoom.</p>
         </section>
         <section class="card">
           <div class="label">Commission</div>
           <p>When the gold hoop is empty it rests at the base of the lattice, wide around the circumference. Each pending send sits on a level set by its weight × levy: heavier work climbs toward the tip.</p>
-          <p>Filaments link those gold seats to the cyan miners packing the next block. When a send is committed it leaves gold, bursts into the tip, then falls through the purple confirming rings. From the last purple ring the block cascades down the curling lattice. Sealed hash-bonus vouts stay off the spiral so a busy book does not pack it.</p>
-          <p>At blockfound the cyan hoop tilts to the tip and miner rewards firework in — graphics only, no lettering.</p>
+          <p>Filaments link those gold seats to the cyan miners packing the next block. Committed sends leave gold and appear under purple confirming rings, then as recovered blocks on the spiral. Sealed hash-bonus vouts stay off the spiral so a busy book does not pack it.</p>
+          <p>The charcoal field is a static fine square grid — Continuum Receive look. Data dots update from the live book; the camera slowly auto-orbits when you are not dragging.</p>
           <p>Consensus spendable at <strong>6 confirmations</strong>. Third-party <span class="eq">min_confirms</span> default 12.</p>
         </section>
       </div>
@@ -224,7 +288,7 @@
           <p class="sub">Network-wide pending rings breathe, lean, and converge as they commission into the next block. she is private</p>
           <p id="pulse">waiting · lattice</p>
         </div>
-        <p class="foot">Gold climbs to the tip, purple rings confirm, then blocks cascade down the curl. Hover to magnify · drag to orbit · scroll to zoom.</p>
+        <p class="foot">Continuum grid · slow auto-orbit · gold climbs to tip · purple rings confirm. Hover · drag · scroll.</p>
       </div>
       <div class="col">
         <section class="card">
@@ -235,13 +299,13 @@
         </section>
         <section class="card">
           <div class="label">Live book</div>
-          <p>Tip height <span class="eq" id="h-tip">—</span> · Scope <span class="eq" id="h-scope">network</span></p>
+          <p>Tip height <span class="eq" id="h-tip">—</span> · Scope <span class="eq" id="h-scope">—</span></p>
           <p>Nodes online <span class="eq" id="h-nodes">—</span></p>
-          <p>Pending sends <span class="eq" id="h-pend">0</span> · Forming hashes <span class="eq" id="h-hashes">0</span></p>
-          <p>Forming block <span class="eq" id="h-form">—</span> · Forming miners <span class="eq" id="h-miners">0</span></p>
-          <p>Rings <span class="eq" id="h-rings">0</span> · Forming weight <span class="eq" id="h-weight">0</span></p>
-          <p>Levy in flight <span class="eq" id="h-levy">0</span> · Next in <span class="eq" id="h-next">—</span></p>
-          <p>Base fee <span class="eq" id="h-fee">1</span> · Mature depth <span class="eq">6 conf</span></p>
+          <p>Pending sends <span class="eq" id="h-pend">—</span> · Forming hashes <span class="eq" id="h-hashes">—</span></p>
+          <p>Forming block <span class="eq" id="h-form">—</span> · Forming miners <span class="eq" id="h-miners">—</span></p>
+          <p>Rings <span class="eq" id="h-rings">—</span> · Forming weight <span class="eq" id="h-weight">—</span></p>
+          <p>Levy in flight <span class="eq" id="h-levy">—</span> · Next in <span class="eq" id="h-next">—</span></p>
+          <p>Base fee <span class="eq" id="h-fee">—</span> · Mature depth <span class="eq">6 conf</span></p>
           <p><button type="button" class="full-btn" id="lattice-full-open">Open in full screen</button></p>
           <pre id="pick">select a node</pre>
         </section>
@@ -251,7 +315,7 @@
             <li>Tip is the neon-green apex. The forming block is the inner cyan hoop.</li>
             <li>Empty gold hoop sits wide at the base. Tx weight lifts each send toward the tip.</li>
             <li>Committed sends burst into the tip, then the purple confirming rings. Each purple hub shows that block’s tx count.</li>
-            <li>From the last purple ring, mature blocks cascade down the curling lattice. Hash-bonus vouts are not painted.</li>
+            <li>Mature blocks sit on the curling lattice as recovered hubs. Hash-bonus vouts are not painted.</li>
           </ul>
         </section>
       </div>
@@ -271,14 +335,40 @@
       goldIds: new Set(), goldPos: {}, confIds: new Set(), confPos: {},
     };
 
+    let rafPending = false;
+    let animating = true;
+    function requestRedraw() {
+      if (rafPending) return;
+      rafPending = true;
+      requestAnimationFrame(function (t) {
+        rafPending = false;
+        state.t = t;
+        draw(t);
+      });
+    }
+
+    function tick(t) {
+      state.t = t;
+      if (!state.dragging) state.yaw += 0.00115;
+      draw(t);
+      if (animating) if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      animating = false;
+      requestRedraw();
+    } else {
+      requestAnimationFrame(tick);
+    }
+    }
+
     function resize() {
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       canvas.width = canvas.clientWidth * dpr;
       canvas.height = canvas.clientHeight * dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (!animating) requestRedraw();
     }
     window.addEventListener('resize', resize);
     resize();
+    requestAnimationFrame(tick);
 
     function isDark() {
       const t = document.documentElement.getAttribute('data-theme');
@@ -293,10 +383,10 @@
     function palette() {
       const dark = isDark();
       return {
-        bg: cssVar('--lattice-bg', dark ? '#050b18' : '#dce6f0'),
-        core: cssVar('--lattice-core', dark ? '#0b1c33' : '#f4f8fc'),
-        grid: cssVar('--lattice-grid', dark ? 'rgba(90,140,190,.12)' : 'rgba(13,33,55,.16)'),
-        rail: cssVar('--lattice-rail', dark ? 'rgba(230,240,255,.55)' : 'rgba(13,33,55,.42)'),
+        bg: cssVar('--lattice-bg', dark ? '#07090c' : '#eef2f6'),
+        core: cssVar('--lattice-core', dark ? '#0a0c10' : '#f4f7fa'),
+        grid: cssVar('--lattice-grid', dark ? 'rgba(168,176,186,.18)' : 'rgba(15,23,42,.08)'),
+        rail: cssVar('--lattice-rail', dark ? 'rgba(200,208,216,.16)' : 'rgba(15,23,42,.28)'),
         link: cssVar('--lattice-link', dark ? 'rgba(196,107,255,.55)' : 'rgba(109,24,168,.62)'),
         gold: cssVar('--lattice-gold', dark ? '#ffd24a' : '#c48a00'),
         cyan: cssVar('--lattice-cyan', dark ? '#4fd8e8' : '#007a96'),
@@ -369,7 +459,10 @@
       const rails = [];
       const gens = data.generations || [];
       const pending = latticeTxs(data.pending || []);
-      const tipH = data.tip?.height || 0;
+      const tipRaw = data.tip && data.tip.height != null ? Number(data.tip.height) : NaN;
+      const tipH = Number.isFinite(tipRaw) ? tipRaw : null;
+      const tipHNum = tipH != null ? tipH : 0;
+      const tipLabel = tipH != null ? String(tipH) : '—';
       const prevCyan = (state.pendRings || []).find((r) => r.kind === 'block');
       const origins = [];
       if (prevCyan) {
@@ -380,10 +473,10 @@
       }
       const Y_TIP = 11.2;
       nodes.push({
-        id: 'tip', label: 'TIP ' + tipH, kind: 'tip', prime: true,
+        id: 'tip', label: 'TIP ' + tipLabel, kind: 'tip', prime: true,
         gen: -0.15, x: 0, y: Y_TIP, z: 0, role: 'tip', r: 8.2, meta: data.tip || {},
       });
-      const block = data.pendingBlock || { height: tipH + 1, hashes: 0, txs: [] };
+      const block = data.pendingBlock || { height: tipH != null ? tipH + 1 : null, hashes: 0, txs: [] };
       const hashTxs = formingHashSeats(block);
       const bands = bandSends(pending);
       const rings = [];
@@ -401,21 +494,25 @@
           ox: 0, oz: 0, items: sorted, hub: !!hub, nodes: [], hubNode: null,
         });
       }
-      const minerN = Math.max(hashTxs.length, 1);
-      const cyanRad = 1.22 + 2.55 * Math.tanh(minerN / 5.2) + 0.1 * Math.min(minerN, 20);
-      addRing({
-        kind: 'block', y: Y_TIP - 0.88, baseRad: cyanRad, expand: 1,
-        items: hashTxs,
-        label: 'forming #' + (block.height || (tipH + 1)) + ' · ' + hashTxs.length + ' miners',
-        color: 'cyan', hub: true, tilt: 0.1,
-      });
-      const cyan = rings[rings.length - 1];
-      cyan.yRest = Y_TIP - 0.88;
-      cyan.yKiss = Y_TIP - 0.55;
-      cyan.tiltRest = 0.1;
-      cyan.tiltKiss = 0.5;
-      cyan.radRest = cyanRad;
-      cyan.radKiss = cyanRad * 0.96;
+      const minerN = hashTxs.length;
+      const cyanRad = 1.22 + 2.55 * Math.tanh(Math.max(minerN, 0) / 5.2) + 0.1 * Math.min(minerN, 20);
+      const formH = block.height != null ? block.height : (tipH != null ? tipH + 1 : null);
+      /* No cyan hoop / hub when nobody is hashing — avoids empty blue ring on the void */
+      if (minerN > 0) {
+        addRing({
+          kind: 'block', y: Y_TIP - 0.88, baseRad: cyanRad, expand: 1,
+          items: hashTxs,
+          label: 'forming' + (formH != null ? (' #' + formH) : '') + ' · ' + hashTxs.length + ' miners',
+          color: 'cyan', hub: true, tilt: 0.1,
+        });
+        const cyan = rings[rings.length - 1];
+        cyan.yRest = Y_TIP - 0.88;
+        cyan.yKiss = Y_TIP - 0.55;
+        cyan.tiltRest = 0.1;
+        cyan.tiltKiss = 0.5;
+        cyan.radRest = cyanRad;
+        cyan.radKiss = cyanRad * 0.96;
+      }
       const Y_BASE = -1.55;
       const Y_GOLD_TOP = Y_TIP - 1.08;
       const RAD_WIDE = 7.2;
@@ -499,22 +596,18 @@
       const recovered = gens.filter((g) => !(g.confirming || (Number(g.confirmations) >= 1 && !g.spendable)));
       const newGoldIds = new Set(goldNodes.map((n) => n.id));
       const committed = [...(state.goldIds || [])].filter((id) => !newGoldIds.has(id));
-      if (state.tipH && tipH > state.tipH) {
-        spawnFireworks(origins, { x: 0, y: Y_TIP, z: 0 }, tipH);
-        const fromGold = committed.map((id) => state.goldPos[id]).filter(Boolean);
-        if (fromGold.length) spawnCommitBursts(fromGold, { x: 0, y: Y_TIP, z: 0 }, { x: 0, y: Y_TIP - 1.72, z: 0 }, tipH);
+      /* Static Continuum grid: no firework / commit-burst / cascade motion */
+      if (state.tipH && tipH != null && tipH > state.tipH) {
+        /* tip advanced — data updates only; no particle FX */
       }
       const newConfIds = new Set(confirming.map((g) => Number(g.height)));
       [...(state.confIds || [])].forEach((h) => {
         if (newConfIds.has(h)) return;
-        const from = state.confPos[h];
-        if (!from) return;
-        const gi = recovered.findIndex((g) => Number(g.height) === h);
-        spawnCascade(from, gi >= 0 ? gi + 1 : 1, h);
+        /* confirming → recovered: no cascade animation */
       });
       state.goldIds = newGoldIds;
       state.confIds = newConfIds;
-      state.tipH = tipH;
+      state.tipH = tipHNum;
       confirming.forEach((g, ci) => {
         const raw = (g.txs || []).filter((tx) => String(tx.kind || '') !== 'dummy');
         const txs = latticeTxs(raw);
@@ -561,7 +654,7 @@
         const rad = Math.log(1 + n) * 2.15;
         const theta0 = n * 0.46;
         const raw = (g.txs || []).filter((tx) => String(tx.kind || '') !== 'dummy');
-        const txs = latticeTxs(raw.length ? raw : [{ id: 'b-' + g.height, kind: 'block', prime: true }]);
+        const txs = latticeTxs(raw);
         const txCount = raw.length;
         const blockId = 'h-' + g.height;
         const bx = rad * Math.cos(theta0), bz = rad * Math.sin(theta0);
@@ -589,49 +682,26 @@
           links.push({ a: blockId, b: id });
         });
       });
-      if (!rails.length) {
-        for (let i = 0; i < 40; i++) {
-          const n = i * 0.45;
-          const rad = Math.log(1 + n) * 2.15;
-          const th = n * 0.46;
-          rails.push({ x: rad * Math.cos(th), y: 9.2 - n * 0.72, z: rad * Math.sin(th) });
-        }
-      }
+      /* no synthetic rails — empty book stays empty */
       state.nodes = nodes;
       state.links = links;
       state.rails = rails;
     }
 
-    function demoData() {
-      const tip = 3908 + (state.seq % 3);
-      const pending = Array.from({ length: 9 + (state.seq % 5) }, (_, i) => {
-        const fee = 1 + i * i;
-        const weight = 1 + (i % 3);
-        return {
-          id: 'mem-' + (state.seq + i), kind: i % 4 === 0 ? 'b-spend' : 'send',
-          fee, weight, prime: true, included: i < 3,
-          priority: (i < 3 ? 400 : 0) + weight * (1 + Math.log1p(fee)),
-        };
-      });
-      const hashTxs = Array.from({ length: 4 }, (_, i) => ({
-        id: 'hash-demo-' + i, kind: 'hash', count: 12 + i * 9, weight: 12 + i * 9,
-        fee: 0, included: true, prime: false, tag: 'm' + String(i).padStart(8, 'a'),
-      }));
-      const generations = Array.from({ length: 16 }, (_, gi) => {
-        const height = tip - gi;
-        const txs = Array.from({ length: 4 + (gi % 5) }, (_, i) => ({
-          id: height + '-' + i,
-          kind: i === 0 ? 'coinbase' : (i % 4 === 0 ? 'hash' : 'transfer'),
-          prime: i === 0 || i % 4 !== 0,
-        }));
-        return { height, hash: '', confirmations: gi + 1, spendable: gi >= 5, confirming: gi < 5, txs };
-      });
+    function emptyLattice() {
       return {
-        tip: { height: tip, hash: '', baseFee: 1, timestamp: Date.now() - 55_000 },
-        pending,
-        pendingBlock: { height: tip + 1, hashes: hashTxs.reduce((a, t) => a + t.count, 0), txs: hashTxs, weight: 80, fee: 12 },
-        targetBlockIntervalMs: 90_000, scope: 'network', nodesOnline: 2,
-        generations, live: false,
+        ok: true,
+        live: false,
+        tip: null,
+        pending: [],
+        pendingBlock: { height: null, hashes: 0, weight: 0, fee: 0, txs: [] },
+        targetBlockIntervalMs: 90_000,
+        scope: null,
+        nodesOnline: null,
+        generations: [],
+        spendableConfirmations: 6,
+        minConfirmsPolicy: 12,
+        policy: null,
       };
     }
 
@@ -794,8 +864,8 @@
         }
         ctx.globalAlpha = 1;
         const bloom = ctx.createRadialGradient(dest.x, dest.y, 4, dest.x, dest.y, 70 + 40 * (1 - u));
-        bloom.addColorStop(0, isDark() ? `rgba(57,255,106,${0.38 * fade})` : `rgba(0,216,90,${0.28 * fade})`);
-        bloom.addColorStop(0.45, isDark() ? `rgba(79,216,232,${0.16 * fade})` : `rgba(0,122,150,${0.14 * fade})`);
+        bloom.addColorStop(0, isDark() ? `rgba(57,255,106,${0.32 * fade})` : `rgba(0,216,90,${0.24 * fade})`);
+        bloom.addColorStop(0.55, isDark() ? `rgba(57,255,106,${0.08 * fade})` : `rgba(0,216,90,${0.06 * fade})`);
         bloom.addColorStop(1, 'rgba(0,0,0,0)');
         ctx.fillStyle = bloom;
         ctx.beginPath();
@@ -818,18 +888,15 @@
       if (!ts) return 0;
       return Math.max(0, Math.min(1.08, (Date.now() - ts) / interval));
     }
-    function poseRings(t) {
-      const due = blockDue();
+    function poseRings(_t) {
+      /* Static poses only — no kiss/tilt animation, no breath, no hub bob */
       for (const ring of state.pendRings || []) {
         if (ring.kind === 'block') {
-          const u = Math.max(0, Math.min(1, due));
-          ring.y = (ring.yRest ?? ring.y) + ((ring.yKiss ?? ring.y) - (ring.yRest ?? ring.y)) * u;
-          ring.tilt = (ring.tiltRest ?? ring.tilt) + ((ring.tiltKiss ?? ring.tilt) - (ring.tiltRest ?? ring.tilt)) * u;
-          ring.baseRad = (ring.radRest ?? ring.baseRad) + ((ring.radKiss ?? ring.baseRad) - (ring.radRest ?? ring.baseRad)) * u;
+          ring.y = ring.yRest ?? ring.y;
+          ring.tilt = ring.tiltRest ?? ring.tilt;
+          ring.baseRad = ring.radRest ?? ring.baseRad;
         }
-        const breath = 1 + 0.055 * Math.sin(t / 620 + (ring.kind === 'block' ? 0.35 : 1.15))
-          * Math.tanh(Math.log1p(ring.mass) / 2.1);
-        const rad = ring.baseRad * breath;
+        const rad = ring.baseRad;
         ring.rad = rad;
         const n = Math.max(ring.items.length, 1);
         ring.nodes.forEach((node, i) => {
@@ -843,7 +910,7 @@
         if (ring.hubNode) {
           ring.hubNode.x = ring.ox;
           ring.hubNode.z = ring.oz;
-          ring.hubNode.y = ring.y + 0.3 + 0.045 * Math.sin(t / 480);
+          ring.hubNode.y = ring.y + 0.3;
           if (ring.kind === 'confirm' && ring.hubNode.meta && ring.hubNode.meta.height != null) {
             state.confPos[Number(ring.hubNode.meta.height)] = {
               x: ring.hubNode.x, y: ring.hubNode.y, z: ring.hubNode.z,
@@ -870,22 +937,24 @@
         );
         if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
       }
-      ctx.setLineDash(ring.kind === 'block' ? [2, 6] : [7, 5]);
+      ctx.setLineDash(ring.kind === 'block' ? [2, 6] : [6, 5]);
       ctx.strokeStyle = color;
-      ctx.globalAlpha = 0.55;
-      ctx.lineWidth = 4.2;
-      ctx.stroke();
-      ctx.globalAlpha = 0.95;
-      ctx.lineWidth = 1.7;
+      ctx.globalAlpha = 0.42;
+      ctx.lineWidth = 1.35;
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
       const lab = project(ring.ox, ring.y + ring.tilt, ring.oz - rad);
-      ctx.font = '700 11px "Segoe UI",system-ui,sans-serif';
+      ctx.font = '700 12.5px "Segoe UI",system-ui,sans-serif';
       ctx.textAlign = 'center';
       ctx.fillStyle = color;
       const n = ring.items.length;
       ctx.fillText(ring.label + (ring.kind === 'block' ? '' : ('  ' + n)), lab.x, lab.y - 10);
+    }
+    function drawQrField(w, h, pal) {
+      /* Continuum Receive: flat charcoal fill only — QR/square bg grid removed 2026-09-25 */
+      ctx.fillStyle = pal.bg;
+      ctx.fillRect(0, 0, w, h);
     }
     function draw(t) {
       const now = t == null ? state.t : t;
@@ -893,36 +962,17 @@
       const pal = palette();
       const w = canvas.clientWidth, h = canvas.clientHeight;
       ctx.clearRect(0, 0, w, h);
-      const g = ctx.createRadialGradient(w * 0.5, h * 0.42, 16, w * 0.5, h * 0.62, Math.max(w, h) * 0.72);
-      g.addColorStop(0, pal.core);
-      g.addColorStop(1, pal.bg);
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, w, h);
-      const apex = project(0, 11.2, 0);
-      const wash = ctx.createRadialGradient(apex.x, apex.y, 8, apex.x, apex.y, 220);
-      wash.addColorStop(0, isDark() ? 'rgba(57,255,106,.22)' : 'rgba(0,216,90,.16)');
-      wash.addColorStop(0.45, isDark() ? 'rgba(79,216,232,.10)' : 'rgba(0,122,150,.08)');
-      wash.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = wash;
-      ctx.fillRect(0, 0, w, h);
-      const floorY = -2.2;
-      ctx.strokeStyle = pal.grid;
-      ctx.lineWidth = 1;
-      for (let i = -6; i <= 6; i++) {
-        const a = project(-8, floorY, i * 1.3);
-        const b = project(8, floorY, i * 1.3);
-        const c = project(i * 1.3, floorY, -8);
-        const d = project(i * 1.3, floorY, 8);
-        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(d.x, d.y); ctx.stroke();
-      }
+      drawQrField(w, h, pal);
+      /* No tip/cyan wash — flat charcoal field (no bg grid) */
       const byId = Object.fromEntries(state.nodes.map((n) => [n.id, n]));
       const rail = state.rails.map((p) => project(p.x, p.y, p.z)).sort((a, b) => a.z - b.z);
-      ctx.beginPath();
-      rail.forEach((p, i) => { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
-      ctx.strokeStyle = pal.rail;
-      ctx.lineWidth = 1.4;
-      ctx.stroke();
+      if (rail.length >= 2) {
+        ctx.beginPath();
+        rail.forEach((p, i) => { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+        ctx.strokeStyle = pal.rail;
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+      }
       for (const ring of state.pendRings || []) {
         strokeHoop(ring, ring.color === 'cyan' ? pal.cyan : (ring.color === 'gold' ? pal.gold : pal.link));
       }
@@ -955,18 +1005,8 @@
       for (const { n, p } of pts) {
         const fill = nodeFill(n);
         const neon = n.kind === 'tip' || n.kind === 'pending-block' || n.kind === 'hash' || n.role === 'form' || n.role === 'tip';
-        const pulse = n.nextIn ? (1.18 + 0.1 * Math.sin((now || 0) / 220)) : (n.kind === 'tip' ? (1.06 + 0.04 * Math.sin((now || 0) / 380)) : 1);
-        const r = n.r * p.s * (n.id === state.hover ? 1.45 : 1) * pulse;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, r * (neon ? 4.2 : (n.nextIn ? 3.1 : 2.4)), 0, Math.PI * 2);
-        ctx.fillStyle = fill;
-        ctx.globalAlpha = neon ? (isDark() ? 0.28 : 0.2) : (n.nextIn ? pal.glow + 0.12 : pal.glow);
-        ctx.fill();
-        ctx.globalAlpha = neon ? (isDark() ? 0.55 : 0.38) : 1;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, r * (neon ? 1.85 : 1), 0, Math.PI * 2);
-        ctx.fillStyle = fill;
-        ctx.fill();
+        /* Small static dots — no pulse / breath */
+        const r = Math.max(1.6, n.r * p.s * 0.72 * (n.id === state.hover ? 1.35 : 1));
         ctx.globalAlpha = 1;
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
@@ -974,28 +1014,21 @@
         ctx.fill();
         if (n.prime || n.nextIn || neon) {
           ctx.strokeStyle = n.kind === 'tip' ? pal.tip : (neon ? pal.cyan : (n.nextIn ? pal.gold : pal.stroke));
-          ctx.lineWidth = neon || n.nextIn ? 1.6 : 0.8;
-          ctx.shadowColor = fill;
-          ctx.shadowBlur = neon ? 18 : 0;
-          ctx.stroke();
+          ctx.lineWidth = neon || n.nextIn ? 1.2 : 0.7;
           ctx.shadowBlur = 0;
+          ctx.stroke();
         }
         if (n.kind === 'tip' || n.kind === 'pending-block' || n.nextIn || n.role === 'confirm' || (n.role === 'recover' && n.kind === 'block')) {
-          ctx.font = (n.nextIn ? '800 11px' : '650 11px') + ' "Segoe UI",system-ui,sans-serif';
+          ctx.font = (n.nextIn ? '800 12px' : '650 11.5px') + ' "Segoe UI",system-ui,sans-serif';
           ctx.fillStyle = n.kind === 'tip' ? pal.tip
             : (n.role === 'confirm' || (n.role === 'recover' && n.kind === 'block') ? pal.link
               : (n.kind === 'pending-block' || n.role === 'form' ? pal.cyan : pal.gold));
-          ctx.shadowColor = ctx.fillStyle;
-          ctx.shadowBlur = 10;
+          ctx.shadowBlur = 0;
           ctx.textAlign = 'left';
           ctx.fillText(n.nextIn ? ('NEXT IN  ' + n.label) : n.label, p.x + r + 5, p.y + 4);
-          ctx.shadowBlur = 0;
         }
         n._sx = p.x; n._sy = p.y; n._sr = r;
       }
-      drawFireworks(now);
-      drawCommits(now);
-      drawCascades(now);
       drawLoupe();
     }
     function drawLoupe() {
@@ -1056,9 +1089,9 @@
       });
       if (!lines.length) lines.push('empty neighbourhood');
       const boxY = ly + dest * 2 + 8;
-      ctx.font = '650 11px "Segoe UI",system-ui,sans-serif';
+      ctx.font = '650 12.5px "Segoe UI",system-ui,sans-serif';
       const textW = Math.min(w - 16, Math.max(dest * 2, ...lines.map((s) => ctx.measureText(s).width + 16)));
-      const boxH = 18 + lines.length * 15;
+      const boxH = 22 + lines.length * 18;
       let bx = lx;
       if (bx + textW > w - 8) bx = w - textW - 8;
       if (bx < 8) bx = 8;
@@ -1073,28 +1106,23 @@
       ctx.stroke();
       ctx.fillStyle = pal.gold;
       ctx.textAlign = 'left';
-      ctx.fillText('glass ×2.8', bx + 8, by + 14);
+      ctx.fillText('glass ×2.8', bx + 8, by + 16);
       ctx.fillStyle = isDark() ? '#d6e6f5' : '#0d2137';
-      lines.forEach((line, i) => ctx.fillText(line, bx + 8, by + 30 + i * 15));
+      lines.forEach((line, i) => ctx.fillText(line, bx + 8, by + 36 + i * 18));
     }
-    function tick(t) {
-      state.t = t;
-      if (!state.dragging) state.yaw += 0.00115;
-      draw(t);
-      requestAnimationFrame(tick);
-    }
-    requestAnimationFrame(tick);
+    /* Auto-orbit via tick(); requestRedraw kept for one-shot data/pointer updates if animating paused */
     canvas.addEventListener('pointerdown', (e) => {
       state.dragging = true; state.loupe = null; state.lx = e.clientX; state.ly = e.clientY; canvas.setPointerCapture(e.pointerId);
     });
-    canvas.addEventListener('pointerup', () => { state.dragging = false; });
-    canvas.addEventListener('pointerleave', () => { state.loupe = null; });
+    canvas.addEventListener('pointerup', () => { state.dragging = false; requestRedraw(); });
+    canvas.addEventListener('pointerleave', () => { state.loupe = null; state.hover = null; requestRedraw(); });
     canvas.addEventListener('pointermove', (e) => {
       if (state.dragging) {
         state.yaw += (e.clientX - state.lx) * 0.005;
         state.pitch = Math.max(0.2, Math.min(1.25, state.pitch + (e.clientY - state.ly) * 0.004));
         state.lx = e.clientX; state.ly = e.clientY;
         state.loupe = null;
+        requestRedraw();
       }
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left, y = e.clientY - rect.top;
@@ -1123,33 +1151,46 @@
           m.spendable === true ? 'spendable' : (m.spendable === false ? 'immature' : ''),
         ].filter(Boolean).join('\n');
       }
+      requestRedraw();
     });
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       state.zoom = Math.max(0.55, Math.min(2.2, state.zoom * (e.deltaY > 0 ? 0.94 : 1.06)));
+      requestRedraw();
     }, { passive: false });
     function paintHud(data) {
       const pb = data.pendingBlock || {};
       const pending = latticeTxs(data.pending || []);
       const next = pending[0];
       const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-      set('h-tip', data.tip?.height ?? '—');
-      set('h-scope', data.scope || 'network');
-      set('h-nodes', String(data.nodesOnline ?? '—'));
-      set('h-pend', String(pending.length));
-      set('h-hashes', String(pb.hashes || 0));
+      const live = !!data.live;
+      set('h-tip', data.tip && data.tip.height != null ? String(data.tip.height) : '—');
+      set('h-scope', data.scope != null && data.scope !== '' ? String(data.scope) : (live ? 'network' : '—'));
+      set('h-nodes', data.nodesOnline != null ? String(data.nodesOnline) : '—');
+      set('h-pend', live || data.pending ? String(pending.length) : '—');
+      set('h-hashes', pb.hashes != null ? String(pb.hashes) : (live ? '0' : '—'));
       set('h-form', pb.height != null ? ('#' + pb.height) : '—');
-      set('h-miners', String(formingHashSeats(pb).length));
+      set('h-miners', live || pb.txs ? String(formingHashSeats(pb).length) : '—');
       set('h-rings', String((state.pendRings || []).length));
-      set('h-weight', String(pb.weight || 0));
-      set('h-levy', String(pb.fee || pending.reduce((a, t) => a + (Number(t.fee) || 0), 0)));
+      set('h-weight', pb.weight != null ? String(pb.weight) : (live ? '0' : '—'));
+      // Levy in flight = pending Flow send fees only (not forming-block fee; avoid `0 ||` coerce)
+      const levyPend = pending.reduce((a, t) => a + (Number(t.fee) || 0), 0);
+      set('h-levy', (live || data.pending) ? String(levyPend) : '—');
       set('h-next', next ? ((next.kind || 'send') + ' ' + String(next.id || '').slice(0, 8)) : '—');
-      set('h-fee', String(data.tip?.baseFee ?? 1));
+      set('h-fee', data.tip && data.tip.baseFee != null ? String(data.tip.baseFee) : '—');
       const pulse = document.getElementById('pulse');
-      pulse.textContent = data.live
-        ? ('live · network · forming #' + (pb.height ?? '—') + ' · ' + (data.spendableConfirmations ?? 6) + ' conf spendable · policy ' + (data.policy && data.policy.merchant_default != null ? data.policy.merchant_default : (data.minConfirmsPolicy ?? 12)))
-        : 'node paused · demo lattice from tip';
-      pulse.className = data.live ? '' : 'stale';
+      if (live) {
+        pulse.textContent = 'live · network · forming #' + (pb.height ?? '—')
+          + ' · ' + (data.spendableConfirmations ?? 6) + ' conf spendable · policy '
+          + (data.policy && data.policy.merchant_default != null ? data.policy.merchant_default : (data.minConfirmsPolicy ?? 12));
+        pulse.className = '';
+      } else if (data.tip && data.tip.height != null) {
+        pulse.textContent = 'paused · tip #' + data.tip.height + ' · empty/stale lattice (no demo)';
+        pulse.className = 'stale';
+      } else {
+        pulse.textContent = 'offline · empty lattice · /api/mempool unreachable';
+        pulse.className = 'stale';
+      }
     }
     async function pull() {
       try {
@@ -1157,28 +1198,32 @@
         if (!r.ok) throw new Error('api');
         const data = await r.json();
         if (!data || data.ok === false) throw new Error('empty');
-        data.live = true;
+        if (data.live == null) data.live = true;
         layout(data);
         paintHud(data);
-        state.live = true;
+        state.live = !!data.live;
+        requestRedraw();
       } catch {
-        state.seq += 1;
-        const data = demoData();
+        const data = emptyLattice();
         layout(data);
         paintHud(data);
+        state.live = false;
+        requestRedraw();
       }
     }
-    document.documentElement.addEventListener('shear-theme', function () { draw(); });
-    new MutationObserver(function () { draw(); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    document.documentElement.addEventListener('shear-theme', function () { requestRedraw(); });
+    new MutationObserver(function () { requestRedraw(); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     document.getElementById('lattice-full-open')?.addEventListener('click', () => {
       const u = new URL(location.href);
       u.searchParams.set('full', '1');
       window.open(u.toString(), '_blank', 'noopener');
     });
-    layout(demoData());
-    paintHud(demoData());
+    layout(emptyLattice());
+    paintHud(emptyLattice());
+    requestRedraw();
     pull();
     setInterval(pull, 2500);
   </script>
+
 </body>
 </html>
