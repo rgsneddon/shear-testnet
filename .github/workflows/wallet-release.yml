@@ -8,15 +8,15 @@ on:
       pin:
         description: Public two-part wallet pin (release tag)
         required: true
-        default: '0.34'
+        default: '0.60'
       build_number:
         description: Flutter build-number
         required: true
-        default: '50'
+        default: '85'
       repo:
         description: GitHub repo that owns the release
         required: true
-        default: 'rgsneddon/shear-wallet'
+        default: 'rgsneddon/shear-testnet'
 
 jobs:
   windows:

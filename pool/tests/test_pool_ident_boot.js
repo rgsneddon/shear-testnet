@@ -113,6 +113,7 @@ describe('bootPoolOperator matching spend seed', () => {
     assert.deepEqual(bound, []);
     const err = pool.publicStats().autoPayoutLastError;
     assert.equal(err?.reason, 'unsigned');
+    assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos, 0);
     assert.equal(pool.publicStats().bootPoolOperator.signed, false);
     pool.close();
   });

@@ -35,7 +35,7 @@ describe('store policy and pause', () => {
     const store = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pol-')));
     const p = store.getpolicy();
     assert.equal(p.consensus_min, 6);
-    assert.equal(p.bands.pool_merchant, 30);
+    assert.equal(p.bands.pool_merchant, 12);
     assert.equal(p.frozen, false);
     assert.equal(p.freeze_reason, '');
     assert.equal(p.freeze_banner, '');

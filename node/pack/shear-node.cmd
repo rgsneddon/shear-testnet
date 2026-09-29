@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions
-title SHEAR-NODEv9
+title Shear Sentinel v10
 
 rem Explorer double-click runs cmd /c and closes the window on any early exit.
 rem Re-enter under cmd /k so the console stays open. Tests set SHEAR_NODE_NOPAUSE=1.
@@ -59,7 +59,7 @@ if not defined SHEAR_SEEDS set "SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.di
 if not defined SHEAR_RPC_BIND set "SHEAR_RPC_BIND=127.0.0.1"
 set "PATH=%ROOT%runtime;%ROOT%crypto\native;%PATH%"
 
-echo Starting SHEAR-NODEv9
+echo Starting Shear Sentinel v10
 echo Data   %SHEAR_DATA%
 echo Using  %NODEBIN%
 echo Script %SCRIPT%

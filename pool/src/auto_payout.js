@@ -13,7 +13,6 @@ import { containsShe1, poolWithdrawTx } from '../../crypto/levy.js';
 import { signSpendTx } from '../../crypto/spend.js';
 
 export const AUTO_PAYOUT_MIN_NANOS = PI_SHE_NANOS;
-export const AUTO_PAYOUT_MIN_SHE = PI_SHE_NANOS / NANOS_PER_SHE;
 /** Pool fee dest keeps this much spendable for miner-payout levies. Surplus sweeps to SHEAR_POOL_FEE_PAYOUT_DEST. */
 export const POOL_FEE_RESERVE_SHE = 10;
 export const POOL_FEE_RESERVE_NANOS = 10 * NANOS_PER_SHE;

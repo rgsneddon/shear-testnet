@@ -60,14 +60,14 @@
 <div class="banner" role="status">
     <strong>Testnet only.</strong> Mainnet is not live · launch date not decided
     <span class="sep">·</span>
-    Continuum pin <strong>0.59</strong>
+    Continuum pin <strong>0.60</strong>
   </div>
 
   <main>
     <div class="wrap page-hero">
       <p class="section-label">Wallet</p>
       <h1>Get started</h1>
-      <p class="lede">High-level Continuum path. No OS paste walls here — deep install notes live in official docs.</p>
+      <p class="lede">Install Continuum 0.60, keep shewall.bin, then let a node fill Shearview. Deep OS notes live in the docs. The node download is Shear Sentinel v10.</p>
     </div>
 
     <section class="wrap section">
@@ -75,11 +75,11 @@
         <div class="panel">
           <h3>Continuum steps</h3>
           <ol class="steps">
-            <li><strong>Install Continuum 0.59</strong> from the release channel you trust for shear-testnet-v5.</li>
-            <li><strong>Set a password</strong> and store it offline. There is no recovery email.</li>
-            <li><strong>Create or restore</strong> a wallet. Note your <code>she1</code> receive address.</li>
-            <li><strong>Export backup</strong> as <code>shewall.bin</code> and keep it offline.</li>
-            <li><strong>Wait for Continuity</strong> before treating a balance as spendable.</li>
+            <li><strong>Install Continuum 0.60</strong> from the wallet hub (Windows, Linux, Arch, Fedora, Android) for shear-testnet-v5. Android has no full node: stay on Connect Bare. A desktop node is the separate Shear Sentinel v10 zip.</li>
+            <li><strong>Set a password</strong> and store it offline. There is no recovery email. shear restore opens a password-sealed shewall.bin. It does not import a raw spend seed.</li>
+            <li><strong>Create or restore</strong>, then note your <code>she1</code>. Connect Bare is the default. A local node is the same read: the node walks the book and returns only notes sealed to your dest, through the tip. Payments to anyone else stay out. Empty blocks do not appear.</li>
+            <li><strong>Export backup</strong> as <code>shewall.bin</code> from Closure and keep it offline. On Android, export before you uninstall an older install, then sideload the 0.60 APK.</li>
+            <li><strong>Wait for Continuity</strong>. Spendable is opened coins with 6 confirmations. Younger seals stay pending. A pool balance does not become Spendable. Mine with ShearK 2.6 and Copy dest; seals made while the wallet was closed show up when you open it.</li>
           </ol>
           <div class="note">Mining is <strong>not</strong> inside Continuum. Use ShearK separately — see Mine.</div>
         </div>
@@ -91,7 +91,7 @@
             <li><span class="tag warn-line">shear1</span> Closure — never share</li>
           </ul>
           <div class="note" style="margin-top:1rem">
-            Tip pin: Continuum <strong>0.59</strong> · network <strong data-shear-network>shear-testnet-v5</strong> · algo <strong>ShearHash-v3</strong>
+            Tip pin: Continuum <strong>0.60</strong> · network <strong data-shear-network>shear-testnet-v5</strong> · algo <strong>ShearHash-v3</strong>
           </div>
           <div class="cta-row" style="margin-top:1.25rem">
             <a class="btn btn-primary" href="mine.html">Next: Mine</a>
@@ -104,7 +104,7 @@
       <section class="wrap section-sm">
       <div class="panel">
         <h3>Continuum downloads</h3>
-        <p>Dedicated wallet hub with OS packages for tip pin 0.59.</p>
+        <p>Wallet hub for Continuum 0.60. Node packs (Shear Sentinel v10) and the ShearK 2.6 miner are separate downloads. The how-to for explorer, mempool, pool, and the share lattice is in the docs under Pages and downloads.</p>
         <div class="cta-row" style="margin-top:0.85rem">
           <a class="btn btn-primary" href="/wallet/">Open Continuum hub →</a>
         </div>
@@ -114,7 +114,7 @@
 
   <footer class="footer">
     <div class="wrap footer-inner">
-      <div data-shear-foot data-wallet-fallback="0.59" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
+      <div data-shear-foot data-wallet-fallback="0.60" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
       <nav>
         <a href="index.html">Home</a>
         <a href="mine.html">Mine</a>

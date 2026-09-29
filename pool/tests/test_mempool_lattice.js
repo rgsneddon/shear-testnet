@@ -207,6 +207,8 @@ describe('mempool lattice pending rings', () => {
       assert.equal(stats.gossipWorkers[0].miner, 'mabcdef01');
       assert.equal(stats.gossipWorkers[0].roundHashes, 9);
       assert.equal(stats.nodesOnline, 4);
+      assert.equal(stats.hashrate, 0);
+      assert.equal(stats.networkRoundHashes, 9);
     } finally {
       pool.close();
     }

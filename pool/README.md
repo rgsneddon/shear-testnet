@@ -2,7 +2,7 @@
 
 Open-source Shear pool: stratum on `:1111`, HTTP dashboard on loopback `:8088`, optional P2P.
 
-This cut speaks **shear-testnet-v4** (ADMITv2, Bulletproofs+, weight levy, Q16.16 packed ASERT toward **90s** blocks). When mainnet `shear-v1` is cut, update `MAGIC_TESTNET` / systemd `SHEAR_NETWORK` and this README — do not dual-stack.
+This cut speaks **shear-testnet-v5** (ADMITv2, Bulletproofs+, weight levy, Q16.16 packed ASERT toward **90s** blocks). When mainnet `shear-v1` is cut, update `MAGIC_TESTNET` / systemd `SHEAR_NETWORK` and this README — do not dual-stack.
 
 Public site example in this repo is **https://mypool.site**. Operator admin is **https://mypool.site/admin**. Point those names at your box. Prod examples require `SHEAR_ADMIN_HOST` (generic example `mypool.site`); do not commit a real operator subdomain. First-run is deny-by-default when that env is unset.
 
@@ -23,6 +23,12 @@ Public site example in this repo is **https://mypool.site**. Operator admin is *
 - nginx + Let’s Encrypt for the public name
 - Disk for `SHEAR_DATA` (fresh dir on a magic change — wipe v3 `chain.bin`)
 
+## Pool fee — change this before you run a pool
+
+`THIS_POOL_DIRECT_FEE_DEST` in `pool/src/pool.js` is one operator's `ssa1`. A pool built from this tree seals **1%** of each block it finds to that address. The other 99% is split across the miners who proved shares on that block.
+
+**Replace that constant with your own `ssa1` before you start the pool.** If you leave the shipped address, your pool's 1% is paid to that wallet, not yours. The process prints `pool_fee_dest` on listen as a reminder. Solo mining (`npm run solo` or `node node/src/node.js --solo`) does not use this constant and does not take the 1%. The finder keeps the epoch pot and the hash bonus.
+
 ## Install
 
 ```bash
@@ -37,11 +43,11 @@ If `shearadmit.node` / `shearhash.node` fail to build, the pool cannot verify AD
 ## Datadir
 
 ```bash
-sudo mkdir -p /var/lib/shear/testnet-v4
-sudo chown "$USER":"$USER" /var/lib/shear/testnet-v4
+sudo mkdir -p /var/lib/shear/testnet-v5
+sudo chown "$USER":"$USER" /var/lib/shear/testnet-v5
 ```
 
-v3 and v4 are different books. Do not reuse a `shear-testnet-v3` datadir.
+v4 and v5 are different books. Do not reuse a `shear-testnet-v4` datadir.
 
 ## systemd
 
@@ -55,7 +61,7 @@ sudo journalctl -u shear-pool -f
 
 The pool unit does not bind `:30303`. `shear-p2p.service` (`node node/src/node.js --mode=p2p-sync`) owns P2P and feeds verified blocks to the pool on `127.0.0.1:30313`. Fleet peers run `deploy/shear-node.service` in that same p2p-sync mode, not this pool process. Solo localhost stratum stays `npm run solo`.
 
-You should see a JSON line with `"magic":"shear-testnet-v4"`, `"stratum":1111`, `"http":8088`, `"p2p":0`.
+You should see a JSON line with `"magic":"shear-testnet-v5"`, `"stratum":1111`, `"http":8088`, `"p2p":0`.
 
 Optional environment (drop-in `/etc/systemd/system/shear-pool.service.d/local.conf`):
 

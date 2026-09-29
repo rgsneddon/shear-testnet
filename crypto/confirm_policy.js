@@ -6,11 +6,14 @@ import { SPENDABLE_CONFIRMATIONS, MIN_CONFIRMS_POLICY, TARGET_BLOCK_INTERVAL_MS 
 
 export const CONSENSUS_MIN = SPENDABLE_CONFIRMATIONS;
 export const MERCHANT_DEFAULT = MIN_CONFIRMS_POLICY;
+/** Standing pool payout depth. Sixty is the freeze ceiling, not double this band. */
+export const POOL_PAYOUT_ELEVATED = 60;
+
 export const POLICY_BANDS = Object.freeze({
   ui_seen: 1,
   consensus_spendable: CONSENSUS_MIN,
   peer_small_flow: MERCHANT_DEFAULT,
-  pool_merchant: 30,
+  pool_merchant: 12,
   otc_large: 120,
 });
 
@@ -38,6 +41,7 @@ export function emptyPolicyState() {
     quietBlocks: 0,
     hRatioLow: false,
     hRatioRecoverBlocks: 0,
+    hRatioPayoutHeld: false,
     reorg_risk: false,
   };
 }
@@ -114,12 +118,18 @@ export function applySignals(state, {
     s.quietBlocks += 1;
   }
 
+  if (s.h_ratio < H_RATIO_FREEZE || s.hRatioLow) s.hRatioPayoutHeld = true;
+  if (!s.frozen && !s.hRatioLow && !(s.h_ratio < H_RATIO_FREEZE)) s.hRatioPayoutHeld = false;
+
   return s;
 }
 
 export function operationalBands(state) {
   const raise = !!(state?.reorg_risk || (state?.d_max || 0) >= D_MAX_RISK);
   const twice = !!(state?.hRatioLow || (state?.h_ratio ?? 1) < H_RATIO_FREEZE);
+  // A later side lead or deep reorg can rename the freeze. The 60 ceiling stays
+  // until the quiet clear and the hash-ratio recovery have both finished.
+  const hRatioPayoutHeld = !!(state?.hRatioPayoutHeld || state?.h_ratio_payout_held);
   const out = {};
   for (const [k, v] of Object.entries(POLICY_BANDS)) {
     if (FLOOR_BANDS.has(k)) {
@@ -128,10 +138,18 @@ export function operationalBands(state) {
     }
     let n = v;
     if (raise) n = Math.max(n, 30);
-    if (twice) n *= 2;
+    if (twice && k !== 'pool_merchant') n *= 2;
+    if (k === 'pool_merchant' && (twice || hRatioPayoutHeld)) n = POOL_PAYOUT_ELEVATED;
     out[k] = n;
   }
   return out;
+}
+
+/** Payout and published merchant depth. Missing policy stays on the calm band, not 30. */
+export function poolMerchantNeed(policy) {
+  const raw = policy?.operational?.pool_merchant ?? policy?.confirmedNeed;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : POLICY_BANDS.pool_merchant;
 }
 
 export function bandNeed(name, state) {
@@ -173,6 +191,9 @@ export function getpolicy(state) {
     side_lead: s.side_lead || 0,
     reorg_risk: !!s.reorg_risk,
     quiet_blocks: s.quietBlocks || 0,
+    h_ratio_low: !!s.hRatioLow,
+    h_ratio_recover_blocks: s.hRatioRecoverBlocks || 0,
+    h_ratio_payout_held: !!s.hRatioPayoutHeld,
     operational,
   };
 }

@@ -1,10 +1,13 @@
 import http from 'node:http';
 import { mempoolPressure } from '../../crypto/levy.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
-import { MAGIC_TESTNET, HASH_TX_LIVE, NANOS_PER_SHE, consensusFingerprint } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, HASH_TX_LIVE, NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS, consensusFingerprint } from '../../crypto/asert.js';
 import { hash20FromAddress, isDestAddress, isPaymentCode, encodeDest } from '../../crypto/address.js';
 import { noteCommitOfDest20 } from '../../crypto/note.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
+import { networkReport } from './network_report.js';
+import { oracleView } from './oracle_feed.js';
+import { cloneVault, portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
 
 export const RPC_PORT = 18332;
 export const RPC_HOST = '127.0.0.1';
@@ -85,6 +88,77 @@ function notesForAddress(store, address) {
   return notes;
 }
 
+function noteValueNanos(note) {
+  const v = note?.valueProof && note.valueProof.v != null ? Number(note.valueProof.v) : 0;
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+}
+
+function commitTag(commit) {
+  const hex = Buffer.isBuffer(commit)
+    ? commit.toString('hex')
+    : (commit instanceof Uint8Array ? Buffer.from(commit).toString('hex') : '');
+  if (!hex) return '0';
+  return hex.length < 16 ? hex : hex.slice(0, 16);
+}
+
+/** Wallet history is every note sealed to this dest, once, plus explorer rows
+ *  that are not the same height. Explorer ids (`hash-cb-n`) are not the
+ *  wallet's `blockfound:height:dest` id. */
+function walletHistoryFor(store, address) {
+  const tipH = Number(store.tip?.()?.height || 0);
+  const explorer = typeof store.historyFor === 'function' ? (store.historyFor(address) || []) : [];
+  const ownedHeights = new Set();
+  const fromNotes = [];
+  for (const n of notesForAddress(store, address)) {
+    const height = Number(n.height) || 0;
+    if (height < 1) continue;
+    const kind = String(n.kind || (n.coinbase ? 'pot' : 'send'));
+    if (kind === 'hash' || kind === 'dummy') continue;
+    const nanos = noteValueNanos(n);
+    if (nanos <= 0) continue;
+    const pot = kind === 'pot' || kind === 'coinbase' || n.coinbase === true;
+    ownedHeights.add(height);
+    const confs = tipH >= height ? (tipH - height + 1) : 0;
+    fromNotes.push({
+      id: pot ? `blockfound:${height}:${address}` : `note:${height}:${address}:${commitTag(n.commit)}`,
+      kind: pot ? 'blockfound' : 'receive',
+      from: pot ? 'coinbase' : '',
+      to: address,
+      nanos,
+      height,
+      confirmed: confs >= SPENDABLE_CONFIRMATIONS,
+    });
+  }
+  const rest = [];
+  for (const row of explorer) {
+    const h = Number(row?.height) || 0;
+    const kind = String(row?.kind || '');
+    if (kind === 'lock' || kind === 'vote' || kind === 'withdraw') {
+      rest.push(row);
+      continue;
+    }
+    const to = String(row?.to || '');
+    if (h >= 1 && ownedHeights.has(h) && (to === address || to === '')) continue;
+    rest.push(row);
+  }
+  return fromNotes.concat(rest);
+}
+
+function networkReportJson(store, p2p) {
+  const t = store?.tip ? store.tip() : null;
+  const hash = t?.hash ? Buffer.from(t.hash).toString('hex') : '';
+  const nodes = p2p && typeof p2p.syncedOnline === 'function' ? p2p.syncedOnline() : 1;
+  const peers = p2p && typeof p2p.liveOnline === 'function' ? p2p.liveOnline() : 0;
+  return networkReport({
+    height: t?.height || 0,
+    hash,
+    nodesOnline: nodes,
+    peersLive: peers,
+    rounds: typeof store?.openRoundRows === 'function' ? store.openRoundRows() : [],
+    mempool: Array.isArray(store?.mempool) ? store.mempool : [],
+  });
+}
+
 function statsJson(store) {
   const t = store.tip ? store.tip() : null;
   const raw = t?.header ? Buffer.from(t.header) : Buffer.alloc(0);
@@ -144,6 +218,10 @@ export function createRpc({
   if (store && typeof store.on === 'function') {
     store.on('reorg', (e) => pushEvent('reorg', e));
     store.on('credits_frozen', (e) => pushEvent('credits_frozen', e));
+    store.on('tip', (e) => pushEvent('tip', {
+      height: Number(e?.height || 0),
+      hash: String(e?.hash || ''),
+    }));
   }
 
   function dispatch(method, params = {}) {
@@ -257,6 +335,9 @@ export function createRpc({
     if (m === 'getstats' || m === 'stats') {
       return statsJson(store);
     }
+    if (m === 'getnetwork' || m === 'network') {
+      return networkReportJson(store, p2p);
+    }
     if (m === 'getheader' || m === 'header') {
       const height = Math.floor(Number(params.height || params[0] || 0));
       const b = blockAtHeight(store, height);
@@ -325,8 +406,31 @@ export function createRpc({
       if (!isDestAddress(address) && !isPaymentCode(address)) {
         return { ok: false, reason: 'bad_address' };
       }
-      const txs = typeof store.historyFor === 'function' ? store.historyFor(address) : [];
-      return { ok: true, coin: 'SHE', txs: toHex(txs) };
+      return { ok: true, coin: 'SHE', txs: toHex(walletHistoryFor(store, address)) };
+    }
+    if (m === 'getoracle' || m === 'oracle') {
+      const vault = store.reserveVault || null;
+      return { ok: true, ...oracleView(vault, store.oracleSnapshot, Date.now()) };
+    }
+    if (m === 'getreserve' || m === 'reserve') {
+      const vault = store.reserveVault;
+      if (!vault) return { ok: false, reason: 'no_reserve' };
+      const now = Date.now();
+      const pub = publicVaultView(vault, now);
+      const out = {
+        ok: true,
+        programId: pub.programId,
+        epochBps: Math.floor(Number(vault.epochBps ?? pub.oracleBps ?? 0)),
+        epochIndex: Math.floor(Number(vault.epochIndex || 0)),
+        votes: pub.votes,
+        totalStakedNanos: pub.totalStakedNanos,
+        totalIdleNanos: pub.totalIdleNanos,
+        liveHashBonusNanos: Number(vault.liveHashBonusNanos || 1),
+      };
+      const address = String(params.address || params[0] || '');
+      if (!address) return out;
+      if (!isDestAddress(address)) return { ok: false, reason: 'bad_address' };
+      return { ...out, address, portal: portalRewards(cloneVault(vault), address, now) };
     }
     return { ok: false, reason: 'unknown_method', method: m };
   }
@@ -376,6 +480,10 @@ export function createRpc({
       json(res, 200, dispatch('getstats'));
       return;
     }
+    if (req.method === 'GET' && (url.pathname === '/network' || url.pathname === '/getnetwork' || url.pathname === '/api/network')) {
+      json(res, 200, dispatch('getnetwork'));
+      return;
+    }
     if (req.method === 'GET' && (url.pathname === '/header' || url.pathname === '/getheader' || url.pathname === '/api/explorer/header')) {
       const out = dispatch('getheader', Object.fromEntries(url.searchParams));
       json(res, out?.ok === false ? 404 : 200, out);
@@ -415,6 +523,14 @@ export function createRpc({
     }
     if (req.method === 'GET' && (url.pathname === '/api/policy' || url.pathname === '/policy')) {
       json(res, 200, dispatch('getpolicy'));
+      return;
+    }
+    if (req.method === 'GET' && (url.pathname === '/oracle' || url.pathname === '/getoracle' || url.pathname === '/api/oracle')) {
+      json(res, 200, dispatch('getoracle'));
+      return;
+    }
+    if (req.method === 'GET' && (url.pathname === '/reserve' || url.pathname === '/getreserve' || url.pathname === '/api/reserve')) {
+      json(res, 200, dispatch('getreserve', Object.fromEntries(url.searchParams)));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/wallet/send') {

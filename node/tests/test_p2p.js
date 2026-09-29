@@ -31,6 +31,8 @@ import {
   createP2p,
   HEADERS_PAGE,
   GETBLOCK_BATCH,
+  GETBLOCK_WAIT_MS,
+  TIP_NUDGE_MS,
   encodeWireBlock,
   decodeWireBlock,
   jsonWire,
@@ -184,6 +186,44 @@ describe('p2p gossip', () => {
     assert.equal(a.p2p.syncedOnline(), 1);
   });
 
+  it('forwards a newer miner round across a two-hop line and does not loop an equal count', async () => {
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-hop-a-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-hop-b-'));
+    const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-hop-c-'));
+    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const c = await startNode({ dataDir: dirC, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    try {
+      await a.p2p.connect('127.0.0.1', b.bound.port);
+      await c.p2p.connect('127.0.0.1', b.bound.port);
+      const linked = await waitFor(() => a.p2p.syncedOnline() === 2 && c.p2p.syncedOnline() === 2, 8000);
+      assert.equal(linked, true, 'line A-B-C did not finish the handshakes');
+      const tag = 'mdeadbeef';
+      a.p2p.publishWork([{ tag, count: 42, dest: 'ssa1qshouldnottravel', hashrate: 99999 }]);
+      const heard = await waitFor(() => (
+        c.store.openRoundRows().some((r) => r.tag === tag && Number(r.count) === 42)
+      ), 8000);
+      assert.equal(heard, true, 'two-hop node never stored the proven round');
+      assert.doesNotMatch(JSON.stringify(c.store.openRoundRows()), /ssa1|hashrate|shouldnottravel/);
+      a.p2p.publishWork([{ tag, count: 42 }]);
+      await new Promise((r) => setTimeout(r, 500));
+      assert.equal(c.store.openRoundRows().filter((r) => r.tag === tag).length, 1);
+      assert.equal(c.store.openRoundRows().find((r) => r.tag === tag).count, 42);
+      a.p2p.publishWork([{ tag, count: 50 }]);
+      const higher = await waitFor(() => (
+        c.store.openRoundRows().some((r) => r.tag === tag && Number(r.count) === 50)
+      ), 8000);
+      assert.equal(higher, true, 'a higher proven count did not cross the hop');
+    } finally {
+      a.p2p.close();
+      b.p2p.close();
+      c.p2p.close();
+      await a.rpc?.close?.();
+      await b.rpc?.close?.();
+      await c.rpc?.close?.();
+    }
+  });
+
   it('gossips pending sends and open-round miner rows onto a peer lattice', async () => {
     const dest = destMiner();
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-mem-a-'));
@@ -305,7 +345,9 @@ describe('p2p gossip', () => {
     assert.equal(cfg.p2p, 30303);
     assert.equal(cfg.magic, MAGIC_TESTNET);
     assert.equal(cfg.magic, 'shear-testnet-v5');
-    assert.equal(cfg.version, '9.0');
+    assert.equal(cfg.version, '10.0');
+    assert.equal(cfg.display, 'Shear Sentinel v10');
+    assert.equal(cfg.name, 'Shear Sentinel');
     assert.equal(cfg.mainnet, false);
     assert.equal(cfg.phaseBGate, true);
     assert.equal(cfg.rpc, 18332);
@@ -871,6 +913,147 @@ describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
     } finally {
       a.p2p.close();
       await a.rpc?.close?.();
+    }
+  });
+
+  it('forwards a one-block tip before ingest and asks for that block immediately', async () => {
+    assert.ok(GETBLOCK_WAIT_MS <= 250);
+    assert.ok(TIP_NUDGE_MS <= 100);
+    const blocks = fakeBlocks(10);
+    const store = {
+      blocks,
+      tip: () => blocks[blocks.length - 1],
+      ingest: () => ({ ok: false, reason: 'fake' }),
+    };
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET });
+    const bound = await p2p.listen();
+    const announcer = net.connect(bound.port, '127.0.0.1');
+    const next = net.connect(bound.port, '127.0.0.1');
+    try {
+      await readJsonLines(announcer, 2, 2000);
+      await readJsonLines(next, 2, 2000);
+      const hash = fakeHash(11);
+      const t0 = Date.now();
+      announcer.write(`${JSON.stringify({
+        type: 'tip',
+        magic: MAGIC_TESTNET,
+        height: 11,
+        hash,
+        work: '0x10',
+      })}\n`);
+      const [asked, heard] = await Promise.all([
+        readJsonLines(announcer, 1, 500),
+        readJsonLines(next, 1, 500),
+      ]);
+      assert.ok(Date.now() - t0 < 500, 'one-block tip did not move in milliseconds');
+      assert.equal(asked[0]?.type, 'getblock');
+      assert.equal(String(asked[0]?.hash || '').toLowerCase(), hash);
+      assert.equal(asked.some((m) => m.type === 'getheaders'), false);
+      assert.equal(heard[0]?.type, 'tip');
+      assert.equal(String(heard[0]?.hash || '').toLowerCase(), hash);
+      assert.equal(heard[0]?.height, 11);
+    } finally {
+      announcer.destroy();
+      next.destroy();
+      p2p.close();
+    }
+  });
+
+  it('does not forward a same-height tip', async () => {
+    const blocks = fakeBlocks(10);
+    const store = {
+      blocks,
+      tip: () => blocks[blocks.length - 1],
+      ingest: () => ({ ok: false, reason: 'fake' }),
+    };
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET });
+    const bound = await p2p.listen();
+    const announcer = net.connect(bound.port, '127.0.0.1');
+    const next = net.connect(bound.port, '127.0.0.1');
+    try {
+      await readJsonLines(announcer, 2, 2000);
+      await readJsonLines(next, 2, 2000);
+      const foreign = fakeHash(99);
+      announcer.write(`${JSON.stringify({
+        type: 'tip',
+        magic: MAGIC_TESTNET,
+        height: 10,
+        hash: foreign,
+        work: '0x1',
+      })}\n`);
+      const heard = await readJsonLines(next, 1, 250);
+      assert.equal(heard.some((m) => String(m.hash || '').toLowerCase() === foreign), false);
+    } finally {
+      announcer.destroy();
+      next.destroy();
+      p2p.close();
+    }
+  });
+
+  it('a one-block tip reaches a two-hop line in milliseconds', async () => {
+    const dest = destMiner();
+    let powTag = 1;
+    const easyPow = () => {
+      const h = Buffer.alloc(32);
+      h[1] = powTag & 0x0f;
+      h[2] = (powTag >> 4) & 0xff;
+      h[3] = (powTag >> 12) & 0xff;
+      powTag += 1;
+      return h;
+    };
+    const trustIngest = (node) => {
+      const orig = node.store.ingest.bind(node.store);
+      node.store.ingest = (blocks, opts = {}) => {
+        const hash = blocks?.[0]?.hash;
+        const trusted = hash ? Buffer.from(hash) : opts.trustedPowHash;
+        return orig(blocks, { ...opts, trustedPowHash: trusted, skipSharePow: true });
+      };
+    };
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-tipms-a-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-tipms-b-'));
+    const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-tipms-c-'));
+    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const c = await startNode({ dataDir: dirC, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    trustIngest(b);
+    trustIngest(c);
+    try {
+      await a.p2p.connect('127.0.0.1', b.bound.port);
+      await c.p2p.connect('127.0.0.1', b.bound.port);
+      const linked = await waitFor(() => a.p2p.syncedOnline() === 2 && c.p2p.syncedOnline() === 2, 8000);
+      assert.equal(linked, true, 'line A-B-C did not finish the handshakes');
+      const parent = a.store.tip();
+      const now = parent
+        ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
+        : Date.now();
+      const { tpl } = a.store.template({ miner: dest, shareBits: 4, now });
+      const mined = a.store.append({
+        header: tpl.header,
+        txs: tpl.txs,
+        samples: tpl.samples,
+        miner: dest,
+        shareBatch: tpl.shareBatch || [],
+        aLeaves: tpl.aLeaves,
+        bLeaves: tpl.bLeaves,
+        rootA: tpl.rootA,
+        rootB: tpl.rootB,
+        weight: tpl.weight,
+      }, { trustedPowHash: easyPow(), skipSharePow: true });
+      assert.equal(mined.ok, true, mined.reason);
+      const t0 = Date.now();
+      const caught = await waitFor(() => tipsEqual(a, c), 2000);
+      const elapsed = Date.now() - t0;
+      assert.equal(caught, true, `two-hop tip stuck at ${c.store.tip()?.height || 0} after ${elapsed}ms`);
+      assert.ok(elapsed < 2000, `two-hop tip took ${elapsed}ms`);
+      assert.equal(c.store.tip().height, a.store.tip().height);
+      assert.equal(Buffer.from(c.store.tip().hash).equals(Buffer.from(a.store.tip().hash)), true);
+    } finally {
+      a.p2p.close();
+      b.p2p.close();
+      c.p2p.close();
+      await a.rpc?.close?.();
+      await b.rpc?.close?.();
+      await c.rpc?.close?.();
     }
   });
 });

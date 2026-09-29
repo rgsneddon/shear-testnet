@@ -31,6 +31,8 @@ import { PHASE_B_GATE } from './chain.js';
 import { createRpc, RPC_PORT } from './rpc.js';
 import { createSoloStratum, SOLO_STRATUM_PORT, SOLO_STRATUM_BIND } from './solo_stratum.js';
 import { mintVorticeDeployKey, parseVorticeKey, VORTICE_KEY_PREFIX } from '../../crypto/vortex.js';
+import { NODE_DISPLAY, NODE_NAME } from './product.js';
+import { loadOracleSnapshot } from './oracle_feed.js';
 import {
   applyLatestBootstrap,
   pullPublishedBootstrap,
@@ -41,7 +43,8 @@ const VERSION = PRODUCT_VERSION;
 
 export function printConfig() {
   return {
-    name: 'shear-node',
+    name: NODE_NAME,
+    display: NODE_DISPLAY,
     version: VERSION,
     magic: MAGIC_TESTNET,
     client: CLIENT,
@@ -83,7 +86,7 @@ function bookPresent(dir, exists) {
   return exists(path.join(dir, 'chain.bin')) || exists(path.join(dir, 'chain.jsonl'));
 }
 
-/** Shared book for SHEAR-NODEv9 and Continuum. Windows: %APPDATA%\\Shear\\testnet-v5 (Roaming). */
+/** Shared book for Shear Sentinel v10 and Continuum. Windows: %APPDATA%\\Shear\\testnet-v5 (Roaming). */
 export function defaultDataDir({
   env = process.env,
   homedir = os.homedir(),
@@ -157,6 +160,7 @@ export async function startNode({
   fs.mkdirSync(dataDir, { recursive: true });
   const store = createStore(dataDir, { fastSync: !!fastSync });
   store.reserveVault = store.reserveVault || emptyVault();
+  store.oracleSnapshot = loadOracleSnapshot({ dataDir });
   const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET, fluffDelayMs });
   const bound = await p2p.listen();
   const rpc = createRpc({ store, p2p, port: rpcPort, host: rpcBind });

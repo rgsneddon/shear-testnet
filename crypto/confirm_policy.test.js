@@ -26,7 +26,7 @@ describe('confirm policy is not consensus', () => {
     assert.equal(SPENDABLE_CONFIRMATIONS, 6);
     assert.equal(MIN_CONFIRMS_POLICY, 12);
     assert.equal(CONSENSUS_MIN, 6);
-    assert.equal(POLICY_BANDS.pool_merchant, 30);
+    assert.equal(POLICY_BANDS.pool_merchant, 12);
     assert.equal(POLICY_BANDS.join_mark_paid, undefined);
     const fp = consensusFingerprint();
     assert.match(fp, /:6:1:1000:/);
@@ -45,7 +45,7 @@ describe('getpolicy object', () => {
     assert.equal(p.bands.ui_seen, 1);
     assert.equal(p.bands.consensus_spendable, 6);
     assert.equal(p.bands.peer_small_flow, 12);
-    assert.equal(p.bands.pool_merchant, 30);
+    assert.equal(p.bands.pool_merchant, 12);
     assert.equal(p.bands.otc_large, 120);
     assert.equal(p.bands.join_mark_paid, undefined);
     assert.equal(p.frozen, false);
@@ -53,7 +53,7 @@ describe('getpolicy object', () => {
     assert.equal(p.h_ratio, 1);
     assert.equal(p.freeze_reason, '');
     assert.equal(p.freeze_banner, '');
-    assert.equal(p.operational.pool_merchant, 30);
+    assert.equal(p.operational.pool_merchant, 12);
     assert.equal(p.operational.consensus_spendable, 6);
   });
 });
@@ -114,9 +114,9 @@ describe('dynamic raise and freeze', () => {
     assert.equal(getpolicy(s).frozen, false);
   });
 
-  it('4-block side branch does not meet pool_merchant 30', () => {
+  it('4-block side branch does not meet pool_merchant 12', () => {
     const need = operationalBands(emptyPolicyState()).pool_merchant;
-    assert.equal(need, 30);
+    assert.equal(need, 12);
     assert.equal(4 >= need, false);
   });
 });
@@ -157,7 +157,7 @@ function policyFromHeaders(blocks, nowMs, extra = {}) {
 describe('intended freeze policy from header work', () => {
   const nowMs = 20 * HOUR_MS;
 
-  it('healthy multi-miner / steady hourly work stays unfrozen at baseline 30', () => {
+  it('healthy multi-miner / steady hourly work stays unfrozen at baseline 12', () => {
     const blocks = [
       ...hourBlocks(nowMs, 3, 100),
       ...hourBlocks(nowMs, 2, 100),
@@ -175,7 +175,7 @@ describe('intended freeze policy from header work', () => {
     assert.equal(s.reorg_risk, false);
     const p = getpolicy(s);
     assert.equal(p.frozen, false);
-    assert.equal(p.operational.pool_merchant, 30);
+    assert.equal(p.operational.pool_merchant, 12);
     assert.equal(p.operational.consensus_spendable, 6);
     assert.equal(p.freeze_banner, '');
     assert.equal(CONSENSUS_MIN, 6);
@@ -191,7 +191,7 @@ describe('intended freeze policy from header work', () => {
     const ratio = hashRatioFromHours(hourlyWorkBuckets(blocks, nowMs));
     assert.ok(ratio >= H_RATIO_FREEZE, `single-miner h_ratio ${ratio}`);
     assert.equal(s.frozen, false);
-    assert.equal(operationalBands(s).pool_merchant, 30);
+    assert.equal(operationalBands(s).pool_merchant, 12);
     assert.equal(operationalBands(s).consensus_spendable, 6);
   });
 
@@ -217,7 +217,7 @@ describe('intended freeze policy from header work', () => {
     assert.equal(p.operational.pool_merchant, 60);
     assert.equal(p.operational.peer_small_flow, 24);
     assert.equal(p.operational.consensus_spendable, 6);
-    assert.equal(p.bands.pool_merchant, 30);
+    assert.equal(p.bands.pool_merchant, 12);
     assert.match(p.freeze_banner, /h_ratio/);
     assert.match(p.freeze_banner, /60/);
     assert.equal(
@@ -235,7 +235,7 @@ describe('intended freeze policy from header work', () => {
     assert.equal(hashRatioFromHours(hrs), 1);
     const s = policyFromHeaders(young, nowMs);
     assert.equal(s.frozen, false);
-    assert.equal(operationalBands(s).pool_merchant, 30);
+    assert.equal(operationalBands(s).pool_merchant, 12);
   });
 
   it('d_max >= 10 still freezes fail-closed', () => {

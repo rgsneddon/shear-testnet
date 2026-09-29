@@ -105,11 +105,6 @@ export function isAdminHost(host) {
   return hosts.includes(h);
 }
 
-export function isAdminPath(pathname) {
-  const p = String(pathname || '');
-  return p === '/admin' || p.startsWith('/admin/') || p.startsWith('/api/admin');
-}
-
 function toBase32(buf) {
   let bits = 0;
   let val = 0;

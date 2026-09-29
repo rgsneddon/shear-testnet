@@ -1,5 +1,6 @@
 import net from 'node:net';
 import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
+import { freshMinerRounds, safeMinerRounds } from './network_report.js';
 import { shareRowJson } from '../../crypto/pack.js';
 import { compactTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
@@ -169,8 +170,12 @@ export function catchupPeerBetter(a, b) {
 }
 /** Seed redial so a dropped peer cannot leave a node stuck forever. */
 export const SEED_RETRY_MS = 3_000;
-/** Drop a hung getblock window so IBD cannot stall after a peer crash. */
-export const GETBLOCK_WAIT_MS = 20_000;
+/** Retry a hung getblock. A missed one-block tip must not wait on a multi-second poll. */
+export const GETBLOCK_WAIT_MS = 250;
+/** How often the hung-getblock watch runs. */
+export const PENDING_WATCH_MS = 50;
+/** Re-push our tip and re-pull a peer that is still ahead. */
+export const TIP_NUDGE_MS = 100;
 
 function hexHash(h) {
   if (Buffer.isBuffer(h) || h instanceof Uint8Array) return Buffer.from(h).toString('hex').toLowerCase();
@@ -601,9 +606,15 @@ export function createP2p({
   const fluffTimers = new Map();
   const inflightBlocks = new Set();
   const getblockServeQ = [];
+  const blockWaiters = new Map();
+  const gossipedTips = new Set();
+  const gossipedTipOrder = [];
   let getblockServeTimer = null;
   let getblockServeSent = 0;
   let getblockServeMaxBacklog = 0;
+  let pendingWatch = null;
+  let tipNudgeTimer = null;
+  let nudgedHash = '';
   let server = null;
   let peerSeq = 0;
 
@@ -782,7 +793,7 @@ export function createP2p({
   }
 
   function publishWork(rows = []) {
-    const list = Array.isArray(rows) ? rows.filter((r) => r && r.tag && Number(r.count) > 0) : [];
+    const list = safeMinerRounds(rows);
     if (typeof store.noteOpenRound === 'function') store.noteOpenRound(list, { source: 'local' });
     if (list.length) broadcast({ type: 'work', magic, rows: list });
   }
@@ -828,6 +839,107 @@ export function createP2p({
     if (!rec || rec.syncing) return;
     if (!peerTipAhead(rec)) return;
     scheduleCatchup();
+  }
+
+  function rememberGossip(hash) {
+    if (!hash || gossipedTips.has(hash)) return false;
+    gossipedTips.add(hash);
+    gossipedTipOrder.push(hash);
+    while (gossipedTipOrder.length > 256) {
+      const old = gossipedTipOrder.shift();
+      if (old) gossipedTips.delete(old);
+    }
+    return true;
+  }
+
+  /** Forward a strictly taller tip before this node has the block. Same-height and shorter hashes stay put. */
+  function gossipTip(msg, except) {
+    const hash = wireHash(msg?.hash);
+    const h = Number(msg?.height);
+    const localH = Number(store.tip()?.height || 0);
+    if (!hash || !Number.isFinite(h) || h <= localH) return;
+    if (!rememberGossip(hash)) return;
+    broadcast({
+      type: 'tip',
+      magic,
+      height: h,
+      hash,
+      work: msg?.work != null && String(msg.work) !== '' ? String(msg.work) : '0x0',
+    }, except);
+  }
+
+  /**
+   * A one-block gap pulls that hash now. A wider gap stays on getheaders.
+   * Already pending, in flight, or verifying does not send a second ask.
+   */
+  function pullOneBlock(sock, msg) {
+    const rec = peers.get(sock);
+    if (!rec) return false;
+    const hash = wireHash(msg?.hash);
+    const peerH = Number(msg?.height);
+    const localH = Number(store.tip()?.height || 0);
+    if (!hash || !Number.isFinite(peerH) || peerH !== localH + 1) return false;
+    const have = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
+    if (have.has(hash)) return false;
+    if (!rec.pending) rec.pending = new Set();
+    if (!rec.failed) rec.failed = new Set();
+    if (rec.failed.has(hash)) return false;
+    if (rec.pending.has(hash) || rec.verifying?.has(hash) || inflightBlocks.has(hash)) return true;
+    rec.pending.add(hash);
+    inflightBlocks.add(hash);
+    rec.pendingAt = Date.now();
+    rec.syncing = true;
+    send(sock, { type: 'getblock', magic, hash });
+    return true;
+  }
+
+  function noteBlockWaiter(hash, sock) {
+    const h = String(hash || '').toLowerCase();
+    if (!h || !sock) return;
+    let set = blockWaiters.get(h);
+    if (!set) {
+      set = new Set();
+      blockWaiters.set(h, set);
+    }
+    if (set.size >= 32 && !set.has(sock)) return;
+    set.add(sock);
+  }
+
+  function serveWaiters(hash) {
+    const h = String(hash || '').toLowerCase();
+    const set = blockWaiters.get(h);
+    if (!set || !set.size) return;
+    blockWaiters.delete(h);
+    const idx = headerIndexByHash(store.blocks, h);
+    const block = idx >= 0 ? store.blocks[idx] : null;
+    if (!block) return;
+    for (const waiter of set) {
+      if (!waiter || waiter.destroyed || !peers.has(waiter)) continue;
+      enqueueGetblockServe(waiter, block);
+    }
+  }
+
+  function armTipNudge() {
+    if (tipNudgeTimer) return;
+    tipNudgeTimer = setTimeout(() => {
+      tipNudgeTimer = null;
+      const nowHash = localTipHash();
+      if (nowHash && nowHash !== nudgedHash) {
+        nudgedHash = nowHash;
+        announce();
+      }
+      let stillAhead = false;
+      for (const [sock, rec] of peers) {
+        if (!peerTipAhead(rec)) continue;
+        stillAhead = true;
+        const localH = Number(store.tip()?.height || 0);
+        const peerH = Number(rec.height);
+        if (wireHash(rec.hash) && peerH === localH + 1) pullOneBlock(sock, rec);
+        else if (!rec.syncing || !(rec.pending && rec.pending.size)) requestHeaders(sock);
+      }
+      if (stillAhead) armTipNudge();
+    }, TIP_NUDGE_MS);
+    if (typeof tipNudgeTimer.unref === 'function') tipNudgeTimer.unref();
   }
 
   function pumpGetblocks(sock) {
@@ -936,9 +1048,13 @@ export function createP2p({
       return;
     }
     if (msg.type === 'work') {
+      const before = typeof store.openRoundRows === 'function' ? store.openRoundRows() : [];
       if (typeof store.noteOpenRound === 'function') {
         store.noteOpenRound(msg.rows || [], { source: 'peer' });
       }
+      const after = typeof store.openRoundRows === 'function' ? store.openRoundRows() : [];
+      const fresh = freshMinerRounds(before, after);
+      if (fresh.length) broadcast({ type: 'work', magic, rows: fresh }, sock);
       return;
     }
     if (msg.type === 'addr') {
@@ -957,7 +1073,13 @@ export function createP2p({
     }
     if (msg.type === 'tip' || msg.type === 'inv') {
       notePeerTip(sock, msg);
-      requestHeaders(sock);
+      const localH = Number(store.tip()?.height || 0);
+      const peerH = Number(msg.height);
+      const ahead = Number.isFinite(peerH) && peerH > localH;
+      if (ahead) gossipTip(msg, sock);
+      if (Number.isFinite(peerH) && peerH === localH + 1) pullOneBlock(sock, msg);
+      else requestHeaders(sock);
+      if (ahead || peerTipAhead(peers.get(sock))) armTipNudge();
       return;
     }
     if (msg.type === 'getblocks') {
@@ -1039,6 +1161,7 @@ export function createP2p({
         }));
       } catch { /* ignore */ }
       if (b) enqueueGetblockServe(sock, b);
+      else if (want) noteBlockWaiter(want, sock);
       return;
     }
     if (msg.type === 'block' || msg.type === 'blocks') {
@@ -1167,7 +1290,14 @@ export function createP2p({
         const changed = (before && after)
           ? !Buffer.from(before.hash).equals(Buffer.from(after.hash))
           : Boolean(after && !before);
-        if (got?.ok && changed) broadcast(tipMsg(), sock);
+        if (got?.ok) {
+          if (lastHash) serveWaiters(lastHash);
+          if (changed) {
+            broadcast(tipMsg(), sock);
+            const tipHash = localTipHash();
+            if (tipHash && tipHash !== lastHash) serveWaiters(tipHash);
+          }
+        }
         if (rec) pumpGetblocks(sock);
       }).catch((err) => {
         const rec = peers.get(sock);
@@ -1192,6 +1322,10 @@ export function createP2p({
   function drop(sock) {
     sockets.delete(sock);
     peers.delete(sock);
+    for (const [hash, set] of blockWaiters) {
+      set.delete(sock);
+      if (!set.size) blockWaiters.delete(hash);
+    }
   }
 
   function attach(sock, extra = {}) {
@@ -1248,19 +1382,21 @@ export function createP2p({
 
   function listen() {
     server = net.createServer(attach);
-    const pendingWatch = setInterval(() => {
+    if (pendingWatch) clearInterval(pendingWatch);
+    pendingWatch = setInterval(() => {
       const now = Date.now();
       for (const [sock, rec] of peers) {
         if (!rec?.syncing || !rec.pending || !rec.pending.size || !rec.pendingAt) continue;
         if (now - rec.pendingAt < GETBLOCK_WAIT_MS) continue;
         const stuck = [...rec.pending];
+        for (const h of stuck) inflightBlocks.delete(h);
         rec.pending = new Set();
         rec.pendingAt = 0;
         rec.want = [...stuck, ...(rec.want || [])];
         rec.syncing = false;
         pumpGetblocks(sock);
       }
-    }, 5_000);
+    }, PENDING_WATCH_MS);
     if (typeof pendingWatch.unref === 'function') pendingWatch.unref();
     return new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -1333,6 +1469,15 @@ export function createP2p({
   }
 
   function close() {
+    if (pendingWatch) {
+      clearInterval(pendingWatch);
+      pendingWatch = null;
+    }
+    if (tipNudgeTimer) {
+      clearTimeout(tipNudgeTimer);
+      tipNudgeTimer = null;
+    }
+    blockWaiters.clear();
     if (getblockServeTimer) {
       clearTimeout(getblockServeTimer);
       getblockServeTimer = null;

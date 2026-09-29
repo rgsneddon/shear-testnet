@@ -44,6 +44,107 @@ import 'windows_sxs_manifest.dart';
 
 const kGatePassword = 'correct-horse';
 
+const _kOfflineYoungNanos = 2252;
+
+/// Every pot already sealed to this wallet on a tip-440 book.
+/// Heights outside 112/300/438 are here so the catch-up cannot special-case
+/// the reported gap. 438 is still under the 6-confirmation floor.
+const _kOfflineOwnedNanos = <int, int>{
+  7: kUnitsPerShe,
+  112: 2 * kUnitsPerShe,
+  250: kUnitsPerShe,
+  300: 3 * kUnitsPerShe,
+  438: _kOfflineYoungNanos,
+};
+
+const _kOfflineConfirmedNanos = 7 * kUnitsPerShe;
+
+class _OfflineCatchupBook {
+  _OfflineCatchupBook({required this.dest, required this.notes});
+  final String dest;
+  /// Owned seals plus one foreign seal. The foreign row must not land.
+  final List<Map<String, dynamic>> notes;
+}
+
+Map<String, dynamic> _offlinePot(int nanos, int height, {required Uint8List dest20, required Uint8List seed}) {
+  var note = _sealNoteNoRange(nanos, dest20: dest20, kind: 'pot');
+  note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
+  note = compactSealedVout(note);
+  note['height'] = height;
+  return note;
+}
+
+/// Seals spread through the book, compacted the way the chain stores them.
+_OfflineCatchupBook _offlineCatchupBook(ShearIdentity id) {
+  final probe = ShearLedger()..bindIdentity(id);
+  final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
+  final d20 = hash20FromAddress(dest);
+  if (d20 == null) throw StateError('dest20');
+  final seed = hexToBytes(id.seedHex);
+  final other = createIdentity();
+  final otherProbe = ShearLedger()..bindIdentity(other);
+  final otherDest = otherProbe.homeDest(other.address, paymentCode: other.paymentCode);
+  final other20 = hash20FromAddress(otherDest);
+  if (other20 == null) throw StateError('other dest20');
+  final notes = [
+    for (final e in _kOfflineOwnedNanos.entries)
+      _offlinePot(e.value, e.key, dest20: d20, seed: seed),
+    _offlinePot(9 * kUnitsPerShe, 200, dest20: other20, seed: hexToBytes(other.seedHex)),
+  ];
+  return _OfflineCatchupBook(dest: dest, notes: notes);
+}
+
+String _offlineHex(Object? v) {
+  if (v == null) return '';
+  final bytes = v is Uint8List ? v : Uint8List.fromList(List<int>.from(v as List));
+  return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+}
+
+Map<String, dynamic> _wireOfflineNote(Map<String, dynamic> n) {
+  final vp = Map<String, dynamic>.from(n['valueProof'] as Map);
+  return {
+    'height': n['height'],
+    'kind': n['kind'],
+    'noteCommit': _offlineHex(n['noteCommit']),
+    'commit': _offlineHex(n['commit']),
+    'rEph': _offlineHex(n['rEph']),
+    'rCt': _offlineHex(n['rCt']),
+    if (n['admitPub'] != null) 'admitPub': _offlineHex(n['admitPub']),
+    if (n['dest20'] != null) 'dest20': _offlineHex(n['dest20']),
+    'valueProof': {
+      'R': _offlineHex(vp['R']),
+      'z': _offlineHex(vp['z']),
+      'v': vp['v'],
+    },
+  };
+}
+
+void _expectOfflineCatchup(ShearLedger ledger, ShearIdentity id, {required double reportedBalance}) {
+  expect(ledger.sealedHeight, 440);
+  final ownedHeights = _kOfflineOwnedNanos.keys.toSet();
+  final landed = ledger.transactions.where((t) => (t.height ?? 0) >= 1).toList();
+  expect(landed.map((t) => t.height).toSet(), ownedHeights, reason: 'every owned seal once, and no other height');
+  expect(landed.length, ownedHeights.length);
+  final meter = ledger.transactions.where((t) => (t.height ?? 0) < 1).toList();
+  expect(meter.every((t) => t.kind == 'hash'), isTrue, reason: 'a pool pending meter is not a sealed height');
+  expect(
+    ledger.shearviewTxs(id.address).map((t) => t.height).toSet(),
+    ownedHeights,
+  );
+  for (final e in _kOfflineOwnedNanos.entries) {
+    final row = ledger.transactions.where((t) => t.height == e.key).single;
+    expect((row.amount * kUnitsPerShe).round(), e.value, reason: 'height ${e.key}');
+    final confs = 440 - e.key + 1;
+    expect(row.confirmed, confs >= ShearLedger.spendableConfirmations);
+  }
+  final pending = ledger.pendingTxs(id.address);
+  expect(pending.map((t) => t.height).toSet(), {438});
+  expect((pending.single.amount * kUnitsPerShe).round(), _kOfflineYoungNanos);
+  final spend = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
+  expect((spend * kUnitsPerShe).round(), _kOfflineConfirmedNanos);
+  expect(spend, isNot(closeTo(reportedBalance, 1e-6)));
+}
+
 /// Fake seal without the 64-bit Dart range proof (minutes on Windows).
 Map<String, dynamic> _sealNoteNoRange(int v, {Uint8List? dest20, String kind = 'send'}) {
   final r = randomScalar();
@@ -152,7 +253,7 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.59"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.60"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
@@ -160,12 +261,12 @@ void main() {
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.59"'), isTrue);
-    expect(winMain.contains('Shear 0.6'), isFalse);
-    expect(winRc.contains('"Shear 0.59"'), isTrue);
+    expect(winMain.contains('L"Shear 0.60"'), isTrue);
+    expect(winMain.contains('L"Shear 0.6"'), isFalse);
+    expect(winRc.contains('"Shear 0.60"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.59"'), isTrue);
-    expect(linuxApp.contains('Shear 0.6'), isFalse);
+    expect(linuxApp.contains('"Shear 0.60"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.6"'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
     expect(activity.contains('FlutterActivity()'), isFalse);
@@ -1965,8 +2066,8 @@ void main() {
         reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.59.0+84'));
-    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.59'"));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.60.0+85'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.60'"));
   });
 
   test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
@@ -1991,7 +2092,8 @@ void main() {
     expect(pendingReceiveThinPoll(ledger.pendingTxs(id.address)), isTrue);
     expect(
       shouldFullSyncCredits(hasPendingReceive: true, historyBehindTip: true),
-      isFalse,
+      isTrue,
+      reason: 'a pending row must not hide seals behind the tip',
     );
     expect(
       shouldFullSyncCredits(
@@ -2016,6 +2118,122 @@ void main() {
     final syncSrc = File('lib/shear_read_sync.dart').readAsStringSync();
     expect(syncSrc.contains('[for (var h = 1; h <= sampledTip; h++) h]'), isFalse);
   });
+
+  test('Connect Bare ingests every offline seal up to the tip, including 112, 300, and 438', () async {
+    final id = createIdentity();
+    final opened = _offlineCatchupBook(id);
+    expect(jsonEncode({'ok': true, 'notes': opened.notes}), contains('"height":7'));
+    final header = Uint8List(128);
+    final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    for (final reported in const <double>[0, 3738.365814558]) {
+      final live = _PoolLive(
+        headerHex: hex,
+        height: 440,
+        balance: reported,
+        pending: _kOfflineYoungNanos / kUnitsPerShe,
+        owner: opened.dest,
+      );
+      for (var h = 1; h <= 440; h++) {
+        live.headerAtHeight[h] = hex;
+      }
+      live.notes = opened.notes;
+      live.history = [
+        {
+          'id': 'explorer-cb-7',
+          'kind': 'coinbase',
+          'from': 'coinbase',
+          'to': opened.dest,
+          'nanos': kUnitsPerShe,
+          'height': 7,
+          'confirmed': true,
+        },
+      ];
+      final server = await _fakePool(live: live);
+      addTearDown(() => server.close(force: true));
+      final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+      final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+      expect(ledger.transactions, isEmpty);
+      try {
+        await ledger.syncCredits(id.address, paymentCode: id.paymentCode)
+            .timeout(const Duration(seconds: 90));
+      } catch (e) {
+        fail(
+          'reported=$reported $e stats=${live.statsHits} header=${live.headerHits} '
+          'batch=${live.headersBatchHits} balance=${live.balanceHits} '
+          'notes=${live.notesHits} history=${live.historyHits}',
+        );
+      }
+      _expectOfflineCatchup(ledger, id, reportedBalance: reported);
+      await server.close(force: true);
+    }
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('full node ingests every offline seal up to the tip, including 112, 300, and 438', () async {
+    expect(nodeTipHeightFromSse('event: tip\ndata: {"height":440,"hash":"ab"}\n'), 440);
+    expect(nodeTipHeightFromSse('event: reorg\ndata: {"height":12}\n'), isNull);
+    final id = createIdentity();
+    final opened = _offlineCatchupBook(id);
+    final repo = Directory.current.path.replaceAll('\\', '/').endsWith('/wallet')
+        ? Directory.current.parent.path
+        : Directory.current.path;
+    final script = '$repo${Platform.pathSeparator}node${Platform.pathSeparator}tests${Platform.pathSeparator}offline_receive_serve.js';
+    final previousOverrides = HttpOverrides.current;
+    HttpOverrides.global = _PassthroughHttpOverrides();
+    addTearDown(() {
+      HttpOverrides.global = previousOverrides;
+    });
+    for (final reported in const <double>[0, 3738.365814558]) {
+      final spec = File(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}shear-offline-receive-$pid-${reported.round()}.json',
+      );
+      spec.writeAsStringSync(jsonEncode({
+        'tip': 440,
+        'dest': opened.dest,
+        'confirmedNanos': (reported * kUnitsPerShe).round(),
+        'notes': [for (final n in opened.notes) _wireOfflineNote(n)],
+      }));
+      addTearDown(() {
+        if (spec.existsSync()) spec.deleteSync();
+      });
+      final proc = await Process.start(
+        'node',
+        [script, spec.path],
+        workingDirectory: repo,
+      );
+      final err = StringBuffer();
+      proc.stderr.transform(utf8.decoder).listen(err.write);
+      final ready = Completer<int>();
+      proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
+        if (!ready.isCompleted && line.startsWith('PORT ')) {
+          ready.complete(int.parse(line.substring(5).trim()));
+        }
+      });
+      final port = await ready.future.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () => throw StateError('node rpc did not listen reported=$reported\n$err'),
+      );
+      final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:$port', http: _realHttp());
+      final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+      expect(ledger.transactions, isEmpty);
+      final woke = Completer<int>();
+      var stop = false;
+      unawaited(listenNodeTips(
+        base: 'http://127.0.0.1:$port',
+        cancelled: () => stop,
+        onTip: (height) {
+          if (!woke.isCompleted) woke.complete(height);
+        },
+      ));
+      final tipped = await woke.future.timeout(const Duration(seconds: 15));
+      expect(tipped, 440);
+      expect(ledger.transactions, isEmpty, reason: 'the tip notice must not invent rows');
+      await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+      _expectOfflineCatchup(ledger, id, reportedBalance: reported);
+      stop = true;
+      proc.kill();
+      pool.close();
+    }
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('runTipAccrualTick clears busy after throw and hang so the next tick runs', () async {
     var busy = false;
@@ -2061,13 +2279,17 @@ void main() {
     expect(walletPollIsHot(tipMoved: true, pendingReceive: false, historyBehindTip: false), isTrue);
     final t0 = DateTime.fromMillisecondsSinceEpoch(0);
     expect(
-      walletShouldPoll(lastPoll: t0, now: t0.add(const Duration(seconds: 1)), hot: true),
+      walletShouldPoll(lastPoll: t0, now: t0.add(const Duration(seconds: 8)), hot: true),
       isTrue,
+    );
+    expect(
+      walletShouldPoll(lastPoll: t0, now: t0.add(const Duration(seconds: 1)), hot: true),
+      isFalse,
     );
     expect(
       walletShouldPoll(
         lastPoll: t0.add(const Duration(seconds: 10)),
-        now: t0.add(const Duration(seconds: 11)),
+        now: t0.add(const Duration(seconds: 14)),
         hot: false,
       ),
       isFalse,
@@ -2075,7 +2297,7 @@ void main() {
     expect(
       walletShouldPoll(
         lastPoll: t0.add(const Duration(seconds: 10)),
-        now: t0.add(const Duration(seconds: 14)),
+        now: t0.add(const Duration(seconds: 18)),
         hot: false,
       ),
       isTrue,
@@ -2744,7 +2966,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.59');
+    expect(kWalletVersion, '0.60');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(kWalletVersion, isNot('0.47'));
@@ -3207,8 +3429,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.59');
-    expect(kWalletVersion, '0.59');
+    expect(app.title, 'Shear 0.60');
+    expect(kWalletVersion, '0.60');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -6247,8 +6469,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.59 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.59');
+  test('kWalletVersion == 0.60 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.60');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -7560,7 +7782,7 @@ void main() {
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), isNot(closeTo(poolBalance * 2, 1e-6)));
   });
 
-  test('syncCredits spendable stays the reconstruct when the notes scan is fatter', () async {
+  test('syncCredits spendable is the opened confirmed note when the pool snapshot is smaller', () async {
     final id = createIdentity();
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
@@ -7580,9 +7802,9 @@ void main() {
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     final got = await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
     expect(live.notesHits, greaterThan(0));
-    expect(got, closeTo(poolBalance, 1e-9));
-    expect(got, isNot(closeTo(noteShe, 1e-6)));
-    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(poolBalance, 1e-9));
+    expect(got, closeTo(noteShe, 1e-9));
+    expect(got, isNot(closeTo(poolBalance, 1e-6)));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(noteShe, 1e-9));
     ledger.applyTipHex(hex, sealedHeight: 20);
     ledger.rememberNote({
       'address': dest,
@@ -7590,8 +7812,8 @@ void main() {
       'amount': noteShe,
       'height': 2,
     });
-    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(poolBalance, 1e-9));
-    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), isNot(closeTo(noteShe, 1e-6)));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(noteShe, 1e-9));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), isNot(closeTo(noteShe * 2, 1e-6)));
   });
 
   test('owedTowardPi keeps the mailbox pull-book when another dest reports 0', () async {

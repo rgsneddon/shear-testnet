@@ -92,7 +92,7 @@ describe('freeze banner on pool HUD / miner / admin', () => {
       const stats = await fetch(`http://127.0.0.1:${port}/api/stats`).then((r) => r.json());
       assert.equal(stats.ok, true);
       assert.equal(stats.frozen, false);
-      assert.equal(stats.confirmedNeed, 30);
+      assert.equal(stats.confirmedNeed, 12);
       assert.equal(stats.spendableConfirmations, 6);
       assert.equal(stats.policy.frozen, false);
       assert.equal(stats.policy.freeze_reason, '');

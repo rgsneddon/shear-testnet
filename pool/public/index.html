@@ -379,8 +379,8 @@
         <h1>Shear</h1>
         <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
         <p>ADMITv2 membership over this book's notes, with confidential amounts. <a href="https://dag.shear.digital/">DINS-DAG</a> settles each round as the blue set: the spine pot plus the hash nanos, once. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
-        <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. While this book has fewer than 10,000 notes the membership set is thin.</p>
-        <p>Mine with Copy dest: <code>ssa1.worker</code>. Hash bonus (no pool fee) and your share of the block pot (after 1%) accumulate. At π SHE of <em>confirmed</em> credit (30 pool confirmations, not the chain’s 6) the pool sends the unpaid sum to that <code>ssa1</code> and pays the levy.</p>
+        <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. While this book has fewer than 10,000 notes the membership set is thin. The pool seals the pay. Continuum reads every note for your dest from a node, including seals from while the wallet was closed. Spendable in the wallet is 6 confirmations of an opened coin. The numbers on this dashboard are the pool’s own view. Wallet: https://shear.digital/wallet/ (Continuum 0.60). Node: https://shear.digital/node/ (Shear Sentinel v10). How-to: https://shear.digital/docs/#/surfaces.</p>
+        <p>Mine with Copy dest: <code>ssa1.worker</code>. Hash bonus (no pool fee) and your share of the block pot (after 1%) accumulate. At π SHE of <em>confirmed</em> credit (12 pool confirmations, not the chain’s 6) the pool sends the unpaid sum to that <code>ssa1</code> and pays the levy.</p>
         <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v4</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
       </section>
@@ -389,9 +389,9 @@
         <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v4</code> · ShearHash-v3.</p>
         <p class="label" id="stratum-cleartext">Stratum is <strong>cleartext TCP</strong> unless TLS is configured in front of the bind. Production should set <code>SHEAR_STRATUM_AUTH=1</code>.</p>
         <ol class="mine-steps">
-          <li>Wallet → <strong>Copy dest</strong> (the Continuum <code>ssa1</code> shown on screen — that mailbox, not a rotated dest).</li>
-          <li>Paste dest and a worker name. Pick CPU threads.</li>
-          <li>Copy the command. Unpaid hash bonus + pot share auto-pay to that <code>ssa1</code> at π SHE. No withdraw button.</li>
+          <li>Install Continuum 0.60 from https://shear.digital/wallet/ and ShearK 2.6 from https://shear.digital/miner/. Wallet → <strong>Copy dest</strong> (the Continuum <code>ssa1</code> shown on screen — that mailbox, not a rotated dest).</li>
+          <li>Paste dest and a worker name. Pick CPU threads. Run --selftest once on a new machine, then the command below.</li>
+          <li>Copy the command. Unpaid hash bonus + pot share auto-pay to that <code>ssa1</code> at π SHE. No withdraw button. Open Continuum (Connect Bare or a local node) to see each sealed pay. A pool balance here is not the wallet Spendable figure.</li>
         </ol>
         <form id="mine-form" action="#" method="get" autocomplete="off">
         <p>

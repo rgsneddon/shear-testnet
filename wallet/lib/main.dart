@@ -37,7 +37,7 @@ import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 import 'shear_vpn_profile.dart';
 
-const kWalletVersion = '0.59';
+const kWalletVersion = '0.60';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
@@ -189,6 +189,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   bool _showCtfTranscript = false;
   Timer? _accrualTick;
   Timer? _preloginTick;
+  int _tipWatchGen = 0;
   bool _tipBusy = false;
   bool _creditBusy = false;
   bool _accrualPaused = false;
@@ -329,6 +330,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     hop.removeListener(_onHop);
     unawaited(hop.disconnect());
     WidgetsBinding.instance.removeObserver(this);
+    _tipWatchGen += 1;
     _accrualTick?.cancel();
     _preloginTick?.cancel();
     _nodeProc?.kill();
@@ -342,6 +344,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       _accrualPaused = true;
+      _tipWatchGen += 1;
       _accrualTick?.cancel();
       _accrualTick = null;
       return;
@@ -739,8 +742,43 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
   }
 
+  Future<void> _onNodeTip(int height) async {
+    final ident = id;
+    if (!mounted || !unlocked || ident == null || widget.skipPoolSync) return;
+    if (height > ledger.sealedHeight && mounted) {
+      _lastPaintSealed = height;
+      setState(() {});
+    }
+    if (_creditBusy) return;
+    _creditBusy = true;
+    try {
+      await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
+      _rememberLedger();
+      if (!mounted) return;
+      final spendUnits = (ledger.spendable(ident.address) * 1e9).round();
+      final pendingN = ledger.pendingTxs(ident.address).length;
+      _lastPaintSealed = ledger.sealedHeight;
+      _lastPaintSpendable = spendUnits;
+      _lastPaintPending = pendingN;
+      setState(() {});
+    } catch (_) {
+    } finally {
+      _creditBusy = false;
+    }
+  }
+
   void _startAccrualTick({bool immediate = false}) {
     _accrualTick?.cancel();
+    final watchGen = ++_tipWatchGen;
+    if (!widget.skipPoolSync) {
+      unawaited(listenNodeTips(
+        base: kLocalNodeRpc,
+        cancelled: () => watchGen != _tipWatchGen || !mounted,
+        onTip: (height) {
+          unawaited(_onNodeTip(height));
+        },
+      ));
+    }
     if (widget.skipPoolSync) {
       _accrualTick = Timer.periodic(kWalletHotPoll, (_) {
         if (!mounted || !unlocked) return;
@@ -752,86 +790,84 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (!mounted || !unlocked || _accrualPaused) return;
       final ident = id;
       if (ident == null) return;
-      final pendingThin = pendingReceiveThinPoll([
-        ...ledger.pendingTxs(ident.address),
-        ...ledger.ownerHistory(ident.address),
-      ]);
-      final hot = walletPollIsHot(
-        tipMoved: ledger.sealedHeight != _lastPaintSealed,
-        pendingReceive: pendingThin,
-        historyBehindTip: ledger.historyBehindTip,
-      );
       final now = DateTime.now();
-      if (!immediate && !walletShouldPoll(lastPoll: _lastPoll, now: now, hot: hot)) {
+      if (!immediate && !walletShouldPoll(lastPoll: _lastPoll, now: now, hot: true)) {
         return;
       }
       immediate = false;
       _lastPoll = now;
+      var tipMoved = false;
       await runTipAccrualTick(
         busy: _tipBusy,
         setBusy: (v) => _tipBusy = v,
+        timeout: const Duration(seconds: 3),
         work: () async {
           final before = ledger.sealedHeight;
           try {
-            await ledger.syncTip().timeout(kWalletTipTimeout);
+            await ledger.syncTip().timeout(const Duration(seconds: 2));
           } catch (_) {}
-          final tipMoved = ledger.sealedHeight != before;
+          tipMoved = ledger.sealedHeight != before;
+          if (tipMoved && mounted) {
+            _lastPaintSealed = ledger.sealedHeight;
+            sidecar.seekerTip = ledger.pool?.liveTip ?? ledger.displayHeight;
+            setState(() {});
+          }
           if (tipMoved || now.difference(_lastVault) >= kWalletVaultGap) {
             _lastVault = DateTime.now();
             _syncJoinRoster();
             await _syncVaults(ident);
           }
-          final thin = pendingReceiveThinPoll([
-            ...ledger.pendingTxs(ident.address),
-            ...ledger.ownerHistory(ident.address),
-          ]);
-          final full = shouldFullSyncCredits(
-            hasPendingReceive: thin,
-            historyBehindTip: ledger.historyBehindTip,
-            openCollatePending: !ledger.openCollated || ledger.notesLagSpendable,
-          );
-          if (!_creditBusy) {
-            _creditBusy = true;
-            try {
-              if (full) {
-                await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
-              } else {
-                await ledger.syncBalancesOnly(ident.address, paymentCode: ident.paymentCode);
-              }
-              _rememberLedger();
-              final persistAt = DateTime.now();
-              if (persistAt.difference(_lastPersist) >= const Duration(seconds: 15)) {
-                _lastPersist = persistAt;
-                unawaited(session.persist());
-              }
-            } finally {
-              _creditBusy = false;
-            }
-          }
-          final spendUnits = (ledger.spendable(ident.address) * 1e9).round();
-          final pendingN = ledger.pendingTxs(ident.address).length;
-          final owedShe = ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode);
-          _touchOwedClock(owedShe);
-          final dirty = ledger.sealedHeight != _lastPaintSealed
-              || spendUnits != _lastPaintSpendable
-              || pendingN != _lastPaintPending
-              || tipMoved
-              || owedShe > 0;
-          sidecar.seekerTip = ledger.pool?.liveTip ?? ledger.displayHeight;
-          if (sidecar.takeOverIfMatched()) {
-            if (mounted) {
-              setState(() {});
-              if (sidecar.localSyncNoticeDue(caughtTip: true)) _showLocalNodeSynced();
-            }
-          }
-          if (dirty && mounted) {
-            _lastPaintSealed = ledger.sealedHeight;
-            _lastPaintSpendable = spendUnits;
-            _lastPaintPending = pendingN;
-            setState(() {});
-          }
         },
       );
+      if (!mounted || !unlocked || id == null) return;
+      final thin = pendingReceiveThinPoll([
+        ...ledger.pendingTxs(ident.address),
+        ...ledger.ownerHistory(ident.address),
+      ]);
+      final full = shouldFullSyncCredits(
+        hasPendingReceive: thin,
+        historyBehindTip: ledger.historyBehindTip,
+        openCollatePending: !ledger.openCollated || ledger.notesLagSpendable,
+      );
+      if (_creditBusy) return;
+      _creditBusy = true;
+      try {
+        if (full) {
+          await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
+        } else {
+          await ledger.syncBalancesOnly(ident.address, paymentCode: ident.paymentCode);
+        }
+        _rememberLedger();
+        final persistAt = DateTime.now();
+        if (persistAt.difference(_lastPersist) >= const Duration(seconds: 15)) {
+          _lastPersist = persistAt;
+          unawaited(session.persist());
+        }
+        final spendUnits = (ledger.spendable(ident.address) * 1e9).round();
+        final pendingN = ledger.pendingTxs(ident.address).length;
+        final owedShe = ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode);
+        _touchOwedClock(owedShe);
+        final dirty = ledger.sealedHeight != _lastPaintSealed
+            || spendUnits != _lastPaintSpendable
+            || pendingN != _lastPaintPending
+            || tipMoved
+            || owedShe > 0;
+        sidecar.seekerTip = ledger.pool?.liveTip ?? ledger.displayHeight;
+        if (sidecar.takeOverIfMatched()) {
+          if (mounted) {
+            setState(() {});
+            if (sidecar.localSyncNoticeDue(caughtTip: true)) _showLocalNodeSynced();
+          }
+        }
+        if (dirty && mounted) {
+          _lastPaintSealed = ledger.sealedHeight;
+          _lastPaintSpendable = spendUnits;
+          _lastPaintPending = pendingN;
+          setState(() {});
+        }
+      } finally {
+        _creditBusy = false;
+      }
     }
     if (immediate) unawaited(tick());
     _accrualTick = Timer.periodic(kWalletHotPoll, (_) { unawaited(tick()); });

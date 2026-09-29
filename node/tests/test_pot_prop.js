@@ -2,13 +2,13 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { generateKeyPairSync } from 'node:crypto';
-import { newIdentity, freshStealthDest, hash20FromAddress, ed25519RawPub, encodeDest, destCommitFromSpendPub } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest, hash20FromAddress, ed25519RawPub, encodeDest, destCommitFromSpendPub, isDestAddress } from '../../crypto/address.js';
 import { signSpendTx, verifySpendSig } from '../../crypto/spend.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SHARE_FLOOR_BITS, GENESIS_BITS_PACKED, bitsForBlock, MAGIC_TESTNET } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SHARE_FLOOR_BITS, GENESIS_BITS_PACKED, bitsForBlock, MAGIC_TESTNET, consensusFingerprint } from '../../crypto/asert.js';
 import { potSubsidyNanos, epochMs } from '../../crypto/pot_sched.js';
 import { poolFeeDest } from '../../crypto/levy.js';
-import { splitPot } from '../../pool/src/pool.js';
+import { splitPot, THIS_POOL_DIRECT_FEE_DEST } from '../../pool/src/pool.js';
 import { findShare, dest20OfShare } from '../../crypto/share_batch.js';
 import {
   buildTemplate,
@@ -71,6 +71,35 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const propPot = prop.reduce((a, s) => a + s.nanos, 0);
     assert.equal(propPot, BLOCK_SUBSIDY_NANOS);
     assert.equal(prop.find((s) => s.address === poolFeeDest()).nanos, fee);
+  });
+
+  it('pool fee wallet is public and solo keeps the whole pot', () => {
+    const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
+    const solo = fs.readFileSync(new URL('../src/solo_stratum.js', import.meta.url), 'utf8');
+    assert.equal(isDestAddress(THIS_POOL_DIRECT_FEE_DEST), true);
+    assert.match(src, /replace this with your own ssa1/i);
+    assert.match(src, /Solo mining/);
+    assert.equal(consensusFingerprint().includes(THIS_POOL_DIRECT_FEE_DEST), false);
+    assert.match(solo, /store\.template\(\{ miner: dest, shareBits \}\)/);
+    assert.doesNotMatch(solo, /THIS_POOL_DIRECT_FEE_DEST/);
+    const miner = destOf(newIdentity());
+    const batch = [
+      { dest: miner, dest20: dest20OfShare({ dest: miner }), nonce: 1n, lz: 8 },
+    ];
+    const soloShares = potSharesFromBatch(batch, null);
+    assert.equal(soloShares.length, 1);
+    assert.equal(soloShares[0].address, miner);
+    assert.equal(soloShares[0].nanos, BLOCK_SUBSIDY_NANOS);
+    assert.equal(soloShares.some((s) => s.kind === 'pool-fee'), false);
+    const alice = destOf(newIdentity());
+    const bob = destOf(newIdentity());
+    const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
+    const poolShares = potSharesFromBatch([
+      { dest: alice, dest20: dest20OfShare({ dest: alice }), nonce: 3n, lz: 8 },
+      { dest: bob, dest20: dest20OfShare({ dest: bob }), nonce: 4n, lz: 8 },
+    ], THIS_POOL_DIRECT_FEE_DEST);
+    assert.equal(poolShares.find((s) => s.address === THIS_POOL_DIRECT_FEE_DEST).nanos, fee);
+    assert.equal(poolShares.find((s) => s.kind === 'pool-fee').address, THIS_POOL_DIRECT_FEE_DEST);
   });
 
   it('rejects a block that pays the whole pot to the pool dest', () => {

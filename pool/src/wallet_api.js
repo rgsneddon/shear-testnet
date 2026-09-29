@@ -477,10 +477,6 @@ export function explorerRecentTxs(store, limit = 30) {
   return orderExplorerRecent(out, limit);
 }
 
-export function publicExplorerTxs(store) {
-  return confirmedBlockTxs(store, 30);
-}
-
 /** Last N confirmed blocks only. No hash-bonus rows and no pot-split lines. */
 export function poolRecentBlockTxs(store, limit = 30) {
   return confirmedBlockTxs(store, limit);

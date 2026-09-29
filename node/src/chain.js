@@ -313,7 +313,7 @@ export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null,
   if (poolNc && fee > 0) {
     const existing = out.find((s) => ncHex(s.noteCommit) === poolNc);
     if (existing) existing.nanos += fee;
-    else out.push({ noteCommit: noteCommitOfDest20(hash20FromAddress(pool)), nanos: fee, kind: 'pot' });
+    else out.push({ noteCommit: noteCommitOfDest20(hash20FromAddress(pool)), nanos: fee, kind: 'pool-fee' });
   }
   return out.filter((s) => s.nanos > 0);
 }
@@ -451,6 +451,32 @@ export function matchDestBoundHashCustodyPot({
     }
   }
   return false;
+}
+
+/**
+ * Pot splits a pool may seal. Fee folded into a round participant is allowed
+ * up to the 3% cap. Which dest receives it is that pool's choice, not book law.
+ */
+function propPayCandidates(leaves, wantPot, hinted, extraAmt, shareBatch) {
+  const candidates = [];
+  if (hinted) candidates.push(potPaysFromLeaves(leaves, hinted, extraAmt, wantPot));
+  candidates.push(potPaysFromLeaves(leaves, null, extraAmt, wantPot));
+  if (extraAmt > 0) candidates.push(potPaysFromLeaves(leaves, null, 0, wantPot));
+  if (!(extraAmt > 0)) {
+    const dests = new Set();
+    if (hinted && isDestAddress(hinted)) dests.add(hinted);
+    for (const s of shareBatch || []) {
+      const d = destOfShare(s);
+      if (d && isDestAddress(d)) dests.add(d);
+    }
+    for (const dest of dests) {
+      for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
+        const fee = Math.floor(wantPot * bps / 10000);
+        if (fee > 0) candidates.push(potPaysFromLeaves(leaves, dest, fee, wantPot));
+      }
+    }
+  }
+  return candidates;
 }
 
 /** Per-hasher extra pot note: 0% (absent) through POOL_FEE_MAX_BPS. */
@@ -1015,10 +1041,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         }
         const extraAmt = extraPotFeeNanos(extra, wantPot);
         if (extraAmt == null) return { ok: false, reason: 'pot_prop' };
-        const candidates = [];
-        if (hinted) candidates.push(potPaysFromLeaves(leaves, hinted, extraAmt, wantPot));
-        candidates.push(potPaysFromLeaves(leaves, null, extraAmt, wantPot));
-        if (extraAmt > 0) candidates.push(potPaysFromLeaves(leaves, null, 0, wantPot));
+        const candidates = propPayCandidates(leaves, wantPot, hinted, extraAmt, shareBatch);
         let matched = false;
         for (const pays of candidates) {
           let okTry = true;

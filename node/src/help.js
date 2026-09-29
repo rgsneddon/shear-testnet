@@ -1,4 +1,5 @@
-import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
+import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { NODE_DISPLAY } from './product.js';
 
 const TOPICS = ['run', 'env', 'rpc', 'solo', 'p2p', 'bootstrap', 'status'];
 
@@ -26,7 +27,7 @@ function sectionEnv() {
   return [
     'Env:',
     '  SHEAR_DATA          datadir. Windows %APPDATA%\\Shear\\testnet-v5 (Roaming). Unix ~/.shear/testnet-v5.',
-    '                      Same path for SHEAR-NODEv9 and Continuum 0.58.',
+    '                      Same path for Shear Sentinel v10 and Continuum 0.60.',
     '  SHEAR_NETWORK       shear-testnet-v5 (this book). shear-v1 waits for genesis.',
     '  SHEAR_P2P_PORT      default 30303',
     '  SHEAR_P2P_BIND      default 0.0.0.0',
@@ -53,13 +54,19 @@ function sectionRpc() {
   return [
     'RPC (loopback JSON, GET or JSON-RPC):',
     '  GET /stats | /api/stats     height, hash, jroot, magic, fingerprint',
+    '  GET /api/network | /network synced nodes, tip hash, proven round hashes. No dest, amount, or claimed hash rate',
     '  GET /header?height=N        one header',
     '  GET /headers?from=&to=      header window',
     '  GET /block?height=N         compact block',
     '  GET /blocks?from=&to=       compact window',
     '  GET /chaintips /reorgs /policy /jroot /fingerprint /fluxset',
     '  GET /notes /api/wallet/notes /api/wallet/balance /api/wallet/history',
+    '  GET /api/oracle | /oracle   staking basket. Mint uses frozen epochBps. A stale basket does not move it.',
+    '  GET /api/reserve?address=   one portal: staked, idle, vote, accrued. Public vote counts. No other dests.',
     '  POST /api/wallet/send | /queuetx',
+    '',
+    'Reserve lock, epoch vote, and withdraw are sealed transactions. This node applies them.',
+    'The staking oracle is shear-reserve-oracle-v1. It cannot move the pot or the hash-bonus pile.',
     '',
     'Do not bind RPC to the public internet.',
   ];
@@ -79,7 +86,7 @@ function sectionSolo() {
     '       npm run solo',
     '     Bare node node/src/node.js is validator-only (no stratum).',
     '     npm run pool is the public-pool operator stack — not solo.',
-    '  3. CLI (first-class) or Continuum 0.58:',
+    '  3. CLI (first-class) or Continuum 0.60:',
     '       dart run bin/shear.dart dest --rpc http://127.0.0.1:18332',
     '       dart run bin/shear.dart balance',
     '       dart run bin/shear.dart history',
@@ -89,6 +96,7 @@ function sectionSolo() {
     '     ./ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8',
     '',
     'Finder keeps the live epoch pot + hash bonus on Copy dest. No pool fee.',
+    'The 1% in pool/src/pool.js THIS_POOL_DIRECT_FEE_DEST is the pool operator fee only. Solo does not charge it.',
     'Login is wallet/CLI Copy dest as ssa1.solo. .solo is only a worker name.',
     'Stuck mid-IBD (unsigned@N then prev): pull tip, rebuild native, SHEAR_GETBLOCK_BATCH=1,',
     'same-shell SHEAR_SEEDS. Do not wipe the datadir unless CoS says so.',
@@ -141,14 +149,14 @@ export function helpTopics() {
 export function printHelp(topic) {
   const t = String(topic || '').replace(/^-+/, '').toLowerCase();
   const head = [
-    `shear-node ${PRODUCT_VERSION} — validating full node (ADMITv2)`,
+    `${NODE_DISPLAY} — validating full node (ADMITv2)`,
     `Book magic: ${MAGIC_TESTNET}`,
     '',
   ];
   const tail = [
     '',
     'RPC is loopback. Do not bind RPC to the public internet.',
-    'Mainnet shear-v1 is not live and is not yet scheduled. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 and SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET.',
+    'Mainnet shear-v1 is not live. The public countdown is 30th October 2026 at 1400hrs UK time. That countdown is a display date and does not emit. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 and SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET.',
     'Build native addons on this box: cmake randomx, then make -C crypto/native',
   ];
   const body = {

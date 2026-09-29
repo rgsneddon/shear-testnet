@@ -49,16 +49,17 @@ const kHashBonusVoteDeltaShe = 0.00000000001;
 bool pendingReceiveThinPoll(Iterable<ShearTx> txs) => txs.any((t) =>
     (t.kind == 'pool-withdraw' || t.kind == 'receive') && (t.height ?? 0) < 1);
 
-/// Full syncCredits only after confirm/timeout; thin tip/balance while pending.
-/// First unlock collate must still run even if a pending receive already exists.
+/// A tip ahead of the last ingest must walk every seal up to that tip.
+/// A height-less pending row does not hide those seals. Once the book is
+/// caught up, the poll stays on the thin balance read.
 bool shouldFullSyncCredits({
   required bool hasPendingReceive,
   required bool historyBehindTip,
   bool openCollatePending = false,
 }) {
   if (openCollatePending) return true;
-  if (hasPendingReceive) return false;
-  return historyBehindTip;
+  if (historyBehindTip) return true;
+  return hasPendingReceive && false;
 }
 
 String _bytesHex(Uint8List b) =>
@@ -2080,6 +2081,32 @@ class ShearLedger {
       creditReceive(to: tx.to, amount: tx.amount, from: tx.from, id: tx.id);
       return;
     }
+    if (tx.isBlockBundle && (tx.height ?? 0) >= 1 && tx.to.isNotEmpty) {
+      final slot = _txs.indexWhere((t) =>
+          t.isBlockBundle && t.to == tx.to && (t.height ?? 0) == tx.height);
+      if (slot >= 0) {
+        final prev = _txs[slot];
+        _txs[slot] = ShearTx(
+          id: prev.id.isNotEmpty ? prev.id : tx.id,
+          from: prev.from.isNotEmpty ? prev.from : tx.from,
+          to: prev.to,
+          amount: prev.amount > 0 ? prev.amount : tx.amount,
+          kind: prev.kind.isNotEmpty ? prev.kind : tx.kind,
+          height: prev.height,
+          confirmed: prev.confirmed,
+          memo: prev.memo || tx.memo,
+          memoPlain: prev.memoPlain ?? tx.memoPlain,
+          memoCt: prev.memoCt ?? tx.memoCt,
+          rounds: prev.rounds ?? tx.rounds,
+          hashAmount: prev.hashAmount ?? tx.hashAmount,
+          threads: prev.threads ?? tx.threads,
+          pot: prev.pot ?? tx.pot,
+          change: prev.change ?? tx.change,
+          atMs: prev.atMs ?? tx.atMs,
+        );
+        return;
+      }
+    }
     _txs.add(tx);
     if (_receiptKind(tx.kind)) _collapseDuplicateReceipts();
     if (tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) rememberDest(tx.to);
@@ -2444,18 +2471,17 @@ class ShearLedger {
   }
 
   /// Verified confirmed coins only. An external balance with no opened value
-  /// proof is not a coin. A later proof caps the book and never raises it.
+  /// proof is not a coin. Once a proof has opened, Spendable is that confirmed
+  /// sum: a 0 book does not hide it, and a larger pool figure does not raise it.
   double _shownSpendable(String key) {
-    final book = spendable(key);
     final cap = _verifiedConfirmedShe(key);
     final pk = payKey(key);
     if (cap != null) {
       _unverifiedExternal.remove(pk);
       _externalShe.remove(pk);
-      if (book > cap + 1e-12) return cap;
-      return book;
+      return cap;
     }
-    return _bookMinusUnverified(pk, book);
+    return _bookMinusUnverified(pk, spendable(key));
   }
 
   /// Null cap: the pool figure is not spendable. A confirmRound credit that
@@ -2496,6 +2522,16 @@ class ShearLedger {
       return (vp['v'] as num).toDouble() / kUnitsPerShe;
     }
     return fallback;
+  }
+
+  bool _openedNoteAt(String key, int height) {
+    if (height < 1) return false;
+    for (final n in _notes) {
+      if (n['spent'] == true || n['verified'] != true) continue;
+      if (!_noteOnDest(n, key)) continue;
+      if ((n['height'] as num?)?.toInt() == height) return true;
+    }
+    return false;
   }
 
   bool _noteOnDest(Map<String, dynamic> note, String dest) {
@@ -2960,11 +2996,19 @@ class ShearLedger {
         await syncHistory(key, openMemos: openMemos);
       } catch (_) {}
     }
-    // The pool reconstruct is the spendable book. A notes scan of those same
-    // funds must not be added on top of it. Vault dests stay out of the sum.
+    // Opened coins with 6 confirmations are the book. The pre-notes snapshot
+    // must not write a 0 or an inflated figure back over that sum. Without a
+    // proof, the snapshot still caps a higher local pile. Vault dests stay out.
     for (final e in reconstructed.entries) {
       if (_isProgramVaultDest(e.key)) {
         _spendable.remove(e.key);
+        continue;
+      }
+      final cap = _verifiedConfirmedShe(e.key);
+      if (cap != null) {
+        _spendable[e.key] = cap;
+        _unverifiedExternal.remove(e.key);
+        _externalShe.remove(e.key);
         continue;
       }
       final piled = spendable(e.key);
@@ -3505,6 +3549,9 @@ class ShearLedger {
       }
       if (liveIds.contains(t.id)) return false;
       if (t.kind == 'send' && !t.confirmed && (t.height ?? 0) < 1) return false;
+      // An opened note at this height is the seal. An explorer id that does
+      // not match the ShearView id must not erase it after 6 confirmations.
+      if (_openedNoteAt(key, h)) return false;
       return true;
     });
     _collapseDuplicateReceipts();

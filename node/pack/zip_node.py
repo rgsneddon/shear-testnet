@@ -158,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             "pool/src/hash_credit.js",
             "pool/src/withdraw_state.js",
             "contracts/Reserve.json",
+            "reserve/latest.json",
         ):
             src = os.path.join(REPO, rel.replace("/", os.sep))
             if not os.path.isfile(src):
@@ -177,12 +178,12 @@ def main(argv: list[str] | None = None) -> int:
         if flavor == "windows":
             write_mingw_runtime(z)
         readme = (
-            f"SHEAR-NODEv{major} ({flavor})  node pin {pin}\n"
+            f"Shear Sentinel v{major} ({flavor})  node pin {pin}\n"
             "Windows: double-click shear-node.cmd or shear-node.bat. The window stays open.\n"
             "Unix: chmod +x shear-node.sh && ./shear-node.sh\n"
             "It syncs from genesis (or the saved tip) to the live tip. No automatic bootstrap.\n"
             "Pass --solo for local stratum after ibd=false.\n"
-            "Magic shear-testnet-v5. Continuum wallet is 0.58.\n"
+            "Magic shear-testnet-v5. Continuum wallet is 0.60.\n"
             "If node_modules is missing: npm ci once in this folder, then run the launcher.\n"
         )
         z.writestr("README.txt", readme)

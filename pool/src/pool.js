@@ -46,12 +46,11 @@ import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
 import { createPullBook, PULL_COOLDOWN_MS, AUTO_PAYOUT_MIN_NANOS } from './pull_book.js';
 import {
   buildAutoPayoutTx,
-  potCreditAfterFeeNanos,
   redactSsa1,
 } from './auto_payout.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
-import { potSharesFromBatch, hashBonusByMiner, custodyPotShares } from '../../node/src/chain.js';
+import { potSharesFromBatch, hashBonusByMiner } from '../../node/src/chain.js';
 import { sortShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
 import { explorerRecentTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
@@ -115,8 +114,11 @@ export const HASHRATE_STALL_HOLD_MS = 90_000;
 export const HASHRATE_HOLD_FRAC = 0.9;
 /** Rebuild /api/stats JSON on this cadence. The HTTP handler never computes it. */
 export const STATS_REFRESH_MS = 400;
-/** Auto-payout sweep cadence. Never share the stats paint interval. */
-export const PAYOUT_SWEEP_MS = Math.max(5000, Number(process.env.SHEAR_PAYOUT_SWEEP_MS) || 5000);
+/** Auto-payout sweep cadence. Hourly, so the book walk does not stall the pool page. */
+export const PAYOUT_SWEEP_MS = Math.max(
+  60 * 60 * 1000,
+  Number(process.env.SHEAR_PAYOUT_SWEEP_MS) || (60 * 60 * 1000),
+);
 /** One due miner per tick so a slow queueTx cannot monopolize the loop. */
 export const PAYOUT_SWEEP_MAX_ROWS = 1;
 /** Wall-clock budget for one sweep pass. Remaining due rows reschedule. */
@@ -243,12 +245,22 @@ export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
   return sum / n;
 }
 
-/** PROP of (pot - 100 bps) across hasher dests. Pool dest gets only the fee. */
-export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS) {
+/**
+ * Pool operator fee wallet. Not book law. Not used by solo mining.
+ * INSTALLER: replace this with your own ssa1 before you run a pool.
+ * If you leave it, this pool's 1% fee is sealed to the wallet shipped here,
+ * which is not yours. Solo (`npm run solo` / `--solo`) does not read this
+ * constant and does not take the 1%. The solo finder keeps the epoch pot.
+ */
+export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1qaggzjnmsd3lvpqjww4ql62rmjvsu2xykxf09jr83juwq0drn6jyy7qye9j97v3yza7l250el3c99zg0q4vhst8j37n';
+
+/** PROP of (pot - 100 bps) across hasher dests. Fee dest gets only the fee. */
+export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDest = null) {
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const fee = Math.floor(pot * POOL_FEE_BPS / 10000);
   const rest = pot - fee;
-  const feeAddr = poolFeeDest() || payoutDest(poolDest);
+  const named = feeDest && isDestAddress(feeDest) ? feeDest : '';
+  const feeAddr = named || poolFeeDest() || payoutDest(poolDest);
   const by = new Map();
   for (const r of Array.isArray(round) ? round : []) {
     const dest = String(r.miner || r.address || r.dest || '').trim();
@@ -364,18 +376,6 @@ export function serializeMinerRow(m) {
     tag: publicMinerTag(dest || login),
     hashrate: Number(m?.hashrate || 0),
   };
-}
-
-export function publicWorkerTag(login) {
-  const raw = String(login || '').trim();
-  const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
-  return createHash('sha256')
-    .update('shear-worker-tag-v1')
-    .update(parseLogin(raw))
-    .update('|')
-    .update(worker)
-    .digest('hex')
-    .slice(0, 8);
 }
 
 /** Login suffix after dest. Public; not the silent ID. Worker names are not bloomed. */
@@ -1417,9 +1417,39 @@ export function createPool({
     }
     return last;
   }
+  let networkView = null;
   function setP2p(next) { p2pNet = next; }
+  function setNetworkView(view) {
+    if (!view || !Array.isArray(view.txs)) return;
+    const txs = [];
+    for (const m of view.txs) {
+      const id = String(m?.id || '');
+      if (!id) continue;
+      txs.push({
+        id,
+        kind: String(m.kind || 'send'),
+        fee: Number(m.fee) || 0,
+        weight: Number(m.weight) || 0,
+      });
+    }
+    const rounds = [];
+    for (const r of Array.isArray(view.rounds) ? view.rounds : []) {
+      const tag = String(r?.tag || '').toLowerCase();
+      if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
+      const count = Math.floor(Number(r.count) || 0);
+      if (count < 1) continue;
+      rounds.push({ tag, count, source: r.source === 'local' ? 'local' : 'peer' });
+    }
+    const synced = Number(view.synced);
+    networkView = {
+      txs,
+      rounds,
+      synced: Number.isFinite(synced) && synced >= 0 ? synced : null,
+    };
+  }
   function nodesOnline() {
-    const n = p2pNet?.liveOnline?.() ?? p2pNet?.syncedOnline?.();
+    if (networkView && networkView.synced != null) return networkView.synced;
+    const n = p2pNet?.syncedOnline?.() ?? p2pNet?.liveOnline?.();
     const v = Number(n);
     return Number.isFinite(v) && v >= 0 ? v : 1;
   }
@@ -1680,18 +1710,18 @@ export function createPool({
     lag1Shares = provenLag1Shares(tipHdr, lag1Shares);
     const live = snapshotRound();
     const potRows = live.map((s) => ({ miner: s.miner, count: Number(s.proven) || 0 })).filter((s) => s.count > 0);
-    // PROP pot is custodial on the pool dest (auto-paid at π). Hash bonus is
-    // dest-bound on lag-1 shareBatch and seals in the next blockfound.
     const wantPot = wantLivePot();
-    const potShares = isDestAddress(poolPay)
-      ? custodyPotShares(poolPay, wantPot)
-      : (lag1Shares.length
-        ? potSharesFromBatch(lag1Shares, poolPay, wantPot)
-        : splitPot(
-          potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
-          poolPay,
-          wantPot,
-        ));
+    // Pool path only. 99% PROP to this round's hashers, 1% to the fee wallet.
+    // Solo never reaches this function.
+    const feeTo = THIS_POOL_DIRECT_FEE_DEST;
+    const potShares = lag1Shares.length
+      ? potSharesFromBatch(lag1Shares, feeTo, wantPot)
+      : splitPot(
+        potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
+        feeTo,
+        wantPot,
+        feeTo,
+      );
     // she1 login may have no dest yet (dest arrives as owned ssa1). The header
     // still issues; shareBatch credit stays hasher dests only. The finder
     // address is the hasher, never the pool fee note.
@@ -1702,7 +1732,7 @@ export function createPool({
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     const chainLen = (store.blocks || []).length;
-    // Hash bonus seals to hasher dests. PROP pot stays on poolPay until π.
+    // Hash bonus seals to hasher dests. Pot notes seal to the round, not the pool.
     const { job, tpl } = store.template({
       miner: payout,
       samples,
@@ -2096,13 +2126,12 @@ export function createPool({
               })),
             {
               height: sealedH,
-              nanos: potCreditAfterFeeNanos(wantLivePot()),
+              nanos: 0,
               hashByDest: pullBookHashLeg(hashPays),
               hashUnit: unit,
               finderTag: publicMinerTag(session?.login || session?.workerKey),
             },
           );
-          setImmediate(runAutoPayoutSweep);
         } catch {
           stats.lastFoundAt = Date.now();
           stats.findAt = Array.isArray(stats.findAt) ? stats.findAt : [];
@@ -2405,13 +2434,11 @@ export function createPool({
       ...consensusLaw(),
       policy: typeof store.getpolicy === 'function' ? store.getpolicy() : undefined,
       frozen: typeof store.getpolicy === 'function' ? !!store.getpolicy().frozen : false,
-      confirmedNeed: typeof store.getpolicy === 'function'
-        ? (store.getpolicy().operational?.pool_merchant || 30)
-        : 30,
+      confirmedNeed: (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30),
       stratum: `:${stratumPort}`,
       stratumBind: stratumBindHost(stratumBind),
       poolFeeBps: POOL_FEE_BPS,
-      feeDest: poolFeeDest(),
+      feeDest: THIS_POOL_DIRECT_FEE_DEST,
       lostWorkHashes: Number(stats.lostWorkHashes) || 0,
       lostWorkEvents: Number(stats.lostWorkEvents) || 0,
       hashBusy: Number(stats.hashBusy) || 0,
@@ -2446,7 +2473,10 @@ export function createPool({
       hashrate: workers.reduce((a, m) => a + (Number(m.hashrate) || 0), 0),
       networkRoundHashes: networkRoundHashesOf(
         miners,
-        typeof store.openRoundRows === 'function' ? store.openRoundRows() : [],
+        [
+          ...(typeof store.openRoundRows === 'function' ? store.openRoundRows() : []),
+          ...(Array.isArray(networkView?.rounds) ? networkView.rounds : []),
+        ],
       ),
       blocks: stats.blocks,
       blocksSession: stats.blocks,
@@ -2481,6 +2511,12 @@ export function createPool({
       nodesOnline: nodesOnline(),
       uptimeMs: Date.now() - stats.started,
       workers,
+      gossipWorkers: (networkView?.rounds || []).map((r) => ({
+        miner: r.tag,
+        worker: r.tag,
+        connected: true,
+        roundHashes: r.count,
+      })),
       recentTxs: explorerRecentTxs(store, 10),
     };
   }
@@ -2512,7 +2548,7 @@ export function createPool({
     const rows = minerByTag(tag, now);
     const tipH = Number(store.tip?.()?.height || 0);
     const policy = typeof store.getpolicy === 'function' ? store.getpolicy() : {};
-    const need = policy.operational?.pool_merchant || 30;
+    const need = (policy?.operational?.pool_merchant || 30);
     const pull = pullBook.view(tag, { tipHeight: tipH, need });
     const held = pullBook.ledger(tag);
     const known = typeof pullBook.hasTag === 'function' ? pullBook.hasTag(tag) : false;
@@ -2656,9 +2692,7 @@ export function createPool({
     budgetMs = PAYOUT_SWEEP_BUDGET_MS,
   } = {}) {
     const tipH = Number(store.tip?.()?.height || 0);
-    const need = typeof store.getpolicy === 'function'
-      ? (store.getpolicy().operational?.pool_merchant || 30)
-      : 30;
+    const need = (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30);
     const from = payoutDest(miner) || poolFeeDest();
     if (!isDestAddress(from) || containsShe1(from)) return [];
     const spendKey = refreshOperatorSpendKey();
@@ -2873,7 +2907,7 @@ export function createPool({
         freeze_banner: policy.freeze_banner || '',
         h_ratio: Number.isFinite(Number(policy.h_ratio)) ? Number(policy.h_ratio) : 1,
         side_lead: Number(policy.side_lead) || 0,
-        confirmedNeed: policy.operational?.pool_merchant || 30,
+        confirmedNeed: (policy?.operational?.pool_merchant || 30),
       };
     },
     miners() {
@@ -3023,9 +3057,7 @@ export function createPool({
       res.setHeader('content-type', 'application/json');
       res.setHeader('Cache-Control', 'no-store');
       const tipH = Number(store.tip?.()?.height || 0);
-      const need = typeof store.getpolicy === 'function'
-        ? (store.getpolicy().operational?.pool_merchant || 30)
-        : 30;
+      const need = (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30);
       const pull = pullBook.view(tag, { tipHeight: tipH, need });
       const held = typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : [];
       const known = typeof pullBook.hasTag === 'function' ? pullBook.hasTag(tag) : false;
@@ -3077,6 +3109,8 @@ export function createPool({
           miners,
           lastJob,
           nodesOnline: nodesOnline(),
+          networkPending: networkView ? networkView.txs : [],
+          networkRounds: networkView ? networkView.rounds : [],
           poolDest: miner,
           pullBook,
           queueSend,
@@ -3084,9 +3118,7 @@ export function createPool({
           completeMinerPull: (login, dest, nanos) => {
             const t = publicMinerTag(login);
             const tipH = Number(store.tip?.()?.height || 0);
-            const confNeed = typeof store.getpolicy === 'function'
-              ? (store.getpolicy().operational?.pool_merchant || 30)
-              : 30;
+            const confNeed = (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30);
             const view = pullBook.view(t, { tipHeight: tipH, need: confNeed });
             if (!(view.confirmedNanos > 0)) return { ok: false, reason: 'none_confirmed' };
             if (Number(nanos) !== view.confirmedNanos) return { ok: false, reason: 'nanos' };
@@ -3159,6 +3191,11 @@ export function createPool({
       stratum.listen(stratumPort, stratumBindHost(stratumBind), () => {
         httpServer.listen(httpPort, '127.0.0.1', () => {
           if (!restampTimer) restampTimer = setInterval(maybeRestampJob, JOB_RESTAMP_MS);
+          console.error(JSON.stringify({
+            event: 'pool_fee_dest',
+            advisory: 'Change THIS_POOL_DIRECT_FEE_DEST in pool/src/pool.js to your own ssa1 before you run this pool. The shipped address receives the 1% fee. Solo mining does not charge it.',
+            feeDestTail: String(THIS_POOL_DIRECT_FEE_DEST).slice(-4),
+          }));
           resolve({
             stratumPort,
             httpPort,
@@ -3228,6 +3265,7 @@ export function createPool({
     runAutoPayoutSweep,
     sweepAutoPayouts,
     setP2p,
+    setNetworkView,
     restampJob: restampLiveHeader,
     sweepIdle: sweepIdleMiners,
     get pendingPayout() { return pendingPayout; },

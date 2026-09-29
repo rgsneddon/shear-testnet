@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.59 (current)
+## 0.60 (current)
+
+The node returns every positive note sealed to the open dest, once, up to the tip. A note with 6 confirmations is spendable. A younger note stays pending. A mismatched explorer coinbase id does not drop an opened note. A note sealed to another dest stays out. Spendable is that opened confirmed sum when the reported balance is 0 and when the reported balance is larger. Public tag **0.60** (store `0.60.0+85`). Tag **0.59** stays. Node tag is `v10` (Shear Sentinel v10). macOS `.dmg` stays the MacBook handoff.
+
+## 0.59
 
 One incoming payment is one Continuum pending row. A pool-withdraw echo and the chain receive of the same coins fold together. The row stays through five confirmations and leaves on the sixth. Two different chain receives of the same amount stay two rows. Hash-bonus block rows stay one each. Spendable is unchanged from 0.58: a sealed value proof that opened, and 6 confirmations. Public tag **0.59** (store `0.59.0+84`). Tag **0.58** stays. Node tag `v9` stays. macOS `.dmg` stays the MacBook handoff.
 

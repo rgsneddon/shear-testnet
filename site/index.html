@@ -58,7 +58,7 @@
   <script src="shared/shear-chrome.js"></script>
 
 <div class="banner" role="status">
-    <strong>Testnet only.</strong> Mainnet is not live · <span id="mainnet-countdown" data-until="2026-10-01T00:00:00+01:00">countdown to 1st October 2026</span>
+    <strong>Testnet only.</strong> Mainnet is not live · <span id="mainnet-countdown" data-until="2026-10-30T14:00:00+00:00">countdown to 30th October 2026 at 1400hrs UK time</span>
     <span class="banner-extra"><span class="sep">·</span> Windows miner may trigger SmartScreen (unsigned build)</span>
   </div>
 
@@ -67,7 +67,7 @@
       <div class="scroll-hero-stage">
         <div class="scroll-hero-visuals" id="scroll-hero-visuals" aria-hidden="true">
           <div class="cui-panel cui-a">
-            <div class="cui-top"><span class="cui-app">Continuum</span><span class="cui-ver">0.59</span></div>
+            <div class="cui-top"><span class="cui-app">Continuum</span><span class="cui-ver">0.60</span></div>
             <div class="cui-label">Spendable</div>
             <div class="cui-bal">63.649 <span>SHE</span></div>
             <div class="cui-row"><span>In Reserve</span><span>35.000</span></div>
@@ -98,7 +98,7 @@
             <div class="terminal-body">
               <div><span class="prompt">$</span> <span class="dim">magic</span> <span class="hi" data-shear-network>shear-testnet-v5</span></div>
               <div><span class="key">algo</span> <span class="val">ShearHash-v3</span></div>
-              <div><span class="key">wallet</span> <span class="val">Continuum 0.59</span></div>
+              <div><span class="key">wallet</span> <span class="val">Continuum 0.60</span></div>
               <div><span class="key">miner</span> <span class="val">ShearK 2.6</span></div>
               <div><span class="key">stratum</span> <span class="hi">:1111</span></div>
             </div>
@@ -191,7 +191,7 @@
         <article class="card span-4">
           <div class="card-kicker">Hashpower</div>
           <h3>Mine</h3>
-          <p>Pool (stratum + Copy dest) for most miners. Solo for operators who run a full node. Mining is ShearK — separate from the wallet.</p>
+          <p>Pool (stratum + Copy dest) for most miners. Solo for operators who run a full node. Mining is ShearK — separate from the wallet. Each sealed pay for your dest is read back from the node when Continuum is open.</p>
           <a class="learn" href="mine.html">Pool vs solo →</a>
         </article>
       </div>
@@ -203,11 +203,11 @@
       <div class="faq" role="list">
         <div class="faq-item open" role="listitem">
           <button class="faq-q" type="button" aria-expanded="true">Testnet vs mainnet?<span class="chev">▾</span></button>
-          <div class="faq-a">You are on <strong data-shear-network>shear-testnet-v5</strong>. Mainnet is not live and the public countdown is 1st October 2026. Treat balances as disposable.</div>
+          <div class="faq-a">You are on <strong data-shear-network>shear-testnet-v5</strong>. Mainnet is not live and the public countdown is 30th October 2026 at 1400hrs UK time. Treat balances as disposable.</div>
         </div>
         <div class="faq-item" role="listitem">
           <button class="faq-q" type="button" aria-expanded="false">Is Continuum instant?<span class="chev">▾</span></button>
-          <div class="faq-a">No. Hashbonus typically needs ~6 confirmations. Pot / π settlement is on the order of ~30. Wait for Continuity before spending.</div>
+          <div class="faq-a">No. Spendable is coins whose value proof opened and that have 6 confirmations. A younger seal stays pending in Shearview. A pool balance, including 0, does not paint Spendable. Pot / π settlement is on the order of ~30. Wait for Continuity before spending.</div>
         </div>
         <div class="faq-item" role="listitem">
           <button class="faq-q" type="button" aria-expanded="false">Windows SmartScreen warning?<span class="chev">▾</span></button>
@@ -219,7 +219,7 @@
         </div>
         <div class="faq-item" role="listitem">
           <button class="faq-q" type="button" aria-expanded="false">Pool or solo?<span class="chev">▾</span></button>
-          <div class="faq-a">Most people use the pool (stratum at <code>pool.shear.digital:1111</code>). Solo needs a synced node and is documented under Mine → docs.</div>
+          <div class="faq-a">Most people use the pool (stratum at <code>pool.shear.digital:1111</code>) with ShearK and Copy dest. The pool seals the pay on the book. Continuum, on Connect Bare or beside a local node, asks a node for every note sealed to your dest up through the tip, including seals from while the wallet was closed. Solo needs a synced node (ibd=false) and is documented under Mine → docs. Explorer lists sealed blocks with no dest and no amount. The mempool lattice shows pending sends and the 6 confirming rings. Downloads: Continuum 0.60 on the wallet hub, Shear Sentinel v10 on the node page.</div>
         </div>
         <div class="faq-item" role="listitem">
           <button class="faq-q" type="button" aria-expanded="false">Can I share my shear1 address?<span class="chev">▾</span></button>
@@ -231,7 +231,7 @@
     <section class="wrap section">
       <div class="cta-block">
         <h2>Start on testnet</h2>
-        <p>Wallet first. Mining second. Docs when you need depth.</p>
+        <p>Wallet first (Continuum 0.60). Node when you want the book on this machine (Shear Sentinel v10). Mining second, with ShearK 2.6. Explorer, mempool, and the pool are the public views. Docs when you need the how-to.</p>
         <div class="cta-row" style="justify-content:center">
           <a class="btn btn-primary" href="get-started.html">Get wallet</a>
           <a class="btn btn-ghost" href="https://pool.shear.digital" rel="noopener">Open pool</a>
@@ -243,18 +243,18 @@
 
   <footer class="footer">
     <div class="wrap footer-inner">
-      <div data-shear-foot data-wallet-fallback="0.59" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
+      <div data-shear-foot data-wallet-fallback="0.60" data-network-fallback="shear-testnet-v5">Shear · … · Continuum … · …</div>
       <nav>
         <a href="network.html">Network</a>
         <a href="governance.html">Governance</a>
         <a href="mine.html">Mine</a>
         <a href="docs/index.html">Docs</a>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.59" rel="noopener">Wallet 0.59</a>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.59/shear-wallet-0.59-windows.zip" rel="noopener">shear-wallet-0.59-windows.zip</a>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.59/shear-wallet-0.59-android.apk" rel="noopener">shear-wallet-0.59-android.apk</a>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.59/shear-wallet-0.59-linux.zip" rel="noopener">shear-wallet-0.59-linux.zip</a>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.59/shear-wallet-0.59-archlinux.zip" rel="noopener">shear-wallet-0.59-archlinux.zip</a>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.59/shear-wallet-0.59-fedora.zip" rel="noopener">shear-wallet-0.59-fedora.zip</a>
+        <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.60" rel="noopener">Wallet 0.60</a>
+        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.60/shear-wallet-0.60-windows.zip" rel="noopener">shear-wallet-0.60-windows.zip</a>
+        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.60/shear-wallet-0.60-android.apk" rel="noopener">shear-wallet-0.60-android.apk</a>
+        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.60/shear-wallet-0.60-linux.zip" rel="noopener">shear-wallet-0.60-linux.zip</a>
+        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.60/shear-wallet-0.60-archlinux.zip" rel="noopener">shear-wallet-0.60-archlinux.zip</a>
+        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.60/shear-wallet-0.60-fedora.zip" rel="noopener">shear-wallet-0.60-fedora.zip</a>
         <a href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" rel="noopener">Miner 2.6</a>
         <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">GitHub</a>
       </nav>
@@ -272,14 +272,14 @@
       function tick() {
         var left = until - Date.now();
         if (!(left > 0)) {
-          el.textContent = '1st October 2026';
+          el.textContent = '30th October 2026 at 1400hrs UK time';
           return;
         }
         var sec = Math.floor(left / 1000);
         var days = Math.floor(sec / 86400);
         var hours = Math.floor((sec % 86400) / 3600);
         var mins = Math.floor((sec % 3600) / 60);
-        el.textContent = 'countdown to 1st October 2026 · ' + days + 'd ' + pad(hours) + 'h ' + pad(mins) + 'm ' + pad(sec % 60) + 's';
+        el.textContent = 'countdown to 30th October 2026 at 1400hrs UK time · ' + days + 'd ' + pad(hours) + 'h ' + pad(mins) + 'm ' + pad(sec % 60) + 's';
       }
       tick();
       setInterval(tick, 1000);

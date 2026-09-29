@@ -52,7 +52,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /shear1/);
     assert.match(main, /never share/i);
     assert.match(main, /ADMITv2/);
-    assert.match(main, /Continuum 0\.59/);
+    assert.match(main, /Continuum 0\.60/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.match(main, /https:\/\/shear\.digital\/docs\//);
     assert.match(main, /pool\.shear\.digital:1111/);
@@ -89,7 +89,9 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(paper, /hasher dest that produced proven work/);
 
     const readme = read('README.md');
-    assert.match(readme, /Wallet pin: \*\*0\.58\*\*/);
+    assert.match(readme, /Wallet pin: \*\*0\.60\*\*/);
+    assert.match(readme, /Shear Sentinel v10/);
+    assert.match(readme, /releases\/tag\/v10/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.55\*\*/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.41\*\*/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.40\*\*/);
@@ -97,21 +99,22 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.38\*\*/);
     assert.doesNotMatch(readme, /Wallet \*\*0\.38\*\* syncs/);
     const walletReadme = read('wallet/README.md');
-    assert.match(walletReadme, /releases\/tag\/0\.59/);
+    assert.match(walletReadme, /releases\/tag\/0\.60/);
     assert.doesNotMatch(walletReadme, /releases\/tag\/0\.58/);
     assert.doesNotMatch(walletReadme, /releases\/tag\/0\.55(?!\.)/);
-    assert.match(walletReadme, /shear-wallet-0\.59-windows\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.59-linux\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.59-archlinux\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.59-fedora\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.59-android\.apk/);
+    assert.match(walletReadme, /shear-wallet-0\.60-windows\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.60-linux\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.60-archlinux\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.60-fedora\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.60-android\.apk/);
     assert.doesNotMatch(walletReadme, /shear-wallet-0\.58-/);
     assert.doesNotMatch(walletReadme, /shear-wallet-0\.55-/);
     assert.doesNotMatch(walletReadme, /shear-wallet-0\.40-/);
     assert.doesNotMatch(walletReadme, /releases\/tag\/0\.39/);
     assert.match(readme, /Copy dest/);
     assert.match(readme, /own hash bonus on the next sealed block/);
-    assert.match(readme, /shear-testnet-v4/);
+    assert.match(readme, /shear-testnet-v5/);
+    assert.doesNotMatch(readme, /shear-testnet-v4/);
     assert.doesNotMatch(readme, /Chain: `shear-testnet-v2`/);
     assert.match(readme, /p2p\.shear\.digital:30303/);
     assert.match(readme, /r2r\.shear\.digital:30303/);
@@ -139,7 +142,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
     assert.match(main, /ShearK 2\.6/);
-    assert.match(main, /Continuum 0\.59/);
+    assert.match(main, /Continuum 0\.60/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.doesNotMatch(main, /Continuum 0\.53/);
     assert.doesNotMatch(main, /Continuum 0\.52/);
@@ -155,7 +158,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(main, /Continuum GUI <strong>0\.40<\/strong>/);
     assert.doesNotMatch(main, /Continuum GUI 0\.40/);
     const help = read('node/src/help.js');
-    assert.match(help, /Continuum 0\.58/);
+    assert.match(help, /Continuum 0\.60/);
     assert.doesNotMatch(help, /Continuum 0\.48/);
     assert.doesNotMatch(help, /Continuum 0\.40/);
     assert.doesNotMatch(main, /shear-wallet-0\.38-macos\.dmg/);
@@ -201,14 +204,15 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(readme, /same shell.*npm run solo|npm run solo/);
     assert.match(nodePage, /Darwin/);
     assert.doesNotMatch(pool, /shear-testnet-v3/);
-    assert.match(main, /countdown to 1st October 2026/);
-    assert.match(main, /2026-10-01T00:00:00\+01:00/);
+    assert.match(main, /countdown to 30th October 2026 at 1400hrs UK time/);
+    assert.match(main, /2026-10-30T14:00:00\+00:00/);
     assert.doesNotMatch(main, /launch date not decided/);
     assert.doesNotMatch(main, /2026-09-18T21:00:00/);
     assert.doesNotMatch(docs, /2026-09-18T21:00:00/);
     assert.doesNotMatch(read('site/admin/index.html'), /2026-09-18T21:00:00/);
     assert.doesNotMatch(readme, /2026-09-18T21:00:00/);
-    assert.match(readme, /not yet scheduled/);
+    assert.match(readme, /30th October 2026 at 1400hrs UK time/);
+    assert.match(readme, /does not emit/);
   });
 
   it('clone and operator handoff stay on merged main, not feat/admit-v2', () => {
@@ -228,16 +232,16 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /Pin \*\*0\.41\*\*/);
   });
 
-  it('MacBook handoff is Apple-only SHEAR-NODEv9 + Continuum 0.58; old underscore files are gone', () => {
+  it('MacBook handoff is Apple-only Shear Sentinel v10 + Continuum 0.60; old underscore files are gone', () => {
     assert.equal(fs.existsSync(path.join(root, 'MACBOOK_HANDOFF.md')), false);
     assert.equal(fs.existsSync(path.join(root, 'WINDOWS_HANDOFF.md')), false);
     const md = read('NODE-MACBOOK-HANDOFF.md');
     assert.match(md, /https:\/\/github\.com\/rgsneddon\/shear-testnet/);
-    assert.match(md, /shear-node-v9-macos\.zip/);
-    assert.match(md, /shear-wallet-0\.58-macos\.dmg/);
-    assert.match(md, /tag `v9`/);
+    assert.match(md, /shear-node-v10-macos\.zip/);
+    assert.match(md, /shear-wallet-0\.60-macos\.dmg/);
+    assert.match(md, /tag `v10`/);
     assert.match(md, /Do not move tag `v7`/);
-    assert.match(md, /0\.58/);
+    assert.match(md, /0\.60/);
     assert.match(md, /pack_macos\.sh/);
     assert.match(md, /blob\/main\/NODE-MACBOOK-HANDOFF\.md/);
     assert.match(md, /wallet_api\.js/);

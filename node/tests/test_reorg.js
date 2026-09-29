@@ -118,7 +118,7 @@ describe('most-work adopt', () => {
     assert.equal(tips.some((t) => t.status === 'active'), true);
     assert.equal(tips.some((t) => t.status === 'valid-fork'), true);
     assert.equal(local.getpolicy().consensus_min, 6);
-    assert.equal(local.getpolicy().bands.pool_merchant, 30);
+    assert.equal(local.getpolicy().bands.pool_merchant, 12);
     assert.equal(local.mempool.some((t) => t.id === 'bounce-1'), true, 'bounce-1 must remain in mempool after reorg');
   });
 

@@ -52,7 +52,7 @@ describe('node RPC', () => {
       const pol = await get(`http://127.0.0.1:${bound.port}/policy`);
       assert.equal(pol.json.consensus_min, 6);
       assert.equal(pol.json.merchant_default, 12);
-      assert.equal(pol.json.bands.pool_merchant, 30);
+      assert.equal(pol.json.bands.pool_merchant, 12);
       assert.equal(pol.json.frozen, false);
       const tips = await get(`http://127.0.0.1:${bound.port}/chaintips`);
       assert.equal(tips.json.tips.some((t) => t.status === 'active'), true);

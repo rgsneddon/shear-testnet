@@ -294,7 +294,7 @@ describe('HTTP stats cannot stall', () => {
     assert.equal(fp.ok, true);
     assert.equal(fp.admit, 'ADMITv2');
     assert.equal(fp.hashTxLive, 1);
-    assert.equal(fp.magic, 'shear-testnet-v4');
+    assert.equal(fp.magic, 'shear-testnet-v5');
     assert.ok(String(fp.fingerprint || '').length > 8);
     const shePage = await fetch(`http://127.0.0.1:${httpPort}/miner/she1ccbe79d6`);
     assert.equal(shePage.status, 404);
@@ -312,7 +312,11 @@ describe('HTTP stats cannot stall', () => {
     assert.doesNotMatch(paint, /sweepAutoPayouts/);
     assert.doesNotMatch(paint, /queueSend/);
     assert.match(src, /PAYOUT_SWEEP_MS/);
-    assert.ok(PAYOUT_SWEEP_MS >= 5000);
+    assert.ok(PAYOUT_SWEEP_MS >= 60 * 60 * 1000);
+    const creditAt = src.indexOf('pullBook.creditRound(');
+    const creditEnd = src.indexOf('} catch {', creditAt);
+    assert.ok(creditAt >= 0 && creditEnd > creditAt);
+    assert.doesNotMatch(src.slice(creditAt, creditEnd), /runAutoPayoutSweep/);
     assert.match(src, /runAutoPayoutSweep/);
     assert.match(src, /setImmediate\(flushDirtyJob\)/);
     assert.match(src, /PAYOUT_SWEEP_MAX_ROWS/);
@@ -321,6 +325,7 @@ describe('HTTP stats cannot stall', () => {
     const sweep = src.slice(sweepAt, sweepAt + 1600);
     assert.match(sweep, /setImmediate\(/);
     assert.match(src, /PAYOUT_SWEEP_BUDGET_MS/);
+    assert.match(src, /setInterval\(runAutoPayoutSweep/);
     const bodyAt = src.indexOf('async function sweepAutoPayouts');
     const bodyEnd = src.indexOf('function queueSend', bodyAt);
     assert.ok(bodyAt >= 0 && bodyEnd > bodyAt);
@@ -537,7 +542,7 @@ describe('pool dashboard + stratum', () => {
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     assert.equal(stats.nodesOnline, 1);
     assert.equal(stats.magic, MAGIC_TESTNET);
-    assert.equal(stats.magic, 'shear-testnet-v4');
+    assert.equal(stats.magic, 'shear-testnet-v5');
     assert.equal(stats.network, MAGIC_TESTNET);
     assert.equal(stats.personalisation, 'ShearHash-v3');
     assert.equal(stats.rxMode, 'light');
@@ -557,9 +562,9 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.destHrp, 'ssa');
     assert.equal(stats.spendableConfirmations, 6);
     assert.equal(stats.minConfirmsPolicy, 12);
-    assert.equal(stats.confirmedNeed, 30);
+    assert.equal(stats.confirmedNeed, 12);
     assert.equal(stats.policy.consensus_min, 6);
-    assert.equal(stats.policy.bands.pool_merchant, 30);
+    assert.equal(stats.policy.bands.pool_merchant, 12);
     assert.equal(stats.frozen, false);
     assert.equal(stats.policy.frozen, false);
     assert.equal(stats.policy.freeze_reason, '');
@@ -807,7 +812,7 @@ describe('public miner listing', () => {
     assert.ok(explainerAt >= 0 && pullAt > explainerAt && statsAt > pullAt && workersAt > statsAt);
     assert.match(miner, /π SHE/);
     assert.match(miner, /hash bonus is fee-free/);
-    assert.match(miner, /30 confirmations/);
+    assert.match(miner, /12 confirmations/);
     assert.match(miner, /id="payout-note"/);
     assert.match(miner, /id="accounting"/);
     assert.match(miner, />HEIGHT</);

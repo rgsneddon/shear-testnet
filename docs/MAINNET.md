@@ -9,7 +9,7 @@ This tree is prepped for `shear-v1`. **It does not emit yet.**
 - Fingerprint must include `POT_SCHED=lin-epoch:…:epochDays=400` and `EPOCH_DAYS=400`. Do not emit under a perpetual 1 SHE pot.
 - Wallet CLI: `shear --network shear-v1` does the same.
 - The operator is **not** cutting over. Do not set `SHEAR_MAINNET_EMIT=1`.
-- The 1 October 2026 countdown is a display date. It is not genesis and it does not emit.
+- The public countdown is 30th October 2026 at 1400hrs UK time. It is a display date. It is not genesis and it does not emit.
 
 ## User funds (Continuum 0.55.2)
 
