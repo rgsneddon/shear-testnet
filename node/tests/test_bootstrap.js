@@ -136,7 +136,7 @@ describe('latest-only prune bootstrap', () => {
     assert.doesNotMatch(html, /No node rewrite/);
     assert.equal(/Overwritten at every prune/i.test(html), false);
     assert.equal(html.includes('FAST_SYNC=1'), false);
-    assert.match(html, /shear-testnet-v6/);
+    assert.match(html, /shear-testnet-v7/);
     assert.match(html, /never hooks a bootstrap/i);
   });
 

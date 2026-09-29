@@ -43,6 +43,8 @@ import {
   MAGIC_TESTNET_V2,
   MAGIC_TESTNET_V3,
   MAGIC_TESTNET_V4,
+  MAGIC_TESTNET_V6,
+  MAGIC_TESTNET_V7,
   MAGIC_MAINNET,
   HASH_FN,
   HASH_TX_LIVE,
@@ -65,35 +67,39 @@ describe('ASERT 90s block retarget', () => {
     assert.equal(nextBits(packBits(21), 90_000), packBits(21));
   });
 
-  it('raises packed bits when blocks arrive faster than 90s, without a full integer jump', () => {
+  it('raises packed bits when blocks arrive faster than 90s, tau-damped (not bang-bang +1)', () => {
     const next = unpackBits(nextBits(packBits(21), 45_000));
     assert.ok(next > 21, `expected harden from 21, got ${next}`);
-    assert.ok(next <= 23, `45s harden is +1 log2, got ${next}`);
+    // (T-seen)/tau at 45s ≈ 0.001736 — far below a full log2 step
+    assert.ok(next < 21.01, `45s must be tau-damped, got ${next}`);
     const from16 = unpackBits(nextBits(packBits(16), 59_000));
     assert.ok(from16 > 16, `59s must climb off 16, got ${from16}`);
-    assert.ok(from16 < 17, `59s must not double work, got ${from16}`);
+    assert.ok(from16 < 16.01, `59s must not double work, got ${from16}`);
     assert.equal(nextBits(packBits(16), 90_000), packBits(16));
     const stuck = unpackBits(nextBits(packBits(16), 82_000));
     assert.ok(stuck > 16, `82s must not sit in a dead band, got ${stuck}`);
   });
 
-  it('4 GH/s at 12 bits is ~1µs; log2 step catches 90s in tens of blocks, not hours', () => {
+  it('tau damping: single fast block moves <<1 bit; farm lid still caps; catch-up is not bang-bang', () => {
     const farmHs = 4e9;
-    const t12 = (2 ** 12) / farmHs;
+    const startBits = 12;
+    const t12 = (2 ** startBits) / farmHs;
     assert.ok(t12 < 2e-6 && t12 > 5e-7, `12-bit @ 4GH/s ${t12}s`);
-    let packed = packBits(12);
-    let t = (2 ** 12) / farmHs;
-    let n = 0;
-    while (t < 80 && n < 40) {
+    const one = unpackBits(nextBits(packBits(startBits), 1));
+    assert.ok(one > startBits, `1ms must harden, got ${one}`);
+    assert.ok(one - startBits < 0.01, `1ms must be tau-damped not +2, got ${one}`);
+    // After many fast blocks bits climb; still far from bang-bang tens-of-blocks catch-up
+    let packed = packBits(startBits);
+    for (let n = 0; n < 40; n += 1) {
+      const t = (2 ** unpackBits(packed)) / farmHs;
       packed = nextBits(packed, Math.max(1, t * 1000));
-      t = (2 ** unpackBits(packed)) / farmHs;
-      n += 1;
     }
-    assert.ok(n <= 20, `4GH/s from genesis 12 reached ~90s in ${n} blocks (t=${t}s)`);
-    assert.ok(t >= 80 && t <= 200, `settled interval ${t}s`);
+    const after40 = unpackBits(packed);
+    assert.ok(after40 < startBits + 1, `40 fast blocks stay << bang-bang, got ${after40}`);
+    assert.ok(after40 > startBits, `40 fast blocks must climb, got ${after40}`);
   });
 
-  it('a 3s farm hardens +2 bits per block, not 0.003; HUD bits stay ≤ 256', () => {
+  it('tau-damped step keeps farm lid constants; stall at 8τ eases by ease max; HUD ≤ 256', () => {
     assert.equal(ASERT_HARDEN_MAX, 2);
     assert.equal(ASERT_EASE_MAX, 2);
     assert.equal(ASERT_EASE_MAX_TESTNET, 2);
@@ -101,10 +107,13 @@ describe('ASERT 90s block retarget', () => {
     assert.equal(asertEaseMax(MAGIC_TESTNET), 2);
     assert.equal(asertEaseMax(MAGIC_MAINNET), 1);
     const jumped = unpackBits(nextBits(packBits(21), 3_500));
-    assert.ok(jumped >= 23, `3.5s must +2, got ${jumped}`);
-    assert.ok(jumped <= 23.01, `3.5s must cap at +2, got ${jumped}`);
+    assert.ok(jumped > 21, `3.5s must harden, got ${jumped}`);
+    assert.ok(jumped < 21.01, `3.5s must be tau-damped not +2, got ${jumped}`);
     const oneMs = unpackBits(nextBits(packBits(21), 1));
-    assert.ok(oneMs <= 23.01, `1ms must still cap at +2, got ${oneMs}`);
+    assert.ok(oneMs < 21.01, `1ms must be tau-damped, got ${oneMs}`);
+    const stall = unpackBits(nextBits(packBits(21), ASERT_HALFLIFE_MS * 8));
+    assert.ok(stall <= 19.01, `8τ stall must ease by farm lid, got ${stall}`);
+    assert.ok(stall >= 18.99, `8τ stall ease cap −2, got ${stall}`);
     const packedPaint = 731501;
     assert.ok(packedPaint > 256);
     assert.ok(displayBits(packedPaint) < 12);
@@ -112,7 +121,7 @@ describe('ASERT 90s block retarget', () => {
     assert.ok(displayBits(GENESIS_BITS_PACKED) <= MAX_BITS);
     assert.equal(displayBits(GENESIS_BITS_PACKED), GENESIS_BITS);
     const fp = consensusFingerprint();
-    assert.match(fp, /ASERT_STEP=log2/);
+    assert.match(fp, /ASERT_STEP=\(T-seen\)\/tau/);
     assert.match(fp, /ASERT_HARDEN=2/);
     assert.match(fp, /ASERT_EASE=2/);
     assert.match(mainnetFingerprint(), /ASERT_EASE=1/);
@@ -139,7 +148,7 @@ describe('ASERT 90s block retarget', () => {
     assert.ok(mean > 85_000 && mean < 95_000, `mean last-200 ${mean}`);
   });
 
-  it('farm on then off: testnet ease=2 long EWMA recenters near 90s; mainnet ease=1 walks slow', () => {
+  it('farm on then off: tau-damped ASERT recenters near 90s; ease lid differs testnet vs mainnet on stall', () => {
     const target = TARGET_BLOCK_INTERVAL_MS;
     const baseHs = (2 ** GENESIS_BITS) / (target / 1000);
     function run(magic) {
@@ -160,7 +169,7 @@ describe('ASERT 90s block retarget', () => {
       }
       const afterOsc = intervals.length;
       pushHs(baseHs, 350);
-      return { intervals, afterOsc };
+      return { intervals, afterOsc, packed };
     }
     function ewma(dts) {
       const half = 288;
@@ -176,10 +185,15 @@ describe('ASERT 90s block retarget', () => {
     const mn = run(MAGIC_MAINNET);
     const tnSettle = ewma(tn.intervals.slice(-288));
     const tnOsc = ewma(tn.intervals.slice(40, tn.afterOsc));
-    const mnOsc = ewma(mn.intervals.slice(40, mn.afterOsc));
     assert.ok(tnSettle > 80_000 && tnSettle < 105_000, `testnet long EWMA ${tnSettle}`);
     assert.ok(tnOsc < 400_000, `testnet oscillation EWMA ${tnOsc}`);
-    assert.ok(mnOsc > tnOsc, `mainnet leftover slow bias ${mnOsc} vs testnet ${tnOsc}`);
+    // 8τ stall hits the farm lid: testnet ease −2, mainnet ease −1
+    const stall = ASERT_HALFLIFE_MS * 8;
+    const tnStall = unpackBits(nextBits(packBits(21), stall, MAGIC_TESTNET));
+    const mnStall = unpackBits(nextBits(packBits(21), stall, MAGIC_MAINNET));
+    assert.ok(Math.abs(tnStall - 19) < 0.02, `testnet 8τ ease −2, got ${tnStall}`);
+    assert.ok(Math.abs(mnStall - 20) < 0.02, `mainnet 8τ ease −1, got ${mnStall}`);
+    assert.ok(tnStall < mnStall, `testnet eases more than mainnet on stall`);
   });
 
   it('is not stuck at 32 bits / 4.29e9 work', () => {
@@ -189,7 +203,8 @@ describe('ASERT 90s block retarget', () => {
     assert.equal(clampBits(256), packBits(256));
     assert.equal(clampBits(300), packBits(256));
     assert.ok(unpackBits(nextBits(packBits(32), 250)) > 32);
-    assert.ok(unpackBits(nextBits(packBits(36), 250)) - 36 <= 2);
+    assert.ok(unpackBits(nextBits(packBits(36), 250)) - 36 < 0.01);
+    assert.ok(unpackBits(nextBits(packBits(36), 250)) - 36 <= ASERT_HARDEN_MAX);
     assert.equal(nextBits(packBits(36), 90_000), packBits(36));
     const parentTs = 1_700_000_000_000;
     const eased = unpackBits(bitsForBlock(packBits(36), parentTs, parentTs + 12 * 3600_000));
@@ -286,7 +301,9 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(formatShe(1e-11), '0.00000000');
     assert.equal(formatShe(1e-8), '0.00000001');
     assert.equal(formatShe(1e-9), '0.00000000');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v6');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v7');
+    assert.equal(MAGIC_TESTNET_V7, 'shear-testnet-v7');
+    assert.equal(MAGIC_TESTNET_V6, 'shear-testnet-v6');
     assert.equal(MAGIC_TESTNET_V4, 'shear-testnet-v4');
     assert.equal(MAGIC_TESTNET_V1, 'shear-testnet-v1');
     assert.equal(MAGIC_TESTNET_V2, 'shear-testnet-v2');
@@ -344,7 +361,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
-    assert.match(fp, /NETWORK=shear-testnet-v6/);
+    assert.match(fp, /NETWORK=shear-testnet-v7/);
     assert.match(fp, /HASH_TX_LIVE=1/);
     assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
     assert.match(fp, /POOL_FEE_MAX_BPS=300/);

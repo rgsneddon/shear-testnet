@@ -54,7 +54,7 @@ if not defined NODEBIN (
 )
 
 if not defined SHEAR_DATA set "SHEAR_DATA=%APPDATA%\Shear\testnet-v6"
-if not defined SHEAR_NETWORK set "SHEAR_NETWORK=shear-testnet-v6"
+if not defined SHEAR_NETWORK set "SHEAR_NETWORK=shear-testnet-v7"
 if not defined SHEAR_SEEDS set "SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303"
 if not defined SHEAR_RPC_BIND set "SHEAR_RPC_BIND=127.0.0.1"
 set "PATH=%ROOT%runtime;%ROOT%crypto\native;%PATH%"

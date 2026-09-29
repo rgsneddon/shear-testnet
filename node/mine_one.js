@@ -44,7 +44,7 @@ console.log(JSON.stringify({
   height: tip?.height || 0,
   prevHeight: before?.height || 0,
   jroot: jr ? Buffer.from(jr).toString('hex') : '',
-  magic: 'shear-testnet-v6',
+  magic: 'shear-testnet-v7',
   admit: 'ADMITv2',
 }));
 if (!got?.ok) process.exit(1);

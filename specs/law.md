@@ -2,7 +2,7 @@
 
 Frozen numbers. `consensusFingerprint()` pins every line. A later flip is a new book.
 
-Network: `shear-testnet-v6` (privacy-class). Frozen `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant.
+Network: `shear-testnet-v7` (privacy-class). Frozen `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant.
 
 ## Numbers
 
@@ -18,7 +18,7 @@ Network: `shear-testnet-v6` (privacy-class). Frozen `shear-testnet-v5`, `shear-t
 | `SAMPLE_PRUNE_CONFIRMATIONS` | `1000` |
 | Reorg checkpoints | First frozen hash at height **1000** (prune floor), then every **400** blocks (bootstrap cadence). A heavier fork that replaces that hash is `reorg_checkpoint`. |
 | Vault seal | Same freeze: first at height **1000**, then every **400**. `vaultSeal` = Reserve commitment + checkpoint hash (optional vault-genesis hash). Forks that diverged before that freeze get no vault (`no_vault`) and cannot unlock the sealed pot. Adopt of a history that lacks seal ancestry is `reorg_vault_seal` (or `reorg_checkpoint` if the hash itself moved). The vault stays on the master chain from genesis; replay never wipes it. Tip **below 1000** has no seal yet. |
-| `GENESIS_BITS` | `12` (match asert.js). Packed Q16.16 on the wire. Floor 4, ceiling 256. Fast blocks +2 bits, slow −2 on this book (`ASERT_EASE=2`). Mainnet ease cap is 1. Child bits use the parent solve interval, not the stamp of the block being mined. |
+| `GENESIS_BITS` | `15` (match asert.js; sized for ~200–400 H/s live testnet). Packed Q16.16 on the wire. Floor 4, ceiling 256. Step is `(T−seen)/τ` then ±2 farm lid on this book (`ASERT_EASE=2`). Mainnet ease cap is 1. Child bits use the parent solve interval, not the stamp of the block being mined. |
 | `LIVE_MIN_BITS` | `4` |
 | `MAX_BITS` | `256` |
 | `SHARE_FLOOR_BITS` | `8` |

@@ -28,15 +28,21 @@ export const MIN_BITS = 1;
  */
 export const MAX_BITS = 256;
 /**
- * Testnet floor. RandomX-lite at ~50 H/s finds a block on the 90s scale
- * near 12 bits (2^12 / 50 ≈ 82s). 14 was minutes; 21 was hours.
- * Share vardiff opens at 8 and must be able to sit under header bits.
+ * Testnet floor. Share vardiff opens at 8 and must sit under header bits.
+ * Genesis work is sized separately for the live hashrate band (see GENESIS_BITS).
  */
 export const LIVE_MIN_BITS = 4;
-/** Empty-chain start. 256 is the digest ceiling, not a start. Fast blocks harden +2/block so a farm cannot spew. */
-export const GENESIS_BITS = 12;
 /**
- * Per-block ASERT caps on log2(target/seen). Harden +2 stops a farm spew.
+ * Empty-chain start (Q16.16 packed via GENESIS_BITS_PACKED).
+ * Live testnet hashrate band ~200–400 H/s. Ideal bits ≈ log2(H×90):
+ *   200 H/s → ~14.14; 300 H/s → ~14.72; 400 H/s → ~15.14.
+ * Pick 15 (mid/upper of that band): expected genesis interval
+ *   2^15/300 ≈ 109s; at 400 H/s ≈ 82s. (Was 12 for ~50 H/s / ~82s.)
+ * Fingerprint includes GENESIS_BITS — empty cut required.
+ */
+export const GENESIS_BITS = 15;
+/**
+ * Per-block ASERT farm lid on the tau-damped step. Harden +2 stops a farm spew.
  * Testnet ease matches harden so a farm-off (or stall) can re-center the
  * 90s long average. Mainnet stays ease=1 (frozen fingerprint). Do not pin
  * these to a live pool hashrate.
@@ -104,10 +110,12 @@ export const MAGIC_TESTNET_V3 = 'shear-testnet-v3';
 export const MAGIC_TESTNET_V4 = 'shear-testnet-v4';
 /** Previous DINS book. Not this magic. */
 export const MAGIC_TESTNET_V5 = 'shear-testnet-v5';
-/** Empty book cut for the pre-mainnet soak. v5 is a different chain. */
+/** Previous empty-book soak (GENESIS_BITS=12, bang-bang log2 step). Not this magic. */
 export const MAGIC_TESTNET_V6 = 'shear-testnet-v6';
+/** Empty book cut: GENESIS_BITS=15 + tau-damped ASERT. v6 is a different chain. */
+export const MAGIC_TESTNET_V7 = 'shear-testnet-v7';
 /** ADMITv2 privacy-class book. */
-export const MAGIC_TESTNET = MAGIC_TESTNET_V6;
+export const MAGIC_TESTNET = MAGIC_TESTNET_V7;
 export const MAGIC_MAINNET = 'shear-v1';
 /** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
 export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
@@ -162,7 +170,7 @@ export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
 /**
  * Consensus floor: spendable after 9 confirmations (~13.5 min at 90s).
- * In the fingerprint. shear-testnet-v6 book, operator 2026-09-29.
+ * In the fingerprint. shear-testnet-v7 book, operator 2026-09-29.
  */
 export const SPENDABLE_CONFIRMATIONS = 9;
 /** Sample bodies may drop after this many confirmations. Money vouts stay. */
@@ -258,7 +266,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,
     'BITS=q16.16',
     `ASERT_TAU_MS=${ASERT_HALFLIFE_MS}`,
-    'ASERT_STEP=log2',
+    'ASERT_STEP=(T-seen)/tau',
     `ASERT_HARDEN=${ASERT_HARDEN_MAX}`,
     `ASERT_EASE=${asertEaseMax(magic)}`,
     `MTP_FUTURE_MS=${MTP_FUTURE_MS}`,
@@ -420,12 +428,14 @@ export function clampBits(bits) {
 }
 
 /**
- * Per-block ASERT toward 90s on Q16.16 packed work.
+ * Per-block absolute ASERT toward 90s on Q16.16 packed work.
  * Pure function of the header timestamp delta — verifiers must not use
  * wall clock. Same-tick (≤0) is treated as 1ms so it still climbs; the
- * ±harden/ease cap (not a 1ms floor) is what stops a timestamp-collision
+ * ±harden/ease farm lid (not a 1ms floor) is what stops a timestamp-collision
  * storm. Stalls clamp at 8 half-lives so one gap cannot dump the floor.
- * Step is log2(T / seen). Testnet ±2; mainnet harden +2 / ease −1.
+ * Step is (T - seen) / tau in log2-work space (BCH-class absolute ASERT).
+ * ASERT_HALFLIFE_MS damps the move — not bang-bang full log2(T/seen) each block.
+ * Testnet ±2 farm lid; mainnet harden +2 / ease −1.
  */
 export function nextBits(previousBits, intervalMs, magic = MAGIC_TESTNET) {
   const prev = unpackBits(clampBits(previousBits));
@@ -433,7 +443,7 @@ export function nextBits(previousBits, intervalMs, magic = MAGIC_TESTNET) {
   if (!Number.isFinite(seen) || seen < 1) seen = 1;
   const cap = ASERT_HALFLIFE_MS * 8;
   if (seen > cap) seen = cap;
-  let delta = Math.log2(TARGET_BLOCK_INTERVAL_MS / seen);
+  let delta = (TARGET_BLOCK_INTERVAL_MS - seen) / ASERT_HALFLIFE_MS;
   if (delta > ASERT_HARDEN_MAX) delta = ASERT_HARDEN_MAX;
   const ease = asertEaseMax(magic);
   if (delta < -ease) delta = -ease;

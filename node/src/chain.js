@@ -1472,12 +1472,13 @@ export function parentSolveIntervalMs(blocks) {
   }
 }
 
+/** Template bits from parentSolveInterval only. candidateTimestamp is ignored
+ *  so live jobs never pull bits off a wall stamp. verifyBlock still uses
+ *  parentIntervalMs / bitsForBlock on the sealed header path. */
 export function retarget(chain, candidateTimestamp) {
+  void candidateTimestamp;
   if (!chain.length) return GENESIS_BITS_PACKED;
   const last = decodeHeader(Buffer.from(chain[chain.length - 1].header));
-  if (candidateTimestamp != null) {
-    return bitsForBlock(last.bits, last.timestamp, candidateTimestamp);
-  }
   if (chain.length < 2) return nextBits(last.bits, TARGET_BLOCK_INTERVAL_MS);
   const prev = decodeHeader(Buffer.from(chain[chain.length - 2].header));
   const solved = Number(last.timestamp) - Number(prev.timestamp);

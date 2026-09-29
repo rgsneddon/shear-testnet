@@ -75,7 +75,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / overview',
     html:
       '<p>Shear is a CPU-mined ledger. Coin is created when a block is found, not before. There is no premine and the developers do not sell SHE. You hash, or someone who already holds coin pays you.</p>' +
-      '<p>ADMITv2 membership over this book\'s notes, with confidential amounts. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. On the public pool, a found block seals hash bonus (no 1% fee) and your pot share after the 1% fee to your miner <code>ssa1</code> in that block. Continuum reads it on the next sealed block. The live network today is <code>shear-testnet-v6</code>. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
+      '<p>ADMITv2 membership over this book\'s notes, with confidential amounts. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. On the public pool, a found block seals hash bonus (no 1% fee) and your pot share after the 1% fee to your miner <code>ssa1</code> in that block. Continuum reads it on the next sealed block. The live network today is <code>shear-testnet-v7</code>. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
       '<table><tr><th>Coin</th><td>SHE (11 protocol decimals; public pages show nine)</td></tr>' +
       '<tr><th>Algo</th><td>ShearHash-v3 (RandomX light, CPU)</td></tr>' +
       '<tr><th>Block pot</th><td>1.00 SHE in epoch 0, then −0.01 SHE/epoch to a 0.20 SHE floor (4d testnet / 400d mainnet)</td></tr>' +
@@ -113,7 +113,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / testnet',
     html:
       '<p>This is testnet. Balances can vanish. Treat them as a practice run before mainnet.</p>' +
-      '<p>This public testnet is the privacy-class book (<code>shear-testnet-v6</code>). Mainnet <code>shear-v1</code> is not live. The public countdown is 30th October 2026 at 1400hrs UK time. Do not cut a mainnet genesis zip from these pages.</p>' +
+      '<p>This public testnet is the privacy-class book (<code>shear-testnet-v7</code>). Mainnet <code>shear-v1</code> is not live. The public countdown is 30th October 2026 at 1400hrs UK time. Do not cut a mainnet genesis zip from these pages.</p>' +
       '<p>Install clients only from the buttons on <a href="https://shear.digital">shear.digital</a> or the official GitHub tags. Windows SmartScreen may warn that ShearK-Miner.exe is unrecognized; this testnet build is not Authenticode-signed.</p>'
   };
 
@@ -121,7 +121,7 @@ window.SHEAR_DOCS = {
     title: 'Whitepaper',
     crumb: 'start / whitepaper',
     html:
-      '<p>Version 2.0 of the project note: ADMITv2, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve, and DINS-DAG (one pot-plus-hash mint, once per eligible share). Wallet pin 0.62. Live magic <code>shear-testnet-v6</code>.</p>' +
+      '<p>Version 2.0 of the project note: ADMITv2, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve, and DINS-DAG (one pot-plus-hash mint, once per eligible share). Wallet pin 0.62. Live magic <code>shear-testnet-v7</code>.</p>' +
       '<p><a href="https://shear.digital/whitepaper/">https://shear.digital/whitepaper/</a> presents it as a record with a PDF preview. Download <code>shear-whitepaper.pdf</code> from that page. There is no WHITEPAPER button in the site navbar. Typed whitepaper.shear.digital may fail TLS (apex SAN).</p>'
   };
 
@@ -147,7 +147,7 @@ window.SHEAR_DOCS = {
     title: 'Wallet overview',
     crumb: 'wallet / overview',
     html:
-      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.62</strong> (Windows, Linux, Arch, Fedora, and Android). Sync is a local node at <code>127.0.0.1:18332</code> — not flyclient, not pool HTTP as the only path. Magic <code>shear-testnet-v6</code>. Connect bare uses the same note scan when a node answers: every seal for your dest, through the tip. Android stays on Connect bare because that pack has no node runtime.</p>' +
+      '<p>The Shear wallet is a six-tab app. It does not mine. Current pin is <strong>0.62</strong> (Windows, Linux, Arch, Fedora, and Android). Sync is a local node at <code>127.0.0.1:18332</code> — not flyclient, not pool HTTP as the only path. Magic <code>shear-testnet-v7</code>. Connect bare uses the same note scan when a node answers: every seal for your dest, through the tip. Android stays on Connect bare because that pack has no node runtime.</p>' +
       '<table><tr><th>Continuum</th><td>Spendable balance, <code>she1</code>, eight-point confirmation vortex</td></tr>' +
       '<tr><th>Flow</th><td>Send and receive</td></tr>' +
       '<tr><th>Resistance</th><td>Tx detail</td></tr>' +
@@ -187,7 +187,7 @@ window.SHEAR_DOCS = {
     title: 'Node-sync',
     crumb: 'wallet / node-sync',
     html:
-      '<p>0.62 talks to a stock local node on <code>shear-testnet-v6</code>. Default seed is <code>http://127.0.0.1:18332</code>. Headers, compact blocks, and the tree root / jroot come from that node. Flyclient height sampling is not the send, balance, or history path. Hash bonus and the pot share are sealed to your dest in the found block and are spendable after 9 confirmations.</p>' +
+      '<p>0.62 talks to a stock local node on <code>shear-testnet-v7</code>. Default seed is <code>http://127.0.0.1:18332</code>. Headers, compact blocks, and the tree root / jroot come from that node. Flyclient height sampling is not the send, balance, or history path. Hash bonus and the pot share are sealed to your dest in the found block and are spendable after 9 confirmations.</p>' +
       '<p>The node walks every sealed block and returns only the notes whose dest commitment is yours. History for the wallet lists each of those notes once. A pot uses the stable id <code>blockfound:height:dest</code>. An explorer row id does not replace that seal. When the node seals a block it advises <code>http://127.0.0.1:18332/events</code>. The wallet ingests on that advice. An 8 second poll is the fallback when the stream is quiet.</p>' +
       '<p>Run <code>node node/src/node.js</code> on the same machine (or point the wallet at a node you trust). Download Shear Sentinel v12 from <a href="https://shear.digital/node/">the node page</a>. Public pool HTTP submit stays an advanced toggle with an IP warning. Do not use pool.shear.digital as the only sync path. If no local node answers, Connect bare can still read a public node, and a pool balance on that path is still not Spendable.</p>'
   };
@@ -401,7 +401,7 @@ window.SHEAR_DOCS = {
       '<pre>git clone https://github.com/rgsneddon/shear-testnet.git\n' +
       'cd shear-testnet\ngit checkout 0.62\nnpm ci\n' +
       'export SHEAR_DATA="$HOME/.shear/testnet-v6"\n' +
-      'export SHEAR_NETWORK=shear-testnet-v6\n' +
+      'export SHEAR_NETWORK=shear-testnet-v7\n' +
       'export SHEAR_BOOTSTRAP=1\n' +
       'export SHEAR_REORG_HALT_DEPTH=0\n' +
       'export SHEAR_P2P_PORT=30303\n' +
@@ -410,7 +410,7 @@ window.SHEAR_DOCS = {
       'export SHEAR_RPC_BIND=127.0.0.1\n' +
       'export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303\n' +
       'node node/src/node.js</pre>' +
-      '<p>Magic <code>shear-testnet-v6</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine until you add <code>--solo</code> after the height has caught the public tip. Build RandomX and <code>crypto/native</code> on that machine. Never copy a macOS <code>shearhash.node</code> onto Linux, or an Ubuntu one onto Fedora.</p>' +
+      '<p>Magic <code>shear-testnet-v7</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine until you add <code>--solo</code> after the height has caught the public tip. Build RandomX and <code>crypto/native</code> on that machine. Never copy a macOS <code>shearhash.node</code> onto Linux, or an Ubuntu one onto Fedora.</p>' +
       '<p>Windows, same release, in PowerShell from the repo root: <code>git checkout 0.62</code>, <code>npm ci</code>, then set <code>$env:SHEAR_DATA</code>, <code>$env:SHEAR_NETWORK</code>, <code>$env:SHEAR_BOOTSTRAP="1"</code>, <code>$env:SHEAR_SEEDS</code> to the same list, and run <code>node node/src/node.js</code>. Arch uses the same shell as Linux.</p>' +
       '<p>Default sync is full archival IBD from those peers. Reorg checkpoints are height 1000, then every 400. Do not set <code>SHEAR_FAST_SYNC</code> on a mining node.</p>' +
       '<p>Tree: <a href="https://shear.digital/node/">shear.digital/node</a>.</p>'
@@ -420,7 +420,7 @@ window.SHEAR_DOCS = {
     title: 'Consensus',
     crumb: 'network / consensus',
     html:
-      '<p>More work wins, whoever mined it. Equal work follows the lower tip hash, not the block that arrived first and not the pool. Magic <code>shear-testnet-v6</code> on release 0.62. ADMITv2 membership over this book\'s notes, with confidential amounts. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
+      '<p>More work wins, whoever mined it. Equal work follows the lower tip hash, not the block that arrived first and not the pool. Magic <code>shear-testnet-v7</code> on release 0.62. ADMITv2 membership over this book\'s notes, with confidential amounts. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
   };
 
   P.header = {
@@ -486,7 +486,7 @@ window.SHEAR_DOCS = {
     title: 'DINS-DAG',
     crumb: 'addresses / dins-dag',
     html:
-      '<p><code>shear-testnet-v6</code> settles a mining round as DINS-DAG. The book fingerprint carries <code>DINS=pot+hash</code> and <code>ROOTA=pot-spine+dag-fluxset</code>. Eligible shares are the blue set, sorted by identity. Arrival order is not membership. Each eligible share is counted once. A blue share is not dropped to favour another set.</p>' +
+      '<p><code>shear-testnet-v7</code> settles a mining round as DINS-DAG. The book fingerprint carries <code>DINS=pot+hash</code> and <code>ROOTA=pot-spine+dag-fluxset</code>. Eligible shares are the blue set, sorted by identity. Arrival order is not membership. Each eligible share is counted once. A blue share is not dropped to favour another set.</p>' +
       '<p>The mint is the spine pot plus the hash nanos, once. That mint is not paid again from a second hash leg. Miners receive the epoch pot in the coinbase and the hash bonus on the next sealed block. Epoch 0 pot is 1.00 SHE. It steps down 0.01 SHE each 4-day testnet epoch to a 0.20 SHE floor. The hash unit is 10<sup>−11</sup> SHE. Public pages show nine digits.</p>' +
       '<p>Wallet pin Continuum 0.62. Miner pin ShearK 2.6. DAG is a link in the client navbar. Mainnet is not live.</p>'
   };
@@ -495,7 +495,7 @@ window.SHEAR_DOCS = {
     title: 'P2P',
     crumb: 'network / p2p',
     html:
-      '<p>Port 30303. Magic <code>shear-testnet-v6</code>. A node on an older book drops a hello whose magic is not <code>shear-testnet-v6</code>. Do not dual-magic. IBD is headers then a window of getblocks (default 16 in flight); merkle and native PoW still run.</p>'
+      '<p>Port 30303. Magic <code>shear-testnet-v7</code>. A node on an older book drops a hello whose magic is not <code>shear-testnet-v7</code>. Do not dual-magic. IBD is headers then a window of getblocks (default 16 in flight); merkle and native PoW still run.</p>'
   };
 
   P.rpc = {

@@ -523,7 +523,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final msg = e is FormatException ? e.message : '';
       if (msg.startsWith('shewall_reset_required')) {
         setState(() => _lockError =
-            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v6).');
+            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v7).');
         return;
       }
       setState(() => _lockError = 'Wrong password.');

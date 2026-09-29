@@ -6,7 +6,7 @@ This is the **main Shear tree** (`rgsneddon/shear-testnet`): node, crypto, specs
 
 | Repo | What |
 |------|------|
-| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv2 (`shear-testnet-v6`) |
+| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv2 (`shear-testnet-v7`) |
 | [rgsneddon/ShearK](https://github.com/rgsneddon/ShearK) | Official miner pin + how-to (keep this repo) |
 
 Windows ops start: [`HANDOFF_OPS.md`](HANDOFF_OPS.md). MacBook cuts Apple-only artifacts: [`MACBOOK-HANDOFF.md`](MACBOOK-HANDOFF.md).
@@ -21,11 +21,11 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Wallet pin: **0.62** (Continuum GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.62
 - Node pin: **Shear Sentinel v12** (product 12.0). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/v12
 - Stratum: `pool.shear.digital:1111`
-- P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v6`)
+- P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v7`)
 - Site: https://shear.digital
 - Docs: https://shear.digital/docs/#/surfaces
 - Pool: https://pool.shear.digital
-- Chain: `shear-testnet-v6`
+- Chain: `shear-testnet-v7`
 
 Mainnet `shear-v1` is **not live**. The public countdown is 30th October 2026 at 1400hrs UK time. That countdown is a display date. It is not genesis and it does not emit. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` **and** `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`. Fingerprint must include `POT_SCHED` + `EPOCH_DAYS=400` + oracle policy before emit. Do not set those env vars.
 
@@ -87,7 +87,7 @@ test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall No
 make -C crypto/native
 ```
 
-`--print-config` must show `"version":"12.0"`, `"magic":"shear-testnet-v6"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
+`--print-config` must show `"version":"12.0"`, `"magic":"shear-testnet-v7"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
 
 ### Run
 
@@ -96,7 +96,7 @@ sudo mkdir -p /var/lib/shear/testnet-v6
 sudo chown "$USER":"$USER" /var/lib/shear/testnet-v6
 
 export SHEAR_DATA=/var/lib/shear/testnet-v6
-export SHEAR_NETWORK=shear-testnet-v6
+export SHEAR_NETWORK=shear-testnet-v7
 export SHEAR_P2P_PORT=30303
 export SHEAR_P2P_BIND=0.0.0.0
 export SHEAR_RPC_PORT=18332
