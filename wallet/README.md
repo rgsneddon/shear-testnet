@@ -1,4 +1,4 @@
-# Shear wallet 0.61
+# Shear wallet 0.62
 
 GUI (Flutter) and CLI. Same identity, same encrypted `shewall.bin`, same book magic `shear-testnet-v6`.
 
@@ -10,18 +10,18 @@ Mine with **Copy dest**: the Continuum `ssa1` shown on screen (Copy dest copies 
 
 Pool: `pool.shear.digital:1111` (cleartext TCP unless TLS is in front). Magic: `shear-testnet-v6`.
 
-Continuum is spendable, pending transfers until nine confirmations, and Copy ID. It reads a node at `127.0.0.1:18332`, or Connect Bare when no node is on this device. The node returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. Open-round hashes stay pending until the next sealed block. Shearview lists your landings (height, from/to, date, amount, snippet); tap a row for full Resistance detail. Hash bonus and the pot share sit in the blockfound row. The pool does not hold them for a later send. This wallet does not mine. Public pool HTTP submit is an advanced toggle. `shear restore` opens the password-sealed `shewall.bin`. Node pack: [Shear Sentinel v11](https://github.com/rgsneddon/shear-testnet/releases/tag/v11). How-to: https://shear.digital/docs/#/surfaces
+Continuum is spendable, pending transfers until nine confirmations, and Copy ID. It reads a node at `127.0.0.1:18332`, or Connect Bare when no node is on this device. The node returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. Open-round hashes stay pending until the next sealed block. Shearview lists your landings (height, from/to, date, amount, snippet); tap a row for full Resistance detail. Hash bonus and the pot share sit in the blockfound row. The pool does not hold them for a later send. This wallet does not mine. Public pool HTTP submit is an advanced toggle. `shear restore` opens the password-sealed `shewall.bin`. Node pack: [Shear Sentinel v12](https://github.com/rgsneddon/shear-testnet/releases/tag/v12). How-to: https://shear.digital/docs/#/surfaces
 
-Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.61
+Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.62
 
 | Platform | Install |
 |----------|---------|
-| Windows | Unzip `shear-wallet-0.61-windows.zip`, run `shear_wallet.exe` |
-| Linux | Unzip `shear-wallet-0.61-linux.zip`, run `./shear_wallet` |
-| Arch | Unzip `shear-wallet-0.61-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
-| Fedora | Unzip `shear-wallet-0.61-fedora.zip`, run `./shear_wallet` |
-| Android | Sideload `shear-wallet-0.61-android.apk` (`com.shear.shear_wallet`). Uninstall any old debug-signed build first |
-| macOS | MacBook handoff only (`MACBOOK-HANDOFF.md`). The `shear-wallet-0.61-macos.dmg` is cut on a Mac and is not attached from Windows |
+| Windows | Unzip `shear-wallet-0.62-windows.zip`, run `shear_wallet.exe` |
+| Linux | Unzip `shear-wallet-0.62-linux.zip`, run `./shear_wallet` |
+| Arch | Unzip `shear-wallet-0.62-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
+| Fedora | Unzip `shear-wallet-0.62-fedora.zip`, run `./shear_wallet` |
+| Android | Sideload `shear-wallet-0.62-android.apk` (`com.shear.shear_wallet`). Uninstall any old debug-signed build first |
+| macOS | MacBook handoff only (`MACBOOK-HANDOFF.md`). The `shear-wallet-0.62-macos.dmg` is cut on a Mac and is not attached from Windows |
 
 ## CLI
 

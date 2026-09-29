@@ -164,10 +164,12 @@ def main(argv: list[str] | None = None) -> int:
             if not os.path.isfile(src):
                 sys.exit(f"missing {rel}")
             z.write(src, rel)
-        if os.environ.get("SHEAR_NODE_PACK_DEPS", "1") != "0":
-            nm = os.path.join(REPO, "node_modules")
-            if os.path.isdir(nm):
-                add_filtered_tree(z, nm, "node_modules", skip_dirs={".git"})
+        if os.environ.get("SHEAR_NODE_PACK_DEPS", "1") == "0":
+            sys.exit("refusing zip: SHEAR_NODE_PACK_DEPS=0 omits node_modules")
+        nm = os.path.join(REPO, "node_modules")
+        if not os.path.isdir(nm):
+            sys.exit("missing node_modules — run npm ci before packing")
+        add_filtered_tree(z, nm, "node_modules", skip_dirs={".git"})
         runtime = os.path.join(REPO, "runtime")
         if os.path.isdir(runtime):
             add_filtered_tree(z, runtime, "runtime", skip_dirs={".git"})
@@ -183,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
             "Unix: chmod +x shear-node.sh && ./shear-node.sh\n"
             "It syncs from genesis (or the saved tip) to the live tip. No automatic bootstrap.\n"
             "Pass --solo for local stratum after ibd=false.\n"
-            "Magic shear-testnet-v6. Continuum wallet is 0.61.\n"
+            "Magic shear-testnet-v6. Continuum wallet is 0.62.\n"
             "If node_modules is missing: npm ci once in this folder, then run the launcher.\n"
         )
         z.writestr("README.txt", readme)
@@ -199,6 +201,15 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit("missing shear-node.sh")
     if "crypto/native/shearhash.node" not in names:
         sys.exit("missing crypto/native/shearhash.node — pack this flavor on that OS")
+    for req in (
+        "node_modules/@noble/curves/ed25519.js",
+        "node_modules/@noble/curves/secp256k1.js",
+        "node_modules/@noble/hashes/sha2.js",
+        "node_modules/@noble/hashes/sha3.js",
+        "node_modules/@noble/hashes/argon2.js",
+    ):
+        if req not in names:
+            sys.exit(f"missing {req}")
     if flavor == "windows":
         for dll in ("runtime/libgcc_s_seh-1.dll", "runtime/libstdc++-6.dll", "runtime/libwinpthread-1.dll"):
             if dll not in names:

@@ -27,7 +27,7 @@ function sectionEnv() {
   return [
     'Env:',
     '  SHEAR_DATA          datadir. Windows %APPDATA%\\Shear\\testnet-v6 (Roaming). Unix ~/.shear/testnet-v6.',
-    '                      Same path for Shear Sentinel v11 and Continuum 0.61.',
+    '                      Same path for Shear Sentinel v12 and Continuum 0.62.',
     '  SHEAR_NETWORK       shear-testnet-v6 (this book). shear-v1 waits for genesis.',
     '  SHEAR_P2P_PORT      default 30303',
     '  SHEAR_P2P_BIND      default 0.0.0.0',
@@ -86,7 +86,7 @@ function sectionSolo() {
     '       npm run solo',
     '     Bare node node/src/node.js is validator-only (no stratum).',
     '     npm run pool is the public-pool operator stack — not solo.',
-    '  3. CLI (first-class) or Continuum 0.61:',
+    '  3. CLI (first-class) or Continuum 0.62:',
     '       dart run bin/shear.dart dest --rpc http://127.0.0.1:18332',
     '       dart run bin/shear.dart balance',
     '       dart run bin/shear.dart history',

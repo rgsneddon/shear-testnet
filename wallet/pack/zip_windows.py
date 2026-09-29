@@ -90,10 +90,24 @@ def main() -> int:
                 "pool/src/hash_credit.js",
                 "pool/src/withdraw_state.js",
                 "contracts/Reserve.json",
+                "reserve/latest.json",
             ):
                 p = os.path.join(node_root, extra.replace("/", os.sep))
-                if os.path.isfile(p):
-                    z.write(p, extra)
+                if not os.path.isfile(p):
+                    sys.exit(f"Continuum sidecar missing {extra}")
+                z.write(p, extra)
+            nm = os.path.join(node_root, "node_modules")
+            if not os.path.isdir(nm):
+                sys.exit("Continuum sidecar missing node_modules — run npm ci before packing")
+            bundled = 0
+            for dp, dns, fns in os.walk(nm):
+                dns[:] = [d for d in dns if d not in {".git"}]
+                for fn in fns:
+                    p = os.path.join(dp, fn)
+                    rel = os.path.relpath(p, node_root).replace("\\", "/")
+                    z.write(p, rel)
+                    bundled += 1
+            print("bundled node_modules files", bundled)
             node_exe = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs", "node.exe")
             if os.path.isfile(node_exe):
                 z.write(node_exe, "runtime/node.exe")
@@ -104,7 +118,7 @@ def main() -> int:
                 if not os.path.isfile(src):
                     sys.exit(f"Continuum sidecar needs MinGW {dll} beside gcc")
                 z.write(src, f"runtime/{dll}")
-            print("bundled Shear Sentinel v11 beside Continuum")
+            print("bundled Shear Sentinel v12 beside Continuum")
 
     size = os.path.getsize(out)
     names = zipfile.ZipFile(out).namelist()
@@ -117,11 +131,21 @@ def main() -> int:
     if EXE_NAME not in names:
         sys.exit(f"missing {EXE_NAME} at zip root")
     if "node/src/node.js" not in names:
-        sys.exit("Continuum zip must include node/src/node.js (Shear Sentinel v11 sidecar)")
+        sys.exit("Continuum zip must include node/src/node.js (Shear Sentinel v12 sidecar)")
     if "runtime/node.exe" not in names:
         sys.exit("Continuum zip must include runtime/node.exe")
     if "crypto/native/shearhash.node" not in names:
         sys.exit("Continuum zip must include crypto/native/shearhash.node")
+    for req in (
+        "node_modules/@noble/curves/ed25519.js",
+        "node_modules/@noble/curves/secp256k1.js",
+        "node_modules/@noble/hashes/sha2.js",
+        "node_modules/@noble/hashes/sha3.js",
+        "node_modules/@noble/hashes/argon2.js",
+        "reserve/latest.json",
+    ):
+        if req not in names:
+            sys.exit(f"Continuum zip must include {req}")
     for dll in ("runtime/libgcc_s_seh-1.dll", "runtime/libstdc++-6.dll", "runtime/libwinpthread-1.dll"):
         if dll not in names:
             sys.exit(f"Continuum zip must include {dll}")

@@ -109,24 +109,48 @@ function walletHistoryFor(store, address) {
   const explorer = typeof store.historyFor === 'function' ? (store.historyFor(address) || []) : [];
   const ownedHeights = new Set();
   const fromNotes = [];
+  const blocks = new Map();
   for (const n of notesForAddress(store, address)) {
     const height = Number(n.height) || 0;
     if (height < 1) continue;
     const kind = String(n.kind || (n.coinbase ? 'pot' : 'send'));
-    if (kind === 'hash' || kind === 'dummy') continue;
+    if (kind === 'dummy') continue;
     const nanos = noteValueNanos(n);
     if (nanos <= 0) continue;
-    const pot = kind === 'pot' || kind === 'coinbase' || n.coinbase === true;
-    ownedHeights.add(height);
     const confs = tipH >= height ? (tipH - height + 1) : 0;
+    const hash = kind === 'hash';
+    const pot = !hash && (kind === 'pot' || kind === 'coinbase' || (n.coinbase === true && kind !== 'pool-fee'));
+    if (hash || pot) {
+      const row = blocks.get(height) || { pot: 0, hash: 0, confs };
+      if (hash) row.hash += nanos;
+      else row.pot += nanos;
+      row.confs = confs;
+      blocks.set(height, row);
+      ownedHeights.add(height);
+      continue;
+    }
+    ownedHeights.add(height);
     fromNotes.push({
-      id: pot ? `blockfound:${height}:${address}` : `note:${height}:${address}:${commitTag(n.commit)}`,
-      kind: pot ? 'blockfound' : 'receive',
-      from: pot ? 'coinbase' : '',
+      id: `note:${height}:${address}:${commitTag(n.commit)}`,
+      kind: kind === 'send' ? 'receive' : kind,
+      from: '',
       to: address,
       nanos,
       height,
       confirmed: confs >= SPENDABLE_CONFIRMATIONS,
+    });
+  }
+  for (const [height, row] of blocks) {
+    fromNotes.push({
+      id: `blockfound:${height}:${address}`,
+      kind: 'blockfound',
+      from: 'coinbase',
+      to: address,
+      nanos: row.pot + row.hash,
+      potNanos: row.pot,
+      hashNanos: row.hash,
+      height,
+      confirmed: row.confs >= SPENDABLE_CONFIRMATIONS,
     });
   }
   const rest = [];

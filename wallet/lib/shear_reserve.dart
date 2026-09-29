@@ -617,6 +617,7 @@ Future<ReserveDepositResult> postReserveDeposit({
       restFrame,
       paymentCode: paymentCode,
       needShe: need,
+      keepHome: true,
     );
     final tx = await ledger.send(
       from: from,

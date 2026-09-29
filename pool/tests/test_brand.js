@@ -123,7 +123,7 @@ describe('brand pages', () => {
       const nav = p.match(/id="shear-nav"[\s\S]*?<\/nav>/);
       assert.ok(nav, 'missing shear-nav');
       const labels = [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
-      assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'MINER', 'NODE', 'WALLET', 'DOCS']);
+      assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS']);
       assert.equal(labels.includes('WHITEPAPER'), false);
       if (!p.includes('id="shear-hero"')) {
         assert.equal(/GNFP|gnfp|feeless/i.test(p), false);
@@ -201,12 +201,12 @@ describe('brand pages', () => {
     assert.match(poolHtml, /data-active="POOL"/);
     assert.match(explorerHtml, /class="nav-btn is-on"[^>]*>EXPLORER</);
     assert.match(mempoolHtml, /data-active="MEMPOOL"/);
-    assert.match(siteHtml, /releases\/tag\/0\.59/);
+    assert.match(siteHtml, /href="\/wallet\/"/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.55\.2/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.53/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.52/);
-    assert.match(siteHtml, /rgsneddon\/ShearK/);
+    assert.match(siteHtml, /href="\/miner\/"/);
     assert.doesNotMatch(siteHtml, /theme\.js\?v=15/);
     for (const page of [poolHtml, explorerHtml, mempoolHtml]) {
       assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
@@ -220,11 +220,12 @@ describe('brand pages', () => {
       assert.doesNotMatch(page, /releases\/tag\/0\.36|shear-wallet-0\.36/);
       assert.doesNotMatch(page, /releases\/tag\/0\.28|shear-wallet-0\.28/);
     }
-    assert.match(explorerHtml, /rgsneddon\/shear-testnet/);
-    assert.match(explorerHtml, /releases\/tag\/0\.59/);
-    assert.match(explorerHtml, /rgsneddon\/ShearK/);
+    assert.match(explorerHtml, /href="https:\/\/shear\.digital\/wallet\/"/);
+    assert.match(explorerHtml, /href="https:\/\/shear\.digital\/node\/"/);
+    assert.match(explorerHtml, /href="https:\/\/shear\.digital\/miner\/"/);
+    assert.doesNotMatch(explorerHtml, /github\.com/);
     assert.match(explorerHtml, /theme\.js\?v=15/);
-    assert.match(poolHtml, /rgsneddon\/ShearK/);
+    assert.match(read('site/miner/index.html'), /rgsneddon\/ShearK/);
     assert.match(poolHtml, /Shear pool · ShearHash-v3/);
     assert.match(poolHtml, /Great Vibes/);
     assert.match(poolHtml, /grid-template-columns:\s*1fr 2fr/);
@@ -239,7 +240,8 @@ describe('brand pages', () => {
     assert.match(poolHtml, /id="addr"/);
     assert.match(poolHtml, /id="copy-cmd"/);
     assert.match(poolHtml, /ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1/);
-    assert.match(poolHtml, /ShearK-Miner-2\.6-linux\.zip/);
+    assert.match(read('site/miner/index.html'), /ShearK-Miner-2\.6-linux\.zip/);
+    assert.doesNotMatch(poolHtml.slice(poolHtml.indexOf('id="start-mining"'), poolHtml.indexOf('id="testnet-banner"')), /<a\s/);
     assert.doesNotMatch(poolHtml, /Private by default/);
     assert.doesNotMatch(poolHtml, /Proof of work only/);
     assert.doesNotMatch(poolHtml, /shewall\.json/);
@@ -445,7 +447,6 @@ describe('sticky public navbar', () => {
     assert.doesNotMatch(home, /--bg: #eef3f8/);
     for (const rel of [
       'pool/public/explorer.html',
-      'pool/public/miner.html',
       'site/whitepaper/index.html',
       'pool/admin/index.html',
     ]) {
@@ -460,6 +461,7 @@ describe('sticky public navbar', () => {
     }
     for (const rel of [
       'pool/public/index.html',
+      'pool/public/miner.html',
       'site/docs/index.html',
       'mempool/index.html',
       'site/index.html',

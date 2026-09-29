@@ -21,7 +21,8 @@ describe('website W-IMPL binds', () => {
     assert.match(explorer, /function ongoingHashbonusHashes\(stats\)/);
     assert.match(explorer, /function fmtHashNanos\(hashes, unitNanos\)/);
     assert.match(explorer, /networkRoundHashes/);
-    assert.match(explorer, /roundHashes/);
+    assert.doesNotMatch(explorer, /stats\.workers/);
+    assert.doesNotMatch(explorer, /stats\.avgBlockTimeMs/);
     assert.match(explorer, /1000000000/);
     assert.match(explorer, /setText\('ex-hashrate', fmtHashNanos\(ongoingHashbonusHashes\(stats\), stats && stats\.hashBonusNanos\) \+ ' SHE'\)/);
     assert.doesNotMatch(explorer, /fmtRate\(stats\.hashrate\)/);
@@ -33,6 +34,17 @@ describe('website W-IMPL binds', () => {
     assert.doesNotMatch(explorer, /Shear minted by Reserve/);
     assert.match(explorer, /id="ex-reserve-vault"/);
     assert.doesNotMatch(explorer, /fully synced/);
+    const start = explorer.indexOf('function ongoingHashbonusHashes');
+    const end = explorer.indexOf('function fmtHashNanos');
+    const fn = explorer.slice(start, end);
+    const withNetwork = vm.runInNewContext(`${fn}\nongoingHashbonusHashes({ networkRoundHashes: 12, workers: [{ roundHashes: 99 }] });`);
+    const poolOnly = vm.runInNewContext(`${fn}\nongoingHashbonusHashes({ workers: [{ roundHashes: 99 }] });`);
+    assert.equal(withNetwork, 12);
+    assert.equal(poolOnly, 0);
+    const poolSrc = read('../src/pool.js');
+    assert.match(poolSrc, /networkAvgBlockTimeMs: avgBlockIntervalMs\(store\.blocks\)/);
+    assert.doesNotMatch(poolSrc, /networkAvgBlockTimeMs: avgMs/);
+    assert.match(poolSrc, /avgBlockTimeMs: avgMs/);
   });
 
   it('explorer last block is the network tip, not the pool find clock', () => {
@@ -125,13 +137,14 @@ describe('website W-IMPL binds', () => {
     assert.doesNotMatch(mempool, /prettier/);
   });
 
-  it('wallet pin 0.61 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
+  it('wallet pin 0.62 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
     const paper = read('../../site/whitepaper/index.html');
     const pdf = read('../../site/whitepaper/build_pdf.py');
     assert.match(explorer, /id="shear-chrome-root" data-active="EXPLORER"/);
     assert.doesNotMatch(explorer, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(explorer, /releases\/tag\/0\.52/);
-    assert.match(poolExplorer, /releases\/tag\/0\.61/);
+    assert.match(poolExplorer, /href="https:\/\/shear\.digital\/wallet\/"/);
+    assert.doesNotMatch(poolExplorer, /github\.com/);
     assert.doesNotMatch(poolExplorer, /releases\/tag\/0\.55(?!\.)/);
     assert.match(pool, /id="shear-chrome-root" data-active="POOL"/);
     assert.doesNotMatch(pool, /releases\/tag\/0\.55(?!\.)/);
@@ -139,13 +152,13 @@ describe('website W-IMPL binds', () => {
     assert.match(mempool, /id="shear-chrome-root" data-active="MEMPOOL"/);
     assert.doesNotMatch(mempool, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(mempool, /releases\/tag\/0\.52/);
-    assert.match(pdf, /pin 0\.61/);
+    assert.match(pdf, /pin 0\.62/);
     assert.doesNotMatch(pdf, /pin 0\.55(?!\.2)/);
-    assert.match(pdf, /Wallet pin at publication: 0\.61/);
-    assert.match(pdf, /wallet-0\.61/);
+    assert.match(pdf, /Wallet pin at publication: 0\.62/);
+    assert.match(pdf, /wallet-0\.62/);
     assert.doesNotMatch(pdf, /wallet-0\.55(?!\.2)/);
     assert.match(paper, /a class="nav-btn"/);
-    assert.match(paper, /href="https:\/\/shear\.digital"/);
+    assert.match(paper, /href="https:\/\/shear\.digital\/"/);
     assert.doesNotMatch(paper, /prettier/);
     assert.match(read('../../explorer/shared/shear-chrome.js'), /id="shear-wordmark"/);
     assert.match(explorer, /shear-chrome\.js/);

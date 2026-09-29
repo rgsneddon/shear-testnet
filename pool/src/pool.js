@@ -252,7 +252,7 @@ export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
  * which is not yours. Solo (`npm run solo` / `--solo`) does not read this
  * constant and does not take the 1%. The solo finder keeps the epoch pot.
  */
-export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1qaggzjnmsd3lvpqjww4ql62rmjvsu2xykxf09jr83juwq0drn6jyy7qye9j97v3yza7l250el3c99zg0q4vhst8j37n';
+export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1qqv2ezgh5krtlcqu586r5dtx6nancf3hjtey2dp7kjujf523fz70l5tqrvzl0axx39qxgnmm4v8kqxcn3s4nqzrgjve';
 
 /** PROP of (pot - 100 bps) across hasher dests. Fee dest gets only the fee. */
 export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDest = null) {
@@ -1030,6 +1030,23 @@ export function isPublicMinerRow(m, now = Date.now()) {
   return (Number(now) - gone) < HASH_PRESENCE_MS;
 }
 
+function collectWorkerNames(view) {
+  const raw = [];
+  if (Array.isArray(view?.workerNames)) raw.push(...view.workerNames);
+  if (view?.worker) raw.push(view.worker);
+  const seen = new Set();
+  const out = [];
+  for (const item of raw) {
+    const s = String(item || '').trim();
+    if (!s) continue;
+    const key = s.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out;
+}
+
 /** One dashboard row per public miner tag. Device sessions combine. */
 export function foldPublicMinerViews(views) {
   const byTag = new Map();
@@ -1041,6 +1058,7 @@ export function foldPublicMinerViews(views) {
     if (!prev) {
       byTag.set(tag, {
         ...v,
+        workerNames: collectWorkerNames(v),
         hashrate: Number(v.hashrate) || 0,
         hashes: Number(v.hashes) || 0,
         roundHashes: Number(v.roundHashes) || 0,
@@ -1078,6 +1096,10 @@ export function foldPublicMinerViews(views) {
     const fa = Number(prev.firstSeen) || 0;
     const fb = Number(v.firstSeen) || 0;
     prev.firstSeen = fa && fb ? Math.min(fa, fb) : (fa || fb);
+    prev.workerNames = collectWorkerNames({
+      workerNames: [...(prev.workerNames || []), ...(Array.isArray(v.workerNames) ? v.workerNames : [])],
+      worker: v.worker,
+    });
     prev.name = uniquePublicLabels([prev.name, v.name]);
     prev.version = uniquePublicLabels([prev.version, v.version]);
   }
@@ -2512,7 +2534,7 @@ export function createPool({
       shareBits: Number(lastJob?.shareBits || shareBits),
       lastFoundAt: stats.lastFoundAt || 0,
       avgBlockTimeMs: avgMs,
-      networkAvgBlockTimeMs: avgMs,
+      networkAvgBlockTimeMs: avgBlockIntervalMs(store.blocks),
       avgBlockTimeMedianMs: medianMs,
       avgBlockWindow: findDts.length,
       nodesOnline: nodesOnline(),
@@ -2551,6 +2573,30 @@ export function createPool({
     });
   }
 
+  /** Pot shares already on the public ledger, split at the spendable floor.
+   *  Hash amounts stay off this object. */
+  function publicPotBanner(rows, tipHeight) {
+    let pending = 0;
+    let confirmed = 0;
+    let block = 0;
+    let fee = 0;
+    let earned = 0;
+    const tip = Number(tipHeight) || 0;
+    for (const r of rows) {
+      const pot = Math.floor(Number(r?.blockRwdNanos) || 0);
+      const rowFee = Math.floor(Number(r?.poolFeeNanos) || 0);
+      const rowTotal = Math.floor(Number(r?.totalNanos) || 0);
+      block += pot;
+      fee += rowFee;
+      earned += rowTotal;
+      const h = Number(r?.height) || 0;
+      const confs = tip >= h && h >= 1 ? tip - h + 1 : 0;
+      if (confs >= SPENDABLE_CONFIRMATIONS) confirmed += pot;
+      else pending += pot;
+    }
+    return { pending, confirmed, block, fee, earned };
+  }
+
   function minerPublicJson(tag, now = Date.now()) {
     const rows = minerByTag(tag, now);
     const tipH = Number(store.tip?.()?.height || 0);
@@ -2575,6 +2621,8 @@ export function createPool({
     }), { hashrate: 0, roundHashes: 0, accepted: 0, stale: 0, blocks: 0, threads: 0 });
     const liveDest = rows.map((m) => hasherPayoutDest(m.login, { dest: m.payoutDest })).find(Boolean) || '';
     const dest = pull.dest || liveDest;
+    const ledger = publicMinerLedger(typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : []);
+    const banner = publicPotBanner(ledger, tipH);
     return {
       ok: true,
       tag,
@@ -2611,14 +2659,23 @@ export function createPool({
       destRedacted: dest ? redactSsa1(dest) : (pull.destRedacted || 'ssa1********'),
       hasPayoutDest: !!dest,
       confirmedSentLabel: dest
-        ? `On-chain hashbonus to ${redactSsa1(dest)}`
-        : 'No valid ssa1 on login — credits held for admin payout',
+        ? `Confirmed sent to ${redactSsa1(dest)}`
+        : 'No valid ssa1 on this miner login',
+      pendingConfirmShe: banner.pending / NANOS_PER_SHE,
+      pendingConfirmDisplay: formatShe(banner.pending / NANOS_PER_SHE),
+      confirmedSentShe: banner.confirmed / NANOS_PER_SHE,
+      confirmedSentDisplay: formatShe(banner.confirmed / NANOS_PER_SHE),
+      totals: {
+        blockRwdNanos: banner.block,
+        poolFeeNanos: banner.fee,
+        totalNanos: banner.earned,
+      },
       autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
       autoPayoutMinShe: AUTO_PAYOUT_MIN_NANOS / NANOS_PER_SHE,
       lastPullMs: pull.lastPullMs,
       nextPullMs: pull.nextPullMs,
       cooldownMs: PULL_COOLDOWN_MS,
-      ledger: publicMinerLedger(typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : []),
+      ledger,
       ...(autoPayoutLastError && autoPayoutLastError.tag === tag
         ? { autoPayoutLastError }
         : {}),

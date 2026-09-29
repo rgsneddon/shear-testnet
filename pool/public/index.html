@@ -138,14 +138,33 @@
     input[aria-invalid="true"] { border-color:#b42318; }
     input[aria-invalid="false"] { border-color:var(--green); }
     .mine-dl { margin: 0 0 8px; }
-    .cmd-row { display:flex; gap:8px; align-items:stretch; }
-    .cmd-row pre { flex:1; margin:0; }
-    .cmd-row button { padding:.4rem .7rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer; font-family:"Segoe UI",system-ui,sans-serif; font-size:.85rem; }
+    #start-mining, #mine-form { min-width:0; max-width:100%; }
+    #start-mining input { max-width:100%; }
+    .cmd-row { display:flex; flex-direction:row; gap:8px; align-items:stretch; width:100%; max-width:100%; min-width:0; }
+    .cmd-row pre { flex:1 1 auto; min-width:0; max-width:100%; margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .cmd-row button { flex:0 0 auto; align-self:center; white-space:nowrap; padding:.4rem .7rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer; font-family:"Segoe UI",system-ui,sans-serif; font-size:.85rem; }
     .cmd-row button:disabled { opacity:.55; cursor:not-allowed; }
     .cmd-row button.is-copied { color:var(--green); }
     table { width:100%; max-width:100%; border-collapse:collapse; table-layout:fixed; }
     th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.88rem; overflow-wrap:anywhere; word-break:break-word; }
     .table-wrap { width:100%; max-width:100%; overflow-x:auto; }
+    .miner-hover { position: relative; }
+    .miner-pop {
+      display: none;
+      position: fixed;
+      z-index: 80;
+      margin: 0;
+      padding: 6px 10px;
+      list-style: none;
+      background: var(--panel, #10141a);
+      color: var(--ink, #e8eef4);
+      border: 1px solid rgba(61, 139, 255, .45);
+      border-radius: 6px;
+      font-size: .85rem;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .miner-pop li { margin: 0; padding: 1px 0; }
     #recent-wrap { overflow: visible; }
     #recent-txs td:nth-child(2) { white-space: nowrap; }
     .panel-card { min-width:0; }
@@ -378,21 +397,16 @@
       <section class="panel-card">
         <h1>Shear</h1>
         <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
-        <p>ADMITv2 membership over this book's notes, with confidential amounts. <a href="https://dag.shear.digital/">DINS-DAG</a> settles each round as the blue set: the spine pot plus the hash nanos, once. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
-        <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. While this book has fewer than 10,000 notes the membership set is thin. The pool seals the pay. Continuum reads every note for your dest from a node, including seals from while the wallet was closed. Spendable in the wallet is 9 confirmations of an opened coin. The numbers on this dashboard are the pool’s own view. Wallet: https://shear.digital/wallet/ (Continuum 0.61). Node: https://shear.digital/node/ (Shear Sentinel v11). How-to: https://shear.digital/docs/#/surfaces.</p>
-        <p>Mine with Copy dest: <code>ssa1.worker</code>. Hash bonus (no pool fee) and your share of the block pot (after 1%) seal to that <code>ssa1</code> in the found block. Continuum lists that seal as blockfound. Spendable is 9 confirmations of the opened coin. The pool does not hold the reward and send it later.</p>
-        <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v6</p>
+        <p>Shear is a private cryptocurrency. Continuity-settled proof of work. DINS-DAG settles each round as the blue set: the spine pot plus the hash nanos, once. PoW elects the tip. <strong>Testnet.</strong></p>
+        <p>Mine with Copy dest: <code>ssa1.worker</code>. Hash bonus (no pool fee) and your share of the block pot after the 1% fee seal to that <code>ssa1</code> in the found block. Continuum lists that seal as blockfound. This pool is not custodial - we merely process what the node tells us.</p>
+        <p>Privacy is ADMITv2 membership over the notes on this blockchain, with confidential amounts. Offer a silent ID (<code>she1</code>) when someone pays you. Coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure.</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
       </section>
       <section class="panel-card" id="start-mining">
         <h2>Start mining</h2>
-        <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v6</code> · ShearHash-v3.</p>
-        <p class="label" id="stratum-cleartext">Stratum is <strong>cleartext TCP</strong> unless TLS is configured in front of the bind. Production should set <code>SHEAR_STRATUM_AUTH=1</code>.</p>
-        <ol class="mine-steps">
-          <li>Install Continuum 0.61 from https://shear.digital/wallet/ and ShearK 2.6 from https://shear.digital/miner/. Wallet → <strong>Copy dest</strong> (the Continuum <code>ssa1</code> shown on screen — that mailbox, not a rotated dest).</li>
-          <li>Paste dest and a worker name. Pick CPU threads. Run --selftest once on a new machine, then the command below.</li>
-          <li>Copy the command. The found block pays that <code>ssa1</code>. No withdraw button. Open Continuum (Connect Bare or a local node) to see each sealed pay. A figure on this page is not the wallet Spendable figure.</li>
-        </ol>
+        <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v6</code> · ShearHash-v3. ShearK 2.6.</p>
+        <p class="label" id="stratum-cleartext">Stratum is <strong>cleartext TCP</strong>. Set <code>SHEAR_STRATUM_AUTH=1</code> when TLS is not in front.</p>
+        <p>Paste Copy dest, a worker name, and CPU threads. Copy the command into ShearK. Use a worker name that you will recognise, so you can find your miners page link in the pool miners table below.</p>
         <form id="mine-form" action="#" method="get" autocomplete="off">
         <p>
           <label class="label" for="addr">Copy dest (<code>ssa1</code>)</label><br/>
@@ -406,17 +420,12 @@
           <label class="label" for="threads">CPU threads</label><br/>
           <input id="threads" name="threads" type="number" min="1" max="256" value="4" step="1"/>
         </p>
-        <p class="mine-dl label">ShearK-Miner 2.6:
-          <a href="https://github.com/rgsneddon/ShearK/releases/download/2.6/ShearK-Miner-2.6-linux.zip">Linux</a>
-          ·
-          <a href="https://github.com/rgsneddon/ShearK/releases/download/2.6/ShearK-Miner-2.6-windows.zip">Windows</a>
-        </p>
         <div class="cmd-row">
           <pre id="mine-cmd">ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --threads 4</pre>
           <button type="submit" id="copy-cmd">Copy command</button>
         </div>
-        <p class="label" id="cmd-hint">Login is the dest the wallet exported as <code>ssa1.worker</code>. <code>she1</code> without dest is unpaid. Never <code>shear1</code>.</p>
-        <p class="label" id="win-smartscreen">Windows: SmartScreen or Defender may warn that ShearK-Miner.exe is an unrecognized app. This testnet build is not Authenticode-signed. Choose More info → Run anyway, or right-click the zip/exe → Properties → Unblock, then run.</p>
+        <p class="label" id="cmd-hint">Login is <code>ssa1.worker</code>. <code>she1</code> without a dest is unpaid. Never <code>shear1</code>.</p>
+        <p class="label" id="win-smartscreen">Windows: SmartScreen may warn. ShearK-Miner.exe is not Authenticode-signed. More info → Run anyway, or Unblock the file.</p>
         </form>
       </section>
     </div>
@@ -885,7 +894,13 @@
         }).map(function (w) {
           const tag = String(w.miner || '');
           const href = '/miner/' + encodeURIComponent(tag);
-          return '<tr><td><a href="' + href + '">' + tag + '</a></td><td>' +
+          const names = (Array.isArray(w.workerNames) && w.workerNames.length)
+            ? w.workerNames
+            : (w.worker ? [String(w.worker)] : []);
+          const pop = names.length
+            ? '<ul class="miner-pop">' + names.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>'
+            : '';
+          return '<tr><td><span class="miner-hover"><a href="' + href + '">' + esc(tag) + '</a>' + pop + '</span></td><td>' +
             ([w.name, w.version].filter(Boolean).join(' ') || '—') + '</td><td>' + fmtRate(w.hashrate) + '</td><td>' +
             (Number(w.blocksSession != null ? w.blocksSession : w.blocks) || 0) + '</td><td>' +
             (Number(w.blocksLifetime) || 0) + '</td><td>' + (w.accepted || 0) + '</td><td>' +
@@ -995,6 +1010,43 @@
         .then(paint)
         .catch(function () {})
         .then(function () { statsBusy = false; });
+    }
+    const minersTable = document.getElementById('miners');
+    function placeMinerPop(hover) {
+      const pop = hover && hover.querySelector('.miner-pop');
+      if (!pop) return;
+      const r = hover.getBoundingClientRect();
+      pop.style.display = 'block';
+      pop.style.left = Math.max(8, r.left) + 'px';
+      pop.style.top = (r.bottom + 4) + 'px';
+    }
+    function hideMinerPop(hover) {
+      const pop = hover && hover.querySelector('.miner-pop');
+      if (pop) pop.style.display = '';
+    }
+    if (minersTable) {
+      minersTable.addEventListener('mouseover', function (ev) {
+        const hover = ev.target.closest && ev.target.closest('.miner-hover');
+        if (hover) placeMinerPop(hover);
+      });
+      minersTable.addEventListener('mouseout', function (ev) {
+        const hover = ev.target.closest && ev.target.closest('.miner-hover');
+        if (!hover) return;
+        const to = ev.relatedTarget;
+        if (to && hover.contains(to)) return;
+        hideMinerPop(hover);
+      });
+      minersTable.addEventListener('focusin', function (ev) {
+        const hover = ev.target.closest && ev.target.closest('.miner-hover');
+        if (hover) placeMinerPop(hover);
+      });
+      minersTable.addEventListener('focusout', function (ev) {
+        const hover = ev.target.closest && ev.target.closest('.miner-hover');
+        if (!hover) return;
+        const to = ev.relatedTarget;
+        if (to && hover.contains(to)) return;
+        hideMinerPop(hover);
+      });
     }
     setInterval(tick, 1000);
     tick();

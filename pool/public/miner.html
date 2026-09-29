@@ -8,6 +8,7 @@
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
   <link rel="stylesheet" href="/brand/theme.css?v=30"/>
+  <link rel="stylesheet" href="/shared/shear-chrome.css?v=20260926dag"/>
   <style>
     :root, html[data-theme="dark"] {
       --bg: #07090c; --card: #11161f; --ink: #e8eef4; --muted: #8b9aab;
@@ -50,12 +51,13 @@
     }
     .split-rule { width: 1px; background: rgba(94,234,212,.28); }
     html[data-theme="light"] .split-rule { background: rgba(15,118,110,.28); }
-    .pull-row {
+    .pay-banner {
       display:grid; gap:8px; width:100%;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       margin: 8px 0 16px; align-items: stretch;
     }
-    .pull-row .panel-card { margin:0; padding:7px 8px; min-width:0; }
+    .pay-banner .panel-card { margin:0; padding:7px 8px; min-width:0; }
+    .pay-banner .hint { color:var(--muted); font-size:.75rem; margin:.35rem 0 0; font-weight:500; }
     .label { color:var(--muted); font-size:.75rem; letter-spacing:.05em; text-transform:uppercase; }
     .payout-err { color:var(--muted); font-size:.75rem; margin:.35rem 0 0; font-weight:500; }
     .value { font-size:.9rem; font-weight:650; margin-top:2px; color:var(--cyan); overflow-wrap:anywhere; }
@@ -79,19 +81,7 @@
     .mono { font-family: ui-monospace, Consolas, monospace; font-size:.88rem; }
     table { width:100%; border-collapse:collapse; }
     th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.88rem; overflow-wrap:anywhere; }
-    #accounting th:not(:first-child), #accounting td:not(:first-child),
-    #acct-totals th:not(:first-child), #acct-totals td:not(:first-child) { text-align:right; font-variant-numeric: tabular-nums; }
-    .acct-scroll {
-      max-height: 22.5rem;
-      overflow-y: auto;
-      overflow-x: auto;
-    }
-    #accounting thead th {
-      position: sticky; top: 0; z-index: 1;
-      background: var(--card, #fff);
-    }
-    #acct-totals { margin-top: 8px; }
-    #acct-totals table { margin: 0; }
+    .table-wrap { width:100%; max-width:100%; overflow-x:auto; }
     #back-pool-box .back-pool {
       display: inline-block; margin: 2px 0 0; text-align: left;
       color: #1558c0; font-size: .9rem; font-weight: 750;
@@ -121,73 +111,37 @@
       position:sticky; top:0; z-index:40;
     }
 
-    a.nav-btn {
-      display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
-      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
-      border:1px solid rgba(94,234,212,.22);
-      background: var(--card);
-    }
-    html[data-theme="light"] a.nav-btn { border-color: rgba(15,118,110,.28); }
     @media (max-width: 1024px) {
       .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .pull-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .pay-banner { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <header class="top-banner">
-    <div class="banner-brand">
-      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
-        src="/brand/05c-wordmark-nevia-light-transparent.png"
-        data-light="/brand/05c-wordmark-nevia-light-transparent.png"
-        data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
-      <img class="banner-wordmark theme-img-dark" alt=""
-        src="/brand/05d-wordmark-nevia-dark-transparent.png"/>
-    </div>
-    <nav class="nav" id="shear-nav">
-      <a class="nav-btn" href="https://shear.digital">MAIN</a>
-      <a class="nav-btn" href="/">POOL</a>
-      <a class="nav-btn" href="https://explorer.shear.digital">EXPLORER</a>
-      <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" target="_blank" rel="noopener">MINER</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.58" target="_blank" rel="noopener">WALLET</a>
-      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
-    </nav>
-    <div class="banner-tools">
-      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
-        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
-        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
-      </button>
-      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
-    </div>
-  </header>
+  <div id="shear-chrome-root" data-active="POOL" data-brand-base="/brand/" data-testnet-pill="1"></div>
+  <script src="/shared/shear-chrome.js?v=20260926dag"></script>
   <div class="wrap">
     <section class="panel-card">
       <h1>Miner stats · <span class="mono" id="miner-tag">—</span></h1>
-      <p>This page counts round work. Payment is the coinbase of the found block: your hash bonus and your share of the pot after the 1% fee seal to your <code>ssa1</code> in that block. Hash bonus is fee-free. There is no withdraw button and no later send. Open Continuum (Connect Bare or a local node) to read the blockfound row. Spendable there is 9 confirmations of an opened coin. Wallet: https://shear.digital/wallet/ (Continuum 0.61). Node: https://shear.digital/node/ (Shear Sentinel v11). How-to: https://shear.digital/docs/#/surfaces.</p>
-      <p id="reward-identity">Rewards share the block pot by round work after the 1% pool fee — not one SHE per block you found.</p>
-      <p id="payout-note">The found block seals the pay. Continuum spendable is 9 confirmations. Figures here are this round’s work, not a balance the pool is holding.</p>
+      <p id="payout-note">Live work for this miner: hashrate, shares, and blocks found.</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
       <p id="freeze-banner" role="status" hidden></p>
     </section>
-    <div class="pull-row" id="pull-row">
-      <article class="panel-card pull-acc">
-        <div class="label">Accumulated</div>
-        <div class="value yellow" id="m-pending">0 SHE</div>
+    <div class="pay-banner" id="pay-banner">
+      <article class="panel-card">
+        <div class="label">Ongoing hashbonus</div>
+        <div class="value yellow" id="m-hashbonus">Shear Privacy</div>
+        <p class="hint">The amount stays on your notes.</p>
       </article>
-      <article class="panel-card pull-confirming">
-        <div class="label">Confirming SHE</div>
-        <div class="value yellow" id="m-confirming">0 SHE</div>
+      <article class="panel-card">
+        <div class="label">Pending confirmed</div>
+        <div class="value yellow" id="m-pending">Shear Privacy</div>
+        <p class="hint">Sealed coins under 9 confirmations stay on your notes.</p>
       </article>
-      <article class="panel-card pull-waiting">
-        <div class="label">Waiting payout</div>
-        <div class="value yellow" id="m-waiting">0 SHE</div>
-        <p class="payout-err hid" id="m-payout-error"></p>
-      </article>
-      <article class="panel-card pull-conf">
-        <div class="label" id="m-sent-label">All-time sent to ssa1********</div>
-        <div class="value yellow" id="m-confirmed">0 SHE</div>
+      <article class="panel-card">
+        <div class="label" id="m-sent-label">Confirmed sent</div>
+        <div class="value yellow" id="m-confirmed">Shear Privacy</div>
+        <p class="hint">Spendable coins stay in Continuum.</p>
       </article>
     </div>
     <div class="grid" id="stat-grid">
@@ -223,62 +177,26 @@
         <a class="back-pool" href="/">back to pool</a>
       </article>
     </div>
-    <section class="panel-card">
+    <section class="panel-card" id="worker-table">
       <h2>Workers</h2>
-      <p>Worker is the login name after the dest (for example monsoon). Miner tag stays a hashed she1 id.</p>
+      <div class="table-wrap">
       <table id="workers">
         <thead>
           <tr>
             <th>Worker</th>
-            <th>Version</th>
+            <th>Client</th>
             <th>Hashrate</th>
-            <th>Blocks found</th>
-            <th>Accepted</th>
-            <th>Stale</th>
-            <th>Threads</th>
-            <th>Hashes this round</th>
-            <th>Connected</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </section>
-    <section class="panel-card">
-      <h2>Accounting</h2>
-      <p>Per sealed block. Block rwd is your share of the pot after the pool fee. Pool fee is this pool’s cut of your pot share (0–3% cap; this pool takes 1%). Total earned is the block reward. Latest 10 rows sit in view; older heights scroll.</p>
-      <div class="acct-scroll">
-      <table id="accounting">
-        <thead>
-          <tr>
-            <th>HEIGHT</th>
-            <th>BLOCK RWD</th>
-            <th>POOL FEE</th>
-            <th>TOTAL EARNED</th>
+            <th>Session finds</th>
+            <th>Lifetime seals</th>
+            <th>Accepted shares</th>
+            <th>Hashes reported</th>
+            <th>Stale shares</th>
+            <th>CPU threads</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
       </div>
-    </section>
-    <section class="panel-card" id="acct-totals">
-      <table>
-        <thead>
-          <tr>
-            <th>TOTALS</th>
-            <th>BLOCK RWD</th>
-            <th>POOL FEE</th>
-            <th>TOTAL EARNED</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td class="mono">all heights</td>
-            <td id="tot-block">0.00000000</td>
-            <td id="tot-fee">0.00000000</td>
-            <td id="tot-earned">0.00000000</td>
-          </tr>
-        </tbody>
-      </table>
     </section>
   </div>
   <script>
@@ -312,13 +230,6 @@
       if (Number.isFinite(n) && n > 0) return n.toFixed(8).replace(/0+$/, '').replace(/\.$/, '') + ' SHE';
       return '0 SHE';
     }
-    function fmtSheNanos(nanos, digits) {
-      const n = Number(nanos) || 0;
-      const she = n / 1e11;
-      const d = digits == null ? 8 : digits;
-      if (!(she > 0)) return (0).toFixed(d);
-      return she.toFixed(d);
-    }
     function paintFreezeBanner(el, s) {
       if (!el) return;
       const frozen = !!(s && s.frozen);
@@ -326,6 +237,31 @@
       const line = frozen ? String(policy.freeze_banner || s.freeze_banner || '') : '';
       el.hidden = !line;
       el.textContent = line;
+    }
+    function esc(v) {
+      return String(v == null ? '' : v).replace(/[&<>"]/g, function (c) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c];
+      });
+    }
+    function paintWorkers(rows) {
+      const body = document.querySelector('#workers tbody');
+      if (!body) return;
+      const list = (Array.isArray(rows) ? rows : []).slice().sort(function (a, b) {
+        return (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0);
+      });
+      if (!list.length) {
+        body.innerHTML = '<tr><td colspan="9">No live workers</td></tr>';
+        return;
+      }
+      body.innerHTML = list.map(function (w) {
+        const client = [w.name, w.version].filter(Boolean).join(' ') || '—';
+        const finds = Number(w.blocksSession != null ? w.blocksSession : w.blocks) || 0;
+        const hashes = w.hashes != null ? Number(w.hashes) : (Number(w.roundHashes) || Number(w.provenHashes) || 0);
+        return '<tr><td>' + esc(w.worker || 'worker') + '</td><td>' + esc(client) + '</td><td>' +
+          esc(fmtRate(w.hashrate)) + '</td><td>' + finds + '</td><td>Shear Privacy</td><td>' +
+          (Number(w.accepted) || 0) + '</td><td>' + hashes + '</td><td>' +
+          (Number(w.stale) || 0) + '</td><td>' + (Number(w.threads) || 0) + '</td></tr>';
+      }).join('');
     }
     function paint(d) {
       if (!d || !d.ok) {
@@ -348,65 +284,17 @@
       set('m-orphans', String(d.orphans || 0));
       set('m-threads', String(d.threads || 0));
       set('m-round', String(d.hashes || d.roundHashes || 0));
-      set('m-pending', fmtPullShe(d.pendingDisplay, d.pendingShe));
-      set('m-confirming', fmtPullShe(d.unconfirmedDisplay, d.unconfirmedShe));
-      set('m-waiting', fmtPullShe(d.creditConfirmedDisplay, d.creditConfirmedShe));
-      var errEl = document.getElementById('m-payout-error');
-      if (errEl) {
-        var last = d.autoPayoutLastError;
-        var why = last && last.reason;
-        if (why === 'insufficient' || why === 'unsigned') {
-          errEl.textContent = why === 'insufficient'
-            ? 'Last auto-payout could not send: spendable short of the due amount.'
-            : 'Last auto-payout could not send: unsigned (pool spend key missing).';
-          errEl.classList.remove('hid');
-        } else {
-          errEl.textContent = '';
-          errEl.classList.add('hid');
-        }
-      }
-      set('m-confirmed', fmtPullShe(d.sentDisplay || d.confirmedDisplay, d.sentShe != null ? d.sentShe : d.confirmedShe));
-      set('m-sent-label', d.confirmedSentLabel || ('All-time sent to ' + (d.destRedacted || 'ssa1********')));
-      var note = 'The found block seals hash bonus and your pot share after the 1% fee to your ssa1. Continuum shows that blockfound row. Spendable is 9 confirmations. This page does not hold the SHE.';
-      if (d.hasPayoutDest === false) {
-        note = 'No valid ssa1 on this miner login. Log in with Copy dest so the found block can seal the note to you.';
-      }
+      set('m-hashbonus', 'Shear Privacy');
+      set('m-pending', 'Shear Privacy');
+      set('m-confirmed', 'Shear Privacy');
+      set('m-sent-label', d.confirmedSentLabel || 'Confirmed sent');
+      var note = 'Live work for this miner: hashrate, shares, and blocks found.';
+      if (d.hasPayoutDest === false) note = 'No valid ssa1 on this miner login.';
       set('payout-note', note);
       set('m-first', ago(d.firstSeen));
       set('m-last', ago(d.lastSeen));
+      paintWorkers(d.workers);
       document.title = d.tag + ' · Shear miner';
-      const tb = document.querySelector('#workers tbody');
-      if (tb) {
-        tb.innerHTML = (d.workers || []).slice().sort(function (a, b) {
-          return (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0);
-        }).map(function (w) {
-          const name = String(w.worker || 'worker').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || 'worker';
-          return '<tr><td class="mono">' + name + '</td><td>' + ([w.name, w.version].filter(Boolean).join(' ') || '—') +
-            '</td><td>' + fmtRate(w.hashrate) + '</td><td>' + (w.blocks || 0) +
-            '</td><td>' + (w.accepted || 0) + '</td><td>' + (w.stale || 0) +
-            '</td><td>' + (w.threads || 0) + '</td><td>' + (w.hashes || w.roundHashes || 0) +
-            '</td><td>' + (w.connected ? 'yes' : 'no') + '</td></tr>';
-        }).join('');
-      }
-      const ab = document.querySelector('#accounting tbody');
-      if (ab) {
-        const rows = (d.ledger || []).slice();
-        ab.innerHTML = rows.map(function (r) {
-          return '<tr><td class="mono">' + (r.height || 0) +
-            '</td><td>' + fmtSheNanos(r.blockRwdNanos, 8) +
-            '</td><td>' + fmtSheNanos(r.poolFeeNanos, 8) +
-            '</td><td>' + fmtSheNanos(r.totalNanos, 8) + '</td></tr>';
-        }).join('') || '<tr><td colspan="4">No sealed credits yet.</td></tr>';
-        let totB = 0, totF = 0, totT = 0;
-        for (let i = 0; i < rows.length; i += 1) {
-          totB += Number(rows[i].blockRwdNanos) || 0;
-          totF += Number(rows[i].poolFeeNanos) || 0;
-          totT += Number(rows[i].totalNanos) || 0;
-        }
-        set('tot-block', fmtSheNanos(totB, 8));
-        set('tot-fee', fmtSheNanos(totF, 8));
-        set('tot-earned', fmtSheNanos(totT, 8));
-      }
     }
     function tick() {
       if (!/^m[0-9a-f]{8}$/i.test(tag)) {

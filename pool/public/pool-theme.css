@@ -208,13 +208,25 @@ html[data-theme="light"] .cmd-row button:hover {
 .cmd-row button:disabled { opacity: 0.5; cursor: not-allowed; }
 .cmd-row button.is-copied { color: var(--green); border-color: var(--green); }
 
+.cmd-row {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
 .cmd-row pre {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   padding: 0.45rem 0.55rem;
   font-family: var(--mono);
   font-size: 0.82rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
+.cmd-row button { flex: 0 0 auto; align-self: center; white-space: nowrap; }
 
 /* Tables */
 table { width: 100%; border-collapse: collapse; table-layout: fixed; }

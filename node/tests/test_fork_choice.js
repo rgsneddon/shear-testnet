@@ -85,7 +85,9 @@ describe('fork choice does not follow the first block or the pool', () => {
     assert.equal(isFinalIngestFail('not_heavier'), false);
     assert.match(consensusFingerprint(), /FORK=work-then-lowhash/);
     assert.equal(consensusFingerprint().includes('11.0'), false);
+    assert.equal(consensusFingerprint().includes('12.0'), false);
     assert.equal(consensusFingerprint().includes('0.61'), false);
+    assert.equal(consensusFingerprint().includes('0.62'), false);
 
     const heavy = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fork-heavy-')));
     const light = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fork-light-')));

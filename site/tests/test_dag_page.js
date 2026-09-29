@@ -9,7 +9,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const page = fs.readFileSync(path.join(here, '../dag/index.html'), 'utf8');
 
 function navLabels(html) {
-  return [...html.matchAll(/<a class="nav-btn"[^>]*>([^<]+)<\/a>/g)].map((m) => m[1]);
+  return [...html.matchAll(/<a class="nav-btn(?: [^"]*)?"[^>]*>([^<]+)<\/a>/g)].map((m) => m[1]);
 }
 
 describe('dag.shear.digital page', () => {
@@ -22,7 +22,11 @@ describe('dag.shear.digital page', () => {
     assert.match(page, /DINS-DAG/);
     assert.match(page, /blue set, sorted by identity/);
     assert.match(page, /not paid a second time/);
-    assert.match(page, /Continuum 0\.61/);
+    assert.match(page, /Continuum 0\.62/);
+    assert.match(page, /href="https:\/\/shear\.digital\/wallet\/">WALLET/);
+    assert.match(page, /href="https:\/\/shear\.digital\/node\/">NODE/);
+    assert.match(page, /href="https:\/\/shear\.digital\/miner\/">MINER/);
+    assert.doesNotMatch(page, /github\.com/);
     assert.doesNotMatch(page, /Continuum 0\.55(?!\.2)/);
     assert.match(page, /ShearK 2\.6/);
     assert.match(page, /shear-testnet-v6/);

@@ -8,11 +8,11 @@ on:
       pin:
         description: Public two-part wallet pin (release tag)
         required: true
-        default: '0.61'
+        default: '0.62'
       build_number:
         description: Flutter build-number
         required: true
-        default: '86'
+        default: '87'
       repo:
         description: GitHub repo that owns the release
         required: true

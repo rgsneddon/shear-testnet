@@ -542,15 +542,12 @@ describe('auto payout at π SHE to miner ssa1', () => {
     pool.close();
   });
 
-  it('miner page paints a muted auto-payout error under Waiting payout', () => {
+  it('miner page does not publish sealed amounts in the three boxes', () => {
     const html = fs.readFileSync(new URL('../public/miner.html', import.meta.url), 'utf8');
-    const waiting = html.indexOf('Waiting payout');
-    const errId = html.indexOf('id="m-payout-error"');
-    assert.ok(waiting >= 0);
-    assert.ok(errId > waiting);
-    assert.match(html, /payout-err/);
-    assert.match(html, /autoPayoutLastError/);
-    assert.match(html, /why === 'insufficient' \|\| why === 'unsigned'/);
+    assert.equal(html.split('Shear Privacy').length - 1, 6);
+    assert.equal(html.includes('Waiting payout'), false);
+    assert.equal(html.includes('id="m-payout-error"'), false);
+    assert.equal(html.includes('autoPayoutLastError'), false);
     assert.doesNotMatch(html, /SHEAR_POOL_SPEND_SEED/);
   });
 });

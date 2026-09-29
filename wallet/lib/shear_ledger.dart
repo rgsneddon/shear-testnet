@@ -639,7 +639,7 @@ Future<ContinuumSendResult> submitContinuumSend({
             paymentCode: paymentCode,
             amount: need,
           );
-    final tx = await ledger.send(
+    final tx = await ledger.sendSpendableSum(
       from: from,
       to: candidate,
       amount: amount,
@@ -716,8 +716,8 @@ String voteFailCopy(Object error) {
   }
   return error.toString();
 }
-/// Hop-fee picker had no single sealed note that can cover the fee.
-/// One Flow input spends one note; several smaller notes are not combined.
+/// Hop-fee picker had no sealed note, and the rest-frame sum could not cover the fee.
+/// One Flow input spends one note. A user send of the sum posts one transaction per note.
 const kErrNoSealedNote =
     'No sealed Continuum note ready for the hop fee — wait for sync/confirms';
 /// Pool answered with an HTML error page (or other non-JSON). Never surface FormatException.
@@ -753,7 +753,19 @@ String flowSpendFrom(ShearLedger ledger, {
     }
   }
   if (best != null) return best;
-  if (cover == home) throw StateError(kFlowMiningRefuse);
+  if (cover == home || ledger.spendable(home) + 1e-12 >= amount) return home;
+  if (ledger.spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 >= amount) {
+    var richest = home;
+    var richestShe = ledger.spendable(home);
+    for (final d in ledger.moneyDests(restFrame, paymentCode: paymentCode)) {
+      final she = ledger.spendable(d);
+      if (she > richestShe) {
+        richest = d;
+        richestShe = she;
+      }
+    }
+    if (richest.isNotEmpty) return richest;
+  }
   throw StateError('insufficient');
 }
 
@@ -995,9 +1007,15 @@ class ShearTx {
       memoCt: j['memoCt'] is Map ? Map<String, dynamic>.from(j['memoCt'] as Map) : null,
       rounds: (j['rounds'] as num?)?.toInt(),
       hashAmount: (j['hashAmount'] as num?)?.toDouble() ??
+          (j['hashNanos'] is num && (j['hashNanos'] as num) > 0
+              ? (j['hashNanos'] as num).toDouble() / kUnitsPerShe
+              : null) ??
           (kind == 'hash' && amount > 0 ? amount : null),
       threads: (j['threads'] as num?)?.toInt(),
-      pot: (j['pot'] as num?)?.toDouble(),
+      pot: (j['pot'] as num?)?.toDouble() ??
+          (j['potNanos'] is num && (j['potNanos'] as num) > 0
+              ? (j['potNanos'] as num).toDouble() / kUnitsPerShe
+              : null),
       change: j['change']?.toString(),
       atMs: (j['atMs'] as num?)?.toInt() ??
           (j['ms'] as num?)?.toInt() ??
@@ -1218,6 +1236,63 @@ List<ShearTx> rollupExplorerTxs(Iterable<ShearTx> txs) {
   return rest;
 }
 
+/// One Shearview line. A hash bonus paid inside a block is [child] of that pot.
+class ShearviewTreeRow {
+  const ShearviewTreeRow({required this.tx, this.child = false});
+
+  final ShearTx tx;
+  final bool child;
+}
+
+/// Block pot share is the parent. Hash bonuses sealed in that block are children.
+/// The parent amount is the pot alone. Parent plus children equal the sealed sum.
+List<ShearviewTreeRow> shearviewTree(Iterable<ShearTx> rows) {
+  final out = <ShearviewTreeRow>[];
+  for (final t in rows) {
+    final hash = t.hashAmount ?? 0;
+    final block = t.kind == 'blockfound' || t.kind == 'coinbase' || t.kind == 'block';
+    if (!block || hash <= 0) {
+      out.add(ShearviewTreeRow(tx: t));
+      continue;
+    }
+    final potRaw = (t.pot != null && t.pot! > 0) ? t.pot! : t.amount - hash;
+    final pot = potRaw > 1e-15 ? potRaw : 0.0;
+    out.add(ShearviewTreeRow(
+      tx: ShearTx(
+        id: t.id,
+        from: t.from,
+        to: t.to,
+        amount: pot,
+        kind: t.kind,
+        height: t.height,
+        confirmed: t.confirmed,
+        memo: t.memo,
+        memoPlain: t.memoPlain,
+        memoCt: t.memoCt,
+        pot: pot,
+        atMs: t.atMs,
+        rounds: t.rounds,
+        threads: t.threads,
+        change: t.change,
+      ),
+    ));
+    out.add(ShearviewTreeRow(
+      child: true,
+      tx: ShearTx(
+        id: '${t.id}:hashbonus',
+        from: 'coinbase',
+        to: t.to,
+        amount: hash,
+        kind: 'hash',
+        height: t.height,
+        confirmed: t.confirmed,
+        atMs: t.atMs,
+      ),
+    ));
+  }
+  return out;
+}
+
 /// Shearview query over id, dest, kind, amount, height, and memo.
 bool shearviewMatches(ShearTx t, String query) {
   final q = query.trim().toLowerCase();
@@ -1241,6 +1316,8 @@ class ShearLedger {
 
   final ShearPoolClient? pool;
   final Map<String, double> _spendable = {};
+  /// Accepted Reserve locks still sitting in the verified note sum.
+  final Map<String, double> _lockDebitShe = {};
   /// Owned sealed notes (commit, noteCommit, r, prev, index, admit x). Reserve vault excepted.
   final List<Map<String, dynamic>> _notes = [];
   /// Dests whose notes carried a complete value proof this session.
@@ -1624,6 +1701,14 @@ class ShearLedger {
       _headerTimestampMs = ts;
     }
     _advanceSealed(sealedHeight);
+  }
+
+  /// The tab already shows this live tip. Move the sealed cursor with it so
+  /// the note scan is not skipped while Shearview sits on an older height.
+  /// A failed read of 0 does not wipe a remembered tip.
+  void noteLiveHeight(int height) {
+    if (height < 1 || height <= _sealedHeight) return;
+    applyTipHex('', sealedHeight: height);
   }
 
   void applyTipHex(String headerHex, {required int sealedHeight}) {
@@ -2381,21 +2466,17 @@ class ShearLedger {
     if (amount > spendable(key)) _spendable[key] = amount;
   }
 
-  Future<void> syncTip() async {
-    if (pool == null) return;
-    try {
-      await pool!.followLive().timeout(kWalletTipTimeout);
-      final json = await pool!.stats();
-      if (json['policy'] is Map) {
-        applyPolicy(Map<String, dynamic>.from(json['policy'] as Map));
-      } else if (json['frozen'] is bool) {
-        applyPolicy({
-          'frozen': json['frozen'],
-          'freeze_reason': json['freeze_reason'],
-          'freeze_banner': json['freeze_banner'],
-        });
-      }
-      applyVaultSeal(json);
+  Future<void> _applyStatsTip(Map<String, dynamic> json) async {
+    if (json['policy'] is Map) {
+      applyPolicy(Map<String, dynamic>.from(json['policy'] as Map));
+    } else if (json['frozen'] is bool) {
+      applyPolicy({
+        'frozen': json['frozen'],
+        'freeze_reason': json['freeze_reason'],
+        'freeze_banner': json['freeze_banner'],
+      });
+    }
+    applyVaultSeal(json);
       final sealed = (json['height'] as num?)?.toInt() ?? 0;
       final hex = json['header']?.toString() ?? '';
       final genesis = pool!.genesisHex ?? await pool!.fetchGenesisHex();
@@ -2430,6 +2511,20 @@ class ShearLedger {
       take('bits', (n) => networkBits = n);
       take('blockBits', (n) => networkBits = n);
       take('miners', (n) => networkMiners = n);
+  }
+
+  Future<void> syncTip() async {
+    if (pool == null) return;
+    try {
+      final live = pool!.liveTip;
+      if (live > _sealedHeight) noteLiveHeight(live);
+      final first = await pool!.stats().timeout(const Duration(seconds: 2));
+      await _applyStatsTip(first);
+    } catch (_) {}
+    try {
+      await pool!.followLive().timeout(kWalletTipTimeout);
+      final json = await pool!.stats().timeout(const Duration(seconds: 2));
+      await _applyStatsTip(json);
     } catch (_) {}
   }
 
@@ -2470,6 +2565,40 @@ class ShearLedger {
     return n;
   }
 
+  /// Open-wallet coin control. Notes parked on the shear1 rest frame join the
+  /// spendable dest. Every other owned ssa1 stays one note and is counted in
+  /// that same sum. A young note stays unspendable. Does not invent coins.
+  double recheckRestFrameSpendable(String restFrame, {String? paymentCode}) {
+    _dropProgramVaults();
+    _foldFlowDest(restFrame, paymentCode: paymentCode);
+    final bound = currentDest(restFrame, paymentCode: paymentCode);
+    if (!isDestAddress(bound)) {
+      return spendableOwned(restFrame, paymentCode: paymentCode);
+    }
+    for (final n in _notes) {
+      if (n['spent'] == true) continue;
+      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (addr.isEmpty || _isProgramVaultDest(addr)) continue;
+      if (isDestAddress(addr)) {
+        if (!isBindable(addr, restFrame: restFrame, paymentCode: paymentCode)) continue;
+        rememberDest(addr);
+        if (n['verified'] == true) _proofCheckedDests.add(payKey(addr));
+        continue;
+      }
+      n['address'] = bound;
+      n['dest'] = bound;
+      rememberDest(bound);
+      if (n['verified'] == true) _proofCheckedDests.add(payKey(bound));
+    }
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      final key = payKey(d);
+      final cap = _verifiedConfirmedShe(key);
+      if (cap == null) continue;
+      _spendable[key] = cap;
+    }
+    return spendableOwned(restFrame, paymentCode: paymentCode);
+  }
+
   /// Verified confirmed coins only. An external balance with no opened value
   /// proof is not a coin. Once a proof has opened, Spendable is that confirmed
   /// sum: a 0 book does not hide it, and a larger pool figure does not raise it.
@@ -2479,9 +2608,17 @@ class ShearLedger {
     if (cap != null) {
       _unverifiedExternal.remove(pk);
       _externalShe.remove(pk);
-      return cap;
+      final debit = _lockDebitShe[pk] ?? 0;
+      final left = cap - debit;
+      return left <= 1e-12 ? 0 : left;
     }
     return _bookMinusUnverified(pk, spendable(key));
+  }
+
+  void _noteLockDebit(String src, double needShe) {
+    if (needShe <= 1e-12) return;
+    final pk = payKey(src);
+    _lockDebitShe[pk] = (_lockDebitShe[pk] ?? 0) + needShe;
   }
 
   /// Null cap: the pool figure is not spendable. A confirmRound credit that
@@ -2632,7 +2769,7 @@ class ShearLedger {
   /// before the note book is filled. Returns true when the pool answered,
   /// including an empty list. A network miss returns false and leaves the book.
   ///
-  /// One Flow spend consumes one note. Several smaller notes are not combined.
+  /// One Flow spend consumes one note. A user send of the sum is sendSpendableSum.
   Future<bool> collateSpendNotes({
     String? dest,
     String? restFrame,
@@ -2786,14 +2923,22 @@ class ShearLedger {
   }
 
   /// Fold fragmented Continuum dests into one covering dest. Does not invent SHE.
-  /// A cover that is the mining mailbox is moved to a fresh spend dest first.
-  String consolidateSpendableForLock(String restFrame, {String? paymentCode, required double needShe}) {
+  /// A Flow or vote cover that is the mining mailbox moves to a fresh spend dest.
+  /// A Reserve lock stays on the dest that holds the coins, including that mailbox,
+  /// so the node debits the same notes Continuum already shows as spendable.
+  String consolidateSpendableForLock(
+    String restFrame, {
+    String? paymentCode,
+    required double needShe,
+    bool keepHome = false,
+  }) {
     final plan = planLockFunding(this, restFrame: restFrame, paymentCode: paymentCode, needShe: needShe);
     final home = homeDest(restFrame, paymentCode: paymentCode);
     if (plan.from != null && plan.from != home) return plan.from!;
     final miss = lockFundingShortfall(plan);
     if (miss.isNotEmpty) throw StateError(miss);
     if (plan.from == home) {
+      if (keepHome) return home;
       if (_paintedFundDest == home && spendable(home) + 1e-9 >= needShe) return home;
       return _hopOffMiningMailbox(home, restFrame, paymentCode: paymentCode);
     }
@@ -2808,6 +2953,7 @@ class ShearLedger {
       _spendable[target] = (_spendable[target] ?? 0) + amt;
     }
     if (target == home) {
+      if (keepHome) return home;
       if (_paintedFundDest == home && spendable(home) + 1e-9 >= needShe) return home;
       return _hopOffMiningMailbox(home, restFrame, paymentCode: paymentCode);
     }
@@ -2932,12 +3078,15 @@ class ShearLedger {
   /// Do not query every historical dest.
   Future<double> syncCredits(String restFrame, {String? paymentCode, bool openMemos = false}) async {
     if (pool == null) {
+      final opened = recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
       _openCollated = true;
-      return spendableOwned(restFrame, paymentCode: paymentCode);
+      return opened;
     }
     keepOwnedDests(restFrame, paymentCode: paymentCode);
     final before = _settledHeight;
     try {
+      final live = pool?.liveTip ?? 0;
+      if (live > _sealedHeight) noteLiveHeight(live);
       await syncTip();
     } catch (_) {}
     final dests = syncDests(restFrame, paymentCode: paymentCode);
@@ -3014,8 +3163,9 @@ class ShearLedger {
       final piled = spendable(e.key);
       if (piled > e.value + 1e-12) _spendable[e.key] = e.value;
     }
+    final opened = recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
     _openCollated = true;
-    return spendableOwned(restFrame, paymentCode: paymentCode);
+    return opened;
   }
 
   /// Thin poll: tip + dest balances only. No history, notes, or memoOpen.
@@ -3748,6 +3898,116 @@ class ShearLedger {
     }
   }
 
+  /// One Flow vin is one note. When no note covers [amount] and the rest-frame
+  /// sum does, post one proven send per note until the pay is filled.
+  Future<ShearTx> sendSpendableSum({
+    required String from,
+    required String to,
+    required double amount,
+    String? memo,
+    bool local = false,
+    String? kind,
+    String? programId,
+    String? restFrame,
+    String? paymentCode,
+    String? choice,
+    int? currentEpoch,
+    int? epochStartMs,
+    String? change,
+    Uint8List? spendSeed,
+    bool privacyHopUp = false,
+    bool allowPublicHttp = false,
+    bool paintedCover = false,
+  }) async {
+    final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
+    Future<ShearTx> once(double pay, String src) {
+      return send(
+        from: src,
+        to: to,
+        amount: pay,
+        memo: memo,
+        local: local,
+        kind: kind,
+        programId: programId,
+        restFrame: restFrame,
+        paymentCode: paymentCode,
+        choice: choice,
+        currentEpoch: currentEpoch,
+        epochStartMs: epochStartMs,
+        change: change,
+        spendSeed: spendSeed,
+        privacyHopUp: privacyHopUp,
+        allowPublicHttp: allowPublicHttp,
+        paintedCover: paintedCover,
+      );
+    }
+    if (sendKind != 'send' || local || paintedCover || restFrame == null) {
+      return once(amount, from);
+    }
+    try {
+      return await once(amount, from);
+    } catch (e) {
+      final msg = e is StateError ? e.message : '';
+      if (msg != 'no_note' && msg != kErrNoSealedNote && msg != 'insufficient') rethrow;
+      final slices = _sumSlices(restFrame, paymentCode, amount);
+      if (slices.length < 2) rethrow;
+      ShearTx? last;
+      for (final slice in slices) {
+        last = await once(slice.pay, slice.dest);
+      }
+      return last!;
+    }
+  }
+
+  double _roomAfterLevy(double she) {
+    var pay = she;
+    for (var k = 0; k < 6; k++) {
+      final fee = levyNanos((pay * kUnitsPerShe).round()) / kUnitsPerShe;
+      final next = she - fee;
+      if (next <= 1e-12) return 0;
+      if ((next - pay).abs() < 1e-12) return next;
+      pay = next;
+    }
+    return pay > 1e-12 ? pay : 0;
+  }
+
+  /// Notes whose individual rooms are under [amount], together covering it.
+  List<({String dest, double pay})> _sumSlices(String restFrame, String? paymentCode, double amount) {
+    final owned = moneyDests(restFrame, paymentCode: paymentCode).map(payKey).toSet();
+    final rows = <({String dest, double room})>[];
+    for (final n in _notes) {
+      if (n['spent'] == true) continue;
+      if (!_noteMature(n)) continue;
+      final dest = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (dest.isEmpty || !owned.contains(payKey(dest))) continue;
+      final room = _roomAfterLevy(_noteSheOf(n, 0));
+      if (room <= 1e-12) continue;
+      rows.add((dest: dest, room: room));
+    }
+    if (rows.length < 2) return const [];
+    rows.sort((a, b) => b.room.compareTo(a.room));
+    if (rows.first.room + 1e-12 >= amount) return const [];
+    final picked = <({String dest, double room})>[];
+    var have = 0.0;
+    for (final r in rows) {
+      picked.add(r);
+      have += r.room;
+      if (have + 1e-12 >= amount) break;
+    }
+    if (have + 1e-12 < amount) return const [];
+    final out = <({String dest, double pay})>[];
+    var left = amount;
+    for (final r in picked) {
+      if (left <= 1e-12) break;
+      final pay = left < r.room ? left : r.room;
+      if (pay <= 1e-12) return const [];
+      out.add((dest: r.dest, pay: pay));
+      left -= pay;
+    }
+    if (left > 1e-8 || out.length < 2) return const [];
+    return out;
+  }
+
   Future<ShearTx> send({
     required String from,
     required String to,
@@ -3848,6 +4108,7 @@ class ShearLedger {
             restFrame,
             paymentCode: paymentCode,
             needShe: needShe,
+            keepHome: sendKind == 'lock',
           );
         }
       }
@@ -3873,9 +4134,16 @@ class ShearLedger {
     }
     if (!paintedCover) {
       final usable = _shownSpendable(src);
-      if (usable + 1e-12 < needShe) throw StateError('insufficient');
+      final owned = restFrame == null
+          ? usable
+          : spendableOwned(restFrame, paymentCode: paymentCode);
+      if (usable + 1e-12 < needShe && owned + 1e-12 < needShe) {
+        throw StateError('insufficient');
+      }
       final pk = payKey(src);
-      if (spendable(pk) > usable + 1e-12) _spendable[pk] = usable;
+      if (usable + 1e-12 >= needShe && spendable(pk) > usable + 1e-12) {
+        _spendable[pk] = usable;
+      }
     }
     if (spendable(src) < needShe) {
       var fromNotes = 0.0;
@@ -3889,16 +4157,21 @@ class ShearLedger {
         _spendable[src] = fromNotes;
       }
     }
-    if (spendable(src) < needShe) throw StateError('insufficient');
+    if (spendable(src) < needShe) {
+      final owned = restFrame == null
+          ? spendable(src)
+          : spendableOwned(restFrame, paymentCode: paymentCode);
+      if (owned + 1e-12 < needShe) throw StateError('insufficient');
+    }
     Map<String, dynamic>? spent;
     Map<String, dynamic>? chosen;
     var fundedShe = spendable(src);
     List<Uint8List> livePubs = const [];
     List<Uint8List> liveCommits = const [];
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local && !paintedCover) {
-      // One sealed note must cover needShe. Summing several smaller notes into
-      // one Flow vin is out of scope. Pull the pool note list when the local
-      // book has no covering note.
+      // One sealed note covers this send. A sum of smaller notes is posted by
+      // sendSpendableSum as one transaction per note. Pull the pool note list
+      // when the local book has no covering note.
       final cols = await _fluxColumns();
       livePubs = cols.pubs;
       liveCommits = cols.commits;
@@ -3960,7 +4233,6 @@ class ShearLedger {
       }
       // 9 confirmations stay in force. A balance snapshot does not make a
       // young note spendable.
-      // One note must cover the fee. Several smaller notes are not combined.
       // After the picker misses, the book is the notes we can actually spend
       // so Continuum does not keep claiming a cover the hop fee cannot use.
       if (spent == null) {
@@ -4229,6 +4501,7 @@ class ShearLedger {
       if (json == null || json['ok'] != true || json['tx'] is! Map) {
         throw lastErr ?? StateError('send failed');
       }
+      if (sendKind == 'lock') _noteLockDebit(src, needShe);
       final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
       final reported = (json['fromBalance'] as num?)?.toDouble();
       var nextBal = reported ?? (spendable(src) - needShe);
@@ -4259,6 +4532,7 @@ class ShearLedger {
       return tx;
     }
     _spendable[src] = spendable(src) - needShe;
+    if (sendKind == 'lock') _noteLockDebit(src, needShe);
     _parkChange(src, changeDest);
     final tx = ShearTx(
       id: 'send-${DateTime.now().millisecondsSinceEpoch}',

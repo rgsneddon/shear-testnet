@@ -13,7 +13,7 @@ import 'shear_shewall.dart';
 import 'shear_vortex.dart';
 
 /// Public wallet pin. Keep in lock-step with [kWalletVersion] in main.dart.
-const kCliVersion = '0.61';
+const kCliVersion = '0.62';
 
 /// GUI surface each command covers. Tests assert this map stays complete.
 const kCliGuiCoverage = <String, String>{
@@ -672,7 +672,7 @@ Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
   );
   _bindLedger(ledger, id, session);
   final from = ledger.currentDest(id.address, paymentCode: id.paymentCode);
-  final tx = await ledger.send(
+  final tx = await ledger.sendSpendableSum(
     from: from,
     to: to,
     amount: amount,
@@ -853,7 +853,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       if (amt == null) throw const FormatException('reserve lock needs --amount');
       final she = double.parse(amt);
       final from = dest;
-      final tx = await ledger.send(
+      final tx = await ledger.sendSpendableSum(
         from: from,
         to: dest,
         amount: she,
@@ -878,7 +878,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
         err.writeln(errVote);
         return 1;
       }
-      await ledger.send(
+      await ledger.sendSpendableSum(
         from: dest,
         to: dest,
         amount: 0,

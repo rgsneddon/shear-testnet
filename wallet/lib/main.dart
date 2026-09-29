@@ -37,11 +37,11 @@ import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 import 'shear_vpn_profile.dart';
 
-const kWalletVersion = '0.61';
+const kWalletVersion = '0.62';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
-/// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
-const kReserveLockSent = 'Deposit submitted — wait 9 confirmations';
+/// Shown after a Reserve lock is accepted. Spendable drops and staking starts now.
+const kReserveLockSent = 'Deposit accepted. Spendable is reduced and staking has started.';
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
 const kDepositRowHeight = 22.0;
 const kTabs = [
@@ -192,6 +192,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   int _tipWatchGen = 0;
   bool _tipBusy = false;
   bool _creditBusy = false;
+  bool _creditAgain = false;
   bool _accrualPaused = false;
   DateTime _lastPersist = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastPoll = DateTime.fromMillisecondsSinceEpoch(0);
@@ -720,6 +721,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         await session.persist();
       } catch (_) {}
     }
+    ledger.recheckRestFrameSpendable(id!.address, paymentCode: id!.paymentCode);
     try {
       if (widget.demoTx) {
         var pay = ledger.currentDest(id!.address);
@@ -745,11 +747,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Future<void> _onNodeTip(int height) async {
     final ident = id;
     if (!mounted || !unlocked || ident == null || widget.skipPoolSync) return;
-    if (height > ledger.sealedHeight && mounted) {
-      _lastPaintSealed = height;
-      setState(() {});
+    if (height > ledger.sealedHeight) {
+      ledger.noteLiveHeight(height);
+      _lastPaintSealed = ledger.sealedHeight;
+      if (mounted) setState(() {});
     }
-    if (_creditBusy) return;
+    if (_creditBusy) {
+      _creditAgain = true;
+      return;
+    }
     _creditBusy = true;
     try {
       await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
@@ -764,6 +770,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     } catch (_) {
     } finally {
       _creditBusy = false;
+      if (_creditAgain && mounted && unlocked) {
+        _creditAgain = false;
+        unawaited(_onNodeTip(ledger.displayHeight));
+      }
     }
   }
 
@@ -1973,14 +1983,29 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     return _card([
       const Text('Shearview  S_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
       Text(
-        'Your transactions: height, from/to, date, amount, snippet. Tap a row for full Resistance detail. Hashbonus sits inside the block landing.',
+        'Your transactions: height, from/to, date, amount, snippet. Tap a row for full Resistance detail. A block pot share is the parent. Hash bonuses paid in that block are children under it. The two amounts add.',
         style: TextStyle(color: shearMutedOf(context)),
       ),
-      TextField(
-        key: const Key('shearview-search'),
-        controller: shearviewQuery,
-        decoration: const InputDecoration(labelText: 'Search id, dest, kind, amount, height, memo'),
-        onChanged: (_) => setState(() {}),
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          TextButton(
+            key: const Key('shearview-clear'),
+            onPressed: () {
+              shearviewQuery.clear();
+              setState(() {});
+            },
+            child: const Text('Clear'),
+          ),
+          Expanded(
+            child: TextField(
+              key: const Key('shearview-search'),
+              controller: shearviewQuery,
+              decoration: const InputDecoration(labelText: 'Search id, dest, kind, amount, height, memo'),
+              onChanged: (_) => setState(() {}),
+            ),
+          ),
+        ],
       ),
       ..._shearviewMemoAdvice(ident, hist),
       if (hist.isEmpty)
@@ -1989,19 +2014,30 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           key: const Key('shearview-empty'),
           style: TextStyle(color: shearMutedOf(context)),
         ),
-      for (final t in hist)
-        ListTile(
-          key: Key('shearview-row-${t.id}'),
+      for (final row in shearviewTree(hist))
+        Padding(
+          padding: EdgeInsets.only(left: row.child ? 28 : 0),
+          child: ListTile(
+          key: Key(row.child ? 'shearview-hash-${row.tx.id}' : 'shearview-row-${row.tx.id}'),
           dense: true,
-          isThreeLine: true,
-          selected: t.id == _focusedTxId,
-          title: Text(_shearviewTitle(ident.address, t)),
-          subtitle: Text(
-            t.kind == 'receive' && t.memo && openedMemos.contains(t.id) && t.memoPlain != null
-                ? '${_shearviewSubtitle(t)}  memo: ${t.memoPlain}'
-                : _shearviewSubtitle(t),
+          isThreeLine: !row.child,
+          selected: row.tx.id == _focusedTxId,
+          title: Text(row.child
+              ? 'h=${row.tx.height ?? 0}  hashbonus  ${formatShe(row.tx.amount)} SHE'
+              : _shearviewTitle(ident.address, row.tx)),
+          subtitle: row.child
+              ? null
+              : Text(
+            row.tx.kind == 'receive' && row.tx.memo && openedMemos.contains(row.tx.id) && row.tx.memoPlain != null
+                ? '${_shearviewSubtitle(row.tx)}  memo: ${row.tx.memoPlain}'
+                : _shearviewSubtitle(row.tx),
           ),
           onTap: () async {
+            final t = row.tx;
+            if (row.child) {
+              setState(() => _focusedTxId = t.id);
+              return;
+            }
             if (t.memo && t.memoPlain == null && t.memoCt != null) {
               final plain = await memoOpenOffUi(t.to, t.memoCt);
               ledger.applyMemoPlain(t.id, plain);
@@ -2020,6 +2056,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               tab = _resistanceTab;
             });
           },
+        ),
         ),
     ]);
   }

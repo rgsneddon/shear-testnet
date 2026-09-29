@@ -27,6 +27,10 @@ describe('wallet history from the book', () => {
       dest20: hash20FromAddress(mine),
       kind: 'pot',
     });
+    const hashNote = sealCoinbaseNote(256, {
+      dest20: hash20FromAddress(mine),
+      kind: 'hash',
+    });
     const young = sealCoinbaseNote(2252, {
       dest20: hash20FromAddress(mine),
       kind: 'pot',
@@ -41,15 +45,15 @@ describe('wallet history from the book', () => {
       height,
       hash,
       header,
-      txs: [{ coinbase: true, vout: [vout] }],
+      txs: [{ coinbase: true, vout: Array.isArray(vout) ? vout : [vout] }],
     });
     const store = new EventEmitter();
     store.blocks = [
-      block(7, mineNote),
+      block(7, [mineNote, hashNote]),
       block(8, young),
       block(200, foreign),
     ];
-    store.tip = () => ({ height: 12, header, hash });
+    store.tip = () => ({ height: 15, header, hash });
     store.historyFor = (address) => (String(address) === mine
       ? [{
           id: `${hash.toString('hex')}-cb-0`,
@@ -71,7 +75,9 @@ describe('wallet history from the book', () => {
       const byHeight = new Map(txs.map((t) => [t.height, t]));
       assert.equal(byHeight.get(7).id, `blockfound:7:${mine}`);
       assert.equal(byHeight.get(7).confirmed, true);
-      assert.equal(byHeight.get(7).nanos, 2 * NANOS_PER_SHE);
+      assert.equal(byHeight.get(7).nanos, 2 * NANOS_PER_SHE + 256);
+      assert.equal(byHeight.get(7).potNanos, 2 * NANOS_PER_SHE);
+      assert.equal(byHeight.get(7).hashNanos, 256);
       assert.equal(byHeight.get(8).id, `blockfound:8:${mine}`);
       assert.equal(byHeight.get(8).confirmed, false);
       assert.equal(byHeight.get(8).nanos, 2252);

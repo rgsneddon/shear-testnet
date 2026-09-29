@@ -18,8 +18,8 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
 - Miner pin: **ShearK-Miner 2.6** — https://github.com/rgsneddon/ShearK/releases/tag/2.6
-- Wallet pin: **0.61** (Continuum GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.61
-- Node pin: **Shear Sentinel v11** (product 11.0). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/v11
+- Wallet pin: **0.62** (Continuum GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.62
+- Node pin: **Shear Sentinel v12** (product 12.0). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/v12
 - Stratum: `pool.shear.digital:1111`
 - P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v6`)
 - Site: https://shear.digital
@@ -87,7 +87,7 @@ test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall No
 make -C crypto/native
 ```
 
-`--print-config` must show `"version":"11.0"`, `"magic":"shear-testnet-v6"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
+`--print-config` must show `"version":"12.0"`, `"magic":"shear-testnet-v6"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
 
 ### Run
 
@@ -140,7 +140,7 @@ ShearK-Miner --pool pool.shear.digital:1111 --user ssa1YOURDEST.worker --threads
 
 `ssa1.worker` / `ssa1.solo` is Continuum/CLI Copy dest — the `ssa1` shown on screen, not a rotated mailbox. Amounts are confidential; dests are stealth. Reuse that mining mailbox so blocks stay linked.
 
-Continuum **0.61** reads a node at `127.0.0.1:18332`. Connect Bare uses the same scan when no local node answers (that is the Android path). The node is the book: it returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. `shear restore` opens a password-sealed `shewall.bin`. Public pool HTTP submit is an advanced toggle. How-to: https://shear.digital/docs/#/surfaces
+Continuum **0.62** reads a node at `127.0.0.1:18332`. Connect Bare uses the same scan when no local node answers (that is the Android path). The node is the book: it returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. `shear restore` opens a password-sealed `shewall.bin`. Public pool HTTP submit is an advanced toggle. How-to: https://shear.digital/docs/#/surfaces
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure.
 CLI covers the same functions (`dart run bin/shear.dart help`), including sign, The Reserve vote/rewards, vort1 create/register, and Closure backup/restore.

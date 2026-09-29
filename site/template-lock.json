@@ -5,11 +5,11 @@
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/boot/index.html": {
-      "skeleton": "cce343e5a0b967836f9f928d938619849fef253d72222edb8f2995e0e661b77b",
+      "skeleton": "ca0881452589736c4c7cdc7f4ec4eab7456968dc8e7f24a6f83d9b3d1fe252b6",
       "style": "fd03a6f669054017d3388c29242d336c0d017096bce274b4ea35e36d3bad3bee"
     },
     "dag/index.html": {
-      "skeleton": "f24229e5cf7eadb65b0fe988fa280a977d0833437bee3905bdb554fcae59945b",
+      "skeleton": "58ef1fb43fc4efe7a6e74a5850d7cb3cc1c17ab21b01e1338607dbb49fd56b82",
       "style": "a2048fb4a26d8242ac3f497cd5d78473bb2de718a2e96aed64e2faa1929d0977"
     },
     "explorer/explorer.html": {
@@ -25,63 +25,63 @@
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "pool/public/index.html": {
-      "skeleton": "58cafbd347dd8285dd505315ba998bcfa1c7be2178123bfab93e3e4ee94961eb",
-      "style": "ca379f432346547b65abc24108f59f5a4c4030f3ef39e2bf902446c35ebb2b6a"
+      "skeleton": "8db5cef0a50f48d33a1e58b443b6563d4edb98cbabb7a80a01cc33cb2866119c",
+      "style": "4410e3f91c7b5544c0b1ca8249ff03366cb363ddb96247fe6c3dc507f8e7cb48"
     },
     "pool/public/explorer.html": {
-      "skeleton": "44bb43084160bd2979b0e7bcce2a89c3fc153b00f2885407baa2ea04f6ebab0d",
+      "skeleton": "d326b37a535393d8d5b3ef1039947ad1bde4e6ad9e1baaee1405a539298e9f42",
       "style": "177e4abe348422ec84d814a959d99d6829e070d961f8ce8b1f598b034d0cb2be"
     },
     "pool/public/miner.html": {
-      "skeleton": "e0c585021c3970766e38b2763e757a6531d6f4d449ec1419d39041436f4d4f18",
-      "style": "5aeba73ecd3bb6995388eae6704472da492ab3473b2f864786d7f9bf17c0ecae"
+      "skeleton": "c7646568de29f78401ae5c6cb8a028e6f09385116782c76398afd82e7fc80b0a",
+      "style": "437ddcee008d60f0a3094f338d1db33fabd7319685ee45edbd077918e146ef0e"
     },
     "site/r2r/index.html": {
       "skeleton": "afcd825c1a4729af92c0de0a0499bd42fb8606b483e87b04902260a81914854e",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/index.html": {
-      "skeleton": "92520acc84468c0c7930ce4071f4005935f9b64d129fc8486043c7d9000ad6bb",
+      "skeleton": "c01f2f5d5a18dddbe76ebfbb1bb2be04de760341b95c4621d1032d763d6eb360",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/admin/index.html": {
-      "skeleton": "15e933b24e7b8aebcb06e97447efe8355b088668f6e40bd7aa2879b6f60f6538",
+      "skeleton": "245e80a5b6487dd53bc7c29231629a5a95af8ccc17a0f558fdfa5190ac172b8d",
       "style": "b5f7428c82f4404ce68772b2baea6b226ebd3c746541003832e51ffb3d4c4e86"
     },
     "site/docs/index.html": {
-      "skeleton": "1e489d3f0fa708e4a8013ca8dd9fdef96fb211df62238bf726b412afcb4f0c57",
+      "skeleton": "3bda547f87dd57b86851c477568286cc24e5a1f86c12a4a13cc67d60e70b002f",
       "style": "99e0b7f1f1e516a861f1a34caefc57d2584ebc358bfaa42e4b467d1869edbdbe"
     },
     "site/get-started.html": {
-      "skeleton": "79cc665cbfe0f2a971f295e94269de7dcf33d08f321f8f4f9664e645be74c572",
+      "skeleton": "5ea5c1640f98d5c43ef1358ae5c4dcd6c7df4ad0c7c95d4886db82c56a155249",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/governance.html": {
-      "skeleton": "66e91eda0327adf2466782855ca6ebe1b47000e617baa2dbd24131e71eea19fa",
+      "skeleton": "e106c68dee0be65a3165e4db81d1c83590192dbc105124095a844f6368cdba56",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/mine.html": {
-      "skeleton": "83221440081e5fb5255a157157ff67afe986c57fbfab97db53a817991afbd7ad",
+      "skeleton": "189004f56cb80a6fe64b2882c8c07d5cb284be1c085fd2c042f0d1d6d4029288",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/miner/index.html": {
-      "skeleton": "2dd7febbb37ad4638516aa1a5303966b30ba5dcf544f675cb6d9f31d1394c9ca",
+      "skeleton": "9da1ee71c9e23340519dc71436851fe997c74f3271339f8dc6ac05e7a9edd692",
       "style": "0d1a9c3299687be627ef57bdd5c37f7194f42a757440d2a782d80353834e429a"
     },
     "site/network.html": {
-      "skeleton": "85c5dfdc005176245072d732483bb2bd59ca2c9513845e76eab3b69b59db1e53",
+      "skeleton": "e0a8368c9f1cda131caafcf037b2d58088829836d1c6e3c5f7485b5f347ec1ac",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/node/index.html": {
-      "skeleton": "201f7204d2f18c639e38e32b54e776082f709d261724c6359671b6038ad701e6",
+      "skeleton": "c7baad9dfc72ebe74bc47f993f6d0187a3d2e7c00e2319c29bbc0a20882add46",
       "style": "5aae7de3b4d1515b536ef53d3bf66676a1ae9230dc5f9c773e7754d56e2d2fcc"
     },
     "site/wallet/index.html": {
-      "skeleton": "fa669ade919fab9ff5250dd01765d41cd1298fdc1dbcce82c19459a917260236",
+      "skeleton": "f139cbf53f49281fa202edd55c927a1bb9a04c731dffe0796cd42a6db90c46b3",
       "style": "4a410ccd78e0094693bde09c7fc8dcf9472c96fa67b4dbd3141e1ef411503ba7"
     },
     "site/whitepaper/index.html": {
-      "skeleton": "90101deef10a58971718fdb1dc7724c9ba1bdf4f6add765f8b740e4ef126b741",
+      "skeleton": "070bad83d36b1619a926a3f58aa0ebdd33d76815f2fc72e9104410755170bbdf",
       "style": "cf4add7c1fb7ab54c2195331277b2fdb75150be2b5b33d8f174afbbd3eee9d82"
     },
     "vortices/index.html": {
@@ -104,7 +104,7 @@
     "pool/public/brand/theme.css": "c2f1feaeea84640b4ea0ba27990435efe0bc3e7ecc058334645eb966711a5aa6",
     "pool/public/brand/urema.css": "14c30f0b55efefd31f715c6b7a7aea27189a33be5cd4124723520220208c4310",
     "pool/public/css/site.css": "514cbbe925b41a52c0d4136dbb272924d3dad0d5accb132a73c8ea74d4e965ab",
-    "pool/public/pool-theme.css": "8d8eaaf73f2edb901e7efe332fa2821c006d63239ee3a295f712451886299b41",
+    "pool/public/pool-theme.css": "768a71e9b88da4cb904095fe835409942561b8e3e925e6d68a84094fc4e4a671",
     "pool/public/shared/shear-chrome.css": "b3d2c9287341f0925a0bd360c461e864a65f7e8cb896ac43798344a532901802",
     "site/boot/brand/nevia.css": "f77dc3bb176dec05147c3ba6bf24f5dfc205739a2ee79c5cda86ab03618cc5f2",
     "site/boot/brand/theme.css": "34c670fe1025ee63e998ce82c928e8e78587c3e0284217411c8d802483a661b9",

@@ -78,6 +78,39 @@ void main() {
     expect(ledger.spendSeed, seed);
   });
 
+  test('reserve lock stays on the mining dest that holds the coins', () async {
+    final id = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.confirmRound(address: home, pot: 3.96, height: 1);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    const need = 3.2;
+    final from = ledger.consolidateSpendableForLock(
+      id.address,
+      paymentCode: id.paymentCode,
+      needShe: need,
+      keepHome: true,
+    );
+    expect(from, home);
+    expect(ledger.spendable(home), closeTo(3.96, 1e-9));
+    final before = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
+    expect(before, greaterThanOrEqualTo(need));
+    final tx = await ledger.send(
+      from: home,
+      to: home,
+      amount: need,
+      local: true,
+      kind: 'lock',
+      programId: kReserveProgram,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: hexToBytes(id.seedHex),
+    );
+    expect(tx.from, home);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(before));
+    expect(ledger.spendable(home), closeTo(3.96 - need, 0.001));
+  });
+
   test('vote fee hops off the mining mailbox when it is the only cover', () async {
     final id = createIdentity();
     final ledger = ShearLedger()..bindIdentity(id);
@@ -117,10 +150,8 @@ void main() {
     final other = ledger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
     ledger.confirmRound(address: home, pot: 40, height: 1);
     ledger.settleTo(1 + ShearLedger.spendableConfirmations);
-    expect(
-      () => flowSpendFrom(ledger, restFrame: id.address, paymentCode: id.paymentCode, amount: 10),
-      throwsA(predicate((Object e) => '$e'.contains('mining mailbox'))),
-    );
+    final only = flowSpendFrom(ledger, restFrame: id.address, paymentCode: id.paymentCode, amount: 10);
+    expect(only, home);
     ledger.confirmRound(address: other, pot: 25, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations);
     final from = flowSpendFrom(ledger, restFrame: id.address, paymentCode: id.paymentCode, amount: 20);
