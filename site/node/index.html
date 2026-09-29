@@ -45,8 +45,8 @@
       }
     })();
   </script>
-  <title>Shear Node — shear-testnet-v6</title>
-  <meta name="description" content="Build and run a Shear validating node for shear-testnet-v6. Multi-OS deps including Fedora/RHEL, Debian, Arch, openSUSE, macOS, Windows/WSL." />
+  <title>Shear Node — shear-testnet-v7</title>
+  <meta name="description" content="Build and run a Shear validating node for shear-testnet-v7. Multi-OS deps including Fedora/RHEL, Debian, Arch, openSUSE, macOS, Windows/WSL." />
   <link rel="icon" href="../brand/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
   <link rel="stylesheet" href="../css/site.css" />
@@ -96,7 +96,7 @@
   <div class="banner" role="status">
     <strong>Unzip and run, or build from source.</strong> Shear Sentinel v12 packs
     <span class="sep">·</span>
-    magic shear-testnet-v6 · node 12.0 · sequential IBD
+    magic shear-testnet-v7 · node 12.0 · sequential IBD
   </div>
 
   <main>
@@ -124,7 +124,7 @@
     <section class="wrap section">
       <p class="section-label">0 · OS dependencies</p>
       <h2 style="margin:0 0 .35rem">Build from source</h2>
-      <p>Full validating node for <strong>shear-testnet-v6</strong>. Prefer the prebuilt zip above. To build it yourself, clone <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">rgsneddon/shear-testnet</a> <code>main</code> (node pin <strong>12.0</strong>; node lives at <code>node/</code> in that tree).</p>
+      <p>Full validating node for <strong>shear-testnet-v7</strong>. Prefer the prebuilt zip above. To build it yourself, clone <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">rgsneddon/shear-testnet</a> <code>main</code> (node pin <strong>12.0</strong>; node lives at <code>node/</code> in that tree).</p>
 <p>Beginner path (from tip site): OS deps → clone → RandomX + <code>crypto/native</code> → validating node → optional <code>npm run solo</code> (thin stratum on 127.0.0.1:1111). Continuum GUI is optional for RPC. Never <code>npm run pool</code> unless you are operating the public pool.</p>
 <p>Commands below are lifted from tip <code>site/index.html</code> <code>#solo-mine</code> — do not invent alternate package lines.</p>
       <div class="os-tabs" id="solo-os-tabs">
@@ -199,8 +199,8 @@ make -C crypto/native</pre>
           <p>Then continue with clone / RandomX / <code>crypto/native</code> below. Build <code>crypto/native</code> on this Fedora machine. A <code>shearhash.node</code> copied from Ubuntu will not load.</p>
           <p>Deploy with the unit in the repo. It dials any and all seeds and listens for Continuum on <code>127.0.0.1:18332</code>. Do not <code>npm run pool</code>.</p>
           <div class="copy-row">
-            <pre id="fedora-node-deploy">sudo mkdir -p /opt/shear-v4 /var/lib/shear/testnet-v6
-sudo chown "$USER":"$USER" /opt/shear-v4 /var/lib/shear/testnet-v6
+            <pre id="fedora-node-deploy">sudo mkdir -p /opt/shear-v4 /var/lib/shear/testnet-v7
+sudo chown "$USER":"$USER" /opt/shear-v4 /var/lib/shear/testnet-v7
 git clone https://github.com/rgsneddon/shear-testnet.git /opt/shear-v4
 cd /opt/shear-v4
 npm ci
@@ -216,7 +216,7 @@ sudo systemctl enable --now shear-node
 journalctl -u shear-node -n 20 --no-pager</pre>
             <button type="button" data-copy="fedora-node-deploy">Copy</button>
           </div>
-          <p>You are done when a status line shows <code>hashBackend=native</code>, <code>peers</code> at least 1, and <code>ibd=false</code> with the height holding still. While the height is still climbing, <code>ibd=true</code> is catch-up, not a failure. The number on pool.shear.digital is the pool’s own book. Your node follows the public peers. Those two heights are not the same reading. Do not wipe <code>/var/lib/shear/testnet-v6</code> because the pool page is taller. Add every seed you have; the node is not limited to one host.</p>
+          <p>You are done when a status line shows <code>hashBackend=native</code>, <code>peers</code> at least 1, and <code>ibd=false</code> with the height holding still. While the height is still climbing, <code>ibd=true</code> is catch-up, not a failure. The number on pool.shear.digital is the pool’s own book. Your node follows the public peers. Those two heights are not the same reading. Do not wipe <code>/var/lib/shear/testnet-v7</code> because the pool page is taller. Add every seed you have; the node is not limited to one host.</p>
         </div>
         <div class="os-tabpanel" role="tabpanel" id="solo-pane-arch" aria-labelledby="solo-tab-arch" data-os="arch" hidden>
           <p>Arch Linux. <code>base-devel</code> plus nodejs, npm, cmake, openssl. Repo <code>rust</code> is enough; rustup is optional.</p>
@@ -354,13 +354,13 @@ make -C crypto/native
 node node/src/node.js --print-config</pre>
         <button type="button" data-copy="solo-node">Copy</button>
       </div>
-      <p><code>--print-config</code> must show <code>"version":"12.0"</code>, <code>"magic":"shear-testnet-v6"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
+      <p><code>--print-config</code> must show <code>"version":"12.0"</code>, <code>"magic":"shear-testnet-v7"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
       
         <h3>2. Validating node (not the full pool)</h3>
       <p>Node pin <strong>12.0</strong> (v12). Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). It does <strong>not</strong> pull a bootstrap. An empty book starts at genesis and requests height 1, 2, 3, … until the tip; a recorded tip resumes. Put <code>SHEAR_SEEDS</code> in the <strong>same shell</strong>. Outbound TCP to those seeds is required. Optional snapshot: download <code>latest.json</code> + <code>latest.bin</code> from <a href="https://boot.shear.digital">boot.shear.digital</a> and pass <code>--bootstrap</code> on an empty datadir. Do <strong>not</strong> <code>npm run pool</code>.</p>
       <div class="copy-row">
-        <pre id="solo-run">export SHEAR_DATA="$HOME/.shear/testnet-v6"
-export SHEAR_NETWORK=shear-testnet-v6
+        <pre id="solo-run">export SHEAR_DATA="$HOME/.shear/testnet-v7"
+export SHEAR_NETWORK=shear-testnet-v7
 export SHEAR_P2P_PORT=30303
 export SHEAR_P2P_BIND=0.0.0.0
 export SHEAR_RPC_PORT=18332
@@ -393,7 +393,7 @@ npm run solo</pre>
 
   <footer class="footer">
     <div class="wrap footer-inner">
-      <div data-shear-foot data-wallet-fallback="0.62" data-network-fallback="shear-testnet-v6">Shear · … · Continuum … · …</div>
+      <div data-shear-foot data-wallet-fallback="0.62" data-network-fallback="shear-testnet-v7">Shear · … · Continuum … · …</div>
       <nav>
         <a href="/">Main</a>
         <a href="/miner/">Miner</a>

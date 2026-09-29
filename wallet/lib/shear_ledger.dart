@@ -4513,7 +4513,7 @@ class ShearLedger {
         _spendable[changeDest] = spendable(changeDest) + parkedAmt;
         _dests.add(changeDest);
       } else {
-        _parkChange(src, changeDest);
+        _parkChange(src, changeDest, changeShe: fundedShe - needShe);
       }
       final tx = ShearTx(
         id: raw.id,
@@ -4533,7 +4533,7 @@ class ShearLedger {
     }
     _spendable[src] = spendable(src) - needShe;
     if (sendKind == 'lock') _noteLockDebit(src, needShe);
-    _parkChange(src, changeDest);
+    _parkChange(src, changeDest, changeShe: fundedShe - needShe);
     final tx = ShearTx(
       id: 'send-${DateTime.now().millisecondsSinceEpoch}',
       from: src,
@@ -4550,12 +4550,16 @@ class ShearLedger {
     return tx;
   }
 
-  void _parkChange(String src, String? changeDest) {
-    if (changeDest == null || changeDest.isEmpty) return;
+  void _parkChange(String src, String? changeDest, {double? changeShe}) {
+    if (changeDest == null || changeDest.isEmpty || changeDest == src) return;
     final leftover = spendable(src);
     if (leftover <= 1e-18) return;
-    _spendable[src] = 0;
-    _spendable[changeDest] = spendable(changeDest) + leftover;
+    var moved = changeShe ?? leftover;
+    if (moved > leftover) moved = leftover;
+    if (moved <= 1e-18) return;
+    final kept = leftover - moved;
+    _spendable[src] = kept <= 1e-18 ? 0 : kept;
+    _spendable[changeDest] = spendable(changeDest) + moved;
     _dests.add(changeDest);
   }
 

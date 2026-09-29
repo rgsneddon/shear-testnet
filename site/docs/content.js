@@ -400,7 +400,7 @@ window.SHEAR_DOCS = {
       '<p>Release <a href="https://shear.digital/node/">0.62</a>. A node is the book. It appends, verifies, speaks P2P, and runs the GATE that lets native Flow and pinned Reserve bytecode land in the same block. Continuum 0.62 reads this node, not flyclient. An empty book applies the snapshot once; a recorded tip resumes and does not pull.</p>' +
       '<pre>git clone https://github.com/rgsneddon/shear-testnet.git\n' +
       'cd shear-testnet\ngit checkout 0.62\nnpm ci\n' +
-      'export SHEAR_DATA="$HOME/.shear/testnet-v6"\n' +
+      'export SHEAR_DATA="$HOME/.shear/testnet-v7"\n' +
       'export SHEAR_NETWORK=shear-testnet-v7\n' +
       'export SHEAR_BOOTSTRAP=1\n' +
       'export SHEAR_REORG_HALT_DEPTH=0\n' +

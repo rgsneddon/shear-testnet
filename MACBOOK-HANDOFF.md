@@ -37,7 +37,7 @@ crypto/asert.js:          PRODUCT_VERSION = '12.0'
 
 The GUI sidecar is Shear Sentinel v12 (`runtime/node` + `node/src/node.js`). Empty book does **not** auto-pull `boot.shear.digital`. Users who want a snapshot import it by hand.
 
-Shared book with the standalone node: macOS `~/.shear/testnet-v6`. Windows `%APPDATA%\Shear\testnet-v6` (Roaming). Do not spawn a second node if one is already on 18332.
+Shared book with the standalone node: macOS `~/.shear/testnet-v7`. Windows `%APPDATA%\Shear\testnet-v7` (Roaming). Do not spawn a second node if one is already on 18332.
 
 ---
 

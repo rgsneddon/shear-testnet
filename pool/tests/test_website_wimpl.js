@@ -152,6 +152,8 @@ describe('website W-IMPL binds', () => {
     assert.match(mempool, /id="shear-chrome-root" data-active="MEMPOOL"/);
     assert.doesNotMatch(mempool, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(mempool, /releases\/tag\/0\.52/);
+    assert.match(pdf, /shear-testnet-v7/);
+    assert.doesNotMatch(pdf, /shear-testnet-v6/);
     assert.match(pdf, /pin 0\.62/);
     assert.doesNotMatch(pdf, /pin 0\.55(?!\.2)/);
     assert.match(pdf, /Wallet pin at publication: 0\.62/);

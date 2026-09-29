@@ -447,7 +447,9 @@ describe('hash-tx consensus law', () => {
     assert.equal(/^\d+\.\d+$/.test('0.1.0'), false);
     assert.equal(law.productVersion, '12.0');
     assert.equal(fp.includes('11.0'), false);
+    assert.equal(fp.includes('10.0'), false);
     assert.equal(fp.includes('12.0'), false);
+    assert.equal(fp.includes('PRODUCT_VERSION'), false);
     assert.equal(fp.includes('9.0'), false);
     assert.equal(fp.includes('8.0'), false);
     assert.equal(fp.includes('7.0'), false);

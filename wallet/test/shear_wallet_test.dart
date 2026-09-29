@@ -1308,6 +1308,98 @@ void main() {
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
   });
 
+  test('unlock recheck consolidates confirmed notes and a send draws that sum', () async {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
+      'admit_proof': true,
+      'v': 2,
+      'spendTag': Uint8List(32)..[0] = 1,
+      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
+      'cTilde': Uint8List(32)..[0] = 2,
+    };
+    debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
+        _sealNoteNoRange(v, dest20: dest20, kind: kind);
+    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final probe = ShearLedger()..bindIdentity(id);
+    final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
+    final d20 = hash20FromAddress(dest)!;
+    final a = _offlinePot(kUnitsPerShe * 2 ~/ 5, 2, dest20: d20, seed: seed);
+    final b = _offlinePot(kUnitsPerShe * 9 ~/ 20, 2, dest20: d20, seed: seed);
+    final pubs = <Uint8List>[];
+    for (final n in [a, b]) {
+      final x = admitScalarFromSeed(seed, n);
+      pubs.add(pointBytes(admitPub(x)));
+    }
+    final posts = <Map<String, dynamic>>[];
+    final pool = _RecordingPool(posts, pubs: pubs);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    ledger.ingestSealedVouts(
+      [a, b],
+      spendSeed: seed,
+      dest: dest,
+      prev: Uint8List(32),
+      startIndex: 0,
+    );
+    final tip = 2 + ShearLedger.spendableConfirmations - 1;
+    ledger.rememberNote({
+      'address': id.address,
+      'dest': id.address,
+      'verified': true,
+      'height': tip,
+      'amount': 2,
+      'commit': Uint8List(32)..[0] = 11,
+      'r': Uint8List(32)..[0] = 12,
+    });
+    ledger.rememberNote({
+      'address': id.address,
+      'dest': id.address,
+      'verified': false,
+      'height': 2,
+      'amount': 4,
+    });
+    ledger.settleTo(tip);
+    final opened = ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
+    expect(opened, closeTo(0.85, 1e-9));
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(opened, 1e-9),
+    );
+    expect(ledger.notes.where((n) => n['verified'] != true && (n['amount'] as num) == 4), isNotEmpty);
+    expect(ledger.notes.where((n) => n['verified'] == true && (n['amount'] as num) == 2), isNotEmpty);
+    final stranger = createIdentity();
+    await expectLater(
+      ledger.send(
+        from: dest,
+        to: stranger.address,
+        amount: 0.1,
+        local: true,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        spendSeed: seed,
+      ),
+      throwsA(isA<StateError>().having((e) => flowSendAdvisoryOf(e), 'advisory', kErrPayIdentity)),
+    );
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(0.85, 1e-9));
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    final before = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
+    await ledger.sendSpendableSum(
+      from: dest,
+      to: bob,
+      amount: 0.3,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: seed,
+      allowPublicHttp: true,
+    );
+    expect(posts, isNotEmpty);
+    expect(posts.every((p) => p['to'] == bob), isTrue);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      lessThan(before - 0.2),
+    );
+  });
+
   test('HTML pool body on lock is a StateError, not FormatException', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     addTearDown(() => server.close(force: true));

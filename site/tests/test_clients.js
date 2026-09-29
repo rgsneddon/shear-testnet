@@ -19,6 +19,9 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /She Is Private/);
     assert.match(html, /ADMITv2/);
     assert.match(html, /Continuum 0\.62/);
+    assert.match(html, /shear-testnet-v7/);
+    assert.doesNotMatch(html, /shear-testnet-v6/);
+    assert.doesNotMatch(html, /testnet-v6/);
     assert.doesNotMatch(html, /Continuum 0\.55/);
     assert.match(html, /cui-ver">0\.62</);
     assert.match(html, /ShearK 2\.6/);

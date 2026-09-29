@@ -21,7 +21,9 @@ describe('boot.shear.digital page', () => {
     assert.match(boot, /href="\/latest\.bin"/);
     assert.match(boot, /id="dl-json"/);
     assert.match(boot, /id="dl-bin"/);
-    assert.match(boot, /shear-testnet-v6/);
+    assert.match(boot, /shear-testnet-v7/);
+    assert.doesNotMatch(boot, /shear-testnet-v6/);
+    assert.doesNotMatch(boot, /testnet-v6/);
     assert.match(boot, /never hooks a bootstrap|do not pull this automatically|does not pull a bootstrap|never pull/i);
     assert.doesNotMatch(boot, /applies the snapshot once; a recorded tip resumes and does not pull/);
     assert.doesNotMatch(boot, /#eef3f8/);

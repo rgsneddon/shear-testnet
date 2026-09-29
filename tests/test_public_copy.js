@@ -115,6 +115,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(readme, /Copy dest/);
     assert.match(readme, /own hash bonus on the next sealed block/);
     assert.match(readme, /shear-testnet-v7/);
+    assert.doesNotMatch(joined, /shear-testnet-v6/);
+    assert.doesNotMatch(joined, /testnet-v6/);
     assert.doesNotMatch(readme, /shear-testnet-v4/);
     assert.doesNotMatch(readme, /Chain: `shear-testnet-v2`/);
     assert.match(readme, /p2p\.shear\.digital:30303/);

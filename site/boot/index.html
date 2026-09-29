@@ -167,7 +167,7 @@ cd ~/shear-bootstrap
 curl -fsSO https://boot.shear.digital/latest.json
 curl -fsSO https://boot.shear.digital/latest.bin
 
-export SHEAR_DATA="$HOME/.shear/testnet-v6"
+export SHEAR_DATA="$HOME/.shear/testnet-v7"
 rm -rf "$SHEAR_DATA"
 node node/src/node.js --bootstrap="$PWD"</pre>
     <p>Same binary, P2P 30303, RPC 18332 loopback, magic <code>shear-testnet-v7</code>. Then it requests each later height until the tip. Mining (<code>--solo</code>) is refused until <code>ibd=false</code>.</p>
@@ -180,7 +180,7 @@ node node/src/node.js --bootstrap="$PWD"</pre>
     </ul>
 
     <h2>Full IBD (default)</h2>
-    <pre>export SHEAR_DATA="$HOME/.shear/testnet-v6"
+    <pre>export SHEAR_DATA="$HOME/.shear/testnet-v7"
 export SHEAR_NETWORK=shear-testnet-v7
 export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
 node node/src/node.js</pre>
