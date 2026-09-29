@@ -58,6 +58,8 @@ bool isLiveBookStats(Map<String, dynamic> stats) {
     stats['network'],
     stats['bookLawFingerprint'],
   ].map((e) => '${e ?? ''}').join(' ');
+  if ('${stats['magic'] ?? ''}' == 'shear-testnet-v6') return false;
+  if ('${stats['network'] ?? ''}' == 'shear-testnet-v6') return false;
   if (blob.contains('shear-testnet-v3')) return false;
   if (blob.contains('shear-testnet-v2')) return false;
   if (blob.contains('shear-testnet-v1')) return false;

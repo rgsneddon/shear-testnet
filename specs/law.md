@@ -39,7 +39,7 @@ Network: `shear-testnet-v7` (privacy-class). Frozen `shear-testnet-v6`, `shear-t
 Fingerprint also pins:
 
 ```
-NETWORK=shear-testnet-v6
+NETWORK=shear-testnet-v7
 FORK=work-then-lowhash
 HASH_FN=ShearHash-v3
 HASH_TX_LIVE=1

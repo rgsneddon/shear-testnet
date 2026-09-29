@@ -92,10 +92,10 @@ make -C crypto/native
 ### Run
 
 ```bash
-sudo mkdir -p /var/lib/shear/testnet-v6
-sudo chown "$USER":"$USER" /var/lib/shear/testnet-v6
+sudo mkdir -p /var/lib/shear/testnet-v7
+sudo chown "$USER":"$USER" /var/lib/shear/testnet-v7
 
-export SHEAR_DATA=/var/lib/shear/testnet-v6
+export SHEAR_DATA=/var/lib/shear/testnet-v7
 export SHEAR_NETWORK=shear-testnet-v7
 export SHEAR_P2P_PORT=30303
 export SHEAR_P2P_BIND=0.0.0.0

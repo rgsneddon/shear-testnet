@@ -42,10 +42,10 @@ export const LIVE_MIN_BITS = 4;
  */
 export const GENESIS_BITS = 15;
 /**
- * Per-block ASERT farm lid on the tau-damped step. Harden +2 stops a farm spew.
- * Testnet ease matches harden so a farm-off (or stall) can re-center the
- * 90s long average. Mainnet stays ease=1 (frozen fingerprint). Do not pin
- * these to a live pool hashrate.
+ * Per-block lid on the τ-damped step. A single fast header moves a fraction
+ * of a bit, so ±2 almost never binds. Catch-up after a hashrate shock is
+ * O(τ) blocks. Testnet ease matches harden. Mainnet stays ease=1 (frozen
+ * fingerprint). Do not pin these to a live pool hashrate.
  */
 export const ASERT_HARDEN_MAX = 2;
 export const ASERT_EASE_MAX_MAINNET = 1;
@@ -428,19 +428,20 @@ export function clampBits(bits) {
 }
 
 /**
- * Per-block absolute ASERT toward 90s on Q16.16 packed work.
- * Pure function of the header timestamp delta — verifiers must not use
- * wall clock. Same-tick (≤0) is treated as 1ms so it still climbs; the
- * ±harden/ease farm lid (not a 1ms floor) is what stops a timestamp-collision
- * storm. Stalls clamp at 8 half-lives so one gap cannot dump the floor.
- * Step is (T - seen) / tau in log2-work space (BCH-class absolute ASERT).
- * ASERT_HALFLIFE_MS damps the move — not bang-bang full log2(T/seen) each block.
- * Testnet ±2 farm lid; mainnet harden +2 / ease −1.
+ * Recursive parent-interval step toward 90s on Q16.16 packed work.
+ * Each sealed block adds (T − parentGap) / τ, then the ± lid. On a
+ * contiguous header chain those additions telescope to the absolute
+ * schedule from genesis. There is no second stored schedule. Verifiers
+ * use the sealed parent gap, not wall clock.
+ * A non-positive or non-finite gap is the 90s target, so template, pool,
+ * and verify agree. A positive gap, including 1ms, stays τ-damped.
+ * Stalls clamp at 8 half-lives. Testnet lid ±2; mainnet harden +2 / ease −1.
  */
 export function nextBits(previousBits, intervalMs, magic = MAGIC_TESTNET) {
   const prev = unpackBits(clampBits(previousBits));
   let seen = Number(intervalMs);
-  if (!Number.isFinite(seen) || seen < 1) seen = 1;
+  if (!Number.isFinite(seen) || seen <= 0) seen = TARGET_BLOCK_INTERVAL_MS;
+  else if (seen < 1) seen = 1;
   const cap = ASERT_HALFLIFE_MS * 8;
   if (seen > cap) seen = cap;
   let delta = (TARGET_BLOCK_INTERVAL_MS - seen) / ASERT_HALFLIFE_MS;
@@ -465,9 +466,8 @@ export function bitsForBlock(parentBits, parentTimestamp, blockTimestamp, magic 
  * Verifiers only see the sealed header timestamp.
  *
  * Never after wall (the old parent+90s template ran headers hours ahead).
- * Never before parent (≤0 interval is treated as 1 ms and climbs bits).
- * Clock skew `wall < parent` stamps parent, not wall.
- * Fast rounds may raise bits; they must not write a future stamp.
+ * Never before parent. Clock skew `wall < parent` stamps parent+1 so the
+ * sealed gap is 1ms, which the τ-damped step barely moves.
  * `wallIntervalMs` is accepted for callers and ignored: wall is the interval.
  */
 export function templateStampMs(parentTimestamp, now = Date.now(), wallIntervalMs = null, mtpTimestamp = null) {
@@ -476,11 +476,7 @@ export function templateStampMs(parentTimestamp, now = Date.now(), wallIntervalM
   const parent = Number(parentTimestamp);
   if (!Number.isFinite(wall)) return Date.now();
   if (!Number.isFinite(parent)) return wall;
-  // Strictly after parent when we can (verifyBlock requires ts > parentTs).
-  // Clock skew `wall < parent` still stamps parent so bits do not see a
-  // negative interval — callers without MTP keep the old contract.
-  // verifyBlock requires ts > parentTs. Clock skew wall < parent still
-  // needs a positive interval so ASERT does not treat it as 1 ms and harden.
+  // verifyBlock requires ts > parentTs. A 1ms gap is τ-damped.
   let stamp = wall <= parent ? parent + 1 : wall;
   if (mtpTimestamp != null && Number.isFinite(Number(mtpTimestamp))) {
     const cap = Number(mtpTimestamp) + MTP_FUTURE_MS;

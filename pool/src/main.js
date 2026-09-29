@@ -22,7 +22,7 @@ try {
   process.exit(1);
 }
 
-const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v4');
+const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v7');
 fs.mkdirSync(dataDir, { recursive: true });
 const boot = bootPoolOperator({ dataDir });
 const miner = boot.miner

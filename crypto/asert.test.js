@@ -76,8 +76,20 @@ describe('ASERT 90s block retarget', () => {
     assert.ok(from16 > 16, `59s must climb off 16, got ${from16}`);
     assert.ok(from16 < 16.01, `59s must not double work, got ${from16}`);
     assert.equal(nextBits(packBits(16), 90_000), packBits(16));
+    const held = nextBits(packBits(15), TARGET_BLOCK_INTERVAL_MS);
+    assert.equal(nextBits(packBits(15), 0), held);
+    assert.equal(nextBits(packBits(15), -1), held);
+    assert.equal(nextBits(packBits(15), Number.NaN), held);
+    assert.equal(nextBits(packBits(15), 0.5), nextBits(packBits(15), 1));
     const stuck = unpackBits(nextBits(packBits(16), 82_000));
     assert.ok(stuck > 16, `82s must not sit in a dead band, got ${stuck}`);
+  });
+
+  it('asert source describes the recursive parent step, not a spew lid', () => {
+    const src = fs.readFileSync(new URL('./asert.js', import.meta.url), 'utf8');
+    assert.equal(src.includes('stops a farm spew'), false);
+    assert.equal(/restore\b[^\n]{0,80}log2/.test(src), false);
+    assert.match(src, /recursive parent-interval/i);
   });
 
   it('tau damping: single fast block moves <<1 bit; farm lid still caps; catch-up is not bang-bang', () => {
@@ -362,6 +374,10 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
     assert.match(fp, /NETWORK=shear-testnet-v7/);
+    assert.match(fp, /:4:15:/);
+    assert.equal(GENESIS_BITS, 15);
+    assert.equal(LIVE_MIN_BITS, 4);
+    assert.equal(TARGET_BLOCK_INTERVAL_MS, 90000);
     assert.match(fp, /HASH_TX_LIVE=1/);
     assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
     assert.match(fp, /POOL_FEE_MAX_BPS=300/);

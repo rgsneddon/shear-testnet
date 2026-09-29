@@ -43,8 +43,8 @@ If `shearadmit.node` / `shearhash.node` fail to build, the pool cannot verify AD
 ## Datadir
 
 ```bash
-sudo mkdir -p /var/lib/shear/testnet-v6
-sudo chown "$USER":"$USER" /var/lib/shear/testnet-v6
+sudo mkdir -p /var/lib/shear/testnet-v7
+sudo chown "$USER":"$USER" /var/lib/shear/testnet-v7
 ```
 
 v4, v5, and v6 are different books. This tree seals `shear-testnet-v7`. Do not reuse a `shear-testnet-v4` or `shear-testnet-v5` datadir.

@@ -1,6 +1,6 @@
 # Shear consensus
 
-Network magic (testnet, ADMITv2 book): `shear-testnet-v6`  
+Network magic (testnet, ADMITv2 book): `shear-testnet-v7`  
 Frozen previous books: `shear-testnet-v5`, `shear-testnet-v4`, `shear-testnet-v3` (ADMITv1 LSAG), `shear-testnet-v2`.  
 Mainnet magic (`shear-v1`) genesis is `2026-09-18T21:00:00+01:00`. Do not merge v3 into frozen v2 or into v1 until the operator cuts over.
 

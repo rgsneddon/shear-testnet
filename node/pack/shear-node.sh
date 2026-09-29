@@ -9,7 +9,7 @@ elif [ -x "$ROOT/runtime/node.exe" ]; then
 else
   NODEBIN="${NODEBIN:-node}"
 fi
-export SHEAR_DATA="${SHEAR_DATA:-$HOME/.shear/testnet-v6}"
+export SHEAR_DATA="${SHEAR_DATA:-$HOME/.shear/testnet-v7}"
 export SHEAR_NETWORK="${SHEAR_NETWORK:-shear-testnet-v7}"
 export SHEAR_SEEDS="${SHEAR_SEEDS:-p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303}"
 export SHEAR_RPC_BIND="${SHEAR_RPC_BIND:-127.0.0.1}"

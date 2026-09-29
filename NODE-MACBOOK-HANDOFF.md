@@ -17,7 +17,7 @@ Two Apple files. Do not mix the tags. This machine does not upload them.
 
 `node/pack/zip_node.py` (what `pack_macos.sh` calls) must ship `node/src`, `crypto`, `pool/src/wallet_api.js`, `pool/src/hash_credit.js`, `pool/src/withdraw_state.js`, and `contracts/Reserve.json`. RPC imports `wallet_api.js`; `reserve_evm.js` reads `Reserve.json` at boot. Without those files the unzipped node exits 1.
 
-Shared book (Shear Sentinel v12 and Continuum 0.62): macOS/Linux `~/.shear/testnet-v6`. Windows `%APPDATA%\Shear\testnet-v6` (Roaming). One process at a time on :30303 / :18332.
+Shared book (Shear Sentinel v12 and Continuum 0.62): macOS/Linux `~/.shear/testnet-v7`. Windows `%APPDATA%\Shear\testnet-v7` (Roaming). One process at a time on :30303 / :18332.
 
 Developer ID: `Russell Sneddon (SFCBP95595)`. An unsigned disk image is Gatekeeper-blocked. `wallet/pack_macos.sh` uses `ditto` so the notarization ticket survives. Do not replace that with `cp -R`.
 

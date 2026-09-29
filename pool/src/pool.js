@@ -50,7 +50,7 @@ import {
 } from './auto_payout.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
-import { potSharesFromBatch, hashBonusByMiner } from '../../node/src/chain.js';
+import { potSharesFromBatch, hashBonusByMiner, retarget } from '../../node/src/chain.js';
 import { sortShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
 import { explorerRecentTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
@@ -1614,11 +1614,7 @@ export function createPool({
     const rows = store.blocks || [];
     if (!rows.length) return null;
     try {
-      const last = decodeHeader(Buffer.from(rows[rows.length - 1].header));
-      if (rows.length < 2) return nextBits(last.bits, TARGET_BLOCK_INTERVAL_MS);
-      const prev = decodeHeader(Buffer.from(rows[rows.length - 2].header));
-      const solved = Number(last.timestamp) - Number(prev.timestamp);
-      return nextBits(last.bits, solved > 0 ? solved : TARGET_BLOCK_INTERVAL_MS);
+      return retarget(rows);
     } catch {
       return null;
     }

@@ -1466,7 +1466,7 @@ export function parentSolveIntervalMs(blocks) {
     const last = decodeHeader(Buffer.from(blocks[blocks.length - 1].header));
     const prev = decodeHeader(Buffer.from(blocks[blocks.length - 2].header));
     const d = Number(last.timestamp) - Number(prev.timestamp);
-    return d > 0 ? d : TARGET_BLOCK_INTERVAL_MS;
+    return Number.isFinite(d) ? d : TARGET_BLOCK_INTERVAL_MS;
   } catch {
     return TARGET_BLOCK_INTERVAL_MS;
   }
@@ -1482,7 +1482,7 @@ export function retarget(chain, candidateTimestamp) {
   if (chain.length < 2) return nextBits(last.bits, TARGET_BLOCK_INTERVAL_MS);
   const prev = decodeHeader(Buffer.from(chain[chain.length - 2].header));
   const solved = Number(last.timestamp) - Number(prev.timestamp);
-  return nextBits(last.bits, solved > 0 ? solved : TARGET_BLOCK_INTERVAL_MS);
+  return nextBits(last.bits, solved);
 }
 
 export function genesisBlock({ miner, now = Date.now() }) {

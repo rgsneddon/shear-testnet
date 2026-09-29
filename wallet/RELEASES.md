@@ -23,7 +23,7 @@ Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) at
 
 ## 0.62 (current)
 
-Book `shear-testnet-v6`. Spendable is an opened coin with 9 confirmations. A note paid to an owned `ssa1`, a full `she1`, or this wallet's own `shear1` is one book note on an `ssa1`. After 9 confirmations it joins the rest frame's one spendable sum. A later note is added to that sum. A send spends from that sum. Public tag **0.62** (store `0.62.0+87`). Node tag is `v12` (Shear Sentinel v12). ShearK pin stays **2.6**. Tag **0.61** and node tag `v11` stay. macOS `.dmg` stays the MacBook handoff.
+Book `shear-testnet-v7`. Spendable is an opened coin with 9 confirmations. A note paid to an owned `ssa1`, a full `she1`, or this wallet's own `shear1` is one book note on an `ssa1`. After 9 confirmations it joins the rest frame's one spendable sum. A later note is added to that sum. A send spends from that sum. Public tag **0.62** (store `0.62.0+87`). Node tag is `v12` (Shear Sentinel v12). ShearK pin stays **2.6**. Tag **0.61** and node tag `v11` stay. macOS `.dmg` stays the MacBook handoff.
 
 ## 0.61
 

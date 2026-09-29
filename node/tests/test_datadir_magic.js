@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../src/store.js';
-import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_TESTNET_V4, MAGIC_MAINNET, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_TESTNET_V4, MAGIC_TESTNET_V6, MAGIC_MAINNET, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { encodeDest } from '../../crypto/address.js';
 import { mineTemplate } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -39,8 +39,15 @@ describe('v3 and v4 datadirs refuse each other', () => {
     assert.throws(() => createStore(dir), /datadir_magic:shear-testnet-v4/);
   });
 
-  it('empty datadir loads as this book', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-v3-'));
+  it('v6 book.magic is the previous book and does not load', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-v6-refuse-'));
+    fs.writeFileSync(path.join(dir, 'book.magic'), MAGIC_TESTNET_V6);
+    assert.throws(() => createStore(dir), /datadir_magic:shear-testnet-v6/);
+  });
+
+  it('empty datadir loads as shear-testnet-v7', () => {
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v7');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-v7-'));
     const store = createStore(dir);
     assert.equal(store.tip(), null);
     const again = createStore(dir);
