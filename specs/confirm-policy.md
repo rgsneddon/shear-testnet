@@ -2,7 +2,7 @@
 
 Network: `shear-testnet-v3`. **Not** in `consensusFingerprint()`.
 
-Policy and book-keeping. Does not change which chain is canonical. Does not turn levy on. Consensus spendable floor stays **6** (`SPENDABLE_CONFIRMATIONS`, already in the fingerprint). Freeze is policy.
+Policy and book-keeping. Does not change which chain is canonical. Does not turn levy on. Consensus spendable floor stays **9** (`SPENDABLE_CONFIRMATIONS`, already in the fingerprint). Freeze is policy.
 
 Surfaces that share one table: wallet Continuum / Shearview, pool pending / confirmed, explorer.shear.digital, node RPC `getpolicy`. Pool dashboard is not the source of `d_max` / `h_ratio` — those are measured from headers and `getchaintips`.
 
@@ -11,14 +11,14 @@ Surfaces that share one table: wallet Continuum / Shearview, pool pending / conf
 | Class | Depth N | ~time at 90 s | Who |
 |-------|---------|---------------|-----|
 | UI “seen” | 1 | 90 s | Wallet badge only |
-| Consensus spendable | **6** | ~9 min | Already locked. Coinbase, B-spends. Matches `CONFIRMS_SPEND` |
-| Peer / small Flow | 12 | ~18 min | Existing `min_confirms` |
-| Pool / merchant | 30 | ~45 min | Pool “confirmed”; no shop 0-conf |
+| Consensus spendable | **9** | ~13.5 min | Already locked. Coinbase, B-spends. |
+| Peer / small Flow | 12 | ~18 min | Wallet `minConfirms` |
+| Pool / merchant | 12 | ~18 min | Calm band. Reorg risk raises this to 30; a hash-ratio freeze raises it to 60. Blockfound coinbase is already sealed. |
 | OTC / large Continuum | 120 | ~3 h | Human desks |
 
-Coinbase / hash-bonus maturity = max(6, desk policy). Never spend a pot shallower than 6.
+Coinbase / hash-bonus maturity = max(9, desk policy). Never spend a pot shallower than 9.
 
-The 6-conf floor does not move. `ui_seen` stays 1.
+The 9-conf floor does not move. `ui_seen` stays 1.
 
 ## Dynamic raise
 
@@ -31,7 +31,7 @@ Inputs (node, from headers — not pool H/s):
 Rules:
 
 - `d_max >= 3` → operational N ← max(N, 30); paint “reorg risk”
-- `d_max >= 10` **or** `side_lead > 0` for more than 2 block times (180 s) → **freeze credits** (pool confirmed, wallet spendable stays pending even past 6)
+- `d_max >= 10` **or** `side_lead > 0` for more than 2 block times (180 s) → **freeze credits** (pool confirmed, wallet spendable stays pending even past 9)
 - `h_ratio < 0.5` → multiply policy N by 2 until H/s recovers for 20 blocks; also freeze (ops)
 - Freeze clears after 20 consecutive blocks with `d_max == 0` and `side_lead <= 0`
 

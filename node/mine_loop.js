@@ -1,7 +1,7 @@
 /**
  * 24h soak miner. Talks to the live node over loopback RPC so chain.bin
  * stays with the validating process. Persists the miner dest so a Flow
- * spend can unwrap rEph/rCt after 6 confirmations.
+ * spend can unwrap rEph/rCt after 9 confirmations.
  *
  *   SHEAR_RPC=http://127.0.0.1:18332 node node/mine_loop.js
  */

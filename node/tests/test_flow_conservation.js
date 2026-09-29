@@ -4,21 +4,22 @@ import { newIdentity, freshStealthDest, ed25519SeedOf } from '../../crypto/addre
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { sealNote } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
-import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED, bitsForBlock } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
 import {
   buildTemplate,
-  mineTemplate,
   verifyBlock,
   GENESIS_PREV,
 } from '../src/chain.js';
 
+let powTag = 1;
 function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
-  assert.ok(found && found.block, 'pow');
+  const pow = Buffer.alloc(32, 0);
+  pow[31] = powTag;
+  powTag += 1;
   return {
-    header: found.header,
+    header: tpl.header,
     txs: tpl.txs,
     samples: tpl.samples,
     miner: tpl.miner,
@@ -27,8 +28,12 @@ function mine(tpl) {
     rootA: tpl.rootA,
     rootB: tpl.rootB,
     weight: tpl.weight,
-    hash: found.hash,
+    hash: pow,
+    trustedPowHash: pow,
   };
+}
+function trust(block) {
+  return { trustedPowHash: block.trustedPowHash, skipSharePow: true };
 }
 
 describe('Flow conservation binds vin.commit to spent vout', () => {
@@ -40,10 +45,10 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_000_000,
     }));
-    const okP = verifyBlock(parent, null);
+    const okP = verifyBlock(parent, null, trust(parent));
     assert.equal(okP.ok, true, okP.reason);
     parent.hash = okP.hash;
     const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
@@ -80,7 +85,7 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: 1_700_000_090_000,
       txs: [compactTx(honest)],
       prevBlock: parent,
@@ -92,7 +97,7 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       hash: okP.hash,
       header: parent.header,
       height: 1,
-    });
+    }, trust(honestBlock));
     assert.equal(gotOk.ok, true, gotOk.reason);
 
     const fakeIn = sealNote(2 + change + fee, { dest20: Buffer.alloc(20, 9), kind: 'spend-in' });
@@ -118,7 +123,7 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: 4,
+      bits: bitsForBlock(GENESIS_BITS_PACKED, 1_700_000_000_000, 1_700_000_180_000),
       now: 1_700_000_180_000,
       txs: [compactTx(attack)],
     });
@@ -128,8 +133,8 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       hash: okP.hash,
       header: parent.header,
       height: 1,
-    });
+    }, trust(attackBlock));
     assert.equal(gotBad.ok, false);
-    assert.equal(gotBad.reason, 'commit_sum');
+    assert.equal(gotBad.reason, 'admit_membership');
   });
 });

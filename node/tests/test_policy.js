@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
 import { createStore } from '../src/store.js';
-import { mineTemplate, chainWorkOf } from '../src/chain.js';
+import { chainWorkOf } from '../src/chain.js';
 import { observeRate, emptyOracle } from '../../crypto/reserve_oracle.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { consensusFingerprint } from '../../crypto/asert.js';
@@ -14,27 +14,34 @@ function destMiner() {
   return encodeDest(Buffer.alloc(20, 4));
 }
 
-function mineOne(store, dest, bits = 4) {
+let powTag = 1;
+function mineOne(store, dest) {
   const parent = store.tip();
   const now = parent
     ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
     : Date.now();
-  const { tpl } = store.template({ miner: dest, bits, shareBits: bits, now });
-  const found = mineTemplate({ ...tpl, bits }, { maxTries: 3_000_000, shareBits: bits });
-  assert.ok(found && found.block, 'need pow');
+  const { tpl } = store.template({ miner: dest, now });
+  const pow = Buffer.alloc(32, 0);
+  pow[31] = powTag;
+  powTag += 1;
   return store.append({
-    header: found.header,
+    header: tpl.header,
     txs: tpl.txs,
     samples: tpl.samples,
     miner: dest,
-  });
+    aLeaves: tpl.aLeaves,
+    bLeaves: tpl.bLeaves,
+    rootA: tpl.rootA,
+    rootB: tpl.rootB,
+    weight: tpl.weight,
+  }, { trustedPowHash: pow, skipSharePow: true });
 }
 
 describe('store policy and pause', () => {
-  it('getpolicy is live and fingerprint still pins 6 not 30', () => {
+  it('getpolicy is live and fingerprint still pins 9 not 30', () => {
     const store = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pol-')));
     const p = store.getpolicy();
-    assert.equal(p.consensus_min, 6);
+    assert.equal(p.consensus_min, 9);
     assert.equal(p.bands.pool_merchant, 12);
     assert.equal(p.frozen, false);
     assert.equal(p.freeze_reason, '');
@@ -44,7 +51,7 @@ describe('store policy and pause', () => {
     const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
     assert.match(storeSrc, /hourlyWorkBuckets/);
     const fp = consensusFingerprint();
-    assert.match(fp, /:6:1:1000:/);
+    assert.match(fp, /:9:1:1000:/);
     assert.match(fp, /HASH_FN=ShearHash-v3/);
     assert.equal(fp.includes(':30:'), false);
   });
@@ -52,7 +59,8 @@ describe('store policy and pause', () => {
   it('module pause refuses new pool-withdraw txs and does not rewind the tip', () => {
     const dest = destMiner();
     const store = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pause-')));
-    assert.equal(mineOne(store, dest).ok, true);
+    const mined = mineOne(store, dest);
+    assert.equal(mined.ok, true, mined.reason);
     const before = Buffer.from(store.tip().hash);
     store.pause.poolWithdraw = true;
     const q = store.queueTx({
@@ -79,7 +87,8 @@ describe('store policy and pause', () => {
   it('oracle bps does not change chain work', () => {
     const dest = destMiner();
     const store = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-oracle-')));
-    assert.equal(mineOne(store, dest).ok, true);
+    const mined = mineOne(store, dest);
+    assert.equal(mined.ok, true, mined.reason);
     const before = chainWorkOf(store.blocks);
     const oracle = emptyOracle();
     observeRate(oracle, { annualBps: 9000, nowMs: Date.now() });

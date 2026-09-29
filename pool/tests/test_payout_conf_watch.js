@@ -34,7 +34,7 @@ describe('pool payout confirmations', () => {
     assert.equal(poolMerchantNeed(p), 60);
     assert.equal(p.freeze_banner, 'Credits frozen (h_ratio): confirmations elevated to 60.');
     assert.equal(p.operational.peer_small_flow, 24);
-    assert.equal(p.operational.consensus_spendable, 6);
+    assert.equal(p.operational.consensus_spendable, 9);
   });
 
   it('h_ratio stays at 60 until the shipped 20-block recovery, then returns to 12', () => {
@@ -83,7 +83,7 @@ describe('pool payout confirmations', () => {
     assert.equal(s.d_max, 1);
     assert.equal(s.frozen, true);
     assert.equal(getpolicy(s).operational.peer_small_flow, 12);
-    assert.equal(getpolicy(s).operational.consensus_spendable, 6);
+    assert.equal(getpolicy(s).operational.consensus_spendable, 9);
 
     const later = 100 + REORG_WINDOW_MS + 1;
     s = applySignals(s, { nowMs: later, h_ratio: 1, side_lead: 0 });

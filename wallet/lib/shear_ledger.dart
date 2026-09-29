@@ -1104,7 +1104,7 @@ bool isOwnerLanding(ShearTx t) =>
 
 bool isReservePendingKind(ShearTx t) => t.kind == 'lock' || t.kind == 'vote';
 
-/// Continuum pending pie remark. Sender: sending. Recipient: receive.
+/// Continuum pending vortex remark. Sender: sending. Recipient: receive.
 String continuumPendingRemark(ShearTx t, {required bool outgoing}) {
   if (t.kind == 'send') return 'sending';
   if (t.kind == 'pool-withdraw') return outgoing ? 'sending' : 'receiving';
@@ -1591,10 +1591,10 @@ class ShearLedger {
 
   /// Last height Continuum already settled into spendable.
   int get settledHeight => _settledHeight;
-  /// Consensus floor: 6 confirmations. Operator lock — do not change; flag them.
-  static const spendableConfirmations = 6;
-  /// Continuum pie lifetime matches consensus spendable.
-  static const continuumConfirmations = 6;
+  /// Consensus floor: 9 confirmations. Operator lock — do not change; flag them.
+  static const spendableConfirmations = 9;
+  /// Continuum vortex lifetime matches consensus spendable.
+  static const continuumConfirmations = 9;
   /// Third-party/merchant policy (~18 min). Not consensus.
   static const minConfirms = 12;
   /// Pool/merchant "confirmed" band. Policy, not consensus. From getpolicy.
@@ -2239,7 +2239,7 @@ class ShearLedger {
     return t - height + 1;
   }
 
-  /// Hash bonus on verified dests at ≥ 6 confirmations. Display only; no claim.
+  /// Hash bonus on verified dests at ≥ 9 confirmations. Display only; no claim.
   double confirmedHashBonus(String restFrame, {String? paymentCode}) {
     final keys = ownedAddresses(restFrame, paymentCode: paymentCode);
     var n = 0.0;
@@ -2996,7 +2996,7 @@ class ShearLedger {
         await syncHistory(key, openMemos: openMemos);
       } catch (_) {}
     }
-    // Opened coins with 6 confirmations are the book. The pre-notes snapshot
+    // Opened coins with 9 confirmations are the book. The pre-notes snapshot
     // must not write a 0 or an inflated figure back over that sum. Without a
     // proof, the snapshot still caps a higher local pile. Vault dests stay out.
     for (final e in reconstructed.entries) {
@@ -3258,7 +3258,7 @@ class ShearLedger {
 
   /// A credit parked on destForLogin, or on the shear1 rest-frame itself,
   /// moves onto destCommit once the spend pub is known. Spendable coins stay
-  /// spendable. Coins still under 6 confirmations stay confirming.
+  /// spendable. Coins still under 9 confirmations stay confirming.
   void _foldFlowDest(String restFrame, {String? paymentCode}) {
     final pub = _spendPubOf(paymentCode);
     if (pub == null || pub.length != 32) return;
@@ -3533,8 +3533,8 @@ class ShearLedger {
     _txs.removeWhere((t) {
       final h = t.height ?? 0;
       if (h < 1) return false;
-      // Still on the Continuum pending pie. A history page that omits this
-      // id must not drop it before 6 confirmations.
+      // Still on the Continuum pending vortex. A history page that omits this
+      // id must not drop it before 9 confirmations.
       if (h <= _sealedHeight + 1 && confirmationsOf(h) < spendableConfirmations) return false;
       // Lock/withdraw rows replay portal principal after a thin staked=0 sync.
       // A later history page of payouts must not erase them.
@@ -3550,7 +3550,7 @@ class ShearLedger {
       if (liveIds.contains(t.id)) return false;
       if (t.kind == 'send' && !t.confirmed && (t.height ?? 0) < 1) return false;
       // An opened note at this height is the seal. An explorer id that does
-      // not match the ShearView id must not erase it after 6 confirmations.
+      // not match the ShearView id must not erase it after 9 confirmations.
       if (_openedNoteAt(key, h)) return false;
       return true;
     });
@@ -3593,7 +3593,7 @@ class ShearLedger {
     return rows;
   }
 
-  /// Coins still arriving: incoming rows with fewer than 6 confirmations.
+  /// Coins still arriving: incoming rows with fewer than 9 confirmations.
   /// Not added into Spendable. A row already counted as immature is not summed twice.
   double unconfirmedIncomingShe(String restFrame, {String? paymentCode}) {
     _collapseDuplicateReceipts();
@@ -3958,7 +3958,7 @@ class ShearLedger {
           }
         }
       }
-      // 6 confirmations stay in force. A balance snapshot does not make a
+      // 9 confirmations stay in force. A balance snapshot does not make a
       // young note spendable.
       // One note must cover the fee. Several smaller notes are not combined.
       // After the picker misses, the book is the notes we can actually spend

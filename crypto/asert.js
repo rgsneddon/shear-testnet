@@ -102,10 +102,12 @@ export const MAGIC_TESTNET_V1 = 'shear-testnet-v1';
 export const MAGIC_TESTNET_V2 = 'shear-testnet-v2';
 export const MAGIC_TESTNET_V3 = 'shear-testnet-v3';
 export const MAGIC_TESTNET_V4 = 'shear-testnet-v4';
-/** DINS pot+hash book. v4 is the previous lag-1 chain and is not this magic. */
+/** Previous DINS book. Not this magic. */
 export const MAGIC_TESTNET_V5 = 'shear-testnet-v5';
-/** ADMITv2 privacy-class book. v4 is frozen off this tree. */
-export const MAGIC_TESTNET = MAGIC_TESTNET_V5;
+/** Empty book cut for the pre-mainnet soak. v5 is a different chain. */
+export const MAGIC_TESTNET_V6 = 'shear-testnet-v6';
+/** ADMITv2 privacy-class book. */
+export const MAGIC_TESTNET = MAGIC_TESTNET_V6;
 export const MAGIC_MAINNET = 'shear-v1';
 /** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
 export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
@@ -131,7 +133,7 @@ export function asertEaseMax(magic = MAGIC_TESTNET) {
   return String(magic) === MAGIC_MAINNET ? ASERT_EASE_MAX_MAINNET : ASERT_EASE_MAX_TESTNET;
 }
 /** Node and pool display version. Two-part only (`*.*`, never `0.1.0`). Not part of consensusFingerprint. Continuum wallet is kWalletVersion, not this number. */
-export const PRODUCT_VERSION = '10.0';
+export const PRODUCT_VERSION = '11.0';
 /** Official C miner display/tag version. Two-part only (`*.*`). Operator set Shear-Miner to 1.1 (fee-free). 1.0 keeps the built-in fee. */
 export const MINER_VERSION = '1.1';
 /** Hash bonus commits on accept. Not env. */
@@ -159,10 +161,10 @@ export const FEE_SPLIT_RESERVE_BPS = 5000;
 export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
 /**
- * Consensus floor: spendable after 6 confirmations (~9 min). In the fingerprint.
- * Operator lock 2026-08-28: SIX is the law. Do not change this; flag the operator.
+ * Consensus floor: spendable after 9 confirmations (~13.5 min at 90s).
+ * In the fingerprint. shear-testnet-v6 book, operator 2026-09-29.
  */
-export const SPENDABLE_CONFIRMATIONS = 6;
+export const SPENDABLE_CONFIRMATIONS = 9;
 /** Sample bodies may drop after this many confirmations. Money vouts stay. */
 export const SAMPLE_PRUNE_CONFIRMATIONS = 1000;
 const SAMPLE_PRUNE_PIN = SAMPLE_PRUNE_CONFIRMATIONS;
@@ -228,6 +230,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `RESERVE_ORACLE=shear-reserve-oracle-v1:maxBps=10000:maxStep=100:maxAgeMs=${ORACLE_MAX_AGE_MS}:quorum=14`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
     `NETWORK=${network}`,
+    'FORK=work-then-lowhash',
     `HASH_TX_LIVE=${HASH_TX_LIVE}`,
     'AMOUNT=confidential',
     'DUMMY_OUTS=1',

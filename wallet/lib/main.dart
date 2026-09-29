@@ -37,11 +37,11 @@ import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 import 'shear_vpn_profile.dart';
 
-const kWalletVersion = '0.60';
+const kWalletVersion = '0.61';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock tx is accepted. Six matches spendable confirmations.
-const kReserveLockSent = 'Deposit submitted — wait 6 confirmations';
+const kReserveLockSent = 'Deposit submitted — wait 9 confirmations';
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
 const kDepositRowHeight = 22.0;
 const kTabs = [
@@ -522,7 +522,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final msg = e is FormatException ? e.message : '';
       if (msg.startsWith('shewall_reset_required')) {
         setState(() => _lockError =
-            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v5).');
+            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v6).');
         return;
       }
       setState(() => _lockError = 'Wrong password.');
@@ -903,7 +903,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
   }
 
-  /// Deprecated: pool auto-pays π SHE to miner ssa1. Wallet pull is gone.
+  /// Wallet pull is gone. A found block seals the miner pay; this wallet does not pull a pool balance.
   Future<void> _pollPull(ShearIdentity ident) async {
     assert(ident.paymentCode.isNotEmpty || ident.paymentCode.isEmpty);
     return;
@@ -1700,7 +1700,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (spend == 0 && pending.isEmpty) ...[
         const SizedBox(height: 8),
         Text(
-          'Sync a local node at 127.0.0.1:18332. Fallback sync https://pool.shear.digital if local RPC is down; pool HUD is not spendable. Spendable is coins with 6 confirmations. Unconfirmed is coins still arriving. This book starts empty until your first landing.',
+          'Sync a local node at 127.0.0.1:18332. Fallback sync https://pool.shear.digital if local RPC is down; pool HUD is not spendable. Spendable is coins with 9 confirmations. Unconfirmed is coins still arriving. This book starts empty until your first landing.',
           key: const Key('continuum-empty-honesty'),
           style: TextStyle(color: shearMutedOf(context), fontSize: 12),
         ),
@@ -1857,7 +1857,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final pendingPane = <Widget>[
       Text('Pending', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
       Text(
-        'Each pending transfer stays on this list. Tap a row to open it in Shearview. One pie wedge per confirmation; at ${ShearLedger.spendableConfirmations} confs the row drops and the coins are spendable. Hash rewards sit inside a found block, not as their own rows.',
+        'Each pending transfer stays on this list. Tap a row to open it in Shearview. One vortex point turns yellow per confirmation; at ${ShearLedger.spendableConfirmations} confs the row drops and the coins are spendable. Hash rewards sit inside a found block, not as their own rows.',
         style: TextStyle(color: shearMutedOf(context), fontSize: 12),
       ),
       for (final t in pending)
@@ -1869,10 +1869,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                ConfirmPie(
+                ConfirmVortex(
                   key: Key('confirm-pie-${t.id}'),
                   filled: ledger.confirmationsOf(t.height ?? 0),
                   size: 28,
+                  need: ShearLedger.continuumConfirmations,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -1984,7 +1985,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ..._shearviewMemoAdvice(ident, hist),
       if (hist.isEmpty)
         Text(
-          'No landings yet. Hashbonus appears here after the including block (6 confs to spend). The 1 SHE-class pot is pool-custodial until 30 confs, then auto-pays at π SHE (${formatShe(kPiShe)}). Tap a row for full Resistance detail.',
+          'No landings yet. A found block seals hash bonus and your pot share (after the 1% fee) to this dest in that block. Spendable after 9 confirmations. Tap a row for full Resistance detail.',
           key: const Key('shearview-empty'),
           style: TextStyle(color: shearMutedOf(context)),
         ),
@@ -2026,7 +2027,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Widget _flow(BuildContext context, ShearIdentity ident) {
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('Pay she1, ssa1, or shear1. The book only records an ssa1 dest. Coins settle on destCommit after 6 confirms.'),
+      const Text('Pay she1, ssa1, or shear1. The book only records an ssa1 dest. Coins settle on destCommit after 9 confirms.'),
       SelectableText(_offerReceiveDest(ident), key: const Key('flow-receive-dest')),
       const SizedBox(height: 8),
       OutlinedButton(
@@ -2149,7 +2150,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         return Text('Flow levy (empty mempool) ${formatShe(L / kUnitsPerShe)} SHE. Hash bonuses stay on the found block.');
       }),
       const Text(
-        'Receive: she1 (silent pay), ssa1 dest, or shear1 identity. Chain dests are ssa1 only. Spendable is node-verified notes after 6 confirms. Memo plaintext opens only with the stealth shared secret.',
+        'Receive: she1 (silent pay), ssa1 dest, or shear1 identity. Chain dests are ssa1 only. Spendable is node-verified notes after 9 confirms. Memo plaintext opens only with the stealth shared secret.',
       ),
     ]);
   }

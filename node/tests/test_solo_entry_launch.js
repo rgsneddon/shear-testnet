@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { encodeDest } from '../../crypto/address.js';
+import { MAGIC_TESTNET } from '../../crypto/asert.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -34,7 +35,7 @@ function childEnv(extra) {
   for (const key of ['SHEAR_MAINNET_EMIT', 'SHEAR_MAINNET_EMIT_CONFIRM', 'SHEAR_DATA', 'SHEAR_SEEDS']) {
     delete env[key];
   }
-  env.SHEAR_NETWORK = 'shear-testnet-v4';
+  env.SHEAR_NETWORK = MAGIC_TESTNET;
   return { ...env, ...extra };
 }
 

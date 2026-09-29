@@ -2,7 +2,7 @@
 
 This tree is prepped for `shear-v1`. **It does not emit yet.**
 
-- Magic today: `shear-testnet-v4` (ADMITv2).
+- Magic today: `shear-testnet-v6` (ADMITv2). `shear-testnet-v5` and `shear-testnet-v4` are earlier books.
 - Mainnet magic: `shear-v1`.
 - Genesis instant is already in `crypto/asert.js` (`GENESIS_MAINNET` = `2026-09-18T21:00:00+01:00`). Do not invent another. Do not move it.
 - `node node/src/node.js` with `SHEAR_NETWORK=shear-v1` prints `clock_wait` unless `SHEAR_MAINNET_EMIT=1` **and** `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET` **and** the genesis instant has passed.
@@ -11,7 +11,7 @@ This tree is prepped for `shear-v1`. **It does not emit yet.**
 - The operator is **not** cutting over. Do not set `SHEAR_MAINNET_EMIT=1`.
 - The public countdown is 30th October 2026 at 1400hrs UK time. It is a display date. It is not genesis and it does not emit.
 
-## User funds (Continuum 0.55.2)
+## User funds (Continuum 0.61)
 
 Mainnet uses the same coinbase rule the pool builds:
 

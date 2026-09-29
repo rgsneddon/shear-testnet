@@ -132,7 +132,7 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
     assert.equal(GETBLOCK_SERVE_PER_TURN, 1);
   });
 
-  it('peerTipAhead ignores hash inequality and catch-up picks the best peer', () => {
+  it('peerTipAhead uses height and work, and equal work uses the lower tip hash', () => {
     assert.equal(peerTipAheadOf({
       localHeight: 5,
       localWork: '0x20',
@@ -160,6 +160,26 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
       peerHeight: 5,
       peerWork: '0x21',
     }), true);
+    assert.equal(peerTipAheadOf({
+      localHeight: 5,
+      localWork: '0x20',
+      localHash: 'bb',
+      peerHeight: 5,
+      peerWork: '0x20',
+      peerHash: 'aa',
+    }), true);
+    assert.equal(peerTipAheadOf({
+      localHeight: 5,
+      localWork: '0x20',
+      localHash: 'aa',
+      peerHeight: 5,
+      peerWork: '0x20',
+      peerHash: 'bb',
+    }), false);
+    assert.equal(catchupPeerBetter(
+      { height: 5, work: '0x20', hash: 'aa' },
+      { height: 5, work: '0x20', hash: 'bb' },
+    ), true);
     assert.equal(catchupPeerBetter({ height: 10 }, { height: 4 }), true);
     assert.equal(catchupPeerBetter(
       { height: 5, work: '0x30' },

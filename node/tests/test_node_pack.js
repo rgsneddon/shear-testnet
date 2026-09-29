@@ -31,14 +31,14 @@ describe('portable node packs', () => {
     const handoff = fs.readFileSync(path.join(root, 'NODE-MACBOOK-HANDOFF.md'), 'utf8');
     assert.match(cmd, /node\\src\\node\.js/);
     assert.match(sh, /node\/src\/node\.js/);
-    assert.match(cmd, /SHEAR_NETWORK=shear-testnet-v5/);
-    assert.match(cmd, /APPDATA%\\Shear\\testnet-v5/);
-    assert.match(sh, /HOME\/\.shear\/testnet-v5/);
-    assert.match(sh, /SHEAR_NETWORK:-shear-testnet-v5/);
+    assert.match(cmd, /SHEAR_NETWORK=shear-testnet-v6/);
+    assert.match(cmd, /APPDATA%\\Shear\\testnet-v6/);
+    assert.match(sh, /HOME\/\.shear\/testnet-v6/);
+    assert.match(sh, /SHEAR_NETWORK:-shear-testnet-v6/);
     assert.match(cmd, /pause/i);
     assert.match(cmd, /SHEAR_NODE_NOPAUSE/);
     assert.match(cmd, /Shear node stopped/);
-    assert.match(cmd, /Shear Sentinel v10/);
+    assert.match(cmd, /Shear Sentinel v11/);
     assert.match(cmd, /crypto\\native/);
     assert.match(cmd, /libgcc_s_seh-1\.dll|PATH=%ROOT%runtime/);
     assert.doesNotMatch(cmd, /SHEAR_BOOTSTRAP=1/);
@@ -46,22 +46,22 @@ describe('portable node packs', () => {
     assert.match(py, /FLAVORS = \("windows", "linux", "archlinux", "fedora", "opensuse", "macos"\)/);
     assert.match(py, /write_crlf_launcher/);
     assert.match(mac, /zip_node\.py macos/);
-    assert.match(handoff, /shear-node-v10-macos\.zip/);
+    assert.match(handoff, /shear-node-v11-macos\.zip/);
     assert.match(handoff, /opensuse/i);
-    assert.equal(PRODUCT_VERSION, '10.0');
+    assert.equal(PRODUCT_VERSION, '11.0');
     assert.match(py, /shear-node-\{pack_label\}-\{flavor\}\.zip/);
     assert.match(cmd, /pause/i);
     const bat = fs.readFileSync(path.join(root, 'node/pack/shear-node.bat'), 'utf8');
     assert.match(bat, /pause/i);
     assert.match(bat, /SHEAR_NODE_NOPAUSE/);
-    assert.match(bat, /Shear Sentinel v10/);
+    assert.match(bat, /Shear Sentinel v11/);
     assert.match(bat, /node\\src\\node\.js/);
   });
 
   it('zip_node.py writes a windows zip that contains the launcher and node entry', () => {
     const r = runPython(['node/pack/zip_node.py', 'windows'], { SHEAR_NODE_PACK_DEPS: '0' });
     assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-    const zipPath = path.join(root, 'dist', 'shear-node-v10-windows.zip');
+    const zipPath = path.join(root, 'dist', 'shear-node-v11-windows.zip');
     assert.equal(fs.existsSync(zipPath), true, zipPath);
     const listed = runPython([
       '-c',
@@ -87,7 +87,7 @@ describe('portable node packs', () => {
       + 'cmd=z.read("shear-node.cmd"); bat=z.read("shear-node.bat");\n'
       + 'assert cmd.count(b"\\n")==cmd.count(b"\\r\\n") and cmd.count(b"\\r\\n")>0;\n'
       + 'assert bat.count(b"\\n")==bat.count(b"\\r\\n") and bat.count(b"\\r\\n")>0;\n'
-      + 'assert b"Shear Sentinel v10" in cmd and b"pause" in cmd.lower();\n'
+      + 'assert b"Shear Sentinel v11" in cmd and b"pause" in cmd.lower();\n'
       + 'print("crlf-ok")',
       zipPath,
     ]);

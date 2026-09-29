@@ -32,7 +32,7 @@ function childEnv(extra) {
     'SHEAR_SEEDS', 'SHEAR_P2P_IPC', 'SHEAR_DATA', 'SHEAR_HTTP', 'SHEAR_STRATUM',
     'SHEAR_RPC_PORT', 'SHEAR_MODE',
   ]) delete env[key];
-  env.SHEAR_NETWORK = 'shear-testnet-v4';
+  env.SHEAR_NETWORK = MAGIC_TESTNET;
   return { ...env, ...extra };
 }
 

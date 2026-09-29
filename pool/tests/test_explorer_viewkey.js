@@ -6,20 +6,22 @@ import path from 'node:path';
 import { newIdentity, destOpeningFromView, destCommitFromSpendPub, encodeDest } from '../../crypto/address.js';
 import { destForLogin, memoSeal } from '../../crypto/flow_sheet.js';
 import { createStore } from '../../node/src/store.js';
-import { buildTemplate, mineTemplate, GENESIS_PREV } from '../../node/src/chain.js';
+import { buildTemplate, GENESIS_PREV } from '../../node/src/chain.js';
 import { handleWalletApi, searchExplorerTxs, explorerCirculation, networkSupply, poolRecentBlockTxs, publicBlockDetail, mempoolIncoming, sealedReservePaint } from '../src/wallet_api.js';
 import { createPullBook } from '../src/pull_book.js';
 import { publicMinerTag } from '../src/pool.js';
 import { potCreditNanos } from '../src/pull_book.js';
-import { HASH_BONUS_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
+import { HASH_BONUS_NANOS, NANOS_PER_SHE, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { bitsForBlock, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 
+let powTag = 1;
 function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
-  assert.ok(found && found.block, 'pow');
+  const pow = Buffer.alloc(32, 0);
+  pow[31] = powTag;
+  powTag += 1;
   return {
-    header: found.header,
+    header: tpl.header,
     txs: tpl.txs,
     samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
@@ -29,7 +31,11 @@ function mine(tpl) {
     rootA: tpl.rootA,
     rootB: tpl.rootB,
     weight: tpl.weight,
+    trustedPowHash: pow,
   };
+}
+function trust(block) {
+  return { trustedPowHash: block.trustedPowHash, skipSharePow: true };
 }
 
 function get(store, pathAndQuery) {
@@ -49,10 +55,11 @@ describe('explorer dests', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: Date.now(),
     });
-    const got = store.append(mine(tpl));
+    const sealed = mine(tpl);
+    const got = store.append(sealed, trust(sealed));
     assert.equal(got.ok, true, got.reason);
     assert.ok(got.block.txs[0].vout.every((o) => o.commit));
 
@@ -136,10 +143,11 @@ describe('explorer dests', () => {
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: Date.now(),
     });
-    assert.equal(store.append(mine(b1)).ok, true);
+    const sealed1 = mine(b1);
+    assert.equal(store.append(sealed1, trust(sealed1)).ok, true);
     const parent = store.tip();
     const parentH = decodeHeader(Buffer.from(parent.header));
     const t2 = Number(parentH.timestamp) + TARGET_BLOCK_INTERVAL_MS;
@@ -154,7 +162,8 @@ describe('explorer dests', () => {
       now: t2,
       samples: [{ miner: dest, nonce: '2', tag: 'b', count: 1 }],
     });
-    assert.equal(store.append(mine(b2)).ok, true);
+    const sealed2 = mine(b2);
+    assert.equal(store.append(sealed2, trust(sealed2)).ok, true);
 
     const hist = get(store, '/api/explorer/history');
     assert.equal(hist.status, 200);
@@ -194,7 +203,7 @@ describe('explorer dests', () => {
     assert.deepEqual(shipped.map((t) => t.id).sort(), byHeight.json.txs.map((t) => t.id).sort());
 
     const dash = fs.readFileSync(new URL('../public/explorer.html', import.meta.url), 'utf8');
-    assert.match(dash, />VAULT</);
+    assert.match(dash, /VAULT · staked/);
     assert.doesNotMatch(dash, />Reserve in vault</);
     const circ = get(store, '/api/explorer/circulation');
     assert.equal(circ.status, 200);
@@ -283,10 +292,8 @@ describe('explorer dests', () => {
     assert.doesNotMatch(page, /Recent transfers/);
     assert.match(page, /id="net-grid"/);
     assert.match(page, /Circulating Shear/);
-    assert.match(page, /Shear minted by Reserve/);
-    assert.match(page, /VAULT/);
+    assert.match(page, /VAULT · staked/);
     assert.match(page, /id="ex-circ-she"/);
-    assert.match(page, /id="ex-reserve-minted"/);
     assert.match(page, /id="ex-reserve-vault"/);
     assert.match(page, /stats\.circulatingNanos/);
     assert.match(page, /stats\.reserveVaultNanos/);

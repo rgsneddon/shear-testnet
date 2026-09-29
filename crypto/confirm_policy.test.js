@@ -22,14 +22,14 @@ import {
 } from './confirm_policy.js';
 
 describe('confirm policy is not consensus', () => {
-  it('keeps 6 in the fingerprint and 30 / 12 out of it', () => {
-    assert.equal(SPENDABLE_CONFIRMATIONS, 6);
+  it('keeps 9 in the fingerprint and 30 / 12 out of it', () => {
+    assert.equal(SPENDABLE_CONFIRMATIONS, 9);
     assert.equal(MIN_CONFIRMS_POLICY, 12);
-    assert.equal(CONSENSUS_MIN, 6);
+    assert.equal(CONSENSUS_MIN, 9);
     assert.equal(POLICY_BANDS.pool_merchant, 12);
     assert.equal(POLICY_BANDS.join_mark_paid, undefined);
     const fp = consensusFingerprint();
-    assert.match(fp, /:6:1:1000:/);
+    assert.match(fp, /:9:1:1000:/);
     assert.match(fp, /HASH_FN=ShearHash-v3/);
     assert.match(fp, /:4:12:1:/); // LIVE_MIN_BITS, GENESIS_BITS — policy 12 is not this pin
     assert.equal(fp.includes(':30:'), false);
@@ -38,12 +38,12 @@ describe('confirm policy is not consensus', () => {
 });
 
 describe('getpolicy object', () => {
-  it('returns consensus_min 6, merchant_default 12, bands, frozen, d_max, h_ratio', () => {
+  it('returns consensus_min 9, merchant_default 12, bands, frozen, d_max, h_ratio', () => {
     const p = getpolicy(emptyPolicyState());
-    assert.equal(p.consensus_min, 6);
+    assert.equal(p.consensus_min, 9);
     assert.equal(p.merchant_default, 12);
     assert.equal(p.bands.ui_seen, 1);
-    assert.equal(p.bands.consensus_spendable, 6);
+    assert.equal(p.bands.consensus_spendable, 9);
     assert.equal(p.bands.peer_small_flow, 12);
     assert.equal(p.bands.pool_merchant, 12);
     assert.equal(p.bands.otc_large, 120);
@@ -54,12 +54,12 @@ describe('getpolicy object', () => {
     assert.equal(p.freeze_reason, '');
     assert.equal(p.freeze_banner, '');
     assert.equal(p.operational.pool_merchant, 12);
-    assert.equal(p.operational.consensus_spendable, 6);
+    assert.equal(p.operational.consensus_spendable, 9);
   });
 });
 
 describe('dynamic raise and freeze', () => {
-  it('d_max >= 3 raises operational N to at least 30 and paints reorg risk; 6 does not move', () => {
+  it('d_max >= 3 raises operational N to at least 30 and paints reorg risk; 9 does not move', () => {
     let s = recordReorg(emptyPolicyState(), { depth: 4, atMs: 1_000 });
     s = applySignals(s, { nowMs: 1_000, h_ratio: 1, side_lead: 0 });
     assert.equal(s.d_max, 4);
@@ -68,7 +68,7 @@ describe('dynamic raise and freeze', () => {
     const op = operationalBands(s);
     assert.equal(op.pool_merchant, 30);
     assert.equal(op.peer_small_flow, 30);
-    assert.equal(op.consensus_spendable, 6);
+    assert.equal(op.consensus_spendable, 9);
     assert.equal(op.ui_seen, 1);
   });
 
@@ -90,14 +90,14 @@ describe('dynamic raise and freeze', () => {
     assert.equal(s.freezeReason, 'side_lead');
   });
 
-  it('h_ratio < 0.5 doubles policy N and freezes; 6 stays 6', () => {
+  it('h_ratio < 0.5 doubles policy N and freezes; 9 stays 9', () => {
     let s = applySignals(emptyPolicyState(), { nowMs: 1, h_ratio: 0.4, side_lead: 0 });
     assert.equal(s.frozen, true);
     assert.equal(s.freezeReason, 'h_ratio');
     const op = operationalBands(s);
     assert.equal(op.pool_merchant, 60);
     assert.equal(op.join_mark_paid, undefined);
-    assert.equal(op.consensus_spendable, 6);
+    assert.equal(op.consensus_spendable, 9);
   });
 
   it('freeze clears after 20 consecutive quiet blocks with d_max 0 and side_lead <= 0', () => {
@@ -176,9 +176,9 @@ describe('intended freeze policy from header work', () => {
     const p = getpolicy(s);
     assert.equal(p.frozen, false);
     assert.equal(p.operational.pool_merchant, 12);
-    assert.equal(p.operational.consensus_spendable, 6);
+    assert.equal(p.operational.consensus_spendable, 9);
     assert.equal(p.freeze_banner, '');
-    assert.equal(CONSENSUS_MIN, 6);
+    assert.equal(CONSENSUS_MIN, 9);
   });
 
   it('steady single miner at 90s with h_ratio≈1 stays unfrozen', () => {
@@ -192,7 +192,7 @@ describe('intended freeze policy from header work', () => {
     assert.ok(ratio >= H_RATIO_FREEZE, `single-miner h_ratio ${ratio}`);
     assert.equal(s.frozen, false);
     assert.equal(operationalBands(s).pool_merchant, 12);
-    assert.equal(operationalBands(s).consensus_spendable, 6);
+    assert.equal(operationalBands(s).consensus_spendable, 9);
   });
 
   it('farm-then-drop to ~0.39 freezes on h_ratio even when 90s tip advances and reorg_risk=false', () => {
@@ -216,7 +216,7 @@ describe('intended freeze policy from header work', () => {
     assert.equal(p.freeze_reason, 'h_ratio');
     assert.equal(p.operational.pool_merchant, 60);
     assert.equal(p.operational.peer_small_flow, 24);
-    assert.equal(p.operational.consensus_spendable, 6);
+    assert.equal(p.operational.consensus_spendable, 9);
     assert.equal(p.bands.pool_merchant, 12);
     assert.match(p.freeze_banner, /h_ratio/);
     assert.match(p.freeze_banner, /60/);
@@ -243,7 +243,7 @@ describe('intended freeze policy from header work', () => {
     s = applySignals(s, { nowMs, h_ratio: 1, side_lead: 0 });
     assert.equal(s.frozen, true);
     assert.equal(s.freezeReason, 'd_max');
-    assert.equal(getpolicy(s).operational.consensus_spendable, 6);
+    assert.equal(getpolicy(s).operational.consensus_spendable, 9);
   });
 
   it('side_lead > 0 held longer than 2 block times still freezes fail-closed', () => {

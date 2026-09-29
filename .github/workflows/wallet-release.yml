@@ -8,11 +8,11 @@ on:
       pin:
         description: Public two-part wallet pin (release tag)
         required: true
-        default: '0.60'
+        default: '0.61'
       build_number:
         description: Flutter build-number
         required: true
-        default: '85'
+        default: '86'
       repo:
         description: GitHub repo that owns the release
         required: true
@@ -44,7 +44,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-windows.zip --repo ${{ inputs.repo }} --clobber
+          gh release upload ${{ inputs.pin }} wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip --repo ${{ inputs.repo }} --clobber
           if (Test-Path wallet/dist-cli/shear.exe) { gh release upload ${{ inputs.pin }} wallet/dist-cli/shear.exe --repo ${{ inputs.repo }} --clobber }
 
   linux:

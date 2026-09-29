@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="description" content="DINS-DAG settlement for shear-testnet-v5. Blue-set shares, one pot-plus-hash mint, no second hash leg."/>
+  <meta name="description" content="DINS-DAG settlement for shear-testnet-v6. Blue-set shares, one pot-plus-hash mint, no second hash leg."/>
   <script>
     (function () {
       var KEY = 'shear-theme';
@@ -46,7 +46,7 @@
       }
     })();
   </script>
-  <title>DINS-DAG · shear-testnet-v5</title>
+  <title>DINS-DAG · shear-testnet-v6</title>
   <link rel="icon" href="https://shear.digital/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="https://shear.digital/brand/favicon.ico"/>
   <link rel="stylesheet" href="https://shear.digital/css/site.css"/>
@@ -123,7 +123,7 @@
       <a class="nav-btn" href="https://dag.shear.digital/">DAG</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.60" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.61" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
@@ -133,7 +133,7 @@
     <canvas id="dag" aria-label="Live DINS-DAG lattice and node globe"></canvas>
     <div class="overlay">
       <h1>DINS-DAG</h1>
-      <p class="lede">Eligible shares are the blue set, sorted by identity. The mint is the spine pot plus the hash nanos, once. That work is not paid a second time from a pull-book hash leg. Continuum 0.60. ShearK 2.6. Book <code>shear-testnet-v5</code>. DAG is a link in the client navbar. This page is the open round, not your balance: sealed pays are on the node, and Continuum lists them in Shearview after you open the wallet. Wallet download: https://shear.digital/wallet/ (Continuum 0.60). Node download: https://shear.digital/node/ (Shear Sentinel v10). How-to: https://shear.digital/docs/#/surfaces. <a href="https://shear.digital/docs/#/dins-dag">DINS-DAG docs</a> · <a href="https://shear.digital/whitepaper/">whitepaper</a>.</p>
+      <p class="lede">Eligible shares are the blue set, sorted by identity. The mint is the spine pot plus the hash nanos, once. That work is not paid a second time from a pull-book hash leg. Continuum 0.61. ShearK 2.6. Book <code>shear-testnet-v6</code>. DAG is a link in the client navbar. This page is the open round, not your balance: sealed pays are on the node, and Continuum lists them in Shearview after you open the wallet. Wallet download: https://shear.digital/wallet/ (Continuum 0.61). Node download: https://shear.digital/node/ (Shear Sentinel v11). How-to: https://shear.digital/docs/#/surfaces. <a href="https://shear.digital/docs/#/dins-dag">DINS-DAG docs</a> · <a href="https://shear.digital/whitepaper/">whitepaper</a>.</p>
       <div class="frames">
         <article class="frame"><span class="k">Book height</span><span class="v" id="f-height">—</span></article>
         <article class="frame"><span class="k">Network tip</span><span class="v" id="f-tip">—</span></article>
@@ -142,7 +142,7 @@
         <article class="frame"><span class="k">Blue shares</span><span class="v" id="f-blue">—</span></article>
       </div>
       <p class="legend"><span class="sw" style="background:#ffd24a"></span>sealed lattice r = ln(1 + n) <span class="sw" style="background:#c46bff"></span>confirming <span class="sw" style="background:#39ff6a"></span>tip <span class="sw" style="background:#4fd8e8"></span>pool workers <span class="sw diamond" style="background:#3d7bff"></span>blue shares</p>
-      <p id="live-line">connecting · shear-testnet-v5</p>
+      <p id="live-line">connecting · shear-testnet-v6</p>
     </div>
   </div>
   <script type="module">
@@ -150,7 +150,7 @@
     var canvas = document.getElementById('dag');
     var ctx = canvas.getContext('2d');
     var motion = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    var view = { height: 0, blocks: [], workers: 0, nodes: 0, magic: 'shear-testnet-v5', tipAt: 0, tipId: '', ok: false, flash: 0, blueTotal: 0, blueIdentities: 0, blueGlyphs: [], orbit: [], blueFlash: 0 };
+    var view = { height: 0, blocks: [], workers: 0, nodes: 0, magic: 'shear-testnet-v6', tipAt: 0, tipId: '', ok: false, flash: 0, blueTotal: 0, blueIdentities: 0, blueGlyphs: [], orbit: [], blueFlash: 0 };
     function headerTipMs(hex) {
       var s = String(hex || '');
       if (s.length < 216) return 0;
@@ -203,7 +203,7 @@
       if (!line) return;
       line.textContent = view.ok
         ? ('live · ' + view.magic + ' · #' + view.height + ' · ' + view.nodes + ' nodes · ' + view.blueTotal + ' blue shares')
-        : ('offline · retrying · ' + (view.magic || 'shear-testnet-v5'));
+        : ('offline · retrying · ' + (view.magic || 'shear-testnet-v6'));
     }
     function fit() {
       var rect = canvas.getBoundingClientRect();
@@ -431,7 +431,7 @@
           blocks: blocks,
           workers: gossip.filter(function (w) { return w && w.connected; }).length,
           nodes: Math.max(0, Math.floor(Number(stats.nodesOnline) || 0)),
-          magic: stats.magic || stats.network || 'shear-testnet-v5',
+          magic: stats.magic || stats.network || 'shear-testnet-v6',
           tipAt: headerTipMs(stats.header),
           tipId: tipId,
           ok: true,

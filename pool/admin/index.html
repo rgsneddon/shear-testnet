@@ -137,7 +137,7 @@
       <a class="nav-btn" href="https://mempool.shear.digital">MEMPOOL</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/ShearK/releases/tag/2.6" target="_blank" rel="noopener">MINER</a>
       <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/tree/main/node" target="_blank" rel="noopener">NODE</a>
-      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.60" target="_blank" rel="noopener">WALLET</a>
+      <a class="nav-btn" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.61" target="_blank" rel="noopener">WALLET</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
     </nav>
     <div class="banner-tools">
@@ -274,7 +274,7 @@
               <div class="spend" id="bal-miners">—</div>
             </div>
           </div>
-          <p class="label spend-note" id="bal-escrow" style="text-transform:none;letter-spacing:0;font-weight:500">On-chain miner escrow is held for auto-payout. Do not withdraw it.</p>
+          <p class="label spend-note" id="bal-escrow" style="text-transform:none;letter-spacing:0;font-weight:500">Miner rewards seal to hasher dests in the found block. This payout-dest balance is not that pay.</p>
         </div>
         <form id="flow" class="card" autocomplete="off">
           <div class="label">Withdraw</div>
@@ -497,7 +497,7 @@
       const escrow = $('bal-escrow');
       if (escrow) {
         const held = w.json.custodyDisplay || '0';
-        escrow.textContent = 'On-chain miner escrow ' + held + ' SHE is held for auto-payout. Do not withdraw it.';
+        escrow.textContent = 'Payout-dest balance ' + held + ' SHE is not miner rewards. A found block seals hash bonus and pot share to the hasher dests.';
       }
       if (w.json.totp) {
         $('add-2fa').classList.add('hid');

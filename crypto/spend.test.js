@@ -83,15 +83,16 @@ describe('funded spend / no double-spend', () => {
     assert.equal(d.nanos, pay + leftover + fee);
   });
 
-  it('credits incoming only after 6 confs and always subtracts a sealed send', () => {
+  it('credits incoming only after 9 confs and always subtracts a sealed send', () => {
     const rows = [
       { from: 'coinbase', to: dest, nanos: 10 * NANOS_PER_SHE, height: 1, kind: 'coinbase' },
       { from: dest, to: other, nanos: 3 * NANOS_PER_SHE, height: 10, kind: 'send' },
     ];
     const coinbase = rows[0];
-    assert.equal(SPENDABLE_CONFIRMATIONS, 6);
+    assert.equal(SPENDABLE_CONFIRMATIONS, 9);
     assert.equal(matureSpendableNanos([coinbase], dest, 5, SPENDABLE_CONFIRMATIONS), 0);
-    assert.equal(matureSpendableNanos([coinbase], dest, 6, SPENDABLE_CONFIRMATIONS), 10 * NANOS_PER_SHE);
+    assert.equal(matureSpendableNanos([coinbase], dest, 8, SPENDABLE_CONFIRMATIONS), 0);
+    assert.equal(matureSpendableNanos([coinbase], dest, 9, SPENDABLE_CONFIRMATIONS), 10 * NANOS_PER_SHE);
     assert.equal(matureSpendableNanos(rows, dest, 10, SPENDABLE_CONFIRMATIONS), 7 * NANOS_PER_SHE);
   });
 

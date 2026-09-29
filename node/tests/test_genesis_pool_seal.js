@@ -114,7 +114,7 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
     );
 
     const sealedH = Number(tip.height);
-    for (let h = sealedH + 1; h <= sealedH + 6; h += 1) {
+    for (let h = sealedH + 1; h <= sealedH + 8; h += 1) {
       store.blocks.push({ height: h, txs: [] });
     }
     const hashRec = reconstructOwner(store, hasher);

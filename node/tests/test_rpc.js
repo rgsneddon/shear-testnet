@@ -7,27 +7,33 @@ import http from 'node:http';
 import { encodeDest } from '../../crypto/address.js';
 import { createStore } from '../src/store.js';
 import { createRpc } from '../src/rpc.js';
-import { mineTemplate } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 
 function destMiner() {
   return encodeDest(Buffer.alloc(20, 3));
 }
 
-function mineOne(store, dest, bits = 4) {
+let powTag = 1;
+function mineOne(store, dest) {
   const parent = store.tip();
   const now = parent
     ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
     : Date.now();
-  const { tpl } = store.template({ miner: dest, bits, shareBits: bits, now });
-  const found = mineTemplate({ ...tpl, bits }, { maxTries: 3_000_000, shareBits: bits });
-  assert.ok(found && found.block, 'need pow');
+  const { tpl } = store.template({ miner: dest, now });
+  const pow = Buffer.alloc(32, 0);
+  pow[31] = powTag;
+  powTag += 1;
   return store.append({
-    header: found.header,
+    header: tpl.header,
     txs: tpl.txs,
     samples: tpl.samples,
     miner: dest,
-  });
+    aLeaves: tpl.aLeaves,
+    bLeaves: tpl.bLeaves,
+    rootA: tpl.rootA,
+    rootB: tpl.rootB,
+    weight: tpl.weight,
+  }, { trustedPowHash: pow, skipSharePow: true });
 }
 
 function get(url) {
@@ -50,7 +56,7 @@ describe('node RPC', () => {
     const bound = await rpc.listen();
     try {
       const pol = await get(`http://127.0.0.1:${bound.port}/policy`);
-      assert.equal(pol.json.consensus_min, 6);
+      assert.equal(pol.json.consensus_min, 9);
       assert.equal(pol.json.merchant_default, 12);
       assert.equal(pol.json.bands.pool_merchant, 12);
       assert.equal(pol.json.frozen, false);
@@ -101,7 +107,7 @@ describe('node RPC', () => {
       const stats = await get(`${base}/stats`);
       assert.equal(stats.status, 200);
       assert.equal(stats.json.ok, true);
-      assert.equal(stats.json.magic, 'shear-testnet-v4');
+      assert.equal(stats.json.magic, 'shear-testnet-v6');
       assert.equal(stats.json.admit, 'ADMITv2');
       assert.equal(stats.json.hashTxLive, 1);
       assert.equal(stats.json.height, 1);
@@ -135,7 +141,7 @@ describe('node RPC', () => {
       const tpl = await post(base, { method: 'gettemplate', params: { miner: dest } });
       assert.equal(tpl.json.ok, true);
       assert.equal(tpl.json.admit, 'ADMITv2');
-      assert.equal(tpl.json.magic, 'shear-testnet-v4');
+      assert.equal(tpl.json.magic, 'shear-testnet-v6');
       assert.ok(tpl.json.jobId);
       assert.ok(tpl.json.header);
     } finally {

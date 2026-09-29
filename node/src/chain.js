@@ -9,6 +9,7 @@ import {
   MAX_BITS,
   nextBits,
   bitsForBlock,
+  TARGET_BLOCK_INTERVAL_MS,
   isPackedBits,
   unpackBits,
   blockWork,
@@ -885,7 +886,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     } catch {
       return { ok: false, reason: 'parent_header' };
     }
-    const want = bitsForBlock(parent.bits, parent.timestamp, decoded.timestamp);
+    const intervalOpt = opts.parentIntervalMs;
+    const want = intervalOpt != null
+      ? nextBits(parent.bits, Number(intervalOpt), magic)
+      : bitsForBlock(parent.bits, parent.timestamp, decoded.timestamp);
     if (decoded.bits !== want) return { ok: false, reason: 'bits' };
     if (!isPackedBits(decoded.bits) || !isPackedBits(want)) return { ok: false, reason: 'bits' };
     const fp = unpackBits(decoded.bits);
@@ -1426,12 +1430,46 @@ export function chainWorkOf(blocks) {
   return sum;
 }
 
+function tipHashHex(blocks) {
+  const tip = blocks[blocks.length - 1];
+  if (!tip?.hash) return '';
+  try {
+    return Buffer.from(tip.hash).toString('hex').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * One chain, whoever found the blocks.
+ * More work wins. Equal work: the lower tip hash wins.
+ * First-seen is not a rule, and the pool is not a special tip.
+ */
 export function shouldAdopt(local, remote) {
   const L = Array.isArray(local) ? local : [];
   const R = Array.isArray(remote) ? remote : [];
   if (!R.length) return false;
   if (!L.length) return true;
-  return chainWorkOf(R) > chainWorkOf(L);
+  const lw = chainWorkOf(L);
+  const rw = chainWorkOf(R);
+  if (rw > lw) return true;
+  if (rw < lw) return false;
+  const rh = tipHashHex(R);
+  const lh = tipHashHex(L);
+  return rh !== '' && lh !== '' && rh < lh;
+}
+
+/** Solve time of the tip, used as the next block's difficulty. Missing history uses 90s. */
+export function parentSolveIntervalMs(blocks) {
+  if (!Array.isArray(blocks) || blocks.length < 2) return TARGET_BLOCK_INTERVAL_MS;
+  try {
+    const last = decodeHeader(Buffer.from(blocks[blocks.length - 1].header));
+    const prev = decodeHeader(Buffer.from(blocks[blocks.length - 2].header));
+    const d = Number(last.timestamp) - Number(prev.timestamp);
+    return d > 0 ? d : TARGET_BLOCK_INTERVAL_MS;
+  } catch {
+    return TARGET_BLOCK_INTERVAL_MS;
+  }
 }
 
 export function retarget(chain, candidateTimestamp) {
@@ -1440,9 +1478,10 @@ export function retarget(chain, candidateTimestamp) {
   if (candidateTimestamp != null) {
     return bitsForBlock(last.bits, last.timestamp, candidateTimestamp);
   }
-  if (chain.length < 2) return last.bits;
+  if (chain.length < 2) return nextBits(last.bits, TARGET_BLOCK_INTERVAL_MS);
   const prev = decodeHeader(Buffer.from(chain[chain.length - 2].header));
-  return nextBits(last.bits, Number(last.timestamp) - Number(prev.timestamp));
+  const solved = Number(last.timestamp) - Number(prev.timestamp);
+  return nextBits(last.bits, solved > 0 ? solved : TARGET_BLOCK_INTERVAL_MS);
 }
 
 export function genesisBlock({ miner, now = Date.now() }) {

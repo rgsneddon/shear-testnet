@@ -194,7 +194,7 @@
     <section class="panel-card">
       <h1>Shear explorer</h1>
       <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
-      <p>Continuity-settled PoW. Wallet pin Continuum 0.60. Confirmed blocks only. Height, time, status, type — no dest, no amount. ADMITv2 membership over this book's notes. While this book has fewer than 10,000 notes the membership set is thin. Offer <code>she1</code> when someone pays you. Your own payments are in Continuum Shearview, read from a node (Connect Bare or local). Download Continuum 0.60 at https://shear.digital/wallet/ and Shear Sentinel v10 at https://shear.digital/node/. How-to: https://shear.digital/docs/#/surfaces.</p>
+      <p>Continuity-settled PoW. Wallet pin Continuum 0.61. Confirmed blocks only. Height, time, status, type — no dest, no amount. ADMITv2 membership over this book's notes. While this book has fewer than 10,000 notes the membership set is thin. Offer <code>she1</code> when someone pays you. Your own payments are in Continuum Shearview, read from a node (Connect Bare or local). Download Continuum 0.61 at https://shear.digital/wallet/ and Shear Sentinel v11 at https://shear.digital/node/. How-to: https://shear.digital/docs/#/surfaces.</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
     </section>
     <div class="grid" id="net-grid">
@@ -237,7 +237,7 @@
     </section>
     <section class="panel-card">
       <h2>BLOCK LIST - FULL</h2>
-      <p class="label">Every sealed block, newest first. Ten rows in view; scroll for the rest. Search by height, block id, or a from–to range. Reserve lock and vote appear from mempool as (pending). Hash bonuses in the open round stay off this list. Pending drops at 6 confirmations. Amounts and dests stay off this table. Spendable in the wallet is 6 confirmations of an opened coin, not a figure on this page.</p>
+      <p class="label">Every sealed block, newest first. Ten rows in view; scroll for the rest. Search by height, block id, or a from–to range. Reserve lock and vote appear from mempool as (pending). Hash bonuses in the open round stay off this list. Pending drops at 9 confirmations. Amounts and dests stay off this table. Spendable in the wallet is 9 confirmations of an opened coin, not a figure on this page.</p>
       <div class="table-wrap block-list-scroll" id="ex-tx-wrap">
       <table id="ex-txs">
         <thead>
@@ -447,11 +447,11 @@
       }
     }
     let tipHeight = 0;
-    let spendableNeed = 6;
+    let spendableNeed = 9;
     function blockStatus(t, tip, need) {
       const h = Number(t && t.height) || 0;
       const tipH = Number(tip != null ? tip : tipHeight) || 0;
-      const n = Math.max(1, Number(need != null ? need : spendableNeed) || 6);
+      const n = Math.max(1, Number(need != null ? need : spendableNeed) || 9);
       const confs = (h >= 1 && tipH >= h) ? (tipH - h + 1) : 0;
       return confs >= n ? 'confirmed' : 'pending';
     }
@@ -526,12 +526,12 @@
       const pulse = document.getElementById('live-pulse');
       if (pulse) {
         pulse.classList.remove('stale');
-        pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v5') + ' · height ' + (stats.height ?? 0);
+        pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v6') + ' · height ' + (stats.height ?? 0);
       }
       tipHeight = Number(stats.height) || 0;
       spendableNeed = Number(stats.spendableConfirmations)
         || Number(stats.policy && stats.policy.consensus_min)
-        || 6;
+        || 9;
       setText('ex-height', stats.height ?? 0);
       setText('ex-hashrate', fmtHashNanos(ongoingHashbonusHashes(stats), stats && stats.hashBonusNanos) + ' SHE');
       const NANOS = 100000000000;
@@ -552,7 +552,7 @@
         || Number(stats.policy && stats.policy.consensus_min)
         || Number(stats.policy && stats.policy.bands && stats.policy.bands.consensus_spendable)
         || spendableNeed
-        || 6;
+        || 9;
       setText('ex-spendable-conf', String(Math.max(0, sc)) + ' conf');
       filled = true;
       const hist = await fetchJson('/explorer/recent').catch(function () { return { txs: [] }; });
@@ -578,7 +578,7 @@
       spendableNeed = Number(stats.spendableConfirmations)
         || Number(stats.policy && stats.policy.consensus_min)
         || spendableNeed
-        || 6;
+        || 9;
       const got = await fetchJson('/explorer/search?' + q.toString());
       const n = (got.txs || []).length;
       let status = n + ' block(s)';

@@ -45,8 +45,8 @@
 
   <div class="wrap">
     <h1>Vortices</h1>
-    <p class="lead">Name, what it does, and one vort1 link. Paste that link into Continuum. No account. Install Continuum 0.60 from https://shear.digital/wallet/, open Vortex, and paste the link. The node records the programme call. Shear Sentinel v10 is at https://shear.digital/node/. How-to: https://shear.digital/docs/#/surfaces.</p>
-    <p class="netline" id="netline" aria-live="polite">Network · <code id="netmagic">shear-testnet-v5</code></p>
+    <p class="lead">Name, what it does, and one vort1 link. Paste that link into Continuum. No account. Install Continuum 0.61 from https://shear.digital/wallet/, open Vortex, and paste the link. The node records the programme call. Shear Sentinel v11 is at https://shear.digital/node/. How-to: https://shear.digital/docs/#/surfaces.</p>
+    <p class="netline" id="netline" aria-live="polite">Network · <code id="netmagic">shear-testnet-v6</code></p>
     <div id="list"></div>
     <article>
       <h2>Upload a vortex</h2>
@@ -67,7 +67,7 @@
     (function bindNetworkMagic() {
       var el = document.getElementById('netmagic');
       if (!el) return;
-      var FALLBACK = 'shear-testnet-v5';
+      var FALLBACK = 'shear-testnet-v6';
       fetch('https://pool.shear.digital/api/stats', { cache: 'no-store' })
         .then(function (r) { if (!r.ok) throw new Error('stats'); return r.json(); })
         .then(function (s) {

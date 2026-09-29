@@ -55,7 +55,7 @@ function tmpStore() {
 }
 
 describe('most-work adopt', () => {
-  it('heavier valid fork replaces the local tip; equal work keeps first-seen; invalid rest-frame is refused', async () => {
+  it('heavier valid fork replaces the local tip; equal work follows the lower tip hash; invalid rest-frame is refused', async () => {
     const id = newIdentity();
     const box = spendBox(id);
     const dest = box.dest;
@@ -66,10 +66,17 @@ describe('most-work adopt', () => {
 
     const equalPeer = tmpStore();
     assert.equal((await Promise.resolve(mineOne(equalPeer, dest))).ok, true);
+    const preferPeer = shouldAdopt(local.blocks, equalPeer.blocks);
     const equal = local.ingest(equalPeer.blocks);
-    assert.equal(equal.ok, false);
-    assert.equal(equal.reason, 'not_heavier');
-    assert.equal(Buffer.from(local.tip().hash).equals(firstHash), true);
+    if (preferPeer) {
+      assert.equal(equal.ok, true, equal.reason);
+      assert.equal(Buffer.from(local.tip().hash).equals(Buffer.from(equalPeer.tip().hash)), true);
+    } else {
+      assert.equal(equal.ok, false);
+      assert.equal(equal.reason, 'side_hold');
+      assert.equal(Buffer.from(local.tip().hash).equals(firstHash), true);
+      assert.equal(local.sideTipHash(), Buffer.from(equalPeer.tip().hash).toString('hex'));
+    }
 
     const events = [];
     local.on('reorg', (e) => events.push(e));
@@ -117,7 +124,7 @@ describe('most-work adopt', () => {
     const tips = local.getchaintips();
     assert.equal(tips.some((t) => t.status === 'active'), true);
     assert.equal(tips.some((t) => t.status === 'valid-fork'), true);
-    assert.equal(local.getpolicy().consensus_min, 6);
+    assert.equal(local.getpolicy().consensus_min, 9);
     assert.equal(local.getpolicy().bands.pool_merchant, 12);
     assert.equal(local.mempool.some((t) => t.id === 'bounce-1'), true, 'bounce-1 must remain in mempool after reorg');
   });

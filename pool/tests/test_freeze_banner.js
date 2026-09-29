@@ -93,7 +93,7 @@ describe('freeze banner on pool HUD / miner / admin', () => {
       assert.equal(stats.ok, true);
       assert.equal(stats.frozen, false);
       assert.equal(stats.confirmedNeed, 12);
-      assert.equal(stats.spendableConfirmations, 6);
+      assert.equal(stats.spendableConfirmations, 9);
       assert.equal(stats.policy.frozen, false);
       assert.equal(stats.policy.freeze_reason, '');
       assert.equal(stats.policy.freeze_banner, '');

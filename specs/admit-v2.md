@@ -6,7 +6,7 @@ This book is **ADMITv2** (small v). Prior book: **ADMITv1** (full-fluxset LSAG o
 Do not write AdmitV2, ADMITV2, Admit v2, or ADMIT-V2. Membership, not Multiple.
 Do not brand the product FCMP++. Curve Trees (Campanelli, Hall-Andersen, Kamp, USENIX Security 23 / ePrint 2022/756) is the accumulator; cite that paper. Helios/Selene is not used.
 
-Network magic: **`shear-testnet-v4`**. Empty genesis on this magic. Mainnet `shear-v1` waits; do not invent a genesis datetime here.
+Network magic: **`shear-testnet-v6`**. Empty genesis on this magic. Mainnet `shear-v1` waits; do not invent a genesis datetime here.
 
 ## Statement
 
@@ -94,7 +94,7 @@ Rebuild J, both trees, and spent tags from the sealed chain. Do not delete spent
 
 ## Fingerprint pins
 
-`ADMIT=ADMITv2`, `RANGE=bpplus`, `LEVY=weight`, `NETWORK=shear-testnet-v4`, cycle `pallas-vesta-pasta`, `ADMIT_ARITY=32`, `ADMIT_K=1`, `ADMIT_LEAF=shear-admit-leaf-v2`.
+`ADMIT=ADMITv2`, `RANGE=bpplus`, `LEVY=weight`, `NETWORK=shear-testnet-v6`, `FORK=work-then-lowhash`, cycle `pallas-vesta-pasta`, `ADMIT_ARITY=32`, `ADMIT_K=1`, `ADMIT_LEAF=shear-admit-leaf-v2`.
 
 ## Performance bar
 

@@ -1,6 +1,6 @@
 /**
  * Confirm policy. Not consensus. Not in consensusFingerprint().
- * 6-conf floor never moves. Freeze is policy.
+ * 9-conf floor never moves. Freeze is policy.
  */
 import { SPENDABLE_CONFIRMATIONS, MIN_CONFIRMS_POLICY, TARGET_BLOCK_INTERVAL_MS } from './asert.js';
 
@@ -158,7 +158,7 @@ export function bandNeed(name, state) {
   return CONSENSUS_MIN;
 }
 
-/** Coinbase / hash-bonus maturity: never shallower than 6. */
+/** Coinbase / hash-bonus maturity: never shallower than the 9-conf consensus floor. */
 export function coinbaseNeed(deskNeed, state) {
   const desk = Math.max(CONSENSUS_MIN, Math.floor(Number(deskNeed) || CONSENSUS_MIN));
   const op = bandNeed('pool_merchant', state);

@@ -1,7 +1,7 @@
 # Shear consensus
 
-Network magic (testnet, ADMITv2 book): `shear-testnet-v4`  
-Frozen previous books: `shear-testnet-v3` (ADMITv1 LSAG), `shear-testnet-v2`.  
+Network magic (testnet, ADMITv2 book): `shear-testnet-v6`  
+Frozen previous books: `shear-testnet-v5`, `shear-testnet-v4`, `shear-testnet-v3` (ADMITv1 LSAG), `shear-testnet-v2`.  
 Mainnet magic (`shear-v1`) genesis is `2026-09-18T21:00:00+01:00`. Do not merge v3 into frozen v2 or into v1 until the operator cuts over.
 
 PoW for this book is **ShearHash-v3** (RandomX light). See [shearhash-v3.md](shearhash-v3.md). Header size is still **128 bytes**.
@@ -37,13 +37,13 @@ Coinbase is the only source of new SHE.
 
 ## Resistance
 
-ASERT toward 90 s, per block, on **Q16.16 packed** header `bits` (`BITS=q16.16`, half-life `ASERT_TAU_MS` = 288 × 90 s). Floor 4 bits (`LIVE_MIN_BITS`), ceiling **256 bits**. Genesis **12** bits packed as `12 << 16`. Per-block cap is **±2 log2** on testnet (`ASERT_HARDEN=2`, `ASERT_EASE=2`) so a farm-off can re-center the long average; mainnet genesis stays `ASERT_EASE=1`. Same-tick intervals are 1 ms and still only +2. Stalls clamp at 8 half-lives. Integer LZ rungs cannot represent the 1.09× work that 90 s needs when hashrate sits between powers of two. Share vardiff stays integer LZ. Do **not** keep a 32-bit (~4.29e9) lid — that froze GNFP under large CPU farms.
+ASERT toward 90 s, per block, on **Q16.16 packed** header `bits` (`BITS=q16.16`, half-life `ASERT_TAU_MS` = 288 × 90 s). Floor 4 bits (`LIVE_MIN_BITS`), ceiling **256 bits**. Genesis **12** bits packed as `12 << 16`. The child header's bits are `nextBits(parent.bits, parentSolveInterval)`: that interval is the grandparent-to-parent timestamp delta, or `TARGET_BLOCK_INTERVAL_MS` (90_000) when there is no grandparent. The stamp of the block being mined does not retarget. Per-block cap is **±2 log2** on testnet (`ASERT_HARDEN=2`, `ASERT_EASE=2`) so a farm-off can re-center the long average; mainnet genesis stays `ASERT_EASE=1`. Same-tick intervals are 1 ms and still only +2. Stalls clamp at 8 half-lives. Integer LZ rungs cannot represent the 1.09× work that 90 s needs when hashrate sits between powers of two. Share vardiff stays integer LZ. Do **not** keep a 32-bit (~4.29e9) lid — that froze GNFP under large CPU farms.
 
-Work of a block: `blockWorkBig(bits) => 2^{bits_fp}` as bigint. Heaviest valid chain wins. Equal work keeps first-seen.
+Work of a block: `blockWorkBig(bits) => 2^{bits_fp}` as bigint. The chain with more work wins, whoever mined it. Equal work follows the lower tip hash (`FORK=work-then-lowhash`), not the block that arrived first and not which pool found it. A competing branch stays staged so a later heavier child can still win. A second genesis, or any chain that shares no block with the local tip, is downloaded when that peer is ahead.
 
 Scale (90 s, opt-in B + prune): see [scale.md](scale.md). Tree A is O(miners) per block, not O(hashes). After 1000 confirmations, sample/B bodies drop; sealed vouts and pot remain. At ~10 MH/s that is still GB-class disk for headers + collated A-leaves + sealed txs, not one JSON object per hash.
 
-Consensus spendable is **6 confirmations** (the minimum; ~9 min at 90 s). That depth is in `consensusFingerprint()`. `min_confirms` default **12** is third-party/merchant policy only (~18 min), not a consensus floor. B-spends wait for the same 6-conf consensus depth. 0-conf is merchant policy.
+Consensus spendable is **9 confirmations** (the minimum; ~9 min at 90 s). That depth is in `consensusFingerprint()`. `min_confirms` default **12** is third-party/merchant policy only (~18 min), not a consensus floor. B-spends wait for the same 9-conf consensus depth. 0-conf is merchant policy.
 
 ## ADMITv2 membership
 

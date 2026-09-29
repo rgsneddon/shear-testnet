@@ -6,21 +6,23 @@ import path from 'node:path';
 import { newIdentity, destOpeningFromView, freshStealthDest } from '../../crypto/address.js';
 import { spendBox, admitSend } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
+import { HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { signSpendTx } from '../../crypto/spend.js';
-import { buildTemplate, mineTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
+import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { createStore } from '../src/store.js';
 import { reconstructOwner } from '../../pool/src/wallet_api.js';
 import { readChainBin } from '../../crypto/chainbin.js';
 import { decodeHeader } from '../../crypto/header.js';
 
+let powTag = 1;
 function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
-  assert.ok(found && found.block, 'pow');
+  const pow = Buffer.alloc(32, 0);
+  pow[31] = powTag;
+  powTag += 1;
   return {
-    header: found.header,
+    header: tpl.header,
     txs: tpl.txs,
     samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
@@ -30,7 +32,11 @@ function mine(tpl) {
     rootA: tpl.rootA,
     rootB: tpl.rootB,
     weight: tpl.weight,
+    trustedPowHash: pow,
   };
+}
+function trust(block) {
+  return { trustedPowHash: block.trustedPowHash || block.hash, skipSharePow: true };
 }
 
 describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, () => {
@@ -54,11 +60,11 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
       prev: GENESIS_PREV,
       height: 1,
       miner: destA,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: t0,
       samples: fat,
     }));
-    const a1 = await Promise.resolve(store.append(b1));
+    const a1 = await Promise.resolve(store.append(b1, trust(b1)));
     assert.equal(a1.ok, true, a1.reason);
     assert.equal(store.blocks[0].samples.length, 1);
     assert.equal(store.blocks[0].samples[0].count, 250);
@@ -73,7 +79,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
         prevHeader: parent.header,
         height: parent.height + 1,
         miner: destA,
-        bits: 4,
+        bits: GENESIS_BITS_PACKED,
         now: Number(parentH.timestamp) + 90_000,
       }));
       const pot = (nxt.txs[0].vout || []).find((o) => o.kind === 'pot');
@@ -83,7 +89,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
         r: pot.r,
         index: nxt.txs[0].vout.indexOf(pot),
       };
-      assert.equal((await Promise.resolve(store.append(nxt))).ok, true);
+      assert.equal((await Promise.resolve(store.append(nxt, trust(nxt)))).ok, true);
     }
     const fee = levyNanos(3);
     const change = BLOCK_SUBSIDY_NANOS - 3 - fee;
@@ -116,11 +122,11 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
       parentBlocks: store.blocks,
       height: parentSend.height + 1,
       miner: destA,
-      bits: 4,
+      bits: GENESIS_BITS_PACKED,
       now: Number(parentSendH.timestamp) + 90_000,
       txs: [send],
     }));
-    const sendOk = await Promise.resolve(store.append(sendBlock));
+    const sendOk = await Promise.resolve(store.append(sendBlock, trust(sendBlock)));
     assert.equal(sendOk.ok, true, sendOk.reason);
     const sendHeight = store.tip().height;
 
@@ -132,10 +138,10 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
         prevHeader: parent.header,
         height: parent.height + 1,
         miner: destA,
-        bits: 4,
+        bits: GENESIS_BITS_PACKED,
         now: Number(parentH.timestamp) + 90_000,
       }));
-      assert.equal((await Promise.resolve(store.append(nxt))).ok, true);
+      assert.equal((await Promise.resolve(store.append(nxt, trust(nxt)))).ok, true);
     }
 
     const buried = store.blocks.find((b) => Number(b.height) === sendHeight) || store.blocks[0];
@@ -162,7 +168,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
       samples: [],
       samplesPruned: true,
       height: epochs[0].height || 1,
-    }, null, { tipHeight: SAMPLE_PRUNE_CONFIRMATIONS + 1 });
+    }, null, { tipHeight: SAMPLE_PRUNE_CONFIRMATIONS + 1, trustedPowHash: epochs[0].hash, skipSharePow: true });
     assert.equal(buriedBin.ok, true, buriedBin.reason);
 
     const histAlice = reconstructOwner(store, destA);
@@ -173,6 +179,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
 
     const buriedCheck = verifyBlock(genesis, null, {
       tipHeight: SAMPLE_PRUNE_CONFIRMATIONS + Number(genesis.height || 1),
+      ...trust(genesis),
     });
     assert.equal(buriedCheck.ok, true, buriedCheck.reason);
 

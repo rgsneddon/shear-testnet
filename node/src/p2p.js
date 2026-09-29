@@ -141,12 +141,18 @@ export function parseChainWork(v) {
   return null;
 }
 
-/** Ahead only from a taller height or explicit heavier work. Hash inequality is not ahead. */
+/**
+ * Ahead when the peer is taller, has more work, or has the same work and a
+ * lower tip hash. A different hash with no work figure is not ahead: that
+ * tip may be the lighter one. The pool is not consulted.
+ */
 export function peerTipAheadOf({
   localHeight = 0,
   localWork = null,
+  localHash = '',
   peerHeight = null,
   peerWork = null,
+  peerHash = '',
 } = {}) {
   const peerH = Number(peerHeight);
   const localH = Number(localHeight) || 0;
@@ -154,10 +160,15 @@ export function peerTipAheadOf({
   const pw = parseChainWork(peerWork);
   const lw = parseChainWork(localWork);
   if (pw != null && lw != null && pw > lw) return true;
+  if (pw != null && lw != null && pw === lw) {
+    const ph = String(peerHash || '').toLowerCase();
+    const lh = String(localHash || '').toLowerCase();
+    if (ph && lh && ph !== lh && ph < lh) return true;
+  }
   return false;
 }
 
-/** Best catch-up peer: heavier work when both announce it, otherwise greater height. */
+/** Best catch-up peer: more work, else taller, else the lower tip hash at equal work. */
 export function catchupPeerBetter(a, b) {
   const aw = parseChainWork(a?.work);
   const bw = parseChainWork(b?.work);
@@ -166,6 +177,9 @@ export function catchupPeerBetter(a, b) {
   const bH = Number.isFinite(Number(b?.height)) ? Number(b.height) : -1;
   if (aH !== bH) return aH > bH;
   if (aw != null && bw == null) return true;
+  const ah = String(a?.hash || '').toLowerCase();
+  const bh = String(b?.hash || '').toLowerCase();
+  if (aw != null && bw != null && aw === bw && ah && bh && ah !== bh) return ah < bh;
   return false;
 }
 /** Seed redial so a dropped peer cannot leave a node stuck forever. */
@@ -453,10 +467,11 @@ export function lineHasIpBesideIdentity(line) {
 
 /** `prev` is a batch-order miss; retry on the next header page. Merkle/pow stay final.
  * A missing local hasher is not a bad block — do not poison genesis.
- * `side_hold` is a competing branch that is not heavier yet. Keep fetching it. */
+ * `side_hold` is a competing branch that has not won fork-choice yet.
+ * `not_heavier` must not poison that branch: a later child can still carry more work. */
 export function isFinalIngestFail(reason) {
   const r = String(reason || '');
-  if (r === 'prev' || r === 'hash_bonus' || r === 'side_hold') return false;
+  if (r === 'prev' || r === 'hash_bonus' || r === 'side_hold' || r === 'not_heavier') return false;
   if (/native[_ ]addon[_ ]missing|native_missing/i.test(r)) return false;
   return true;
 }
@@ -537,6 +552,25 @@ export function competingHeader({
     const prev = headerPrevHash(h.header);
     if (!prev || (tip && prev === tip)) continue;
     if (headerIndexByHash(blocks, prev) < 0) continue;
+    return { hash, height: Number(h.height) || 0 };
+  }
+  return null;
+}
+
+/**
+ * First header we do not already have. Used when a heavier peer's chain
+ * does not connect to ours, including a second genesis. Sequential IBD
+ * never asks for it. Without this, two infancy tips never meet.
+ */
+export function unconnectedHeader({
+  headers = [],
+  have,
+  failed,
+  pending,
+} = {}) {
+  for (const h of headers || []) {
+    const hash = wireHash(h.hash);
+    if (!hash || headerSkipped(hash, have, failed, pending)) continue;
     return { hash, height: Number(h.height) || 0 };
   }
   return null;
@@ -660,8 +694,10 @@ export function createP2p({
     return peerTipAheadOf({
       localHeight: Number(store.tip()?.height || 0),
       localWork: localWorkHex(),
+      localHash: localTipHash(),
       peerHeight: rec.height,
       peerWork: rec.work,
+      peerHash: rec.hash,
     });
   }
 
@@ -690,6 +726,17 @@ export function createP2p({
   function localTipHash() {
     const t = store.tip();
     return t ? Buffer.from(t.hash).toString('hex') : '';
+  }
+
+  function seenHashes() {
+    const have = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
+    if (typeof store.sideHashes === 'function') {
+      for (const h of store.sideHashes()) {
+        const hex = hexHash(h);
+        if (hex) have.add(hex);
+      }
+    }
+    return have;
   }
 
   function tipMsg() {
@@ -1103,7 +1150,7 @@ export function createP2p({
       const tip = store.tip();
       const localH = Number(tip?.height || 0);
       const localHash = tip?.hash ? hexHash(tip.hash) : '';
-      const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
+      const have = seenHashes();
       const page = msg.headers || [];
       rec.page = page;
       const sideTip = typeof store.sideTipHash === 'function' ? store.sideTipHash() : '';
@@ -1127,7 +1174,12 @@ export function createP2p({
         have,
         failed: rec.failed,
         pending: rec.pending,
-      });
+      }) || (peerTipAhead(rec) ? unconnectedHeader({
+        headers: page,
+        have,
+        failed: rec.failed,
+        pending: rec.pending,
+      }) : null);
       rec.want = next ? [next.hash] : [];
       if (!rec.want.length && !(rec.pending && rec.pending.size)) {
         if (rec.verifying && rec.verifying.size) return;

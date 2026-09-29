@@ -286,7 +286,7 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(formatShe(1e-11), '0.00000000');
     assert.equal(formatShe(1e-8), '0.00000001');
     assert.equal(formatShe(1e-9), '0.00000000');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v5');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v6');
     assert.equal(MAGIC_TESTNET_V4, 'shear-testnet-v4');
     assert.equal(MAGIC_TESTNET_V1, 'shear-testnet-v1');
     assert.equal(MAGIC_TESTNET_V2, 'shear-testnet-v2');
@@ -316,12 +316,12 @@ describe('hash-tx consensus law', () => {
   it('bakes HASH_TX_LIVE=1 into the fingerprint; env cannot revert it', () => {
     process.env.HASH_TX_LIVE = '0';
     assert.equal(HASH_TX_LIVE, 1);
-    assert.equal(SPENDABLE_CONFIRMATIONS, 6);
+    assert.equal(SPENDABLE_CONFIRMATIONS, 9);
     assert.equal(MIN_CONFIRMS_POLICY, 12);
     const fp = consensusFingerprint();
     assert.match(fp, new RegExp(`:${LIVE_MIN_BITS}:${GENESIS_BITS}:`));
     assert.equal(MIN_CONFIRMS_POLICY, 12);
-    assert.equal(SPENDABLE_CONFIRMATIONS, 6);
+    assert.equal(SPENDABLE_CONFIRMATIONS, 9);
     assert.match(fp, /^shear-book-law-2:shear-v1:/);
     assert.match(fp, /:90000:/);
     assert.match(fp, /:ssa:/);
@@ -344,7 +344,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
-    assert.match(fp, /NETWORK=shear-testnet-v5/);
+    assert.match(fp, /NETWORK=shear-testnet-v6/);
     assert.match(fp, /HASH_TX_LIVE=1/);
     assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
     assert.match(fp, /POOL_FEE_MAX_BPS=300/);
@@ -400,7 +400,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(fp.includes('HASH_FN=ShearHash-v3'), true);
     assert.equal(fp.includes('HASH_FN=ShearHash-v2'), false);
     const law = consensusLaw();
-    assert.equal(PRODUCT_VERSION, '10.0');
+    assert.equal(PRODUCT_VERSION, '11.0');
     assert.equal(MINER_VERSION, '1.1');
     assert.equal(SHEARK_MINER_VERSION, '2.5');
     assert.equal(PRODUCT_VERSION.split('.').length, 2);
@@ -412,8 +412,8 @@ describe('hash-tx consensus law', () => {
     assert.equal(/^\d+\.\d+\.\d+$/.test(MINER_VERSION), false);
     assert.equal(/^\d+\.\d+$/.test('0.10'), true);
     assert.equal(/^\d+\.\d+$/.test('0.1.0'), false);
-    assert.equal(law.productVersion, '10.0');
-    assert.equal(fp.includes('10.0'), false);
+    assert.equal(law.productVersion, '11.0');
+    assert.equal(fp.includes('11.0'), false);
     assert.equal(fp.includes('9.0'), false);
     assert.equal(fp.includes('8.0'), false);
     assert.equal(fp.includes('7.0'), false);
@@ -429,6 +429,8 @@ describe('hash-tx consensus law', () => {
     assert.equal(fp.includes('0.58'), false);
     assert.equal(fp.includes('0.59'), false);
     assert.equal(fp.includes('0.60'), false);
+    assert.equal(fp.includes('0.61'), false);
+    assert.match(fp, /FORK=work-then-lowhash/);
     assert.equal(fp.includes(PRODUCT_VERSION), false);
     assert.equal(law.minerVersion, '1.1');
     assert.equal(law.shearkMinerVersion, '2.5');

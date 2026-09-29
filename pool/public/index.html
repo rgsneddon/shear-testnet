@@ -379,19 +379,19 @@
         <h1>Shear</h1>
         <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
         <p>ADMITv2 membership over this book's notes, with confidential amounts. <a href="https://dag.shear.digital/">DINS-DAG</a> settles each round as the blue set: the spine pot plus the hash nanos, once. PoW elects the tip. Continuity-settled. <strong>Testnet.</strong></p>
-        <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. While this book has fewer than 10,000 notes the membership set is thin. The pool seals the pay. Continuum reads every note for your dest from a node, including seals from while the wallet was closed. Spendable in the wallet is 6 confirmations of an opened coin. The numbers on this dashboard are the pool’s own view. Wallet: https://shear.digital/wallet/ (Continuum 0.60). Node: https://shear.digital/node/ (Shear Sentinel v10). How-to: https://shear.digital/docs/#/surfaces.</p>
-        <p>Mine with Copy dest: <code>ssa1.worker</code>. Hash bonus (no pool fee) and your share of the block pot (after 1%) accumulate. At π SHE of <em>confirmed</em> credit (12 pool confirmations, not the chain’s 6) the pool sends the unpaid sum to that <code>ssa1</code> and pays the levy.</p>
-        <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v4</p>
+        <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. While this book has fewer than 10,000 notes the membership set is thin. The pool seals the pay. Continuum reads every note for your dest from a node, including seals from while the wallet was closed. Spendable in the wallet is 9 confirmations of an opened coin. The numbers on this dashboard are the pool’s own view. Wallet: https://shear.digital/wallet/ (Continuum 0.61). Node: https://shear.digital/node/ (Shear Sentinel v11). How-to: https://shear.digital/docs/#/surfaces.</p>
+        <p>Mine with Copy dest: <code>ssa1.worker</code>. Hash bonus (no pool fee) and your share of the block pot (after 1%) seal to that <code>ssa1</code> in the found block. Continuum lists that seal as blockfound. Spendable is 9 confirmations of the opened coin. The pool does not hold the reward and send it later.</p>
+        <p>Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v6</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
       </section>
       <section class="panel-card" id="start-mining">
         <h2>Start mining</h2>
-        <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v4</code> · ShearHash-v3.</p>
+        <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v6</code> · ShearHash-v3.</p>
         <p class="label" id="stratum-cleartext">Stratum is <strong>cleartext TCP</strong> unless TLS is configured in front of the bind. Production should set <code>SHEAR_STRATUM_AUTH=1</code>.</p>
         <ol class="mine-steps">
-          <li>Install Continuum 0.60 from https://shear.digital/wallet/ and ShearK 2.6 from https://shear.digital/miner/. Wallet → <strong>Copy dest</strong> (the Continuum <code>ssa1</code> shown on screen — that mailbox, not a rotated dest).</li>
+          <li>Install Continuum 0.61 from https://shear.digital/wallet/ and ShearK 2.6 from https://shear.digital/miner/. Wallet → <strong>Copy dest</strong> (the Continuum <code>ssa1</code> shown on screen — that mailbox, not a rotated dest).</li>
           <li>Paste dest and a worker name. Pick CPU threads. Run --selftest once on a new machine, then the command below.</li>
-          <li>Copy the command. Unpaid hash bonus + pot share auto-pay to that <code>ssa1</code> at π SHE. No withdraw button. Open Continuum (Connect Bare or a local node) to see each sealed pay. A pool balance here is not the wallet Spendable figure.</li>
+          <li>Copy the command. The found block pays that <code>ssa1</code>. No withdraw button. Open Continuum (Connect Bare or a local node) to see each sealed pay. A figure on this page is not the wallet Spendable figure.</li>
         </ol>
         <form id="mine-form" action="#" method="get" autocomplete="off">
         <p>
@@ -406,7 +406,7 @@
           <label class="label" for="threads">CPU threads</label><br/>
           <input id="threads" name="threads" type="number" min="1" max="256" value="4" step="1"/>
         </p>
-        <p class="mine-dl label">Miner 2.5:
+        <p class="mine-dl label">ShearK-Miner 2.6:
           <a href="https://github.com/rgsneddon/ShearK/releases/download/2.6/ShearK-Miner-2.6-linux.zip">Linux</a>
           ·
           <a href="https://github.com/rgsneddon/ShearK/releases/download/2.6/ShearK-Miner-2.6-windows.zip">Windows</a>
@@ -426,7 +426,7 @@
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
       <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash-v3</div></article>
-      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v4</div></article>
+      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v6</div></article>
       <article class="panel-card"><div class="label">Proof</div><div class="value" id="proof">PoW</div></article>
       <article class="panel-card"><div class="label">NODES ONLINE</div><div class="value" id="nodes-n">0</div></article>
       <article class="panel-card"><div class="label">Height</div><div class="value" id="height">0</div></article>
@@ -495,7 +495,7 @@
     </section>
     <section class="panel-card" id="pool-explorer">
       <h2>Pool explorer · last 10 transactions</h2>
-      <p class="label">Reserve lock and vote appear from mempool as (pending). Hash bonuses in the open round stay off this list. Pending drops at 6 confirmations.</p>
+      <p class="label">Reserve lock and vote appear from mempool as (pending). Hash bonuses in the open round stay off this list. Pending drops at 9 confirmations.</p>
       <div class="table-wrap" id="recent-wrap">
       <table id="recent-txs">
         <thead>
@@ -554,7 +554,7 @@
       else addrEl.removeAttribute('aria-invalid');
       document.getElementById('copy-cmd').disabled = !ok;
       document.getElementById('cmd-hint').textContent = ok
-        ? 'Ready to copy · ShearHash-v3 · shear-testnet-v4 · :1111'
+        ? 'Ready to copy · ShearHash-v3 · shear-testnet-v6 · :1111'
         : 'Paste Copy dest (ssa1). Login is ssa1.worker.';
       saveMineForm(addr, (document.getElementById('worker').value || '').trim(), t);
     }
@@ -863,7 +863,7 @@
       document.getElementById('coin').textContent = s.coin || 'SHE';
       document.getElementById('algo').textContent = s.personalisation || 'ShearHash-v3';
       const net = document.getElementById('network');
-      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v4';
+      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v6';
       if (boxDue('crew', now)) {
         document.getElementById('miners-n').textContent = String(s.miners || 0);
         const workerN = (s.workers || []).reduce(function (n, w) {
@@ -927,7 +927,7 @@
     function blockStatus(t, tip, need) {
       const h = Number(t && t.height) || 0;
       const tipH = Number(tip) || 0;
-      const n = Math.max(1, Number(need) || 6);
+      const n = Math.max(1, Number(need) || 9);
       const confs = (h >= 1 && tipH >= h) ? (tipH - h + 1) : 0;
       return confs >= n ? 'confirmed' : 'pending';
     }
@@ -960,7 +960,7 @@
       const tip = Number(s && s.height) || 0;
       const need = Math.max(1, Number(s && s.spendableConfirmations)
         || Number(s && s.policy && s.policy.consensus_min)
-        || 6);
+        || 9);
       const sig = rows.map(function (t) { return t.id; }).join('|');
       const html = rows.length
         ? rows.map(function (t) {

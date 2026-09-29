@@ -521,7 +521,7 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(ok.json.ok, true);
     assert.equal(ok.json.tx.from, silent);
     assert.ok(ok.json.fromBalance < 1.5);
-    assert.equal(SPENDABLE_CONFIRMATIONS, 6);
+    assert.equal(SPENDABLE_CONFIRMATIONS, 9);
   });
 
   it('unsigned send cannot spend painted owed-π; reconstructOwner is the book', () => {

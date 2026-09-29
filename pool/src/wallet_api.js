@@ -272,7 +272,7 @@ function blockAtMs(block) {
   }
 }
 
-/** One row per sealed block. Pending until consensus_spendable (6), not ui_seen. */
+/** One row per sealed block. Pending until consensus_spendable (9), not ui_seen. */
 function confirmedBlockRow(b, tipH) {
   const hid = Buffer.isBuffer(b?.hash)
     ? b.hash.toString('hex')

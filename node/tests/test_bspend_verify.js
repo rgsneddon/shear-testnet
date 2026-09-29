@@ -110,8 +110,8 @@ describe('verifyBlock B-spend uses the committing header', () => {
       txs: [spendTx],
     }));
     const spent = new Set();
-    assert.equal(SPENDABLE_CONFIRMATIONS, 6);
-    // 6-conf law: commit at height 1 is not spendable at tip 2.
+    assert.equal(SPENDABLE_CONFIRMATIONS, 9);
+    // 9-conf law: commit at height 1 is not spendable at tip 2.
     const justSealed = verifyBlock(sealed, commitBlock, { tipHeight: 2, spentB: new Set() });
     assert.equal(justSealed.ok, false, justSealed.reason);
     assert.equal(justSealed.reason, 'immature');

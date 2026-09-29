@@ -114,7 +114,7 @@ describe('privacy.walk', () => {
       ephPub: carolPay.ephPub.toString('hex'),
     }), spendKey);
     assert.equal(verifySpendSig(tx), true);
-    assert.equal(SPENDABLE_CONFIRMATIONS, 6);
+    assert.equal(SPENDABLE_CONFIRMATIONS, 9);
     const funded = verifyFundedBody([tx], (addr) => (addr === bobPay.dest ? 3 * NANOS_PER_SHE : 0));
     assert.equal(funded.ok, true, funded.reason);
     assert.notEqual(change.dest, bobPay.dest);
@@ -327,7 +327,7 @@ describe('privacy.walk', () => {
     assert.match(fp, /DEST_HRP_SSA_ONLY=1/);
     assert.match(fp, /SPEND_SIG_ONLY=1/);
     assert.match(fp, /MEMO_NOT_DEST_KEYED=1/);
-    assert.match(fp, /NETWORK=shear-testnet-v4/);
+    assert.match(fp, /NETWORK=shear-testnet-v6/);
     assert.match(fp, /HASH_FN=ShearHash-v3/);
     assert.match(fp, /HASH_TX_LIVE=1/);
     assert.match(fp, /HASH_UNIT_FLOOR=1/);

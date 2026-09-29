@@ -1,6 +1,6 @@
 /**
  * Funded-spend law. A dest cannot pay more than its mature Continuum.
- * Incoming in the same block / mempool is not spendable (6-conf).
+ * Incoming in the same block / mempool is not spendable (9-conf).
  * Outgoing on the sealed book always debits, even before 6 confs —
  * otherwise a dest could send, wait, and send the same coins again.
  * Spend authority is Ed25519 over shear-spend-v1 || packDigest.

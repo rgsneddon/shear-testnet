@@ -7,6 +7,7 @@ import {
   verifyBlock,
   blockNeedsEvm,
   retarget,
+  parentSolveIntervalMs,
   GENESIS_PREV,
   publicJob,
   headerHash,
@@ -767,6 +768,7 @@ export function createStore(dir, {
       trustedPowHash: verifyOpts.trustedPowHash || null,
       skipSharePow: !!verifyOpts.skipSharePow,
       offLoopPow: !!verifyOpts.offLoopPow,
+      parentIntervalMs: parentSolveIntervalMs(blocks),
       parentFluxset: liveFlux,
       parentSpendTags: liveFlux.spendTags,
       poolDest: verifyOpts.poolDest
@@ -774,6 +776,9 @@ export function createStore(dir, {
         || (block.miner && isDestAddress(block.miner) ? block.miner : null),
     });
     const after = (c) => {
+      // A failed consensus check keeps its own reason. The vault clock is a
+      // second gate only after the block verifies.
+      if (!c?.ok) return c;
       for (const tx of (block.txs || []).slice(1)) {
         const pay = payoutOnTip(tx);
         if (!pay.ok) return pay;
@@ -828,7 +833,7 @@ export function createStore(dir, {
     refreshPolicy({ newBlock: true, nowMs: blockTimeMs(stored) });
     emit('tip', { hash: hex32(stored.hash), height: stored.height });
     if (check.evmSession) evmSession = check.evmSession;
-    clearSide();
+    // The active tip grew. The other branch stays, so a later heavier child of it can still win.
     return { ok: true, block: stored, evmSession: check.evmSession || evmSession };
   }
 
@@ -1031,17 +1036,20 @@ export function createStore(dir, {
       committedBps: Number(vault?.epochBps ?? 264),
       reserveState: vault,
       offLoopPow: !!verifyOpts.offLoopPow,
+      trustedPowHash: verifyOpts.trustedPowHash || null,
+      skipSharePow: !!verifyOpts.skipSharePow,
+      parentIntervalMs: accepted.length ? parentSolveIntervalMs(accepted) : undefined,
     });
   }
 
-  function verifyFork(fork) {
+  function verifyFork(fork, verifyOpts = {}) {
     const needs = (fork || []).some((b) => blockNeedsEvm(b?.txs || []));
-    if (needs) return verifyForkAsync(fork);
+    if (needs) return verifyForkAsync(fork, verifyOpts);
     const accepted = [];
     const trialSpent = new Set();
     const { trialVault, lca, noVault } = trialVaultForFork(fork);
     for (let i = 0; i < fork.length; i += 1) {
-      const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, { noVault: !!noVault });
+      const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, { ...verifyOpts, noVault: !!noVault });
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
       const lean = leanBlock({
         ...fork[i],
@@ -1098,6 +1106,23 @@ export function createStore(dir, {
     sideBlocks = [];
   }
 
+  function sideChain() {
+    if (!sideBlocks.length) return [];
+    if (sideAnchor < 0) return sideBlocks.slice();
+    return blocks.slice(0, sideAnchor + 1).concat(sideBlocks);
+  }
+
+  /** Remember one competing branch: the one fork-choice prefers. */
+  function stageSide(anchor, staged) {
+    const rows = Array.isArray(staged) ? staged : [];
+    if (!rows.length) return;
+    const next = anchor < 0 ? rows.slice() : blocks.slice(0, anchor + 1).concat(rows);
+    const cur = sideChain();
+    if (cur.length && !shouldAdopt(cur, next)) return;
+    sideAnchor = anchor;
+    sideBlocks = rows.slice();
+  }
+
   function prevHexOf(block) {
     try {
       return Buffer.from(decodeHeader(Buffer.from(block.header)).prevBlockHash).toString('hex').toLowerCase();
@@ -1140,6 +1165,7 @@ export function createStore(dir, {
         tipHeight: Number(prev?.height || 0) + 1,
         evmHistory: history.concat(out),
         parentFluxset: null,
+        parentIntervalMs: parentSolveIntervalMs(history.concat(out)),
       });
       const take = (c) => {
         if (!c?.ok) return c;
@@ -1178,27 +1204,25 @@ export function createStore(dir, {
       const staged = prior.concat(verified.blocks);
       if (staged.length > 8192) return { ok: false, reason: 'side_hold', tip: tip() };
       const candidate = blocks.slice(0, anchor + 1).concat(staged);
-      let heavier = false;
+      let prefer = false;
       try {
-        heavier = chainWorkOf(candidate) > chainWorkOf(blocks);
+        prefer = shouldAdopt(blocks, candidate);
       } catch {
         return { ok: false, reason: 'bad_header', tip: tip() };
       }
-      if (!heavier) {
-        sideAnchor = anchor;
-        sideBlocks = staged;
+      if (!prefer) {
+        stageSide(anchor, staged);
         return { ok: false, reason: 'side_hold', tip: tip() };
       }
-      clearSide();
       return finishAdopt({ ok: true, accepted: candidate });
     };
     if (checked && typeof checked.then === 'function') return checked.then(apply);
     return apply(checked);
   }
 
-  function adopt(fork) {
+  function adopt(fork, verifyOpts = {}) {
     if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
-    const verified = verifyFork(fork);
+    const verified = verifyOpts.offLoopPow ? verifyForkAsync(fork, verifyOpts) : verifyFork(fork, verifyOpts);
     if (verified && typeof verified.then === 'function') {
       return verified.then((v) => finishAdopt(v));
     }
@@ -1210,7 +1234,10 @@ export function createStore(dir, {
     const accepted = verified.accepted;
     rememberFork(accepted, 'valid-fork');
     if (!shouldAdopt(blocks, accepted)) {
-      return { ok: false, reason: 'not_heavier', tip: tip() };
+      const holdAt = commonPrefixLen(blocks, accepted);
+      if (holdAt <= 0) stageSide(-1, accepted);
+      else stageSide(holdAt - 1, accepted.slice(holdAt));
+      return { ok: false, reason: 'side_hold', tip: tip() };
     }
     const fromBlocks = blocks.slice();
     const broken = reorgBreaksCheckpoint(fromBlocks, accepted, checkpointOpts);
@@ -1245,6 +1272,12 @@ export function createStore(dir, {
     const event = makeReorgEvent({ fromBlocks, toBlocks: accepted, lca });
     blocks.length = 0;
     for (const b of accepted) blocks.push(b);
+    if (disconnected.length) {
+      sideAnchor = lca > 0 ? lca - 1 : -1;
+      sideBlocks = (lca > 0 ? disconnected : fromBlocks).slice();
+    } else if (sideTipHash() && sideTipHash() === hex32(blocks[blocks.length - 1]?.hash).toLowerCase()) {
+      clearSide();
+    }
     rememberHeaders(accepted, 'active');
     rewriteChain();
     rebuildExplorer();
@@ -1305,10 +1338,7 @@ export function createStore(dir, {
     if (anchorIdx >= 0 || (sideBlocks.length && prevHex === sideTipHash())) {
       return stageOrAdopt(fork, verifyOpts, anchorIdx);
     }
-    if (verifyOpts.offLoopPow) {
-      return verifyForkAsync(fork, verifyOpts).then((v) => finishAdopt(v));
-    }
-    return adopt(fork);
+    return adopt(fork, verifyOpts);
   }
 
   function ingest(fork, verifyOpts = {}) {
@@ -1457,7 +1487,7 @@ export function createStore(dir, {
         now = templateStampMs(parent.timestamp, wall, wallIntervalMs, mtp);
       } catch { /* keep wall */ }
     }
-    const bits = bitsIn != null ? bitsIn : retarget(blocks, now);
+    const bits = bitsIn != null ? bitsIn : retarget(blocks);
     const lag1 = lag1Continuity(t ? t.header : null);
     let baseFeeNow = 1;
     try {
@@ -1593,6 +1623,9 @@ export function createStore(dir, {
     historyFor,
     spendableNanos,
     sideTipHash,
+    sideHashes() {
+      return sideBlocks.map((b) => hex32(b.hash).toLowerCase()).filter(Boolean);
+    },
     pruneBuried,
     pruneAfter,
     fastSync: archiveFast,

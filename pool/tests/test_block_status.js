@@ -41,12 +41,12 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
 
   it('wallet Continuum settle is already spendableConfirmations 6', () => {
     const src = fs.readFileSync(new URL('../../wallet/lib/shear_ledger.dart', import.meta.url), 'utf8');
-    assert.match(src, /static const spendableConfirmations = 6/);
+    assert.match(src, /static const spendableConfirmations = 9/);
     assert.match(src, /confirmationsOf\(row\.height, tip\) >= spendableConfirmations/);
     assert.match(src, /confirmationsOf\(h, tip\) >= spendableConfirmations/);
   });
 
-  it('explorerRecentTxs marks a tip-height coinbase pending until 6 confirms', () => {
+  it('explorerRecentTxs marks a tip-height coinbase pending until 9 confirms', () => {
     const dest = 'ssa1qfywwp7jll5p0ys54azypr7u9p2g0r45k59xxxr';
     function block(height, n) {
       return {

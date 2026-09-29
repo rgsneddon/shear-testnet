@@ -26,7 +26,7 @@ describe('Shear Sentinel staking oracle', () => {
     assert.equal(vault.epochBps, 264);
     assert.equal(vault.oracle.annualBps, 264);
     assert.equal(consensusFingerprint().includes('Sentinel'), false);
-    assert.equal(consensusFingerprint().includes('10.0'), false);
+    assert.equal(consensusFingerprint().includes('11.0'), false);
   });
 
   it('a fresh basket names the next freeze and leaves this epoch untouched', () => {
@@ -77,8 +77,8 @@ describe('Shear Sentinel staking oracle', () => {
       assert.equal(one.portal.accrued, 0);
       assert.equal(Object.keys(vault.portals).length, 0);
       const cfg = printConfig();
-      assert.equal(cfg.display, 'Shear Sentinel v10');
-      assert.equal(cfg.version, '10.0');
+      assert.equal(cfg.display, 'Shear Sentinel v11');
+      assert.equal(cfg.version, '11.0');
     } finally {
       rpc.close();
     }

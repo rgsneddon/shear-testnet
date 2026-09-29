@@ -10,26 +10,26 @@ import { unpackShareBatch, shareRowJson } from '../../crypto/pack.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
 import { encodeWireBlock, decodeWireBlock } from '../src/p2p.js';
 import { createStore } from '../src/store.js';
-import { mineTemplate } from '../src/chain.js';
 import { coinbaseSplit } from '../../crypto/mint.js';
 
 function destOf(byte) {
   return encodeDest(Buffer.alloc(20, byte));
 }
 
-function mineAppend(store, { miner, bits = 4, shareBatch = [], poolDest = null, now }) {
+let powTag = 1;
+function mineAppend(store, { miner, shareBatch = [], poolDest = null, now }) {
   const { tpl } = store.template({
     miner,
-    bits,
-    shareBits: bits,
+    shareBits: SHARE_FLOOR_BITS,
     shareBatch,
     poolDest,
     now,
   });
-  const found = mineTemplate({ ...tpl, bits }, { maxTries: 3_000_000, shareBits: bits });
-  assert.ok(found && found.block, 'need pow');
+  const pow = Buffer.alloc(32, 0);
+  pow[31] = powTag;
+  powTag += 1;
   return store.append({
-    header: found.header,
+    header: tpl.header,
     txs: tpl.txs,
     samples: tpl.samples,
     shareBatch: tpl.shareBatch || shareBatch,
@@ -38,7 +38,7 @@ function mineAppend(store, { miner, bits = 4, shareBatch = [], poolDest = null, 
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
     rootB: tpl.rootB,
-  });
+  }, { trustedPowHash: pow });
 }
 
 describe('shareBatch on disk and p2p wire', () => {
@@ -61,7 +61,7 @@ describe('shareBatch on disk and p2p wire', () => {
     const a = createStore(dirA);
     const b = createStore(dirB);
     const t0 = 1_700_000_000_000;
-    const first = mineAppend(a, { miner: hasher, bits: 4, now: t0 });
+    const first = mineAppend(a, { miner: hasher, now: t0 });
     assert.equal(first.ok, true, first.reason);
     const cloned = {
       header: first.block.header,
@@ -74,7 +74,7 @@ describe('shareBatch on disk and p2p wire', () => {
       rootA: first.block.rootA,
       rootB: first.block.rootB,
     };
-    const b1 = b.append(cloned);
+    const b1 = b.append(cloned, { trustedPowHash: Buffer.from(first.block.hash) });
     assert.equal(b1.ok, true, b1.reason);
 
     const share = findShare(first.block.header, {
@@ -86,7 +86,6 @@ describe('shareBatch on disk and p2p wire', () => {
     assert.ok(share, 'need floor-8 lag-1 share');
     const second = mineAppend(a, {
       miner: hasher,
-      bits: 4,
       shareBatch: [{ dest: hasher, dest20: share.dest20, nonce: share.nonce, lz: share.lz }],
       poolDest: pool,
       now: t0 + 90_000,
@@ -110,16 +109,16 @@ describe('shareBatch on disk and p2p wire', () => {
     const wire = encodeWireBlock(second.block);
     assert.ok(Array.isArray(wire.shareBatch) && wire.shareBatch.length >= 1, 'wire carries shareBatch');
     const round = JSON.parse(JSON.stringify(wire));
-    const ingested = b.append(decodeWireBlock(round));
+    const ingested = b.append(decodeWireBlock(round), { trustedPowHash: Buffer.from(second.block.hash) });
     assert.equal(ingested.ok, true, ingested.reason);
     assert.equal(b.tip().height, 2);
 
     const missing = encodeWireBlock({ ...second.block, shareBatch: [] });
     const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-wire-c-'));
     const c = createStore(dirC);
-    assert.equal(c.append(cloned).ok, true);
-    const rejected = c.append(decodeWireBlock(missing));
+    assert.equal(c.append(cloned, { trustedPowHash: Buffer.from(first.block.hash) }).ok, true);
+    const rejected = c.append(decodeWireBlock(missing), { trustedPowHash: Buffer.from(second.block.hash) });
     assert.equal(rejected.ok, false);
-    assert.equal(rejected.reason, 'hash_bonus');
+    assert.equal(rejected.reason, 'continuity');
   });
 });

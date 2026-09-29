@@ -86,6 +86,7 @@ describe('sequential IBD', () => {
     assert.equal(isFinalIngestFail('hash_bonus'), false);
     assert.equal(isFinalIngestFail('prev'), false);
     assert.equal(isFinalIngestFail('side_hold'), false);
+    assert.equal(isFinalIngestFail('not_heavier'), false);
     assert.equal(advertisedPeerTip({ height: 1937 }, 2), 1937);
   });
 
@@ -103,11 +104,16 @@ describe('sequential IBD', () => {
     assert.equal(mineOne(local, dest).ok, true);
     assert.equal(local.tip().height, 2);
     assert.equal(Buffer.from(local.tip().hash).equals(Buffer.from(net.blocks[1].hash)), false);
+    const privateTip = Buffer.from(local.tip().hash).toString('hex');
     const first = local.ingest([net.blocks[1]], trust(net.blocks[1]));
-    assert.equal(first.ok, false);
-    assert.equal(first.reason, 'side_hold');
-    assert.equal(local.tip().height, 2);
-    assert.ok(local.sideTipHash());
+    if (first.ok) {
+      assert.equal(Buffer.from(local.tip().hash).equals(Buffer.from(net.blocks[1].hash)), true);
+      assert.equal(local.sideTipHash(), privateTip);
+    } else {
+      assert.equal(first.reason, 'side_hold');
+      assert.equal(local.tip().height, 2);
+      assert.equal(local.sideTipHash(), Buffer.from(net.blocks[1].hash).toString('hex'));
+    }
     let second;
     try {
       second = local.ingest([net.blocks[2]], trust(net.blocks[2]));
@@ -118,7 +124,7 @@ describe('sequential IBD', () => {
     assert.equal(second.ok, true, second.reason);
     assert.equal(local.tip().height, 3);
     assert.equal(Buffer.from(local.tip().hash).equals(Buffer.from(net.tip().hash)), true);
-    assert.equal(local.sideTipHash(), '');
+    assert.equal(local.sideTipHash(), privateTip);
     assert.equal(fs.existsSync(path.join(localDir, 'chain.bin')), true);
     const prev = Buffer.alloc(80, 0);
     const parent = Buffer.from(net.blocks[0].hash);

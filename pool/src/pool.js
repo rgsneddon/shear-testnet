@@ -19,7 +19,7 @@ import {
   HASH_BONUS_NANOS,
   hashBonusUnitNanos,
   HASH_TX_LIVE,
-  bitsForBlock,
+  nextBits,
   templateStampMs,
   medianTimePast,
   MTP_WINDOW,
@@ -1588,18 +1588,23 @@ export function createPool({
     replyLine(sock, { id: msg.id, error: reason }, { drop });
   }
 
-  function blockBitsNow() {
-    const tip = store.tip();
-    if (tip?.header) {
-      try {
-        const parent = decodeHeader(Buffer.from(tip.header));
-        const mtp = medianTimePast((store.blocks || []).slice(-MTP_WINDOW).map((b) => {
-          try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
-        }));
-        const stamp = templateStampMs(parent.timestamp, Date.now(), null, mtp);
-        return bitsForBlock(parent.bits, parent.timestamp, BigInt(stamp));
-      } catch { /* fall through */ }
+  function parentIntervalBits() {
+    const rows = store.blocks || [];
+    if (!rows.length) return null;
+    try {
+      const last = decodeHeader(Buffer.from(rows[rows.length - 1].header));
+      if (rows.length < 2) return nextBits(last.bits, TARGET_BLOCK_INTERVAL_MS);
+      const prev = decodeHeader(Buffer.from(rows[rows.length - 2].header));
+      const solved = Number(last.timestamp) - Number(prev.timestamp);
+      return nextBits(last.bits, solved > 0 ? solved : TARGET_BLOCK_INTERVAL_MS);
+    } catch {
+      return null;
     }
+  }
+
+  function blockBitsNow() {
+    const stable = parentIntervalBits();
+    if (stable != null) return stable;
     return Number(lastJob?.blockBits || lastJob?.bits || bits);
   }
 
@@ -1804,10 +1809,10 @@ export function createPool({
   }
 
   /**
-   * Timestamp restamp is available for tests. The live timer must not tick
-   * it: a new header drops every floor share that is not on the sealed
-   * parent, so hashbonus collapses to the finder. Bits-ease still cuts a
-   * new template when ASERT would move.
+   * Every JOB_RESTAMP_MS, advance the live header timestamp on the same jobId.
+   * Bits stay on the parent solve interval. A short in-progress stamp must not
+   * retarget. rememberJobHeader keeps the previous header so in-flight shares
+   * still count.
    */
   let lastEaseAt = Date.now();
   let restampTimer = null;
@@ -1831,8 +1836,6 @@ export function createPool({
         }));
         stamp = templateStampMs(parent.timestamp, wall, null, mtp);
         overMtp = Number(decoded.timestamp) > Number(mtp) + MTP_FUTURE_MS;
-        const wantBits = bitsForBlock(parent.bits, parent.timestamp, BigInt(stamp));
-        if (wantBits !== Number(decoded.bits) && !overMtp) return lastJob;
       } catch { /* keep live stamp */ }
     }
     if (stamp > wall && !overMtp) return lastJob;
@@ -1876,15 +1879,19 @@ export function createPool({
           try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
         }));
         const stamp = templateStampMs(parent.timestamp, now, null, mtp);
-        const wantBits = bitsForBlock(parent.bits, parent.timestamp, BigInt(stamp));
+        const wantBits = parentIntervalBits() ?? decoded.bits;
         const liveTs = Number(decoded.timestamp);
         const overMtp = liveTs > Number(mtp) + MTP_FUTURE_MS;
         const liveInt = Math.floor(unpackBits(wantBits));
         const jobInt = Math.floor(unpackBits(decoded.bits));
-        // Packed Q16.16 moves every 10s on a long ease. A new jobId makes
-        // dest-bind shares stale_job. Only restamp the same id when integer
-        // bits actually step or the live header is past the MTP cap.
-        if (!overMtp && liveInt === jobInt) return lastJob;
+        // Difficulty stays on the previous solve. A short in-progress stamp
+        // used to harden +2 and stretch wall time toward ~100s. Same jobId.
+        if (!overMtp && liveInt === jobInt) {
+          const before = String(lastJob.header || '');
+          const job = restampLiveHeader(now);
+          if (job && String(job.header || '') !== before) broadcastJob(job);
+          return job;
+        }
         const header = encodeHeader({
           version: decoded.version,
           prevBlockHash: decoded.prevBlockHash,
