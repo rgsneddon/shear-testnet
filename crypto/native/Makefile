@@ -25,10 +25,10 @@ endif
 all: shearhash.node shearadmit.node
 
 # C sources. Do not link with g++ — stdatomic.h is not C++ on this box.
-shearhash.node: shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(RXLIB)
+shearhash.node: shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MINER)/src/sha256.c $(RXLIB)
 	$(CC) $(CFLAGS) $(LINKFLAGS) \
 	  -I$(NODE_INC) -I$(MINER)/src -I$(RX)/src \
-	  -o $@ shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(RXLIB) \
+	  -o $@ shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MINER)/src/sha256.c $(RXLIB) \
 	  -pthread
 
 admitlib:
