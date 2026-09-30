@@ -126,7 +126,23 @@ jobs:
           python3 - << 'PY'
           import os, shutil, subprocess
           from pathlib import Path
-          real = Path(os.path.realpath(shutil.which("node")))
+          seen = []
+          for p in list(Path("/usr/bin").glob("node*")) + list(Path("/usr/lib64").glob("libnode.so*")):
+              if p.is_file():
+                  seen.append((p.stat().st_size, str(p.resolve())))
+          seen = sorted(set(seen), reverse=True)
+          print("NODE_CANDIDATES")
+          for size, path in seen[:12]:
+              print(size, path)
+          named = []
+          for size, path in seen:
+              name = Path(path).name
+              if name == "node" or name.startswith("node-") or name.startswith("node2"):
+                  named.append(Path(path))
+          if not named:
+              raise SystemExit("no node binary under /usr/bin")
+          preferred = [p for p in named if p.name in ("node26", "node-26", "node24", "node-24", "node22", "node-22")]
+          real = preferred[0] if preferred else max(named, key=lambda p: p.stat().st_size)
           print("NODE_REAL", real, real.stat().st_size)
           runtime = Path("/src/runtime")
           if runtime.exists():
@@ -143,8 +159,12 @@ jobs:
               if len(parts) < 3 or not parts[2].startswith("/"):
                   continue
               lib = Path(parts[2])
-              if lib.name.startswith(keep):
+              if lib.name.startswith(keep) and lib.is_file():
                   libs.append(lib)
+          if not any(lib.name.startswith("libnode") for lib in libs):
+              for lib in Path("/usr/lib64").glob("libnode.so*"):
+                  if lib.is_file() and not lib.is_symlink():
+                      libs.append(lib)
           if libs:
               shutil.copy2(real, runtime / "node.bin")
               for lib in libs:
@@ -177,6 +197,7 @@ jobs:
           test -f /tmp/smoke/crypto/native/shearadmit.node
           chmod +x /tmp/smoke/runtime/node
           if [ -f /tmp/smoke/runtime/node.bin ]; then chmod +x /tmp/smoke/runtime/node.bin; fi
+          echo "ZIP_BYTES $(stat -c%s "$ZIP")"
           test "$(stat -c%s "$ZIP")" -gt 20000000
           SYS_VER=$(node -p "process.version")
           PACK_VER=$(/tmp/smoke/runtime/node -p "process.version")
