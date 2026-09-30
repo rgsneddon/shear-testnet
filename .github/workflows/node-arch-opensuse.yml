@@ -1,0 +1,145 @@
+# Pack Shear Sentinel Arch and openSUSE zips inside those distros.
+# The native addons and the bundled node come from the image, then the zip
+# is uploaded to the existing v14 release. This does not retag and does not
+# replace the Windows, Linux, or Fedora assets.
+name: node-arch-opensuse
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: node-arch-opensuse
+  cancel-in-progress: false
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: archlinux
+            image: archlinux:base
+          - flavor: opensuse
+            image: opensuse/tumbleweed
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and pack inside the distro image
+        run: |
+          cat > "$RUNNER_TEMP/pack-distro.sh" << 'ENDSCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+          echo "FLAVOR=$FLAVOR"
+          cat /etc/os-release
+          case "$FLAVOR" in
+            archlinux)
+              pacman-key --init
+              pacman-key --populate archlinux
+              pacman -Syu --noconfirm
+              pacman -S --noconfirm --needed base-devel cmake nodejs npm rust python git file
+              ;;
+            opensuse)
+              zypper -n refresh
+              zypper -n install gcc gcc-c++ make cmake nodejs npm nodejs-devel rust cargo python3 git zip gzip tar pkg-config file
+              ;;
+            *)
+              echo "unknown flavor $FLAVOR" >&2
+              exit 1
+              ;;
+          esac
+          if ! command -v python3 >/dev/null 2>&1; then
+            ln -sf "$(command -v python)" /usr/local/bin/python3
+          fi
+          command -v node
+          command -v cargo
+          command -v python3
+          node -p "process.version"
+          rustc --version
+          node -e 'const fs=require("fs"); const cs=["/usr/include/node","/usr/local/include/node"]; for (const d of cs) { if (fs.existsSync(d+"/node_api.h")) { console.log("NODE_INC "+d); process.exit(0); } } console.error("node_api.h missing"); process.exit(1);'
+
+          cd /src
+          rm -rf runtime node_modules dist crypto/randomx/build \
+            crypto/native/shearhash.node crypto/native/shearadmit.node \
+            crypto/native/admit/target
+          npm ci
+          cmake -S crypto/randomx -B crypto/randomx/build
+          cmake --build crypto/randomx/build -j"$(nproc)"
+          make -C crypto/native -j"$(nproc)"
+          test -f crypto/native/shearhash.node
+          test -f crypto/native/shearadmit.node
+          file crypto/native/shearhash.node
+          file crypto/native/shearadmit.node
+          export SHEAR_NODE_PACK_LABEL=v14
+          python3 node/pack/zip_node.py "$FLAVOR"
+          ZIP="dist/shear-node-v14-${FLAVOR}.zip"
+          test -f "$ZIP"
+
+          rm -rf /tmp/smoke
+          mkdir -p /tmp/smoke
+          python3 -m zipfile -e "$ZIP" /tmp/smoke
+          test -f /tmp/smoke/runtime/node
+          test -f /tmp/smoke/crypto/native/shearhash.node
+          test -f /tmp/smoke/crypto/native/shearadmit.node
+          chmod +x /tmp/smoke/runtime/node
+          cmp /tmp/smoke/runtime/node "$(command -v node)"
+          grep -q "export const PRODUCT_VERSION = '14.0';" /tmp/smoke/crypto/asert.js
+          grep -q "shear-testnet-v9" /tmp/smoke/crypto/asert.js
+          HASH=$(cd /tmp/smoke && ./runtime/node --input-type=module -e '
+          import { createRequire } from "node:module";
+          const req = createRequire(import.meta.url);
+          const n = req("./crypto/native/shearhash.node");
+          const a = req("./crypto/native/shearadmit.node");
+          if (typeof n.hash !== "function") throw new Error("shearhash has no hash");
+          if (typeof a.noteH !== "function") throw new Error("shearadmit has no noteH");
+          n.backend("interpreter");
+          const out = n.hash(Buffer.alloc(128, 0x11));
+          if (!Buffer.isBuffer(out) || out.length !== 32) throw new Error("hash length");
+          console.log(out.toString("hex"));
+          ')
+          case "$HASH" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+            *) echo "smoke hash was not hex: $HASH" >&2; exit 1 ;;
+          esac
+          {
+            echo "FLAVOR=$FLAVOR"
+            . /etc/os-release
+            echo "PRETTY_NAME=$PRETTY_NAME"
+            echo "ID=$ID"
+            echo "NODE=$(node -p process.version)"
+            echo "RUSTC=$(rustc --version)"
+            sha256sum crypto/native/shearhash.node crypto/native/shearadmit.node
+            echo "HASH_OK $HASH"
+            echo "ZIP_BYTES=$(wc -c < "$ZIP")"
+            echo "PACK_OK"
+          } | tee "dist/build-proof-${FLAVOR}.txt"
+          ENDSCRIPT
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/src \
+            -v "$RUNNER_TEMP/pack-distro.sh":/pack-distro.sh:ro \
+            -e FLAVOR="${{ matrix.flavor }}" \
+            "${{ matrix.image }}" \
+            bash /pack-distro.sh
+
+      - name: Upload the zip to the v14 release
+        run: |
+          ZIP="$GITHUB_WORKSPACE/dist/shear-node-v14-${{ matrix.flavor }}.zip"
+          test -f "$ZIP"
+          grep -q PACK_OK "$GITHUB_WORKSPACE/dist/build-proof-${{ matrix.flavor }}.txt"
+          for i in 1 2 3 4 5 6; do
+            if gh release upload v14 "$ZIP" --repo rgsneddon/shear-testnet; then
+              exit 0
+            fi
+            echo "upload attempt $i failed, retrying"
+            sleep $((i * 20))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proof-${{ matrix.flavor }}
+          path: |
+            dist/build-proof-${{ matrix.flavor }}.txt
+            dist/shear-node-v14-${{ matrix.flavor }}.zip
