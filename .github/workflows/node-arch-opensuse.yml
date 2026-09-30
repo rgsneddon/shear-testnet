@@ -123,6 +123,47 @@ jobs:
           test -f crypto/native/shearadmit.node
           file crypto/native/shearhash.node
           file crypto/native/shearadmit.node
+          python3 - << 'PY'
+          import os, shutil, subprocess
+          from pathlib import Path
+          real = Path(os.path.realpath(shutil.which("node")))
+          print("NODE_REAL", real, real.stat().st_size)
+          runtime = Path("/src/runtime")
+          if runtime.exists():
+              shutil.rmtree(runtime)
+          runtime.mkdir()
+          ldd = subprocess.check_output(["ldd", str(real)], text=True, stderr=subprocess.STDOUT)
+          print(ldd)
+          keep = ("libnode", "libstdc++", "libgcc_s", "libuv")
+          libs = []
+          for line in ldd.splitlines():
+              if "=>" not in line:
+                  continue
+              parts = line.split()
+              if len(parts) < 3 or not parts[2].startswith("/"):
+                  continue
+              lib = Path(parts[2])
+              if lib.name.startswith(keep):
+                  libs.append(lib)
+          if libs:
+              shutil.copy2(real, runtime / "node.bin")
+              for lib in libs:
+                  shutil.copy2(lib, runtime / lib.name)
+              (runtime / "node").write_text(
+                  "#!/bin/sh\n"
+                  "HERE=$(CDPATH= cd -- \"$(dirname \"$0\")\" && pwd)\n"
+                  "export LD_LIBRARY_PATH=\"$HERE${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"\n"
+                  "exec \"$HERE/node.bin\" \"$@\"\n"
+              )
+              os.chmod(runtime / "node", 0o755)
+              os.chmod(runtime / "node.bin", 0o755)
+              print("BUNDLED_LIBS", " ".join(lib.name for lib in libs))
+          else:
+              shutil.copy2(real, runtime / "node")
+              os.chmod(runtime / "node", 0o755)
+              print("BUNDLED_PLAIN", (runtime / "node").stat().st_size)
+          PY
+          /src/runtime/node -p "process.version"
           export SHEAR_NODE_PACK_LABEL=v14
           python3 node/pack/zip_node.py "$FLAVOR"
           ZIP="dist/shear-node-v14-${FLAVOR}.zip"
@@ -135,7 +176,12 @@ jobs:
           test -f /tmp/smoke/crypto/native/shearhash.node
           test -f /tmp/smoke/crypto/native/shearadmit.node
           chmod +x /tmp/smoke/runtime/node
-          cmp /tmp/smoke/runtime/node "$(command -v node)"
+          if [ -f /tmp/smoke/runtime/node.bin ]; then chmod +x /tmp/smoke/runtime/node.bin; fi
+          test "$(stat -c%s "$ZIP")" -gt 20000000
+          SYS_VER=$(node -p "process.version")
+          PACK_VER=$(/tmp/smoke/runtime/node -p "process.version")
+          echo "SYS_VER=$SYS_VER PACK_VER=$PACK_VER"
+          test "$SYS_VER" = "$PACK_VER"
           grep -q "export const PRODUCT_VERSION = '14.0';" /tmp/smoke/crypto/asert.js
           grep -q "shear-testnet-v9" /tmp/smoke/crypto/asert.js
           HASH=$(cd /tmp/smoke && ./runtime/node --input-type=module -e '
