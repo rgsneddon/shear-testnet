@@ -4,7 +4,8 @@ import { newIdentity, freshStealthDest, ed25519SeedOf } from '../../crypto/addre
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { sealNote } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
-import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED, bitsForBlock } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED, nextBits } from '../../crypto/asert.js';
+import { decodeHeader } from '../../crypto/header.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
 import {
@@ -123,7 +124,7 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: bitsForBlock(GENESIS_BITS_PACKED, 1_700_000_000_000, 1_700_000_180_000),
+      bits: nextBits(decodeHeader(parent.header).bits, 90_000),
       now: 1_700_000_180_000,
       txs: [compactTx(attack)],
     });

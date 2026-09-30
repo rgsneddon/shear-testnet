@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { newIdentity, freshStealthDest, ed25519SeedOf } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, levyNeed, mempoolDepthBytes } from '../../crypto/levy.js';
-import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS, BLOCK_SUBSIDY_NANOS, GENESIS_BPS, GENESIS_BITS_PACKED, bitsForBlock } from '../../crypto/asert.js';
+import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS, BLOCK_SUBSIDY_NANOS, GENESIS_BPS, GENESIS_BITS_PACKED, nextBits } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { lockTx, withdrawTx, emptyVault, deposit } from '../../crypto/reserve_vault.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
@@ -116,7 +116,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
       parentWeight: parent.weight,
       height: 2,
       miner: destA,
-      bits: bitsForBlock(ph.bits, ph.timestamp, childNow),
+      bits: nextBits(ph.bits, 90_000),
       now: childNow,
       samples: [{ miner: destA, nonce: '1', tag: 'a', count: 1 }],
     };
