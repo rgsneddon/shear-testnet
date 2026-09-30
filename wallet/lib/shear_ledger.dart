@@ -4503,17 +4503,28 @@ class ShearLedger {
       }
       if (sendKind == 'lock') _noteLockDebit(src, needShe);
       final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
-      final reported = (json['fromBalance'] as num?)?.toDouble();
-      var nextBal = reported ?? (spendable(src) - needShe);
-      if (nextBal < 0) nextBal = 0;
-      _spendable[src] = nextBal;
-      final parkedAmt = (json['changeBalance'] as num?)?.toDouble();
-      if (changeDest != null && parkedAmt != null && parkedAmt > 1e-18) {
-        _spendable[src] = 0;
-        _spendable[changeDest] = spendable(changeDest) + parkedAmt;
-        _dests.add(changeDest);
+      // wallet_api.js sets fromBalance to 0 and sends changeBalance for the
+      // pool's reconstructed leftover whenever change is parked. That figure
+      // is the spent output, not the other confirmed notes on this dest.
+      // Debit the send from the local sum and park only this note's change.
+      if (sendKind == 'send') {
+        final left = spendable(src) - needShe;
+        _spendable[src] = left <= 1e-18 ? 0 : left;
+        final noteChange = fundedShe - needShe;
+        _parkChange(src, changeDest, changeShe: noteChange > 1e-18 ? noteChange : null);
       } else {
-        _parkChange(src, changeDest, changeShe: fundedShe - needShe);
+        final reported = (json['fromBalance'] as num?)?.toDouble();
+        var nextBal = reported ?? (spendable(src) - needShe);
+        if (nextBal < 0) nextBal = 0;
+        _spendable[src] = nextBal;
+        final parkedAmt = (json['changeBalance'] as num?)?.toDouble();
+        if (changeDest != null && parkedAmt != null && parkedAmt > 1e-18) {
+          _spendable[src] = 0;
+          _spendable[changeDest] = spendable(changeDest) + parkedAmt;
+          _dests.add(changeDest);
+        } else {
+          _parkChange(src, changeDest, changeShe: fundedShe - needShe);
+        }
       }
       final tx = ShearTx(
         id: raw.id,

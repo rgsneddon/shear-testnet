@@ -1383,6 +1383,7 @@ void main() {
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(0.85, 1e-9));
     final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
     final before = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
+    pool.reconstructedNanos = (before * kUnitsPerShe).round();
     await ledger.sendSpendableSum(
       from: dest,
       to: bob,
@@ -1393,11 +1394,26 @@ void main() {
       allowPublicHttp: true,
     );
     expect(posts, isNotEmpty);
+    expect(posts.single.containsKey('change'), isTrue);
     expect(posts.every((p) => p['to'] == bob), isTrue);
-    expect(
-      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
-      lessThan(before - 0.2),
-    );
+    final after = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
+    final unsent = ledger.notes
+        .where((n) => n['spent'] != true && n['verified'] == true)
+        .where((n) {
+          final h = (n['height'] as num?)?.toInt() ?? 0;
+          final amt = (n['amount'] as num?)?.toDouble() ?? 0;
+          return h >= 1 &&
+              h <= 2 &&
+              amt > 0 &&
+              amt < 1 &&
+              ledger.confirmationsOf(h) >= ShearLedger.spendableConfirmations;
+        })
+        .fold<double>(0, (sum, n) => sum + (n['amount'] as num).toDouble());
+    expect(unsent, greaterThan(0.39));
+    expect(after, greaterThan(unsent - 1e-9));
+    expect(after, greaterThan(before - 0.3 - 0.02));
+    expect(after, lessThan(before - 0.2));
+    expect(after, lessThan(1));
   });
 
   test('HTML pool body on lock is a StateError, not FormatException', () async {
@@ -8581,6 +8597,9 @@ class _RecordingPool extends ShearPoolClient {
   final List<String> spendTags;
   List<Map<String, dynamic>> sealedNotes = const [];
   int notesHits = 0;
+  /// Pool reconstruct of the source, in nanos. When set, send replies with
+  /// the wallet_api.js shape: fromBalance, and changeBalance when change is parked.
+  int? reconstructedNanos;
 
   @override
   Future<Map<String, dynamic>> notes(String address) async {
@@ -8639,17 +8658,35 @@ class _RecordingPool extends ShearPoolClient {
       'sig': sig,
       'spendPub': spendPub,
       'programId': programId,
+      if (change != null) 'change': change,
       if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
     });
+    final tx = <String, dynamic>{
+      'id': 'note-send-1',
+      'from': from,
+      'to': to,
+      'amount': amount,
+      'kind': kind ?? 'send',
+    };
+    final held = reconstructedNanos;
+    if (held == null) {
+      return {'ok': true, 'tx': tx};
+    }
+    final kindName = kind ?? 'send';
+    final nanos = (amount * kUnitsPerShe).round();
+    final fee = kindName == 'send' ? levyNanos(nanos) : 0;
+    final leftover = held - nanos - fee;
+    final changeDest = change ?? '';
+    final parked = kindName == 'send' &&
+        changeDest.isNotEmpty &&
+        changeDest != from &&
+        leftover > 0;
+    if (parked) tx['change'] = changeDest;
     return {
       'ok': true,
-      'tx': {
-        'id': 'note-send-1',
-        'from': from,
-        'to': to,
-        'amount': amount,
-        'kind': kind ?? 'send',
-      },
+      'tx': tx,
+      'fromBalance': parked ? 0 : (leftover > 0 ? leftover : 0) / kUnitsPerShe,
+      if (parked) 'changeBalance': leftover / kUnitsPerShe,
     };
   }
 }
