@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import 'shear_identity.dart';
 import 'shear_levy.dart';
 import 'shear_read_sync.dart';
-import 'shear_vpn_profile.dart';
 
 /// Residual hop daemon for Continuum Reserve (restore-privacy RPT2).
 const kPrivacyHopHost = '77.42.91.84';
@@ -120,36 +119,6 @@ bool hopFeeDestIsSsa1(String dest) => privacyHopFeeDestOk(dest);
 
 const kErrPrivacyVpn = 'Couldn’t reach Shear Privacy VPN — try again';
 
-/// Probe-up is not a TUN. Desktop must not claim the IP is masked.
-bool privacyHopClaimsIpMask({
-  required bool tunUp,
-  required bool probeOnly,
-}) =>
-    tunUp && !probeOnly;
-
-class PublicSendGate {
-  const PublicSendGate({required this.sendBlocked, required this.claimsIpMask, this.error});
-  final bool sendBlocked;
-  final bool claimsIpMask;
-  final String? error;
-}
-
-PublicSendGate publicSendGate({
-  required bool vpnMode,
-  required bool tunUp,
-  required bool probeOnly,
-  required bool localReady,
-}) {
-  if (!vpnMode) {
-    return PublicSendGate(sendBlocked: !localReady, claimsIpMask: false, error: localReady ? null : kErrPrivacyVpn);
-  }
-  final mask = privacyHopClaimsIpMask(tunUp: tunUp, probeOnly: probeOnly);
-  if (!mask) {
-    return const PublicSendGate(sendBlocked: true, claimsIpMask: false, error: kErrPrivacyVpn);
-  }
-  return const PublicSendGate(sendBlocked: false, claimsIpMask: true);
-}
-
 class PrivacyHopController extends ChangeNotifier {
   PrivacyHopController({
     this.mock = false,
@@ -206,12 +175,6 @@ class PrivacyHopController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// A privacy-hop send while the device tunnel is up.
-  void noteDeviceSend() {
-    final ip = vpnIp;
-    _log(ip != null && ip.isNotEmpty ? 'send via device tunnel $ip' : 'send via device tunnel');
-    notifyListeners();
-  }
   bool get isConnecting => state == PrivacyHopState.connecting;
 
   String statusLine() => message.isNotEmpty ? message : privacyHopStateLabel(state);
@@ -219,15 +182,11 @@ class PrivacyHopController extends ChangeNotifier {
   Future<bool> connect({
     String host = kPrivacyHopHost,
     int port = kPrivacyHopPort,
-    ShearVpnProfile? profile,
   }) async {
     if (isUp) return true;
-    final use = profile ?? ShearVpnProfile();
     state = PrivacyHopState.connecting;
     message = 'Waiting for device VPN approval…';
     _log('Waiting for device VPN approval');
-    _log(use.extendedOn ? 'extended controls on' : 'extended controls off');
-    _log('${use.ipv4 ? 'ipv4' : ''} ${use.ipv6 ? 'ipv6' : ''}'.trim());
     notifyListeners();
     final impl = connectImpl;
     if (impl != null) {
@@ -253,7 +212,10 @@ class PrivacyHopController extends ChangeNotifier {
         'label': kPrivacyHopLabel,
         'timeoutMs': kPrivacyHopHandshakeTimeoutMs,
         'attempts': kPrivacyHopHandshakeAttempts,
-        ...use.connectArgs,
+        'ipv4': true,
+        'ipv6': true,
+        'trafficShape': false,
+        'outerObfuscation': false,
       });
       final map = raw is Map<String, dynamic>
           ? raw
@@ -312,7 +274,7 @@ class PrivacyHopController extends ChangeNotifier {
     probeOnly = false;
     message = 'Privacy hop off';
     vpnIp = null;
-    _log('VPN tunnel off');
+    _log('Privacy hop off');
     notifyListeners();
   }
 

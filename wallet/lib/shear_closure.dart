@@ -3,15 +3,18 @@ import 'dart:io';
 
 import 'shear_read_open.dart';
 
-enum ClosureSendMode { connectBare, shearPrivacyVpn, localNode, localNodeFull }
+enum ClosureSendMode { connectBare, localNode, localNodeFull }
 
 const kClosureModeBare = 'connectBare';
+
+/// Retired stored string. Old sessions that saved the Shear VPN tunnel open
+/// on Connect bare. Not a product mode.
 const kClosureModeVpn = 'shearPrivacyVpn';
 const kClosureModeLocal = 'localNode';
 const kClosureModeFull = 'localNodeFull';
 
-/// Connect bare is the new-session default. Stored hop and full-node values
-/// fold into the two 0.58 paths: bare, or the one syncing node.
+/// Connect bare is the new-session default. A stored VPN-tunnel string and
+/// full-node values fold into the two paths: bare, or the one syncing node.
 ClosureSendMode closureModeFromStored(String? raw, {required bool android}) {
   switch (raw) {
     case kClosureModeLocal:
@@ -31,8 +34,6 @@ String closureModeStored(ClosureSendMode mode) {
   switch (mode) {
     case ClosureSendMode.connectBare:
       return kClosureModeBare;
-    case ClosureSendMode.shearPrivacyVpn:
-      return kClosureModeVpn;
     case ClosureSendMode.localNode:
       return kClosureModeLocal;
     case ClosureSendMode.localNodeFull:
@@ -110,7 +111,7 @@ const kLocalNodeModeCopy =
     'Start resumes from the saved height. Stop saves that height and leaves the book. No stratum.';
 const kLocalNodeFullModeCopy = kLocalNodeModeCopy;
 
-/// The VPN tunnel is deprecated. Connect bare pushes a signed send. Nodes verify it.
+/// Connect bare pushes a signed send. Nodes verify it. No tunnel on this device.
 const kConnectBareCopy =
     'Connect bare. You push a signed send. Each node verifies it on the book it holds. '
     'DINS-DAG and the ADMITv2 fluxset keep that spend private. No tunnel and no node on this device.';
@@ -162,8 +163,6 @@ String closureChipLabel(ClosureSendMode mode) {
   switch (mode) {
     case ClosureSendMode.connectBare:
       return 'CONNECT BARE';
-    case ClosureSendMode.shearPrivacyVpn:
-      return 'VPN HOP MODE';
     case ClosureSendMode.localNode:
     case ClosureSendMode.localNodeFull:
       return 'RUN NODE';
@@ -174,8 +173,6 @@ String closureChipKey(ClosureSendMode mode) {
   switch (mode) {
     case ClosureSendMode.connectBare:
       return 'wallet-mode-connect-bare';
-    case ClosureSendMode.shearPrivacyVpn:
-      return 'wallet-mode-vpn-hop';
     case ClosureSendMode.localNode:
       return 'wallet-mode-local-node';
     case ClosureSendMode.localNodeFull:
@@ -205,7 +202,6 @@ List<String> closureSpawnArgs({required bool emptyDatadir, required ClosureSendM
   // Args stay empty. Bootstrap is never auto-applied; users import boot.shear.digital by hand.
   if (emptyDatadir ||
       mode == ClosureSendMode.connectBare ||
-      mode == ClosureSendMode.shearPrivacyVpn ||
       mode == ClosureSendMode.localNode ||
       mode == ClosureSendMode.localNodeFull) {
     return const [];
@@ -301,7 +297,7 @@ typedef ClosureProcessStart = Future<void> Function(
   List<String> args,
 );
 
-/// Continuum sidecar. Connect bare and VPN keep no node. Local node has no
+/// Continuum sidecar. Connect bare keeps no node. Local node has no
 /// stratum. Local-node-full on desktop listens on 1111. Android never arms it.
 class ShearNodeSidecar {
   ShearNodeSidecar({
@@ -399,8 +395,7 @@ class ShearNodeSidecar {
     );
   }
 
-  bool get _noNode =>
-      committed == ClosureSendMode.connectBare || committed == ClosureSendMode.shearPrivacyVpn;
+  bool get _noNode => committed == ClosureSendMode.connectBare;
 
   /// Dialog latch for this process. A new sidecar is a new wallet launch.
   bool _localSyncNoticeOffered = false;

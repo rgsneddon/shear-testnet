@@ -35,7 +35,6 @@ import 'shear_privacy_hop.dart';
 import 'shear_closure.dart';
 import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
-import 'shear_vpn_profile.dart';
 
 const kWalletVersion = '0.63';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
@@ -101,7 +100,6 @@ class ShearWalletApp extends StatefulWidget {
     this.startUnlocked = false,
     this.skipPoolSync = false,
     this.privacyHop,
-    this.enforceReserveHopGate = false,
     this.postReserveLock = false,
     this.hopFeePay,
   });
@@ -133,8 +131,6 @@ class ShearWalletApp extends StatefulWidget {
   final bool skipPoolSync;
   /// Residual hop controller. Tests inject a mock.
   final PrivacyHopController? privacyHop;
-  /// Tests: apply the Reserve hop/unprivate Send gate even when [skipPoolSync] is set.
-  final bool enforceReserveHopGate;
   /// Tests: post Reserve lock to [ledger.pool] even when [skipPoolSync] is set.
   final bool postReserveLock;
 
@@ -175,10 +171,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   late final ShearNodeSidecar sidecar;
   Process? _nodeProc;
   final _nodeConsoleScroll = ScrollController();
-  final _vpnConsoleScroll = ScrollController();
-  final ShearVpnProfile vpnProfile = ShearVpnProfile();
-  /// Set only by the Closure tick box. Stored VPN mode does not start the tunnel.
-  bool _vpnTunnelOn = false;
   int vortexTab = 0;
   List<Vortice> vortices = leanContinuumVortices();
   final Set<String> openedMemos = {};
@@ -227,7 +219,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   void _onHop() {
     if (mounted) setState(() {});
-    _pinVpnConsole();
   }
 
   Future<void> _startSharedNode(String binary, Map<String, String> env, List<String> args) async {
@@ -266,16 +257,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final max = _nodeConsoleScroll.position.maxScrollExtent;
       if (max > 0 && _nodeConsoleScroll.offset != max) {
         _nodeConsoleScroll.jumpTo(max);
-      }
-    });
-  }
-
-  void _pinVpnConsole() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_vpnConsoleScroll.hasClients) return;
-      final max = _vpnConsoleScroll.position.maxScrollExtent;
-      if (max > 0 && _vpnConsoleScroll.offset != max) {
-        _vpnConsoleScroll.jumpTo(max);
       }
     });
   }
@@ -337,7 +318,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     _preloginTick?.cancel();
     _nodeProc?.kill();
     _nodeConsoleScroll.dispose();
-    _vpnConsoleScroll.dispose();
     _reserveLockHold?.cancel();
     super.dispose();
   }
@@ -1279,11 +1259,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                       fontWeight: FontWeight.w700,
                       color: sidecar.committed == ClosureSendMode.connectBare
                           ? const Color(0xFF5EEAD4)
-                          : sidecar.committed == ClosureSendMode.shearPrivacyVpn
-                              ? const Color(0xFFD4AF37)
-                              : sidecar.committed == ClosureSendMode.localNode
-                                  ? const Color(0xFF00E5FF)
-                                  : const Color(0xFF39FF14),
+                          : sidecar.committed == ClosureSendMode.localNode
+                              ? const Color(0xFF00E5FF)
+                              : const Color(0xFF39FF14),
                     ),
                   ),
                 ),
@@ -2149,18 +2127,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             });
             return;
           }
-          if (_flowPublicBlocked) {
-            setState(() {
-              _flowSendAdvisory = kErrPrivacyVpn;
-              _flowSendOk = false;
-            });
-            return;
-          }
           final amount = double.tryParse(flowAmt.text) ?? 0;
           final bare = sidecar.committed == ClosureSendMode.connectBare;
-          final hopMode = sidecar.committed == ClosureSendMode.shearPrivacyVpn;
-          final tun = hopMode && hop.tunVerified && !hop.probeOnly;
-          if (tun) hop.noteDeviceSend();
           final result = await submitContinuumSend(
             ledger: ledger,
             restFrame: ident.address,
@@ -2171,7 +2139,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
             spendSeed: hexToBytes(ident.seedHex),
             local: false,
-            privacyHopUp: tun,
             allowPublicHttp: bare,
             depth: _mempoolDepth,
           );
@@ -2498,22 +2465,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     );
   }
 
-  /// VPN public path. Probe-up and a down sibling both block. Connect bare
-  /// does not look for the hop. Tests that skip the pool do not, unless they
-  /// enforce the hop gate.
-  bool get _flowPublicBlocked {
-    if (sidecar.committed == ClosureSendMode.connectBare) return false;
-    if (sidecar.committed != ClosureSendMode.shearPrivacyVpn) return false;
-    if (widget.skipPoolSync && !widget.enforceReserveHopGate) return false;
-    final gate = publicSendGate(
-      vpnMode: true,
-      tunUp: hop.tunVerified,
-      probeOnly: hop.probeOnly,
-      localReady: false,
-    );
-    return gate.sendBlocked;
-  }
-
   void _showLocalNodeSynced() {
     final ctx = _nav.currentContext;
     if (ctx == null) return;
@@ -2565,10 +2516,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       nowMs: DateTime.now().millisecondsSinceEpoch,
     );
   }
-
-  /// B/C before the sidecar is at tip uses the wait copy. Mode A uses the VPN string.
-  String get _sendBlockedSnack =>
-      sidecar.sendBlocked ? sidecar.sendBlockedCopy : kErrPrivacyVpn;
 
   bool get _reserveSendReady {
     final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
@@ -3433,16 +3380,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           ..._reservePane(context, ident),
         ],
       );
-    } else if (cur.id == kRestorePrivacyProgram) {
-      kids.add(RestorePrivacyPane(
-        profile: vpnProfile,
-        onChanged: () => setState(() {}),
-      ));
-      kids.add(OutlinedButton(
-        key: const Key('vortice-remove'),
-        onPressed: () => _removeVortice(context, cur),
-        child: const Text('Remove vortice'),
-      ));
     } else if (cur.id == kRxPrivacyBrowserProgram) {
       kids.add(const RxPrivacyBrowserPane());
       kids.add(OutlinedButton(
@@ -3478,10 +3415,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   Future<void> _resistanceStart(BuildContext context) async {
-    if (_vpnTunnelOn) {
-      await hop.disconnect();
-      _vpnTunnelOn = false;
-    }
     await _applyResistancePath(context, sidecar.startResistanceNode);
   }
 
@@ -3498,31 +3431,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg.isEmpty ? 'Send path applied' : msg)),
     );
-  }
-
-  /// Tick joins the device tunnel and forces privacy-hop sends.
-  /// Untick drops the tunnel and returns to Connect bare.
-  Future<void> _setVpnTunnel(bool on) async {
-    if (on) {
-      setState(() => _vpnTunnelOn = true);
-      sidecar.select(ClosureSendMode.shearPrivacyVpn);
-      await sidecar.apply();
-      session.closureSendMode = closureModeStored(sidecar.committed);
-      if (!widget.skipPoolSync) await session.persist();
-      if (!mounted) return;
-      setState(() {});
-      await hop.connect(profile: vpnProfile);
-      if (!mounted) return;
-      setState(() {});
-      return;
-    }
-    await hop.disconnect();
-    sidecar.select(ClosureSendMode.connectBare);
-    await sidecar.apply();
-    session.closureSendMode = closureModeStored(sidecar.committed);
-    if (!widget.skipPoolSync) await session.persist();
-    if (!mounted) return;
-    setState(() => _vpnTunnelOn = false);
   }
 
   Widget _closure(BuildContext context, ShearIdentity ident) {
@@ -3567,11 +3475,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       FilledButton(
         key: const Key('closure-apply'),
         onPressed: () async {
-          final next = sidecar.pending;
-          if (_vpnTunnelOn && next != ClosureSendMode.shearPrivacyVpn) {
-            await hop.disconnect();
-            _vpnTunnelOn = false;
-          }
           final msg = await sidecar.apply();
           session.closureSendMode = closureModeStored(sidecar.committed);
           if (!mounted) return;

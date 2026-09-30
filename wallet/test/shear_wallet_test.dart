@@ -5629,7 +5629,6 @@ void main() {
       reserve: ShearReserve(),
       startUnlocked: true,
       skipPoolSync: true,
-      enforceReserveHopGate: true,
       privacyHop: hop,
     ));
     await tester.pump();
@@ -5807,7 +5806,6 @@ void main() {
       startUnlocked: true,
       skipPoolSync: true,
       postReserveLock: true,
-      enforceReserveHopGate: true,
       privacyHop: PrivacyHopController(mock: true),
     ));
     await tester.pump();
@@ -5859,7 +5857,6 @@ void main() {
       reserve: ShearReserve(),
       startUnlocked: true,
       skipPoolSync: true,
-      enforceReserveHopGate: true,
       privacyHop: hop,
     ));
     await tester.pump();
@@ -5902,7 +5899,6 @@ void main() {
       reserve: ShearReserve(),
       startUnlocked: true,
       skipPoolSync: true,
-      enforceReserveHopGate: true,
       privacyHop: hop,
     ));
     await tester.pump();
@@ -5948,7 +5944,6 @@ void main() {
       ledger: ledger,
       startUnlocked: true,
       skipPoolSync: true,
-      enforceReserveHopGate: true,
       privacyHop: hop,
     ));
     await tester.pump();
