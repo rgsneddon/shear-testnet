@@ -45,6 +45,7 @@ import {
   MAGIC_TESTNET_V4,
   MAGIC_TESTNET_V6,
   MAGIC_TESTNET_V7,
+  MAGIC_TESTNET_V8,
   MAGIC_MAINNET,
   HASH_FN,
   HASH_TX_LIVE,
@@ -67,14 +68,13 @@ describe('ASERT 90s block retarget', () => {
     assert.equal(nextBits(packBits(21), 90_000), packBits(21));
   });
 
-  it('raises packed bits when blocks arrive faster than 90s, tau-damped (not bang-bang +1)', () => {
+  it('raises packed bits when blocks arrive faster than 90s', () => {
     const next = unpackBits(nextBits(packBits(21), 45_000));
     assert.ok(next > 21, `expected harden from 21, got ${next}`);
-    // (T-seen)/tau at 45s ≈ 0.001736 — far below a full log2 step
-    assert.ok(next < 21.01, `45s must be tau-damped, got ${next}`);
+    assert.ok(next - 21 < ASERT_HARDEN_MAX, `45s stays inside the farm lid, got ${next}`);
     const from16 = unpackBits(nextBits(packBits(16), 59_000));
     assert.ok(from16 > 16, `59s must climb off 16, got ${from16}`);
-    assert.ok(from16 < 16.01, `59s must not double work, got ${from16}`);
+    assert.ok(from16 - 16 < 1, `one 59s gap is under a full bit, got ${from16}`);
     assert.equal(nextBits(packBits(16), 90_000), packBits(16));
     const held = nextBits(packBits(15), TARGET_BLOCK_INTERVAL_MS);
     assert.equal(nextBits(packBits(15), 0), held);
@@ -92,27 +92,20 @@ describe('ASERT 90s block retarget', () => {
     assert.match(src, /recursive parent-interval/i);
   });
 
-  it('tau damping: single fast block moves <<1 bit; farm lid still caps; catch-up is not bang-bang', () => {
-    const farmHs = 4e9;
-    const startBits = 12;
-    const t12 = (2 ** startBits) / farmHs;
-    assert.ok(t12 < 2e-6 && t12 > 5e-7, `12-bit @ 4GH/s ${t12}s`);
-    const one = unpackBits(nextBits(packBits(startBits), 1));
-    assert.ok(one > startBits, `1ms must harden, got ${one}`);
-    assert.ok(one - startBits < 0.01, `1ms must be tau-damped not +2, got ${one}`);
-    // After many fast blocks bits climb; still far from bang-bang tens-of-blocks catch-up
-    let packed = packBits(startBits);
-    for (let n = 0; n < 40; n += 1) {
-      const t = (2 ** unpackBits(packed)) / farmHs;
-      packed = nextBits(packed, Math.max(1, t * 1000));
-    }
-    const after40 = unpackBits(packed);
-    assert.ok(after40 < startBits + 1, `40 fast blocks stay << bang-bang, got ${after40}`);
-    assert.ok(after40 > startBits, `40 fast blocks must climb, got ${after40}`);
+  it('eight 2000ms gaps from genesis add at least one bit; one fast gap stays under the lid', () => {
+    let packed = GENESIS_BITS_PACKED;
+    for (let n = 0; n < 8; n += 1) packed = nextBits(packed, 2_000);
+    const after8 = unpackBits(packed);
+    assert.ok(after8 >= GENESIS_BITS + 1, `eight 2000ms gaps must add >=1 bit, got ${after8}`);
+    const held = nextBits(packed, TARGET_BLOCK_INTERVAL_MS);
+    assert.equal(unpackBits(held), unpackBits(packed), `90000ms must not raise, got ${unpackBits(held)}`);
+    const one = unpackBits(nextBits(packBits(12), 1));
+    assert.ok(one > 12, `1ms must harden, got ${one}`);
+    assert.ok(one - 12 <= ASERT_HARDEN_MAX, `1ms stays inside the farm lid, got ${one}`);
   });
 
-  it('tau-damped step keeps farm lid constants; stall at 8τ eases by ease max; HUD ≤ 256', () => {
-    assert.equal(ASERT_HARDEN_MAX, 2);
+  it('fast-gap step keeps farm lid constants; stall at 8τ eases by ease max; HUD ≤ 256', () => {
+    assert.equal(ASERT_HARDEN_MAX, 6);
     assert.equal(ASERT_EASE_MAX, 2);
     assert.equal(ASERT_EASE_MAX_TESTNET, 2);
     assert.equal(ASERT_EASE_MAX_MAINNET, 1);
@@ -120,9 +113,10 @@ describe('ASERT 90s block retarget', () => {
     assert.equal(asertEaseMax(MAGIC_MAINNET), 1);
     const jumped = unpackBits(nextBits(packBits(21), 3_500));
     assert.ok(jumped > 21, `3.5s must harden, got ${jumped}`);
-    assert.ok(jumped < 21.01, `3.5s must be tau-damped not +2, got ${jumped}`);
+    assert.ok(jumped - 21 <= ASERT_HARDEN_MAX, `3.5s stays inside the farm lid, got ${jumped}`);
     const oneMs = unpackBits(nextBits(packBits(21), 1));
-    assert.ok(oneMs < 21.01, `1ms must be tau-damped, got ${oneMs}`);
+    assert.ok(oneMs - 21 <= ASERT_HARDEN_MAX, `1ms stays inside the farm lid, got ${oneMs}`);
+    assert.ok(oneMs > 21, `1ms must harden, got ${oneMs}`);
     const stall = unpackBits(nextBits(packBits(21), ASERT_HALFLIFE_MS * 8));
     assert.ok(stall <= 19.01, `8τ stall must ease by farm lid, got ${stall}`);
     assert.ok(stall >= 18.99, `8τ stall ease cap −2, got ${stall}`);
@@ -133,11 +127,14 @@ describe('ASERT 90s block retarget', () => {
     assert.ok(displayBits(GENESIS_BITS_PACKED) <= MAX_BITS);
     assert.equal(displayBits(GENESIS_BITS_PACKED), GENESIS_BITS);
     const fp = consensusFingerprint();
-    assert.match(fp, /ASERT_STEP=\(T-seen\)\/tau/);
-    assert.match(fp, /ASERT_HARDEN=2/);
+    assert.match(fp, /ASERT_STEP=log2\(T\/seen\)/);
+    assert.equal(fp.includes('ASERT_STEP=(T-seen)/tau'), false);
+    assert.equal(fp.includes('ASERT_STEP=8x2000ms=+1bit'), false);
+    assert.match(fp, /ASERT_HARDEN=6/);
+    assert.match(fp, /HEADER_AHEAD_MS=15000/);
     assert.match(fp, /ASERT_EASE=2/);
     assert.match(mainnetFingerprint(), /ASERT_EASE=1/);
-    assert.match(mainnetFingerprint(), /ASERT_HARDEN=2/);
+    assert.match(mainnetFingerprint(), /ASERT_HARDEN=6/);
   });
 
   it('lowers packed bits when blocks arrive slower than 90s', () => {
@@ -215,8 +212,9 @@ describe('ASERT 90s block retarget', () => {
     assert.equal(clampBits(256), packBits(256));
     assert.equal(clampBits(300), packBits(256));
     assert.ok(unpackBits(nextBits(packBits(32), 250)) > 32);
-    assert.ok(unpackBits(nextBits(packBits(36), 250)) - 36 < 0.01);
-    assert.ok(unpackBits(nextBits(packBits(36), 250)) - 36 <= ASERT_HARDEN_MAX);
+    const fast36 = unpackBits(nextBits(packBits(36), 250)) - 36;
+    assert.ok(fast36 > 0.05, `250ms must move 36-bit work, got ${fast36}`);
+    assert.ok(fast36 <= ASERT_HARDEN_MAX);
     assert.equal(nextBits(packBits(36), 90_000), packBits(36));
     const parentTs = 1_700_000_000_000;
     const eased = unpackBits(bitsForBlock(packBits(36), parentTs, parentTs + 12 * 3600_000));
@@ -313,8 +311,10 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(formatShe(1e-11), '0.00000000');
     assert.equal(formatShe(1e-8), '0.00000001');
     assert.equal(formatShe(1e-9), '0.00000000');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v7');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v8');
+    assert.equal(MAGIC_TESTNET_V8, 'shear-testnet-v8');
     assert.equal(MAGIC_TESTNET_V7, 'shear-testnet-v7');
+    assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V7);
     assert.equal(MAGIC_TESTNET_V6, 'shear-testnet-v6');
     assert.equal(MAGIC_TESTNET_V4, 'shear-testnet-v4');
     assert.equal(MAGIC_TESTNET_V1, 'shear-testnet-v1');
@@ -373,7 +373,8 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
-    assert.match(fp, /NETWORK=shear-testnet-v7/);
+    assert.match(fp, /NETWORK=shear-testnet-v8/);
+    assert.doesNotMatch(fp, /NETWORK=shear-testnet-v7/);
     assert.match(fp, /:4:15:/);
     assert.equal(GENESIS_BITS, 15);
     assert.equal(LIVE_MIN_BITS, 4);
@@ -401,7 +402,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /LEVY=weight/);
     assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
     assert.match(fp, /BITS=q16\.16/);
-    assert.match(fp, /ASERT_HARDEN=2/);
+    assert.match(fp, /ASERT_HARDEN=6/);
     assert.match(fp, /ASERT_EASE=2/);
     assert.equal(MTP_FUTURE_MS, 7_200_000);
     assert.match(fp, /MTP_FUTURE_MS=7200000/);
@@ -411,7 +412,7 @@ describe('hash-tx consensus law', () => {
     const mfp = mainnetFingerprint();
     assert.match(mfp, /NETWORK=shear-v1/);
     assert.match(mfp, /ASERT_EASE=1/);
-    assert.match(mfp, /ASERT_HARDEN=2/);
+    assert.match(mfp, /ASERT_HARDEN=6/);
     assert.match(mfp, /GENESIS=2026-09-18T21:00:00\+01:00/);
     assert.equal(GENESIS_MAINNET, '2026-09-18T21:00:00+01:00');
     assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET) - 1), false);
@@ -467,6 +468,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(fp.includes('0.60'), false);
     assert.equal(fp.includes('0.61'), false);
     assert.equal(fp.includes('0.62'), false);
+    assert.equal(fp.includes('0.63'), false);
     assert.match(fp, /FORK=work-then-lowhash/);
     assert.equal(fp.includes(PRODUCT_VERSION), false);
     assert.equal(law.minerVersion, '1.1');

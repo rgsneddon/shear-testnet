@@ -404,7 +404,7 @@
       </section>
       <section class="panel-card" id="start-mining">
         <h2>Start mining</h2>
-        <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v7</code> · ShearHash-v3. ShearK 2.6.</p>
+        <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v8</code> · ShearHash-v3. ShearK 2.6.</p>
         <p class="label" id="stratum-cleartext">Stratum is <strong>cleartext TCP</strong>. Set <code>SHEAR_STRATUM_AUTH=1</code> when TLS is not in front.</p>
         <p>Paste Copy dest, a worker name, and CPU threads. Copy the command into ShearK. Use a worker name that you will recognise, so you can find your miners page link in the pool miners table below.</p>
         <form id="mine-form" action="#" method="get" autocomplete="off">
@@ -435,7 +435,7 @@
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
       <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash-v3</div></article>
-      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v7</div></article>
+      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v8</div></article>
       <article class="panel-card"><div class="label">Proof</div><div class="value" id="proof">PoW</div></article>
       <article class="panel-card"><div class="label">NODES ONLINE</div><div class="value" id="nodes-n">0</div></article>
       <article class="panel-card"><div class="label">Height</div><div class="value" id="height">0</div></article>
@@ -563,7 +563,7 @@
       else addrEl.removeAttribute('aria-invalid');
       document.getElementById('copy-cmd').disabled = !ok;
       document.getElementById('cmd-hint').textContent = ok
-        ? 'Ready to copy · ShearHash-v3 · shear-testnet-v7 · :1111'
+        ? 'Ready to copy · ShearHash-v3 · shear-testnet-v8 · :1111'
         : 'Paste Copy dest (ssa1). Login is ssa1.worker.';
       saveMineForm(addr, (document.getElementById('worker').value || '').trim(), t);
     }
@@ -872,7 +872,7 @@
       document.getElementById('coin').textContent = s.coin || 'SHE';
       document.getElementById('algo').textContent = s.personalisation || 'ShearHash-v3';
       const net = document.getElementById('network');
-      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v7';
+      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v8';
       if (boxDue('crew', now)) {
         document.getElementById('miners-n').textContent = String(s.miners || 0);
         const workerN = (s.workers || []).reduce(function (n, w) {

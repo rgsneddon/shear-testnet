@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'shear_read_open.dart';
+
 enum ClosureSendMode { connectBare, shearPrivacyVpn, localNode, localNodeFull }
 
 const kClosureModeBare = 'connectBare';
@@ -85,6 +87,11 @@ bool noteSidecarLine(ShearNodeSidecar side, String line) {
   if (st == null) return false;
   side.reportedHeight = st.height;
   side.reportedIbd = st.ibd;
+  if (side.hasHeldBlocks) {
+    try {
+      side.openWhileCatchingUp();
+    } catch (_) {}
+  }
   return side.takeOverIfMatched();
 }
 
@@ -332,6 +339,61 @@ class ShearNodeSidecar {
   int reportedHeight = 0;
   bool reportedIbd = true;
   int seekerTip = 0;
+
+  List<dynamic> _heldBlocks = const [];
+  Set<int> _heldHeights = const {};
+  int _heldTip = 0;
+  String? _heldDest;
+
+  /// Last sequential open. Set while [reportedIbd] is still true.
+  ReadBlockOpen? lastOpen;
+
+  bool get hasHeldBlocks => _heldBlocks.isNotEmpty;
+
+  /// Blocks the local node has already read. Opening uses these on the next
+  /// status line, including while IBD is still true.
+  void holdReadBlocks(List blocks, {String? dest, Set<int>? readHeights, int? liveTip}) {
+    _heldBlocks = blocks;
+    if (dest != null) _heldDest = dest;
+    if (readHeights != null) _heldHeights = readHeights;
+    if (liveTip != null) _heldTip = liveTip;
+  }
+
+  /// Run node walk. [ibd] defaults to the node's reported flag and is not
+  /// forced false while the node is still catching up.
+  ReadBlockOpen openRunNode({
+    List? blocks,
+    Set<int>? readHeights,
+    int? liveTip,
+    String? dest,
+    bool? ibd,
+  }) {
+    final opened = openReadBlockProofs(
+      blocks: blocks ?? _heldBlocks,
+      readHeights: readHeights ?? _heldHeights,
+      liveTip: liveTip ?? (_heldTip > 0 ? _heldTip : seekerTip),
+      dest: dest ?? _heldDest,
+      ibd: ibd ?? reportedIbd,
+    );
+    lastOpen = opened;
+    return opened;
+  }
+
+  /// Same ordered walk as Connect bare. Runs while [reportedIbd] is still true.
+  ReadBlockOpen openWhileCatchingUp({
+    List? blocks,
+    Set<int>? readHeights,
+    int? liveTip,
+    String? dest,
+  }) {
+    return openRunNode(
+      blocks: blocks,
+      readHeights: readHeights,
+      liveTip: liveTip,
+      dest: dest,
+      ibd: reportedIbd,
+    );
+  }
 
   bool get _noNode =>
       committed == ClosureSendMode.connectBare || committed == ClosureSendMode.shearPrivacyVpn;

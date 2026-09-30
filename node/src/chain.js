@@ -8,7 +8,6 @@ import {
   LIVE_MIN_BITS,
   MAX_BITS,
   nextBits,
-  bitsForBlock,
   TARGET_BLOCK_INTERVAL_MS,
   isPackedBits,
   unpackBits,
@@ -30,6 +29,7 @@ import {
   POOL_FEE_MAX_BPS,
   MTP_WINDOW,
   MTP_FUTURE_MS,
+  HEADER_AHEAD_MS,
   medianTimePast,
   GENESIS_BPS,
   RESERVE_PROGRAM,
@@ -887,9 +887,13 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       return { ok: false, reason: 'parent_header' };
     }
     const intervalOpt = opts.parentIntervalMs;
-    const want = intervalOpt != null
-      ? nextBits(parent.bits, Number(intervalOpt), magic)
-      : bitsForBlock(parent.bits, parent.timestamp, decoded.timestamp);
+    // Child timestamp is not this block's work. A missing or non-positive
+    // parent gap is the 90s fixed point, same as nextBits, so a chosen
+    // stamp cannot freeze or ease the bits required here.
+    const seen = intervalOpt != null && Number.isFinite(Number(intervalOpt)) && Number(intervalOpt) > 0
+      ? Number(intervalOpt)
+      : TARGET_BLOCK_INTERVAL_MS;
+    const want = nextBits(parent.bits, seen, magic);
     if (decoded.bits !== want) return { ok: false, reason: 'bits' };
     if (!isPackedBits(decoded.bits) || !isPackedBits(want)) return { ok: false, reason: 'bits' };
     const fp = unpackBits(decoded.bits);
@@ -907,6 +911,9 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       : [parentTs];
     const mtp = medianTimePast(window);
     if (ts > mtp + MTP_FUTURE_MS) return { ok: false, reason: 'timestamp' };
+    if (nowMs != null && Number.isFinite(Number(nowMs)) && ts > Number(nowMs) + HEADER_AHEAD_MS) {
+      return { ok: false, reason: 'timestamp' };
+    }
     if (nowMs != null && Number.isFinite(Number(nowMs)) && ts > Number(nowMs) + MTP_FUTURE_MS) {
       return { ok: false, reason: 'timestamp' };
     }
@@ -1472,9 +1479,9 @@ export function parentSolveIntervalMs(blocks) {
   }
 }
 
-/** Template bits from parentSolveInterval only. candidateTimestamp is ignored
- *  so live jobs never pull bits off a wall stamp. verifyBlock still uses
- *  parentIntervalMs / bitsForBlock on the sealed header path. */
+/** Template bits from the sealed parent interval only. candidateTimestamp is
+ *  ignored, so a miner-chosen stamp cannot freeze or ease the job target.
+ *  verifyBlock uses that same parent interval, never the child timestamp. */
 export function retarget(chain, candidateTimestamp) {
   void candidateTimestamp;
   if (!chain.length) return GENESIS_BITS_PACKED;

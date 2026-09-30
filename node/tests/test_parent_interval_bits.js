@@ -6,6 +6,7 @@ import {
   bitsForBlock,
   GENESIS_BITS_PACKED,
   TARGET_BLOCK_INTERVAL_MS,
+  ASERT_HARDEN_MAX,
   unpackBits,
 } from '../../crypto/asert.js';
 import {
@@ -106,9 +107,12 @@ describe('non-positive parent gap uses one packed step', () => {
 
     const fast = unpackBits(nextBits(parentBits, 1));
     const at45 = unpackBits(nextBits(parentBits, 45_000));
-    assert.ok(fast - unpackBits(parentBits) < 0.01);
-    assert.ok(at45 - unpackBits(parentBits) < 0.01);
-    assert.ok(fast > unpackBits(parentBits));
+    const base = unpackBits(parentBits);
+    assert.ok(fast > base);
+    assert.ok(at45 > base);
+    assert.ok(fast - base <= ASERT_HARDEN_MAX);
+    assert.ok(at45 - base < fast - base);
+    assert.equal(nextBits(parentBits, 90_000), parentBits);
     void trust;
   });
 });

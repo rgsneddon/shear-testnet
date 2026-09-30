@@ -6,7 +6,7 @@ This is the **main Shear tree** (`rgsneddon/shear-testnet`): node, crypto, specs
 
 | Repo | What |
 |------|------|
-| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv2 (`shear-testnet-v7`) |
+| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv2 (`shear-testnet-v8`) |
 | [rgsneddon/ShearK](https://github.com/rgsneddon/ShearK) | Official miner pin + how-to (keep this repo) |
 
 Windows ops start: [`HANDOFF_OPS.md`](HANDOFF_OPS.md). MacBook cuts Apple-only artifacts: [`MACBOOK-HANDOFF.md`](MACBOOK-HANDOFF.md).
@@ -18,14 +18,14 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
 - Miner pin: **ShearK-Miner 2.6** — https://github.com/rgsneddon/ShearK/releases/tag/2.6
-- Wallet pin: **0.62** (Continuum GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.62
+- Wallet pin: **0.63** (Continuum GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.63
 - Node pin: **Shear Sentinel v12** (product 12.0). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/v12
 - Stratum: `pool.shear.digital:1111`
-- P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v7`)
+- P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v8`)
 - Site: https://shear.digital
 - Docs: https://shear.digital/docs/#/surfaces
 - Pool: https://pool.shear.digital
-- Chain: `shear-testnet-v7`
+- Chain: `shear-testnet-v8`
 
 Mainnet `shear-v1` is **not live**. The public countdown is 30th October 2026 at 1400hrs UK time. That countdown is a display date. It is not genesis and it does not emit. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` **and** `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`. Fingerprint must include `POT_SCHED` + `EPOCH_DAYS=400` + oracle policy before emit. Do not set those env vars.
 
@@ -87,7 +87,7 @@ test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall No
 make -C crypto/native
 ```
 
-`--print-config` must show `"version":"12.0"`, `"magic":"shear-testnet-v7"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
+`--print-config` must show `"version":"12.0"`, `"magic":"shear-testnet-v8"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
 
 ### Run
 
@@ -96,7 +96,7 @@ sudo mkdir -p /var/lib/shear/testnet-v7
 sudo chown "$USER":"$USER" /var/lib/shear/testnet-v7
 
 export SHEAR_DATA=/var/lib/shear/testnet-v7
-export SHEAR_NETWORK=shear-testnet-v7
+export SHEAR_NETWORK=shear-testnet-v8
 export SHEAR_P2P_PORT=30303
 export SHEAR_P2P_BIND=0.0.0.0
 export SHEAR_RPC_PORT=18332
@@ -140,7 +140,7 @@ ShearK-Miner --pool pool.shear.digital:1111 --user ssa1YOURDEST.worker --threads
 
 `ssa1.worker` / `ssa1.solo` is Continuum/CLI Copy dest — the `ssa1` shown on screen, not a rotated mailbox. Amounts are confidential; dests are stealth. Reuse that mining mailbox so blocks stay linked.
 
-Continuum **0.62** reads a node at `127.0.0.1:18332`. Connect Bare uses the same scan when no local node answers (that is the Android path). The node is the book: it returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. `shear restore` opens a password-sealed `shewall.bin`. Public pool HTTP submit is an advanced toggle. How-to: https://shear.digital/docs/#/surfaces
+Continuum **0.63** reads a node at `127.0.0.1:18332`. Connect Bare uses the same scan when no local node answers (that is the Android path). The node is the book: it returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. `shear restore` opens a password-sealed `shewall.bin`. Public pool HTTP submit is an advanced toggle. How-to: https://shear.digital/docs/#/surfaces
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure.
 CLI covers the same functions (`dart run bin/shear.dart help`), including sign, The Reserve vote/rewards, vort1 create/register, and Closure backup/restore.

@@ -2,7 +2,7 @@
 
 Frozen numbers. `consensusFingerprint()` pins every line. A later flip is a new book.
 
-Network: `shear-testnet-v7` (privacy-class). Frozen `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant.
+Network: `shear-testnet-v8` (privacy-class). Frozen `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant.
 
 ## Numbers
 
@@ -39,7 +39,7 @@ Network: `shear-testnet-v7` (privacy-class). Frozen `shear-testnet-v6`, `shear-t
 Fingerprint also pins:
 
 ```
-NETWORK=shear-testnet-v7
+NETWORK=shear-testnet-v8
 FORK=work-then-lowhash
 HASH_FN=ShearHash-v3
 HASH_TX_LIVE=1
@@ -67,7 +67,10 @@ LEVY_CAP=0.001-SHE
 LEVY_SPLIT=50-50-finder-reserve
 ADMIT=ADMITv2
 BITS=q16.16
-ASERT_TAU_MS=25920000
+ASERT_TAU_MS=90000
+ASERT_STEP=log2(T/seen)
+ASERT_HARDEN=6
+ASERT_EASE=2
 SHARE_FLOOR_BITS=8
 MAX_SHARES_PER_BLOCK=8192
 SPEND_SIG=ed25519-shear-spend-v1

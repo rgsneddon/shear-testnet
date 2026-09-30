@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'shear_read_open.dart';
 import 'shear_tip_tick.dart';
 
 import 'shear_identity.dart' show kBookMagic;
@@ -60,6 +61,9 @@ bool isLiveBookStats(Map<String, dynamic> stats) {
   ].map((e) => '${e ?? ''}').join(' ');
   if ('${stats['magic'] ?? ''}' == 'shear-testnet-v6') return false;
   if ('${stats['network'] ?? ''}' == 'shear-testnet-v6') return false;
+  if ('${stats['magic'] ?? ''}' == 'shear-testnet-v7') return false;
+  if ('${stats['network'] ?? ''}' == 'shear-testnet-v7') return false;
+  if (blob.contains('shear-testnet-v7')) return false;
   if (blob.contains('shear-testnet-v3')) return false;
   if (blob.contains('shear-testnet-v2')) return false;
   if (blob.contains('shear-testnet-v1')) return false;
@@ -169,6 +173,14 @@ class ShearReadSync {
   int _failures = 0;
   final Set<int> _proven = {};
   final Set<int> _compactProven = {};
+  final List<Map<String, dynamic>> _readBlocks = [];
+
+  /// Money dest whose seals are opened while compact pages arrive.
+  String? proofDest;
+
+  /// Last walk of blocks already read. Set while the live tip is still ahead.
+  ReadBlockOpen? lastOpen;
+
   String? jrootHex;
   int sampledTip = 0;
 
@@ -193,6 +205,12 @@ class ShearReadSync {
     return n;
   }
   int get failures => _failures;
+
+  /// Heights whose compact bodies have been read. An unread height is absent.
+  Set<int> get readHeights => Set<int>.unmodifiable(_compactProven);
+
+  /// Compact bodies already read, in the order each page arrived.
+  List<Map<String, dynamic>> get readBlocks => List<Map<String, dynamic>>.unmodifiable(_readBlocks);
   bool get honest =>
       liveBase != null &&
       wantedHeaders > 0 &&
@@ -279,6 +297,8 @@ class ShearReadSync {
     if (genesis.isNotEmpty && genesisHex != null && genesis != genesisHex) {
       _proven.clear();
       _compactProven.clear();
+      _readBlocks.clear();
+      lastOpen = null;
       jrootHex = null;
       sampledTip = 0;
     }
@@ -357,6 +377,8 @@ class ShearReadSync {
     if (genesisHex != null && gotGenesis.isNotEmpty && gotGenesis != genesisHex) {
       _proven.clear();
       _compactProven.clear();
+      _readBlocks.clear();
+      lastOpen = null;
       jrootHex = null;
       sampledTip = 0;
     }
@@ -402,6 +424,8 @@ class ShearReadSync {
             if (genesisHex != null && genesisHex != g) {
               _proven.clear();
               _compactProven.clear();
+              _readBlocks.clear();
+              lastOpen = null;
             }
             genesisHex = g;
           }
@@ -439,28 +463,84 @@ class ShearReadSync {
         '/blocks?from=$from&to=$to',
         '/compactblocks?from=$from&to=$to',
       ]);
+      final page = <Map<String, dynamic>>[];
       final rows = batch?['blocks'];
       if (rows is List) {
         for (final row in rows) {
           if (row is! Map) continue;
           final h = (row['height'] as num?)?.toInt() ?? 0;
           if (h < 1) continue;
-          if (row['header'] != null || row['txs'] != null) _compactProven.add(h);
+          if (row['header'] != null || row['txs'] != null) {
+            page.add(Map<String, dynamic>.from(row));
+          }
         }
       }
       for (var h = from; h <= to; h++) {
         if (_compactProven.contains(h)) continue;
+        if (page.any((b) => ((b['height'] as num?)?.toInt() ?? 0) == h)) continue;
         final blk = await _getFirst(base, [
           '/block?height=$h',
           '/compactblock?height=$h',
         ]);
         if (blk == null) continue;
         if (blk['header'] != null || blk['txs'] != null || blk['ok'] == true) {
-          _compactProven.add(h);
+          final row = Map<String, dynamic>.from(blk);
+          row['height'] = (row['height'] as num?)?.toInt() ?? h;
+          page.add(row);
         }
+      }
+      if (page.isNotEmpty) {
+        applyReadPage(pageBlocks: page, liveTip: tip, dest: proofDest);
       }
       await Future<void>.delayed(Duration.zero);
     }
+  }
+
+  /// One compact page is now in hand. Open its proofs before later pages,
+  /// including while [liveTip] is still ahead of this prefix.
+  ReadBlockOpen applyReadPage({
+    required List pageBlocks,
+    required int liveTip,
+    String? dest,
+    bool ibd = false,
+  }) {
+    for (final raw in pageBlocks) {
+      if (raw is! Map) continue;
+      final row = Map<String, dynamic>.from(raw);
+      final h = readBlockHeight(row);
+      if (h < 1) continue;
+      row['height'] = h;
+      _compactProven.add(h);
+      _readBlocks.removeWhere((b) => readBlockHeight(b) == h);
+      _readBlocks.add(row);
+    }
+    if (liveTip > sampledTip) sampledTip = liveTip;
+    return openConnectBare(
+      blocks: _readBlocks,
+      readHeights: Set<int>.from(_compactProven),
+      liveTip: liveTip,
+      dest: dest ?? proofDest,
+      ibd: ibd,
+    );
+  }
+
+  /// Connect bare walk over blocks already read. Same function Run node calls.
+  ReadBlockOpen openConnectBare({
+    required List blocks,
+    required Set<int> readHeights,
+    required int liveTip,
+    String? dest,
+    bool ibd = false,
+  }) {
+    final opened = openReadBlockProofs(
+      blocks: blocks,
+      readHeights: readHeights,
+      liveTip: liveTip,
+      dest: dest ?? proofDest,
+      ibd: ibd,
+    );
+    lastOpen = opened;
+    return opened;
   }
 
   Future<void> _proveJroot(String base) async {

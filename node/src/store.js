@@ -572,6 +572,8 @@ export function createStore(dir, {
         committedBps: Number(reserveVault.epochBps ?? 264),
         reserveState: reserveVault,
         spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, prev ? prev.height : 0)),
+        parentIntervalMs: parentSolveIntervalMs(blocks.slice(0, i - 1)),
+        nowMs: Date.now(),
       });
       if (spentCheck && typeof spentCheck.then === 'function') {
         return spentCheck.then(step);
@@ -1039,6 +1041,7 @@ export function createStore(dir, {
       trustedPowHash: verifyOpts.trustedPowHash || null,
       skipSharePow: !!verifyOpts.skipSharePow,
       parentIntervalMs: accepted.length ? parentSolveIntervalMs(accepted) : undefined,
+      nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
     });
   }
 
@@ -1166,6 +1169,7 @@ export function createStore(dir, {
         evmHistory: history.concat(out),
         parentFluxset: null,
         parentIntervalMs: parentSolveIntervalMs(history.concat(out)),
+        nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
       });
       const take = (c) => {
         if (!c?.ok) return c;

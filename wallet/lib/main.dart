@@ -37,7 +37,7 @@ import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 import 'shear_vpn_profile.dart';
 
-const kWalletVersion = '0.62';
+const kWalletVersion = '0.63';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock is accepted. Spendable drops and staking starts now.
@@ -523,7 +523,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final msg = e is FormatException ? e.message : '';
       if (msg.startsWith('shewall_reset_required')) {
         setState(() => _lockError =
-            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v7).');
+            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v8).');
         return;
       }
       setState(() => _lockError = 'Wrong password.');
@@ -759,6 +759,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     _creditBusy = true;
     try {
       await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
+      _openLocalReadPrefix();
       _rememberLedger();
       if (!mounted) return;
       final spendUnits = (ledger.spendable(ident.address) * 1e9).round();
@@ -775,6 +776,23 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         unawaited(_onNodeTip(ledger.displayHeight));
       }
     }
+  }
+
+  /// Run node opens proofs of blocks already read while IBD is still true.
+  void _openLocalReadPrefix() {
+    if (sidecar.committed != ClosureSendMode.localNode &&
+        sidecar.committed != ClosureSendMode.localNodeFull) {
+      return;
+    }
+    final sync = ledger.pool?.sync;
+    if (sync == null || sync.readBlocks.isEmpty) return;
+    sidecar.holdReadBlocks(
+      sync.readBlocks,
+      dest: sync.proofDest,
+      readHeights: sync.readHeights,
+      liveTip: ledger.pool?.liveTip ?? sync.sampledTip,
+    );
+    sidecar.openWhileCatchingUp();
   }
 
   void _startAccrualTick({bool immediate = false}) {
@@ -863,6 +881,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             || tipMoved
             || owedShe > 0;
         sidecar.seekerTip = ledger.pool?.liveTip ?? ledger.displayHeight;
+        _openLocalReadPrefix();
         if (sidecar.takeOverIfMatched()) {
           if (mounted) {
             setState(() {});

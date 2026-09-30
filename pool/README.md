@@ -2,7 +2,7 @@
 
 Open-source Shear pool: stratum on `:1111`, HTTP dashboard on loopback `:8088`, optional P2P.
 
-This cut speaks **shear-testnet-v7** (ADMITv2, Bulletproofs+, weight levy, Q16.16 packed ASERT toward **90s** blocks). When mainnet `shear-v1` is cut, update `MAGIC_TESTNET` / systemd `SHEAR_NETWORK` and this README — do not dual-stack.
+This cut speaks **shear-testnet-v8** (ADMITv2, Bulletproofs+, weight levy, Q16.16 packed ASERT toward **90s** blocks). When mainnet `shear-v1` is cut, update `MAGIC_TESTNET` / systemd `SHEAR_NETWORK` and this README — do not dual-stack.
 
 Public site example in this repo is **https://mypool.site**. Operator admin is **https://mypool.site/admin**. Point those names at your box. Prod examples require `SHEAR_ADMIN_HOST` (generic example `mypool.site`); do not commit a real operator subdomain. First-run is deny-by-default when that env is unset.
 
@@ -47,7 +47,7 @@ sudo mkdir -p /var/lib/shear/testnet-v7
 sudo chown "$USER":"$USER" /var/lib/shear/testnet-v7
 ```
 
-v4, v5, and v6 are different books. This tree seals `shear-testnet-v7`. Do not reuse a `shear-testnet-v4` or `shear-testnet-v5` datadir.
+v4, v5, and v6 are different books. This tree seals `shear-testnet-v8`. Do not reuse a `shear-testnet-v4` or `shear-testnet-v5` datadir.
 
 ## systemd
 
@@ -61,7 +61,7 @@ sudo journalctl -u shear-pool -f
 
 The pool unit does not bind `:30303`. `shear-p2p.service` (`node node/src/node.js --mode=p2p-sync`) owns P2P and feeds verified blocks to the pool on `127.0.0.1:30313`. Fleet peers run `deploy/shear-node.service` in that same p2p-sync mode, not this pool process. Solo localhost stratum stays `npm run solo`.
 
-You should see a JSON line with `"magic":"shear-testnet-v7"`, `"stratum":1111`, `"http":8088`, `"p2p":0`.
+You should see a JSON line with `"magic":"shear-testnet-v8"`, `"stratum":1111`, `"http":8088`, `"p2p":0`.
 
 Optional environment (drop-in `/etc/systemd/system/shear-pool.service.d/local.conf`):
 

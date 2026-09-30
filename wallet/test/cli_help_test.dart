@@ -105,7 +105,7 @@ void main() {
       ledger: guiLedger,
     );
     expect(imported.paymentCode, startsWith('she1'));
-    expect(kBookMagic, 'shear-testnet-v7');
+    expect(kBookMagic, 'shear-testnet-v8');
 
     final store2 = File('${dir.path}/session2.json');
     final restOut = StringBuffer();

@@ -252,7 +252,7 @@ export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
  * which is not yours. Solo (`npm run solo` / `--solo`) does not read this
  * constant and does not take the 1%. The solo finder keeps the epoch pot.
  */
-export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1qqv2ezgh5krtlcqu586r5dtx6nancf3hjtey2dp7kjujf523fz70l5tqrvzl0axx39qxgnmm4v8kqxcn3s4nqzrgjve';
+export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1qv3fvqp7555xemucfy3f6lhk2mx3vd7hk06g7htzwcr8zujsn2wfaqe059cepku4p3hh58nmvwtcyflspnvdszmruah';
 
 /** PROP of (pot - 100 bps) across hasher dests. Fee dest gets only the fee. */
 export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDest = null) {
@@ -1755,7 +1755,10 @@ export function createPool({
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     const chainLen = (store.blocks || []).length;
-    // Hash bonus seals to hasher dests. Pot notes seal to the round, not the pool.
+    // Block target is consensus next-work for this parent (retarget → nextBits).
+    // `bits` / lockBits may size an empty book only. A live parent never
+    // keeps that override. A share that misses the issued target is not a block.
+    void lockBits;
     const { job, tpl } = store.template({
       miner: payout,
       samples,
@@ -1763,7 +1766,7 @@ export function createPool({
       shareBits: sb,
       shareBatch: lag1Shares,
       poolDest: poolPay,
-      ...(chainLen >= 1 && !lockBits ? {} : { bits }),
+      ...(chainLen >= 1 ? {} : { bits }),
       wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
     });
     const gate = gateJob(job);

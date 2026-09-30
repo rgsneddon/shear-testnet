@@ -42,26 +42,42 @@ export const LIVE_MIN_BITS = 4;
  */
 export const GENESIS_BITS = 15;
 /**
- * Per-block lid on the τ-damped step. A single fast header moves a fraction
- * of a bit, so ±2 almost never binds. Catch-up after a hashrate shock is
- * O(τ) blocks. Testnet ease matches harden. Mainnet stays ease=1 (frozen
- * fingerprint). Do not pin these to a live pool hashrate.
+ * Per-block lid. Testnet ease stays 2. Harden is 6 so one 2s gap
+ * restores a 90s expectation. Mainnet ease stays 1.
+ * Do not pin these to a live pool hashrate.
  */
-export const ASERT_HARDEN_MAX = 2;
+export const ASERT_HARDEN_MAX = 6;
 export const ASERT_EASE_MAX_MAINNET = 1;
 export const ASERT_EASE_MAX_TESTNET = 2;
 /** Live book default (testnet). Mainnet fingerprint still pins EASE=1. */
 export const ASERT_EASE_MAX = ASERT_EASE_MAX_TESTNET;
 /**
  * Header `bits` is Q16.16 packed work (integer LZ + 16-bit fraction).
- * Integer rungs (16 vs 17) could not represent the 1.09× target that 90 s
- * needs when hashrate sits between powers of two; 82 s sat in the old
- * ±15 % dead band forever. 288-block half-life matches BCH aserti3 in
- * block-count terms at T=90 s. Share vardiff stays integer LZ.
+ * Integer rungs could not represent the 1.09× target that 90 s needs
+ * when hashrate sits between powers of two. Share vardiff stays integer LZ.
+ *
+ * One sealed parent gap moves work by log2(T / gap), then the ± lid.
+ * A 90000 ms gap adds zero, so that interval is the fixed point: the
+ * next expected solve time is T again. Eight sealed gaps of 2000 ms
+ * add at least one bit from genesis and from any later parent.
+ * Harden 6 covers log2(T / 2000) in one block, so a fast farm cannot
+ * keep a 1000-confirmation prune window, or the life of the chain, on
+ * a seconds-apart cadence. The previous fraction-of-a-bit step is not
+ * this book.
  */
 export const BITS_FP_SCALE = 65536;
-export const ASERT_HALFLIFE_BLOCKS = 288;
-export const ASERT_HALFLIFE_MS = ASERT_HALFLIFE_BLOCKS * TARGET_BLOCK_INTERVAL_MS;
+export const ASERT_FAST_GAPS = 8;
+export const ASERT_FAST_GAP_MS = 2_000;
+export const ASERT_STEP_ID = 'log2(T/seen)';
+/** Time constant of the log step. One target-interval of error is one bit before the lid. */
+export const ASERT_HALFLIFE_MS = TARGET_BLOCK_INTERVAL_MS;
+/**
+ * A header may sit this far ahead of the verifier clock. Further ahead is
+ * rejected, so a finder cannot publish a 2 s solve stamped as a 90 s gap.
+ * Honest clocks within this skew still agree. The excess telescopes: over a
+ * prune window the summed lie is at most this many milliseconds.
+ */
+export const HEADER_AHEAD_MS = 15_000;
 export const GENESIS_BITS_PACKED = (GENESIS_BITS * BITS_FP_SCALE) >>> 0;
 /** Protocol unit is 10⁻¹¹ SHE (11 decimals). Vote steps are integers of this unit. Public amounts show eight fractional digits. */
 export const SHE_DECIMALS = 11;
@@ -112,10 +128,12 @@ export const MAGIC_TESTNET_V4 = 'shear-testnet-v4';
 export const MAGIC_TESTNET_V5 = 'shear-testnet-v5';
 /** Previous empty-book soak (GENESIS_BITS=12, bang-bang log2 step). Not this magic. */
 export const MAGIC_TESTNET_V6 = 'shear-testnet-v6';
-/** Empty book cut: GENESIS_BITS=15 + tau-damped ASERT. v6 is a different chain. */
+/** Previous book. Not this magic. */
 export const MAGIC_TESTNET_V7 = 'shear-testnet-v7';
+/** Live book. Pools and solo miners share the 90s next-work rule. v7 is a different chain. */
+export const MAGIC_TESTNET_V8 = 'shear-testnet-v8';
 /** ADMITv2 privacy-class book. */
-export const MAGIC_TESTNET = MAGIC_TESTNET_V7;
+export const MAGIC_TESTNET = MAGIC_TESTNET_V8;
 export const MAGIC_MAINNET = 'shear-v1';
 /** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
 export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
@@ -170,7 +188,7 @@ export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
 /**
  * Consensus floor: spendable after 9 confirmations (~13.5 min at 90s).
- * In the fingerprint. shear-testnet-v7 book, operator 2026-09-29.
+ * In the fingerprint. shear-testnet-v8 book.
  */
 export const SPENDABLE_CONFIRMATIONS = 9;
 /** Sample bodies may drop after this many confirmations. Money vouts stay. */
@@ -266,9 +284,10 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,
     'BITS=q16.16',
     `ASERT_TAU_MS=${ASERT_HALFLIFE_MS}`,
-    'ASERT_STEP=(T-seen)/tau',
+    `ASERT_STEP=${ASERT_STEP_ID}`,
     `ASERT_HARDEN=${ASERT_HARDEN_MAX}`,
     `ASERT_EASE=${asertEaseMax(magic)}`,
+    `HEADER_AHEAD_MS=${HEADER_AHEAD_MS}`,
     `MTP_FUTURE_MS=${MTP_FUTURE_MS}`,
   ].join(':');
 }
@@ -429,13 +448,14 @@ export function clampBits(bits) {
 
 /**
  * Recursive parent-interval step toward 90s on Q16.16 packed work.
- * Each sealed block adds (T − parentGap) / τ, then the ± lid. On a
- * contiguous header chain those additions telescope to the absolute
- * schedule from genesis. There is no second stored schedule. Verifiers
- * use the sealed parent gap, not wall clock.
- * A non-positive or non-finite gap is the 90s target, so template, pool,
- * and verify agree. A positive gap, including 1ms, stays τ-damped.
- * Stalls clamp at 8 half-lives. Testnet lid ±2; mainnet harden +2 / ease −1.
+ * delta = log2(T / seen), then the ± lid. A sealed gap of T adds zero,
+ * so each later expected interval is T and every 1000-block prune
+ * window has the same fixed point for the life of the chain.
+ * There is no second stored schedule. Verifiers use the sealed parent
+ * gap, not the child timestamp and not wall clock. A non-positive or
+ * non-finite gap is the 90s target, so template, pool, and verify agree.
+ * Stalls clamp at 8 half-lives before the ease lid. Testnet harden +6
+ * and ease −2; mainnet ease −1.
  */
 export function nextBits(previousBits, intervalMs, magic = MAGIC_TESTNET) {
   const prev = unpackBits(clampBits(previousBits));
@@ -444,7 +464,10 @@ export function nextBits(previousBits, intervalMs, magic = MAGIC_TESTNET) {
   else if (seen < 1) seen = 1;
   const cap = ASERT_HALFLIFE_MS * 8;
   if (seen > cap) seen = cap;
-  let delta = (TARGET_BLOCK_INTERVAL_MS - seen) / ASERT_HALFLIFE_MS;
+  let delta = 0;
+  if (seen !== TARGET_BLOCK_INTERVAL_MS) {
+    delta = Math.log2(TARGET_BLOCK_INTERVAL_MS / seen);
+  }
   if (delta > ASERT_HARDEN_MAX) delta = ASERT_HARDEN_MAX;
   const ease = asertEaseMax(magic);
   if (delta < -ease) delta = -ease;
@@ -456,7 +479,12 @@ export function displayBits(packed) {
   return unpackBits(clampBits(packed));
 }
 
-/** Bits for this block from parent bits and the two header timestamps. */
+/**
+ * Next-work for a sealed gap expressed as two timestamps.
+ * verifyBlock does not call this with the child stamp. This block's work
+ * is nextBits(parent, sealed parent interval). The child timestamp only
+ * becomes the next parent gap after the header is accepted.
+ */
 export function bitsForBlock(parentBits, parentTimestamp, blockTimestamp, magic = MAGIC_TESTNET) {
   return nextBits(parentBits, Number(blockTimestamp) - Number(parentTimestamp), magic);
 }
@@ -466,8 +494,7 @@ export function bitsForBlock(parentBits, parentTimestamp, blockTimestamp, magic 
  * Verifiers only see the sealed header timestamp.
  *
  * Never after wall (the old parent+90s template ran headers hours ahead).
- * Never before parent. Clock skew `wall < parent` stamps parent+1 so the
- * sealed gap is 1ms, which the τ-damped step barely moves.
+ * Never before parent. Clock skew `wall < parent` stamps parent+1.
  * `wallIntervalMs` is accepted for callers and ignored: wall is the interval.
  */
 export function templateStampMs(parentTimestamp, now = Date.now(), wallIntervalMs = null, mtpTimestamp = null) {
@@ -476,7 +503,7 @@ export function templateStampMs(parentTimestamp, now = Date.now(), wallIntervalM
   const parent = Number(parentTimestamp);
   if (!Number.isFinite(wall)) return Date.now();
   if (!Number.isFinite(parent)) return wall;
-  // verifyBlock requires ts > parentTs. A 1ms gap is τ-damped.
+  // verifyBlock requires ts > parentTs. A 1ms gap is one fast parent step.
   let stamp = wall <= parent ? parent + 1 : wall;
   if (mtpTimestamp != null && Number.isFinite(Number(mtpTimestamp))) {
     const cap = Number(mtpTimestamp) + MTP_FUTURE_MS;

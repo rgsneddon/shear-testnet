@@ -2515,6 +2515,10 @@ class ShearLedger {
 
   Future<void> syncTip() async {
     if (pool == null) return;
+    final frame = _restFrame;
+    if (frame != null && frame.isNotEmpty) {
+      pool!.sync?.proofDest = homeDest(frame);
+    }
     try {
       final live = pool!.liveTip;
       if (live > _sealedHeight) noteLiveHeight(live);

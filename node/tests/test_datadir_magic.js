@@ -13,7 +13,7 @@ try { setHashBackend('jit'); } catch { /* interpreter */ }
 
 describe('v3 and v4 datadirs refuse each other', () => {
   it('createStore throws datadir_magic on a v2 book.magic file', () => {
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v7');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v8');
     assert.equal(MAGIC_TESTNET_V4, 'shear-testnet-v4');
     assert.notEqual(MAGIC_TESTNET_V2, MAGIC_TESTNET);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-v2-'));
@@ -45,8 +45,8 @@ describe('v3 and v4 datadirs refuse each other', () => {
     assert.throws(() => createStore(dir), /datadir_magic:shear-testnet-v6/);
   });
 
-  it('empty datadir loads as shear-testnet-v7', () => {
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v7');
+  it('empty datadir loads as shear-testnet-v8', () => {
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v8');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-v7-'));
     const store = createStore(dir);
     assert.equal(store.tip(), null);
@@ -120,7 +120,7 @@ describe('v3 and v4 datadirs refuse each other', () => {
     }
   });
 
-  it('P2P hellos, tips, and headers shear-testnet-v7', async () => {
+  it('P2P hellos, tips, and headers shear-testnet-v8', async () => {
     const { createP2p } = await import('../src/p2p.js');
     const net = await import('node:net');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-p2p-v3-'));
@@ -173,8 +173,8 @@ describe('v3 and v4 datadirs refuse each other', () => {
     const hello = inbound.find((m) => m.type === 'hello');
     const tip = inbound.find((m) => m.type === 'tip');
     assert.equal(hello.magic, MAGIC_TESTNET);
-    assert.equal(hello.magic, 'shear-testnet-v7');
-    assert.equal(tip.magic, 'shear-testnet-v7');
+    assert.equal(hello.magic, 'shear-testnet-v8');
+    assert.equal(tip.magic, 'shear-testnet-v8');
     assert.equal(tip.height, 1);
     sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, ua: 'v4-peer', port: 1 })}\n`);
     sock.write(`${JSON.stringify({ type: 'getheaders', magic: MAGIC_TESTNET, locator: [], stopHash: '' })}\n`);
@@ -185,7 +185,7 @@ describe('v3 and v4 datadirs refuse each other', () => {
       headers = inbound.find((m) => m.type === 'headers');
     }
     assert.ok(headers, 'v4 peer must serve headers');
-    assert.equal(headers.magic, 'shear-testnet-v7');
+    assert.equal(headers.magic, 'shear-testnet-v8');
     assert.ok(Array.isArray(headers.headers));
     assert.ok(headers.headers.length >= 1);
     const hdr0 = headers.headers[0];

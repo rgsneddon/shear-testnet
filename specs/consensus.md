@@ -1,7 +1,7 @@
 # Shear consensus
 
-Network magic (testnet, ADMITv2 book): `shear-testnet-v7`  
-Frozen previous books: `shear-testnet-v5`, `shear-testnet-v4`, `shear-testnet-v3` (ADMITv1 LSAG), `shear-testnet-v2`.  
+Network magic (testnet, ADMITv2 book): `shear-testnet-v8`  
+Frozen previous books: `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, `shear-testnet-v3` (ADMITv1 LSAG), `shear-testnet-v2`.  
 Mainnet magic (`shear-v1`) genesis is `2026-09-18T21:00:00+01:00`. Do not merge v3 into frozen v2 or into v1 until the operator cuts over.
 
 PoW for this book is **ShearHash-v3** (RandomX light). See [shearhash-v3.md](shearhash-v3.md). Header size is still **128 bytes**.
@@ -37,7 +37,7 @@ Coinbase is the only source of new SHE.
 
 ## Resistance
 
-ASERT toward 90 s, per block, on **Q16.16 packed** header `bits` (`BITS=q16.16`, half-life `ASERT_TAU_MS` = 288 × 90 s). Floor 4 bits (`LIVE_MIN_BITS`), ceiling **256 bits**. Genesis **15** bits packed as `15 << 16` (sized for live testnet ~200–400 H/s via ≈ log2(H×90)). The child header's bits are `nextBits(parent.bits, parentSolveInterval)`: that interval is the grandparent-to-parent timestamp delta, or `TARGET_BLOCK_INTERVAL_MS` (90_000) when there is no grandparent. The stamp of the block being mined does not retarget. Step is **(T − seen) / τ** (absolute ASERT; `ASERT_STEP=(T-seen)/tau`), then the per-block farm lid **±2** on testnet (`ASERT_HARDEN=2`, `ASERT_EASE=2`); mainnet genesis stays `ASERT_EASE=1`. Same-tick intervals are 1 ms. Stalls clamp at 8 half-lives. Integer LZ rungs cannot represent the 1.09× work that 90 s needs when hashrate sits between powers of two. Share vardiff stays integer LZ. Do **not** keep a 32-bit (~4.29e9) lid — that froze GNFP under large CPU farms.
+ASERT toward 90 s, per block, on **Q16.16 packed** header `bits` (`BITS=q16.16`, `ASERT_TAU_MS` = 90000). Floor 4 bits (`LIVE_MIN_BITS`), ceiling **256 bits**. Genesis **15** bits packed as `15 << 16` (sized for live testnet ~200–400 H/s via ≈ log2(H×90)). The child header's bits are `nextBits(parent.bits, parentSolveInterval)`: that interval is the grandparent-to-parent timestamp delta, or `TARGET_BLOCK_INTERVAL_MS` (90_000) when there is no grandparent. The stamp of the block being mined does not retarget. The step is `log2(T / seen)` (`ASERT_STEP=log2(T/seen)`). A 90000 ms gap adds zero, so that interval is the fixed point. Eight sealed parent gaps of 2000 ms add at least one bit. The per-block farm lid is harden **+6** and ease **−2** on testnet (`ASERT_HARDEN=6`, `ASERT_EASE=2`); mainnet genesis stays `ASERT_EASE=1`. Same-tick intervals are 1 ms. Stalls clamp at 8 half-lives. Integer LZ rungs cannot represent the 1.09× work that 90 s needs when hashrate sits between powers of two. Share vardiff stays integer LZ. Do **not** keep a 32-bit (~4.29e9) lid — that froze GNFP under large CPU farms. A pool job's block target is this same next-work value. A share that misses it is not a block.
 
 Work of a block: `blockWorkBig(bits) => 2^{bits_fp}` as bigint. The chain with more work wins, whoever mined it. Equal work follows the lower tip hash (`FORK=work-then-lowhash`), not the block that arrived first and not which pool found it. A competing branch stays staged so a later heavier child can still win. A second genesis, or any chain that shares no block with the local tip, is downloaded when that peer is ahead.
 
