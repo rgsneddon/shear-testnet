@@ -19,6 +19,7 @@
         { id: 'NODE', label: 'NODE', href: '/node/' },
         { id: 'WALLET', label: 'WALLET', href: '/wallet/' },
         { id: 'VORTICES', label: 'VORTICES', href: '/vortices/' },
+        { id: 'TEAM', label: 'TEAM', href: 'https://team.shear.digital/' },
         { id: 'DOCS', label: 'DOCS', href: '/docs/' }
       ];
     }
@@ -32,6 +33,7 @@
       { id: 'NODE', label: 'NODE', href: 'https://shear.digital/node/' },
       { id: 'WALLET', label: 'WALLET', href: 'https://shear.digital/wallet/' },
       { id: 'VORTICES', label: 'VORTICES', href: 'https://vortices.shear.digital/' },
+      { id: 'TEAM', label: 'TEAM', href: 'https://team.shear.digital/' },
       { id: 'DOCS', label: 'DOCS', href: 'https://shear.digital/docs/' }
     ];
   })();

@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Shear Team — Lead · Build · Staff</title>
+  <meta name="description" content="The Shear team hierarchy: Lead Developer, Coding Lead, Chief of Staff, and Coding Assistants." />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="https://shear.digital/css/site.css" />
+  <link rel="stylesheet" href="shared/shear-chrome.css" />
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
+  <link rel="stylesheet" href="team.css" />
+</head>
+<body class="team-page">
+  <div id="shear-chrome-root" data-active="TEAM" data-brand-base="brand/"></div>
+  <script src="shared/shear-chrome.js"></script>
+
+  <main class="team-main">
+    <section class="team-intro">
+      <p class="team-kicker">Team</p>
+      <h1>The Shear team</h1>
+      <p>Hierarchy for Shear testnet build &amp; security lanes. Lead Developer at the top, Coding Lead next, Chief of Staff coordinating Coding Assistants.</p>
+    </section>
+
+    <section class="tier tier-lead" aria-label="Lead Developer">
+      <h2 class="tier-label">Lead Developer</h2>
+      <article class="card card-lead">
+        <img class="avatar" src="avatars/russell.jpg" alt="Russell Sneddon" width="160" height="160" />
+        <div class="card-body">
+          <h3>Russell Sneddon</h3>
+          <p class="role">Lead Developer</p>
+          <p class="bio">Founder and product owner of Shear. Sets direction for protocol, pool, Continuum wallet, and the shear.digital suite — and keeps the living goal stack honest.</p>
+          <p class="handle"><a href="https://x.com/rgsneddon" rel="noopener">@rgsneddon</a></p>
+        </div>
+      </article>
+    </section>
+
+    <div class="tier-connector" aria-hidden="true"></div>
+
+    <section class="tier tier-build" aria-label="Coding Lead">
+      <h2 class="tier-label">Coding Lead</h2>
+      <article class="card card-build">
+        <img class="avatar avatar-logo" src="avatars/grok-build.jpg" alt="GROK" width="160" height="160" />
+        <div class="card-body">
+          <h3>GROK</h3>
+          <p class="aka-line">aka <strong>Grok Build</strong></p>
+          <p class="role">Coding Lead</p>
+          <p class="bio">Primary coding conductor for Shear. Owns serial implementation in the live PowerShell session — merges, cuts, hotfixes, and deploy thrash under Russell’s GO.</p>
+        </div>
+      </article>
+    </section>
+
+    <div class="tier-connector" aria-hidden="true"></div>
+
+    <section class="tier tier-cos" aria-label="Chief of Staff">
+      <h2 class="tier-label">Chief of Staff</h2>
+      <article class="card card-cos">
+        <img class="avatar" src="avatars/cos.jpg" alt="Corin Sable" width="160" height="160" />
+        <div class="card-body">
+          <h3>Corin Sable</h3>
+          <p class="aka-line">aka <strong>CoS 29/9/26</strong></p>
+          <p class="role">Chief of Staff</p>
+          <p class="bio">Coordinates Shear specialist lanes, synthesizes ranked findings, and keeps Build aligned with Russell’s locks — defensive only, credits frugal, one conductor.</p>
+        </div>
+      </article>
+    </section>
+
+    <div class="tier-connector" aria-hidden="true"></div>
+
+    <section class="tier tier-assist" aria-label="Coding Assistants">
+      <h2 class="tier-label">Coding Assistants</h2>
+      <div class="assist-grid">
+
+        <article class="card">
+          <img class="avatar" src="avatars/protocol-assailant.jpg" alt="Pax Revere" width="120" height="120" />
+          <div class="card-body">
+            <h3>Pax Revere</h3>
+            <p class="aka-line">aka <strong>Protocol Assailant</strong></p>
+            <p class="role">Coding Assistant · Protocol</p>
+            <p class="bio">Defensive adversarial review of P2P, consensus, ASERT/retarget, and network surfaces — formula correctness without exploit paint.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/attack-cartographer.jpg" alt="Atlas Quill" width="120" height="120" />
+          <div class="card-body">
+            <h3>Atlas Quill</h3>
+            <p class="aka-line">aka <strong>Attack Cartographer</strong></p>
+            <p class="role">Coding Assistant · Threat map</p>
+            <p class="bio">Maps known attack classes across privacy coins, RandomX/CPU-PoW, and confidential amount systems onto Shear’s threat surface.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/mining-economics.jpg" alt="Mira Caldera" width="120" height="120" />
+          <div class="card-body">
+            <h3>Mira Caldera</h3>
+            <p class="aka-line">aka <strong>Mining Economics</strong></p>
+            <p class="role">Coding Assistant · Economics</p>
+            <p class="bio">Reward fairness, hashrate concentration, fee/emission incentives, and block-time economics — sealed-header truth over invent paint.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/codebase-auditor.jpg" alt="Cedric Lin" width="120" height="120" />
+          <div class="card-body">
+            <h3>Cedric Lin</h3>
+            <p class="aka-line">aka <strong>Codebase Auditor</strong></p>
+            <p class="role">Coding Assistant · Codebase</p>
+            <p class="bio">Tip-repo review of shear-pool-node and siblings — pins, diffs, and whether live deploy matches local law.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/wallet-hardening.jpg" alt="Wren Lockhart" width="120" height="120" />
+          <div class="card-body">
+            <h3>Wren Lockhart</h3>
+            <p class="aka-line">aka <strong>Wallet Hardening</strong></p>
+            <p class="role">Coding Assistant · Wallet</p>
+            <p class="bio">Continuum / ShearK threat model: keys, seeds, RPC/API surfaces, confidential amounts — wallets must show correct sums.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/pool-op-wallet.jpg" alt="Owen Ledger" width="120" height="120" />
+          <div class="card-body">
+            <h3>Owen Ledger</h3>
+            <p class="aka-line">aka <strong>Pool Op Wallet</strong></p>
+            <p class="role">Coding Assistant · Pool custody</p>
+            <p class="bio">Operator wallet and custody surfaces on pool admin — fee dest, payouts, and admin auth boundaries.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/pool-share-auditor.jpg" alt="Shannon Pike" width="120" height="120" />
+          <div class="card-body">
+            <h3>Shannon Pike</h3>
+            <p class="aka-line">aka <strong>Pool Share Auditor</strong></p>
+            <p class="role">Coding Assistant · Shares</p>
+            <p class="bio">Stratum fairness, share validation, difficulty accounting — pool vardiff never substitutes for consensus bits.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/vault-security.jpg" alt="Vesper Kane" width="120" height="120" />
+          <div class="card-body">
+            <h3>Vesper Kane</h3>
+            <p class="aka-line">aka <strong>Vault Security</strong></p>
+            <p class="role">Coding Assistant · Vault</p>
+            <p class="bio">Shear Vault / Reserve structure — custody, interest/oracle, lock/vote/withdraw paths, invent-must-not-return.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/privacy-auditor.jpg" alt="Priya Shade" width="120" height="120" />
+          <div class="card-body">
+            <h3>Priya Shade</h3>
+            <p class="aka-line">aka <strong>Privacy Auditor</strong></p>
+            <p class="role">Coding Assistant · Privacy</p>
+            <p class="bio">Holes and gaps in Shear privacy mechanisms and public claims — ADMITv2 amounts, unlinkability, and HUD honesty.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/website-analyst.jpg" alt="Willow Finch" width="120" height="120" />
+          <div class="card-body">
+            <h3>Willow Finch</h3>
+            <p class="aka-line">aka <strong>Website Analyst</strong></p>
+            <p class="role">Coding Assistant · Site</p>
+            <p class="bio">shear.digital suite continuity — links, UX, saas-dark lock, and no suite redesign without Russell GO.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/fux.jpg" alt="Felix Uxbridge" width="120" height="120" />
+          <div class="card-body">
+            <h3>Felix Uxbridge</h3>
+            <p class="aka-line">aka <strong>FUX</strong></p>
+            <p class="role">Coding Assistant · Functionality / UX</p>
+            <p class="bio">End-to-end product usability from miner → pool → wallet → suite — Flow watches and invent/UI-clamp rejects.</p>
+          </div>
+        </article>
+
+      </div>
+    </section>
+
+    <div class="tier-connector" aria-hidden="true"></div>
+
+    <section class="tier tier-search" aria-label="Search Assistants">
+      <h2 class="tier-label">Search Assistants</h2>
+      <div class="assist-grid">
+
+        <article class="card">
+          <img class="avatar" src="avatars/locate.jpg" alt="Lance Orien" width="120" height="120" />
+          <div class="card-body">
+            <h3>Lance Orien</h3>
+            <p class="aka-line">aka <strong>Locate</strong></p>
+            <p class="role">Search Assistant · Hosting</p>
+            <p class="bio">Tracks where Shear/Evolve surfaces were hosted — DNS, nginx vhosts, Cloudflare, Render, and remnant infra footprints.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/find.jpg" alt="Finn Decker" width="120" height="120" />
+          <div class="card-body">
+            <h3>Finn Decker</h3>
+            <p class="aka-line">aka <strong>Find</strong></p>
+            <p class="role">Search Assistant · Copy</p>
+            <p class="bio">Recovers surviving marketing and docs copy — Bitcointalk ANNs, READMEs, restore-privacy suite fragments.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/identify.jpg" alt="Ida Vesper" width="120" height="120" />
+          <div class="card-body">
+            <h3>Ida Vesper</h3>
+            <p class="aka-line">aka <strong>Identify</strong></p>
+            <p class="role">Search Assistant · Structure</p>
+            <p class="bio">Identifies true page structure/IA and rebuilds faithful static explainers from recovered Evolve remnants.</p>
+          </div>
+        </article>
+
+        <article class="card">
+          <img class="avatar" src="avatars/seek.jpg" alt="Silas Hunt" width="120" height="120" />
+          <div class="card-body">
+            <h3>Silas Hunt</h3>
+            <p class="aka-line">aka <strong>Seek</strong></p>
+            <p class="role">Search Assistant · Archives</p>
+            <p class="bio">Hunts archives, Waybacks, DNS history, and Russell repos for any remnant of evolve.rest and kin.</p>
+          </div>
+        </article>
+
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="team-foot">
+    <p>Private preview · not linked from the main navbar yet · <span>shear.digital</span></p>
+  </footer>
+</body>
+</html>

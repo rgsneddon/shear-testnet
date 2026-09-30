@@ -1,0 +1,41 @@
+/* Shear Dark SaaS pin — tokens from live css/site.css :root + shear-chrome.
+   Restores the Build saas-dark pin (deleted by revert-saas.py). Not a redesign. */
+
+:root,
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #07090c;
+  --bg-elev: #0c1016;
+  --surface: #11161f;
+  --surface-2: #161d28;
+  --hairline: rgba(180, 210, 230, 0.09);
+  --hairline-strong: rgba(180, 210, 230, 0.16);
+  --text: #e8eef4;
+  --text-dim: #8b9aab;
+  --text-mute: #5c6b7a;
+  --accent: #5eead4;
+  --accent-dim: rgba(94, 234, 212, 0.14);
+  --accent-glow: rgba(94, 234, 212, 0.28);
+  --warn: #f0b429;
+  --warn-dim: rgba(240, 180, 41, 0.12);
+  --danger-soft: #f87171;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "Cascadia Code", "SF Mono", "Consolas", ui-monospace, monospace;
+  --ink: #e8eef4;
+  --muted: #8b9aab;
+  --card: #11161f;
+  --cyan: #5eead4;
+  --blue: #5eead4;
+  --green: #5dcc7a;
+  --banner: rgba(7, 9, 12, 0.92);
+  --input: #0c1016;
+  --code: #0c1016;
+  --gold: #f0b429;
+}
+
+/* Hide legacy sibling topbars only — never hide chrome-injected #shear-topbar inside #shear-chrome-root */
+#shear-chrome-root ~ header.top-banner {
+  display: none !important;
+}
