@@ -5,21 +5,32 @@ import 'shear_note.dart';
 
 /// One owned note whose value proof opened against its commit.
 class OpenedReadNote {
-  const OpenedReadNote({required this.height, required this.nanos, required this.verified});
+  const OpenedReadNote({
+    required this.height,
+    required this.nanos,
+    required this.verified,
+    required this.commit,
+  });
 
   final int height;
   final int nanos;
   final bool verified;
+
+  /// Commit bytes that [verifySealedNote] accepted for [nanos].
+  final Uint8List commit;
 }
 
 /// An owned note at a height already read whose proof did not open.
 class UnspendableReadNote {
-  const UnspendableReadNote({required this.height, required this.reason});
+  const UnspendableReadNote({required this.height, required this.reason, this.commit});
 
   final int height;
 
   /// `bare-v` when R or z is missing. `proof` when verification fails.
   final String reason;
+
+  /// Commit of the note that failed, when the row had one.
+  final Uint8List? commit;
 }
 
 /// Result of walking blocks already read, in ascending height.
@@ -99,7 +110,11 @@ ReadBlockOpen openReadBlockProofs({
         opened.add(openedNote);
         spendable += openedNote.nanos;
       } else {
-        unspendable.add(UnspendableReadNote(height: h, reason: _unspendableReason(note)));
+        unspendable.add(UnspendableReadNote(
+          height: h,
+          reason: _unspendableReason(note),
+          commit: _copyCommit(note['commit']),
+        ));
       }
     }
   }
@@ -172,7 +187,18 @@ OpenedReadNote? _openOwned(Map note, int height) {
   }, v)) {
     return null;
   }
-  return OpenedReadNote(height: height, nanos: v, verified: true);
+  return OpenedReadNote(
+    height: height,
+    nanos: v,
+    verified: true,
+    commit: Uint8List.fromList(commit),
+  );
+}
+
+Uint8List? _copyCommit(dynamic raw) {
+  final bytes = _asBytes(raw);
+  if (bytes == null || bytes.isEmpty) return null;
+  return Uint8List.fromList(bytes);
 }
 
 String _unspendableReason(Map note) {

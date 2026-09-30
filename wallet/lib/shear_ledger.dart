@@ -1360,10 +1360,11 @@ class ShearLedger implements ReadProofSink {
     if (!isDestAddress(money)) return;
     final used = <Map>[];
     for (final opened in open.opened) {
-      if (!opened.verified || opened.nanos <= 0) continue;
+      if (!opened.verified || opened.nanos <= 0 || opened.commit.isEmpty) continue;
       final raw = _takeReadNote(blocks, opened, used);
+      if (raw == null) continue;
       final row = <String, dynamic>{
-        if (raw != null) ...raw,
+        ...raw,
         'address': money,
         'dest': money,
         'height': opened.height,
@@ -1382,14 +1383,18 @@ class ShearLedger implements ReadProofSink {
     recheckRestFrameSpendable(frame);
   }
 
+  /// The vout whose commit is the one [opened] verified. A failed or foreign
+  /// output with the same value is a different note.
   Map<String, dynamic>? _takeReadNote(List blocks, OpenedReadNote opened, List<Map> used) {
+    if (opened.commit.isEmpty) return null;
     for (final block in blocks) {
       if (block is! Map || readBlockHeight(block) != opened.height) continue;
       for (final note in _readVouts(block)) {
         if (used.any((u) => identical(u, note))) continue;
-        final vp = note['valueProof'];
-        if (vp is! Map || vp['v'] is! num) continue;
-        if ((vp['v'] as num).round() != opened.nanos) continue;
+        final commit = _noteBytes(note['commit']);
+        if (commit == null || !_bytesEq(commit, opened.commit)) continue;
+        final claim = _verifiedClaimNanos(note);
+        if (claim == null || claim != opened.nanos) continue;
         used.add(note);
         return Map<String, dynamic>.from(note);
       }
@@ -1422,18 +1427,22 @@ class ShearLedger implements ReadProofSink {
     return out;
   }
 
+  /// A failed proof at a height stays unverified even when its value equals
+  /// an opened note at that same height. The opened commit is left alone.
   void _unverifyFailedRead(ReadBlockOpen open, String money) {
     if (open.unspendable.isEmpty) return;
-    final openedNanos = <int, Set<int>>{};
+    final openedByHeight = <int, List<Uint8List>>{};
     for (final n in open.opened) {
-      (openedNanos[n.height] ??= <int>{}).add(n.nanos);
+      if (n.commit.isEmpty) continue;
+      (openedByHeight[n.height] ??= <Uint8List>[]).add(n.commit);
     }
     final badHeights = <int>{for (final u in open.unspendable) u.height};
     for (final row in _notes) {
       final h = (row['height'] as num?)?.toInt() ?? 0;
       if (!badHeights.contains(h) || !_noteOnDest(row, money)) continue;
-      final nanos = (row['nanos'] as num?)?.round();
-      if (nanos != null && (openedNanos[h]?.contains(nanos) ?? false)) continue;
+      final commit = _noteBytes(row['commit']);
+      final openedHere = openedByHeight[h] ?? const <Uint8List>[];
+      if (commit != null && openedHere.any((c) => _bytesEq(c, commit))) continue;
       row['verified'] = false;
     }
   }

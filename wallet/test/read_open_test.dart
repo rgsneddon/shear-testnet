@@ -39,18 +39,58 @@ Map<String, dynamic> _hexNote(Map<String, dynamic> n) {
   };
 }
 
-Map<String, dynamic> _block(int height, Map<String, dynamic> note) => {
+Map<String, dynamic> _block(int height, List<Map<String, dynamic>> notes) => {
       'height': height,
       'header': 'aa',
       'txs': [
-        {'vout': [note]},
+        {'vout': notes},
       ],
     };
 
+/// Owned note of the same value whose R no longer opens that commit.
+Map<String, dynamic> _failSameValue(Map<String, dynamic> note) {
+  final vp = Map<String, dynamic>.from(note['valueProof'] as Map);
+  final r = Uint8List.fromList(vp['R'] as Uint8List);
+  r[0] = (r[0] + 1) & 0xff;
+  vp['R'] = r;
+  return {
+    'kind': note['kind'],
+    'noteCommit': Uint8List.fromList(note['noteCommit'] as Uint8List),
+    'commit': Uint8List.fromList(note['commit'] as Uint8List),
+    'dest20': Uint8List.fromList(note['dest20'] as Uint8List),
+    'valueProof': vp,
+  };
+}
+
+bool _sameCommit(Object? a, Object? b) {
+  Uint8List? bytes(Object? v) {
+    if (v is Uint8List) return v;
+    if (v is List) return Uint8List.fromList(List<int>.from(v));
+    return null;
+  }
+
+  final left = bytes(a);
+  final right = bytes(b);
+  if (left == null || right == null || left.length != right.length) return false;
+  for (var i = 0; i < left.length; i++) {
+    if (left[i] != right[i]) return false;
+  }
+  return true;
+}
+
 class _Book {
-  _Book(this.ident, this.blocks);
+  _Book(
+    this.ident,
+    this.blocks, {
+    required this.goodCommit,
+    required this.failedCommit,
+    required this.foreignCommit,
+  });
   final ShearIdentity ident;
   final Map<int, Map<String, dynamic>> blocks;
+  final Uint8List goodCommit;
+  final Uint8List failedCommit;
+  final Uint8List foreignCommit;
   String get dest => ident.address;
 
   List<Map<String, dynamic>> get shuffled => [
@@ -67,20 +107,32 @@ _Book _book() {
   final dest = ident.address;
   final d20 = hash20FromAddress(dest);
   if (d20 == null) throw StateError('dest20');
+  final other = createIdentity();
+  final other20 = hash20FromAddress(other.address);
+  if (other20 == null) throw StateError('foreign dest20');
   final good2 = _seal(1000, d20);
+  final failedSame = _failSameValue(_seal(1000, d20));
+  final foreignSame = _seal(1000, other20);
   final good5 = _hexNote(_seal(2500, d20));
   final bad = _seal(3000, d20);
   (bad['valueProof'] as Map)['v'] = 3001;
   final bare = _seal(4000, d20);
   bare['valueProof'] = {'v': 4000};
   final unread = _seal(9000, d20);
-  return _Book(ident, {
-    2: _block(2, good2),
-    3: _block(3, bad),
-    4: _block(4, bare),
-    5: _block(5, good5),
-    9: _block(9, unread),
-  });
+  return _Book(
+    ident,
+    {
+      // Failed and foreign rows of the same value sit ahead of the note that opens.
+      2: _block(2, [failedSame, foreignSame, good2]),
+      3: _block(3, [bad]),
+      4: _block(4, [bare]),
+      5: _block(5, [good5]),
+      9: _block(9, [unread]),
+    },
+    goodCommit: Uint8List.fromList(good2['commit'] as Uint8List),
+    failedCommit: Uint8List.fromList(failedSame['commit'] as Uint8List),
+    foreignCommit: Uint8List.fromList(foreignSame['commit'] as Uint8List),
+  );
 }
 
 void _expectOpen(ReadBlockOpen opened, {required bool ibd}) {
@@ -89,8 +141,8 @@ void _expectOpen(ReadBlockOpen opened, {required bool ibd}) {
   expect(opened.opened.every((n) => n.verified), isTrue);
   expect(opened.opened.map((n) => n.nanos).toList(), [1000, 2500]);
   expect(opened.spendableNanos, 3500);
-  expect(opened.unspendable.map((n) => n.height).toList(), [3, 4]);
-  expect(opened.unspendable.map((n) => n.reason).toList(), ['proof', 'bare-v']);
+  expect(opened.unspendable.map((n) => n.height).toList(), [2, 3, 4]);
+  expect(opened.unspendable.map((n) => n.reason).toList(), ['proof', 'proof', 'bare-v']);
   expect(opened.order.contains(9), isFalse);
   expect(opened.openedHeights.contains(9), isFalse);
   expect(opened.unspendable.any((n) => n.height == 9), isFalse);
@@ -119,16 +171,47 @@ void _expectLedger(ShearLedger ledger, _Book book, ReadBlockOpen opened, {requir
   expect(verified.contains(3001), isFalse);
   expect(verified.contains(4000), isFalse);
   expect(verified.contains(9000), isFalse);
+  final openedAt2 = opened.opened.where((n) => n.height == 2).toList();
+  expect(openedAt2, hasLength(1));
+  expect(_sameCommit(openedAt2.single.commit, book.goodCommit), isTrue);
+  expect(_sameCommit(openedAt2.single.commit, book.failedCommit), isFalse);
+  expect(_sameCommit(openedAt2.single.commit, book.foreignCommit), isFalse);
+  final verifiedAt2 = [
+    for (final n in ledger.notes)
+      if (n['verified'] == true && ((n['height'] as num?)?.toInt() ?? 0) == 2) n,
+  ];
+  expect(verifiedAt2, hasLength(1));
+  expect(_sameCommit(verifiedAt2.single['commit'], openedAt2.single.commit), isTrue);
+  expect(
+    ledger.notes.any((n) => n['verified'] == true && _sameCommit(n['commit'], book.failedCommit)),
+    isFalse,
+  );
+  expect(
+    ledger.notes.any((n) => n['verified'] == true && _sameCommit(n['commit'], book.foreignCommit)),
+    isFalse,
+  );
 }
 
 void _obs(String mode, ReadBlockOpen opened, ShearLedger ledger, _Book book) {
   final unspendable = opened.unspendable.map((n) => '${n.height}:${n.reason}').join(',');
+  final openedAt2 = opened.opened.where((n) => n.height == 2).toList();
+  final verifiedAt2 = [
+    for (final n in ledger.notes)
+      if (n['verified'] == true && ((n['height'] as num?)?.toInt() ?? 0) == 2) n,
+  ];
+  final commitMatch = openedAt2.length == 1 &&
+      verifiedAt2.length == 1 &&
+      _sameCommit(openedAt2.single.commit, book.goodCommit) &&
+      _sameCommit(verifiedAt2.single['commit'], openedAt2.single.commit);
+  final failedVerified =
+      ledger.notes.any((n) => n['verified'] == true && _sameCommit(n['commit'], book.failedCommit));
   // ignore: avoid_print
   print(
     'OBS mode=$mode order=${opened.order.join(',')} opened=${opened.openedHeights.join(',')} '
     'unspendable=$unspendable catchingUp=${opened.catchingUp} '
     'deferredUntilSync=${opened.deferredUntilSync} ibd=${opened.ibd} '
-    'spendableNanos=${opened.spendableNanos} ledgerNanos=${_ledgerNanos(ledger, book)}',
+    'spendableNanos=${opened.spendableNanos} ledgerNanos=${_ledgerNanos(ledger, book)} '
+    'commitMatch=$commitMatch failedVerified=$failedVerified',
   );
 }
 
