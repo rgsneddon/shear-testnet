@@ -167,6 +167,13 @@ describe('thin solo stratum', () => {
     assert.equal(soloMaySeal({ height: 70, hash: 'cd'.repeat(32), peers: ahead }), false);
     assert.equal(soloMaySeal({ height: 100, hash: 'ab'.repeat(32), peers: ahead }), true);
     assert.equal(soloMaySeal({ height: 70 }), true);
+    assert.equal(soloMaySeal({ height: 0, followPublic: true, peers: new Map() }), false);
+    assert.equal(soloMaySeal({ height: 0 }), true);
+    assert.equal(soloMaySeal({
+      height: 0,
+      followPublic: true,
+      peers: new Map([['peer', { height: 0, hash: 'aa'.repeat(32) }]]),
+    }), true);
     const behind = new Map([['peer', { height: 99, hash: 'aa'.repeat(32) }]]);
     assert.equal(soloMaySeal({
       height: 100,

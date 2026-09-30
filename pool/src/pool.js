@@ -24,7 +24,6 @@ import {
   medianTimePast,
   MTP_WINDOW,
   MTP_FUTURE_MS,
-  unpackBits,
   consensusFingerprint,
   consensusLaw,
   epochView,
@@ -53,7 +52,7 @@ import { createStore } from '../../node/src/store.js';
 import { potSharesFromBatch, hashBonusByMiner, retarget } from '../../node/src/chain.js';
 import { sortShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
-import { explorerRecentTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
+import { poolRecentBlockTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 import {
@@ -799,6 +798,16 @@ export function gateJob(job) {
 
 /** Stratum payload. headerHistory is pool-side only — a 12-header blob
  *  blew up the miner recv line so ShearK never submitted after restamp. */
+function headerWorkBits(header) {
+  try {
+    if (!header) return null;
+    const buf = Buffer.isBuffer(header) ? header : headerFromHex(header);
+    return decodeHeader(buf).bits;
+  } catch {
+    return null;
+  }
+}
+
 export function wireJob(job, shareBits) {
   if (!job || typeof job !== 'object') return job;
   const { headerHistory, shareBitsHist, ...rest } = job;
@@ -807,6 +816,11 @@ export function wireJob(job, shareBits) {
   const out = { ...rest };
   if (shareBits != null) out.shareBits = shareBits;
   out.shareBind = 'dest';
+  const sealed = headerWorkBits(out.header);
+  if (sealed != null) {
+    out.bits = sealed;
+    out.blockBits = sealed;
+  }
   return out;
 }
 
@@ -865,7 +879,11 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
   const prev = Number(job.shareBitsPrev);
   const prevAt = Number(job.shareBitsAt) || 0;
   const now = Date.now();
-  const blockOk = meetsTarget(hash, Number(job.blockBits || job.bits));
+  // Block credit is the sealed header target. shareBits and a substituted
+  // job.blockBits are not that target.
+  const sealedBits = headerWorkBits(header || job?.header);
+  const blockTarget = sealedBits != null ? sealedBits : Number(job.blockBits || job.bits);
+  const blockOk = meetsTarget(hash, blockTarget);
   const pay = String(dest || job?.dest || '').trim();
   let shareHash = hash;
   if (pay) {
@@ -1903,11 +1921,9 @@ export function createPool({
         const wantBits = parentIntervalBits() ?? decoded.bits;
         const liveTs = Number(decoded.timestamp);
         const overMtp = liveTs > Number(mtp) + MTP_FUTURE_MS;
-        const liveInt = Math.floor(unpackBits(wantBits));
-        const jobInt = Math.floor(unpackBits(decoded.bits));
-        // Difficulty stays on the previous solve. A short in-progress stamp
-        // used to harden +2 and stretch wall time toward ~100s. Same jobId.
-        if (!overMtp && liveInt === jobInt) {
+        // Same jobId. Timestamp ticks do not retarget. Any packed undercut,
+        // including a fraction under one bit, is rewritten to consensus work.
+        if (!overMtp && decoded.bits === wantBits) {
           const before = String(lastJob.header || '');
           const job = restampLiveHeader(now);
           if (job && String(job.header || '') !== before) broadcastJob(job);
@@ -2525,11 +2541,11 @@ export function createPool({
       accruingNanos: supply.accruingNanos || 0,
       height: tip?.height || 0,
       header: tip?.header ? Buffer.from(tip.header).toString('hex') : '',
-      bits: displayBits(lastJob?.blockBits || lastJob?.bits || bits),
-      bitsPacked: Number(lastJob?.blockBits || lastJob?.bits || bits),
+      bits: displayBits(blockBitsNow()),
+      bitsPacked: Number(blockBitsNow()),
       liveMinBits: LIVE_MIN_BITS,
       maxBits: MAX_BITS,
-      blockBits: Number(lastJob?.blockBits || lastJob?.bits || bits),
+      blockBits: Number(blockBitsNow()),
       shareBits: Number(lastJob?.shareBits || shareBits),
       lastFoundAt: stats.lastFoundAt || 0,
       avgBlockTimeMs: avgMs,
@@ -2545,7 +2561,7 @@ export function createPool({
         connected: true,
         roundHashes: r.count,
       })),
-      recentTxs: explorerRecentTxs(store, 10),
+      recentTxs: poolRecentBlockTxs(store, 10),
     };
   }
   paintStatsSnap();

@@ -22,14 +22,14 @@ describe('dag.shear.digital page', () => {
     assert.match(page, /DINS-DAG/);
     assert.match(page, /blue set, sorted by identity/);
     assert.match(page, /not paid a second time/);
-    assert.match(page, /Continuum 0\.63/);
+    assert.match(page, /Continuum 0\.64/);
     assert.match(page, /href="https:\/\/shear\.digital\/wallet\/">WALLET/);
     assert.match(page, /href="https:\/\/shear\.digital\/node\/">NODE/);
     assert.match(page, /href="https:\/\/shear\.digital\/miner\/">MINER/);
     assert.doesNotMatch(page, /github\.com/);
     assert.doesNotMatch(page, /Continuum 0\.55(?!\.2)/);
     assert.match(page, /ShearK 2\.6/);
-    assert.match(page, /shear-testnet-v8/);
+    assert.match(page, /shear-testnet-v9/);
     assert.doesNotMatch(page, /shear-testnet-v6/);
     assert.match(page, /DAG is a link in the client navbar/);
     assert.match(page, /href="https:\/\/dag\.shear\.digital\/"/);

@@ -80,13 +80,13 @@ export function printConfig() {
 
 export { createP2p, P2P_PORT, createStore, createRpc, RPC_PORT, mintVorticeDeployKey, parseVorticeKey };
 
-const BOOK_LEAF = 'testnet-v7';
+const BOOK_LEAF = 'testnet-v9';
 
 function bookPresent(dir, exists) {
   return exists(path.join(dir, 'chain.bin')) || exists(path.join(dir, 'chain.jsonl'));
 }
 
-/** Shared book for Shear Sentinel v13 and Continuum. Windows: %APPDATA%\\Shear\\testnet-v7 (Roaming). */
+/** Shared book for Shear Sentinel v14 and Continuum. Windows: %APPDATA%\\Shear\\testnet-v9 (Roaming). */
 export function defaultDataDir({
   env = process.env,
   homedir = os.homedir(),
@@ -166,11 +166,7 @@ export async function startNode({
   const rpc = createRpc({ store, p2p, port: rpcPort, host: rpcBind });
   const rpcBound = await rpc.listen();
   const seedList = resolveSeedList(seeds);
-  await p2p.dialSeeds(seedList);
-  const seedTimer = setInterval(() => {
-    p2p.dialSeeds(seedList);
-  }, SEED_RETRY_MS);
-  if (typeof seedTimer.unref === 'function') seedTimer.unref();
+  // `--solo` is already on argv. Arm the local stratum before the first seed dial.
   let stratum = null;
   let stratumBound = null;
   if (solo) {
@@ -179,9 +175,15 @@ export async function startNode({
       port: stratumPort,
       host: stratumBind,
       peers: () => p2p.peers,
+      followPublic: seedList.length > 0,
     });
     stratumBound = await stratum.listen();
   }
+  await p2p.dialSeeds(seedList);
+  const seedTimer = setInterval(() => {
+    p2p.dialSeeds(seedList);
+  }, SEED_RETRY_MS);
+  if (typeof seedTimer.unref === 'function') seedTimer.unref();
   const origClose = p2p.close.bind(p2p);
   p2p.close = () => {
     clearInterval(seedTimer);
@@ -351,14 +353,14 @@ async function main() {
     return;
   }
   if (argv.includes('--status')) {
-    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v7');
+    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v9');
     const store = createStore(dataDir, {
       fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
     });
     printNodeStatus({ store, extra: { hashBackend: hashBackendKind() || 'missing' } });
     return;
   }
-  const dataDirForBoot = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v7');
+  const dataDirForBoot = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v9');
   const emptyDatadir = datadirIsEmpty(dataDirForBoot);
   const boot = await resolveGuiBootstrap({
     argv,

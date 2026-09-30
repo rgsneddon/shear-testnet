@@ -15,8 +15,10 @@ import {
   MAGIC_TESTNET,
   MAGIC_TESTNET_V7,
   MAGIC_TESTNET_V8,
+  MAGIC_TESTNET_V9,
+  medianIntervalMs,
 } from './asert.js';
-import { decodeHeader } from './header.js';
+import { decodeHeader, encodeHeader } from './header.js';
 import { createStore } from '../node/src/store.js';
 import { judgeShare, createPool } from '../pool/src/pool.js';
 
@@ -54,10 +56,11 @@ function meanGaps(store) {
 describe('shear-testnet-v8 pool and solo share the 90s rule', () => {
   it('a 90000 ms chain stays at genesis work and eight fast gaps from a later parent add a bit', () => {
     const live = consensusFingerprint();
-    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V8);
-    assert.match(live, /NETWORK=shear-testnet-v8/);
-    assert.equal(live.includes('NETWORK=shear-testnet-v7'), false);
-    assert.notEqual(live, live.replaceAll('shear-testnet-v8', 'shear-testnet-v7'));
+    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V9);
+    assert.match(live, /NETWORK=shear-testnet-v9/);
+    assert.equal(live.includes('NETWORK=shear-testnet-v8'), false);
+    assert.notEqual(live, live.replaceAll('shear-testnet-v9', 'shear-testnet-v8'));
+    assert.equal(MAGIC_TESTNET_V8, 'shear-testnet-v8');
     assert.equal(MAGIC_TESTNET_V7, 'shear-testnet-v7');
     assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V7);
 
@@ -89,10 +92,15 @@ describe('shear-testnet-v8 pool and solo share the 90s rule', () => {
     const tip = decodeHeader(Buffer.from(store.tip().header));
     const prev = decodeHeader(Buffer.from(store.blocks[store.blocks.length - 2].header));
     assert.equal(Number(tip.timestamp) - Number(prev.timestamp), 2_000);
-    let stepped = parentBits;
-    for (let n = 0; n < 8; n += 1) stepped = nextBits(stepped, 2_000);
-    const want = nextBits(tip.bits, 2_000);
-    assert.equal(want, stepped);
+    const gaps = [];
+    for (let i = 1; i < store.blocks.length; i += 1) {
+      const a = decodeHeader(Buffer.from(store.blocks[i - 1].header));
+      const b = decodeHeader(Buffer.from(store.blocks[i].header));
+      gaps.push(Number(b.timestamp) - Number(a.timestamp));
+    }
+    const seen = medianIntervalMs(gaps);
+    const want = nextBits(tip.bits, seen);
+    assert.equal(seen, 2_000);
     assert.ok(unpackBits(want) >= unpackBits(parentBits) + 1);
     assert.ok(unpackBits(want) >= GENESIS_BITS + 1);
 
@@ -130,14 +138,36 @@ describe('shear-testnet-v8 pool and solo share the 90s rule', () => {
     assert.equal(judged.ok, true);
     assert.equal(judged.block, false);
 
-    const denied = seal(store, {
+    const offered = store.template({
       miner,
       now: longNow,
       bits: eased,
-      pow: powHex(400),
+      shareBits: 8,
     });
+    assert.equal(Number(offered.job.blockBits), want);
+    assert.equal(Number(offered.job.bits), want);
+    const rec = store.jobs.get(offered.job.jobId);
+    const decoded = decodeHeader(Buffer.from(rec.tpl.header));
+    rec.tpl.header = encodeHeader({
+      version: decoded.version,
+      prevBlockHash: decoded.prevBlockHash,
+      merkleRoot: decoded.merkleRoot,
+      continuityRoot: decoded.continuityRoot,
+      timestamp: decoded.timestamp,
+      bits: eased,
+      nonce: 0n,
+      baseFee: decoded.baseFee,
+    });
+    const beforeH = store.tip().height;
+    const denied = store.submitHeader({
+      jobId: offered.job.jobId,
+      nonce: 0n,
+      miner,
+      powHash: powHex(400),
+    }, { trusted: true });
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'bits');
+    assert.equal(store.tip().height, beforeH);
 
     const kept = seal(store, { miner, now: longNow, pow: powHex(401) });
     assert.equal(kept.ok, true, kept.reason);

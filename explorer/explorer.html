@@ -194,7 +194,7 @@
     <section class="panel-card">
       <h1>Shear explorer</h1>
       <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
-      <p>Continuity-settled PoW. Wallet pin Continuum 0.63. Confirmed blocks only. Height, time, status, type — no dest, no amount. ADMITv2 membership over this book's notes. While this book has fewer than 10,000 notes the membership set is thin. Offer <code>she1</code> when someone pays you. Your own payments are in Continuum Shearview, read from a node (Connect Bare or local).</p>
+      <p>Continuity-settled PoW. Wallet pin Continuum 0.64. Confirmed blocks only. Height, time, status, type — no dest, no amount. ADMITv2 membership over this book's notes. While this book has fewer than 10,000 notes the membership set is thin. Offer <code>she1</code> when someone pays you. Your own payments are in Continuum Shearview, read from a node (Connect Bare or local).</p>
       <p class="pulse" id="live-pulse">live · testnet</p>
     </section>
     <div class="grid" id="net-grid">
@@ -517,7 +517,7 @@
       const pulse = document.getElementById('live-pulse');
       if (pulse) {
         pulse.classList.remove('stale');
-        pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v8') + ' · height ' + (stats.height ?? 0);
+        pulse.textContent = 'live · ' + (stats.magic || stats.network || 'shear-testnet-v9') + ' · height ' + (stats.height ?? 0);
       }
       tipHeight = Number(stats.height) || 0;
       spendableNeed = Number(stats.spendableConfirmations)

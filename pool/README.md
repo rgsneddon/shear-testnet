@@ -2,14 +2,14 @@
 
 Open-source Shear pool: stratum on `:1111`, HTTP dashboard on loopback `:8088`, optional P2P.
 
-This cut speaks **shear-testnet-v8** (ADMITv2, Bulletproofs+, weight levy, Q16.16 packed ASERT toward **90s** blocks). When mainnet `shear-v1` is cut, update `MAGIC_TESTNET` / systemd `SHEAR_NETWORK` and this README — do not dual-stack.
+This cut speaks **shear-testnet-v9** (ADMITv2, Bulletproofs+, weight levy, Q16.16 packed ASERT toward **90s** blocks). When mainnet `shear-v1` is cut, update `MAGIC_TESTNET` / systemd `SHEAR_NETWORK` and this README — do not dual-stack.
 
 Public site example in this repo is **https://mypool.site**. Operator admin is **https://mypool.site/admin**. Point those names at your box. Prod examples require `SHEAR_ADMIN_HOST` (generic example `mypool.site`); do not commit a real operator subdomain. First-run is deny-by-default when that env is unset.
 
 ## What you get
 
 - Stratum bind `SHEAR_STRATUM_BIND` (testnet dest-only may use `0.0.0.0`; **prod example is `127.0.0.1` behind a TLS terminator**). `SHEAR_STRATUM_AUTH=1` (prod example on) requires an ed25519 login signature over `shear-stratum-login-v1`. Dev dest-only is `SHEAR_STRATUM_AUTH=0`. Unauthenticated dest login is an ephemeral tag, not dest ownership. Do not enable dest-ban without ownership once AUTH is on. Testnet cleartext TCP is temporary — see `deploy/nginx-stratum-tls.conf`. This tree does not ship TLS certificates. Confirm bind and login via `GET /api/stats` (`stratumBind` should be `127.0.0.1`, `loginAuth` should be `ed25519` when auth is on). Non-loopback ∧ AUTH≠1 sets `alerts.stratumDrift`. Reload fleet units with `deploy/reload-stratum-units.sh` (`SHEAR_STRATUM_BIND=127.0.0.1`, `SHEAR_STRATUM_AUTH=1`).
-- Pin **ShearK-Miner 2.5** (or current cut) for the 128-byte job
+- Pin **ShearK-Miner 2.6** for the 128-byte job
 - HTTP `127.0.0.1:8088` (nginx terminates TLS)
 - Validating node + pool in one process (same magic as the book)
 - Two meters: `hashrate` is a time-window / EMA (does not spike when a round resets). `proven_round` / `roundHashes` is accepted dest-bound work this block for hash-bonus minting and **does** reset at block found.
@@ -43,11 +43,11 @@ If `shearadmit.node` / `shearhash.node` fail to build, the pool cannot verify AD
 ## Datadir
 
 ```bash
-sudo mkdir -p /var/lib/shear/testnet-v7
-sudo chown "$USER":"$USER" /var/lib/shear/testnet-v7
+sudo mkdir -p /var/lib/shear/testnet-v9
+sudo chown "$USER":"$USER" /var/lib/shear/testnet-v9
 ```
 
-v4, v5, and v6 are different books. This tree seals `shear-testnet-v8`. Do not reuse a `shear-testnet-v4` or `shear-testnet-v5` datadir.
+v4, v5, v6, v7, and v8 are different books. This tree seals `shear-testnet-v9`. Do not reuse a `shear-testnet-v4`, `shear-testnet-v5`, `shear-testnet-v7`, or `shear-testnet-v8` datadir.
 
 ## systemd
 
@@ -61,7 +61,7 @@ sudo journalctl -u shear-pool -f
 
 The pool unit does not bind `:30303`. `shear-p2p.service` (`node node/src/node.js --mode=p2p-sync`) owns P2P and feeds verified blocks to the pool on `127.0.0.1:30313`. Fleet peers run `deploy/shear-node.service` in that same p2p-sync mode, not this pool process. Solo localhost stratum stays `npm run solo`.
 
-You should see a JSON line with `"magic":"shear-testnet-v8"`, `"stratum":1111`, `"http":8088`, `"p2p":0`.
+You should see a JSON line with `"magic":"shear-testnet-v9"`, `"stratum":1111`, `"http":8088`, `"p2p":0`.
 
 Optional environment (drop-in `/etc/systemd/system/shear-pool.service.d/local.conf`):
 

@@ -16,6 +16,8 @@ import {
   MAGIC_TESTNET,
   MAGIC_TESTNET_V7,
   MAGIC_TESTNET_V8,
+  MAGIC_TESTNET_V9,
+  medianIntervalMs,
   consensusFingerprint,
 } from '../../crypto/asert.js';
 import {
@@ -130,14 +132,18 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
   });
 
   it('verify, pool judge, and solo submit share one next-work and reject a private easier target or a long stamp', () => {
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v8');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v9');
+    assert.equal(MAGIC_TESTNET_V9, 'shear-testnet-v9');
     assert.equal(MAGIC_TESTNET_V8, 'shear-testnet-v8');
     assert.equal(MAGIC_TESTNET_V7, 'shear-testnet-v7');
+    assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V8);
     assert.notEqual(MAGIC_TESTNET_V7, MAGIC_TESTNET);
     const fp = consensusFingerprint();
-    assert.match(fp, /NETWORK=shear-testnet-v8/);
-    assert.doesNotMatch(fp, /NETWORK=shear-testnet-v7/);
-    assert.match(fp, /ASERT_STEP=log2\(T\/seen\)/);
+    assert.match(fp, /NETWORK=shear-testnet-v9/);
+    assert.doesNotMatch(fp, /NETWORK=shear-testnet-v8/);
+    assert.match(fp, /ASERT_STEP=median11\(log2\(T\/seen\)\)/);
+    assert.equal(medianIntervalMs([2_000]), TARGET_BLOCK_INTERVAL_MS);
+    assert.equal(medianIntervalMs(Array.from({ length: 6 }, () => 2_000)), 2_000);
 
     const id = newIdentity();
     const miner = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
@@ -193,8 +199,10 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
       { header: child.header },
     ];
     const want = retarget(chain);
-    assert.equal(want, nextBits(parentBits, gap));
-    assert.ok(unpackBits(want) > unpackBits(parentBits));
+    assert.equal(want, nextBits(parentBits, TARGET_BLOCK_INTERVAL_MS));
+    assert.equal(unpackBits(want), unpackBits(parentBits));
+    const oneGapHard = nextBits(parentBits, gap);
+    assert.ok(unpackBits(oneGapHard) > unpackBits(want));
 
     const easyTpl = buildTemplate({
       prev: child.hash,
@@ -202,7 +210,7 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
       prevBlock: child,
       height: 3,
       miner,
-      bits: parentBits,
+      bits: oneGapHard,
       now: t0 + gap + gap,
     });
     const easy = verifyBlock({
@@ -213,11 +221,25 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
       height: 3,
     }, child, {
       ...trust(),
-      parentIntervalMs: gap,
+      parentIntervalMs: TARGET_BLOCK_INTERVAL_MS,
+      grandparentHeader: genesis.header,
       nowMs: t0 + gap + gap,
     });
     assert.equal(easy.ok, false);
     assert.equal(easy.reason, 'bits');
+    const omitted = verifyBlock({
+      header: easyTpl.header,
+      txs: easyTpl.txs,
+      samples: easyTpl.samples,
+      miner,
+      height: 3,
+    }, child, {
+      ...trust(),
+      parentIntervalMs: gap,
+      nowMs: t0 + gap + gap,
+    });
+    assert.equal(omitted.ok, false);
+    assert.equal(omitted.reason, 'bits');
 
     const aheadTpl = buildTemplate({
       prev: child.hash,
@@ -236,7 +258,8 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
       height: 3,
     }, child, {
       ...trust(),
-      parentIntervalMs: gap,
+      parentIntervalMs: TARGET_BLOCK_INTERVAL_MS,
+      grandparentHeader: genesis.header,
       nowMs: t0 + gap + 2_000,
     });
     assert.equal(ahead.ok, false);
@@ -259,7 +282,8 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
       height: 3,
     }, child, {
       ...trust(),
-      parentIntervalMs: gap,
+      parentIntervalMs: TARGET_BLOCK_INTERVAL_MS,
+      grandparentHeader: genesis.header,
       nowMs: t0 + gap + gap,
     });
     assert.equal(honest.ok, true, honest.reason);
@@ -282,7 +306,7 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     assert.equal(Number(wired.blockBits), want);
     assert.equal(Number(wired.bits), want);
     const soloSrc = fs.readFileSync(new URL('../src/solo_stratum.js', import.meta.url), 'utf8');
-    assert.match(soloSrc, /const blockBits = Number\(job\.blockBits \|\| job\.bits\)/);
+    assert.match(soloSrc, /blockBits = decodeHeader\(header\)\.bits/);
     assert.match(soloSrc, /meetsTarget\(hash, blockBits\)/);
     try {
       const store = {

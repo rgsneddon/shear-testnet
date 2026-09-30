@@ -26,9 +26,9 @@ function sectionRun() {
 function sectionEnv() {
   return [
     'Env:',
-    '  SHEAR_DATA          datadir. Windows %APPDATA%\\Shear\\testnet-v7 (Roaming). Unix ~/.shear/testnet-v7.',
-    '                      Same path for Shear Sentinel v13 and Continuum 0.63.',
-    '  SHEAR_NETWORK       shear-testnet-v8 (this book). shear-v1 waits for genesis.',
+    '  SHEAR_DATA          datadir. Windows %APPDATA%\\Shear\\testnet-v9 (Roaming). Unix ~/.shear/testnet-v9.',
+    '                      Same path for Shear Sentinel v14 and Continuum 0.64.',
+    '  SHEAR_NETWORK       shear-testnet-v9 (this book). shear-v1 waits for genesis.',
     '  SHEAR_P2P_PORT      default 30303',
     '  SHEAR_P2P_BIND      default 0.0.0.0',
     '  SHEAR_P2P_IPC       pool-to-sidecar localhost TCP (default 127.0.0.1:30313). Not a peer port.',
@@ -80,13 +80,13 @@ function sectionSolo() {
     '       cmake --build crypto/randomx/build -j"$(nproc)"',
     '       make -C crypto/native',
     '  2. Validating node + thin local stratum (NOT npm run pool):',
-    '       export SHEAR_NETWORK=shear-testnet-v8',
+    '       export SHEAR_NETWORK=shear-testnet-v9',
     '       export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303',
     '       export SHEAR_RPC_BIND=127.0.0.1',
     '       npm run solo',
     '     Bare node node/src/node.js is validator-only (no stratum).',
     '     npm run pool is the public-pool operator stack — not solo.',
-    '  3. CLI (first-class) or Continuum 0.63:',
+    '  3. CLI (first-class) or Continuum 0.64:',
     '       dart run bin/shear.dart dest --rpc http://127.0.0.1:18332',
     '       dart run bin/shear.dart balance',
     '       dart run bin/shear.dart history',
@@ -116,7 +116,7 @@ function sectionP2p() {
     '  p2p_ingest reason=prev is a parent miss; the node retries. It is not a ban.',
     '  p2p_ingest reason=unsigned on a sealed compact block is a node bug — pull tip, rebuild native.',
     '  Do not wipe a mid-IBD datadir unless CoS says so after a fix.',
-    '  Magic stays shear-testnet-v8. Do not start sheark-v4-afk.',
+    '  Magic stays shear-testnet-v9. Do not start sheark-v4-afk.',
   ];
 }
 
@@ -125,7 +125,7 @@ function sectionBootstrap() {
     'Bootstrap:',
     '  Default start does not pull or apply a snapshot. Sync is sequential from the local tip (genesis if empty).',
     '  Optional manual import: SHEAR_BOOTSTRAP=1 or --bootstrap=https://boot.shear.digital on an empty datadir.',
-    '  latest.json + latest.bin from boot.shear.digital. Magic shear-testnet-v8. Empty datadir only.',
+    '  latest.json + latest.bin from boot.shear.digital. Magic shear-testnet-v9. Empty datadir only.',
     '  A datadir that already holds chain.bin or chain.jsonl resumes from that tip.',
     '  SHEAR_FAST_SYNC=1 skips archival bodies on this node only.',
   ];

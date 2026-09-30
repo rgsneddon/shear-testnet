@@ -7,7 +7,6 @@ import {
   verifyBlock,
   blockNeedsEvm,
   retarget,
-  parentSolveIntervalMs,
   GENESIS_PREV,
   publicJob,
   headerHash,
@@ -19,6 +18,7 @@ import {
   lag1Continuity,
   shouldAdopt,
   chainWorkOf,
+  headerGapsMs,
 } from './chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
@@ -137,6 +137,12 @@ export function writeTipFile(dir, tip) {
   fs.writeFileSync(tmp, `${JSON.stringify({ height, hash })}\n`);
   fs.renameSync(tmp, tipPath);
   return { height, hash };
+}
+
+/** Header of the block before the parent. The chain's last row is the parent. */
+function grandparentHeader(chain) {
+  if (!Array.isArray(chain) || chain.length < 2) return null;
+  return chain[chain.length - 2]?.header || null;
 }
 
 export function createStore(dir, {
@@ -572,7 +578,8 @@ export function createStore(dir, {
         committedBps: Number(reserveVault.epochBps ?? 264),
         reserveState: reserveVault,
         spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, prev ? prev.height : 0)),
-        parentIntervalMs: parentSolveIntervalMs(blocks.slice(0, i - 1)),
+        grandparentHeader: grandparentHeader(blocks.slice(0, i - 1)),
+        sealedIntervalsMs: headerGapsMs(blocks.slice(0, i - 1)),
         nowMs: Date.now(),
       });
       if (spentCheck && typeof spentCheck.then === 'function') {
@@ -770,7 +777,8 @@ export function createStore(dir, {
       trustedPowHash: verifyOpts.trustedPowHash || null,
       skipSharePow: !!verifyOpts.skipSharePow,
       offLoopPow: !!verifyOpts.offLoopPow,
-      parentIntervalMs: parentSolveIntervalMs(blocks),
+      grandparentHeader: grandparentHeader(blocks),
+      sealedIntervalsMs: headerGapsMs(blocks),
       parentFluxset: liveFlux,
       parentSpendTags: liveFlux.spendTags,
       poolDest: verifyOpts.poolDest
@@ -1040,7 +1048,8 @@ export function createStore(dir, {
       offLoopPow: !!verifyOpts.offLoopPow,
       trustedPowHash: verifyOpts.trustedPowHash || null,
       skipSharePow: !!verifyOpts.skipSharePow,
-      parentIntervalMs: accepted.length ? parentSolveIntervalMs(accepted) : undefined,
+      grandparentHeader: grandparentHeader(accepted),
+      sealedIntervalsMs: headerGapsMs(accepted),
       nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
     });
   }
@@ -1168,7 +1177,8 @@ export function createStore(dir, {
         tipHeight: Number(prev?.height || 0) + 1,
         evmHistory: history.concat(out),
         parentFluxset: null,
-        parentIntervalMs: parentSolveIntervalMs(history.concat(out)),
+        grandparentHeader: grandparentHeader(history.concat(out)),
+        sealedIntervalsMs: headerGapsMs(history.concat(out)),
         nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
       });
       const take = (c) => {
@@ -1491,7 +1501,10 @@ export function createStore(dir, {
         now = templateStampMs(parent.timestamp, wall, wallIntervalMs, mtp);
       } catch { /* keep wall */ }
     }
-    const bits = bitsIn != null ? bitsIn : retarget(blocks);
+    // Sealed parent interval only. Caller bits (share target, boot override,
+    // a private easier job) must not undercut the header miners are offered.
+    const bits = retarget(blocks);
+    void bitsIn;
     const lag1 = lag1Continuity(t ? t.header : null);
     let baseFeeNow = 1;
     try {

@@ -36,7 +36,7 @@ import 'shear_closure.dart';
 import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 
-const kWalletVersion = '0.63';
+const kWalletVersion = '0.64';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock is accepted. Spendable drops and staking starts now.
@@ -170,6 +170,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       widget.privacyHop ?? PrivacyHopController();
   late final ShearNodeSidecar sidecar;
   Process? _nodeProc;
+  bool _proofBusy = false;
+  bool _proofAgain = false;
   final _nodeConsoleScroll = ScrollController();
   int vortexTab = 0;
   List<Vortice> vortices = leanContinuumVortices();
@@ -242,10 +244,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     void take(String line) {
       if (!mounted || line.isEmpty) return;
       sidecar.seekerTip = ledger.pool?.liveTip ?? ledger.displayHeight;
-      final firstHonest = noteSidecarLine(sidecar, line);
+      final firstHonest = noteSidecarLine(sidecar, line, openProofs: false);
       setState(() {});
       _pinNodeConsole();
       if (sidecar.localSyncNoticeDue(caughtTip: firstHonest)) _showLocalNodeSynced();
+      if (sidecar.hasHeldBlocks) unawaited(_openSidecarProofs());
     }
     proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(take);
     proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen(take);
@@ -504,7 +507,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final msg = e is FormatException ? e.message : '';
       if (msg.startsWith('shewall_reset_required')) {
         setState(() => _lockError =
-            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v8).');
+            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v9).');
         return;
       }
       setState(() => _lockError = 'Wrong password.');
@@ -760,6 +763,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   /// Run node opens proofs of blocks already read while IBD is still true.
+  /// The walk is [openWhileCatchingUpOffUi], so the tick can paint first.
   void _openLocalReadPrefix() {
     if (sidecar.committed != ClosureSendMode.localNode &&
         sidecar.committed != ClosureSendMode.localNodeFull) {
@@ -773,7 +777,28 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       readHeights: sync.readHeights,
       liveTip: ledger.pool?.liveTip ?? sync.sampledTip,
     );
-    sidecar.openWhileCatchingUp();
+    unawaited(_openSidecarProofs());
+  }
+
+  /// One proof walk at a time. A newer status line runs after this one, not
+  /// piled on the UI isolate.
+  Future<void> _openSidecarProofs() async {
+    if (_proofBusy) {
+      _proofAgain = true;
+      return;
+    }
+    _proofBusy = true;
+    try {
+      do {
+        _proofAgain = false;
+        if (!sidecar.hasHeldBlocks) return;
+        await sidecar.openWhileCatchingUpOffUi();
+        if (mounted) setState(() {});
+      } while (_proofAgain && mounted && sidecar.hasHeldBlocks);
+    } catch (_) {
+    } finally {
+      _proofBusy = false;
+    }
   }
 
   void _startAccrualTick({bool immediate = false}) {
@@ -2520,7 +2545,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   bool get _reserveSendReady {
     final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
     if (!unprivateAmountPermitted(she)) return false;
-    if (sidecar.committed == ClosureSendMode.localNode) {
+    if (sidecar.committed == ClosureSendMode.localNode ||
+        sidecar.committed == ClosureSendMode.localNodeFull) {
       return sidecar.honest || walletAtTip(_syncLabel);
     }
     return true;
@@ -2810,6 +2836,24 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Future<void> _reserveVote(BuildContext context, ShearIdentity ident, String choice) async {
     final dest = _reserveDestOf(ident);
     if (dest == null || dest.isEmpty) return;
+    final gate = reserveVoteGate(ledger, reserve, dest);
+    if (gate != null) {
+      if (context.mounted) {
+        final messenger = ScaffoldMessenger.of(context);
+        messenger.clearSnackBars();
+        messenger.showSnackBar(SnackBar(content: Text(gate)));
+      }
+      return;
+    }
+    final already = reserve.portal(dest);
+    if (already.vote != null && already.voteEpoch == reserve.currentEpoch) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(voteFailCopy(StateError('vote_locked')))),
+        );
+      }
+      return;
+    }
     var depth = await _mempoolDepthNow();
     var voteL = levyNanos(0, depth: depth);
     if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < voteL / kUnitsPerShe) {
@@ -2874,53 +2918,28 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    final now = DateTime.now().millisecondsSinceEpoch;
     final tun = hop.tunVerified && !hop.probeOnly;
-    try {
-      final from = ledger.consolidateSpendableForLock(
-        ident.address,
-        paymentCode: ident.paymentCode,
-        needShe: voteL / kUnitsPerShe,
-      );
-      await ledger.send(
-        from: from,
-        to: dest,
-        amount: 0,
-        local: ledger.pool == null || widget.skipPoolSync,
-        kind: 'vote',
-        programId: kReserveProgram,
-        privacyHopUp: tun,
-        allowPublicHttp: true,
-        restFrame: ident.address,
-        paymentCode: ident.paymentCode,
-        choice: choice,
-        currentEpoch: reserve.currentEpoch,
-        epochStartMs: reserve.epochStartMs,
-        spendSeed: hexToBytes(ident.seedHex),
-      );
-    } catch (e) {
-      if (context.mounted) {
-        final messenger = ScaffoldMessenger.of(context);
-        messenger.removeCurrentSnackBar();
-        messenger.showSnackBar(
-          SnackBar(content: Text(voteFailCopy(e))),
-        );
-      }
-      return;
-    }
-    final err = reserve.vote(dest: dest, choice: choice, nowMs: now);
+    final result = await commandReserveVote(
+      ledger: ledger,
+      reserve: reserve,
+      restFrame: ident.address,
+      paymentCode: ident.paymentCode,
+      dest: dest,
+      choice: choice,
+      depth: depth,
+      spendSeed: hexToBytes(ident.seedHex),
+      local: ledger.pool == null || widget.skipPoolSync,
+      privacyHopUp: tun,
+    );
     if (context.mounted) {
       final messenger = ScaffoldMessenger.of(context);
-      // Deposit leaves its snack showing. A queued vote line stays invisible.
       messenger.removeCurrentSnackBar();
-      messenger.showSnackBar(SnackBar(
-        content: Text(err == null
-            ? 'Vote submitted — Your vote: $choice'
-            : voteFailCopy(StateError(err))),
-      ));
+      messenger.showSnackBar(SnackBar(content: Text(result.remark)));
     }
-    if (err != null) return;
-    if (!widget.skipPoolSync) await _syncVaults(ident);
+    if (!result.enacted) return;
+    if (!widget.skipPoolSync) {
+      await _syncVaults(ident);
+    }
     if (mounted) setState(() => _reserveVoteDraft = choice);
   }
 
@@ -2946,15 +2965,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final draft = _reserveVoteDraft ?? p.vote;
     final yours = _panel(context, [
             const Text('The Reserve', style: TextStyle(fontWeight: FontWeight.w700)),
-            if (sidecar.committed == ClosureSendMode.localNode && sidecar.sendBlocked)
+            if ((sidecar.committed == ClosureSendMode.localNode ||
+                    sidecar.committed == ClosureSendMode.localNodeFull) &&
+                sidecar.sendBlocked)
               Text(
                 sidecar.sendBlockedCopy,
                 key: const Key('reserve-local-wait'),
                 style: TextStyle(color: shearMutedOf(context)),
               ),
             const Text(
-              'The Reserve is Shear governance. Lock over π SHE into your portal. '
-              'The first qualifying stake opens a 400-day epoch. '
+              'The Reserve is Shear governance. Deposit any amount into your own portal, '
+              'in as many transactions as you like. Only a vote needs that sum to reach π SHE, '
+              'then 9 confirmations. The first portal to reach π opens a 400-day epoch. '
               'Last-99-day deposits still unlock a vote but earn no stake. '
               'Interest is a variable rate observed by The Reserve oracle. '
               'The winning vote then moves the hash bonus by one unit.',
@@ -3098,7 +3120,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               key: const Key('reserve-overall-votes'),
             ),
             Text(reserve.epochStartMs == 0
-                ? 'No epoch yet. The first π SHE deposit will start it.'
+                ? 'No epoch yet. It starts when a portal\'s own deposits reach π SHE.'
                 : '$daysLeft days remaining in this epoch  ·  day $dayOfEpoch of $kReserveEpochDays'),
             if (reserve.uniqueEpochs.isNotEmpty) ...[
               const SizedBox(height: 8),
@@ -3202,7 +3224,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             'Locked  $totalShe SHE${p.joined ? '  ·  joined this epoch' : ''}',
             textAlign: TextAlign.justify,
           ),
-          if (p.idle == 0 && p.nanos > 0)
+          if (p.canVote)
             const Text('Locked stake can vote', key: Key('reserve-locked-can-vote')),
           Text(
             'Accrued this epoch  $accruedShe SHE  ·  updates daily at frozen oracle bps; paid at epoch end',
@@ -3242,10 +3264,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             overall,
-            if (p.canVote) ...[
-              const SizedBox(height: 12),
-              vote,
-            ],
+            const SizedBox(height: 12),
+            vote,
           ],
         );
         if (side) {
@@ -3264,10 +3284,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             yours,
             const SizedBox(height: 12),
             overall,
-            if (p.canVote) ...[
-              const SizedBox(height: 12),
-              vote,
-            ],
+            const SizedBox(height: 12),
+            vote,
           ],
         );
       }),
@@ -3453,13 +3471,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
       const SizedBox(height: 16),
       Text('Send path', key: const Key('closure-send-path'), style: const TextStyle(fontWeight: FontWeight.w700)),
-      const Text('Two paths. Choose one, then Apply.'),
+      const Text('Three paths. Choose one, then Apply. The top bar shows the path that is on.'),
       RadioListTile<ClosureSendMode>(
         key: const Key('closure-send-path-bare'),
         contentPadding: EdgeInsets.zero,
         value: ClosureSendMode.connectBare,
         groupValue: sidecar.pending,
-        title: const Text('Connect bare'),
+        title: const Text('Connect Bare'),
         subtitle: const Text(kConnectBareCopy),
         onChanged: (v) => setState(() => sidecar.select(v!)),
       ),
@@ -3468,8 +3486,17 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         contentPadding: EdgeInsets.zero,
         value: ClosureSendMode.localNode,
         groupValue: sidecar.pending,
-        title: const Text('Run node'),
+        title: const Text('p2P Node'),
         subtitle: const Text(kLocalNodeModeCopy),
+        onChanged: (v) => setState(() => sidecar.select(v!)),
+      ),
+      RadioListTile<ClosureSendMode>(
+        key: const Key('closure-send-path-full'),
+        contentPadding: EdgeInsets.zero,
+        value: ClosureSendMode.localNodeFull,
+        groupValue: sidecar.pending,
+        title: const Text('Full Node'),
+        subtitle: const Text(kLocalNodeFullModeCopy),
         onChanged: (v) => setState(() => sidecar.select(v!)),
       ),
       FilledButton(
@@ -3590,7 +3617,7 @@ class _ReserveVoteSealDialogState extends State<_ReserveVoteSealDialog> {
         FilledButton(
           key: const Key('reserve-vote-confirm-accept'),
           onPressed: ok ? () => Navigator.pop(context, true) : null,
-          child: const Text('Accept'),
+          child: const Text('CONFIRM'),
         ),
       ],
     );

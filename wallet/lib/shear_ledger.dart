@@ -89,6 +89,24 @@ bool _flowCryptoOnCaller() =>
     debugNativeSealNote != null ||
     Platform.environment['FLUTTER_TEST'] == 'true';
 
+/// Counts ledger, sync, and proof work that still runs on the UI isolate.
+int debugUiHeavyCount = 0;
+
+void noteUiHeavy(String label) {
+  debugUiHeavyCount += 1;
+}
+
+/// Stamp of this isolate. [sealSignReserveWire] returns the worker's stamp.
+final String reserveIsolateStamp =
+    '${identityHashCode(Isolate.current)}-${DateTime.now().microsecondsSinceEpoch}';
+
+/// How many reserve seals [Isolate.run] has returned to this isolate.
+int debugReserveIsolateRuns = 0;
+
+/// Stamp from the last reserve seal. Differs from [reserveIsolateStamp]
+/// when the seal ran in [Isolate.run].
+String debugReserveOffIsolateStamp = '';
+
 /// Seal Flow vouts (range proof + admit pub). Production hop-fee pay calls this
 /// via [Isolate.run] so the UI isolate can keep pumping frames.
 Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
@@ -163,6 +181,7 @@ Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) {
 
 Future<Map<String, dynamic>> _sealFlowOffUi(Map<String, dynamic> input) {
   if (_flowCryptoOnCaller()) {
+    noteUiHeavy('seal');
     return Future<Map<String, dynamic>>.value(sealFlowSpendVouts(input));
   }
   return Isolate.run(() => sealFlowSpendVouts(input));
@@ -170,6 +189,7 @@ Future<Map<String, dynamic>> _sealFlowOffUi(Map<String, dynamic> input) {
 
 Future<Map<String, dynamic>> _proveFlowOffUi(Map<String, dynamic> input) {
   if (_flowCryptoOnCaller()) {
+    noteUiHeavy('prove');
     return Future<Map<String, dynamic>>.value(reproveFlowSpendWire(input));
   }
   return Isolate.run(() => reproveFlowSpendWire(input));
@@ -435,6 +455,65 @@ Map<String, dynamic> sealedReserveVout(String to, int nanos, String kind) {
     note['valueProof'] = {...Map<String, dynamic>.from(vp), 'v': nanos};
   }
   return note;
+}
+
+/// Seal and sign one reserve lock, vote, or withdraw.
+/// Production calls this only from [Isolate.run].
+Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
+  final to = (input['to'] as String?) ?? '';
+  final from = (input['from'] as String?) ?? '';
+  final kind = (input['kind'] as String?) ?? 'lock';
+  final nanos = (input['nanos'] as int?) ?? 0;
+  final spendSeed = input['spendSeed'] is Uint8List ? input['spendSeed'] as Uint8List : null;
+  final shared = input['shared'] is Uint8List ? input['shared'] as Uint8List : null;
+  final spec = <Map<String, dynamic>>[
+    for (final raw in (input['vouts'] as List? ?? const []))
+      if (raw is Map) Map<String, dynamic>.from(raw),
+  ];
+  final vinIn = <Map<String, dynamic>>[
+    for (final raw in (input['vin'] as List? ?? const []))
+      if (raw is Map) Map<String, dynamic>.from(raw),
+  ];
+  final sealed = <Map<String, dynamic>>[
+    for (final o in spec)
+      sealedReserveVout(
+        (o['address'] as String?) ?? to,
+        (o['nanos'] as int?) ?? (kind == 'vote' ? 0 : nanos),
+        (o['kind'] as String?) ?? kind,
+      ),
+  ];
+  final postedVin = _postedVin(vinIn);
+  final postedVout = _postedVout(sealed);
+  Uint8List? sig;
+  Uint8List? pub;
+  if (spendSeed != null && spendSeed.length == 32) {
+    final msg = spendMessage(from: from, vout: postedVout, kind: kind, vin: postedVin);
+    if (shared != null) {
+      sig = stealthSign(spendSeed, shared, msg);
+      pub = stealthTweakPub(ed25519PublicFromSeed(spendSeed), shared);
+    } else {
+      sig = ed25519Sign(spendSeed, msg);
+      pub = ed25519PublicFromSeed(spendSeed);
+    }
+  }
+  return {
+    'vouts': sealed,
+    'postedVin': postedVin,
+    'postedVout': postedVout,
+    'sig': sig,
+    'pub': pub,
+    'isolateStamp': reserveIsolateStamp,
+  };
+}
+
+/// Reserve lock, vote, and withdraw seal. Always [Isolate.run]. A caller-side
+/// bypass would put [sealSignReserveWire] on the UI isolate.
+Future<Map<String, dynamic>> _reserveSealOffUi(Map<String, dynamic> input) {
+  return Isolate.run(() => sealSignReserveWire(input)).then((out) {
+    debugReserveIsolateRuns += 1;
+    debugReserveOffIsolateStamp = (out['isolateStamp'] as String?) ?? '';
+    return out;
+  });
 }
 
 /// Painted Continuum send has no flux-set note, so it cannot run native
@@ -2919,12 +2998,7 @@ class ShearLedger implements ReadProofSink {
           'prev': raw['prev'],
           'startIndex': raw['startIndex'],
         };
-        Map<String, dynamic> scanned;
-        try {
-          scanned = await Isolate.run(() => scanSealedVouts(input));
-        } catch (_) {
-          scanned = scanSealedVouts(input);
-        }
+        final scanned = await Isolate.run(() => scanSealedVouts(input));
         _applySealedScan(scanned);
         _notesAt[key] = _sealedHeight;
       } catch (_) {
@@ -4504,39 +4578,70 @@ class ShearLedger implements ReadProofSink {
       note['spent'] = true;
       }
     }
+    final List<Map<String, dynamic>> postedVin;
+    final List<Map<String, dynamic>> postedVout;
     if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw') {
-      final sealedReserve = <Map<String, dynamic>>[
-        for (final o in vouts)
-          sealedReserveVout(
-            (o['address'] as String?) ?? destTo,
-            (o['nanos'] as int?) ?? (sendKind == 'vote' ? 0 : nanos),
-            (o['kind'] as String?) ?? sendKind,
-          ),
+      if (spendSeed != null && spendSeed.length == 32) {
+        if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
+          throw StateError('unspendable_dest');
+        }
+      }
+      final shared = _stealthShared[src];
+      final built = await _reserveSealOffUi({
+        'to': destTo,
+        'from': src,
+        'kind': sendKind,
+        'nanos': nanos,
+        'spendSeed': spendSeed,
+        'shared': shared,
+        'vouts': <Map<String, dynamic>>[
+          for (final o in vouts) Map<String, dynamic>.from(o),
+        ],
+        'vin': <Map<String, dynamic>>[
+          for (final o in vin) Map<String, dynamic>.from(o),
+        ],
+      });
+      final sealed = <Map<String, dynamic>>[
+        for (final raw in (built['vouts'] as List))
+          if (raw is Map) Map<String, dynamic>.from(raw),
       ];
       vouts
         ..clear()
-        ..addAll(sealedReserve);
-    }
-    final postedVin = _postedVin(vin);
-    final postedVout = _postedVout(vouts);
-    if (spendSeed != null && spendSeed.length == 32) {
-      if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
-        throw StateError('unspendable_dest');
+        ..addAll(sealed);
+      postedVin = <Map<String, dynamic>>[
+        for (final raw in (built['postedVin'] as List))
+          if (raw is Map) Map<String, dynamic>.from(raw),
+      ];
+      postedVout = <Map<String, dynamic>>[
+        for (final raw in (built['postedVout'] as List))
+          if (raw is Map) Map<String, dynamic>.from(raw),
+      ];
+      final sig = built['sig'];
+      final pub = built['pub'];
+      if (sig is Uint8List) sigHex = _bytesHex(sig);
+      if (pub is Uint8List) spendPubHex = _bytesHex(pub);
+    } else {
+      postedVin = _postedVin(vin);
+      postedVout = _postedVout(vouts);
+      if (spendSeed != null && spendSeed.length == 32) {
+        if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
+          throw StateError('unspendable_dest');
+        }
+        // Sign the posted C̃-only vin/vout so spendPackDigest matches the server.
+        final msg = spendMessage(from: src, vout: postedVout, kind: sendKind, vin: postedVin);
+        final shared = _stealthShared[src];
+        late Uint8List sig;
+        late Uint8List pub;
+        if (shared != null) {
+          sig = stealthSign(spendSeed, shared, msg);
+          pub = stealthTweakPub(ed25519PublicFromSeed(spendSeed), shared);
+        } else {
+          sig = ed25519Sign(spendSeed, msg);
+          pub = ed25519PublicFromSeed(spendSeed);
+        }
+        sigHex = _bytesHex(sig);
+        spendPubHex = _bytesHex(pub);
       }
-      // Sign the posted C̃-only vin/vout so spendPackDigest matches the server.
-      final msg = spendMessage(from: src, vout: postedVout, kind: sendKind, vin: postedVin);
-      final shared = _stealthShared[src];
-      late Uint8List sig;
-      late Uint8List pub;
-      if (shared != null) {
-        sig = stealthSign(spendSeed, shared, msg);
-        pub = stealthTweakPub(ed25519PublicFromSeed(spendSeed), shared);
-      } else {
-        sig = ed25519Sign(spendSeed, msg);
-        pub = ed25519PublicFromSeed(spendSeed);
-      }
-      sigHex = _bytesHex(sig);
-      spendPubHex = _bytesHex(pub);
     }
     if (pool != null && !local) {
       Future<Map<String, dynamic>> postOnce() {

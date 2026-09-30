@@ -23,6 +23,19 @@ export const V3_SELFTEST_K =
   '55111f0216ab10a6ba15fc0146990b10d26edcf58c86fa1418c41d96fa40b8e4';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+function prependHashDllPath() {
+  if (process.platform !== 'win32') return;
+  const dirs = [
+    path.join(here, 'native'),
+    path.join(here, '..', 'runtime'),
+  ];
+  const extra = dirs.filter((d) => fs.existsSync(path.join(d, 'libgcc_s_seh-1.dll')));
+  if (!extra.length) return;
+  process.env.PATH = `${extra.join(path.delimiter)}${path.delimiter}${process.env.PATH || ''}`;
+}
+prependHashDllPath();
+
 let native = null;
 try {
   native = createRequire(import.meta.url)('./native/shearhash.node');

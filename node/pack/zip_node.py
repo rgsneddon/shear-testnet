@@ -15,6 +15,8 @@ import shutil
 import sys
 import zipfile
 
+from bundle_modules import assert_zip_has_modules
+
 FLAVORS = ("windows", "linux", "archlinux", "fedora", "opensuse", "macos")
 SKIP_DIR_NAMES = {
     "node_modules",
@@ -185,8 +187,8 @@ def main(argv: list[str] | None = None) -> int:
             "Unix: chmod +x shear-node.sh && ./shear-node.sh\n"
             "It syncs from genesis (or the saved tip) to the live tip. No automatic bootstrap.\n"
             "Pass --solo for local stratum after ibd=false.\n"
-            "Magic shear-testnet-v8. Continuum wallet is 0.63.\n"
-            "If node_modules is missing: npm ci once in this folder, then run the launcher.\n"
+            "Magic shear-testnet-v9. Continuum wallet is 0.64.\n"
+            "node_modules, crypto, and the native addons are inside this zip.\n"
         )
         z.writestr("README.txt", readme)
 
@@ -214,7 +216,8 @@ def main(argv: list[str] | None = None) -> int:
         for dll in ("runtime/libgcc_s_seh-1.dll", "runtime/libstdc++-6.dll", "runtime/libwinpthread-1.dll"):
             if dll not in names:
                 sys.exit(f"missing {dll}")
-    print("ok", name, "pin", pin, "flavor", flavor)
+    assert_zip_has_modules(names, REPO)
+    print("ok", name, "pin", pin, "flavor", flavor, "modules", len(names))
     return 0
 
 

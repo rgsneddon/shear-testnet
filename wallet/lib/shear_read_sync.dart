@@ -493,7 +493,7 @@ class ShearReadSync {
         }
       }
       if (page.isNotEmpty) {
-        applyReadPage(pageBlocks: page, liveTip: tip, dest: proofDest);
+        await applyReadPageOffUi(pageBlocks: page, liveTip: tip, dest: proofDest);
       }
       await Future<void>.delayed(Duration.zero);
     }
@@ -525,6 +525,36 @@ class ShearReadSync {
       dest: dest ?? proofDest,
       ibd: ibd,
     );
+  }
+
+  /// Same page bookkeeping as [applyReadPage]. The proof walk is [Isolate.run].
+  Future<ReadBlockOpen> applyReadPageOffUi({
+    required List pageBlocks,
+    required int liveTip,
+    String? dest,
+    bool ibd = false,
+  }) async {
+    for (final raw in pageBlocks) {
+      if (raw is! Map) continue;
+      final row = Map<String, dynamic>.from(raw);
+      final h = readBlockHeight(row);
+      if (h < 1) continue;
+      row['height'] = h;
+      _compactProven.add(h);
+      _readBlocks.removeWhere((b) => readBlockHeight(b) == h);
+      _readBlocks.add(row);
+    }
+    if (liveTip > sampledTip) sampledTip = liveTip;
+    final opened = await openReadBlockProofsOffUi(
+      blocks: _readBlocks,
+      readHeights: Set<int>.from(_compactProven),
+      liveTip: liveTip,
+      dest: dest ?? proofDest,
+      ibd: ibd,
+    );
+    lastOpen = opened;
+    proofSink?.ingestReadOpen(opened, blocks: _readBlocks, dest: dest ?? proofDest);
+    return opened;
   }
 
   /// Connect bare walk over blocks already read. Same function Run node calls.

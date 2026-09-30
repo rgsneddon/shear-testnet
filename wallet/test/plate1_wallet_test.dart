@@ -206,8 +206,8 @@ void main() {
     expect(closureModeFromStored(kClosureModeBare, android: true), ClosureSendMode.connectBare);
     expect(closureModeFromStored(kClosureModeVpn, android: false), ClosureSendMode.connectBare);
     expect(closureModeFromStored('not-a-mode', android: false), ClosureSendMode.connectBare);
-    expect(closureModeFromStored('fullNode', android: true), ClosureSendMode.localNode);
-    expect(closureModeFromStored('fullNode', android: false), ClosureSendMode.localNode);
+    expect(closureModeFromStored('fullNode', android: true), ClosureSendMode.localNodeFull);
+    expect(closureModeFromStored('fullNode', android: false), ClosureSendMode.localNodeFull);
     expect(closureStratumPort(ClosureSendMode.connectBare, android: false), isNull);
     expect(closureStratumPort(ClosureSendMode.connectBare, android: true), isNull);
     expect(closureStratumPort(ClosureSendMode.localNode, android: false), isNull);
@@ -252,7 +252,7 @@ void main() {
     expect(resolveSharedNodeBinary(besideDir: dir.path), bin.path);
     expect(resolveSharedNodeBinary(override: 'from-env', besideDir: dir.path), 'from-env');
     final data = closureNodeDataDir(besideDir: dir.path);
-    expect(data.contains('testnet-v7'), isTrue);
+    expect(data.contains('testnet-v9'), isTrue);
     expect(closureDatadirEmpty(data), isTrue);
     final legacy = '${dir.path}${Platform.pathSeparator}shear-node-data';
     Directory(legacy).createSync(recursive: true);
@@ -282,7 +282,12 @@ void main() {
     expect(closureSpawnEnv(ClosureSendMode.localNode, android: false, dataDir: '/tmp/shear-node')['SHEAR_STRATUM'], isNull);
     expect(closureSpawnEnv(ClosureSendMode.localNode, android: false, dataDir: '/tmp/shear-node')['SHEAR_GETBLOCK_BATCH'], '1');
     expect(closureSpawnEnv(ClosureSendMode.localNodeFull, android: false, dataDir: '/tmp/shear-node')['SHEAR_STRATUM'], isNull);
-    expect(closureSpawnEnv(ClosureSendMode.localNodeFull, android: false, dataDir: '/tmp/shear-node')['SHEAR_SOLO'], '0');
+    expect(closureSpawnEnv(ClosureSendMode.localNodeFull, android: false, dataDir: '/tmp/shear-node')['SHEAR_SOLO'], '1');
+    expect(closureSpawnEnv(ClosureSendMode.localNodeFull, android: true, dataDir: '/tmp/shear-node')['SHEAR_SOLO'], '0');
+    expect(closureSpawnArgs(emptyDatadir: false, mode: ClosureSendMode.localNodeFull), ['--solo']);
+    expect(closureSpawnArgs(emptyDatadir: false, mode: ClosureSendMode.localNodeFull).first, '--solo');
+    expect(closureSpawnArgs(emptyDatadir: false, mode: ClosureSendMode.localNodeFull, android: true), isEmpty);
+    expect(closureSpawnArgs(emptyDatadir: false, mode: ClosureSendMode.localNode), isEmpty);
     side.select(ClosureSendMode.localNode);
     expect(await side.apply(), 'Restarting local node for new send path…');
     expect(side.listenPort, isNull);
@@ -315,10 +320,15 @@ void main() {
     expect(noteSidecarLine(side, atTip), isFalse);
     side.select(ClosureSendMode.localNodeFull);
     await side.apply();
-    expect(side.pending, ClosureSendMode.localNode);
+    expect(side.pending, ClosureSendMode.localNodeFull);
+    expect(side.committed, ClosureSendMode.localNodeFull);
+    expect(side.lastArgs, ['--solo']);
+    expect(side.lastArgs.first, '--solo');
     expect(side.listenPort, isNull);
-    expect(side.showSoloMine, isFalse);
+    expect(side.showSoloMine, isTrue);
     expect(side.showResistanceConsole, isTrue);
+    expect(started.last['SHEAR_SOLO'], '1');
+    expect(started.last['args'], '--solo');
     expect(started.last['SHEAR_STRATUM'], isNull);
     expect(started.last['SHEAR_GETBLOCK_BATCH'], '1');
     final retired = ShearNodeSidecar(
@@ -337,8 +347,12 @@ void main() {
     expect(retired.showResistanceConsole, isFalse);
     final phone = ShearNodeSidecar(android: true);
     phone.select(ClosureSendMode.localNodeFull);
-    expect(phone.pending, ClosureSendMode.localNode);
+    expect(phone.pending, ClosureSendMode.localNodeFull);
     await phone.apply();
+    expect(phone.committed, ClosureSendMode.localNodeFull);
+    expect(phone.lastArgs, isEmpty);
+    expect(phone.lastEnv['SHEAR_SOLO'], '0');
+    expect(phone.showSoloMine, isFalse);
     expect(phone.listenPort, isNull);
   });
 
@@ -529,9 +543,12 @@ void main() {
     expect(find.byKey(const Key('closure-solo-mine')), findsNothing);
     expect(find.byKey(const Key('closure-send-path-bare')), findsOneWidget);
     expect(find.byKey(const Key('closure-send-path-local')), findsOneWidget);
+    expect(find.byKey(const Key('closure-send-path-full')), findsOneWidget);
+    expect(find.text('Full Node'), findsOneWidget);
+    expect(find.text('p2P Node'), findsOneWidget);
     expect(find.byKey(const Key('settings-vpn-tunnel')), findsNothing);
-    await tester.ensureVisible(find.text('Run node'));
-    await tester.tap(find.text('Run node'));
+    await tester.ensureVisible(find.text('p2P Node'));
+    await tester.tap(find.text('p2P Node'));
     await tester.pump();
     await tester.ensureVisible(find.byKey(const Key('closure-apply')));
     await tester.tap(find.byKey(const Key('closure-apply')));
@@ -539,7 +556,7 @@ void main() {
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 400)));
     await tester.pump();
     expect(find.byKey(const Key('wallet-mode-local-node')), findsOneWidget);
-    expect(find.text('RUN NODE'), findsOneWidget);
+    expect(find.text('P2P NODE'), findsOneWidget);
     await tester.tap(find.text('Resistance'));
     await tester.pump();
     expect(find.byKey(const Key('resistance-node-console')), findsOneWidget);
@@ -641,6 +658,10 @@ void main() {
   testWidgets('Cast vote posts spendSeed and shows the submitted snack', (tester) async {
     final funded = await fundedSplit(tester, 0, 20);
     await depositSum(tester, '10');
+    final lockHeight = funded.ledger.sealedHeight + 1;
+    funded.ledger.confirmRound(address: funded.other, pot: 0, height: lockHeight);
+    funded.ledger.settleTo(lockHeight + ShearLedger.spendableConfirmations - 1);
+    await tester.pump();
     expect(find.text('Locked stake can vote'), findsOneWidget);
     await tester.ensureVisible(find.byKey(const Key('reserve-vote-increase bonus')));
     await tester.tap(find.byKey(const Key('reserve-vote-increase bonus')));
@@ -650,6 +671,10 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.byKey(const Key('reserve-vote-confirm')), findsOneWidget);
+    final accept = tester.widget<FilledButton>(find.byKey(const Key('reserve-vote-confirm-accept')));
+    final acceptChild = accept.child;
+    expect(acceptChild, isA<Text>());
+    expect((acceptChild as Text).data, 'CONFIRM');
     await tester.enterText(find.byKey(const Key('reserve-vote-confirm-field')), 'CONFIRM');
     await tester.pump();
     await tester.tap(find.byKey(const Key('reserve-vote-confirm-accept')));
@@ -659,8 +684,12 @@ void main() {
     await tester.tap(find.byKey(const Key('reserve-vote-sign-accept')));
     await tester.pump();
     final submitted = find.text('Vote submitted — Your vote: increase bonus');
-    for (var i = 0; i < 40 && submitted.evaluate().isEmpty; i++) {
-      await tester.pump(const Duration(milliseconds: 50));
+    final voteDeadline = DateTime.now().add(const Duration(seconds: 45));
+    while (DateTime.now().isBefore(voteDeadline) && submitted.evaluate().isEmpty) {
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      await tester.pump();
     }
     final snacks = tester.widgetList<SnackBar>(find.byType(SnackBar)).map((s) {
       final c = s.content;
@@ -721,14 +750,15 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(find.byKey(const Key('wallet-mode-local-node')), findsOneWidget);
-    expect(find.text('RUN NODE'), findsOneWidget);
+    expect(find.text('P2P NODE'), findsOneWidget);
     expect(hop.isUp, isFalse);
     await tester.tap(find.text('Closure'));
     await tester.pump();
     expect(find.byKey(const Key('settings-vpn-tunnel')), findsNothing);
     expect(find.byKey(const Key('closure-send-path-bare')), findsOneWidget);
     expect(find.byKey(const Key('closure-send-path-local')), findsOneWidget);
-    expect(find.text('Run node'), findsOneWidget);
+    expect(find.text('p2P Node'), findsOneWidget);
+    expect(find.text('Full Node'), findsOneWidget);
     await tester.tap(find.text('Resistance'));
     await tester.pump();
     expect(find.byKey(const Key('resistance-vpn-console')), findsNothing);
@@ -777,7 +807,7 @@ void main() {
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
     await tester.pump();
     expect(find.byKey(const Key('wallet-mode-local-node')), findsOneWidget);
-    expect(find.text('RUN NODE'), findsOneWidget);
+    expect(find.text('P2P NODE'), findsOneWidget);
     expect(find.byKey(const Key('resistance-node-console')), findsOneWidget);
     expect(find.byKey(const Key('resistance-sync-height')), findsOneWidget);
     expect(hop.isUp, isFalse);

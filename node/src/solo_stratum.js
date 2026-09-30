@@ -8,7 +8,7 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { isInitialBlockDownload } from './status.js';
 import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
-import { setNonce } from '../../crypto/header.js';
+import { setNonce, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
 
 export const SOLO_STRATUM_PORT = 1111;
@@ -35,6 +35,13 @@ export function soloWireJob(job, shareBits) {
   const out = { ...rest };
   if (shareBits != null) out.shareBits = shareBits;
   out.shareBind = 'dest';
+  try {
+    if (out.header) {
+      const sealed = decodeHeader(headerFromHex(out.header)).bits;
+      out.bits = sealed;
+      out.blockBits = sealed;
+    }
+  } catch { /* job fields stay */ }
   return out;
 }
 
@@ -63,7 +70,10 @@ export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest } = {}) 
     return { ok: false, reason: 'bad_hash', hash: hex };
   }
   const job = rec.job || {};
-  const blockBits = Number(job.blockBits || job.bits);
+  let blockBits = Number(job.blockBits || job.bits);
+  try {
+    blockBits = decodeHeader(header).bits;
+  } catch { /* job field */ }
   const blockOk = meetsTarget(hash, blockBits);
   const advertised = Number(rec.shareBits ?? job.shareBits ?? SHARE_FLOOR_BITS);
   const pay = String(dest || '').trim();
@@ -97,10 +107,23 @@ export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest } = {}) 
  * match extends a private fork. Once a tip exists, some peer must advertise
  * this exact hash. No peer map (unit harness) stays open. Height 0 may seal.
  */
-export function soloMaySeal({ height = 0, hash = '', peers } = {}) {
+export function soloMaySeal({ height = 0, hash = '', peers, followPublic = false } = {}) {
+  const localH = Number(height) || 0;
+  // Seeds mean this process follows the public book. Height 0 must not seal
+  // a private genesis before a peer is on that same genesis.
+  if (followPublic && localH === 0) {
+    let genesisPeer = false;
+    if (peers && typeof peers.values === 'function') {
+      for (const rec of peers.values()) {
+        const peerH = Number(rec?.height);
+        const peerHash = String(rec?.hash || '');
+        if (Number.isFinite(peerH) && peerH === 0 && peerHash) genesisPeer = true;
+      }
+    }
+    if (!genesisPeer) return false;
+  }
   if (!peers || typeof peers.values !== 'function') return true;
   if (isInitialBlockDownload({ height, peers })) return false;
-  const localH = Number(height) || 0;
   const localHash = String(hash || '').toLowerCase();
   let matchedTip = false;
   let splitTip = false;
@@ -132,7 +155,7 @@ function hashAtHeight(store, height) {
   return '';
 }
 
-export function applySoloSubmit({ store, jobId, nonce, claimed, dest, peers } = {}) {
+export function applySoloSubmit({ store, jobId, nonce, claimed, dest, peers, followPublic = false } = {}) {
   const judged = evaluateSoloSubmit({ store, jobId, nonce, claimed, dest });
   if (!judged.ok) return judged;
   if (!judged.block) {
@@ -153,6 +176,7 @@ export function applySoloSubmit({ store, jobId, nonce, claimed, dest, peers } = 
     height,
     hash: tipHex(tip),
     peers,
+    followPublic,
     blockHashAt: (h) => hashAtHeight(store, h),
   })) {
     return { ok: false, reason: 'syncing', hash: judged.hash, block: true };
@@ -195,6 +219,7 @@ export function createSoloStratum({
   host = process.env.SHEAR_STRATUM_BIND || SOLO_STRATUM_BIND,
   restampMs = SOLO_JOB_RESTAMP_MS,
   peers = null,
+  followPublic = false,
 } = {}) {
   const sockets = new Set();
   let lastJob = null;
@@ -207,6 +232,7 @@ export function createSoloStratum({
       height: Number(tip?.height) || 0,
       hash: tipHex(tip),
       peers: typeof peers === 'function' ? peers() : peers,
+      followPublic,
       blockHashAt: (h) => hashAtHeight(store, h),
     });
   }
@@ -287,6 +313,7 @@ export function createSoloStratum({
             claimed: powHash,
             dest: session.dest,
             peers: typeof peers === 'function' ? peers() : peers,
+            followPublic,
           });
           if (!got?.ok && got?.block) {
             try {

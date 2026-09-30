@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.63 (current)
+## 0.64 (current)
+
+Book `shear-testnet-v9`. Public tag **0.64** (store `0.64.0+89`). Node tag is `v14` (Shear Sentinel v14, product `14.0`). ShearK pin is **2.6**. Datadir leaf is `testnet-v9`. Tag **0.63** and node tag `v13` stay on the previous book. macOS `.dmg` stays the MacBook handoff.
+
+## 0.63
 
 Book `shear-testnet-v8`. Connect bare and Run node open each already-read block's value proof in ascending height while the tip is still ahead, and an opened note with 9 confirmations joins Spendable before catch-up finishes. An owned note opens only when that proof verifies against the note's commit, and the ledger coin is that commit. Another output of the same value is not that coin. A younger opened note stays unspendable. A failed proof and a bare `{v}` claim are not spendable. Next-work adds at least one bit across eight sealed 2000 ms gaps from genesis. Public tag **0.63** (store `0.63.0+88`). Node tag stays `v13` (Shear Sentinel v13). ShearK pin stays **2.6**. Tag **0.62** stays. macOS `.dmg` stays the MacBook handoff.
 

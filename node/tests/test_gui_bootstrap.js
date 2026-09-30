@@ -183,7 +183,7 @@ describe('wallet node bootstrap', () => {
     assert.equal(fs.readFileSync(path.join(jsonlOnly, 'chain.jsonl'), 'utf8'), '{"height":12}\n');
   });
 
-  it('defaultDataDir is Roaming Shear/testnet-v7 on Windows and ~/.shear/testnet-v7 on Unix', () => {
+  it('defaultDataDir is Roaming Shear/testnet-v9 on Windows and ~/.shear/testnet-v9 on Unix', () => {
     assert.equal(
       defaultDataDir({ env: { SHEAR_DATA: 'D:\\book' }, platform: 'win32', homedir: 'C:\\Users\\x' }),
       'D:\\book',
@@ -194,21 +194,21 @@ describe('wallet node bootstrap', () => {
       platform: 'win32',
       exists: () => false,
     });
-    assert.equal(win, path.join('C:\\Users\\x\\AppData\\Roaming', 'Shear', 'testnet-v7'));
+    assert.equal(win, path.join('C:\\Users\\x\\AppData\\Roaming', 'Shear', 'testnet-v9'));
     const posix = defaultDataDir({
       env: {},
       homedir: '/home/x',
       platform: 'linux',
       exists: () => false,
     });
-    assert.equal(posix, path.join('/home/x', '.shear', 'testnet-v7'));
+    assert.equal(posix, path.join('/home/x', '.shear', 'testnet-v9'));
     const legacy = defaultDataDir({
       env: { APPDATA: 'C:\\Users\\x\\AppData\\Roaming' },
       homedir: 'C:\\Users\\x',
       platform: 'win32',
-      exists: (p) => String(p).includes(`${path.sep}.shear${path.sep}testnet-v7`) && String(p).endsWith('chain.bin'),
+      exists: (p) => String(p).includes(`${path.sep}.shear${path.sep}testnet-v9`) && String(p).endsWith('chain.bin'),
     });
-    assert.equal(legacy, path.join('C:\\Users\\x', '.shear', 'testnet-v7'));
+    assert.equal(legacy, path.join('C:\\Users\\x', '.shear', 'testnet-v9'));
   });
 
   it('pullPublishedBootstrap stores a pair an empty datadir can apply', async () => {
@@ -277,7 +277,10 @@ describe('wallet node bootstrap', () => {
     assert.match(closure, /bool emptyDatadir = false/);
     assert.match(closure, /kLocalNodeModeCopy =/);
     assert.match(closure, /requests each next block in order until the tip/);
-    assert.match(closure, /kLocalNodeFullModeCopy = kLocalNodeModeCopy/);
+    assert.match(closure, /kLocalNodeFullModeCopy =/);
+    assert.match(closure, /with --solo on the command line before it syncs/);
+    assert.match(closure, /without --solo/);
+    assert.equal(closure.includes('kLocalNodeFullModeCopy = kLocalNodeModeCopy'), false);
     assert.equal(/auto bootstrap/i.test(closure), false);
     assert.equal(/auto bootstrap/i.test(main), false);
     assert.equal(closure.includes('post to the pool'), false);

@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions
-title Shear Sentinel v13
+title Shear Sentinel v14
 
 rem Explorer double-click runs cmd /c and closes the window on any early exit.
 rem Re-enter under cmd /k so the console stays open. Tests set SHEAR_NODE_NOPAUSE=1.
@@ -53,13 +53,13 @@ if not defined NODEBIN (
   goto :hold
 )
 
-if not defined SHEAR_DATA set "SHEAR_DATA=%APPDATA%\Shear\testnet-v7"
-if not defined SHEAR_NETWORK set "SHEAR_NETWORK=shear-testnet-v8"
+if not defined SHEAR_DATA set "SHEAR_DATA=%APPDATA%\Shear\testnet-v9"
+if not defined SHEAR_NETWORK set "SHEAR_NETWORK=shear-testnet-v9"
 if not defined SHEAR_SEEDS set "SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303"
 if not defined SHEAR_RPC_BIND set "SHEAR_RPC_BIND=127.0.0.1"
 set "PATH=%ROOT%runtime;%ROOT%crypto\native;%PATH%"
 
-echo Starting Shear Sentinel v13
+echo Starting Shear Sentinel v14
 echo Data   %SHEAR_DATA%
 echo Using  %NODEBIN%
 echo Script %SCRIPT%

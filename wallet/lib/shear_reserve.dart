@@ -29,6 +29,10 @@ const kVoteHold = 'leave bonus as-is';
 const kReserveCutoffDisclaimer =
     'Fewer than $kReserveJoinCutoffDays days remain. New deposits still lock and can unlock a vote, even on a first Reserve deposit. They do not earn stake.';
 const kReserveAccruedLabel = 'Accrued rewards';
+const kVoteConfirmWait = 'Vote is waiting on 9 confirmations of the reserve lock.';
+
+/// Vote attempt while this portal's own deposits are still under π.
+const kVoteBelowPi = 'ineligible, please deposit at least Pi and wait for it to confirm';
 
 /// 1-based epoch day. The first 24h is day 1. Never returns 0.
 int reserveDayOfEpoch({
@@ -646,6 +650,122 @@ Future<ReserveDepositResult> postReserveDeposit({
     ledger.restorePaintedBook(mark);
     return ReserveDepositResult(posted: false, remark: '$e');
   }
+}
+
+int reserveLockConfirmations(ShearLedger ledger, ShearTx tx) {
+  final h = tx.height;
+  if (h == null || h < 1) return 0;
+  return ledger.confirmationsOf(h);
+}
+
+/// Null when this dest has no reserve lock, or every lock already has the
+/// spendable confirmation floor. Any positive amount counts, including a
+/// top-up that is only part of the sum. The least-confirmed lock holds the
+/// vote. A sum under π is not this wait.
+String? reserveVoteConfirmationWait(ShearLedger ledger, String dest) {
+  var worst = 1 << 30;
+  var found = false;
+  for (final t in ledger.transactions) {
+    if (t.kind != 'lock') continue;
+    if (t.to.isNotEmpty && t.to != dest) continue;
+    if (t.amount <= 0) continue;
+    found = true;
+    final c = reserveLockConfirmations(ledger, t);
+    if (c < worst) worst = c;
+  }
+  if (!found) return null;
+  if (worst < ShearLedger.spendableConfirmations) return kVoteConfirmWait;
+  return null;
+}
+
+/// Ineligible while this user's own vault sum is under π. Otherwise the
+/// confirmation wait, if any lock of any size is still under the floor.
+String? reserveVoteGate(ShearLedger ledger, ShearReserve reserve, String dest) {
+  if (reserve.portal(dest).nanos < kPiSheNanos) return kVoteBelowPi;
+  return reserveVoteConfirmationWait(ledger, dest);
+}
+
+class ReserveVoteResult {
+  const ReserveVoteResult({required this.enacted, required this.remark});
+
+  final bool enacted;
+  final String remark;
+}
+
+/// Shipped vote command. Waits on 9 confirmations, then spends the fee once.
+Future<ReserveVoteResult> commandReserveVote({
+  required ShearLedger ledger,
+  required ShearReserve reserve,
+  required String restFrame,
+  String? paymentCode,
+  required String dest,
+  required String choice,
+  required int depth,
+  Uint8List? spendSeed,
+  bool local = true,
+  bool privacyHopUp = false,
+  int? nowMs,
+}) async {
+  final gate = reserveVoteGate(ledger, reserve, dest);
+  if (gate != null) {
+    return ReserveVoteResult(enacted: false, remark: gate);
+  }
+  final portal = reserve.portal(dest);
+  if (portal.vote != null && portal.voteEpoch == reserve.currentEpoch) {
+    return ReserveVoteResult(
+      enacted: false,
+      remark: voteFailCopy(StateError('vote_locked')),
+    );
+  }
+  final voteL = levyNanos(0, depth: depth);
+  final needShe = voteL / kUnitsPerShe;
+  if (ledger.spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 < needShe) {
+    return ReserveVoteResult(
+      enacted: false,
+      remark: 'Not enough Continuum spendable for vote tx fee ${formatShe(needShe)} SHE',
+    );
+  }
+  try {
+    final from = ledger.consolidateSpendableForLock(
+      restFrame,
+      paymentCode: paymentCode,
+      needShe: needShe,
+    );
+    await ledger.send(
+      from: from,
+      to: dest,
+      amount: 0,
+      local: local,
+      kind: 'vote',
+      programId: kReserveProgram,
+      privacyHopUp: privacyHopUp,
+      allowPublicHttp: true,
+      restFrame: restFrame,
+      paymentCode: paymentCode,
+      choice: choice,
+      currentEpoch: reserve.currentEpoch,
+      epochStartMs: reserve.epochStartMs,
+      spendSeed: spendSeed,
+    );
+  } catch (e) {
+    final shown = voteFailCopy(e);
+    if (shown.toLowerCase().contains('insufficient')) {
+      return ReserveVoteResult(
+        enacted: false,
+        remark: 'Not enough Continuum spendable for vote tx fee ${formatShe(needShe)} SHE',
+      );
+    }
+    return ReserveVoteResult(enacted: false, remark: shown);
+  }
+  final err = reserve.vote(
+    dest: dest,
+    choice: choice,
+    nowMs: nowMs ?? DateTime.now().millisecondsSinceEpoch,
+  );
+  if (err != null) {
+    return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError(err)));
+  }
+  return ReserveVoteResult(enacted: true, remark: 'Vote submitted — Your vote: $choice');
 }
 
 /// One column of the Reserve ballot. Left to right: −1, hold, +1.

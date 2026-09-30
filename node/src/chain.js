@@ -8,6 +8,7 @@ import {
   LIVE_MIN_BITS,
   MAX_BITS,
   nextBits,
+  medianIntervalMs,
   TARGET_BLOCK_INTERVAL_MS,
   isPackedBits,
   unpackBits,
@@ -886,13 +887,24 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     } catch {
       return { ok: false, reason: 'parent_header' };
     }
-    const intervalOpt = opts.parentIntervalMs;
-    // Child timestamp is not this block's work. A missing or non-positive
-    // parent gap is the 90s fixed point, same as nextBits, so a chosen
-    // stamp cannot freeze or ease the bits required here.
-    const seen = intervalOpt != null && Number.isFinite(Number(intervalOpt)) && Number(intervalOpt) > 0
-      ? Number(intervalOpt)
-      : TARGET_BLOCK_INTERVAL_MS;
+    // This block's work is the median of the sealed header gaps. The child
+    // stamp is not work. One gap, padded with the 90s target, does not move
+    // the median. A caller must pass sealedIntervalsMs from the same chain
+    // the template used, or verify and the job disagree.
+    let seen = TARGET_BLOCK_INTERVAL_MS;
+    if (Array.isArray(opts.sealedIntervalsMs)) {
+      seen = medianIntervalMs(opts.sealedIntervalsMs);
+    } else if (!parent.prevBlockHash.equals(GENESIS_PREV)) {
+      if (!opts.grandparentHeader) return { ok: false, reason: 'bits' };
+      let grand;
+      try {
+        grand = decodeHeader(Buffer.from(opts.grandparentHeader));
+      } catch {
+        return { ok: false, reason: 'parent_header' };
+      }
+      const gap = Number(parent.timestamp) - Number(grand.timestamp);
+      seen = medianIntervalMs([Number.isFinite(gap) && gap > 0 ? gap : TARGET_BLOCK_INTERVAL_MS]);
+    }
     const want = nextBits(parent.bits, seen, magic);
     if (decoded.bits !== want) return { ok: false, reason: 'bits' };
     if (!isPackedBits(decoded.bits) || !isPackedBits(want)) return { ok: false, reason: 'bits' };
@@ -1466,6 +1478,23 @@ export function shouldAdopt(local, remote) {
   return rh !== '' && lh !== '' && rh < lh;
 }
 
+/** Consecutive sealed header gaps, oldest first. A bad stamp is the 90s pad. */
+export function headerGapsMs(chain) {
+  const blocks = Array.isArray(chain) ? chain : [];
+  const gaps = [];
+  for (let i = 1; i < blocks.length; i += 1) {
+    try {
+      const a = decodeHeader(Buffer.from(blocks[i - 1].header));
+      const b = decodeHeader(Buffer.from(blocks[i].header));
+      const d = Number(b.timestamp) - Number(a.timestamp);
+      gaps.push(Number.isFinite(d) && d > 0 ? d : TARGET_BLOCK_INTERVAL_MS);
+    } catch {
+      gaps.push(TARGET_BLOCK_INTERVAL_MS);
+    }
+  }
+  return gaps;
+}
+
 /** Solve time of the tip, used as the next block's difficulty. Missing history uses 90s. */
 export function parentSolveIntervalMs(blocks) {
   if (!Array.isArray(blocks) || blocks.length < 2) return TARGET_BLOCK_INTERVAL_MS;
@@ -1479,17 +1508,14 @@ export function parentSolveIntervalMs(blocks) {
   }
 }
 
-/** Template bits from the sealed parent interval only. candidateTimestamp is
+/** Template bits from the median of sealed header gaps. candidateTimestamp is
  *  ignored, so a miner-chosen stamp cannot freeze or ease the job target.
- *  verifyBlock uses that same parent interval, never the child timestamp. */
+ *  verifyBlock uses that same median, never the child timestamp. */
 export function retarget(chain, candidateTimestamp) {
   void candidateTimestamp;
   if (!chain.length) return GENESIS_BITS_PACKED;
   const last = decodeHeader(Buffer.from(chain[chain.length - 1].header));
-  if (chain.length < 2) return nextBits(last.bits, TARGET_BLOCK_INTERVAL_MS);
-  const prev = decodeHeader(Buffer.from(chain[chain.length - 2].header));
-  const solved = Number(last.timestamp) - Number(prev.timestamp);
-  return nextBits(last.bits, solved);
+  return nextBits(last.bits, medianIntervalMs(headerGapsMs(chain)));
 }
 
 export function genesisBlock({ miner, now = Date.now() }) {

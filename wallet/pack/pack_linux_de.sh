@@ -42,14 +42,18 @@ test -e "$BUNDLE/lib/libsodium.so.26" || test -e "$BUNDLE/lib/libsodium.so.23"
 DIST="$WALLET/dist"
 mkdir -p "$DIST"
 PKGBUILD="$WALLET/pack/archlinux/PKGBUILD"
-export BUNDLE DIST PKGBUILD VER
+REPO="$(cd "$WALLET/.." && pwd)"
+export BUNDLE DIST PKGBUILD VER REPO
 
 python3 - <<PY
-import os, zipfile, sys
+import os, sys, zipfile
 bundle = os.environ["BUNDLE"]
 dist = os.environ["DIST"]
 pkgbuild = os.environ["PKGBUILD"]
 ver = os.environ["VER"]
+repo = os.environ["REPO"]
+sys.path.insert(0, os.path.join(repo, "node", "pack"))
+from bundle_modules import assert_zip_has_modules, write_release_sidecar
 
 def add_tree(z, root):
     for dp, _dns, fns in os.walk(root):
@@ -65,11 +69,13 @@ for p in (linux_out, arch_out):
 
 with zipfile.ZipFile(linux_out, "w", zipfile.ZIP_DEFLATED) as z:
     add_tree(z, bundle)
+    write_release_sidecar(z, repo, flavor="linux")
 print("wrote", linux_out, os.path.getsize(linux_out))
 
 with zipfile.ZipFile(arch_out, "w", zipfile.ZIP_DEFLATED) as z:
     z.write(pkgbuild, "PKGBUILD")
     add_tree(z, bundle)
+    write_release_sidecar(z, repo, flavor="linux")
 print("wrote", arch_out, os.path.getsize(arch_out))
 
 for name in (linux_out, arch_out):
@@ -91,6 +97,16 @@ for name in (linux_out, arch_out):
         pkg = zipfile.ZipFile(name).read("PKGBUILD").decode()
         if f"pkgver={ver}" not in pkg or f"pkgver={ver}.0" in pkg:
             sys.exit(f"arch PKGBUILD not two-part {ver}")
+    for req in (
+        "node/src/node.js",
+        "runtime/node",
+        "crypto/native/shearhash.node",
+        "node_modules/@noble/hashes/sha2.js",
+        "node_modules/@ethereumjs/evm/package.json",
+    ):
+        if req not in names:
+            sys.exit(f"wallet zip missing {req}")
+    assert_zip_has_modules(names, repo)
 print("ok")
 PY
 echo "LINUX_PACK_OK $VER"

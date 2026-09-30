@@ -107,7 +107,7 @@ describe('node RPC', () => {
       const stats = await get(`${base}/stats`);
       assert.equal(stats.status, 200);
       assert.equal(stats.json.ok, true);
-      assert.equal(stats.json.magic, 'shear-testnet-v8');
+      assert.equal(stats.json.magic, 'shear-testnet-v9');
       assert.equal(stats.json.admit, 'ADMITv2');
       assert.equal(stats.json.hashTxLive, 1);
       assert.equal(stats.json.height, 1);
@@ -141,7 +141,7 @@ describe('node RPC', () => {
       const tpl = await post(base, { method: 'gettemplate', params: { miner: dest } });
       assert.equal(tpl.json.ok, true);
       assert.equal(tpl.json.admit, 'ADMITv2');
-      assert.equal(tpl.json.magic, 'shear-testnet-v8');
+      assert.equal(tpl.json.magic, 'shear-testnet-v9');
       assert.ok(tpl.json.jobId);
       assert.ok(tpl.json.header);
     } finally {

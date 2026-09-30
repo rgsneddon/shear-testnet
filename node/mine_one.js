@@ -7,6 +7,7 @@
 import { createStore } from './src/store.js';
 import { mineTemplate } from './src/chain.js';
 import { newIdentity, freshStealthDest } from '../crypto/address.js';
+import { MAGIC_TESTNET } from '../crypto/asert.js';
 
 const dir = process.env.SHEAR_DATA;
 if (!dir) {
@@ -44,7 +45,7 @@ console.log(JSON.stringify({
   height: tip?.height || 0,
   prevHeight: before?.height || 0,
   jroot: jr ? Buffer.from(jr).toString('hex') : '',
-  magic: 'shear-testnet-v8',
+  magic: MAGIC_TESTNET,
   admit: 'ADMITv2',
 }));
 if (!got?.ok) process.exit(1);

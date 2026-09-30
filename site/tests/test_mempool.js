@@ -33,7 +33,7 @@ describe('mempool lattice honesty', () => {
     assert.match(html, /txCount \+ ' txs'/);
     assert.doesNotMatch(html, /hash bonuses, pot, and every other tx/);
     assert.doesNotMatch(html, /valid-hash bonus/);
-    assert.match(html, /Continuum 0\.63/);
+    assert.match(html, /Continuum 0\.64/);
     assert.doesNotMatch(html, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(html, /releases\/tag\/0\.36/);
     assert.doesNotMatch(html, /releases\/tag\/0\.35/);
@@ -169,13 +169,14 @@ describe('explorer pending paint', () => {
       for (const b of store.blocks) pool.store.blocks.push(b);
       for (const m of store.mempool) pool.store.mempool.push(m);
       const stats = pool.publicStats();
-      assert.equal(stats.recentTxs[0].id, 'lock-live');
-      assert.equal(stats.recentTxs[0].pending, true);
+      assert.equal(stats.recentTxs[0].kind, 'block');
+      assert.equal(stats.recentTxs[0].id, Buffer.alloc(32, 32).toString('hex'));
+      assert.equal(stats.recentTxs.some((t) => t.id === 'lock-live' || t.kind === 'lock' || t.kind === 'vote'), false);
       assert.ok(stats.recentTxs.length <= 10);
       assert.equal(publicPayloadLeaksIdentity(stats.recentTxs), false);
       const row = publicSurfaceRow(stats.recentTxs[0]);
       assert.equal(row.to, '');
-      assert.equal(row.kind, 'lock');
+      assert.equal(row.kind, 'block');
       assert.equal(row.amountHidden, true);
       assert.equal(row.amount, undefined);
       assert.equal(row.memoPlain, undefined);

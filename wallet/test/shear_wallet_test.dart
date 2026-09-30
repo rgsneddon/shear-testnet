@@ -253,7 +253,7 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.63"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.64"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
@@ -261,11 +261,11 @@ void main() {
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.63"'), isTrue);
+    expect(winMain.contains('L"Shear 0.64"'), isTrue);
     expect(winMain.contains('L"Shear 0.6"'), isFalse);
-    expect(winRc.contains('"Shear 0.63"'), isTrue);
+    expect(winRc.contains('"Shear 0.64"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.63"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.64"'), isTrue);
     expect(linuxApp.contains('"Shear 0.6"'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -2288,7 +2288,7 @@ void main() {
     expect(sync.seeds.first.contains('127.0.0.1'), isTrue);
     expect(sync.seeds, contains(kLocalNodeRpc));
     expect(sync.seeds.contains(kPublicPoolHttp), isTrue);
-    expect(kBookMagic, 'shear-testnet-v8');
+    expect(kBookMagic, 'shear-testnet-v9');
     expect(kWalletDefaultSeed, contains('127.0.0.1'));
     expect(kWalletDefaultSeed.contains('pool.shear.digital'), isFalse);
     final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
@@ -2301,8 +2301,8 @@ void main() {
         reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.63.0+88'));
-    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.63'"));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.64.0+89'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.64'"));
   });
 
   test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
@@ -3214,7 +3214,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.63');
+    expect(kWalletVersion, '0.64');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(kWalletVersion, isNot('0.47'));
@@ -3677,8 +3677,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.63');
-    expect(kWalletVersion, '0.63');
+    expect(app.title, 'Shear 0.64');
+    expect(kWalletVersion, '0.64');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -5400,6 +5400,7 @@ void main() {
     final ident = session.identity!;
     final ledger = ShearLedger();
     ledger.viewSecret = ident.viewKey;
+    final vault = ShearReserve();
     ledger.confirmRound(address: ledger.homeDest(ident.address, paymentCode: ident.paymentCode), pot: 10, height: 20);
     ledger.settleTo(30);
     expect(
@@ -5409,7 +5410,7 @@ void main() {
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ledger,
-      reserve: ShearReserve(),
+      reserve: vault,
       startUnlocked: true,
       skipPoolSync: true,
     ));
@@ -5418,53 +5419,90 @@ void main() {
     await tester.tap(find.text('Vortex'));
     await tester.pump();
     expect(find.textContaining('Need'), findsWidgets);
-    expect(find.byKey(const Key('reserve-vote-submit')), findsNothing);
+    expect(find.byKey(const Key('reserve-vote-submit')), findsOneWidget);
     await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
+    await tester.pump();
+    expect(tester.widget<TextField>(find.byKey(const Key('reserve-amount'))).controller?.text, '1');
     await tester.ensureVisible(find.byKey(const Key('reserve-send')));
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
     await tester.tap(find.byKey(const Key('reserve-send')));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
     expect(find.byKey(const Key('reserve-sign')), findsOneWidget);
     expect(find.byKey(const Key('reserve-lock-sign-levy')), findsOneWidget);
     expect(find.textContaining('One fee to add funds to the vault'), findsWidgets);
     await tester.tap(find.byKey(const Key('reserve-sign-accept')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
+    await _waitKey(tester, const Key('reserve-locked-in'));
     expect(find.byKey(const Key('reserve-locked-in')), findsOneWidget);
     expect(find.text(kReserveLockSent), findsWidgets);
     expect(find.byKey(const Key('reserve-lock-sent')), findsOneWidget);
     expect(find.textContaining('Coins are locked in your portal'), findsOneWidget);
     expect(find.byKey(const Key('reserve-locked-in-levy')), findsOneWidget);
-    expect(find.byKey(const Key('reserve-vote-submit')), findsNothing);
+    expect(find.byKey(const Key('reserve-vote-submit')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(Key('reserve-vote-$kVoteIncrease')));
+    await tester.tap(find.byKey(Key('reserve-vote-$kVoteIncrease')));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-vote-submit')));
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-vote-submit'))).onPressed, isNotNull);
+    await tester.tap(find.byKey(const Key('reserve-vote-submit')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text(kVoteBelowPi), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-confirm')), findsNothing);
     await tester.enterText(find.byKey(const Key('reserve-amount')), '$kPiShe');
     await tester.ensureVisible(find.byKey(const Key('reserve-send')));
     await tester.tap(find.byKey(const Key('reserve-send')));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
     expect(find.byKey(const Key('reserve-sign')), findsOneWidget);
     await tester.tap(find.byKey(const Key('reserve-sign-accept')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
+    await _waitText(tester, 'vote unlocked');
     expect(find.textContaining('vote unlocked'), findsWidgets);
     expect(find.textContaining(kReserveAccruedLabel), findsWidgets);
     expect(find.byKey(const Key('reserve-vote-submit')), findsOneWidget);
-    expect(find.byKey(const Key('reserve-vote-results')), findsNothing);
-    await tester.tap(find.byKey(Key('reserve-vote-$kVoteIncrease')));
-    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-vote-submit')));
     await tester.tap(find.byKey(const Key('reserve-vote-submit')));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text(kVoteConfirmWait), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-confirm')), findsNothing);
+    final lockHeight = ledger.sealedHeight + 1;
+    ledger.confirmRound(address: 'other', pot: 0, height: lockHeight);
+    ledger.settleTo(lockHeight + ShearLedger.spendableConfirmations - 1);
+    await tester.pump();
+    final portalDest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    expect(
+      reserveVoteGate(ledger, vault, portalDest),
+      isNull,
+      reason: ledger.transactions.where((t) => t.kind == 'lock').map((t) => '${t.amount}@${t.height}/${reserveLockConfirmations(ledger, t)}').join(','),
+    );
+    expect(find.byKey(const Key('reserve-vote-results')), findsNothing);
+    await tester.ensureVisible(find.byKey(const Key('reserve-vote-submit')));
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-vote-submit'))).onPressed, isNotNull);
+    await tester.tap(find.byKey(const Key('reserve-vote-submit')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
     expect(find.byKey(const Key('reserve-vote-confirm')), findsOneWidget);
     expect(find.byKey(const Key('reserve-vote-confirm-levy')), findsOneWidget);
     expect(find.textContaining('One fee to cast this vote'), findsWidgets);
     expect(find.byKey(const Key('reserve-vote-confirm-accept')), findsOneWidget);
+    final confirmText =
+        (tester.widget<FilledButton>(find.byKey(const Key('reserve-vote-confirm-accept'))).child as Text).data;
+    expect(confirmText, 'CONFIRM');
+    // ignore: avoid_print
+    print('CONFIRM_CONTROL $confirmText');
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-vote-confirm-accept'))).onPressed, isNull);
     await tester.enterText(find.byKey(const Key('reserve-vote-confirm-field')), 'CONFIRM');
     await tester.pump();
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-vote-confirm-accept'))).onPressed, isNotNull);
     await tester.tap(find.byKey(const Key('reserve-vote-confirm-accept')));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(find.byKey(const Key('reserve-vote-sign')), findsOneWidget);
     expect(find.byKey(const Key('reserve-vote-sign-levy')), findsOneWidget);
     await tester.tap(find.byKey(const Key('reserve-vote-sign-accept')));
-    await tester.pump();
+    await _waitKey(tester, const Key('reserve-vote-results'));
+    expect(find.byKey(const Key('reserve-vote-confirm')), findsNothing);
     expect(find.byKey(const Key('reserve-vote-results')), findsOneWidget);
     expect(find.textContaining('your vote:'), findsNothing);
     expect(find.byKey(const Key('reserve-your-vote')), findsOneWidget);
@@ -5823,8 +5861,7 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('reserve-sign')), findsOneWidget);
     await tester.tap(find.byKey(const Key('reserve-sign-accept')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
+    await _waitKey(tester, const Key('reserve-locked-in'));
     expect(find.text('unsigned'), findsNothing);
     expect(find.text(kErrLockUnsigned), findsNothing);
     expect(find.byKey(const Key('reserve-locked-in')), findsOneWidget);
@@ -6738,8 +6775,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.63 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.63');
+  test('kWalletVersion == 0.64 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.64');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -6830,7 +6867,7 @@ void main() {
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     final v3 = _PoolLive(headerHex: hex, height: 2306, magic: 'shear-testnet-v3');
-    final v4 = _PoolLive(headerHex: hex, height: 16, magic: 'shear-testnet-v8');
+    final v4 = _PoolLive(headerHex: hex, height: 16, magic: 'shear-testnet-v9');
     final v3s = await _fakePool(live: v3);
     final v4s = await _fakePool(live: v4);
     addTearDown(() => v3s.close(force: true));
@@ -6838,7 +6875,8 @@ void main() {
     expect(isLiveBookStats({'magic': 'shear-testnet-v3'}), isFalse);
     expect(isLiveBookStats({'magic': 'shear-testnet-v6'}), isFalse);
     expect(isLiveBookStats({'magic': 'shear-testnet-v7'}), isFalse);
-    expect(isLiveBookStats({'magic': 'shear-testnet-v8'}), isTrue);
+    expect(isLiveBookStats({'magic': 'shear-testnet-v8'}), isFalse);
+    expect(isLiveBookStats({'magic': 'shear-testnet-v9'}), isTrue);
     final sync = ShearReadSync(
       seeds: ['http://127.0.0.1:${v3s.port}', 'http://127.0.0.1:${v4s.port}'],
       http: _realHttp(),
@@ -6857,7 +6895,7 @@ void main() {
     );
     final reset = ShearIdentity.fromJson(v3, reset: true);
     expect(reset.address, id.address);
-    expect(id.toJson()['network'], 'shear-testnet-v8');
+    expect(id.toJson()['network'], 'shear-testnet-v9');
   });
 
   test('upgraded wallet drops leftover pre-reset txs; live history is the book', () async {
@@ -7067,7 +7105,7 @@ void main() {
     final liveUrl = 'http://127.0.0.1:${liveServer.port}';
     expect(isUsableTipStats(const <String, dynamic>{}), isFalse);
     expect(isUsableTipStats({'height': 0, 'header': ''}), isFalse);
-    expect(isUsableTipStats({'height': 40, 'magic': 'shear-testnet-v8'}), isTrue);
+    expect(isUsableTipStats({'height': 40, 'magic': 'shear-testnet-v9'}), isTrue);
     final sync = ShearReadSync(
       seeds: [emptyUrl, liveUrl],
       http: _realHttp(),
@@ -7124,7 +7162,7 @@ void main() {
       seeds: ['http://127.0.0.1:${server.port}'],
       http: _realHttp(),
     );
-    expect(report, contains('magic=shear-testnet-v8'));
+    expect(report, contains('magic=shear-testnet-v9'));
     expect(report, contains('followTip.sampledTip=53'));
     expect(report, contains('displayHeight=53'));
     expect(report, contains('sealedHeight=53'));
@@ -7602,7 +7640,14 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    expect(find.byKey(const Key('reserve-vote-box')), findsNothing);
+    expect(find.byKey(const Key('reserve-vote-box')), findsOneWidget);
+    await tester.tap(find.byKey(Key('reserve-vote-$kVoteIncrease')));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-vote-submit')));
+    await tester.tap(find.byKey(const Key('reserve-vote-submit')));
+    await tester.pump();
+    expect(find.text(kVoteBelowPi), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-confirm')), findsNothing);
     vault.applyRemotePortal(dest, {
       'staked': kPiSheNanos,
       'idle': 0,
@@ -8527,17 +8572,41 @@ Future<void> _end018(WidgetTester tester, ShearLedger ledger) async {
   await tester.pump(const Duration(seconds: 9));
 }
 
-Future<void> _waitKey(WidgetTester tester, Key key) async {
-  for (var i = 0; i < 40; i++) {
+Future<void> _waitKey(WidgetTester tester, Key key) {
+  return _waitUntil(tester, () => find.byKey(key).evaluate().isNotEmpty, 'missing $key');
+}
+
+/// Real time, not fake frames. Reserve seal runs in [Isolate.run].
+Future<void> _waitText(WidgetTester tester, String needle) {
+  return _waitUntil(
+    tester,
+    () => find.textContaining(needle).evaluate().isNotEmpty,
+    'missing text $needle',
+  );
+}
+
+Future<void> _waitUntil(WidgetTester tester, bool Function() ready, String why) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 45));
+  while (DateTime.now().isBefore(deadline)) {
     await tester.pump();
-    if (find.byKey(key).evaluate().isNotEmpty) return;
+    if (ready()) return;
+    // Fake 50 ms lets the deposit's 1 ms frame yield start the seal.
+    // Real time lets Isolate.run finish; fake time alone never does.
+    await tester.pump(const Duration(milliseconds: 50));
+    if (ready()) return;
     await tester.runAsync(() async {
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     });
-    await tester.pump();
-    if (find.byKey(key).evaluate().isNotEmpty) return;
   }
-  fail('missing $key');
+  await tester.pump();
+  if (ready()) return;
+  final texts = tester
+      .widgetList<Text>(find.byType(Text))
+      .map((t) => t.data ?? t.textSpan?.toPlainText() ?? '')
+      .where((s) => s.isNotEmpty)
+      .take(24)
+      .join(' | ');
+  fail('$why runs=$debugReserveIsolateRuns texts=$texts');
 }
 
 class _HistoryKeepPool extends ShearPoolClient {
@@ -8833,7 +8902,7 @@ class _PoolLive {
     this.balance = 10,
     this.pending = 0,
     this.avgBlockTimeMs = 90000,
-    this.magic = 'shear-testnet-v8',
+    this.magic = 'shear-testnet-v9',
     this.owner,
     List<Map<String, dynamic>>? incoming,
     List<Map<String, dynamic>>? history,

@@ -115,7 +115,7 @@ describe('node Reserve vault', () => {
     assert.equal(c.hashBonusNanos, HASH_BONUS_NANOS);
     assert.equal(c.hashBonusNanos, 1);
     assert.equal(c.mainnet, false);
-    assert.equal(c.magic, 'shear-testnet-v8');
+    assert.equal(c.magic, 'shear-testnet-v9');
   });
 
   it('lock spends mature Continuum, refuses when spendable is short, withdraw returns principal + staked interest', { timeout: 600_000 }, async () => {

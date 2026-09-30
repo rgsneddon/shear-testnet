@@ -10,7 +10,7 @@ import { createPool, scoreShare, judgeShare } from '../src/pool.js';
 import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
 import { setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
-import { SHARE_FLOOR_BITS, SHEARK_MINER_VERSION } from '../../crypto/asert.js';
+import { SHARE_FLOOR_BITS, SHEARK_MINER_VERSION, GENESIS_BITS_PACKED, GENESIS_BITS, unpackBits } from '../../crypto/asert.js';
 import {
   clampShareBits,
   expectedOneThreadHs,
@@ -167,8 +167,9 @@ describe('share vardiff', () => {
       assert.ok(job, `login must return a job, got ${JSON.stringify(hello)}`);
       assert.equal(Number(job.shareBits), mintShareMinBits());
       assert.ok(Number(job.shareBits) > openBits);
-      assert.ok(Number(job.blockBits) >= Number(job.shareBits));
-      assert.ok(Number(job.blockBits) < 21, `blockBits ${job.blockBits} still the too-hard default`);
+      assert.equal(Number(job.blockBits), GENESIS_BITS_PACKED);
+      assert.ok(unpackBits(job.blockBits) >= GENESIS_BITS);
+      assert.ok(Number(job.shareBits) <= unpackBits(job.blockBits));
       const climbed = nextShareBits({
         current: mintShareMinBits(),
         actualIntervalMs: 1,

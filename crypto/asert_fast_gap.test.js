@@ -13,8 +13,9 @@ import {
   unpackBits,
   consensusFingerprint,
   ASERT_STEP_ID,
+  medianIntervalMs,
 } from './asert.js';
-import { decodeHeader } from './header.js';
+import { decodeHeader, encodeHeader } from './header.js';
 import { createStore } from '../node/src/store.js';
 import { judgeShare, createPool } from '../pool/src/pool.js';
 
@@ -64,20 +65,52 @@ describe('eight fast gaps raise work and the pool uses that target', () => {
     const prev = decodeHeader(Buffer.from(store.blocks[store.blocks.length - 2].header));
     const gap = Number(tip.timestamp) - Number(prev.timestamp);
     assert.equal(gap, 2_000);
-    const want = nextBits(tip.bits, gap);
-    assert.equal(want, packed);
+    const gaps = [];
+    for (let i = 1; i < store.blocks.length; i += 1) {
+      const a = decodeHeader(Buffer.from(store.blocks[i - 1].header));
+      const b = decodeHeader(Buffer.from(store.blocks[i].header));
+      gaps.push(Number(b.timestamp) - Number(a.timestamp));
+    }
+    const seen = medianIntervalMs(gaps);
+    const want = nextBits(tip.bits, seen);
+    assert.equal(seen, 2_000);
+    assert.ok(unpackBits(packed) >= GENESIS_BITS + 1);
     assert.ok(unpackBits(want) >= GENESIS_BITS + 1);
 
-    const denied = seal(store, {
+    const under = store.template({
       miner,
       now: t0 + 9 * 2_000,
       bits: GENESIS_BITS_PACKED,
-      pow: powHex(30),
+      shareBits: 8,
     });
+    assert.equal(Number(under.job.blockBits), want);
+    assert.equal(Number(under.job.bits), want);
+    assert.notEqual(Number(under.job.blockBits), GENESIS_BITS_PACKED);
+    const rec = store.jobs.get(under.job.jobId);
+    const decodedJob = decodeHeader(Buffer.from(rec.tpl.header));
+    rec.tpl.header = encodeHeader({
+      version: decodedJob.version,
+      prevBlockHash: decodedJob.prevBlockHash,
+      merkleRoot: decodedJob.merkleRoot,
+      continuityRoot: decodedJob.continuityRoot,
+      timestamp: decodedJob.timestamp,
+      bits: GENESIS_BITS_PACKED,
+      nonce: 0n,
+      baseFee: decodedJob.baseFee,
+    });
+    rec.job = { ...rec.job, bits: 8, blockBits: 8, shareBits: 8 };
+    const beforeH = store.tip().height;
+    const denied = store.submitHeader({
+      jobId: under.job.jobId,
+      nonce: 0n,
+      miner,
+      powHash: powHex(30),
+    }, { trusted: true });
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'bits');
+    assert.equal(store.tip().height, beforeH);
 
-    const { job } = store.template({ miner, now: t0 + 9 * 2_000 });
+    const { job } = store.template({ miner, now: t0 + 9 * 2_000, bits: 8, shareBits: 8 });
     assert.equal(Number(job.blockBits), want);
     assert.equal(Number(job.bits), want);
 
@@ -93,6 +126,13 @@ describe('eight fast gaps raise work and the pool uses that target', () => {
     });
     assert.equal(missed.ok, true);
     assert.equal(missed.block, false);
+    const substituted = judgeShare({
+      job: { ...job, bits: 8, blockBits: 8, shareBits: 8 },
+      hash: shareOnly,
+      header: Buffer.from(job.header, 'hex'),
+      dest: '',
+    });
+    assert.equal(substituted.block, false);
 
     const hit = judgeShare({
       job: { ...job, shareBits: 8 },

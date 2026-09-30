@@ -56,19 +56,18 @@ export const ASERT_EASE_MAX = ASERT_EASE_MAX_TESTNET;
  * Integer rungs could not represent the 1.09× target that 90 s needs
  * when hashrate sits between powers of two. Share vardiff stays integer LZ.
  *
- * One sealed parent gap moves work by log2(T / gap), then the ± lid.
- * A 90000 ms gap adds zero, so that interval is the fixed point: the
- * next expected solve time is T again. Eight sealed gaps of 2000 ms
- * add at least one bit from genesis and from any later parent.
- * Harden 6 covers log2(T / 2000) in one block, so a fast farm cannot
- * keep a 1000-confirmation prune window, or the life of the chain, on
- * a seconds-apart cadence. The previous fraction-of-a-bit step is not
- * this book.
+ * The network target feeds the median of the last 11 sealed header gaps
+ * into nextBits. Missing samples are padded with T, so one fast or slow
+ * header cannot move the median. Six of those eleven short gaps do.
+ * nextBits still applies log2(T / seen) and the ± lid to that one interval.
+ * A 90000 ms median adds zero. Eight sealed gaps of 2000 ms inside the
+ * window add at least one bit. Harden 6 covers log2(T / 2000).
  */
 export const BITS_FP_SCALE = 65536;
+export const ASERT_CURVE_WINDOW = 11;
 export const ASERT_FAST_GAPS = 8;
 export const ASERT_FAST_GAP_MS = 2_000;
-export const ASERT_STEP_ID = 'log2(T/seen)';
+export const ASERT_STEP_ID = 'median11(log2(T/seen))';
 /** Time constant of the log step. One target-interval of error is one bit before the lid. */
 export const ASERT_HALFLIFE_MS = TARGET_BLOCK_INTERVAL_MS;
 /**
@@ -130,10 +129,12 @@ export const MAGIC_TESTNET_V5 = 'shear-testnet-v5';
 export const MAGIC_TESTNET_V6 = 'shear-testnet-v6';
 /** Previous book. Not this magic. */
 export const MAGIC_TESTNET_V7 = 'shear-testnet-v7';
-/** Live book. Pools and solo miners share the 90s next-work rule. v7 is a different chain. */
+/** Previous book. Not this magic. */
 export const MAGIC_TESTNET_V8 = 'shear-testnet-v8';
+/** Live book. One median-11 difficulty curve for nodes, pools, wallets, and p2p. */
+export const MAGIC_TESTNET_V9 = 'shear-testnet-v9';
 /** ADMITv2 privacy-class book. */
-export const MAGIC_TESTNET = MAGIC_TESTNET_V8;
+export const MAGIC_TESTNET = MAGIC_TESTNET_V9;
 export const MAGIC_MAINNET = 'shear-v1';
 /** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
 export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
@@ -150,7 +151,7 @@ export const RX_SCRATCHPAD_L3 = 2097152;
 export const RX_MODE = 'light';
 export const RX_KEY = 'ShearHash-v3/key';
 export const SHEARK_MINER_NAME = 'ShearK-Miner';
-export const SHEARK_MINER_VERSION = '2.5';
+export const SHEARK_MINER_VERSION = '2.6';
 /** Frozen consensus identity. A different fingerprint is a different law. */
 export const BOOK_LAW_ID = 'shear-book-law-2';
 
@@ -158,8 +159,8 @@ export const BOOK_LAW_ID = 'shear-book-law-2';
 export function asertEaseMax(magic = MAGIC_TESTNET) {
   return String(magic) === MAGIC_MAINNET ? ASERT_EASE_MAX_MAINNET : ASERT_EASE_MAX_TESTNET;
 }
-/** Node and pool display version. Two-part only (`*.*`, never `0.1.0`). Not part of consensusFingerprint. Continuum wallet is kWalletVersion, not this number. */
-export const PRODUCT_VERSION = '13.0';
+/** Node and pool display version. Two-part only (`*.*`, never `0.1.0`). Not part of consensusFingerprint. Continuum wallet is kWalletVersion, not this number. Shear Sentinel v14. v13 is the previous pin. */
+export const PRODUCT_VERSION = '14.0';
 /** Official C miner display/tag version. Two-part only (`*.*`). Operator set Shear-Miner to 1.1 (fee-free). 1.0 keeps the built-in fee. */
 export const MINER_VERSION = '1.1';
 /** Hash bonus commits on accept. Not env. */
@@ -188,7 +189,7 @@ export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
 /**
  * Consensus floor: spendable after 9 confirmations (~13.5 min at 90s).
- * In the fingerprint. shear-testnet-v8 book.
+ * In the fingerprint. shear-testnet-v9 book.
  */
 export const SPENDABLE_CONFIRMATIONS = 9;
 /** Sample bodies may drop after this many confirmations. Money vouts stay. */
@@ -447,15 +448,31 @@ export function clampBits(bits) {
 }
 
 /**
- * Recursive parent-interval step toward 90s on Q16.16 packed work.
- * delta = log2(T / seen), then the ± lid. A sealed gap of T adds zero,
- * so each later expected interval is T and every 1000-block prune
- * window has the same fixed point for the life of the chain.
- * There is no second stored schedule. Verifiers use the sealed parent
- * gap, not the child timestamp and not wall clock. A non-positive or
- * non-finite gap is the 90s target, so template, pool, and verify agree.
- * Stalls clamp at 8 half-lives before the ease lid. Testnet harden +6
- * and ease −2; mainnet ease −1.
+ * Median of the last ASERT_CURVE_WINDOW sealed gaps, padded with T.
+ * Index 5 of the sorted window of 11. One sample cannot move it.
+ * Six short gaps become the median and nextBits walks toward 90s.
+ */
+export function medianIntervalMs(gaps) {
+  const window = ASERT_CURVE_WINDOW;
+  const raw = Array.isArray(gaps) ? gaps : [];
+  const tail = raw.slice(-window);
+  const samples = [];
+  for (const g of tail) {
+    const n = Number(g);
+    samples.push(Number.isFinite(n) && n > 0 ? n : TARGET_BLOCK_INTERVAL_MS);
+  }
+  while (samples.length < window) samples.push(TARGET_BLOCK_INTERVAL_MS);
+  const sorted = samples.slice().sort((a, b) => a - b);
+  return sorted[(sorted.length - 1) >> 1];
+}
+
+/**
+ * One step toward 90s on Q16.16 packed work.
+ * delta = log2(T / seen), then the ± lid. The network passes the median
+ * sealed gap as `seen`, not a single header. A median of T adds zero.
+ * A non-positive or non-finite gap is the 90s target, so template, pool,
+ * and verify agree. Stalls clamp at 8 half-lives before the ease lid.
+ * Testnet harden +6 and ease −2; mainnet ease −1.
  */
 export function nextBits(previousBits, intervalMs, magic = MAGIC_TESTNET) {
   const prev = unpackBits(clampBits(previousBits));

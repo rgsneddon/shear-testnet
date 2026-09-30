@@ -9,10 +9,10 @@ elif [ -x "$ROOT/runtime/node.exe" ]; then
 else
   NODEBIN="${NODEBIN:-node}"
 fi
-export SHEAR_DATA="${SHEAR_DATA:-$HOME/.shear/testnet-v7}"
-export SHEAR_NETWORK="${SHEAR_NETWORK:-shear-testnet-v8}"
+export SHEAR_DATA="${SHEAR_DATA:-$HOME/.shear/testnet-v9}"
+export SHEAR_NETWORK="${SHEAR_NETWORK:-shear-testnet-v9}"
 export SHEAR_SEEDS="${SHEAR_SEEDS:-p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303}"
 export SHEAR_RPC_BIND="${SHEAR_RPC_BIND:-127.0.0.1}"
 cd "$ROOT"
-echo "Shear Sentinel v13"
+echo "Shear Sentinel v14"
 exec "$NODEBIN" "$ROOT/node/src/node.js" "$@"

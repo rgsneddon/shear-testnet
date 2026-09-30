@@ -1,3 +1,5 @@
+import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -305,4 +307,67 @@ void main() {
     _expectLedger(ledger, book, opened, nanos: 1000);
     _obs('run-node', opened, ledger, book);
   });
+
+  test('block proofs open off the UI isolate', () async {
+    final openSrc = File('lib/shear_read_open.dart').readAsStringSync();
+    final closureSrc = File('lib/shear_closure.dart').readAsStringSync();
+    final syncSrc = File('lib/shear_read_sync.dart').readAsStringSync();
+    final mainSrc = File('lib/main.dart').readAsStringSync();
+    expect(openSrc, contains('Isolate.run(() => openReadBlockProofsWire('));
+    expect(closureSrc, contains('openWhileCatchingUpOffUi('));
+    expect(syncSrc, contains('applyReadPageOffUi('));
+    expect(mainSrc, contains('openProofs: false'));
+    expect(mainSrc, contains('openWhileCatchingUpOffUi('));
+    final book = _book();
+    final callerId = identityHashCode(Isolate.current).toString();
+    debugReadProofIsolateRuns = 0;
+    debugReadProofOffIsolateStamp = '';
+    final opened = await openReadBlockProofsOffUi(
+      blocks: book.shuffled,
+      readHeights: _read,
+      liveTip: _liveTip,
+      dest: book.dest,
+      ibd: true,
+    );
+    final direct = openReadBlockProofs(
+      blocks: book.shuffled,
+      readHeights: _read,
+      liveTip: _liveTip,
+      dest: book.dest,
+      ibd: true,
+    );
+    expect(debugReadProofIsolateRuns, 1);
+    expect(debugReadProofOffIsolateStamp.split('-').first, isNot(callerId));
+    expect(opened.order, direct.order);
+    expect(opened.openedHeights, direct.openedHeights);
+    expect(opened.spendableNanos, direct.spendableNanos);
+    expect(opened.unspendable.length, direct.unspendable.length);
+    expect(opened.catchingUp, isTrue);
+    final side = ShearNodeSidecar()..reportedIbd = true;
+    side.holdReadBlocks(
+      book.shuffled,
+      dest: book.dest,
+      readHeights: _read,
+      liveTip: _liveTip,
+    );
+    final again = await side.openWhileCatchingUpOffUi();
+    expect(again.order, direct.order);
+    expect(again.openedHeights, direct.openedHeights);
+    expect(side.lastOpen, same(again));
+    expect(debugReadProofIsolateRuns, 2);
+    final sync = ShearReadSync(seeds: const ['http://127.0.0.1:9'], jitter: Duration.zero);
+    final page = await sync.applyReadPageOffUi(
+      pageBlocks: [book.blocks[5]!, book.blocks[2]!],
+      liveTip: _liveTip,
+      dest: book.dest,
+    );
+    expect(page.order, [2, 5]);
+    expect(page.openedHeights, [2, 5]);
+    expect(page.catchingUp, isTrue);
+    expect(debugReadProofIsolateRuns, 3);
+    // ignore: avoid_print
+    print(
+      'PROOF_OFF_UI caller=$callerId stamp=${debugReadProofOffIsolateStamp.split('-').first} runs=$debugReadProofIsolateRuns order=${opened.order.join(',')}',
+    );
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }

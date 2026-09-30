@@ -13,13 +13,15 @@ const kClosureModeVpn = 'shearPrivacyVpn';
 const kClosureModeLocal = 'localNode';
 const kClosureModeFull = 'localNodeFull';
 
-/// Connect bare is the new-session default. A stored VPN-tunnel string and
-/// full-node values fold into the two paths: bare, or the one syncing node.
+/// Connect bare is the new-session default. A stored VPN-tunnel string folds
+/// into Connect Bare. p2P Node and Full Node stay distinct. Full Node is the
+/// path that passes `--solo`.
 ClosureSendMode closureModeFromStored(String? raw, {required bool android}) {
   switch (raw) {
-    case kClosureModeLocal:
     case kClosureModeFull:
     case 'fullNode':
+      return ClosureSendMode.localNodeFull;
+    case kClosureModeLocal:
       return ClosureSendMode.localNode;
     case kClosureModeBare:
     case kClosureModeVpn:
@@ -82,13 +84,15 @@ bool localNodeMatchesSeeker({required int nodeHeight, required bool ibd, require
 
 /// Log one sidecar line. The wallet switches to full-node mode only when the
 /// node's tip matches the light-seeker tip. True only on that false→true edge.
-bool noteSidecarLine(ShearNodeSidecar side, String line) {
+bool noteSidecarLine(ShearNodeSidecar side, String line, {bool openProofs = true}) {
   side.addLog(line);
   final st = parseLocalNodeStatus(line);
   if (st == null) return false;
   side.reportedHeight = st.height;
   side.reportedIbd = st.ibd;
-  if (side.hasHeldBlocks) side.openWhileCatchingUp();
+  // The wallet stdout path passes false and opens in Isolate.run so a status
+  // line does not walk value proofs on the UI isolate.
+  if (openProofs && side.hasHeldBlocks) side.openWhileCatchingUp();
   return side.takeOverIfMatched();
 }
 
@@ -105,11 +109,17 @@ const kAndroidNodeMissingCopy =
     'This Android pack does not include a node runtime, so Run node cannot start on the phone. '
     'Continuum stays on Connect bare. The light seeker still follows the live tip.';
 
-/// One wallet node. Start resumes from the saved tip. Stop leaves that tip on disk.
+/// p2P Node. A full node on this device, without `--solo`.
 const kLocalNodeModeCopy =
-    'Run one node beside the wallet. It requests each next block in order until the tip. '
-    'Start resumes from the saved height. Stop saves that height and leaves the book. No stratum.';
-const kLocalNodeFullModeCopy = kLocalNodeModeCopy;
+    'p2P Node. A full node on this device, without --solo. '
+    'It requests each next block in order until the tip and does not mine. '
+    'Start resumes from the saved height. Stop saves that height and leaves the book.';
+
+/// Full Node. `--solo` is the first command argument, before the node syncs.
+const kLocalNodeFullModeCopy =
+    'Full Node. The same full node, with --solo on the command line before it syncs, '
+    'so this device can solo mine. Start resumes from the saved height. '
+    'Stop saves that height and leaves the book.';
 
 /// Connect bare pushes a signed send. Nodes verify it. No tunnel on this device.
 const kConnectBareCopy =
@@ -164,8 +174,9 @@ String closureChipLabel(ClosureSendMode mode) {
     case ClosureSendMode.connectBare:
       return 'CONNECT BARE';
     case ClosureSendMode.localNode:
+      return 'P2P NODE';
     case ClosureSendMode.localNodeFull:
-      return 'RUN NODE';
+      return 'FULL NODE';
   }
 }
 
@@ -193,18 +204,21 @@ Map<String, String> closureSpawnEnv(
     'SHEAR_DATA': dataDir,
     'SHEAR_MAX_PEERS': android ? '8' : '16',
     'SHEAR_GETBLOCK_BATCH': '1',
-    'SHEAR_SOLO': '0',
+    'SHEAR_SOLO': (!android && mode == ClosureSendMode.localNodeFull) ? '1' : '0',
     'SHEAR_FAST_SYNC': '1',
   };
 }
 
-List<String> closureSpawnArgs({required bool emptyDatadir, required ClosureSendMode mode}) {
-  // Args stay empty. Bootstrap is never auto-applied; users import boot.shear.digital by hand.
-  if (emptyDatadir ||
-      mode == ClosureSendMode.connectBare ||
-      mode == ClosureSendMode.localNode ||
-      mode == ClosureSendMode.localNodeFull) {
-    return const [];
+/// Command line for the built-in node. Full Node on desktop puts `--solo` first,
+/// before the process starts and therefore before it dials seeds. Bootstrap is
+/// never auto-applied. Android never receives `--solo`.
+List<String> closureSpawnArgs({
+  required bool emptyDatadir,
+  required ClosureSendMode mode,
+  bool android = false,
+}) {
+  if (!android && mode == ClosureSendMode.localNodeFull) {
+    return const ['--solo'];
   }
   return const [];
 }
@@ -252,18 +266,18 @@ PackagedNode? resolvePackagedNode({String? override, String? besideDir}) {
   return PackagedNode(binary: legacy, workDir: besideDir);
 }
 
-/// Shared with Shear Sentinel v13. Windows: %APPDATA%\\Shear\\testnet-v7 (Roaming).
+/// Shared with Shear Sentinel v14. Windows: %APPDATA%\\Shear\\testnet-v9 (Roaming).
 String defaultShearBookDir() {
   final data = Platform.environment['SHEAR_DATA'];
   if (data != null && data.isNotEmpty) return data;
   if (Platform.isWindows) {
     final app = Platform.environment['APPDATA'];
     if (app != null && app.isNotEmpty) {
-      return '$app${Platform.pathSeparator}Shear${Platform.pathSeparator}testnet-v7';
+      return '$app${Platform.pathSeparator}Shear${Platform.pathSeparator}testnet-v9';
     }
   }
   final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
-  return '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v7';
+  return '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v9';
 }
 
 String closureNodeDataDir({String? override, required String besideDir}) {
@@ -274,7 +288,7 @@ String closureNodeDataDir({String? override, required String besideDir}) {
     return legacyBeside;
   }
   final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
-  final posix = '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v7';
+  final posix = '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v9';
   if (Platform.isWindows &&
       shared != posix &&
       closureDatadirEmpty(shared) &&
@@ -395,6 +409,27 @@ class ShearNodeSidecar {
     );
   }
 
+/// [openWhileCatchingUp] with the value-proof walk in [Isolate.run].
+  Future<ReadBlockOpen> openWhileCatchingUpOffUi({
+    List? blocks,
+    Set<int>? readHeights,
+    int? liveTip,
+    String? dest,
+  }) async {
+    final usedBlocks = blocks ?? _heldBlocks;
+    final usedDest = dest ?? _heldDest;
+    final opened = await openReadBlockProofsOffUi(
+      blocks: usedBlocks,
+      readHeights: readHeights ?? _heldHeights,
+      liveTip: liveTip ?? (_heldTip > 0 ? _heldTip : seekerTip),
+      dest: usedDest,
+      ibd: reportedIbd,
+    );
+    lastOpen = opened;
+    proofSink?.ingestReadOpen(opened, blocks: usedBlocks, dest: usedDest);
+    return opened;
+  }
+
   bool get _noNode => committed == ClosureSendMode.connectBare;
 
   /// Dialog latch for this process. A new sidecar is a new wallet launch.
@@ -439,14 +474,21 @@ class ShearNodeSidecar {
   final List<String> log = [];
 
   void select(ClosureSendMode mode) {
-    pending = mode == ClosureSendMode.localNode || mode == ClosureSendMode.localNodeFull
-        ? ClosureSendMode.localNode
-        : ClosureSendMode.connectBare;
+    switch (mode) {
+      case ClosureSendMode.localNode:
+        pending = ClosureSendMode.localNode;
+      case ClosureSendMode.localNodeFull:
+        pending = ClosureSendMode.localNodeFull;
+      case ClosureSendMode.connectBare:
+        pending = ClosureSendMode.connectBare;
+    }
   }
 
-  bool get showResistanceConsole => committed == ClosureSendMode.localNode;
+  bool get showResistanceConsole =>
+      committed == ClosureSendMode.localNode || committed == ClosureSendMode.localNodeFull;
 
-  bool get showSoloMine => false;
+  /// Full Node is the only path that solo-mines. Android never arms it.
+  bool get showSoloMine => !android && committed == ClosureSendMode.localNodeFull;
 
   bool get sendBlocked => !_noNode && !honest;
 
@@ -473,9 +515,15 @@ class ShearNodeSidecar {
 
   /// Commits [pending]. Apply→A stops the sidecar immediately. B↔C restarts.
   Future<String> apply() async {
-    final next = pending == ClosureSendMode.localNode || pending == ClosureSendMode.localNodeFull
-        ? ClosureSendMode.localNode
-        : ClosureSendMode.connectBare;
+    final ClosureSendMode next;
+    switch (pending) {
+      case ClosureSendMode.localNode:
+        next = ClosureSendMode.localNode;
+      case ClosureSendMode.localNodeFull:
+        next = ClosureSendMode.localNodeFull;
+      case ClosureSendMode.connectBare:
+        next = ClosureSendMode.connectBare;
+    }
     final prev = committed;
     if (next == ClosureSendMode.connectBare) {
       await stop();
@@ -492,7 +540,7 @@ class ShearNodeSidecar {
     committed = next;
     final empty = datadirEmpty?.call() ?? emptyDatadir;
     lastEnv = closureSpawnEnv(next, android: android, dataDir: dataDir, emptyDatadir: empty);
-    lastArgs = closureSpawnArgs(emptyDatadir: empty, mode: next);
+    lastArgs = closureSpawnArgs(emptyDatadir: empty, mode: next, android: android);
     listenPort = closureStratumPort(next, android: android);
     if (nodeBinary == null || nodeBinary!.isEmpty || startProcess == null) {
       running = false;

@@ -1,7 +1,15 @@
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'shear_identity.dart';
 import 'shear_note.dart';
+
+/// How many [openReadBlockProofsWire] calls [Isolate.run] has returned.
+int debugReadProofIsolateRuns = 0;
+
+/// Stamp from the last proof walk. Differs from this isolate when the walk
+/// ran in [Isolate.run].
+String debugReadProofOffIsolateStamp = '';
 
 /// One owned note whose value proof opened against its commit.
 class OpenedReadNote {
@@ -129,6 +137,105 @@ ReadBlockOpen openReadBlockProofs({
     ibd: ibd,
     liveTip: liveTip,
   );
+}
+
+/// Sendable result of [openReadBlockProofs]. The walk stays in the worker.
+Map<String, dynamic> openReadBlockProofsWire(Map<String, dynamic> input) {
+  final heights = input['readHeights'];
+  final opened = openReadBlockProofs(
+    blocks: input['blocks'] as List,
+    readHeights: heights is Set<int>
+        ? heights
+        : Set<int>.from((heights as List).map((h) => (h as num).toInt())),
+    liveTip: (input['liveTip'] as num).toInt(),
+    dest: input['dest'] as String?,
+    ibd: input['ibd'] == true,
+  );
+  return {
+    'isolateStamp':
+        '${identityHashCode(Isolate.current)}-${DateTime.now().microsecondsSinceEpoch}',
+    'order': opened.order,
+    'opened': [
+      for (final n in opened.opened)
+        {
+          'height': n.height,
+          'nanos': n.nanos,
+          'verified': n.verified,
+          'commit': n.commit,
+        },
+    ],
+    'unspendable': [
+      for (final n in opened.unspendable)
+        {
+          'height': n.height,
+          'reason': n.reason,
+          if (n.commit != null) 'commit': n.commit,
+        },
+    ],
+    'catchingUp': opened.catchingUp,
+    'deferredUntilSync': opened.deferredUntilSync,
+    'spendableNanos': opened.spendableNanos,
+    'ibd': opened.ibd,
+    'liveTip': opened.liveTip,
+  };
+}
+
+ReadBlockOpen readBlockOpenFromWire(Map<String, dynamic> wire) {
+  Uint8List? bytes(Object? raw) {
+    if (raw == null) return null;
+    if (raw is Uint8List) return raw;
+    return Uint8List.fromList(List<int>.from(raw as List));
+  }
+
+  return ReadBlockOpen(
+    order: [for (final h in (wire['order'] as List)) (h as num).toInt()],
+    opened: [
+      for (final raw in (wire['opened'] as List))
+        if (raw is Map)
+          OpenedReadNote(
+            height: (raw['height'] as num).toInt(),
+            nanos: (raw['nanos'] as num).toInt(),
+            verified: raw['verified'] == true,
+            commit: bytes(raw['commit']) ?? Uint8List(0),
+          ),
+    ],
+    unspendable: [
+      for (final raw in (wire['unspendable'] as List))
+        if (raw is Map)
+          UnspendableReadNote(
+            height: (raw['height'] as num).toInt(),
+            reason: (raw['reason'] as String?) ?? 'proof',
+            commit: bytes(raw['commit']),
+          ),
+    ],
+    catchingUp: wire['catchingUp'] == true,
+    deferredUntilSync: wire['deferredUntilSync'] == true,
+    spendableNanos: (wire['spendableNanos'] as num).toInt(),
+    ibd: wire['ibd'] == true,
+    liveTip: (wire['liveTip'] as num).toInt(),
+  );
+}
+
+/// Proof walk for Connect bare and Run node. The UI isolate only applies the
+/// result; [verifySealedNote] runs in [Isolate.run].
+Future<ReadBlockOpen> openReadBlockProofsOffUi({
+  required List blocks,
+  required Set<int> readHeights,
+  required int liveTip,
+  String? dest,
+  bool ibd = false,
+}) {
+  return Isolate.run(() => openReadBlockProofsWire({
+        'blocks': blocks,
+        'readHeights': readHeights.toList(),
+        'liveTip': liveTip,
+        'dest': dest,
+        'ibd': ibd,
+      })).then((wire) {
+    debugReadProofIsolateRuns += 1;
+    debugReadProofOffIsolateStamp = (wire['isolateStamp'] as String?) ?? '';
+    return readBlockOpenFromWire(wire);
+  });
 }
 
 List<Map> _notesOf(Map block) {
