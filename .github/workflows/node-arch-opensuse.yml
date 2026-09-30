@@ -5,13 +5,46 @@
 name: node-arch-opensuse
 on:
   workflow_dispatch:
+    inputs:
+      flavors:
+        description: Space-separated flavors to pack (archlinux, opensuse)
+        required: false
+        default: archlinux opensuse
 
 concurrency:
-  group: node-arch-opensuse
+  group: node-arch-opensuse-${{ inputs.flavors }}
   cancel-in-progress: false
 
 jobs:
+  choose:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.set.outputs.include }}
+    steps:
+      - id: set
+        env:
+          FLAVORS: ${{ inputs.flavors }}
+        run: |
+          python3 - << 'PY'
+          import json, os
+          images = {
+              "archlinux": "archlinux:base",
+              "opensuse": "opensuse/tumbleweed",
+          }
+          wanted = os.environ.get("FLAVORS", "").split()
+          include = []
+          for flavor in wanted:
+              if flavor not in images:
+                  raise SystemExit(f"unknown flavor {flavor}")
+              include.append({"flavor": flavor, "image": images[flavor]})
+          if not include:
+              raise SystemExit("no flavors")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("include=" + json.dumps(include) + "\n")
+          PY
+
   pack:
+    needs: choose
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -19,11 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - flavor: archlinux
-            image: archlinux:base
-          - flavor: opensuse
-            image: opensuse/tumbleweed
+        include: ${{ fromJSON(needs.choose.outputs.include) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,7 +87,22 @@ jobs:
           command -v python3
           node -p "process.version"
           rustc --version
-          node -e 'const fs=require("fs"); const cs=["/usr/include/node","/usr/local/include/node"]; for (const d of cs) { if (fs.existsSync(d+"/node_api.h")) { console.log("NODE_INC "+d); process.exit(0); } } console.error("node_api.h missing"); process.exit(1);'
+          NODE_INC=""
+          if found=$(node -e 'const fs=require("fs"); const p=process.config.variables.node_prefix||""; const cs=[p+"/include/node","/usr/include/node","/usr/local/include/node"]; for (const d of cs) { if (fs.existsSync(d+"/node_api.h")) { console.log(d); process.exit(0); } } process.exit(2);'); then
+            NODE_INC="$found"
+          else
+            hdr=$(find /usr -name node_api.h 2>/dev/null | head -n 1 || true)
+            if [ -z "${hdr}" ]; then
+              echo "node_api.h missing" >&2
+              exit 1
+            fi
+            mkdir -p /usr/include
+            ln -sfn "$(dirname "$hdr")" /usr/include/node
+            NODE_INC=/usr/include/node
+          fi
+          echo "NODE_INC $NODE_INC"
+          test -f "$NODE_INC/node_api.h"
+          export NODE_INC
 
           cd /src
           rm -rf runtime node_modules dist crypto/randomx/build \
