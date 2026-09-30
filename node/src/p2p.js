@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { randomBytes } from 'node:crypto';
 import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { freshMinerRounds, safeMinerRounds } from './network_report.js';
 import { shareRowJson } from '../../crypto/pack.js';
@@ -427,10 +428,23 @@ export function peerRemoteKey(sock) {
 
 /**
  * Currently-online fully-synced nodes the network can see: this process
- * (includeSelf) plus every unique live remote that has announced the local
- * tip hash. Disconnected peers are not in `peers`, so historical uniques
- * do not accumulate.
+ * (includeSelf), every unique live remote at the local tip, and every
+ * synced node a live peer has gossiped from its own sockets. The gossip
+ * set is replaced by the next census and dropped with that peer, so a
+ * disconnected node does not stay in the count. The pool is one peer.
+ * A node that dials any other synced peer is still counted.
  */
+export const CENSUS_MAX = 64;
+export const CENSUS_HOP_MAX = 1;
+
+/** Stable gossip identity. A numeric socket id is local and is not a key. */
+export function censusKey(rec) {
+  const nodeId = String(rec?.nodeId || '').trim().toLowerCase();
+  if (nodeId) return `id:${nodeId}`;
+  const host = String(rec?.remote || rec?.host || '').trim();
+  if (!host || host === '0.0.0.0') return '';
+  return `ip:${host}`;
+}
 /** One random live socket, never the inbound peer. */
 export function pickStemSocket(sockets, except, rng = Math.random) {
   const list = [];
@@ -601,14 +615,23 @@ export function drainRetryPrev(rec) {
   return rec;
 }
 
-export function countSyncedOnline({ localHash = '', peers = [], includeSelf = true } = {}) {
+export function countSyncedOnline({
+  localHash = '',
+  peers = [],
+  heard = [],
+  includeSelf = true,
+} = {}) {
   const want = String(localHash || '').toLowerCase();
   const seen = new Set();
-  for (const rec of peers) {
-    if (rec == null || rec.hash == null) continue;
-    if (String(rec.hash).toLowerCase() !== want) continue;
-    seen.add(String(rec.remote || '') || `id:${rec.id || 0}`);
-  }
+  const take = (rec) => {
+    if (rec == null || rec.hash == null) return;
+    if (String(rec.hash).toLowerCase() !== want) return;
+    const key = censusKey(rec) || (rec.remote ? '' : `sock:${rec.id || 0}`);
+    if (!key) return;
+    seen.add(key);
+  };
+  for (const rec of peers) take(rec);
+  for (const rec of heard) take(rec);
   return (includeSelf ? 1 : 0) + seen.size;
 }
 
@@ -651,6 +674,10 @@ export function createP2p({
   let nudgedHash = '';
   let server = null;
   let peerSeq = 0;
+  const selfId = randomBytes(8).toString('hex');
+  const announced = new Map();
+  let censusTimer = null;
+  let lastCensus = 0;
 
   function listenPortOf() {
     return server?.address()?.port ?? port;
@@ -1056,6 +1083,58 @@ export function createP2p({
     scheduleGetblockServe();
   }
 
+  function directCensus() {
+    const local = localTipHash().toLowerCase();
+    const nodes = [];
+    const seen = new Set();
+    for (const rec of peers.values()) {
+      if (rec.hash == null) continue;
+      if (String(rec.hash).toLowerCase() !== local) continue;
+      const nodeId = String(rec.nodeId || '').trim().toLowerCase();
+      const host = String(rec.remote || '').trim();
+      const row = { nodeId, host, remote: host, hash: String(rec.hash).toLowerCase() };
+      const key = censusKey(row);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      nodes.push({ id: nodeId, host, hash: row.hash });
+      if (nodes.length >= CENSUS_MAX) break;
+    }
+    return nodes;
+  }
+
+  function heardNow() {
+    const out = [];
+    for (const slot of announced.values()) {
+      for (const row of [...(slot.hop0 || []), ...(slot.hop1 || [])]) out.push(row);
+    }
+    return out;
+  }
+
+  function censusFromWire(list) {
+    const nodes = [];
+    const seen = new Set();
+    for (const n of (Array.isArray(list) ? list : []).slice(0, CENSUS_MAX)) {
+      if (n?.hash == null) continue;
+      const nodeId = String(n.id || n.nodeId || '').trim().toLowerCase();
+      const host = String(n.host || '').trim();
+      if (nodeId && nodeId === selfId) continue;
+      const hash = (wireHash(n.hash) || String(n.hash)).toLowerCase();
+      const row = { nodeId, host, remote: host, hash };
+      const key = censusKey(row);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      nodes.push(row);
+    }
+    return nodes;
+  }
+
+  function broadcastCensus(force = false) {
+    const now = Date.now();
+    if (!force && now - lastCensus < 500) return;
+    lastCensus = now;
+    broadcast({ type: 'census', magic, hop: 0, nodes: directCensus() });
+  }
+
   function handle(sock, msg) {
     if (!msg || typeof msg !== 'object') return;
     if (msg.magic && msg.magic !== magic) {
@@ -1068,6 +1147,8 @@ export function createP2p({
       const advertised = Number(msg.port);
       if (Number.isFinite(advertised) && advertised > 0) rec.listenPort = advertised;
       rec.ua = String(msg.ua || rec.ua || '');
+      const nid = String(msg.nodeId || '').trim().toLowerCase();
+      if (/^[0-9a-f]{8,32}$/.test(nid)) rec.nodeId = nid;
       peers.set(sock, rec);
       send(sock, tipMsg());
       send(sock, { type: 'addr', magic, peers: advertisedPeers(sock) });
@@ -1118,8 +1199,29 @@ export function createP2p({
       }
       return;
     }
+    if (msg.type === 'census') {
+      const hop = Number(msg.hop) || 0;
+      const nodes = censusFromWire(msg.nodes);
+      const slot = announced.get(sock) || { hop0: [], hop1: [] };
+      if (hop >= CENSUS_HOP_MAX) slot.hop1 = nodes;
+      else slot.hop0 = nodes;
+      announced.set(sock, slot);
+      if (hop < CENSUS_HOP_MAX) {
+        broadcast({
+          type: 'census',
+          magic,
+          hop: hop + 1,
+          nodes: nodes.map((n) => ({ id: n.nodeId, host: n.host, hash: n.hash })),
+        }, sock);
+      }
+      return;
+    }
     if (msg.type === 'tip' || msg.type === 'inv') {
       notePeerTip(sock, msg);
+      const rec = peers.get(sock);
+      if (rec && String(rec.hash || '').toLowerCase() === localTipHash().toLowerCase()) {
+        broadcastCensus();
+      }
       const localH = Number(store.tip()?.height || 0);
       const peerH = Number(msg.height);
       const ahead = Number.isFinite(peerH) && peerH > localH;
@@ -1374,6 +1476,8 @@ export function createP2p({
   function drop(sock) {
     sockets.delete(sock);
     peers.delete(sock);
+    announced.delete(sock);
+    broadcastCensus(true);
     for (const [hash, set] of blockWaiters) {
       set.delete(sock);
       if (!set.size) blockWaiters.delete(hash);
@@ -1428,13 +1532,16 @@ export function createP2p({
     });
     sock.on('close', () => drop(sock));
     sock.on('error', () => drop(sock));
-    send(sock, { type: 'hello', magic, ua: P2P_UA, port: listenPortOf() });
+    send(sock, { type: 'hello', magic, ua: P2P_UA, port: listenPortOf(), nodeId: selfId });
     send(sock, tipMsg());
   }
 
   function listen() {
     server = net.createServer(attach);
     if (pendingWatch) clearInterval(pendingWatch);
+    if (censusTimer) clearInterval(censusTimer);
+    censusTimer = setInterval(() => broadcastCensus(), 2000);
+    if (typeof censusTimer.unref === 'function') censusTimer.unref();
     pendingWatch = setInterval(() => {
       const now = Date.now();
       for (const [sock, rec] of peers) {
@@ -1525,6 +1632,11 @@ export function createP2p({
       clearInterval(pendingWatch);
       pendingWatch = null;
     }
+    if (censusTimer) {
+      clearInterval(censusTimer);
+      censusTimer = null;
+    }
+    announced.clear();
     if (tipNudgeTimer) {
       clearTimeout(tipNudgeTimer);
       tipNudgeTimer = null;
@@ -1552,6 +1664,7 @@ export function createP2p({
     return countSyncedOnline({
       localHash: localTipHash(),
       peers: [...peers.values()],
+      heard: heardNow(),
       includeSelf: true,
     });
   }

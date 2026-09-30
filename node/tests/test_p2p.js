@@ -165,6 +165,21 @@ describe('p2p gossip', () => {
     assert.equal(countSyncedOnline({ localHash: local, peers: [] }), 1);
     assert.equal(countLiveOnline({ peers: live }), 4);
     assert.equal(countLiveOnline({ peers: live.filter((p) => p.hash === 'old') }), 2);
+    assert.equal(countSyncedOnline({
+      localHash: local,
+      peers: [{ remote: '1.1.1.1', hash: 'abc', nodeId: 'aa' }],
+      heard: [{ nodeId: 'bb', host: '9.9.9.9', remote: '9.9.9.9', hash: 'abc' }],
+    }), 3);
+    assert.equal(countSyncedOnline({
+      localHash: local,
+      peers: [{ remote: '1.1.1.1', hash: 'abc', nodeId: 'aa' }],
+      heard: [{ nodeId: 'aa', host: '1.1.1.1', remote: '1.1.1.1', hash: 'abc' }],
+    }), 2);
+    assert.equal(countSyncedOnline({
+      localHash: local,
+      peers: [],
+      heard: [{ nodeId: 'bb', host: '9.9.9.9', remote: '9.9.9.9', hash: 'old' }],
+    }), 1);
   });
 
   it('two connected empty nodes each see the other as online, then drop on close', async () => {
@@ -184,6 +199,31 @@ describe('p2p gossip', () => {
       await b.rpc?.close?.();
     }
     assert.equal(a.p2p.syncedOnline(), 1);
+  });
+
+  it('counts a synced node that dialed a peer of ours, not only a direct socket', async () => {
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-hop-a-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-hop-b-'));
+    const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-hop-c-'));
+    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    const c = await startNode({ dataDir: dirC, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    try {
+      await a.p2p.connect('127.0.0.1', b.bound.port);
+      await c.p2p.connect('127.0.0.1', b.bound.port);
+      const seen = await waitFor(
+        () => a.p2p.syncedOnline() >= 3 && c.p2p.syncedOnline() >= 3 && b.p2p.syncedOnline() >= 3,
+        8000,
+      );
+      assert.equal(seen, true, `a=${a.p2p.syncedOnline()} b=${b.p2p.syncedOnline()} c=${c.p2p.syncedOnline()}`);
+    } finally {
+      a.p2p.close();
+      b.p2p.close();
+      c.p2p.close();
+      await a.rpc?.close?.();
+      await b.rpc?.close?.();
+      await c.rpc?.close?.();
+    }
   });
 
   it('forwards a newer miner round across a two-hop line and does not loop an equal count', async () => {
