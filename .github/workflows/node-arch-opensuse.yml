@@ -88,17 +88,24 @@ jobs:
           node -p "process.version"
           rustc --version
           NODE_INC=""
-          if found=$(node -e 'const fs=require("fs"); const p=process.config.variables.node_prefix||""; const cs=[p+"/include/node","/usr/include/node","/usr/local/include/node"]; for (const d of cs) { if (fs.existsSync(d+"/node_api.h")) { console.log(d); process.exit(0); } } process.exit(2);'); then
-            NODE_INC="$found"
-          else
-            hdr=$(find /usr -name node_api.h 2>/dev/null | head -n 1 || true)
-            if [ -z "${hdr}" ]; then
-              echo "node_api.h missing" >&2
-              exit 1
+          for d in /usr/include/node /usr/local/include/node /usr/include/node26 /usr/include/node24 /usr/include/node22 /usr/include/node20; do
+            if [ -f "$d/node_api.h" ]; then
+              if [ "$d" != /usr/include/node ] && [ ! -e /usr/include/node ]; then
+                ln -sfn "$d" /usr/include/node
+              fi
+              if [ -f /usr/include/node/node_api.h ]; then
+                NODE_INC=/usr/include/node
+              else
+                NODE_INC="$d"
+              fi
+              break
             fi
-            mkdir -p /usr/include
-            ln -sfn "$(dirname "$hdr")" /usr/include/node
-            NODE_INC=/usr/include/node
+          done
+          if [ -z "${NODE_INC}" ]; then
+            echo "node headers:" >&2
+            ls -d /usr/include/node* >&2 || true
+            echo "node_api.h missing" >&2
+            exit 1
           fi
           echo "NODE_INC $NODE_INC"
           test -f "$NODE_INC/node_api.h"
@@ -167,7 +174,16 @@ jobs:
             "${{ matrix.image }}" \
             bash /pack-distro.sh
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proof-${{ matrix.flavor }}
+          path: |
+            dist/build-proof-${{ matrix.flavor }}.txt
+            dist/shear-node-v14-${{ matrix.flavor }}.zip
+
       - name: Upload the zip to the v14 release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           ZIP="$GITHUB_WORKSPACE/dist/shear-node-v14-${{ matrix.flavor }}.zip"
           test -f "$ZIP"
@@ -180,10 +196,3 @@ jobs:
             sleep $((i * 20))
           done
           exit 1
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: proof-${{ matrix.flavor }}
-          path: |
-            dist/build-proof-${{ matrix.flavor }}.txt
-            dist/shear-node-v14-${{ matrix.flavor }}.zip
