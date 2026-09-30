@@ -87,11 +87,7 @@ bool noteSidecarLine(ShearNodeSidecar side, String line) {
   if (st == null) return false;
   side.reportedHeight = st.height;
   side.reportedIbd = st.ibd;
-  if (side.hasHeldBlocks) {
-    try {
-      side.openWhileCatchingUp();
-    } catch (_) {}
-  }
+  if (side.hasHeldBlocks) side.openWhileCatchingUp();
   return side.takeOverIfMatched();
 }
 
@@ -348,6 +344,9 @@ class ShearNodeSidecar {
   /// Last sequential open. Set while [reportedIbd] is still true.
   ReadBlockOpen? lastOpen;
 
+  /// Receives each walk, including a status line while IBD is still true.
+  ReadProofSink? proofSink;
+
   bool get hasHeldBlocks => _heldBlocks.isNotEmpty;
 
   /// Blocks the local node has already read. Opening uses these on the next
@@ -376,6 +375,11 @@ class ShearNodeSidecar {
       ibd: ibd ?? reportedIbd,
     );
     lastOpen = opened;
+    proofSink?.ingestReadOpen(
+      opened,
+      blocks: blocks ?? _heldBlocks,
+      dest: dest ?? _heldDest,
+    );
     return opened;
   }
 

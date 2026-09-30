@@ -8,6 +8,7 @@ import 'shear_ctf.dart';
 import 'shear_identity.dart';
 import 'shear_eip712.dart';
 import 'shear_levy.dart';
+import 'shear_read_open.dart';
 import 'shear_read_sync.dart';
 import 'shear_ed25519.dart';
 import 'shear_pack.dart';
@@ -1311,8 +1312,10 @@ bool shearviewMatches(ShearTx t, String query) {
 }
 
 /// Spendable at block-found only. Per-hash credit sits in [pending] until confirm.
-class ShearLedger {
-  ShearLedger({this.pool});
+class ShearLedger implements ReadProofSink {
+  ShearLedger({this.pool}) {
+    pool?.sync?.proofSink = this;
+  }
 
   final ShearPoolClient? pool;
   final Map<String, double> _spendable = {};
@@ -1343,6 +1346,96 @@ class ShearLedger {
       }
     }
     _notes.add(incoming);
+  }
+
+  /// Put opened proofs on this book. A note is spendable only after its proof
+  /// opens and it has [spendableConfirmations] against the known live tip.
+  /// A failed proof and a bare `{v}` stay unverified. An unread height is skipped.
+  @override
+  void ingestReadOpen(ReadBlockOpen open, {required List blocks, String? dest}) {
+    if (open.liveTip >= 1) noteLiveHeight(open.liveTip);
+    final frame = (dest != null && dest.isNotEmpty) ? dest : (_restFrame ?? '');
+    if (frame.isEmpty) return;
+    final money = homeDest(frame);
+    if (!isDestAddress(money)) return;
+    final used = <Map>[];
+    for (final opened in open.opened) {
+      if (!opened.verified || opened.nanos <= 0) continue;
+      final raw = _takeReadNote(blocks, opened, used);
+      final row = <String, dynamic>{
+        if (raw != null) ...raw,
+        'address': money,
+        'dest': money,
+        'height': opened.height,
+        'nanos': opened.nanos,
+        'verified': true,
+        'spent': false,
+      };
+      rememberNote(row);
+      _creditNoteToShearview(row);
+    }
+    _unverifyFailedRead(open, money);
+    if (open.opened.any((n) => n.verified && n.nanos > 0)) {
+      rememberDest(money);
+      _proofCheckedDests.add(payKey(money));
+    }
+    recheckRestFrameSpendable(frame);
+  }
+
+  Map<String, dynamic>? _takeReadNote(List blocks, OpenedReadNote opened, List<Map> used) {
+    for (final block in blocks) {
+      if (block is! Map || readBlockHeight(block) != opened.height) continue;
+      for (final note in _readVouts(block)) {
+        if (used.any((u) => identical(u, note))) continue;
+        final vp = note['valueProof'];
+        if (vp is! Map || vp['v'] is! num) continue;
+        if ((vp['v'] as num).round() != opened.nanos) continue;
+        used.add(note);
+        return Map<String, dynamic>.from(note);
+      }
+    }
+    return null;
+  }
+
+  List<Map> _readVouts(Map block) {
+    final out = <Map>[];
+    void take(dynamic list) {
+      if (list is! List) return;
+      for (final item in list) {
+        if (item is Map) out.add(item);
+      }
+    }
+
+    final txs = block['txs'];
+    if (txs is List) {
+      for (final tx in txs) {
+        if (tx is! Map) continue;
+        for (final key in const ['vout', 'vouts', 'notes']) {
+          take(tx[key]);
+        }
+      }
+    }
+    if (out.isNotEmpty) return out;
+    for (final key in const ['notes', 'vouts', 'vout']) {
+      take(block[key]);
+    }
+    return out;
+  }
+
+  void _unverifyFailedRead(ReadBlockOpen open, String money) {
+    if (open.unspendable.isEmpty) return;
+    final openedNanos = <int, Set<int>>{};
+    for (final n in open.opened) {
+      (openedNanos[n.height] ??= <int>{}).add(n.nanos);
+    }
+    final badHeights = <int>{for (final u in open.unspendable) u.height};
+    for (final row in _notes) {
+      final h = (row['height'] as num?)?.toInt() ?? 0;
+      if (!badHeights.contains(h) || !_noteOnDest(row, money)) continue;
+      final nanos = (row['nanos'] as num?)?.round();
+      if (nanos != null && (openedNanos[h]?.contains(nanos) ?? false)) continue;
+      row['verified'] = false;
+    }
   }
 
   bool _bytesEq(Uint8List a, Uint8List b) {

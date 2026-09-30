@@ -178,6 +178,9 @@ class ShearReadSync {
   /// Money dest whose seals are opened while compact pages arrive.
   String? proofDest;
 
+  /// Receives each finished walk, including a prefix while the tip is ahead.
+  ReadProofSink? proofSink;
+
   /// Last walk of blocks already read. Set while the live tip is still ahead.
   ReadBlockOpen? lastOpen;
 
@@ -540,6 +543,7 @@ class ShearReadSync {
       ibd: ibd,
     );
     lastOpen = opened;
+    proofSink?.ingestReadOpen(opened, blocks: blocks, dest: dest ?? proofDest);
     return opened;
   }
 

@@ -52,6 +52,11 @@ class ReadBlockOpen {
   List<int> get openedHeights => [for (final n in opened) n.height];
 }
 
+/// Ledger (or a test double) that receives one finished walk.
+abstract class ReadProofSink {
+  void ingestReadOpen(ReadBlockOpen open, {required List blocks, String? dest});
+}
+
 int readBlockHeight(Object? block) {
   if (block is! Map) return 0;
   final h = block['height'];

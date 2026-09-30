@@ -307,6 +307,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       startProcess: _startSharedNode,
       onStop: _stopSharedNode,
     )
+      ..proofSink = ledger
       ..nodeScript = packed?.script
       ..workDir = packed?.workDir;
     _tabScroll = List.generate(kTabs.length, (_) => ScrollController());

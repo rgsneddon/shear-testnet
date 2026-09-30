@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/shear_closure.dart';
 import 'package:shear_wallet/shear_identity.dart';
+import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_read_open.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
@@ -47,9 +48,10 @@ Map<String, dynamic> _block(int height, Map<String, dynamic> note) => {
     };
 
 class _Book {
-  _Book(this.dest, this.blocks);
-  final String dest;
+  _Book(this.ident, this.blocks);
+  final ShearIdentity ident;
   final Map<int, Map<String, dynamic>> blocks;
+  String get dest => ident.address;
 
   List<Map<String, dynamic>> get shuffled => [
         blocks[9]!,
@@ -61,7 +63,8 @@ class _Book {
 }
 
 _Book _book() {
-  final dest = createIdentity().address;
+  final ident = createIdentity();
+  final dest = ident.address;
   final d20 = hash20FromAddress(dest);
   if (d20 == null) throw StateError('dest20');
   final good2 = _seal(1000, d20);
@@ -71,7 +74,7 @@ _Book _book() {
   final bare = _seal(4000, d20);
   bare['valueProof'] = {'v': 4000};
   final unread = _seal(9000, d20);
-  return _Book(dest, {
+  return _Book(ident, {
     2: _block(2, good2),
     3: _block(3, bad),
     4: _block(4, bare),
@@ -97,21 +100,52 @@ void _expectOpen(ReadBlockOpen opened, {required bool ibd}) {
   expect(opened.liveTip, _liveTip);
 }
 
-void _obs(String mode, ReadBlockOpen opened) {
+int _ledgerNanos(ShearLedger ledger, _Book book) =>
+    (ledger.spendableOwned(book.ident.address, paymentCode: book.ident.paymentCode) * kUnitsPerShe).round();
+
+/// Mature opened notes are on the ledger. The 9-confirmation floor still
+/// withholds a younger opened note. A failed proof and a bare `{v}` are not coins.
+void _expectLedger(ShearLedger ledger, _Book book, ReadBlockOpen opened, {required int nanos}) {
+  expect(opened.catchingUp, isTrue);
+  expect(opened.deferredUntilSync, isFalse);
+  expect(_ledgerNanos(ledger, book), nanos);
+  expect((ledger.spendable(book.ident.address) * kUnitsPerShe).round(), nanos);
+  final verified = <int>[
+    for (final n in ledger.notes)
+      if (n['verified'] == true && n['spent'] != true && n['nanos'] is num) (n['nanos'] as num).round(),
+  ];
+  expect(verified.contains(1000), isTrue);
+  expect(verified.contains(2500), isTrue);
+  expect(verified.contains(3001), isFalse);
+  expect(verified.contains(4000), isFalse);
+  expect(verified.contains(9000), isFalse);
+}
+
+void _obs(String mode, ReadBlockOpen opened, ShearLedger ledger, _Book book) {
   final unspendable = opened.unspendable.map((n) => '${n.height}:${n.reason}').join(',');
   // ignore: avoid_print
   print(
     'OBS mode=$mode order=${opened.order.join(',')} opened=${opened.openedHeights.join(',')} '
     'unspendable=$unspendable catchingUp=${opened.catchingUp} '
     'deferredUntilSync=${opened.deferredUntilSync} ibd=${opened.ibd} '
-    'spendableNanos=${opened.spendableNanos}',
+    'spendableNanos=${opened.spendableNanos} ledgerNanos=${_ledgerNanos(ledger, book)}',
   );
+}
+
+ShearLedger _bind(ShearReadSync? sync, ShearNodeSidecar? side, _Book book) {
+  final ledger = ShearLedger();
+  ledger.bindIdentity(book.ident);
+  sync?.proofSink = ledger;
+  side?.proofSink = ledger;
+  return ledger;
 }
 
 void main() {
   test('Connect bare opens each read block proof in height order while the tip is ahead', () {
     final book = _book();
     final sync = ShearReadSync(seeds: const ['http://127.0.0.1:9'], jitter: Duration.zero);
+    final ledger = _bind(sync, null, book);
+    expect(_ledgerNanos(ledger, book), 0);
     final prefix = sync.applyReadPage(
       pageBlocks: [book.blocks[5]!, book.blocks[2]!],
       liveTip: _liveTip,
@@ -124,7 +158,9 @@ void main() {
     expect(prefix.ibd, isFalse);
     expect(sync.sampledTip, _liveTip);
     expect(sync.honest, isFalse);
-    _obs('connect-bare-prefix', prefix);
+    // Height 2 has 11 confirmations at tip 12. Height 5 has 8, under the floor.
+    _expectLedger(ledger, book, prefix, nanos: 1000);
+    _obs('connect-bare-prefix', prefix, ledger, book);
 
     final grown = sync.applyReadPage(
       pageBlocks: [book.blocks[4]!, book.blocks[3]!],
@@ -133,7 +169,8 @@ void main() {
     );
     _expectOpen(grown, ibd: false);
     expect(sync.lastOpen, same(grown));
-    _obs('connect-bare-page', grown);
+    _expectLedger(ledger, book, grown, nanos: 1000);
+    _obs('connect-bare-page', grown, ledger, book);
 
     final opened = sync.openConnectBare(
       blocks: book.shuffled,
@@ -143,7 +180,8 @@ void main() {
     );
     _expectOpen(opened, ibd: false);
     expect(sync.lastOpen, same(opened));
-    _obs('connect-bare', opened);
+    _expectLedger(ledger, book, opened, nanos: 1000);
+    _obs('connect-bare', opened, ledger, book);
   });
 
   test('Run node opens the same read-block proofs in height order while ibd is true', () {
@@ -156,7 +194,9 @@ void main() {
       dest: book.dest,
     );
     final side = ShearNodeSidecar();
+    final ledger = _bind(null, side, book);
     expect(side.reportedIbd, isTrue);
+    expect(_ledgerNanos(ledger, book), 0);
     side.holdReadBlocks(
       book.shuffled,
       dest: book.dest,
@@ -171,13 +211,15 @@ void main() {
     _expectOpen(fromStatus, ibd: true);
     expect(fromStatus.order, bare.order);
     expect(fromStatus.openedHeights, bare.openedHeights);
-    _obs('run-node-status', fromStatus);
+    _expectLedger(ledger, book, fromStatus, nanos: 1000);
+    _obs('run-node-status', fromStatus, ledger, book);
 
     final opened = side.openWhileCatchingUp();
     _expectOpen(opened, ibd: true);
     expect(opened.order, bare.order);
     expect(opened.openedHeights, bare.openedHeights);
     expect(side.reportedIbd, isTrue);
-    _obs('run-node', opened);
+    _expectLedger(ledger, book, opened, nanos: 1000);
+    _obs('run-node', opened, ledger, book);
   });
 }

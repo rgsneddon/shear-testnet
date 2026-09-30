@@ -23,7 +23,7 @@ Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) at
 
 ## 0.63 (current)
 
-Book `shear-testnet-v8`. Connect bare and Run node open each already-read block's value proof in ascending height while the tip is still ahead. An owned note opens only when that proof verifies against the note's commit. A bare `{v}` claim is not spendable. Next-work adds at least one bit across eight sealed 2000 ms gaps from genesis. Public tag **0.63** (store `0.63.0+88`). Node tag stays `v13` (Shear Sentinel v13). ShearK pin stays **2.6**. Tag **0.62** stays. macOS `.dmg` stays the MacBook handoff.
+Book `shear-testnet-v8`. Connect bare and Run node open each already-read block's value proof in ascending height while the tip is still ahead, and an opened note with 9 confirmations joins Spendable before catch-up finishes. An owned note opens only when that proof verifies against the note's commit. A younger opened note stays unspendable. A failed proof and a bare `{v}` claim are not spendable. Next-work adds at least one bit across eight sealed 2000 ms gaps from genesis. Public tag **0.63** (store `0.63.0+88`). Node tag stays `v13` (Shear Sentinel v13). ShearK pin stays **2.6**. Tag **0.62** stays. macOS `.dmg` stays the MacBook handoff.
 
 ## 0.62
 
