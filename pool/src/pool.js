@@ -252,7 +252,7 @@ export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
  * which is not yours. Solo (`npm run solo` / `--solo`) does not read this
  * constant and does not take the 1%. The solo finder keeps the epoch pot.
  */
-export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1qv3fvqp7555xemucfy3f6lhk2mx3vd7hk06g7htzwcr8zujsn2wfaqe059cepku4p3hh58nmvwtcyflspnvdszmruah';
+export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1q8flwjptadua9u7qtpvs7t26aarenstew938zlcgclzvthv5v4e03hsv4j8uf2pr73w8arp0krf0mhry6f5gqff4fl9';
 
 /** PROP of (pot - 100 bps) across hasher dests. Fee dest gets only the fee. */
 export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDest = null) {
