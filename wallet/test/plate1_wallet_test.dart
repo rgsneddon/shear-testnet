@@ -13,7 +13,6 @@ import 'package:shear_wallet/shear_privacy_hop.dart';
 import 'package:shear_wallet/shear_qr.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_vortex.dart';
-import 'package:shear_wallet/shear_vpn_profile.dart';
 
 void main() {
   test('next owed sum matures in 6 seconds', () {
@@ -215,21 +214,13 @@ void main() {
     expect(closureStratumPort(ClosureSendMode.localNodeFull, android: true), isNull);
     expect(closureStratumPort(ClosureSendMode.localNodeFull, android: false), isNull);
     expect(closureModeStored(ClosureSendMode.connectBare), kClosureModeBare);
-    expect(closureModeStored(ClosureSendMode.shearPrivacyVpn), 'shearPrivacyVpn');
+    expect(closureModeStored(closureModeFromStored(kClosureModeVpn, android: true)), kClosureModeBare);
     expect(closureModeStored(ClosureSendMode.localNode), isNot('continuumSendPath'));
     expect(closureSpawnArgs(emptyDatadir: true, mode: ClosureSendMode.connectBare), isEmpty);
     expect(kConnectBareCopy.toLowerCase(), isNot(contains('looking for the vpn')));
   });
 
-  test('VPN down blocks public send with the exact string and probe-up does not claim a mask', () {
-    final down = publicSendGate(vpnMode: true, tunUp: false, probeOnly: false, localReady: false);
-    expect(down.sendBlocked, isTrue);
-    expect(down.claimsIpMask, isFalse);
-    expect(down.error, kErrPrivacyVpn);
-    expect(down.error, 'Couldn’t reach Shear Privacy VPN — try again');
-    final probe = publicSendGate(vpnMode: true, tunUp: true, probeOnly: true, localReady: false);
-    expect(probe.sendBlocked, isTrue);
-    expect(probe.claimsIpMask, isFalse);
+  test('privacy hop pins the EU relay and unprivate amounts stay open', () {
     expect(kPrivacyHopHost, '77.42.91.84');
     expect(kPrivacyHopPort, 44044);
     expect(kPrivacyHopFeeShe, 0);
@@ -330,12 +321,20 @@ void main() {
     expect(side.showResistanceConsole, isTrue);
     expect(started.last['SHEAR_STRATUM'], isNull);
     expect(started.last['SHEAR_GETBLOCK_BATCH'], '1');
-    side.select(ClosureSendMode.shearPrivacyVpn);
-    expect(await side.apply(), kConnectBareCopy);
-    expect(side.committed, ClosureSendMode.connectBare);
-    expect(side.running, isFalse);
-    expect(side.listenPort, isNull);
-    expect(side.showResistanceConsole, isFalse);
+    final retired = ShearNodeSidecar(
+      android: false,
+      storedMode: kClosureModeVpn,
+      nodeBinary: 'node',
+      dataDir: '/tmp/shear-node',
+      emptyDatadir: true,
+      startProcess: (binary, env, args) async {},
+    );
+    expect(retired.committed, ClosureSendMode.connectBare);
+    expect(retired.pending, ClosureSendMode.connectBare);
+    expect(await retired.apply(), kConnectBareCopy);
+    expect(retired.running, isFalse);
+    expect(retired.listenPort, isNull);
+    expect(retired.showResistanceConsole, isFalse);
     final phone = ShearNodeSidecar(android: true);
     phone.select(ClosureSendMode.localNodeFull);
     expect(phone.pending, ClosureSendMode.localNode);
@@ -587,7 +586,6 @@ void main() {
       ledger: ledger,
       startUnlocked: true,
       skipPoolSync: true,
-      enforceReserveHopGate: true,
       privacyHop: hop,
     ));
     await tester.pump();
@@ -677,14 +675,8 @@ void main() {
     expect(vote.from, isNot(funded.home));
   });
 
-  test('default tunnel is IPv4 and IPv6 with extended controls off', () {
-    final profile = ShearVpnProfile();
-    expect(profile.ipv4, isTrue);
-    expect(profile.ipv6, isTrue);
-    expect(profile.trafficShape, isFalse);
-    expect(profile.outerObfuscation, isFalse);
-    expect(profile.extendedOn, isFalse);
-    expect(leanContinuumVortices().any((v) => v.id == kRestorePrivacyProgram), isFalse);
+  test('privacy hop service routes the device and extended scale stays opt-in', () {
+    expect(leanContinuumVortices().any((v) => v.id == 'restore-privacy-v1'), isFalse);
     final vpn = File('android/app/src/main/kotlin/com/shear/shear_wallet/PrivacyHopVpnService.kt').readAsStringSync();
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(vpn, contains('addRoute("0.0.0.0", 0)'));
@@ -804,7 +796,7 @@ void main() {
     expect(hop.isUp, isFalse);
   });
 
-  testWidgets('Restore Privacy vort1 opens the client with extended controls off', (tester) async {
+  testWidgets('a restore-privacy vortice has no tunnel client', (tester) async {
     tester.view.physicalSize = const Size(800, 2400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -819,8 +811,8 @@ void main() {
       await session.setPassword('test-pass-1');
       session.deployedVortices = const [
         Vortice(
-          id: kRestorePrivacyProgram,
-          name: kRestorePrivacyName,
+          id: 'restore-privacy-v1',
+          name: 'Restore Privacy',
           origin: 'https://shear.digital/vortices/restore-privacy',
         ),
       ];
@@ -835,14 +827,17 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    expect(find.text(kRestorePrivacyName), findsOneWidget);
-    await tester.tap(find.text(kRestorePrivacyName));
+    expect(find.text('Restore Privacy'), findsOneWidget);
+    await tester.tap(find.text('Restore Privacy'));
     await tester.pump();
-    expect(find.byKey(const Key('restore-privacy-pane')), findsOneWidget);
-    expect(find.text('IPv4 on'), findsOneWidget);
-    expect(find.text('IPv6 on'), findsOneWidget);
-    expect(tester.widget<SwitchListTile>(find.byKey(const Key('restore-privacy-traffic-shape'))).value, isFalse);
-    expect(tester.widget<SwitchListTile>(find.byKey(const Key('restore-privacy-obfuscation'))).value, isFalse);
+    expect(find.byKey(const Key('restore-privacy-pane')), findsNothing);
+    expect(find.byKey(const Key('restore-privacy-traffic-shape')), findsNothing);
+    expect(find.byKey(const Key('restore-privacy-obfuscation')), findsNothing);
+    expect(find.text('IPv4 on'), findsNothing);
+    expect(
+      find.text('Third-party vortice cannot mint SHE; it must fund its own rewards.'),
+      findsOneWidget,
+    );
     expect(find.text('Privacy hop'), findsNothing);
   });
 }
