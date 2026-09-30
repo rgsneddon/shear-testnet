@@ -38,7 +38,7 @@ describe('portable node packs', () => {
     assert.match(cmd, /pause/i);
     assert.match(cmd, /SHEAR_NODE_NOPAUSE/);
     assert.match(cmd, /Shear node stopped/);
-    assert.match(cmd, /Shear Sentinel v12/);
+    assert.match(cmd, /Shear Sentinel v13/);
     assert.match(cmd, /crypto\\native/);
     assert.match(cmd, /libgcc_s_seh-1\.dll|PATH=%ROOT%runtime/);
     assert.doesNotMatch(cmd, /SHEAR_BOOTSTRAP=1/);
@@ -46,22 +46,22 @@ describe('portable node packs', () => {
     assert.match(py, /FLAVORS = \("windows", "linux", "archlinux", "fedora", "opensuse", "macos"\)/);
     assert.match(py, /write_crlf_launcher/);
     assert.match(mac, /zip_node\.py macos/);
-    assert.match(handoff, /shear-node-v12-macos\.zip/);
+    assert.match(handoff, /shear-node-v13-macos\.zip/);
     assert.match(handoff, /opensuse/i);
-    assert.equal(PRODUCT_VERSION, '12.0');
+    assert.equal(PRODUCT_VERSION, '13.0');
     assert.match(py, /shear-node-\{pack_label\}-\{flavor\}\.zip/);
     assert.match(cmd, /pause/i);
     const bat = fs.readFileSync(path.join(root, 'node/pack/shear-node.bat'), 'utf8');
     assert.match(bat, /pause/i);
     assert.match(bat, /SHEAR_NODE_NOPAUSE/);
-    assert.match(bat, /Shear Sentinel v12/);
+    assert.match(bat, /Shear Sentinel v13/);
     assert.match(bat, /node\\src\\node\.js/);
   });
 
   it('zip_node.py writes a windows zip that contains the launcher and node entry', () => {
     const r = runPython(['node/pack/zip_node.py', 'windows']);
     assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-    const zipPath = path.join(root, 'dist', 'shear-node-v12-windows.zip');
+    const zipPath = path.join(root, 'dist', 'shear-node-v13-windows.zip');
     assert.equal(fs.existsSync(zipPath), true, zipPath);
     const listed = runPython([
       '-c',
@@ -93,7 +93,7 @@ describe('portable node packs', () => {
       + 'cmd=z.read("shear-node.cmd"); bat=z.read("shear-node.bat");\n'
       + 'assert cmd.count(b"\\n")==cmd.count(b"\\r\\n") and cmd.count(b"\\r\\n")>0;\n'
       + 'assert bat.count(b"\\n")==bat.count(b"\\r\\n") and bat.count(b"\\r\\n")>0;\n'
-      + 'assert b"Shear Sentinel v12" in cmd and b"pause" in cmd.lower();\n'
+      + 'assert b"Shear Sentinel v13" in cmd and b"pause" in cmd.lower();\n'
       + 'print("crlf-ok")',
       zipPath,
     ]);

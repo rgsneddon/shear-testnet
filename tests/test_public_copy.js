@@ -91,8 +91,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
 
     const readme = read('README.md');
     assert.match(readme, /Wallet pin: \*\*0\.63\*\*/);
-    assert.match(readme, /Shear Sentinel v12/);
-    assert.match(readme, /releases\/tag\/v12/);
+    assert.match(readme, /Shear Sentinel v13/);
+    assert.match(readme, /releases\/tag\/v13/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.55\*\*/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.41\*\*/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.40\*\*/);
@@ -235,21 +235,21 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /Pin \*\*0\.41\*\*/);
   });
 
-  it('MacBook handoff is Apple-only Shear Sentinel v12 + Continuum 0.63; old underscore files are gone', () => {
+  it('MacBook handoff is Apple-only Shear Sentinel v13 + Continuum 0.63; old underscore files are gone', () => {
     assert.equal(fs.existsSync(path.join(root, 'MACBOOK_HANDOFF.md')), false);
     assert.equal(fs.existsSync(path.join(root, 'WINDOWS_HANDOFF.md')), false);
     const md = read('NODE-MACBOOK-HANDOFF.md');
     assert.match(md, /https:\/\/github\.com\/rgsneddon\/shear-testnet/);
-    assert.match(md, /shear-node-v12-macos\.zip/);
+    assert.match(md, /shear-node-v13-macos\.zip/);
     assert.match(md, /shear-wallet-0\.63-macos\.dmg/);
-    assert.match(md, /tag `v12`/);
+    assert.match(md, /tag `v13`/);
     assert.match(md, /Do not move tag `v7`/);
     assert.match(md, /0\.60/);
-    assert.match(md, /gh release upload v12 /);
+    assert.match(md, /gh release upload v13 /);
     assert.match(md, /gh release upload 0\.63 /);
     assert.doesNotMatch(md, /gh release upload v10 /);
     assert.doesNotMatch(md, /gh release upload 0\.60 /);
-    assert.match(md, /is \*\*12\.0\*\*/);
+    assert.match(md, /is \*\*13\.0\*\*/);
     assert.match(md, /pack_macos\.sh/);
     assert.match(md, /blob\/main\/NODE-MACBOOK-HANDOFF\.md/);
     assert.match(md, /wallet_api\.js/);

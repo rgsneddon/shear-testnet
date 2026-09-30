@@ -94,9 +94,9 @@ window.SHEAR_DOCS = {
     title: 'Pages and downloads',
     crumb: 'start / pages',
     html:
-      '<p>Each public host is one job. Downloads stay on the published pins: Continuum <strong>0.63</strong> and Shear Sentinel v12. The node is the book. The wallet reads that book. The pool is where you hash.</p>' +
+      '<p>Each public host is one job. Downloads stay on the published pins: Continuum <strong>0.63</strong> and Shear Sentinel v13. The node is the book. The wallet reads that book. The pool is where you hash.</p>' +
       '<table><tr><th>Wallet</th><td><a href="https://shear.digital/wallet/">shear.digital/wallet</a> — Continuum 0.63 for Windows, Linux, Arch, Fedora, and Android. Android has no full node, so it uses Connect bare. <a href="https://shear.digital/wallet/">Release 0.63</a>.</td></tr>' +
-      '<tr><th>Node</th><td><a href="https://shear.digital/node/">shear.digital/node</a> — Shear Sentinel v12. Unzip and run, or build from source. It syncs height 1, 2, 3, … and serves notes for one dest at a time on <code>127.0.0.1:18332</code>. A new block is advised on <code>/events</code>.</td></tr>' +
+      '<tr><th>Node</th><td><a href="https://shear.digital/node/">shear.digital/node</a> — Shear Sentinel v13. Unzip and run, or build from source. It syncs height 1, 2, 3, … and serves notes for one dest at a time on <code>127.0.0.1:18332</code>. A new block is advised on <code>/events</code>.</td></tr>' +
       '<tr><th>Get started</th><td><a href="https://shear.digital/get-started.html">get-started</a> — password, Connect bare or local node, <code>shewall.bin</code>, then mine.</td></tr>' +
       '<tr><th>Pool</th><td><a href="https://pool.shear.digital/">pool.shear.digital</a> — stratum <code>pool.shear.digital:1111</code>. Login is Copy dest. Coins are sealed on the book; the wallet reads them from a node. The pool HUD is not spendable.</td></tr>' +
       '<tr><th>Explorer</th><td><a href="https://explorer.shear.digital/">explorer.shear.digital</a> — every sealed block, newest first. Height, time, status, type. No dest, no amount.</td></tr>' +
@@ -189,7 +189,7 @@ window.SHEAR_DOCS = {
     html:
       '<p>0.63 talks to a stock local node on <code>shear-testnet-v8</code>. Default seed is <code>http://127.0.0.1:18332</code>. Headers, compact blocks, and the tree root / jroot come from that node. Flyclient height sampling is not the send, balance, or history path. Hash bonus and the pot share are sealed to your dest in the found block and are spendable after 9 confirmations.</p>' +
       '<p>The node walks every sealed block and returns only the notes whose dest commitment is yours. History for the wallet lists each of those notes once. A pot uses the stable id <code>blockfound:height:dest</code>. An explorer row id does not replace that seal. When the node seals a block it advises <code>http://127.0.0.1:18332/events</code>. The wallet ingests on that advice. An 8 second poll is the fallback when the stream is quiet.</p>' +
-      '<p>Run <code>node node/src/node.js</code> on the same machine (or point the wallet at a node you trust). Download Shear Sentinel v12 from <a href="https://shear.digital/node/">the node page</a>. Public pool HTTP submit stays an advanced toggle with an IP warning. Do not use pool.shear.digital as the only sync path. If no local node answers, Connect bare can still read a public node, and a pool balance on that path is still not Spendable.</p>'
+      '<p>Run <code>node node/src/node.js</code> on the same machine (or point the wallet at a node you trust). Download Shear Sentinel v13 from <a href="https://shear.digital/node/">the node page</a>. Public pool HTTP submit stays an advanced toggle with an IP warning. Do not use pool.shear.digital as the only sync path. If no local node answers, Connect bare can still read a public node, and a pool balance on that path is still not Spendable.</p>'
   };
 
   P.continuum = {
@@ -383,7 +383,7 @@ window.SHEAR_DOCS = {
     crumb: 'reserve / oracle',
     html:
       '<p>The staking rate is an epoch APR observed by <code>shear-reserve-oracle-v1</code> (4-day testnet / 400-day mainnet), coded into every node. Freeze is bounded and fail-closed. A bad rate cannot reorg blocks or steal the pot. The wallet paints live observations as observational until freeze; mint uses frozen <code>epochBps</code> only.</p>' +
-      '<p>Shear Sentinel v12 answers <code>GET /api/oracle</code> and <code>GET /api/reserve</code>. The basket is the observation. Mint uses the frozen epoch rate. A stale basket leaves that freeze in place. The step between epochs is at most 100 bps. Lock, epoch vote, and withdraw are sealed transactions. The node applies them. The oracle cannot move the pot or the hash-bonus pile.</p>'
+      '<p>Shear Sentinel v13 answers <code>GET /api/oracle</code> and <code>GET /api/reserve</code>. The basket is the observation. Mint uses the frozen epoch rate. A stale basket leaves that freeze in place. The step between epochs is at most 100 bps. Lock, epoch vote, and withdraw are sealed transactions. The node applies them. The oracle cannot move the pot or the hash-bonus pile.</p>'
   };
 
   P.withdraw = {

@@ -135,7 +135,7 @@ describe('shear.digital/docs', () => {
     assert.doesNotMatch(content, /Wallet pin<\/th><td>0\.33/);
     const readme = fs.readFileSync(path.join(here, '../../README.md'), 'utf8');
     assert.match(readme, /releases\/tag\/0\.63/);
-    assert.match(readme, /releases\/tag\/v12/);
+    assert.match(readme, /releases\/tag\/v13/);
     assert.doesNotMatch(readme, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(readme, /Wallet \*\*0\.33\*\*/);
     assert.match(content, /127\.0\.0\.1:18332/);

@@ -86,7 +86,7 @@ function bookPresent(dir, exists) {
   return exists(path.join(dir, 'chain.bin')) || exists(path.join(dir, 'chain.jsonl'));
 }
 
-/** Shared book for Shear Sentinel v12 and Continuum. Windows: %APPDATA%\\Shear\\testnet-v7 (Roaming). */
+/** Shared book for Shear Sentinel v13 and Continuum. Windows: %APPDATA%\\Shear\\testnet-v7 (Roaming). */
 export function defaultDataDir({
   env = process.env,
   homedir = os.homedir(),

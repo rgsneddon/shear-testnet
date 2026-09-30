@@ -572,7 +572,7 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.policy.freeze_banner, '');
     assert.equal(typeof stats.policy.h_ratio, 'number');
     assert.equal(typeof stats.policy.side_lead, 'number');
-    assert.equal(stats.productVersion, '12.0');
+    assert.equal(stats.productVersion, '13.0');
     assert.equal(stats.minerVersion, '1.1');
     if (stats.header) assert.equal(stats.header.length, 256);
 

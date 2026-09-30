@@ -260,7 +260,7 @@ PackagedNode? resolvePackagedNode({String? override, String? besideDir}) {
   return PackagedNode(binary: legacy, workDir: besideDir);
 }
 
-/// Shared with Shear Sentinel v12. Windows: %APPDATA%\\Shear\\testnet-v7 (Roaming).
+/// Shared with Shear Sentinel v13. Windows: %APPDATA%\\Shear\\testnet-v7 (Roaming).
 String defaultShearBookDir() {
   final data = Platform.environment['SHEAR_DATA'];
   if (data != null && data.isNotEmpty) return data;

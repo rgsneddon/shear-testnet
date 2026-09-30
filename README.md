@@ -19,7 +19,7 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Algo: **ShearHash-v3** (CPU, RandomX light)
 - Miner pin: **ShearK-Miner 2.6** — https://github.com/rgsneddon/ShearK/releases/tag/2.6
 - Wallet pin: **0.63** (Continuum GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.63
-- Node pin: **Shear Sentinel v12** (product 12.0). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/v12
+- Node pin: **Shear Sentinel v13** (product 13.0). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/v13
 - Stratum: `pool.shear.digital:1111`
 - P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v8`)
 - Site: https://shear.digital
@@ -87,7 +87,7 @@ test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall No
 make -C crypto/native
 ```
 
-`--print-config` must show `"version":"12.0"`, `"magic":"shear-testnet-v8"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
+`--print-config` must show `"version":"13.0"`, `"magic":"shear-testnet-v8"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
 
 ### Run
 

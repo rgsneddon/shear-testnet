@@ -27,7 +27,7 @@ function sectionEnv() {
   return [
     'Env:',
     '  SHEAR_DATA          datadir. Windows %APPDATA%\\Shear\\testnet-v7 (Roaming). Unix ~/.shear/testnet-v7.',
-    '                      Same path for Shear Sentinel v12 and Continuum 0.63.',
+    '                      Same path for Shear Sentinel v13 and Continuum 0.63.',
     '  SHEAR_NETWORK       shear-testnet-v8 (this book). shear-v1 waits for genesis.',
     '  SHEAR_P2P_PORT      default 30303',
     '  SHEAR_P2P_BIND      default 0.0.0.0',

@@ -86,6 +86,7 @@ describe('fork choice does not follow the first block or the pool', () => {
     assert.match(consensusFingerprint(), /FORK=work-then-lowhash/);
     assert.equal(consensusFingerprint().includes('11.0'), false);
     assert.equal(consensusFingerprint().includes('12.0'), false);
+    assert.equal(consensusFingerprint().includes('13.0'), false);
     assert.equal(consensusFingerprint().includes('0.61'), false);
     assert.equal(consensusFingerprint().includes('0.62'), false);
     assert.equal(consensusFingerprint().includes('0.63'), false);
