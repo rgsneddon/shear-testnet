@@ -503,6 +503,7 @@
             <th>Time</th>
             <th>Status</th>
             <th>Type</th>
+            <th>FINDER</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -880,6 +881,12 @@
       const n = Math.max(1, Math.floor(Number(limit) || 10));
       return pending.concat(sealed).slice(0, n);
     }
+    function maskFinder(tag, worker) {
+      const t = String(tag || '').trim().toLowerCase();
+      if (!/^m[0-9a-f]{8}$/.test(t)) return '—';
+      const w = String(worker || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+      return 'm*****/' + (w || '—');
+    }
     function paintRecent(txs, s) {
       const body = document.querySelector('#recent-txs tbody');
       if (!body) return;
@@ -904,11 +911,12 @@
             const statusCell = reserve
               ? '<span class="reserve-chip">Reserve</span>' + esc(kind) + ' ' + esc(pendingLabel)
               : esc(pendingLabel);
+            const finderCell = maskFinder(t.finder || t.finderTag, t.finderWorker || t.worker);
             return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
               esc(fmtLocalTs(t.at)) + '</td><td>' + statusCell + '</td><td class="mono">' +
-              esc(kind) + '</td></tr>';
+              esc(kind) + '</td><td class="mono">' + esc(finderCell) + '</td></tr>';
           }).join('')
-        : '<tr><td colspan="4">No sealed blocks yet.</td></tr>';
+        : '<tr><td colspan="5">No sealed blocks yet.</td></tr>';
       body.innerHTML = html;
       recentSig = sig;
     }
