@@ -1720,7 +1720,42 @@ export function createPool({
   }
   // '' when the live job can still seal on this tip. Otherwise a fail-closed
   // reason. Consensus bits are retarget(); this does not invent an easier target.
+  let sidecarTip = null;
+  let jobHoldLogged = false;
+  /** Hold new jobs when the sidecar tip is strictly taller. The pool tip is not consensus. */
+  const SIDECAR_AHEAD_HOLD = 1;
+  function noteSidecarTip(tip) {
+    const height = Number(tip?.height);
+    if (!Number.isFinite(height)) return;
+    sidecarTip = {
+      height,
+      hash: String(tip?.hash || '').replace(/^0x/i, '').toLowerCase(),
+    };
+    if (!sidecarAhead()) jobHoldLogged = false;
+  }
+  function sidecarAhead() {
+    if (!sidecarTip) return false;
+    const local = Number(store.tip()?.height || 0);
+    return (sidecarTip.height - local) >= SIDECAR_AHEAD_HOLD;
+  }
+  function logJobHold() {
+    if (jobHoldLogged || !sidecarTip) return;
+    jobHoldLogged = true;
+    try {
+      console.error(JSON.stringify({
+        event: 'job_hold',
+        reason: 'sidecar_ahead',
+        height: Number(store.tip()?.height || 0),
+        sidecarHeight: Number(sidecarTip.height),
+        gap: Number(sidecarTip.height) - Number(store.tip()?.height || 0),
+      }));
+    } catch { /* ignore */ }
+  }
+  function jobHoldReason() {
+    return sidecarAhead() ? 'sidecar_ahead' : '';
+  }
   function sealReject(now = Date.now()) {
+    if (sidecarAhead()) return 'sidecar_ahead';
     if (!lastJob?.header) return 'no_job';
     const tip = store.tip();
     const tipHash = tip?.hash
@@ -1883,6 +1918,11 @@ export function createPool({
   }
 
   function issueJob(shareBitsNow, { force = false } = {}) {
+    if (sidecarAhead()) {
+      logJobHold();
+      return lastJob;
+    }
+    jobHoldLogged = false;
     const sb = clampShareBits(shareBitsNow ?? shareBits, { blockBits: blockBitsNow(), minBits: liveShareMin() });
     const now = Date.now();
     const liveBits = blockBitsNow();
@@ -2028,6 +2068,10 @@ export function createPool({
   let lastEaseAt = Date.now();
   let restampTimer = null;
   function restampLiveHeader(now = Date.now()) {
+    if (sidecarAhead()) {
+      logJobHold();
+      return lastJob;
+    }
     if (!lastJob?.header) return lastJob;
     let decoded;
     try {
@@ -2302,7 +2346,9 @@ export function createPool({
     }
     let nextJob = null;
     let sealedBlock = false;
-    if (scored.block && !closedRound) {
+    if (scored.block && !closedRound && sidecarAhead()) {
+      logJobHold();
+    } else if (scored.block && !closedRound) {
       sealing = true;
       const jid = String(params.jobId || job.jobId || '');
       const rec = jid ? store.jobs.get(jid) : null;
@@ -3562,6 +3608,8 @@ export function createPool({
     sweepAutoPayouts,
     setP2p,
     setNetworkView,
+    noteSidecarTip,
+    jobHoldReason,
     restampJob: restampLiveHeader,
     watchTipStall,
     sweepIdle: sweepIdleMiners,

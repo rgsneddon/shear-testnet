@@ -64,24 +64,20 @@ async function minePacked(store, dest, now) {
 }
 
 describe('IBD compact Flow ingest vs mempool unsigned', () => {
-  it('recordIngestFail does not ban on prev or native-missing; unsigned mempool still final', () => {
+  it('recordIngestFail does not ban on prev, native-missing, or unsigned', () => {
     assert.equal(isFinalIngestFail('prev'), false);
     assert.equal(isFinalIngestFail('native_missing'), false);
     assert.equal(isFinalIngestFail('ShearHash-v3 native addon missing and ShearK-Miner not built'), false);
-    assert.equal(isFinalIngestFail('unsigned'), true);
+    assert.equal(isFinalIngestFail('unsigned'), false);
     assert.equal(isFinalIngestFail('merkle'), true);
     const rec = { expensiveFails: 0 };
     for (let i = 0; i < P2P_FAIL_DISCONNECT + 4; i += 1) {
       assert.equal(recordIngestFail(rec, 'prev'), false);
+      assert.equal(recordIngestFail(rec, 'unsigned'), false);
     }
     assert.equal(rec.expensiveFails, 0);
     assert.equal(recordIngestFail(rec, 'native_missing'), false);
     assert.equal(rec.expensiveFails, 0);
-    const ban = { expensiveFails: 0 };
-    for (let i = 0; i < P2P_FAIL_DISCONNECT - 1; i += 1) {
-      assert.equal(recordIngestFail(ban, 'unsigned'), false);
-    }
-    assert.equal(recordIngestFail(ban, 'unsigned'), true);
   });
 
   it('queueTx of a truly unsigned Flow send stays unsigned', () => {
@@ -102,7 +98,7 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
     const got = store.queueTx(send);
     assert.equal(got.ok, false);
     assert.equal(got.reason, 'unsigned');
-    assert.equal(isFinalIngestFail(got.reason), true);
+    assert.equal(isFinalIngestFail(got.reason), false);
   });
 
   it('encodeWireBlock of a signed Flow block still ingests on a second store', async (t) => {

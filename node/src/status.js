@@ -31,6 +31,29 @@ function recBusy(rec) {
 }
 
 /**
+ * Tallest advertised peer tip. Null height means no peer has said.
+ * A mesh that is all behind this node reports that height — it does not look caught-up to a hidden tip.
+ */
+export function bestPeerTip(peers) {
+  let bestH = null;
+  let bestHash = '';
+  if (!peers || typeof peers.values !== 'function') {
+    return { peerMaxHeight: null, peerHash: '' };
+  }
+  for (const rec of peers.values()) {
+    const h = Number(rec?.height);
+    if (!Number.isFinite(h)) continue;
+    const hash = String(rec?.hash || '').replace(/^0x/i, '').toLowerCase();
+    if (bestH == null || h > bestH || (h === bestH && hash && (!bestHash || hash < bestHash))) {
+      bestH = h;
+      bestHash = hash;
+    }
+  }
+  if (bestH == null) return { peerMaxHeight: null, peerHash: '' };
+  return { peerMaxHeight: bestH, peerHash: bestHash };
+}
+
+/**
  * IBD stays true until this tip has caught every live peer and queues are idle.
  * Empty-tip height=0 with no advertised peer ahead remains false.
  */
@@ -53,6 +76,7 @@ export function nodeStatus({ store, p2p, extra = {} } = {}) {
   const want = peerWant(p2p);
   const peers = typeof p2p?.liveOnline === 'function' ? Number(p2p.liveOnline()) || 0 : 0;
   const backend = hashBackendKind() || 'missing';
+  const best = bestPeerTip(p2p?.peers);
   return {
     event: 'status',
     height,
@@ -62,6 +86,8 @@ export function nodeStatus({ store, p2p, extra = {} } = {}) {
     peers,
     want,
     ibd: isInitialBlockDownload({ height, peers: p2p?.peers }),
+    peerMaxHeight: best.peerMaxHeight,
+    peerHash: best.peerHash,
     hashBackend: backend,
     ...extra,
   };
@@ -77,6 +103,8 @@ export function printNodeStatus(args) {
     `peers=${row.peers}`,
     `want=${row.want}`,
     `ibd=${row.ibd}`,
+    `peerMaxHeight=${row.peerMaxHeight == null ? '-' : row.peerMaxHeight}`,
+    `peerHash=${row.peerHash ? String(row.peerHash).slice(0, 16) : '-'}`,
     `hashBackend=${row.hashBackend}`,
   ];
   if (row.stratum != null) line.push(`stratum=${row.stratum}`);

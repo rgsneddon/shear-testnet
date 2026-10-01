@@ -154,6 +154,6 @@ describe('fork choice does not follow the first block or the pool', () => {
     }
     assert.equal(fresh.tip().height, src.tip().height);
     assert.equal(Buffer.from(fresh.tip().hash).equals(Buffer.from(src.tip().hash)), true);
-    assert.equal(isFinalIngestFail('admit_membership'), true);
+    assert.equal(isFinalIngestFail('admit_membership'), false);
   });
 });

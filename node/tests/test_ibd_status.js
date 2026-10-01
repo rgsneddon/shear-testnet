@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { nodeStatus, printNodeStatus } from '../src/status.js';
+import { bestPeerTip, nodeStatus, printNodeStatus } from '../src/status.js';
 
 function tipStore(height, hashByte = 1) {
   const hash = Buffer.alloc(32, hashByte);
@@ -13,9 +13,10 @@ function p2pWith(recs, live = recs.length + 1) {
   return { peers, liveOnline: () => live };
 }
 
-function idleRec(height) {
+function idleRec(height, hash = '') {
   return {
     height,
+    hash,
     want: [],
     pending: new Set(),
     retryPrev: [],
@@ -59,6 +60,31 @@ describe('status IBD catch-up', () => {
     assert.match(errs[0], /height=71/);
     assert.match(errs[0], /want=0/);
     assert.match(errs[0], /ibd=true/);
+    assert.match(errs[0], /peerMaxHeight=95/);
+    assert.match(errs[0], /peerHash=/);
+  });
+
+  it('reports peerMaxHeight beside want and ibd when the mesh is not ahead', () => {
+    const low = 'bb'.repeat(32);
+    const high = 'aa'.repeat(32);
+    const row = nodeStatus({
+      store: tipStore(100),
+      p2p: p2pWith([idleRec(100, low), idleRec(100, high)]),
+    });
+    assert.equal(row.height, 100);
+    assert.equal(row.want, 0);
+    assert.equal(row.ibd, false);
+    assert.equal(row.peerMaxHeight, 100);
+    assert.equal(row.peerHash, high);
+    assert.deepEqual(bestPeerTip(new Map()), { peerMaxHeight: null, peerHash: '' });
+    const ahead = nodeStatus({
+      store: tipStore(100),
+      p2p: p2pWith([idleRec(100, low), idleRec(115, high)]),
+    });
+    assert.equal(ahead.ibd, true);
+    assert.equal(ahead.want, 0);
+    assert.equal(ahead.peerMaxHeight, 115);
+    assert.equal(ahead.peerHash, high);
   });
 
   it('stays ibd=true while syncing even when want/pending/retryPrev are empty', () => {
