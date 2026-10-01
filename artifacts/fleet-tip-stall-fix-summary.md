@@ -48,4 +48,4 @@ A two-hop handshake test in `test_p2p.js` also fails on unmodified `main` in thi
 
 ## PR
 
-See the draft pull request on branch `cursor/fleet-tip-stall-ipc-5e19`.
+https://github.com/rgsneddon/shear-testnet/pull/44 (draft, branch `cursor/fleet-tip-stall-ipc-5e19`). Not deployed.
