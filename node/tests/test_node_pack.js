@@ -46,6 +46,12 @@ describe('portable node packs', () => {
     assert.match(py, /FLAVORS = \("windows", "linux", "archlinux", "fedora", "opensuse", "macos"\)/);
     assert.match(py, /write_crlf_launcher/);
     assert.match(mac, /zip_node\.py macos/);
+    assert.match(mac, /LABEL=v15/);
+    assert.match(mac, /PRODUCT_VERSION/);
+    assert.match(mac, /npm ci/);
+    assert.match(mac, /shear-testnet-v10/);
+    assert.doesNotMatch(mac, /LABEL=v9/);
+    assert.doesNotMatch(mac, /shear-node-v9-macos/);
     assert.match(handoff, /shear-node-v15-macos\.zip/);
     assert.match(handoff, /opensuse/i);
     assert.equal(PRODUCT_VERSION, '15.0');
