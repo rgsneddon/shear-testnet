@@ -37,7 +37,7 @@ import 'shear_node_proc.dart';
 import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 
-const kWalletVersion = '0.65';
+const kWalletVersion = '0.66';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock is accepted. Spendable drops and staking starts now.
@@ -805,12 +805,21 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   /// Run node opens proofs of blocks already read while IBD is still true.
   /// The walk is [openWhileCatchingUpOffUi], so the tick can paint first.
   void _openLocalReadPrefix() {
+    final sync = ledger.pool?.sync;
+    if (sync == null || sync.readBlocks.isEmpty) return;
+    if (sidecar.committed == ClosureSendMode.connectBare) {
+      sync.openConnectBare(
+        blocks: sync.readBlocks,
+        readHeights: sync.readHeights,
+        liveTip: sync.sampledTip,
+        dest: sync.proofDest,
+      );
+      return;
+    }
     if (sidecar.committed != ClosureSendMode.localNode &&
         sidecar.committed != ClosureSendMode.localNodeFull) {
       return;
     }
-    final sync = ledger.pool?.sync;
-    if (sync == null || sync.readBlocks.isEmpty) return;
     sidecar.holdReadBlocks(
       sync.readBlocks,
       dest: sync.proofDest,
@@ -902,6 +911,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         hasPendingReceive: thin,
         historyBehindTip: ledger.historyBehindTip,
         openCollatePending: !ledger.openCollated || ledger.notesLagSpendable,
+        tipMovedWithoutLanding: tipMoved && ledger.tipAdvancedWithoutLanding,
       );
       if (_creditBusy) {
         _creditAgain = true;
@@ -1789,7 +1799,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (spend == 0 && pending.isEmpty) ...[
         const SizedBox(height: 8),
         Text(
-          'Sync a local node at 127.0.0.1:18332. Fallback sync https://pool.shear.digital if local RPC is down; pool HUD is not spendable. Spendable is coins with 9 confirmations. Unconfirmed is coins still arriving. This book starts empty until your first landing.',
+          'Sync a local node at 127.0.0.1:18332. Tip, blocks, and lands come from the node network. If that feed is missing, those fields stay empty. Pool HUD is not the chain. Spendable is coins with 9 confirmations. Unconfirmed is coins still arriving. This book starts empty until your first landing.',
           key: const Key('continuum-empty-honesty'),
           style: TextStyle(color: shearMutedOf(context), fontSize: 12),
         ),
@@ -1844,7 +1854,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
       const SizedBox(height: 6),
       Text(
-        'Stable mining login for ShearK / stratum. Copy once — you do not need to continually update your miner dest.',
+        'Copy dest copies the mailbox shown above. Stable mining login for ShearK / stratum. Copy once — you do not need to continually update your miner dest.',
         style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
       ),
     ];
@@ -3281,7 +3291,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             textAlign: TextAlign.justify,
           ),
           if (p.canVote)
-            const Text('Locked stake can vote', key: Key('reserve-locked-can-vote')),
+            const Text(
+              'Locked stake can vote',
+              key: Key('reserve-locked-can-vote'),
+              textAlign: TextAlign.justify,
+            ),
           Text(
             'Accrued this epoch  $accruedShe SHE  ·  updates daily at frozen oracle bps; paid at epoch end',
             textAlign: TextAlign.justify,
@@ -3559,7 +3573,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         key: const Key('closure-apply'),
         onPressed: () async {
           final msg = await sidecar.apply();
+          ledger.onClosureApply();
           session.closureSendMode = closureModeStored(sidecar.committed);
+          if (!widget.skipPoolSync) {
+            try {
+              await ledger.syncCredits(ident.address, paymentCode: ident.paymentCode);
+            } catch (_) {}
+          }
           if (!mounted) return;
           setState(() {});
           ScaffoldMessenger.of(context).showSnackBar(

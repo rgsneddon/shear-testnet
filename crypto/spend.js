@@ -315,12 +315,14 @@ export function verifyReservePortalOpen(tx) {
   if (!reserveNeedsPortalOpen(tx)) return true;
   // Gossip compact drops the address string and the local opening. The spend
   // pub and sig are the admit proof. A body with no spend pub stays on the
-  // historical compact path (sealed range proof, or dest20 with no Pedersen C).
+  // historical compact path: sealed range proof, modern commit+valueProof
+  // (spendPub stripped; rangeProof-only is not enough), or dest20 with no Pedersen C.
   if (spendPubFromTx(tx)) return verifySpendSig(tx);
   const dest = reservePortalDest(tx);
   if (!dest) {
     const o = tx?.vout?.[0];
     if (o?.commit && o.rangeProof && o.rangeProof !== true) return true;
+    if (o?.commit && o.valueProof && o.valueProof !== true) return true;
     return reserveDest20Open(o);
   }
   return verifySpendSig(tx);

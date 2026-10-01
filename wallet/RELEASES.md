@@ -21,9 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.65 (current)
+## 0.66 (current)
 
-Book `shear-testnet-v10`. Public tag **0.65** (store `0.65.0+90`). Node tag is `v15` (Shear Sentinel v15, product `15.0`). ShearK pin is **2.6**. Datadir leaf is `testnet-v10`. Tag **0.64** and node tag `v14` stay on the previous book. macOS `.dmg` stays the MacBook handoff.
+Book `shear-testnet-v10`. Public tag **0.66** (store `0.66.0+91`). Node tag **v16** (Shear Sentinel v16, product 16.0). ShearK pin is **2.6**. Datadir leaf is `testnet-v10`. Tag **0.65** and node tag `v15` stay on the previous pins. macOS `.dmg` stays the MacBook handoff. Full note: [`docs/RELEASE-0.66-v16.md`](../docs/RELEASE-0.66-v16.md).
+
+Pending lists every immature mined land from the node network (local RPC and public node seeds). Pool HTTP is not the chain ledger. A low hash ratio does not hold pool credits.
 
 ## 0.63
 

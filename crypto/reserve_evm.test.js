@@ -53,6 +53,19 @@ describe('Reserve bytecode on the Shear EVM', () => {
     );
   });
 
+  it('MAGIC_TESTNET, the Reserve.sol allowlist, and Reserve.json move together', () => {
+    const sol = fs.readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
+    const pin = JSON.parse(fs.readFileSync(new URL('../contracts/Reserve.json', import.meta.url), 'utf8'));
+    const named = sol.match(new RegExp(
+      `constant (SHEAR_TESTNET(?:_V\\d+)?) = keccak256\\(bytes\\("${MAGIC_TESTNET}"\\)\\)`,
+    ));
+    assert.ok(named, `Reserve.sol missing keccak256(bytes("${MAGIC_TESTNET}"))`);
+    assert.match(sol, new RegExp(`magic != ${named[1]}\\b`));
+    const hash = Buffer.from(shearMagicBytes(MAGIC_TESTNET)).toString('hex');
+    const code = String(pin.bytecode || '').replace(/^0x/i, '').toLowerCase();
+    assert.equal(code.includes(hash), true, 'recompile Reserve.json after the allowlist change');
+  });
+
   it('deploys, takes a π lock, lets a late first deposit vote, and enacts +1', async () => {
     const s = await bootReserveEvm();
     const t0 = 1_700_000_000_000;

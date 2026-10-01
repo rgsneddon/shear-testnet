@@ -159,7 +159,16 @@ def main(argv: list[str] | None = None) -> int:
             "pool/src/wallet_api.js",
             "pool/src/hash_credit.js",
             "pool/src/withdraw_state.js",
+            "pool/src/pool.js",
+            "pool/src/main.js",
+            "pool/src/admin.js",
+            "pool/src/pull_book.js",
+            "pool/src/auto_payout.js",
+            "pool/src/pool_ident.js",
+            "pool/src/share_vardiff.js",
+            "pool/src/totp_qr.js",
             "contracts/Reserve.json",
+            "contracts/Reserve.sol",
             "reserve/latest.json",
         ):
             src = os.path.join(REPO, rel.replace("/", os.sep))
@@ -187,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             "Unix: chmod +x shear-node.sh && ./shear-node.sh\n"
             "It syncs from genesis (or the saved tip) to the live tip. No automatic bootstrap.\n"
             "Pass --solo for local stratum after ibd=false.\n"
-            "Magic shear-testnet-v10. Continuum wallet is 0.65.\n"
+            "Magic shear-testnet-v10. Continuum wallet is 0.66.\n"
             "node_modules, crypto, and the native addons are inside this zip.\n"
         )
         z.writestr("README.txt", readme)

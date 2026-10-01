@@ -385,8 +385,8 @@ describe('p2p gossip', () => {
     assert.equal(cfg.p2p, 30303);
     assert.equal(cfg.magic, MAGIC_TESTNET);
     assert.equal(cfg.magic, 'shear-testnet-v10');
-    assert.equal(cfg.version, '15.0');
-    assert.equal(cfg.display, 'Shear Sentinel v15');
+    assert.equal(cfg.version, '16.0');
+    assert.equal(cfg.display, 'Shear Sentinel v16');
     assert.equal(cfg.name, 'Shear Sentinel');
     assert.equal(cfg.mainnet, false);
     assert.equal(cfg.phaseBGate, true);

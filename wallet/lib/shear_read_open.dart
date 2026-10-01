@@ -18,6 +18,7 @@ class OpenedReadNote {
     required this.nanos,
     required this.verified,
     required this.commit,
+    this.dest = '',
   });
 
   final int height;
@@ -26,6 +27,9 @@ class OpenedReadNote {
 
   /// Commit bytes that [verifySealedNote] accepted for [nanos].
   final Uint8List commit;
+
+  /// Money dest this note opened against. Empty means the walk's single dest.
+  final String dest;
 }
 
 /// An owned note at a height already read whose proof did not open.
@@ -213,6 +217,67 @@ ReadBlockOpen readBlockOpenFromWire(Map<String, dynamic> wire) {
     spendableNanos: (wire['spendableNanos'] as num).toInt(),
     ibd: wire['ibd'] == true,
     liveTip: (wire['liveTip'] as num).toInt(),
+  );
+}
+
+/// Open the same blocks once per money dest. Each opened note keeps that dest.
+/// A mailbox that is not the home dest is not rewritten onto the home dest.
+ReadBlockOpen openReadBlockProofsForDests({
+  required List blocks,
+  required Set<int> readHeights,
+  required int liveTip,
+  required List<String> dests,
+  bool ibd = false,
+}) {
+  final want = dests.where((d) => d.isNotEmpty).toList();
+  if (want.length <= 1) {
+    return openReadBlockProofs(
+      blocks: blocks,
+      readHeights: readHeights,
+      liveTip: liveTip,
+      dest: want.isEmpty ? null : want.first,
+      ibd: ibd,
+    );
+  }
+  final opened = <OpenedReadNote>[];
+  final unspendable = <UnspendableReadNote>[];
+  final order = <int>{};
+  var spendable = 0;
+  var catching = false;
+  var deferred = false;
+  for (final d in want) {
+    final part = openReadBlockProofs(
+      blocks: blocks,
+      readHeights: readHeights,
+      liveTip: liveTip,
+      dest: d,
+      ibd: ibd,
+    );
+    order.addAll(part.order);
+    catching = catching || part.catchingUp;
+    deferred = deferred || part.deferredUntilSync;
+    for (final n in part.opened) {
+      opened.add(OpenedReadNote(
+        height: n.height,
+        nanos: n.nanos,
+        verified: n.verified,
+        commit: n.commit,
+        dest: n.dest.isNotEmpty ? n.dest : d,
+      ));
+      spendable += n.nanos;
+    }
+    unspendable.addAll(part.unspendable);
+  }
+  final heights = order.toList()..sort();
+  return ReadBlockOpen(
+    order: List<int>.unmodifiable(heights),
+    opened: List<OpenedReadNote>.unmodifiable(opened),
+    unspendable: List<UnspendableReadNote>.unmodifiable(unspendable),
+    catchingUp: catching,
+    deferredUntilSync: deferred,
+    spendableNanos: spendable,
+    ibd: ibd,
+    liveTip: liveTip,
   );
 }
 

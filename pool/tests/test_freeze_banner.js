@@ -33,15 +33,21 @@ describe('freeze banner on pool HUD / miner / admin', () => {
       paint(el, { frozen: false, policy: { freeze_banner: 'Credits frozen (h_ratio): confirmations elevated to 60.' } });
       assert.equal(el.hidden, true);
       assert.equal(el.textContent, '');
-      const line = freezeBannerLine({
+      const dropped = freezeBannerLine({
         frozen: true,
         freeze_reason: 'h_ratio',
         operational: { pool_merchant: 60 },
       });
+      assert.equal(dropped, '');
+      const line = freezeBannerLine({
+        frozen: true,
+        freeze_reason: 'side_lead',
+        operational: { pool_merchant: 12 },
+      });
       paint(el, { frozen: true, policy: { freeze_banner: line }, freeze_banner: line });
       assert.equal(el.hidden, false);
-      assert.equal(el.textContent, 'Credits frozen (h_ratio): confirmations elevated to 60.');
-      assert.match(el.textContent, /h_ratio/);
+      assert.equal(el.textContent, 'Credits frozen (side_lead): confirmations elevated to 12.');
+      assert.doesNotMatch(el.textContent, /h_ratio/);
       assert.match(el.textContent, /elevated/);
       assert.doesNotMatch(el.textContent, /ssa1/);
     });
@@ -54,21 +60,22 @@ describe('freeze banner on pool HUD / miner / admin', () => {
     assert.match(src, /freeze_reason: policy\.freeze_reason/);
     const s = applySignals(emptyPolicyState(), { nowMs: 1, h_ratio: 0.39, side_lead: 0 });
     const p = getpolicy(s);
-    assert.equal(p.frozen, true);
-    assert.equal(p.freeze_reason, 'h_ratio');
+    assert.equal(p.frozen, false);
+    assert.equal(p.freeze_reason, '');
     assert.equal(p.h_ratio, 0.39);
+    assert.equal(p.h_ratio_payout_held, false);
     assert.equal(typeof p.side_lead, 'number');
-    assert.equal(p.freeze_banner, 'Credits frozen (h_ratio): confirmations elevated to 60.');
+    assert.equal(p.freeze_banner, '');
+    assert.equal(p.operational.pool_merchant, 12);
   });
 
-  it('Continuum source shows freeze banner when frozen', () => {
+  it('Continuum drops an h_ratio credit hold and does not paint that strip', () => {
     const dart = fs.readFileSync(new URL('../../wallet/lib/main.dart', import.meta.url), 'utf8');
-    assert.match(dart, /continuum-freeze-banner/);
-    assert.match(dart, /creditsFrozen/);
-    assert.match(dart, /freezeBanner/);
+    assert.doesNotMatch(dart, /continuum-freeze-banner/);
+    assert.doesNotMatch(dart, /Credits frozen \(h_ratio\)/);
     const ledger = fs.readFileSync(new URL('../../wallet/lib/shear_ledger.dart', import.meta.url), 'utf8');
-    assert.match(ledger, /freeze_reason/);
-    assert.match(ledger, /freeze_banner/);
+    assert.match(ledger, /rawReason == 'h_ratio'/);
+    assert.match(ledger, /freezeBanner\.contains\('h_ratio'\)/);
     assert.match(ledger, /Credits frozen \(\$reason\): confirmations elevated to \$confirmedNeed/);
   });
 

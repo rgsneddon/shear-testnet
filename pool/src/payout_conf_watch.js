@@ -10,7 +10,6 @@ import {
   emptyPolicyState,
   getpolicy,
   poolMerchantNeed,
-  H_RATIO_FREEZE,
 } from '../../crypto/confirm_policy.js';
 
 export function seedWatchState(published = {}) {
@@ -23,15 +22,14 @@ export function seedWatchState(published = {}) {
   s.frozen = !!published.frozen;
   s.freezeReason = String(published.freeze_reason || published.freezeReason || '');
   s.quietBlocks = Math.max(0, Math.floor(Number(published.quiet_blocks ?? published.quietBlocks) || 0));
-  s.hRatioRecoverBlocks = Math.max(0, Math.floor(Number(published.h_ratio_recover_blocks ?? published.hRatioRecoverBlocks) || 0));
-  s.hRatioLow = !!published.h_ratio_low
-    || !!published.hRatioLow
-    || s.h_ratio < H_RATIO_FREEZE
-    || (s.frozen && s.freezeReason === 'h_ratio');
-  s.hRatioPayoutHeld = !!published.h_ratio_payout_held
-    || !!published.hRatioPayoutHeld
-    || s.hRatioLow
-    || (s.frozen && s.freezeReason === 'h_ratio');
+  s.hRatioRecoverBlocks = 0;
+  s.hRatioLow = false;
+  s.hRatioPayoutHeld = false;
+  if (s.freezeReason === 'h_ratio') {
+    s.frozen = false;
+    s.freezeReason = '';
+    s.quietBlocks = 0;
+  }
   return s;
 }
 

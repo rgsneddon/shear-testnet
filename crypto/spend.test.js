@@ -2,7 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { levyNanos } from './levy.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, verifyReservePortalOpen } from './spend.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, spendPubFromTx, verifyReservePortalOpen } from './spend.js';
+import { sealNote } from './note.js';
+import { compactTx } from './chronoflux.js';
 import { newIdentity, destOpeningFromView, hash20FromAddress, silentPay, ed25519SeedOf, stealthSpendPrivate, recognizeSilentDest, ed25519PrivateFromSeed, ed25519RawPub, encodeDest } from './address.js';
 import { destCommitFromSpendPub } from './stealth_ed25519.js';
 import { generateKeyPairSync, createPublicKey, verify } from 'node:crypto';
@@ -42,6 +44,33 @@ describe('funded spend / no double-spend', () => {
     assert.equal(fundedDebit(vote), null);
     const funded = verifyFundedBody([vote], () => 0);
     assert.equal(funded.ok, true, funded.reason);
+  });
+
+  it('sealed compact lock with commit+valueProof and no spendPub opens the portal', () => {
+    const id = newIdentity();
+    const d20 = hash20FromAddress(id.address);
+    const note = sealNote(1, { dest20: d20, kind: 'lock' });
+    const sealed = compactTx({
+      kind: 'lock',
+      from: id.address,
+      to: id.address,
+      spendPub: id.spendPub.toString('hex'),
+      vin: [{ address: id.address, dest20: d20 }],
+      vout: [{ ...note, kind: 'lock', address: id.address }],
+    });
+    assert.equal(spendPubFromTx(sealed), null);
+    const o = sealed.vout[0];
+    assert.ok(o.commit);
+    assert.ok(o.valueProof);
+    const range = o.rangeProof;
+    delete o.rangeProof;
+    assert.equal(verifyReservePortalOpen(sealed), true);
+    const vp = o.valueProof;
+    delete o.valueProof;
+    assert.equal(verifyReservePortalOpen(sealed), false);
+    o.rangeProof = range;
+    assert.equal(verifyReservePortalOpen(sealed), true);
+    o.valueProof = vp;
   });
 
   it('debits amount plus levy from the sender', () => {

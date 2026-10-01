@@ -53,14 +53,191 @@ bool pendingReceiveThinPoll(Iterable<ShearTx> txs) => txs.any((t) =>
 /// A tip ahead of the last ingest must walk every seal up to that tip.
 /// A height-less pending row does not hide those seals. Once the book is
 /// caught up, the poll stays on the thin balance read.
+/// A pending receive by itself does not force the full pull. A tip that
+/// moved without a landing does.
 bool shouldFullSyncCredits({
   required bool hasPendingReceive,
   required bool historyBehindTip,
   bool openCollatePending = false,
+  bool tipMovedWithoutLanding = false,
 }) {
   if (openCollatePending) return true;
   if (historyBehindTip) return true;
-  return hasPendingReceive && false;
+  if (tipMovedWithoutLanding) return true;
+  return hasPendingReceive && tipMovedWithoutLanding;
+}
+
+/// Heights strictly after [before] through [tip], inclusive.
+List<int> tipGapHeights(int before, int tip) {
+  if (tip < 1 || tip <= before) return const [];
+  final start = before < 0 ? 1 : before + 1;
+  return [for (var h = start; h <= tip; h++) h];
+}
+
+/// One owner mined land already present on a node body, history row, or note.
+class NodeOwnerLand {
+  const NodeOwnerLand({
+    required this.height,
+    required this.dest,
+    required this.amount,
+    required this.kind,
+  });
+
+  final int height;
+  final String dest;
+  final double amount;
+  final String kind;
+}
+
+class TipGapPlan {
+  const TipGapPlan({required this.lands, required this.misses});
+
+  final List<NodeOwnerLand> lands;
+  final List<int> misses;
+}
+
+const _minedKinds = {'blockfound', 'coinbase', 'mine', 'block', 'pot'};
+
+bool _isMinedKind(String kind) => _minedKinds.contains(kind);
+
+String? _rowDest(Map row) {
+  for (final key in const ['dest', 'address', 'to', 'miner']) {
+    final v = row[key]?.toString() ?? '';
+    if (v.isNotEmpty) return v;
+  }
+  return null;
+}
+
+double _rowShe(Map row) {
+  final amount = row['amount'];
+  if (amount is num && amount > 0) return amount.toDouble();
+  final nanos = row['nanos'];
+  if (nanos is num && nanos > 0) return nanos / kUnitsPerShe;
+  final vp = row['valueProof'];
+  if (vp is Map) {
+    final v = vp['v'];
+    if (v is num && v > 0) return v / kUnitsPerShe;
+  }
+  return 0;
+}
+
+int _rowHeight(Map row) {
+  final h = row['height'];
+  if (h is num) return h.toInt();
+  return int.tryParse('${h ?? ''}') ?? 0;
+}
+
+/// Owner mined lands in node material. Pool balance and owed-π are ignored.
+List<NodeOwnerLand> ownerLandsFromNode({
+  required Iterable<Map> bodies,
+  required Iterable<Map> history,
+  required Iterable<Map> notes,
+  required Set<String> moneyDests,
+}) {
+  if (moneyDests.isEmpty) return const [];
+  final out = <NodeOwnerLand>[];
+  final seen = <String>{};
+
+  void add(int height, String dest, double amount, String kind) {
+    if (height < 1 || dest.isEmpty || amount <= 0) return;
+    if (!moneyDests.contains(dest)) return;
+    if (!_isMinedKind(kind)) return;
+    final id = '$height|$dest|$kind';
+    if (!seen.add(id)) return;
+    out.add(NodeOwnerLand(
+      height: height,
+      dest: dest,
+      amount: amount,
+      kind: kind == 'pot' || kind == 'block' || kind == 'coinbase' ? 'blockfound' : kind,
+    ));
+  }
+
+  for (final row in history) {
+    final kind = row['kind']?.toString() ?? '';
+    final dest = _rowDest(row);
+    if (dest == null) continue;
+    add(_rowHeight(row), dest, _rowShe(row), kind.isEmpty ? 'blockfound' : kind);
+  }
+  for (final row in notes) {
+    final kind = row['kind']?.toString() ?? (row['coinbase'] == true ? 'coinbase' : '');
+    final dest = _rowDest(row);
+    if (dest == null) continue;
+    if (kind == 'hash' || kind == 'dummy' || kind == 'send') continue;
+    add(_rowHeight(row), dest, _rowShe(row), kind.isEmpty ? 'coinbase' : kind);
+  }
+  for (final block in bodies) {
+    final h = _rowHeight(block);
+    if (h < 1) continue;
+    final miner = block['miner']?.toString() ?? '';
+    final txs = block['txs'];
+    if (txs is List) {
+      for (final tx in txs) {
+        if (tx is! Map) continue;
+        final coinbase = tx['coinbase'] == true;
+        for (final key in const ['vout', 'vouts', 'notes']) {
+          final list = tx[key];
+          if (list is! List) continue;
+          for (final item in list) {
+            if (item is! Map) continue;
+            final kind = item['kind']?.toString() ?? (coinbase ? 'coinbase' : '');
+            if (kind == 'hash' || kind == 'dummy') continue;
+            final dest = _rowDest(item) ?? (coinbase ? miner : null);
+            if (dest == null) continue;
+            if (!coinbase && !_isMinedKind(kind)) continue;
+            add(h, dest, _rowShe(item), kind.isEmpty ? 'coinbase' : kind);
+          }
+        }
+      }
+    }
+    for (final key in const ['notes', 'vouts', 'vout']) {
+      final list = block[key];
+      if (list is! List) continue;
+      for (final item in list) {
+        if (item is! Map) continue;
+        final kind = item['kind']?.toString() ?? 'coinbase';
+        if (kind == 'hash' || kind == 'dummy' || kind == 'send') continue;
+        final dest = _rowDest(item) ?? miner;
+        if (dest.isEmpty) continue;
+        add(h, dest, _rowShe(item), kind);
+      }
+    }
+  }
+  return out;
+}
+
+/// One row per height in (before, tip] that the node material names.
+/// A height with no node land is an honest miss. Pool figures are not a fill.
+TipGapPlan planTipGap({
+  required int before,
+  required int tip,
+  required List<NodeOwnerLand> opened,
+}) {
+  final byHeight = <int, List<NodeOwnerLand>>{};
+  for (final land in opened) {
+    (byHeight[land.height] ??= <NodeOwnerLand>[]).add(land);
+  }
+  final lands = <NodeOwnerLand>[];
+  final misses = <int>[];
+  for (final h in tipGapHeights(before, tip)) {
+    final rows = byHeight[h];
+    if (rows == null || rows.isEmpty) {
+      misses.add(h);
+    } else {
+      lands.addAll(rows);
+    }
+  }
+  return TipGapPlan(lands: lands, misses: misses);
+}
+
+/// History and notes may be marked caught-up only when no immature owner
+/// land from node material is still absent. [misses] is the empty-pull count.
+bool mayStampIngestCaughtUp({
+  required bool landsMissing,
+  required int misses,
+  int budget = 2,
+}) {
+  if (!landsMissing) return true;
+  return misses >= budget;
 }
 
 String _bytesHex(Uint8List b) =>
@@ -734,14 +911,14 @@ Future<ContinuumSendResult> submitContinuumSend({
   final need = amount + levy / kUnitsPerShe;
   final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
   if (painted + 1e-12 < need) {
-    return ContinuumSendResult(posted: false, to: candidate, remark: 'Not enough Continuum spendable');
+    return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
   }
   debugLastContinuumSendError = null;
   final mark = ledger.markPaintedBook();
   final gap = ledger.fundFromPaintedContinuum(restFrame, paymentCode: paymentCode, needShe: need);
   if (gap == null) {
     ledger.restorePaintedBook(mark);
-    return ContinuumSendResult(posted: false, to: candidate, remark: 'Not enough Continuum spendable');
+    return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
   }
   try {
     final paintedFrom = ledger.paintedFundDest;
@@ -1466,20 +1643,27 @@ class ShearLedger implements ReadProofSink {
   /// A failed proof and a bare `{v}` stay unverified. An unread height is skipped.
   @override
   void ingestReadOpen(ReadBlockOpen open, {required List blocks, String? dest}) {
+    rememberNodeChain(bodies: [
+      for (final b in blocks)
+        if (b is Map) Map<String, dynamic>.from(b),
+    ]);
     if (open.liveTip >= 1) noteLiveHeight(open.liveTip);
+    creditKnownNodeLands();
     final frame = (dest != null && dest.isNotEmpty) ? dest : (_restFrame ?? '');
-    if (frame.isEmpty) return;
-    final money = homeDest(frame);
-    if (!isDestAddress(money)) return;
+    if (frame.isEmpty && open.opened.every((n) => n.dest.isEmpty)) return;
+    final fallback = frame.isEmpty ? '' : (isDestAddress(frame) ? frame : homeDest(frame));
     final used = <Map>[];
+    var credited = false;
     for (final opened in open.opened) {
       if (!opened.verified || opened.nanos <= 0 || opened.commit.isEmpty) continue;
       final raw = _takeReadNote(blocks, opened, used);
       if (raw == null) continue;
+      final tagged = opened.dest.isNotEmpty ? opened.dest : (_rowDest(raw) ?? fallback);
+      if (tagged.isEmpty || !isDestAddress(tagged)) continue;
       final row = <String, dynamic>{
         ...raw,
-        'address': money,
-        'dest': money,
+        'address': tagged,
+        'dest': tagged,
         'height': opened.height,
         'nanos': opened.nanos,
         'verified': true,
@@ -1487,13 +1671,12 @@ class ShearLedger implements ReadProofSink {
       };
       rememberNote(row);
       _creditNoteToShearview(row);
+      rememberDest(tagged);
+      _proofCheckedDests.add(payKey(tagged));
+      credited = true;
     }
-    _unverifyFailedRead(open, money);
-    if (open.opened.any((n) => n.verified && n.nanos > 0)) {
-      rememberDest(money);
-      _proofCheckedDests.add(payKey(money));
-    }
-    recheckRestFrameSpendable(frame);
+    if (fallback.isNotEmpty) _unverifyFailedRead(open, fallback);
+    if (credited && frame.isNotEmpty) recheckRestFrameSpendable(frame);
   }
 
   /// The vout whose commit is the one [opened] verified. A failed or foreign
@@ -1761,6 +1944,171 @@ class ShearLedger implements ReadProofSink {
   int _settledHeight = 0;
   final Map<String, int> _historyAt = {};
   final Map<String, int> _notesAt = {};
+  /// Empty history/notes pulls while an immature owner land is still absent.
+  final Map<String, int> _ingestMisses = {};
+  static const ingestMissBudget = 2;
+  final List<Map<String, dynamic>> _nodeBodies = [];
+  final List<Map<String, dynamic>> _nodeHistoryRows = [];
+  final List<Map<String, dynamic>> _nodeNoteRows = [];
+  /// Heights in the latest tip gap with no owner land in node material.
+  final List<int> honestLandMisses = [];
+  bool tipAdvancedWithoutLanding = false;
+
+  /// Node compact bodies, history rows, and notes already opened. Replaces
+  /// each list that is passed. Pool balance is not stored here.
+  void rememberNodeChain({
+    List<Map<String, dynamic>>? bodies,
+    List<Map<String, dynamic>>? history,
+    List<Map<String, dynamic>>? notes,
+  }) {
+    if (bodies != null) {
+      _nodeBodies
+        ..clear()
+        ..addAll(bodies);
+    }
+    if (history != null) {
+      _nodeHistoryRows
+        ..clear()
+        ..addAll(history);
+    }
+    if (notes != null) {
+      _nodeNoteRows
+        ..clear()
+        ..addAll(notes);
+    }
+  }
+
+  bool historyStamped(String address) {
+    final key = payKey(address);
+    return _sealedHeight >= 1 && _historyAt[key] == _sealedHeight;
+  }
+
+  bool notesStamped(String address) {
+    final key = payKey(address);
+    return _sealedHeight >= 1 && _notesAt[key] == _sealedHeight;
+  }
+
+  /// Closure Apply, every mode. The next credit sync must pull node history
+  /// and notes again instead of trusting a caught-up stamp.
+  void onClosureApply() {
+    _historyAt.clear();
+    _notesAt.clear();
+    _ingestMisses.clear();
+  }
+
+  Set<String> _landDests({String? extraDest}) {
+    final dests = <String>{..._dests};
+    final frame = _restFrame;
+    if (frame != null && frame.isNotEmpty) {
+      final home = homeDest(frame);
+      if (home.isNotEmpty) dests.add(home);
+    }
+    if (extraDest != null && extraDest.isNotEmpty) dests.add(extraDest);
+    dests.removeWhere((d) => d.isEmpty || _isProgramVaultDest(d));
+    return dests;
+  }
+
+  List<NodeOwnerLand> _openedOwnerLands({String? extraDest}) {
+    return ownerLandsFromNode(
+      bodies: _nodeBodies,
+      history: _nodeHistoryRows,
+      notes: _nodeNoteRows,
+      moneyDests: _landDests(extraDest: extraDest),
+    );
+  }
+
+  bool immatureOwnerLandsMissing(String address) {
+    final key = payKey(address);
+    for (final land in _openedOwnerLands(extraDest: address)) {
+      if (land.dest != key && payKey(land.dest) != key && land.dest != address) continue;
+      if (confirmationsOf(land.height) >= spendableConfirmations) continue;
+      final have = _txs.any((t) =>
+          isWalletBlockKind(t.kind) &&
+          (t.height ?? 0) == land.height &&
+          (t.to == land.dest || payKey(t.to) == key));
+      if (!have) return true;
+    }
+    return false;
+  }
+
+  bool _stampIngest(String key, {bool count = true}) {
+    final missing = immatureOwnerLandsMissing(key);
+    final misses = _ingestMisses[key] ?? 0;
+    final ok = mayStampIngestCaughtUp(
+      landsMissing: missing,
+      misses: misses,
+      budget: ingestMissBudget,
+    );
+    if (!count) return ok;
+    if (!missing || ok) {
+      if (!missing) _ingestMisses.remove(key);
+    } else {
+      _ingestMisses[key] = misses + 1;
+    }
+    return ok;
+  }
+
+  String _ownerLandKey(String dest, int height) => '${payKey(dest)}|$height';
+
+  /// One immature row per node/history land. A tx inserted by history must
+  /// still enroll, or [settleTo] never moves it into spendable.
+  void _enrollOwnerLand({required String dest, required double amount, required int height}) {
+    if (height < 1 || amount <= 0 || dest.isEmpty) return;
+    final pk = payKey(dest);
+    final key = _ownerLandKey(pk, height);
+    if (_landSettled.contains(key) || _landEnrolled.contains(key)) return;
+    _landEnrolled.add(key);
+    final already = _immature.any((r) => r.height == height && payKey(r.dest) == pk);
+    if (!already) {
+      _immature.add((dest: pk, amount: amount, height: height));
+    }
+  }
+
+  void _ensureOwnerLandRow(NodeOwnerLand land) {
+    final id = 'blockfound:${land.height}:${land.dest}';
+    final have = _txs.any((t) =>
+        t.id == id ||
+        (isWalletBlockKind(t.kind) &&
+            (t.height ?? 0) == land.height &&
+            (t.to == land.dest || payKey(t.to) == payKey(land.dest))));
+    if (!have) {
+      _txs.add(ShearTx(
+        id: id,
+        from: 'coinbase',
+        to: land.dest,
+        amount: land.amount,
+        kind: land.kind == 'mine' ? 'mine' : 'blockfound',
+        height: land.height,
+        confirmed: false,
+      ));
+      rememberDest(land.dest);
+    }
+    _enrollOwnerLand(dest: land.dest, amount: land.amount, height: land.height);
+  }
+
+  /// Credit every node land in (before, tip]. A height with none is a miss.
+  void creditNodeLandsInGap({required int before, required int tip, String? extraDest}) {
+    final plan = planTipGap(
+      before: before,
+      tip: tip,
+      opened: _openedOwnerLands(extraDest: extraDest),
+    );
+    honestLandMisses
+      ..clear()
+      ..addAll(plan.misses);
+    for (final land in plan.lands) {
+      _ensureOwnerLandRow(land);
+    }
+  }
+
+  /// Lands already in node material, including heights outside the latest gap.
+  void creditKnownNodeLands() {
+    for (final land in _openedOwnerLands()) {
+      _ensureOwnerLandRow(land);
+    }
+  }
+
+  int _bookedLandCount() => _txs.where((t) => isWalletBlockKind(t.kind)).length;
   /// Failed note pulls while spendable is ahead of the sealed book.
   /// Stop the background retry after two misses at this height; Pay still forces one.
   final Map<String, int> _noteMisses = {};
@@ -1812,10 +2160,19 @@ class ShearLedger implements ReadProofSink {
     _externalShe.clear();
     _pending.clear();
     _immature.clear();
+    _landEnrolled.clear();
+    _landSettled.clear();
+    _settledNodeShe.clear();
     _owedPiDisplay = 0;
     _historyAt.clear();
     _notesAt.clear();
     _noteMisses.clear();
+    _ingestMisses.clear();
+    _nodeBodies.clear();
+    _nodeHistoryRows.clear();
+    _nodeNoteRows.clear();
+    honestLandMisses.clear();
+    tipAdvancedWithoutLanding = false;
     _openCollated = false;
     _sealedHeight = 0;
     _settledHeight = 0;
@@ -1852,6 +2209,7 @@ class ShearLedger implements ReadProofSink {
 
   /// One height for the user: live tip if the node is ahead of last paint.
   int get displayHeight {
+    if (pool != null && isPoolLedgerHost(pool!.baseUrl)) return _sealedHeight;
     final live = pool?.liveTip ?? 0;
     return live > _sealedHeight ? live : _sealedHeight;
   }
@@ -1904,6 +2262,12 @@ class ShearLedger implements ReadProofSink {
   /// One-line Continuum banner when the tip lacks vault-seal ancestry. Empty otherwise.
   String vaultSealBanner = '';
   final List<({String dest, double amount, int height})> _immature = [];
+  /// Node/history lands enrolled into [_immature], keyed `dest|height`.
+  final Set<String> _landEnrolled = {};
+  /// Those lands already moved into [_spendable] by [settleTo].
+  final Set<String> _landSettled = {};
+  /// Matured node-land SHE by dest. A balance snapshot must not erase this.
+  final Map<String, double> _settledNodeShe = {};
 
   /// Read lag-1 continuity from a 128-byte tip header. Next dest uses sealedHeight+1.
   void applyTipHeader(Uint8List header, {required int sealedHeight}) {
@@ -1952,8 +2316,15 @@ class ShearLedger implements ReadProofSink {
     }
     tipHeight = sealedHeight + 1;
     if (sealedHeight > _sealedHeight) _sealedHeight = sealedHeight;
-    if (prev > 0 && sealedHeight > prev) {
-      _bundleOpenRounds(height: prev + 1);
+    if (sealedHeight > prev) {
+      final beforeLands = _bookedLandCount();
+      if (prev > 0) {
+        _historyAt.clear();
+        _notesAt.clear();
+        _bundleOpenRounds(height: prev + 1);
+      }
+      creditNodeLandsInGap(before: prev, tip: sealedHeight);
+      tipAdvancedWithoutLanding = _bookedLandCount() == beforeLands;
     }
     settleTo(sealedHeight);
   }
@@ -2358,6 +2729,12 @@ class ShearLedger implements ReadProofSink {
         change: prev.change ?? tx.change,
         atMs: tx.atMs ?? prev.atMs,
       );
+      if (isWalletBlockKind(tx.kind) || isWalletBlockKind(prev.kind)) {
+        final h = (nextHeight ?? 0);
+        final amt = tx.amount > 0 ? tx.amount : prev.amount;
+        final dest = prev.to.isNotEmpty ? prev.to : tx.to;
+        _enrollOwnerLand(dest: dest, amount: amt, height: h);
+      }
       return;
     }
     if (_receiptKind(tx.kind)) {
@@ -2404,10 +2781,14 @@ class ShearLedger implements ReadProofSink {
           change: prev.change ?? tx.change,
           atMs: prev.atMs ?? tx.atMs,
         );
+        _enrollOwnerLand(dest: prev.to, amount: prev.amount > 0 ? prev.amount : tx.amount, height: prev.height ?? 0);
         return;
       }
     }
     _txs.add(tx);
+    if (isWalletBlockKind(tx.kind)) {
+      _enrollOwnerLand(dest: tx.to, amount: tx.amount, height: tx.height ?? 0);
+    }
     if (_receiptKind(tx.kind)) _collapseDuplicateReceipts();
     if (tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) rememberDest(tx.to);
   }
@@ -2570,13 +2951,20 @@ class ShearLedger implements ReadProofSink {
   }
 
   void applyPolicy(Map<String, dynamic> json) {
-    creditsFrozen = json['frozen'] == true;
+    final rawReason = json['freeze_reason']?.toString() ?? '';
+    final creditHold = rawReason == 'h_ratio';
+    creditsFrozen = json['frozen'] == true && !creditHold;
     final op = json['operational'];
-    if (op is Map && op['pool_merchant'] is num) {
+    if (!creditHold && op is Map && op['pool_merchant'] is num) {
       confirmedNeed = (op['pool_merchant'] as num).toInt();
     }
-    freezeReason = json['freeze_reason']?.toString() ?? '';
-    freezeBanner = json['freeze_banner']?.toString() ?? '';
+    freezeReason = creditHold ? '' : rawReason;
+    freezeBanner = creditHold ? '' : (json['freeze_banner']?.toString() ?? '');
+    if (freezeBanner.contains('h_ratio')) {
+      creditsFrozen = false;
+      freezeReason = '';
+      freezeBanner = '';
+    }
     if (!creditsFrozen) {
       freezeReason = '';
       freezeBanner = '';
@@ -2619,6 +3007,19 @@ class ShearLedger implements ReadProofSink {
       }
       _txs[i] = t.copyWith(confirmed: false);
       _immature.add((dest: t.to, amount: t.amount, height: h));
+      if (isWalletBlockKind(t.kind) && h >= 1) {
+        final pk = payKey(t.to);
+        final key = _ownerLandKey(pk, h);
+        if (_landSettled.remove(key)) {
+          final left = (_settledNodeShe[pk] ?? 0) - t.amount;
+          if (left <= 1e-12) {
+            _settledNodeShe.remove(pk);
+          } else {
+            _settledNodeShe[pk] = left;
+          }
+          _landEnrolled.add(key);
+        }
+      }
     }
     prune();
   }
@@ -2631,6 +3032,11 @@ class ShearLedger implements ReadProofSink {
     for (final row in _immature) {
       if (confirmationsOf(row.height, tip) >= spendableConfirmations) {
         _spendable[row.dest] = (_spendable[row.dest] ?? 0) + row.amount;
+        final pk = payKey(row.dest);
+        final key = _ownerLandKey(pk, row.height);
+        if (_landEnrolled.contains(key) && _landSettled.add(key)) {
+          _settledNodeShe[pk] = (_settledNodeShe[pk] ?? 0) + row.amount;
+        }
         if (row.height > _settledHeight) _settledHeight = row.height;
       } else {
         keep.add(row);
@@ -2663,6 +3069,7 @@ class ShearLedger implements ReadProofSink {
           t.kind != 'receive' &&
           t.kind != 'coinbase' &&
           t.kind != 'blockfound' &&
+          t.kind != 'mine' &&
           t.kind != 'pool-withdraw' &&
           t.kind != 'lock' &&
           t.kind != 'withdraw') continue;
@@ -2682,6 +3089,12 @@ class ShearLedger implements ReadProofSink {
   }
 
   Future<void> _applyStatsTip(Map<String, dynamic> json) async {
+    if (pool != null && isPoolLedgerHost(pool!.baseUrl)) return;
+    final paint = chainPaintFromNodeStats(json);
+    if (!paint.usable) {
+      applyTipHex('', sealedHeight: 0);
+      return;
+    }
     if (json['policy'] is Map) {
       applyPolicy(Map<String, dynamic>.from(json['policy'] as Map));
     } else if (json['frozen'] is bool) {
@@ -2692,14 +3105,15 @@ class ShearLedger implements ReadProofSink {
       });
     }
     applyVaultSeal(json);
-      final sealed = (json['height'] as num?)?.toInt() ?? 0;
-      final hex = json['header']?.toString() ?? '';
+      final sealed = paint.tip;
+      final hex = paint.headerHex;
       final genesis = pool!.genesisHex ?? await pool!.fetchGenesisHex();
       if (genesis != null && genesis.isNotEmpty) bindChainGenesis(genesis);
-      if (isUsableTipStats(json)) {
-        applyTipHex(hex, sealedHeight: sealed);
-      } else {
-        applyTipHex('', sealedHeight: 0);
+      applyTipHex(hex, sealedHeight: sealed);
+      if (json.containsKey('hashrate')) networkHashrate = paint.hashrate;
+      if (json.containsKey('circulatingNanos')) circulatingNanos = paint.circulatingNanos;
+      if (json.containsKey('bits') || json.containsKey('blockBits')) {
+        networkBits = paint.bits;
       }
       final raw = json['networkAvgBlockTimeMs'] ?? json['avgBlockTimeMs'];
       final avg = raw is num ? raw.round() : int.tryParse('$raw');
@@ -2709,7 +3123,6 @@ class ShearLedger implements ReadProofSink {
         final v = json[k];
         if (v is num && v >= 0) set(v.round());
       }
-      take('hashrate', (n) => networkHashrate = n);
       take('hashBonusNanos', (n) => liveHashBonusNanos = n);
       take('extraMintedNanos', (n) => extraMintedNanos = n);
       take('mintBankNanos', (n) => extraMintedNanos = n);
@@ -2723,8 +3136,6 @@ class ShearLedger implements ReadProofSink {
       }
       take('potEmittedNanos', (n) => potEmittedNanos = n);
       take('hashBonusEmittedNanos', (n) => hashBonusEmittedNanos = n);
-      take('bits', (n) => networkBits = n);
-      take('blockBits', (n) => networkBits = n);
       take('miners', (n) => networkMiners = n);
   }
 
@@ -2732,7 +3143,9 @@ class ShearLedger implements ReadProofSink {
     if (pool == null) return;
     final frame = _restFrame;
     if (frame != null && frame.isNotEmpty) {
-      pool!.sync?.proofDest = homeDest(frame);
+      final dests = moneyDests(frame).toList();
+      pool!.sync?.proofDests = dests;
+      pool!.sync?.proofDest = dests.isEmpty ? homeDest(frame) : dests.first;
     }
     try {
       final live = pool!.liveTip;
@@ -2824,14 +3237,27 @@ class ShearLedger implements ReadProofSink {
   double _shownSpendable(String key) {
     final cap = _verifiedConfirmedShe(key);
     final pk = payKey(key);
+    final debit = _lockDebitShe[pk] ?? 0;
+    double afterDebit(double she) {
+      final left = she - debit;
+      return left <= 1e-12 ? 0 : left;
+    }
     if (cap != null) {
       _unverifiedExternal.remove(pk);
       _externalShe.remove(pk);
-      final debit = _lockDebitShe[pk] ?? 0;
-      final left = cap - debit;
-      return left <= 1e-12 ? 0 : left;
+      final settled = _settledNodeShe[pk] ?? 0;
+      final shown = cap >= settled ? cap : settled;
+      return afterDebit(shown);
     }
-    return _bookMinusUnverified(pk, spendable(key));
+    final rest = _bookMinusUnverified(pk, spendable(key));
+    final settled = _settledNodeShe[pk] ?? 0;
+    if (settled <= 1e-12 || rest + 1e-12 >= settled) return afterDebit(rest);
+    final book = spendable(key);
+    final external = _externalShe[pk];
+    if (external != null && book + 1e-12 >= settled && external + 1e-12 >= book) {
+      return afterDebit(settled);
+    }
+    return afterDebit(rest);
   }
 
   void _noteLockDebit(String src, double needShe) {
@@ -2842,12 +3268,15 @@ class ShearLedger implements ReadProofSink {
 
   /// Null cap: the pool figure is not spendable. A confirmRound credit that
   /// settled locally is what remains after that figure is removed.
+  /// A recorded 0 is a zero pool figure, not a claim on coins landed later.
   double _bookMinusUnverified(String pk, double book) {
-    var external = _externalShe[pk] ?? 0.0;
-    if (external <= 0 && _unverifiedExternal.contains(pk)) external = book;
-    final local = book - external;
-    if (local <= 1e-12) return 0;
-    return local;
+    if (_externalShe.containsKey(pk)) {
+      final local = book - (_externalShe[pk] ?? 0);
+      if (local <= 1e-12) return 0;
+      return local;
+    }
+    if (_unverifiedExternal.contains(pk)) return 0;
+    return book;
   }
 
   /// Null when this dest has not presented a complete value proof.
@@ -2858,9 +3287,9 @@ class ShearLedger implements ReadProofSink {
     for (final n in _notes) {
       if (n['spent'] == true || n['verified'] != true) continue;
       if (!_noteOnDest(n, key)) continue;
-      final h = (n['height'] as num?)?.toInt();
-      if (h == null || h < 1) continue;
-      if (confirmationsOf(h) < spendableConfirmations) continue;
+      // Same floor as the Flow picker. A missing height is already in the
+      // mature book; a stamped height still waits for 9 confirmations.
+      if (!_noteMature(n)) continue;
       final she = _noteSheOf(n, 0);
       if (she <= 0) continue;
       total += she;
@@ -2995,7 +3424,7 @@ class ShearLedger implements ReadProofSink {
     String? paymentCode,
     bool bindSpendable = false,
   }) async {
-    if (pool == null) return false;
+    if (pool == null || isPoolLedgerHost(pool!.baseUrl)) return false;
     final seed = spendSeed;
     if (seed == null || seed.length != 32) return false;
     final dests = <String>{};
@@ -3024,7 +3453,7 @@ class ShearLedger implements ReadProofSink {
         final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
         final scanned = await scanSealedWireOffUi(raw);
         _applySealedScan(scanned);
-        _notesAt[key] = _sealedHeight;
+        if (_stampIngest(key, count: false)) _notesAt[key] = _sealedHeight;
       } catch (_) {
         failed = true;
       }
@@ -3207,9 +3636,12 @@ class ShearLedger implements ReadProofSink {
     if (writeOwed) _takeOwed(json, address);
     if (!isDestAddress(address)) return;
     _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
-    if (beforeHeight > 0 && tipSealed > beforeHeight) {
-      confirmRound(address: address, pot: 0, height: beforeHeight + 1);
-      settleTo(tipSealed);
+    if (tipSealed > beforeHeight) {
+      creditNodeLandsInGap(before: beforeHeight, tip: tipSealed, extraDest: address);
+      if (beforeHeight > 0 && tipSealed == beforeHeight + 1) {
+        confirmRound(address: address, pot: 0, height: beforeHeight + 1);
+      }
+      if (beforeHeight > 0) settleTo(tipSealed);
     }
     if (_isProgramVaultDest(address)) {
       _dropProgramVaults();
@@ -3223,14 +3655,19 @@ class ShearLedger implements ReadProofSink {
         return;
       }
       if (live > 0) rememberDest(key);
-      _spendable[key] = live;
       final pk = payKey(key);
-      if (_verifiedConfirmedShe(pk) == null) {
-        _unverifiedExternal.add(pk);
-        _externalShe[pk] = live;
-      } else {
+      final settled = _settledNodeShe[pk] ?? 0;
+      if (_verifiedConfirmedShe(pk) != null) {
         _unverifiedExternal.remove(pk);
         _externalShe.remove(pk);
+      } else if (settled > 1e-12) {
+        // A node balance number is not the coin. Leave the matured land.
+        _externalShe.remove(pk);
+        _unverifiedExternal.remove(pk);
+      } else {
+        _spendable[key] = live;
+        _unverifiedExternal.add(pk);
+        _externalShe[pk] = live;
       }
     }
   }
@@ -3311,7 +3748,7 @@ class ShearLedger implements ReadProofSink {
         if (!lag || (_noteMisses[key] ?? 0) >= 2) continue;
       }
       final seed = spendSeed;
-      if (seed != null && seed.length == 32 && pool != null) {
+      if (seed != null && seed.length == 32 && pool != null && !isPoolLedgerHost(pool!.baseUrl)) {
         try {
           final json = await pool!.notes(key);
           final rows = json['notes'];
@@ -3321,7 +3758,7 @@ class ShearLedger implements ReadProofSink {
               final scanned = await scanSealedWireOffUi(raw);
               _applySealedScan(scanned);
             }
-            _notesAt[key] = _sealedHeight;
+            if (_stampIngest(key, count: false)) _notesAt[key] = _sealedHeight;
             if (_ownsSealedOn(key)) {
               _noteMisses.remove(key);
             } else if (spendable(key) > 1e-12) {
@@ -3339,6 +3776,10 @@ class ShearLedger implements ReadProofSink {
         await syncHistory(key, openMemos: openMemos);
       } catch (_) {}
     }
+    // Node bodies and the history just pulled. A tip that did not move still
+    // credits every opened owner land. Pool balance is not in that material.
+    creditKnownNodeLands();
+    settleTo(_sealedHeight);
     // Opened coins with 9 confirmations are the book. The pre-notes snapshot
     // must not write a 0 or an inflated figure back over that sum. Without a
     // proof, the snapshot still caps a higher local pile. Vault dests stay out.
@@ -3348,10 +3789,28 @@ class ShearLedger implements ReadProofSink {
         continue;
       }
       final cap = _verifiedConfirmedShe(e.key);
-      if (cap != null) {
+      final floor = _settledNodeShe[e.key] ?? 0;
+      if (cap != null && floor <= 1e-12) {
         _spendable[e.key] = cap;
         _unverifiedExternal.remove(e.key);
         _externalShe.remove(e.key);
+        continue;
+      }
+      if (floor > 1e-12) {
+        final extra = _externalShe[e.key];
+        if (extra != null) {
+          final book = spendable(e.key);
+          final without = book - extra;
+          if (without > 1e-12) {
+            _spendable[e.key] = without < floor ? floor : without;
+          } else if (book + 1e-12 >= floor) {
+            _spendable[e.key] = floor;
+          }
+        } else if (cap != null && cap > spendable(e.key)) {
+          _spendable[e.key] = cap;
+        }
+        _externalShe.remove(e.key);
+        _unverifiedExternal.remove(e.key);
         continue;
       }
       final piled = spendable(e.key);
@@ -3388,6 +3847,7 @@ class ShearLedger implements ReadProofSink {
 
   Future<List<ShearTx>> syncHistory(String address, {bool openMemos = false}) async {
     if (pool == null) return ownerHistory(address);
+    if (isPoolLedgerHost(pool!.baseUrl)) return ownerHistory(address);
     final key = payKey(address);
     if (_historyAt[key] == _sealedHeight && !needsHistoryRefresh) {
       return ownerHistory(address);
@@ -3434,9 +3894,14 @@ class ShearLedger implements ReadProofSink {
       // Empty live history with a known credit is a miss (node stall on a
       // new block) — retry next poll instead of freezing Shearview.
       final named = parsed['named'] == true;
-      if (named || spendable(key) <= 0) {
+      if ((named || spendable(key) <= 0) && _stampIngest(key)) {
         _historyAt[key] = _sealedHeight;
       }
+      final histRows = <Map<String, dynamic>>[
+        for (final row in rows)
+          if (row is Map) Map<String, dynamic>.from(row),
+      ];
+      if (!isPoolLedgerHost(pool!.baseUrl)) rememberNodeChain(history: histRows);
     } catch (_) {}
     prune();
     return ownerHistory(address);
@@ -3923,6 +4388,7 @@ class ShearLedger implements ReadProofSink {
         return confirmationsOf(h) >= 1;
       }
       if (h < 1) {
+        if (isWalletBlockKind(t.kind)) return true;
         return !t.confirmed &&
             (t.kind == 'receive' ||
                 t.kind == 'send' ||
@@ -3930,6 +4396,7 @@ class ShearLedger implements ReadProofSink {
                 isOwnerLanding(t));
       }
       final confs = confirmationsOf(h);
+      if (isWalletBlockKind(t.kind)) return true;
       if (isOwnerLanding(t)) return confs >= 1;
       return confs >= continuumConfirmations;
     }).toList();
@@ -4012,7 +4479,12 @@ class ShearLedger implements ReadProofSink {
       }
       if (!t.confirmed && (t.kind == 'send' || t.kind == 'lock' || t.kind == 'vote')) return true;
       final h = t.height ?? 0;
-      if (h < 1) return t.kind == 'receive' && !t.confirmed;
+      if (h < 1) {
+        // Rollup paints block rows confirmed. The book row is still unconfirmed
+        // until a height is stamped and the maturity floor is met.
+        if (t.kind == 'blockfound' || t.kind == 'coinbase' || t.kind == 'mine') return true;
+        return t.kind == 'receive' && !t.confirmed;
+      }
       return confirmationsOf(h) < continuumConfirmations;
     }).toList();
     rows.sort((a, b) => (b.height ?? 0).compareTo(a.height ?? 0));
@@ -5105,7 +5577,7 @@ class ShearPoolClient {
         if (_pinned == null) _sync?.noteFailure();
         rethrow;
       }
-      if (_sync != null) _sync!.liveBase = kPublicPoolHttp;
+      // A send may try the pool host. The chain base stays on the node.
       return _postOnce(kPublicPoolHttp, path, body);
     } catch (_) {
       if (_pinned == null) _sync?.noteFailure();
@@ -5286,7 +5758,7 @@ class ShearPoolClient {
 }
 
 /// Tip lines the Windows binary prints for `--print-tip`.
-/// Default seeds are the local RPC, local pool, and the public pool.
+/// Default seeds are the local node RPC and the public node HTTP seeds.
 /// A refused loopback must not hide a live same-genesis height.
 Future<String> continuumTipReport({List<String>? seeds, HttpClient? http}) async {
   final clientHttp = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8));

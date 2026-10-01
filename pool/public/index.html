@@ -458,8 +458,9 @@
           </div>
         </div>
       </article>
-      <article class="panel-card"><div class="label">blockBits</div><div class="value" id="block-bits">—</div></article>
-      <article class="panel-card"><div class="label">shareBits</div><div class="value" id="share-bits">—</div></article>
+      <article class="panel-card"><div class="label">Consensus blockBits</div><div class="value" id="block-bits">—</div><p>Header next-work. Not share vardiff.</p></article>
+      <article class="panel-card"><div class="label">shareBits (vardiff)</div><div class="value" id="share-bits">—</div><p>Share target only. shareBits is not a retarget.</p></article>
+      <article class="panel-card"><div class="label">Average block time (sealed, all blocks)</div><div class="value" id="avg-block">—</div></article>
       <article class="panel-card"><div class="label">Uptime</div><div class="value" id="uptime">0s</div></article>
       <article class="panel-card"><div class="label">Last Block (pool)</div>
         <div class="value last-block-box" id="updated">
@@ -687,6 +688,22 @@
         setTimeout(function () { spark.remove(); }, 600);
       }
     }
+    function fmtAvgBlock(ms) {
+      const n = Number(ms);
+      if (!Number.isFinite(n) || n <= 0) return '—';
+      const sec = n / 1000;
+      if (sec < 120) return sec.toFixed(sec < 10 ? 2 : 1) + 's';
+      const m = Math.floor(sec / 60);
+      const s = Math.round(sec % 60);
+      return m + 'm ' + s + 's';
+    }
+    function paintAvgBlock(s) {
+      const el = document.getElementById('avg-block');
+      if (!el) return;
+      const net = s && Number(s.networkAvgBlockTimeMs);
+      const ms = (Number.isFinite(net) && net > 0) ? net : (s && s.avgBlockTimeMs);
+      el.textContent = fmtAvgBlock(ms);
+    }
     function paintLastBlock(s) {
       const read = document.getElementById('last-block-read');
       const needle = document.getElementById('last-block-needle');
@@ -798,6 +815,7 @@
       const shareBitsEl = document.getElementById('share-bits');
       if (blockBitsEl) blockBitsEl.textContent = (s && s.blockBits != null) ? String(s.blockBits) : '—';
       if (shareBitsEl) shareBitsEl.textContent = (s && s.shareBits != null) ? String(s.shareBits) : '—';
+      paintAvgBlock(s);
       if (boxDue('uptime', now)) document.getElementById('uptime').textContent = fmtUptime(s.uptimeMs);
       if (boxDue('last', now)) paintLastBlock(s);
       if (boxDue('miners', now)) {

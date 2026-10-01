@@ -18,8 +18,9 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
 - Miner pin: **ShearK-Miner 2.6** — https://github.com/rgsneddon/ShearK/releases/tag/2.6
-- Wallet pin: **0.65** (Continuum GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.65
-- Node pin: **Shear Sentinel v15** (product 15.0). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/v15
+- Wallet pin: **0.66** (Continuum GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.66
+- Node pin: **Shear Sentinel v16** (product 16.0). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/v16
+- Release note: [`docs/RELEASE-0.66-v16.md`](docs/RELEASE-0.66-v16.md) (PR #44 is `3dc91baf881fd570cfcfb94539cc956389655e0f`. The release commit on top of it is this head. `6054186` is quarantine.)
 - Stratum: `pool.shear.digital:1111`
 - P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v10`)
 - Site: https://shear.digital
@@ -87,7 +88,7 @@ test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall No
 make -C crypto/native
 ```
 
-`--print-config` must show `"version":"15.0"`, `"magic":"shear-testnet-v10"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
+`--print-config` must show `"version":"16.0"`, `"magic":"shear-testnet-v10"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
 
 ### Run
 

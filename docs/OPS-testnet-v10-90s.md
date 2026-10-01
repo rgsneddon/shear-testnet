@@ -30,9 +30,9 @@ Do this by hand on the fleet. This note is not a wipe command.
 
 1. Land the v10 law, magic, and fail-closed datadir check on every host before any process opens a book.
 2. Stop v9 miners. Do not point them at the new book.
-3. Start Shear Sentinel v15 on an empty `testnet-v10` datadir. Do not open a v9 or v8 chaindir.
+3. Start Shear Sentinel v16 on an empty `testnet-v10` datadir. Do not open a v9 or v8 chaindir.
 4. Start the pool on that empty book.
 5. Point ShearK-Miner 2.6 at the new pool. The miner pin stays 2.6.
-6. Continuum 0.65: reset the shewall onto `shear-testnet-v10`. A v9 shewall does not join this book.
+6. Continuum 0.66: reset the shewall onto `shear-testnet-v10`. A v9 shewall does not join this book.
 
 Product versions are not part of `consensusFingerprint()`.

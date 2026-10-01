@@ -106,15 +106,23 @@ Future<Map<String, dynamic>> openSessionEnvelope(
   };
 }
 
-/// Argon seal plus the shewall write. Production calls this from [Isolate.run].
-Future<Map<String, dynamic>> sealAndWriteSession(
-  String path,
+/// Argon seal of a session envelope. Does not touch the file. Production calls
+/// this from [Isolate.run]; [ShearSession.persist] writes only if this call is
+/// still the latest, so a slow seal cannot put an older biometrics flag back.
+Future<Map<String, dynamic>> sealSessionEnvelope(
   Map<String, dynamic> plain,
   String password,
   bool bio,
 ) async {
   final env = Map<String, dynamic>.from(await ShearLock.seal(plain, password));
   env['biometricsEnabled'] = bio;
+  return <String, dynamic>{
+    'env': env,
+    'stamp': identityHashCode(Isolate.current).toString(),
+  };
+}
+
+void writeSessionFile(String path, Map<String, dynamic> env) {
   final file = File(path);
   file.parent.createSync(recursive: true);
   file.writeAsStringSync(jsonEncode(env), flush: true);
@@ -123,10 +131,19 @@ Future<Map<String, dynamic>> sealAndWriteSession(
       Process.runSync('chmod', ['600', path]);
     } catch (_) {}
   }
-  return <String, dynamic>{
-    'env': env,
-    'stamp': identityHashCode(Isolate.current).toString(),
-  };
+}
+
+/// Argon seal plus the shewall write. Prefer [ShearSession.persist], which
+/// drops a stale seal instead of letting it overwrite a newer one.
+Future<Map<String, dynamic>> sealAndWriteSession(
+  String path,
+  Map<String, dynamic> plain,
+  String password,
+  bool bio,
+) async {
+  final sealed = await sealSessionEnvelope(plain, password, bio);
+  writeSessionFile(path, Map<String, dynamic>.from(sealed['env'] as Map));
+  return sealed;
 }
 
 String? walletPasswordError(String password, {String? confirm}) {
@@ -171,6 +188,7 @@ class ShearSession {
   bool sealed = false;
   Map<String, dynamic>? _envelope;
   String? _password;
+  int _persistGen = 0;
 
   bool get needsPasswordSet => !sealed;
   bool get needsUnlock => sealed && identity == null;
@@ -256,14 +274,20 @@ class ShearSession {
 
   Future<void> persist() async {
     if (!sealed || _password == null || identity == null) return;
+    final gen = ++_persistGen;
     final path = store.path;
     final plain = _plainBody();
     final password = _password!;
     final bio = biometricsEnabled;
     final sealedEnv = await Isolate.run(
-      () => sealAndWriteSession(path, plain, password, bio),
+      () => sealSessionEnvelope(plain, password, bio),
     );
-    _envelope = Map<String, dynamic>.from(sealedEnv['env'] as Map);
+    // The isolate must not write. A seal requested earlier can finish later
+    // and would put the old biometrics flag back on disk.
+    if (gen != _persistGen) return;
+    final env = Map<String, dynamic>.from(sealedEnv['env'] as Map);
+    writeSessionFile(path, env);
+    _envelope = env;
     debugSessionPersistStamp = sealedEnv['stamp'] as String;
   }
 

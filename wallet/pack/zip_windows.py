@@ -96,7 +96,16 @@ def main() -> int:
                 "pool/src/wallet_api.js",
                 "pool/src/hash_credit.js",
                 "pool/src/withdraw_state.js",
+                "pool/src/pool.js",
+                "pool/src/main.js",
+                "pool/src/admin.js",
+                "pool/src/pull_book.js",
+                "pool/src/auto_payout.js",
+                "pool/src/pool_ident.js",
+                "pool/src/share_vardiff.js",
+                "pool/src/totp_qr.js",
                 "contracts/Reserve.json",
+                "contracts/Reserve.sol",
                 "reserve/latest.json",
             ):
                 p = os.path.join(node_root, extra.replace("/", os.sep))
@@ -126,7 +135,7 @@ def main() -> int:
                     sys.exit(f"Continuum sidecar needs MinGW {dll} beside gcc")
                 z.write(src, f"runtime/{dll}")
             write_missing_required(z, node_root)
-            print("bundled Shear Sentinel v15 beside Continuum")
+            print("bundled Shear Sentinel v16 beside Continuum")
 
     size = os.path.getsize(out)
     names = zipfile.ZipFile(out).namelist()
@@ -139,7 +148,7 @@ def main() -> int:
     if EXE_NAME not in names:
         sys.exit(f"missing {EXE_NAME} at zip root")
     if "node/src/node.js" not in names:
-        sys.exit("Continuum zip must include node/src/node.js (Shear Sentinel v15 sidecar)")
+        sys.exit("Continuum zip must include node/src/node.js (Shear Sentinel v16 sidecar)")
     if "runtime/node.exe" not in names:
         sys.exit("Continuum zip must include runtime/node.exe")
     if "crypto/native/shearhash.node" not in names:

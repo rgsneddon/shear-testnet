@@ -10,7 +10,6 @@ import {
   D_MAX_FREEZE,
   D_MAX_RISK,
   FREEZE_CLEAR_BLOCKS,
-  H_RATIO_RECOVER_BLOCKS,
   REORG_WINDOW_MS,
   SIDE_LEAD_FREEZE_MS,
 } from '../../crypto/confirm_policy.js';
@@ -26,108 +25,69 @@ describe('pool payout confirmations', () => {
     assert.ok(PAYOUT_SWEEP_MS >= 60 * 60 * 1000);
   });
 
-  it('h_ratio below one half elevates to 60 and names that reason', () => {
+  it('h_ratio below one half does not elevate payout or name a credit hold', () => {
     const s = applySignals(emptyPolicyState(), { nowMs: 1, h_ratio: 0.49, side_lead: 0 });
     const p = getpolicy(s);
-    assert.equal(s.freezeReason, 'h_ratio');
-    assert.equal(operationalBands(s).pool_merchant, 60);
-    assert.equal(poolMerchantNeed(p), 60);
-    assert.equal(p.freeze_banner, 'Credits frozen (h_ratio): confirmations elevated to 60.');
-    assert.equal(p.operational.peer_small_flow, 24);
+    assert.equal(s.freezeReason, '');
+    assert.equal(s.frozen, false);
+    assert.equal(s.hRatioPayoutHeld, false);
+    assert.equal(operationalBands(s).pool_merchant, 12);
+    assert.equal(poolMerchantNeed(p), 12);
+    assert.equal(p.freeze_banner, '');
+    assert.equal(p.operational.peer_small_flow, 12);
     assert.equal(p.operational.consensus_spendable, 9);
+    assert.doesNotMatch(JSON.stringify(p), /Credits frozen \(h_ratio\)/);
   });
 
-  it('h_ratio stays at 60 until the shipped 20-block recovery, then returns to 12', () => {
+  it('a low h_ratio stays on the calm 12 band across blocks', () => {
     let s = applySignals(emptyPolicyState(), { nowMs: 1, h_ratio: 0.2, side_lead: 0 });
-    assert.equal(poolMerchantNeed(getpolicy(s)), 60);
+    assert.equal(poolMerchantNeed(getpolicy(s)), 12);
     s = applySignals(s, { nowMs: 2, h_ratio: 1, side_lead: 0 });
-    assert.equal(s.hRatioLow, true);
-    assert.equal(poolMerchantNeed(getpolicy(s)), 60);
-    for (let i = 0; i < FREEZE_CLEAR_BLOCKS - 1; i += 1) {
-      s = applySignals(s, { nowMs: 10 + i, h_ratio: 1, side_lead: 0, newBlock: true });
-      assert.equal(poolMerchantNeed(getpolicy(s)), 60);
-    }
-    s = applySignals(s, { nowMs: 100, h_ratio: 1, side_lead: 0, newBlock: true });
-    assert.equal(FREEZE_CLEAR_BLOCKS, 20);
-    assert.equal(H_RATIO_RECOVER_BLOCKS, 20);
-    assert.equal(s.frozen, false);
     assert.equal(s.hRatioLow, false);
     assert.equal(poolMerchantNeed(getpolicy(s)), 12);
-    assert.equal(getpolicy(s).freeze_banner, '');
+    for (let i = 0; i < FREEZE_CLEAR_BLOCKS; i += 1) {
+      s = applySignals(s, { nowMs: 10 + i, h_ratio: 1, side_lead: 0, newBlock: true });
+      assert.equal(poolMerchantNeed(getpolicy(s)), 12);
+      assert.equal(getpolicy(s).freeze_banner, '');
+    }
+    assert.equal(s.frozen, false);
+    assert.equal(s.hRatioPayoutHeld, false);
   });
 
-  it('a depth-1 reorg during h_ratio recovery keeps payout at 60 until the quiet clear', () => {
+  it('a depth-1 reorg does not invent an h_ratio credit hold', () => {
     let s = applySignals(emptyPolicyState(), { nowMs: 1, h_ratio: 0.2, side_lead: 0 });
-    s = applySignals(s, { nowMs: 2, h_ratio: 1, side_lead: 0 });
-    for (let i = 0; i < H_RATIO_RECOVER_BLOCKS - 5; i += 1) {
-      s = applySignals(s, { nowMs: 10 + i, h_ratio: 1, side_lead: 0, newBlock: true });
-    }
-    assert.equal(s.hRatioRecoverBlocks, 15);
-    assert.equal(s.quietBlocks, 15);
-    assert.equal(poolMerchantNeed(getpolicy(s)), 60);
-
     s = recordReorg(s, { depth: 1, atMs: 100 });
-    s = applySignals(s, { nowMs: 100, h_ratio: 1, side_lead: 0 });
+    s = applySignals(s, { nowMs: 100, h_ratio: 0.2, side_lead: 0 });
     assert.equal(s.d_max, 1);
-    assert.equal(s.quietBlocks, 0);
-    assert.equal(s.hRatioRecoverBlocks, 15);
-    assert.equal(s.freezeReason, 'h_ratio');
-
-    for (let i = 0; i < 5; i += 1) {
-      s = applySignals(s, { nowMs: 200 + i, h_ratio: 1, side_lead: 0, newBlock: true });
-      const p = getpolicy(s);
-      assert.equal(poolMerchantNeed(p), 60);
-      assert.equal(p.freeze_banner, 'Credits frozen (h_ratio): confirmations elevated to 60.');
-    }
-    assert.equal(s.hRatioLow, false);
-    assert.equal(s.d_max, 1);
-    assert.equal(s.frozen, true);
-    assert.equal(getpolicy(s).operational.peer_small_flow, 12);
-    assert.equal(getpolicy(s).operational.consensus_spendable, 9);
-
-    const later = 100 + REORG_WINDOW_MS + 1;
-    s = applySignals(s, { nowMs: later, h_ratio: 1, side_lead: 0 });
-    assert.equal(s.d_max, 0);
-    assert.equal(s.frozen, true);
-    assert.equal(poolMerchantNeed(getpolicy(s)), 60);
-    for (let i = 0; i < FREEZE_CLEAR_BLOCKS - 1; i += 1) {
-      s = applySignals(s, { nowMs: later + 10 + i, h_ratio: 1, side_lead: 0, newBlock: true });
-      assert.equal(poolMerchantNeed(getpolicy(s)), 60);
-      assert.equal(getpolicy(s).freeze_banner, 'Credits frozen (h_ratio): confirmations elevated to 60.');
-    }
-    s = applySignals(s, { nowMs: later + 100, h_ratio: 1, side_lead: 0, newBlock: true });
     assert.equal(s.frozen, false);
-    assert.equal(s.d_max, 0);
+    assert.equal(s.freezeReason, '');
     assert.equal(poolMerchantNeed(getpolicy(s)), 12);
     assert.equal(getpolicy(s).freeze_banner, '');
+    assert.equal(getpolicy(s).operational.consensus_spendable, 9);
   });
 
-  it('a held side lead after h_ratio recovery stays at 60 until the quiet clear', () => {
+  it('a held side lead freezes as a reorg signal and does not raise payout to 60', () => {
     let s = applySignals(emptyPolicyState(), { nowMs: 1, h_ratio: 0.2, side_lead: 0 });
-    assert.equal(s.freezeReason, 'h_ratio');
+    assert.equal(s.frozen, false);
     const t0 = 1_000;
-    for (let i = 0; i < H_RATIO_RECOVER_BLOCKS; i += 1) {
-      s = applySignals(s, { nowMs: t0 + i, h_ratio: 1, side_lead: 3, newBlock: true });
-    }
-    assert.equal(s.hRatioLow, false);
-    assert.equal(s.quietBlocks, 0);
-    assert.equal(s.frozen, true);
+    s = applySignals(s, { nowMs: t0, h_ratio: 1, side_lead: 3 });
     s = applySignals(s, { nowMs: t0 + SIDE_LEAD_FREEZE_MS + 1, h_ratio: 1, side_lead: 3 });
     assert.equal(s.freezeReason, 'side_lead');
-    assert.equal(s.quietBlocks, 0);
-    assert.equal(poolMerchantNeed(getpolicy(s)), 60);
-    assert.equal(getpolicy(s).freeze_banner, 'Credits frozen (side_lead): confirmations elevated to 60.');
-    const row = readingFromPublished(getpolicy(s), 60);
-    assert.equal(row.depth, 60);
+    assert.equal(poolMerchantNeed(getpolicy(s)), 12);
+    assert.equal(getpolicy(s).freeze_banner, 'Credits frozen (side_lead): confirmations elevated to 12.');
+    assert.doesNotMatch(getpolicy(s).freeze_banner, /h_ratio/);
+    const row = readingFromPublished(getpolicy(s), 12);
+    assert.equal(row.depth, 12);
     assert.equal(row.agree, true);
 
     s = applySignals(s, { nowMs: t0 + SIDE_LEAD_FREEZE_MS + 2, h_ratio: 1, side_lead: 0 });
     assert.equal(s.frozen, true);
-    assert.equal(poolMerchantNeed(getpolicy(s)), 60);
+    assert.equal(poolMerchantNeed(getpolicy(s)), 12);
     for (let i = 0; i < FREEZE_CLEAR_BLOCKS - 1; i += 1) {
       s = applySignals(s, { nowMs: t0 + SIDE_LEAD_FREEZE_MS + 10 + i, h_ratio: 1, side_lead: 0, newBlock: true });
-      assert.equal(poolMerchantNeed(getpolicy(s)), 60);
-      assert.match(getpolicy(s).freeze_banner, /elevated to 60/);
+      assert.equal(poolMerchantNeed(getpolicy(s)), 12);
+      assert.match(getpolicy(s).freeze_banner, /side_lead/);
+      assert.doesNotMatch(getpolicy(s).freeze_banner, /h_ratio/);
     }
     s = applySignals(s, { nowMs: t0 + SIDE_LEAD_FREEZE_MS + 100, h_ratio: 1, side_lead: 0, newBlock: true });
     assert.equal(s.frozen, false);
@@ -135,33 +95,25 @@ describe('pool payout confirmations', () => {
     assert.equal(getpolicy(s).freeze_banner, '');
   });
 
-  it('a depth-10 reorg on the h_ratio recovery block stays at 60 until the quiet clear', () => {
+  it('a depth-10 reorg freezes on d_max and does not use the old 60 credit ceiling', () => {
     let s = applySignals(emptyPolicyState(), { nowMs: 1, h_ratio: 0.2, side_lead: 0 });
-    s = applySignals(s, { nowMs: 2, h_ratio: 1, side_lead: 0 });
-    for (let i = 0; i < H_RATIO_RECOVER_BLOCKS - 1; i += 1) {
-      s = applySignals(s, { nowMs: 10 + i, h_ratio: 1, side_lead: 0, newBlock: true });
-    }
-    assert.equal(s.hRatioRecoverBlocks, 19);
-    assert.equal(s.hRatioLow, true);
+    assert.equal(s.hRatioPayoutHeld, false);
     const at = 10_000;
     s = recordReorg(s, { depth: D_MAX_FREEZE, atMs: at });
     s = applySignals(s, { nowMs: at, h_ratio: 1, side_lead: 0, newBlock: true });
-    assert.equal(s.hRatioLow, false);
     assert.equal(s.d_max, D_MAX_FREEZE);
     assert.equal(s.freezeReason, 'd_max');
-    assert.equal(s.quietBlocks, 0);
-    assert.equal(poolMerchantNeed(getpolicy(s)), 60);
-    assert.equal(getpolicy(s).freeze_banner, 'Credits frozen (d_max): confirmations elevated to 60.');
+    assert.equal(poolMerchantNeed(getpolicy(s)), 30);
+    assert.match(getpolicy(s).freeze_banner, /d_max/);
+    assert.doesNotMatch(getpolicy(s).freeze_banner, /h_ratio|elevated to 60/);
 
     const later = at + REORG_WINDOW_MS + 1;
     s = applySignals(s, { nowMs: later, h_ratio: 1, side_lead: 0 });
     assert.equal(s.d_max, 0);
     assert.equal(s.frozen, true);
-    assert.equal(poolMerchantNeed(getpolicy(s)), 60);
     for (let i = 0; i < FREEZE_CLEAR_BLOCKS - 1; i += 1) {
       s = applySignals(s, { nowMs: later + 10 + i, h_ratio: 1, side_lead: 0, newBlock: true });
-      assert.equal(poolMerchantNeed(getpolicy(s)), 60);
-      assert.match(getpolicy(s).freeze_banner, /elevated to 60/);
+      assert.doesNotMatch(getpolicy(s).freeze_banner, /h_ratio/);
     }
     s = applySignals(s, { nowMs: later + 100, h_ratio: 1, side_lead: 0, newBlock: true });
     assert.equal(s.frozen, false);
@@ -198,8 +150,9 @@ describe('pool payout confirmations', () => {
     assert.equal(calm.depth, 12);
     assert.equal(calm.freeze_banner, '');
     const low = stepPayoutWatch(emptyPolicyState(), { nowMs: 1, h_ratio: 0.39, side_lead: 0 });
-    assert.equal(low.depth, 60);
-    assert.equal(low.freeze_banner, 'Credits frozen (h_ratio): confirmations elevated to 60.');
+    assert.equal(low.depth, 12);
+    assert.equal(low.frozen, false);
+    assert.equal(low.freeze_banner, '');
     const seeded = seedWatchState({
       h_ratio: 1,
       d_max: 0,
@@ -208,9 +161,14 @@ describe('pool payout confirmations', () => {
       freeze_reason: 'h_ratio',
       quiet_blocks: 4,
       h_ratio_low: true,
+      h_ratio_payout_held: true,
     });
+    assert.equal(seeded.frozen, false);
+    assert.equal(seeded.freezeReason, '');
+    assert.equal(seeded.hRatioPayoutHeld, false);
     const held = stepPayoutWatch(seeded, { nowMs: 2, h_ratio: 1, side_lead: 0, newBlock: false });
-    assert.equal(held.depth, 60);
+    assert.equal(held.depth, 12);
+    assert.equal(held.freeze_banner, '');
     const row = readingFromPublished({
       h_ratio: 0.4,
       d_max: 0,
@@ -218,8 +176,9 @@ describe('pool payout confirmations', () => {
       frozen: true,
       freeze_reason: 'h_ratio',
     }, 60);
-    assert.equal(row.depth, 60);
-    assert.equal(row.agree, true);
-    assert.equal(row.freeze_reason, 'h_ratio');
+    assert.equal(row.depth, 12);
+    assert.equal(row.agree, false);
+    assert.equal(row.freeze_reason, '');
+    assert.equal(row.freeze_banner, '');
   });
 });

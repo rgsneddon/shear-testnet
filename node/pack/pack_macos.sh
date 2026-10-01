@@ -1,19 +1,19 @@
 #!/bin/sh
-# MacBook: Shear Sentinel zip for PRODUCT_VERSION 15.0 (not the Continuum .dmg).
+# MacBook: Shear Sentinel zip for PRODUCT_VERSION 16.0 (not the Continuum .dmg).
 #   npm ci
 #   sh node/pack/pack_macos.sh
-# Upload dist/shear-node-v15-macos.zip onto the existing GitHub release v15.
-# Do not pass --clobber. Do not upload onto v7, v9, v10, v12, or v14.
+# Upload dist/shear-node-v16-macos.zip onto the new GitHub release v16.
+# Do not pass --clobber. Do not upload onto v7, v9, v10, v12, v14, or v15.
 set -e
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 test -f crypto/asert.js
 PIN=$(sed -n "s/^export const PRODUCT_VERSION = '\\(.*\\)';/\\1/p" crypto/asert.js | head -1)
-if [ "$PIN" != "15.0" ]; then
-  echo "refusing pack: PRODUCT_VERSION is '$PIN', want 15.0" >&2
+if [ "$PIN" != "16.0" ]; then
+  echo "refusing pack: PRODUCT_VERSION is '$PIN', want 16.0" >&2
   exit 1
 fi
-LABEL=v15
+LABEL=v16
 if [ ! -d node_modules ]; then
   echo "missing node_modules — run npm ci before packing" >&2
   exit 1
@@ -53,10 +53,10 @@ macho = {
 if magic not in macho:
     sys.exit("shearhash.node is not Mach-O: " + magic.hex())
 text = z.read("crypto/asert.js").decode()
-if "PRODUCT_VERSION = '15.0'" not in text or "shear-testnet-v10" not in text:
-    sys.exit("packed asert.js is not Sentinel 15.0 on shear-testnet-v10")
+if "PRODUCT_VERSION = '16.0'" not in text or "shear-testnet-v10" not in text:
+    sys.exit("packed asert.js is not Sentinel 16.0 on shear-testnet-v10")
 print("darwin-ok", len(names))
 PY
 echo "ok dist/shear-node-$LABEL-macos.zip"
-echo "Upload onto the existing v15 release. Do not pass --clobber."
-echo "gh release upload v15 dist/shear-node-$LABEL-macos.zip --repo rgsneddon/shear-testnet"
+echo "Upload onto the new v16 release. Do not pass --clobber. Do not upload onto v15."
+echo "gh release upload v16 dist/shear-node-$LABEL-macos.zip --repo rgsneddon/shear-testnet"

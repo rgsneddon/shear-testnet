@@ -51,23 +51,23 @@ describe('upgradeable ingest fails do not freeze want', () => {
     const headers = [{ hash, height: 101, header: headerFor(prev) }];
     const now = 1_700_000_000_000;
     const rec = { failed: new Set(), softFailed: new Map() };
-    noteSoftFail(rec, hash, 'evm', now, '15.0');
-    assert.equal(failActive(rec, hash, now, '15.0'), true);
-    assert.equal(upgradeableHold(rec, headers, 100, now, '15.0'), hash);
+    noteSoftFail(rec, hash, 'evm', now, '16.0');
+    assert.equal(failActive(rec, hash, now, '16.0'), true);
+    assert.equal(upgradeableHold(rec, headers, 100, now, '16.0'), hash);
     const held = nextSequentialHeader({
       headers,
       localHeight: 100,
       localHash,
-      failed: activeFailSet(rec, now, '15.0'),
+      failed: activeFailSet(rec, now, '16.0'),
     });
     assert.equal(held, null);
     const later = now + SOFT_FAIL_TTL_MS;
-    assert.equal(failActive(rec, hash, later, '15.0'), false);
+    assert.equal(failActive(rec, hash, later, '16.0'), false);
     const resumed = nextSequentialHeader({
       headers,
       localHeight: 100,
       localHash,
-      failed: activeFailSet(rec, later, '15.0'),
+      failed: activeFailSet(rec, later, '16.0'),
     });
     assert.equal(resumed?.hash, hash);
     assert.equal(resumed?.height, 101);
@@ -76,8 +76,8 @@ describe('upgradeable ingest fails do not freeze want', () => {
   it('clears admit_membership when the pin changes and leaves merkle in failed', () => {
     const now = 1_700_000_000_000;
     const rec = { failed: new Set(['cc'.repeat(32)]), softFailed: new Map() };
-    noteSoftFail(rec, 'dd'.repeat(32), 'admit_membership', now, '15.0');
-    assert.equal(failActive(rec, 'dd'.repeat(32), now, '15.0'), true);
+    noteSoftFail(rec, 'dd'.repeat(32), 'admit_membership', now, '16.0');
+    assert.equal(failActive(rec, 'dd'.repeat(32), now, '16.0'), true);
     assert.equal(failActive(rec, 'dd'.repeat(32), now, '15.1'), false);
     assert.equal(rec.softFailed.has('dd'.repeat(32)), false);
     assert.equal(failActive(rec, 'cc'.repeat(32), now + SOFT_FAIL_TTL_MS * 10, '15.1'), true);

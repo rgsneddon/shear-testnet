@@ -10,11 +10,79 @@ import 'shear_identity.dart' show kBookMagic;
 export 'shear_identity.dart' show kBookMagic;
 
 /// Wallet default is the local node RPC. Public pool HTTP is an advanced toggle
-/// (`userUrl`) with the IP warning — never the stock send path.
+/// (`userUrl`) with the IP warning — never the stock send path, and never the
+/// chain ledger. Chain tip, bodies, history, and stats come from node seeds.
 const kWalletDefaultSeed = 'http://127.0.0.1:18332';
 const kLocalPoolHttp = 'http://127.0.0.1:8088';
 const kLocalNodeRpc = 'http://127.0.0.1:18332';
 const kPublicPoolHttp = 'https://pool.shear.digital';
+
+/// Public node HTTP. Pool hosts are not in this list.
+const kPublicNodeSeeds = <String>[
+  'https://p2p.shear.digital',
+  'https://r2r.shear.digital',
+  'https://b2b.shear.digital',
+];
+
+/// Pool stratum / HUD host. Not a chain source. A loopback test port is not this.
+bool isPoolLedgerHost(String? url) {
+  if (url == null || url.isEmpty) return false;
+  final u = Uri.tryParse(url);
+  if (u == null) return false;
+  final host = u.host.toLowerCase();
+  if (host == 'pool.shear.digital' || host.endsWith('.pool.shear.digital')) return true;
+  if (host == '127.0.0.1' || host == 'localhost' || host == '::1') {
+    return u.port == 8088;
+  }
+  return false;
+}
+
+/// Chain fields Continuum may paint. Missing node keys stay null (honest empty).
+class NodeChainPaint {
+  const NodeChainPaint({
+    this.tip = 0,
+    this.headerHex = '',
+    this.hashrate,
+    this.circulatingNanos,
+    this.bits,
+    this.usable = false,
+  });
+
+  final int tip;
+  final String headerHex;
+  final int? hashrate;
+  final int? circulatingNanos;
+  final int? bits;
+  final bool usable;
+}
+
+int? _chainStat(Map<String, dynamic> stats, String key) {
+  if (!stats.containsKey(key)) return null;
+  final v = stats[key];
+  if (v is num && v >= 0) return v.round();
+  return null;
+}
+
+/// Tip, hashrate, integral q, and bits from a node `/stats` body.
+/// Absent keys stay null. This does not read a pool payload.
+NodeChainPaint chainPaintFromNodeStats(Map<String, dynamic>? stats) {
+  if (stats == null || !isUsableTipStats(stats)) return const NodeChainPaint();
+  final bits = _chainStat(stats, 'bits') ?? _chainStat(stats, 'blockBits');
+  return NodeChainPaint(
+    tip: (stats['height'] as num).toInt(),
+    headerHex: stats['header']?.toString() ?? '',
+    hashrate: _chainStat(stats, 'hashrate'),
+    circulatingNanos: _chainStat(stats, 'circulatingNanos'),
+    bits: bits,
+    usable: true,
+  );
+}
+
+/// Pool JSON is not chain truth. Height, hashrate, q, and bits stay empty.
+NodeChainPaint chainPaintFromPoolPayload(Map<String, dynamic>? poolStats) {
+  if (poolStats == null) return const NodeChainPaint();
+  return const NodeChainPaint();
+}
 
 /// Loopback RPC only. Public pool HTTP is never send-ready (IP rule).
 bool isLocalRpcUrl(String? url) {
@@ -52,6 +120,22 @@ String walletSendBase(String? url) {
   return kPublicPoolHttp;
 }
 
+/// [name] occurs in [blob] and is not a prefix of a longer book number.
+/// `shear-testnet-v1` must not match `shear-testnet-v10`.
+bool _bookNameAt(String blob, String name) {
+  var from = 0;
+  while (from < blob.length) {
+    final at = blob.indexOf(name, from);
+    if (at < 0) return false;
+    final end = at + name.length;
+    final next = end < blob.length ? blob.codeUnitAt(end) : -1;
+    final moreDigits = next >= 0x30 && next <= 0x39;
+    if (!moreDigits) return true;
+    from = end;
+  }
+  return false;
+}
+
 /// True only for the live ADMITv2 book. A leftover v3/v2 node is dropped.
 bool isLiveBookStats(Map<String, dynamic> stats) {
   final blob = [
@@ -59,15 +143,17 @@ bool isLiveBookStats(Map<String, dynamic> stats) {
     stats['network'],
     stats['bookLawFingerprint'],
   ].map((e) => '${e ?? ''}').join(' ');
-  if ('${stats['magic'] ?? ''}' == 'shear-testnet-v6') return false;
-  if ('${stats['network'] ?? ''}' == 'shear-testnet-v6') return false;
-  if ('${stats['magic'] ?? ''}' == 'shear-testnet-v7') return false;
-  if ('${stats['network'] ?? ''}' == 'shear-testnet-v7') return false;
-  if (blob.contains('shear-testnet-v7')) return false;
-  if (blob.contains('shear-testnet-v3')) return false;
-  if (blob.contains('shear-testnet-v2')) return false;
-  if (blob.contains('shear-testnet-v1')) return false;
-  return blob.contains(kBookMagic);
+  const retired = <String>[
+    'shear-testnet-v1',
+    'shear-testnet-v2',
+    'shear-testnet-v3',
+    'shear-testnet-v6',
+    'shear-testnet-v7',
+  ];
+  for (final name in retired) {
+    if (_bookNameAt(blob, name)) return false;
+  }
+  return _bookNameAt(blob, kBookMagic);
 }
 
 /// Kept for call sites; same as [isLiveBookStats].
@@ -156,8 +242,11 @@ class ShearReadSync {
     this.jitter = const Duration(milliseconds: 400),
     Random? random,
   })  : seeds = List<String>.unmodifiable(_dedupe([
-          if (userUrl != null && userUrl.trim().isNotEmpty) userUrl,
-          if (seeds == null) ...[kLocalNodeRpc, kLocalPoolHttp, kPublicPoolHttp] else ...seeds,
+          if (userUrl != null && userUrl.trim().isNotEmpty && !isPoolLedgerHost(userUrl)) userUrl,
+          if (seeds == null)
+            ...[kLocalNodeRpc, ...kPublicNodeSeeds]
+          else
+            ...seeds.where((s) => !isPoolLedgerHost(s)),
         ])),
         _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8)),
         _rng = random ?? Random();
@@ -177,6 +266,9 @@ class ShearReadSync {
 
   /// Money dest whose seals are opened while compact pages arrive.
   String? proofDest;
+
+  /// Every money dest to open. A mining mailbox that is not [proofDest] still counts.
+  List<String> proofDests = const [];
 
   /// Receives each finished walk, including a prefix while the tip is ahead.
   ReadProofSink? proofSink;
@@ -545,11 +637,11 @@ class ShearReadSync {
       _readBlocks.add(row);
     }
     if (liveTip > sampledTip) sampledTip = liveTip;
-    final opened = await openReadBlockProofsOffUi(
+    final opened = await _openReadOffUi(
       blocks: _readBlocks,
       readHeights: Set<int>.from(_compactProven),
       liveTip: liveTip,
-      dest: dest ?? proofDest,
+      dest: dest,
       ibd: ibd,
     );
     lastOpen = opened;
@@ -557,7 +649,74 @@ class ShearReadSync {
     return opened;
   }
 
+  List<String> _destsForOpen(String? dest) {
+    final many = proofDests.where((d) => d.isNotEmpty).toList();
+    if (many.length > 1) return many;
+    if (many.length == 1) return many;
+    final one = dest ?? proofDest;
+    if (one != null && one.isNotEmpty) return [one];
+    return const [];
+  }
+
+  Future<ReadBlockOpen> _openReadOffUi({
+    required List blocks,
+    required Set<int> readHeights,
+    required int liveTip,
+    String? dest,
+    bool ibd = false,
+  }) async {
+    final dests = _destsForOpen(dest);
+    if (dests.length <= 1) {
+      return openReadBlockProofsOffUi(
+        blocks: blocks,
+        readHeights: readHeights,
+        liveTip: liveTip,
+        dest: dests.isEmpty ? dest : dests.first,
+        ibd: ibd,
+      );
+    }
+    final opened = <OpenedReadNote>[];
+    final unspendable = <UnspendableReadNote>[];
+    final order = <int>{};
+    var spendable = 0;
+    var catching = false;
+    for (final d in dests) {
+      final part = await openReadBlockProofsOffUi(
+        blocks: blocks,
+        readHeights: readHeights,
+        liveTip: liveTip,
+        dest: d,
+        ibd: ibd,
+      );
+      order.addAll(part.order);
+      catching = catching || part.catchingUp;
+      for (final n in part.opened) {
+        opened.add(OpenedReadNote(
+          height: n.height,
+          nanos: n.nanos,
+          verified: n.verified,
+          commit: n.commit,
+          dest: d,
+        ));
+        spendable += n.nanos;
+      }
+      unspendable.addAll(part.unspendable);
+    }
+    final heights = order.toList()..sort();
+    return ReadBlockOpen(
+      order: List<int>.unmodifiable(heights),
+      opened: List<OpenedReadNote>.unmodifiable(opened),
+      unspendable: List<UnspendableReadNote>.unmodifiable(unspendable),
+      catchingUp: catching,
+      deferredUntilSync: false,
+      spendableNanos: spendable,
+      ibd: ibd,
+      liveTip: liveTip,
+    );
+  }
+
   /// Connect bare walk over blocks already read. Same function Run node calls.
+  /// Opens every money dest in [proofDests], not only the home dest.
   ReadBlockOpen openConnectBare({
     required List blocks,
     required Set<int> readHeights,
@@ -565,11 +724,12 @@ class ShearReadSync {
     String? dest,
     bool ibd = false,
   }) {
-    final opened = openReadBlockProofs(
+    final dests = _destsForOpen(dest);
+    final opened = openReadBlockProofsForDests(
       blocks: blocks,
       readHeights: readHeights,
       liveTip: liveTip,
-      dest: dest ?? proofDest,
+      dests: dests,
       ibd: ibd,
     );
     lastOpen = opened;

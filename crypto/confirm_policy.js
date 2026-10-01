@@ -6,8 +6,6 @@ import { SPENDABLE_CONFIRMATIONS, MIN_CONFIRMS_POLICY, TARGET_BLOCK_INTERVAL_MS 
 
 export const CONSENSUS_MIN = SPENDABLE_CONFIRMATIONS;
 export const MERCHANT_DEFAULT = MIN_CONFIRMS_POLICY;
-/** Standing pool payout depth. Sixty is the freeze ceiling, not double this band. */
-export const POOL_PAYOUT_ELEVATED = 60;
 
 export const POLICY_BANDS = Object.freeze({
   ui_seen: 1,
@@ -61,8 +59,7 @@ export function recordReorg(state, { depth, atMs }) {
 function freezeReasonOf(s, sideLeadHeld) {
   if (s.d_max >= D_MAX_FREEZE) return 'd_max';
   if (sideLeadHeld) return 'side_lead';
-  if (s.h_ratio < H_RATIO_FREEZE) return 'h_ratio';
-  return s.freezeReason || '';
+  return '';
 }
 
 export function applySignals(state, {
@@ -87,18 +84,17 @@ export function applySignals(state, {
 
   s.reorg_risk = s.d_max >= D_MAX_RISK;
 
-  if (s.h_ratio < H_RATIO_FREEZE) {
-    s.hRatioLow = true;
-    s.hRatioRecoverBlocks = 0;
-  } else if (s.hRatioLow && newBlock) {
-    s.hRatioRecoverBlocks += 1;
-    if (s.hRatioRecoverBlocks >= H_RATIO_RECOVER_BLOCKS) {
-      s.hRatioLow = false;
-      s.hRatioRecoverBlocks = 0;
-    }
+  // h_ratio is a hashrate observation. It does not hold pool credits or raise confs.
+  s.hRatioLow = false;
+  s.hRatioRecoverBlocks = 0;
+  s.hRatioPayoutHeld = false;
+  if (s.freezeReason === 'h_ratio') {
+    s.frozen = false;
+    s.freezeReason = '';
+    s.quietBlocks = 0;
   }
 
-  const wantFreeze = s.d_max >= D_MAX_FREEZE || sideLeadHeld || s.h_ratio < H_RATIO_FREEZE;
+  const wantFreeze = s.d_max >= D_MAX_FREEZE || sideLeadHeld;
   if (wantFreeze) {
     s.frozen = true;
     s.freezeReason = freezeReasonOf(s, sideLeadHeld);
@@ -118,18 +114,11 @@ export function applySignals(state, {
     s.quietBlocks += 1;
   }
 
-  if (s.h_ratio < H_RATIO_FREEZE || s.hRatioLow) s.hRatioPayoutHeld = true;
-  if (!s.frozen && !s.hRatioLow && !(s.h_ratio < H_RATIO_FREEZE)) s.hRatioPayoutHeld = false;
-
   return s;
 }
 
 export function operationalBands(state) {
   const raise = !!(state?.reorg_risk || (state?.d_max || 0) >= D_MAX_RISK);
-  const twice = !!(state?.hRatioLow || (state?.h_ratio ?? 1) < H_RATIO_FREEZE);
-  // A later side lead or deep reorg can rename the freeze. The 60 ceiling stays
-  // until the quiet clear and the hash-ratio recovery have both finished.
-  const hRatioPayoutHeld = !!(state?.hRatioPayoutHeld || state?.h_ratio_payout_held);
   const out = {};
   for (const [k, v] of Object.entries(POLICY_BANDS)) {
     if (FLOOR_BANDS.has(k)) {
@@ -138,8 +127,6 @@ export function operationalBands(state) {
     }
     let n = v;
     if (raise) n = Math.max(n, 30);
-    if (twice && k !== 'pool_merchant') n *= 2;
-    if (k === 'pool_merchant' && (twice || hRatioPayoutHeld)) n = POOL_PAYOUT_ELEVATED;
     out[k] = n;
   }
   return out;
@@ -169,6 +156,7 @@ export function freezeBannerLine(policy) {
   const p = policy || {};
   if (!p.frozen) return '';
   const reason = String(p.freeze_reason || p.freezeReason || 'policy').trim() || 'policy';
+  if (reason === 'h_ratio') return '';
   const need = Number(p.operational?.pool_merchant ?? p.confirmedNeed);
   const n = Number.isFinite(need) && need > 0 ? need : POLICY_BANDS.pool_merchant;
   return `Credits frozen (${reason}): confirmations elevated to ${n}.`;

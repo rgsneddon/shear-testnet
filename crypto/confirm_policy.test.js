@@ -90,14 +90,16 @@ describe('dynamic raise and freeze', () => {
     assert.equal(s.freezeReason, 'side_lead');
   });
 
-  it('h_ratio < 0.5 doubles policy N and freezes; 9 stays 9', () => {
-    let s = applySignals(emptyPolicyState(), { nowMs: 1, h_ratio: 0.4, side_lead: 0 });
-    assert.equal(s.frozen, true);
-    assert.equal(s.freezeReason, 'h_ratio');
+  it('h_ratio < 0.5 does not freeze credits or move the 9 or 12 bands', () => {
+    const s = applySignals(emptyPolicyState(), { nowMs: 1, h_ratio: 0.4, side_lead: 0 });
+    assert.equal(s.frozen, false);
+    assert.equal(s.freezeReason, '');
+    assert.equal(s.hRatioPayoutHeld, false);
     const op = operationalBands(s);
-    assert.equal(op.pool_merchant, 60);
-    assert.equal(op.join_mark_paid, undefined);
+    assert.equal(op.pool_merchant, 12);
+    assert.equal(op.peer_small_flow, 12);
     assert.equal(op.consensus_spendable, 9);
+    assert.equal(getpolicy(s).freeze_banner, '');
   });
 
   it('freeze clears after 20 consecutive quiet blocks with d_max 0 and side_lead <= 0', () => {
@@ -195,7 +197,7 @@ describe('intended freeze policy from header work', () => {
     assert.equal(operationalBands(s).consensus_spendable, 9);
   });
 
-  it('farm-then-drop to ~0.39 freezes on h_ratio even when 90s tip advances and reorg_risk=false', () => {
+  it('farm-then-drop to ~0.39 does not freeze credits while the tip advances', () => {
     const blocks = [
       ...hourBlocks(nowMs, 3, 100),
       ...hourBlocks(nowMs, 2, 100),
@@ -209,21 +211,18 @@ describe('intended freeze policy from header work', () => {
     const s = applySignals(emptyPolicyState(), { nowMs, h_ratio: ratio, side_lead: 0 });
     assert.equal(s.reorg_risk, false);
     assert.equal(s.d_max, 0);
-    assert.equal(s.frozen, true);
-    assert.equal(s.freezeReason, 'h_ratio');
+    assert.equal(s.frozen, false);
+    assert.equal(s.freezeReason, '');
+    assert.equal(s.hRatioPayoutHeld, false);
     const p = getpolicy(s);
-    assert.equal(p.frozen, true);
-    assert.equal(p.freeze_reason, 'h_ratio');
-    assert.equal(p.operational.pool_merchant, 60);
-    assert.equal(p.operational.peer_small_flow, 24);
+    assert.equal(p.frozen, false);
+    assert.equal(p.freeze_reason, '');
+    assert.equal(p.h_ratio_payout_held, false);
+    assert.equal(p.operational.pool_merchant, 12);
+    assert.equal(p.operational.peer_small_flow, 12);
     assert.equal(p.operational.consensus_spendable, 9);
-    assert.equal(p.bands.pool_merchant, 12);
-    assert.match(p.freeze_banner, /h_ratio/);
-    assert.match(p.freeze_banner, /60/);
-    assert.equal(
-      p.freeze_banner,
-      'Credits frozen (h_ratio): confirmations elevated to 60.',
-    );
+    assert.equal(p.freeze_banner, '');
+    assert.doesNotMatch(p.freeze_banner, /h_ratio/);
   });
 
   it('24-bucket zero-pad does not freeze on an empty or single populated hour', () => {
@@ -269,7 +268,7 @@ describe('intended freeze policy from header work', () => {
 });
 
 describe('freeze banner line', () => {
-  it('is empty when unfrozen and names the reason plus elevated confirms when frozen', () => {
+  it('is empty when unfrozen and does not advertise an h_ratio credit hold', () => {
     assert.equal(freezeBannerLine({ frozen: false, freeze_reason: 'h_ratio' }), '');
     assert.equal(
       freezeBannerLine({
@@ -277,7 +276,15 @@ describe('freeze banner line', () => {
         freeze_reason: 'h_ratio',
         operational: { pool_merchant: 60 },
       }),
-      'Credits frozen (h_ratio): confirmations elevated to 60.',
+      '',
+    );
+    assert.equal(
+      freezeBannerLine({
+        frozen: true,
+        freeze_reason: 'side_lead',
+        operational: { pool_merchant: 12 },
+      }),
+      'Credits frozen (side_lead): confirmations elevated to 12.',
     );
     const src = fs.readFileSync(new URL('../node/src/store.js', import.meta.url), 'utf8');
     assert.match(src, /hourlyWorkBuckets/);
