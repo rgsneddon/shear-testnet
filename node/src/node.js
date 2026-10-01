@@ -136,6 +136,7 @@ export async function startNode({
   seeds = undefined,
   fluffDelayMs = null,
   network = process.env.SHEAR_NETWORK || MAGIC_TESTNET,
+  // SHEAR_FAST_SYNC=1: skip archival bodies (not share PoW). Peers still check header work.
   fastSync = process.argv.includes('--fast-sync')
     || String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
   solo = process.argv.includes('--solo')

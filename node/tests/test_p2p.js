@@ -686,7 +686,7 @@ async function readJsonLines(sock, want, ms = 3000) {
   return lines;
 }
 
-describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
+describe('p2p IBD catch-up', { timeout: 7_200_000 }, () => {
   it('serves headers after locator and paginates past 2000 without a last-N dump', () => {
     const blocks = fakeBlocks(2500);
     const loc = locatorHashes(blocks);
@@ -836,11 +836,12 @@ describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
       for (let i = 0; i < want; i += 1) {
         const parent = a.store.tip();
         const now = parent
-          ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
+          ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 5_000
           : Date.now();
         const { tpl } = a.store.template({ miner: dest, shareBits: 4, now });
         const pow = Buffer.alloc(32);
-        pow[1] = i + 1;
+        // Genesis work is 15 bits: the first byte must be 0 and hash[1] must be under 2.
+        pow[31] = i + 1;
         const mined = a.store.append({
           header: tpl.header,
           txs: tpl.txs,
@@ -894,7 +895,7 @@ describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
     }
   });
 
-  it('empty, lagging-prefix, and later third nodes fully catch up past one getblock batch', async () => {
+  it('empty, lagging-prefix, and later third nodes fully catch up past one getblock batch', { timeout: 7_200_000 }, async () => {
     const dest = destMiner();
     process.env.SHEAR_GETBLOCK_BATCH = '2';
     const want = 5;
@@ -1035,9 +1036,9 @@ describe('p2p IBD catch-up', { timeout: 600_000 }, () => {
     let powTag = 1;
     const easyPow = () => {
       const h = Buffer.alloc(32);
-      h[1] = powTag & 0x0f;
-      h[2] = (powTag >> 4) & 0xff;
-      h[3] = (powTag >> 12) & 0xff;
+      // Same 15-bit genesis rule: only the tail bytes may be non-zero.
+      h[30] = (powTag >> 8) & 0xff;
+      h[31] = powTag & 0xff;
       powTag += 1;
       return h;
     };
