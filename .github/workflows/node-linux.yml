@@ -27,6 +27,8 @@ jobs:
           cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
           cmake --build crypto/randomx/build -j"$(nproc)"
           make -C crypto/native shearhash.node
+      - name: Install node deps
+        run: npm ci
       - name: Pack linux, arch, fedora, opensuse
         env:
           SHEAR_NODE_PACK_LABEL: ${{ inputs.label }}
