@@ -9,11 +9,11 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './src/store.js';
-import { mineTemplate, shouldAdopt, verifyBlock, buildTemplate, GENESIS_PREV } from './src/chain.js';
+import { mineTemplate, shouldAdopt, verifyBlock, buildTemplate, retarget, GENESIS_PREV } from './src/chain.js';
 import { decodeHeader } from '../crypto/header.js';
 import { setHashBackend } from '../crypto/shear_hash.js';
 try { setHashBackend('jit'); } catch { /* interpreter */ }
-import { GENESIS_BITS_PACKED, bitsForBlock, SPENDABLE_CONFIRMATIONS, PI_SHE_NANOS, MAGIC_TESTNET } from '../crypto/asert.js';
+import { GENESIS_BITS_PACKED, SPENDABLE_CONFIRMATIONS, PI_SHE_NANOS, MAGIC_TESTNET } from '../crypto/asert.js';
 import { newIdentity, destOpeningFromView, freshStealthDest, encodeDest, ed25519SeedOf } from '../crypto/address.js';
 import { vaultDest } from '../crypto/flow_sheet.js';
 import { lockTx, voteTx, VOTE_INCREASE } from '../crypto/reserve_vault.js';
@@ -137,7 +137,7 @@ async function mineOne(store, dest, _bits, now) {
   let packed = GENESIS_BITS_PACKED;
   if (parent) {
     const ph = decodeHeader(Buffer.from(parent.header));
-    packed = bitsForBlock(ph.bits, ph.timestamp, stamp);
+    packed = retarget(store.blocks, stamp);
   }
   const t0 = Date.now();
   const { tpl } = store.template({ miner: dest, bits: packed, shareBits: 32, now: stamp });

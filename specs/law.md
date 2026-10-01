@@ -2,7 +2,7 @@
 
 Frozen numbers. `consensusFingerprint()` pins every line. A later flip is a new book.
 
-Network: `shear-testnet-v8` (privacy-class). Frozen `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant.
+Network: `shear-testnet-v10` (privacy-class). Frozen `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. v8 and v9 do not soft-merge. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant. invent-must-not-return is unchanged by the v10 cut.
 
 ## Numbers
 
@@ -18,7 +18,7 @@ Network: `shear-testnet-v8` (privacy-class). Frozen `shear-testnet-v6`, `shear-t
 | `SAMPLE_PRUNE_CONFIRMATIONS` | `1000` |
 | Reorg checkpoints | First frozen hash at height **1000** (prune floor), then every **400** blocks (bootstrap cadence). A heavier fork that replaces that hash is `reorg_checkpoint`. |
 | Vault seal | Same freeze: first at height **1000**, then every **400**. `vaultSeal` = Reserve commitment + checkpoint hash (optional vault-genesis hash). Forks that diverged before that freeze get no vault (`no_vault`) and cannot unlock the sealed pot. Adopt of a history that lacks seal ancestry is `reorg_vault_seal` (or `reorg_checkpoint` if the hash itself moved). The vault stays on the master chain from genesis; replay never wipes it. Tip **below 1000** has no seal yet. |
-| `GENESIS_BITS` | `15` (match asert.js; sized for ~200–400 H/s live testnet). Packed Q16.16 on the wire. Floor 4, ceiling 256. Step is `(T−seen)/τ` then ±2 farm lid on this book (`ASERT_EASE=2`). Mainnet ease cap is 1. Child bits use the parent solve interval, not the stamp of the block being mined. |
+| `GENESIS_BITS` | `15` day-0 seed only (match asert.js). Not a hashrate equilibrium and not `log2(H×90)`. Packed Q16.16 on the wire. Floor 4, ceiling 256. Ongoing step is `median11(log2(T/seen))*(T/tau)` with `τ=32T` (`ASERT_TAU_MS=2880000`). Testnet lid is ±1 (`ASERT_HARDEN=1`, `ASERT_EASE=1`). A non-stall gap cannot pack onto the floor (`ASERT_FLOOR=above-min-until-8tau`). Mainnet harden stays 6 and mainnet ease stays 1. Child bits use the sealed-header median, not the stamp of the block being mined. Hashrate fluctuates. 288 blocks is not a Ready bar. |
 | `LIVE_MIN_BITS` | `4` |
 | `MAX_BITS` | `256` |
 | `SHARE_FLOOR_BITS` | `8` |
@@ -39,7 +39,7 @@ Network: `shear-testnet-v8` (privacy-class). Frozen `shear-testnet-v6`, `shear-t
 Fingerprint also pins:
 
 ```
-NETWORK=shear-testnet-v8
+NETWORK=shear-testnet-v10
 FORK=work-then-lowhash
 HASH_FN=ShearHash-v3
 HASH_TX_LIVE=1
@@ -67,10 +67,11 @@ LEVY_CAP=0.001-SHE
 LEVY_SPLIT=50-50-finder-reserve
 ADMIT=ADMITv2
 BITS=q16.16
-ASERT_TAU_MS=90000
-ASERT_STEP=log2(T/seen)
-ASERT_HARDEN=6
-ASERT_EASE=2
+ASERT_TAU_MS=2880000
+ASERT_STEP=median11(log2(T/seen))*(T/tau)
+ASERT_HARDEN=1
+ASERT_EASE=1
+ASERT_FLOOR=above-min-until-8tau
 SHARE_FLOOR_BITS=8
 MAX_SHARES_PER_BLOCK=8192
 SPEND_SIG=ed25519-shear-spend-v1

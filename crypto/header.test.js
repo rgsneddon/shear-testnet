@@ -4,7 +4,7 @@ import { HEADER_LEN, shearHash, meetsTarget } from './shear_hash.js';
 import { encodeHeader, decodeHeader, setNonce, requiredJobFields } from './header.js';
 import { merkleRoot, EMPTY_ROOT, sampleLeaf } from './merkle.js';
 import { encodeAddress, isShearAddress, newIdentity } from './address.js';
-import { nextBits, GENESIS_BITS, LIVE_MIN_BITS, unpackBits } from './asert.js';
+import { nextBits, GENESIS_BITS, LIVE_MIN_BITS, unpackBits, ASERT_HALFLIFE_MS } from './asert.js';
 
 const z32 = Buffer.alloc(32);
 
@@ -86,8 +86,11 @@ describe('merkle + address + asert', () => {
     assert.ok(isShearAddress(again));
   });
 
-  it('ASERT eases when blocks are slow', () => {
+  it('a non-stall gap cannot park on the bits floor', () => {
     const next = unpackBits(nextBits(LIVE_MIN_BITS, 180_000));
-    assert.ok(next <= LIVE_MIN_BITS);
+    assert.ok(next > LIVE_MIN_BITS, `180s is under 8τ, got ${next}`);
+    assert.ok(next < LIVE_MIN_BITS + 0.001, `one ulp above the floor, got ${next}`);
+    const stalled = unpackBits(nextBits(LIVE_MIN_BITS, 8 * ASERT_HALFLIFE_MS));
+    assert.ok(stalled <= LIVE_MIN_BITS, `8τ stall may sit on the floor, got ${stalled}`);
   });
 });

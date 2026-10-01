@@ -22,7 +22,7 @@ try {
   process.exit(1);
 }
 
-const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v9');
+const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v10');
 fs.mkdirSync(dataDir, { recursive: true });
 const boot = bootPoolOperator({ dataDir });
 const miner = boot.miner
@@ -59,7 +59,8 @@ const pool = createPool({
   miner,
   operatorSpendKey: boot.operatorSpendKey,
   shareBits: Number(process.env.SHEAR_SHARE_BITS || SHARE_BITS_V2_START),
-  bits: Number(process.env.SHEAR_BITS || GENESIS_BITS_PACKED),
+  // SHEAR_BITS is not consensus next-work. Template voids caller bits.
+  bits: GENESIS_BITS_PACKED,
 });
 await pool.listen();
 // P2P listen, ShearHash, and getblock encode stay in the sidecar process.

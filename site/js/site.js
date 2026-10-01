@@ -87,7 +87,7 @@
     var pot = Number(j.blockSubsidyNanos) / NANOS;
     if (!Number.isFinite(pot) || pot <= 0) pot = 1;
     var targetMs = Number(j.targetBlockIntervalMs) || 90000;
-    var observed = j.avgBlockTimeMs || j.networkAvgBlockTimeMs;
+    var observed = j.networkAvgBlockTimeMs || j.avgBlockTimeMs;
     setText('nc-quantum', fmtShe(pot));
     setText('nc-flux', fmtShe(pot) + ' / ' + Math.round(targetMs / 1000) + ' s');
     setText('nc-observed', fmtSecs(observed));

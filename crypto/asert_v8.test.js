@@ -56,10 +56,12 @@ function meanGaps(store) {
 describe('shear-testnet-v8 pool and solo share the 90s rule', () => {
   it('a 90000 ms chain stays at genesis work and eight fast gaps from a later parent add a bit', () => {
     const live = consensusFingerprint();
-    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V9);
-    assert.match(live, /NETWORK=shear-testnet-v9/);
+    assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V9);
+    assert.equal(MAGIC_TESTNET_V9, 'shear-testnet-v9');
+    assert.match(live, /NETWORK=shear-testnet-v10/);
+    assert.doesNotMatch(live, /NETWORK=shear-testnet-v9/);
     assert.equal(live.includes('NETWORK=shear-testnet-v8'), false);
-    assert.notEqual(live, live.replaceAll('shear-testnet-v9', 'shear-testnet-v8'));
+    assert.notEqual(live, live.replaceAll('shear-testnet-v10', 'shear-testnet-v8'));
     assert.equal(MAGIC_TESTNET_V8, 'shear-testnet-v8');
     assert.equal(MAGIC_TESTNET_V7, 'shear-testnet-v7');
     assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V7);
@@ -101,8 +103,8 @@ describe('shear-testnet-v8 pool and solo share the 90s rule', () => {
     const seen = medianIntervalMs(gaps);
     const want = nextBits(tip.bits, seen);
     assert.equal(seen, 2_000);
-    assert.ok(unpackBits(want) >= unpackBits(parentBits) + 1);
-    assert.ok(unpackBits(want) >= GENESIS_BITS + 1);
+    assert.ok(unpackBits(want) > unpackBits(parentBits), `fast median must harden, got ${unpackBits(want)}`);
+    assert.ok(unpackBits(want) > GENESIS_BITS);
 
     const longNow = Number(tip.timestamp) + TARGET_BLOCK_INTERVAL_MS * 20;
     const eased = nextBits(tip.bits, longNow - Number(tip.timestamp));

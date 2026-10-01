@@ -869,8 +869,12 @@
       let bestH = -1;
       for (let i = 0; i < list.length; i += 1) {
         const o = list[i];
-        if (!o || isPendingRow(o)) continue;
+        if (!o) continue;
+        // Landed chain blocks only. Do not skip confirmation-pending rows:
+        // those are sealed; skipping them made Time jump multi-block gaps.
         const oh = Number(o.height) || 0;
+        if (oh < 1) continue;
+        if (oh === h - 1) return o;
         if (oh < h && oh > bestH) {
           bestH = oh;
           best = o;

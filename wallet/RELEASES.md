@@ -21,9 +21,9 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.64 (current)
+## 0.65 (current)
 
-Book `shear-testnet-v9`. Public tag **0.64** (store `0.64.0+89`). Node tag is `v14` (Shear Sentinel v14, product `14.0`). ShearK pin is **2.6**. Datadir leaf is `testnet-v9`. Tag **0.63** and node tag `v13` stay on the previous book. macOS `.dmg` stays the MacBook handoff.
+Book `shear-testnet-v10`. Public tag **0.65** (store `0.65.0+90`). Node tag is `v15` (Shear Sentinel v15, product `15.0`). ShearK pin is **2.6**. Datadir leaf is `testnet-v10`. Tag **0.64** and node tag `v14` stay on the previous book. macOS `.dmg` stays the MacBook handoff.
 
 ## 0.63
 

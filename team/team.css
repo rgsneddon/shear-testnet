@@ -113,3 +113,30 @@ body.team-page {
     margin-left: auto; margin-right: auto;
   }
 }
+
+.card-eval { border-color: rgba(139, 92, 246, 0.40); }
+.skeptic-circle {
+  position: relative;
+  width: 168px;
+  height: 168px;
+  margin: 0 auto;
+  flex-shrink: 0;
+}
+.skeptic-face {
+  position: absolute;
+  width: 68px;
+  height: 68px;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  background: #000;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.skeptic-face:nth-child(1) { top: 0; left: 50%; transform: translateX(-50%); }
+.skeptic-face:nth-child(2) { top: 50%; right: 0; transform: translateY(-50%); }
+.skeptic-face:nth-child(3) { bottom: 0; left: 50%; transform: translateX(-50%); }
+.skeptic-face:nth-child(4) { top: 50%; left: 0; transform: translateY(-50%); }
+@media (max-width: 640px) {
+  .skeptic-circle { width: 152px; height: 152px; }
+  .skeptic-face { width: 60px; height: 60px; }
+}

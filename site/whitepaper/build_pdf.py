@@ -115,7 +115,7 @@ def main() -> None:
     pdf.set_font("ShearSerif", "", 12)
     pdf.multi_cell(0, 6, "Shear project", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font("ShearSerif", "I", 11)
-    pdf.multi_cell(0, 6, "shear.digital  ·  Version 2.0 (testnet)  ·  Network magic shear-testnet-v9", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.multi_cell(0, 6, "shear.digital  ·  Version 2.0 (testnet)  ·  Network magic shear-testnet-v10", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(4)
 
     pdf.set_font("ShearSerif", "B", 11)
@@ -130,14 +130,14 @@ def main() -> None:
         "plus a per-dest hash bonus. DINS-DAG is that settlement: one mint, the spine pot plus hash nanos, once per "
         "eligible share. The only programme allowed to mint extra SHE is The Reserve. On this testnet a Reserve epoch "
         "is 4 days. Mainnet’s epoch length is 400 days, and mainnet is not live. This note states the goals and the "
-        "architecture of shear-testnet-v9.",
+        "architecture of shear-testnet-v10.",
     )
 
     pdf.set_font("ShearSerif", "", 10)
     pdf.multi_cell(
         0,
         5,
-        "Keywords: Shear, SHE, shear-testnet-v9, DINS-DAG, ShearHash-v3, RandomX, continuity-tethered Flow, Vortex, vort1, The Reserve, CPU mining",
+        "Keywords: Shear, SHE, shear-testnet-v10, DINS-DAG, ShearHash-v3, RandomX, continuity-tethered Flow, Vortex, vort1, The Reserve, CPU mining",
         new_x=XPos.LMARGIN,
         new_y=YPos.NEXT,
     )
@@ -163,7 +163,7 @@ def main() -> None:
     body(
         pdf,
         "The public sites — shear.digital, pool.shear.digital, explorer.shear.digital, mempool.shear.digital — "
-        "are the face of the testnet. Live magic is shear-testnet-v9. Mainnet shear-v1 is not live "
+        "are the face of the testnet. Live magic is shear-testnet-v10. Mainnet shear-v1 is not live "
         "and the public countdown is 30th October 2026 at 1400hrs UK time. "
         "Testnet balances can vanish. Treat them as a practice run.",
     )
@@ -214,7 +214,7 @@ def main() -> None:
     h2(pdf, "2.4  DINS-DAG")
     body(
         pdf,
-        "DINS-DAG is how shear-testnet-v9 settles a round. The consensus fingerprint of this book carries "
+        "DINS-DAG is how shear-testnet-v10 settles a round. The consensus fingerprint of this book carries "
         "DINS=pot+hash and ROOTA=pot-spine+dag-fluxset. Eligible shares are the blue set, sorted by share identity. "
         "Arrival order is stored and is not membership. Each eligible share is counted once. The mint on that seal is "
         "the spine pot plus the hash nanos of those shares. The same work is not paid again from a second hash leg. "
@@ -254,7 +254,7 @@ def main() -> None:
     h2(pdf, "2.7  Wallet")
     body(
         pdf,
-        "The wallet is a six-tab app, pin 0.64. Continuum is spendable balance, silent ID, and the eight-point confirmation vortex. "
+        "The wallet is a six-tab app, pin 0.65. Continuum is spendable balance, silent ID, and the eight-point confirmation vortex. "
         "Flow is send and receive. Resistance is Tx detail. Vortex is where programmes live. Shearview is "
         "the holder’s own explorer. Closure holds the rest-frame string and the shewall.bin export. The file plus "
         "the password restore the same wallet. There is no paper seed. Lose the password and the file does not open. "
@@ -295,14 +295,14 @@ def main() -> None:
         "Login is Copy dest as a bare ssa1. A typed suffix is optional. The explorer paints confirmed blocks, kinds, and proof-ok — no dest safari, no amount column. Ciphertext "
         "and rest-frame strings stay off that page. A node is the book: append, verify, P2P, and the GATE that lets "
         "native Flow and pinned Reserve bytecode land in the same block model. "
-        "Shipped P2P seeds are p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303, magic shear-testnet-v9. Wallet 0.64 reads a local node at 127.0.0.1:18332. "
+        "Shipped P2P seeds are p2p.shear.digital:30303, r2r.shear.digital:30303, b2b.shear.digital:30303, magic shear-testnet-v10. Wallet 0.65 reads a local node at 127.0.0.1:18332. "
         "After 1000 confirmations, sample rows prune; sealed txs stay. An optional latest-only snapshot is published at height 1000, then every 400 blocks.",
     )
 
     h1(pdf, "3.  Publication")
     body(
         pdf,
-        "This is a testnet preprint for shear-testnet-v9. Constants here match the live fingerprint: epoch pot from 1.00 SHE down to a 0.20 SHE floor, DINS-DAG as one pot-plus-hash mint, 10^-11 SHE per proven floor share "
+        "This is a testnet preprint for shear-testnet-v10. Constants here match the live fingerprint: epoch pot from 1.00 SHE down to a 0.20 SHE floor, DINS-DAG as one pot-plus-hash mint, 10^-11 SHE per proven floor share "
         "paid per hasher dest, nine-confirmation spendable floor, ASERT 90 s, ShearHash-v3 light, chain id 2701 for pool withdraw signatures. How-to pages — "
         "installing the wallet, pointing ShearK at the pool, opening The Reserve, minting a vort1 key — live at "
         "shear.digital/docs. The clients are the WALLET, MINER, and NODE buttons on shear.digital.",
@@ -323,7 +323,7 @@ def main() -> None:
         5,
         "Correspondence: shear.digital. Software under the MIT License, Copyright 2026 Shear. "
         "RandomX is vendored from tevador/RandomX v1.2.3 (BSD). Official miner ShearK-Miner 2.6. "
-        "Wallet pin at publication: 0.64.",
+        "Wallet pin at publication: 0.65.",
         new_x=XPos.LMARGIN,
         new_y=YPos.NEXT,
     )
@@ -331,7 +331,7 @@ def main() -> None:
     pdf.set_title("Shear: Continuity-settled Proof of Work")
     pdf.set_author("Shear")
     pdf.set_subject("Testnet whitepaper")
-    pdf.set_keywords("shear-testnet-v9 ADMITv2 wallet-0.64 ShearK-2.6 DINS-DAG ShearHash-v3 Vortex vort1 The Reserve")
+    pdf.set_keywords("shear-testnet-v10 ADMITv2 wallet-0.65 ShearK-2.6 DINS-DAG ShearHash-v3 Vortex vort1 The Reserve")
     pdf.set_creator("Shear whitepaper builder")
     OUT.write_bytes(pdf.output())
     print("wrote", OUT, OUT.stat().st_size)

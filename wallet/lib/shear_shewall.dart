@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -105,7 +106,21 @@ bool shewallNeedsMigrate(Uint8List env) {
   return true;
 }
 
-Future<Uint8List> sealShewallBin(Uint8List packed, String password) async {
+/// Stamp of the isolate that last ran Export Argon. Differs from the UI isolate.
+String debugShewallSealStamp = '';
+
+/// Stamp of the isolate that last opened a shewall.bin. Differs from the UI isolate.
+String debugShewallOpenStamp = '';
+
+Future<Map<String, dynamic>> _sealShewallOffUi(Uint8List packed, String password) async {
+  final bytes = await _sealShewallBinBody(packed, password);
+  return <String, dynamic>{
+    'bytes': bytes,
+    'stamp': identityHashCode(Isolate.current).toString(),
+  };
+}
+
+Future<Uint8List> _sealShewallBinBody(Uint8List packed, String password) async {
   final salt = _rand(16);
   final nonce = _rand(12);
   final key = await _argonKey(password, salt);
@@ -117,6 +132,14 @@ Future<Uint8List> sealShewallBin(Uint8List packed, String password) async {
     ...box.mac.bytes,
     ...box.cipherText,
   ]);
+}
+
+Future<Uint8List> sealShewallBin(Uint8List packed, String password) async {
+  final out = await Isolate.run(() => _sealShewallOffUi(packed, password));
+  debugShewallSealStamp = out['stamp'] as String;
+  final bytes = out['bytes'];
+  if (bytes is Uint8List) return bytes;
+  return Uint8List.fromList(List<int>.from(bytes as List));
 }
 
 Future<Uint8List> sealShewallBinPbkdf2(Uint8List packed, String password) async {
@@ -134,7 +157,23 @@ Future<Uint8List> sealShewallBinPbkdf2(Uint8List packed, String password) async 
   ]);
 }
 
+Future<Map<String, dynamic>> _openShewallOffUi(Uint8List env, String password) async {
+  final clear = await _openShewallBinBody(env, password);
+  return <String, dynamic>{
+    'clear': clear,
+    'stamp': identityHashCode(Isolate.current).toString(),
+  };
+}
+
 Future<Uint8List> openShewallBin(Uint8List env, String password) async {
+  final out = await Isolate.run(() => _openShewallOffUi(env, password));
+  debugShewallOpenStamp = out['stamp'] as String;
+  final clear = out['clear'];
+  if (clear is Uint8List) return clear;
+  return Uint8List.fromList(List<int>.from(clear as List));
+}
+
+Future<Uint8List> _openShewallBinBody(Uint8List env, String password) async {
   if (env.isNotEmpty && env[0] == 0x7b) throw const FormatException('json_refused');
   final v2 = utf8.encode(shewallEncKind);
   final v1 = utf8.encode(shewallEncKindV1);

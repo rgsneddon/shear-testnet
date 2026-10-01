@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'shear_read_open.dart';
 
@@ -169,6 +170,14 @@ void writeSavedNodeTip(String dataDir, int height) {
       .writeAsStringSync('${jsonEncode({'height': height})}\n');
 }
 
+Future<int> readSavedNodeTipOffUi(String dataDir) {
+  return Isolate.run(() => readSavedNodeTip(dataDir));
+}
+
+Future<void> writeSavedNodeTipOffUi(String dataDir, int height) {
+  return Isolate.run(() => writeSavedNodeTip(dataDir, height));
+}
+
 String closureChipLabel(ClosureSendMode mode) {
   switch (mode) {
     case ClosureSendMode.connectBare:
@@ -266,18 +275,18 @@ PackagedNode? resolvePackagedNode({String? override, String? besideDir}) {
   return PackagedNode(binary: legacy, workDir: besideDir);
 }
 
-/// Shared with Shear Sentinel v14. Windows: %APPDATA%\\Shear\\testnet-v9 (Roaming).
+/// Shared with Shear Sentinel v15. Windows: %APPDATA%\\Shear\\testnet-v10 (Roaming).
 String defaultShearBookDir() {
   final data = Platform.environment['SHEAR_DATA'];
   if (data != null && data.isNotEmpty) return data;
   if (Platform.isWindows) {
     final app = Platform.environment['APPDATA'];
     if (app != null && app.isNotEmpty) {
-      return '$app${Platform.pathSeparator}Shear${Platform.pathSeparator}testnet-v9';
+      return '$app${Platform.pathSeparator}Shear${Platform.pathSeparator}testnet-v10';
     }
   }
   final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
-  return '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v9';
+  return '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v10';
 }
 
 String closureNodeDataDir({String? override, required String besideDir}) {
@@ -288,7 +297,7 @@ String closureNodeDataDir({String? override, required String besideDir}) {
     return legacyBeside;
   }
   final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
-  final posix = '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v9';
+  final posix = '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v10';
   if (Platform.isWindows &&
       shared != posix &&
       closureDatadirEmpty(shared) &&
@@ -336,6 +345,12 @@ class ShearNodeSidecar {
   final bool Function()? datadirEmpty;
   final ClosureProcessStart? startProcess;
   final Future<void> Function()? onStop;
+
+  /// One Apply/Start/Stop at a time. A burst keeps the newest request.
+  int _applyEpoch = 0;
+  Future<void> _applyTail = Future<void>.value();
+  int debugApplyEntered = 0;
+  int debugApplyCoalesced = 0;
 
   /// Set when [nodeBinary] is a Node runtime and the Shear entry is [nodeScript].
   String? nodeScript;
@@ -506,15 +521,41 @@ class ShearNodeSidecar {
     progress = '';
   }
 
-  Future<void> stop() async {
+  Future<void> stop() {
+    return _enqueue(() async {
+      await _stopNow();
+      return '';
+    }).then((_) {});
+  }
+
+  Future<void> _stopNow() async {
     running = false;
     honest = false;
     listenPort = null;
     if (onStop != null) await onStop!();
   }
 
+  /// Start, Stop, and Apply share one gate. A newer request replaces one that
+  /// has not entered yet, and the gate always releases.
+  Future<String> _enqueue(Future<String> Function() body) {
+    final ticket = ++_applyEpoch;
+    final gate = _applyTail;
+    final result = gate.then((_) {
+      if (ticket != _applyEpoch) {
+        debugApplyCoalesced += 1;
+        return Future<String>.value('');
+      }
+      debugApplyEntered += 1;
+      return body();
+    });
+    _applyTail = result.then((_) {}, onError: (Object _, StackTrace __) {});
+    return result;
+  }
+
   /// Commits [pending]. Apply→A stops the sidecar immediately. B↔C restarts.
-  Future<String> apply() async {
+  Future<String> apply() => _enqueue(_applyBody);
+
+  Future<String> _applyBody() async {
     final ClosureSendMode next;
     switch (pending) {
       case ClosureSendMode.localNode:
@@ -526,7 +567,7 @@ class ShearNodeSidecar {
     }
     final prev = committed;
     if (next == ClosureSendMode.connectBare) {
-      await stop();
+      await _stopNow();
       committed = next;
       lastEnv = {};
       lastArgs = const [];
@@ -535,7 +576,7 @@ class ShearNodeSidecar {
     }
     if (prev != next) {
       progress = 'Restarting local node for new send path…';
-      await stop();
+      await _stopNow();
     }
     committed = next;
     final empty = datadirEmpty?.call() ?? emptyDatadir;
@@ -559,26 +600,30 @@ class ShearNodeSidecar {
   }
 
   /// Resistance Start. Resume the saved tip and request each later block. No tunnel.
-  Future<String> startResistanceNode() async {
+  Future<String> startResistanceNode() => _enqueue(_startResistanceBody);
+
+  Future<String> _startResistanceBody() async {
     select(ClosureSendMode.localNode);
     final empty = datadirEmpty?.call() ?? emptyDatadir;
-    final saved = reportedHeight > 0 ? reportedHeight : readSavedNodeTip(dataDir);
+    final saved = reportedHeight > 0 ? reportedHeight : await readSavedNodeTipOffUi(dataDir);
     if (running && committed == pending) {
       progress = empty && saved < 1 ? kResistanceEmptyCopy : resistanceResumeCopy(saved);
       return progress;
     }
-    final msg = await apply();
+    final msg = await _applyBody();
     if (!running) return msg;
     progress = empty ? kResistanceEmptyCopy : resistanceResumeCopy(saved);
     return progress;
   }
 
   /// Resistance Stop. Save the current tip and leave the book on disk. No tunnel.
-  Future<String> stopResistanceNode() async {
-    final saved = reportedHeight > 0 ? reportedHeight : readSavedNodeTip(dataDir);
-    if (saved > 0) writeSavedNodeTip(dataDir, saved);
+  Future<String> stopResistanceNode() => _enqueue(_stopResistanceBody);
+
+  Future<String> _stopResistanceBody() async {
+    final saved = reportedHeight > 0 ? reportedHeight : await readSavedNodeTipOffUi(dataDir);
+    if (saved > 0) await writeSavedNodeTipOffUi(dataDir, saved);
     select(ClosureSendMode.connectBare);
-    await apply();
+    await _applyBody();
     progress = resistanceStopCopy(saved);
     return progress;
   }

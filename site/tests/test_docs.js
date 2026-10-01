@@ -106,13 +106,13 @@ describe('shear.digital/docs', () => {
     assert.doesNotMatch(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
     assert.match(docs, /content\.js\?v=30/);
     for (const pack of [
-      'shear-wallet-0.64-windows.zip',
-      'shear-wallet-0.64-android.apk',
-      'shear-wallet-0.64-linux.zip',
-      'shear-wallet-0.64-archlinux.zip',
-      'shear-wallet-0.64-fedora.zip',
+      'shear-wallet-0.65-windows.zip',
+      'shear-wallet-0.65-android.apk',
+      'shear-wallet-0.65-linux.zip',
+      'shear-wallet-0.65-archlinux.zip',
+      'shear-wallet-0.65-fedora.zip',
     ]) {
-      const url = `releases/download/0.64/${pack}`;
+      const url = `releases/download/0.65/${pack}`;
       assert.match(docs, new RegExp(url.replace(/[.]/g, '\\.')));
       assert.match(content, new RegExp(url.replace(/[.]/g, '\\.')));
     }
@@ -123,9 +123,9 @@ describe('shear.digital/docs', () => {
     assert.match(content, /Remove vortice/);
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);
-    assert.match(content, /Wallet pin<\/th><td>0\.64/);
+    assert.match(content, /Wallet pin<\/th><td>0\.65/);
     assert.doesNotMatch(content, /Wallet pin<\/th><td>0\.55</);
-    assert.match(content, /Current pin is <strong>0\.64<\/strong>/);
+    assert.match(content, /Current pin is <strong>0\.65<\/strong>/);
     assert.doesNotMatch(content, /releases\/download\/0\.62\/shear-wallet-0\.62-macos\.dmg/);
     assert.doesNotMatch(docs, /releases\/download\/0\.62\/shear-wallet-0\.62-macos\.dmg/);
     assert.doesNotMatch(content, /shear-wallet-0\.55\.1-macos\.dmg/);
@@ -134,8 +134,8 @@ describe('shear.digital/docs', () => {
     assert.doesNotMatch(content, /Current pin is <strong>0\.33<\/strong>/);
     assert.doesNotMatch(content, /Wallet pin<\/th><td>0\.33/);
     const readme = fs.readFileSync(path.join(here, '../../README.md'), 'utf8');
-    assert.match(readme, /releases\/tag\/0\.64/);
-    assert.match(readme, /releases\/tag\/v14/);
+    assert.match(readme, /releases\/tag\/0\.65/);
+    assert.match(readme, /releases\/tag\/v15/);
     assert.doesNotMatch(readme, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(readme, /Wallet \*\*0\.33\*\*/);
     assert.match(content, /127\.0\.0\.1:18332/);
@@ -148,10 +148,10 @@ describe('shear.digital/docs', () => {
     assert.match(content, /blue set, sorted by identity/);
     assert.match(content, /not paid again from a second hash leg/);
     assert.match(content, /Connect bare/);
-    assert.match(content, /0\.63 is the previous public pack pin\. 0\.64 is this Continuum wallet\./);
+    assert.match(content, /0\.63 is the previous public pack pin\. 0\.65 is this Continuum wallet\./);
     assert.match(content, /node is the book/);
     assert.match(content, /password-sealed <code>shewall\.bin<\/code>/);
-    assert.match(content, /shear-testnet-v9/);
+    assert.match(content, /shear-testnet-v10/);
     assert.doesNotMatch(content, /shear-testnet-v6/);
     assert.doesNotMatch(content, /testnet-v6/);
     assert.match(content, /127\.0\.0\.1:1111/);
@@ -209,7 +209,7 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /Continuity-settled Proof of Work/);
     assert.match(paper, /HTML is canonical/);
     assert.match(paper, /id="pdf-stale"/);
-    assert.match(paper, /wallet 0\.64/);
+    assert.match(paper, /wallet 0\.65/);
     assert.doesNotMatch(paper, /wallet 0\.55/);
     assert.match(paper, /ShearK 2\.6/);
     assert.doesNotMatch(paper, /The builder still carries older ADMITv1/);
@@ -232,7 +232,7 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /Domain=\.shear\.digital/);
     assert.match(paper, /css\/saas-dark\.css/);
     assert.match(paper, /DINS-DAG/);
-    assert.match(paper, /shear-testnet-v9/);
+    assert.match(paper, /shear-testnet-v10/);
     assert.doesNotMatch(paper, /#eef3f8/);
     assert.doesNotMatch(paper, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
     assert.match(paper, /href="https:\/\/dag\.shear\.digital\/">DAG</);
@@ -246,7 +246,7 @@ describe('whitepaper.shear.digital', () => {
     assert.doesNotMatch(src, /pin 0\.32/);
     assert.doesNotMatch(src, /pin 0\.37/);
     assert.match(src, /ShearK-Miner 2\.6/);
-    assert.match(src, /pin 0\.64/);
+    assert.match(src, /pin 0\.65/);
     assert.doesNotMatch(src, /pin 0\.55/);
     assert.equal(pdf.includes(Buffer.from('The Join')), false);
     const hay = pdfHaystack(pdf);
@@ -257,8 +257,8 @@ describe('whitepaper.shear.digital', () => {
     assert.equal(hay.includes(Buffer.from('ShearK-Miner 1.6')), false);
     assert.equal(hay.includes(utf16be('ShearK-Miner 1.6')), false);
     assert.equal(hay.includes(Buffer.from('wallet 0.32')) || hay.includes(utf16be('wallet 0.32')) || hay.includes(utf16be('pin 0.32')), false);
-    assert.equal(pdf.includes(Buffer.from('shear-testnet-v9')), true);
-    assert.equal(pdf.includes(Buffer.from('wallet-0.64')), true);
+    assert.equal(pdf.includes(Buffer.from('shear-testnet-v10')), true);
+    assert.equal(pdf.includes(Buffer.from('wallet-0.65')), true);
     assert.match(paper, /30th October 2026 at 1400hrs UK time/);
     assert.doesNotMatch(paper, /1st October 2026/);
     assert.equal(pdf.includes(Buffer.from('ShearK-2.6')), true);

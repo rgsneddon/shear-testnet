@@ -56,7 +56,7 @@ export function createPullBook(dir) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'pull-book.json');
   const destByTag = new Map();
-  let state = { credits: [], pulled: [], lastPullMs: {}, found: {} };
+  let state = { credits: [], pulled: [], lastPullMs: {}, found: {}, finders: {} };
   let loaded = false;
   if (fs.existsSync(file)) {
     try {
@@ -66,6 +66,17 @@ export function createPullBook(dir) {
         for (const [k, v] of Object.entries(raw.found)) {
           const n = Math.floor(Number(v) || 0);
           if (k && n > 0) found[String(k).toLowerCase()] = n;
+        }
+      }
+      const finders = {};
+      if (raw?.finders && typeof raw.finders === 'object') {
+        for (const [k, v] of Object.entries(raw.finders)) {
+          const h = Math.floor(Number(k) || 0);
+          if (!(h >= 1) || !v) continue;
+          const tag = String(v.tag || '').trim().toLowerCase();
+          const worker = String(v.worker || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+          if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
+          finders[String(h)] = { tag, worker: worker || 'worker' };
         }
       }
       state = {
@@ -86,6 +97,7 @@ export function createPullBook(dir) {
         })) : [],
         lastPullMs: raw?.lastPullMs && typeof raw.lastPullMs === 'object' ? raw.lastPullMs : {},
         found,
+        finders,
       };
       loaded = true;
       if (raw?.dests && typeof raw.dests === 'object') {
@@ -102,7 +114,7 @@ export function createPullBook(dir) {
         if (c.tag && c.dest20 && !destByTag.get(c.tag)) destByTag.set(c.tag, destFrom20(c.dest20));
       }
     } catch {
-      state = { credits: [], pulled: [], lastPullMs: {}, found: {} };
+      state = { credits: [], pulled: [], lastPullMs: {}, found: {}, finders: {} };
     }
   }
 
@@ -139,6 +151,7 @@ export function createPullBook(dir) {
       })),
       lastPullMs: state.lastPullMs,
       found: state.found,
+      finders: state.finders || {},
       dests: Object.fromEntries([...destByTag].map(([k, v]) => [k, dest20Hex(v)])),
       sealsLifetime: sealsLifetime(),
     };
@@ -165,6 +178,7 @@ export function createPullBook(dir) {
     hashUnit = HASH_BONUS_NANOS,
     now = Date.now(),
     finderTag = '',
+    finderWorker = '',
   } = {}) {
     const list = (rows || []).filter((r) => r && r.tag && (Number(r.count) || 0) > 0);
     const total = list.reduce((a, r) => a + (Number(r.count) || 0), 0);
@@ -173,6 +187,11 @@ export function createPullBook(dir) {
     if (!total && !(hashByDest && hashByDest.size)) return { ok: false, reason: 'empty' };
     const finder = String(finderTag || '').trim().toLowerCase();
     if (finder) state.found[finder] = (Math.floor(Number(state.found[finder]) || 0) + 1);
+    if (finder && /^m[0-9a-f]{8}$/.test(finder)) {
+      if (!state.finders || typeof state.finders !== 'object') state.finders = {};
+      const w = String(finderWorker || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || 'worker';
+      state.finders[String(height)] = { tag: finder, worker: w };
+    }
     let left = pot;
     if (total && pot) {
       for (let i = 0; i < list.length; i += 1) {
@@ -489,8 +508,16 @@ export function createPullBook(dir) {
   }
 
   if (loaded) save();
+  function finderOf(height) {
+    const h = Math.floor(Number(height) || 0);
+    if (!(h >= 1) || !state.finders) return null;
+    const row = state.finders[String(h)];
+    if (!row || !row.tag) return null;
+    return { tag: String(row.tag), worker: String(row.worker || 'worker') };
+  }
+
   return {
     creditRound, view, viewByDest, takeConfirmed, destOf, bindDest, tags, hasTag, dueAuto, unpaidPotNanos,
-    sweepAuto, ledger, sealsLifetime, reconcile,
+    sweepAuto, ledger, sealsLifetime, reconcile, finderOf,
   };
 }

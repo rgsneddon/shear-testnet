@@ -71,8 +71,8 @@ export const PUBLIC_DIR = path.join(__dirname, '../public');
 const REPO_ROOT = path.join(__dirname, '../..');
 
 export function gitHeadOf(cwd = REPO_ROOT) {
-  const env = String(process.env.SHEAR_GIT_HEAD || '').trim();
-  if (/^[0-9a-f]{7,40}$/i.test(env)) return env.toLowerCase();
+  // The advertised head is this tree. SHEAR_GIT_HEAD must not label another book.
+  void process.env.SHEAR_GIT_HEAD;
   try {
     const gitDir = path.join(cwd, '.git');
     let head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
@@ -651,6 +651,38 @@ export function gateStratumLogin(params, { requireLoginAuth = false } = {}) {
   });
   if (!okAuth) return { ok: false, reason: 'need_auth', challenge: makeLoginChallenge() };
   return { ok: true, ...adm };
+}
+
+/** Height-flat and floor-dwell page after this long. Not a process restart. */
+export const TIP_STALL_MS = 15 * 60 * 1000;
+
+/**
+ * Pure. Alert and restamp when the tip is flat, or bits sit on the floor
+ * while finds are stalled, and hashrate, miners, or shares are above zero.
+ * restart is always false. Callers must not bounce the pool or the node.
+ */
+export function tipStallDecision({
+  now = 0,
+  heightSinceMs = 0,
+  bits = null,
+  lastFoundAt = 0,
+  hashrate = 0,
+  miners = 0,
+  shares = 0,
+  liveMinBits = LIVE_MIN_BITS,
+  stallMs = TIP_STALL_MS,
+} = {}) {
+  const activity = Number(hashrate) > 0 || Number(miners) > 0 || Number(shares) > 0;
+  const flatFor = Number(now) - Number(heightSinceMs);
+  const foundAgo = Number(now) - Number(lastFoundAt);
+  const heightFlat = Number.isFinite(flatFor) && flatFor > Number(stallMs);
+  const findsStalled = Number.isFinite(foundAgo) && foundAgo > Number(stallMs);
+  const atFloor = Number.isFinite(Number(bits)) && Number(bits) <= Number(liveMinBits) + 1e-9;
+  const restamp = activity && (heightFlat || (atFloor && (findsStalled || heightFlat)));
+  let reason = '';
+  if (restamp && atFloor && (findsStalled || heightFlat)) reason = 'floor_dwell';
+  else if (restamp) reason = 'tip_stall';
+  return { restamp, alert: restamp, restart: false, reason };
 }
 
 export const ALERT_CONCENTRATION = Number(process.env.SHEAR_ALERT_CONCENTRATION || 0.5) || 0.5;
@@ -1665,6 +1697,54 @@ export function createPool({
   }
 
   let lastIssueAt = 0;
+  let stallHeight = Number(store.tip()?.height || 0);
+  let stallHeightSince = Date.now();
+  let tipStallAlert = null;
+  function noteStallHeight(now = Date.now()) {
+    const h = Number(store.tip()?.height || 0);
+    if (h !== stallHeight) {
+      stallHeight = h;
+      stallHeightSince = now;
+    }
+  }
+  function watchTipStall(now = Date.now(), probe = null) {
+    if (paused && !probe) {
+      return { restamp: false, alert: false, restart: false, reason: '', restamped: false };
+    }
+    noteStallHeight(now);
+    const rows = [...miners.values()];
+    const live = {
+      now,
+      heightSinceMs: stallHeightSince,
+      bits: displayBits(blockBitsNow()),
+      lastFoundAt: Number(stats.lastFoundAt || 0),
+      hashrate: rows.reduce((a, m) => a + (Number(m.hashrate) || 0), 0),
+      miners: rows.length,
+      shares: Number(stats.accepted || 0),
+    };
+    const decision = tipStallDecision(probe ? { ...live, ...probe, now: probe.now ?? now } : live);
+    if (!decision.restamp) {
+      tipStallAlert = null;
+      return { ...decision, restamped: false };
+    }
+    tipStallAlert = { at: now, reason: decision.reason };
+    console.error(JSON.stringify({
+      event: 'tip_stall_restamp',
+      reason: decision.reason,
+      bits: probe?.bits ?? live.bits,
+      hashrate: probe?.hashrate ?? live.hashrate,
+      miners: probe?.miners ?? live.miners,
+      shares: probe?.shares ?? live.shares,
+    }));
+    const job = issueJob(shareBits, { force: true });
+    if (job) broadcastJob(job);
+    return {
+      ...decision,
+      restamped: !!job,
+      jobId: job ? String(job.jobId || '') : '',
+      blockBits: job ? Number(job.blockBits || job.bits) : null,
+    };
+  }
   function resetOpenRound({ sealed = false } = {}) {
     if (paused) return lastJob;
     if (!sealed) {
@@ -1701,6 +1781,7 @@ export function createPool({
       resetOpenRound();
     });
     store.on('tip', (t) => {
+      noteStallHeight(Date.now());
       if (sealing || t?.reorg) return;
       const tipHash = store.tip()
         ? Buffer.from(store.tip().hash).toString('hex')
@@ -1772,7 +1853,6 @@ export function createPool({
       || poolFeeDest();
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
-    const chainLen = (store.blocks || []).length;
     // Block target is consensus next-work for this parent (retarget → nextBits).
     // `bits` / lockBits may size an empty book only. A live parent never
     // keeps that override. A share that misses the issued target is not a block.
@@ -1784,7 +1864,6 @@ export function createPool({
       shareBits: sb,
       shareBatch: lag1Shares,
       poolDest: poolPay,
-      ...(chainLen >= 1 ? {} : { bits }),
       wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
     });
     const gate = gateJob(job);
@@ -1904,6 +1983,7 @@ export function createPool({
     return lastJob;
   }
   function maybeRestampJob() {
+    watchTipStall();
     if (paused) return lastJob;
     if (!lastJob) return lastJob;
     const now = Date.now();
@@ -2174,6 +2254,7 @@ export function createPool({
               hashByDest: pullBookHashLeg(hashPays),
               hashUnit: unit,
               finderTag: publicMinerTag(session?.login || session?.workerKey),
+              finderWorker: publicWorkerName(session?.workerKey || session?.login),
             },
           );
         } catch {
@@ -2491,14 +2572,20 @@ export function createPool({
       shareBlockRatio: (Number(stats.blocks) || 0) > 0
         ? (Number(stats.accepted) || 0) / Number(stats.blocks)
         : 0,
-      alerts: statsAlerts({
-        topDestSharePct: topDestSharePct(workers),
-        shareBlockRatio: (Number(stats.blocks) || 0) > 0
-          ? (Number(stats.accepted) || 0) / Number(stats.blocks)
-          : 0,
-        stratumBind,
-        requireLoginAuth,
-      }),
+      alerts: {
+        ...statsAlerts({
+          topDestSharePct: topDestSharePct(workers),
+          shareBlockRatio: (Number(stats.blocks) || 0) > 0
+            ? (Number(stats.accepted) || 0) / Number(stats.blocks)
+            : 0,
+          stratumBind,
+          requireLoginAuth,
+        }),
+        tipStall: !!tipStallAlert,
+        tipStallReason: tipStallAlert?.reason || '',
+      },
+      blockBitsLabel: 'consensus blockBits (median11 next-work). Not share vardiff.',
+      shareBitsLabel: 'shareBits (vardiff). Not a retarget.',
       stratumConfigSource: stratumConfigSourceOf({ bind: stratumBind, requireLoginAuth }),
       stratumCleartext: true,
       stratumCleartextWarning: 'Stratum is cleartext TCP unless TLS is configured in front of SHEAR_STRATUM_BIND.',
@@ -2561,7 +2648,28 @@ export function createPool({
         connected: true,
         roundHashes: r.count,
       })),
-      recentTxs: poolRecentBlockTxs(store, 10),
+      recentTxs: poolRecentBlockTxs(store, 10).map((t) => {
+        const h = Number(t?.height) || 0;
+        const stored = (typeof pullBook.finderOf === 'function') ? pullBook.finderOf(h) : null;
+        let tag = stored?.tag || '';
+        let worker = stored?.worker || '';
+        if (!tag && h >= 1) {
+          const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
+          const b = blocks.find((x) => Number(x?.height) === h);
+          if (b?.miner) tag = publicMinerTag(b.miner);
+        }
+        if (tag && !worker) {
+          const live = minerByTag(tag);
+          const names = new Set();
+          for (const m of live) names.add(publicWorkerName(m.workerKey || m.login));
+          if (names.size === 1) worker = [...names][0];
+        }
+        return {
+          ...t,
+          finder: tag || '',
+          finderWorker: worker || '',
+        };
+      }),
     };
   }
   paintStatsSnap();
@@ -3346,6 +3454,7 @@ export function createPool({
     setP2p,
     setNetworkView,
     restampJob: restampLiveHeader,
+    watchTipStall,
     sweepIdle: sweepIdleMiners,
     get pendingPayout() { return pendingPayout; },
     get prevJob() { return prevJob; },

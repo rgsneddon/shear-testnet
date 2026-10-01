@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
@@ -14,6 +15,119 @@ import 'shear_shewall.dart';
 export 'shear_shewall.dart' show shewallName;
 
 const kMinWalletPasswordLen = 8;
+
+/// Stamp of the isolate that last sealed and wrote shewall. Differs from the
+/// UI isolate when [ShearSession.persist] ran off-UI.
+String debugSessionPersistStamp = '';
+
+/// Stamp of the isolate that last opened the session envelope.
+String debugSessionUnlockStamp = '';
+
+/// True while archive rows are being parsed off the UI isolate.
+bool debugArchiveHydrateScheduled = false;
+
+/// Stamp of the isolate that last parsed an archive. Differs from the UI isolate.
+String debugArchiveHydrateStamp = '';
+
+/// Parse untrusted archive rows off the UI isolate. Nanos and coinbase defaults
+/// are resolved here. The caller only copies the normalized rows onto the ledger.
+Map<String, dynamic> hydrateArchiveEnvelope(List<dynamic> rows) {
+  final txs = <Map<String, dynamic>>[];
+  for (final row in rows) {
+    if (row is! Map) continue;
+    txs.add(ShearTx.fromJson(Map<String, dynamic>.from(row)).toJson());
+  }
+  return <String, dynamic>{
+    'txs': txs,
+    'stamp': identityHashCode(Isolate.current).toString(),
+  };
+}
+
+List<ShearTx> _txsFromHydrated(List<dynamic> rows) {
+  return <ShearTx>[
+    for (final row in rows)
+      if (row is Map)
+        ShearTx(
+          id: row['id']?.toString() ?? '',
+          from: row['from']?.toString() ?? '',
+          to: row['to']?.toString() ?? '',
+          amount: (row['amount'] as num?)?.toDouble() ?? 0,
+          kind: row['kind']?.toString() ?? '',
+          height: (row['height'] as num?)?.toInt(),
+          confirmed: row['confirmed'] is bool ? row['confirmed'] as bool : true,
+          memo: row['memo'] == true,
+          memoPlain: row['memoPlain']?.toString(),
+          memoCt: row['memoCt'] is Map ? Map<String, dynamic>.from(row['memoCt'] as Map) : null,
+          rounds: (row['rounds'] as num?)?.toInt(),
+          hashAmount: (row['hashAmount'] as num?)?.toDouble(),
+          threads: (row['threads'] as num?)?.toInt(),
+          pot: (row['pot'] as num?)?.toDouble(),
+          change: row['change']?.toString(),
+          atMs: (row['atMs'] as num?)?.toInt(),
+        ),
+  ];
+}
+
+Future<void> applyUserArchiveOffUi(ShearLedger ledger, Map<String, dynamic> archive) async {
+  final rows = archive['txs'];
+  debugArchiveHydrateScheduled = true;
+  try {
+    final opened = await Isolate.run(
+      () => hydrateArchiveEnvelope(rows is List ? rows : const <dynamic>[]),
+    );
+    debugArchiveHydrateStamp = opened['stamp'] as String;
+    final hydrated = opened['txs'];
+    final dests = ((archive['dests'] as List?) ?? const []).map((e) => e.toString()).toList();
+    ledger.replaceFromBackup(
+      address: dests.isNotEmpty ? dests.first : '',
+      spendable: 0,
+      pending: 0,
+      txs: _txsFromHydrated(hydrated is List ? hydrated : const <dynamic>[]),
+      destCount: (archive['destCount'] as num?)?.toInt(),
+      destIndex: (archive['destIndex'] as num?)?.toInt(),
+    );
+    ledger.restoreDests(dests);
+    final g = archive['chainGenesis']?.toString() ?? '';
+    ledger.restoreSealedTip((archive['sealedHeight'] as num?)?.toInt() ?? 0, genesis: g);
+  } finally {
+    debugArchiveHydrateScheduled = false;
+  }
+}
+
+/// Argon open of a session envelope. Production calls this from [Isolate.run].
+Future<Map<String, dynamic>> openSessionEnvelope(
+  Map<String, dynamic> env,
+  String password,
+) async {
+  final plain = await ShearLock.open(env, password);
+  return <String, dynamic>{
+    'plain': plain,
+    'stamp': identityHashCode(Isolate.current).toString(),
+  };
+}
+
+/// Argon seal plus the shewall write. Production calls this from [Isolate.run].
+Future<Map<String, dynamic>> sealAndWriteSession(
+  String path,
+  Map<String, dynamic> plain,
+  String password,
+  bool bio,
+) async {
+  final env = Map<String, dynamic>.from(await ShearLock.seal(plain, password));
+  env['biometricsEnabled'] = bio;
+  final file = File(path);
+  file.parent.createSync(recursive: true);
+  file.writeAsStringSync(jsonEncode(env), flush: true);
+  if (!Platform.isWindows) {
+    try {
+      Process.runSync('chmod', ['600', path]);
+    } catch (_) {}
+  }
+  return <String, dynamic>{
+    'env': env,
+    'stamp': identityHashCode(Isolate.current).toString(),
+  };
+}
 
 String? walletPasswordError(String password, {String? confirm}) {
   final pw = password;
@@ -125,8 +239,11 @@ class ShearSession {
       throw const FormatException('password_not_set');
     }
     try {
-      final plain = await ShearLock.open(env, password);
-      _applyPlain(plain);
+      final opened = await Isolate.run(() => openSessionEnvelope(env, password));
+      debugSessionUnlockStamp = opened['stamp'] as String;
+      final plainRaw = opened['plain'];
+      if (plainRaw is! Map) throw const FormatException('wrong_password');
+      _applyPlain(Map<String, dynamic>.from(plainRaw));
       _password = password;
       sealed = true;
       return identity!;
@@ -139,16 +256,15 @@ class ShearSession {
 
   Future<void> persist() async {
     if (!sealed || _password == null || identity == null) return;
-    store.parent.createSync(recursive: true);
-    final env = Map<String, dynamic>.from(await ShearLock.seal(_plainBody(), _password!));
-    env['biometricsEnabled'] = biometricsEnabled;
-    _envelope = env;
-    store.writeAsStringSync(jsonEncode(env), flush: true);
-    if (!Platform.isWindows) {
-      try {
-        Process.runSync('chmod', ['600', store.path]);
-      } catch (_) {}
-    }
+    final path = store.path;
+    final plain = _plainBody();
+    final password = _password!;
+    final bio = biometricsEnabled;
+    final sealedEnv = await Isolate.run(
+      () => sealAndWriteSession(path, plain, password, bio),
+    );
+    _envelope = Map<String, dynamic>.from(sealedEnv['env'] as Map);
+    debugSessionPersistStamp = sealedEnv['stamp'] as String;
   }
 
   Map<String, dynamic> _plainBody() => {
@@ -376,5 +492,30 @@ Future<ShearIdentity> importEncryptedShewall({
   void Function(List<Vortice>)? onVortices,
 }) async {
   final opened = await openShewallBin(readShewallFile(src), password);
-  return importShewall(opened, ledger, reserve: reserve, onVortices: onVortices);
+  final archive = unpackShewallArchive(opened);
+  if (archive == null) {
+    return importShewall(opened, ledger, reserve: reserve, onVortices: onVortices);
+  }
+  final u = unpackShewall(opened);
+  final id = createIdentity(u['seed32']!);
+  ledger.viewSecret = id.viewKey;
+  ledger.spendPub = decodePaymentCode(id.paymentCode)?['spendPub'];
+  final spend = shewallU64(u['spendableNanos']!) / kUnitsPerShe;
+  await applyUserArchiveOffUi(ledger, archive);
+  final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+  if (spend > ledger.spendableOwned(id.address, paymentCode: id.paymentCode)) {
+    ledger.rememberSpendable(home, spend);
+  }
+  final vortRaw = archive['vortices'];
+  if (onVortices != null && vortRaw is List) {
+    onVortices([
+      for (final row in vortRaw)
+        if (row is Map) Vortice.fromJson(Map<String, dynamic>.from(row)),
+    ]);
+  }
+  final snap = archive['reserve'];
+  if (reserve != null && snap is Map) {
+    reserve.applyLocalSnapshot(Map<String, dynamic>.from(snap));
+  }
+  return id;
 }

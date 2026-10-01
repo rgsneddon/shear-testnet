@@ -15,7 +15,7 @@ import shutil
 import sys
 import zipfile
 
-from bundle_modules import assert_zip_has_modules
+from bundle_modules import assert_zip_has_modules, write_missing_required
 
 FLAVORS = ("windows", "linux", "archlinux", "fedora", "opensuse", "macos")
 SKIP_DIR_NAMES = {
@@ -187,10 +187,11 @@ def main(argv: list[str] | None = None) -> int:
             "Unix: chmod +x shear-node.sh && ./shear-node.sh\n"
             "It syncs from genesis (or the saved tip) to the live tip. No automatic bootstrap.\n"
             "Pass --solo for local stratum after ibd=false.\n"
-            "Magic shear-testnet-v9. Continuum wallet is 0.64.\n"
+            "Magic shear-testnet-v10. Continuum wallet is 0.65.\n"
             "node_modules, crypto, and the native addons are inside this zip.\n"
         )
         z.writestr("README.txt", readme)
+        write_missing_required(z, REPO)
 
     size = os.path.getsize(out)
     names = zipfile.ZipFile(out).namelist()

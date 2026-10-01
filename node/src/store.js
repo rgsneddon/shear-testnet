@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, hashBonusUnitNanos, medianTimePast, MTP_WINDOW } from '../../crypto/asert.js';
+
 import { hashHex } from '../../crypto/shear_hash.js';
 import {
   buildTemplate,
@@ -193,6 +194,7 @@ export function createStore(dir, {
       ? fs.readFileSync(magicFile, 'utf8').trim()
       : String(blocks[0]?.magic || '');
     if (diskMagic && diskMagic !== MAGIC_TESTNET) {
+      // Empty cut. v8 and v9 books do not join this magic. No soft-merge.
       throw new Error(`datadir_magic:${diskMagic}`);
     }
   }

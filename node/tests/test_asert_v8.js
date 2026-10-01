@@ -58,6 +58,7 @@ function pruneWindows({ hashrate, windows, maxAhead = false }) {
   let bits = GENESIS_BITS;
   let excess = 0;
   const means = [];
+  const tails = [];
   const life = [];
   let bias = 0;
   for (let w = 0; w < windows; w += 1) {
@@ -76,8 +77,9 @@ function pruneWindows({ hashrate, windows, maxAhead = false }) {
       bits = unpackBits(nextBits(packBits(bits), claimed));
     }
     means.push(mean(trues));
+    tails.push(mean(trues.slice(-200)));
   }
-  return { means, life: mean(life), bias };
+  return { means, tails, life: mean(life), bias };
 }
 
 function trust() {
@@ -106,21 +108,27 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     assert.equal(mean(gaps), 90_000);
     assert.equal(unpackBits(retarget(chain)), unpackBits(GENESIS_BITS_PACKED));
     const honest = pruneWindows({ hashrate: 15_000, windows });
-    for (const m of honest.means) {
-      assert.ok(Math.abs(m - 90_000) < 2_000, `honest prune window mean ${m}`);
+    assert.ok(honest.means[0] > 70_000, `seed window moves toward 90s, got ${honest.means[0]}`);
+    for (const m of honest.tails) {
+      assert.ok(Math.abs(m - 90_000) < 2_000, `honest settled tail ${m}`);
     }
-    assert.ok(Math.abs(honest.life - 90_000) < 2_000, `honest life mean ${honest.life}`);
+    for (const m of honest.means.slice(1)) {
+      assert.ok(Math.abs(m - 90_000) < 2_000, `honest later window ${m}`);
+    }
     const lied = pruneWindows({ hashrate: 15_000, windows, maxAhead: true });
-    for (const m of lied.means) {
-      assert.ok(Math.abs(m - 90_000) < 2_000, `max-ahead prune window mean ${m}`);
+    for (const m of lied.tails) {
+      assert.ok(Math.abs(m - 90_000) < 2_000, `max-ahead settled tail ${m}`);
     }
-    assert.ok(Math.abs(lied.life - 90_000) < 2_000, `max-ahead life mean ${lied.life}`);
+    for (const m of lied.means.slice(1)) {
+      assert.ok(Math.abs(m - 90_000) < 2_000, `max-ahead later window ${m}`);
+    }
     assert.ok(lied.bias <= HEADER_AHEAD_MS, `timestamp excess ${lied.bias}`);
     // A hashrate change later in the chain recenters on the same fixed point.
     const shifted = pruneWindows({ hashrate: 15_000 * 4, windows: 2 });
-    for (const m of shifted.means) {
-      assert.ok(Math.abs(m - 90_000) < 2_000, `later hashrate window mean ${m}`);
+    for (const m of shifted.tails) {
+      assert.ok(Math.abs(m - 90_000) < 2_000, `later hashrate settled tail ${m}`);
     }
+    assert.ok(Math.abs(shifted.means[1] - 90_000) < 2_000, `later hashrate window ${shifted.means[1]}`);
   });
 
   it('eight 2000 ms gaps add at least one bit from genesis and from a later parent', () => {
@@ -132,16 +140,17 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
   });
 
   it('verify, pool judge, and solo submit share one next-work and reject a private easier target or a long stamp', () => {
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v9');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v10');
     assert.equal(MAGIC_TESTNET_V9, 'shear-testnet-v9');
+    assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V9);
     assert.equal(MAGIC_TESTNET_V8, 'shear-testnet-v8');
     assert.equal(MAGIC_TESTNET_V7, 'shear-testnet-v7');
     assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V8);
     assert.notEqual(MAGIC_TESTNET_V7, MAGIC_TESTNET);
     const fp = consensusFingerprint();
-    assert.match(fp, /NETWORK=shear-testnet-v9/);
+    assert.match(fp, /NETWORK=shear-testnet-v10/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v8/);
-    assert.match(fp, /ASERT_STEP=median11\(log2\(T\/seen\)\)/);
+    assert.match(fp, /ASERT_STEP=median11\(log2\(T\/seen\)\)\*\(T\/tau\)/);
     assert.equal(medianIntervalMs([2_000]), TARGET_BLOCK_INTERVAL_MS);
     assert.equal(medianIntervalMs(Array.from({ length: 6 }, () => 2_000)), 2_000);
 

@@ -75,7 +75,7 @@ describe('eight fast gaps raise work and the pool uses that target', () => {
     const want = nextBits(tip.bits, seen);
     assert.equal(seen, 2_000);
     assert.ok(unpackBits(packed) >= GENESIS_BITS + 1);
-    assert.ok(unpackBits(want) >= GENESIS_BITS + 1);
+    assert.ok(unpackBits(want) > GENESIS_BITS, `median burst must harden, got ${unpackBits(want)}`);
 
     const under = store.template({
       miner,
@@ -153,7 +153,7 @@ describe('eight fast gaps raise work and the pool uses that target', () => {
     try {
       const live = pool.issueJob();
       assert.equal(Number(live.blockBits), want);
-      assert.ok(unpackBits(live.blockBits) >= GENESIS_BITS + 1);
+      assert.ok(unpackBits(live.blockBits) > GENESIS_BITS);
     } finally {
       pool.close();
     }

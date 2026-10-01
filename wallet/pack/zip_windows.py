@@ -12,7 +12,7 @@ import zipfile
 
 _PACK_DIR = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, os.path.abspath(os.path.join(_PACK_DIR, "..", "..", "node", "pack")))
-from bundle_modules import assert_zip_has_modules  # noqa: E402
+from bundle_modules import assert_zip_has_modules, write_missing_required  # noqa: E402
 
 _PACK = os.path.abspath(os.path.dirname(__file__))
 _WALLET_ROOT = os.path.abspath(os.path.join(_PACK, ".."))
@@ -125,7 +125,8 @@ def main() -> int:
                 if not os.path.isfile(src):
                     sys.exit(f"Continuum sidecar needs MinGW {dll} beside gcc")
                 z.write(src, f"runtime/{dll}")
-            print("bundled Shear Sentinel v14 beside Continuum")
+            write_missing_required(z, node_root)
+            print("bundled Shear Sentinel v15 beside Continuum")
 
     size = os.path.getsize(out)
     names = zipfile.ZipFile(out).namelist()
@@ -138,7 +139,7 @@ def main() -> int:
     if EXE_NAME not in names:
         sys.exit(f"missing {EXE_NAME} at zip root")
     if "node/src/node.js" not in names:
-        sys.exit("Continuum zip must include node/src/node.js (Shear Sentinel v14 sidecar)")
+        sys.exit("Continuum zip must include node/src/node.js (Shear Sentinel v15 sidecar)")
     if "runtime/node.exe" not in names:
         sys.exit("Continuum zip must include runtime/node.exe")
     if "crypto/native/shearhash.node" not in names:

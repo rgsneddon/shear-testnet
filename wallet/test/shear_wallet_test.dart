@@ -253,7 +253,7 @@ void main() {
     expect(relEnt.contains('com.apple.security.network.client'), isTrue);
     expect(relEnt.contains('com.apple.security.device.camera'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.camera'), isTrue);
-    expect(main.readAsStringSync().contains('android:label="Shear 0.64"'), isTrue);
+    expect(main.readAsStringSync().contains('android:label="Shear 0.65"'), isTrue);
     expect(relEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(debugEnt.contains('com.apple.security.device.biometry'), isTrue);
     expect(main.readAsStringSync().contains('android.permission.CAMERA'), isTrue);
@@ -261,11 +261,11 @@ void main() {
     final winMain = File('windows/runner/main.cpp').readAsStringSync();
     final winRc = File('windows/runner/Runner.rc').readAsStringSync();
     final linuxApp = File('linux/runner/my_application.cc').readAsStringSync();
-    expect(winMain.contains('L"Shear 0.64"'), isTrue);
+    expect(winMain.contains('L"Shear 0.65"'), isTrue);
     expect(winMain.contains('L"Shear 0.6"'), isFalse);
-    expect(winRc.contains('"Shear 0.64"'), isTrue);
+    expect(winRc.contains('"Shear 0.65"'), isTrue);
     expect(winRc.contains('Shear 0.7'), isFalse);
-    expect(linuxApp.contains('"Shear 0.64"'), isTrue);
+    expect(linuxApp.contains('"Shear 0.65"'), isTrue);
     expect(linuxApp.contains('"Shear 0.6"'), isFalse);
     final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
     expect(activity.contains('FlutterFragmentActivity'), isTrue);
@@ -2288,21 +2288,23 @@ void main() {
     expect(sync.seeds.first.contains('127.0.0.1'), isTrue);
     expect(sync.seeds, contains(kLocalNodeRpc));
     expect(sync.seeds.contains(kPublicPoolHttp), isTrue);
-    expect(kBookMagic, 'shear-testnet-v9');
+    expect(kBookMagic, 'shear-testnet-v10');
     expect(kWalletDefaultSeed, contains('127.0.0.1'));
     expect(kWalletDefaultSeed.contains('pool.shear.digital'), isFalse);
     final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
     final syncSrc = File('lib/shear_read_sync.dart').readAsStringSync();
     expect(ledgerSrc.contains('flyclientSampleHeights'), isFalse,
         reason: 'send/balance/history/tip-proof must not call the FlyClient sampler');
-    expect(ledgerSrc.contains('Isolate.run(() => scanSealedVouts'), isTrue,
+    expect(ledgerSrc.contains('Isolate.run(() => scanSealedWire'), isTrue,
         reason: 'full-sync notes scan must leave the UI isolate');
+    expect(ledgerSrc.contains('return Isolate.run(() => flowPostHex(raw))'), isTrue,
+        reason: 'Flow post hexify must leave the UI isolate');
     expect(ledgerSrc.contains('Isolate.run(() => parseHistoryPayload'), isTrue,
         reason: 'full-sync history parse must leave the UI isolate');
     expect(syncSrc.contains('List<int> flyclientSampleHeights('), isFalse);
     expect(syncSrc.contains('flyclientSampleHeightsForTest'), isTrue);
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.64.0+89'));
-    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.64'"));
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.65.0+90'));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains("const kCliVersion = '0.65'"));
   });
 
   test('pending receive thin poll does not full-sync history/notes every tip tick', () async {
@@ -2608,6 +2610,34 @@ void main() {
         }));
     expect(scanned['notes'], isA<List>());
     expect(scanned['hashFolds'], isA<List>());
+    final wired = await Isolate.run(() => scanSealedWire({
+          'vouts': [
+            {
+              'noteCommit': Uint8List.fromList(List<int>.filled(32, 7)),
+              'commit': Uint8List.fromList(List<int>.filled(32, 8)),
+            },
+          ],
+          'dests': [dest],
+          'dest': dest,
+          'spendSeed': seed,
+          'seenCommitHex': <String>[],
+          'txHints': <Map<String, dynamic>>[],
+          'startIndex': 0,
+        }));
+    expect(wired['notes'], isA<List>());
+    expect(wired['hashFolds'], isA<List>());
+    final posted = await Isolate.run(() => flowPostHex({
+          'vin': [
+            {'commit': Uint8List.fromList(const [1, 2, 3])},
+          ],
+          'vout': [
+            {'commit': Uint8List.fromList(const [4, 5])},
+          ],
+          'admitProof': null,
+        }));
+    expect((posted['vin'] as List).first['commit'], '010203');
+    expect((posted['vout'] as List).first['commit'], '0405');
+    expect(posted['admitProof'], isNull);
     final parsed = await Isolate.run(() => parseHistoryPayload({
           'amountsOnly': false,
           'key': dest,
@@ -3214,7 +3244,7 @@ void main() {
     expect(destsForViewKey(b.viewKey, a.address, heights: [1], ownerViewKey: a.viewKey), isEmpty);
     expect(reserveRejectsDest(a.address, paid, viewKey: a.viewKey), isTrue);
     expect(vaultDest(a.address, viewKey: a.viewKey), isNot(a.address));
-    expect(kWalletVersion, '0.64');
+    expect(kWalletVersion, '0.65');
     expect(kWalletVersion.split('.').length, 2);
     expect(RegExp(r'^\d+\.\d+$').hasMatch(kWalletVersion), isTrue);
     expect(kWalletVersion, isNot('0.47'));
@@ -3677,8 +3707,8 @@ void main() {
     expect(shearBg.value, 0xFFEEF3F8);
     expect(shearInk.value, 0xFF0D2137);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Shear 0.64');
-    expect(kWalletVersion, '0.64');
+    expect(app.title, 'Shear 0.65');
+    expect(kWalletVersion, '0.65');
     await tester.pump();
     expect(find.textContaining(kWalletVersion), findsWidgets);
     expect(find.text('Copy ID'), findsWidgets);
@@ -6775,8 +6805,8 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.64 and 400-day APR uses observed average bps', () {
-    expect(kWalletVersion, '0.64');
+  test('kWalletVersion == 0.65 and 400-day APR uses observed average bps', () {
+    expect(kWalletVersion, '0.65');
     expect(kReserveOracleDefaultBps, 264);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
@@ -6867,7 +6897,7 @@ void main() {
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     final v3 = _PoolLive(headerHex: hex, height: 2306, magic: 'shear-testnet-v3');
-    final v4 = _PoolLive(headerHex: hex, height: 16, magic: 'shear-testnet-v9');
+    final v4 = _PoolLive(headerHex: hex, height: 16, magic: 'shear-testnet-v10');
     final v3s = await _fakePool(live: v3);
     final v4s = await _fakePool(live: v4);
     addTearDown(() => v3s.close(force: true));
@@ -6876,7 +6906,7 @@ void main() {
     expect(isLiveBookStats({'magic': 'shear-testnet-v6'}), isFalse);
     expect(isLiveBookStats({'magic': 'shear-testnet-v7'}), isFalse);
     expect(isLiveBookStats({'magic': 'shear-testnet-v8'}), isFalse);
-    expect(isLiveBookStats({'magic': 'shear-testnet-v9'}), isTrue);
+    expect(isLiveBookStats({'magic': 'shear-testnet-v10'}), isTrue);
     final sync = ShearReadSync(
       seeds: ['http://127.0.0.1:${v3s.port}', 'http://127.0.0.1:${v4s.port}'],
       http: _realHttp(),
@@ -6895,7 +6925,7 @@ void main() {
     );
     final reset = ShearIdentity.fromJson(v3, reset: true);
     expect(reset.address, id.address);
-    expect(id.toJson()['network'], 'shear-testnet-v9');
+    expect(id.toJson()['network'], 'shear-testnet-v10');
   });
 
   test('upgraded wallet drops leftover pre-reset txs; live history is the book', () async {
@@ -7105,7 +7135,7 @@ void main() {
     final liveUrl = 'http://127.0.0.1:${liveServer.port}';
     expect(isUsableTipStats(const <String, dynamic>{}), isFalse);
     expect(isUsableTipStats({'height': 0, 'header': ''}), isFalse);
-    expect(isUsableTipStats({'height': 40, 'magic': 'shear-testnet-v9'}), isTrue);
+    expect(isUsableTipStats({'height': 40, 'magic': 'shear-testnet-v10'}), isTrue);
     final sync = ShearReadSync(
       seeds: [emptyUrl, liveUrl],
       http: _realHttp(),
@@ -7162,7 +7192,7 @@ void main() {
       seeds: ['http://127.0.0.1:${server.port}'],
       http: _realHttp(),
     );
-    expect(report, contains('magic=shear-testnet-v9'));
+    expect(report, contains('magic=shear-testnet-v10'));
     expect(report, contains('followTip.sampledTip=53'));
     expect(report, contains('displayHeight=53'));
     expect(report, contains('sealedHeight=53'));
@@ -8902,7 +8932,7 @@ class _PoolLive {
     this.balance = 10,
     this.pending = 0,
     this.avgBlockTimeMs = 90000,
-    this.magic = 'shear-testnet-v9',
+    this.magic = 'shear-testnet-v10',
     this.owner,
     List<Map<String, dynamic>>? incoming,
     List<Map<String, dynamic>>? history,

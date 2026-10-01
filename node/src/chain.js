@@ -35,6 +35,7 @@ import {
   GENESIS_BPS,
   RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
+import { isHistoricalHeader } from '../../crypto/historical_prefix.js';
 import {
   verifyShareBatch,
   collateShareUnits,
@@ -887,10 +888,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     } catch {
       return { ok: false, reason: 'parent_header' };
     }
-    // This block's work is the median of the sealed header gaps. The child
-    // stamp is not work. One gap, padded with the 90s target, does not move
-    // the median. A caller must pass sealedIntervalsMs from the same chain
-    // the template used, or verify and the job disagree.
+    // Difficulty is network-wide. This block's work is the median of the
+    // sealed header gaps on the chain, not a pool forecast and not a miner
+    // target. The child stamp is not work. One gap, padded with the 90s
+    // target, does not move the median. sealedIntervalsMs is headerGapsMs of
+    // that sealed chain, the same window the template used.
     let seen = TARGET_BLOCK_INTERVAL_MS;
     if (Array.isArray(opts.sealedIntervalsMs)) {
       seen = medianIntervalMs(opts.sealedIntervalsMs);
@@ -906,7 +908,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       seen = medianIntervalMs([Number.isFinite(gap) && gap > 0 ? gap : TARGET_BLOCK_INTERVAL_MS]);
     }
     const want = nextBits(parent.bits, seen, magic);
-    if (decoded.bits !== want) return { ok: false, reason: 'bits' };
+    // The sealed prefix that holds the reserve lock was found under the
+    // one-gap parent interval. Those exact headers stay valid. Every other
+    // header still has to match the median of the sealed gaps.
+    if (decoded.bits !== want && !isHistoricalHeader(h)) return { ok: false, reason: 'bits' };
     if (!isPackedBits(decoded.bits) || !isPackedBits(want)) return { ok: false, reason: 'bits' };
     const fp = unpackBits(decoded.bits);
     if (fp < LIVE_MIN_BITS || fp > MAX_BITS) return { ok: false, reason: 'bits' };

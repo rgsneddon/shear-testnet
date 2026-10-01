@@ -186,7 +186,7 @@ jobs:
           /src/runtime/node -p "process.version"
           export SHEAR_NODE_PACK_LABEL=v14
           python3 node/pack/zip_node.py "$FLAVOR"
-          ZIP="dist/shear-node-v14-${FLAVOR}.zip"
+          ZIP="dist/shear-node-v15-${FLAVOR}.zip"
           test -f "$ZIP"
 
           rm -rf /tmp/smoke
@@ -203,8 +203,8 @@ jobs:
           PACK_VER=$(/tmp/smoke/runtime/node -p "process.version")
           echo "SYS_VER=$SYS_VER PACK_VER=$PACK_VER"
           test "$SYS_VER" = "$PACK_VER"
-          grep -q "export const PRODUCT_VERSION = '14.0';" /tmp/smoke/crypto/asert.js
-          grep -q "shear-testnet-v9" /tmp/smoke/crypto/asert.js
+          grep -q "export const PRODUCT_VERSION = '15.0';" /tmp/smoke/crypto/asert.js
+          grep -q "shear-testnet-v10" /tmp/smoke/crypto/asert.js
           HASH=$(cd /tmp/smoke && ./runtime/node --input-type=module -e '
           import { createRequire } from "node:module";
           const req = createRequire(import.meta.url);
@@ -246,13 +246,13 @@ jobs:
           name: proof-${{ matrix.flavor }}
           path: |
             dist/build-proof-${{ matrix.flavor }}.txt
-            dist/shear-node-v14-${{ matrix.flavor }}.zip
+            dist/shear-node-v15-${{ matrix.flavor }}.zip
 
       - name: Upload the zip to the v14 release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ZIP="$GITHUB_WORKSPACE/dist/shear-node-v14-${{ matrix.flavor }}.zip"
+          ZIP="$GITHUB_WORKSPACE/dist/shear-node-v15-${{ matrix.flavor }}.zip"
           test -f "$ZIP"
           grep -q PACK_OK "$GITHUB_WORKSPACE/dist/build-proof-${{ matrix.flavor }}.txt"
           for i in 1 2 3 4 5 6; do

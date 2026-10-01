@@ -242,6 +242,24 @@ def missing_on_disk(repo: str) -> list[str]:
     return missing
 
 
+def write_missing_required(z, repo: str) -> None:
+    """Store walker paths the hand list did not already put in the archive.
+
+    Duplicate names are not written. A path that is not on disk is left for
+    assert_zip_has_modules to refuse.
+    """
+    repo = os.path.abspath(repo)
+    have = {info.filename.replace("\\", "/") for info in z.infolist()}
+    for arc in required_module_paths(repo):
+        if arc in have:
+            continue
+        src = os.path.join(repo, *arc.split("/"))
+        if not os.path.isfile(src):
+            continue
+        z.write(src, arc)
+        have.add(arc)
+
+
 def assert_zip_has_modules(names: set[str] | list[str], repo: str) -> None:
     have = set(names)
     missing = [arc for arc in required_module_paths(repo) if arc not in have]

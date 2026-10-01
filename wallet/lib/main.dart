@@ -33,10 +33,11 @@ import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
 import 'shear_privacy_hop.dart';
 import 'shear_closure.dart';
+import 'shear_node_proc.dart';
 import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 
-const kWalletVersion = '0.64';
+const kWalletVersion = '0.65';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock is accepted. Spendable drops and staking starts now.
@@ -169,7 +170,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   late final PrivacyHopController hop =
       widget.privacyHop ?? PrivacyHopController();
   late final ShearNodeSidecar sidecar;
-  Process? _nodeProc;
+  NodeProcHandle? _nodeHandle;
+  Timer? _nodeLogPaint;
+  bool _nodeLogDirty = false;
   bool _proofBusy = false;
   bool _proofAgain = false;
   final _nodeConsoleScroll = ScrollController();
@@ -187,6 +190,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   bool _tipBusy = false;
   bool _creditBusy = false;
   bool _creditAgain = false;
+  bool _pullBusy = false;
+  Timer? _creditFollow;
   bool _accrualPaused = false;
   DateTime _lastPersist = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastPoll = DateTime.fromMillisecondsSinceEpoch(0);
@@ -223,9 +228,51 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (mounted) setState(() {});
   }
 
+  void _ingestNodeLine(String line) {
+    if (!mounted || line.isEmpty) return;
+    sidecar.seekerTip = ledger.pool?.liveTip ?? ledger.displayHeight;
+    final firstHonest = noteSidecarLine(sidecar, line, openProofs: false);
+    _requestShellPaint();
+    if (sidecar.localSyncNoticeDue(caughtTip: firstHonest)) _showLocalNodeSynced();
+    if (sidecar.hasHeldBlocks) unawaited(_openSidecarProofs());
+  }
+
+  /// About 8 Hz. Log lines, tip height, and proof walks share this paint.
+  void _requestShellPaint() {
+    if (!mounted) return;
+    _nodeLogDirty = true;
+    _nodeLogPaint ??= Timer(const Duration(milliseconds: 125), _paintNodeLog);
+  }
+
+  /// One follow-up credit sync after a burst. It does not re-enter on the
+  /// same turn as the sync that just finished.
+  void _armCreditFollow() {
+    if (_creditFollow != null) return;
+    _creditFollow = Timer(const Duration(milliseconds: 125), () {
+      _creditFollow = null;
+      if (!mounted || !unlocked) return;
+      if (!_creditAgain) return;
+      if (_creditBusy) {
+        _armCreditFollow();
+        return;
+      }
+      _creditAgain = false;
+      unawaited(_onNodeTip(ledger.displayHeight));
+    });
+  }
+
+  /// About 8 Hz. Every line is already ingested; this only publishes.
+  void _paintNodeLog() {
+    _nodeLogPaint = null;
+    if (!mounted || !_nodeLogDirty) return;
+    _nodeLogDirty = false;
+    setState(() {});
+    _pinNodeConsole();
+  }
+
   Future<void> _startSharedNode(String binary, Map<String, String> env, List<String> args) async {
-    _nodeProc?.kill();
-    final merged = <String, String>{...Platform.environment, ...env};
+    await _stopSharedNode();
+    final merged = Map<String, String>.from(Platform.environment)..addAll(env);
     final work = sidecar.workDir;
     if (work != null && work.isNotEmpty) {
       final delim = Platform.isWindows ? ';' : ':';
@@ -233,25 +280,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           '$work${Platform.pathSeparator}runtime$delim$work${Platform.pathSeparator}crypto${Platform.pathSeparator}native';
       merged['PATH'] = '$extra$delim${merged['PATH'] ?? ''}';
     }
-    final proc = await Process.start(
-      binary,
-      args,
-      workingDirectory: (work != null && work.isNotEmpty) ? work : null,
+    final handle = await startNodeProcessOffUi(
+      binary: binary,
+      args: args,
       environment: merged,
-      mode: ProcessStartMode.normal,
+      workingDirectory: (work != null && work.isNotEmpty) ? work : null,
     );
-    _nodeProc = proc;
-    void take(String line) {
-      if (!mounted || line.isEmpty) return;
-      sidecar.seekerTip = ledger.pool?.liveTip ?? ledger.displayHeight;
-      final firstHonest = noteSidecarLine(sidecar, line, openProofs: false);
-      setState(() {});
-      _pinNodeConsole();
-      if (sidecar.localSyncNoticeDue(caughtTip: firstHonest)) _showLocalNodeSynced();
-      if (sidecar.hasHeldBlocks) unawaited(_openSidecarProofs());
-    }
-    proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(take);
-    proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen(take);
+    _nodeHandle = handle;
+    handle.listen(_ingestNodeLine);
   }
 
   void _pinNodeConsole() {
@@ -265,8 +301,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   Future<void> _stopSharedNode() async {
-    _nodeProc?.kill();
-    _nodeProc = null;
+    final handle = _nodeHandle;
+    _nodeHandle = null;
+    _nodeLogPaint?.cancel();
+    _nodeLogPaint = null;
+    if (handle != null) await handle.kill();
   }
 
   @override
@@ -319,7 +358,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     _tipWatchGen += 1;
     _accrualTick?.cancel();
     _preloginTick?.cancel();
-    _nodeProc?.kill();
+    final dying = _nodeHandle;
+    _nodeHandle = null;
+    _nodeLogPaint?.cancel();
+    _creditFollow?.cancel();
+    unawaited(dying?.kill(wait: false) ?? Future<void>.value());
     _nodeConsoleScroll.dispose();
     _reserveLockHold?.cancel();
     super.dispose();
@@ -507,7 +550,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final msg = e is FormatException ? e.message : '';
       if (msg.startsWith('shewall_reset_required')) {
         setState(() => _lockError =
-            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v9).');
+            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v10).');
         return;
       }
       setState(() => _lockError = 'Wrong password.');
@@ -677,7 +720,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       genesis: session.rememberedChainGenesis,
     );
     if (session.rememberedTxs.isNotEmpty) {
-      applyUserArchive(ledger, {
+      await applyUserArchiveOffUi(ledger, {
         'dests': session.rememberedDests,
         'destCount': session.rememberedDestCount,
         'destIndex': session.rememberedDestIndex,
@@ -734,7 +777,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (height > ledger.sealedHeight) {
       ledger.noteLiveHeight(height);
       _lastPaintSealed = ledger.sealedHeight;
-      if (mounted) setState(() {});
+      _requestShellPaint();
     }
     if (_creditBusy) {
       _creditAgain = true;
@@ -751,14 +794,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       _lastPaintSealed = ledger.sealedHeight;
       _lastPaintSpendable = spendUnits;
       _lastPaintPending = pendingN;
-      setState(() {});
+      _requestShellPaint();
     } catch (_) {
     } finally {
       _creditBusy = false;
-      if (_creditAgain && mounted && unlocked) {
-        _creditAgain = false;
-        unawaited(_onNodeTip(ledger.displayHeight));
-      }
+      if (_creditAgain && mounted && unlocked) _armCreditFollow();
     }
   }
 
@@ -793,7 +833,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         _proofAgain = false;
         if (!sidecar.hasHeldBlocks) return;
         await sidecar.openWhileCatchingUpOffUi();
-        if (mounted) setState(() {});
+        _requestShellPaint();
       } while (_proofAgain && mounted && sidecar.hasHeldBlocks);
     } catch (_) {
     } finally {
@@ -844,7 +884,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           if (tipMoved && mounted) {
             _lastPaintSealed = ledger.sealedHeight;
             sidecar.seekerTip = ledger.pool?.liveTip ?? ledger.displayHeight;
-            setState(() {});
+            _requestShellPaint();
           }
           if (tipMoved || now.difference(_lastVault) >= kWalletVaultGap) {
             _lastVault = DateTime.now();
@@ -863,7 +903,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         historyBehindTip: ledger.historyBehindTip,
         openCollatePending: !ledger.openCollated || ledger.notesLagSpendable,
       );
-      if (_creditBusy) return;
+      if (_creditBusy) {
+        _creditAgain = true;
+        return;
+      }
       _creditBusy = true;
       try {
         if (full) {
@@ -890,7 +933,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         _openLocalReadPrefix();
         if (sidecar.takeOverIfMatched()) {
           if (mounted) {
-            setState(() {});
+            _requestShellPaint();
             if (sidecar.localSyncNoticeDue(caughtTip: true)) _showLocalNodeSynced();
           }
         }
@@ -898,10 +941,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           _lastPaintSealed = ledger.sealedHeight;
           _lastPaintSpendable = spendUnits;
           _lastPaintPending = pendingN;
-          setState(() {});
+          _requestShellPaint();
         }
       } finally {
         _creditBusy = false;
+        if (_creditAgain && mounted && unlocked) _armCreditFollow();
       }
     }
     if (immediate) unawaited(tick());
@@ -1384,23 +1428,35 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     );
   }
 
-  Future<void> _pullRefreshTipAndBalance() async {
+  /// The indicator future returns immediately. Tip and credit sync keep running
+  /// and publish on the shared paint timer.
+  Future<void> _pullRefreshTipAndBalance() {
     final ident = id;
-    if (ident == null || widget.skipPoolSync) return;
+    if (ident == null || widget.skipPoolSync || _pullBusy) {
+      return Future<void>.value();
+    }
+    _pullBusy = true;
+    unawaited(_finishPullRefresh(ident));
+    return Future<void>.value();
+  }
+
+  Future<void> _finishPullRefresh(ShearIdentity ident) async {
     try {
       await ledger.syncTip().timeout(const Duration(seconds: 8));
       await ledger
           .syncCredits(ident.address, paymentCode: ident.paymentCode)
           .timeout(const Duration(seconds: 20));
       _rememberLedger();
+      _requestShellPaint();
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Couldn’t refresh tip and balance.')),
         );
       }
+    } finally {
+      _pullBusy = false;
     }
-    if (mounted) setState(() {});
   }
 
   Widget _card(List<Widget> kids) {

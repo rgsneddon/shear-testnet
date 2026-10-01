@@ -18,6 +18,7 @@ export {
   joinCutoffMs,
 } from './pot_sched.js';
 import { epochDays, potSchedPin, EPOCH_DAYS_TESTNET, EPOCH_DAYS_MAINNET, POT_FLOOR_NANOS } from './pot_sched.js';
+import { HISTORICAL_TIP } from './historical_prefix.js';
 
 export const TARGET_BLOCK_INTERVAL_MS = 90_000;
 export const MIN_BITS = 1;
@@ -29,26 +30,29 @@ export const MIN_BITS = 1;
 export const MAX_BITS = 256;
 /**
  * Testnet floor. Share vardiff opens at 8 and must sit under header bits.
- * Genesis work is sized separately for the live hashrate band (see GENESIS_BITS).
+ * Genesis work is a day-0 seed only (see GENESIS_BITS). It is not a
+ * lasting equilibrium and it is not recomputed from a hashrate forecast.
  */
 export const LIVE_MIN_BITS = 4;
 /**
- * Empty-chain start (Q16.16 packed via GENESIS_BITS_PACKED).
- * Live testnet hashrate band ~200–400 H/s. Ideal bits ≈ log2(H×90):
- *   200 H/s → ~14.14; 300 H/s → ~14.72; 400 H/s → ~15.14.
- * Pick 15 (mid/upper of that band): expected genesis interval
- *   2^15/300 ≈ 109s; at 400 H/s ≈ 82s. (Was 12 for ~50 H/s / ~82s.)
- * Fingerprint includes GENESIS_BITS — empty cut required.
+ * Day-0 seed for an empty cut (Q16.16 packed via GENESIS_BITS_PACKED).
+ * Fingerprint includes GENESIS_BITS. After genesis, tempo is the sealed-gap
+ * step only. This seed is not a forecast and not a fixed point of the book.
  */
 export const GENESIS_BITS = 15;
 /**
- * Per-block lid. Testnet ease stays 2. Harden is 6 so one 2s gap
- * restores a 90s expectation. Mainnet ease stays 1.
- * Do not pin these to a live pool hashrate.
+ * Per-block lid on the median step. v9 used harden +6 and testnet ease −2.
+ * A short-gap median then walked about twelve bits while the window lagged,
+ * and the tip could seal on the floor. v10 testnet lid is ±1.
+ * Mainnet harden stays 6 and mainnet ease stays 1 until that book is cut.
+ * Do not pin these to a pool hashrate.
  */
-export const ASERT_HARDEN_MAX = 6;
+export const ASERT_HARDEN_MAX_MAINNET = 6;
+export const ASERT_HARDEN_MAX_TESTNET = 1;
+/** Live book default (testnet). Mainnet fingerprint still pins HARDEN=6. */
+export const ASERT_HARDEN_MAX = ASERT_HARDEN_MAX_TESTNET;
 export const ASERT_EASE_MAX_MAINNET = 1;
-export const ASERT_EASE_MAX_TESTNET = 2;
+export const ASERT_EASE_MAX_TESTNET = 1;
 /** Live book default (testnet). Mainnet fingerprint still pins EASE=1. */
 export const ASERT_EASE_MAX = ASERT_EASE_MAX_TESTNET;
 /**
@@ -59,17 +63,26 @@ export const ASERT_EASE_MAX = ASERT_EASE_MAX_TESTNET;
  * The network target feeds the median of the last 11 sealed header gaps
  * into nextBits. Missing samples are padded with T, so one fast or slow
  * header cannot move the median. Six of those eleven short gaps do.
- * nextBits still applies log2(T / seen) and the ± lid to that one interval.
- * A 90000 ms median adds zero. Eight sealed gaps of 2000 ms inside the
- * window add at least one bit. Harden 6 covers log2(T / 2000).
+ * nextBits applies (T/τ)·log2(T/seen) and the ± lid to that one interval.
+ * τ is 32 target intervals, so the median's lag cannot ring the block time.
+ * A 90000 ms median adds zero. Once the median is a 2000 ms gap, eight
+ * further steps add at least one bit. The v10 testnet lid is one bit.
  */
 export const BITS_FP_SCALE = 65536;
 export const ASERT_CURVE_WINDOW = 11;
 export const ASERT_FAST_GAPS = 8;
 export const ASERT_FAST_GAP_MS = 2_000;
-export const ASERT_STEP_ID = 'median11(log2(T/seen))';
-/** Time constant of the log step. One target-interval of error is one bit before the lid. */
-export const ASERT_HALFLIFE_MS = TARGET_BLOCK_INTERVAL_MS;
+export const ASERT_STEP_ID = 'median11(log2(T/seen))*(T/tau)';
+/**
+ * Damping time of the log step. v10 chooses τ = 32·T.
+ * One e-fold of median error moves T/τ of a bit, so a six-block median lag
+ * cannot walk the tip onto the floor or ring the interval. This is not a
+ * 288-block Ready bar. The pool cannot edit τ mid-chain. Pinned as ASERT_TAU_MS.
+ */
+export const ASERT_TAU_BLOCKS = 32;
+export const ASERT_HALFLIFE_MS = ASERT_TAU_BLOCKS * TARGET_BLOCK_INTERVAL_MS;
+/** A non-stall gap may not sit on LIVE_MIN_BITS. An 8τ stall may. */
+export const ASERT_FLOOR_ID = 'above-min-until-8tau';
 /**
  * A header may sit this far ahead of the verifier clock. Further ahead is
  * rejected, so a finder cannot publish a 2 s solve stamped as a 90 s gap.
@@ -131,10 +144,12 @@ export const MAGIC_TESTNET_V6 = 'shear-testnet-v6';
 export const MAGIC_TESTNET_V7 = 'shear-testnet-v7';
 /** Previous book. Not this magic. */
 export const MAGIC_TESTNET_V8 = 'shear-testnet-v8';
-/** Live book. One median-11 difficulty curve for nodes, pools, wallets, and p2p. */
+/** Previous book (median11, harden 6, ease 2). Not this magic. Fail-closed. */
 export const MAGIC_TESTNET_V9 = 'shear-testnet-v9';
-/** ADMITv2 privacy-class book. */
-export const MAGIC_TESTNET = MAGIC_TESTNET_V9;
+/** Live book. One median-11 difficulty curve for nodes, pools, wallets, and p2p. */
+export const MAGIC_TESTNET_V10 = 'shear-testnet-v10';
+/** ADMITv2 privacy-class book. Empty cut. v9 payloads do not load. */
+export const MAGIC_TESTNET = MAGIC_TESTNET_V10;
 export const MAGIC_MAINNET = 'shear-v1';
 /** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
 export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
@@ -155,12 +170,16 @@ export const SHEARK_MINER_VERSION = '2.6';
 /** Frozen consensus identity. A different fingerprint is a different law. */
 export const BOOK_LAW_ID = 'shear-book-law-2';
 
-/** Testnet ease matches harden (±2). Mainnet genesis still pins ease=1. */
+/** Testnet ease matches the v10 lid (±1). Mainnet genesis still pins ease=1. */
 export function asertEaseMax(magic = MAGIC_TESTNET) {
   return String(magic) === MAGIC_MAINNET ? ASERT_EASE_MAX_MAINNET : ASERT_EASE_MAX_TESTNET;
 }
-/** Node and pool display version. Two-part only (`*.*`, never `0.1.0`). Not part of consensusFingerprint. Continuum wallet is kWalletVersion, not this number. Shear Sentinel v14. v13 is the previous pin. */
-export const PRODUCT_VERSION = '14.0';
+/** Mainnet harden stays 6. The live testnet book uses the ±1 lid. */
+export function asertHardenMax(magic = MAGIC_TESTNET) {
+  return String(magic) === MAGIC_MAINNET ? ASERT_HARDEN_MAX_MAINNET : ASERT_HARDEN_MAX_TESTNET;
+}
+/** Node and pool display version. Two-part only (`*.*`, never `0.1.0`). Not part of consensusFingerprint. Continuum wallet is kWalletVersion, not this number. Shear Sentinel v15. v14 is the previous pin. */
+export const PRODUCT_VERSION = '15.0';
 /** Official C miner display/tag version. Two-part only (`*.*`). Operator set Shear-Miner to 1.1 (fee-free). 1.0 keeps the built-in fee. */
 export const MINER_VERSION = '1.1';
 /** Hash bonus commits on accept. Not env. */
@@ -189,7 +208,7 @@ export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
 /**
  * Consensus floor: spendable after 9 confirmations (~13.5 min at 90s).
- * In the fingerprint. shear-testnet-v9 book.
+ * In the fingerprint. shear-testnet-v10 book.
  */
 export const SPENDABLE_CONFIRMATIONS = 9;
 /** Sample bodies may drop after this many confirmations. Money vouts stay. */
@@ -286,10 +305,12 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'BITS=q16.16',
     `ASERT_TAU_MS=${ASERT_HALFLIFE_MS}`,
     `ASERT_STEP=${ASERT_STEP_ID}`,
-    `ASERT_HARDEN=${ASERT_HARDEN_MAX}`,
+    `ASERT_HARDEN=${asertHardenMax(magic)}`,
     `ASERT_EASE=${asertEaseMax(magic)}`,
+    `ASERT_FLOOR=${ASERT_FLOOR_ID}`,
     `HEADER_AHEAD_MS=${HEADER_AHEAD_MS}`,
     `MTP_FUTURE_MS=${MTP_FUTURE_MS}`,
+    ...(String(magic) === MAGIC_MAINNET ? [] : [`HISTORICAL_TIP=${HISTORICAL_TIP}`]),
   ].join(':');
 }
 
@@ -468,11 +489,12 @@ export function medianIntervalMs(gaps) {
 
 /**
  * One step toward 90s on Q16.16 packed work.
- * delta = log2(T / seen), then the ± lid. The network passes the median
+ * delta = (T/τ)·log2(T / seen), then the ± lid. The network passes the median
  * sealed gap as `seen`, not a single header. A median of T adds zero.
  * A non-positive or non-finite gap is the 90s target, so template, pool,
  * and verify agree. Stalls clamp at 8 half-lives before the ease lid.
- * Testnet harden +6 and ease −2; mainnet ease −1.
+ * Testnet lid is ±1. Mainnet harden is 6 and mainnet ease is 1.
+ * A gap shorter than the stall cap cannot park on LIVE_MIN_BITS.
  */
 export function nextBits(previousBits, intervalMs, magic = MAGIC_TESTNET) {
   const prev = unpackBits(clampBits(previousBits));
@@ -480,15 +502,22 @@ export function nextBits(previousBits, intervalMs, magic = MAGIC_TESTNET) {
   if (!Number.isFinite(seen) || seen <= 0) seen = TARGET_BLOCK_INTERVAL_MS;
   else if (seen < 1) seen = 1;
   const cap = ASERT_HALFLIFE_MS * 8;
+  const stalled = seen >= cap;
   if (seen > cap) seen = cap;
   let delta = 0;
   if (seen !== TARGET_BLOCK_INTERVAL_MS) {
-    delta = Math.log2(TARGET_BLOCK_INTERVAL_MS / seen);
+    const gain = TARGET_BLOCK_INTERVAL_MS / ASERT_HALFLIFE_MS;
+    delta = Math.log2(TARGET_BLOCK_INTERVAL_MS / seen) * gain;
   }
-  if (delta > ASERT_HARDEN_MAX) delta = ASERT_HARDEN_MAX;
+  const harden = asertHardenMax(magic);
+  if (delta > harden) delta = harden;
   const ease = asertEaseMax(magic);
   if (delta < -ease) delta = -ease;
-  return packBits(prev + delta);
+  let next = prev + delta;
+  if (!stalled && next <= LIVE_MIN_BITS) {
+    next = LIVE_MIN_BITS + (1 / BITS_FP_SCALE);
+  }
+  return packBits(next);
 }
 
 /** Unpacked work bits in [LIVE_MIN_BITS, MAX_BITS] for HUD and clamps. */
@@ -497,10 +526,9 @@ export function displayBits(packed) {
 }
 
 /**
- * Next-work for a sealed gap expressed as two timestamps.
- * verifyBlock does not call this with the child stamp. This block's work
- * is nextBits(parent, sealed parent interval). The child timestamp only
- * becomes the next parent gap after the header is accepted.
+ * @deprecated Single-gap helper. Not the verify or template want-bits path.
+ * Those call nextBits(parentBits, medianIntervalMs(sealed gaps)).
+ * A child stamp passed here does not set this block's consensus bits.
  */
 export function bitsForBlock(parentBits, parentTimestamp, blockTimestamp, magic = MAGIC_TESTNET) {
   return nextBits(parentBits, Number(blockTimestamp) - Number(parentTimestamp), magic);

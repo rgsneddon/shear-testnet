@@ -5,8 +5,8 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/node /opt/shear-v4/node/src/publish_bootstrap.js --loop
-Environment=SHEAR_DATA=/var/lib/shear/testnet-v9
-Environment=SHEAR_BOOT_PUBLISH=/var/lib/shear/testnet-v9/bootstrap
+Environment=SHEAR_DATA=/var/lib/shear/testnet-v10
+Environment=SHEAR_BOOT_PUBLISH=/var/lib/shear/testnet-v10/bootstrap
 Environment=SHEAR_BOOT_INTERVAL_MS=6000
 Restart=always
 RestartSec=5

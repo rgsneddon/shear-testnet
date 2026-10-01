@@ -122,6 +122,28 @@ describe('website W-IMPL binds', () => {
     assert.doesNotMatch(explorer, /Math\.min\(\s*avg/);
   });
 
+  it('pool avg card prefers sealed networkAvgBlockTimeMs, not EWMA paint', () => {
+    assert.match(pool, /Average block time \(sealed, all blocks\)/);
+    assert.match(pool, /networkAvgBlockTimeMs/);
+    assert.match(pool, /Number\.isFinite\(net\) && net > 0\) \? net : \(s && s\.avgBlockTimeMs\)/);
+    assert.doesNotMatch(pool, /chainAvgMs/);
+    assert.doesNotMatch(pool, /\(chainAvgMs != null\) \? chainAvgMs : \(s && s\.avgBlockTimeMs\)/);
+    assert.match(pool, /id="block-bits"/);
+    assert.match(pool, /id="share-bits"/);
+    assert.match(pool, /shareBits is not a retarget/);
+  });
+
+  it('explorer avg block time is sealed networkAvgBlockTimeMs, not EWMA paint', () => {
+    assert.match(explorer, /id="ex-avg-block"/);
+    assert.match(explorer, /Avg block time/);
+    assert.match(explorer, /var avgBt = Number\(stats\.networkAvgBlockTimeMs\)/);
+    assert.match(explorer, /setText\('ex-avg-block', avgBt > 0 \? \(fmtBlockMs\(avgBt\)/);
+    assert.doesNotMatch(explorer, /stats\.avgBlockTimeMs/);
+    assert.doesNotMatch(explorer, /chainAvgMs/);
+    const card = explorer.slice(explorer.indexOf('id="ex-avg-block"') - 80, explorer.indexOf('id="ex-avg-block"') + 40);
+    console.log('EXPLORER_PAGE ' + card.replace(/\s+/g, ' ').trim());
+  });
+
   it('pool heading is pool-scoped and circulating subtitle does not say spendable people', () => {
     assert.match(pool, /Last Block \(pool\)/);
     assert.match(pool, /Pool hashrate/);
@@ -137,7 +159,7 @@ describe('website W-IMPL binds', () => {
     assert.doesNotMatch(mempool, /prettier/);
   });
 
-  it('wallet pin 0.64 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
+  it('wallet pin 0.65 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
     const paper = read('../../site/whitepaper/index.html');
     const pdf = read('../../site/whitepaper/build_pdf.py');
     assert.match(explorer, /id="shear-chrome-root" data-active="EXPLORER"/);
@@ -152,12 +174,12 @@ describe('website W-IMPL binds', () => {
     assert.match(mempool, /id="shear-chrome-root" data-active="MEMPOOL"/);
     assert.doesNotMatch(mempool, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(mempool, /releases\/tag\/0\.52/);
-    assert.match(pdf, /shear-testnet-v9/);
+    assert.match(pdf, /shear-testnet-v10/);
     assert.doesNotMatch(pdf, /shear-testnet-v6/);
-    assert.match(pdf, /pin 0\.64/);
+    assert.match(pdf, /pin 0\.65/);
     assert.doesNotMatch(pdf, /pin 0\.55(?!\.2)/);
-    assert.match(pdf, /Wallet pin at publication: 0\.64/);
-    assert.match(pdf, /wallet-0\.64/);
+    assert.match(pdf, /Wallet pin at publication: 0\.65/);
+    assert.match(pdf, /wallet-0\.65/);
     assert.doesNotMatch(pdf, /wallet-0\.55(?!\.2)/);
     assert.match(paper, /a class="nav-btn"/);
     assert.match(paper, /href="https:\/\/shear\.digital\/"/);
@@ -168,5 +190,32 @@ describe('website W-IMPL binds', () => {
     assert.match(poolExplorer, /class="top-banner"/);
     assert.match(pool, /\.top-banner \{/);
     assert.match(pool, /shear-chrome\.js/);
+  });
+
+  it('v10 docs name the fingerprint, the seed, and the quarantine', () => {
+    const consensus = read('../../specs/consensus.md');
+    const ops = read('../../docs/OPS-testnet-v10-90s.md');
+    for (const doc of [consensus, ops]) {
+      assert.match(doc, /shear-testnet-v10/);
+      assert.match(doc, /median11/);
+      assert.match(doc, /fluctuat/);
+      assert.match(doc, /seed/);
+      assert.match(doc, /τ=32T/);
+      assert.match(doc, /288/);
+      assert.match(doc, /invent-must-not-return/);
+      assert.match(doc, /6054186/);
+      assert.match(doc, /v8/);
+      assert.match(doc, /v9/);
+    }
+    assert.match(ops, /last resort/);
+    assert.match(pool, /id="block-bits"/);
+    assert.match(pool, /id="share-bits"/);
+    assert.match(pool, /shareBits is not a retarget/);
+    assert.match(explorer, /id="ex-avg-block"/);
+    assert.match(explorer, /networkAvgBlockTimeMs/);
+    assert.match(ops, /shareBits`\) is not a retarget/);
+    const ready = pool.match(/Ready to copy[^'\n]*/);
+    assert.ok(ready);
+    assert.doesNotMatch(ready[0], /avgBlockTimeMs/);
   });
 });

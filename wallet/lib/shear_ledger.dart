@@ -195,6 +195,40 @@ Future<Map<String, dynamic>> _proveFlowOffUi(Map<String, dynamic> input) {
   return Isolate.run(() => reproveFlowSpendWire(input));
 }
 
+/// Hexify a Flow post body inside the worker. Vin, vout, and the admit proof
+/// are byte-heavy; the UI isolate only sends them and posts the result.
+Map<String, dynamic> flowPostHex(Map<String, dynamic> raw) {
+  final proof = raw['admitProof'];
+  return <String, dynamic>{
+    'vin': List<dynamic>.from(_hexify(raw['vin']) as List? ?? const []),
+    'vout': List<dynamic>.from(_hexify(raw['vout']) as List? ?? const []),
+    'admitProof': proof == null ? null : Map<String, dynamic>.from(_hexify(proof) as Map),
+  };
+}
+
+Future<Map<String, dynamic>> flowPostHexOffUi(Map<String, dynamic> raw) {
+  return Isolate.run(() => flowPostHex(raw));
+}
+
+/// Hexify the scan snapshot inside the worker, then scan. The caller sends
+/// the raw snapshot; the JSON clone does not run on the UI isolate.
+Map<String, dynamic> scanSealedWire(Map<String, dynamic> raw) {
+  return scanSealedVouts(<String, dynamic>{
+    'vouts': _hexify(raw['vouts']),
+    'dests': List<String>.from(raw['dests'] as List? ?? const []),
+    'dest': raw['dest'],
+    'spendSeed': raw['spendSeed'],
+    'seenCommitHex': List<String>.from(raw['seenCommitHex'] as List? ?? const []),
+    'txHints': _hexify(raw['txHints']),
+    'prev': raw['prev'],
+    'startIndex': raw['startIndex'],
+  });
+}
+
+Future<Map<String, dynamic>> scanSealedWireOffUi(Map<String, dynamic> raw) {
+  return Isolate.run(() => scanSealedWire(raw));
+}
+
 /// Pure CPU scan of compacted vouts. Full-sync calls this via [Isolate.run].
 /// Returns `{notes, hashFolds}` maps — no ledger mutation.
 Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
@@ -2988,17 +3022,7 @@ class ShearLedger implements ReadProofSink {
         saw = true;
         if (rows.isEmpty) continue;
         final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
-        final input = <String, dynamic>{
-          'vouts': jsonDecode(jsonEncode(_hexify(raw['vouts']))),
-          'dests': List<String>.from(raw['dests'] as List? ?? const []),
-          'dest': raw['dest'],
-          'spendSeed': seed,
-          'seenCommitHex': List<String>.from(raw['seenCommitHex'] as List? ?? const []),
-          'txHints': jsonDecode(jsonEncode(raw['txHints'])),
-          'prev': raw['prev'],
-          'startIndex': raw['startIndex'],
-        };
-        final scanned = await Isolate.run(() => scanSealedVouts(input));
+        final scanned = await scanSealedWireOffUi(raw);
         _applySealedScan(scanned);
         _notesAt[key] = _sealedHeight;
       } catch (_) {
@@ -3294,17 +3318,7 @@ class ShearLedger implements ReadProofSink {
           if (rows is List) {
             if (rows.isNotEmpty) {
               final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
-              final input = <String, dynamic>{
-                'vouts': jsonDecode(jsonEncode(_hexify(raw['vouts']))),
-                'dests': List<String>.from(raw['dests'] as List? ?? const []),
-                'dest': raw['dest'],
-                'spendSeed': seed,
-                'seenCommitHex': List<String>.from(raw['seenCommitHex'] as List? ?? const []),
-                'txHints': jsonDecode(jsonEncode(raw['txHints'])),
-                'prev': raw['prev'],
-                'startIndex': raw['startIndex'],
-              };
-              final scanned = await Isolate.run(() => scanSealedVouts(input));
+              final scanned = await scanSealedWireOffUi(raw);
               _applySealedScan(scanned);
             }
             _notesAt[key] = _sealedHeight;
@@ -4644,7 +4658,13 @@ class ShearLedger implements ReadProofSink {
       }
     }
     if (pool != null && !local) {
-      Future<Map<String, dynamic>> postOnce() {
+      Future<Map<String, dynamic>> postOnce() async {
+        final wire = await flowPostHexOffUi(<String, dynamic>{
+          'vin': postedVin,
+          'vout': postedVout,
+          'admitProof': admitProof,
+        });
+        final proof = wire['admitProof'];
         return pool!.send(
           from: src,
           to: destTo,
@@ -4659,12 +4679,10 @@ class ShearLedger implements ReadProofSink {
           sig: sigHex,
           spendPub: spendPubHex,
           ephPub: pay?.ephPub != null ? _bytesHex(pay!.ephPub) : null,
-          vin: List<dynamic>.from(_hexify(postedVin) as List),
-          vout: List<dynamic>.from(_hexify(postedVout) as List),
+          vin: List<dynamic>.from(wire['vin'] as List? ?? const []),
+          vout: List<dynamic>.from(wire['vout'] as List? ?? const []),
           excess: excess is Uint8List ? _bytesHex(excess) : excess,
-          admitProof: admitProof != null
-              ? Map<String, dynamic>.from(_hexify(admitProof) as Map)
-              : null,
+          admitProof: proof is Map ? Map<String, dynamic>.from(proof) : null,
           spendTag: admitProof?['spendTag'] is Uint8List
               ? _bytesHex(admitProof!['spendTag'] as Uint8List)
               : admitProof?['spendTag']?.toString(),

@@ -1,11 +1,16 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_ctf.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_reserve.dart';
+import 'package:shear_wallet/shear_session.dart';
 
 void main() {
   tearDown(() {
@@ -121,6 +126,69 @@ void main() {
     print(launch);
     expect(launch.contains('not-started'), isFalse);
     expect(launch.startsWith('DESKTOP_LAUNCH hung'), isFalse);
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  testWidgets('cold unlock hydrates the archive off the UI isolate', (tester) async {
+    final caller = identityHashCode(Isolate.current).toString();
+    final dir = Directory.systemTemp.createTempSync('shear-cold-unlock-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final store = File('${dir.path}${Platform.pathSeparator}session.json');
+    final session = ShearSession(store: store);
+    await tester.runAsync(() async {
+      await session.loadOrCreate();
+      final dest = session.identity!.address;
+      session.rememberedTxs = <Map<String, dynamic>>[
+        for (var i = 0; i < 15000; i++)
+          <String, dynamic>{
+            'id': 'h$i',
+            'from': '',
+            'to': dest,
+            'kind': 'coinbase',
+            'height': 1,
+            'nanos': 1000000000,
+            'confirmed': true,
+          },
+      ];
+      session.rememberedSealedHeight = 4;
+      await session.setPassword('test-pass-1');
+    });
+    final cold = ShearSession(store: store);
+    await tester.pumpWidget(ShearWalletApp(
+      session: cold,
+      ledger: ShearLedger(),
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('Unlock'), findsOneWidget);
+    await tester.enterText(find.byType(TextField).first, 'test-pass-1');
+    await tester.pump();
+    final state = tester.state<ShearWalletAppState>(find.byType(ShearWalletApp));
+    var during = 0;
+    await tester.runAsync(() async {
+      final timer = Timer.periodic(const Duration(milliseconds: 1), (_) {
+        if (debugArchiveHydrateScheduled && !state.unlocked) during++;
+      });
+      await state.unlockNow();
+      timer.cancel();
+    });
+    await tester.pump();
+    expect(state.unlocked, isTrue);
+    expect(during, greaterThan(0));
+    expect(debugArchiveHydrateStamp, isNotEmpty);
+    expect(debugArchiveHydrateStamp, isNot(caller));
+    expect(state.ledger.transactions, hasLength(15000));
+    final row = state.ledger.transactions.first;
+    expect(row.id, 'h0');
+    expect(row.from, 'coinbase');
+    expect(row.amount, closeTo(0.01, 1e-12));
+    expect(find.text('Unlock'), findsNothing);
+    // ignore: avoid_print
+    print(
+      'COLD_UNLOCK during=$during stamp=$debugArchiveHydrateStamp caller=$caller txs=${state.ledger.transactions.length} unlocked=${state.unlocked} responsive=True',
+    );
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('top-ups that reach Pi enact once after 9 confirmations', () async {

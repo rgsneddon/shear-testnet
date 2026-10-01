@@ -45,8 +45,8 @@ List<String> _zipNames(File zip) {
 }
 
 void main() {
-  test('kWalletVersion displayed pin is 0.64 (not 0.14.0)', () {
-    expect(kWalletVersion, '0.64');
+  test('kWalletVersion displayed pin is 0.65 (not 0.14.0)', () {
+    expect(kWalletVersion, '0.65');
     final zipPy = File('pack/zip_windows.py').readAsStringSync();
     expect(zipPy, contains('kWalletVersion'));
     expect(zipPy, contains('shear-wallet-{PUBLIC_PIN}-windows.zip'));
