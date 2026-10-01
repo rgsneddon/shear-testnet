@@ -79,6 +79,9 @@ const ipc = await attachPoolIpc({
       });
     }
   },
+  onSidecarTip(tip) {
+    pool.noteSidecarTip(tip);
+  },
   onApplied() {
     try { pool.paintStatsSnap(); } catch { /* stats timer retries */ }
   },

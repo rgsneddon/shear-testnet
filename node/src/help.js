@@ -114,7 +114,7 @@ function sectionP2p() {
     '  IBD: ibd=true while want/pending/retryPrev/syncing is busy, or a live peer height is above this tip.',
     '  p2p_ingest reason=merkle is a sealed-block mismatch — do not skip verify.',
     '  p2p_ingest reason=prev is a parent miss; the node retries. It is not a ban.',
-    '  p2p_ingest reason=unsigned on a sealed compact block is a node bug — pull tip, rebuild native.',
+    '  p2p_ingest reason=unsigned on a sealed compact block retries after a short TTL. It is not a permanent fail. Pull tip and rebuild native; do not wipe.',
     '  Do not wipe a mid-IBD datadir unless CoS says so after a fix.',
     '  Magic stays shear-testnet-v10. Do not start sheark-v4-afk.',
   ];
@@ -135,10 +135,11 @@ function sectionStatus() {
   return [
     'Status:',
     '  While running, the process prints JSON event=status and a one-line stderr summary:',
-    '    height=  hash=  peers=  want=  ibd=  hashBackend=',
+    '    height=  hash=  peers=  want=  ibd=  peerMaxHeight=  peerHash=  hashBackend=',
     '  --status reads the datadir and prints once (no P2P bind).',
     '  height is this node\'s tip, not a guessed network height.',
     '  want is outstanding getblock hashes. ibd=true while catching up (queues, syncing, or a live peer tip is ahead) — not merely when want is 0.',
+    '  peerMaxHeight and peerHash are the tallest live peer tip. Seeds behind this node stay visible there; they are not a second chain tip.',
   ];
 }
 

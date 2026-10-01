@@ -9,12 +9,17 @@ import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { admitWireTx } from '../../crypto/chronoflux.js';
 import { txWeight } from '../../crypto/levy.js';
 import { reviveBytes } from '../../crypto/note.js';
-import { decodeWireBlock, encodeWireBlock } from './p2p.js';
+import { decodeWireBlock, encodeWireBlock, headerPrevHash } from './p2p.js';
 
 export const P2P_IPC_HOST = '127.0.0.1';
 export const P2P_IPC_PORT = 30313;
 const IPC_MAX_FRAME = 8 * 1024 * 1024;
-const IPC_BACKFILL_MAX = 8;
+/**
+ * Blocks forwarded per turn on hello / parent repair.
+ * A wider gap is chunked. It is not a reason to send nothing.
+ */
+export const IPC_BACKFILL_MAX = 8;
+const IPC_REPAIR_RETRY_MS = 2_000;
 
 /** Public lattice fields only. Addresses, seeds, and proofs stay off this wire. */
 export function networkMempoolWire(store, p2p) {
@@ -72,6 +77,67 @@ function powHexOf(block) {
   if (h == null) return '';
   if (Buffer.isBuffer(h) || h instanceof Uint8Array) return Buffer.from(h).toString('hex');
   return String(h).replace(/^0x/i, '').toLowerCase();
+}
+
+/**
+ * Every block above `fromHeight`, oldest first.
+ * `refused` is only when this store claims a taller tip and has no bodies to send.
+ */
+export function selectIpcBackfill(blocks, fromHeight, { localHeight, window = IPC_BACKFILL_MAX } = {}) {
+  const from = Number(fromHeight) || 0;
+  const list = (Array.isArray(blocks) ? blocks : [])
+    .filter((b) => Number(b?.height || 0) > from)
+    .sort((a, b) => Number(a.height) - Number(b.height));
+  const tipFromBlocks = list.length ? Number(list[list.length - 1].height) : from;
+  const local = Number.isFinite(Number(localHeight)) ? Number(localHeight) : tipFromBlocks;
+  const gap = local > from ? local - from : 0;
+  const cap = Math.max(1, Math.floor(Number(window) || IPC_BACKFILL_MAX));
+  if (!(local > from)) {
+    return { blocks: [], gap: 0, from, local, window: cap, refused: false, reason: '' };
+  }
+  if (!list.length) {
+    return { blocks: [], gap, from, local, window: cap, refused: true, reason: 'missing_blocks' };
+  }
+  return { blocks: list, gap, from, local, window: cap, refused: false, reason: '' };
+}
+
+export function chunkIpcBlocks(blocks, window = IPC_BACKFILL_MAX) {
+  const n = Math.max(1, Math.floor(Number(window) || IPC_BACKFILL_MAX));
+  const chunks = [];
+  const list = Array.isArray(blocks) ? blocks : [];
+  for (let i = 0; i < list.length; i += n) chunks.push(list.slice(i, i + n));
+  return chunks;
+}
+
+/** Ancestors ending at `hash`, at most `window` blocks, oldest first. */
+export function ancestorWindow(blocks, hash, window = IPC_BACKFILL_MAX) {
+  const want = String(hash || '').replace(/^0x/i, '').toLowerCase();
+  if (!want) return [];
+  const list = Array.isArray(blocks) ? blocks : [];
+  let idx = -1;
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (powHexOf(list[i]) === want) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) return [];
+  const n = Math.max(1, Math.floor(Number(window) || IPC_BACKFILL_MAX));
+  const start = Math.max(0, idx - n + 1);
+  return list.slice(start, idx + 1);
+}
+
+/**
+ * `prev` / `unsigned` on IPC apply: ask for the parent before the child is retried.
+ * Other reasons do not walk ancestors.
+ */
+export function ipcParentRepair(block, reason) {
+  const r = String(reason || '');
+  if (r !== 'prev' && r !== 'unsigned') return null;
+  const parent = headerPrevHash(block?.header);
+  const child = powHexOf(block);
+  const ask = !!(parent && !/^0+$/.test(parent));
+  return { reason: r, parent: parent || '', child, ask };
 }
 
 function tipView(store) {
@@ -147,17 +213,114 @@ function forwardBlock(send, block) {
 
 function paceBackfill(store, send, afterHeight) {
   const local = tipView(store).height;
-  const from = Number(afterHeight) || 0;
-  if (local <= from || local - from > IPC_BACKFILL_MAX) return;
-  const blocks = (store.blocks || []).filter((b) => Number(b?.height || 0) > from);
+  const plan = selectIpcBackfill(store.blocks || [], afterHeight, {
+    localHeight: local,
+    window: IPC_BACKFILL_MAX,
+  });
+  if (plan.refused) {
+    try {
+      console.error(JSON.stringify({
+        event: 'ipc_backfill_refuse',
+        reason: plan.reason,
+        from: plan.from,
+        height: plan.local,
+        gap: plan.gap,
+      }));
+    } catch { /* ignore */ }
+    return;
+  }
+  if (!plan.blocks.length) return;
+  const chunks = chunkIpcBlocks(plan.blocks, IPC_BACKFILL_MAX);
+  if (plan.gap > IPC_BACKFILL_MAX) {
+    try {
+      console.error(JSON.stringify({
+        event: 'ipc_backfill',
+        from: plan.from,
+        height: plan.local,
+        gap: plan.gap,
+        window: IPC_BACKFILL_MAX,
+        chunks: chunks.length,
+        refused: false,
+      }));
+    } catch { /* ignore */ }
+  }
   let i = 0;
   const step = () => {
-    if (i >= blocks.length) return;
-    forwardBlock(send, blocks[i]);
+    const chunk = chunks[i];
     i += 1;
-    setImmediate(step);
+    if (!chunk) return;
+    for (const block of chunk) forwardBlock(send, block);
+    if (i < chunks.length) setImmediate(step);
   };
   setImmediate(step);
+}
+
+function serveIpcGetblock(store, send, msg) {
+  const want = String(msg?.hash || '').replace(/^0x/i, '').toLowerCase();
+  const window = ancestorWindow(store?.blocks || [], want, IPC_BACKFILL_MAX);
+  const from = Number(msg?.height) || 0;
+  let rows = window.filter((b) => Number(b?.height || 0) > from);
+  if (!rows.length && window.length) rows = window.slice(-1);
+  const child = String(msg?.child || '').replace(/^0x/i, '').toLowerCase();
+  if (child && child !== want) {
+    const extra = ancestorWindow(store?.blocks || [], child, 1);
+    if (extra.length && !rows.some((b) => powHexOf(b) === child)) rows = rows.concat(extra);
+  }
+  if (!rows.length) {
+    try {
+      console.error(JSON.stringify({
+        event: 'ipc_getblock',
+        found: false,
+        height: tipView(store).height,
+        reason: 'missing',
+      }));
+    } catch { /* ignore */ }
+    return;
+  }
+  for (const block of rows) forwardBlock(send, block);
+  try {
+    console.error(JSON.stringify({
+      event: 'ipc_getblock',
+      found: true,
+      n: rows.length,
+      height: tipView(store).height,
+    }));
+  } catch { /* ignore */ }
+}
+
+function makeParentRepair(store, send) {
+  const asked = new Map();
+  return (msg, got) => {
+    const reason = String(got?.reason || 'fail');
+    const repair = ipcParentRepair(msg?.block, reason);
+    const height = Number(store.tip()?.height || 0);
+    try {
+      console.error(JSON.stringify({
+        event: 'ipc_apply',
+        ok: false,
+        reason,
+        height,
+        blockHeight: Number(msg?.block?.height || 0),
+        parent: repair?.parent || '',
+      }));
+    } catch { /* ignore */ }
+    if (!repair?.ask) return;
+    const now = Date.now();
+    const prevAt = asked.get(repair.parent) || 0;
+    if (now - prevAt < IPC_REPAIR_RETRY_MS) return;
+    asked.set(repair.parent, now);
+    if (asked.size > 64) {
+      const oldest = asked.keys().next().value;
+      asked.delete(oldest);
+    }
+    send({
+      type: 'ipc_getblock',
+      magic: MAGIC_TESTNET,
+      hash: repair.parent,
+      child: repair.child,
+      height,
+    });
+  };
 }
 
 function reviveIpcTx(tx) {
@@ -231,7 +394,7 @@ function attachLines(sock, onMsg) {
   });
 }
 
-function enqueueApply(store, skip, onApplied) {
+function enqueueApply(store, skip, onApplied, onFail) {
   let tail = Promise.resolve();
   return (msg) => {
     const job = tail.then(async () => {
@@ -245,14 +408,28 @@ function enqueueApply(store, skip, onApplied) {
         got = { ok: false, reason: String(err?.message || err).slice(0, 80) };
       }
       if (!got?.ok && powHex) skip.delete(powHex);
-      try {
-        console.error(JSON.stringify({
-          event: 'ipc_apply',
-          ok: !!got?.ok,
-          reason: got?.ok ? undefined : (got?.reason || 'fail'),
-          height: Number(store.tip()?.height || 0),
-        }));
-      } catch { /* ignore */ }
+      if (!got?.ok) {
+        if (typeof onFail === 'function') onFail(msg, got);
+        else {
+          try {
+            console.error(JSON.stringify({
+              event: 'ipc_apply',
+              ok: false,
+              reason: got?.reason || 'fail',
+              height: Number(store.tip()?.height || 0),
+              blockHeight: Number(msg?.block?.height || 0),
+            }));
+          } catch { /* ignore */ }
+        }
+      } else {
+        try {
+          console.error(JSON.stringify({
+            event: 'ipc_apply',
+            ok: true,
+            height: Number(store.tip()?.height || 0),
+          }));
+        } catch { /* ignore */ }
+      }
       if (typeof onApplied === 'function') {
         try { onApplied(got); } catch { /* ignore */ }
       }
@@ -272,6 +449,7 @@ export function attachPoolIpc({
   port = P2P_IPC_PORT,
   onPeers = null,
   onApplied = null,
+  onSidecarTip = null,
 } = {}) {
   if (!loopbackHost(P2P_IPC_HOST)) throw new Error('ipc_bind');
   const skip = new Set();
@@ -279,7 +457,19 @@ export function attachPoolIpc({
   const send = (obj) => writeJson(client, obj);
   bindTipForward(store, send, skip);
   bindTxForward(store, send);
-  const enqueue = enqueueApply(store, skip, onApplied);
+  const repair = makeParentRepair(store, send);
+  const enqueue = enqueueApply(store, skip, onApplied, repair);
+  function noteRemoteTip(msg) {
+    if (typeof onSidecarTip !== 'function') return;
+    const height = Number(msg?.height);
+    if (!Number.isFinite(height)) return;
+    onSidecarTip({
+      height,
+      hash: msg?.hash,
+      work: msg?.work,
+      role: msg?.role || '',
+    });
+  }
   const server = net.createServer((sock) => {
     if (!loopbackSock(sock.remoteAddress)) {
       try { sock.destroy(); } catch { /* ignore */ }
@@ -297,12 +487,18 @@ export function attachPoolIpc({
     attachLines(sock, (msg) => {
       if (!msg || typeof msg !== 'object') return;
       if (msg.type === 'ipc_hello') {
+        noteRemoteTip(msg);
         paceBackfill(store, send, msg.height);
         sendMempool(store, send);
         return;
       }
       if (msg.type === 'ipc_peers') {
+        noteRemoteTip(msg);
         if (typeof onPeers === 'function') onPeers(Number(msg.peers) || 0, msg);
+        return;
+      }
+      if (msg.type === 'ipc_getblock') {
+        serveIpcGetblock(store, send, msg);
         return;
       }
       if (msg.type === 'ipc_tx') {
@@ -350,10 +546,12 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
   const send = (obj) => writeJson(sock, obj);
   bindTipForward(store, send, skip);
   bindTxForward(store, send);
-  const enqueue = enqueueApply(store, skip, null);
+  const repair = makeParentRepair(store, send);
+  const enqueue = enqueueApply(store, skip, null, repair);
 
   function sendPeers() {
     const view = networkMempoolWire(store, p2p);
+    const tip = tipView(store);
     send({
       type: 'ipc_peers',
       magic: MAGIC_TESTNET,
@@ -361,6 +559,9 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
       synced: view.synced,
       txs: view.txs,
       rounds: view.rounds,
+      height: tip.height,
+      hash: tip.hash,
+      work: tip.work,
     });
   }
 
@@ -386,6 +587,10 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
       if (msg.type === 'ipc_hello') {
         paceBackfill(store, send, msg.height);
         sendMempool(store, send);
+        return;
+      }
+      if (msg.type === 'ipc_getblock') {
+        serveIpcGetblock(store, send, msg);
         return;
       }
       if (msg.type === 'ipc_work') {

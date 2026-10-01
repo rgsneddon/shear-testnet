@@ -479,15 +479,89 @@ export function lineHasIpBesideIdentity(line) {
   return ip && id;
 }
 
-/** `prev` is a batch-order miss; retry on the next header page. Merkle/pow stay final.
+/**
+ * `evm`, `unsigned`, and `admit_membership` can pass after a pin bump or a native rebuild.
+ * They are not permanent. merkle / pow / bits stay final.
+ * The soft-fail map is process memory, so a boot clears it.
+ */
+export const SOFT_FAIL_TTL_MS = 60_000;
+
+export function isUpgradeableIngestFail(reason) {
+  const r = String(reason || '');
+  return r === 'evm' || r === 'unsigned' || r === 'admit_membership';
+}
+
+/** `prev` is a batch-order miss; retry on the next header page. Merkle/pow/bits stay final.
  * A missing local hasher is not a bad block — do not poison genesis.
  * `side_hold` is a competing branch that has not won fork-choice yet.
- * `not_heavier` must not poison that branch: a later child can still carry more work. */
+ * `not_heavier` must not poison that branch: a later child can still carry more work.
+ * Upgradeable reasons (`evm`, `unsigned`, `admit_membership`) use a TTL, not `failed` forever. */
 export function isFinalIngestFail(reason) {
   const r = String(reason || '');
   if (r === 'prev' || r === 'hash_bonus' || r === 'side_hold' || r === 'not_heavier') return false;
+  if (isUpgradeableIngestFail(r)) return false;
   if (/native[_ ]addon[_ ]missing|native_missing/i.test(r)) return false;
   return true;
+}
+
+export function noteSoftFail(rec, hash, reason, now = Date.now(), pin = PRODUCT_VERSION) {
+  const h = String(hash || '').toLowerCase();
+  if (!rec || !h) return rec;
+  if (!(rec.softFailed instanceof Map)) rec.softFailed = new Map();
+  rec.softFailed.set(h, { at: now, reason: String(reason || ''), pin: String(pin || '') });
+  return rec;
+}
+
+/** Permanent fails plus upgradeable fails still inside their TTL and pin. */
+export function failActive(rec, hash, now = Date.now(), pin = PRODUCT_VERSION) {
+  const h = String(hash || '').toLowerCase();
+  if (!h || !rec) return false;
+  if (rec.failed instanceof Set && rec.failed.has(h)) return true;
+  if (Array.isArray(rec.failed) && rec.failed.includes(h)) return true;
+  const row = rec.softFailed instanceof Map ? rec.softFailed.get(h) : null;
+  if (!row) return false;
+  const expired = (now - Number(row.at || 0)) >= SOFT_FAIL_TTL_MS;
+  const pinMoved = row.pin && String(pin || '') && row.pin !== String(pin);
+  if (expired || pinMoved) {
+    rec.softFailed.delete(h);
+    return false;
+  }
+  return true;
+}
+
+export function activeFailSet(rec, now = Date.now(), pin = PRODUCT_VERSION) {
+  const out = new Set();
+  const add = (h) => {
+    const s = String(h || '').toLowerCase();
+    if (s) out.add(s);
+  };
+  if (rec?.failed instanceof Set) {
+    for (const h of rec.failed) add(h);
+  } else if (Array.isArray(rec?.failed)) {
+    for (const h of rec.failed) add(h);
+  }
+  if (rec?.softFailed instanceof Map) {
+    for (const h of [...rec.softFailed.keys()]) {
+      if (failActive(rec, h, now, pin)) add(h);
+    }
+  }
+  return out;
+}
+
+/** Next-height header held only by an upgradeable fail. Permanent fails are not a hold. */
+export function upgradeableHold(rec, headers, localHeight, now = Date.now(), pin = PRODUCT_VERSION) {
+  const wantH = Math.max(0, Number(localHeight) || 0) + 1;
+  for (const h of headers || []) {
+    if (Number(h?.height) !== wantH) continue;
+    const hash = wireHash(h.hash);
+    if (!hash) continue;
+    const permanent = rec?.failed instanceof Set
+      ? rec.failed.has(hash)
+      : Array.isArray(rec?.failed) && rec.failed.includes(hash);
+    if (permanent) continue;
+    if (failActive(rec, hash, now, pin)) return hash;
+  }
+  return '';
 }
 
 /** Ban only on final fails. `prev` / native-missing must not increment expensiveFails. */
@@ -882,6 +956,7 @@ export function createP2p({
   function beginHeaders(sock) {
     const rec = peers.get(sock);
     if (!rec || rec.syncing) return;
+    if (rec.softHoldUntil && Date.now() < rec.softHoldUntil) return;
     if (!peerTipAhead(rec)) return;
     if (bestAheadSock() !== sock) return;
     rec.syncing = true;
@@ -900,6 +975,7 @@ export function createP2p({
     setImmediate(() => {
       catchupScheduled = false;
       const best = bestAheadSock();
+      if (best) handoffWants(best);
       for (const [sock, rec] of peers) {
         if (sock === best) continue;
         if (rec?.syncing && !(rec.pending && rec.pending.size)) rec.syncing = false;
@@ -911,8 +987,37 @@ export function createP2p({
   function requestHeaders(sock) {
     const rec = peers.get(sock);
     if (!rec || rec.syncing) return;
+    if (rec.softHoldUntil && Date.now() < rec.softHoldUntil) return;
     if (!peerTipAhead(rec)) return;
     scheduleCatchup();
+  }
+
+  function softWaitMs(rec) {
+    const now = Date.now();
+    let wait = SOFT_FAIL_TTL_MS;
+    if (rec?.softFailed instanceof Map) {
+      for (const row of rec.softFailed.values()) {
+        const left = SOFT_FAIL_TTL_MS - (now - Number(row?.at || 0));
+        if (left > 0 && left < wait) wait = left;
+      }
+    }
+    return Math.max(50, wait);
+  }
+
+  function armSoftRetry(sock, rec) {
+    if (!rec) return;
+    const wait = softWaitMs(rec);
+    rec.softHoldUntil = Date.now() + wait;
+    if (rec.softTimer) return;
+    rec.softTimer = setTimeout(() => {
+      rec.softTimer = null;
+      const live = peers.get(sock);
+      if (!live) return;
+      live.softHoldUntil = 0;
+      live.syncing = false;
+      requestHeaders(sock);
+    }, wait);
+    if (typeof rec.softTimer.unref === 'function') rec.softTimer.unref();
   }
 
   function rememberGossip(hash) {
@@ -942,13 +1047,44 @@ export function createP2p({
     }, except);
   }
 
+  function takeWants(rec) {
+    const out = [];
+    if (Array.isArray(rec?.want)) out.push(...rec.want);
+    if (Array.isArray(rec?.retryPrev)) out.push(...rec.retryPrev);
+    if (rec?.pending instanceof Set) out.push(...rec.pending);
+    return out.filter(Boolean);
+  }
+
+  /** Outstanding getblocks follow the tallest ahead peer, not the lagging mesh. */
+  function handoffWants(best) {
+    const bestRec = peers.get(best);
+    if (!bestRec) return;
+    if (!Array.isArray(bestRec.want)) bestRec.want = [];
+    if (!bestRec.pending) bestRec.pending = new Set();
+    for (const [sock, rec] of peers) {
+      if (sock === best || !rec) continue;
+      for (const h of takeWants(rec)) {
+        inflightBlocks.delete(String(h).toLowerCase());
+        if (!bestRec.want.includes(h) && !bestRec.pending.has(h)) bestRec.want.push(h);
+      }
+      rec.want = [];
+      rec.retryPrev = [];
+      if (rec.pending) rec.pending = new Set();
+      rec.pendingAt = 0;
+      if (!(rec.verifying && rec.verifying.size)) rec.syncing = false;
+    }
+  }
+
   /**
-   * A one-block gap pulls that hash now. A wider gap stays on getheaders.
+   * A one-block gap pulls that hash from the tallest ahead peer.
+   * A lagging mesh peer at local+1 does not win while someone taller is connected.
    * Already pending, in flight, or verifying does not send a second ask.
    */
   function pullOneBlock(sock, msg) {
     const rec = peers.get(sock);
     if (!rec) return false;
+    const best = bestAheadSock();
+    if (best && best !== sock) return false;
     const hash = wireHash(msg?.hash);
     const peerH = Number(msg?.height);
     const localH = Number(store.tip()?.height || 0);
@@ -957,7 +1093,10 @@ export function createP2p({
     if (have.has(hash)) return false;
     if (!rec.pending) rec.pending = new Set();
     if (!rec.failed) rec.failed = new Set();
-    if (rec.failed.has(hash)) return false;
+    if (failActive(rec, hash)) {
+      if (upgradeableHold(rec, [{ hash, height: peerH }], localH)) armSoftRetry(sock, rec);
+      return false;
+    }
     if (rec.pending.has(hash) || rec.verifying?.has(hash) || inflightBlocks.has(hash)) return true;
     rec.pending.add(hash);
     inflightBlocks.add(hash);
@@ -1008,8 +1147,9 @@ export function createP2p({
         stillAhead = true;
         const localH = Number(store.tip()?.height || 0);
         const peerH = Number(rec.height);
-        if (wireHash(rec.hash) && peerH === localH + 1) pullOneBlock(sock, rec);
-        else if (!rec.syncing || !(rec.pending && rec.pending.size)) requestHeaders(sock);
+        const oneStep = wireHash(rec.hash) && peerH === localH + 1;
+        const pulled = oneStep && pullOneBlock(sock, rec);
+        if (!pulled && (!rec.syncing || !(rec.pending && rec.pending.size))) requestHeaders(sock);
       }
       if (stillAhead) armTipNudge();
     }, TIP_NUDGE_MS);
@@ -1020,7 +1160,12 @@ export function createP2p({
     const rec = peers.get(sock);
     if (!rec) return;
     const best = bestAheadSock();
-    if (best !== sock) {
+    if (best && best !== sock) {
+      handoffWants(best);
+      pumpGetblocks(best);
+      return;
+    }
+    if (!best) {
       if (!(rec.pending && rec.pending.size)) rec.syncing = false;
       return;
     }
@@ -1031,7 +1176,7 @@ export function createP2p({
     const have = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
     while (rec.pending.size < getblockBatch() && rec.want.length) {
       const hash = rec.want.shift();
-      if (!hash || have.has(hash) || rec.failed.has(hash) || rec.pending.has(hash)) continue;
+      if (!hash || have.has(hash) || failActive(rec, hash) || rec.pending.has(hash)) continue;
       if (rec.verifying?.has(hash) || inflightBlocks.has(hash)) continue;
       rec.pending.add(hash);
       inflightBlocks.add(hash);
@@ -1226,8 +1371,8 @@ export function createP2p({
       const peerH = Number(msg.height);
       const ahead = Number.isFinite(peerH) && peerH > localH;
       if (ahead) gossipTip(msg, sock);
-      if (Number.isFinite(peerH) && peerH === localH + 1) pullOneBlock(sock, msg);
-      else requestHeaders(sock);
+      const oneStep = Number.isFinite(peerH) && peerH === localH + 1;
+      if (!(oneStep && pullOneBlock(sock, msg))) requestHeaders(sock);
       if (ahead || peerTipAhead(peers.get(sock))) armTipNudge();
       return;
     }
@@ -1256,30 +1401,31 @@ export function createP2p({
       const page = msg.headers || [];
       rec.page = page;
       const sideTip = typeof store.sideTipHash === 'function' ? store.sideTipHash() : '';
+      const blocked = activeFailSet(rec);
       const next = nextSequentialHeader({
         headers: page,
         localHeight: localH,
         localHash,
         have,
-        failed: rec.failed,
+        failed: blocked,
         pending: rec.pending,
       }) || sideFollowHeader({
         headers: page,
         sideTip,
         have,
-        failed: rec.failed,
+        failed: blocked,
         pending: rec.pending,
       }) || competingHeader({
         headers: page,
         blocks: store.blocks || [],
         localHash,
         have,
-        failed: rec.failed,
+        failed: blocked,
         pending: rec.pending,
       }) || (peerTipAhead(rec) ? unconnectedHeader({
         headers: page,
         have,
-        failed: rec.failed,
+        failed: blocked,
         pending: rec.pending,
       }) : null);
       rec.want = next ? [next.hash] : [];
@@ -1287,6 +1433,10 @@ export function createP2p({
         if (rec.verifying && rec.verifying.size) return;
         rec.syncing = false;
         rec.pending = null;
+        if (upgradeableHold(rec, page, localH)) {
+          armSoftRetry(sock, rec);
+          return;
+        }
         requestHeaders(sock);
         return;
       }
@@ -1420,10 +1570,12 @@ export function createP2p({
                 headers: rec.page || [],
                 sideTip: typeof store.sideTipHash === 'function' ? store.sideTipHash() : '',
                 have,
-                failed: rec.failed,
+                failed: activeFailSet(rec),
                 pending: rec.pending,
               });
               if (follow) rec.want = [follow.hash, ...(rec.want || [])];
+            } else if (isUpgradeableIngestFail(got?.reason) && !have.has(lastHash)) {
+              noteSoftFail(rec, lastHash, got.reason);
             } else if (isFinalIngestFail(got?.reason)) rec.failed.add(lastHash);
           }
           if (!got?.ok && recordIngestFail(rec, got?.reason)) {
@@ -1474,6 +1626,11 @@ export function createP2p({
   }
 
   function drop(sock) {
+    const rec = peers.get(sock);
+    if (rec?.softTimer) {
+      clearTimeout(rec.softTimer);
+      rec.softTimer = null;
+    }
     sockets.delete(sock);
     peers.delete(sock);
     announced.delete(sock);
