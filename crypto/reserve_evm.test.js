@@ -14,6 +14,8 @@ import {
   decodePortal,
   decodeWithdraw,
   encodeObserveRate,
+  selector,
+  shearMagicBytes,
 } from './reserve_evm.js';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +29,28 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.match(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET \}/);
     assert.match(src, /shearMagicBytes\(network = MAGIC_TESTNET\)/);
     assert.equal(MAGIC_TESTNET, 'shear-testnet-v10');
+  });
+
+  it('CREATE with shear-testnet-v10 succeeds and an unknown magic reverts', async () => {
+    const s = await bootReserveEvm({ network: 'shear-testnet-v10' });
+    assert.ok(s.address);
+    const magic = await callReserve(s, selector('magic()'), { staticCall: true });
+    assert.equal(magic.ok, true, magic.reason);
+    assert.equal(
+      Buffer.from(magic.returnValue).equals(Buffer.from(shearMagicBytes('shear-testnet-v10'))),
+      true,
+    );
+    const view = decodePublicView((await callReserve(s, encodePublicView(1), { staticCall: true })).returnValue);
+    assert.equal(view.liveHashBonusNanos, 1);
+    const prior = await bootReserveEvm({ network: 'shear-testnet-v9' });
+    assert.ok(prior.address);
+    await assert.rejects(
+      () => bootReserveEvm({ network: 'shear-testnet-unknown' }),
+      (err) => {
+        assert.match(String(err.message), /^reserve_deploy: revert$/);
+        return true;
+      },
+    );
   });
 
   it('deploys, takes a π lock, lets a late first deposit vote, and enacts +1', async () => {
