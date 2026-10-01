@@ -842,14 +842,41 @@
       if (!t || /^shear1/i.test(t) || /^she1/i.test(t)) return '';
       return t.slice(0, 9);
     }
-    function fmtLocalTs(ms) {
+    function fmtBlockLandInterval(ms) {
       const n = Number(ms);
       if (!Number.isFinite(n) || n <= 0) return '—';
-      const d = new Date(n);
-      if (Number.isNaN(d.getTime())) return '—';
-      function pad(v) { return String(v).padStart(2, '0'); }
-      return pad(d.getDate()) + '-' + pad(d.getMonth() + 1) + '-' + d.getFullYear()
-        + ' : ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+      const sec = Math.max(0, Math.floor(n / 1000));
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      if (m > 0) return m + 'm ' + s + 's';
+      return s + 's';
+    }
+    function blockLandGapMs(t, prev) {
+      const raw = t && (t.parentGapMs != null ? t.parentGapMs
+        : (t.parentGap != null ? t.parentGap
+          : (t.gapMs != null ? t.gapMs : t.intervalMs)));
+      const fromParent = Number(raw);
+      if (Number.isFinite(fromParent) && fromParent > 0) return fromParent;
+      const a = Number(t && t.at);
+      const b = Number(prev && prev.at);
+      if (Number.isFinite(a) && a > 0 && Number.isFinite(b) && b > 0 && a > b) return a - b;
+      return null;
+    }
+    function prevSealedPoolBlock(t, list) {
+      const h = Number(t && t.height) || 0;
+      if (h < 2) return null;
+      let best = null;
+      let bestH = -1;
+      for (let i = 0; i < list.length; i += 1) {
+        const o = list[i];
+        if (!o || isPendingRow(o)) continue;
+        const oh = Number(o.height) || 0;
+        if (oh < h && oh > bestH) {
+          bestH = oh;
+          best = o;
+        }
+      }
+      return best;
     }
     let recentSig = '';
     function blockStatus(t, tip, need) {
@@ -913,7 +940,7 @@
               : esc(pendingLabel);
             const finderCell = maskFinder(t.finder || t.finderTag, t.finderWorker || t.worker);
             return '<tr><td class="mono"><a href="' + href + '">' + esc(shortId(t.id)) + '</a></td><td>' +
-              esc(fmtLocalTs(t.at)) + '</td><td>' + statusCell + '</td><td class="mono">' +
+              esc(fmtBlockLandInterval(blockLandGapMs(t, prevSealedPoolBlock(t, rows)))) + '</td><td>' + statusCell + '</td><td class="mono">' +
               esc(kind) + '</td><td class="mono">' + esc(finderCell) + '</td></tr>';
           }).join('')
         : '<tr><td colspan="5">No sealed blocks yet.</td></tr>';
