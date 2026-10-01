@@ -102,7 +102,6 @@
       align-items: center;
     }
     #stat-grid .resist-meter,
-    #stat-grid .avg-block-box,
     #stat-grid .last-block-box {
       display: block;
       width: 100%;
@@ -199,21 +198,21 @@
     html[data-theme="dark"] .resist-track { background: rgba(79,216,232,.12); }
     html[data-theme="dark"] .resist-fill { background: #2ee36a; box-shadow: 0 0 12px rgba(46,227,106,.55); }
     html[data-theme="dark"] .resist-word { color: #f4fff6; }
-    .avg-block-box, .last-block-box { margin: 0; }
-    .avg-block-track, .last-block-track {
+    .last-block-box { margin: 0; }
+    .last-block-track {
       position: relative;
       height: 1.4rem;
       background: rgba(26,111,181,.12);
       overflow: hidden;
     }
-    .avg-block-mid, .last-block-mid {
+    .last-block-mid {
       position: absolute;
       left: 50%;
       top: 0; bottom: 0;
       width: 1px;
       background: rgba(26,111,181,.28);
     }
-    .avg-block-needle, .last-block-needle {
+    .last-block-needle {
       position: absolute;
       top: 2px; bottom: 2px;
       width: 3px;
@@ -223,7 +222,7 @@
       box-shadow: 0 0 6px #2ee36a, 0 0 14px #1a9a4a, 0 0 28px rgba(46,227,106,.85);
       transition: left .7s ease, background .7s ease, box-shadow .7s ease;
     }
-    .avg-block-read, .last-block-read {
+    .last-block-read {
       position: relative;
       z-index: 1;
       display: flex;
@@ -235,11 +234,10 @@
       letter-spacing: .04em;
       color: var(--ink);
     }
-    html[data-theme="dark"] .avg-block-track,
     html[data-theme="dark"] .last-block-track { background: rgba(79,216,232,.12); }
-    html[data-theme="dark"] .avg-block-mid, html[data-theme="dark"] .last-block-mid { background: rgba(255,255,255,.22); }
-    html[data-theme="dark"] .avg-block-read, html[data-theme="dark"] .last-block-read { color: #f4fff6; }
-    html[data-theme="dark"] .avg-block-needle, html[data-theme="dark"] .last-block-needle {
+    html[data-theme="dark"] .last-block-mid { background: rgba(255,255,255,.22); }
+    html[data-theme="dark"] .last-block-read { color: #f4fff6; }
+    html[data-theme="dark"] .last-block-needle {
       box-shadow: 0 0 8px #2ee36a, 0 0 18px #1a9a4a, 0 0 32px rgba(46,227,106,.95);
     }
     .last-block-spark {
@@ -404,7 +402,7 @@
       </section>
       <section class="panel-card" id="start-mining">
         <h2>Start mining</h2>
-        <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v9</code> · ShearHash-v3. ShearK 2.6.</p>
+        <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v10</code> · ShearHash-v3. ShearK 2.6.</p>
         <p class="label" id="stratum-cleartext">Stratum is <strong>cleartext TCP</strong>. Set <code>SHEAR_STRATUM_AUTH=1</code> when TLS is not in front.</p>
         <p>Paste Copy dest, a worker name, and CPU threads. Copy the command into ShearK. Use a worker name that you will recognise, so you can find your miners page link in the pool miners table below.</p>
         <form id="mine-form" action="#" method="get" autocomplete="off">
@@ -435,9 +433,8 @@
     <div class="grid" id="stat-grid">
       <article class="panel-card"><div class="label">Coin</div><div class="value" id="coin">SHE</div></article>
       <article class="panel-card"><div class="label">Algo</div><div class="value" id="algo">ShearHash-v3</div></article>
-      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v9</div></article>
+      <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v10</div></article>
       <article class="panel-card"><div class="label">Proof</div><div class="value" id="proof">PoW</div></article>
-      <article class="panel-card"><div class="label">NODES ONLINE</div><div class="value" id="nodes-n">0</div></article>
       <article class="panel-card"><div class="label">Height</div><div class="value" id="height">0</div></article>
       <article class="panel-card"><div class="label">Pool hashrate</div><div class="value" id="hashrate">0 H/s</div></article>
       <article class="panel-card"><div class="label">Resistance</div>
@@ -461,15 +458,8 @@
           </div>
         </div>
       </article>
-      <article class="panel-card"><div class="label">AVG BLOCK TIME</div>
-        <div class="value avg-block-box" id="avg-block" role="meter" aria-label="Average block time">
-          <div class="avg-block-track">
-            <div class="avg-block-mid"></div>
-            <div class="avg-block-needle" id="avg-block-needle"></div>
-            <span class="avg-block-read" id="avg-block-read">—</span>
-          </div>
-        </div>
-      </article>
+      <article class="panel-card"><div class="label">blockBits</div><div class="value" id="block-bits">—</div></article>
+      <article class="panel-card"><div class="label">shareBits</div><div class="value" id="share-bits">—</div></article>
       <article class="panel-card"><div class="label">Uptime</div><div class="value" id="uptime">0s</div></article>
       <article class="panel-card"><div class="label">Last Block (pool)</div>
         <div class="value last-block-box" id="updated">
@@ -563,7 +553,7 @@
       else addrEl.removeAttribute('aria-invalid');
       document.getElementById('copy-cmd').disabled = !ok;
       document.getElementById('cmd-hint').textContent = ok
-        ? 'Ready to copy · ShearHash-v3 · shear-testnet-v9 · :1111'
+        ? 'Ready to copy · ShearHash-v3 · shear-testnet-v10 · :1111'
         : 'Paste Copy dest (ssa1). Login is ssa1.worker.';
       saveMineForm(addr, (document.getElementById('worker').value || '').trim(), t);
     }
@@ -636,16 +626,6 @@
       const s = sec % 60;
       return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
     }
-    function fmtAvgBlock(ms) {
-      if (ms == null || !Number.isFinite(Number(ms)) || Number(ms) < 0) return '—';
-      const sec = Number(ms) / 1000;
-      if (sec < 60) return sec.toFixed(1) + 's';
-      const m = Math.floor(sec / 60);
-      const s = sec - m * 60;
-      if (m < 60) return m + 'm ' + s.toFixed(1) + 's';
-      const h = Math.floor(m / 60);
-      return h + 'h ' + (m % 60) + 'm ' + Math.floor(s) + 's';
-    }
     function avgBlockAxisStops() {
       return [
         [0, 0],
@@ -668,60 +648,6 @@
         }
       }
       return 100;
-    }
-    function avgBlockBarColor(ms) {
-      const v = Number(ms);
-      if (!Number.isFinite(v) || v < 0) return '#2ee36a';
-      const sec = v / 1000;
-      const cols = [
-        [0, '#ffffff'],
-        [50, '#ffe14a'],
-        [90, '#2ee36a'],
-        [120, '#ff8a00'],
-        [240, '#b42318'],
-      ];
-      if (sec <= cols[0][0]) return cols[0][1];
-      for (let i = 1; i < cols.length; i += 1) {
-        if (sec <= cols[i][0]) {
-          const u = (sec - cols[i - 1][0]) / (cols[i][0] - cols[i - 1][0]);
-          return lerpHex(cols[i - 1][1], cols[i][1], u);
-        }
-      }
-      return cols[cols.length - 1][1];
-    }
-    function avgMsFromDagBlocks(blocks) {
-      const times = (Array.isArray(blocks) ? blocks : [])
-        .map(function (b) { return Number(b && b.timestamp); })
-        .filter(function (t) { return Number.isFinite(t) && t > 0; })
-        .sort(function (a, b) { return a - b; });
-      if (times.length < 2) return null;
-      let sum = 0, n = 0;
-      for (let i = 1; i < times.length; i += 1) {
-        const dt = times[i] - times[i - 1];
-        if (!Number.isFinite(dt) || dt <= 0) continue;
-        sum += dt;
-        n += 1;
-      }
-      return n ? sum / n : null;
-    }
-    function paintAvgBlock(s) {
-      const read = document.getElementById('avg-block-read');
-      const needle = document.getElementById('avg-block-needle');
-      const box = document.getElementById('avg-block');
-      const ms = (chainAvgMs != null) ? chainAvgMs : (s && s.avgBlockTimeMs);
-      const label = fmtAvgBlock(ms);
-      if (read) read.textContent = label;
-      const pct = avgBlockNeedlePct(ms);
-      const col = avgBlockBarColor(ms);
-      if (needle) {
-        needle.style.left = pct + '%';
-        needle.style.background = col;
-        needle.style.boxShadow = '0 0 6px ' + col + ', 0 0 16px ' + col;
-      }
-      if (box) {
-        box.setAttribute('aria-valuenow', String(Number(ms) || 0));
-        box.setAttribute('aria-valuetext', label);
-      }
     }
     function lerpHex(a, b, t) {
       function rgb(h) {
@@ -790,24 +716,10 @@
       if (!Number.isFinite(v) || v <= 0) return NaN;
       return v >= 65536 ? v / 65536 : v;
     }
-    function bitsWord(n) {
-      const raw = unpackedBits(n);
-      if (!Number.isFinite(raw) || raw <= 0) return '—';
-      const v = Math.floor(raw);
-      const ones = ['zero','one','two','three','four','five','six','seven','eight','nine',
-        'ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen'];
-      const tens = ['','','twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'];
-      function u100(x) {
-        if (x < 20) return ones[x];
-        const t = Math.floor(x / 10), o = x % 10;
-        return o ? tens[t] + '-' + ones[o] : tens[t];
-      }
-      if (v < 100) return u100(v);
-      if (v < 1000) {
-        const h = Math.floor(v / 100), r = v % 100;
-        return ones[h] + ' hundred' + (r ? ' ' + u100(r) : '');
-      }
-      return String(v);
+    function formatBitsDisplay(bits) {
+      if (!Number.isFinite(bits) || bits <= 0) return '—';
+      // Honest numeric bits: keep fractional digits (e.g. 26.1), trim trailing zeros; do not floor to words.
+      return bits.toFixed(6).replace(/\.?0+$/, '');
     }
     function resistFillPct(bits, minBits, maxBits) {
       const lo = Number(minBits);
@@ -830,12 +742,12 @@
         return;
       }
       fillEl.style.width = resistFillPct(bits, lo, hi) + '%';
-      wordEl.textContent = bitsWord(bits);
+      wordEl.textContent = formatBitsDisplay(bits);
       if (meter) {
         meter.setAttribute('aria-valuemin', String(lo));
         meter.setAttribute('aria-valuemax', String(hi));
         meter.setAttribute('aria-valuenow', String(bits));
-        meter.setAttribute('aria-valuetext', bitsWord(bits));
+        meter.setAttribute('aria-valuetext', formatBitsDisplay(bits));
       }
     }
     function paintFreezeBanner(el, s) {
@@ -847,12 +759,10 @@
       el.textContent = line;
     }
     const boxEveryMs = {
-      nodes: 10000,
       height: 1000,
       hashrate: 7000,
       resistance: 2000,
       crew: 4000,
-      avg: 6000,
       uptime: 1000,
       last: 1000,
       miners: 1000
@@ -872,7 +782,7 @@
       document.getElementById('coin').textContent = s.coin || 'SHE';
       document.getElementById('algo').textContent = s.personalisation || 'ShearHash-v3';
       const net = document.getElementById('network');
-      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v9';
+      if (net) net.textContent = s.magic || s.network || 'shear-testnet-v10';
       if (boxDue('crew', now)) {
         document.getElementById('miners-n').textContent = String(s.miners || 0);
         const workerN = (s.workers || []).reduce(function (n, w) {
@@ -881,10 +791,12 @@
         document.getElementById('workers-n').textContent = String(workerN || s.miners || 0);
       }
       if (boxDue('hashrate', now)) document.getElementById('hashrate').textContent = fmtRate(s.hashrate);
-      if (boxDue('nodes', now)) document.getElementById('nodes-n').textContent = String(Math.max(0, Number(s.nodesOnline) || 0));
       if (boxDue('height', now)) document.getElementById('height').textContent = String(s.height || 0);
       if (boxDue('resistance', now)) paintResistance(s);
-      if (boxDue('avg', now)) paintAvgBlock(s);
+      const blockBitsEl = document.getElementById('block-bits');
+      const shareBitsEl = document.getElementById('share-bits');
+      if (blockBitsEl) blockBitsEl.textContent = (s && s.blockBits != null) ? String(s.blockBits) : '—';
+      if (shareBitsEl) shareBitsEl.textContent = (s && s.shareBits != null) ? String(s.shareBits) : '—';
       if (boxDue('uptime', now)) document.getElementById('uptime').textContent = fmtUptime(s.uptimeMs);
       if (boxDue('last', now)) paintLastBlock(s);
       if (boxDue('miners', now)) {
@@ -1000,7 +912,6 @@
       body.innerHTML = html;
       recentSig = sig;
     }
-    let chainAvgMs = null;
     let statsBusy = false;
     function tick() {
       if (statsBusy) return;
