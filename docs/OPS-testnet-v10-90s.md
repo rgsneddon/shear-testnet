@@ -20,7 +20,7 @@ Hashrate fluctuates. It is not constant and it is not linear. Do not bake a hash
 
 ## Seal path
 
-If height is flat for more than about 15 minutes, or bits are at `liveMinBits` while finds are stalled, and hashrate, miners, or shares are above zero: page `tip_stall_restamp` and reissue the job from the sealed tip. That path does not restart the pool or the node.
+If height is flat for more than about 15 minutes, or bits are at `liveMinBits` while finds are stalled, and hashrate, miners, or shares are above zero: page `tip_stall_restamp`. Reissue only when the live job cannot seal (parent, consensus bits, or stamp). A header that can still seal stays up — a new job every 10s abandons a multi-minute search while hashrate stays online. Empty `/api/mempool` `pending` is not that stall. The path does not restart the pool or the node, and it does not change ASERT next-work.
 
 Manual bounce of a pool or node process is a human last resort only. It is not the freeze fix. Do not auto-bounce.
 

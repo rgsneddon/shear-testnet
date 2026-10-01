@@ -5,7 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
+import { decodeHeader, encodeHeader, headerFromHex } from '../../crypto/header.js';
 import { LIVE_MIN_BITS } from '../../crypto/asert.js';
+import { retarget } from '../../node/src/chain.js';
 import { createPool, tipStallDecision, TIP_STALL_MS } from '../src/pool.js';
 
 describe('tip stall and floor dwell restamp without a bounce', () => {
@@ -48,6 +50,9 @@ describe('tip stall and floor dwell restamp without a bounce', () => {
     });
     assert.equal(quiet.restamp, false);
     assert.equal(quiet.restart, false);
+    const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
+    const pred = src.slice(src.indexOf('export function tipStallDecision'), src.indexOf('export const ALERT_CONCENTRATION'));
+    assert.equal(/mempool/.test(pred), false);
   });
 
   it('watchTipStall reissues the live job from the sealed tip and does not bounce', () => {
@@ -100,9 +105,96 @@ describe('tip stall and floor dwell restamp without a bounce', () => {
       const stats = pool.publicStats();
       assert.equal(stats.alerts.tipStall, true);
       assert.equal(stats.alerts.tipStallReason, 'floor_dwell');
+      assert.equal(stats.alerts.tipStallJobId, floor.jobId);
+      assert.equal(stats.alerts.tipStallReissued, false);
+      const keptHeader = pool.issueJob().header;
+      const again = pool.watchTipStall(now + 10_000, {
+        now: now + 10_000,
+        heightSinceMs: now - TIP_STALL_MS - 5_000,
+        bits: 12,
+        lastFoundAt: now,
+        hashrate: 1500,
+        miners: 2,
+        shares: 9,
+      });
+      assert.equal(again.restart, false);
+      assert.equal(again.restamped, true);
+      assert.equal(again.reissued, false);
+      assert.equal(again.seal, 'ok');
+      assert.equal(again.jobId, floor.jobId);
+      assert.equal(pool.issueJob().header, keptHeader);
       assert.match(stats.blockBitsLabel, /blockBits/);
       assert.match(stats.shareBitsLabel, /not a retarget/i);
       assert.equal(bounced, 0);
+    } finally {
+      pool.close();
+    }
+  });
+
+  it('a bits undercut is rewritten to consensus next-work, not an easier target', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stall-bits-'));
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: dest,
+    });
+    try {
+      const now = Date.now();
+      const first = pool.watchTipStall(now, {
+        now,
+        heightSinceMs: now - TIP_STALL_MS - 5_000,
+        bits: 20,
+        lastFoundAt: now,
+        hashrate: 4000,
+        miners: 3,
+        shares: 0,
+      });
+      assert.equal(first.restamped, true);
+      assert.equal(first.seal, 'ok');
+      const want = retarget(pool.store.blocks);
+      const job = pool.issueJob();
+      const decoded = decodeHeader(headerFromHex(job.header));
+      assert.equal(Number(decoded.bits), Number(want));
+      const under = encodeHeader({
+        version: decoded.version,
+        prevBlockHash: decoded.prevBlockHash,
+        merkleRoot: decoded.merkleRoot,
+        continuityRoot: decoded.continuityRoot,
+        timestamp: decoded.timestamp,
+        bits: Number(want) - 1,
+        nonce: 0n,
+        baseFee: decoded.baseFee,
+      });
+      job.header = under.toString('hex');
+      job.bits = Number(want) - 1;
+      job.blockBits = Number(want) - 1;
+      const rec = pool.store.jobs.get(String(job.jobId));
+      if (rec) {
+        rec.job = job;
+        if (rec.tpl) rec.tpl.header = under;
+      }
+      const seen = decodeHeader(headerFromHex(pool.issueJob().header));
+      assert.equal(Number(seen.bits), Number(want) - 1, 'undercut must sit on the live header');
+      const fixed = pool.watchTipStall(now + 1_000, {
+        now: now + 1_000,
+        heightSinceMs: now - TIP_STALL_MS - 5_000,
+        bits: 20,
+        lastFoundAt: now,
+        hashrate: 4000,
+        miners: 3,
+        shares: 0,
+      });
+      assert.equal(fixed.restart, false);
+      assert.equal(fixed.reissued, true);
+      assert.equal(fixed.restamped, true);
+      assert.equal(fixed.seal, 'ok');
+      assert.notEqual(fixed.jobId, first.jobId);
+      const sealed = decodeHeader(headerFromHex(pool.issueJob().header));
+      assert.equal(Number(sealed.bits), Number(want));
+      assert.notEqual(Number(sealed.bits), Number(want) - 1);
     } finally {
       pool.close();
     }

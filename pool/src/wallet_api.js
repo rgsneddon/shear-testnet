@@ -833,6 +833,19 @@ export function mempoolLattice(store, limitOrOpts = 24) {
   const includedIds = new Set(
     tplTxs.filter((t) => t && !t.coinbase).map((t) => String(t.id || '')).filter(Boolean),
   );
+  const jobUser = [];
+  for (const t of tplTxs) {
+    if (!t || t.coinbase) continue;
+    const id = String(t.id || '');
+    if (!id) continue;
+    const weight = Number(t.weight) > 0 ? Number(t.weight) : memoTxWeight(t);
+    jobUser.push({
+      id,
+      kind: t.kind || 'send',
+      fee: Number(t.fee || 0),
+      weight,
+    });
+  }
   const rawPending = Array.isArray(opts.networkPending)
     ? opts.networkPending
     : (store?.mempool || []);
@@ -850,7 +863,23 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       included,
       priority: (included ? 400 : 0) + mass,
     };
-  }).filter((t) => t.id).sort((a, b) => b.priority - a.priority);
+  }).filter((t) => t.id);
+  const seenPending = new Set(pending.map((t) => t.id));
+  for (const row of jobUser) {
+    if (seenPending.has(row.id)) continue;
+    const mass = row.weight * (1 + Math.log1p(Math.max(0, row.fee)));
+    pending.push({
+      id: row.id,
+      kind: row.kind,
+      fee: row.fee,
+      weight: row.weight,
+      prime: row.kind === 'b-spend' || row.kind === 'send' || row.kind === 'claim',
+      included: true,
+      priority: 400 + mass,
+    });
+    seenPending.add(row.id);
+  }
+  pending.sort((a, b) => b.priority - a.priority);
   const gossipRounds = Array.isArray(opts.networkRounds);
   const byTag = new Map();
   if (!gossipRounds) {
@@ -891,7 +920,13 @@ export function mempoolLattice(store, limitOrOpts = 24) {
     hashes,
     weight: hashes + pending.reduce((a, t) => a + (Number(t.weight) || 0), 0),
     fee: pending.reduce((a, t) => a + (Number(t.fee) || 0), 0),
-    txs: hashRows,
+    txs: hashRows.concat(jobUser.map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      fee: row.fee,
+      weight: row.weight,
+      included: true,
+    }))),
   };
   const n = Math.max(1, Math.min(48, Math.floor(Number(opts.limit) || 24)));
   const generations = [];

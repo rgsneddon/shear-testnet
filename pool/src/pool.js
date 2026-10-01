@@ -24,6 +24,7 @@ import {
   medianTimePast,
   MTP_WINDOW,
   MTP_FUTURE_MS,
+  HEADER_AHEAD_MS,
   consensusFingerprint,
   consensusLaw,
   epochView,
@@ -660,6 +661,8 @@ export const TIP_STALL_MS = 15 * 60 * 1000;
  * Pure. Alert and restamp when the tip is flat, or bits sit on the floor
  * while finds are stalled, and hashrate, miners, or shares are above zero.
  * restart is always false. Callers must not bounce the pool or the node.
+ * An empty mempool is not this decision. Pending [] does not explain a stall
+ * while hashrate is above zero.
  */
 export function tipStallDecision({
   now = 0,
@@ -1490,6 +1493,7 @@ export function createPool({
     return last;
   }
   let networkView = null;
+  let stopped = false;
   function setP2p(next) { p2pNet = next; }
   function setNetworkView(view) {
     if (!view || !Array.isArray(view.txs)) return;
@@ -1518,6 +1522,7 @@ export function createPool({
       rounds,
       synced: Number.isFinite(synced) && synced >= 0 ? synced : null,
     };
+    try { paintStatsSnap(); } catch { /* snap is rebuilt on the stats cadence */ }
   }
   function nodesOnline() {
     if (networkView && networkView.synced != null) return networkView.synced;
@@ -1531,6 +1536,10 @@ export function createPool({
   let lastJob = null;
   let prevJob = null;
   let prevJobAt = 0;
+  // Mempool ids last packed into a template. Membership change rebuilds once.
+  // A painted hold that stays queued does not churn the job id; a tip change
+  // still force-rebuilds, so a hold that becomes fundable is packed then.
+  let packedMempoolKey = '';
   let pendingPayout = [];
   let lag1Shares = [];
   let openShares = [];
@@ -1661,10 +1670,10 @@ export function createPool({
   }
 
   function parentIntervalBits() {
-    const rows = store.blocks || [];
-    if (!rows.length) return null;
+    // Same call template() uses, including an empty book. A null here made
+    // sealReject ignore an undercut and leave the easier header up.
     try {
-      return retarget(rows);
+      return retarget(store.blocks || []);
     } catch {
       return null;
     }
@@ -1700,6 +1709,8 @@ export function createPool({
   let stallHeight = Number(store.tip()?.height || 0);
   let stallHeightSince = Date.now();
   let tipStallAlert = null;
+  let stallReissueAt = 0;
+  let stallReissueSeal = '';
   function noteStallHeight(now = Date.now()) {
     const h = Number(store.tip()?.height || 0);
     if (h !== stallHeight) {
@@ -1707,9 +1718,43 @@ export function createPool({
       stallHeightSince = now;
     }
   }
+  // '' when the live job can still seal on this tip. Otherwise a fail-closed
+  // reason. Consensus bits are retarget(); this does not invent an easier target.
+  function sealReject(now = Date.now()) {
+    if (!lastJob?.header) return 'no_job';
+    const tip = store.tip();
+    const tipHash = tip?.hash
+      ? (Buffer.isBuffer(tip.hash) ? tip.hash.toString('hex') : String(tip.hash).replace(/^0x/i, '')).toLowerCase()
+      : '';
+    const prev = String(lastJob.prevBlockHash || '').replace(/^0x/i, '').toLowerCase();
+    if (tipHash && prev !== tipHash) return 'parent';
+    let decoded;
+    try { decoded = decodeHeader(headerFromHex(lastJob.header)); }
+    catch { return 'header'; }
+    const wantBits = parentIntervalBits();
+    if (wantBits != null && Number(decoded.bits) !== Number(wantBits)) return 'bits';
+    const ts = Number(decoded.timestamp);
+    if (!(ts > 0) || ts > Number(now) + HEADER_AHEAD_MS) return 'timestamp';
+    if (tip?.header) {
+      let parent;
+      try { parent = decodeHeader(Buffer.from(tip.header)); }
+      catch { return 'parent_header'; }
+      if (!(ts > Number(parent.timestamp))) return 'timestamp';
+      const mtp = medianTimePast((store.blocks || []).slice(-MTP_WINDOW).map((b) => {
+        try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
+      }));
+      if (ts > Number(mtp) + MTP_FUTURE_MS) return 'timestamp';
+    }
+    return '';
+  }
+
+  function liveJobCanSeal(now = Date.now()) {
+    return sealReject(now) === '';
+  }
+
   function watchTipStall(now = Date.now(), probe = null) {
     if (paused && !probe) {
-      return { restamp: false, alert: false, restart: false, reason: '', restamped: false };
+      return { restamp: false, alert: false, restart: false, reason: '', restamped: false, reissued: false, seal: '' };
     }
     noteStallHeight(now);
     const rows = [...miners.values()];
@@ -1725,23 +1770,54 @@ export function createPool({
     const decision = tipStallDecision(probe ? { ...live, ...probe, now: probe.now ?? now } : live);
     if (!decision.restamp) {
       tipStallAlert = null;
-      return { ...decision, restamped: false };
+      return { ...decision, restamped: false, reissued: false, seal: sealReject(now) || 'ok' };
     }
-    tipStallAlert = { at: now, reason: decision.reason };
+    // Keep a sealable header. A new job every restamp tick throws away the
+    // multi-minute search miners are already hashing. Reissue only when this
+    // header cannot seal, and only once per stall window while it still cannot.
+    let job = lastJob;
+    let reissued = false;
+    if (!liveJobCanSeal(now)) {
+      const why = sealReject(now);
+      const due = (Number(now) - stallReissueAt) >= TIP_STALL_MS || why !== stallReissueSeal;
+      if (due) {
+        stallReissueAt = Number(now);
+        stallReissueSeal = why;
+        const next = issueJob(shareBits, { force: true });
+        if (next && liveJobCanSeal(now)) {
+          job = next;
+          reissued = true;
+          broadcastJob(job);
+          stallReissueSeal = '';
+        } else if (next) {
+          job = next;
+        }
+      }
+    }
+    const seal = sealReject(now);
+    tipStallAlert = {
+      at: now,
+      reason: seal ? `${decision.reason}:${seal}` : decision.reason,
+      jobId: job ? String(job.jobId || '') : '',
+      reissued,
+    };
     console.error(JSON.stringify({
       event: 'tip_stall_restamp',
       reason: decision.reason,
+      seal: seal || 'ok',
+      reissued,
+      jobId: tipStallAlert.jobId,
       bits: probe?.bits ?? live.bits,
       hashrate: probe?.hashrate ?? live.hashrate,
       miners: probe?.miners ?? live.miners,
       shares: probe?.shares ?? live.shares,
     }));
-    const job = issueJob(shareBits, { force: true });
-    if (job) broadcastJob(job);
     return {
       ...decision,
-      restamped: !!job,
-      jobId: job ? String(job.jobId || '') : '',
+      restamped: !!(job && !seal),
+      reissued,
+      seal: seal || 'ok',
+      jobId: tipStallAlert.jobId,
       blockBits: job ? Number(job.blockBits || job.bits) : null,
     };
   }
@@ -1791,6 +1867,21 @@ export function createPool({
     });
   }
 
+  function mempoolKey(list) {
+    const ids = [];
+    for (const t of list || []) {
+      if (!t || t.coinbase) continue;
+      const id = String(t.id || '');
+      if (id) ids.push(id);
+    }
+    ids.sort();
+    return ids.join('\n');
+  }
+
+  function mempoolDrifted() {
+    return mempoolKey(store.mempool) !== packedMempoolKey;
+  }
+
   function issueJob(shareBitsNow, { force = false } = {}) {
     const sb = clampShareBits(shareBitsNow ?? shareBits, { blockBits: blockBitsNow(), minBits: liveShareMin() });
     const now = Date.now();
@@ -1801,9 +1892,10 @@ export function createPool({
       : '';
     const jobPrev = String(lastJob?.prevBlockHash || '');
     const parentOk = !tipHash || jobPrev === tipHash;
-    // Same parent must keep the jobId. Packed Q16.16 ticks every restamp
-    // and a new id stales dest-bind shares that are still in flight.
-    if (!force && lastJob && parentOk) {
+    // Same parent keeps the jobId while the mempool set is unchanged.
+    // A gain or loss rebuilds so the job miners hash now includes that tx.
+    // The previous job stays inside the share grace window.
+    if (!force && lastJob && parentOk && !mempoolDrifted()) {
       lastIssueAt = now;
       if (Number(lastJob.shareBits) === sb) return lastJob;
       const hist = [...(lastJob.shareBitsHist || []), { bits: Number(lastJob.shareBits), at: now }]
@@ -1868,6 +1960,7 @@ export function createPool({
     });
     const gate = gateJob(job);
     if (!gate.ok) return null;
+    packedMempoolKey = mempoolKey(store.mempool);
     console.error(JSON.stringify({
       event: 'issue_job',
       jobId: job.jobId,
@@ -2001,9 +2094,11 @@ export function createPool({
         const wantBits = parentIntervalBits() ?? decoded.bits;
         const liveTs = Number(decoded.timestamp);
         const overMtp = liveTs > Number(mtp) + MTP_FUTURE_MS;
-        // Same jobId. Timestamp ticks do not retarget. Any packed undercut,
+        // Same jobId. A sealable header is left alone so miners finish the
+        // search. Timestamp ticks do not retarget. Any packed undercut,
         // including a fraction under one bit, is rewritten to consensus work.
         if (!overMtp && decoded.bits === wantBits) {
+          if (liveJobCanSeal(now)) return lastJob;
           const before = String(lastJob.header || '');
           const job = restampLiveHeader(now);
           if (job && String(job.header || '') !== before) broadcastJob(job);
@@ -2583,6 +2678,9 @@ export function createPool({
         }),
         tipStall: !!tipStallAlert,
         tipStallReason: tipStallAlert?.reason || '',
+        tipStallJobId: tipStallAlert?.jobId || '',
+        tipStallAt: Number(tipStallAlert?.at || 0),
+        tipStallReissued: !!tipStallAlert?.reissued,
       },
       blockBitsLabel: 'consensus blockBits (median11 next-work). Not share vardiff.',
       shareBitsLabel: 'shareBits (vardiff). Not a retarget.',
@@ -2997,8 +3095,15 @@ export function createPool({
     try {
       const next = issueJob(undefined, { force: true });
       if (next) broadcastJob(next);
-    } catch { /* next natural issueJob still picks the send up */ }
+    } catch { /* mempool drift on the next issueJob still rebuilds */ }
     console.error(JSON.stringify({ event: 'issue_job_force_ms', ms: Date.now() - t0 }));
+  }
+
+  if (typeof store.on === 'function') {
+    store.on('tx', () => {
+      jobDirty = true;
+      setImmediate(flushDirtyJob);
+    });
   }
 
   function dropSockets(list) {
@@ -3364,6 +3469,7 @@ export function createPool({
   httpServer.keepAliveTimeout = 5000;
   httpServer.on('listening', () => {
     setImmediate(() => {
+      if (stopped) return;
       paintStatsSnap();
       if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);
       if (!payoutTimer) {
@@ -3383,11 +3489,14 @@ export function createPool({
             advisory: 'Change THIS_POOL_DIRECT_FEE_DEST in pool/src/pool.js to your own ssa1 before you run this pool. The shipped address receives the 1% fee. Solo mining does not charge it.',
             feeDestTail: String(THIS_POOL_DIRECT_FEE_DEST).slice(-4),
           }));
+          const httpBound = httpServer.address();
+          const stratumBound = stratum.address();
           resolve({
-            stratumPort,
-            httpPort,
+            stratumPort: stratumBound && typeof stratumBound === 'object' ? stratumBound.port : stratumPort,
+            httpPort: httpBound && typeof httpBound === 'object' ? httpBound.port : httpPort,
           });
           setImmediate(() => {
+            if (stopped) return;
             paintStatsSnap();
             if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);
             if (!payoutTimer) {
@@ -3402,6 +3511,7 @@ export function createPool({
   }
 
   function close() {
+    stopped = true;
     if (restampTimer) {
       clearInterval(restampTimer);
       restampTimer = null;
@@ -3431,9 +3541,8 @@ export function createPool({
     for (const s of sockets) try { s.destroy(); } catch { /* ignore */ }
     sockets.clear();
     try { stratum.close(); } catch { /* ignore */ }
+    try { httpServer.closeAllConnections?.(); } catch { /* ignore */ }
     try { httpServer.close(); } catch { /* ignore */ }
-    try { stratum.unref(); } catch { /* ignore */ }
-    try { httpServer.unref(); } catch { /* ignore */ }
   }
 
   return {

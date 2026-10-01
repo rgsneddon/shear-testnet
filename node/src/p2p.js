@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { freshMinerRounds, safeMinerRounds } from './network_report.js';
 import { shareRowJson } from '../../crypto/pack.js';
-import { compactTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
+import { admitWireTx, compactTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
 
@@ -816,7 +816,7 @@ export function createP2p({
   }
 
   function wireTx(tx) {
-    return compactTx(tx);
+    return admitWireTx(tx);
   }
 
   function scheduleFluff(id, tx, except) {

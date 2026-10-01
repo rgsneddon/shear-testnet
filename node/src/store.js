@@ -977,6 +977,9 @@ export function createStore(dir, {
       }
     }
     if (reserveNeedsPortalOpen(tx) && !verifyReservePortalOpen(tx)) {
+      try {
+        console.error(JSON.stringify({ event: 'admit_fail', id: String(tx?.id || ''), reason: 'unsigned' }));
+      } catch { /* ignore */ }
       return { ok: false, reason: 'unsigned' };
     }
     const pay = payoutOnTip(tx);
@@ -991,6 +994,21 @@ export function createStore(dir, {
     });
     if (got.ok && got.tx && !got.duplicate) {
       emit('tx', got.tx);
+      try {
+        console.error(JSON.stringify({
+          event: 'queue_ok',
+          id: String(got.tx.id || ''),
+          kind: String(got.tx.kind || ''),
+        }));
+      } catch { /* ignore */ }
+    } else if (got && got.ok === false) {
+      try {
+        console.error(JSON.stringify({
+          event: 'admit_fail',
+          id: String(tx?.id || ''),
+          reason: String(got.reason || 'admit'),
+        }));
+      } catch { /* ignore */ }
     }
     return got;
   }
@@ -1536,6 +1554,9 @@ export function createStore(dir, {
           const have = destSpendableNanos(held.from, Number(t?.height || 0));
           if (have < held.nanos) {
             keep.push(m);
+            try {
+              console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: 'painted_hold' }));
+            } catch { /* ignore */ }
             continue;
           }
         }

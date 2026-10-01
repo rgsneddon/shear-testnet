@@ -6,7 +6,9 @@
  */
 import net from 'node:net';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { admitWireTx } from '../../crypto/chronoflux.js';
 import { txWeight } from '../../crypto/levy.js';
+import { reviveBytes } from '../../crypto/note.js';
 import { decodeWireBlock, encodeWireBlock } from './p2p.js';
 
 export const P2P_IPC_HOST = '127.0.0.1';
@@ -158,6 +160,43 @@ function paceBackfill(store, send, afterHeight) {
   setImmediate(step);
 }
 
+function reviveIpcTx(tx) {
+  try {
+    return JSON.parse(JSON.stringify(tx), reviveBytes);
+  } catch {
+    return tx;
+  }
+}
+
+function sendMempool(store, send) {
+  for (const m of store?.mempool || []) {
+    const id = String(m?.id || '');
+    if (!id) continue;
+    let wire;
+    try { wire = admitWireTx(m); } catch { continue; }
+    send({ type: 'ipc_tx', magic: MAGIC_TESTNET, tx: wire });
+  }
+}
+
+/** Admitted txs cross the pool/sidecar cut. Duplicate queueTx does not re-emit. */
+function bindTxForward(store, send) {
+  if (typeof store?.on !== 'function') return;
+  store.on('tx', (tx) => {
+    const id = String(tx?.id || '');
+    if (!id) return;
+    let wire;
+    try { wire = admitWireTx(tx); } catch { return; }
+    send({ type: 'ipc_tx', magic: MAGIC_TESTNET, tx: wire });
+  });
+}
+
+function acceptIpcTx(store, msg) {
+  if (!msg || msg.type !== 'ipc_tx' || !msg.tx || typeof msg.tx !== 'object') return;
+  if (msg.magic && msg.magic !== MAGIC_TESTNET) return;
+  if (typeof store?.queueTx !== 'function') return;
+  try { store.queueTx(reviveIpcTx(msg.tx)); } catch { /* admit_fail stays on the store */ }
+}
+
 function bindTipForward(store, send, skip) {
   if (typeof store?.on !== 'function') return () => {};
   return store.on('tip', (info) => {
@@ -239,6 +278,7 @@ export function attachPoolIpc({
   let client = null;
   const send = (obj) => writeJson(client, obj);
   bindTipForward(store, send, skip);
+  bindTxForward(store, send);
   const enqueue = enqueueApply(store, skip, onApplied);
   const server = net.createServer((sock) => {
     if (!loopbackSock(sock.remoteAddress)) {
@@ -258,10 +298,15 @@ export function attachPoolIpc({
       if (!msg || typeof msg !== 'object') return;
       if (msg.type === 'ipc_hello') {
         paceBackfill(store, send, msg.height);
+        sendMempool(store, send);
         return;
       }
       if (msg.type === 'ipc_peers') {
         if (typeof onPeers === 'function') onPeers(Number(msg.peers) || 0, msg);
+        return;
+      }
+      if (msg.type === 'ipc_tx') {
+        acceptIpcTx(store, msg);
         return;
       }
       if (msg.type === 'ipc_block') enqueue(msg);
@@ -304,6 +349,7 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
   let peerTimer = null;
   const send = (obj) => writeJson(sock, obj);
   bindTipForward(store, send, skip);
+  bindTxForward(store, send);
   const enqueue = enqueueApply(store, skip, null);
 
   function sendPeers() {
@@ -339,10 +385,15 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
       if (!msg || typeof msg !== 'object') return;
       if (msg.type === 'ipc_hello') {
         paceBackfill(store, send, msg.height);
+        sendMempool(store, send);
         return;
       }
       if (msg.type === 'ipc_work') {
         if (typeof p2p?.publishWork === 'function') p2p.publishWork(msg.rows || []);
+        return;
+      }
+      if (msg.type === 'ipc_tx') {
+        acceptIpcTx(store, msg);
         return;
       }
       if (msg.type === 'ipc_block') enqueue(msg);

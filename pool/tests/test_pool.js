@@ -250,7 +250,7 @@ describe('HTTP stats cannot stall', () => {
     assert.match(src, /worker_threads/);
     assert.match(src, /hash_worker\.js/);
     assert.match(src, /STATS_REFRESH_MS/);
-    assert.match(src, /resolve\(\{\s*stratumPort,\s*httpPort,\s*\}\);\s*setImmediate\(\(\) => \{\s*paintStatsSnap/);
+    assert.match(src, /resolve\(\{[\s\S]*?\}\);\s*setImmediate\(\(\) => \{\s*if \(stopped\) return;\s*paintStatsSnap/);
     assert.match(src, /scoreShareLive/);
     assert.match(src, /hashOffThread/);
     assert.match(src, /rememberLiveSharePow/);

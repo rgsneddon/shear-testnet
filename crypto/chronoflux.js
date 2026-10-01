@@ -511,6 +511,21 @@ export function compactTx(tx) {
 }
 
 /**
+ * Mempool relay. Sealed compact drops spendPub; admit still has to verify it.
+ * Openings stay off the wire.
+ */
+export function admitWireTx(tx) {
+  const wire = compactTx(tx);
+  if (!wire || typeof wire !== 'object' || wire.coinbase) return wire;
+  if (tx?.spendPub && !wire.spendPub) {
+    wire.spendPub = typeof tx.spendPub === 'string'
+      ? tx.spendPub
+      : Buffer.from(tx.spendPub).toString('hex');
+  }
+  return wire;
+}
+
+/**
  * On-disk chain row: header + sealed txs + (until prune) collated samples.
  * Never persist one JSON object per hash, template objects, or Buffer dumps.
  */
