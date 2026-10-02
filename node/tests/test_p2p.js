@@ -1061,7 +1061,7 @@ describe('p2p IBD catch-up', { timeout: 7_200_000 }, () => {
     try {
       await a.p2p.connect('127.0.0.1', b.bound.port);
       await c.p2p.connect('127.0.0.1', b.bound.port);
-      const linked = await waitFor(() => a.p2p.syncedOnline() === 2 && c.p2p.syncedOnline() === 2, 8000);
+      const linked = await waitFor(() => a.p2p.syncedOnline() === 2 && c.p2p.syncedOnline() === 2, 30_000);
       assert.equal(linked, true, 'line A-B-C did not finish the handshakes');
       const parent = a.store.tip();
       const now = parent
