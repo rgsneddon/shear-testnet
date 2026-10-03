@@ -94,28 +94,29 @@
   <script src="../shared/shear-chrome.js"></script>
 
   <div class="banner" role="status">
-    <strong>Unzip and run, or build from source.</strong> Shear Sentinel v16 packs
+    <strong>Unzip and run, or build from source.</strong> Shear Sentinel v17 packs
     <span class="sep">·</span>
-    magic shear-testnet-v10 · node 16.0 · sequential IBD
+    magic shear-testnet-v10 · node 17.0 · sequential IBD
   </div>
 
   <main>
     <div class="wrap page-hero">
       <p class="section-label">Validating node</p>
       <h1>Run a Shear node</h1>
-      <p class="lede">The node is the book. It syncs height 1, 2, 3, … to the tip and answers Continuum with the notes sealed to one dest. Clone <code>shear-testnet</code>, build RandomX + <code>crypto/native</code>, or unzip Shear Sentinel v16. No automatic bootstrap. Optional <code>--solo</code> stratum after <code>ibd=false</code>. Continuum downloads are on <a href="/wallet/">WALLET</a>. Published node pin is 16.0.</p>
+      <p class="lede">The node is the book. It syncs height 1, 2, 3, … to the tip and answers Continuum with the notes sealed to one dest. Clone <code>shear-testnet</code>, build RandomX + <code>crypto/native</code>, or unzip Shear Sentinel v17. No automatic bootstrap. Optional <code>--solo</code> stratum after <code>ibd=false</code>. Continuum downloads are on <a href="/wallet/">WALLET</a>. Published node pin is 17.0.</p>
     </div>
 
     <section class="wrap section-sm">
       <div class="panel honest">
         <h3>Prebuilt node (unzip and run)</h3>
-        <p>Node release <strong>v16</strong>. Shear Sentinel v16 (product 16.0) is the portable node cut. Windows, Linux, and Fedora zips are on <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.67">the Continuum 0.67 release</a>. Git tag v16 stays on the same commit as tag 0.66. Arch and openSUSE node zips are not attached. Follow-only nodes may lag. Mining, <code>--solo</code>, and a self-pool need this v16 pack. Unzip, run <code>shear-node.cmd</code> or <code>shear-node.bat</code> (Windows — the window stays open) or <code>./shear-node.sh</code> (Linux family). It syncs height 1, 2, 3, … to the tip and keeps serving. Loopback RPC is 127.0.0.1:18332. Continuum on this machine uses that port. Connect Bare uses it when it answers, which is how Android receives without a phone node. A new tip is advised on /events. The wallet then reads every note for its dest. No automatic bootstrap. Pass <code>--solo</code> only after <code>ibd=false</code> if you want local stratum at 127.0.0.1:1111, then point ShearK 2.7 at that port with Copy dest. The node verifies every transaction (ADMITv2) and the mining mint (DINS-DAG pot plus hash bonus). Continuum wallet is <strong>0.67</strong>. The macOS node zip is the MacBook handoff. This page does not link a macOS artifact.</p>
+        <p>Node release <strong>v17</strong>. Shear Sentinel v17 (product 17.0) is the portable node cut. Windows, Linux, Arch, Fedora, openSUSE, and macOS zips are on <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/v17">the Shear Sentinel v17 release</a>. Git tag v16 stays on the same commit as tag 0.66. Follow-only nodes may lag. Mining, <code>--solo</code>, and a self-pool need this v17 pack. Unzip, run <code>shear-node.cmd</code> or <code>shear-node.bat</code> (Windows — the window stays open) or <code>./shear-node.sh</code> (Linux family and macOS). It syncs height 1, 2, 3, … to the tip and keeps serving. Loopback RPC is 127.0.0.1:18332. Continuum on this machine uses that port. Connect Bare uses it when it answers, which is how Android receives without a phone node. A new tip is advised on /events. The wallet then reads every note for its dest. No automatic bootstrap. Pass <code>--solo</code> only after <code>ibd=false</code> if you want local stratum at 127.0.0.1:1111, then point ShearK 2.8 at that port with Copy dest. The node verifies every transaction (ADMITv2) and the mining mint (DINS-DAG pot plus hash bonus). Continuum wallet is <strong>0.67</strong>.</p>
         <p class="cta-row" style="margin:0.8rem 0 0;display:flex;flex-wrap:wrap;gap:8px">
-          <a class="btn btn-primary" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.67/shear-node-v16-windows.zip">shear-node-v16-windows.zip</a>
-          <a class="btn btn-soft" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.67/shear-node-v16-linux.zip">shear-node-v16-linux.zip</a>
-          <span class="btn btn-soft">shear-node-v16-archlinux.zip is not attached</span>
-          <a class="btn btn-soft" href="https://github.com/rgsneddon/shear-testnet/releases/download/0.67/shear-node-v16-fedora.zip">shear-node-v16-fedora.zip</a>
-          <span class="btn btn-soft">shear-node-v16-opensuse.zip is not attached</span>
+          <a class="btn btn-primary" href="https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-windows.zip">shear-node-v17-windows.zip</a>
+          <a class="btn btn-soft" href="https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-linux.zip">shear-node-v17-linux.zip</a>
+          <a class="btn btn-soft" href="https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-archlinux.zip">shear-node-v17-archlinux.zip</a>
+          <a class="btn btn-soft" href="https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-fedora.zip">shear-node-v17-fedora.zip</a>
+          <a class="btn btn-soft" href="https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-opensuse.zip">shear-node-v17-opensuse.zip</a>
+          <a class="btn btn-soft" href="https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-macos.zip">shear-node-v17-macos.zip</a>
         </p>
         <p style="margin:0.8rem 0 0">Optional snapshot: <a href="https://boot.shear.digital">boot.shear.digital</a> (<code>latest.json</code> + <code>latest.bin</code>), empty datadir only, <code>--bootstrap</code>.</p>
       </div>
@@ -124,7 +125,7 @@
     <section class="wrap section">
       <p class="section-label">0 · OS dependencies</p>
       <h2 style="margin:0 0 .35rem">Build from source</h2>
-      <p>Full validating node for <strong>shear-testnet-v10</strong>. Prefer the prebuilt zip above. To build it yourself, clone <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">rgsneddon/shear-testnet</a> <code>main</code> (node pin <strong>16.0</strong>; node lives at <code>node/</code> in that tree).</p>
+      <p>Full validating node for <strong>shear-testnet-v10</strong>. Prefer the prebuilt zip above. To build it yourself, clone <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">rgsneddon/shear-testnet</a> <code>main</code> (node pin <strong>17.0</strong>; node lives at <code>node/</code> in that tree).</p>
 <p>Beginner path (from tip site): OS deps → clone → RandomX + <code>crypto/native</code> → validating node → optional <code>npm run solo</code> (thin stratum on 127.0.0.1:1111). Continuum GUI is optional for RPC. Never <code>npm run pool</code> unless you are operating the public pool.</p>
 <p>Commands below are lifted from tip <code>site/index.html</code> <code>#solo-mine</code> — do not invent alternate package lines.</p>
       <div class="os-tabs" id="solo-os-tabs">
@@ -354,10 +355,10 @@ make -C crypto/native
 node node/src/node.js --print-config</pre>
         <button type="button" data-copy="solo-node">Copy</button>
       </div>
-      <p><code>--print-config</code> must show <code>"version":"16.0"</code>, <code>"magic":"shear-testnet-v10"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
+      <p><code>--print-config</code> must show <code>"version":"17.0"</code>, <code>"magic":"shear-testnet-v10"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
       
         <h3>2. Validating node (not the full pool)</h3>
-      <p>Node pin <strong>16.0</strong> (v16). Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). It does <strong>not</strong> pull a bootstrap. An empty book starts at genesis and requests height 1, 2, 3, … until the tip; a recorded tip resumes. Put <code>SHEAR_SEEDS</code> in the <strong>same shell</strong>. Outbound TCP to those seeds is required. Optional snapshot: download <code>latest.json</code> + <code>latest.bin</code> from <a href="https://boot.shear.digital">boot.shear.digital</a> and pass <code>--bootstrap</code> on an empty datadir. Do <strong>not</strong> <code>npm run pool</code>.</p>
+      <p>Node pin <strong>17.0</strong> (v17). Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). It does <strong>not</strong> pull a bootstrap. An empty book starts at genesis and requests height 1, 2, 3, … until the tip; a recorded tip resumes. Put <code>SHEAR_SEEDS</code> in the <strong>same shell</strong>. Outbound TCP to those seeds is required. Optional snapshot: download <code>latest.json</code> + <code>latest.bin</code> from <a href="https://boot.shear.digital">boot.shear.digital</a> and pass <code>--bootstrap</code> on an empty datadir. Do <strong>not</strong> <code>npm run pool</code>.</p>
       <div class="copy-row">
         <pre id="solo-run">export SHEAR_DATA="$HOME/.shear/testnet-v10"
 export SHEAR_NETWORK=shear-testnet-v10

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
-import { createP2p, applyTipAdvertisement, catchupFields } from '../src/p2p.js';
+import { createP2p, applyTipAdvertisement, catchupFields, countSyncedOnline } from '../src/p2p.js';
 import { nodeStatus } from '../src/status.js';
 
 function readJsonLines(sock, min, ms) {
@@ -69,6 +69,23 @@ describe('tip gossip does not inflate catch-up', () => {
     assert.equal(fields.hash, '');
     assert.notEqual(fields.height, 270);
     assert.notEqual(fields.work, '0xff');
+  });
+
+  it('an empty direct tip is counted at the empty book and is not sync-eligible', () => {
+    const rec = { height: 0, hash: null, work: null, nodeId: 'abc12345' };
+    applyTipAdvertisement(rec, {
+      type: 'tip', height: 0, hash: '', work: '0x0',
+    }, { localHeight: 0, localHash: '' });
+    assert.equal(rec.hash, '');
+    assert.notEqual(rec.syncEligible, true);
+    const fields = catchupFields(rec);
+    assert.equal(fields.height, null);
+    assert.equal(fields.work, null);
+    assert.equal(countSyncedOnline({
+      localHash: '',
+      peers: [rec],
+      includeSelf: true,
+    }), 2);
   });
 
   it('a direct tip advertisement is not sync-eligible until a body applies', async () => {
@@ -173,6 +190,70 @@ describe('tip gossip does not inflate catch-up', () => {
       assert.equal(rec.eligibleReason, 'body');
       assert.ok((rec.bodiesServed || 0) >= 1);
     } finally {
+      sock.destroy();
+      p2p.close();
+    }
+  });
+
+  it('while IBD a getblock burst is served with a cap of 8 to 32', async () => {
+    const blocks = [];
+    for (let i = 1; i <= 4; i += 1) {
+      const hash = Buffer.alloc(32);
+      hash.writeUInt32BE(i, 28);
+      const header = Buffer.alloc(128);
+      header.writeUInt32BE(i, 0);
+      blocks.push({ header, hash, height: i, txs: [], shareBatch: [] });
+    }
+    const store = {
+      blocks,
+      tip: () => blocks[blocks.length - 1],
+      chainWorkHex: () => '0x10',
+      ingest: () => ({ ok: false, reason: 'fake' }),
+    };
+    const logs = [];
+    const orig = console.error;
+    console.error = (...args) => {
+      logs.push(args.map((a) => String(a)).join(' '));
+      orig.apply(console, args);
+    };
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET });
+    const bound = await p2p.listen();
+    const sock = await connectPeer(bound.port);
+    try {
+      sock.write(`${JSON.stringify({
+        type: 'tip', magic: MAGIC_TESTNET, height: 40, hash: 'cd'.repeat(32), work: '0x80',
+      })}\n`);
+      await readJsonLines(sock, 1, 2000);
+      const row = nodeStatus({ store, p2p });
+      assert.equal(row.ibd, true);
+      assert.equal(row.syncEligiblePeers, 0);
+      sock.write(blocks.map((b) => `${JSON.stringify({
+        type: 'getblock',
+        magic: MAGIC_TESTNET,
+        hash: Buffer.from(b.hash).toString('hex'),
+      })}\n`).join(''));
+      const ev = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`no serve\n${logs.slice(-12).join('\n')}`)), 2000);
+        const tick = setInterval(() => {
+          for (const line of logs) {
+            const start = line.indexOf('{');
+            if (start < 0 || !line.includes('p2p_getblock_serve')) continue;
+            try {
+              const parsed = JSON.parse(line.slice(start));
+              if (parsed.event === 'p2p_getblock_serve') {
+                clearInterval(tick);
+                clearTimeout(timer);
+                resolve(parsed);
+                return;
+              }
+            } catch { /* ignore */ }
+          }
+        }, 20);
+      });
+      assert.ok(ev.cap >= 8 && ev.cap <= 32, JSON.stringify(ev));
+      assert.ok(ev.n > 1, JSON.stringify(ev));
+    } finally {
+      console.error = orig;
       sock.destroy();
       p2p.close();
     }

@@ -875,6 +875,8 @@ export function submittedShareDigest(params) {
 export function hashWorkerRejectReason(err) {
   const m = String(err?.message || err || '');
   if (m === 'hash_busy') return 'busy';
+  // close() rejects in-flight hashes with this. It is shutdown, not a bad digest.
+  if (m === 'closed') return 'closed';
   if (m.includes('native addon missing') || m.includes('ShearK-Miner not built')) return 'native_missing';
   if (m.includes('header must be')) return 'bad_header';
   if (m === 'hash_timeout' || m === 'hash_worker_exit') return 'hash_timeout';
@@ -2354,6 +2356,9 @@ export function createPool({
       scored = await scoreShareLive({ job, nonce: params.nonce, claimed, conn, dest: destPay });
     } catch (e) {
       const reason = hashWorkerRejectReason(e);
+      // A share already accepted can still have a sibling hash in flight.
+      // close() rejects that hash with "closed". That is not a hash failure.
+      if (reason === 'closed') return;
       if (reason === 'busy') stats.hashBusy = (Number(stats.hashBusy) || 0) + 1;
       try {
         console.error(JSON.stringify({

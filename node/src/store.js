@@ -573,6 +573,13 @@ export function createStore(dir, {
         weight: blocks[i - 1].weight,
       };
       i += 1;
+      // Already-accepted blocks. ShearHash here would hold the event loop
+      // after a losing tip is dropped: status stops, the miner keeps the old
+      // job, and later fleet blocks sit unread.
+      let trustedPowHash = null;
+      try {
+        if (b?.hash && Buffer.from(b.hash).length === 32) trustedPowHash = Buffer.from(b.hash);
+      } catch { /* verify hashes when the stored id is not 32 bytes */ }
       const spentCheck = verifyBlock(b, prev, {
         spentB,
         tipHeight: Number(tip()?.height || b.height),
@@ -583,6 +590,8 @@ export function createStore(dir, {
         grandparentHeader: grandparentHeader(blocks.slice(0, i - 1)),
         sealedIntervalsMs: headerGapsMs(blocks.slice(0, i - 1)),
         nowMs: Date.now(),
+        trustedPowHash,
+        skipSharePow: true,
       });
       if (spentCheck && typeof spentCheck.then === 'function') {
         return spentCheck.then(step);

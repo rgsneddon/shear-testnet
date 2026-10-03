@@ -45,18 +45,19 @@ describe('shear.digital/node page', () => {
     assert.match(node, /--solo/);
     assert.doesNotMatch(node, /export SHEAR_BOOTSTRAP=1/);
     assert.match(node, /boot\.shear\.digital/);
-    assert.match(node, /Shear Sentinel v16/);
-    assert.match(node, /16\.0/);
-    assert.match(node, /release <strong>v16<\/strong>/);
-    assert.doesNotMatch(node, /node 17\.0|version":"17\.0"|release <strong>v17<\/strong>/);
+    assert.match(node, /Shear Sentinel v17/);
+    assert.match(node, /17\.0/);
+    assert.match(node, /release <strong>v17<\/strong>/);
+    assert.doesNotMatch(node, /release <strong>v16<\/strong>/);
     assert.doesNotMatch(node, /node 10\.0|version":"10\.0"|pin <strong>10\.0/);
     assert.doesNotMatch(node, /Node v6|node 6\.0|shear-node-v6/);
     assert.doesNotMatch(node, /shear-node-v7-/);
     assert.doesNotMatch(node, /shear-node-0\.58-/);
-    for (const flavor of ['windows', 'linux', 'archlinux', 'fedora', 'opensuse']) {
-      assert.match(node, new RegExp(`shear-node-v16-${flavor}\\.zip`));
+    for (const flavor of ['windows', 'linux', 'archlinux', 'fedora', 'opensuse', 'macos']) {
+      assert.match(node, new RegExp(`releases/download/v17/shear-node-v17-${flavor}\\.zip`));
     }
-    assert.doesNotMatch(node, /shear-node-v16-macos\.(zip|dmg)/);
+    assert.doesNotMatch(node, /shear-node-v17-macos\.dmg/);
+    assert.doesNotMatch(node, /is not attached/);
     assert.doesNotMatch(node, /shear-node-9\.0-/);
     assert.doesNotMatch(node, /No prebuilt node binary on releases/);
     assert.match(node, /cmake -S crypto\/randomx/);

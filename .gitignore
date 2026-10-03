@@ -8,6 +8,7 @@ sheark-miner/*.dll
 sheark-miner/ShearK-Miner-mainnet
 sheark-miner/dist/
 crypto/native/shearhash.node
+crypto/native/*.dll
 crypto/native/shearadmit.node
 crypto/native/*.node
 crypto/native/win_node_import.a

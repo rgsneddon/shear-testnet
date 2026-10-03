@@ -32,10 +32,12 @@ describe('stratum wire job', () => {
     assert.equal(hashWorkerRejectReason(new Error('header must be 128 bytes')), 'bad_header');
     assert.equal(hashWorkerRejectReason(new Error('hash_timeout')), 'hash_timeout');
     assert.equal(hashWorkerRejectReason(new Error('hash_worker_exit')), 'hash_timeout');
+    assert.equal(hashWorkerRejectReason(new Error('closed')), 'closed');
     assert.equal(hashWorkerRejectReason(new Error('verify parse')), 'native_missing');
     assert.equal(hashWorkerRejectReason(new Error('rx crash')), 'hash_failed');
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     assert.match(src, /hashWorkerRejectReason/);
+    assert.match(src, /if \(reason === 'closed'\) return;/);
     assert.match(src, /headerHex: copy\.toString\('hex'\)/);
     const main = fs.readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
     assert.match(main, /assertHashBackend/);
@@ -576,7 +578,7 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.policy.freeze_banner, '');
     assert.equal(typeof stats.policy.h_ratio, 'number');
     assert.equal(typeof stats.policy.side_lead, 'number');
-    assert.equal(stats.productVersion, '16.0');
+    assert.equal(stats.productVersion, '17.0');
     assert.equal(stats.minerVersion, '1.1');
     if (stats.header) assert.equal(stats.header.length, 256);
 

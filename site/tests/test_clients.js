@@ -24,7 +24,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /testnet-v6/);
     assert.doesNotMatch(html, /Continuum 0\.55/);
     assert.match(html, /cui-ver">0\.67</);
-    assert.match(html, /ShearK 2\.7/);
+    assert.match(html, /ShearK 2\.8/);
     assert.match(html, /href="\/wallet\/"/);
     assert.doesNotMatch(html, /releases\/download\/0\.67\/shear-wallet-0\.67-macos\.dmg/);
     assert.match(html, /releases\/tag\/0\.67/);
@@ -38,7 +38,7 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /shear-wallet-0\.67-fedora\.zip/);
     assert.match(html, /releases\/download\/0\.67\/shear-wallet-0\.67-linux\.zip/);
     assert.match(html, /releases\/download\/0\.67\/shear-wallet-0\.67-fedora\.zip/);
-    assert.doesNotMatch(html, /releases\/download\/0\.67\/shear-node-v16-macos/);
+    assert.doesNotMatch(html, /releases\/download\/0\.67\/shear-node-v17-macos/);
     assert.doesNotMatch(html, /releases\/download\/v17\//);
     assert.doesNotMatch(html, /releases\/download\/2\.7\//);
     assert.doesNotMatch(html, /0\.60\.1/);
@@ -205,7 +205,7 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /How to mine/);
     assert.match(admin, /The Reserve/);
     assert.match(admin, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
-    assert.match(admin, /ShearK-Miner 2\.7/);
+    assert.match(admin, /ShearK-Miner 2\.8/);
     assert.match(admin, /A typed suffix is optional/);
     assert.doesNotMatch(admin, /YOUR_SSA1\.solo/);
     assert.match(admin, /shear-wallet-0\.67-windows\.zip/);

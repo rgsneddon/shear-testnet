@@ -92,14 +92,19 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
 
     const readme = read('README.md');
     assert.match(readme, /Wallet pin: \*\*0\.67\*\*/);
-    assert.match(readme, /Shear Sentinel v16/);
-    assert.match(readme, /\(product 16\.0\)/);
+    assert.match(readme, /Shear Sentinel v17/);
+    assert.match(readme, /\(product 17\.0\)/);
     assert.match(readme, /releases\/tag\/0\.67/);
     assert.match(readme, /Git tag `v16` stays on the same commit as tag `0\.66`/);
-    assert.match(readme, /releases\/download\/0\.67\/shear-node-v16-windows\.zip/);
+    assert.match(readme, /releases\/download\/v17\/shear-node-v17-windows\.zip/);
+    assert.match(readme, /shear-node-v17-linux\.zip/);
+    assert.match(readme, /shear-node-v17-archlinux\.zip/);
+    assert.match(readme, /shear-node-v17-fedora\.zip/);
+    assert.match(readme, /shear-node-v17-opensuse\.zip/);
+    assert.match(readme, /shear-node-v17-macos\.zip/);
     assert.doesNotMatch(readme, /not published yet/);
-    assert.doesNotMatch(readme, /product 17\.0/);
-    assert.doesNotMatch(readme, /releases\/tag\/v17/);
+    assert.doesNotMatch(readme, /product 16\.0/);
+    assert.match(readme, /releases\/tag\/v17/);
     assert.doesNotMatch(readme, /releases\/tag\/2\.7/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.55\*\*/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.41\*\*/);
@@ -157,7 +162,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(joined, /ADMITv2/);
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
-    assert.match(main, /ShearK 2\.7/);
+    assert.match(main, /ShearK 2\.8/);
     assert.match(main, /Continuum 0\.67/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.doesNotMatch(main, /Continuum 0\.53/);
@@ -241,8 +246,9 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(ops, /git checkout main/);
     assert.doesNotMatch(ops, /git checkout feat\/admit-v2/);
     assert.match(ops, /Pins are \*\*0\.67\*\*/);
-    assert.match(ops, /ShearK \*\*2\.7\*\*/);
-    assert.match(ops, /Shear Sentinel \*\*v16\*\*/);
+    assert.match(ops, /ShearK \*\*2\.8\*\*/);
+    assert.match(ops, /Shear Sentinel \*\*v17\*\*/);
+    assert.doesNotMatch(ops, /Shear Sentinel \*\*v16\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.48\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.42\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.41\*\*/);
@@ -252,18 +258,24 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /Pin \*\*0\.41\*\*/);
   });
 
-  it('MacBook handoff is Apple-only Shear Sentinel v16 + Continuum 0.67; old underscore files are gone', () => {
+  it('MacBook handoff is Apple-only Shear Sentinel v17 + Continuum 0.67; old underscore files are gone', () => {
     assert.equal(fs.existsSync(path.join(root, 'MACBOOK_HANDOFF.md')), false);
     assert.equal(fs.existsSync(path.join(root, 'WINDOWS_HANDOFF.md')), false);
     const md = read('NODE-MACBOOK-HANDOFF.md');
     assert.match(md, /https:\/\/github\.com\/rgsneddon\/shear-testnet/);
-    assert.match(md, /shear-node-v16-macos\.zip/);
+    assert.match(md, /shear-node-v17-macos\.zip/);
     assert.match(md, /shear-wallet-0\.67-macos\.dmg/);
     assert.match(md, /tag `v16`/);
     assert.match(md, /Do not move tag `v16`/);
     assert.match(md, /Do not move tag `0\.66`/);
     assert.match(md, /stays on the same commit as tag `0\.66`/);
     assert.match(md, /releases\/tag\/0\.67/);
+    assert.match(md, /releases\/tag\/v17/);
+    assert.match(md, /shear-node-v17-windows\.zip/);
+    assert.match(md, /shear-node-v17-linux\.zip/);
+    assert.match(md, /shear-node-v17-archlinux\.zip/);
+    assert.match(md, /shear-node-v17-fedora\.zip/);
+    assert.match(md, /shear-node-v17-opensuse\.zip/);
     assert.match(md, /0\.60/);
     assert.doesNotMatch(md, /gh release upload v16 /);
     assert.match(md, /gh release upload 0\.67 /);
@@ -274,11 +286,11 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(md, /gh release upload 0\.65 /);
     assert.doesNotMatch(md, /gh release upload v10 /);
     assert.doesNotMatch(md, /gh release upload 0\.60 /);
-    assert.match(md, /is \*\*16\.0\*\*/);
-    assert.doesNotMatch(md, /is \*\*17\.0\*\*/);
+    assert.match(md, /is \*\*17\.0\*\*/);
+    assert.doesNotMatch(md, /is \*\*16\.0\*\*/);
     assert.match(md, /must not contain `17\.0`/);
     assert.match(md, /`0\.67`, `0\.66`/);
-    assert.match(md, /refuses anything other than `16\.0`/);
+    assert.match(md, /refuses anything other than `17\.0`/);
     assert.match(md, /refuses build number 49/);
     assert.match(md, /`\+N` \(92\)/);
     assert.match(md, /pack_macos\.sh/);

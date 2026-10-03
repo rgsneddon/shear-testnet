@@ -27,7 +27,7 @@ function sectionEnv() {
   return [
     'Env:',
     '  SHEAR_DATA          datadir. Windows %APPDATA%\\Shear\\testnet-v10 (Roaming). Unix ~/.shear/testnet-v10.',
-    '                      Same path for Shear Sentinel v16 and Continuum 0.67.',
+    '                      Same path for Shear Sentinel v17 and Continuum 0.67.',
     '  SHEAR_NETWORK       shear-testnet-v10 (this book). shear-v1 waits for genesis.',
     '  SHEAR_P2P_PORT      default 30303',
     '  SHEAR_P2P_BIND      default 0.0.0.0',
@@ -44,7 +44,7 @@ function sectionEnv() {
     '  SHEAR_SOLO          1 = thin local stratum (same as --solo / npm run solo)',
     '  SHEAR_STRATUM       solo stratum port (default 1111)',
     '  SHEAR_STRATUM_BIND  solo stratum bind (default 127.0.0.1)',
-    '  SHEARK_MINER        optional path to ShearK-Miner 2.7 if shearhash.node is missing',
+    '  SHEARK_MINER        optional path to ShearK-Miner 2.8 if shearhash.node is missing',
     '  SHEAR_MAINNET_EMIT  do not set. Launch is not decided.',
     '  SHEAR_MAINNET_EMIT_CONFIRM  do not set.',
   ];
@@ -92,7 +92,7 @@ function sectionSolo() {
     '       dart run bin/shear.dart history',
     '  4. Status lines print height, hash, peers, want, ibd, hashBackend.',
     '     hashBackend=missing means shares will reject native_missing — build step 1.',
-    '  Mining, --solo, and a self-pool need Shear Sentinel v16. A follow-only node may lag.',
+    '  Mining, --solo, and a self-pool need Shear Sentinel v17. A follow-only node may lag.',
     '  5. ./ShearK-Miner --selftest',
     '     ./ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8',
     '',

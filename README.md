@@ -17,9 +17,9 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
-- Miner pin: **ShearK-Miner 2.7** (TLS-aware, not a quiet 2.6). Packs: [ShearK-Miner-2.7-windows.zip](https://github.com/rgsneddon/shear-testnet/releases/download/0.67/ShearK-Miner-2.7-windows.zip) and [ShearK-Miner-2.7-linux.zip](https://github.com/rgsneddon/shear-testnet/releases/download/0.67/ShearK-Miner-2.7-linux.zip).
+- Miner pin: **ShearK-Miner 2.8** (TLS-aware, not a quiet 2.6 or 2.7). Windows pack: [ShearK-Miner-2.8-windows.zip](site/miner/ShearK-Miner-2.8-windows.zip). A Linux 2.8 pack is not published.
 - Wallet pin: **0.67** (Continuum GUI + CLI). Packs are on the [0.67 release](https://github.com/rgsneddon/shear-testnet/releases/tag/0.67). The macOS `.dmg` is not attached.
-- Node pin: **Shear Sentinel v16** (product 16.0). [shear-node-v16-windows.zip](https://github.com/rgsneddon/shear-testnet/releases/download/0.67/shear-node-v16-windows.zip), [shear-node-v16-linux.zip](https://github.com/rgsneddon/shear-testnet/releases/download/0.67/shear-node-v16-linux.zip), and [shear-node-v16-fedora.zip](https://github.com/rgsneddon/shear-testnet/releases/download/0.67/shear-node-v16-fedora.zip) are assets of that same release. Git tag `v16` stays on the same commit as tag `0.66`.
+- Node pin: **Shear Sentinel v17** (product 17.0). Windows, Linux, Arch, Fedora, openSUSE, and macOS zips are one release: [v17](https://github.com/rgsneddon/shear-testnet/releases/tag/v17) ([windows](https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-windows.zip), [linux](https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-linux.zip), [archlinux](https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-archlinux.zip), [fedora](https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-fedora.zip), [opensuse](https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-opensuse.zip), [macos](https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-macos.zip)). Git tag `v16` stays on the same commit as tag `0.66`.
 - Previous note: [`docs/RELEASE-0.66-v16.md`](docs/RELEASE-0.66-v16.md) (PR #44 is `3dc91baf881fd570cfcfb94539cc956389655e0f`. `6054186` is quarantine.)
 - Stratum: public `stratum+ssl://pool.shear.digital:443`; cleartext migrate `pool.shear.digital:1111`; localhost solo `127.0.0.1:1111`. Port 1113 is only the pool process TLS listener. Public packets to 1113 do not arrive, so miners use 443. nginx ssl_preread sends a ShearK ClientHello (no ALPN) to that listener and keeps browser ALPN on the site.
 - P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v10`)
@@ -88,7 +88,7 @@ test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall No
 make -C crypto/native
 ```
 
-`--print-config` must show `"version":"16.0"`, `"magic":"shear-testnet-v10"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
+`--print-config` must show `"version":"17.0"`, `"magic":"shear-testnet-v10"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
 
 ### Run
 

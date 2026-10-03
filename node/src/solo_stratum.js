@@ -128,11 +128,15 @@ export function soloMaySeal({ height = 0, hash = '', peers, followPublic = false
   let matchedTip = false;
   let splitTip = false;
   for (const rec of peers.values()) {
-    const peerH = Number(rec?.height);
-    const peerHash = String(rec?.hash || '').toLowerCase();
-    if (!peerHash || !Number.isFinite(peerH)) continue;
+    const peerH = Math.max(
+      Number.isFinite(Number(rec?.adHeight)) ? Number(rec.adHeight) : -1,
+      Number.isFinite(Number(rec?.gossipHeight)) ? Number(rec.gossipHeight) : -1,
+      Number.isFinite(Number(rec?.height)) ? Number(rec.height) : -1,
+    );
     if (peerH > localH) return false;
     if (peerH !== localH) continue;
+    const peerHash = String(rec?.adHash || rec?.hash || rec?.gossipHash || '').toLowerCase();
+    if (!peerHash) continue;
     if (!localHash || peerHash === localHash) matchedTip = true;
     else splitTip = true;
   }
@@ -225,6 +229,16 @@ export function createSoloStratum({
   let lastJob = null;
   let lastMiner = '';
   let restamp = null;
+  let unsubTip = null;
+
+  function pushFreshJob() {
+    if (!lastMiner || !sockets.size) return;
+    try {
+      const job = issueJob(lastMiner);
+      if (!job) return;
+      pushJob(job, job.shareBits || SHARE_FLOOR_BITS);
+    } catch { /* ignore */ }
+  }
 
   function sealOk() {
     const tip = typeof store.tip === 'function' ? store.tip() : null;
@@ -348,15 +362,12 @@ export function createSoloStratum({
         server.removeListener('error', reject);
         const addr = server.address();
         const interval = Number(restampMs);
+        if (typeof store.on === 'function') {
+          // After markSyncEligible, so a taller advertisement still refuses a job.
+          unsubTip = store.on('tip', () => { setImmediate(pushFreshJob); });
+        }
         if (Number.isFinite(interval) && interval > 0) {
-          restamp = setInterval(() => {
-            if (!lastMiner || !sockets.size) return;
-            try {
-              const job = issueJob(lastMiner);
-              if (!job) return;
-              pushJob(job, job.shareBits || SHARE_FLOOR_BITS);
-            } catch { /* ignore */ }
-          }, interval);
+          restamp = setInterval(pushFreshJob, interval);
           if (typeof restamp.unref === 'function') restamp.unref();
         }
         resolve({
@@ -368,6 +379,10 @@ export function createSoloStratum({
   }
 
   function close() {
+    if (typeof unsubTip === 'function') {
+      unsubTip();
+      unsubTip = null;
+    }
     if (restamp) {
       clearInterval(restamp);
       restamp = null;

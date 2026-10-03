@@ -208,7 +208,7 @@ def main() -> None:
         "is bound to previous hash, continuity root, merkle root, and bits, so it rebuilds every block and does not "
         "include miner identity. Mining may JIT if the digest matches the interpreter on the self-test vector. "
         "Verification is the light-mode interpreter. Wire algorithm name is ShearHash. Personalisation is ShearHash-v3. "
-        "The official hasher is ShearK-Miner 2.7.",
+        "The official hasher is ShearK-Miner 2.8.",
     )
 
     h2(pdf, "2.4  DINS-DAG")
@@ -322,7 +322,7 @@ def main() -> None:
         0,
         5,
         "Correspondence: shear.digital. Software under the MIT License, Copyright 2026 Shear. "
-        "RandomX is vendored from tevador/RandomX v1.2.3 (BSD). Official miner ShearK-Miner 2.7. "
+        "RandomX is vendored from tevador/RandomX v1.2.3 (BSD). Official miner ShearK-Miner 2.8. "
         "Wallet pin at publication: 0.67.",
         new_x=XPos.LMARGIN,
         new_y=YPos.NEXT,
@@ -330,8 +330,8 @@ def main() -> None:
 
     pdf.set_title("Shear: Continuity-settled Proof of Work")
     pdf.set_author("Shear")
-    pdf.set_subject("Testnet whitepaper. Continuum 0.67. ShearK-Miner 2.7. Public stratum stratum+ssl://pool.shear.digital:443.")
-    pdf.set_keywords("shear-testnet-v10 ADMITv2 wallet-0.67 ShearK-2.7 DINS-DAG ShearHash-v3 Vortex vort1 The Reserve")
+    pdf.set_subject("Testnet whitepaper. Continuum 0.67. ShearK-Miner 2.8. Public stratum stratum+ssl://pool.shear.digital:443.")
+    pdf.set_keywords("shear-testnet-v10 ADMITv2 wallet-0.67 ShearK-2.8 DINS-DAG ShearHash-v3 Vortex vort1 The Reserve")
     pdf.set_creator("Shear whitepaper builder")
     OUT.write_bytes(pdf.output())
     print("wrote", OUT, OUT.stat().st_size)

@@ -112,7 +112,9 @@ export function tipIsRelay(msg) {
  * Record a tip advertisement.
  * Relay/gossip updates peer-max fields only.
  * A direct tip may record an at-or-behind book position and a probe
- * advertisement. It does not raise the height or work catch-up uses.
+ * advertisement, including an empty hash for an empty book. That hash is
+ * how census counts a peer at the same tip. It does not raise the height
+ * or work catch-up uses, and it does not set syncEligible.
  */
 export function applyTipAdvertisement(rec, msg, { localHeight = 0, localHash = '' } = {}) {
   const next = rec && typeof rec === 'object' ? rec : {};
@@ -138,7 +140,7 @@ export function applyTipAdvertisement(rec, msg, { localHeight = 0, localHash = '
   if (work) next.adWork = work;
   const heightAhead = Number.isFinite(h) && h > localH;
   if (!heightAhead) {
-    if (hash) next.hash = hash;
+    next.hash = hash;
     if (Number.isFinite(h)) next.height = h;
     if (work) next.work = work;
   }
@@ -1685,6 +1687,8 @@ export function createP2p({
       rec.page = page;
       const sideTip = typeof store.sideTipHash === 'function' ? store.sideTipHash() : '';
       const blocked = activeFailSet(rec);
+      // A probe-ahead tip has not served a body, so its winning block is not
+      // local+1 on our fork. Sequential misses it. Fetch that header anyway.
       const next = nextSequentialHeader({
         headers: page,
         localHeight: localH,
@@ -1705,7 +1709,7 @@ export function createP2p({
         have,
         failed: blocked,
         pending: rec.pending,
-      }) || (peerTipAhead(rec) ? unconnectedHeader({
+      }) || ((peerTipAhead(rec) || peerProbeAhead(rec)) ? unconnectedHeader({
         headers: page,
         have,
         failed: blocked,
@@ -1976,6 +1980,18 @@ export function createP2p({
           }
         }
         if (rec) pumpGetblocks(sock);
+        // A discarded solo tip must not leave header sync idle while a peer
+        // is already taller. pumpGetblocks no-ops when this sock is not the
+        // best one, or when syncing was left set across the reorg.
+        if (got?.reorg) {
+          for (const recPeer of peers.values()) {
+            if (!recPeer) continue;
+            if (recPeer.verifying && recPeer.verifying.size) continue;
+            if (recPeer.pending && recPeer.pending.size) continue;
+            recPeer.syncing = false;
+          }
+          scheduleCatchup();
+        }
       }).catch((err) => {
         const rec = peers.get(sock);
         if (rec) {

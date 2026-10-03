@@ -1,0 +1,409 @@
+# Shear Sentinel v17. One release, six zips, each built on that OS.
+# Publish runs only after windows, linux, archlinux, fedora, opensuse, and macos
+# all succeed. It does not upload a single flavor, and it does not move v16 or 0.67.
+name: node-v17
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: node-v17-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          path-type: inherit
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-python
+      - name: Build the Windows addon and pack
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export PATH="/ucrt64/bin:/c/Windows/System32:$PATH"
+          node -p "process.version"
+          command -v gcc
+          command -v dlltool
+          command -v cmake
+          command -v cargo
+          node -e "const fs=require('fs'); const p=process.config.variables.node_prefix||''; const d=p+'/include/node'; if(!fs.existsSync(d+'/node_api.h')) { console.error('missing node_api.h under '+d); process.exit(1); }"
+          npm ci
+          cmake -S crypto/randomx -B crypto/randomx/build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DARCH=native
+          cmake --build crypto/randomx/build -j"$(nproc)"
+          make -C crypto/native
+          test -f crypto/native/shearhash.node
+          python3 node/pack/zip_node.py windows
+          test -f dist/shear-node-v17-windows.zip
+          python3 - << 'PY'
+          import zipfile
+          z = zipfile.ZipFile("dist/shear-node-v17-windows.zip")
+          asert = z.read("crypto/asert.js")
+          if b"PRODUCT_VERSION = '17.0'" not in asert or b"shear-testnet-v10" not in asert:
+              raise SystemExit("windows pin")
+          if b"A discarded solo tip must not leave header sync idle" not in z.read("node/src/p2p.js"):
+              raise SystemExit("windows catch-up")
+          if b"skipSharePow" not in z.read("node/src/store.js"):
+              raise SystemExit("windows skipSharePow")
+          if z.read("crypto/native/shearhash.node")[:2] != b"MZ":
+              raise SystemExit("windows addon is not a PE")
+          print("windows-zip-ok")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shear-node-v17-windows
+          path: dist/shear-node-v17-windows.zip
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the Linux addon and pack only the linux zip
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3
+          npm ci
+          cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
+          cmake --build crypto/randomx/build -j"$(nproc)"
+          make -C crypto/native
+          python3 node/pack/zip_node.py linux
+          test -f dist/shear-node-v17-linux.zip
+          test ! -f dist/shear-node-v17-fedora.zip
+          test ! -f dist/shear-node-v17-archlinux.zip
+          test ! -f dist/shear-node-v17-opensuse.zip
+          python3 - << 'PY'
+          import zipfile
+          z = zipfile.ZipFile("dist/shear-node-v17-linux.zip")
+          asert = z.read("crypto/asert.js")
+          if b"PRODUCT_VERSION = '17.0'" not in asert or b"shear-testnet-v10" not in asert:
+              raise SystemExit("linux pin")
+          if b"A discarded solo tip must not leave header sync idle" not in z.read("node/src/p2p.js"):
+              raise SystemExit("linux catch-up")
+          if b"skipSharePow" not in z.read("node/src/store.js"):
+              raise SystemExit("linux skipSharePow")
+          if z.read("crypto/native/shearhash.node")[:4] != b"\x7fELF":
+              raise SystemExit("linux addon is not ELF")
+          print("linux-zip-ok")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shear-node-v17-linux
+          path: dist/shear-node-v17-linux.zip
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Pack the macOS zip
+        run: |
+          set -euo pipefail
+          brew install cmake
+          npm ci
+          sh node/pack/pack_macos.sh
+          python3 - << 'PY'
+          import zipfile
+          z = zipfile.ZipFile("dist/shear-node-v17-macos.zip")
+          if b"A discarded solo tip must not leave header sync idle" not in z.read("node/src/p2p.js"):
+              raise SystemExit("macos catch-up")
+          if b"skipSharePow" not in z.read("node/src/store.js"):
+              raise SystemExit("macos skipSharePow")
+          print("macos-zip-ok")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shear-node-v17-macos
+          path: dist/shear-node-v17-macos.zip
+          if-no-files-found: error
+
+  distro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: archlinux
+            image: archlinux:base
+          - flavor: fedora
+            image: fedora:latest
+          - flavor: opensuse
+            image: opensuse/tumbleweed
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and pack inside the distro image
+        run: |
+          cat > "$RUNNER_TEMP/pack-distro.sh" << 'ENDSCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+          echo "FLAVOR=$FLAVOR"
+          cat /etc/os-release
+          case "$FLAVOR" in
+            archlinux)
+              pacman-key --init
+              pacman-key --populate archlinux
+              pacman -Syu --noconfirm
+              pacman -S --noconfirm --needed base-devel cmake nodejs npm rust python git file
+              ;;
+            fedora)
+              dnf -y install gcc gcc-c++ make cmake nodejs nodejs-devel rust cargo python3 git zip findutils file pkgconf-pkg-config
+              ;;
+            opensuse)
+              zypper -n refresh
+              zypper -n install gcc gcc-c++ make cmake nodejs npm nodejs-devel rust cargo python3 git zip gzip tar pkg-config file
+              ;;
+            *)
+              echo "unknown flavor $FLAVOR" >&2
+              exit 1
+              ;;
+          esac
+          if ! command -v python3 >/dev/null 2>&1; then
+            ln -sf "$(command -v python)" /usr/local/bin/python3
+          fi
+          command -v node
+          command -v cargo
+          command -v python3
+          node -p "process.version"
+          rustc --version
+          NODE_INC=""
+          for d in /usr/include/node /usr/local/include/node /usr/include/node26 /usr/include/node24 /usr/include/node22 /usr/include/node20; do
+            if [ -f "$d/node_api.h" ]; then
+              if [ "$d" != /usr/include/node ] && [ ! -e /usr/include/node ]; then
+                ln -sfn "$d" /usr/include/node
+              fi
+              if [ -f /usr/include/node/node_api.h ]; then
+                NODE_INC=/usr/include/node
+              else
+                NODE_INC="$d"
+              fi
+              break
+            fi
+          done
+          if [ -z "${NODE_INC}" ]; then
+            echo "node headers:" >&2
+            ls -d /usr/include/node* >&2 || true
+            echo "node_api.h missing" >&2
+            exit 1
+          fi
+          echo "NODE_INC $NODE_INC"
+          test -f "$NODE_INC/node_api.h"
+          export NODE_INC
+          cd /src
+          rm -rf runtime node_modules dist crypto/randomx/build \
+            crypto/native/shearhash.node crypto/native/shearadmit.node \
+            crypto/native/admit/target
+          npm ci
+          cmake -S crypto/randomx -B crypto/randomx/build
+          cmake --build crypto/randomx/build -j"$(nproc)"
+          make -C crypto/native -j"$(nproc)"
+          test -f crypto/native/shearhash.node
+          test -f crypto/native/shearadmit.node
+          file crypto/native/shearhash.node
+          file crypto/native/shearadmit.node
+          unset SHEAR_NODE_PACK_LABEL
+          python3 node/pack/zip_node.py "$FLAVOR"
+          ZIP="dist/shear-node-v17-${FLAVOR}.zip"
+          test -f "$ZIP"
+          rm -rf /tmp/smoke
+          mkdir -p /tmp/smoke
+          python3 -m zipfile -e "$ZIP" /tmp/smoke
+          test -f /tmp/smoke/runtime/node
+          test -f /tmp/smoke/crypto/native/shearhash.node
+          test -f /tmp/smoke/crypto/native/shearadmit.node
+          chmod +x /tmp/smoke/runtime/node
+          if [ -f /tmp/smoke/runtime/node.bin ]; then chmod +x /tmp/smoke/runtime/node.bin; fi
+          test "$(stat -c%s "$ZIP")" -gt 20000000
+          grep -q "export const PRODUCT_VERSION = '17.0';" /tmp/smoke/crypto/asert.js
+          grep -q "shear-testnet-v10" /tmp/smoke/crypto/asert.js
+          grep -q "A discarded solo tip must not leave header sync idle" /tmp/smoke/node/src/p2p.js
+          grep -q "skipSharePow" /tmp/smoke/node/src/store.js
+          file /tmp/smoke/crypto/native/shearhash.node | grep -q ELF
+          HASH=$(cd /tmp/smoke && ./runtime/node --input-type=module -e '
+          import { createRequire } from "node:module";
+          const req = createRequire(import.meta.url);
+          const n = req("./crypto/native/shearhash.node");
+          const a = req("./crypto/native/shearadmit.node");
+          if (typeof n.hash !== "function") throw new Error("shearhash has no hash");
+          if (typeof a.noteH !== "function") throw new Error("shearadmit has no noteH");
+          n.backend("interpreter");
+          const out = n.hash(Buffer.alloc(128, 0x11));
+          if (!Buffer.isBuffer(out) || out.length !== 32) throw new Error("hash length");
+          console.log(out.toString("hex"));
+          ')
+          case "$HASH" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+            *) echo "smoke hash was not hex: $HASH" >&2; exit 1 ;;
+          esac
+          echo "PACK_OK $FLAVOR $HASH"
+          ENDSCRIPT
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/src \
+            -v "$RUNNER_TEMP/pack-distro.sh":/pack-distro.sh:ro \
+            -e FLAVOR="${{ matrix.flavor }}" \
+            "${{ matrix.image }}" \
+            bash /pack-distro.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shear-node-v17-${{ matrix.flavor }}
+          path: dist/shear-node-v17-${{ matrix.flavor }}.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, linux, macos, distro]
+    if: success()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Confirm tag v16 and tag 0.67 are unchanged
+        run: |
+          set -euo pipefail
+          git fetch origin tag v16 tag 0.67
+          test "${GITHUB_REF}" = "refs/heads/main"
+          test "$(git rev-parse 'v16^{}')" = "3b8b0b19aaca694cacc0b3cef559735b6c6a6919"
+          test "$(git rev-parse '0.67^{}')" = "05338aa86517c217b68196b7ad44d26c9892d23c"
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: shear-node-v17-*
+          merge-multiple: true
+      - name: Publish release v17 only when all six zips are present
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - << 'PY'
+          import zipfile
+          from pathlib import Path
+          flavors = ("windows", "linux", "archlinux", "fedora", "opensuse", "macos")
+          macho = {
+              b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe",
+              b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe",
+          }
+          found = sorted(p.name for p in Path("dist").glob("shear-node-v17-*.zip"))
+          want = [f"shear-node-v17-{fl}.zip" for fl in flavors]
+          if found != sorted(want):
+              raise SystemExit(f"zip set {found} != {sorted(want)}")
+          for fl in flavors:
+              z = zipfile.ZipFile(f"dist/shear-node-v17-{fl}.zip")
+              asert = z.read("crypto/asert.js")
+              if b"PRODUCT_VERSION = '17.0'" not in asert or b"shear-testnet-v10" not in asert:
+                  raise SystemExit(fl + " pin")
+              if b"A discarded solo tip must not leave header sync idle" not in z.read("node/src/p2p.js"):
+                  raise SystemExit(fl + " catch-up")
+              if b"skipSharePow" not in z.read("node/src/store.js"):
+                  raise SystemExit(fl + " skipSharePow")
+              magic = z.read("crypto/native/shearhash.node")[:4]
+              if fl == "windows" and magic[:2] != b"MZ":
+                  raise SystemExit("windows addon")
+              elif fl == "macos" and magic not in macho:
+                  raise SystemExit("macos addon " + magic.hex())
+              elif fl not in ("windows", "macos") and magic != b"\x7fELF":
+                  raise SystemExit(fl + " addon " + magic.hex())
+          print("six-ok")
+          PY
+          if gh release view v17 --repo rgsneddon/shear-testnet >/dev/null 2>&1; then
+            echo "v17 already exists; refusing to add assets"
+            exit 1
+          fi
+          python3 - << 'PY'
+          from pathlib import Path
+          Path("/tmp/v17-notes.md").write_text(
+              "Shear Sentinel v17 (product 17.0).\n\n"
+              "After a losing solo block is discarded, the node keeps fetching until it is on the taller peer tip, and a connected solo miner is given a new job from that tip.\n\n"
+              "Book shear-testnet-v10 is unchanged. Continuum stays 0.67. Tag v16 stays on the same commit as tag 0.66.\n\n"
+              "One release, six zips, each built on that OS:\n"
+              "- shear-node-v17-windows.zip\n"
+              "- shear-node-v17-linux.zip\n"
+              "- shear-node-v17-archlinux.zip\n"
+              "- shear-node-v17-fedora.zip\n"
+              "- shear-node-v17-opensuse.zip\n"
+              "- shear-node-v17-macos.zip\n"
+          )
+          PY
+          gh release create v17 \
+            --repo rgsneddon/shear-testnet \
+            --target "${GITHUB_SHA}" \
+            --title "Shear Sentinel v17" \
+            --notes-file /tmp/v17-notes.md \
+            dist/shear-node-v17-windows.zip \
+            dist/shear-node-v17-linux.zip \
+            dist/shear-node-v17-archlinux.zip \
+            dist/shear-node-v17-fedora.zip \
+            dist/shear-node-v17-opensuse.zip \
+            dist/shear-node-v17-macos.zip
+          python3 - << 'PY'
+          import json, subprocess, time, urllib.request
+          raw = subprocess.check_output(
+              ["gh", "release", "view", "v17", "--repo", "rgsneddon/shear-testnet", "--json", "tagName,assets"],
+              text=True,
+          )
+          view = json.loads(raw)
+          names = sorted(a["name"] for a in view["assets"])
+          want = [
+              "shear-node-v17-archlinux.zip",
+              "shear-node-v17-fedora.zip",
+              "shear-node-v17-linux.zip",
+              "shear-node-v17-macos.zip",
+              "shear-node-v17-opensuse.zip",
+              "shear-node-v17-windows.zip",
+          ]
+          if names != want:
+              print("asset names", names)
+              subprocess.run(
+                  ["gh", "release", "delete", "v17", "--yes", "--cleanup-tag", "--repo", "rgsneddon/shear-testnet"],
+                  check=False,
+              )
+              raise SystemExit("release assets are not the six node zips; partial release deleted")
+          for asset in view["assets"]:
+              url = asset["url"] if asset.get("browser_download_url") is None else asset["browser_download_url"]
+              ok = False
+              for _ in range(8):
+                  req = urllib.request.Request(url, method="GET", headers={"User-Agent": "shear-node-v17", "Range": "bytes=0-0"})
+                  try:
+                      with urllib.request.urlopen(req, timeout=60) as res:
+                          if res.status in (200, 206):
+                              ok = True
+                              break
+                  except Exception as exc:
+                      print(asset["name"], exc)
+                      time.sleep(5)
+              if not ok:
+                  raise SystemExit("not 200 " + asset["name"])
+              print("200", asset["name"])
+          print("release-v17-ok")
+          PY
+          test "$(git rev-parse 'v16^{}')" = "3b8b0b19aaca694cacc0b3cef559735b6c6a6919"
+          test "$(git rev-parse '0.67^{}')" = "05338aa86517c217b68196b7ad44d26c9892d23c"

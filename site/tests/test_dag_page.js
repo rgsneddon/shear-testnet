@@ -28,7 +28,7 @@ describe('dag.shear.digital page', () => {
     assert.match(page, /href="https:\/\/shear\.digital\/miner\/">MINER/);
     assert.doesNotMatch(page, /github\.com/);
     assert.doesNotMatch(page, /Continuum 0\.55(?!\.2)/);
-    assert.match(page, /ShearK 2\.7/);
+    assert.match(page, /ShearK 2\.8/);
     assert.match(page, /shear-testnet-v10/);
     assert.doesNotMatch(page, /shear-testnet-v6/);
     assert.match(page, /DAG is a link in the client navbar/);

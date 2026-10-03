@@ -6,17 +6,25 @@ CC ?= cc
 CFLAGS ?= -O2 -Wall -fPIC
 UNAME_S := $(shell uname -s 2>/dev/null)
 ifeq ($(OS),Windows_NT)
+  # Command-line CC= still wins. Plain `cc` is not this MinGW gcc.
+  CC := gcc
   # N-API lives in node.exe. dlltool builds an import lib; do not link node.lib.
+  # This WinLibs build has no libstdc++.a. The shared runtime must be the
+  # same MinGW that linked the addon: an earlier libgcc on PATH (Rust, Android
+  # SDK) loads and then fails with "procedure could not be found" (error 127).
   LINKFLAGS := -shared
   NODE_IMPORT := win_node_import.a
+  LIBSTDCXX := -pthread -lstdc++
   ADMITSYS := -lws2_32 -luserenv -lbcrypt -lntdll -pthread
 else ifeq ($(UNAME_S),Darwin)
   LINKFLAGS := -bundle -undefined dynamic_lookup
   NODE_IMPORT :=
+  LIBSTDCXX := -pthread -lstdc++
   ADMITSYS := -lpthread
 else
   LINKFLAGS := -shared -Wl,-z,noexecstack
   NODE_IMPORT :=
+  LIBSTDCXX := -pthread -lstdc++
   ADMITSYS := -lpthread -ldl -lm
 endif
 
@@ -27,12 +35,16 @@ ADMITLIB := $(ADMIT_DIR)/target/release/libshear_admit.a
 
 all: shearhash.node shearadmit.node
 
-# C sources. Do not link with g++ — stdatomic.h is not C++ on this box.
-shearhash.node: shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MINER)/src/sha256.c $(RXLIB)
+# C sources. Do not compile with g++ — stdatomic.h is not C++ on this box.
+# RandomX is C++, and Windows N-API symbols come from node.exe via the import lib.
+shearhash.node: shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MINER)/src/sha256.c $(RXLIB) $(NODE_IMPORT)
 	$(CC) $(CFLAGS) $(LINKFLAGS) \
 	  -I$(NODE_INC) -I$(MINER)/src -I$(RX)/src \
 	  -o $@ shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MINER)/src/sha256.c $(RXLIB) \
-	  -pthread
+	  $(NODE_IMPORT) $(LIBSTDCXX)
+ifeq ($(OS),Windows_NT)
+	node copy-mingw-runtime.js $(CC)
+endif
 
 admitlib:
 	cargo build --release --manifest-path $(ADMIT_DIR)/Cargo.toml

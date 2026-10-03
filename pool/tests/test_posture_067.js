@@ -93,7 +93,7 @@ describe('fee dest, auth pub, certify, public stats', () => {
     assert.equal(ident.ok, true);
     assert.equal(stats.interval.soaking, true);
     assert.equal(stats.interval.certified90s, false);
-    assert.equal(stats.productVersion, '16.0');
+    assert.equal(stats.productVersion, '17.0');
     assert.equal(body.includes(THIS_POOL_DIRECT_FEE_DEST), false);
     assert.equal(stats.feeDest, undefined);
     assert.equal(stats.fluxset, undefined);
@@ -212,8 +212,9 @@ describe('stratum TLS job to share', () => {
       version,
     }));
     assert.equal(magic, 'MZ');
-    assert.equal(version, '2.7');
+    assert.equal(version, '2.8');
     assert.notEqual(version, '2.6');
+    assert.notEqual(version, '2.7');
     const child = spawn(miner, [
       '--backend', 'jit',
       '--pool', `stratum+ssl://127.0.0.1:${bound.tlsPort}`,
