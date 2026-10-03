@@ -96,7 +96,14 @@ jobs:
               ;;
           esac
           if ! command -v python3 >/dev/null 2>&1; then
-            ln -sf "$(command -v python)" /usr/local/bin/python3
+            if command -v python3.13 >/dev/null 2>&1; then
+              ln -sf "$(command -v python3.13)" /usr/local/bin/python3
+            elif command -v python >/dev/null 2>&1; then
+              ln -sf "$(command -v python)" /usr/local/bin/python3
+            else
+              echo "python3 missing" >&2
+              exit 1
+            fi
           fi
           cd /src
           rm -rf crypto/randomx/build sheark-miner/ShearK-Miner sheark-miner/src/*.o
