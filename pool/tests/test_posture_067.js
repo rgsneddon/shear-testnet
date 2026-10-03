@@ -88,6 +88,9 @@ describe('fee dest, auth pub, certify, public stats', () => {
     const pool = createPool({ dataDir: dir, stratumPort: 0, httpPort: 0 });
     const stats = pool.publicStats();
     const body = JSON.stringify(stats);
+    const ident = configuredFeeIdentity({ env: {} });
+    const tail = String(ident.feeDest || '').slice(-4);
+    assert.equal(ident.ok, true);
     assert.equal(stats.interval.soaking, true);
     assert.equal(stats.interval.certified90s, false);
     assert.equal(stats.productVersion, '16.0');
@@ -95,6 +98,16 @@ describe('fee dest, auth pub, certify, public stats', () => {
     assert.equal(stats.feeDest, undefined);
     assert.equal(stats.fluxset, undefined);
     assert.equal(stats.pubs, undefined);
+    assert.equal(stats.feeDestTail, tail);
+    assert.equal(stats.feeDestTail, THIS_POOL_DIRECT_FEE_DEST.slice(-4));
+    assert.equal(String(stats.feeDestTail).length, 4);
+    console.log(JSON.stringify({
+      event: 'public_stats_fee_tail',
+      feeDestTail: stats.feeDestTail,
+      feeDestPresent: Object.prototype.hasOwnProperty.call(stats, 'feeDest'),
+      fluxsetPresent: Object.prototype.hasOwnProperty.call(stats, 'fluxset'),
+      pubsPresent: Object.prototype.hasOwnProperty.call(stats, 'pubs'),
+    }));
     pool.close();
     const index = fs.readFileSync(path.join(root, 'pool/public/index.html'), 'utf8');
     const explorer = fs.readFileSync(path.join(root, 'explorer/explorer.html'), 'utf8');
