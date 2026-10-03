@@ -1,10 +1,10 @@
 /**
  * Operator posture that is not book law: fee identity, stratum listen,
  * interval certify wording, and the bound stratum auth pub.
- * The live fee ssa1 stays the shipped constant until Russell pins another.
+ * Russell pinned this fee ssa1 for the shear-testnet-v10 reset. One percent.
  */
 
-export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1q8flwjptadua9u7qtpvs7t26aarenstew938zlcgclzvthv5v4e03hsv4j8uf2pr73w8arp0krf0mhry6f5gqff4fl9';
+export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1qzcru37269cx30t7pdsmujwrxhc76km6ctzhwggxnyr9f0ld85wc4zvluktldtcnke7mr524ngqqvfr3sd5qsh6kkuk';
 
 export const CERTIFY_WINDOW = 288;
 

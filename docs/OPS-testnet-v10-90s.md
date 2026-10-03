@@ -41,7 +41,7 @@ Product versions are not part of `consensusFingerprint()`.
 
 ## Fee dest and stratum auth
 
-The shipped fee ssa1 stays until Russell pins another. This cut does not rotate it. `SHEAR_FEE_DEST` and `SHEAR_ADMIN_SPEND_DEST` default to that same address. A mismatch fails closed at boot and on the seal path. `SHEAR_FEE_IDENTITY_LAB=1` is the only lab bypass. There is no silent default swap on deploy.
+The shipped fee ssa1 is the Russell pin `ssa1qzcru37269cx30t7pdsmujwrxhc76km6ctzhwggxnyr9f0ld85wc4zvluktldtcnke7mr524ngqqvfr3sd5qsh6kkuk` at 1 percent. `SHEAR_FEE_DEST` and `SHEAR_ADMIN_SPEND_DEST` default to that same address. A mismatch fails closed at boot and on the seal path. `SHEAR_FEE_IDENTITY_LAB=1` is the only lab bypass. There is no silent default swap on deploy.
 
 `SHEAR_STRATUM_AUTH=1` rejects a login whose pubkey is not `SHEAR_STRATUM_AUTH_PUB` (64 hex). An unbound auth pub cannot satisfy AUTH.
 

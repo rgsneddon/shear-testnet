@@ -3699,7 +3699,7 @@ export function createPool({
           if (!restampTimer) restampTimer = setInterval(maybeRestampJob, JOB_RESTAMP_MS);
           console.error(JSON.stringify({
             event: 'pool_fee_dest',
-            advisory: 'Fee publish and admin spend share one pin. Russell sets the ssa1 later. This cut does not rotate it.',
+            advisory: 'Fee publish and admin spend share one pin.',
             feeDestTail: String(ident.feeDest || '').slice(-4),
           }));
           const httpBound = httpServer.address();

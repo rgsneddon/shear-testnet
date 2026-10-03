@@ -24,7 +24,7 @@ const openssl = 'C:\\msys64\\mingw64\\bin\\openssl.exe';
 
 describe('fee dest, auth pub, certify, public stats', () => {
   it('mismatched fee dest versus admin spend fails closed and the shipped ssa1 is unchanged', () => {
-    const shipped = 'ssa1q8flwjptadua9u7qtpvs7t26aarenstew938zlcgclzvthv5v4e03hsv4j8uf2pr73w8arp0krf0mhry6f5gqff4fl9';
+    const shipped = 'ssa1qzcru37269cx30t7pdsmujwrxhc76km6ctzhwggxnyr9f0ld85wc4zvluktldtcnke7mr524ngqqvfr3sd5qsh6kkuk';
     assert.equal(THIS_POOL_DIRECT_FEE_DEST, shipped);
     const match = configuredFeeIdentity({ env: {} });
     assert.equal(match.ok, true);
