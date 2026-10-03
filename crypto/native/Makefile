@@ -1,4 +1,4 @@
-NODE_INC ?= $(shell node -e "const fs=require('fs'); const p=process.config.variables.node_prefix||''; const cands=[p+'/include/node','/usr/local/include/node','/usr/include/node']; for (const d of cands) { if (fs.existsSync(d+'/node_api.h')) { process.stdout.write(d); process.exit(0);} } process.exit(1)")
+NODE_INC ?= $(shell node -e "const fs=require('fs'); const path=require('path'); const execDir=path.dirname(process.execPath); const prefix=process.config.variables.node_prefix||''; const cands=[prefix?path.join(prefix,'include','node'):'','/usr/local/include/node','/usr/include/node',path.join(execDir,'include','node'),path.join(execDir,'..','include','node')].filter(Boolean); for (const d of cands) { if (fs.existsSync(path.join(d,'node_api.h'))) { process.stdout.write(d.split(path.sep).join('/')); process.exit(0);} } process.exit(1)")
 RX := $(abspath ../randomx)
 RXLIB := $(RX)/build/librandomx.a
 MINER := $(abspath ../../sheark-miner)

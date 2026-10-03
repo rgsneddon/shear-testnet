@@ -43,7 +43,13 @@ jobs:
           command -v dlltool
           command -v cmake
           command -v cargo
-          node -e "const fs=require('fs'); const p=process.config.variables.node_prefix||''; const d=p+'/include/node'; if(!fs.existsSync(d+'/node_api.h')) { console.error('missing node_api.h under '+d); process.exit(1); }"
+          VER=$(node -p process.version)
+          rm -rf .node-headers
+          mkdir -p .node-headers
+          curl -fsSL "https://nodejs.org/dist/${VER}/node-${VER}-headers.tar.gz" | tar -xz -C .node-headers
+          export NODE_INC="$(pwd)/.node-headers/node-${VER}/include/node"
+          test -f "$NODE_INC/node_api.h"
+          echo "NODE_INC $NODE_INC"
           npm ci
           cmake -S crypto/randomx -B crypto/randomx/build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DARCH=native
           cmake --build crypto/randomx/build -j"$(nproc)"
@@ -127,6 +133,13 @@ jobs:
         run: |
           set -euo pipefail
           brew install cmake
+          VER=$(node -p process.version)
+          rm -rf .node-headers
+          mkdir -p .node-headers
+          curl -fsSL "https://nodejs.org/dist/${VER}/node-${VER}-headers.tar.gz" | tar -xz -C .node-headers
+          export NODE_INC="$(pwd)/.node-headers/node-${VER}/include/node"
+          test -f "$NODE_INC/node_api.h"
+          echo "NODE_INC $NODE_INC"
           npm ci
           sh node/pack/pack_macos.sh
           python3 - << 'PY'
@@ -171,14 +184,14 @@ jobs:
               pacman-key --init
               pacman-key --populate archlinux
               pacman -Syu --noconfirm
-              pacman -S --noconfirm --needed base-devel cmake nodejs npm rust python git file
+              pacman -S --noconfirm --needed base-devel cmake nodejs npm rust python git file patchelf
               ;;
             fedora)
-              dnf -y install gcc gcc-c++ make cmake nodejs nodejs-devel rust cargo python3 git zip findutils file pkgconf-pkg-config
+              dnf -y install gcc gcc-c++ make cmake nodejs nodejs-devel rust cargo python3 git zip findutils file pkgconf-pkg-config patchelf
               ;;
             opensuse)
               zypper -n refresh
-              zypper -n install gcc gcc-c++ make cmake nodejs npm nodejs-devel rust cargo python3 git zip gzip tar pkg-config file
+              zypper -n install gcc gcc-c++ make cmake nodejs npm nodejs-devel rust cargo python3 git zip gzip tar pkg-config file patchelf
               ;;
             *)
               echo "unknown flavor $FLAVOR" >&2
