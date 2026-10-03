@@ -1,5 +1,5 @@
 #!/bin/sh
-# ShearK-Miner 2.7 (ShearHash-v3 light)
+# ShearK-Miner 2.8 (ShearHash-v3 light)
 # Public pool: stratum+ssl://pool.shear.digital:443  (shear-testnet-v4)
 # Localhost solo stays cleartext: stratum+tcp://127.0.0.1:1111
 #
@@ -12,7 +12,7 @@
 
 cd "$(dirname "$0")"
 if [ ! -x ./ShearK-Miner ]; then
-  echo "ShearK-Miner missing or not executable. Unpack ShearK-Miner-2.7-linux.zip first."
+  echo "ShearK-Miner missing or not executable. Unpack ShearK-Miner-2.8-linux.zip first."
   exit 1
 fi
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -13,6 +14,26 @@ function read(rel) {
 
 function bytes(rel) {
   return fs.readFileSync(path.join(root, rel));
+}
+
+function zipMember(buf, name) {
+  let o = 0;
+  while (o + 30 <= buf.length && buf.readUInt32LE(o) === 0x04034b50) {
+    const method = buf.readUInt16LE(o + 8);
+    const compSize = buf.readUInt32LE(o + 18);
+    const nameLen = buf.readUInt16LE(o + 26);
+    const extraLen = buf.readUInt16LE(o + 28);
+    const member = buf.subarray(o + 30, o + 30 + nameLen).toString('utf8');
+    const start = o + 30 + nameLen + extraLen;
+    const data = buf.subarray(start, start + compSize);
+    if (member === name) {
+      if (method === 0) return data;
+      if (method === 8) return zlib.inflateRawSync(data);
+      throw new Error(`zip method ${method} for ${name}`);
+    }
+    o = start + compSize;
+  }
+  throw new Error(`missing zip member ${name}`);
 }
 
 function pngSize(buf) {
@@ -240,7 +261,20 @@ describe('brand pages', () => {
     assert.match(poolHtml, /id="addr"/);
     assert.match(poolHtml, /id="copy-cmd"/);
     assert.match(poolHtml, /ShearK-Miner --pool stratum\+ssl:\/\/pool\.shear\.digital:443 --user YOUR_SSA1/);
-    assert.match(read('site/miner/index.html'), /ShearK-Miner-2\.7-linux\.zip/);
+    const minerPage = read('site/miner/index.html');
+    assert.match(minerPage, /Pin 2\.8/);
+    assert.match(minerPage, /ShearK Miner <span style="color:var\(--accent\)">2\.8<\/span>/);
+    assert.match(minerPage, /href="ShearK-Miner-2\.8-windows\.zip"/);
+    assert.doesNotMatch(minerPage, /ShearK-Miner-2\.7/);
+    assert.doesNotMatch(minerPage, /ShearK-Miner-2\.8-linux\.zip/);
+    const minerZip = bytes('site/miner/ShearK-Miner-2.8-windows.zip');
+    assert.equal(minerZip.subarray(0, 2).toString('hex'), '504b');
+    const minerReadme = zipMember(minerZip, 'README.txt').toString('utf8');
+    const minerBat = zipMember(minerZip, 'example.bat').toString('utf8');
+    assert.match(minerReadme, /ShearK-Miner 2\.8/);
+    assert.match(minerBat, /ShearK-Miner-2\.8-windows\.zip/);
+    assert.doesNotMatch(minerReadme, /ShearK-Miner 2\.7/);
+    assert.equal(zipMember(minerZip, 'ShearK-Miner.exe').subarray(0, 2).toString('hex'), '4d5a');
     assert.doesNotMatch(poolHtml.slice(poolHtml.indexOf('id="start-mining"'), poolHtml.indexOf('id="testnet-banner"')), /<a\s/);
     assert.doesNotMatch(poolHtml, /Private by default/);
     assert.doesNotMatch(poolHtml, /Proof of work only/);

@@ -46,7 +46,7 @@
 #endif
 
 #define DEFAULT_HOST "pool.shear.digital"
-#define DEFAULT_PORT 1111
+#define DEFAULT_PORT 443
 #define LINE_CAP 8192
 #define HEX_CAP (SHEAR_HEADER_LEN * 2 + 16)
 #define QCAP 8192
@@ -59,12 +59,12 @@ static char g_dest[256];
 static char g_host_buf[256];
 static const char *g_host = DEFAULT_HOST;
 static int g_port = DEFAULT_PORT;
-static int g_tls = 0;
+static int g_tls = 1;
 static int g_require_tls = 0;
-/* Default pool is bare host:port (cleartext). An ssl URL or --tls clears this. */
-static int g_cleartext_url = 1;
+/* Default is stratum+ssl://pool.shear.digital:443. A tcp URL, a bare
+   host:port, or --notls is cleartext and stays lab-only. */
+static int g_cleartext_url = 0;
 static const char *g_tls_ca = NULL;
-static const char *g_tls_pin = NULL;
 static int g_threads = 0;
 static int g_cpu_cores = 1;
 static int g_cpu_threads = 1;
@@ -169,7 +169,7 @@ static void usage(FILE *out) {
           "Hashes the 128-byte Shear header. One proven share-hash mints units.\n\n"
           "  --user she1…|ssa1….worker   required (not shear1)\n"
           "  --dest ssa1…                owned payout dest (she1 login)\n"
-          "  --pool host:port            default %s:%d\n"
+          "  --pool host:port            default stratum+ssl://%s:%d\n"
           "  --threads N                 no 256 farm cap\n"
           "  --backend jit-full            default: 2 GiB dataset JIT (same digest as light)\n"
           "  --backend jit                light 128 MiB cache JIT\n"
@@ -179,7 +179,6 @@ static void usage(FILE *out) {
           "  --tls / --notls             force TLS or cleartext\n"
           "  --require-tls               refuse a cleartext URL\n"
           "  --tls-ca FILE               PEM trust anchor\n"
-          "  --tls-pin HEX               SHA-256 of the server cert\n"
           "  --notls                     plaintext (localhost or lab only)\n"
           "  --bench [SECONDS]\n"
           "  --selftest\n"
@@ -445,7 +444,7 @@ static int conn_open(Conn *c, const char *host, int port) {
   if (g_tls) {
     char err[160];
     err[0] = 0;
-    if (stratum_tls_handshake(c->fd, host, g_tls_ca, g_tls_pin, err, sizeof(err)) != 0) {
+    if (stratum_tls_handshake(c->fd, host, g_tls_ca, NULL, err, sizeof(err)) != 0) {
       fprintf(stderr, "tls failed %s\n", err[0] ? err : "handshake");
       conn_close(c);
       return -1;
@@ -1251,8 +1250,9 @@ int main(int argc, char **argv) {
       g_tls = 1;
     } else if (strcmp(argv[i], "--tls-ca") == 0 && i + 1 < argc) {
       g_tls_ca = argv[++i];
-    } else if (strcmp(argv[i], "--tls-pin") == 0 && i + 1 < argc) {
-      g_tls_pin = argv[++i];
+    } else if (strcmp(argv[i], "--tls-pin") == 0) {
+      fprintf(stderr, "tls pin refused\n");
+      return 2;
     } else if (strcmp(argv[i], "--user") == 0 && i + 1 < argc) {
       g_user = argv[++i];
     } else if (strcmp(argv[i], "--dest") == 0 && i + 1 < argc) {

@@ -1,10 +1,10 @@
-# ShearK-Miner 2.7
+# ShearK-Miner 2.8
 
 Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache). TLS-aware stratum. Not a quiet rebuild of 2.6.
 
 - Display repo: **[Testnet] ShearK** (`rgsneddon/ShearK`)
 - Wire algo: `ShearHash` · personalisation `ShearHash-v3` · magic `shear-testnet-v4`
-- Banner: `ShearK-Miner 2.7 (ShearHash-v3 light)`
+- Banner: `ShearK-Miner 2.8 (ShearHash-v3 light)`
 - Public pool: `stratum+ssl://pool.shear.digital:443` (443 is the reachable edge; the pool process TLS port 1113 does not receive public SYNs)
 - Localhost solo: `stratum+tcp://127.0.0.1:1111` (cleartext only when you ask for it)
 - Header: 128 bytes. Light mode only. Do not recut Shear-Miner **1.1** / **1.0**. Submit includes the ShearHash-v3 digest.

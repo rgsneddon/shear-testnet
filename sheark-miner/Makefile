@@ -1,4 +1,4 @@
-VERSION ?= 2.7
+VERSION ?= 2.8
 CC ?= cc
 # GNU Make defaults CXX to g++ even when g++ is absent (WSL clang-only).
 ifeq ($(origin CXX),default)
@@ -65,7 +65,7 @@ $(RXLIB):
 	cd $(RXBUILD) && cmake $(CMAKE_GEN) -DCMAKE_BUILD_TYPE=Release -DARCH=$(RX_ARCH) $(RX)
 	$(MAKE) -C $(RXBUILD) -j4
 
-src/%.o: src/%.c src/shear_hash.h src/sha512.h src/stratum_tls.h
+src/%.o: src/%.c src/shear_hash.h src/sha512.h src/stratum_tls.h src/tls_roots.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 
 $(BIN): $(RXLIB) $(OBJS)
