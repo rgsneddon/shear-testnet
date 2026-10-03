@@ -10,7 +10,7 @@ const html = fs.readFileSync(
 );
 
 describe('shear.digital client buttons', () => {
-  it('home stays on the SaaS dark theme and pins Continuum 0.67', () => {
+  it('home stays on the SaaS dark theme and pins Continuum 0.68', () => {
     assert.match(html, /data-theme="dark"/);
     assert.match(html, /Domain=\.shear\.digital/);
     assert.match(html, /css\/saas-dark\.css/);
@@ -18,27 +18,27 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-active="MAIN"/);
     assert.match(html, /She Is Private/);
     assert.match(html, /ADMITv2/);
-    assert.match(html, /Continuum 0\.67/);
+    assert.match(html, /Continuum 0\.68/);
     assert.match(html, /shear-testnet-v10/);
     assert.doesNotMatch(html, /shear-testnet-v6/);
     assert.doesNotMatch(html, /testnet-v6/);
     assert.doesNotMatch(html, /Continuum 0\.55/);
-    assert.match(html, /cui-ver">0\.67</);
+    assert.match(html, /cui-ver">0\.68</);
     assert.match(html, /ShearK 2\.8/);
     assert.match(html, /href="\/wallet\/"/);
-    assert.doesNotMatch(html, /releases\/download\/0\.67\/shear-wallet-0\.67-macos\.dmg/);
-    assert.match(html, /releases\/tag\/0\.67/);
-    assert.match(html, /releases\/download\/0\.67\/shear-wallet-0\.67-windows\.zip/);
+    assert.doesNotMatch(html, /releases\/download\/0\.68\/shear-wallet-0\.68-macos\.dmg/);
+    assert.match(html, /releases\/tag\/0\.68/);
+    assert.match(html, /releases\/download\/0\.68\/shear-wallet-0\.68-windows\.zip/);
     assert.match(html, /Git tag v16 stays on the same commit as tag 0\.66/);
     assert.doesNotMatch(html, /not published yet/);
-    assert.match(html, /shear-wallet-0\.67-windows\.zip/);
-    assert.match(html, /shear-wallet-0\.67-android\.apk/);
-    assert.match(html, /shear-wallet-0\.67-linux\.zip/);
-    assert.match(html, /shear-wallet-0\.67-archlinux\.zip/);
-    assert.match(html, /shear-wallet-0\.67-fedora\.zip/);
-    assert.match(html, /releases\/download\/0\.67\/shear-wallet-0\.67-linux\.zip/);
-    assert.match(html, /releases\/download\/0\.67\/shear-wallet-0\.67-fedora\.zip/);
-    assert.doesNotMatch(html, /releases\/download\/0\.67\/shear-node-v17-macos/);
+    assert.match(html, /shear-wallet-0\.68-windows\.zip/);
+    assert.match(html, /shear-wallet-0\.68-android\.apk/);
+    assert.match(html, /shear-wallet-0\.68-linux\.zip/);
+    assert.match(html, /shear-wallet-0\.68-archlinux\.zip/);
+    assert.match(html, /shear-wallet-0\.68-fedora\.zip/);
+    assert.match(html, /releases\/download\/0\.68\/shear-wallet-0\.68-linux\.zip/);
+    assert.match(html, /releases\/download\/0\.68\/shear-wallet-0\.68-fedora\.zip/);
+    assert.doesNotMatch(html, /releases\/download\/0\.68\/shear-node-v17-macos/);
     assert.doesNotMatch(html, /releases\/download\/v17\//);
     assert.doesNotMatch(html, /releases\/download\/2\.7\//);
     assert.doesNotMatch(html, /0\.60\.1/);
@@ -60,19 +60,19 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /Continuum 0\.51/);
     const wallet = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../wallet/index.html'), 'utf8');
     assert.match(wallet, /css\/saas-dark\.css/);
-    assert.match(wallet, /shear-wallet-0\.67-windows\.zip/);
-    assert.match(wallet, /shear-wallet-0\.67-linux\.zip/);
-    assert.match(wallet, /shear-wallet-0\.67-archlinux\.zip/);
-    assert.match(wallet, /shear-wallet-0\.67-fedora\.zip/);
-    assert.match(wallet, /shear-wallet-0\.67-android\.apk/);
+    assert.match(wallet, /shear-wallet-0\.68-windows\.zip/);
+    assert.match(wallet, /shear-wallet-0\.68-linux\.zip/);
+    assert.match(wallet, /shear-wallet-0\.68-archlinux\.zip/);
+    assert.match(wallet, /shear-wallet-0\.68-fedora\.zip/);
+    assert.match(wallet, /shear-wallet-0\.68-android\.apk/);
     assert.doesNotMatch(wallet, /shear-wallet-0\.51-/);
     assert.doesNotMatch(wallet, /shear-wallet-0\.48-/);
-    assert.match(wallet, /releases\/tag\/0\.67/);
-    assert.match(wallet, /releases\/download\/0\.67\/shear-wallet-0\.67-windows\.zip/);
+    assert.match(wallet, /releases\/tag\/0\.68/);
+    assert.match(wallet, /releases\/download\/0\.68\/shear-wallet-0\.68-windows\.zip/);
     assert.match(wallet, /Git tag v16 stays on the same commit as tag 0\.66/);
     assert.doesNotMatch(wallet, /not published yet/);
-    assert.doesNotMatch(wallet, /archive\/refs\/tags\/0\.67/);
-    assert.doesNotMatch(wallet, /releases\/download\/0\.67\/shear-wallet-0\.67-macos\.dmg/);
+    assert.doesNotMatch(wallet, /archive\/refs\/tags\/0\.68/);
+    assert.doesNotMatch(wallet, /releases\/download\/0\.68\/shear-wallet-0\.68-macos\.dmg/);
     assert.doesNotMatch(wallet, /shear-wallet-0\.55\.1-macos\.dmg/);
     assert.doesNotMatch(wallet, /releases\/download\/0\.55\.1\//);
     assert.doesNotMatch(wallet, /shear-wallet-0\.55-/);
@@ -90,7 +90,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /data-wallet-fallback="0\.52"/);
   });
 
-  it('WALLET nav on MAIN MEMPOOL POOL EXPLORER pins 0.67 and refuses older tags', () => {
+  it('WALLET nav on MAIN MEMPOOL POOL EXPLORER pins 0.68 and refuses older tags', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const pages = {
       main: html,
@@ -208,9 +208,9 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /ShearK-Miner 2\.8/);
     assert.match(admin, /A typed suffix is optional/);
     assert.doesNotMatch(admin, /YOUR_SSA1\.solo/);
-    assert.match(admin, /shear-wallet-0\.67-windows\.zip/);
-    assert.match(admin, /shear-wallet-0\.67-android\.apk/);
-    assert.doesNotMatch(admin, /releases\/download\/0\.67\/shear-wallet-0\.67-macos\.dmg/);
+    assert.match(admin, /shear-wallet-0\.68-windows\.zip/);
+    assert.match(admin, /shear-wallet-0\.68-android\.apk/);
+    assert.doesNotMatch(admin, /releases\/download\/0\.68\/shear-wallet-0\.68-macos\.dmg/);
     assert.doesNotMatch(admin, /shear-wallet-0\.55\.1-macos\.dmg/);
     assert.doesNotMatch(admin, /shear-wallet-0\.55-/);
     assert.doesNotMatch(admin, /releases\/download\/0\.55\//);

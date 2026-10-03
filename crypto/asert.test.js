@@ -515,6 +515,8 @@ describe('hash-tx consensus law', () => {
     assert.equal(fp.includes('16.0'), false);
     assert.equal(fp.includes('15.0'), false);
     assert.equal(fp.includes('0.66'), false);
+    assert.equal(fp.includes('0.67'), false);
+    assert.equal(fp.includes('0.68'), false);
     assert.equal(fp.includes('14.0'), false);
     assert.equal(fp.includes('11.0'), false);
     assert.equal(fp.includes('10.0'), false);

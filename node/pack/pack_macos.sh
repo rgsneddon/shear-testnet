@@ -3,7 +3,7 @@
 #   npm ci
 #   sh node/pack/pack_macos.sh
 # Writes dist/shear-node-v17-macos.zip. The node release tag is v17.
-# Do not upload this zip onto 0.67 or v16. Do not pass --clobber.
+# Do not upload this zip onto 0.68, 0.67, or v16. Do not pass --clobber.
 set -e
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
@@ -61,4 +61,4 @@ if "pool/src/posture.js" not in names:
 print("darwin-ok", len(names))
 PY
 echo "ok dist/shear-node-$LABEL-macos.zip"
-echo "Node release tag is v17. Do not upload this zip onto 0.67 or v16."
+echo "Node release tag is v17. Do not upload this zip onto 0.68, 0.67, or v16."

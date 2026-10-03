@@ -37,7 +37,7 @@ import 'shear_node_proc.dart';
 import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 
-const kWalletVersion = '0.67';
+const kWalletVersion = '0.68';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock is accepted. Spendable drops and staking starts now.
@@ -103,6 +103,7 @@ class ShearWalletApp extends StatefulWidget {
     this.privacyHop,
     this.postReserveLock = false,
     this.hopFeePay,
+    this.hostAndroid,
   });
 
   final ShearSession? session;
@@ -139,11 +140,17 @@ class ShearWalletApp extends StatefulWidget {
   /// seal/prove runs in [Isolate.run]. A slow hook must not run in the confirm turn.
   final Future<void> Function()? hopFeePay;
 
+  /// Null uses the real platform. Tests set this so an Android bar can be
+  /// measured on a desktop host.
+  final bool? hostAndroid;
+
   @override
   ShearWalletAppState createState() => ShearWalletAppState();
 }
 
 class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObserver {
+  bool get _hostAndroid => widget.hostAndroid ?? (!kIsWeb && Platform.isAndroid);
+
   late final ShearSession session = widget.session ?? ShearSession();
   late final ShearLedger ledger = widget.ledger ?? ShearLedger(pool: ShearPoolClient());
   late final ShearBiometrics biometrics = widget.biometrics ?? const NoBiometrics();
@@ -323,7 +330,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       besideDir: beside,
     );
     sidecar = ShearNodeSidecar(
-      android: !kIsWeb && Platform.isAndroid,
+      android: widget.hostAndroid ?? (!kIsWeb && Platform.isAndroid),
       storedMode: widget.session?.closureSendMode,
       nodeBinary: packed?.binary,
       dataDir: dataDir,
@@ -386,8 +393,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Future<void> _boot() async {
     id = await session.loadOrCreate();
     sidecar
-      ..committed = closureModeFromStored(session.closureSendMode, android: !kIsWeb && Platform.isAndroid)
-      ..pending = closureModeFromStored(session.closureSendMode, android: !kIsWeb && Platform.isAndroid);
+      ..committed = closureModeFromStored(session.closureSendMode, android: _hostAndroid)
+      ..pending = closureModeFromStored(session.closureSendMode, android: _hostAndroid);
     _syncJoinRoster();
     try {
       _bioReady = await biometrics.available;
@@ -742,11 +749,19 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       });
     }
     if (!widget.skipPoolSync) {
-      unawaited(_finishUnlockSync());
+      // Paint Verifying, then leave the UI isolate. The credit worker does the
+      // note walk. Do not write a height or a balance here to cover the wait.
+      unawaited(() async {
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted || id == null) return;
+        await _finishUnlockSync();
+        if (!mounted || !unlocked || id == null) return;
+        unawaited(_syncVaults(id!));
+        _startAccrualTick();
+      }());
     } else if (mounted) {
       setState(() => _verifying = false);
     }
-    ledger.recheckRestFrameSpendable(id!.address, paymentCode: id!.paymentCode);
     try {
       if (widget.demoTx) {
         var pay = ledger.currentDest(id!.address);
@@ -761,9 +776,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     // froze Shearview when history was hundreds of bundled blocks.
     if (mounted && !unlocked) setState(() => unlocked = true);
     _syncJoinRoster();
-    if (id != null && !widget.skipPoolSync) unawaited(_syncVaults(id!));
-    if (widget.skipPoolSync && widget.demoTx) unawaited(_playDemoLive());
-    _startAccrualTick(immediate: true);
+    if (widget.skipPoolSync) _startAccrualTick(immediate: true);
     if (widget.demoTx) {
       unawaited(_playDemoLive());
     }
@@ -789,6 +802,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       restFrame: ident.address,
       paymentCode: ident.paymentCode,
       full: full,
+      sessionPath: session.store.path,
+      sessionPassword: session.password,
     );
   }
 
@@ -1330,6 +1345,123 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   int get _continuumExtraMintedNanos =>
       reserve.mintBankNanos > 0 ? reserve.mintBankNanos : (ledger.extraMintedNanos ?? 0);
 
+  /// Android keeps the logo, the link, and the sealed height. The mode chip,
+  /// version, and theme control stay on the wider desktop bar.
+  PreferredSizeWidget _topBar(BuildContext context) {
+    if (_hostAndroid) {
+      final sealed = ledger.sealedHeight;
+      final heightLabel = sealed > 0 ? 'height $sealed' : 'height —';
+      final link = _tipHud.live && !_tipHud.ibd ? 'connected' : 'not connected';
+      return AppBar(
+        automaticallyImplyLeading: false,
+        toolbarHeight: 56,
+        titleSpacing: 8,
+        title: Row(
+          children: [
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: _brandLockup(mark: 28, wordHeight: 16),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                link,
+                key: const Key('wallet-connected'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              heightLabel,
+              key: const Key('wallet-block-height'),
+              maxLines: 1,
+              overflow: TextOverflow.fade,
+              softWrap: false,
+              style: TextStyle(
+                fontSize: 13,
+                color: _tipHud.amber
+                    ? const Color(0xFFE6A817)
+                    : Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return AppBar(
+      automaticallyImplyLeading: false,
+      toolbarHeight: 64,
+      titleSpacing: 12,
+      title: FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.centerLeft,
+        child: Row(
+          children: [
+            _brandLockup(mark: 44, wordHeight: 32),
+            const SizedBox(width: 10),
+            Text('$kWalletVersion  ${kSymbols[tab]}'),
+          ],
+        ),
+      ),
+      actions: [
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Row(
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Text(
+                  closureChipLabel(sidecar.committed),
+                  key: Key(closureChipKey(sidecar.committed)),
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: sidecar.committed == ClosureSendMode.connectBare
+                        ? const Color(0xFF5EEAD4)
+                        : sidecar.committed == ClosureSendMode.localNode
+                            ? const Color(0xFF00E5FF)
+                            : const Color(0xFF39FF14),
+                  ),
+                ),
+              ),
+              if (_verifying)
+                const Padding(
+                  padding: EdgeInsets.only(right: 8),
+                  child: Text('Verifying…', key: Key('unlock-verifying')),
+                ),
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: InkWell(
+                  onTap: (kDebugMode || widget.demoTx) ? _findBlock : null,
+                  child: Text(
+                    _tipHud.label,
+                    key: const Key('wallet-block-height'),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: _tipHud.amber
+                          ? const Color(0xFFE6A817)
+                          : Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: _themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode',
+                onPressed: _toggleTheme,
+                icon: Icon(_themeMode == ThemeMode.dark ? Icons.light_mode : Icons.dark_mode),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _shell(BuildContext context) {
     final ident = id;
     if (ident == null) {
@@ -1348,73 +1480,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     ];
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        toolbarHeight: 64,
-        titleSpacing: 12,
-        title: FittedBox(
-          fit: BoxFit.scaleDown,
-          alignment: Alignment.centerLeft,
-          child: Row(
-            children: [
-              _brandLockup(mark: 44, wordHeight: 32),
-              const SizedBox(width: 10),
-              Text('$kWalletVersion  ${kSymbols[tab]}'),
-            ],
-          ),
-        ),
-        actions: [
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Row(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: Text(
-                    closureChipLabel(sidecar.committed),
-                    key: Key(closureChipKey(sidecar.committed)),
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: sidecar.committed == ClosureSendMode.connectBare
-                          ? const Color(0xFF5EEAD4)
-                          : sidecar.committed == ClosureSendMode.localNode
-                              ? const Color(0xFF00E5FF)
-                              : const Color(0xFF39FF14),
-                    ),
-                  ),
-                ),
-                if (_verifying)
-                  const Padding(
-                    padding: EdgeInsets.only(right: 8),
-                    child: Text('Verifying…', key: Key('unlock-verifying')),
-                  ),
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: InkWell(
-                    onTap: (kDebugMode || widget.demoTx) ? _findBlock : null,
-                    child: Text(
-                      _tipHud.label,
-                      key: const Key('wallet-block-height'),
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: _tipHud.amber
-                            ? const Color(0xFFE6A817)
-                            : Theme.of(context).colorScheme.onSurface,
-                      ),
-                    ),
-                  ),
-                ),
-                IconButton(
-                  tooltip: _themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode',
-                  onPressed: _toggleTheme,
-                  icon: Icon(_themeMode == ThemeMode.dark ? Icons.light_mode : Icons.dark_mode),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+      appBar: _topBar(context),
       body: Stack(
         children: [
           Column(
@@ -3593,7 +3659,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
       const SizedBox(height: 16),
       Text('Send path', key: const Key('closure-send-path'), style: const TextStyle(fontWeight: FontWeight.w700)),
-      const Text('Three paths. Choose one, then Apply. The top bar shows the path that is on.'),
+      Text(
+        _hostAndroid
+            ? 'This phone reads height and confirms coins. It does not start a node.'
+            : 'Three paths. Choose one, then Apply. The top bar shows the path that is on.',
+      ),
       RadioListTile<ClosureSendMode>(
         key: const Key('closure-send-path-bare'),
         contentPadding: EdgeInsets.zero,
@@ -3603,24 +3673,26 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         subtitle: const Text(kConnectBareCopy),
         onChanged: (v) => setState(() => sidecar.select(v!)),
       ),
-      RadioListTile<ClosureSendMode>(
-        key: const Key('closure-send-path-local'),
-        contentPadding: EdgeInsets.zero,
-        value: ClosureSendMode.localNode,
-        groupValue: sidecar.pending,
-        title: const Text('p2P Node'),
-        subtitle: const Text(kLocalNodeModeCopy),
-        onChanged: (v) => setState(() => sidecar.select(v!)),
-      ),
-      RadioListTile<ClosureSendMode>(
-        key: const Key('closure-send-path-full'),
-        contentPadding: EdgeInsets.zero,
-        value: ClosureSendMode.localNodeFull,
-        groupValue: sidecar.pending,
-        title: const Text('Full Node'),
-        subtitle: const Text(kLocalNodeFullModeCopy),
-        onChanged: (v) => setState(() => sidecar.select(v!)),
-      ),
+      if (!_hostAndroid)
+        RadioListTile<ClosureSendMode>(
+          key: const Key('closure-send-path-local'),
+          contentPadding: EdgeInsets.zero,
+          value: ClosureSendMode.localNode,
+          groupValue: sidecar.pending,
+          title: const Text('p2P Node'),
+          subtitle: const Text(kLocalNodeModeCopy),
+          onChanged: (v) => setState(() => sidecar.select(v!)),
+        ),
+      if (!_hostAndroid)
+        RadioListTile<ClosureSendMode>(
+          key: const Key('closure-send-path-full'),
+          contentPadding: EdgeInsets.zero,
+          value: ClosureSendMode.localNodeFull,
+          groupValue: sidecar.pending,
+          title: const Text('Full Node'),
+          subtitle: const Text(kLocalNodeFullModeCopy),
+          onChanged: (v) => setState(() => sidecar.select(v!)),
+        ),
       FilledButton(
         key: const Key('closure-apply'),
         onPressed: () {

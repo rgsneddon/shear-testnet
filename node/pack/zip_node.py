@@ -222,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
             "Unix: chmod +x shear-node.sh && ./shear-node.sh\n"
             "It syncs from genesis (or the saved tip) to the live tip. No automatic bootstrap.\n"
             "Pass --solo for local stratum after ibd=false.\n"
-            "Magic shear-testnet-v10. Continuum wallet is 0.67.\n"
+            "Magic shear-testnet-v10. Continuum wallet is 0.68.\n"
             "node_modules, crypto, and the native addons are inside this zip.\n"
         )
         z.writestr("README.txt", readme)

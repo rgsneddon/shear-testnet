@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.67 (current)
+## 0.68 (current)
+
+Book `shear-testnet-v10` is unchanged. Public tag **0.68** (store `0.68.0+93`). The Android bar shows the logo, connected, and block height only. Android has no P2P option and no full-node option. Windows credit verification stays off the UI thread. Spendable is the opened coins a send can use. Node pin **Shear Sentinel v17** (product 17.0) stays tag `v17`. Git tag `v16` stays on the same commit as tag `0.66`. Tag **0.67** stays. There is no version phone-home. The macOS `.dmg` stays the MacBook handoff and is not attached.
+
+## 0.67
 
 Book `shear-testnet-v10` is unchanged. Public tag **0.67** (store `0.67.0+92`). Node pin **Shear Sentinel v17** (product 17.0) is tag `v17` with `shear-node-v17-windows.zip`, `shear-node-v17-linux.zip`, `shear-node-v17-archlinux.zip`, `shear-node-v17-fedora.zip`, `shear-node-v17-opensuse.zip`, and `shear-node-v17-macos.zip`. Wallet tag **0.67** is unchanged. The 0.67 release still has the previous node assets `shear-node-v16-windows.zip`, `shear-node-v16-linux.zip`, and `shear-node-v16-fedora.zip`. Git tag `v16` stays on the same commit as tag `0.66`. ShearK pin is **2.8** (TLS-aware). The Windows pack is `site/miner/ShearK-Miner-2.8-windows.zip`. A Linux 2.8 pack is not published. Public stratum is `stratum+ssl://pool.shear.digital:443`. Datadir leaf stays `testnet-v10`. Same-chain upgrade keeps the session. Debug-signed 0.65/0.66 need one export, uninstall, then this release-signed APK. There is no version phone-home. Fee-payout ssa1 is unchanged until Russell pins it. macOS `.dmg` stays the MacBook handoff.
 

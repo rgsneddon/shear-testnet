@@ -5,7 +5,7 @@ import unittest
 from check_android_release import gate, normalize_sha256
 
 PIN = "BE:4A:F2:81:B6:D5:F6:12:02:55:E9:19:F3:AD:43:B6:90:36:B3:8C:4A:F0:12:15:4B:A7:D2:01:5F:E3:C6:65"
-BADGING = """package: name='com.shear.shear_wallet' versionCode='92' versionName='0.67.0'
+BADGING = """package: name='com.shear.shear_wallet' versionCode='93' versionName='0.68.0'
 native-code: 'armeabi-v7a' 'arm64-v8a' 'x86_64'
 """
 CERTS = "Signer #1 certificate SHA-256 digest: " + PIN.replace(":", "").lower() + "\n"
@@ -19,7 +19,7 @@ class GateTest(unittest.TestCase):
     def test_matching_fat_release_passes(self):
         errors, info = gate("ignored.apk", PIN, BADGING, CERTS)
         self.assertEqual(errors, [])
-        self.assertEqual(info["versionCode"], 92)
+        self.assertEqual(info["versionCode"], 93)
         self.assertEqual(info["package"], "com.shear.shear_wallet")
 
     def test_wrong_cert_is_refused(self):
@@ -31,9 +31,14 @@ class GateTest(unittest.TestCase):
         self.assertTrue(any("debug" in err for err in errors))
 
     def test_old_version_code_is_refused(self):
-        old = BADGING.replace("versionCode='92'", "versionCode='91'")
+        old = BADGING.replace("versionCode='93'", "versionCode='92'")
         errors, _info = gate("ignored.apk", PIN, old, CERTS)
         self.assertTrue(any("versionCode" in err for err in errors))
+
+    def test_default_build_number_49_is_refused(self):
+        old = BADGING.replace("versionCode='93'", "versionCode='49'")
+        errors, _info = gate("ignored.apk", PIN, old, CERTS)
+        self.assertTrue(any("not above 92" in err for err in errors))
 
     def test_split_abi_is_refused(self):
         split = BADGING.replace(

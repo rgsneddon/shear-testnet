@@ -10,6 +10,7 @@ import 'shear_eip712.dart';
 import 'shear_levy.dart';
 import 'shear_read_open.dart';
 import 'shear_read_sync.dart';
+import 'shear_session.dart';
 import 'shear_ed25519.dart';
 import 'shear_pack.dart';
 import 'shear_admit.dart';
@@ -281,6 +282,10 @@ final List<String> debugCreditFollowKinds = <String>[];
 /// Worker stamps paired with [debugCreditFollowKinds].
 final List<String> debugCreditFollowStamps = <String>[];
 
+/// Keys of the last [followOffUi] payload. A session follow must not carry
+/// `notes` — encoding that book on the UI isolate is the Verifying hang.
+List<String> debugLastFollowSpecKeys = <String>[];
+
 /// How many credit follows have returned to this isolate.
 int debugCreditFollowRuns = 0;
 
@@ -333,8 +338,38 @@ Map<String, int> _followInts(Object? raw) {
 
 /// Tip, balance, notes, and history run here. The UI isolate only adopts the
 /// book the worker already collated.
+Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
+  final path = spec['sessionPath']?.toString() ?? '';
+  final password = spec['sessionPassword']?.toString() ?? '';
+  if (path.isEmpty || password.isEmpty) return spec;
+  final file = File(path);
+  if (!file.existsSync()) return spec;
+  final raw = jsonDecode(file.readAsStringSync());
+  if (raw is! Map) return spec;
+  final opened = await openSessionEnvelope(Map<String, dynamic>.from(raw), password);
+  final plain = opened['plain'];
+  if (plain is! Map) return spec;
+  final j = Map<String, dynamic>.from(plain);
+  return <String, dynamic>{
+    ...spec,
+    if (j['seedHex'] != null) 'seedHex': j['seedHex'],
+    if (j['address'] != null) 'address': j['address'],
+    if (j['viewKey'] != null) 'viewKey': j['viewKey'],
+    if (j['paymentCode'] != null) 'paymentCode': j['paymentCode'],
+    'dests': j['dests'] ?? spec['dests'],
+    'txs': j['txs'] ?? const <dynamic>[],
+    'sealed': j['sealedHeight'] ?? spec['sealed'],
+    'destCount': j['destCount'] ?? spec['destCount'],
+    'destIndex': j['destIndex'] ?? spec['destIndex'],
+  };
+}
+
+/// Tip, balance, notes, and history run here. The UI isolate only adopts the
+/// book the worker already collated.
 Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
-  final spec = jsonDecode(specJson) as Map<String, dynamic>;
+  var spec = jsonDecode(specJson) as Map<String, dynamic>;
+  spec = await _bookFromSession(spec);
+  spec.remove('sessionPassword');
   final base = spec['baseUrl']?.toString() ?? '';
   final pool = base.isEmpty ? null : ShearPoolClient(baseUrl: base);
   final ledger = ShearLedger(pool: pool);
@@ -903,7 +938,8 @@ LockFundingPlan planLockFunding(
   String? cover;
   final holding = <String>[];
   for (final d in dests) {
-    final s = ledger.spendable(d);
+    // Same coins Continuum shows. A settled land or pool figure is not added.
+    final s = ledger.usableSpendable(d);
     if (s <= 0) continue;
     have += s;
     holding.add(d);
@@ -3332,6 +3368,11 @@ class ShearLedger implements ReadProofSink {
   /// Verified confirmed coins only. An external balance with no opened value
   /// proof is not a coin. Once a proof has opened, Spendable is that confirmed
   /// sum: a 0 book does not hide it, and a larger pool figure does not raise it.
+  ///
+  /// The stored map is that same sum. Settled history is not a second coin a
+  /// send can use, so it does not raise the map or the figure on screen.
+  double usableSpendable(String address) => _shownSpendable(address);
+
   double _shownSpendable(String key) {
     final cap = _verifiedConfirmedShe(key);
     final pk = payKey(key);
@@ -3343,9 +3384,8 @@ class ShearLedger implements ReadProofSink {
     if (cap != null) {
       _unverifiedExternal.remove(pk);
       _externalShe.remove(pk);
-      final settled = _settledNodeShe[pk] ?? 0;
-      final shown = cap >= settled ? cap : settled;
-      return afterDebit(shown);
+      if ((spendable(pk) - cap).abs() > 1e-12) _spendable[pk] = cap;
+      return afterDebit(cap);
     }
     final rest = _bookMinusUnverified(pk, spendable(key));
     final settled = _settledNodeShe[pk] ?? 0;
@@ -3933,13 +3973,58 @@ class ShearLedger implements ReadProofSink {
     required String restFrame,
     String? paymentCode,
     required bool full,
+    String? sessionPath,
+    String? sessionPassword,
   }) async {
-    final spec = jsonEncode(exportCreditFollow(
-      restFrame: restFrame,
-      paymentCode: paymentCode,
-      full: full,
-    ));
-    final result = await Isolate.run(() => creditFollowWorker(spec));
+    final pinned = pool != null && pool!.isPinned;
+    final spec = <String, dynamic>{
+      'full': full,
+      'restFrame': restFrame,
+      'paymentCode': paymentCode ?? '',
+      'baseUrl': pinned ? pool!.baseUrl : (pool?.sync?.liveBase ?? ''),
+      'address': _restFrame ?? restFrame,
+      'seedHex': spendSeed == null ? '' : _bytesHex(spendSeed!),
+      'viewKey': viewSecret ?? '',
+      'sealed': _sealedHeight,
+      'settled': _settledHeight,
+      'destCount': destCount,
+      'destIndex': destIndex,
+      'dests': _dests.toList(),
+    };
+    // A sealed session is already on disk. The worker opens it. Encoding the
+    // in-memory book here is what froze Verifying on 0.68 (Windows and Android).
+    if (sessionPath != null && sessionPath.isNotEmpty) {
+      spec['sessionPath'] = sessionPath;
+      spec['sessionPassword'] = sessionPassword ?? '';
+    } else {
+      final book = exportCreditFollow(
+        restFrame: restFrame,
+        paymentCode: paymentCode,
+        full: full,
+      );
+      for (final key in const [
+        'txs',
+        'notes',
+        'spendable',
+        'pending',
+        'advisory',
+        'externalShe',
+        'lockDebit',
+        'settledNodeShe',
+        'proofChecked',
+        'unverifiedExternal',
+        'notesAt',
+        'historyAt',
+        'openCollated',
+        'nodeBodies',
+        'nodeHistory',
+        'nodeNotes',
+      ]) {
+        spec[key] = book[key];
+      }
+    }
+    debugLastFollowSpecKeys = spec.keys.map((k) => k.toString()).toList();
+    final result = await Isolate.run(() => creditFollowWorker(jsonEncode(spec)));
     debugCreditFollowStamp = result['stamp']?.toString() ?? '';
     debugCreditFollowKind = result['kind']?.toString() ?? '';
     debugCreditFollowKinds.add(debugCreditFollowKind);
@@ -4026,7 +4111,8 @@ class ShearLedger implements ReadProofSink {
       }
       final cap = _verifiedConfirmedShe(e.key);
       final floor = _settledNodeShe[e.key] ?? 0;
-      if (cap != null && floor <= 1e-12) {
+      if (cap != null) {
+        // Opened notes are the usable sum, even when settled history is taller.
         _spendable[e.key] = cap;
         _unverifiedExternal.remove(e.key);
         _externalShe.remove(e.key);
@@ -4035,15 +4121,9 @@ class ShearLedger implements ReadProofSink {
       if (floor > 1e-12) {
         final extra = _externalShe[e.key];
         if (extra != null) {
-          final book = spendable(e.key);
-          final without = book - extra;
-          if (without > 1e-12) {
-            _spendable[e.key] = without < floor ? floor : without;
-          } else if (book + 1e-12 >= floor) {
-            _spendable[e.key] = floor;
-          }
-        } else if (cap != null && cap > spendable(e.key)) {
-          _spendable[e.key] = cap;
+          final without = spendable(e.key) - extra;
+          // Settled history must not raise the book above the local coins.
+          _spendable[e.key] = without > 1e-12 ? without : 0;
         }
         _externalShe.remove(e.key);
         _unverifiedExternal.remove(e.key);

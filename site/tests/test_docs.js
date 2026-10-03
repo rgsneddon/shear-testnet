@@ -104,30 +104,30 @@ describe('shear.digital/docs', () => {
     assert.match(docs, /shared\/shear-chrome\.js/);
     assert.match(docs, /css\/saas-dark\.css/);
     assert.doesNotMatch(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
-    assert.match(docs, /content\.js\?v=33/);
+    assert.match(docs, /content\.js\?v=34/);
     for (const pack of [
-      'shear-wallet-0.67-windows.zip',
-      'shear-wallet-0.67-android.apk',
-      'shear-wallet-0.67-linux.zip',
-      'shear-wallet-0.67-archlinux.zip',
-      'shear-wallet-0.67-fedora.zip',
+      'shear-wallet-0.68-windows.zip',
+      'shear-wallet-0.68-android.apk',
+      'shear-wallet-0.68-linux.zip',
+      'shear-wallet-0.68-archlinux.zip',
+      'shear-wallet-0.68-fedora.zip',
     ]) {
       const name = pack.replace(/[.]/g, '\\.');
       assert.match(docs, new RegExp(name));
       assert.match(content, new RegExp(name));
     }
     assert.doesNotMatch(docs, /releases\/tag\/0\.\d+/);
-    assert.match(content, /releases\/tag\/0\.67/);
-    assert.match(docs, /releases\/download\/0\.67\/shear-wallet-0\.67-windows\.zip/);
-    assert.match(content, /releases\/download\/0\.67\/shear-wallet-0\.67-windows\.zip/);
+    assert.match(content, /releases\/tag\/0\.68/);
+    assert.match(docs, /releases\/download\/0\.68\/shear-wallet-0\.68-windows\.zip/);
+    assert.match(content, /releases\/download\/0\.68\/shear-wallet-0\.68-windows\.zip/);
     assert.match(docs, /Git tag v16 stays on the same commit as tag 0\.66/);
     assert.match(content, /Git tag v16 stays on the same commit as tag 0\.66/);
     assert.doesNotMatch(docs, /not published yet/);
     assert.doesNotMatch(content, /not published yet/);
-    assert.doesNotMatch(docs, /releases\/download\/0\.67\/shear-wallet-0\.67-macos\.dmg/);
-    assert.doesNotMatch(content, /releases\/download\/0\.67\/shear-wallet-0\.67-macos\.dmg/);
+    assert.doesNotMatch(docs, /releases\/download\/0\.68\/shear-wallet-0\.68-macos\.dmg/);
+    assert.doesNotMatch(content, /releases\/download\/0\.68\/shear-wallet-0\.68-macos\.dmg/);
     assert.doesNotMatch(docs, /releases\/download\/v17\//);
-    assert.doesNotMatch(content, /archive\/refs\/tags\/0\.67/);
+    assert.doesNotMatch(content, /archive\/refs\/tags\/0\.68/);
     assert.doesNotMatch(docs, /0\.60\.1/);
     assert.doesNotMatch(docs, /0\.55\.1\.1/);
     assert.doesNotMatch(content, /0\.60\.1/);
@@ -135,9 +135,9 @@ describe('shear.digital/docs', () => {
     assert.match(content, /Remove vortice/);
     assert.match(content, /this wallet only/);
     assert.match(content, /vort1 origin/);
-    assert.match(content, /Wallet pin<\/th><td>0\.67/);
+    assert.match(content, /Wallet pin<\/th><td>0\.68/);
     assert.doesNotMatch(content, /Wallet pin<\/th><td>0\.55</);
-    assert.match(content, /Current pin is <strong>0\.67<\/strong>/);
+    assert.match(content, /Current pin is <strong>0\.68<\/strong>/);
     assert.doesNotMatch(content, /releases\/download\/0\.62\/shear-wallet-0\.62-macos\.dmg/);
     assert.doesNotMatch(docs, /releases\/download\/0\.62\/shear-wallet-0\.62-macos\.dmg/);
     assert.doesNotMatch(content, /shear-wallet-0\.55\.1-macos\.dmg/);
@@ -146,9 +146,9 @@ describe('shear.digital/docs', () => {
     assert.doesNotMatch(content, /Current pin is <strong>0\.33<\/strong>/);
     assert.doesNotMatch(content, /Wallet pin<\/th><td>0\.33/);
     const readme = fs.readFileSync(path.join(here, '../../README.md'), 'utf8');
-    assert.match(readme, /Wallet pin: \*\*0\.67\*\*/);
+    assert.match(readme, /Wallet pin: \*\*0\.68\*\*/);
     assert.match(readme, /Shear Sentinel v17/);
-    assert.match(readme, /releases\/tag\/0\.67/);
+    assert.match(readme, /releases\/tag\/0\.68/);
     assert.match(readme, /Git tag `v16` stays on the same commit as tag `0\.66`/);
     assert.match(readme, /\(product 17\.0\)/);
     assert.match(readme, /releases\/download\/v17\/shear-node-v17-windows\.zip/);
@@ -156,7 +156,7 @@ describe('shear.digital/docs', () => {
     assert.doesNotMatch(readme, /not published yet/);
     assert.doesNotMatch(readme, /product 16\.0/);
     assert.match(readme, /releases\/tag\/v17/);
-    assert.doesNotMatch(readme, /releases\/download\/0\.67\/shear-wallet-0\.67-macos\.dmg/);
+    assert.doesNotMatch(readme, /releases\/download\/0\.68\/shear-wallet-0\.68-macos\.dmg/);
     assert.doesNotMatch(readme, /pool\.shear\.digital:1111 --user/);
     assert.doesNotMatch(readme, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(readme, /Wallet \*\*0\.33\*\*/);
@@ -170,7 +170,7 @@ describe('shear.digital/docs', () => {
     assert.match(content, /blue set, sorted by identity/);
     assert.match(content, /not paid again from a second hash leg/);
     assert.match(content, /Connect bare/);
-    assert.match(content, /0\.66 is the previous public pack pin\. 0\.67 is this Continuum wallet\./);
+    assert.match(content, /0\.67 is the previous public pack pin\. 0\.68 is this Continuum wallet\./);
     assert.match(content, /node is the book/);
     assert.match(content, /password-sealed <code>shewall\.bin<\/code>/);
     assert.match(content, /shear-testnet-v10/);
@@ -231,7 +231,7 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /Continuity-settled Proof of Work/);
     assert.match(paper, /HTML is canonical/);
     assert.match(paper, /id="pdf-stale"/);
-    assert.match(paper, /Continuum 0\.67/);
+    assert.match(paper, /Continuum 0\.68/);
     assert.match(paper, /ShearK 2\.8/);
     assert.doesNotMatch(paper, /wallet 0\.66/);
     assert.doesNotMatch(paper, /wallet 0\.55/);
@@ -272,7 +272,7 @@ describe('whitepaper.shear.digital', () => {
     assert.doesNotMatch(src, /pin 0\.37/);
     assert.match(src, /ShearK-Miner 2\.8/);
     assert.doesNotMatch(src, /ShearK-Miner 2\.6/);
-    assert.match(src, /pin 0\.67/);
+    assert.match(src, /pin 0\.68/);
     assert.doesNotMatch(src, /pin 0\.66/);
     assert.doesNotMatch(src, /pool\.shear\.digital:1111/);
     assert.doesNotMatch(src, /pin 0\.55/);
@@ -286,7 +286,7 @@ describe('whitepaper.shear.digital', () => {
     assert.equal(hay.includes(utf16be('ShearK-Miner 1.6')), false);
     assert.equal(hay.includes(Buffer.from('wallet 0.32')) || hay.includes(utf16be('wallet 0.32')) || hay.includes(utf16be('pin 0.32')), false);
     assert.equal(pdf.includes(Buffer.from('shear-testnet-v10')), true);
-    assert.equal(pdf.includes(Buffer.from('wallet-0.67')), true);
+    assert.equal(pdf.includes(Buffer.from('wallet-0.68')), true);
     assert.equal(pdf.includes(Buffer.from('wallet-0.66')), false);
     assert.equal(pdf.includes(Buffer.from('ShearK-2.8')), true);
     assert.equal(pdf.includes(Buffer.from('ShearK-2.6')), false);

@@ -2,7 +2,7 @@
 """Refuse a Continuum release APK whose signer, package, or versionCode is wrong.
 
 The pin is the public cert fingerprint in wallet/android/release-cert-sha256.txt.
-Last published versionCode is 91. This does not build or sign anything.
+Last published versionCode before Continuum 0.68 was 92. This cut is 93. This does not build or sign anything.
 """
 import argparse
 import os
@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 PACKAGE = "com.shear.shear_wallet"
-MIN_VERSION_CODE = 91
+MIN_VERSION_CODE = 92
 FAT_ABIS = ("armeabi-v7a", "arm64-v8a", "x86_64")
 
 

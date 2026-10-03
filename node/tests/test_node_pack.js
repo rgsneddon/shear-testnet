@@ -51,7 +51,7 @@ describe('portable node packs', () => {
     assert.match(mac, /!= "17\.0"/);
     assert.doesNotMatch(mac, /!= "16\.0"/);
     assert.doesNotMatch(mac, /gh release upload v16 /);
-    assert.doesNotMatch(mac, /gh release upload 0\.67 /);
+    assert.doesNotMatch(mac, /gh release upload 0\.68 /);
     assert.doesNotMatch(mac, /LABEL=v16/);
     assert.doesNotMatch(mac, /LABEL=v15/);
     assert.doesNotMatch(mac, /gh release upload v15 /);

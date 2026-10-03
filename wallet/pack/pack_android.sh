@@ -5,7 +5,10 @@
 set -euo pipefail
 WALLET="$(cd "$(dirname "$0")/.." && pwd)"
 VER="$(sed -n "s/^const kWalletVersion = '\\(.*\\)';/\\1/p" "$WALLET/lib/main.dart" | head -1 | tr -d '\r')"
-VER="${VER:-0.67}"
+if [ -z "$VER" ]; then
+  echo "ANDROID_PIN_MISSING kWalletVersion" >&2
+  exit 1
+fi
 PUBSPEC_PLUS="$(sed -n 's/^version: .*+\([0-9][0-9]*\).*/\1/p' "$WALLET/pubspec.yaml" | head -1 | tr -d '\r')"
 if [ -z "${PUBSPEC_PLUS}" ]; then
   echo "ANDROID_BUILD_NUMBER_MISSING pubspec +N" >&2
