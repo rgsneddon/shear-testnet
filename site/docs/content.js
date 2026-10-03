@@ -167,8 +167,8 @@ window.SHEAR_DOCS = {
       '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
       '<li>Open Closure and export <code>shewall.bin</code>. Keep that file with the password. <code>shear restore</code> imports that sealed file. It does not import a raw spend seed.</li>' +
       '<li>Leave the session on Connect bare, or start a local node from Closure. Either way the wallet asks the node for notes sealed to your dest. Mining is ShearK, from the miner page, not from Continuum.</li></ol>' +
-      '<p>Tag: <a href="https://shear.digital/wallet/">shear.digital/wallet</a>. 0.66 is the previous public pack pin. 0.67 is this Continuum wallet. Debug-signed 0.65 and 0.66 need one export, uninstall, then the 0.67 release-signed APK. Later bumps stay in place. There is no version phone-home. The GitHub release is not published yet. Pack names: ' +
-      'shear-wallet-0.67-windows.zip ' +
+      '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.67">the Continuum 0.67 release</a>. 0.66 is the previous public pack pin. 0.67 is this Continuum wallet. Debug-signed 0.65 and 0.66 need one export, uninstall, then the 0.67 release-signed APK. Later bumps stay in place. There is no version phone-home. Git tag v16 stays on the same commit as tag 0.66. Pack names: ' +
+      '<a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.67/shear-wallet-0.67-windows.zip">shear-wallet-0.67-windows.zip</a> ' +
       'shear-wallet-0.67-android.apk ' +
       'shear-wallet-0.67-linux.zip ' +
       'shear-wallet-0.67-archlinux.zip ' +

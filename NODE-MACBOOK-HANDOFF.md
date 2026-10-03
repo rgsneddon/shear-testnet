@@ -1,10 +1,10 @@
 # MacBook handoff — Shear Sentinel v16 and Continuum 0.67 (Apple only)
 
-Two Apple files. Do not mix the tags. This machine uploads only these two files onto tags `v16` and `0.67`. It does not replace the Windows, Linux, Arch, Fedora, or OpenSUSE assets, and it does not pass `--clobber`. The GitHub release is not published yet.
+Two Apple files. Do not mix the filenames with the git tags. This machine uploads only these two files onto the existing release `0.67`. It does not replace the Windows, Linux, Arch, Fedora, or OpenSUSE assets, and it does not pass `--clobber`. Those non-Mac assets are already at https://github.com/rgsneddon/shear-testnet/releases/tag/0.67.
 
-| Product | File | GitHub tag |
+| Product | File | GitHub release |
 |---|---|---|
-| Shear Sentinel v16 | `shear-node-v16-macos.zip` | `v16` |
+| Shear Sentinel v16 | `shear-node-v16-macos.zip` | `0.67` |
 | Continuum 0.67 | `shear-wallet-0.67-macos.dmg` | `0.67` |
 
 **This file:** https://github.com/rgsneddon/shear-testnet/blob/main/NODE-MACBOOK-HANDOFF.md
@@ -16,7 +16,7 @@ Two Apple files. Do not mix the tags. This machine uploads only these two files 
 
 **Previous tag `0.66` stays.** Do not rebuild those assets, do not pass `--clobber`, and do not upload a 0.67 file onto `0.66` or `0.65`.
 
-**This cut's non-Mac zips** are packed on the Windows and Linux hosts onto tags `v16` and `0.67`. This Mac uploads only the two Apple files.
+**This cut's non-Mac zips** are already assets of release `0.67`, including `shear-node-v16-windows.zip`, `shear-node-v16-linux.zip`, and `shear-node-v16-fedora.zip`. Git tag `v16` stays on the same commit as tag `0.66`. Do not move tag `v16`. This Mac uploads only the two Apple files onto release `0.67`.
 
 **Checked on the Windows build host, 2026-10-02.** Flutter 3.47.4 is installed. `xcodebuild` is not. WSL has no distribution. This host cannot emit a Mach-O binary or a Continuum `.dmg`. `dist/shear-wallet-0.67-macos.dmg` and `dist/shear-node-v16-macos.zip` are absent. Cut both on the Mac with the commands below. Do not invent them on Windows and do not upload them from Windows.
 
@@ -47,7 +47,7 @@ grep MAGIC_TESTNET_V10 crypto/asert.js
 npm ci
 ```
 
-Upload onto GitHub tag `v16` and tag `0.67`. The GitHub release is not published yet. Do not pass `--clobber`. Do not move tag `0.66`.
+Upload onto the existing GitHub release `0.67` at https://github.com/rgsneddon/shear-testnet/releases/tag/0.67. Do not pass `--clobber`. Do not move tag `0.66`. Do not move tag `v16`.
 
 ---
 
@@ -56,10 +56,10 @@ Upload onto GitHub tag `v16` and tag `0.67`. The GitHub release is not published
 ```bash
 sh node/pack/pack_macos.sh
 unzip -l dist/shear-node-v16-macos.zip | grep -E 'wallet_api.js|posture.js|Reserve.json|shearhash.node'
-gh release upload v16 dist/shear-node-v16-macos.zip --repo rgsneddon/shear-testnet
+gh release upload 0.67 dist/shear-node-v16-macos.zip --repo rgsneddon/shear-testnet
 ```
 
-No `--clobber`. Native addons must be Darwin. Do not upload this zip onto tag `v15`. The release is not published yet.
+No `--clobber`. Native addons must be Darwin. Do not upload this zip onto tag `v15`. Do not move tag `v16`. The other `shear-node-v16` zips are already on release `0.67`.
 
 ---
 

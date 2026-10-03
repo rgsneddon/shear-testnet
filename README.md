@@ -17,9 +17,9 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
-- Miner pin: **ShearK-Miner 2.7** (TLS-aware, not a quiet 2.6). The 2.7 GitHub release is not published yet.
-- Wallet pin: **0.67** (Continuum GUI + CLI). The 0.67 GitHub release is not published yet.
-- Node pin: **Shear Sentinel v16** (product 16.0). The GitHub release is not published yet.
+- Miner pin: **ShearK-Miner 2.7** (TLS-aware, not a quiet 2.6). Packs: [ShearK-Miner-2.7-windows.zip](https://github.com/rgsneddon/shear-testnet/releases/download/0.67/ShearK-Miner-2.7-windows.zip) and [ShearK-Miner-2.7-linux.zip](https://github.com/rgsneddon/shear-testnet/releases/download/0.67/ShearK-Miner-2.7-linux.zip).
+- Wallet pin: **0.67** (Continuum GUI + CLI). Packs are on the [0.67 release](https://github.com/rgsneddon/shear-testnet/releases/tag/0.67). The macOS `.dmg` is not attached.
+- Node pin: **Shear Sentinel v16** (product 16.0). [shear-node-v16-windows.zip](https://github.com/rgsneddon/shear-testnet/releases/download/0.67/shear-node-v16-windows.zip), [shear-node-v16-linux.zip](https://github.com/rgsneddon/shear-testnet/releases/download/0.67/shear-node-v16-linux.zip), and [shear-node-v16-fedora.zip](https://github.com/rgsneddon/shear-testnet/releases/download/0.67/shear-node-v16-fedora.zip) are assets of that same release. Git tag `v16` stays on the same commit as tag `0.66`.
 - Previous note: [`docs/RELEASE-0.66-v16.md`](docs/RELEASE-0.66-v16.md) (PR #44 is `3dc91baf881fd570cfcfb94539cc956389655e0f`. `6054186` is quarantine.)
 - Stratum: public `stratum+ssl://pool.shear.digital:443`; cleartext migrate `pool.shear.digital:1111`; localhost solo `127.0.0.1:1111`. Port 1113 is only the pool process TLS listener. Public packets to 1113 do not arrive, so miners use 443. nginx ssl_preread sends a ShearK ClientHello (no ALPN) to that listener and keeps browser ALPN on the site.
 - P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v10`)

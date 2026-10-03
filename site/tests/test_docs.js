@@ -104,7 +104,7 @@ describe('shear.digital/docs', () => {
     assert.match(docs, /shared\/shear-chrome\.js/);
     assert.match(docs, /css\/saas-dark\.css/);
     assert.doesNotMatch(docs, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
-    assert.match(docs, /content\.js\?v=32/);
+    assert.match(docs, /content\.js\?v=33/);
     for (const pack of [
       'shear-wallet-0.67-windows.zip',
       'shear-wallet-0.67-android.apk',
@@ -116,10 +116,16 @@ describe('shear.digital/docs', () => {
       assert.match(docs, new RegExp(name));
       assert.match(content, new RegExp(name));
     }
-    assert.match(docs, /GitHub release is not published yet/);
-    assert.match(content, /GitHub release is not published yet/);
-    assert.doesNotMatch(docs, /releases\/download\/0\.67\//);
-    assert.doesNotMatch(content, /releases\/download\/0\.67\//);
+    assert.doesNotMatch(docs, /releases\/tag\/0\.\d+/);
+    assert.match(content, /releases\/tag\/0\.67/);
+    assert.match(docs, /releases\/download\/0\.67\/shear-wallet-0\.67-windows\.zip/);
+    assert.match(content, /releases\/download\/0\.67\/shear-wallet-0\.67-windows\.zip/);
+    assert.match(docs, /Git tag v16 stays on the same commit as tag 0\.66/);
+    assert.match(content, /Git tag v16 stays on the same commit as tag 0\.66/);
+    assert.doesNotMatch(docs, /not published yet/);
+    assert.doesNotMatch(content, /not published yet/);
+    assert.doesNotMatch(docs, /releases\/download\/0\.67\/shear-wallet-0\.67-macos\.dmg/);
+    assert.doesNotMatch(content, /releases\/download\/0\.67\/shear-wallet-0\.67-macos\.dmg/);
     assert.doesNotMatch(docs, /releases\/download\/v17\//);
     assert.doesNotMatch(content, /archive\/refs\/tags\/0\.67/);
     assert.doesNotMatch(docs, /0\.60\.1/);
@@ -142,13 +148,14 @@ describe('shear.digital/docs', () => {
     const readme = fs.readFileSync(path.join(here, '../../README.md'), 'utf8');
     assert.match(readme, /Wallet pin: \*\*0\.67\*\*/);
     assert.match(readme, /Shear Sentinel v16/);
-    assert.match(readme, /The 0\.67 GitHub release is not published yet/);
+    assert.match(readme, /releases\/tag\/0\.67/);
+    assert.match(readme, /Git tag `v16` stays on the same commit as tag `0\.66`/);
     assert.match(readme, /\(product 16\.0\)/);
-    assert.match(readme, /The GitHub release is not published yet/);
+    assert.match(readme, /releases\/download\/0\.67\/shear-node-v16-windows\.zip/);
+    assert.doesNotMatch(readme, /not published yet/);
     assert.doesNotMatch(readme, /product 17\.0/);
-    assert.doesNotMatch(readme, /releases\/tag\/0\.67/);
     assert.doesNotMatch(readme, /releases\/tag\/v17/);
-    assert.doesNotMatch(readme, /releases\/download\/0\.67\//);
+    assert.doesNotMatch(readme, /releases\/download\/0\.67\/shear-wallet-0\.67-macos\.dmg/);
     assert.doesNotMatch(readme, /pool\.shear\.digital:1111 --user/);
     assert.doesNotMatch(readme, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(readme, /Wallet \*\*0\.33\*\*/);

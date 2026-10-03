@@ -23,7 +23,7 @@ Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) at
 
 ## 0.67 (current)
 
-Book `shear-testnet-v10` is unchanged. Public tag **0.67** (store `0.67.0+92`). Node pin **Shear Sentinel v16** (product 16.0). The GitHub release is https://github.com/rgsneddon/shear-testnet/releases/tag/0.67. ShearK pin is **2.7** (TLS-aware). Public stratum is `stratum+ssl://pool.shear.digital:443`. Datadir leaf stays `testnet-v10`. Same-chain upgrade keeps the session. Debug-signed 0.65/0.66 need one export, uninstall, then this release-signed APK. There is no version phone-home. Fee-payout ssa1 is unchanged until Russell pins it. macOS `.dmg` stays the MacBook handoff.
+Book `shear-testnet-v10` is unchanged. Public tag **0.67** (store `0.67.0+92`). Node pin **Shear Sentinel v16** (product 16.0). The GitHub release is https://github.com/rgsneddon/shear-testnet/releases/tag/0.67. `shear-node-v16-windows.zip`, `shear-node-v16-linux.zip`, and `shear-node-v16-fedora.zip` are assets of that release. Git tag `v16` stays on the same commit as tag `0.66`. ShearK pin is **2.7** (TLS-aware). Public stratum is `stratum+ssl://pool.shear.digital:443`. Datadir leaf stays `testnet-v10`. Same-chain upgrade keeps the session. Debug-signed 0.65/0.66 need one export, uninstall, then this release-signed APK. There is no version phone-home. Fee-payout ssa1 is unchanged until Russell pins it. macOS `.dmg` stays the MacBook handoff.
 
 ## 0.66
 

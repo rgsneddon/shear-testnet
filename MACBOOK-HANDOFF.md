@@ -5,7 +5,7 @@
 | Product | File | GitHub tag | Release name |
 |---|---|---|---|
 | Continuum 0.67 | `shear-wallet-0.67-macos.dmg` | `0.67` | Continuum 0.67 |
-| Shear Sentinel v16 | `shear-node-v16-macos.zip` | `v16` | Shear Sentinel v16 |
+| Shear Sentinel v16 | `shear-node-v16-macos.zip` | `0.67` | Continuum 0.67 |
 
 **Repo:** https://github.com/rgsneddon/shear-testnet
 **This file:** https://github.com/rgsneddon/shear-testnet/blob/main/MACBOOK-HANDOFF.md
@@ -13,7 +13,7 @@
 **Branch:** `main` once this cut is merged. Until then, the branch that contains `PRODUCT_VERSION = '16.0'` and `kWalletVersion = '0.67'`.
 **Book:** `shear-testnet-v10`. Datadir `~/.shear/testnet-v10`. One process at a time on :30303 / :18332.
 
-**Node pin is Shear Sentinel v16 (product 16.0).** Do not pass `--clobber`. Do not upload this zip onto `v15`. The GitHub release is not published yet.
+**Node pin is Shear Sentinel v16 (product 16.0).** Do not pass `--clobber`. Do not upload this zip onto `v15`. Non-Mac packs are already at https://github.com/rgsneddon/shear-testnet/releases/tag/0.67. Git tag `v16` stays on the same commit as tag `0.66`. Do not move tag `v16`.
 
 **Previous tag `0.66` stays.** Do not move tag `0.66`. Do not upload a 0.67 file onto `0.66` or `0.65`.
 
@@ -74,7 +74,7 @@ grep MAGIC_TESTNET_V10 crypto/asert.js
 npm ci
 ```
 
-Upload onto GitHub tag `v16` and tag `0.67`. The GitHub release is not published yet. Do not pass `--clobber`. Do not move tag `0.66`.
+Upload onto the existing GitHub release `0.67` at https://github.com/rgsneddon/shear-testnet/releases/tag/0.67. Do not pass `--clobber`. Do not move tag `0.66`. Do not move tag `v16`.
 
 ---
 
@@ -83,10 +83,10 @@ Upload onto GitHub tag `v16` and tag `0.67`. The GitHub release is not published
 ```bash
 sh node/pack/pack_macos.sh
 unzip -l dist/shear-node-v16-macos.zip | grep -E 'wallet_api.js|posture.js|Reserve.json|shearhash.node'
-gh release upload v16 dist/shear-node-v16-macos.zip --repo rgsneddon/shear-testnet
+gh release upload 0.67 dist/shear-node-v16-macos.zip --repo rgsneddon/shear-testnet
 ```
 
-No `--clobber`. Native addons must be Darwin. Do not upload this zip onto tag `v15`. The release is not published yet.
+No `--clobber`. Native addons must be Darwin. Do not upload this zip onto tag `v15`. Do not move tag `v16`. The other `shear-node-v16` zips are already on release `0.67`.
 
 ---
 
