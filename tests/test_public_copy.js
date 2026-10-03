@@ -240,10 +240,14 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /\*\*Working branch:\*\* `feat\/admit-v2`/);
     assert.match(ops, /git checkout main/);
     assert.doesNotMatch(ops, /git checkout feat\/admit-v2/);
-    assert.match(ops, /Pins are \*\*0\.48\*\*/);
+    assert.match(ops, /Pins are \*\*0\.67\*\*/);
+    assert.match(ops, /ShearK \*\*2\.7\*\*/);
+    assert.match(ops, /Shear Sentinel \*\*v16\*\*/);
+    assert.doesNotMatch(ops, /Pins are \*\*0\.48\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.42\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.41\*\*/);
-    assert.match(ops, /Pin \*\*0\.48\*\*/);
+    assert.match(ops, /Pin \*\*0\.67\*\*/);
+    assert.doesNotMatch(ops, /Pin \*\*0\.48\*\*/);
     assert.doesNotMatch(ops, /Pin \*\*0\.42\*\*/);
     assert.doesNotMatch(ops, /Pin \*\*0\.41\*\*/);
   });
