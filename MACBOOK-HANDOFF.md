@@ -40,6 +40,8 @@ This Mac does not. Linux is a VPS cut, not a Windows cut and not a Mac cut. The 
 
 `node/pack/zip_node.py` refuses to ship a Windows `.node` inside a Linux zip, and it refuses a Linux `.node` inside the Windows zip. Native addons in the macOS zip must be Mach-O built on this Mac.
 
+ShearK-Miner 2.8 for Linux, Arch, Fedora, openSUSE, and macOS is packed by `.github/workflows/sheark-28.yml` and published on https://github.com/rgsneddon/ShearK/releases/tag/2.8. The Windows miner zip stays `python sheark-miner/pack/zip_windows.py` on the Windows PC. Each miner zip includes `example.bat` and `example.sh`.
+
 The Android release keystore is not in git. `wallet/android/key.properties` is gitignored. One Continuum release cert is reused for every later publish. Debug-signed 0.65/0.66 needs one export, uninstall, then 0.68. Later upgrades stay in place. No login version phone-home.
 
 ---

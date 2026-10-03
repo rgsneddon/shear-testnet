@@ -264,15 +264,24 @@ describe('brand pages', () => {
     const minerPage = read('site/miner/index.html');
     assert.match(minerPage, /Pin 2\.8/);
     assert.match(minerPage, /ShearK Miner <span style="color:var\(--accent\)">2\.8<\/span>/);
-    assert.match(minerPage, /href="ShearK-Miner-2\.8-windows\.zip"/);
+    for (const flavor of ['windows', 'linux', 'archlinux', 'fedora', 'opensuse', 'macos']) {
+      assert.match(
+        minerPage,
+        new RegExp(`href="https://github\\.com/rgsneddon/ShearK/releases/download/2\\.8/ShearK-Miner-2\\.8-${flavor}\\.zip"`),
+      );
+    }
+    assert.match(minerPage, /example\.bat/);
+    assert.match(minerPage, /example\.sh/);
     assert.doesNotMatch(minerPage, /ShearK-Miner-2\.7/);
-    assert.doesNotMatch(minerPage, /ShearK-Miner-2\.8-linux\.zip/);
+    assert.doesNotMatch(minerPage, /not published/);
     const minerZip = bytes('site/miner/ShearK-Miner-2.8-windows.zip');
     assert.equal(minerZip.subarray(0, 2).toString('hex'), '504b');
     const minerReadme = zipMember(minerZip, 'README.txt').toString('utf8');
     const minerBat = zipMember(minerZip, 'example.bat').toString('utf8');
     assert.match(minerReadme, /ShearK-Miner 2\.8/);
     assert.match(minerBat, /ShearK-Miner-2\.8-windows\.zip/);
+    const minerSh = zipMember(minerZip, 'example.sh').toString('utf8');
+    assert.match(minerSh, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
     assert.doesNotMatch(minerReadme, /ShearK-Miner 2\.7/);
     assert.equal(zipMember(minerZip, 'ShearK-Miner.exe').subarray(0, 2).toString('hex'), '4d5a');
     assert.doesNotMatch(poolHtml.slice(poolHtml.indexOf('id="start-mining"'), poolHtml.indexOf('id="testnet-banner"')), /<a\s/);

@@ -260,10 +260,11 @@ window.SHEAR_DOCS = {
     title: 'How to mine',
     crumb: 'mining / how-to',
     html:
-      '<p>Official miner is <strong>ShearK-Miner 2.8</strong>, CPU only. Login is wallet Copy dest as a bare <code>ssa1</code>. A typed suffix is optional.</p>' +
+      '<p>Official miner is <strong>ShearK-Miner 2.8</strong>, CPU only. Login is wallet Copy dest as a bare <code>ssa1</code>. A typed suffix is optional. Downloads, one zip per OS, each with <code>example.bat</code> and <code>example.sh</code>: <a href="https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-windows.zip">Windows</a>, <a href="https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-linux.zip">Linux</a>, <a href="https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-archlinux.zip">Arch</a>, <a href="https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-fedora.zip">Fedora</a>, <a href="https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-opensuse.zip">openSUSE</a>, <a href="https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-macos.zip">macOS</a>. The page is <a href="https://shear.digital/miner/">shear.digital/miner</a>. The written how-to is <a href="https://github.com/rgsneddon/ShearK">rgsneddon/ShearK</a>.</p>' +
+      '<p>Unzip the whole archive. On Windows, edit <code>example.bat</code> and double-click it. Keep the OpenSSL DLLs beside the exe. On Linux, Arch, Fedora, openSUSE, and macOS, edit <code>example.sh</code>, run <code>chmod +x ShearK-Miner example.sh</code>, then <code>./example.sh</code>. Keep the OpenSSL libraries beside the binary. Use the zip built for that OS.</p>' +
       '<pre>./ShearK-Miner --selftest\n' +
       './ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user YOUR_SSA1 --backend jit-full --threads 8</pre>' +
-      '<p>Windows: <code>ShearK-Miner.exe</code> with the same flags. Downloads: <a href="https://shear.digital/miner/">ShearK 2.8</a>.</p>' +
+      '<p>Windows: <code>ShearK-Miner.exe</code> with the same flags. <code>--selftest</code> must print digest <code>98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b</code>. Do not pass <code>--tls-pin</code>. There is no <code>--tls-insecure</code>.</p>' +
       '<p>Public miners use <code>stratum+ssl://pool.shear.digital:443</code> with ShearK 2.8. The pool process TLS listener on 1113 is not reachable from the public internet; 443 ssl_preread forwards a ShearK ClientHello (no ALPN) to that listener. Localhost solo stays cleartext TCP at <code>127.0.0.1:1111</code>. Production public bind sets <code>SHEAR_STRATUM_AUTH=1</code>.</p>' +
       '<p>The public pool takes 1% of the 1 SHE pot. Each hasher dest that produced proven work receives its own hash bonus in full on the next sealed block.</p>'
   };
@@ -289,7 +290,7 @@ window.SHEAR_DOCS = {
     title: 'ShearK 2.8',
     crumb: 'mining / sheark',
     html:
-      '<p>ShearK-Miner is the official hasher. Pin <strong>2.8</strong> (bare <code>ssa1</code>, abort on restamp, verify claimed digest). Do not recut 2.5. Default <code>--backend jit-full</code> is the 2 GiB dataset (same digest as light). Always run <code>--selftest</code> once on a new machine. The Windows pack name is ShearK-Miner-2.8-windows.zip. A Linux 2.8 pack is not published.</p>' +
+      '<p>ShearK-Miner is the official hasher. Pin <strong>2.8</strong> (bare <code>ssa1</code>, abort on restamp, verify claimed digest). Do not recut 2.5. Default <code>--backend jit-full</code> is the 2 GiB dataset (same digest as light). Always run <code>--selftest</code> once on a new machine. Packs: ShearK-Miner-2.8-windows.zip, ShearK-Miner-2.8-linux.zip, ShearK-Miner-2.8-archlinux.zip, ShearK-Miner-2.8-fedora.zip, ShearK-Miner-2.8-opensuse.zip, and ShearK-Miner-2.8-macos.zip. Every pack includes <code>example.bat</code> and <code>example.sh</code>. Release: <a href="https://github.com/rgsneddon/ShearK/releases/tag/2.8">ShearK 2.8</a>.</p>' +
       '<p>One login. No miner-fee dual-login. Keep any extra fee yourself if you run a private stratum.</p>'
   };
 

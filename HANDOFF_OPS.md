@@ -35,7 +35,7 @@ Private inventory (optional): `gh repo clone rgsneddon/handoff %USERPROFILE%\han
 | Node | **Shear Sentinel v17** (product 17.0). Git tag `v16` stays on the same commit as tag `0.66`. Do not move tag `v16`. |
 | ADMIT | ADMITv2 (Pasta arity-32 CDS; Membership, not Multiple) |
 | Wallet | **0.68** (`wallet/pubspec.yaml` `0.68.0+93`, `kWalletVersion`) |
-| Miner | **ShearK 2.8**. Windows pack `site/miner/ShearK-Miner-2.8-windows.zip`. A Linux 2.8 pack is not published. |
+| Miner | **ShearK 2.8**. Six zips on https://github.com/rgsneddon/ShearK/releases/tag/2.8 (windows, linux, archlinux, fedora, opensuse, macos). Each zip includes `example.bat` and `example.sh`. |
 | Stratum | public `stratum+ssl://pool.shear.digital:443`; localhost solo `stratum+tcp://127.0.0.1:1111` |
 | SHARE_BIND | `rx+noteCommit` |
 | Mainnet | **blocked**. Do **not** set `SHEAR_MAINNET_EMIT=1`. Do not rotate the live fee-payout ssa1 from this file. |
