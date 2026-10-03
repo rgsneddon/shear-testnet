@@ -5,6 +5,7 @@ Wallet zip is GUI only. Official miner is a separate GitHub release.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -59,10 +60,48 @@ def add_tree(z: zipfile.ZipFile, root: str) -> None:
             z.write(p, os.path.relpath(p, root).replace("\\", "/"))
 
 
+def pubspec_version() -> tuple[str, str]:
+    pubspec = os.path.join(REPO, "pubspec.yaml")
+    with open(pubspec, encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("version:"):
+                raw = line.split(":", 1)[1].strip()
+                name, _, build = raw.partition("+")
+                return name, build
+    sys.exit(f"pubspec missing version: {pubspec}")
+
+
+def ensure_version_json(exe: str) -> None:
+    """Flutter's Windows bundle omitted version.json. Write the asset from pubspec.
+
+    The runner's own FileVersion must already carry that pubspec pin. This does
+    not relabel an older exe.
+    """
+    version, build = pubspec_version()
+    if not version.startswith(PUBLIC_PIN + ".") or not build or build == "49":
+        sys.exit(f"refusing pubspec {version}+{build} for pin {PUBLIC_PIN}")
+    blob = open(exe, "rb").read()
+    pin = version.encode("ascii")
+    pin_wide = version.encode("utf-16le")
+    if pin not in blob and pin_wide not in blob:
+        sys.exit(f"runner {exe} does not contain pubspec version {version}")
+    assets = os.path.join(BUNDLE, "data", "flutter_assets")
+    if not os.path.isdir(assets):
+        sys.exit(f"missing Flutter assets {assets}")
+    body = (
+        '{"app_name":"shear_wallet","version":"%s","build_number":"%s","package_name":"shear_wallet"}'
+        % (version, build)
+    )
+    path = os.path.join(assets, "version.json")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(body)
+
+
 def main() -> int:
     exe = os.path.join(BUNDLE, EXE_NAME)
     if not os.path.isfile(exe):
         sys.exit(f"missing Flutter runner {exe} — run flutter build windows --release first")
+    ensure_version_json(exe)
 
     os.makedirs(DIST, exist_ok=True)
     out = os.path.join(DIST, OUT_NAME)
@@ -99,6 +138,7 @@ def main() -> int:
                 "pool/src/pool.js",
                 "pool/src/main.js",
                 "pool/src/admin.js",
+                "pool/src/posture.js",
                 "pool/src/pull_book.js",
                 "pool/src/auto_payout.js",
                 "pool/src/pool_ident.js",
@@ -145,6 +185,19 @@ def main() -> int:
 
     if size < 1_000_000:
         sys.exit(f"refusing tiny zip {out}")
+    version_name = "data/flutter_assets/version.json"
+    if version_name not in names:
+        sys.exit(f"missing {version_name} — Flutter asset pin, not a painted label")
+    want_version, want_build = pubspec_version()
+    pinned = json.loads(zipfile.ZipFile(out).read(version_name).decode("utf-8"))
+    if pinned.get("app_name") != "shear_wallet" or pinned.get("package_name") != "shear_wallet":
+        sys.exit(f"version.json identity {pinned}")
+    if pinned.get("version") != want_version or str(pinned.get("build_number")) != want_build:
+        sys.exit(f"version.json {pinned.get('version')}+{pinned.get('build_number')} != pubspec {want_version}+{want_build}")
+    if not str(pinned.get("version", "")).startswith(PUBLIC_PIN + "."):
+        sys.exit(f"version.json {pinned.get('version')} does not match kWalletVersion {PUBLIC_PIN}")
+    if want_build == "49":
+        sys.exit("refusing BUILD_NUMBER 49")
     if EXE_NAME not in names:
         sys.exit(f"missing {EXE_NAME} at zip root")
     if "node/src/node.js" not in names:

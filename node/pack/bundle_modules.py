@@ -17,6 +17,13 @@ SPEC_RE = re.compile(
 )
 
 ROOTS = ("node/src/node.js",)
+# Zips ship the pool entry even when node.js does not import it. Walk these
+# so a new relative import (posture.js) cannot be left out of the archive.
+SHIPPED = (
+    "pool/src/pool.js",
+    "pool/src/main.js",
+    "pool/src/admin.js",
+)
 NATIVE = (
     "crypto/native/shearhash.node",
     "crypto/native/shearadmit.node",
@@ -144,6 +151,8 @@ def required_module_paths(repo: str) -> list[str]:
 
     for root in ROOTS:
         add(root)
+    for root in SHIPPED:
+        add(root)
     for native in NATIVE:
         if native not in seen:
             seen.add(native)
@@ -170,6 +179,58 @@ def required_module_paths(repo: str) -> list[str]:
             if target:
                 add(target)
     return needed
+
+
+def copy_linked_libs(binary: str, dest_dir: str) -> list[str]:
+    """Copy non-glibc shared libraries next to a distro node binary.
+
+    Fedora's /usr/bin/node is a small PIE that needs libnode.so.127. A zip
+    that copies only that 27KB file does not start. libc stays on the OS.
+    """
+    import shutil
+    import subprocess
+    try:
+        out = subprocess.check_output(["ldd", binary], text=True, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    skip = ("libc.so", "libm.so", "libdl.so", "libpthread.so", "librt.so", "libresolv.so", "ld-linux", "linux-vdso")
+    copied: list[str] = []
+    for line in out.splitlines():
+        if "=>" not in line:
+            continue
+        name, rest = line.split("=>", 1)
+        soname = name.strip().split()[0]
+        if soname.startswith(skip):
+            continue
+        path = rest.strip().split()[0]
+        if not path.startswith("/") or not os.path.isfile(path):
+            continue
+        base = os.path.basename(path)
+        target = os.path.join(dest_dir, base)
+        if not os.path.isfile(target):
+            shutil.copy2(path, target)
+        if base not in copied:
+            copied.append(base)
+    return copied
+
+
+def rpath_origin(binary: str, libs: list[str] | None = None) -> None:
+    """Point the binary and each bundled library at the directory they share.
+
+    An RPATH on the node binary finds libnode.so.127. libnode's own imports
+    (libuv, openssl, brotli) still follow the system cache unless those
+    libraries also carry $ORIGIN. The wallet starts runtime/node directly
+    and does not set LD_LIBRARY_PATH.
+    """
+    import subprocess
+    dest = os.path.dirname(os.path.abspath(binary))
+    targets = [binary]
+    for base in libs or []:
+        path = base if os.path.isabs(base) else os.path.join(dest, base)
+        if os.path.isfile(path) and path not in targets:
+            targets.append(path)
+    for target in targets:
+        subprocess.check_call(["patchelf", "--set-rpath", "$ORIGIN", target])
 
 
 def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
@@ -221,7 +282,22 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
             runtime_src = cand
     if not runtime_src or not os.path.isfile(runtime_src):
         raise SystemExit("release sidecar needs a node binary on PATH")
-    z.write(runtime_src, f"runtime/{runtime_name}")
+    if flavor == "windows":
+        z.write(runtime_src, f"runtime/{runtime_name}")
+    else:
+        import tempfile
+        stage = tempfile.mkdtemp(prefix="shear-wallet-runtime-")
+        try:
+            staged = os.path.join(stage, runtime_name)
+            shutil.copy2(runtime_src, staged)
+            libs = copy_linked_libs(staged, stage)
+            if libs:
+                rpath_origin(staged, libs)
+            z.write(staged, f"runtime/{runtime_name}")
+            for base in libs:
+                z.write(os.path.join(stage, base), f"runtime/{base}")
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
     if flavor == "windows":
         gcc = shutil.which("gcc")
         bindir = os.path.dirname(os.path.abspath(gcc)) if gcc else ""

@@ -286,7 +286,8 @@ class ShearSession {
     // and would put the old biometrics flag back on disk.
     if (gen != _persistGen) return;
     final env = Map<String, dynamic>.from(sealedEnv['env'] as Map);
-    writeSessionFile(path, env);
+    await Isolate.run(() => writeSessionFile(path, env));
+    if (gen != _persistGen) return;
     _envelope = env;
     debugSessionPersistStamp = sealedEnv['stamp'] as String;
   }

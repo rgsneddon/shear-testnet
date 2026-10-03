@@ -1,26 +1,25 @@
 /**
- * P2P ShearHash lane. RandomX runs in a worker so the HTTP accept loop
- * can serve /api/stats while a block or share batch is still verifying.
- * Cap is global for this process (one shared node binary, solo and pool).
+ * P2P ShearHash lane. RandomX runs in child processes so the HTTP accept
+ * loop can serve /api/stats while a block or share batch is still verifying.
+ * One process-global RandomX cache cannot be shared by two isolates, so
+ * each lane is its own process. Cap stays at P2P_VERIFY_CAP.
  */
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { Worker } from 'node:worker_threads';
+import { hashLaneBackend } from './hash_lane.js';
 
 /** Keep in lockstep with node/src/p2p.js P2P_VERIFY_CAP. */
 export const P2P_VERIFY_CAP = 2;
 
-const workerUrl = new URL('./hash_offloop_worker.js', import.meta.url);
+export { hashLaneBackend };
+
 const childUrl = fileURLToPath(new URL('./hash_offloop_child.js', import.meta.url));
 
-let worker = null;
-let child = null;
+/** @type {import('node:child_process').ChildProcess[]} */
+let children = [];
 let seq = 0;
 
-function winChild() {
-  return process.platform === 'win32';
-}
 const pending = new Map();
 
 let active = 0;
@@ -68,19 +67,22 @@ function touchChild(proc, live) {
 }
 
 function failPending(err) {
-  worker = null;
-  child = null;
+  const dead = children;
+  children = [];
+  for (const proc of dead) {
+    try { proc.kill(); } catch { /* ignore */ }
+  }
   if (!pending.size) return;
   for (const [, job] of pending) job.reject(err);
   pending.clear();
 }
 
 function bootChild() {
-  if (child) return child;
   const proc = spawn(process.execPath, [childUrl], {
     stdio: ['pipe', 'pipe', 'inherit'],
     windowsHide: true,
   });
+  proc._inflight = 0;
   const rl = createInterface({ input: proc.stdout });
   rl.on('line', (line) => {
     const parts = line.split('\t');
@@ -88,39 +90,29 @@ function bootChild() {
     const job = pending.get(id);
     if (!job) return;
     pending.delete(id);
+    if (proc._inflight > 0) proc._inflight -= 1;
     if (workerActive > 0) workerActive -= 1;
     if (parts[1] === 'ERR') job.reject(new Error(parts.slice(2).join('\t') || 'hash_failed'));
     else job.resolve(Buffer.from(parts[1], 'hex'));
-    if (pending.size === 0) touchChild(proc, false);
+    if (proc._inflight === 0) touchChild(proc, false);
   });
   proc.on('error', (err) => failPending(err instanceof Error ? err : new Error(String(err))));
-  proc.on('exit', () => failPending(new Error('hash_worker_exit')));
+  proc.on('exit', () => {
+    if (!children.includes(proc)) return;
+    failPending(new Error('hash_worker_exit'));
+  });
   touchChild(proc, false);
-  child = proc;
+  children.push(proc);
   return proc;
 }
 
-function boot() {
-  if (worker) return worker;
-  const w = new Worker(workerUrl);
-  w.on('message', (msg) => {
-    if (msg?.phase === 'start') {
-      workerActive += 1;
-      if (workerActive > workerMaxActive) workerMaxActive = workerActive;
-      return;
-    }
-    const job = pending.get(msg?.id);
-    if (!job) return;
-    pending.delete(msg.id);
-    if (workerActive > 0) workerActive -= 1;
-    if (msg?.ok) job.resolve(Buffer.from(msg.hash));
-    else job.reject(new Error(msg?.error || 'hash_failed'));
-  });
-  w.on('error', (err) => failPending(err instanceof Error ? err : new Error(String(err))));
-  w.on('exit', () => failPending(new Error('hash_worker_exit')));
-  if (typeof w.unref === 'function') w.unref();
-  worker = w;
-  return w;
+function pickChild() {
+  while (children.length < P2P_VERIFY_CAP) bootChild();
+  let best = children[0];
+  for (const proc of children) {
+    if ((proc._inflight || 0) < (best._inflight || 0)) best = proc;
+  }
+  return best;
 }
 
 function post(header) {
@@ -128,19 +120,18 @@ function post(header) {
   const headerHex = Buffer.from(header).toString('hex');
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
+    let proc;
     try {
-      if (winChild()) {
-        const proc = bootChild();
-        touchChild(proc, true);
-        workerActive += 1;
-        if (workerActive > workerMaxActive) workerMaxActive = workerActive;
-        proc.stdin.write(`${id}\t${headerHex}\n`);
-      } else {
-        boot().postMessage({ id, headerHex });
-      }
+      proc = pickChild();
+      proc._inflight = (proc._inflight || 0) + 1;
+      touchChild(proc, true);
+      workerActive += 1;
+      if (workerActive > workerMaxActive) workerMaxActive = workerActive;
+      proc.stdin.write(`${id}\t${headerHex}\n`);
     } catch (err) {
       pending.delete(id);
-      if (workerActive > 0 && winChild()) workerActive -= 1;
+      if (proc && proc._inflight > 0) proc._inflight -= 1;
+      if (workerActive > 0) workerActive -= 1;
       reject(err);
     }
   });

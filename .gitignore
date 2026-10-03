@@ -4,11 +4,13 @@ miner/Shear-Miner
 miner/Shear-Miner.exe
 sheark-miner/ShearK-Miner
 sheark-miner/ShearK-Miner.exe
+sheark-miner/*.dll
 sheark-miner/ShearK-Miner-mainnet
 sheark-miner/dist/
 crypto/native/shearhash.node
 crypto/native/shearadmit.node
 crypto/native/*.node
+crypto/native/win_node_import.a
 crypto/randomx/build/
 crypto/randomx/build-win/
 crypto/randomx/build-mingw/

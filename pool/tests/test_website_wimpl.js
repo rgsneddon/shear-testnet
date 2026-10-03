@@ -137,9 +137,12 @@ describe('website W-IMPL binds', () => {
     assert.match(explorer, /id="ex-avg-block"/);
     assert.match(explorer, /Avg block time/);
     assert.match(explorer, /var avgBt = Number\(stats\.networkAvgBlockTimeMs\)/);
-    assert.match(explorer, /setText\('ex-avg-block', avgBt > 0 \? \(fmtBlockMs\(avgBt\)/);
+    assert.match(explorer, /~90s not certified/);
+    assert.match(explorer, /soaking n=/);
+    assert.match(explorer, /setText\('ex-avg-block', avgLabel\)/);
     assert.doesNotMatch(explorer, /stats\.avgBlockTimeMs/);
     assert.doesNotMatch(explorer, /chainAvgMs/);
+    assert.doesNotMatch(explorer, /certified90s &&/);
     const card = explorer.slice(explorer.indexOf('id="ex-avg-block"') - 80, explorer.indexOf('id="ex-avg-block"') + 40);
     console.log('EXPLORER_PAGE ' + card.replace(/\s+/g, ' ').trim());
   });
@@ -159,7 +162,7 @@ describe('website W-IMPL binds', () => {
     assert.doesNotMatch(mempool, /prettier/);
   });
 
-  it('wallet pin 0.66 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
+  it('wallet pin 0.67 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
     const paper = read('../../site/whitepaper/index.html');
     const pdf = read('../../site/whitepaper/build_pdf.py');
     assert.match(explorer, /id="shear-chrome-root" data-active="EXPLORER"/);
@@ -176,10 +179,14 @@ describe('website W-IMPL binds', () => {
     assert.doesNotMatch(mempool, /releases\/tag\/0\.52/);
     assert.match(pdf, /shear-testnet-v10/);
     assert.doesNotMatch(pdf, /shear-testnet-v6/);
-    assert.match(pdf, /pin 0\.66/);
+    assert.match(pdf, /pin 0\.67/);
+    assert.doesNotMatch(pdf, /pin 0\.66/);
     assert.doesNotMatch(pdf, /pin 0\.55(?!\.2)/);
-    assert.match(pdf, /Wallet pin at publication: 0\.66/);
-    assert.match(pdf, /wallet-0\.66/);
+    assert.match(pdf, /Wallet pin at publication: 0\.67/);
+    assert.match(pdf, /wallet-0\.67/);
+    assert.doesNotMatch(pdf, /wallet-0\.66/);
+    assert.doesNotMatch(pdf, /ShearK-2\.6/);
+    assert.doesNotMatch(pdf, /pool\.shear\.digital:1111/);
     assert.doesNotMatch(pdf, /wallet-0\.55(?!\.2)/);
     assert.match(paper, /a class="nav-btn"/);
     assert.match(paper, /href="https:\/\/shear\.digital\/"/);

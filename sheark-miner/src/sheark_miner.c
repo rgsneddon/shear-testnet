@@ -12,6 +12,7 @@
 #endif
 #endif
 #include "shear_hash.h"
+#include "stratum_tls.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -58,6 +59,12 @@ static char g_dest[256];
 static char g_host_buf[256];
 static const char *g_host = DEFAULT_HOST;
 static int g_port = DEFAULT_PORT;
+static int g_tls = 0;
+static int g_require_tls = 0;
+/* Default pool is bare host:port (cleartext). An ssl URL or --tls clears this. */
+static int g_cleartext_url = 1;
+static const char *g_tls_ca = NULL;
+static const char *g_tls_pin = NULL;
 static int g_threads = 0;
 static int g_cpu_cores = 1;
 static int g_cpu_threads = 1;
@@ -167,7 +174,13 @@ static void usage(FILE *out) {
           "  --backend jit-full            default: 2 GiB dataset JIT (same digest as light)\n"
           "  --backend jit                light 128 MiB cache JIT\n"
           "  --backend interpreter\n"
-          "  --notls                     plaintext (default on this pool)\n"
+          "  --pool stratum+ssl://host:port   TLS stratum (verifies CA or --tls-ca)\n"
+          "  --pool stratum+tcp://host:port   cleartext (localhost / lab)\n"
+          "  --tls / --notls             force TLS or cleartext\n"
+          "  --require-tls               refuse a cleartext URL\n"
+          "  --tls-ca FILE               PEM trust anchor\n"
+          "  --tls-pin HEX               SHA-256 of the server cert\n"
+          "  --notls                     plaintext (localhost or lab only)\n"
           "  --bench [SECONDS]\n"
           "  --selftest\n"
           "  --verify HEADERHEX\n"
@@ -405,6 +418,7 @@ static int tcp_connect(const char *host, int port) {
 
 static void conn_close(Conn *c) {
   if (!c) return;
+  if (stratum_tls_active()) stratum_tls_close();
   if (c->fd >= 0) {
     close_fd(c->fd);
     c->fd = -1;
@@ -428,6 +442,15 @@ static int conn_open(Conn *c, const char *host, int port) {
   c->fd = -1;
   c->fd = tcp_connect(host, port);
   if (c->fd < 0) return -1;
+  if (g_tls) {
+    char err[160];
+    err[0] = 0;
+    if (stratum_tls_handshake(c->fd, host, g_tls_ca, g_tls_pin, err, sizeof(err)) != 0) {
+      fprintf(stderr, "tls failed %s\n", err[0] ? err : "handshake");
+      conn_close(c);
+      return -1;
+    }
+  }
   if (set_nonblock(c->fd) != 0) {
     conn_close(c);
     return -1;
@@ -437,6 +460,7 @@ static int conn_open(Conn *c, const char *host, int port) {
 
 static int conn_write(Conn *c, const char *buf, int n) {
   if (!c || c->fd < 0) return -1;
+  if (stratum_tls_active()) return stratum_tls_write(buf, n);
   int w = (int)send(c->fd, buf, (size_t)n, 0);
   if (w == n) return 0;
 #if defined(_WIN32)
@@ -451,6 +475,15 @@ static int conn_read(Conn *c) {
   if (!c || c->fd < 0) return -1;
   if (c->buflen >= LINE_CAP - 1) c->buflen = 0;
   int space = LINE_CAP - 1 - c->buflen;
+  if (stratum_tls_active()) {
+    int n = stratum_tls_read(c->buf + c->buflen, space);
+    if (n > 0) {
+      c->buflen += n;
+      c->buf[c->buflen] = 0;
+      return n;
+    }
+    return n;
+  }
   int n = (int)recv(c->fd, c->buf + c->buflen, (size_t)space, 0);
   if (n > 0) {
     c->buflen += n;
@@ -1040,13 +1073,14 @@ static void print_config(void) {
          "\"version\":\"%s\",\"clientLogin\":\"direct\",\"feePct\":0,"
          "\"pool\":\"%s:%d\",\"headerBytes\":%d,\"magic\":\"%s\","
          "\"rxMode\":\"light\",\"rxCacheMiB\":%d,\"hugePages\":%s,"
-         "\"threads\":%d,\"backend\":\"%s\",\"destBound\":%s,\"dest20\":\"%s\"}\n",
+         "\"threads\":%d,\"backend\":\"%s\",\"destBound\":%s,\"dest20\":\"%s\",\"tls\":%s}\n",
          SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_ALGO, SHEAR_PERSONAL,
          SHEAR_VERSION, g_host, g_port, SHEAR_HEADER_LEN, SHEAR_MAGIC,
          SHEAR_RX_CACHE_MIB, shear_hash_huge_pages() ? "true" : "false",
          g_threads, shear_hash_backend(),
          g_have_note ? "true" : "false",
-         g_have_note ? g_dest20_hex : "");
+         g_have_note ? g_dest20_hex : "",
+         g_tls ? "true" : "false");
 }
 
 static int mine_once(void) {
@@ -1180,10 +1214,6 @@ int main(int argc, char **argv) {
     usage(stdout);
     return 0;
   }
-  if (shear_hash_set_backend(backend_arg) != 0) {
-    fprintf(stderr, "unknown or unavailable --backend %s; using %s\n", backend_arg,
-            shear_hash_backend());
-  }
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--selftest") == 0) do_selftest = 1;
     else if (strcmp(argv[i], "--print-config") == 0) do_cfg = 1;
@@ -1193,13 +1223,36 @@ int main(int argc, char **argv) {
       if (i + 1 < argc && argv[i + 1][0] >= '1' && argv[i + 1][0] <= '9')
         bench_secs = atoi(argv[++i]);
     } else if (strcmp(argv[i], "--pool") == 0 && i + 1 < argc) {
-      snprintf(g_host_buf, sizeof(g_host_buf), "%s", argv[++i]);
+      const char *spec = argv[++i];
+      if (strncmp(spec, "stratum+ssl://", 14) == 0) {
+        g_tls = 1;
+        g_cleartext_url = 0;
+        spec += 14;
+      } else if (strncmp(spec, "stratum+tcp://", 14) == 0) {
+        g_tls = 0;
+        g_cleartext_url = 1;
+        spec += 14;
+      } else {
+        g_tls = 0;
+        g_cleartext_url = 1;
+      }
+      snprintf(g_host_buf, sizeof(g_host_buf), "%s", spec);
       char *colon = strrchr(g_host_buf, ':');
       if (colon && colon != g_host_buf && *(colon + 1)) {
         *colon = 0;
         g_port = atoi(colon + 1);
       }
       g_host = g_host_buf;
+    } else if (strcmp(argv[i], "--tls") == 0) {
+      g_tls = 1;
+      g_cleartext_url = 0;
+    } else if (strcmp(argv[i], "--require-tls") == 0) {
+      g_require_tls = 1;
+      g_tls = 1;
+    } else if (strcmp(argv[i], "--tls-ca") == 0 && i + 1 < argc) {
+      g_tls_ca = argv[++i];
+    } else if (strcmp(argv[i], "--tls-pin") == 0 && i + 1 < argc) {
+      g_tls_pin = argv[++i];
     } else if (strcmp(argv[i], "--user") == 0 && i + 1 < argc) {
       g_user = argv[++i];
     } else if (strcmp(argv[i], "--dest") == 0 && i + 1 < argc) {
@@ -1210,8 +1263,19 @@ int main(int argc, char **argv) {
     } else if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
       i++;
     } else if (strcmp(argv[i], "--notls") == 0) {
-      /* plaintext stratum (Shear pool default) */
+      g_cleartext_url = 1;
+      g_tls = 0;
     }
+  }
+  /* Flag order must not matter. Refuse before the dataset alloc so a bad URL
+     does not spend seconds on jit-full. print-config exits before mining. */
+  if (!do_selftest && !verify_hex && g_require_tls && (g_cleartext_url || !g_tls)) {
+    fprintf(stderr, "requireTls: refusing cleartext\n");
+    return 2;
+  }
+  if (shear_hash_set_backend(backend_arg) != 0) {
+    fprintf(stderr, "unknown or unavailable --backend %s; using %s\n", backend_arg,
+            shear_hash_backend());
   }
   if (do_selftest) {
     char hex[65];
@@ -1284,6 +1348,10 @@ int main(int argc, char **argv) {
            (unsigned long long)h, (double)h / secs, shear_hash_backend(), secs);
     return 0;
   }
+  if (g_require_tls && !g_tls) {
+    fprintf(stderr, "requireTls: refusing cleartext\n");
+    return 2;
+  }
   if (!g_user) {
     usage(stderr);
     return 2;
@@ -1349,7 +1417,8 @@ int main(int argc, char **argv) {
   }
 #endif
   printf("ShearK-Miner %s (ShearHash-v3 light)\n", SHEAR_VERSION);
-  printf("tcp://%s:%d user=%s dest=%s threads=%d coin=SHE algo=%s backend=%s hugePages=%s\n",
+  printf("%s://%s:%d user=%s dest=%s threads=%d coin=SHE algo=%s backend=%s hugePages=%s\n",
+         g_tls ? "stratum+ssl" : "stratum+tcp",
          g_host, g_port, g_login, g_dest[0] ? g_dest : "-", g_threads, SHEAR_ALGO,
          shear_hash_backend(), shear_hash_huge_pages() ? "yes" : "no");
   printf("device cpuCores=%d cpuThreads=%d", g_cpu_cores, g_cpu_threads);

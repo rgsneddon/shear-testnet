@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.66 (current)
+## 0.67 (current)
+
+Book `shear-testnet-v10` is unchanged. Public tag **0.67** (store `0.67.0+92`). Node pin **Shear Sentinel v16** (product 16.0). The GitHub release is not published yet. ShearK pin is **2.7** (TLS-aware). Public stratum is `stratum+ssl://pool.shear.digital:443`. Datadir leaf stays `testnet-v10`. Same-chain upgrade keeps the session. Debug-signed 0.65/0.66 need one export, uninstall, then this release-signed APK. There is no version phone-home. Fee-payout ssa1 is unchanged until Russell pins it. macOS `.dmg` stays the MacBook handoff.
+
+## 0.66
 
 Book `shear-testnet-v10`. Public tag **0.66** (store `0.66.0+91`). Node tag **v16** (Shear Sentinel v16, product 16.0). ShearK pin is **2.6**. Datadir leaf is `testnet-v10`. Tag **0.65** and node tag `v15` stay on the previous pins. macOS `.dmg` stays the MacBook handoff. Full note: [`docs/RELEASE-0.66-v16.md`](../docs/RELEASE-0.66-v16.md).
 

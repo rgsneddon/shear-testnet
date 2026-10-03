@@ -27,7 +27,7 @@ function sectionEnv() {
   return [
     'Env:',
     '  SHEAR_DATA          datadir. Windows %APPDATA%\\Shear\\testnet-v10 (Roaming). Unix ~/.shear/testnet-v10.',
-    '                      Same path for Shear Sentinel v16 and Continuum 0.66.',
+    '                      Same path for Shear Sentinel v16 and Continuum 0.67.',
     '  SHEAR_NETWORK       shear-testnet-v10 (this book). shear-v1 waits for genesis.',
     '  SHEAR_P2P_PORT      default 30303',
     '  SHEAR_P2P_BIND      default 0.0.0.0',
@@ -44,7 +44,7 @@ function sectionEnv() {
     '  SHEAR_SOLO          1 = thin local stratum (same as --solo / npm run solo)',
     '  SHEAR_STRATUM       solo stratum port (default 1111)',
     '  SHEAR_STRATUM_BIND  solo stratum bind (default 127.0.0.1)',
-    '  SHEARK_MINER        optional path to ShearK-Miner 2.5 if shearhash.node is missing',
+    '  SHEARK_MINER        optional path to ShearK-Miner 2.7 if shearhash.node is missing',
     '  SHEAR_MAINNET_EMIT  do not set. Launch is not decided.',
     '  SHEAR_MAINNET_EMIT_CONFIRM  do not set.',
   ];
@@ -86,7 +86,7 @@ function sectionSolo() {
     '       npm run solo',
     '     Bare node node/src/node.js is validator-only (no stratum).',
     '     npm run pool is the public-pool operator stack — not solo.',
-    '  3. CLI (first-class) or Continuum 0.66:',
+    '  3. CLI (first-class) or Continuum 0.67:',
     '       dart run bin/shear.dart dest --rpc http://127.0.0.1:18332',
     '       dart run bin/shear.dart balance',
     '       dart run bin/shear.dart history',
@@ -136,7 +136,7 @@ function sectionStatus() {
   return [
     'Status:',
     '  While running, the process prints JSON event=status and a one-line stderr summary:',
-    '    height=  hash=  peers=  want=  ibd=  peerMaxHeight=  peerHash=  hashBackend=',
+    '    height=  hash=  peers=  want=  ibd=  peerMaxHeight=  syncPeerHeight=  peerHash=  hashBackend=',
     '  --status reads the datadir and prints once (no P2P bind).',
     '  height is this node\'s tip, not a guessed network height.',
     '  want is outstanding getblock hashes. ibd=true while catching up (queues, syncing, or a live peer tip is ahead) — not merely when want is 0.',

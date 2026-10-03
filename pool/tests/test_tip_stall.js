@@ -59,13 +59,19 @@ describe('tip stall and floor dwell restamp without a bounce', () => {
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     const body = src.slice(src.indexOf('function watchTipStall'), src.indexOf('function resetOpenRound'));
     assert.match(body, /issueJob\(shareBits, \{ force: true \}\)/);
-    assert.match(body, /tip_stall_restamp/);
+    assert.equal(/tip_stall_restamp/.test(body), false);
+    assert.equal(/systemctl/.test(body), false);
     assert.equal(/\.restart\(/.test(body), false);
     assert.equal(/process\.exit/.test(body), false);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stall-'));
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     let bounced = 0;
+    const logged = [];
+    const origErr = console.error;
+    console.error = (...args) => {
+      logged.push(args.map(String).join(' '));
+    };
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -126,7 +132,9 @@ describe('tip stall and floor dwell restamp without a bounce', () => {
       assert.match(stats.blockBitsLabel, /blockBits/);
       assert.match(stats.shareBitsLabel, /not a retarget/i);
       assert.equal(bounced, 0);
+      assert.equal(logged.some((line) => line.includes('tip_stall_restamp')), false);
     } finally {
+      console.error = origErr;
       pool.close();
     }
   });
@@ -135,6 +143,11 @@ describe('tip stall and floor dwell restamp without a bounce', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stall-bits-'));
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const logged = [];
+    const origErr = console.error;
+    console.error = (...args) => {
+      logged.push(args.map(String).join(' '));
+    };
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
@@ -195,7 +208,9 @@ describe('tip stall and floor dwell restamp without a bounce', () => {
       const sealed = decodeHeader(headerFromHex(pool.issueJob().header));
       assert.equal(Number(sealed.bits), Number(want));
       assert.notEqual(Number(sealed.bits), Number(want) - 1);
+      assert.equal(logged.some((line) => line.includes('tip_stall_restamp')), false);
     } finally {
+      console.error = origErr;
       pool.close();
     }
   });

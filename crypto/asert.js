@@ -166,7 +166,7 @@ export const RX_SCRATCHPAD_L3 = 2097152;
 export const RX_MODE = 'light';
 export const RX_KEY = 'ShearHash-v3/key';
 export const SHEARK_MINER_NAME = 'ShearK-Miner';
-export const SHEARK_MINER_VERSION = '2.6';
+export const SHEARK_MINER_VERSION = '2.7';
 /** Frozen consensus identity. A different fingerprint is a different law. */
 export const BOOK_LAW_ID = 'shear-book-law-2';
 
@@ -178,7 +178,7 @@ export function asertEaseMax(magic = MAGIC_TESTNET) {
 export function asertHardenMax(magic = MAGIC_TESTNET) {
   return String(magic) === MAGIC_MAINNET ? ASERT_HARDEN_MAX_MAINNET : ASERT_HARDEN_MAX_TESTNET;
 }
-/** Node and pool display version. Two-part only (`*.*`, never `0.1.0`). Not part of consensusFingerprint. Continuum wallet is kWalletVersion, not this number. Shear Sentinel v16. v15 is the previous pin. */
+/** Node and pool display version. Two-part only (`*.*`, never `0.1.0`). Not part of consensusFingerprint. Continuum wallet is kWalletVersion, not this number. Display pin is Shear Sentinel v16. */
 export const PRODUCT_VERSION = '16.0';
 /** Official C miner display/tag version. Two-part only (`*.*`). Operator set Shear-Miner to 1.1 (fee-free). 1.0 keeps the built-in fee. */
 export const MINER_VERSION = '1.1';

@@ -68,9 +68,17 @@ describe('pool UI/API cannot vanish on restart', () => {
     assert.match(p2pNgx, /server_name p2p\.shear\.digital;/);
     assert.match(r2rNgx, /server_name r2r\.shear\.digital;/);
     assert.match(b2bNgx, /server_name b2b\.shear\.digital;/);
-    assert.doesNotMatch(p2pNgx, /proxy_pass http:\/\/127\.0\.0\.1:8088/);
-    assert.doesNotMatch(r2rNgx, /proxy_pass http:\/\/127\.0\.0\.1:8088/);
-    assert.doesNotMatch(b2bNgx, /proxy_pass http:\/\/127\.0\.0\.1:8088/);
+    for (const ngx of [p2pNgx, r2rNgx, b2bNgx]) {
+      assert.match(ngx, /continuum-rpc-18332/);
+      assert.match(ngx, /location = \/stats \{ proxy_pass http:\/\/127\.0\.0\.1:18332; \}/);
+      assert.match(ngx, /location = \/api\/stats \{ proxy_pass http:\/\/127\.0\.0\.1:18332; \}/);
+      assert.match(ngx, /location = \/compactblocks \{ proxy_pass http:\/\/127\.0\.0\.1:18332; \}/);
+      assert.match(ngx, /location = \/headers \{ proxy_pass http:\/\/127\.0\.0\.1:18332; \}/);
+      assert.match(ngx, /location = \/events \{/);
+      assert.match(ngx, /try_files \$uri \$uri\/ \/index\.html;/);
+      assert.doesNotMatch(ngx, /proxy_pass http:\/\/127\.0\.0\.1:8088/);
+      assert.doesNotMatch(ngx, /pool\.shear\.digital/);
+    }
     assert.doesNotMatch(p2pNgx, /77\.42\.91\.84/);
     assert.doesNotMatch(r2rNgx, /2\.28\.8\.89/);
     assert.doesNotMatch(b2bNgx, /178\.156\.222\.223/);

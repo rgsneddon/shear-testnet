@@ -6,7 +6,7 @@
 (function (global) {
   'use strict';
 
-  var FALLBACK_WALLET = '0.66';
+  var FALLBACK_WALLET = '0.67';
   var FALLBACK_NET = 'shear-testnet-v10';
   var lastNetwork = FALLBACK_NET;
   var lastWallet = FALLBACK_WALLET;
@@ -194,9 +194,11 @@
       var pins = parts[0] || {};
       var netLive = parts[1] || '';
       var ghWallet = parts[2] || '';
-      if (ghWallet && versionAtLeast(ghWallet, FALLBACK_WALLET)) wallet = ghWallet;
-      else if (pins.wallet_latest_version && versionAtLeast(pins.wallet_latest_version, FALLBACK_WALLET)) {
-        wallet = stripV(pins.wallet_latest_version);
+      var floor = wallet;
+      var pinWallet = stripV(pins.wallet_latest_version || '');
+      if (ghWallet && /^0\.\d/.test(ghWallet) && versionAtLeast(ghWallet, floor)) wallet = ghWallet;
+      else if (pinWallet && /^0\.\d/.test(pinWallet) && versionAtLeast(pinWallet, floor)) {
+        wallet = pinWallet;
       }
       if (netLive) network = netLive;
       else if (pins.active_network_name) network = pins.active_network_name;

@@ -90,15 +90,16 @@ jobs:
               add_tree(z, bundle)
           apk = "wallet/build/app/outputs/flutter-apk/app-release.apk"
           shutil.copy(apk, os.path.join(dist, f"shear-wallet-{pin}-android.apk"))
-          shutil.copy(linux, os.path.join(dist, f"shear-wallet-{pin}-fedora.zip"))
           PY
         env:
           PIN: ${{ inputs.pin }}
+      - name: Refuse a release APK that is not the pinned Continuum cert
+        run: python3 wallet/pack/check_android_release.py dist/shear-wallet-${{ inputs.pin }}-android.apk
       - name: Attach
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-linux.zip dist/shear-wallet-${{ inputs.pin }}-archlinux.zip dist/shear-wallet-${{ inputs.pin }}-fedora.zip dist/shear-wallet-${{ inputs.pin }}-android.apk --repo ${{ inputs.repo }} --clobber
+          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-linux.zip dist/shear-wallet-${{ inputs.pin }}-archlinux.zip dist/shear-wallet-${{ inputs.pin }}-android.apk --repo ${{ inputs.repo }} --clobber
           if [ -f wallet/dist-cli/shear ]; then gh release upload ${{ inputs.pin }} wallet/dist-cli/shear --repo ${{ inputs.repo }} --clobber; fi
 
   macos:

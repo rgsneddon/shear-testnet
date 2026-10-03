@@ -1,6 +1,6 @@
 # Portable Shear node
 
-Same node as `node node/src/node.js`. Pin is `PRODUCT_VERSION` (16.0, displayed Shear Sentinel v16). Continuum wallet is 0.66. Do not retag v9.
+Same node as `node node/src/node.js`. Pin is `PRODUCT_VERSION` (16.0, displayed Shear Sentinel v16). Continuum wallet is 0.67. The zip walks `pool/src/pool.js` so `posture.js` ships with the pool entry. Do not retag v9. Do not pass --clobber. The v16 GitHub release is not published yet.
 
 Build **on the OS you ship**. Native `shearhash.node` / `shearadmit.node` are not portable across OS.
 

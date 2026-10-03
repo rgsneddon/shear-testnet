@@ -22,6 +22,8 @@ describe('boot.shear.digital page', () => {
     assert.match(boot, /id="dl-json"/);
     assert.match(boot, /id="dl-bin"/);
     assert.match(boot, /shear-testnet-v10/);
+    assert.match(boot, /Continuum 0\.67/);
+    assert.doesNotMatch(boot, /Continuum 0\.66/);
     assert.doesNotMatch(boot, /shear-testnet-v6/);
     assert.doesNotMatch(boot, /testnet-v6/);
     assert.match(boot, /never hooks a bootstrap|do not pull this automatically|does not pull a bootstrap|never pull/i);
@@ -46,6 +48,7 @@ describe('shear.digital/node page', () => {
     assert.match(node, /Shear Sentinel v16/);
     assert.match(node, /16\.0/);
     assert.match(node, /release <strong>v16<\/strong>/);
+    assert.doesNotMatch(node, /node 17\.0|version":"17\.0"|release <strong>v17<\/strong>/);
     assert.doesNotMatch(node, /node 10\.0|version":"10\.0"|pin <strong>10\.0/);
     assert.doesNotMatch(node, /Node v6|node 6\.0|shear-node-v6/);
     assert.doesNotMatch(node, /shear-node-v7-/);

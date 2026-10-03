@@ -4,7 +4,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WALLET="$ROOT/wallet"
 DIST="$WALLET/dist"
-VER="$(sed -n "s/^const kWalletVersion = '\\(.*\\)';/\\1/p" "$WALLET/lib/main.dart" | head -1)"
+VER="$(sed -n "s/^const kWalletVersion = '\\(.*\\)';/\\1/p" "$WALLET/lib/main.dart" | head -1 | tr -d '\r')"
 VER="${VER:-0.33}"
 APPNAME="Shear"
 VOLNAME="Shear $VER"
@@ -14,8 +14,22 @@ BG="$WALLET/pack/dmg-bg.png"
 APP="$WALLET/build/macos/Build/Products/Release/$APPNAME.app"
 
 cd "$WALLET"
+PUBSPEC_PLUS="$(sed -n 's/^version: .*+\([0-9][0-9]*\).*/\1/p' "$WALLET/pubspec.yaml" | head -1 | tr -d '\r')"
+if [ -z "${PUBSPEC_PLUS}" ]; then
+  echo "MACOS_BUILD_NUMBER_MISSING pubspec +N" >&2
+  exit 1
+fi
+if [ -n "${BUILD_NUMBER:-}" ] && [ "$BUILD_NUMBER" != "$PUBSPEC_PLUS" ]; then
+  echo "MACOS_BUILD_NUMBER_MISMATCH env=$BUILD_NUMBER pubspec=$PUBSPEC_PLUS" >&2
+  exit 1
+fi
+BUILD_NUMBER="$PUBSPEC_PLUS"
+if [ "$BUILD_NUMBER" = "49" ]; then
+  echo "MACOS_BUILD_NUMBER_REFUSED 49" >&2
+  exit 1
+fi
 if [ "${PACK_REBUILD:-}" = "1" ] || [ ! -d "$APP" ]; then
-  flutter build macos --release --build-name=$VER --build-number="${BUILD_NUMBER:-50}"
+  flutter build macos --release --build-name="$VER" --build-number="$BUILD_NUMBER"
 fi
 test -d "$APP"
 # Bundle libsodium so AdmitV1 prove is native (Dart BigInt field is minutes at live n).

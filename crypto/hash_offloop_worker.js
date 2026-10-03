@@ -1,10 +1,8 @@
 import { parentPort } from 'node:worker_threads';
+import { hashLaneBackend } from './hash_lane.js';
 import { setHashBackend, shearHash } from './shear_hash.js';
 
-const backend = String(process.env.SHEAR_HASH_BACKEND || '').trim();
-if (backend) {
-  try { setHashBackend(backend); } catch { /* interpreter stays */ }
-}
+try { setHashBackend(hashLaneBackend()); } catch { /* interpreter stays */ }
 
 // Real ShearHash-v3. The parent counts in-flight calls around this message.
 parentPort.on('message', (msg) => {

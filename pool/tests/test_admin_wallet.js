@@ -10,7 +10,8 @@ import { NANOS_PER_SHE, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS } from '../../cryp
 import { sealCoinbaseNote } from '../../crypto/note.js';
 import { reconstructOwner } from '../src/wallet_api.js';
 import { destOpeningFromView } from '../../crypto/address.js';
-import { levyNanos, poolFeeDest, containsShe1 } from '../../crypto/levy.js';
+import { levyNanos, containsShe1 } from '../../crypto/levy.js';
+import { configuredFeeIdentity } from '../src/posture.js';
 import { signPoolWithdraw, poolWithdrawDigest } from '../../crypto/eip712.js';
 import { sign } from 'node:crypto';
 import { withdrawNonces, withdrawDigests } from '../src/withdraw_state.js';
@@ -142,7 +143,7 @@ describe('operator admin fee wallet', () => {
     const admin = createAdmin(dir);
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
-    const from = poolFeeDest();
+    const from = configuredFeeIdentity().feeDest;
     const amount = 0.05;
     const nanos = Math.round(amount * NANOS_PER_SHE);
     const fee = levyNanos(nanos);
@@ -259,7 +260,7 @@ describe('operator admin fee wallet', () => {
     const hasher = destForLogin(hasherId.address, { viewKey: hasherId.viewKey, height: 1 });
     const rest = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
     const fee = Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
-    const feeDest = poolFeeDest();
+    const feeDest = configuredFeeIdentity().feeDest;
     const store = {
       blocks: [{
         height: 2,
@@ -314,7 +315,7 @@ describe('operator admin fee wallet', () => {
     const book = createPullBook(dir);
     const pot = potCreditNanos();
     assert.equal(book.creditRound([{ tag: 'mabcdef12', dest, count: 10 }], { height: 5, nanos: pot }).ok, true);
-    const fee = poolFeeDest();
+    const fee = configuredFeeIdentity().feeDest;
     const store = {
       historyFor: (addr) => (addr === fee ? [{
         id: 'fee-1', from: 'coinbase', to: fee, nanos: NANOS_PER_SHE, height: 10, kind: 'pool-fee',

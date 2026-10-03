@@ -33,7 +33,7 @@ describe('mempool lattice honesty', () => {
     assert.match(html, /txCount \+ ' txs'/);
     assert.doesNotMatch(html, /hash bonuses, pot, and every other tx/);
     assert.doesNotMatch(html, /valid-hash bonus/);
-    assert.match(html, /Continuum 0\.66/);
+    assert.match(html, /Continuum 0\.67/);
     assert.doesNotMatch(html, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(html, /releases\/tag\/0\.36/);
     assert.doesNotMatch(html, /releases\/tag\/0\.35/);

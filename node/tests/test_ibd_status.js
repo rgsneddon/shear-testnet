@@ -76,7 +76,12 @@ describe('status IBD catch-up', () => {
     assert.equal(row.ibd, false);
     assert.equal(row.peerMaxHeight, 100);
     assert.equal(row.peerHash, high);
-    assert.deepEqual(bestPeerTip(new Map()), { peerMaxHeight: null, peerHash: '' });
+    assert.deepEqual(bestPeerTip(new Map()), {
+      peerMaxHeight: null,
+      peerHash: '',
+      syncPeerHeight: null,
+      syncEligiblePeers: 0,
+    });
     const ahead = nodeStatus({
       store: tipStore(100),
       p2p: p2pWith([idleRec(100, low), idleRec(115, high)]),

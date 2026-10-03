@@ -97,7 +97,7 @@ describe('brand pages', () => {
     assert.match(chromeSrc, /toggleShearTheme|theme-toggle/);
     const chromeLabels = [...chromeSrc.matchAll(/label:\s*'([^']+)'/g)].map((m) => m[1]);
     assert.deepEqual(chromeLabels.slice(0, chromeLabels.length / 2), [
-      'MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS',
+      'MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'TEAM', 'DOCS',
     ]);
     for (const p of pages) {
       assert.match(p, /<head>[\s\S]*theme\.js[\s\S]*<\/head>/);
@@ -239,8 +239,8 @@ describe('brand pages', () => {
     assert.match(poolHtml, /id="mine-form"/);
     assert.match(poolHtml, /id="addr"/);
     assert.match(poolHtml, /id="copy-cmd"/);
-    assert.match(poolHtml, /ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1/);
-    assert.match(read('site/miner/index.html'), /ShearK-Miner-2\.6-linux\.zip/);
+    assert.match(poolHtml, /ShearK-Miner --pool stratum\+ssl:\/\/pool\.shear\.digital:443 --user YOUR_SSA1/);
+    assert.match(read('site/miner/index.html'), /ShearK-Miner-2\.7-linux\.zip/);
     assert.doesNotMatch(poolHtml.slice(poolHtml.indexOf('id="start-mining"'), poolHtml.indexOf('id="testnet-banner"')), /<a\s/);
     assert.doesNotMatch(poolHtml, /Private by default/);
     assert.doesNotMatch(poolHtml, /Proof of work only/);

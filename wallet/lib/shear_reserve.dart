@@ -54,7 +54,18 @@ String reserveEpochStillOpenCopy([int days = kReserveEpochDays]) =>
     'The epoch is still open. Withdraw after $days days.';
 
 String reserveWithdrawDialogCopy([int days = kReserveEpochDays]) =>
-    'Return principal and $days-day APR interest to Continuum.\nThis settles the finished epoch.';
+    'Return principal and $days-day APR interest to Continuum.\nThis settles the finished epoch.\nSign is local-only (testnet). Not full custody.';
+
+/// Unsealed oracle observe is advisory. It never mints Spendable.
+String vaultObserveLabel({required bool sealed}) => sealed
+    ? 'sealed'
+    : 'advisory — not book-final';
+
+/// Observe never adds Spendable. Sealed notes are a different path.
+int spendableFromVaultObserve({required bool sealed, int oracleNanos = 0}) {
+  if (!sealed || oracleNanos != 0) return 0;
+  return 0;
+}
 
 bool extraMintAllowed(String programId) => programId == kReserveProgram;
 

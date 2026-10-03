@@ -49,6 +49,12 @@ int? closureStratumPort(ClosureSendMode mode, {required bool android}) {
   return null;
 }
 
+/// Public pool is TLS. Localhost solo stays cleartext.
+String shearKPoolUrl({required bool publicPool}) {
+  if (publicPool) return 'stratum+ssl://pool.shear.digital:443';
+  return 'stratum+tcp://127.0.0.1:1111';
+}
+
 /// Parsed node `printNodeStatus` line. Null when the line is not a status row.
 ({int height, bool ibd})? parseLocalNodeStatus(String line) {
   final t = line.trim();
@@ -206,6 +212,7 @@ Map<String, String> closureSpawnEnv(
   required bool android,
   required String dataDir,
   bool emptyDatadir = false,
+  bool publicStratum = false,
 }) {
   return <String, String>{
     'SHEAR_RPC_BIND': '127.0.0.1',
@@ -215,6 +222,7 @@ Map<String, String> closureSpawnEnv(
     'SHEAR_GETBLOCK_BATCH': '1',
     'SHEAR_SOLO': (!android && mode == ClosureSendMode.localNodeFull) ? '1' : '0',
     'SHEAR_FAST_SYNC': '1',
+    'SHEARK_POOL': shearKPoolUrl(publicPool: publicStratum),
   };
 }
 
@@ -360,6 +368,8 @@ class ShearNodeSidecar {
   int reportedHeight = 0;
   bool reportedIbd = true;
   int seekerTip = 0;
+  /// Apply→Bare drops the last sidecar watermark. A dead seeker is not synced.
+  bool seekerDishonest = false;
 
   List<dynamic> _heldBlocks = const [];
   Set<int> _heldHeights = const {};
@@ -568,6 +578,8 @@ class ShearNodeSidecar {
     final prev = committed;
     if (next == ClosureSendMode.connectBare) {
       await _stopNow();
+      seekerTip = 0;
+      seekerDishonest = true;
       committed = next;
       lastEnv = {};
       lastArgs = const [];

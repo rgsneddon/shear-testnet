@@ -53,19 +53,13 @@
       <p>No premine, no ICO. SHE is created when blocks are found. You hash, or you are paid by someone who already holds coin.</p>
       <p>Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. While this book has fewer than 10,000 notes the membership set is thin.</p>
       <p>Each found block mints 1 SHE among hasher dests that produced proven work. Each of those dests receives its own hash bonus on the next sealed block. Mine with Copy dest (a bare <code>ssa1</code>). A typed suffix is optional.</p>
-      <p>Site <a href="https://shear.digital">shear.digital</a> · Pool <a href="https://pool.shear.digital">pool.shear.digital</a> · Explorer <a href="https://explorer.shear.digital">explorer.shear.digital</a> · stratum <code>pool.shear.digital:1111</code></p>
+      <p>Site <a href="https://shear.digital">shear.digital</a> · Pool <a href="https://pool.shear.digital">pool.shear.digital</a> · Explorer <a href="https://explorer.shear.digital">explorer.shear.digital</a> · stratum <code>stratum+ssl://pool.shear.digital:443</code></p>
     </section>
     <section class="panel-card" id="wallet">
       <h2>Install the wallet</h2>
-      <p>Current pin is Continuum <strong>0.66</strong> for Android, Windows, Linux, Arch, and Fedora. This app does not mine. Install only from the official tag. Magic <code>shear-testnet-v10</code> / ADMITv2. Connect Bare is the default, and it is the only mode on Android. A desktop can also run Shear Sentinel v16 from https://shear.digital/node/. Either way the wallet asks the node for every note sealed to your dest, including seals from while it was closed. Spendable is opened coins with 9 confirmations. shear restore imports shewall.bin, not a raw spend seed.</p>
+      <p>Current pin is Continuum <strong>0.67</strong> for Android, Windows, Linux, Arch, and Fedora. This app does not mine. Install only from the official tag. Magic <code>shear-testnet-v10</code> / ADMITv2. Connect Bare is the default, and it is the only mode on Android. A desktop can also run Shear Sentinel v16 from https://shear.digital/node/. Either way the wallet asks the node for every note sealed to your dest, including seals from while it was closed. Spendable is opened coins with 9 confirmations. shear restore imports shewall.bin, not a raw spend seed.</p>
       <p><a href="https://shear.digital/wallet/">shear.digital/wallet</a></p>
-      <ul>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.66/shear-wallet-0.66-windows.zip">Windows</a></li>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.66/shear-wallet-0.66-android.apk">Android</a></li>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.66/shear-wallet-0.66-linux.zip">Linux</a></li>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.66/shear-wallet-0.66-archlinux.zip">Arch</a></li>
-        <li><a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.66/shear-wallet-0.66-fedora.zip">Fedora</a></li>
-      </ul>
+      <p>The GitHub release is not published yet. Pack names: shear-wallet-0.67-windows.zip, shear-wallet-0.67-android.apk, shear-wallet-0.67-linux.zip, shear-wallet-0.67-archlinux.zip, shear-wallet-0.67-fedora.zip.</p>
       <ol>
         <li>On Windows and Linux, unzip and open the app. On Android, install the APK. Do not keep running a desktop build from a zip or from Downloads.</li>
         <li>On Windows and Linux, unzip and open the app. On Android, install the APK.</li>
@@ -76,13 +70,13 @@
     </section>
     <section class="panel-card" id="mine">
       <h2>How to mine</h2>
-      <p>Official miner is <strong>ShearK-Miner 2.6</strong>. CPU only. Log in with wallet <strong>Copy dest</strong> (<code>ssa1</code>). A bare address stays bare.</p>
+      <p>Official miner is <strong>ShearK-Miner 2.7</strong>. CPU only. Log in with wallet <strong>Copy dest</strong> (<code>ssa1</code>). A bare address stays bare.</p>
       <p><a href="https://shear.digital/miner/">shear.digital/miner</a></p>
       <ol>
         <li>Download the Windows or Linux zip. Unpack. On Windows double-click <code>example.bat</code> after you paste your dest.</li>
         <li>Run a self-test: <code>./ShearK-Miner --selftest</code></li>
         <li>Start hashing:
-          <br/><code>./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1 --backend jit --threads 8</code></li>
+          <br/><code>./ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user YOUR_SSA1 --backend jit --threads 8</code></li>
         <li><code>--user</code> is the <code>ssa1</code> from Copy dest. A typed suffix is optional and pays the same address. <code>she1</code> without <code>--dest</code> is unpaid.</li>
       </ol>
       <p>Each found block mints <strong>1 SHE</strong> (the pot), split by proven work among hasher dests. Each dest that hashed that round receives <strong>0.00000000001 SHE</strong> per proven floor share on the next sealed block. The public pool may take 1% of the pot only. Hash bonuses pay in full to those dests.</p>
@@ -101,7 +95,7 @@
     <section class="panel-card">
       <h2>Doors</h2>
       <p>Site <a href="https://shear.digital">shear.digital</a><br/>
-      Pool <a href="https://pool.shear.digital">pool.shear.digital</a> · <code>pool.shear.digital:1111</code><br/>
+      Pool <a href="https://pool.shear.digital">pool.shear.digital</a> · <code>stratum+ssl://pool.shear.digital:443</code><br/>
       Explorer <a href="https://explorer.shear.digital">explorer.shear.digital</a><br/>
       Mempool <a href="https://mempool.shear.digital">mempool.shear.digital</a></p>
       <p>This is testnet. Balances can vanish. Network is <code>shear-testnet-v10</code>. ADMITv2 membership, confidential amounts. While the book has fewer than 10,000 notes the membership set is thin. Mainnet <code>shear-v1</code> is not live. The public countdown is 30th October 2026 at 1400hrs UK time. Page map and downloads: https://shear.digital/docs/#/surfaces. Mempool lattice: https://mempool.shear.digital/. Share round: the DAG host in the navbar.</p>

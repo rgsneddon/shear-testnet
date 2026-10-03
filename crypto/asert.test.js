@@ -500,7 +500,7 @@ describe('hash-tx consensus law', () => {
     const law = consensusLaw();
     assert.equal(PRODUCT_VERSION, '16.0');
     assert.equal(MINER_VERSION, '1.1');
-    assert.equal(SHEARK_MINER_VERSION, '2.6');
+    assert.equal(SHEARK_MINER_VERSION, '2.7');
     assert.equal(PRODUCT_VERSION.split('.').length, 2);
     assert.equal(MINER_VERSION.split('.').length, 2);
     assert.equal(SHEARK_MINER_VERSION.split('.').length, 2);
@@ -511,6 +511,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(/^\d+\.\d+$/.test('0.10'), true);
     assert.equal(/^\d+\.\d+$/.test('0.1.0'), false);
     assert.equal(law.productVersion, '16.0');
+    assert.equal(fp.includes('17.0'), false);
     assert.equal(fp.includes('16.0'), false);
     assert.equal(fp.includes('15.0'), false);
     assert.equal(fp.includes('0.66'), false);
@@ -543,7 +544,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /FORK=work-then-lowhash/);
     assert.equal(fp.includes(PRODUCT_VERSION), false);
     assert.equal(law.minerVersion, '1.1');
-    assert.equal(law.shearkMinerVersion, '2.6');
+    assert.equal(law.shearkMinerVersion, '2.7');
     assert.equal(fp.includes(SHEARK_MINER_VERSION), false);
     assert.equal(fp.includes('shearkMinerVersion'), false);
     assert.equal(law.hashTxLive, 1);

@@ -60,10 +60,16 @@ describe('A1 stratum auth gate', () => {
     const pub = spki.subarray(spki.length - 32).toString('hex');
     const ok = verifyStratumLoginAuth({ dest, challenge: chal, sig: sig.toString('hex'), pub });
     assert.equal(ok, true);
-    const gated = gateStratumLogin({
+    const unbound = gateStratumLogin({
       login: dest, client: 'ShearHash', version: '2.4',
       challenge: chal, authSig: sig.toString('hex'), authPub: pub,
     }, { requireLoginAuth: true });
+    assert.equal(unbound.ok, false);
+    assert.equal(unbound.reason, 'auth_pub_unbound');
+    const gated = gateStratumLogin({
+      login: dest, client: 'ShearHash', version: '2.4',
+      challenge: chal, authSig: sig.toString('hex'), authPub: pub,
+    }, { requireLoginAuth: true, boundAuthPub: pub });
     assert.equal(gated.ok, true);
   });
 });

@@ -16,11 +16,11 @@ import {
   timingSafeEqual,
 } from 'node:crypto';
 import { isDestAddress, payoutDest } from '../../crypto/address.js';
+import { configuredFeeIdentity } from './posture.js';
 import { NANOS_PER_SHE, formatShe } from '../../crypto/asert.js';
 import {
   levyNanos,
   mempoolDepthBytes,
-  poolFeeDest,
   containsShe1,
   verifyPoolWithdrawOffchain,
 } from '../../crypto/levy.js';
@@ -47,7 +47,8 @@ export function adminWalletDests(poolDest) {
   const out = [];
   const pay = payoutDest(poolDest) || (isDestAddress(poolDest) ? String(poolDest).trim() : '');
   if (pay && isDestAddress(pay)) out.push(pay);
-  const fee = poolFeeDest();
+  const pinned = configuredFeeIdentity();
+  const fee = pinned.ok ? pinned.feeDest : '';
   if (fee && isDestAddress(fee) && fee !== pay) out.push(fee);
   if (!out.length && fee) out.push(fee);
   return out;
@@ -64,7 +65,8 @@ export function minerReservedNanos(pullBook) {
 }
 
 export function adminWalletBalance(store, poolDest, pullBook) {
-  const fee = poolFeeDest();
+  const pinned = configuredFeeIdentity();
+  const fee = pinned.ok ? pinned.feeDest : '';
   const pay = payoutDest(poolDest) || (isDestAddress(poolDest) ? String(poolDest).trim() : '');
   const feeN = fee ? reconstructOwner(store, fee).spendableNanos : 0;
   const custodyN = pay && pay !== fee ? reconstructOwner(store, pay).spendableNanos : 0;
@@ -85,7 +87,13 @@ export function adminWalletBalance(store, poolDest, pullBook) {
 }
 
 function adminSpendFrom() {
-  return poolFeeDest();
+  const pinned = configuredFeeIdentity();
+  if (!pinned.ok) {
+    const err = new Error('fee_dest_mismatch');
+    err.reason = 'fee_dest_mismatch';
+    throw err;
+  }
+  return pinned.feeDest;
 }
 
 export function configuredAdminHosts() {

@@ -8,7 +8,14 @@
  * stdout: "<id>\t<hash hex>" or "<id>\tERR\t<message>"
  */
 import readline from 'node:readline';
-import { shearHash } from './shear_hash.js';
+import { hashLaneBackend } from './hash_lane.js';
+import { setHashBackend, shearHash } from './shear_hash.js';
+
+const laneBackend = hashLaneBackend();
+try { setHashBackend(laneBackend); } catch { /* interpreter stays */ }
+try {
+  console.error(JSON.stringify({ event: 'hash_lane', backend: laneBackend }));
+} catch { /* ignore */ }
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on('line', (line) => {

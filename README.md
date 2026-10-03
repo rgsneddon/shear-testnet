@@ -17,11 +17,11 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
-- Miner pin: **ShearK-Miner 2.6** — https://github.com/rgsneddon/ShearK/releases/tag/2.6
-- Wallet pin: **0.66** (Continuum GUI + CLI). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/0.66
-- Node pin: **Shear Sentinel v16** (product 16.0). Releases: https://github.com/rgsneddon/shear-testnet/releases/tag/v16
-- Release note: [`docs/RELEASE-0.66-v16.md`](docs/RELEASE-0.66-v16.md) (PR #44 is `3dc91baf881fd570cfcfb94539cc956389655e0f`. The release commit on top of it is this head. `6054186` is quarantine.)
-- Stratum: `pool.shear.digital:1111`
+- Miner pin: **ShearK-Miner 2.7** (TLS-aware, not a quiet 2.6). The 2.7 GitHub release is not published yet.
+- Wallet pin: **0.67** (Continuum GUI + CLI). The 0.67 GitHub release is not published yet.
+- Node pin: **Shear Sentinel v16** (product 16.0). The GitHub release is not published yet.
+- Previous note: [`docs/RELEASE-0.66-v16.md`](docs/RELEASE-0.66-v16.md) (PR #44 is `3dc91baf881fd570cfcfb94539cc956389655e0f`. `6054186` is quarantine.)
+- Stratum: public `stratum+ssl://pool.shear.digital:443`; cleartext migrate `pool.shear.digital:1111`; localhost solo `127.0.0.1:1111`. Port 1113 is only the pool process TLS listener. Public packets to 1113 do not arrive, so miners use 443. nginx ssl_preread sends a ShearK ClientHello (no ALPN) to that listener and keeps browser ALPN on the site.
 - P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v10`)
 - Site: https://shear.digital
 - Docs: https://shear.digital/docs/#/surfaces
@@ -136,12 +136,12 @@ ShearK-Miner --pool 127.0.0.1:1111 --user ssa1YOURDEST.solo --threads 4
 Optional public pool (not solo):
 
 ```
-ShearK-Miner --pool pool.shear.digital:1111 --user ssa1YOURDEST.worker --threads 4
+ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user ssa1YOURDEST.worker --threads 4
 ```
 
 `ssa1.worker` / `ssa1.solo` is Continuum/CLI Copy dest — the `ssa1` shown on screen, not a rotated mailbox. Amounts are confidential; dests are stealth. Reuse that mining mailbox so blocks stay linked.
 
-Continuum **0.65** reads a node at `127.0.0.1:18332`. Connect Bare uses the same scan when no local node answers (that is the Android path). The node is the book: it returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. `shear restore` opens a password-sealed `shewall.bin`. Public pool HTTP submit is an advanced toggle. How-to: https://shear.digital/docs/#/surfaces
+Continuum **0.67** reads a node at `127.0.0.1:18332`. Connect Bare uses the same scan when no local node answers (that is the Android path). The node is the book: it returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. `shear restore` opens a password-sealed `shewall.bin`. Public pool HTTP submit is an advanced toggle. How-to: https://shear.digital/docs/#/surfaces
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure.
 CLI covers the same functions (`dart run bin/shear.dart help`), including sign, The Reserve vote/rewards, vort1 create/register, and Closure backup/restore.

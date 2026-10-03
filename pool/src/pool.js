@@ -1,5 +1,6 @@
 import http from 'node:http';
 import net from 'node:net';
+import tls from 'node:tls';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
@@ -38,11 +39,21 @@ import {
   SHARE_FLOOR_BITS,
   displayBits,
   SHEARK_MINER_VERSION,
+  PRODUCT_VERSION,
   PI_SHE_NANOS,
 } from '../../crypto/asert.js';
 import { poolFeeDest, levyNanos, mempoolDepthBytes, poolWithdrawTx, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
+import {
+  THIS_POOL_DIRECT_FEE_DEST,
+  configuredFeeIdentity,
+  stratumListenPlan,
+  authPubGate,
+  intervalCertify,
+  narrowPublicStats,
+} from './posture.js';
+export { THIS_POOL_DIRECT_FEE_DEST, configuredFeeIdentity, feeIdentityCheck, stratumListenPlan, authPubGate, intervalCertify, CERTIFY_WINDOW } from './posture.js';
 import { createPullBook, PULL_COOLDOWN_MS, AUTO_PAYOUT_MIN_NANOS } from './pull_book.js';
 import {
   buildAutoPayoutTx,
@@ -244,15 +255,6 @@ export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
   if (!n) return null;
   return sum / n;
 }
-
-/**
- * Pool operator fee wallet. Not book law. Not used by solo mining.
- * INSTALLER: replace this with your own ssa1 before you run a pool.
- * If you leave it, this pool's 1% fee is sealed to the wallet shipped here,
- * which is not yours. Solo (`npm run solo` / `--solo`) does not read this
- * constant and does not take the 1%. The solo finder keeps the epoch pot.
- */
-export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1q8flwjptadua9u7qtpvs7t26aarenstew938zlcgclzvthv5v4e03hsv4j8uf2pr73w8arp0krf0mhry6f5gqff4fl9';
 
 /** PROP of (pot - 100 bps) across hasher dests. Fee dest gets only the fee. */
 export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDest = null) {
@@ -640,10 +642,22 @@ export function publicHtmlFile(host, pathname) {
   return p;
 }
 
-export function gateStratumLogin(params, { requireLoginAuth = false } = {}) {
+export function gateStratumLogin(params, { requireLoginAuth = false, boundAuthPub = '' } = {}) {
   const adm = admitClient(params);
   if (!adm.ok) return adm;
   if (!requireLoginAuth) return { ok: true, ...adm };
+  const presented = String(params?.authPub || params?.spendPub || '');
+  const pin = authPubGate({
+    requireAuth: true,
+    boundPub: boundAuthPub,
+    presentedPub: presented,
+  });
+  if (!pin.ok) {
+    if (pin.reason === 'auth_pub_unbound' && !presented && !params?.authSig && !params?.sig) {
+      return { ok: false, reason: 'need_auth', challenge: makeLoginChallenge() };
+    }
+    return { ok: false, reason: pin.reason, challenge: makeLoginChallenge() };
+  }
   const okAuth = verifyStratumLoginAuth({
     dest: adm.login,
     challenge: params?.challenge || params?.authChallenge,
@@ -686,6 +700,47 @@ export function tipStallDecision({
   if (restamp && atFloor && (findsStalled || heightFlat)) reason = 'floor_dwell';
   else if (restamp) reason = 'tip_stall';
   return { restamp, alert: restamp, restart: false, reason };
+}
+
+/**
+ * Cause of a long tip age. Low hashrate with a tip that can still seal is not
+ * a dead tip and is never a bounce. Frozen is no seal progress, a stuck
+ * peer-max, and dead IBD together. restart/bounce stay false.
+ */
+export function tipStallClass({
+  tipAgeMs = 0,
+  lastFoundAgeMs = 0,
+  hashrate = 0,
+  miners = 0,
+  sealProgress = false,
+  peerMaxStuck = false,
+  ibdDead = false,
+  stallMs = TIP_STALL_MS,
+} = {}) {
+  const age = Number(tipAgeMs);
+  const foundAge = Number(lastFoundAgeMs);
+  const thin = !(Number(hashrate) > 0) || Number(hashrate) < 1000 || Number(miners) <= 1;
+  const highAge = Number.isFinite(age) && age > Number(stallMs);
+  const foundStale = Number.isFinite(foundAge) && foundAge > Number(stallMs);
+  if (!sealProgress && peerMaxStuck && ibdDead) {
+    return {
+      klass: 'frozen',
+      deadTip: true,
+      bounce: false,
+      restart: false,
+      text: 'tip frozen — no seal progress, peer-max stuck, IBD dead',
+    };
+  }
+  if (highAge && foundStale && thin) {
+    return {
+      klass: 'low-h',
+      deadTip: false,
+      bounce: false,
+      restart: false,
+      text: 'low-H / tipAge — seals still possible',
+    };
+  }
+  return { klass: 'none', deadTip: false, bounce: false, restart: false, text: '' };
 }
 
 export const ALERT_CONCENTRATION = Number(process.env.SHEAR_ALERT_CONCENTRATION || 0.5) || 0.5;
@@ -1381,6 +1436,14 @@ export function createPool({
   httpPort = 8088,
   stratumBind = process.env.SHEAR_STRATUM_BIND || '127.0.0.1',
   requireLoginAuth = String(process.env.SHEAR_STRATUM_AUTH || '') === '1',
+  tlsCert = process.env.SHEAR_STRATUM_TLS_CERT || '',
+  tlsKey = process.env.SHEAR_STRATUM_TLS_KEY || '',
+  // Process listener. Public miners dial :443. Port 1113 does not receive
+  // public SYNs; nginx ssl_preread forwards a no-ALPN ClientHello here.
+  tlsPort = Number(process.env.SHEAR_STRATUM_TLS_PORT || 1113),
+  requireTls = String(process.env.SHEAR_STRATUM_REQUIRE_TLS || '') === '1',
+  labCleartext = String(process.env.SHEAR_STRATUM_LAB_CLEARTEXT || '') === '1',
+  boundAuthPub = process.env.SHEAR_STRATUM_AUTH_PUB || '',
   miner,
   operatorSpendKey = null,
   shareBits = SHARE_BITS_V2_START,
@@ -1400,23 +1463,45 @@ export function createPool({
   let p2pNet = p2p;
   let hashWorker = null;
   let hashSeq = 0;
+  let hashLive = 0;
   const hashWait = new Map();
+  // terminate() during native ShearHash is an access violation on Windows.
+  // The worker stays referenced until the in-flight call posts its result.
+  function releaseHashWorker() {
+    if (!stopped || hashLive > 0 || !hashWorker) return;
+    const worker = hashWorker;
+    hashWorker = null;
+    try { worker.unref?.(); } catch { /* ignore */ }
+    try { void Promise.resolve(worker.terminate()).catch(() => {}); } catch { /* ignore */ }
+  }
+  function finishHashJob() {
+    hashLive = Math.max(0, hashLive - 1);
+    releaseHashWorker();
+  }
   function bootHashWorker() {
     if (hashWorker) return hashWorker;
     const w = new Worker(HASH_WORKER);
     w.on('message', (msg) => {
       const pending = hashWait.get(msg.id);
-      if (!pending) return;
-      hashWait.delete(msg.id);
-      clearTimeout(pending.timer);
-      if (msg.ok) pending.resolve(Buffer.from(msg.hash));
-      else pending.reject(new Error(msg.error || 'hash_failed'));
+      if (pending && !pending.settled) {
+        pending.settled = true;
+        hashWait.delete(msg.id);
+        clearTimeout(pending.timer);
+        try {
+          if (msg.ok) pending.resolve(Buffer.from(msg.hash));
+          else pending.reject(new Error(msg.error || 'hash_failed'));
+        } catch { /* late worker message after close */ }
+      }
+      finishHashJob();
     });
     const drop = () => {
       hashWorker = null;
+      hashLive = 0;
       for (const [, p] of hashWait) {
+        if (p.settled) continue;
+        p.settled = true;
         clearTimeout(p.timer);
-        p.reject(new Error('hash_worker_exit'));
+        try { p.reject(new Error('hash_worker_exit')); } catch { /* ignore */ }
       }
       hashWait.clear();
     };
@@ -1426,6 +1511,7 @@ export function createPool({
     return w;
   }
   function hashOffThread(header, conn) {
+    if (stopped) return Promise.reject(new Error('closed'));
     if (hashWait.size >= HASH_QUEUE_MAX) {
       return Promise.reject(new Error('hash_busy'));
     }
@@ -1437,13 +1523,17 @@ export function createPool({
     if (conn) conn.hashInflight = (Number(conn.hashInflight) || 0) + 1;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        const pending = hashWait.get(id);
+        if (!pending || pending.settled) return;
+        pending.settled = true;
         hashWait.delete(id);
         reject(new Error('hash_timeout'));
       }, HASH_WORKER_TIMEOUT_MS);
       timer.unref?.();
-      hashWait.set(id, { resolve, reject, timer, conn });
+      hashWait.set(id, { resolve, reject, timer, conn, settled: false });
       try {
         bootHashWorker().postMessage({ id, headerHex: copy.toString('hex') });
+        hashLive += 1;
       } catch (e) {
         hashWait.delete(id);
         clearTimeout(timer);
@@ -1803,6 +1893,34 @@ export function createPool({
       shares: Number(stats.accepted || 0),
     };
     const decision = tipStallDecision(probe ? { ...live, ...probe, now: probe.now ?? now } : live);
+    const stallClass = tipStallClass({
+      tipAgeMs: Number(now) - Number(live.heightSinceMs || now),
+      lastFoundAgeMs: Number(now) - Number(live.lastFoundAt || now),
+      hashrate: live.hashrate,
+      miners: live.miners,
+      sealProgress: liveJobCanSeal(now),
+      peerMaxStuck: false,
+      ibdDead: false,
+    });
+    if (stallClass.klass === 'low-h' && liveJobCanSeal(now)) {
+      tipStallAlert = {
+        at: now,
+        reason: 'low_h',
+        jobId: lastJob ? String(lastJob.jobId || '') : '',
+        reissued: false,
+        text: stallClass.text,
+      };
+      return {
+        restamp: false,
+        alert: true,
+        restart: false,
+        reason: 'low_h',
+        restamped: false,
+        reissued: false,
+        seal: 'ok',
+        text: stallClass.text,
+      };
+    }
     if (!decision.restamp) {
       tipStallAlert = null;
       return { ...decision, restamped: false, reissued: false, seal: sealReject(now) || 'ok' };
@@ -1836,17 +1954,8 @@ export function createPool({
       jobId: job ? String(job.jobId || '') : '',
       reissued,
     };
-    console.error(JSON.stringify({
-      event: 'tip_stall_restamp',
-      reason: decision.reason,
-      seal: seal || 'ok',
-      reissued,
-      jobId: tipStallAlert.jobId,
-      bits: probe?.bits ?? live.bits,
-      hashrate: probe?.hashrate ?? live.hashrate,
-      miners: probe?.miners ?? live.miners,
-      shares: probe?.shares ?? live.shares,
-    }));
+    // A sealable header stays up. Reissue above runs only when this header
+    // cannot seal. This watch does not log a restamp and it does not bounce.
     return {
       ...decision,
       restamped: !!(job && !seal),
@@ -1967,7 +2076,12 @@ export function createPool({
     const wantPot = wantLivePot();
     // Pool path only. 99% PROP to this round's hashers, 1% to the fee wallet.
     // Solo never reaches this function.
-    const feeTo = THIS_POOL_DIRECT_FEE_DEST;
+    const ident = configuredFeeIdentity();
+    if (!ident.ok) {
+      console.error(JSON.stringify({ event: 'fee_dest_mismatch', reason: ident.reason }));
+      return null;
+    }
+    const feeTo = ident.feeDest;
     const potShares = lag1Shares.length
       ? potSharesFromBatch(lag1Shares, feeTo, wantPot)
       : splitPot(
@@ -2471,7 +2585,7 @@ export function createPool({
   }
 
   const sockets = new Set();
-  const stratum = net.createServer((sock) => {
+  function onStratum(sock) {
     try { sock.setNoDelay(true); } catch { /* ignore */ }
     sockets.add(sock);
     let buf = '';
@@ -2495,7 +2609,7 @@ export function createPool({
           || (params.login && method !== 'submit' && method !== 'job' && method !== 'stats'
             && method !== 2 && method !== '2');
         if (isLogin) {
-          const adm = gateStratumLogin(params, { requireLoginAuth });
+          const adm = gateStratumLogin(params, { requireLoginAuth, boundAuthPub });
           if (!adm.ok) {
             if (isWrongAlgoReject(adm.reason)) {
               rememberInvalid(null, String(params.login || params.user || ''), sock);
@@ -2597,7 +2711,16 @@ export function createPool({
           }
           const job = store.jobs.get(String(params.jobId))?.job || conn?.job || lastJob;
           const captured = { sock, session, conn, params, msg, job };
-          void acceptSubmit(captured);
+          // Close can reject an in-flight hash after the socket handler has
+          // moved on. A floating rejection there must not fail the process.
+          void acceptSubmit(captured).catch((err) => {
+            try {
+              console.error(JSON.stringify({
+                event: 'share_submit_unhandled',
+                error: String(err?.message || err).slice(0, 180),
+              }));
+            } catch { /* ignore */ }
+          });
           continue;
         }
       }
@@ -2613,7 +2736,10 @@ export function createPool({
       }
     });
     sock.on('error', () => {});
-  });
+  }
+
+  const stratum = net.createServer(onStratum);
+  let stratumTls = null;
 
   function publicMinerView(m, now = Date.now(), peers = []) {
     const connected = (m.connections || []).some((c) => c.sock);
@@ -2677,7 +2803,7 @@ export function createPool({
       if (g?.header) genesisMs = Number(decodeHeader(Buffer.from(g.header)).timestamp) || genesisMs;
     } catch { /* wall */ }
     const ev = epochView({ nowMs: Date.now(), genesisMs, magic: MAGIC_TESTNET });
-    return {
+    return narrowPublicStats({
       ok: true,
       coin: 'SHE',
       algo: ALGO,
@@ -2704,7 +2830,7 @@ export function createPool({
       stratum: `:${stratumPort}`,
       stratumBind: stratumBindHost(stratumBind),
       poolFeeBps: POOL_FEE_BPS,
-      feeDest: THIS_POOL_DIRECT_FEE_DEST,
+      feeDestTail: String((configuredFeeIdentity().feeDest || '')).slice(-4),
       lostWorkHashes: Number(stats.lostWorkHashes) || 0,
       lostWorkEvents: Number(stats.lostWorkEvents) || 0,
       hashBusy: Number(stats.hashBusy) || 0,
@@ -2731,8 +2857,17 @@ export function createPool({
       blockBitsLabel: 'consensus blockBits (median11 next-work). Not share vardiff.',
       shareBitsLabel: 'shareBits (vardiff). Not a retarget.',
       stratumConfigSource: stratumConfigSourceOf({ bind: stratumBind, requireLoginAuth }),
-      stratumCleartext: true,
-      stratumCleartextWarning: 'Stratum is cleartext TCP unless TLS is configured in front of SHEAR_STRATUM_BIND.',
+      stratumCleartext: stratumListenPlan({
+        bind: stratumBind, hasTls: !!(tlsCert && tlsKey), requireTls, labCleartext,
+      }).cleartext,
+      stratumTls: stratumListenPlan({
+        bind: stratumBind, hasTls: !!(tlsCert && tlsKey), requireTls, labCleartext,
+      }).tls,
+      stratumListenOk: stratumListenPlan({
+        bind: stratumBind, hasTls: !!(tlsCert && tlsKey), requireTls, labCleartext,
+      }).ok,
+      stratumTlsPort: (tlsCert && tlsKey) ? Number(tlsPort) : 0,
+      stratumCleartextWarning: 'Stratum cleartext stays only for loopback or an explicit lab flag. Public bind needs TLS.',
       autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
       autoPayoutMinShe: AUTO_PAYOUT_MIN_NANOS / NANOS_PER_SHE,
       autoPayoutDest: 'ssa1',
@@ -2742,6 +2877,7 @@ export function createPool({
       loginAuth: requireLoginAuth ? 'ed25519' : 'dest-only',
       bootPoolOperator: { signed: !!operatorSpendKey },
       gitHead: gitHeadOf(),
+      productVersion: PRODUCT_VERSION,
       proof: 'PoW',
       miners: workers.length,
       threads: workers.reduce((a, m) => a + (m.threads || 0), 0),
@@ -2781,6 +2917,11 @@ export function createPool({
       lastFoundAt: stats.lastFoundAt || 0,
       avgBlockTimeMs: avgMs,
       networkAvgBlockTimeMs: avgBlockIntervalMs(store.blocks),
+      interval: intervalCertify({
+        sealedSamples: Math.max(0, (Array.isArray(store.blocks) ? store.blocks.length : 0) - 1),
+        ewmaMs: avgMs,
+        sealedMeanMs: avgBlockIntervalMs(store.blocks),
+      }),
       avgBlockTimeMedianMs: medianMs,
       avgBlockWindow: findDts.length,
       nodesOnline: nodesOnline(),
@@ -2814,7 +2955,7 @@ export function createPool({
           finderWorker: worker || '',
         };
       }),
-    };
+    });
   }
   paintStatsSnap();
 
@@ -3526,19 +3667,42 @@ export function createPool({
   });
 
   function listen() {
+    const ident = configuredFeeIdentity();
+    if (!ident.ok) {
+      return Promise.reject(Object.assign(new Error(ident.reason), { code: ident.reason }));
+    }
+    let tlsOpts = null;
+    if (tlsCert && tlsKey) {
+      try {
+        tlsOpts = { cert: fs.readFileSync(tlsCert), key: fs.readFileSync(tlsKey) };
+      } catch (err) {
+        return Promise.reject(err);
+      }
+    }
+    const plan = stratumListenPlan({
+      bind: stratumBind,
+      hasTls: !!tlsOpts,
+      requireTls,
+      labCleartext,
+    });
+    if (!plan.ok) {
+      return Promise.reject(Object.assign(new Error(plan.reason), { code: plan.reason }));
+    }
     return new Promise((resolve, reject) => {
-      stratum.listen(stratumPort, stratumBindHost(stratumBind), () => {
+      const serveHttp = () => {
         httpServer.listen(httpPort, '127.0.0.1', () => {
           if (!restampTimer) restampTimer = setInterval(maybeRestampJob, JOB_RESTAMP_MS);
           console.error(JSON.stringify({
             event: 'pool_fee_dest',
-            advisory: 'Change THIS_POOL_DIRECT_FEE_DEST in pool/src/pool.js to your own ssa1 before you run this pool. The shipped address receives the 1% fee. Solo mining does not charge it.',
-            feeDestTail: String(THIS_POOL_DIRECT_FEE_DEST).slice(-4),
+            advisory: 'Fee publish and admin spend share one pin. Russell sets the ssa1 later. This cut does not rotate it.',
+            feeDestTail: String(ident.feeDest || '').slice(-4),
           }));
           const httpBound = httpServer.address();
-          const stratumBound = stratum.address();
+          const stratumBound = plan.cleartext && stratum.address && stratum.address();
+          const tlsBound = stratumTls && stratumTls.address && stratumTls.address();
           resolve({
-            stratumPort: stratumBound && typeof stratumBound === 'object' ? stratumBound.port : stratumPort,
+            stratumPort: stratumBound && typeof stratumBound === 'object' ? stratumBound.port : (plan.cleartext ? stratumPort : 0),
+            tlsPort: tlsBound && typeof tlsBound === 'object' ? tlsBound.port : (plan.tls ? tlsPort : 0),
             httpPort: httpBound && typeof httpBound === 'object' ? httpBound.port : httpPort,
           });
           setImmediate(() => {
@@ -3551,8 +3715,22 @@ export function createPool({
             }
           });
         });
-      });
-      stratum.on('error', reject);
+      };
+      const serveTls = () => {
+        if (!plan.tls) {
+          serveHttp();
+          return;
+        }
+        stratumTls = tls.createServer(tlsOpts, onStratum);
+        stratumTls.on('error', reject);
+        stratumTls.listen(tlsPort, stratumBindHost(stratumBind), serveHttp);
+      };
+      if (plan.cleartext) {
+        stratum.on('error', reject);
+        stratum.listen(stratumPort, stratumBindHost(stratumBind), serveTls);
+      } else {
+        serveTls();
+      }
     });
   }
 
@@ -3575,18 +3753,17 @@ export function createPool({
       dropTimer = null;
     }
     for (const [, p] of hashWait) {
+      if (p.settled) continue;
+      p.settled = true;
       clearTimeout(p.timer);
       try { p.reject(new Error('closed')); } catch { /* ignore */ }
     }
     hashWait.clear();
-    if (hashWorker) {
-      try { hashWorker.unref?.(); } catch { /* ignore */ }
-      try { hashWorker.terminate(); } catch { /* ignore */ }
-      hashWorker = null;
-    }
+    releaseHashWorker();
     for (const s of sockets) try { s.destroy(); } catch { /* ignore */ }
     sockets.clear();
     try { stratum.close(); } catch { /* ignore */ }
+    try { stratumTls?.close(); } catch { /* ignore */ }
     try { httpServer.closeAllConnections?.(); } catch { /* ignore */ }
     try { httpServer.close(); } catch { /* ignore */ }
   }

@@ -13,9 +13,10 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import tempfile
 import zipfile
 
-from bundle_modules import assert_zip_has_modules, write_missing_required
+from bundle_modules import assert_zip_has_modules, copy_linked_libs, rpath_origin, write_missing_required
 
 FLAVORS = ("windows", "linux", "archlinux", "fedora", "opensuse", "macos")
 SKIP_DIR_NAMES = {
@@ -162,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
             "pool/src/pool.js",
             "pool/src/main.js",
             "pool/src/admin.js",
+            "pool/src/posture.js",
             "pool/src/pull_book.js",
             "pool/src/auto_payout.js",
             "pool/src/pool_ident.js",
@@ -181,22 +183,37 @@ def main(argv: list[str] | None = None) -> int:
         if not os.path.isdir(nm):
             sys.exit("missing node_modules — run npm ci before packing")
         add_filtered_tree(z, nm, "node_modules", skip_dirs={".git"})
-        runtime = os.path.join(REPO, "runtime")
-        if os.path.isdir(runtime):
-            add_filtered_tree(z, runtime, "runtime", skip_dirs={".git"})
-        else:
-            copy_runtime(REPO, flavor)
+        if flavor == "windows":
+            runtime = os.path.join(REPO, "runtime")
+            if not os.path.isdir(runtime):
+                copy_runtime(REPO, flavor)
             if os.path.isdir(runtime):
                 add_filtered_tree(z, runtime, "runtime", skip_dirs={".git"})
-        if flavor == "windows":
             write_mingw_runtime(z)
+        else:
+            # A Windows checkout keeps runtime/node.exe. Do not ship that PE
+            # binary inside a Linux, Fedora, Arch, OpenSUSE, or macOS zip.
+            stage = tempfile.mkdtemp(prefix="shear-node-runtime-")
+            try:
+                copied = copy_runtime(stage, flavor)
+                if not copied:
+                    sys.exit("missing host node binary — pack this flavor on that OS")
+                blob = open(copied, "rb").read(4)
+                if blob.startswith(b"MZ"):
+                    sys.exit("refusing Windows node.exe in a non-windows zip")
+                linked = copy_linked_libs(copied, os.path.dirname(copied))
+                if linked:
+                    rpath_origin(copied, linked)
+                add_filtered_tree(z, os.path.join(stage, "runtime"), "runtime", skip_dirs={".git"})
+            finally:
+                shutil.rmtree(stage, ignore_errors=True)
         readme = (
             f"Shear Sentinel v{major} ({flavor})  node pin {pin}\n"
             "Windows: double-click shear-node.cmd or shear-node.bat. The window stays open.\n"
             "Unix: chmod +x shear-node.sh && ./shear-node.sh\n"
             "It syncs from genesis (or the saved tip) to the live tip. No automatic bootstrap.\n"
             "Pass --solo for local stratum after ibd=false.\n"
-            "Magic shear-testnet-v10. Continuum wallet is 0.66.\n"
+            "Magic shear-testnet-v10. Continuum wallet is 0.67.\n"
             "node_modules, crypto, and the native addons are inside this zip.\n"
         )
         z.writestr("README.txt", readme)
@@ -211,6 +228,11 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit("missing shear-node.cmd")
     if flavor != "windows" and "shear-node.sh" not in names:
         sys.exit("missing shear-node.sh")
+    if flavor != "windows":
+        if "runtime/node" not in names:
+            sys.exit("missing runtime/node — pack this flavor on that OS")
+        if "runtime/node.exe" in names:
+            sys.exit("non-windows zip must not contain runtime/node.exe")
     if "crypto/native/shearhash.node" not in names:
         sys.exit("missing crypto/native/shearhash.node — pack this flavor on that OS")
     for req in (

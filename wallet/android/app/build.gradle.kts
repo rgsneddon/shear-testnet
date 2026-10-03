@@ -1,7 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+val keyPropertiesFile = rootProject.file("key.properties")
+val keyProperties = Properties()
+val hasReleaseKey = keyPropertiesFile.exists()
+if (hasReleaseKey) {
+    keyPropertiesFile.inputStream().use { stream -> keyProperties.load(stream) }
 }
 
 android {
@@ -25,12 +34,37 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            if (hasReleaseKey) {
+                storeFile = file(keyProperties.getProperty("storeFile") ?: "")
+                storePassword = keyProperties.getProperty("storePassword")
+                keyAlias = keyProperties.getProperty("keyAlias")
+                keyPassword = keyProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            if (hasReleaseKey) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
+    }
+}
+
+gradle.taskGraph.whenReady {
+    val releasing = allTasks.any { task ->
+        val name = task.name
+        name.contains("Release", ignoreCase = true) &&
+            (name.startsWith("assemble") || name.startsWith("bundle") || name.contains("Package"))
+    }
+    if (releasing && !hasReleaseKey) {
+        throw GradleException(
+            "Missing wallet/android/key.properties. Release assemble refuses the debug cert. " +
+                "Provide storePassword, keyPassword, keyAlias=continuum, and storeFile for the Continuum release keystore."
+        )
     }
 }
 

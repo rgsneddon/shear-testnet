@@ -5,8 +5,10 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { GENESIS_BITS_PACKED, MAGIC_TESTNET } from '../../crypto/asert.js';
+import { GENESIS_BITS_PACKED, MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS, nextBits } from '../../crypto/asert.js';
+import { jroot as jrootOf } from '../../crypto/admit.js';
 import { VERSION, decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
+import { pointFrom } from '../../crypto/note.js';
 import { meetsTarget, setHashBackend, shearHash } from '../../crypto/shear_hash.js';
 import { hashHeaderOffLoop, p2pHashCap, p2pHashStats, resetP2pHashStats } from '../../crypto/hash_offloop.js';
 
@@ -29,9 +31,85 @@ import {
   resetP2pVerifyStats,
 } from '../src/p2p.js';
 
+// The fixture was sealed at packed bits 786432. Genesis verify requires
+// GENESIS_BITS_PACKED (983040). A padded 90s median does not move that seed,
+// so every header in this short chain is legal at the same packed value.
+// Nonces are ShearHash-v3 hits at that target. Prev links follow those hashes.
+// Share nonces are floor hits on the rewritten parent. chain.js is unchanged.
+// Coinbase jroot on the fixture is the pre-native merkle fallback of the
+// cumulative admit pubs. Verify now wants nativeJroot of that same list.
+// digestTx does not cover jroot, so the mined merkle and PoW stay valid.
+const WEDGE_HEADER_NONCE = [1014n, 5110n, 99739n];
+const WEDGE_SHARE_NONCE = [null, ['258'], ['515']];
+
+function setHeaderBits(header, bits) {
+  const h = Buffer.from(header);
+  h.writeUInt32LE(bits >>> 0, 108);
+  return h;
+}
+
+function setHeaderPrev(header, prevHash) {
+  const h = Buffer.from(header);
+  Buffer.from(prevHash).copy(h, 4, 0, 32);
+  return h;
+}
+
+function admitPubsOf(block) {
+  const pubs = [];
+  for (const tx of block.txs || []) {
+    for (const o of tx.vout || []) {
+      if (!o?.admitPub) continue;
+      try {
+        pubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
+      } catch { /* verify skips the same unreadable pub */ }
+    }
+  }
+  return pubs;
+}
+
+function legalizeBlocks(blocks) {
+  const childBits = nextBits(GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS);
+  if (childBits !== GENESIS_BITS_PACKED) {
+    throw new Error(`padded median would move genesis bits to ${childBits}`);
+  }
+  const out = [];
+  const pubs = [];
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = cloneBlock(blocks[i]);
+    let header = setHeaderBits(block.header, GENESIS_BITS_PACKED);
+    if (i > 0) header = setHeaderPrev(header, out[i - 1].hash);
+    header = setNonce(header, WEDGE_HEADER_NONCE[i]);
+    const hash = shearHash(header);
+    if (decodeHeader(header).bits !== GENESIS_BITS_PACKED) {
+      throw new Error(`wedge block ${i + 1} bits were not rewritten`);
+    }
+    if (!meetsTarget(hash, GENESIS_BITS_PACKED)) {
+      throw new Error(`wedge block ${i + 1} misses genesis bits`);
+    }
+    block.header = header;
+    block.hash = hash;
+    const shareNonces = WEDGE_SHARE_NONCE[i];
+    if (shareNonces) {
+      block.shareBatch = (block.shareBatch || []).map((row, j) => (
+        shareNonces[j] == null ? row : { ...row, nonce: shareNonces[j] }
+      ));
+    }
+    pubs.push(...admitPubsOf(block));
+    const root = Buffer.from(jrootOf(pubs));
+    if (root.length !== 32) throw new Error(`wedge block ${i + 1} jroot is not 32 bytes`);
+    block.txs = (block.txs || []).map((tx, idx) => (idx === 0 ? { ...tx, jroot: root } : tx));
+    out.push(block);
+  }
+  return out;
+}
+
+let legalChain;
 function loadChain() {
-  const raw = JSON.parse(fs.readFileSync(new URL('./fixtures/p2p-wedge-blocks.json', import.meta.url), 'utf8'));
-  return raw.blocks.map((b) => decodeWireBlock(b));
+  if (!legalChain) {
+    const raw = JSON.parse(fs.readFileSync(new URL('./fixtures/p2p-wedge-blocks.json', import.meta.url), 'utf8'));
+    legalChain = legalizeBlocks(raw.blocks.map((b) => decodeWireBlock(b)));
+  }
+  return legalChain.map(cloneBlock);
 }
 
 function cloneBlock(block) {

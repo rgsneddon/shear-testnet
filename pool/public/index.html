@@ -402,7 +402,7 @@
       </section>
       <section class="panel-card" id="start-mining">
         <h2>Start mining</h2>
-        <p>Stratum <code>pool.shear.digital:1111</code> · magic <code>shear-testnet-v10</code> · ShearHash-v3. ShearK 2.6.</p>
+        <p>Public stratum <code>stratum+ssl://pool.shear.digital:443</code>. Magic <code>shear-testnet-v10</code> · ShearHash-v3. Continuum 0.67. ShearK 2.7.</p>
         <p class="label" id="stratum-cleartext">Stratum is <strong>cleartext TCP</strong>. Set <code>SHEAR_STRATUM_AUTH=1</code> when TLS is not in front.</p>
         <p>Paste Copy dest, a worker name, and CPU threads. Copy the command into ShearK. Use a worker name that you will recognise, so you can find your miners page link in the pool miners table below.</p>
         <form id="mine-form" action="#" method="get" autocomplete="off">
@@ -419,7 +419,7 @@
           <input id="threads" name="threads" type="number" min="1" max="256" value="4" step="1"/>
         </p>
         <div class="cmd-row">
-          <pre id="mine-cmd">ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1.worker --threads 4</pre>
+          <pre id="mine-cmd">ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user YOUR_SSA1.worker --threads 4</pre>
           <button type="submit" id="copy-cmd">Copy command</button>
         </div>
         <p class="label" id="cmd-hint">Login is <code>ssa1.worker</code>. <code>she1</code> without a dest is unpaid. Never <code>shear1</code>.</p>
@@ -548,14 +548,14 @@
       }
       const bin = minerBin();
       document.getElementById('mine-cmd').textContent =
-        bin + ' --pool pool.shear.digital:1111 --user ' + user + ' --threads ' + t;
+        bin + ' --pool stratum+ssl://pool.shear.digital:443 --user ' + user + ' --threads ' + t;
       const ok = destOk(addr);
       const addrEl = document.getElementById('addr');
       if (addr) addrEl.setAttribute('aria-invalid', ok ? 'false' : 'true');
       else addrEl.removeAttribute('aria-invalid');
       document.getElementById('copy-cmd').disabled = !ok;
       document.getElementById('cmd-hint').textContent = ok
-        ? 'Ready to copy · ShearHash-v3 · shear-testnet-v10 · :1111'
+        ? 'Ready to copy · ShearHash-v3 · shear-testnet-v10 · stratum+ssl :443'
         : 'Paste Copy dest (ssa1). Login is ssa1.worker.';
       saveMineForm(addr, (document.getElementById('worker').value || '').trim(), t);
     }
@@ -702,7 +702,16 @@
       if (!el) return;
       const net = s && Number(s.networkAvgBlockTimeMs);
       const ms = (Number.isFinite(net) && net > 0) ? net : (s && s.avgBlockTimeMs);
-      el.textContent = fmtAvgBlock(ms);
+      const gate = s && s.interval;
+      if (gate && gate.soaking) {
+        el.textContent = fmtAvgBlock(ms) + ' · soaking n=' + gate.sealedSamples + ' — ~90s not certified';
+        return;
+      }
+      if (gate && gate.certified90s) {
+        el.textContent = fmtAvgBlock(ms) + ' · n=' + gate.sealedSamples + ' ~90s certified';
+        return;
+      }
+      el.textContent = fmtAvgBlock(ms) + (gate ? (' · observational n=' + gate.sealedSamples) : '');
     }
     function paintLastBlock(s) {
       const read = document.getElementById('last-block-read');

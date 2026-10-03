@@ -168,6 +168,83 @@ bool isUsableTipStats(Map<String, dynamic>? stats) {
   return tip >= 1;
 }
 
+/// HTTP 200 HTML is not a node. A live seed is JSON with height ≥ 1.
+bool isHtmlNodeBody(String body, {String? contentType}) {
+  final ct = (contentType ?? '').toLowerCase();
+  if (ct.contains('text/html')) return true;
+  final t = body.trimLeft().toLowerCase();
+  return t.startsWith('<!doctype') || t.startsWith('<html');
+}
+
+/// Decode a node JSON object. HTML and non-objects are not a tip.
+Map<String, dynamic>? decodeNodeJson(String body, {String? contentType}) {
+  if (isHtmlNodeBody(body, contentType: contentType)) return null;
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is Map<String, dynamic>) return decoded;
+    if (decoded is Map) return Map<String, dynamic>.from(decoded);
+  } catch (_) {}
+  return null;
+}
+
+/// Sealed height and network seek stay separate. Sealed-only is not synced.
+class TipHud {
+  const TipHud({
+    required this.sealed,
+    required this.seek,
+    required this.live,
+    required this.ibd,
+    required this.synced,
+    required this.amber,
+    required this.label,
+    required this.syncWord,
+  });
+
+  final int sealed;
+  final int? seek;
+  final bool live;
+  final bool ibd;
+  final bool synced;
+  final bool amber;
+  final String label;
+  final String syncWord;
+}
+
+TipHud tipHud({
+  required int sealed,
+  int? seek,
+  required bool live,
+  required bool ibd,
+}) {
+  final seekKnown = live && seek != null && seek > 0;
+  final synced = seekKnown && !ibd && sealed >= seek!;
+  final amber = !live || ibd || !seekKnown;
+  final String syncWord;
+  final String label;
+  if (!seekKnown) {
+    syncWord = 'no live node';
+    label = sealed > 0
+        ? 'block height: sealed $sealed · no live node'
+        : 'block height: no live node';
+  } else if (!synced) {
+    syncWord = 'seek $seek';
+    label = 'block height: sealed $sealed · seek $seek';
+  } else {
+    syncWord = 'synchronised · $seek';
+    label = 'block height: synchronised · sealed $sealed · seek $seek';
+  }
+  return TipHud(
+    sealed: sealed,
+    seek: seekKnown ? seek : null,
+    live: live,
+    ibd: ibd,
+    synced: synced,
+    amber: amber,
+    label: label,
+    syncWord: syncWord,
+  );
+}
+
 /// Header page size matching node `HEADERS_PAGE`.
 const kNodeSyncHeaderPage = 2000;
 
@@ -801,10 +878,9 @@ class ShearReadSync {
         await res.drain<void>();
         return null;
       }
-      final decoded = jsonDecode(await utf8.decodeStream(res));
-      if (decoded is Map<String, dynamic>) return decoded;
-      if (decoded is Map) return Map<String, dynamic>.from(decoded);
-      return null;
+      final ct = res.headers.contentType?.mimeType;
+      final body = await utf8.decodeStream(res);
+      return decodeNodeJson(body, contentType: ct);
     } catch (_) {
       return null;
     }

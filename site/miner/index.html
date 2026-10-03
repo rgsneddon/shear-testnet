@@ -45,8 +45,8 @@
       }
     })();
   </script>
-  <title>ShearK Miner 2.6 — Shear</title>
-  <meta name="description" content="Download ShearK-Miner 2.6 for Linux and Windows. ShearHash-v3 · shear-testnet-v10 · stratum pool.shear.digital:1111." />
+  <title>ShearK Miner 2.7 — Shear</title>
+  <meta name="description" content="Download ShearK-Miner 2.7 for Linux and Windows. ShearHash-v3 · shear-testnet-v10 · stratum+ssl://pool.shear.digital:443." />
   <link rel="icon" href="../brand/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
   <link rel="stylesheet" href="../css/site.css" />
@@ -69,7 +69,7 @@
   <script src="../shared/shear-chrome.js"></script>
 
   <div class="banner" role="status">
-    <strong>Testnet only.</strong> ShearK 2.6 · ShearHash-v3 · shear-testnet-v10
+    <strong>Testnet only.</strong> ShearK 2.7 · ShearHash-v3 · shear-testnet-v10
     <span class="sep">·</span>
     Windows SmartScreen may flag unsigned builds
   </div>
@@ -77,32 +77,32 @@
   <main>
     <div class="wrap page-hero">
       <p class="section-label">CPU hasher</p>
-      <h1>ShearK Miner <span style="color:var(--accent)">2.6</span></h1>
-      <p class="lede">Official ShearHash-v3 miner. Point it at pool.shear.digital:1111 or, after the node reports ibd=false, at 127.0.0.1:1111. Login is Copy dest, a bare ssa1. A typed suffix is optional. Continuum wallet is separate — download that on <a href="/wallet/">WALLET</a> (0.66). The book is Shear Sentinel v16 on the node page. Run --selftest once, then hash. Sealed pays show in Shearview when the wallet is open. How-to: https://shear.digital/docs/#/mine.</p>
+      <h1>ShearK Miner <span style="color:var(--accent)">2.7</span></h1>
+      <p class="lede">Official ShearHash-v3 miner. Public pool is <code>stratum+ssl://pool.shear.digital:443</code>. After the node reports ibd=false, localhost solo stays <code>stratum+tcp://127.0.0.1:1111</code>. Login is Copy dest, a bare ssa1. A typed suffix is optional. Continuum wallet is separate — download that on <a href="/wallet/">WALLET</a> (0.67). The book is Shear Sentinel v16 on the node page. Run --selftest once, then hash. Sealed pays show in Shearview when the wallet is open. How-to: https://shear.digital/docs/#/mine.</p>
       <div class="pin-row">
-        <span class="pin-chip">Pin 2.6</span>
+        <span class="pin-chip">Pin 2.7</span>
         <span class="pin-chip">ShearHash-v3</span>
         <span class="pin-chip" data-shear-network>shear-testnet-v10</span>
-        <span class="pin-chip">stratum :1111</span>
+        <span class="pin-chip">stratum+ssl :443</span>
       </div>
     </div>
 
     <section class="wrap section">
       <p class="section-label">Downloads</p>
       <h2 style="margin:0 0 .35rem">OS packages</h2>
-      <p style="color:var(--text-dim);margin:0 0 0.5rem">Verified GitHub release assets for tag <code>2.6</code>. Always run <code>--selftest</code> once on a new machine.</p>
+      <p style="color:var(--text-dim);margin:0 0 0.5rem">ShearK 2.7 packs are cut. The GitHub release is not published yet, so this page does not link a release asset. Always run <code>--selftest</code> once on a new machine.</p>
       <div class="dl-grid">
         <article class="dl-card">
           <h3>Linux x86_64</h3>
           <p>ZIP with <code>ShearK-Miner</code> binary. Unzip, chmod, selftest, then connect.</p>
-          <div class="dl-meta">ShearK-Miner-2.6-linux.zip</div>
-          <a class="btn btn-primary" href="https://github.com/rgsneddon/ShearK/releases/download/2.6/ShearK-Miner-2.6-linux.zip" rel="noopener">Download Linux</a>
+          <div class="dl-meta">ShearK-Miner-2.7-linux.zip</div>
+          <span class="btn btn-primary">Not published</span>
         </article>
         <article class="dl-card">
           <h3>Windows x86_64</h3>
           <p><code>ShearK-Miner.exe</code>. SmartScreen may warn on unsigned builds — More info → Run anyway.</p>
-          <div class="dl-meta">ShearK-Miner-2.6-windows.zip</div>
-          <a class="btn btn-primary" href="https://github.com/rgsneddon/ShearK/releases/download/2.6/ShearK-Miner-2.6-windows.zip" rel="noopener">Download Windows</a>
+          <div class="dl-meta">ShearK-Miner-2.7-windows.zip</div>
+          <span class="btn btn-primary">Not published</span>
         </article>
       </div>
     </section>
@@ -110,7 +110,7 @@
     <section class="wrap section-sm">
       <div class="panel warn-panel">
         <h3>Windows SmartScreen</h3>
-        <p style="margin:0">ShearK Windows builds are currently unsigned. SmartScreen / Defender may flag the ZIP or EXE. Prefer the official GitHub release URL above. If prompted: More info → Run anyway, or unblock the zip properties. Do not download ShearK from third-party mirrors.</p>
+        <p style="margin:0">ShearK Windows builds are currently unsigned. SmartScreen / Defender may flag the ZIP or EXE. Use the official 2.7 pack once that GitHub release is published. If prompted: More info → Run anyway, or unblock the zip properties. Do not download ShearK from third-party mirrors.</p>
       </div>
     </section>
 
@@ -121,8 +121,8 @@
           <h3>Start mining on pool</h3>
           <p>Get an <code>ssa1</code> Copy dest from Continuum or the pool UI, then:</p>
           <div class="code-line">./ShearK-Miner --selftest</div>
-          <div class="code-line" style="margin-top:.5rem">./ShearK-Miner --pool pool.shear.digital:1111 --user YOUR_SSA1 --threads 8</div>
-          <p style="margin:.75rem 0 0;color:var(--text-dim);font-size:.9rem">Windows: use <code>ShearK-Miner.exe</code> with the same flags. 2.6 keeps a bare <code>ssa1</code>. A typed <code>YOUR_SSA1.suffix</code> is optional and pays the same address. Stratum is cleartext TCP unless TLS sits in front.</p>
+          <div class="code-line" style="margin-top:.5rem">./ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user YOUR_SSA1 --threads 8</div>
+          <p style="margin:.75rem 0 0;color:var(--text-dim);font-size:.9rem">Windows: use <code>ShearK-Miner.exe</code> with the same flags. The Windows zip ships <code>libssl</code> and <code>libcrypto</code> beside the exe. 2.7 keeps a bare <code>ssa1</code>. A typed <code>YOUR_SSA1.suffix</code> is optional and pays the same address. Public pool is TLS. Localhost solo and the migrate port stay cleartext TCP.</p>
           <div class="cta-row" style="margin-top:1rem">
             <a class="btn btn-primary" href="https://pool.shear.digital" rel="noopener">Open pool →</a>
             <a class="btn btn-ghost" href="https://pool.shear.digital" rel="noopener">Live pool ↗</a>
@@ -143,10 +143,10 @@
     <section class="wrap section">
       <div class="panel">
         <h3>Source / code</h3>
-        <p>Repo <a href="https://github.com/rgsneddon/ShearK" rel="noopener">rgsneddon/ShearK</a> · release tag <a href="/miner/">2.6</a>. Default backend <code>jit-full</code> (2 GiB dataset). Abort on restamp; verify claimed digest. One login — no miner-fee dual-login.</p>
+        <p>Repo <a href="https://github.com/rgsneddon/ShearK" rel="noopener">rgsneddon/ShearK</a> · release tag <a href="/miner/">2.7</a>. Default backend <code>jit-full</code> (2 GiB dataset). Abort on restamp; verify claimed digest. One login — no miner-fee dual-login.</p>
         <div class="cta-row" style="margin-top:.85rem">
           <a class="btn btn-ghost" href="/miner/">Miner page</a>
-          <a class="btn btn-ghost" href="https://github.com/rgsneddon/ShearK/archive/refs/tags/2.6.zip" rel="noopener">Source zip ↗</a>
+          <span class="btn btn-ghost">Source zip is not published yet</span>
         </div>
       </div>
     </section>
@@ -154,7 +154,7 @@
 
   <footer class="footer">
     <div class="wrap footer-inner">
-      <div data-shear-foot data-wallet-fallback="0.66" data-network-fallback="shear-testnet-v10">Shear · … · Continuum … · …</div>
+      <div data-shear-foot data-wallet-fallback="0.67" data-network-fallback="shear-testnet-v10">Shear · … · Continuum … · …</div>
       <nav>
         <a href="/">Main</a>
         <a href="https://pool.shear.digital" rel="noopener">Pool</a>

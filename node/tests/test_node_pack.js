@@ -48,6 +48,9 @@ describe('portable node packs', () => {
     assert.match(mac, /zip_node\.py macos/);
     assert.match(mac, /LABEL=v16/);
     assert.match(mac, /want 16\.0/);
+    assert.match(mac, /!= "16\.0"/);
+    assert.doesNotMatch(mac, /!= "17\.0"/);
+    assert.doesNotMatch(mac, /gh release upload v17 /);
     assert.doesNotMatch(mac, /LABEL=v15/);
     assert.doesNotMatch(mac, /gh release upload v15 /);
     assert.match(mac, /PRODUCT_VERSION/);
@@ -81,6 +84,8 @@ describe('portable node packs', () => {
     assert.match(listed.stdout, /shear-node\.cmd/);
     assert.match(listed.stdout, /shear-node\.bat/);
     assert.match(listed.stdout, /node\/src\/node\.js/);
+    assert.match(listed.stdout, /pool\/src\/posture\.js/);
+    assert.match(listed.stdout, /pool\/src\/pool\.js/);
     assert.match(listed.stdout, /pool\/src\/wallet_api\.js/);
     assert.match(listed.stdout, /pool\/src\/hash_credit\.js/);
     assert.match(listed.stdout, /pool\/src\/withdraw_state\.js/);

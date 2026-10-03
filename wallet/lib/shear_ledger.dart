@@ -269,6 +269,96 @@ bool _flowCryptoOnCaller() =>
 /// Counts ledger, sync, and proof work that still runs on the UI isolate.
 int debugUiHeavyCount = 0;
 
+/// Isolate that last ran [ShearLedger.followOffUi]'s body. Differs from the UI isolate.
+String debugCreditFollowStamp = '';
+
+/// `balances` or `credits`, from the worker that ran the real sync method.
+String debugCreditFollowKind = '';
+
+/// Kinds returned to this isolate, in order. Tests read the Apply entry.
+final List<String> debugCreditFollowKinds = <String>[];
+
+/// Worker stamps paired with [debugCreditFollowKinds].
+final List<String> debugCreditFollowStamps = <String>[];
+
+/// How many credit follows have returned to this isolate.
+int debugCreditFollowRuns = 0;
+
+Object? _followEncode(Object? v) {
+  if (v == null || v is num || v is String || v is bool) return v;
+  if (v is Uint8List) return <String, String>{'__b64': base64Encode(v)};
+  if (v is Map) {
+    return <String, Object?>{
+      for (final e in v.entries) e.key.toString(): _followEncode(e.value),
+    };
+  }
+  if (v is Iterable) {
+    return <Object?>[for (final item in v) _followEncode(item)];
+  }
+  return v.toString();
+}
+
+Object? _followRevive(Object? v) {
+  if (v is Map && v.length == 1 && v['__b64'] is String) {
+    return base64Decode(v['__b64'] as String);
+  }
+  if (v is Map) {
+    return <String, dynamic>{
+      for (final e in v.entries) e.key.toString(): _followRevive(e.value),
+    };
+  }
+  if (v is List) return <Object?>[for (final item in v) _followRevive(item)];
+  return v;
+}
+
+Map<String, double> _followDoubles(Object? raw) {
+  final out = <String, double>{};
+  if (raw is! Map) return out;
+  for (final e in raw.entries) {
+    final n = e.value;
+    if (n is num) out[e.key.toString()] = n.toDouble();
+  }
+  return out;
+}
+
+Map<String, int> _followInts(Object? raw) {
+  final out = <String, int>{};
+  if (raw is! Map) return out;
+  for (final e in raw.entries) {
+    final n = e.value;
+    if (n is num) out[e.key.toString()] = n.toInt();
+  }
+  return out;
+}
+
+/// Tip, balance, notes, and history run here. The UI isolate only adopts the
+/// book the worker already collated.
+Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
+  final spec = jsonDecode(specJson) as Map<String, dynamic>;
+  final base = spec['baseUrl']?.toString() ?? '';
+  final pool = base.isEmpty ? null : ShearPoolClient(baseUrl: base);
+  final ledger = ShearLedger(pool: pool);
+  try {
+    ledger.installCreditFollow(spec);
+    final rest = spec['restFrame']?.toString() ?? '';
+    final code = spec['paymentCode']?.toString();
+    if (rest.isNotEmpty) {
+      ledger.recheckRestFrameSpendable(rest, paymentCode: code);
+    }
+    final full = spec['full'] == true;
+    final opened = full
+        ? await ledger.syncCredits(rest, paymentCode: code)
+        : await ledger.syncBalancesOnly(rest, paymentCode: code);
+    final out = ledger.exportCreditFollow(restFrame: rest, paymentCode: code, full: full);
+    out['stamp'] = identityHashCode(Isolate.current).toString();
+    out['kind'] = full ? 'credits' : 'balances';
+    out['opened'] = opened;
+    return out;
+  } finally {
+    pool?.close();
+  }
+}
+
 void noteUiHeavy(String label) {
   debugUiHeavyCount += 1;
 }
@@ -1609,6 +1699,8 @@ class ShearLedger implements ReadProofSink {
 
   final ShearPoolClient? pool;
   final Map<String, double> _spendable = {};
+  /// Session header nanos. Never copied into [_spendable].
+  final Map<String, double> _advisorySpendable = {};
   /// Accepted Reserve locks still sitting in the verified note sum.
   final Map<String, double> _lockDebitShe = {};
   /// Owned sealed notes (commit, noteCommit, r, prev, index, admit x). Reserve vault excepted.
@@ -2154,6 +2246,7 @@ class ShearLedger implements ReadProofSink {
   void _resetChainBook() {
     _txs.clear();
     _spendable.clear();
+    _advisorySpendable.clear();
     _notes.clear();
     _proofCheckedDests.clear();
     _unverifiedExternal.clear();
@@ -3081,11 +3174,16 @@ class ShearLedger implements ReadProofSink {
       ..addAll(next);
   }
 
+  /// Header figure from an old session. Advisory only: it never raises
+  /// Spendable above notes this wallet has already reconstructed.
   void rememberSpendable(String address, double amount) {
     if (_isProgramVaultDest(address) || _isProgramVaultDest(payKey(address))) return;
     final key = isDestAddress(address) ? address : payKey(address);
     if (!isDestAddress(key)) return;
-    if (amount > spendable(key)) _spendable[key] = amount;
+    _advisorySpendable[key] = amount;
+    final owned = inventoriedNoteShe(key, sum: true);
+    final shown = spendable(key);
+    if (shown > owned + 1e-12) _spendable[key] = owned;
   }
 
   Future<void> _applyStatsTip(Map<String, dynamic> json) async {
@@ -3712,6 +3810,144 @@ class ShearLedger implements ReadProofSink {
       }
     }
     return (max: maxOwed, saw: saw, dest: maxDest);
+  }
+
+  Map<String, dynamic> exportCreditFollow({
+    required String restFrame,
+    String? paymentCode,
+    required bool full,
+  }) {
+    return <String, dynamic>{
+      'full': full,
+      'restFrame': restFrame,
+      'paymentCode': paymentCode ?? '',
+      'baseUrl': (pool != null && pool!.isPinned) ? pool!.baseUrl : '',
+      'address': _restFrame ?? restFrame,
+      'seedHex': spendSeed == null ? '' : _bytesHex(spendSeed!),
+      'viewKey': viewSecret ?? '',
+      'dests': _dests.toList(),
+      'txs': <Object?>[for (final t in _txs) _followEncode(t.toJson())],
+      'notes': <Object?>[for (final n in _notes) _followEncode(n)],
+      'spendable': _followEncode(_spendable),
+      'pending': _followEncode(_pending),
+      'advisory': _followEncode(_advisorySpendable),
+      'externalShe': _followEncode(_externalShe),
+      'lockDebit': _followEncode(_lockDebitShe),
+      'settledNodeShe': _followEncode(_settledNodeShe),
+      'proofChecked': _proofCheckedDests.toList(),
+      'unverifiedExternal': _unverifiedExternal.toList(),
+      'sealed': _sealedHeight,
+      'settled': _settledHeight,
+      'notesAt': _followEncode(_notesAt),
+      'historyAt': _followEncode(_historyAt),
+      'openCollated': _openCollated,
+      'destCount': destCount,
+      'destIndex': destIndex,
+      'nodeBodies': <Object?>[for (final b in _nodeBodies) _followEncode(b)],
+      'nodeHistory': <Object?>[for (final b in _nodeHistoryRows) _followEncode(b)],
+      'nodeNotes': <Object?>[for (final b in _nodeNoteRows) _followEncode(b)],
+    };
+  }
+
+  void installCreditFollow(Map<String, dynamic> spec) {
+    final seed = spec['seedHex']?.toString() ?? '';
+    final address = spec['address']?.toString() ?? '';
+    final view = spec['viewKey']?.toString() ?? '';
+    final code = spec['paymentCode']?.toString() ?? '';
+    if (seed.isNotEmpty && address.isNotEmpty && view.isNotEmpty && code.isNotEmpty) {
+      bindIdentity(ShearIdentity(
+        seedHex: seed,
+        address: address,
+        viewKey: view,
+        paymentCode: code,
+      ));
+    }
+    _dests
+      ..clear()
+      ..addAll(((spec['dests'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
+    _txs
+      ..clear()
+      ..addAll(<ShearTx>[
+        for (final raw in (spec['txs'] as List?) ?? const <dynamic>[])
+          if (_followRevive(raw) is Map)
+            ShearTx.fromJson(Map<String, dynamic>.from(_followRevive(raw) as Map)),
+      ]);
+    _notes
+      ..clear()
+      ..addAll(<Map<String, dynamic>>[
+        for (final raw in (spec['notes'] as List?) ?? const <dynamic>[])
+          if (_followRevive(raw) is Map)
+            Map<String, dynamic>.from(_followRevive(raw) as Map),
+      ]);
+    void takeDoubles(Map<String, double> dest, Object? raw) {
+      dest
+        ..clear()
+        ..addAll(_followDoubles(_followRevive(raw)));
+    }
+    takeDoubles(_spendable, spec['spendable']);
+    takeDoubles(_pending, spec['pending']);
+    takeDoubles(_advisorySpendable, spec['advisory']);
+    takeDoubles(_externalShe, spec['externalShe']);
+    takeDoubles(_lockDebitShe, spec['lockDebit']);
+    takeDoubles(_settledNodeShe, spec['settledNodeShe']);
+    _proofCheckedDests
+      ..clear()
+      ..addAll(((spec['proofChecked'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
+    _unverifiedExternal
+      ..clear()
+      ..addAll(((spec['unverifiedExternal'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
+    _sealedHeight = (spec['sealed'] as num?)?.toInt() ?? _sealedHeight;
+    _settledHeight = (spec['settled'] as num?)?.toInt() ?? _settledHeight;
+    _notesAt
+      ..clear()
+      ..addAll(_followInts(spec['notesAt']));
+    _historyAt
+      ..clear()
+      ..addAll(_followInts(spec['historyAt']));
+    _openCollated = spec['openCollated'] == true;
+    destCount = (spec['destCount'] as num?)?.toInt() ?? destCount;
+    destIndex = (spec['destIndex'] as num?)?.toInt() ?? destIndex;
+    List<Map<String, dynamic>> rows(Object? raw) => <Map<String, dynamic>>[
+          for (final item in (raw as List?) ?? const <dynamic>[])
+            if (_followRevive(item) is Map)
+              Map<String, dynamic>.from(_followRevive(item) as Map),
+        ];
+    _nodeBodies
+      ..clear()
+      ..addAll(rows(spec['nodeBodies']));
+    _nodeHistoryRows
+      ..clear()
+      ..addAll(rows(spec['nodeHistory']));
+    _nodeNoteRows
+      ..clear()
+      ..addAll(rows(spec['nodeNotes']));
+  }
+
+  void adoptCreditFollow(Map<String, dynamic> spec) {
+    installCreditFollow(spec);
+  }
+
+  /// Balance poll or full credit sync. HTTP and note scan run in [Isolate.run].
+  /// This isolate only copies the worker's collated book back.
+  Future<double> followOffUi({
+    required String restFrame,
+    String? paymentCode,
+    required bool full,
+  }) async {
+    final spec = jsonEncode(exportCreditFollow(
+      restFrame: restFrame,
+      paymentCode: paymentCode,
+      full: full,
+    ));
+    final result = await Isolate.run(() => creditFollowWorker(spec));
+    debugCreditFollowStamp = result['stamp']?.toString() ?? '';
+    debugCreditFollowKind = result['kind']?.toString() ?? '';
+    debugCreditFollowKinds.add(debugCreditFollowKind);
+    debugCreditFollowStamps.add(debugCreditFollowStamp);
+    debugCreditFollowRuns += 1;
+    adoptCreditFollow(result);
+    final opened = result['opened'];
+    return opened is num ? opened.toDouble() : spendableOwned(restFrame, paymentCode: paymentCode);
   }
 
   /// Pull Continuum for this wallet's own money dests.

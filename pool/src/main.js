@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createPool, stratumDriftShouldRefuse } from './pool.js';
+import { createPool, stratumDriftShouldRefuse, configuredFeeIdentity, stratumListenPlan } from './pool.js';
 import { isShearAddress } from '../../crypto/address.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { attachPoolIpc, parseIpcAddr, P2P_IPC_PORT } from '../../node/src/p2p_ipc.js';
@@ -40,6 +40,30 @@ if (!boot.signed) {
 }
 const stratumBind = process.env.SHEAR_STRATUM_BIND || '127.0.0.1';
 const requireLoginAuth = String(process.env.SHEAR_STRATUM_AUTH || '') === '1';
+const feePin = configuredFeeIdentity();
+if (!feePin.ok) {
+  console.error(JSON.stringify({
+    ok: false,
+    event: 'fee_dest_mismatch',
+    reason: feePin.reason,
+  }));
+  process.exit(1);
+}
+const stratumPlan = stratumListenPlan({
+  bind: stratumBind,
+  hasTls: !!(process.env.SHEAR_STRATUM_TLS_CERT && process.env.SHEAR_STRATUM_TLS_KEY),
+  requireTls: String(process.env.SHEAR_STRATUM_REQUIRE_TLS || '') === '1',
+  labCleartext: String(process.env.SHEAR_STRATUM_LAB_CLEARTEXT || '') === '1',
+});
+if (!stratumPlan.ok) {
+  console.error(JSON.stringify({
+    ok: false,
+    event: 'stratum_listen_refuse',
+    reason: stratumPlan.reason,
+    stratumBind,
+  }));
+  process.exit(1);
+}
 if (stratumDriftShouldRefuse({ bind: stratumBind, requireLoginAuth })) {
   console.error(JSON.stringify({
     ok: false,

@@ -1,115 +1,122 @@
-# MacBook handoff — Continuum 0.66 and Shear Sentinel v16 (Apple only)
+# MacBook handoff — Continuum 0.67 and Shear Sentinel v16 (Apple only)
 
-**You cut two Apple files and upload only those two.** Windows, Android, Linux, Arch, Fedora, and OpenSUSE wallet and node zips for this cut are packed on the other hosts onto tags `0.66` and `v16`. Do not rebuild them here and do not pass `--clobber`.
+**You cut two Apple files and upload only those two.** Do not pass `--clobber`. Do not rebuild the Windows, Android, Linux, Arch, Fedora, or OpenSUSE packs on this Mac.
 
 | Product | File | GitHub tag | Release name |
 |---|---|---|---|
-| Continuum 0.66 | `shear-wallet-0.66-macos.dmg` | `0.66` | Continuum 0.66 |
+| Continuum 0.67 | `shear-wallet-0.67-macos.dmg` | `0.67` | Continuum 0.67 |
 | Shear Sentinel v16 | `shear-node-v16-macos.zip` | `v16` | Shear Sentinel v16 |
 
 **Repo:** https://github.com/rgsneddon/shear-testnet
 **This file:** https://github.com/rgsneddon/shear-testnet/blob/main/MACBOOK-HANDOFF.md
-**Node steps:** https://github.com/rgsneddon/shear-testnet/blob/main/NODE-MACBOOK-HANDOFF.md
-**Branch:** `main`
-**Book:** `shear-testnet-v10`. Shared datadir `~/.shear/testnet-v10`. Windows `%APPDATA%\Shear\testnet-v10` (Roaming). Do not spawn a second node if one is already on 18332.
+**Node steps (same cut):** https://github.com/rgsneddon/shear-testnet/blob/main/NODE-MACBOOK-HANDOFF.md
+**Branch:** `main` once this cut is merged. Until then, the branch that contains `PRODUCT_VERSION = '16.0'` and `kWalletVersion = '0.67'`.
+**Book:** `shear-testnet-v10`. Datadir `~/.shear/testnet-v10`. One process at a time on :30303 / :18332.
 
-**Previous tag `v15` stays.** Do not upload a v16 zip onto `v15`.
+**Node pin is Shear Sentinel v16 (product 16.0).** Do not pass `--clobber`. Do not upload this zip onto `v15`. The GitHub release is not published yet.
 
-**Previous tag `0.65` stays.** Do not upload a 0.66 file onto `0.65`.
+**Previous tag `0.66` stays.** Do not move tag `0.66`. Do not upload a 0.67 file onto `0.66` or `0.65`.
 
-**Do not move:** `0.52`, `0.53`, `0.54`, `0.55`, `0.55.1`, `0.55.2`, `0.56`, `0.57`, `0.58`, `0.59`, `0.60`, `0.61`, `0.62`, `0.63`, `0.64`, `0.65`, `v6`, `v7`, `v8`, `v9`, `v10`, `v11`, `v12`, `v13`, `v14`, `v15`. Do not move tag `v7`, tag `v9`, tag `v12`, tag `v14`, tag `v15`, or tag `0.65`.
-**Do not create** those old tags. If tag `v16` or tag `0.66` is missing, create only that new tag.
-**Do not build here:** Windows zip, Android apk, Linux zip, Arch zip, Fedora zip, OpenSUSE zip.
-**Do not restyle the live site.** Download links on shear.digital pin Continuum **0.66**, Shear Sentinel v16, and ShearK **2.6**. Do not edit shear.digital from this machine.
-**Miner:** ShearK **2.6** stays on https://github.com/rgsneddon/ShearK/releases/tag/2.6. Do not cut a new miner from this handoff. Do not put ShearK inside the disk image.
+**Do not move:** `0.52` through `0.66`, `v6` through `v15`. Tags `0.60` and `v10` stay.
 
-Developer ID: `Russell Sneddon (SFCBP95595)`. An unsigned disk image is Gatekeeper-blocked. Do not ship a zip of the `.app`. `pack_macos.sh` uses `ditto` so the notarization ticket survives. Do not replace that with `cp -R`.
+**Do not build here:** Windows zip, Android apk, Linux zip, Arch zip, Fedora zip, OpenSUSE zip, ShearK.
 
----
+**Miner:** ShearK **2.7** is the TLS-aware pin (`stratum+ssl://pool.shear.digital:443`). Localhost solo stays `stratum+tcp://127.0.0.1:1111`. Do not label a 2.6 rebuild as TLS-done. Do not put ShearK inside the disk image.
 
-## Pins that must match `main`
-
-```
-wallet/lib/main.dart:     kWalletVersion = '0.66'
-wallet/lib/shear_cli.dart: kCliVersion = '0.66'
-wallet/pubspec.yaml:      version: 0.66.0+91
-crypto/asert.js:          PRODUCT_VERSION = '16.0'
-crypto/asert.js:          MAGIC_TESTNET_V10 = 'shear-testnet-v10'
-```
-
-`PRODUCT_VERSION` is the node (Shear Sentinel v16). Continuum is `0.66`. Do not set `PRODUCT_VERSION` to `0.65` or to `0.64` or to `0.62` or to `12.0` or to `11.0` or `0.61`.
-
-`consensusFingerprint()` does **not** contain `0.52`, `0.53`, `0.54`, `0.55`, `0.55.1`, `0.55.2`, `0.56`, `0.57`, `0.58`, `0.59`, `0.60`, `0.61`, `0.62`, `0.64`, `0.65`, `0.66`, `7.0`, `8.0`, `9.0`, `10.0`, `11.0`, `12.0`, `13.0`, `14.0`, `15.0`, `16.0`, or `PRODUCT_VERSION`. Do not edit the fingerprint array.
-
-`wallet/pack_macos.sh` names the image from `kWalletVersion`, so a stock run writes `shear-wallet-0.66-macos.dmg`. Set `BUILD_NUMBER=91` to match pubspec `0.66.0+91`. The disk image is the GUI. It does not contain `node/src` and it does not contain ShearK.
-
-`node/pack/pack_macos.sh` refuses a pin other than `16.0` and writes `dist/shear-node-v16-macos.zip`. Run `npm ci` first. The zip must contain `pool/src/wallet_api.js`, `contracts/Reserve.json`, `node_modules`, and a Mach-O `crypto/native/shearhash.node`.
-
-Empty book does **not** auto-pull `boot.shear.digital`. Users who want a snapshot import it by hand.
+Developer ID: `Russell Sneddon (SFCBP95595)`. An unsigned disk image is Gatekeeper-blocked. Do not ship a zip of the `.app`. `wallet/pack_macos.sh` uses `ditto` so the notarization ticket survives. Do not replace that with `cp -R`.
 
 ---
 
-## Pull
+## Who packs the other files
+
+This Mac does not. Linux is a VPS cut, not a Windows cut and not a Mac cut. The Windows build host has Flutter and no Xcode, and WSL has no distribution, so it cannot cut the `.dmg` or a Mach-O node zip either.
+
+| Host | What it packs | How |
+|---|---|---|
+| Windows PC | `shear-node-v16-windows.zip`, `ShearK-Miner-2.7-windows.zip` (OpenSSL DLLs beside the exe), `shear-wallet-0.67-windows.zip`, fat `shear-wallet-0.67-android.apk` | `python node/pack/zip_node.py windows`, ShearK `zip_windows.py`, `flutter build windows --release` then `python wallet/pack/zip_windows.py`, `wallet/pack/pack_android.sh` |
+| Linux VPS | `shear-wallet-0.67-linux.zip` and `shear-wallet-0.67-archlinux.zip` (Arch zip is the PKGBUILD plus that Linux bundle, which is what `pack_linux_de.sh` writes). Node `shear-node-v16-linux.zip` after `make -C crypto/native` on that host. | Side directory. Do not overwrite the live `/opt/shear-v4` tree and do not restart `shear-pool` or `shear-p2p` from this handoff. `SHEAR_WALLET` must point at the side tree. `pack_linux_de.sh` reads pubspec `+N` and refuses build number 49. |
+| Fedora host | `shear-node-v16-fedora.zip` and a Fedora wallet zip only when `shearhash.node` / the GUI are built on Fedora | Do not rename an Ubuntu zip to fedora. |
+| OpenSUSE host | `shear-node-v16-opensuse.zip` only when the native addon is built on OpenSUSE | Do not rename another distro's zip. |
+
+`node/pack/zip_node.py` refuses to ship a Windows `.node` inside a Linux zip, and it refuses a Linux `.node` inside the Windows zip. Native addons in the macOS zip must be Mach-O built on this Mac.
+
+The Android release keystore is not in git. `wallet/android/key.properties` is gitignored. One Continuum release cert is reused for every later publish. Debug-signed 0.65/0.66 needs one export, uninstall, then 0.67. Later upgrades stay in place. No login version phone-home.
+
+---
+
+## Pins that must match this cut
+
+```
+wallet/lib/main.dart:      kWalletVersion = '0.67'
+wallet/lib/shear_cli.dart: kCliVersion = '0.67'
+wallet/pubspec.yaml:       version: 0.67.0+92
+crypto/asert.js:           PRODUCT_VERSION = '16.0'
+crypto/asert.js:           MAGIC_TESTNET_V10 = 'shear-testnet-v10'
+```
+
+`PRODUCT_VERSION` is Shear Sentinel v16. It is **16.0**. Continuum is `0.67`. `consensusFingerprint()` must not contain `17.0`, `16.0`, `0.67`, `0.66`, or `PRODUCT_VERSION`.
+
+`node/pack/pack_macos.sh` refuses anything other than `16.0`. The zip it checks is `dist/shear-node-v16-macos.zip`. It must contain `pool/src/wallet_api.js`, `pool/src/posture.js`, `contracts/Reserve.json`, and a Mach-O `crypto/native/shearhash.node`.
+
+`wallet/pack_macos.sh` reads the pubspec `+N` (92). It refuses build number 49. The disk image is the GUI. It does not contain the node tree and it does not contain ShearK. Empty book does not auto-pull a bootstrap.
+
+---
+
+## 0. Pull
 
 ```bash
 git checkout main
 git pull
+grep "PRODUCT_VERSION" crypto/asert.js
+# must print: export const PRODUCT_VERSION = '16.0';
+grep MAGIC_TESTNET_V10 crypto/asert.js
+# must print: export const MAGIC_TESTNET_V10 = 'shear-testnet-v10';
 npm ci
 ```
 
----
-
-## Build Continuum 0.66
-
-```bash
-grep kWalletVersion wallet/lib/main.dart
-# must print: const kWalletVersion = '0.66';
-
-cd wallet
-BUILD_NUMBER=91 SYNC_POOL_WALLET=0 PACK_REBUILD=1 bash pack_macos.sh
-```
-
-Writes `wallet/dist/shear-wallet-0.66-macos.dmg`.
-
-If tag `0.66` does not exist, create only that tag. Do not move tag `0.65`.
-
-```bash
-gh release upload 0.66 dist/shear-wallet-0.66-macos.dmg --repo rgsneddon/shear-testnet
-```
-
-No `--clobber`. Do not attach non-Mac wallet files from this machine.
+Upload onto GitHub tag `v16` and tag `0.67`. The GitHub release is not published yet. Do not pass `--clobber`. Do not move tag `0.66`.
 
 ---
 
-## Build Shear Sentinel v16
+## 1. Shear Sentinel v16
 
 ```bash
-cd /path/to/shear-testnet
-grep "PRODUCT_VERSION" crypto/asert.js
-# must print: export const PRODUCT_VERSION = '16.0';
 sh node/pack/pack_macos.sh
-```
-
-Writes `dist/shear-node-v16-macos.zip`. The zip must contain `pool/src/wallet_api.js` and `contracts/Reserve.json` (RPC and Reserve pin at boot).
-
-If tag `v16` does not exist, create only that tag. Do not move tag `v7`. Do not move tag `v15`.
-
-```bash
-unzip -l dist/shear-node-v16-macos.zip | grep -E 'wallet_api.js|Reserve.json'
+unzip -l dist/shear-node-v16-macos.zip | grep -E 'wallet_api.js|posture.js|Reserve.json|shearhash.node'
 gh release upload v16 dist/shear-node-v16-macos.zip --repo rgsneddon/shear-testnet
 ```
 
-Native addons must be Darwin. No `--clobber`. Do not upload this zip onto tag `v7`, tag `v9`, tag `v10`, tag `v12`, tag `v14`, or tag `v15`.
+No `--clobber`. Native addons must be Darwin. Do not upload this zip onto tag `v15`. The release is not published yet.
+
+---
+
+## 2. Continuum 0.67
+
+```bash
+grep kWalletVersion wallet/lib/main.dart
+# must print: const kWalletVersion = '0.67';
+
+cd wallet
+SYNC_POOL_WALLET=0 PACK_REBUILD=1 bash pack_macos.sh
+```
+
+Writes `wallet/dist/shear-wallet-0.67-macos.dmg`.
+
+```bash
+gh release upload 0.67 dist/shear-wallet-0.67-macos.dmg --repo rgsneddon/shear-testnet
+```
+
+No `--clobber`. Do not attach Windows, Android, Linux, Arch, Fedora, or OpenSUSE files from this machine.
 
 ---
 
 ## Leave these alone
 
 - Reddit stays removed. Discord, Telegram, and X stay.
-- Spendable depth stays 9. `isSpendableHeight(100, 108)` is true. `isSpendableHeight(100, 105)` is false.
-- Hash bonus unit stays 1 nano. One share floor stays 256 units.
-- VPN tunnel stays out of the wallet UI.
+- Spendable depth stays 9. Hash bonus unit stays 1 nano.
 - Public pages stay SaaS dark.
-- Do not put a fleet IP address in this file or in a public page.
-- Do not bounce `shear-pool` from the Mac. Do not delete `chain.bin`.
-- Do not run `sync_pool_wallet.sh`. Set `SYNC_POOL_WALLET=0`.
+- Do not put a fleet IP address in this file.
+- Do not bounce `shear-pool`. Do not delete `chain.bin`. Do not restamp a tip stall.
+- `SYNC_POOL_WALLET=0`.
+- Do not rotate the live fee-payout ssa1 from this handoff. Russell pins that later.
+- Book stays `shear-testnet-v10`. A version bump alone does not wipe the wallet.

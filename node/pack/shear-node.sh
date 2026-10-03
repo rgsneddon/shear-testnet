@@ -2,6 +2,8 @@
 # Portable Shear node. Same entry as `node node/src/node.js`.
 set -e
 ROOT="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+# Fedora's node is a small binary that needs libnode.so beside it.
+export LD_LIBRARY_PATH="$ROOT/runtime${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 if [ -x "$ROOT/runtime/node" ] && "$ROOT/runtime/node" -v >/dev/null 2>&1; then
   NODEBIN="$ROOT/runtime/node"
 elif [ -x "$ROOT/runtime/node.exe" ]; then

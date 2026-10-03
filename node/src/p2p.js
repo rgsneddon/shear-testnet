@@ -65,8 +65,175 @@ export function getblockBatch() {
  * Keep equal to crypto/hash_offloop.js P2P_VERIFY_CAP.
  */
 export const P2P_VERIFY_CAP = 2;
-/** Full block encodes served per event-loop turn. The rest wait and still send. */
+/** Full block encodes served per event-loop turn while caught up. The rest wait and still send. */
 export const GETBLOCK_SERVE_PER_TURN = 1;
+/** Serves per turn during IBD or a mid-chain catch-up. Stays inside 8–32. */
+export const GETBLOCK_SERVE_IBD = 16;
+/** Body misses before a peer is dropped from catch-up. */
+export const GETBLOCK_MISS_LIMIT = 3;
+/** How long a demoted peer stays out of best-ahead selection. */
+export const GETBLOCK_DEMOTE_MS = 30_000;
+
+export function getblockServeCap({ ibd = false, midChain = false, behind = false } = {}) {
+  if (ibd || midChain || behind) return GETBLOCK_SERVE_IBD;
+  return GETBLOCK_SERVE_PER_TURN;
+}
+
+/** Ignore a repeat getblock that is already queued or was just encoded for this socket. */
+export const GETBLOCK_SERVE_DEDUPE_MS = 3_000;
+export function shouldEnqueueGetblock({
+  queued = false,
+  servedAt = 0,
+  now = 0,
+  ttl = GETBLOCK_SERVE_DEDUPE_MS,
+} = {}) {
+  if (queued) return false;
+  const at = Number(servedAt) || 0;
+  if (at > 0 && Number(now) - at < ttl) return false;
+  return true;
+}
+
+/**
+ * A one-block tip retries quickly. An IBD body is a fat encode, so the same
+ * 250ms poll re-asks the tip node until its serve loop floods.
+ */
+export const GETBLOCK_WAIT_IBD_MS = 4_000;
+export function getblockWaitMs({ localHeight = 0, peerHeight = 0 } = {}) {
+  const gap = Number(peerHeight) - Number(localHeight);
+  if (Number.isFinite(gap) && gap > 1) return GETBLOCK_WAIT_IBD_MS;
+  return GETBLOCK_WAIT_MS;
+}
+
+export function tipIsRelay(msg) {
+  return !!(msg && (msg.relay === true || msg.relayed === true));
+}
+
+/**
+ * Record a tip advertisement.
+ * Relay/gossip updates peer-max fields only.
+ * A direct tip may record an at-or-behind book position and a probe
+ * advertisement. It does not raise the height or work catch-up uses.
+ */
+export function applyTipAdvertisement(rec, msg, { localHeight = 0, localHash = '' } = {}) {
+  const next = rec && typeof rec === 'object' ? rec : {};
+  const h = Number(msg?.height);
+  const hash = msg?.hash != null ? String(msg.hash).replace(/^0x/i, '').toLowerCase() : '';
+  const work = msg?.work != null && String(msg.work) !== '' ? String(msg.work) : '';
+  if (Number.isFinite(h)) next.gossipHeight = h;
+  if (hash) next.gossipHash = hash;
+  if (work) next.gossipWork = work;
+  const localH = Number(localHeight) || 0;
+  const local = String(localHash || '').replace(/^0x/i, '').toLowerCase();
+  const sameTip = !!(hash && local && hash === local);
+  if (tipIsRelay(msg)) {
+    next.sawRelay = true;
+    if (sameTip) {
+      next.hash = hash;
+      if (Number.isFinite(h)) next.height = h;
+    }
+    return next;
+  }
+  if (Number.isFinite(h)) next.adHeight = h;
+  if (hash) next.adHash = hash;
+  if (work) next.adWork = work;
+  const heightAhead = Number.isFinite(h) && h > localH;
+  if (!heightAhead) {
+    if (hash) next.hash = hash;
+    if (Number.isFinite(h)) next.height = h;
+    if (work) next.work = work;
+  }
+  return next;
+}
+
+/** A served body, or headers-plus-getblock that applied, makes this peer catch-up eligible. */
+export function markSyncEligible(rec, { height, hash, work, reason = 'body' } = {}) {
+  if (!rec || typeof rec !== 'object') return rec;
+  if (Number.isFinite(Number(height))) rec.height = Number(height);
+  if (hash) rec.hash = String(hash).replace(/^0x/i, '').toLowerCase();
+  if (work != null && String(work) !== '') rec.work = String(work);
+  rec.syncEligible = true;
+  rec.eligibleReason = reason;
+  if (reason === 'body') rec.bodiesServed = (Number(rec.bodiesServed) || 0) + 1;
+  rec.getblockMiss = 0;
+  rec.demoteUntil = 0;
+  return rec;
+}
+
+export function peerDemoted(rec, now = Date.now()) {
+  return !!(rec && Number(rec.demoteUntil) > Number(now));
+}
+
+/**
+ * Height and work a catch-up view may use.
+ * Only a sync-eligible peer (served body, or headers plus a body that applied)
+ * has these. A tip advertisement stays on adHeight / gossipHeight.
+ */
+export function catchupFields(rec, now = Date.now()) {
+  if (!rec || peerDemoted(rec, now) || rec.syncEligible !== true) {
+    return { height: null, work: null, hash: '' };
+  }
+  return {
+    height: Number.isFinite(Number(rec.height)) ? Number(rec.height) : null,
+    work: rec.work ?? null,
+    hash: String(rec.hash || ''),
+  };
+}
+
+export function noteGetblockMiss(rec, now = Date.now()) {
+  if (!rec || typeof rec !== 'object') return { demoted: false, misses: 0, demoteUntil: 0 };
+  rec.getblockMiss = (Number(rec.getblockMiss) || 0) + 1;
+  let demoted = false;
+  if (rec.getblockMiss >= GETBLOCK_MISS_LIMIT) {
+    demoted = true;
+    rec.demoteUntil = Number(now) + GETBLOCK_DEMOTE_MS;
+    rec.syncEligible = false;
+    rec.height = 0;
+    rec.work = null;
+    rec.hash = null;
+  }
+  return { demoted, misses: rec.getblockMiss, demoteUntil: Number(rec.demoteUntil) || 0 };
+}
+
+/**
+ * next:0 from a shorter or non-eligible peer must not drop a local+1 want
+ * another peer already holds.
+ */
+export function shouldClearWantOnNextZero({
+  fromEligible = false,
+  fromShorter = true,
+  otherWantsLocalPlusOne = false,
+} = {}) {
+  if (otherWantsLocalPlusOne && (!fromEligible || fromShorter)) return false;
+  return true;
+}
+
+export function syncSnapshot(peers, now = Date.now()) {
+  let peerMaxHeight = null;
+  let peerHash = '';
+  let syncPeerHeight = null;
+  let eligible = 0;
+  const list = peers && typeof peers.values === 'function' ? peers.values() : [];
+  for (const rec of list) {
+    const g = Number(rec?.gossipHeight);
+    const h = Number.isFinite(g) ? g : Number(rec?.height);
+    const hash = String(rec?.gossipHash || rec?.hash || '').replace(/^0x/i, '').toLowerCase();
+    if (Number.isFinite(h) && (peerMaxHeight == null || h > peerMaxHeight || (h === peerMaxHeight && hash && (!peerHash || hash < peerHash)))) {
+      peerMaxHeight = h;
+      peerHash = hash;
+    }
+    if (rec?.syncEligible === true && !peerDemoted(rec, now)) {
+      eligible += 1;
+      const sh = Number(rec.height);
+      if (Number.isFinite(sh) && (syncPeerHeight == null || sh > syncPeerHeight)) syncPeerHeight = sh;
+    }
+  }
+  return {
+    peerMaxHeight,
+    peerHash,
+    syncPeerHeight,
+    syncEligiblePeers: eligible,
+  };
+}
 
 let verifyActive = 0;
 let verifyMaxActive = 0;
@@ -392,6 +559,8 @@ export function nextSequentialHeader({
 
 /** Peer-advertised book height, used so pruned IBD is not verified as a live tip. */
 export function advertisedPeerTip(rec, fallback = 0) {
+  const g = Number(rec?.gossipHeight);
+  if (Number.isFinite(g) && g > 0) return g;
   const n = Number(rec?.height);
   if (Number.isFinite(n) && n > 0) return n;
   return Math.max(0, Number(fallback) || 0);
@@ -737,7 +906,9 @@ export function createP2p({
   const fluffTimers = new Map();
   const inflightBlocks = new Set();
   const getblockServeQ = [];
+  const recentGetblockServe = new Map();
   const blockWaiters = new Map();
+  const getblockMissLog = new Set();
   const gossipedTips = new Set();
   const gossipedTipOrder = [];
   let getblockServeTimer = null;
@@ -791,7 +962,7 @@ export function createP2p({
   }
 
   function peerTipAhead(rec) {
-    if (!rec) return false;
+    if (!rec || peerDemoted(rec)) return false;
     return peerTipAheadOf({
       localHeight: Number(store.tip()?.height || 0),
       localWork: localWorkHex(),
@@ -802,17 +973,50 @@ export function createP2p({
     });
   }
 
-  function bestAheadSock() {
+  function peerProbeAhead(rec) {
+    if (!rec || peerDemoted(rec)) return false;
+    if (rec.adHeight == null && (rec.adWork == null || rec.adWork === '') && !rec.adHash) return false;
+    return peerTipAheadOf({
+      localHeight: Number(store.tip()?.height || 0),
+      localWork: localWorkHex(),
+      localHash: localTipHash(),
+      peerHeight: rec.adHeight,
+      peerWork: rec.adWork,
+      peerHash: rec.adHash || '',
+    });
+  }
+
+  function bestOf(pred, view) {
     let bestSock = null;
     let bestRec = null;
     for (const [sock, rec] of peers) {
-      if (!peerTipAhead(rec)) continue;
-      if (!bestRec || catchupPeerBetter(rec, bestRec)) {
+      if (!pred(rec)) continue;
+      const row = view(rec);
+      if (!bestRec || catchupPeerBetter(row, view(bestRec))
+        || (!catchupPeerBetter(view(bestRec), row)
+          && (Number(rec.bodiesServed) || 0) > (Number(bestRec.bodiesServed) || 0))) {
         bestSock = sock;
         bestRec = rec;
       }
     }
     return bestSock;
+  }
+
+  function bestAheadSock() {
+    return bestOf(peerTipAhead, (rec) => rec);
+  }
+
+  function bestProbeSock() {
+    if (bestAheadSock()) return null;
+    return bestOf(peerProbeAhead, (rec) => ({
+      height: rec.adHeight,
+      work: rec.adWork,
+      hash: rec.adHash,
+    }));
+  }
+
+  function bestCatchupSock() {
+    return bestAheadSock() || bestProbeSock();
   }
 
   function alreadyLinked(host, p) {
@@ -855,9 +1059,10 @@ export function createP2p({
   function notePeerTip(sock, msg) {
     const rec = peers.get(sock) || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
     rec.remote = peerRemoteKey(sock) || rec.remote;
-    if (msg && msg.hash != null) rec.hash = wireHash(msg.hash) || String(msg.hash);
-    if (msg && Number.isFinite(Number(msg.height))) rec.height = Number(msg.height);
-    if (msg && msg.work != null && String(msg.work) !== '') rec.work = String(msg.work);
+    applyTipAdvertisement(rec, msg, {
+      localHeight: Number(store.tip()?.height || 0),
+      localHash: localTipHash(),
+    });
     peers.set(sock, rec);
   }
 
@@ -957,14 +1162,19 @@ export function createP2p({
     const rec = peers.get(sock);
     if (!rec || rec.syncing) return;
     if (rec.softHoldUntil && Date.now() < rec.softHoldUntil) return;
-    if (!peerTipAhead(rec)) return;
-    if (bestAheadSock() !== sock) return;
+    if (peerDemoted(rec)) return;
+    const eligible = peerTipAhead(rec);
+    const probe = !eligible && peerProbeAhead(rec);
+    if (!eligible && !probe) return;
+    if (eligible) {
+      if (bestAheadSock() !== sock) return;
+    } else if (bestCatchupSock() !== sock) return;
     rec.syncing = true;
     send(sock, {
       type: 'getheaders',
       magic,
       locator: locators(),
-      stopHash: String(rec.hash || ''),
+      stopHash: String(rec.adHash || rec.hash || ''),
     });
   }
 
@@ -974,8 +1184,8 @@ export function createP2p({
     catchupScheduled = true;
     setImmediate(() => {
       catchupScheduled = false;
-      const best = bestAheadSock();
-      if (best) handoffWants(best);
+      const best = bestCatchupSock();
+      if (best && bestAheadSock()) handoffWants(bestAheadSock());
       for (const [sock, rec] of peers) {
         if (sock === best) continue;
         if (rec?.syncing && !(rec.pending && rec.pending.size)) rec.syncing = false;
@@ -988,7 +1198,8 @@ export function createP2p({
     const rec = peers.get(sock);
     if (!rec || rec.syncing) return;
     if (rec.softHoldUntil && Date.now() < rec.softHoldUntil) return;
-    if (!peerTipAhead(rec)) return;
+    if (peerDemoted(rec)) return;
+    if (!peerTipAhead(rec) && !peerProbeAhead(rec)) return;
     scheduleCatchup();
   }
 
@@ -1041,6 +1252,7 @@ export function createP2p({
     broadcast({
       type: 'tip',
       magic,
+      relay: true,
       height: h,
       hash,
       work: msg?.work != null && String(msg.work) !== '' ? String(msg.work) : '0x0',
@@ -1083,8 +1295,9 @@ export function createP2p({
   function pullOneBlock(sock, msg) {
     const rec = peers.get(sock);
     if (!rec) return false;
-    const best = bestAheadSock();
+    const best = bestCatchupSock();
     if (best && best !== sock) return false;
+    if (tipIsRelay(msg) && !peerTipAhead(rec)) return false;
     const hash = wireHash(msg?.hash);
     const peerH = Number(msg?.height);
     const localH = Number(store.tip()?.height || 0);
@@ -1156,17 +1369,57 @@ export function createP2p({
     if (typeof tipNudgeTimer.unref === 'function') tipNudgeTimer.unref();
   }
 
+  /**
+   * A want left over after this node has caught every catch-up peer keeps
+   * IBD true. Nobody ahead means that hash will not be fetched. Drop it.
+   * A peer that is still ahead keeps its queue; this does not run then.
+   */
+  function releaseIdleCatchup() {
+    if (bestCatchupSock()) return;
+    for (const rec of peers.values()) {
+      if (rec?.verifying && rec.verifying.size) continue;
+      const want = Array.isArray(rec?.want) ? rec.want : [];
+      const pending = rec?.pending instanceof Set ? [...rec.pending] : [];
+      const retry = Array.isArray(rec?.retryPrev) ? rec.retryPrev : [];
+      const leftover = [...want, ...pending, ...retry].filter(Boolean);
+      if (!leftover.length && !rec?.syncing) continue;
+      for (const h of leftover) inflightBlocks.delete(String(h).toLowerCase());
+      rec.want = [];
+      rec.wantHeight = 0;
+      rec.retryPrev = [];
+      rec.pending = new Set();
+      rec.pendingAt = 0;
+      rec.syncing = false;
+    }
+  }
+
   function pumpGetblocks(sock) {
     const rec = peers.get(sock);
     if (!rec) return;
-    const best = bestAheadSock();
+    if (peerDemoted(rec)) {
+      // A tip advertisement is not a block inventory. getblock follows a
+      // body-proven peer only; a probe is asked for headers.
+      const next = bestAheadSock();
+      if (next && next !== sock) {
+        handoffWants(next);
+        pumpGetblocks(next);
+      } else {
+        const probe = bestProbeSock();
+        if (probe && probe !== sock) beginHeaders(probe);
+      }
+      return;
+    }
+    const eligible = bestAheadSock();
+    const best = eligible || bestProbeSock();
     if (best && best !== sock) {
-      handoffWants(best);
+      // Missed-hash handoff is body-proven only. A taller tip ad keeps its
+      // own header ask; it does not inherit this sock's getblock queue.
+      if (eligible) handoffWants(eligible);
       pumpGetblocks(best);
       return;
     }
     if (!best) {
-      if (!(rec.pending && rec.pending.size)) rec.syncing = false;
+      releaseIdleCatchup();
       return;
     }
     if (!Array.isArray(rec.want)) rec.want = [];
@@ -1175,9 +1428,13 @@ export function createP2p({
     drainRetryPrev(rec);
     const have = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
     while (rec.pending.size < getblockBatch() && rec.want.length) {
-      const hash = rec.want.shift();
-      if (!hash || have.has(hash) || failActive(rec, hash) || rec.pending.has(hash)) continue;
-      if (rec.verifying?.has(hash) || inflightBlocks.has(hash)) continue;
+      const hash = rec.want[0];
+      if (!hash || have.has(hash) || failActive(rec, hash) || rec.pending.has(hash)) {
+        rec.want.shift();
+        continue;
+      }
+      if (rec.verifying?.has(hash) || inflightBlocks.has(hash)) break;
+      rec.want.shift();
       rec.pending.add(hash);
       inflightBlocks.add(hash);
       rec.pendingAt = Date.now();
@@ -1186,6 +1443,7 @@ export function createP2p({
     }
     if (rec.pending.size) return;
     if (rec.verifying && rec.verifying.size) return;
+    if (rec.want.length && inflightBlocks.has(String(rec.want[0]).toLowerCase())) return;
     rec.syncing = false;
     rec.pending = null;
     requestHeaders(sock);
@@ -1194,11 +1452,25 @@ export function createP2p({
   function flushGetblockServe() {
     getblockServeTimer = null;
     let n = 0;
-    while (n < GETBLOCK_SERVE_PER_TURN && getblockServeQ.length) {
+    const localH = Number(store.tip()?.height || 0);
+    let midChain = false;
+    if (localH > 0) {
+      for (const rec of peers.values()) {
+        if (peerTipAhead(rec) || peerProbeAhead(rec)) { midChain = true; break; }
+      }
+    }
+    let behind = false;
+    for (const rec of peers.values()) {
+      const ownH = Number(rec?.height);
+      if (Number.isFinite(ownH) && ownH > 0 && ownH < localH) { behind = true; break; }
+    }
+    const cap = getblockServeCap({ ibd: ibdBusy(), midChain, behind });
+    while (n < cap && getblockServeQ.length) {
       const job = getblockServeQ.shift();
       n += 1;
       if (!job?.sock || job.sock.destroyed) continue;
       send(job.sock, { type: 'block', magic, block: encodeWireBlock(job.block) });
+      if (job.key) recentGetblockServe.set(job.key, Date.now());
       getblockServeSent += 1;
     }
     if (n > 0) {
@@ -1207,7 +1479,7 @@ export function createP2p({
           event: 'p2p_getblock_serve',
           n,
           left: getblockServeQ.length,
-          cap: GETBLOCK_SERVE_PER_TURN,
+          cap,
         }));
       } catch { /* ignore */ }
     }
@@ -1221,11 +1493,22 @@ export function createP2p({
   }
 
   function enqueueGetblockServe(sock, block) {
-    getblockServeQ.push({ sock, block });
+    const hash = hexHash(block?.hash);
+    const key = `${peers.get(sock)?.id || 0}:${hash}`;
+    const now = Date.now();
+    const queued = getblockServeQ.some((job) => job.key === key);
+    if (!shouldEnqueueGetblock({ queued, servedAt: recentGetblockServe.get(key) || 0, now })) return false;
+    getblockServeQ.push({ sock, block, key });
     if (getblockServeQ.length > getblockServeMaxBacklog) {
       getblockServeMaxBacklog = getblockServeQ.length;
     }
+    if (recentGetblockServe.size > 4096) {
+      for (const [k, at] of recentGetblockServe) {
+        if (now - at >= GETBLOCK_SERVE_DEDUPE_MS) recentGetblockServe.delete(k);
+      }
+    }
     scheduleGetblockServe();
+    return true;
   }
 
   function directCensus() {
@@ -1428,8 +1711,30 @@ export function createP2p({
         failed: blocked,
         pending: rec.pending,
       }) : null);
-      rec.want = next ? [next.hash] : [];
-      if (!rec.want.length && !(rec.pending && rec.pending.size)) {
+      const localPlus = localH + 1;
+      let otherWants = false;
+      for (const [otherSock, other] of peers) {
+        if (otherSock === sock) continue;
+        const queued = (Array.isArray(other.want) && other.want.length)
+          || (other.pending instanceof Set && other.pending.size);
+        if (Number(other?.wantHeight) === localPlus && queued) otherWants = true;
+      }
+      const fromShorter = Number(rec.adHeight ?? rec.height ?? 0) < localPlus;
+      const clearWant = !next && Number(msg.next) === 0
+        ? shouldClearWantOnNextZero({
+          fromEligible: rec.syncEligible === true && !peerDemoted(rec),
+          fromShorter,
+          otherWantsLocalPlusOne: otherWants,
+        })
+        : true;
+      if (next) {
+        rec.want = [next.hash];
+        rec.wantHeight = next.height;
+      } else if (clearWant) {
+        rec.want = [];
+        rec.wantHeight = 0;
+      }
+      if (!(rec.want || []).length && !(rec.pending && rec.pending.size)) {
         if (rec.verifying && rec.verifying.size) return;
         rec.syncing = false;
         rec.pending = null;
@@ -1457,15 +1762,70 @@ export function createP2p({
       const want = wireHash(msg.hash);
       const idx = want ? headerIndexByHash(store.blocks, want) : -1;
       const b = idx >= 0 ? store.blocks[idx] : null;
-      try {
-        console.error(JSON.stringify({
-          event: 'p2p_getblock',
-          found: Boolean(b),
-          height: b?.height || 0,
-        }));
-      } catch { /* ignore */ }
-      if (b) enqueueGetblockServe(sock, b);
-      else if (want) noteBlockWaiter(want, sock);
+      if (b) {
+        try {
+          console.error(JSON.stringify({
+            event: 'p2p_getblock',
+            found: true,
+            height: b.height || 0,
+          }));
+        } catch { /* ignore */ }
+        enqueueGetblockServe(sock, b);
+      } else if (want) {
+        send(sock, { type: 'getblock_nak', magic, hash: want });
+        noteBlockWaiter(want, sock);
+      }
+      return;
+    }
+    if (msg.type === 'getblock_nak' || msg.type === 'block_not_found') {
+      const missHash = wireHash(msg.hash);
+      const recMiss = peers.get(sock);
+      if (missHash) inflightBlocks.delete(missHash);
+      if (recMiss) {
+        recMiss.pending?.delete(missHash);
+        if (!recMiss.pending || recMiss.pending.size === 0) recMiss.pendingAt = 0;
+        const logKey = `${recMiss.id || recMiss.remote || ''}:${missHash}`;
+        if (!getblockMissLog.has(logKey)) {
+          getblockMissLog.add(logKey);
+          try {
+            console.error(JSON.stringify({
+              event: 'p2p_getblock_miss',
+              hash: missHash,
+              peer: recMiss.remote || '',
+            }));
+          } catch { /* ignore */ }
+        }
+        if (!Array.isArray(recMiss.want)) recMiss.want = [];
+        if (missHash && !recMiss.want.includes(missHash)) recMiss.want.unshift(missHash);
+        const missed = noteGetblockMiss(recMiss, Date.now());
+        recMiss.syncing = false;
+        if (missed.demoted) {
+          const nextSock = bestAheadSock();
+          if (nextSock && nextSock !== sock) {
+            const dest = peers.get(nextSock);
+            if (dest) {
+              if (!Array.isArray(dest.want)) dest.want = [];
+              if (!dest.pending) dest.pending = new Set();
+              for (const h of [...(recMiss.want || [])]) {
+                inflightBlocks.delete(String(h).toLowerCase());
+                if (!dest.want.includes(h) && !dest.pending.has(h)) dest.want.push(h);
+              }
+              recMiss.want = [];
+            }
+            handoffWants(nextSock);
+            pumpGetblocks(nextSock);
+            return;
+          }
+          // The next taller tip ad may be asked for headers. It has not
+          // served a body, so the missed hash is not a getblock to that sock.
+          const probe = bestProbeSock();
+          if (probe && probe !== sock) beginHeaders(probe);
+          return;
+        }
+        const ahead = bestAheadSock();
+        if (ahead && ahead !== sock) pumpGetblocks(ahead);
+        else pumpGetblocks(sock);
+      }
       return;
     }
     if (msg.type === 'block' || msg.type === 'blocks') {
@@ -1583,6 +1943,17 @@ export function createP2p({
             if (rec.remote) peerBans.set(rec.remote, until);
             try { sock.destroy(); } catch { /* ignore */ }
           } else if (got?.ok) {
+            const tipNow = store.tip();
+            const tipH = Number(tipNow?.height || last?.height || 0);
+            const servedHash = last?.hash ? hexHash(last.hash) : '';
+            // Catch-up height is the applied tip or the served body. The tip
+            // advertisement stays on adHeight / gossipHeight for peerMax.
+            markSyncEligible(rec, {
+              height: tipH,
+              hash: localTipHash() || servedHash,
+              work: localWorkHex(),
+              reason: 'body',
+            });
             try {
               console.error(JSON.stringify({
                 event: 'p2p_ingest',
@@ -1703,15 +2074,37 @@ export function createP2p({
       const now = Date.now();
       for (const [sock, rec] of peers) {
         if (!rec?.syncing || !rec.pending || !rec.pending.size || !rec.pendingAt) continue;
-        if (now - rec.pendingAt < GETBLOCK_WAIT_MS) continue;
+        const peerH = Number(rec.adHeight ?? rec.height ?? rec.gossipHeight ?? 0);
+        const waitMs = getblockWaitMs({
+          localHeight: Number(store.tip()?.height || 0),
+          peerHeight: peerH,
+        });
+        if (now - rec.pendingAt < waitMs) continue;
         const stuck = [...rec.pending];
         for (const h of stuck) inflightBlocks.delete(h);
         rec.pending = new Set();
         rec.pendingAt = 0;
         rec.want = [...stuck, ...(rec.want || [])];
         rec.syncing = false;
-        pumpGetblocks(sock);
+        const nextSock = bestAheadSock();
+        if (nextSock && nextSock !== sock) {
+          handoffWants(nextSock);
+          pumpGetblocks(nextSock);
+        } else if (!peerDemoted(rec)) {
+          pumpGetblocks(sock);
+        } else {
+          const probe = bestProbeSock();
+          if (probe && probe !== sock) beginHeaders(probe);
+        }
       }
+      const ahead = bestAheadSock();
+      if (ahead) {
+        const live = peers.get(ahead);
+        const pendingN = live?.pending instanceof Set ? live.pending.size : 0;
+        const wantN = Array.isArray(live?.want) ? live.want.length : 0;
+        if (pendingN + wantN === 0) beginHeaders(ahead);
+      }
+      releaseIdleCatchup();
     }, PENDING_WATCH_MS);
     if (typeof pendingWatch.unref === 'function') pendingWatch.unref();
     return new Promise((resolve, reject) => {
@@ -1869,6 +2262,7 @@ export function createP2p({
     getblockServeBacklog: () => getblockServeQ.length,
     getblockServeSent: () => getblockServeSent,
     getblockServeMaxBacklog: () => getblockServeMaxBacklog,
+    syncSnapshot: () => syncSnapshot(peers),
     originInvSetSize: (id) => Number(originInvSize.get(String(id || '')) || 0),
     get port() { return server?.address()?.port ?? port; },
     get listening() { return Boolean(server?.listening); },

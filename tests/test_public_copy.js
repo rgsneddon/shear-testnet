@@ -52,10 +52,11 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /shear1/);
     assert.match(main, /never share/i);
     assert.match(main, /ADMITv2/);
-    assert.match(main, /Continuum 0\.66/);
+    assert.match(main, /Continuum 0\.67/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.match(main, /https:\/\/shear\.digital\/docs\//);
-    assert.match(main, /pool\.shear\.digital:1111/);
+    assert.match(main, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
+    assert.doesNotMatch(main, /pool\.shear\.digital:1111/);
     assert.doesNotMatch(main, /--bg: #eef3f8/);
     assert.doesNotMatch(main, /Owed toward/);
 
@@ -90,9 +91,14 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(paper, /hasher dest that produced proven work/);
 
     const readme = read('README.md');
-    assert.match(readme, /Wallet pin: \*\*0\.66\*\*/);
+    assert.match(readme, /Wallet pin: \*\*0\.67\*\*/);
     assert.match(readme, /Shear Sentinel v16/);
-    assert.match(readme, /releases\/tag\/v16/);
+    assert.match(readme, /\(product 16\.0\)/);
+    assert.match(readme, /The GitHub release is not published yet/);
+    assert.doesNotMatch(readme, /product 17\.0/);
+    assert.doesNotMatch(readme, /releases\/tag\/v17/);
+    assert.doesNotMatch(readme, /releases\/tag\/0\.67/);
+    assert.doesNotMatch(readme, /releases\/tag\/2\.7/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.55\*\*/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.41\*\*/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.40\*\*/);
@@ -100,14 +106,16 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.38\*\*/);
     assert.doesNotMatch(readme, /Wallet \*\*0\.38\*\* syncs/);
     const walletReadme = read('wallet/README.md');
-    assert.match(walletReadme, /releases\/tag\/0\.66/);
+    assert.match(walletReadme, /The 0\.67 GitHub release is not published yet/);
+    assert.doesNotMatch(walletReadme, /releases\/tag\/0\.67/);
+    assert.doesNotMatch(walletReadme, /releases\/tag\/v17/);
     assert.doesNotMatch(walletReadme, /releases\/tag\/0\.58/);
     assert.doesNotMatch(walletReadme, /releases\/tag\/0\.55(?!\.)/);
-    assert.match(walletReadme, /shear-wallet-0\.66-windows\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.66-linux\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.66-archlinux\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.66-fedora\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.66-android\.apk/);
+    assert.match(walletReadme, /shear-wallet-0\.67-windows\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.67-linux\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.67-archlinux\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.67-fedora\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.67-android\.apk/);
     assert.doesNotMatch(walletReadme, /shear-wallet-0\.58-/);
     assert.doesNotMatch(walletReadme, /shear-wallet-0\.55-/);
     assert.doesNotMatch(walletReadme, /shear-wallet-0\.40-/);
@@ -144,8 +152,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(joined, /ADMITv2/);
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
-    assert.match(main, /ShearK 2\.6/);
-    assert.match(main, /Continuum 0\.66/);
+    assert.match(main, /ShearK 2\.7/);
+    assert.match(main, /Continuum 0\.67/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.doesNotMatch(main, /Continuum 0\.53/);
     assert.doesNotMatch(main, /Continuum 0\.52/);
@@ -161,7 +169,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(main, /Continuum GUI <strong>0\.40<\/strong>/);
     assert.doesNotMatch(main, /Continuum GUI 0\.40/);
     const help = read('node/src/help.js');
-    assert.match(help, /Continuum 0\.66/);
+    assert.match(help, /Continuum 0\.67/);
     assert.doesNotMatch(help, /Continuum 0\.48/);
     assert.doesNotMatch(help, /Continuum 0\.40/);
     assert.doesNotMatch(main, /shear-wallet-0\.38-macos\.dmg/);
@@ -235,31 +243,35 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /Pin \*\*0\.41\*\*/);
   });
 
-  it('MacBook handoff is Apple-only Shear Sentinel v16 + Continuum 0.66; old underscore files are gone', () => {
+  it('MacBook handoff is Apple-only Shear Sentinel v16 + Continuum 0.67; old underscore files are gone', () => {
     assert.equal(fs.existsSync(path.join(root, 'MACBOOK_HANDOFF.md')), false);
     assert.equal(fs.existsSync(path.join(root, 'WINDOWS_HANDOFF.md')), false);
     const md = read('NODE-MACBOOK-HANDOFF.md');
     assert.match(md, /https:\/\/github\.com\/rgsneddon\/shear-testnet/);
     assert.match(md, /shear-node-v16-macos\.zip/);
-    assert.match(md, /shear-wallet-0\.66-macos\.dmg/);
+    assert.match(md, /shear-wallet-0\.67-macos\.dmg/);
     assert.match(md, /tag `v16`/);
-    assert.match(md, /Do not move tag `v15`/);
-    assert.match(md, /Do not move tag `v7`/);
+    assert.match(md, /Do not move tag `0\.66`/);
     assert.match(md, /0\.60/);
     assert.match(md, /gh release upload v16 /);
-    assert.match(md, /gh release upload 0\.66 /);
+    assert.match(md, /gh release upload 0\.67 /);
+    assert.doesNotMatch(md, /gh release upload v17 /);
+    assert.doesNotMatch(md, /gh release upload 0\.66 /);
     assert.doesNotMatch(md, /gh release upload v15 /);
     assert.doesNotMatch(md, /gh release upload 0\.65 /);
     assert.doesNotMatch(md, /gh release upload v10 /);
     assert.doesNotMatch(md, /gh release upload 0\.60 /);
     assert.match(md, /is \*\*16\.0\*\*/);
-    assert.match(md, /must not contain `16\.0`/);
-    assert.match(md, /`0\.66`, `0\.65`/);
+    assert.doesNotMatch(md, /is \*\*17\.0\*\*/);
+    assert.match(md, /must not contain `17\.0`/);
+    assert.match(md, /`0\.67`, `0\.66`/);
     assert.match(md, /refuses anything other than `16\.0`/);
-    assert.match(md, /BUILD_NUMBER=91/);
+    assert.match(md, /refuses build number 49/);
+    assert.match(md, /`\+N` \(92\)/);
     assert.match(md, /pack_macos\.sh/);
     assert.match(md, /blob\/main\/NODE-MACBOOK-HANDOFF\.md/);
     assert.match(md, /wallet_api\.js/);
+    assert.match(md, /posture\.js/);
     assert.match(md, /Reserve\.json/);
     assert.doesNotMatch(md, /MACBOOK_HANDOFF\.md/);
     assert.doesNotMatch(md, /WINDOWS_HANDOFF\.md/);

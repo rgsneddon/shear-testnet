@@ -34,23 +34,41 @@ function recBusy(rec) {
  * Tallest advertised peer tip. Null height means no peer has said.
  * A mesh that is all behind this node reports that height — it does not look caught-up to a hidden tip.
  */
+function advertisedHeight(rec) {
+  const g = Number(rec?.gossipHeight);
+  if (Number.isFinite(g)) return g;
+  const h = Number(rec?.height);
+  return Number.isFinite(h) ? h : NaN;
+}
+
 export function bestPeerTip(peers) {
   let bestH = null;
   let bestHash = '';
+  let syncH = null;
+  let eligible = 0;
   if (!peers || typeof peers.values !== 'function') {
-    return { peerMaxHeight: null, peerHash: '' };
+    return { peerMaxHeight: null, peerHash: '', syncPeerHeight: null, syncEligiblePeers: 0 };
   }
   for (const rec of peers.values()) {
-    const h = Number(rec?.height);
-    if (!Number.isFinite(h)) continue;
-    const hash = String(rec?.hash || '').replace(/^0x/i, '').toLowerCase();
-    if (bestH == null || h > bestH || (h === bestH && hash && (!bestHash || hash < bestHash))) {
+    const h = advertisedHeight(rec);
+    const hash = String(rec?.gossipHash || rec?.hash || '').replace(/^0x/i, '').toLowerCase();
+    if (Number.isFinite(h) && (bestH == null || h > bestH || (h === bestH && hash && (!bestHash || hash < bestHash)))) {
       bestH = h;
       bestHash = hash;
     }
+    const demoted = Number(rec?.demoteUntil) > Date.now();
+    if (rec?.syncEligible === true && !demoted) {
+      eligible += 1;
+      const sh = Number(rec?.height);
+      if (Number.isFinite(sh) && (syncH == null || sh > syncH)) syncH = sh;
+    }
   }
-  if (bestH == null) return { peerMaxHeight: null, peerHash: '' };
-  return { peerMaxHeight: bestH, peerHash: bestHash };
+  return {
+    peerMaxHeight: bestH,
+    peerHash: bestHash,
+    syncPeerHeight: syncH,
+    syncEligiblePeers: eligible,
+  };
 }
 
 /**
@@ -62,8 +80,10 @@ export function isInitialBlockDownload({ height = 0, peers } = {}) {
   if (!peers || typeof peers.values !== 'function') return false;
   for (const rec of peers.values()) {
     if (recBusy(rec)) return true;
-    const peerH = Number(rec?.height);
-    if (Number.isFinite(peerH) && peerH > local) return true;
+    const peerH = Number(rec?.gossipHeight);
+    const provenH = Number(rec?.height);
+    const advertised = Number.isFinite(peerH) ? peerH : provenH;
+    if (Number.isFinite(advertised) && advertised > local) return true;
   }
   return false;
 }
@@ -88,6 +108,8 @@ export function nodeStatus({ store, p2p, extra = {} } = {}) {
     ibd: isInitialBlockDownload({ height, peers: p2p?.peers }),
     peerMaxHeight: best.peerMaxHeight,
     peerHash: best.peerHash,
+    syncPeerHeight: best.syncPeerHeight,
+    syncEligiblePeers: best.syncEligiblePeers,
     hashBackend: backend,
     ...extra,
   };
@@ -104,6 +126,7 @@ export function printNodeStatus(args) {
     `want=${row.want}`,
     `ibd=${row.ibd}`,
     `peerMaxHeight=${row.peerMaxHeight == null ? '-' : row.peerMaxHeight}`,
+    `syncPeerHeight=${row.syncPeerHeight == null ? '-' : row.syncPeerHeight}`,
     `peerHash=${row.peerHash ? String(row.peerHash).slice(0, 16) : '-'}`,
     `hashBackend=${row.hashBackend}`,
   ];

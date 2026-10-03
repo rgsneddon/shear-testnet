@@ -2,8 +2,8 @@
 # MacBook: Shear Sentinel zip for PRODUCT_VERSION 16.0 (not the Continuum .dmg).
 #   npm ci
 #   sh node/pack/pack_macos.sh
-# Upload dist/shear-node-v16-macos.zip onto the new GitHub release v16.
-# Do not pass --clobber. Do not upload onto v7, v9, v10, v12, v14, or v15.
+# Upload dist/shear-node-v16-macos.zip onto GitHub release v16.
+# Do not pass --clobber. The release is not published yet.
 set -e
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
@@ -34,6 +34,7 @@ need = (
     "pool/src/wallet_api.js",
     "pool/src/hash_credit.js",
     "pool/src/withdraw_state.js",
+    "pool/src/posture.js",
     "contracts/Reserve.json",
     "crypto/native/shearhash.node",
     "crypto/native/shearadmit.node",
@@ -55,8 +56,10 @@ if magic not in macho:
 text = z.read("crypto/asert.js").decode()
 if "PRODUCT_VERSION = '16.0'" not in text or "shear-testnet-v10" not in text:
     sys.exit("packed asert.js is not Sentinel 16.0 on shear-testnet-v10")
+if "pool/src/posture.js" not in names:
+    sys.exit("missing pool/src/posture.js")
 print("darwin-ok", len(names))
 PY
 echo "ok dist/shear-node-$LABEL-macos.zip"
-echo "Upload onto the new v16 release. Do not pass --clobber. Do not upload onto v15."
+echo "Upload onto the v16 release. Do not pass --clobber. The release is not published yet."
 echo "gh release upload v16 dist/shear-node-$LABEL-macos.zip --repo rgsneddon/shear-testnet"

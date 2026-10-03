@@ -73,7 +73,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.client, 'ShearHash');
     assert.equal(j.algorithm, 'ShearHash');
     assert.equal(j.personalisation, 'ShearHash-v3');
-    assert.equal(j.version, '2.6');
+    assert.equal(j.version, '2.7');
     assert.equal(j.version.split('.').length, 2);
     assert.equal(j.headerBytes, 128);
     assert.equal(j.magic, 'shear-testnet-v4');
@@ -82,6 +82,7 @@ describe('ShearK-Miner', () => {
     assert.equal(j.feePct, 0);
     assert.equal(j.clientLogin, 'direct');
     assert.equal(j.pool, 'pool.shear.digital:1111');
+    assert.equal(j.tls, false);
     const longDest = 'ssa1qsj3qt0mcuznqv6r5370d58tw32gz3yhjychuu0sljyw5zmw9pmwc47d9vnwagjafs3ywjz7udh7suc7e3qsshw25ze';
     const longCfg = spawnSync(bin, [
       '--backend', 'interpreter', '--print-config',
@@ -100,7 +101,8 @@ describe('ShearK-Miner', () => {
     assert.equal(j.backend, 'interpreter');
     assert.equal(typeof j.hugePages, 'boolean');
     const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
-    assert.match(help.stdout, /ShearK-Miner 2\.4 \(ShearHash-v3 light\)/);
+    assert.match(help.stdout, /ShearK-Miner 2\.7 \(ShearHash-v3 light\)/);
+    assert.match(help.stdout, /stratum\+ssl:\/\//);
     assert.match(help.stdout, /ShearHash-v3 light/);
     assert.match(help.stdout, /--backend jit-full/);
     assert.match(help.stdout, /--backend jit/);
@@ -118,7 +120,9 @@ describe('ShearK-Miner', () => {
     assert.match(bat, /--user YOUR_SSA1\.worker/);
     assert.match(bat, /--dest YOUR_SSA1/);
     assert.match(bat, /--backend jit-full/);
-    assert.match(bat, /ShearK-Miner-2\.4-windows\.zip/);
+    assert.match(bat, /ShearK-Miner-2\.7-windows\.zip/);
+    assert.match(bat, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
+    assert.match(bat, /libssl-3-x64\.dll/);
     assert.equal(help.stdout.toLowerCase().includes('feeless'), false);
     assert.match(src, /hashes=%llu round=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu blocks=%d dropped=%llu/);
     assert.match(src, /cpuCores=%d cpuThreads=%d/);
@@ -292,12 +296,12 @@ describe('ShearK-Miner', () => {
     await new Promise((r) => child.once('close', r));
     server.close();
     assert.match(loginLine, /"name":"ShearK-Miner"/);
-    assert.match(loginLine, /"version":"2\.4"/);
+    assert.match(loginLine, /"version":"2\.7"/);
     assert.match(loginLine, /"client":"ShearHash"/);
     assert.match(loginLine, /"algorithm":"ShearHash"/);
     assert.equal(/"dest"/.test(loginLine), false, loginLine);
     assert.equal(/"version":"1\.[019]"/.test(loginLine), false, loginLine);
-    assert.match(out, /ShearK-Miner 2\.4 \(ShearHash-v3 light\)/);
+    assert.match(out, /ShearK-Miner 2\.7 \(ShearHash-v3 light\)/);
     assert.match(stripAnsi(out), /hashes=\d+/);
     assert.match(stripAnsi(out), /accepted=0/);
     assert.match(stripAnsi(out), /rejected=0/);
@@ -351,7 +355,7 @@ describe('ShearK-Miner', () => {
     child.kill('SIGTERM');
     await new Promise((r) => child.once('close', r));
     server.close();
-    assert.match(loginLine, /"version":"2\.4"/);
+    assert.match(loginLine, /"version":"2\.7"/);
     assert.match(loginLine, new RegExp(`"dest":"${dest}"`));
     assert.match(stripAnsi(out), /job[= ]dest-job/);
     assert.equal(header.toString('hex').length, 256);
@@ -417,9 +421,67 @@ describe('ShearK-Miner', () => {
       'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read("example.bat").decode("utf-8"))',
       win], { encoding: 'utf8' });
     assert.equal(bat.status, 0, bat.stderr);
-    assert.match(bat.stdout, /ShearK-Miner-2\.4-windows\.zip/);
+    assert.match(bat.stdout, /ShearK-Miner-2\.5-windows\.zip/);
     assert.match(bat.stdout, /shear-testnet-v4/);
     assert.match(bat.stdout, /--user YOUR_SSA1\.worker/);
     assert.match(bat.stdout, /--backend jit-full/);
+  });
+
+  it('requireTls refuses a cleartext pool url in either flag order', () => {
+    const user = 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul';
+    const first = spawnSync(bin, [
+      '--require-tls', '--pool', 'stratum+tcp://127.0.0.1:1111',
+      '--user', user, '--print-config',
+    ], { encoding: 'utf8' });
+    assert.equal(first.status, 2, first.stdout + first.stderr);
+    assert.match(first.stderr, /requireTls: refusing cleartext/);
+    const second = spawnSync(bin, [
+      '--pool', 'stratum+tcp://127.0.0.1:1111', '--require-tls',
+      '--user', user, '--print-config',
+    ], { encoding: 'utf8' });
+    assert.equal(second.status, 2, second.stdout + second.stderr);
+    assert.match(second.stderr, /requireTls: refusing cleartext/);
+    const bare = spawnSync(bin, [
+      '--require-tls', '--pool', '127.0.0.1:1111', '--notls',
+      '--user', user, '--print-config',
+    ], { encoding: 'utf8' });
+    assert.equal(bare.status, 2, bare.stdout + bare.stderr);
+    assert.match(bare.stderr, /requireTls: refusing cleartext/);
+  });
+
+  it('2.7 windows zip bundles the OpenSSL DLLs the exe imports', (t) => {
+    if (process.platform !== 'win32') {
+      t.skip('2.7 windows zip is packed on Windows');
+      return;
+    }
+    const pack = path.join(root, 'pack', 'zip_windows.py');
+    const built = spawnSync(pythonBin(), [pack], { encoding: 'utf8', cwd: root });
+    assert.equal(built.status, 0, built.stdout + built.stderr);
+    const zip = path.join(dist, 'ShearK-Miner-2.7-windows.zip');
+    assert.equal(fs.existsSync(zip), true, zip);
+    const names = zipNamelist(zip);
+    for (const need of ['ShearK-Miner.exe', 'example.bat', 'libssl-3-x64.dll', 'libcrypto-3-x64.dll']) {
+      assert.ok(names.includes(need), names.join(','));
+    }
+    assert.equal(zipMemberHead(zip, 'ShearK-Miner.exe', 2), '4d5a');
+    const bat = spawnSync(pythonBin(), ['-c',
+      'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read("example.bat").decode("utf-8"))',
+      zip], { encoding: 'utf8' });
+    assert.equal(bat.status, 0, bat.stderr);
+    assert.match(bat.stdout, /ShearK-Miner-2\.7-windows\.zip/);
+    assert.match(bat.stdout, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
+    assert.match(bat.stdout, /libcrypto-3-x64\.dll/);
+    const exeOnly = names.filter((n) => n === 'ShearK-Miner.exe' || n === 'example.bat');
+    assert.ok(names.length > exeOnly.length, 'exe+bat alone is not a 2.7 pack');
+  });
+
+  it('the Linux pack recipe is portable unless SHEARK_NATIVE=1', () => {
+    const mk = fs.readFileSync(path.join(root, 'Makefile'), 'utf8');
+    const linux = mk.split('ifeq ($(UNAME),Linux)')[1].split('endif')[0];
+    assert.equal(linux.includes('-march=native'), false);
+    assert.match(mk, /ifeq \(\$\(SHEARK_NATIVE\),1\)[\s\S]*-march=native/);
+    assert.match(mk, /-DARCH=\$\(RX_ARCH\)/);
+    assert.equal(mk.includes('-DARCH=native'), false);
+    assert.match(mk, /RX_ARCH := default/);
   });
 });
