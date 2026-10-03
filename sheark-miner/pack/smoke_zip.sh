@@ -7,8 +7,11 @@ python3 -m zipfile -e "$ZIP" "$DIR"
 test -f "$DIR/ShearK-Miner"
 test -f "$DIR/example.bat"
 test -f "$DIR/example.sh"
-test -n "$(find "$DIR" -maxdepth 1 -name 'libssl*' -print -quit)"
-test -n "$(find "$DIR" -maxdepth 1 -name 'libcrypto*' -print -quit)"
+shopt -s nullglob
+ssl=("$DIR"/libssl*)
+crypto=("$DIR"/libcrypto*)
+test "${#ssl[@]}" -ge 1
+test "${#crypto[@]}" -ge 1
 grep -q 'ShearK-Miner-2.8-windows.zip' "$DIR/example.bat"
 grep -q 'stratum+ssl://pool.shear.digital:443' "$DIR/example.bat"
 grep -q 'stratum+ssl://pool.shear.digital:443' "$DIR/example.sh"
