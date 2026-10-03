@@ -1,0 +1,118 @@
+# ShearK-Miner 2.8 unix packs. Artifacts only.
+# This workflow does not create a release and does not move any tag.
+# Windows stays the maintainer pack from sheark-miner/pack/zip_windows.py.
+name: sheark-28
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: sheark-28-pack
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, selftest, and pack the Ubuntu zip
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libssl-dev pkg-config python3 patchelf
+          make -C sheark-miner CC=gcc CXX=g++
+          bash sheark-miner/pack/selftest.sh sheark-miner/ShearK-Miner
+          python3 sheark-miner/pack/zip_unix.py linux
+          bash sheark-miner/pack/smoke_zip.sh dist/ShearK-Miner-2.8-linux.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShearK-Miner-2.8-linux
+          path: dist/ShearK-Miner-2.8-linux.zip
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, selftest, and pack the macOS zip
+        run: |
+          set -euo pipefail
+          brew install openssl cmake
+          PREFIX="$(brew --prefix openssl)"
+          test -f "$PREFIX/include/openssl/ssl.h"
+          make -C sheark-miner OPENSSL_PREFIX="$PREFIX"
+          bash sheark-miner/pack/selftest.sh sheark-miner/ShearK-Miner
+          python3 sheark-miner/pack/zip_unix.py macos
+          bash sheark-miner/pack/smoke_zip.sh dist/ShearK-Miner-2.8-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShearK-Miner-2.8-macos
+          path: dist/ShearK-Miner-2.8-macos.zip
+          if-no-files-found: error
+
+  distro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: archlinux
+            image: archlinux:base
+          - flavor: fedora
+            image: fedora:latest
+          - flavor: opensuse
+            image: opensuse/tumbleweed
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and pack inside the distro image
+        run: |
+          cat > "$RUNNER_TEMP/pack-sheark.sh" << 'ENDSCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+          echo "FLAVOR=$FLAVOR"
+          cat /etc/os-release
+          case "$FLAVOR" in
+            archlinux)
+              pacman-key --init
+              pacman-key --populate archlinux
+              pacman -Syu --noconfirm
+              pacman -S --noconfirm --needed base-devel cmake openssl python git patchelf
+              ;;
+            fedora)
+              dnf -y install gcc gcc-c++ make cmake openssl-devel python3 git zip file patchelf pkgconf-pkg-config
+              ;;
+            opensuse)
+              zypper -n refresh
+              zypper -n install gcc gcc-c++ make cmake libopenssl-devel python3 git zip file patchelf pkg-config
+              ;;
+            *)
+              echo "unknown flavor $FLAVOR" >&2
+              exit 1
+              ;;
+          esac
+          if ! command -v python3 >/dev/null 2>&1; then
+            ln -sf "$(command -v python)" /usr/local/bin/python3
+          fi
+          cd /src
+          rm -rf crypto/randomx/build sheark-miner/ShearK-Miner sheark-miner/src/*.o
+          make -C sheark-miner CC=gcc CXX=g++
+          bash sheark-miner/pack/selftest.sh sheark-miner/ShearK-Miner
+          python3 sheark-miner/pack/zip_unix.py "$FLAVOR"
+          bash sheark-miner/pack/smoke_zip.sh "dist/ShearK-Miner-2.8-${FLAVOR}.zip"
+          ENDSCRIPT
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/src \
+            -v "$RUNNER_TEMP/pack-sheark.sh":/pack-sheark.sh:ro \
+            -e FLAVOR="${{ matrix.flavor }}" \
+            "${{ matrix.image }}" \
+            bash /pack-sheark.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShearK-Miner-2.8-${{ matrix.flavor }}
+          path: dist/ShearK-Miner-2.8-${{ matrix.flavor }}.zip
+          if-no-files-found: error

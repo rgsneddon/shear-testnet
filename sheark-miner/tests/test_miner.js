@@ -463,7 +463,7 @@ describe('ShearK-Miner', () => {
     const zip = path.join(dist, 'ShearK-Miner-2.8-windows.zip');
     assert.equal(fs.existsSync(zip), true, zip);
     const names = zipNamelist(zip);
-    for (const need of ['ShearK-Miner.exe', 'example.bat', 'libssl-3-x64.dll', 'libcrypto-3-x64.dll']) {
+    for (const need of ['ShearK-Miner.exe', 'example.bat', 'example.sh', 'libssl-3-x64.dll', 'libcrypto-3-x64.dll']) {
       assert.ok(names.includes(need), names.join(','));
     }
     assert.equal(zipMemberHead(zip, 'ShearK-Miner.exe', 2), '4d5a');
@@ -474,8 +474,31 @@ describe('ShearK-Miner', () => {
     assert.match(bat.stdout, /ShearK-Miner-2\.8-windows\.zip/);
     assert.match(bat.stdout, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
     assert.match(bat.stdout, /libcrypto-3-x64\.dll/);
+    const sh = spawnSync(pythonBin(), ['-c',
+      'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read("example.sh").decode("utf-8"))',
+      zip], { encoding: 'utf8' });
+    assert.equal(sh.status, 0, sh.stderr);
+    assert.match(sh.stdout, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
+    assert.match(sh.stdout, /--backend jit-full/);
     const exeOnly = names.filter((n) => n === 'ShearK-Miner.exe' || n === 'example.bat');
     assert.ok(names.length > exeOnly.length, 'exe+bat alone is not a 2.8 pack');
+  });
+
+  it('unix pack script keeps a sample bat and shell launcher in every flavor', () => {
+    const src = fs.readFileSync(path.join(root, 'pack/zip_unix.py'), 'utf8');
+    for (const flavor of ['linux', 'archlinux', 'fedora', 'opensuse', 'macos']) {
+      assert.match(src, new RegExp(`"${flavor}"`));
+    }
+    assert.match(src, /example\.bat/);
+    assert.match(src, /example\.sh/);
+    assert.match(src, /libssl/);
+    assert.match(src, /libcrypto/);
+    assert.match(src, /Refusing a cross-compile/);
+    assert.match(src, /There is no --tls-insecure/);
+    const mk = fs.readFileSync(path.join(root, 'Makefile'), 'utf8');
+    assert.match(mk, /OPENSSL_PREFIX/);
+    const selftest = fs.readFileSync(path.join(root, 'pack/selftest.sh'), 'utf8');
+    assert.match(selftest, /98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b/);
   });
 
   it('the Linux pack recipe is portable unless SHEARK_NATIVE=1', () => {

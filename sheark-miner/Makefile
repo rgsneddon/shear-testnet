@@ -52,6 +52,12 @@ else
   OPENSSL_DLLS :=
 endif
 
+# macOS Homebrew OpenSSL is keg-only. Public packs pass OPENSSL_PREFIX.
+ifneq ($(OPENSSL_PREFIX),)
+  CFLAGS += -I$(OPENSSL_PREFIX)/include
+  LIBS += -L$(OPENSSL_PREFIX)/lib
+endif
+
 OBJS := src/sheark_miner.o src/shear_hash.o src/sha256.o src/sha512.o src/stratum_tls.o
 
 .PHONY: all clean selftest randomx

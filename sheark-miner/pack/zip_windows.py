@@ -20,6 +20,7 @@ MINER = os.path.abspath(os.path.join(HERE, ".."))
 REPO = os.path.abspath(os.path.join(MINER, ".."))
 EXE = os.path.join(MINER, "ShearK-Miner.exe")
 BAT = os.path.join(MINER, "example.bat")
+SH = os.path.join(MINER, "example.sh")
 DIST = os.path.join(REPO, "dist")
 OPENSSL_BIN = os.environ.get("OPENSSL_BIN", r"C:\msys64\mingw64\bin")
 
@@ -185,12 +186,26 @@ def crlf(path: str) -> bytes:
     return data
 
 
+def lf(path: str) -> bytes:
+    return open(path, "rb").read().replace(b"\r\n", b"\n")
+
+
+def unix_info(arcname: str, mode: int) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(arcname)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = (mode & 0xFFFF) << 16
+    return info
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not os.path.isfile(EXE):
         sys.exit(f"missing {EXE}; build ShearK-Miner.exe first")
     if not os.path.isfile(BAT):
         sys.exit(f"missing {BAT}")
+    if not os.path.isfile(SH):
+        sys.exit(f"missing {SH}")
     dlls = runtime_dlls(EXE)
     names = {os.path.basename(p).lower() for p in dlls}
     for required in ("libssl-3-x64.dll", "libcrypto-3-x64.dll"):
@@ -210,13 +225,17 @@ def main(argv: list[str] | None = None) -> int:
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(EXE, "ShearK-Miner.exe")
         z.writestr("example.bat", crlf(BAT))
+        z.writestr(unix_info("example.sh", 0o755), lf(SH))
         for src in dlls:
             z.write(src, os.path.basename(src))
         note = (
             f"ShearK-Miner {ver}\n"
             "Keep every DLL in this zip next to ShearK-Miner.exe.\n"
+            "Sample launchers in this zip: example.bat and example.sh.\n"
+            "Windows: edit example.bat, then double-click it.\n"
             "Public pool: stratum+ssl://pool.shear.digital:443\n"
             "Localhost solo: stratum+tcp://127.0.0.1:1111\n"
+            "Do not pass --tls-pin. There is no --tls-insecure.\n"
         )
         z.writestr("README.txt", note.replace("\n", "\r\n"))
     listed = zipfile.ZipFile(out).namelist()

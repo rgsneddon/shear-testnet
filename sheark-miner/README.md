@@ -23,7 +23,7 @@ On a new job or restamp (prev, merkle/continuity, bits, time, job id) the miner 
 
 `--print-config` includes `rxMode=light`, `rxCacheMiB=128`, `feePct=0`. `--selftest` must print digest `98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b` and must not match the v1 vector `5d00a242…`.
 
-Windows zip root: `ShearK-Miner.exe`, `example.bat`, and the OpenSSL DLLs the exe imports (`libssl-3-x64.dll`, `libcrypto-3-x64.dll`, plus any further non-system DLL). The exe alone does not start. Linux zip root: `ShearK-Miner` + `example.sh` (OpenSSL from the distro). How-to: the `[Testnet] ShearK` README.
+Windows zip root: `ShearK-Miner.exe`, `example.bat`, `example.sh`, and the OpenSSL DLLs the exe imports (`libssl-3-x64.dll`, `libcrypto-3-x64.dll`, plus any further non-system DLL). The exe alone does not start. Unix zip root (`linux`, `archlinux`, `fedora`, `opensuse`, `macos`): `ShearK-Miner`, `example.bat`, `example.sh`, and that OS's OpenSSL libraries beside the binary. Each zip is built on that OS. How-to: the `[Testnet] ShearK` README.
 
 Build (from this tree, with `crypto/randomx` already vendored in the parent Shear repo):
 

@@ -1,6 +1,7 @@
 @echo off
 REM ShearK-Miner 2.8 (ShearHash-v3 light) — Windows
 REM Public pool: stratum+ssl://pool.shear.digital:443  (shear-testnet-v4)
+REM Live book is shear-testnet-v10. --print-config still reports magic shear-testnet-v4.
 REM Localhost solo stays cleartext: stratum+tcp://127.0.0.1:1111
 REM
 REM Paid login is an ssa1 dest the wallet exported (Copy dest), then .worker.
