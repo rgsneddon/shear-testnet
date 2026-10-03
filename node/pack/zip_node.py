@@ -16,7 +16,13 @@ import sys
 import tempfile
 import zipfile
 
-from bundle_modules import assert_zip_has_modules, copy_linked_libs, rpath_origin, write_missing_required
+from bundle_modules import (
+    assert_zip_has_modules,
+    copy_linked_libs,
+    resolve_real_node,
+    rpath_origin,
+    write_missing_required,
+)
 
 FLAVORS = ("windows", "linux", "archlinux", "fedora", "opensuse", "macos")
 SKIP_DIR_NAMES = {
@@ -118,8 +124,11 @@ def copy_runtime(staging: str, flavor: str) -> str | None:
         return None
     src = shutil.which("node")
     if src and os.path.isfile(src):
+        resolved = resolve_real_node(src)
+        if os.path.realpath(resolved) != os.path.realpath(src):
+            print("node binary", src, "->", resolved, "bytes", os.path.getsize(resolved))
         out = os.path.join(dest, "node.exe" if flavor == "windows" else "node")
-        shutil.copy2(src, out)
+        shutil.copy2(resolved, out)
         return out
     return None
 

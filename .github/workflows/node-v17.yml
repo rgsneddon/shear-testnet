@@ -53,9 +53,15 @@ jobs:
           test -f "$NODE_INC/node_api.h"
           echo "NODE_INC $NODE_INC"
           npm ci
+          # Host rustc is MSVC and writes shear_admit.lib. MinGW ld needs
+          # libshear_admit.a from the gnu toolchain, linked with ucrt64 gcc.
+          rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
+          rustup override set stable-x86_64-pc-windows-gnu
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=gcc
           cmake -S crypto/randomx -B crypto/randomx/build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DARCH=native
           cmake --build crypto/randomx/build -j"$(nproc)"
           make -C crypto/native
+          test -f crypto/native/shearadmit.node
           test -f crypto/native/shearhash.node
           python3 node/pack/zip_node.py windows
           test -f dist/shear-node-v17-windows.zip

@@ -181,6 +181,59 @@ def required_module_paths(repo: str) -> list[str]:
     return needed
 
 
+def resolve_real_node(src: str, conf_dir: str = "/usr/share/libalternatives/node") -> str:
+    """Return the node binary a zip can run, not an alternatives dispatcher.
+
+    openSUSE /usr/bin/node is a symlink to /usr/bin/alts. Copying that stub
+    omits /usr/bin/node22 and libnode22.so, and the zip does not start.
+    A small distro PIE such as Fedora's node stays as-is so ldd can still
+    bundle libnode.so beside it.
+    """
+    real = os.path.realpath(src)
+    if not os.path.isfile(real):
+        return src
+    if os.path.basename(real) != "alts" and os.path.getsize(real) >= 1_000_000:
+        return real
+    chosen = ""
+    best_pref = -1
+    if os.path.isdir(conf_dir):
+        for name in os.listdir(conf_dir):
+            if not name.endswith(".conf"):
+                continue
+            stem = name[:-5]
+            try:
+                pref = int(stem)
+            except ValueError:
+                pref = -1
+            binary = ""
+            with open(os.path.join(conf_dir, name), encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if line.startswith("binary="):
+                        binary = line.split("=", 1)[1].strip()
+                        break
+            if not binary:
+                continue
+            path = os.path.realpath(binary)
+            if not os.path.isfile(path) or os.path.basename(path) == "alts":
+                continue
+            if pref >= best_pref:
+                best_pref = pref
+                chosen = path
+    if not chosen:
+        parent = os.path.dirname(real)
+        largest = 0
+        for base in ("node20", "node22", "node24", "node26"):
+            for directory in (parent, "/usr/bin"):
+                cand = os.path.realpath(os.path.join(directory, base))
+                if not os.path.isfile(cand) or os.path.basename(cand) == "alts":
+                    continue
+                size = os.path.getsize(cand)
+                if size > largest:
+                    largest = size
+                    chosen = cand
+    return chosen or real
+
+
 def copy_linked_libs(binary: str, dest_dir: str) -> list[str]:
     """Copy non-glibc shared libraries next to a distro node binary.
 
