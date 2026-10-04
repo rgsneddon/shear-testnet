@@ -620,9 +620,25 @@
       if (m) return m + 'm ' + s + 's';
       return s + 's';
     }
-    function fmtSinceBlock(at) {
-      if (!at) return '—';
-      const sec = Math.max(0, Math.floor((Date.now() - Number(at)) / 1000));
+    // Pool wall clock from one /api/stats snapshot. foundAt is when this pool
+    // recorded the find. poolNow is that same snapshot. offsetMs is
+    // poolNow - clientNow at apply, so a late poll or a fast browser clock
+    // does not open the box already late. The header stamp is not this clock.
+    function poolFindClockOffsetMs(poolNow, clientNow) {
+      const server = Number(poolNow);
+      const client = Number(clientNow);
+      if (!(server > 0) || !Number.isFinite(client)) return 0;
+      return server - client;
+    }
+    function poolLastBlockAgeMs(foundAt, clientNow, offsetMs) {
+      const found = Number(foundAt) || 0;
+      if (!(found > 0) || !Number.isFinite(Number(clientNow))) return 0;
+      const offset = Number.isFinite(Number(offsetMs)) ? Number(offsetMs) : 0;
+      return Math.max(0, Number(clientNow) + offset - found);
+    }
+    function fmtSinceBlock(ageMs) {
+      if (!Number.isFinite(Number(ageMs))) return '—';
+      const sec = Math.max(0, Math.floor(Number(ageMs) / 1000));
       const h = Math.floor(sec / 3600);
       const m = Math.floor((sec % 3600) / 60);
       const s = sec % 60;
@@ -713,15 +729,25 @@
       }
       el.textContent = fmtAvgBlock(ms) + (gate ? (' · observational n=' + gate.sealedSamples) : '');
     }
-    function paintLastBlock(s) {
+    let poolClockOffsetMs = 0;
+    let poolClockFoundAt = 0;
+    let poolClockTau = 90_000;
+    function notePoolFindClock(s, clientNow) {
+      const found = Number(s && s.lastFoundAt) || 0;
+      const server = Number(s && s.poolNow);
+      if (server > 0) poolClockOffsetMs = poolFindClockOffsetMs(server, clientNow);
+      if (s && Number(s.targetBlockIntervalMs) > 0) poolClockTau = Number(s.targetBlockIntervalMs);
+      poolClockFoundAt = found;
+    }
+    function renderPoolFindClock(clientNow) {
       const read = document.getElementById('last-block-read');
       const needle = document.getElementById('last-block-needle');
       const box = document.getElementById('updated');
-      const at = s && s.lastFoundAt;
-      const tau = (s && s.targetBlockIntervalMs) || 90_000;
-      const label = fmtSinceBlock(at);
+      const at = poolClockFoundAt;
+      const tau = poolClockTau || 90_000;
+      const elapsed = at ? poolLastBlockAgeMs(at, clientNow, poolClockOffsetMs) : 0;
+      const label = at ? fmtSinceBlock(elapsed) : '—';
       if (read) read.textContent = label;
-      const elapsed = at ? Math.max(0, Date.now() - Number(at)) : 0;
       const pct = at ? avgBlockNeedlePct(elapsed) : 4;
       const col = at ? lastBlockNeedleColor(elapsed, tau) : '#c8e86a';
       if (needle) {
@@ -737,6 +763,11 @@
         burstLastBlockFirework(pct);
       }
       if (at) lastSeenFoundAt = Number(at);
+    }
+    function paintLastBlock(s) {
+      const clientNow = Date.now();
+      notePoolFindClock(s, clientNow);
+      renderPoolFindClock(clientNow);
     }
     function unpackedBits(n) {
       const v = Number(n);
@@ -791,7 +822,6 @@
       resistance: 2000,
       crew: 4000,
       uptime: 1000,
-      last: 1000,
       miners: 1000
     };
     const boxPaintedAt = Object.create(null);
@@ -826,7 +856,7 @@
       if (shareBitsEl) shareBitsEl.textContent = (s && s.shareBits != null) ? String(s.shareBits) : '—';
       paintAvgBlock(s);
       if (boxDue('uptime', now)) document.getElementById('uptime').textContent = fmtUptime(s.uptimeMs);
-      if (boxDue('last', now)) paintLastBlock(s);
+      paintLastBlock(s);
       if (boxDue('miners', now)) {
         const tb = document.querySelector('#miners tbody');
         tb.innerHTML = (s.workers || []).slice().sort(function (a, b) {
@@ -1029,6 +1059,10 @@
       });
     }
     setInterval(tick, 1000);
+    setInterval(function () {
+      if (!poolClockFoundAt) return;
+      renderPoolFindClock(Date.now());
+    }, 250);
     tick();
     renderCmd();
   </script>

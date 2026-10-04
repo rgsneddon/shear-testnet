@@ -2522,6 +2522,9 @@ export function createPool({
           stats.findAt = Array.isArray(stats.findAt) ? stats.findAt : [];
           stats.findAt.push(stats.lastFoundAt);
         }
+        // Publish the find on this turn. The page clock is poolNow - lastFoundAt
+        // from this snapshot, not the header stamp and not the browser clock.
+        try { paintStatsSnap(); } catch { /* stats cadence retries */ }
         if (session) session.blocks = (Number(session.blocks) || 0) + 1;
         pendingPayout = snapshotRound();
         for (const m of miners.values()) {
@@ -2920,6 +2923,7 @@ export function createPool({
       blockBits: Number(blockBitsNow()),
       shareBits: Number(lastJob?.shareBits || shareBits),
       lastFoundAt: stats.lastFoundAt || 0,
+      poolNow: now,
       avgBlockTimeMs: avgMs,
       networkAvgBlockTimeMs: avgBlockIntervalMs(store.blocks),
       interval: intervalCertify({
