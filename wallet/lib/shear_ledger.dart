@@ -114,12 +114,15 @@ double _rowShe(Map row) {
   if (amount is num && amount > 0) return amount.toDouble();
   final nanos = row['nanos'];
   if (nanos is num && nanos > 0) return nanos / kUnitsPerShe;
-  final vp = row['valueProof'];
-  if (vp is Map) {
-    final v = vp['v'];
-    if (v is num && v > 0) return v / kUnitsPerShe;
-  }
-  return 0;
+  return _proofOpenedShe(row);
+}
+
+/// She from a value proof that opened. A bare `{v}`, a pool balance, an
+/// owed-π figure, or a history amount with no R and z is not a coin.
+double _proofOpenedShe(Map row) {
+  final opened = _verifiedClaimNanos(row);
+  if (opened == null || opened <= 0) return 0;
+  return opened / kUnitsPerShe;
 }
 
 int _rowHeight(Map row) {
@@ -157,14 +160,14 @@ List<NodeOwnerLand> ownerLandsFromNode({
     final kind = row['kind']?.toString() ?? '';
     final dest = _rowDest(row);
     if (dest == null) continue;
-    add(_rowHeight(row), dest, _rowShe(row), kind.isEmpty ? 'blockfound' : kind);
+    add(_rowHeight(row), dest, _proofOpenedShe(row), kind.isEmpty ? 'blockfound' : kind);
   }
   for (final row in notes) {
     final kind = row['kind']?.toString() ?? (row['coinbase'] == true ? 'coinbase' : '');
     final dest = _rowDest(row);
     if (dest == null) continue;
     if (kind == 'hash' || kind == 'dummy' || kind == 'send') continue;
-    add(_rowHeight(row), dest, _rowShe(row), kind.isEmpty ? 'coinbase' : kind);
+    add(_rowHeight(row), dest, _proofOpenedShe(row), kind.isEmpty ? 'coinbase' : kind);
   }
   for (final block in bodies) {
     final h = _rowHeight(block);
@@ -3395,15 +3398,18 @@ class ShearLedger implements ReadProofSink {
       if ((spendable(pk) - cap).abs() > 1e-12) _spendable[pk] = cap;
       return afterDebit(cap);
     }
+    // The lock already took needShe out of this book. Debit is only for a
+    // gross figure: the opened-note cap above, or settled lands shown instead
+    // of a larger pool number.
     final rest = _bookMinusUnverified(pk, spendable(key));
     final settled = _settledNodeShe[pk] ?? 0;
-    if (settled <= 1e-12 || rest + 1e-12 >= settled) return afterDebit(rest);
+    if (settled <= 1e-12 || rest + 1e-12 >= settled) return rest;
     final book = spendable(key);
     final external = _externalShe[pk];
     if (external != null && book + 1e-12 >= settled && external + 1e-12 >= book) {
       return afterDebit(settled);
     }
-    return afterDebit(rest);
+    return rest;
   }
 
   void _noteLockDebit(String src, double needShe) {
@@ -3448,10 +3454,8 @@ class ShearLedger implements ReadProofSink {
     if (amt is num && amt > 0) return amt.toDouble();
     final nanos = note['nanos'];
     if (nanos is num && nanos > 0) return nanos.toDouble() / kUnitsPerShe;
-    final vp = note['valueProof'];
-    if (vp is Map && vp['v'] is num && (vp['v'] as num) > 0) {
-      return (vp['v'] as num).toDouble() / kUnitsPerShe;
-    }
+    final opened = _proofOpenedShe(note);
+    if (opened > 0) return opened;
     return fallback;
   }
 

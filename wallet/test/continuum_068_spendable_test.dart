@@ -79,6 +79,53 @@ void main() {
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(1.0));
   });
 
+  test('unopened node rows and pool figures are not spendable', () async {
+    final id = createIdentity();
+    final payee = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final to = (ShearLedger()..bindIdentity(payee))
+        .homeDest(payee.address, paymentCode: payee.paymentCode);
+    expect(to, isNot(home));
+    ledger.rememberDest(home);
+    ledger.rememberNodeChain(
+      notes: [
+        {
+          'dest': home,
+          'kind': 'coinbase',
+          'height': 1,
+          'valueProof': {'v': 5 * kUnitsPerShe},
+        },
+      ],
+      history: [
+        {
+          'kind': 'coinbase',
+          'dest': home,
+          'amount': 4.0,
+          'height': 2,
+        },
+      ],
+    );
+    ledger.restoreSealedTip(20);
+    ledger.creditKnownNodeLands();
+    ledger.settleTo(20);
+    ledger.applyPoolSnapshot(
+      home,
+      {'balance': 9.0, 'pending': 1.0, 'owedPi': 3.0},
+      beforeHeight: 20,
+      tipSealed: 20,
+    );
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+    expect(ledger.usableSpendable(home), 0);
+    await expectLater(
+      ledger.send(from: home, to: to, amount: 0.01, local: true),
+      throwsA(
+        isA<StateError>().having((e) => e.message, 'message', contains('insufficient')),
+      ),
+    );
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+  });
+
   test('Verifying follow reads the session in the worker and does not encode notes on the caller', () async {
     final dir = Directory.systemTemp.createTempSync('shear-follow-');
     addTearDown(() => dir.deleteSync(recursive: true));
