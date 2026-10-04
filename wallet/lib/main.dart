@@ -165,6 +165,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   bool _verifying = false;
   /// Sync chrome and the block-height label wait until spendable has painted.
   bool _chromeReady = false;
+
+  /// True from the responding shell until the unlock credit read returns.
+  /// The figure is not 0 SHE during that wait.
+  bool _spendableAwaiting = false;
   String? _lockError;
   bool _bioReady = false;
   bool _bioStored = false;
@@ -789,14 +793,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       reserve.applyLocalSnapshot(session.rememberedReserve!);
     }
     if (!widget.skipPoolSync) {
-      // Spendable is read on another isolate before this shell, its sync
-      // chrome, or a block body exist. A zero timer does not elapse under the
-      // widget-test clock, so the follow itself is the yield.
+      // _finishUnlockSync paints the shell before its credit await.
       if (!mounted || id == null) return;
       await _finishUnlockSync();
     }
     if (!mounted) return;
-    debugPopulationOrder.add('shell');
+    if (!debugPopulationOrder.contains('shell')) {
+      debugPopulationOrder.add('shell');
+    }
     setState(() {
       _lockError = null;
       unlocked = true;
@@ -824,16 +828,16 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         setState(() => _chromeReady = true);
         final ident = id!;
         unawaited(() async {
-          // Spendable is already on screen. History is the next book read.
-          // The reserve portal waits so a replay sees those rows. A pool host
-          // is not a chain source, so this read does not call it.
+          // The chrome frame is already scheduled. Accrual and history start
+          // after this callback returns so the main screen paints first.
+          await Future<void>.delayed(Duration.zero);
+          if (!mounted || !unlocked) return;
+          _startAccrualTick(immediate: true, thinFirst: true);
           try {
             await ledger.syncHistory(ident.address);
           } catch (_) {}
           if (!mounted || id == null) return;
           await _syncVaults(ident);
-          if (!mounted || !unlocked) return;
-          _startAccrualTick(immediate: true, thinFirst: true);
         }());
       });
     }
@@ -903,16 +907,29 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (mounted) setState(() => _verifying = false);
       return;
     }
-    // Hold the credit gate through the note read. The shell is still the
-    // lock screen, so sync chrome and block info are not up yet.
+    // Paint a responding shell before the credit await. The await is the
+    // worker isolate. Sync chrome and block info stay down until it returns.
     _creditBusy = true;
     debugPopulationOrder.add('spendable');
+    _spendableAwaiting = true;
+    debugPopulationOrder.add('shell');
+    if (mounted) {
+      setState(() {
+        _lockError = null;
+        unlocked = true;
+        _verifying = false;
+        _chromeReady = false;
+      });
+    }
+    await Future<void>.delayed(Duration.zero);
     try {
-      await _followCredits(ident, full: false, chain: true, spendableFirst: true);
+      if (id == null) return;
+      await _followCredits(id!, full: false, chain: true, spendableFirst: true);
       _rememberLedger();
     } catch (_) {}
     finally {
       _creditBusy = false;
+      _spendableAwaiting = false;
       if (mounted) setState(() => _verifying = false);
       if (_creditAgain && mounted && unlocked) _armCreditFollow();
     }
@@ -1047,6 +1064,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (!mounted || !unlocked || _accrualPaused) return;
       final ident = id;
       if (ident == null) return;
+      // A frame runs before this poll's tip read and credit follow.
+      if (mounted) setState(() {});
+      await Future<void>.delayed(Duration.zero);
+      if (!mounted || !unlocked || _accrualPaused || id == null) return;
       final now = DateTime.now();
       if (!immediate && !walletShouldPoll(lastPoll: _lastPoll, now: now, hot: true)) {
         return;
@@ -1988,6 +2009,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   Widget _continuum(BuildContext context, ShearIdentity ident) {
     final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
+    final spendReady = !_spendableAwaiting &&
+        ledger.spendableFigureReady(ident.address, paymentCode: ident.paymentCode);
     final unconfirmed = ledger.unconfirmedIncomingShe(ident.address, paymentCode: ident.paymentCode);
     final pending = ledger.pendingTxs(ident.address);
     final reserveDest = _reserveDestOf(ident);
@@ -1997,7 +2020,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final dt = path1.observedIntervalMs;
     final spendPane = <Widget>[
       Text(
-        '${formatShe(spend)} SHE',
+        spendReady ? '${formatShe(spend)} SHE' : '…',
         key: const Key('continuum-spendable'),
         style: TextStyle(
           fontSize: 28,
@@ -2049,7 +2072,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           style: TextStyle(color: shearMutedOf(context), fontSize: 12),
         ),
       ],
-      if (spend == 0 && pending.isEmpty) ...[
+      if (spendReady && spend == 0 && pending.isEmpty) ...[
         const SizedBox(height: 8),
         Text(
           'Sync a local node at 127.0.0.1:18332. Tip, blocks, and lands come from the node network. If that feed is missing, those fields stay empty. Pool HUD is not the chain. Spendable is coins with 9 confirmations. Unconfirmed is coins still arriving. This book starts empty until your first landing.',

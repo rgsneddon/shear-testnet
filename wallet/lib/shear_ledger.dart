@@ -24,6 +24,12 @@ const kShePublicDigits = 9;
 const kUnitsPerShe = 100000000000; // 10^11
 /// Fingerprint pot (BLOCK_SUBSIDY_NANOS / NANOS_PER_SHE). Continuum display only; do not mint from this.
 const kBlockPotShe = 1.0;
+
+/// Sealed pool fee is 1% of that pot. Compact drops `v` on a pool-fee note.
+/// The commitment still opens at this rate, any fee up to 3%, or the pot.
+/// Same candidates as `openedCoinbaseNanos`. A node balance is not a candidate.
+const kPoolFeeBps = 100;
+const kPoolFeeMaxBps = 300;
 /// Fingerprint target interval (TARGET_BLOCK_INTERVAL_MS). Continuum display only.
 const kTargetBlockIntervalMs = 90000;
 
@@ -295,6 +301,9 @@ List<String> debugLastFollowResultKeys = <String>[];
 /// How many credit follows have returned to this isolate.
 int debugCreditFollowRuns = 0;
 
+/// Last notes-read failure from the worker, empty when the list came back.
+String debugCollateError = '';
+
 Object? _followEncode(Object? v) {
   if (v == null || v is num || v is String || v is bool) return v;
   if (v is Uint8List) return <String, String>{'__b64': base64Encode(v)};
@@ -414,8 +423,9 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
     }
     final full = spec['full'] == true;
     final chain = spec['chain'] != false;
-    // Login's first population. Notes whose proofs open, then the height those
-    // confirmations need. No history, no block body, no pool balance.
+    // Login's first population. Notes whose proofs open, then the node's
+    // /balance for this dest (not copied into the sum), then the height those
+    // confirmations need. No history and no block body.
     final opened = spendableFirst
         ? await ledger.populateSpendableFromNode(
             rest,
@@ -694,8 +704,8 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       }
     }
     final kind = (o['kind'] as String?) ?? 'pot';
-    final proofChecked = _completeValueProof(o);
-    final verifiedNanos = proofChecked ? _verifiedClaimNanos(o) : null;
+    final verifiedNanos = _openedSpendNanos(o);
+    final proofChecked = verifiedNanos != null;
     final num? amt = (verifiedNanos != null && verifiedNanos > 0)
         ? verifiedNanos / kUnitsPerShe
         : null;
@@ -792,6 +802,54 @@ bool _completeValueProof(Map o) {
   if (_noteBytes(o['commit']) == null) return false;
   if (_noteBytes(vp['R']) == null || _noteBytes(vp['z']) == null) return false;
   return vp['v'] is num;
+}
+
+/// Nanos the sealed commitment actually opens.
+///
+/// A claimed `v` is used when it opens. A pool-fee note whose compact form
+/// dropped `v` opens at the sealed 1 percent (then any fee up to 3 percent,
+/// then the pot). A `{v}`-only row has no R and z, so it stays closed.
+/// A node `/balance` figure is not an input.
+int? _openedSpendNanos(Map o) {
+  final commit = _noteBytes(o['commit']);
+  final vp = o['valueProof'];
+  if (commit == null || vp is! Map) return null;
+  final r = _noteBytes(vp['R']);
+  final z = _noteBytes(vp['z']);
+  if (r == null || z == null) return null;
+  bool opens(int v) {
+    if (v <= 0) return false;
+    return verifySealedNote({
+      'commit': commit,
+      'valueProof': {'R': r, 'z': z, 'v': v},
+    }, v);
+  }
+
+  final raw = vp['v'];
+  if (raw is num) {
+    final claimed = raw.round();
+    if (claimed > 0 && opens(claimed)) return claimed;
+  }
+  if ((o['kind'] as String?) != 'pool-fee') return null;
+  final potRaw = o['blockSubsidyNanos'] ?? o['potNanos'];
+  final pot = potRaw is num && potRaw > 0
+      ? potRaw.round()
+      : (kBlockPotShe * kUnitsPerShe).round();
+  if (pot <= 0) return null;
+  final nanos = o['nanos'];
+  if (nanos is num) {
+    final n = nanos.round();
+    if (n > 0 && opens(n)) return n;
+  }
+  final prefer = pot * kPoolFeeBps ~/ 10000;
+  if (opens(prefer)) return prefer;
+  final maxFee = pot * kPoolFeeMaxBps ~/ 10000;
+  for (var bps = 1; bps <= kPoolFeeMaxBps; bps++) {
+    final n = pot * bps ~/ 10000;
+    if (n > 0 && n <= maxFee && n != prefer && opens(n)) return n;
+  }
+  if (opens(pot)) return pot;
+  return null;
 }
 
 /// Nanos only when the value proof opens that exact claim.
@@ -2320,6 +2378,11 @@ class ShearLedger implements ReadProofSink {
   /// First unlock notes-then-history collate finished. Thin pending-receive
   /// ticks must not skip that first full pull.
   bool _openCollated = false;
+
+  /// Null until login's notes read finishes. True when that read did not
+  /// return a note list. A failed read is not a verified zero.
+  bool? _spendableReadFailed;
+  String _collateError = '';
   bool get openCollated => _openCollated;
   /// Height-1 header hex of the book this ledger is bound to.
   String? _chainGenesis;
@@ -3407,6 +3470,16 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
+  /// False when login's notes read failed and no opened coin is on the book.
+  /// The screen must not paint that as 0 SHE. A node balance does not make it true.
+  bool spendableFigureReady(String restFrame, {String? paymentCode}) {
+    if (_spendableReadFailed == true &&
+        spendableOwned(restFrame, paymentCode: paymentCode) <= 1e-12) {
+      return false;
+    }
+    return true;
+  }
+
   double spendableOwned(String restFrame, {String? paymentCode}) {
     spendPub ??= decodePaymentCode(paymentCode ?? '')?['spendPub'];
     _dropProgramVaults();
@@ -3649,18 +3722,28 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// Login's first read. Pull this wallet's notes from the node and open their
-  /// proofs, then take the tip height those confirmations need. A pool balance,
-  /// an owed-toward-π figure, and a `{v}`-only row do not enter the sum.
+  /// proofs, then read the node's `/balance` for the same dest, then the tip
+  /// height those confirmations need. The balance number is not a coin. A pool
+  /// balance, an owed-toward-π figure, and a `{v}`-only row do not enter the sum.
+  /// A notes read that does not return a list is not a verified zero.
   Future<double> populateSpendableFromNode(String restFrame, {String? paymentCode}) async {
     keepOwnedDests(restFrame, paymentCode: paymentCode);
     var sawNotes = false;
     if (pool != null && !isPoolLedgerHost(pool!.baseUrl)) {
       // A silent node must not hold the lock screen. Later polls still collate.
       try {
+        // The shell is already up. This open is off the UI isolate. A short
+        // timeout discarded a pool-fee book that was still proving.
         sawNotes = await collateSpendNotes(
           restFrame: restFrame,
           paymentCode: paymentCode,
-        ).timeout(const Duration(seconds: 8));
+        );
+      } catch (e) {
+        _collateError = 'populate:$e';
+      }
+      try {
+        await _readNodeBalance(restFrame, paymentCode: paymentCode)
+            .timeout(const Duration(seconds: 4));
       } catch (_) {}
       try {
         final json = await pool!.stats().timeout(const Duration(seconds: 4));
@@ -3669,8 +3752,25 @@ class ShearLedger implements ReadProofSink {
         if (h > 0) settleTo(h);
       } catch (_) {}
     }
+    _spendableReadFailed = !sawNotes;
     if (sawNotes) _openCollated = true;
     return recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
+  }
+
+  /// GET `/api/wallet/balance` for this wallet's dests. The returned SHE is
+  /// not stored. Spendable stays the opened notes. The fee-dest constant is
+  /// not queried unless it is one of those dests.
+  Future<void> _readNodeBalance(String restFrame, {String? paymentCode}) async {
+    final client = pool;
+    if (client == null || isPoolLedgerHost(client.baseUrl)) return;
+    for (final d in syncDests(restFrame, paymentCode: paymentCode)) {
+      if (!isDestAddress(d)) continue;
+      try {
+        final json = await client.balance(d);
+        final raw = json['balance'];
+        if (json['ok'] == false && raw is! num) continue;
+      } catch (_) {}
+    }
   }
 
   /// Pull sealed notes for the spend dests. Balance snapshots can show SHE
@@ -3714,8 +3814,9 @@ class ShearLedger implements ReadProofSink {
         final scanned = await scanSealedWireOffUi(raw);
         _applySealedScan(scanned);
         if (_stampIngest(key, count: false)) _notesAt[key] = _sealedHeight;
-      } catch (_) {
+      } catch (e) {
         failed = true;
+        _collateError = 'collate:$e';
       }
     }
     if (bindSpendable && saw && !failed) _bindSpendableToNotes(dests);
@@ -4003,6 +4104,8 @@ class ShearLedger implements ReadProofSink {
       'notesAt': _followEncode(_notesAt),
       'historyAt': _followEncode(_historyAt),
       'openCollated': _openCollated,
+      if (_spendableReadFailed != null) 'spendableReadFailed': _spendableReadFailed,
+      if (_collateError.isNotEmpty) 'collateError': _collateError,
       'destCount': destCount,
       'destIndex': destIndex,
       'nodeBodies': <Object?>[for (final b in _nodeBodies) _followEncode(b)],
@@ -4077,6 +4180,11 @@ class ShearLedger implements ReadProofSink {
       ..clear()
       ..addAll(_followInts(spec['historyAt']));
     _openCollated = spec['openCollated'] == true;
+    if (spec.containsKey('spendableReadFailed')) {
+      _spendableReadFailed = spec['spendableReadFailed'] == true;
+    }
+    final collateError = spec['collateError']?.toString() ?? '';
+    if (collateError.isNotEmpty) debugCollateError = collateError;
     destCount = (spec['destCount'] as num?)?.toInt() ?? destCount;
     destIndex = (spec['destIndex'] as num?)?.toInt() ?? destIndex;
     List<Map<String, dynamic>> rows(Object? raw) => <Map<String, dynamic>>[
@@ -4101,7 +4209,7 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
-  void adoptCreditFollow(Map<String, dynamic> spec) {
+  Future<void> adoptCreditFollow(Map<String, dynamic> spec) async {
     // A balance or verify follow does not carry the note book. Installing its
     // empty spendable map wiped opened coins, so Spendable stayed 0 on every
     // platform. Keep proofs that already opened, then recompute the one sum a
@@ -4111,7 +4219,26 @@ class ShearLedger implements ReadProofSink {
         if (n['verified'] == true) Map<String, dynamic>.from(n),
     ];
     final keptProofs = Set<String>.from(_proofCheckedDests);
-    installCreditFollow(spec);
+    final rawNotes = spec['notes'];
+    if (rawNotes is List && rawNotes.length > 24) {
+      final head = Map<String, dynamic>.from(spec)..remove('notes');
+      installCreditFollow(head);
+      _notes.clear();
+      var batch = 0;
+      for (final raw in rawNotes) {
+        final revived = _followRevive(raw);
+        if (revived is Map) {
+          _notes.add(Map<String, dynamic>.from(revived));
+        }
+        batch++;
+        if (batch >= 24) {
+          batch = 0;
+          await Future<void>.delayed(Duration.zero);
+        }
+      }
+    } else {
+      installCreditFollow(spec);
+    }
     for (final n in kept) {
       rememberNote(n);
       final dest = (n['dest'] ?? n['address'])?.toString() ?? '';
@@ -4199,7 +4326,7 @@ class ShearLedger implements ReadProofSink {
     debugCreditFollowKinds.add(debugCreditFollowKind);
     debugCreditFollowStamps.add(debugCreditFollowStamp);
     debugCreditFollowRuns += 1;
-    adoptCreditFollow(result);
+    await adoptCreditFollow(result);
     final opened = result['opened'];
     return opened is num ? opened.toDouble() : spendableOwned(restFrame, paymentCode: paymentCode);
   }
@@ -4352,19 +4479,22 @@ class ShearLedger implements ReadProofSink {
         for (final t in _txs)
           if (t.memoPlain != null && t.memoPlain!.isNotEmpty) t.id: t.memoPlain!,
       };
-      final input = <String, dynamic>{
-        'amountsOnly': json['amountsOnly'] == true,
-        'destProof': json['destProof'] == true,
+      final amountsOnly = json['amountsOnly'] == true;
+      final destProof = json['destProof'] == true;
+      final vaultDests = _vaultDests.toList();
+      final rowSnapshot = <Object?>[
+        for (final row in rows)
+          if (row is Map) Map<String, dynamic>.from(row),
+      ];
+      final parsed = await Isolate.run(() => parseHistoryPayload(<String, dynamic>{
+        'amountsOnly': amountsOnly,
+        'destProof': destProof,
         'key': key,
         'openMemos': openMemos,
         'existingPlain': Map<String, String>.from(existingPlain),
-        'vaultDests': _vaultDests.toList(),
-        'rows': jsonDecode(jsonEncode([
-          for (final row in rows)
-            if (row is Map) Map<String, dynamic>.from(row),
-        ])),
-      };
-      final parsed = await Isolate.run(() => parseHistoryPayload(input));
+        'vaultDests': vaultDests,
+        'rows': jsonDecode(jsonEncode(rowSnapshot)),
+      }));
       if (keepLocalOwnerHistory(
         amountsOnly: json['amountsOnly'] == true || parsed['amountsOnly'] == true,
         destProof: json['destProof'] == true,

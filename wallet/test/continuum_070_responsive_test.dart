@@ -144,6 +144,97 @@ void main() {
     expect(tester.takeException(), isNull);
   }, timeout: const Timeout(Duration(seconds: 40)));
 
+  testWidgets('unlock paints a responding shell before the credit read finishes', (tester) async {
+    final gate = Completer<void>();
+    addTearDown(() {
+      if (!gate.isCompleted) gate.complete();
+    });
+    // Bind in the real zone. A listen() from the test body parks the notes
+    // handler on a fake timer, so the credit await never finishes.
+    final server = await tester.runAsync(() async {
+      final bound = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      bound.listen((req) async {
+        if (req.uri.path.contains('notes')) {
+          try {
+            await gate.future.timeout(const Duration(seconds: 20));
+          } catch (_) {}
+        }
+        req.response.headers.contentType = ContentType.json;
+        final path = req.uri.path;
+        if (path.contains('notes')) {
+          req.response.write('{"ok":true,"notes":[]}');
+        } else if (path.contains('balance')) {
+          req.response.write('{"ok":true,"balance":0}');
+        } else {
+          req.response.write(
+            '{"ok":true,"height":4,"magic":"shear-testnet-v10","network":"shear-testnet-v10"}',
+          );
+        }
+        await req.response.close();
+      });
+      return bound;
+    });
+    expect(server, isNotNull);
+    addTearDown(() => server!.close(force: true));
+    final dir = Directory.systemTemp.createTempSync('c070-respond-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await tester.runAsync(() async {
+      await session.loadOrCreate();
+      await session.setPassword('test-pass-1');
+    });
+    final ledger = ShearLedger(
+      pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server!.port}'),
+    );
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      skipPoolSync: false,
+      hostAndroid: true,
+    ));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField).first, 'test-pass-1');
+    final state = tester.state<ShearWalletAppState>(find.byType(ShearWalletApp));
+    // One runAsync. A second call is denied, and a fake timer never elapses
+    // while this follow is still waiting on the notes gate.
+    await tester.runAsync(() async {
+      final unlock = state.unlockNow();
+      final deadline = DateTime.now().add(const Duration(seconds: 20));
+      while (!state.unlocked && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      expect(state.unlocked, isTrue);
+      final binding = tester.binding;
+      if (binding.hasScheduledFrame) {
+        binding.handleBeginFrame(Duration.zero);
+        binding.handleDrawFrame();
+      }
+      expect(find.byKey(const Key('continuum-spendable')), findsOneWidget);
+      expect(tester.widget<Text>(find.byKey(const Key('continuum-spendable'))).data, '…');
+      expect(find.byKey(const Key('wallet-block-height')), findsNothing);
+      expect(find.byKey(const Key('continuum-empty-honesty')), findsNothing);
+      expect(find.text('p2P Node'), findsNothing);
+      expect(find.text('Full Node'), findsNothing);
+      expect(find.byKey(const Key('android-banner-theme')), findsOneWidget);
+      expect(debugCreditFollowRuns, 0);
+      if (!gate.isCompleted) gate.complete();
+      try {
+        await unlock.timeout(const Duration(seconds: 15));
+      } catch (_) {
+        // A notes handler that missed the gate must not keep the follow open.
+        await server!.close(force: true);
+        await unlock.timeout(const Duration(seconds: 15));
+      }
+    });
+    // Dispose before the post-frame accrual timer. A pump while the shell is
+    // still mounted schedules that timer and the test ends with it pending.
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  }, timeout: const Timeout(Duration(seconds: 60)));
+
   testWidgets('Android banner is dark and light, and the bar stays logo, link, height', (tester) async {
     tester.view.physicalSize = const Size(360, 640);
     tester.view.devicePixelRatio = 1;
