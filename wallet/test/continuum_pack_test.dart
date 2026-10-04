@@ -94,8 +94,11 @@ void main() {
     });
     expect(ledger.spendable(dest), 0);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+    // An advisory 0.25 is not a coin. The archive left no opened note, so
+    // rememberSpendable must not raise what a send can use.
     ledger.rememberSpendable(dest, 0.25);
-    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(0.25, 1e-12));
+    expect(ledger.spendable(dest), 0);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
     ledger.applyCirculatingNanos(100 * kUnitsPerShe);
     ledger.applyCirculatingNanos(0);
     expect(ledger.circulatingNanos, 100 * kUnitsPerShe);
