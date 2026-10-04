@@ -12,7 +12,7 @@ on:
       build_number:
         description: Flutter build-number
         required: true
-        default: '94'
+        default: '95'
       repo:
         description: GitHub repo that owns the release
         required: true
