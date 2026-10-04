@@ -13,13 +13,13 @@ import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_session.dart';
 
 void main() {
-  test('Continuum 0.68 build number comes from pubspec +N and is not 49', () {
-    expect(kWalletVersion, '0.68');
-    expect(kCliVersion, '0.68');
+  test('Continuum 0.69 build number comes from pubspec +N and is not 49', () {
+    expect(kWalletVersion, '0.69');
+    expect(kCliVersion, '0.69');
     expect(kBookMagic, 'shear-testnet-v10');
     final pubspec = File('pubspec.yaml').readAsStringSync();
-    expect(pubspec, contains('version: 0.68.0+93'));
-    final plus = RegExp(r'version:\s*0\.68\.0\+(\d+)').firstMatch(pubspec);
+    expect(pubspec, contains('version: 0.69.0+94'));
+    final plus = RegExp(r'version:\s*0\.69\.0\+(\d+)').firstMatch(pubspec);
     expect(plus, isNotNull);
     final build = int.parse(plus!.group(1)!);
     expect(build, greaterThan(91));
@@ -28,7 +28,7 @@ void main() {
     expect(pack, isNot(contains('BUILD_NUMBER:-49')));
     expect(pack, contains('PUBSPEC_PLUS'));
     expect(pack, contains('ANDROID_BUILD_NUMBER_NOT_ABOVE_91'));
-    expect(pubspec, contains('Displayed pin is 0.68.'));
+    expect(pubspec, contains('Displayed pin is 0.69.'));
     expect(pubspec, isNot(contains('Displayed pin is 0.66.')));
     final buildLine = pack.split('\n').where((l) => l.contains('flutter build apk')).join('\n');
     expect(buildLine, contains('flutter build apk'));

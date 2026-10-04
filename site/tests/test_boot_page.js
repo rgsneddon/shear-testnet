@@ -22,7 +22,7 @@ describe('boot.shear.digital page', () => {
     assert.match(boot, /id="dl-json"/);
     assert.match(boot, /id="dl-bin"/);
     assert.match(boot, /shear-testnet-v10/);
-    assert.match(boot, /Continuum 0\.68/);
+    assert.match(boot, /Continuum 0\.69/);
     assert.doesNotMatch(boot, /Continuum 0\.66/);
     assert.doesNotMatch(boot, /shear-testnet-v6/);
     assert.doesNotMatch(boot, /testnet-v6/);

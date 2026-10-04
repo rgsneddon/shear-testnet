@@ -115,6 +115,6 @@ void main() {
     expect(main, isNot(contains(
       'ledger.recheckRestFrameSpendable(id!.address, paymentCode: id!.paymentCode)',
     )));
-    expect(kWalletVersion, '0.68');
+    expect(kWalletVersion, '0.69');
   });
 }

@@ -57,7 +57,42 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Settings'), findsOneWidget);
+    final dark = find.byKey(const Key('settings-dark-mode'));
+    // Address lines are their own zero-range scrollables. The page list is the
+    // one with AlwaysScrollableScrollPhysics.
+    final closureScroll = find.descendant(
+      of: find.byKey(const PageStorageKey<String>('tab-5')),
+      matching: find.byWidgetPredicate(
+        (w) => w is Scrollable && w.physics is AlwaysScrollableScrollPhysics,
+      ),
+    );
+    expect(closureScroll, findsOneWidget);
+    final scrollState = tester.state<ScrollableState>(closureScroll);
+    final box = tester.renderObject<RenderBox>(dark);
+    final scrollBox = tester.renderObject<RenderBox>(closureScroll);
+    final dy = box.localToGlobal(Offset.zero, ancestor: scrollBox).dy;
+    final next = (scrollState.position.pixels + dy - 16)
+        .clamp(0.0, scrollState.position.maxScrollExtent);
+    scrollState.position.jumpTo(next);
+    await tester.pump();
+    final tileTop = tester.getTopLeft(dark).dy;
+    expect(tileTop, greaterThan(56));
+    expect(tileTop, lessThan(560));
+    expect(dark, findsOneWidget);
     expect(find.text('Unlock with biometrics'), findsOneWidget);
+    expect(find.byIcon(Icons.dark_mode), findsNothing);
+    expect(find.byTooltip('Dark mode'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(dark);
+    await tester.pump();
+    final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
+    expect(app.themeMode, ThemeMode.dark);
+    expect(find.byKey(const Key('wallet-connected')), findsOneWidget);
+    expect(find.byKey(const Key('wallet-block-height')), findsOneWidget);
+    expect(find.text('p2P Node'), findsNothing);
+    expect(find.text('Full Node'), findsNothing);
+    expect(find.byIcon(Icons.dark_mode), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

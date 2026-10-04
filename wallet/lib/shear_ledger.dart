@@ -381,12 +381,20 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
       ledger.recheckRestFrameSpendable(rest, paymentCode: code);
     }
     final full = spec['full'] == true;
-    final opened = full
-        ? await ledger.syncCredits(rest, paymentCode: code)
-        : await ledger.syncBalancesOnly(rest, paymentCode: code);
-    final out = ledger.exportCreditFollow(restFrame: rest, paymentCode: code, full: full);
+    final chain = spec['chain'] != false;
+    // Unlock Verifying is this branch: recheck the coins already in hand.
+    // It does not download the book. That download is the later population.
+    final opened = !chain
+        ? ledger.recheckRestFrameSpendable(
+            rest,
+            paymentCode: (code == null || code.isEmpty) ? null : code,
+          )
+        : full
+            ? await ledger.syncCredits(rest, paymentCode: code)
+            : await ledger.syncBalancesOnly(rest, paymentCode: code);
+    final out = ledger.exportCreditFollow(restFrame: rest, paymentCode: code, full: full && chain);
     out['stamp'] = identityHashCode(Isolate.current).toString();
-    out['kind'] = full ? 'credits' : 'balances';
+    out['kind'] = !chain ? 'verify' : (full ? 'credits' : 'balances');
     out['opened'] = opened;
     return out;
   } finally {
@@ -3973,12 +3981,14 @@ class ShearLedger implements ReadProofSink {
     required String restFrame,
     String? paymentCode,
     required bool full,
+    bool chain = true,
     String? sessionPath,
     String? sessionPassword,
   }) async {
     final pinned = pool != null && pool!.isPinned;
     final spec = <String, dynamic>{
       'full': full,
+      'chain': chain,
       'restFrame': restFrame,
       'paymentCode': paymentCode ?? '',
       'baseUrl': pinned ? pool!.baseUrl : (pool?.sync?.liveBase ?? ''),

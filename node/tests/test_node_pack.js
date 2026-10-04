@@ -60,8 +60,15 @@ describe('portable node packs', () => {
     assert.match(mac, /shear-testnet-v10/);
     assert.doesNotMatch(mac, /LABEL=v9/);
     assert.doesNotMatch(mac, /shear-node-v9-macos/);
-    assert.match(handoff, /shear-node-v17-macos\.zip/);
-    assert.match(handoff, /opensuse/i);
+    assert.match(handoff, /shear-wallet-0\.69-macos\.dmg/);
+    assert.match(handoff, /Do not pass `--clobber`/);
+    assert.match(handoff, /Do not build Shear Sentinel/);
+    assert.match(handoff, /Do not build ShearK/);
+    assert.doesNotMatch(handoff, /shear-node-/);
+    assert.doesNotMatch(handoff, /zip_node\.py/);
+    assert.doesNotMatch(handoff, /node\/pack\/pack_macos\.sh/);
+    assert.doesNotMatch(handoff, /gh release upload v17 /);
+    assert.doesNotMatch(handoff, /gh release upload 0\.68 /);
     assert.equal(PRODUCT_VERSION, '17.0');
     assert.match(py, /shear-node-\{pack_label\}-\{flavor\}\.zip/);
     assert.match(cmd, /pause/i);

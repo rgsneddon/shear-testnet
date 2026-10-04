@@ -8,11 +8,11 @@ on:
       pin:
         description: Public two-part wallet pin (release tag)
         required: true
-        default: '0.33'
+        default: '0.69'
       build_number:
         description: Flutter build-number
         required: true
-        default: '49'
+        default: '94'
 
 jobs:
   windows:
@@ -37,7 +37,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-windows.zip --clobber
+          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-windows.zip
       - uses: actions/upload-artifact@v4
         with:
           name: shear-wallet-${{ inputs.pin }}-windows

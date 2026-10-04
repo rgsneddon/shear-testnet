@@ -8,11 +8,11 @@ on:
       pin:
         description: Public two-part wallet pin (release tag)
         required: true
-        default: '0.62'
+        default: '0.69'
       build_number:
         description: Flutter build-number
         required: true
-        default: '87'
+        default: '94'
       repo:
         description: GitHub repo that owns the release
         required: true
@@ -44,8 +44,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ inputs.pin }} wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip --repo ${{ inputs.repo }} --clobber
-          if (Test-Path wallet/dist-cli/shear.exe) { gh release upload ${{ inputs.pin }} wallet/dist-cli/shear.exe --repo ${{ inputs.repo }} --clobber }
+          gh release upload ${{ inputs.pin }} wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip --repo ${{ inputs.repo }}
+          if (Test-Path wallet/dist-cli/shear.exe) { gh release upload ${{ inputs.pin }} wallet/dist-cli/shear.exe --repo ${{ inputs.repo }} }
 
   linux:
     runs-on: ubuntu-latest
@@ -57,7 +57,7 @@ jobs:
         with:
           flutter-version: '3.44.6'
           channel: stable
-      - name: Build Linux GUI + CLI + APK
+      - name: Build Linux GUI + CLI
         working-directory: wallet
         run: |
           sudo apt-get update
@@ -65,9 +65,30 @@ jobs:
           flutter config --enable-linux-desktop
           flutter pub get
           flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
-          flutter build apk --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
           mkdir -p dist-cli
           dart compile exe bin/shear.dart -o dist-cli/shear || true
+      - name: Continuum release signing
+        working-directory: wallet/android
+        env:
+          CONTINUUM_STORE_PASSWORD: ${{ secrets.CONTINUUM_STORE_PASSWORD }}
+          CONTINUUM_KEY_PASSWORD: ${{ secrets.CONTINUUM_KEY_PASSWORD }}
+          CONTINUUM_KEYSTORE_B64: ${{ secrets.CONTINUUM_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$CONTINUUM_STORE_PASSWORD" ] || [ -z "$CONTINUUM_KEY_PASSWORD" ] || [ -z "$CONTINUUM_KEYSTORE_B64" ]; then
+            echo "Missing wallet/android/key.properties. Release assemble refuses the debug cert."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$CONTINUUM_KEYSTORE_B64" | base64 -d > continuum-release.jks
+          {
+            echo "storePassword=$CONTINUUM_STORE_PASSWORD"
+            echo "keyPassword=$CONTINUUM_KEY_PASSWORD"
+            echo "keyAlias=continuum"
+            echo "storeFile=../continuum-release.jks"
+          } > key.properties
+      - name: Build release APK
+        working-directory: wallet
+        run: flutter build apk --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
       - name: Zip
         run: |
           python3 - <<'PY'
@@ -99,8 +120,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-linux.zip dist/shear-wallet-${{ inputs.pin }}-archlinux.zip dist/shear-wallet-${{ inputs.pin }}-android.apk --repo ${{ inputs.repo }} --clobber
-          if [ -f wallet/dist-cli/shear ]; then gh release upload ${{ inputs.pin }} wallet/dist-cli/shear --repo ${{ inputs.repo }} --clobber; fi
+          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-linux.zip dist/shear-wallet-${{ inputs.pin }}-archlinux.zip dist/shear-wallet-${{ inputs.pin }}-android.apk --repo ${{ inputs.repo }}
+          if [ -f wallet/dist-cli/shear ]; then gh release upload ${{ inputs.pin }} wallet/dist-cli/shear --repo ${{ inputs.repo }}; fi
 
   macos:
     if: false
@@ -126,5 +147,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-macos.zip wallet/dist-cli/shear --repo ${{ inputs.repo }} --clobber
+          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-macos.zip wallet/dist-cli/shear --repo ${{ inputs.repo }}
           echo "Notarized DMG is still a Mac-cut (Developer ID). This job attaches the unsigned-to-GHA .app zip + CLI."

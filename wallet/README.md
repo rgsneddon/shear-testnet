@@ -1,4 +1,4 @@
-# Shear wallet 0.68
+# Shear wallet 0.69
 
 GUI (Flutter) and CLI. Same identity, same encrypted `shewall.bin`, same book magic `shear-testnet-v10`.
 
@@ -10,18 +10,18 @@ Mine with **Copy dest**: the Continuum `ssa1` shown on screen (Copy dest copies 
 
 Pool: public `stratum+ssl://pool.shear.digital:443`. Cleartext migrate `pool.shear.digital:1111` (cleartext TCP). Localhost solo stays cleartext TCP. Magic: `shear-testnet-v10`.
 
-Continuum is spendable, pending transfers until nine confirmations, and Copy ID. It reads a node at `127.0.0.1:18332`, or Connect Bare when no node is on this device. The node returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. Open-round hashes stay pending until the next sealed block. Shearview lists your landings (height, from/to, date, amount, snippet); tap a row for full Resistance detail. Hash bonus and the pot share sit in the blockfound row. The pool does not hold them for a later send. This wallet does not mine. Public pool HTTP submit is an advanced toggle. `shear restore` opens the password-sealed `shewall.bin`. Node pack: Shear Sentinel v17 (product 17.0). Wallet packs stay at https://github.com/rgsneddon/shear-testnet/releases/tag/0.68. Git tag `v16` stays on the same commit as tag `0.66`. How-to: https://shear.digital/docs/#/surfaces
+Continuum is spendable, pending transfers until nine confirmations, and Copy ID. It reads a node at `127.0.0.1:18332`, or Connect Bare when no node is on this device. The node returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. Open-round hashes stay pending until the next sealed block. Shearview lists your landings (height, from/to, date, amount, snippet); tap a row for full Resistance detail. Hash bonus and the pot share sit in the blockfound row. The pool does not hold them for a later send. This wallet does not mine. Public pool HTTP submit is an advanced toggle. `shear restore` opens the password-sealed `shewall.bin`. Node pack: Shear Sentinel v17 (product 17.0). Wallet packs stay at https://github.com/rgsneddon/shear-testnet/releases/tag/0.69. Git tag `v16` stays on the same commit as tag `0.66`. How-to: https://shear.digital/docs/#/surfaces
 
-Windows, Linux, Arch, Fedora, and Android packs: https://github.com/rgsneddon/shear-testnet/releases/download/0.68/shear-wallet-0.68-windows.zip and the matching linux, archlinux, fedora, and android names on that release. The macOS `.dmg` is not attached.
+Windows, Linux, Arch, Fedora, and Android packs: https://github.com/rgsneddon/shear-testnet/releases/download/0.69/shear-wallet-0.69-windows.zip and the matching linux, archlinux, fedora, and android names on that release. The macOS `.dmg` is not attached.
 
 | Platform | Install |
 |----------|---------|
-| Windows | Unzip `shear-wallet-0.68-windows.zip`, run `shear_wallet.exe` |
-| Linux | Unzip `shear-wallet-0.68-linux.zip`, run `./shear_wallet` |
-| Arch | Unzip `shear-wallet-0.68-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
-| Fedora | Unzip `shear-wallet-0.68-fedora.zip`, run `./shear_wallet` |
-| Android | Sideload `shear-wallet-0.68-android.apk` (`com.shear.shear_wallet`). Debug-signed 0.65/0.66: export, uninstall, then install this release-signed APK once |
-| macOS | MacBook handoff only (`NODE-MACBOOK-HANDOFF.md`). The `shear-wallet-0.68-macos.dmg` is cut on a Mac and is not attached from Windows |
+| Windows | Unzip `shear-wallet-0.69-windows.zip`, run `shear_wallet.exe` |
+| Linux | Unzip `shear-wallet-0.69-linux.zip`, run `./shear_wallet` |
+| Arch | Unzip `shear-wallet-0.69-archlinux.zip` (includes `PKGBUILD`) or run `./shear_wallet` |
+| Fedora | Unzip `shear-wallet-0.69-fedora.zip`, run `./shear_wallet` |
+| Android | Sideload `shear-wallet-0.69-android.apk` (`com.shear.shear_wallet`). Debug-signed 0.65/0.66: export, uninstall, then install this release-signed APK once |
+| macOS | MacBook handoff only (`NODE-MACBOOK-HANDOFF.md`). The `shear-wallet-0.69-macos.dmg` is cut on a Mac and is not attached from Windows |
 
 ## CLI
 

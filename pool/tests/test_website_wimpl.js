@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { encodeHeader } from '../../crypto/header.js';
+import { intervalCertify } from '../src/posture.js';
 
 function read(rel) {
   return fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
@@ -133,6 +134,74 @@ describe('website W-IMPL binds', () => {
     assert.match(pool, /shareBits is not a retarget/);
   });
 
+  it('tip page observed card shows soaking n and refuses ~90s certified below 288', () => {
+    const site = read('../../site/js/site.js');
+    const home = read('../../site/index.html');
+    const network = read('../../site/network.html');
+    assert.match(home, /id="nc-observed"/);
+    assert.match(network, /id="nc-observed"/);
+    assert.match(site, /soaking n=/);
+    assert.match(site, /~90s not certified/);
+    const soakAt = site.indexOf('gate.soaking');
+    const certAt = site.indexOf('gate.certified90s');
+    assert.ok(soakAt > 0 && certAt > soakAt);
+    const start = site.indexOf('function setText');
+    const end = site.indexOf('function paintFluxset');
+    const src = site.slice(start, end);
+    function paint(interval, observedMs) {
+      return vm.runInNewContext(
+        `const bag = {};
+         function setText(id, text) { bag[id] = String(text); }
+         ${src.replace('function setText(id, text) {', 'function setTextUnused(id, text) {')}
+         var NANOS = 100000000000;
+         paintContinuity({
+           blockSubsidyNanos: 100000000000,
+           targetBlockIntervalMs: 90000,
+           networkAvgBlockTimeMs: ${observedMs},
+           interval: ${JSON.stringify(interval)}
+         });
+         bag['nc-observed'];`,
+      );
+    }
+    for (const n of [0, 12, 287]) {
+      const gate = intervalCertify({ sealedSamples: n, ewmaMs: 90000, sealedMeanMs: 90000 });
+      assert.equal(gate.soaking, true);
+      assert.equal(gate.certified90s, false);
+      assert.equal(gate.readyOnInterval, false);
+      const thin = paint(gate, 90000);
+      assert.match(thin, new RegExp(`soaking n=${n}`));
+      assert.match(thin, /~90s not certified/);
+      assert.equal(thin.includes('~90s certified'), false);
+      const lied = paint({ ...gate, certified90s: true, readyOnInterval: true }, 90000);
+      assert.match(lied, /~90s not certified/);
+      assert.equal(lied.includes('~90s certified'), false);
+    }
+    const fullGate = intervalCertify({ sealedSamples: 288, ewmaMs: 90000, sealedMeanMs: 90000 });
+    assert.equal(fullGate.soaking, false);
+    assert.equal(fullGate.certified90s, true);
+    assert.equal(fullGate.readyOnInterval, true);
+    const full = paint(fullGate, 90000);
+    assert.match(full, /n=288 ~90s certified/);
+    assert.equal(full.includes('not certified'), false);
+    const offGate = intervalCertify({ sealedSamples: 288, ewmaMs: 120000, sealedMeanMs: 120000 });
+    assert.equal(offGate.soaking, false);
+    assert.equal(offGate.certified90s, false);
+    assert.equal(offGate.readyOnInterval, false);
+    const off = paint(offGate, 120000);
+    assert.match(off, /observational n=288/);
+    assert.equal(off.includes('certified'), false);
+    const bare = vm.runInNewContext(
+      `const bag = {};
+       function setText(id, text) { bag[id] = String(text); }
+       ${src.replace('function setText(id, text) {', 'function setTextUnused(id, text) {')}
+       var NANOS = 100000000000;
+       paintContinuity({ blockSubsidyNanos: 100000000000, targetBlockIntervalMs: 90000, networkAvgBlockTimeMs: 90000 });
+       bag['nc-observed'];`,
+    );
+    assert.match(bare, /~90s not certified/);
+    assert.equal(bare.includes('~90s certified'), false);
+  });
+
   it('explorer avg block time is sealed networkAvgBlockTimeMs, not EWMA paint', () => {
     assert.match(explorer, /id="ex-avg-block"/);
     assert.match(explorer, /Avg block time/);
@@ -162,7 +231,7 @@ describe('website W-IMPL binds', () => {
     assert.doesNotMatch(mempool, /prettier/);
   });
 
-  it('wallet pin 0.68 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
+  it('wallet pin 0.69 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
     const paper = read('../../site/whitepaper/index.html');
     const pdf = read('../../site/whitepaper/build_pdf.py');
     assert.match(explorer, /id="shear-chrome-root" data-active="EXPLORER"/);
@@ -179,11 +248,11 @@ describe('website W-IMPL binds', () => {
     assert.doesNotMatch(mempool, /releases\/tag\/0\.52/);
     assert.match(pdf, /shear-testnet-v10/);
     assert.doesNotMatch(pdf, /shear-testnet-v6/);
-    assert.match(pdf, /pin 0\.68/);
+    assert.match(pdf, /pin 0\.69/);
     assert.doesNotMatch(pdf, /pin 0\.66/);
     assert.doesNotMatch(pdf, /pin 0\.55(?!\.2)/);
-    assert.match(pdf, /Wallet pin at publication: 0\.68/);
-    assert.match(pdf, /wallet-0\.68/);
+    assert.match(pdf, /Wallet pin at publication: 0\.69/);
+    assert.match(pdf, /wallet-0\.69/);
     assert.doesNotMatch(pdf, /wallet-0\.66/);
     assert.doesNotMatch(pdf, /ShearK-2\.6/);
     assert.doesNotMatch(pdf, /pool\.shear\.digital:1111/);

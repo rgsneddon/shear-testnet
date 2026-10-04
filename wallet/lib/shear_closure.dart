@@ -222,6 +222,8 @@ Map<String, String> closureSpawnEnv(
     'SHEAR_GETBLOCK_BATCH': '1',
     'SHEAR_SOLO': (!android && mode == ClosureSendMode.localNodeFull) ? '1' : '0',
     'SHEAR_FAST_SYNC': '1',
+    // Port 30303 is fleet-only. Desktop follows the same hosts over HTTPS.
+    'SHEAR_HTTP_FOLLOW': android ? '0' : '1',
     'SHEARK_POOL': shearKPoolUrl(publicPool: publicStratum),
   };
 }
@@ -261,23 +263,53 @@ class PackagedNode {
   final String? workDir;
 }
 
-/// Prefer `runtime/node` + `node/src/node.js` next to the wallet executable.
-/// A lone `shear-node` file is still accepted for older layouts.
-PackagedNode? resolvePackagedNode({String? override, String? besideDir}) {
-  if (override != null && override.isNotEmpty) {
-    return PackagedNode(binary: override, workDir: besideDir);
-  }
-  if (besideDir == null || besideDir.isEmpty) return null;
+/// `node/src/node.js` plus a Node runtime at [root], or null.
+PackagedNode? _shearNodeAt(String root) {
   final sep = Platform.pathSeparator;
-  final script = '$besideDir${sep}node${sep}src${sep}node.js';
-  if (File(script).existsSync()) {
-    for (final name in ['runtime${sep}node.exe', 'runtime${sep}node']) {
-      final path = '$besideDir$sep$name';
-      if (File(path).existsSync()) {
-        return PackagedNode(binary: path, script: script, workDir: besideDir);
-      }
+  final script = '$root${sep}node${sep}src${sep}node.js';
+  if (!File(script).existsSync()) return null;
+  for (final name in ['runtime${sep}node.exe', 'runtime${sep}node']) {
+    final path = '$root$sep$name';
+    if (File(path).existsSync()) {
+      return PackagedNode(binary: path, script: script, workDir: root);
     }
   }
+  final envPath = Platform.environment['PATH'] ?? '';
+  final delim = Platform.isWindows ? ';' : ':';
+  final exeName = Platform.isWindows ? 'node.exe' : 'node';
+  for (final dir in envPath.split(delim)) {
+    if (dir.isEmpty) continue;
+    final path = '$dir$sep$exeName';
+    if (File(path).existsSync()) {
+      return PackagedNode(binary: path, script: script, workDir: root);
+    }
+  }
+  return null;
+}
+
+/// Prefer `runtime/node` + `node/src/node.js` next to the wallet executable.
+/// A `flutter run` binary sits under `wallet/build/...`, so also walk parents
+/// until the repo (or zip root) that contains that entry. A lone `shear-node`
+/// file is still accepted for older layouts.
+PackagedNode? resolvePackagedNode({String? override, String? besideDir}) {
+  PackagedNode? found;
+  if (besideDir != null && besideDir.isNotEmpty) {
+    var dir = besideDir;
+    for (var i = 0; i < 8; i++) {
+      found = _shearNodeAt(dir);
+      if (found != null) break;
+      final parent = Directory(dir).parent.path;
+      if (parent == dir) break;
+      dir = parent;
+    }
+  }
+  if (override != null && override.isNotEmpty) {
+    if (found != null) {
+      return PackagedNode(binary: override, script: found.script, workDir: found.workDir);
+    }
+    return PackagedNode(binary: override, workDir: besideDir);
+  }
+  if (found != null) return found;
   final legacy = resolveSharedNodeBinary(besideDir: besideDir);
   if (legacy == null) return null;
   return PackagedNode(binary: legacy, workDir: besideDir);
@@ -605,7 +637,14 @@ class ShearNodeSidecar {
       if (nodeScript != null && nodeScript!.isNotEmpty) nodeScript!,
       ...lastArgs,
     ];
-    await startProcess!(nodeBinary!, lastEnv, spawnArgs);
+    try {
+      await startProcess!(nodeBinary!, lastEnv, spawnArgs);
+    } catch (e) {
+      running = false;
+      honest = false;
+      progress = 'Local node did not start. $e';
+      return progress;
+    }
     running = true;
     honest = false;
     return progress;

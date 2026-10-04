@@ -21,7 +21,11 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.68 (current)
+## 0.69 (current)
+
+Book `shear-testnet-v10` is unchanged. Public tag **0.69** (store `0.69.0+94`). Unlock Verifying and new-block population stay off the UI isolate. Android dark mode is in Settings. The Android bar shows the logo, connected, and block height only. Android has no P2P option and no full-node option. Spendable is the opened coins a send can use. A desktop Connect Bare session can start the local node; that process writes its own chain files. Node pin **Shear Sentinel v17** (product 17.0) stays tag `v17`. Git tag `v16` stays on the same commit as tag `0.66`. Tag **0.68** stays. There is no version phone-home. The macOS `.dmg` stays the MacBook handoff and is not attached. ShearK stays **2.8**.
+
+## 0.68
 
 Book `shear-testnet-v10` is unchanged. Public tag **0.68** (store `0.68.0+93`). The Android bar shows the logo, connected, and block height only. Android has no P2P option and no full-node option. Windows credit verification stays off the UI thread. Spendable is the opened coins a send can use. Node pin **Shear Sentinel v17** (product 17.0) stays tag `v17`. Git tag `v16` stays on the same commit as tag `0.66`. Tag **0.67** stays. There is no version phone-home. The macOS `.dmg` stays the MacBook handoff and is not attached. ShearK 2.8 packs for Windows, Linux, Arch, Fedora, openSUSE, and macOS are https://github.com/rgsneddon/ShearK/releases/tag/2.8. Each zip includes example.bat and example.sh.
 

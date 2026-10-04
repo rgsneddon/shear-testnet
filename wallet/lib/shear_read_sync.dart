@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
 
 import 'shear_read_open.dart';
@@ -340,6 +341,9 @@ class ShearReadSync {
   final Set<int> _proven = {};
   final Set<int> _compactProven = {};
   final List<Map<String, dynamic>> _readBlocks = [];
+  /// Heights whose proofs already ran off the UI isolate. A later block must
+  /// not send the whole book through the caller again.
+  final Set<int> _proofOpenedHeights = {};
 
   /// Money dest whose seals are opened while compact pages arrive.
   String? proofDest;
@@ -662,7 +666,13 @@ class ShearReadSync {
         }
       }
       if (page.isNotEmpty) {
-        await applyReadPageOffUi(pageBlocks: page, liveTip: tip, dest: proofDest);
+        final fresh = <Map<String, dynamic>>[
+          for (final row in page)
+            if (!_proofOpenedHeights.contains(readBlockHeight(row))) row,
+        ];
+        if (fresh.isNotEmpty) {
+          await applyReadPageOffUi(pageBlocks: fresh, liveTip: tip, dest: proofDest);
+        }
       }
       await Future<void>.delayed(Duration.zero);
     }
@@ -714,13 +724,17 @@ class ShearReadSync {
       _readBlocks.add(row);
     }
     if (liveTip > sampledTip) sampledTip = liveTip;
+    final pageHeights = <int>{
+      for (final raw in pageBlocks) readBlockHeight(raw),
+    }..remove(0);
     final opened = await _openReadOffUi(
-      blocks: _readBlocks,
-      readHeights: Set<int>.from(_compactProven),
+      blocks: pageBlocks,
+      readHeights: pageHeights,
       liveTip: liveTip,
       dest: dest,
       ibd: ibd,
     );
+    _proofOpenedHeights.addAll(pageHeights);
     lastOpen = opened;
     proofSink?.ingestReadOpen(opened, blocks: _readBlocks, dest: dest ?? proofDest);
     return opened;
@@ -790,6 +804,50 @@ class ShearReadSync {
       ibd: ibd,
       liveTip: liveTip,
     );
+  }
+
+  /// Connect bare walk over blocks already read. Same opened notes as
+  /// [openConnectBare]. [verifySealedNote] runs in [Isolate.run].
+  Future<ReadBlockOpen> openConnectBareOffUi({
+    required List blocks,
+    required Set<int> readHeights,
+    required int liveTip,
+    String? dest,
+    bool ibd = false,
+  }) async {
+    final fresh = <Map<String, dynamic>>[];
+    final heights = <int>{};
+    for (final raw in blocks) {
+      if (raw is! Map) continue;
+      final h = readBlockHeight(raw);
+      if (h < 1 || !readHeights.contains(h) || _proofOpenedHeights.contains(h)) continue;
+      fresh.add(Map<String, dynamic>.from(raw));
+      heights.add(h);
+    }
+    if (fresh.isEmpty) {
+      return lastOpen ??
+          ReadBlockOpen(
+            order: const [],
+            opened: const [],
+            unspendable: const [],
+            catchingUp: ibd || liveTip > 0,
+            deferredUntilSync: false,
+            spendableNanos: 0,
+            ibd: ibd,
+            liveTip: liveTip,
+          );
+    }
+    final opened = await _openReadOffUi(
+      blocks: fresh,
+      readHeights: heights,
+      liveTip: liveTip,
+      dest: dest,
+      ibd: ibd,
+    );
+    _proofOpenedHeights.addAll(heights);
+    lastOpen = opened;
+    proofSink?.ingestReadOpen(opened, blocks: blocks, dest: dest ?? proofDest);
+    return opened;
   }
 
   /// Connect bare walk over blocks already read. Same function Run node calls.
@@ -880,6 +938,10 @@ class ShearReadSync {
       }
       final ct = res.headers.contentType?.mimeType;
       final body = await utf8.decodeStream(res);
+      // A compact page is large enough to freeze the UI isolate inside jsonDecode.
+      if (body.length >= 32768) {
+        return Isolate.run(() => decodeNodeJson(body, contentType: ct));
+      }
       return decodeNodeJson(body, contentType: ct);
     } catch (_) {
       return null;

@@ -26,6 +26,7 @@ import { emptyVault } from '../../crypto/reserve_vault.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS } from '../../crypto/reserve_oracle.js';
 import { createStore } from './store.js';
 import { createP2p, P2P_PORT, SEED_RETRY_MS } from './p2p.js';
+import { startHttpFollow } from './http_follow.js';
 import { attachSidecarIpc } from './p2p_ipc.js';
 import { PHASE_B_GATE } from './chain.js';
 import { createRpc, RPC_PORT } from './rpc.js';
@@ -86,7 +87,7 @@ function bookPresent(dir, exists) {
   return exists(path.join(dir, 'chain.bin')) || exists(path.join(dir, 'chain.jsonl'));
 }
 
-/** Shared book for Shear Sentinel v17 and Continuum 0.68. Windows: %APPDATA%\\Shear\\testnet-v10 (Roaming). A testnet-v10 directory is not this book. */
+/** Shared book for Shear Sentinel v17 and Continuum 0.69. Windows: %APPDATA%\\Shear\\testnet-v10 (Roaming). A testnet-v10 directory is not this book. */
 export function defaultDataDir({
   env = process.env,
   homedir = os.homedir(),
@@ -181,6 +182,7 @@ export async function startNode({
     stratumBound = await stratum.listen();
   }
   await p2p.dialSeeds(seedList);
+  const httpFollow = startHttpFollow({ store, magic: MAGIC_TESTNET });
   const seedTimer = setInterval(() => {
     p2p.dialSeeds(seedList);
   }, SEED_RETRY_MS);
@@ -188,6 +190,7 @@ export async function startNode({
   const origClose = p2p.close.bind(p2p);
   p2p.close = () => {
     clearInterval(seedTimer);
+    try { httpFollow.stop(); } catch { /* ignore */ }
     try { stratum?.close(); } catch { /* ignore */ }
     origClose();
   };

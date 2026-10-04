@@ -37,7 +37,7 @@ import 'shear_node_proc.dart';
 import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 
-const kWalletVersion = '0.68';
+const kWalletVersion = '0.69';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock is accepted. Spendable drops and staking starts now.
@@ -392,6 +392,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   Future<void> _boot() async {
     id = await session.loadOrCreate();
+    _themeMode = session.darkMode ? ThemeMode.dark : ThemeMode.light;
     sidecar
       ..committed = closureModeFromStored(session.closureSendMode, android: _hostAndroid)
       ..pending = closureModeFromStored(session.closureSendMode, android: _hostAndroid);
@@ -757,7 +758,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         await _finishUnlockSync();
         if (!mounted || !unlocked || id == null) return;
         unawaited(_syncVaults(id!));
-        _startAccrualTick();
+        _startAccrualTick(immediate: true);
       }());
     } else if (mounted) {
       setState(() => _verifying = false);
@@ -797,11 +798,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     );
   }
 
-  Future<void> _followCredits(ShearIdentity ident, {required bool full}) {
+  Future<void> _followCredits(ShearIdentity ident, {required bool full, bool chain = true}) {
     return ledger.followOffUi(
       restFrame: ident.address,
       paymentCode: ident.paymentCode,
       full: full,
+      chain: chain,
       sessionPath: session.store.path,
       sessionPassword: session.password,
     );
@@ -815,19 +817,19 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (mounted) setState(() => _verifying = false);
       return;
     }
-    // Hold the credit gate through the seal so the accrual tick cannot start
-    // a second Isolate.run while this one is still open.
+    // Hold the credit gate through the short recheck. The chain download is
+    // not part of Verifying. A full note walk here is what made it hang.
     _creditBusy = true;
     try {
-      await _followCredits(ident, full: _fullCreditNow(wantFull: true));
+      await _followCredits(ident, full: false, chain: false);
       _rememberLedger();
-      await session.persist();
     } catch (_) {}
     finally {
       _creditBusy = false;
       if (mounted) setState(() => _verifying = false);
       if (_creditAgain && mounted && unlocked) _armCreditFollow();
     }
+    if (mounted && unlocked) unawaited(session.persist());
   }
 
   Future<void> _onNodeTip(int height) async {
@@ -844,7 +846,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
     _creditBusy = true;
     try {
-      await _followCredits(ident, full: _fullCreditNow(wantFull: true));
+      await _followCredits(ident, full: false, chain: false);
       _openLocalReadPrefix();
       _rememberLedger();
       if (!mounted) return;
@@ -867,12 +869,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final sync = ledger.pool?.sync;
     if (sync == null || sync.readBlocks.isEmpty) return;
     if (sidecar.committed == ClosureSendMode.connectBare) {
-      sync.openConnectBare(
-        blocks: sync.readBlocks,
-        readHeights: sync.readHeights,
-        liveTip: sync.sampledTip,
-        dest: sync.proofDest,
-      );
+      unawaited(_openBareProofs());
       return;
     }
     if (sidecar.committed != ClosureSendMode.localNode &&
@@ -886,6 +883,33 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       liveTip: ledger.pool?.liveTip ?? sync.sampledTip,
     );
     unawaited(_openSidecarProofs());
+  }
+
+  /// Connect Bare opens the new block off the UI isolate. The bar can paint
+  /// the height while [verifySealedNote] runs.
+  Future<void> _openBareProofs() async {
+    if (_proofBusy) {
+      _proofAgain = true;
+      return;
+    }
+    _proofBusy = true;
+    try {
+      do {
+        _proofAgain = false;
+        final sync = ledger.pool?.sync;
+        if (sync == null || sync.readBlocks.isEmpty) return;
+        await sync.openConnectBareOffUi(
+          blocks: sync.readBlocks,
+          readHeights: sync.readHeights,
+          liveTip: sync.sampledTip,
+          dest: sync.proofDest,
+        );
+        _requestShellPaint();
+      } while (_proofAgain && mounted);
+    } catch (_) {
+    } finally {
+      _proofBusy = false;
+    }
   }
 
   /// One proof walk at a time. A newer status line runs after this one, not
@@ -1184,6 +1208,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     setState(() {
       _themeMode = _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
     });
+    session.darkMode = _themeMode == ThemeMode.dark;
+    unawaited(session.persist());
   }
 
   Widget _brandMark({double size = 40}) {
@@ -1550,6 +1576,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
   }
+
+  /// Same walk the new-block path runs. Tests call this; the tip path calls it too.
+  @visibleForTesting
+  Future<void> populateHeldBlocksNow() => _openBareProofs();
 
   /// The indicator future returns immediately. Tip and credit sync keep running
   /// and publish on the shared paint timer.
@@ -3726,6 +3756,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
       const SizedBox(height: 16),
       const Text('Settings', style: TextStyle(fontWeight: FontWeight.w700)),
+      SwitchListTile(
+        key: const Key('settings-dark-mode'),
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Dark mode'),
+        subtitle: const Text('The bar stays the logo, the link, and the block height.'),
+        value: _themeMode == ThemeMode.dark,
+        onChanged: (_) => _toggleTheme(),
+      ),
       SwitchListTile(
         key: const Key('settings-biometrics'),
         contentPadding: EdgeInsets.zero,

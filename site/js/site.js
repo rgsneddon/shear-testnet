@@ -90,7 +90,19 @@
     var observed = j.networkAvgBlockTimeMs || j.avgBlockTimeMs;
     setText('nc-quantum', fmtShe(pot));
     setText('nc-flux', fmtShe(pot) + ' / ' + Math.round(targetMs / 1000) + ' s');
-    setText('nc-observed', fmtSecs(observed));
+    /* Flux is the protocol target. Observed never says the ~90s target is met while n < 288. */
+    var observedText = fmtSecs(observed);
+    var gate = j.interval;
+    if (gate && gate.soaking) {
+      observedText += ' · soaking n=' + gate.sealedSamples + ' — ~90s not certified';
+    } else if (gate && gate.certified90s) {
+      observedText += ' · n=' + gate.sealedSamples + ' ~90s certified';
+    } else if (gate) {
+      observedText += ' · observational n=' + gate.sealedSamples;
+    } else if (observedText !== '—') {
+      observedText += ' · ~90s not certified';
+    }
+    setText('nc-observed', observedText);
     var circNanos = Number(j.circulatingNanos);
     if (Number.isFinite(circNanos) && circNanos > 0) {
       setText('nc-integral', fmtCirc(circNanos));
