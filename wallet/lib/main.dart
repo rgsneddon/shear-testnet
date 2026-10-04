@@ -64,6 +64,9 @@ const kExplains = [
   'Password and backup. Encrypts shewall.bin so you can restore this wallet on another install.',
 ];
 
+/// What login populated, in order. Spendable is first. Sync chrome is later.
+final List<String> debugPopulationOrder = <String>[];
+
 Future<void> main(List<String> args) async {
   final tipFlag = args.indexOf('--print-tip');
   if (tipFlag >= 0) {
@@ -160,6 +163,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   String password = '';
   bool unlocked = false;
   bool _verifying = false;
+  /// Sync chrome and the block-height label wait until spendable has painted.
+  bool _chromeReady = false;
   String? _lockError;
   bool _bioReady = false;
   bool _bioStored = false;
@@ -783,33 +788,21 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (session.rememberedReserve != null) {
       reserve.applyLocalSnapshot(session.rememberedReserve!);
     }
-    if (mounted) {
-      setState(() {
-        _lockError = null;
-        unlocked = true;
-        _verifying = true;
-      });
-    }
     if (!widget.skipPoolSync) {
-      // Verifying is already set above. Start the credit worker on this
-      // turn, and do not wait for it. The next frame can paint Verifying
-      // while the worker runs. Waiting for endOfFrame first starts
-      // Isolate.run from that frame callback. Widget tests run the frame
-      // under fake async, and Isolate.run entered there never returns, so
-      // Verifying stays up and the walk never counts. A real UI thread is
-      // the same shape: this turn only schedules the other isolate.
-      unawaited(() async {
-        if (!mounted || id == null) return;
-        await _finishUnlockSync();
-        if (!mounted || !unlocked || id == null) return;
-        unawaited(_syncVaults(id!));
-        // Balances only. A full note download is still Connect Bare here,
-        // and it occupies the credit gate so Apply cannot poll balances.
-        _startAccrualTick(immediate: true, thinFirst: true);
-      }());
-    } else if (mounted) {
-      setState(() => _verifying = false);
+      // Spendable is read on another isolate before this shell, its sync
+      // chrome, or a block body exist. A zero timer does not elapse under the
+      // widget-test clock, so the follow itself is the yield.
+      if (!mounted || id == null) return;
+      await _finishUnlockSync();
     }
+    if (!mounted) return;
+    debugPopulationOrder.add('shell');
+    setState(() {
+      _lockError = null;
+      unlocked = true;
+      _verifying = false;
+      _chromeReady = widget.skipPoolSync;
+    });
     try {
       if (widget.demoTx) {
         var pay = ledger.currentDest(id!.address);
@@ -824,6 +817,26 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     // froze Shearview when history was hundreds of bundled blocks.
     if (mounted && !unlocked) setState(() => unlocked = true);
     _syncJoinRoster();
+    if (!widget.skipPoolSync && id != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !unlocked || id == null) return;
+        debugPopulationOrder.add('chrome');
+        setState(() => _chromeReady = true);
+        final ident = id!;
+        unawaited(() async {
+          // Spendable is already on screen. History is the next book read.
+          // The reserve portal waits so a replay sees those rows. A pool host
+          // is not a chain source, so this read does not call it.
+          try {
+            await ledger.syncHistory(ident.address);
+          } catch (_) {}
+          if (!mounted || id == null) return;
+          await _syncVaults(ident);
+          if (!mounted || !unlocked) return;
+          _startAccrualTick(immediate: true, thinFirst: true);
+        }());
+      });
+    }
     if (widget.skipPoolSync) _startAccrualTick(immediate: true);
     if (widget.demoTx) {
       unawaited(_playDemoLive());
@@ -845,12 +858,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     );
   }
 
-  Future<void> _followCredits(ShearIdentity ident, {required bool full, bool chain = true}) {
+  Future<void> _followCredits(
+    ShearIdentity ident, {
+    required bool full,
+    bool chain = true,
+    bool spendableFirst = false,
+  }) {
     return ledger.followOffUi(
       restFrame: ident.address,
       paymentCode: ident.paymentCode,
       full: full,
       chain: chain,
+      spendableFirst: spendableFirst,
       sessionPath: session.store.path,
       sessionPassword: session.password,
     );
@@ -884,11 +903,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (mounted) setState(() => _verifying = false);
       return;
     }
-    // Hold the credit gate through the short recheck. The chain download is
-    // not part of Verifying. A full note walk here is what made it hang.
+    // Hold the credit gate through the note read. The shell is still the
+    // lock screen, so sync chrome and block info are not up yet.
     _creditBusy = true;
+    debugPopulationOrder.add('spendable');
     try {
-      await _followCredits(ident, full: false, chain: false);
+      await _followCredits(ident, full: false, chain: true, spendableFirst: true);
       _rememberLedger();
     } catch (_) {}
     finally {
@@ -1480,19 +1500,20 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               ),
             ),
             const SizedBox(width: 8),
-            Text(
-              heightLabel,
-              key: const Key('wallet-block-height'),
-              maxLines: 1,
-              overflow: TextOverflow.fade,
-              softWrap: false,
-              style: TextStyle(
-                fontSize: 13,
-                color: _tipHud.amber
-                    ? const Color(0xFFE6A817)
-                    : Theme.of(context).colorScheme.onSurface,
+            if (_chromeReady)
+              Text(
+                heightLabel,
+                key: const Key('wallet-block-height'),
+                maxLines: 1,
+                overflow: TextOverflow.fade,
+                softWrap: false,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: _tipHud.amber
+                      ? const Color(0xFFE6A817)
+                      : Theme.of(context).colorScheme.onSurface,
+                ),
               ),
-            ),
             IconButton(
               key: const Key('android-banner-theme'),
               tooltip: _themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode',
@@ -1526,7 +1547,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           fit: BoxFit.scaleDown,
           child: Row(
             children: [
-              Padding(
+              if (_chromeReady)
+                Padding(
                 padding: const EdgeInsets.only(right: 8),
                 child: Text(
                   closureChipLabel(sidecar.committed),
@@ -1547,22 +1569,23 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   padding: EdgeInsets.only(right: 8),
                   child: Text('Verifying…', key: Key('unlock-verifying')),
                 ),
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: InkWell(
-                  onTap: (kDebugMode || widget.demoTx) ? _findBlock : null,
-                  child: Text(
-                    _tipHud.label,
-                    key: const Key('wallet-block-height'),
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: _tipHud.amber
-                          ? const Color(0xFFE6A817)
-                          : Theme.of(context).colorScheme.onSurface,
+              if (_chromeReady)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: InkWell(
+                    onTap: (kDebugMode || widget.demoTx) ? _findBlock : null,
+                    child: Text(
+                      _tipHud.label,
+                      key: const Key('wallet-block-height'),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: _tipHud.amber
+                            ? const Color(0xFFE6A817)
+                            : Theme.of(context).colorScheme.onSurface,
+                      ),
                     ),
                   ),
                 ),
-              ),
               IconButton(
                 tooltip: _themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode',
                 onPressed: _toggleTheme,

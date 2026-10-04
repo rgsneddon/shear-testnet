@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -105,6 +106,96 @@ void main() {
     expect(
       paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode),
       closeTo(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 1e-12),
+    );
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('login reads node notes before height and a pool figure does not raise spendable', () async {
+    final paths = <String>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((req) async {
+      paths.add(req.uri.path);
+      req.response.headers.contentType = ContentType.json;
+      final path = req.uri.path;
+      if (path == '/notes' || path == '/api/wallet/notes') {
+        req.response.write(jsonEncode({
+          'ok': true,
+          'notes': [
+            {
+              'dest': req.uri.queryParameters['address'] ?? '',
+              'kind': 'coinbase',
+              'height': 1,
+              'valueProof': {'v': 5 * kUnitsPerShe},
+            },
+          ],
+        }));
+      } else if (path == '/stats' || path == '/api/stats') {
+        req.response.write(jsonEncode({
+          'ok': true,
+          'height': 20,
+          'balance': 9,
+          'owedPi': 3,
+        }));
+      } else {
+        req.response.statusCode = 500;
+        req.response.write('{"ok":false}');
+      }
+      await req.response.close();
+    });
+    final dir = Directory.systemTemp.createTempSync('c070-first-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    await session.setPassword('test-pass-1');
+    final id = session.identity!;
+    final ledger = ShearLedger(pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}'))
+      ..bindIdentity(id);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.rememberNote({
+      'address': home,
+      'dest': home,
+      'verified': true,
+      'height': 1,
+      'amount': 1.0,
+      'nanos': kUnitsPerShe,
+      'commit': Uint8List(32)..[0] = 7,
+      'r': Uint8List(32)..[0] = 8,
+    });
+    ledger.rememberDest(home);
+    ledger.restoreSealedTip(20);
+    ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
+    final opened = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
+    expect(opened, closeTo(1.0, 1e-9));
+
+    await ledger.followOffUi(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      full: false,
+      chain: true,
+      spendableFirst: true,
+      sessionPath: session.store.path,
+      sessionPassword: session.password,
+    );
+
+    expect(debugCreditFollowKind, 'spendable');
+    expect(paths, isNotEmpty);
+    expect(paths.first.contains('notes'), isTrue);
+    final notesAt = paths.indexWhere((p) => p.contains('notes'));
+    final statsAt = paths.indexWhere((p) => p.contains('stats'));
+    expect(notesAt, greaterThanOrEqualTo(0));
+    expect(statsAt, greaterThan(notesAt));
+    expect(paths.any((p) => p.contains('history')), isFalse);
+    expect(paths.any((p) => p.contains('block')), isFalse);
+    expect(paths.any((p) => p.contains('balance')), isFalse);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(opened, 1e-9),
+    );
+    expect(
+      paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode),
+      closeTo(opened, 1e-12),
     );
   }, timeout: const Timeout(Duration(minutes: 2)));
 }

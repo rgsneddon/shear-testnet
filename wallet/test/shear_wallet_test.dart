@@ -5111,9 +5111,20 @@ void main() {
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
     final ident = session.identity!;
-    final pool = _VortexBalancePool();
-    addTearDown(pool.close);
-    final ledger = ShearLedger(pool: pool);
+    // The follow runs in another isolate and only receives the session file
+    // plus this client's base URL. An in-process balance map is invisible there.
+    final live = _PoolLive(headerHex: '00' * 80, height: 8, balance: 0);
+    late HttpServer server;
+    await tester.runAsync(() async {
+      server = await _fakePool(live: live);
+    });
+    addTearDown(() => server.close(force: true));
+    final node = ShearPoolClient(
+      baseUrl: 'http://127.0.0.1:${server.port}',
+      http: _realHttp()..idleTimeout = const Duration(milliseconds: 50),
+    );
+    addTearDown(node.close);
+    final ledger = ShearLedger(pool: node);
     ledger.bindIdentity(ident);
     // Not a miner: the mailbox is empty. SHE sits on a receive dest someone else paid.
     final mailbox = ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
@@ -5121,12 +5132,17 @@ void main() {
     expect(received, isNot(mailbox));
     final mine = ledger.syncDests(ident.address, paymentCode: ident.paymentCode);
     expect(mine, containsAll([mailbox, received]));
-    pool.balances[mailbox] = 0;
-    pool.balances[received] = 10.5;
+    live.owner = mailbox;
+    live.destBalances[mailbox] = 0;
+    live.destBalances[received] = 10.5;
     final other = createIdentity();
     final otherLedger = ShearLedger()..bindIdentity(other);
     final foreign = otherLedger.syncDests(other.address, paymentCode: other.paymentCode);
     expect(mine.intersection(foreign), isEmpty);
+    session.rememberedDests = ledger.exportedDests();
+    session.rememberedDestCount = ledger.destCount;
+    session.rememberedDestIndex = ledger.destIndex;
+    await tester.runAsync(() => session.persist());
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ledger,
@@ -5136,7 +5152,7 @@ void main() {
     await tester.pump();
     // Unlock seals the session (argon2) after the balance read. Fake pump time
     // does not finish that seal, so advance real time and then paint.
-    for (var n = 0; n < 40 && find.byType(NavigationBar).evaluate().isEmpty; n++) {
+    for (var n = 0; n < 100 && find.byType(NavigationBar).evaluate().isEmpty; n++) {
       await tester.runAsync(() async {
         await Future<void>.delayed(const Duration(milliseconds: 250));
       });
@@ -5147,22 +5163,36 @@ void main() {
       findsOneWidget,
       reason: tester.widgetList<Text>(find.byType(Text)).map((t) => t.data).join(' | '),
     );
-    final before = pool.balanceHits;
-    final mark = pool.queried.length;
+    final before = live.balanceHits;
+    final mark = live.balanceQueried.length;
     await tester.tap(find.byType(NavigationDestination).at(kTabs.indexOf('Vortex')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
-    expect(pool.balanceHits, greaterThan(before));
-    final fresh = pool.queried.sublist(mark).toSet();
+    // Dest balances are read one after another on the worker. The first
+    // response is not the whole set.
+    for (var n = 0;
+        n < 80 && !live.balanceQueried.sublist(mark).toSet().containsAll(mine);
+        n++) {
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      });
+      await tester.pump();
+    }
+    expect(live.balanceHits, greaterThan(before));
+    final fresh = live.balanceQueried.sublist(mark).toSet();
     expect(fresh, mine);
-    expect(pool.queried.toSet().intersection(foreign), isEmpty);
+    expect(live.balanceQueried.toSet().intersection(foreign), isEmpty);
     expect(ledger.spendable(mailbox), 0);
     expect(ledger.spendable(received), 10.5);
     expect(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode), 0);
-    final typed = 10.0;
+    // The pool figure is on the dest map. It is not a coin a send can draw.
+    expect(ledger.usableSpendable(received), 0);
     expect(
-      ledger.spendFrom(ident.address, paymentCode: ident.paymentCode, amount: typed),
-      received,
+      ledger.spendFrom(
+        ident.address,
+        paymentCode: ident.paymentCode,
+        amount: 10,
+        requireCover: true,
+      ),
+      '',
     );
     expect(find.text('The Reserve'), findsWidgets);
     // The live accrual tick arms an 8s tip timeout. Drop the shell and let it fire.
@@ -8373,7 +8403,10 @@ void main() {
     late ShearPoolClient pool;
     await tester.runAsync(() async {
       server = await _fakePool(live: live);
-      pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+      pool = ShearPoolClient(
+        baseUrl: 'http://127.0.0.1:${server.port}',
+        http: _realHttp()..idleTimeout = const Duration(milliseconds: 50),
+      );
     });
     addTearDown(() => server.close(force: true));
     final ledger = ShearLedger(pool: pool)..bindIdentity(ident);
@@ -8424,6 +8457,7 @@ void main() {
     expect(vault.portal(dest).staked + vault.portal(dest).idle, principal);
     expect(vault.liveHashBonusNanos, 7);
     expect(find.byKey(const Key('reserve-locked-in')), findsNothing);
+    await tester.pump();
     final spendShown = tester.widget<Text>(find.byKey(const Key('continuum-spendable'))).data;
     expect(
       spendShown,
@@ -8431,6 +8465,9 @@ void main() {
     );
     expect(spendShown, isNot('${formatShe(40)} SHE'));
     expect(spendShown, isNot('${formatShe(28)} SHE'));
+    // The portal total lands after the Spendable frame. One more build paints it.
+    tester.element(find.byType(ShearWalletApp)).markNeedsBuild();
+    await tester.pump();
     expect(find.byKey(const Key('continuum-in-reserve')), findsOneWidget);
     expect(find.textContaining('In Reserve  ${formatShe(20)} SHE'), findsOneWidget);
     expect(find.textContaining('Not Continuum spendable'), findsWidgets);
@@ -8508,7 +8545,10 @@ void main() {
     late ShearPoolClient inner;
     await tester.runAsync(() async {
       server = await _fakePool(live: live);
-      inner = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _realHttp());
+      inner = ShearPoolClient(
+        baseUrl: 'http://127.0.0.1:${server.port}',
+        http: _realHttp()..idleTimeout = const Duration(milliseconds: 50),
+      );
     });
     addTearDown(() => server.close(force: true));
     final pool = _PublicReadPool(inner);
@@ -8561,10 +8601,12 @@ void main() {
     expect(find.text('Staked  ${formatShe(20)} SHE'), findsOneWidget);
     expect(find.text('Staked  ${formatShe(0)} SHE'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
+    inner.close();
+    pool.close();
     await tester.runAsync(() async {
       await Future<void>.delayed(const Duration(seconds: 2));
     });
-    await tester.pump(const Duration(seconds: 9));
+    await tester.pump(const Duration(seconds: 20));
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   testWidgets('Continuum rolls owed toward pi into Spendable', (tester) async {
@@ -9035,6 +9077,7 @@ class _PoolLive {
   bool failHistory = false;
   String lastHistoryOpen = '';
   int balanceHits = 0;
+  final List<String> balanceQueried = [];
   int historyHits = 0;
   int notesHits = 0;
   /// Pull-book owed-π when set. Omitted from the balance JSON otherwise.
@@ -9160,6 +9203,7 @@ Future<HttpServer> _fakePool({
     } else if (req.uri.path == '/api/wallet/balance') {
       state.balanceHits += 1;
       final addr = req.uri.queryParameters['address'] ?? '';
+      state.balanceQueried.add(addr);
       final incoming = state.incoming.where((r) => r['to'] == addr || payoutDest(r['to']?.toString() ?? '') == addr).toList();
       req.response.write(jsonEncode({
         'balance': state.reconstructed(addr),

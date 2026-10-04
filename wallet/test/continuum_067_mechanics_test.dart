@@ -152,8 +152,12 @@ void main() {
     expect(unlock, greaterThan(0));
     expect(finish, greaterThan(unlock));
     final open = mainSrc.substring(unlock, finish);
-    expect(open, contains('unlocked = true'));
-    expect(open, contains('_verifying = true'));
+    expect(open, contains('await _finishUnlockSync()'));
+    expect(
+      open.indexOf('await _finishUnlockSync()'),
+      lessThan(open.indexOf('unlocked = true')),
+    );
+    expect(open.contains('_verifying = true'), isFalse);
     expect(open.contains('await syncCredits'), isFalse);
     expect(shearKPoolUrl(publicPool: true), 'stratum+ssl://pool.shear.digital:443');
     expect(shearKPoolUrl(publicPool: false), 'stratum+tcp://127.0.0.1:1111');
@@ -165,6 +169,8 @@ void main() {
     expect(follow, greaterThan(0));
     expect(finish, greaterThan(follow));
     final unlockBody = mainSrc.substring(finish, mainSrc.indexOf('Future<void> _onNodeTip'));
+    expect(unlockBody, contains('spendableFirst: true'));
+    expect(unlockBody.contains('chain: false'), isFalse);
     expect(unlockBody.contains('await ledger.syncCredits'), isFalse);
     expect(unlockBody.contains('await ledger.syncBalancesOnly'), isFalse);
     expect(unlockBody, contains('_followCredits'));

@@ -383,7 +383,19 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
   spec = await _bookFromSession(spec);
   spec.remove('sessionPassword');
   final base = spec['baseUrl']?.toString() ?? '';
-  final pool = base.isEmpty ? null : ShearPoolClient(baseUrl: base);
+  final spendableFirst = spec['spendableFirst'] == true;
+  // Login must not sit on the lock screen while a dead port waits out the
+  // normal connect budget. Later polls use the wallet's own client.
+  final pool = base.isEmpty
+      ? null
+      : ShearPoolClient(
+          baseUrl: base,
+          http: spendableFirst
+              ? (HttpClient()
+                ..connectionTimeout = const Duration(milliseconds: 400)
+                ..idleTimeout = const Duration(milliseconds: 400))
+              : null,
+        );
   final ledger = ShearLedger(pool: pool);
   try {
     ledger.installCreditFollow(spec);
@@ -394,20 +406,44 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
     }
     final full = spec['full'] == true;
     final chain = spec['chain'] != false;
-    // Unlock Verifying is this branch: recheck the coins already in hand.
-    // It does not download the book. That download is the later population.
-    final opened = !chain
-        ? ledger.recheckRestFrameSpendable(
+    // Login's first population. Notes whose proofs open, then the height those
+    // confirmations need. No history, no block body, no pool balance.
+    final opened = spendableFirst
+        ? await ledger.populateSpendableFromNode(
             rest,
             paymentCode: (code == null || code.isEmpty) ? null : code,
           )
-        : full
-            ? await ledger.syncCredits(rest, paymentCode: code)
-            : await ledger.syncBalancesOnly(rest, paymentCode: code);
-    final out = ledger.exportCreditFollow(restFrame: rest, paymentCode: code, full: full && chain);
-    if (!chain) {
-      // Verifying only rechecks coins already on the UI book. Shipping the
-      // tx and note lists back is the freeze after the overlay clears.
+        : !chain
+            ? ledger.recheckRestFrameSpendable(
+                rest,
+                paymentCode: (code == null || code.isEmpty) ? null : code,
+              )
+            : full
+                ? await ledger.syncCredits(rest, paymentCode: code)
+                : await ledger.syncBalancesOnly(
+                    rest,
+                    paymentCode: code,
+                    also: [
+                      for (final d in (spec['uiDests'] as List?) ?? const <dynamic>[])
+                        d.toString(),
+                    ],
+                  );
+    final out = ledger.exportCreditFollow(
+      restFrame: rest,
+      paymentCode: code,
+      full: spendableFirst || (full && chain),
+    );
+    if (spendableFirst) {
+      // Notes whose proofs opened come back. The worker did not sync history
+      // or block bodies. An empty tx list must not wipe the UI book.
+      out.remove('txs');
+      out.remove('nodeBodies');
+      out.remove('nodeHistory');
+      out.remove('nodeNotes');
+    } else if (!chain || !full) {
+      // Verify only rechecks coins already on the UI book. A balance follow
+      // never loaded history. The session tx list is not that book, and
+      // installing it wiped locks the Reserve portal still replays.
       out.remove('txs');
       out.remove('notes');
       out.remove('nodeBodies');
@@ -415,7 +451,11 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
       out.remove('nodeNotes');
     }
     out['stamp'] = identityHashCode(Isolate.current).toString();
-    out['kind'] = !chain ? 'verify' : (full ? 'credits' : 'balances');
+    out['kind'] = spendableFirst
+        ? 'spendable'
+        : !chain
+            ? 'verify'
+            : (full ? 'credits' : 'balances');
     out['opened'] = opened;
     return out;
   } finally {
@@ -3581,6 +3621,31 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
+  /// Login's first read. Pull this wallet's notes from the node and open their
+  /// proofs, then take the tip height those confirmations need. A pool balance,
+  /// an owed-toward-π figure, and a `{v}`-only row do not enter the sum.
+  Future<double> populateSpendableFromNode(String restFrame, {String? paymentCode}) async {
+    keepOwnedDests(restFrame, paymentCode: paymentCode);
+    var sawNotes = false;
+    if (pool != null && !isPoolLedgerHost(pool!.baseUrl)) {
+      // A silent node must not hold the lock screen. Later polls still collate.
+      try {
+        sawNotes = await collateSpendNotes(
+          restFrame: restFrame,
+          paymentCode: paymentCode,
+        ).timeout(const Duration(seconds: 2));
+      } catch (_) {}
+      try {
+        final json = await pool!.stats().timeout(const Duration(seconds: 2));
+        final h = (json['height'] as num?)?.toInt() ?? 0;
+        if (h > _sealedHeight) noteLiveHeight(h);
+        if (h > 0) settleTo(h);
+      } catch (_) {}
+    }
+    if (sawNotes) _openCollated = true;
+    return recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
+  }
+
   /// Pull sealed notes for the spend dests. Balance snapshots can show SHE
   /// before the note book is filled. Returns true when the pool answered,
   /// including an empty list. A network miss returns false and leaves the book.
@@ -4040,6 +4105,7 @@ class ShearLedger implements ReadProofSink {
     String? paymentCode,
     required bool full,
     bool chain = true,
+    bool spendableFirst = false,
     String? sessionPath,
     String? sessionPassword,
   }) async {
@@ -4047,6 +4113,7 @@ class ShearLedger implements ReadProofSink {
     final spec = <String, dynamic>{
       'full': full,
       'chain': chain,
+      'spendableFirst': spendableFirst,
       'restFrame': restFrame,
       'paymentCode': paymentCode ?? '',
       'baseUrl': pinned ? pool!.baseUrl : (pool?.sync?.liveBase ?? ''),
@@ -4058,6 +4125,9 @@ class ShearLedger implements ReadProofSink {
       'destCount': destCount,
       'destIndex': destIndex,
       'dests': _dests.toList(),
+      // Money dests the UI already accepts. The session file does not carry
+      // stealth shared secrets, and a recomputed set drops the mining mailbox.
+      'uiDests': syncDests(restFrame, paymentCode: paymentCode).toList(),
     };
     // A sealed session is already on disk. The worker opens it. Encoding the
     // in-memory book here is what froze Verifying on 0.68 (Windows and Android).
@@ -4207,14 +4277,22 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// Thin poll: tip + dest balances only. No history, notes, or memoOpen.
-  Future<double> syncBalancesOnly(String restFrame, {String? paymentCode}) async {
+  Future<double> syncBalancesOnly(
+    String restFrame, {
+    String? paymentCode,
+    Iterable<String> also = const [],
+  }) async {
     if (pool == null) return spendableOwned(restFrame, paymentCode: paymentCode);
     keepOwnedDests(restFrame, paymentCode: paymentCode);
     final before = _settledHeight;
     try {
       await syncTip();
     } catch (_) {}
-    final dests = syncDests(restFrame, paymentCode: paymentCode);
+    final dests = <String>{
+      ...syncDests(restFrame, paymentCode: paymentCode),
+      for (final d in also)
+        if (isDestAddress(d) && !_isProgramVaultDest(d)) d,
+    };
     final owedSweep = await _balancesFor(dests, before: before);
     _finishOwedSweep(owedSweep.max, saw: owedSweep.saw, dest: owedSweep.dest);
     _markSettled(_sealedHeight, before);

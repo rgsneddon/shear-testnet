@@ -27,6 +27,7 @@ void main() {
     debugCreditFollowStamps.clear();
     debugLastFollowSpecKeys = <String>[];
     debugReadProofIsolateRuns = 0;
+    debugPopulationOrder.clear();
     final caller = identityHashCode(Isolate.current).toString();
 
     await tester.pumpWidget(ShearWalletApp(
@@ -40,32 +41,30 @@ void main() {
     final unlock = tester.runAsync(() => state.unlockNow());
     await unlock;
     await tester.pump();
-    expect(find.byKey(const Key('unlock-verifying')), findsOneWidget);
-
-    var cleared = false;
-    for (var i = 0; i < 40 && !cleared; i++) {
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 250)));
-      await tester.pump();
-      cleared = find.byKey(const Key('unlock-verifying')).evaluate().isEmpty;
-    }
-    expect(
-      cleared,
-      isTrue,
-      reason: 'kind=$debugCreditFollowKind runs=$debugCreditFollowRuns keys=$debugLastFollowSpecKeys',
-    );
+    expect(find.byKey(const Key('continuum-spendable')), findsOneWidget);
+    expect(find.byKey(const Key('wallet-block-height')), findsNothing);
+    expect(find.byKey(const Key('unlock-verifying')), findsNothing);
+    expect(debugPopulationOrder, ['spendable', 'shell', 'chrome']);
+    await tester.pump();
+    expect(find.byKey(const Key('wallet-block-height')), findsOneWidget);
     expect(debugCreditFollowRuns, greaterThan(0));
-    expect(debugCreditFollowKind, 'verify');
+    expect(debugCreditFollowKind, 'spendable');
     expect(debugLastFollowSpecKeys, contains('sessionPath'));
-    expect(debugLastFollowSpecKeys, contains('chain'));
+    expect(debugLastFollowSpecKeys, contains('spendableFirst'));
     expect(debugLastFollowSpecKeys, isNot(contains('notes')));
     expect(debugLastFollowSpecKeys, isNot(contains('txs')));
-    expect(debugLastFollowResultKeys, isNot(contains('notes')));
+    expect(debugLastFollowResultKeys, contains('notes'));
     expect(debugLastFollowResultKeys, isNot(contains('txs')));
     expect(debugLastFollowResultKeys, isNot(contains('nodeBodies')));
     expect(debugCreditFollowStamp, isNot(caller));
     expect(tester.takeException(), isNull);
 
     final main = File('lib/main.dart').readAsStringSync();
+    final finish = main.indexOf('Future<void> _finishUnlockSync');
+    final tip = main.indexOf('Future<void> _onNodeTip');
+    final unlockBody = main.substring(finish, tip);
+    expect(unlockBody, contains('spendableFirst: true'));
+    expect(unlockBody.contains('chain: false'), isFalse);
     expect(main, contains('full: false, chain: false'));
     expect(main, contains('openConnectBareOffUi('));
     expect(main, isNot(contains('sync.openConnectBare(')));
@@ -99,5 +98,7 @@ void main() {
     expect(debugReadProofIsolateRuns, runs);
     expect(debugLastFollowSpecKeys, isNot(contains('notes')));
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 9));
   });
 }
