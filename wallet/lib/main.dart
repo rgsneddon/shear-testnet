@@ -762,7 +762,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         await _finishUnlockSync();
         if (!mounted || !unlocked || id == null) return;
         unawaited(_syncVaults(id!));
-        _startAccrualTick(immediate: true);
+        // Balances only. A full note download is still Connect Bare here,
+        // and it occupies the credit gate so Apply cannot poll balances.
+        _startAccrualTick(immediate: true, thinFirst: true);
       }());
     } else if (mounted) {
       setState(() => _verifying = false);
@@ -811,6 +813,26 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       sessionPath: session.store.path,
       sessionPassword: session.password,
     );
+  }
+
+  /// Apply's poll, off the gesture zone. Widget tests run that zone under
+  /// fake async, and Isolate.run entered there does not return. This waits
+  /// out an in-flight tick, then polls balances while the local node is in
+  /// IBD. Queuing [_onNodeTip] instead would only run the short verify walk.
+  Future<void> _followBalancesAfterApply(ShearIdentity ident) async {
+    final waitUntil = DateTime.now().add(const Duration(seconds: 20));
+    while (_creditBusy && mounted && DateTime.now().isBefore(waitUntil)) {
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
+    if (!mounted || !unlocked || _creditBusy) return;
+    _creditBusy = true;
+    try {
+      await _followCredits(ident, full: _fullCreditNow(wantFull: false));
+    } catch (_) {}
+    finally {
+      _creditBusy = false;
+      if (_creditAgain && mounted && unlocked) _armCreditFollow();
+    }
   }
 
   Future<void> _finishUnlockSync() async {
@@ -937,7 +959,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
   }
 
-  void _startAccrualTick({bool immediate = false}) {
+  void _startAccrualTick({bool immediate = false, bool thinFirst = false}) {
     _accrualTick?.cancel();
     final watchGen = ++_tipWatchGen;
     if (!widget.skipPoolSync) {
@@ -994,12 +1016,17 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         ...ledger.pendingTxs(ident.address),
         ...ledger.ownerHistory(ident.address),
       ]);
-      final full = shouldFullSyncCredits(
-        hasPendingReceive: thin,
-        historyBehindTip: ledger.historyBehindTip,
-        openCollatePending: !ledger.openCollated || ledger.notesLagSpendable,
-        tipMovedWithoutLanding: tipMoved && ledger.tipAdvancedWithoutLanding,
-      );
+      // The unlock turn's first poll must not download notes. Later polls
+      // still collate when the book is behind.
+      final full = thinFirst
+          ? false
+          : shouldFullSyncCredits(
+              hasPendingReceive: thin,
+              historyBehindTip: ledger.historyBehindTip,
+              openCollatePending: !ledger.openCollated || ledger.notesLagSpendable,
+              tipMovedWithoutLanding: tipMoved && ledger.tipAdvancedWithoutLanding,
+            );
+      thinFirst = false;
       if (_creditBusy) {
         _creditAgain = true;
         return;
@@ -3735,18 +3762,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             ledger.onClosureApply();
             session.closureSendMode = closureModeStored(sidecar.committed);
             if (!widget.skipPoolSync) {
-              if (_creditBusy) {
-                _creditAgain = true;
-              } else {
-                _creditBusy = true;
-                try {
-                  await _followCredits(ident, full: _fullCreditNow(wantFull: false));
-                } catch (_) {}
-                finally {
-                  _creditBusy = false;
-                  if (_creditAgain && mounted && unlocked) _armCreditFollow();
-                }
-              }
+              Zone.root.run(() {
+                unawaited(_followBalancesAfterApply(ident));
+              });
             }
             if (!mounted) return;
             setState(() {});
