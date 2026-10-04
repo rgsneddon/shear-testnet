@@ -396,6 +396,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     sidecar
       ..committed = closureModeFromStored(session.closureSendMode, android: _hostAndroid)
       ..pending = closureModeFromStored(session.closureSendMode, android: _hostAndroid);
+    if (!_hostAndroid && Platform.environment['FLUTTER_TEST'] != 'true') {
+      unawaited(sidecar.startDesktopBook());
+    }
     _syncJoinRoster();
     try {
       _bioReady = await biometrics.available;
@@ -3731,7 +3734,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         value: ClosureSendMode.connectBare,
         groupValue: sidecar.pending,
         title: const Text('Connect Bare'),
-        subtitle: const Text(kConnectBareCopy),
+        subtitle: Text(_hostAndroid
+            ? kConnectBareCopy
+            : 'Connect bare. You push a signed send. This device still runs the book node so blocks can land. No tunnel.'),
         onChanged: (v) => setState(() => sidecar.select(v!)),
       ),
       if (!_hostAndroid)

@@ -502,12 +502,23 @@ class ShearNodeSidecar {
 
   /// True once, when the local node first catches the light-seeker tip.
   bool takeOverIfMatched() {
-    if (_noNode) return false;
     final matched = localNodeMatchesSeeker(
       nodeHeight: reportedHeight,
       ibd: reportedIbd,
       seekerTip: seekerTip,
     );
+    if (_noNode) {
+      // Connect bare keeps the send path. A running book still catches up.
+      // Matching the tip clears the bar. It does not offer the send-path dialog.
+      if (!running) return false;
+      if (matched) {
+        honest = true;
+        progress = '';
+      } else if (reportedIbd) {
+        honest = false;
+      }
+      return false;
+    }
     if (!matched) {
       if (honest) {
         honest = false;
@@ -647,6 +658,49 @@ class ShearNodeSidecar {
     }
     running = true;
     honest = false;
+    return progress;
+  }
+
+  /// Desktop Connect bare still sends as Connect bare. The book process
+  /// listens, so Windows can allow it, and follows public nodes over HTTPS
+  /// when port 30303 has no peer. That process writes the chain files.
+  /// Android never starts it. Apply of Connect bare still stops it.
+  Future<String> startDesktopBook() => _enqueue(_startDesktopBookBody);
+
+  Future<String> _startDesktopBookBody() async {
+    if (android) return progress;
+    if (running) return progress;
+    if (committed != ClosureSendMode.connectBare) return _applyBody();
+    final empty = datadirEmpty?.call() ?? emptyDatadir;
+    lastEnv = closureSpawnEnv(
+      ClosureSendMode.localNode,
+      android: false,
+      dataDir: dataDir,
+      emptyDatadir: empty,
+    );
+    lastArgs = const [];
+    listenPort = null;
+    if (nodeBinary == null || nodeBinary!.isEmpty || startProcess == null) {
+      running = false;
+      honest = false;
+      progress = kDesktopNodeMissingCopy;
+      return progress;
+    }
+    final spawnArgs = <String>[
+      if (nodeScript != null && nodeScript!.isNotEmpty) nodeScript!,
+      ...lastArgs,
+    ];
+    try {
+      await startProcess!(nodeBinary!, lastEnv, spawnArgs);
+    } catch (e) {
+      running = false;
+      honest = false;
+      progress = 'Local node did not start. $e';
+      return progress;
+    }
+    running = true;
+    honest = false;
+    progress = 'Syncing the book on this device.';
     return progress;
   }
 

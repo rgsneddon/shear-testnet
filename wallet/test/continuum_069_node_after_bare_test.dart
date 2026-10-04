@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -25,7 +26,58 @@ Future<bool> _portFree(int port) async {
   }
 }
 
+const kSoakGenesis = '00001ed47a67a07120dd84da83b88b6fe92df6130db2fb416ade39a3a47a15b1';
+
 void main() {
+  test('Android book start does not spawn a node', () async {
+    var called = false;
+    final side = ShearNodeSidecar(
+      android: true,
+      nodeBinary: 'node',
+      startProcess: (binary, env, args) async {
+        called = true;
+      },
+    );
+    await side.startDesktopBook();
+    expect(called, isFalse);
+    expect(side.running, isFalse);
+    expect(side.committed, ClosureSendMode.connectBare);
+  });
+
+  test('Connect bare desktop book follows HTTPS and Apply still stops it', () async {
+    Map<String, String>? env;
+    var stops = 0;
+    final side = ShearNodeSidecar(
+      nodeBinary: 'node',
+      dataDir: r'C:\tmp\shear-book',
+      startProcess: (binary, envIn, args) async {
+        env = envIn;
+      },
+      onStop: () async {
+        stops += 1;
+      },
+    )..nodeScript = r'C:\tmp\node.js';
+    expect(side.committed, ClosureSendMode.connectBare);
+    final msg = await side.startDesktopBook();
+    expect(msg, 'Syncing the book on this device.');
+    expect(side.running, isTrue);
+    expect(side.committed, ClosureSendMode.connectBare);
+    expect(side.lastArgs, isEmpty);
+    expect(env!['SHEAR_HTTP_FOLLOW'], '1');
+    expect(env!['SHEAR_SOLO'], '0');
+    expect(env!.containsKey('SHEAR_BOOTSTRAP'), isFalse);
+    expect(env!['SHEAR_DATA'], r'C:\tmp\shear-book');
+    side.seekerTip = 4;
+    side.reportedHeight = 4;
+    side.reportedIbd = false;
+    expect(side.takeOverIfMatched(), isFalse);
+    expect(side.honest, isTrue);
+    expect(side.committed, ClosureSendMode.connectBare);
+    expect(await side.apply(), kConnectBareCopy);
+    expect(side.running, isFalse);
+    expect(stops, 1);
+  });
+
   test('flutter build dir still resolves the repo node entry', () {
     final libDir = '${Directory.current.path}${Platform.pathSeparator}lib';
     final packed = resolvePackagedNode(besideDir: libDir);
@@ -126,6 +178,107 @@ void main() {
     expect(sync.proofDest, isNotNull);
     expect(sync.proofDest, isNotEmpty);
     expect(ledger.displayHeight, greaterThan(0));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('Connect bare book start writes the soak chain and does not paint spendable', () async {
+    final previousOverrides = HttpOverrides.current;
+    HttpOverrides.global = _RealHttpOverrides();
+    addTearDown(() {
+      HttpOverrides.global = previousOverrides;
+    });
+    final packed = resolvePackagedNode(besideDir: '${Directory.current.path}${Platform.pathSeparator}lib');
+    expect(packed?.script, isNotNull, reason: 'repo node entry');
+    final dir = Directory.systemTemp.createTempSync('c069-book-bare-');
+    NodeProcHandle? handle;
+    final lines = <String>[];
+    addTearDown(() async {
+      await handle?.kill();
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final rpcPort = await _freePort();
+    final p2pPort = await _freePort();
+    final side = ShearNodeSidecar(
+      nodeBinary: packed!.binary,
+      dataDir: dir.path,
+      datadirEmpty: () => closureDatadirEmpty(dir.path),
+      startProcess: (binary, env, args) async {
+        final merged = Map<String, String>.from(Platform.environment)..addAll(env);
+        merged['SHEAR_RPC_PORT'] = '$rpcPort';
+        merged['SHEAR_P2P_PORT'] = '$p2pPort';
+        final work = packed.workDir;
+        if (work != null && work.isNotEmpty) {
+          final delim = Platform.isWindows ? ';' : ':';
+          final extra =
+              '$work${Platform.pathSeparator}runtime$delim$work${Platform.pathSeparator}crypto${Platform.pathSeparator}native';
+          merged['PATH'] = '$extra$delim${merged['PATH'] ?? ''}';
+        }
+        final started = await startNodeProcessOffUi(
+          binary: binary,
+          args: args,
+          environment: merged,
+          workingDirectory: work,
+        );
+        handle = started;
+        started.listen(lines.add);
+      },
+    )
+      ..nodeScript = packed.script
+      ..workDir = packed.workDir;
+    expect(side.committed, ClosureSendMode.connectBare);
+    final msg = await side.startDesktopBook();
+    expect(side.committed, ClosureSendMode.connectBare);
+    expect(side.running, isTrue, reason: '$msg\n${lines.join('\n')}');
+    expect(side.lastEnv['SHEAR_HTTP_FOLLOW'], '1');
+    expect(side.lastEnv.containsKey('SHEAR_BOOTSTRAP'), isFalse);
+
+    final sep = Platform.pathSeparator;
+    File chain() {
+      final bin = File('${dir.path}${sep}chain.bin');
+      if (bin.existsSync() && bin.lengthSync() > 0) return bin;
+      return File('${dir.path}${sep}chain.jsonl');
+    }
+    final deadline = DateTime.now().add(const Duration(seconds: 90));
+    while (DateTime.now().isBefore(deadline)) {
+      final file = chain();
+      if (file.existsSync() && file.lengthSync() > 0) break;
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
+    final wrote = chain();
+    expect(
+      wrote.existsSync() && wrote.lengthSync() > 0,
+      isTrue,
+      reason: 'node wrote no chain file\n$msg\n${lines.join('\n')}',
+    );
+    String hash = '';
+    final hashDeadline = DateTime.now().add(const Duration(seconds: 30));
+    while (DateTime.now().isBefore(hashDeadline) && hash != kSoakGenesis) {
+      try {
+        final client = HttpClient();
+        final req = await client.getUrl(Uri.parse('http://127.0.0.1:$rpcPort/block?height=1'));
+        final res = await req.close();
+        final body = await res.transform(utf8.decoder).join();
+        client.close(force: true);
+        final decoded = jsonDecode(body);
+        if (decoded is Map) hash = decoded['hash']?.toString() ?? '';
+      } catch (_) {}
+      if (hash != kSoakGenesis) await Future<void>.delayed(const Duration(seconds: 1));
+    }
+    expect(hash, kSoakGenesis, reason: lines.join('\n'));
+
+    final sync = ShearReadSync(
+      seeds: ['http://127.0.0.1:$rpcPort'],
+      jitter: Duration.zero,
+    );
+    final id = createIdentity();
+    final ledger = ShearLedger(pool: ShearPoolClient(sync: sync))..bindIdentity(id);
+    final readDeadline = DateTime.now().add(const Duration(seconds: 45));
+    while (DateTime.now().isBefore(readDeadline) && sync.readBlocks.isEmpty) {
+      await ledger.syncTip();
+    }
+    expect(sync.readBlocks, isNotEmpty, reason: lines.join('\n'));
+    expect(ledger.displayHeight, greaterThan(0));
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
   }, timeout: const Timeout(Duration(minutes: 3)));
 }
 

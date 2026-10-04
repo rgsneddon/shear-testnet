@@ -72,8 +72,19 @@ export function bestPeerTip(peers) {
 }
 
 /**
+ * HTTPS follow has seen a public tip this store has not reached.
+ * A store with no httpSync is unchanged: height 0 and no peer stays idle.
+ */
+function httpTipBehind(store, height) {
+  const http = store?.httpSync;
+  if (!http || http.behind !== true) return false;
+  return Number(http.remoteTip) > Number(height || 0);
+}
+
+/**
  * IBD stays true until this tip has caught every live peer and queues are idle.
  * Empty-tip height=0 with no advertised peer ahead remains false.
+ * A taller HTTPS tip is also IBD, including when peers=0.
  */
 export function isInitialBlockDownload({ height = 0, peers } = {}) {
   const local = Number(height) || 0;
@@ -105,7 +116,7 @@ export function nodeStatus({ store, p2p, extra = {} } = {}) {
     magic: MAGIC_TESTNET,
     peers,
     want,
-    ibd: isInitialBlockDownload({ height, peers: p2p?.peers }),
+    ibd: isInitialBlockDownload({ height, peers: p2p?.peers }) || httpTipBehind(store, height),
     peerMaxHeight: best.peerMaxHeight,
     peerHash: best.peerHash,
     syncPeerHeight: best.syncPeerHeight,

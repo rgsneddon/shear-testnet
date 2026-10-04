@@ -113,7 +113,7 @@ function sectionP2p() {
     '  That sidecar verifies blocks and feeds them over SHEAR_P2P_IPC (127.0.0.1 only).',
     '  Fleet peers run --mode=p2p-sync (store + P2P + loopback RPC), not the pool.',
     '  Solo --solo still serves 127.0.0.1 stratum from this same entry.',
-    '  IBD: ibd=true while want/pending/retryPrev/syncing is busy, or a live peer height is above this tip.',
+    '  IBD: ibd=true while want/pending/retryPrev/syncing is busy, a live peer height is above this tip, or HTTPS follow has a taller public tip (peers may still be 0).',
     '  p2p_ingest reason=merkle is a sealed-block mismatch — do not skip verify.',
     '  p2p_ingest reason=prev is a parent miss; the node retries. It is not a ban.',
     '  p2p_ingest reason=unsigned on a sealed compact block retries after a short TTL. It is not a permanent fail. Pull tip and rebuild native; do not wipe.',

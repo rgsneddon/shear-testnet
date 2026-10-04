@@ -59,6 +59,9 @@ void main() {
     expect(debugLastFollowSpecKeys, contains('chain'));
     expect(debugLastFollowSpecKeys, isNot(contains('notes')));
     expect(debugLastFollowSpecKeys, isNot(contains('txs')));
+    expect(debugLastFollowResultKeys, isNot(contains('notes')));
+    expect(debugLastFollowResultKeys, isNot(contains('txs')));
+    expect(debugLastFollowResultKeys, isNot(contains('nodeBodies')));
     expect(debugCreditFollowStamp, isNot(caller));
     expect(tester.takeException(), isNull);
 

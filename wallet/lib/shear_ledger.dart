@@ -289,6 +289,9 @@ final List<String> debugCreditFollowStamps = <String>[];
 /// `notes` — encoding that book on the UI isolate is the Verifying hang.
 List<String> debugLastFollowSpecKeys = <String>[];
 
+/// Keys the worker returned. Unlock Verifying must not bring the book back.
+List<String> debugLastFollowResultKeys = <String>[];
+
 /// How many credit follows have returned to this isolate.
 int debugCreditFollowRuns = 0;
 
@@ -396,6 +399,15 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
             ? await ledger.syncCredits(rest, paymentCode: code)
             : await ledger.syncBalancesOnly(rest, paymentCode: code);
     final out = ledger.exportCreditFollow(restFrame: rest, paymentCode: code, full: full && chain);
+    if (!chain) {
+      // Verifying only rechecks coins already on the UI book. Shipping the
+      // tx and note lists back is the freeze after the overlay clears.
+      out.remove('txs');
+      out.remove('notes');
+      out.remove('nodeBodies');
+      out.remove('nodeHistory');
+      out.remove('nodeNotes');
+    }
     out['stamp'] = identityHashCode(Isolate.current).toString();
     out['kind'] = !chain ? 'verify' : (full ? 'credits' : 'balances');
     out['opened'] = opened;
@@ -3917,20 +3929,24 @@ class ShearLedger implements ReadProofSink {
     _dests
       ..clear()
       ..addAll(((spec['dests'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
-    _txs
-      ..clear()
-      ..addAll(<ShearTx>[
-        for (final raw in (spec['txs'] as List?) ?? const <dynamic>[])
-          if (_followRevive(raw) is Map)
-            ShearTx.fromJson(Map<String, dynamic>.from(_followRevive(raw) as Map)),
-      ]);
-    _notes
-      ..clear()
-      ..addAll(<Map<String, dynamic>>[
-        for (final raw in (spec['notes'] as List?) ?? const <dynamic>[])
-          if (_followRevive(raw) is Map)
-            Map<String, dynamic>.from(_followRevive(raw) as Map),
-      ]);
+    if (spec.containsKey('txs')) {
+      _txs
+        ..clear()
+        ..addAll(<ShearTx>[
+          for (final raw in (spec['txs'] as List?) ?? const <dynamic>[])
+            if (_followRevive(raw) is Map)
+              ShearTx.fromJson(Map<String, dynamic>.from(_followRevive(raw) as Map)),
+        ]);
+    }
+    if (spec.containsKey('notes')) {
+      _notes
+        ..clear()
+        ..addAll(<Map<String, dynamic>>[
+          for (final raw in (spec['notes'] as List?) ?? const <dynamic>[])
+            if (_followRevive(raw) is Map)
+              Map<String, dynamic>.from(_followRevive(raw) as Map),
+        ]);
+    }
     void takeDoubles(Map<String, double> dest, Object? raw) {
       dest
         ..clear()
@@ -3964,15 +3980,21 @@ class ShearLedger implements ReadProofSink {
             if (_followRevive(item) is Map)
               Map<String, dynamic>.from(_followRevive(item) as Map),
         ];
-    _nodeBodies
-      ..clear()
-      ..addAll(rows(spec['nodeBodies']));
-    _nodeHistoryRows
-      ..clear()
-      ..addAll(rows(spec['nodeHistory']));
-    _nodeNoteRows
-      ..clear()
-      ..addAll(rows(spec['nodeNotes']));
+    if (spec.containsKey('nodeBodies')) {
+      _nodeBodies
+        ..clear()
+        ..addAll(rows(spec['nodeBodies']));
+    }
+    if (spec.containsKey('nodeHistory')) {
+      _nodeHistoryRows
+        ..clear()
+        ..addAll(rows(spec['nodeHistory']));
+    }
+    if (spec.containsKey('nodeNotes')) {
+      _nodeNoteRows
+        ..clear()
+        ..addAll(rows(spec['nodeNotes']));
+    }
   }
 
   void adoptCreditFollow(Map<String, dynamic> spec) {
@@ -4039,6 +4061,7 @@ class ShearLedger implements ReadProofSink {
     }
     debugLastFollowSpecKeys = spec.keys.map((k) => k.toString()).toList();
     final result = await Isolate.run(() => creditFollowWorker(jsonEncode(spec)));
+    debugLastFollowResultKeys = result.keys.map((k) => k.toString()).toList();
     debugCreditFollowStamp = result['stamp']?.toString() ?? '';
     debugCreditFollowKind = result['kind']?.toString() ?? '';
     debugCreditFollowKinds.add(debugCreditFollowKind);

@@ -52,11 +52,14 @@ export async function pullNextHttpBlock({
   }
   if (!base) return false;
   const local = Number(store.tip()?.height || 0);
+  // peers=0 is not idle when the public book is taller. Status reads this.
+  noteHttpSync(store, tip, local);
   if (local >= tip) return false;
   const body = await readJson(`${base}/block?height=${local + 1}`, signal, fetchImpl);
   if (!body || body.ok === false || !body.header) return false;
   const block = decodeWireBlock(body);
   const got = await store.ingest([block], { offLoopPow: true, tipHeight: tip });
+  noteHttpSync(store, tip, Number(store.tip()?.height || local));
   if (got?.ok !== true) {
     try {
       console.error(JSON.stringify({
@@ -76,6 +79,16 @@ export async function pullNextHttpBlock({
     }));
   } catch { /* ignore */ }
   return true;
+}
+
+/** Public HTTPS tip ahead of this store. Empty when follow has not seen a tip. */
+export function noteHttpSync(store, remoteTip, localHeight) {
+  if (!store || typeof store !== 'object') return null;
+  const remote = Number(remoteTip) || 0;
+  const local = Number(localHeight) || 0;
+  const row = { behind: remote > local, remoteTip: remote };
+  store.httpSync = row;
+  return row;
 }
 
 /** Desktop Continuum sets SHEAR_HTTP_FOLLOW=1. Unset leaves fleet nodes on P2P only. */

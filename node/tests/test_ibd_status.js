@@ -127,6 +127,31 @@ describe('status IBD catch-up', () => {
     assert.equal(row.ibd, false);
   });
 
+  it('is IBD at height 0 with peers=0 when HTTPS follow is behind a public tip', () => {
+    const behind = nodeStatus({
+      store: {
+        tip: () => null,
+        httpSync: { behind: true, remoteTip: 204 },
+      },
+      p2p: p2pWith([], 0),
+    });
+    assert.equal(behind.height, 0);
+    assert.equal(behind.peers, 0);
+    assert.equal(behind.want, 0);
+    assert.equal(behind.ibd, true);
+
+    const caught = nodeStatus({
+      store: {
+        tip: () => ({ height: 204, hash: Buffer.alloc(32, 2) }),
+        httpSync: { behind: true, remoteTip: 204 },
+      },
+      p2p: p2pWith([], 0),
+    });
+    assert.equal(caught.height, 204);
+    assert.equal(caught.peers, 0);
+    assert.equal(caught.ibd, false);
+  });
+
   it('keeps empty-tip height=0 want=0 ibd=false when no live peer is ahead', () => {
     const none = nodeStatus({ store: { tip: () => null } });
     assert.equal(none.height, 0);
