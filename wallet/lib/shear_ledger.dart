@@ -5532,7 +5532,11 @@ class ShearLedger implements ReadProofSink {
       if (json == null || json['ok'] != true || json['tx'] is! Map) {
         throw lastErr ?? StateError('send failed');
       }
-      if (sendKind == 'lock') _noteLockDebit(src, needShe);
+      if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
+        // The pool balance below is already net. Debit only when Spendable
+        // shows the opened-note cap, which is the gross sum.
+        _noteLockDebit(src, needShe);
+      }
       final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
       // wallet_api.js sets fromBalance to 0 and sends changeBalance for the
       // pool's reconstructed leftover whenever change is parked. That figure
@@ -5573,8 +5577,14 @@ class ShearLedger implements ReadProofSink {
       _txs.add(tx);
       return tx;
     }
-    _spendable[src] = spendable(src) - needShe;
-    if (sendKind == 'lock') _noteLockDebit(src, needShe);
+    final netBook = spendable(src) - needShe;
+    _spendable[src] = netBook <= 1e-18 ? 0 : netBook;
+    if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
+      // This book is already net. A confirmRound pot has no opened-note cap,
+      // so the assignment above is the only cut. The cap path shows the gross
+      // opened sum and needs this debit once so a 0 book cannot paint it back.
+      _noteLockDebit(src, needShe);
+    }
     _parkChange(src, changeDest, changeShe: fundedShe - needShe);
     final tx = ShearTx(
       id: 'send-${DateTime.now().millisecondsSinceEpoch}',
