@@ -62,7 +62,9 @@ def sign_app(app: Path, identity: str) -> None:
                 nested.append(p)
         for f in files:
             p = Path(root) / f
-            if p.suffix in {".dylib", ".so"}:
+            if p.suffix in {".dylib", ".so", ".node"}:
+                nested.append(p)
+            elif p.name == "node" and p.parent.name == "runtime":
                 nested.append(p)
     nested.sort(key=lambda p: len(p.parts), reverse=True)
     seen: set[str] = set()

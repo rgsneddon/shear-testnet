@@ -35,7 +35,7 @@ Do this by hand on the fleet. This note is not a wipe command.
 3. Start Shear Sentinel v17 on an empty `testnet-v10` datadir. Do not open a v9 or v8 chaindir.
 4. Start the pool on that empty book.
 5. Point ShearK-Miner 2.8 at the public pool with `stratum+ssl://pool.shear.digital:443`. The pool process still listens for TLS on 1113; that port does not receive public SYNs. 443 ssl_preread forwards a no-ALPN ClientHello to it. Localhost solo may stay `stratum+tcp://127.0.0.1:1111`. Do not label a 2.6 rebuild as TLS-done. The Windows zip must include the OpenSSL DLLs beside the exe.
-6. Continuum 0.69: same book `shear-testnet-v10`. A version bump does not wipe. Wipe only when magic changes.
+6. Continuum 0.70: same book `shear-testnet-v10`. A version bump does not wipe. Wipe only when magic changes.
 
 Product versions are not part of `consensusFingerprint()`.
 

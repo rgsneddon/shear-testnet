@@ -231,7 +231,7 @@ describe('website W-IMPL binds', () => {
     assert.doesNotMatch(mempool, /prettier/);
   });
 
-  it('wallet pin 0.69 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
+  it('wallet pin 0.70 stays on explorer, pool, mempool, and the whitepaper PDF source', () => {
     const paper = read('../../site/whitepaper/index.html');
     const pdf = read('../../site/whitepaper/build_pdf.py');
     assert.match(explorer, /id="shear-chrome-root" data-active="EXPLORER"/);

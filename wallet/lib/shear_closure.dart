@@ -55,6 +55,39 @@ String shearKPoolUrl({required bool publicPool}) {
   return 'stratum+tcp://127.0.0.1:1111';
 }
 
+/// How many node-log batches [parseNodeLogBatchOffUi] has returned.
+int debugNodeLogIsolateRuns = 0;
+
+/// Stamp from the last node-log parse. Differs from the UI isolate.
+String debugNodeLogOffIsolateStamp = '';
+
+/// Last status row in [lines]. The scan runs in [Isolate.run].
+Map<String, dynamic> parseNodeLogBatch(List<String> lines) {
+  int? height;
+  bool? ibd;
+  for (final line in lines) {
+    final st = parseLocalNodeStatus(line);
+    if (st == null) continue;
+    height = st.height;
+    ibd = st.ibd;
+  }
+  return {
+    'stamp': identityHashCode(Isolate.current).toString(),
+    'height': height,
+    'ibd': ibd,
+    'hit': height != null,
+  };
+}
+
+Future<({int height, bool ibd})?> parseNodeLogBatchOffUi(List<String> lines) async {
+  await Future<void>.delayed(Duration.zero);
+  final wire = await Isolate.run(() => parseNodeLogBatch(lines));
+  debugNodeLogIsolateRuns += 1;
+  debugNodeLogOffIsolateStamp = wire['stamp']?.toString() ?? '';
+  if (wire['hit'] != true) return null;
+  return (height: (wire['height'] as num?)?.toInt() ?? 0, ibd: wire['ibd'] == true);
+}
+
 /// Parsed node `printNodeStatus` line. Null when the line is not a status row.
 ({int height, bool ibd})? parseLocalNodeStatus(String line) {
   final t = line.trim();

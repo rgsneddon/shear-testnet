@@ -188,6 +188,40 @@ Map<String, dynamic>? decodeNodeJson(String body, {String? contentType}) {
   return null;
 }
 
+/// How many node JSON bodies [decodeNodeJsonOffUi] has returned.
+int debugNodeJsonIsolateRuns = 0;
+
+/// Stamp from the last node JSON parse. Differs from the UI isolate when the
+/// parse ran in [Isolate.run].
+String debugNodeJsonOffIsolateStamp = '';
+
+Map<String, dynamic> decodeNodeJsonWire(Map<String, String?> input) {
+  final decoded = decodeNodeJson(
+    input['body'] ?? '',
+    contentType: input['contentType'],
+  );
+  return {
+    'stamp': identityHashCode(Isolate.current).toString(),
+    if (decoded != null) 'json': decoded,
+  };
+}
+
+/// JSON parse of a node body. Always [Isolate.run]. A block page on the UI
+/// isolate is what made Continuum Not Responding while the log was still moving.
+Future<Map<String, dynamic>?> decodeNodeJsonOffUi(String body, {String? contentType}) async {
+  await Future<void>.delayed(Duration.zero);
+  final wire = await Isolate.run(() => decodeNodeJsonWire({
+        'body': body,
+        'contentType': contentType,
+      }));
+  debugNodeJsonIsolateRuns += 1;
+  debugNodeJsonOffIsolateStamp = wire['stamp']?.toString() ?? '';
+  final json = wire['json'];
+  if (json is Map<String, dynamic>) return json;
+  if (json is Map) return Map<String, dynamic>.from(json);
+  return null;
+}
+
 /// Sealed height and network seek stay separate. Sealed-only is not synced.
 class TipHud {
   const TipHud({
@@ -707,12 +741,29 @@ class ShearReadSync {
   }
 
   /// Same page bookkeeping as [applyReadPage]. The proof walk is [Isolate.run].
+  /// One block body from the node this sync is using. The JSON parse is
+  /// [decodeNodeJsonOffUi]. Android block info and desktop populate share it.
+  Future<Map<String, dynamic>?> blockInfo(int height) async {
+    if (height < 1) return null;
+    final base = (liveBase != null && liveBase!.isNotEmpty)
+        ? liveBase!
+        : (seeds.isNotEmpty ? seeds.first : kLocalNodeRpc);
+    final got = await _getFirst(base, [
+      '/block?height=$height',
+      '/compactblock?height=$height',
+    ]);
+    if (got == null) return null;
+    if (got['header'] == null && got['txs'] == null && got['ok'] != true) return null;
+    return got;
+  }
+
   Future<ReadBlockOpen> applyReadPageOffUi({
     required List pageBlocks,
     required int liveTip,
     String? dest,
     bool ibd = false,
   }) async {
+    await Future<void>.delayed(Duration.zero);
     for (final raw in pageBlocks) {
       if (raw is! Map) continue;
       final row = Map<String, dynamic>.from(raw);
@@ -938,11 +989,9 @@ class ShearReadSync {
       }
       final ct = res.headers.contentType?.mimeType;
       final body = await utf8.decodeStream(res);
-      // A compact page is large enough to freeze the UI isolate inside jsonDecode.
-      if (body.length >= 32768) {
-        return Isolate.run(() => decodeNodeJson(body, contentType: ct));
-      }
-      return decodeNodeJson(body, contentType: ct);
+      // Every body, including one block. The size cutoff still decoded block
+      // info on the UI isolate, and Android told the user to wait or close.
+      return decodeNodeJsonOffUi(body, contentType: ct);
     } catch (_) {
       return null;
     }

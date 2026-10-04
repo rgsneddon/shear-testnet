@@ -78,7 +78,7 @@
     <div class="wrap page-hero">
       <p class="section-label">CPU hasher</p>
       <h1>ShearK Miner <span style="color:var(--accent)">2.8</span></h1>
-      <p class="lede">Official ShearHash-v3 miner. Public pool is <code>stratum+ssl://pool.shear.digital:443</code>. After the node reports ibd=false, localhost solo stays <code>stratum+tcp://127.0.0.1:1111</code>. Login is Copy dest, a bare ssa1. A typed suffix is optional. Continuum wallet is separate — download that on <a href="/wallet/">WALLET</a> (0.69). The book is Shear Sentinel v17 on the node page. Run --selftest once, then hash. Sealed pays show in Shearview when the wallet is open. How-to: https://shear.digital/docs/#/mine.</p>
+      <p class="lede">Official ShearHash-v3 miner. Public pool is <code>stratum+ssl://pool.shear.digital:443</code>. After the node reports ibd=false, localhost solo stays <code>stratum+tcp://127.0.0.1:1111</code>. Login is Copy dest, a bare ssa1. A typed suffix is optional. Continuum wallet is separate — download that on <a href="/wallet/">WALLET</a> (0.70). The book is Shear Sentinel v17 on the node page. Run --selftest once, then hash. Sealed pays show in Shearview when the wallet is open. How-to: https://shear.digital/docs/#/mine.</p>
       <div class="pin-row">
         <span class="pin-chip">Pin 2.8</span>
         <span class="pin-chip">ShearHash-v3</span>
@@ -142,7 +142,7 @@
       <div class="panel">
         <h3>How to mine</h3>
         <ol>
-          <li>Install Continuum 0.69 and use <strong>Copy dest</strong>. The paid login starts with <code>ssa1</code>.</li>
+          <li>Install Continuum 0.70 and use <strong>Copy dest</strong>. The paid login starts with <code>ssa1</code>.</li>
           <li>Download the zip that matches this machine. Leave every file in one folder. Windows needs the OpenSSL DLLs beside <code>ShearK-Miner.exe</code>. The other packs keep <code>ShearK-Miner</code> beside the OpenSSL libraries.</li>
           <li>Open <code>example.bat</code> on Windows, or <code>example.sh</code> on Linux, Arch, Fedora, openSUSE, and macOS. Replace <code>YOUR_SSA1</code> with Copy dest. Set <code>--threads</code> to this machine's logical CPUs. A typed <code>.worker</code> is optional and pays the same address. Two machines need two worker names.</li>
           <li>Windows: save, then double-click <code>example.bat</code>. Everywhere else: <code>chmod +x ShearK-Miner example.sh</code> and run <code>./example.sh</code>.</li>
@@ -185,7 +185,7 @@
         <p>How-to and downloads: <a href="https://github.com/rgsneddon/ShearK/releases/tag/2.8" rel="noopener">rgsneddon/ShearK 2.8</a>. Miner source stays in <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">rgsneddon/shear-testnet</a> under <code>sheark-miner/</code>. Default backend <code>jit-full</code> (2 GiB dataset). Abort on restamp; verify claimed digest. One login. No miner-fee dual-login.</p>
         <div class="cta-row" style="margin-top:.85rem">
           <a class="btn btn-ghost" href="/miner/">Miner page</a>
-          <a class="btn btn-ghost" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.69">Continuum 0.69 release</a>
+          <a class="btn btn-ghost" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.70">Continuum 0.70 release</a>
         </div>
       </div>
     </section>
@@ -193,7 +193,7 @@
 
   <footer class="footer">
     <div class="wrap footer-inner">
-      <div data-shear-foot data-wallet-fallback="0.69" data-network-fallback="shear-testnet-v10">Shear · … · Continuum … · …</div>
+      <div data-shear-foot data-wallet-fallback="0.70" data-network-fallback="shear-testnet-v10">Shear · … · Continuum … · …</div>
       <nav>
         <a href="/">Main</a>
         <a href="https://pool.shear.digital" rel="noopener">Pool</a>

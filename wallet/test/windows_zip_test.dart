@@ -45,8 +45,8 @@ List<String> _zipNames(File zip) {
 }
 
 void main() {
-  test('kWalletVersion displayed pin is 0.69 (not 0.14.0)', () {
-    expect(kWalletVersion, '0.69');
+  test('kWalletVersion displayed pin is 0.70 (not 0.14.0)', () {
+    expect(kWalletVersion, '0.70');
     final zipPy = File('pack/zip_windows.py').readAsStringSync();
     expect(zipPy, contains('kWalletVersion'));
     expect(zipPy, contains('shear-wallet-{PUBLIC_PIN}-windows.zip'));
@@ -59,6 +59,9 @@ void main() {
     final macos = File('pack_macos.sh').readAsStringSync();
     expect(macos, contains('kWalletVersion'));
     expect(macos, isNot(contains('VER=0.14')));
+    expect(macos, contains('stage_app_sidecar'));
+    expect(macos, contains('runtime/node'));
+    expect(macos, contains('node/src/node.js'));
   });
 
   test('built shear-wallet-0.48-windows.zip is a Flutter runner with no miner', () {

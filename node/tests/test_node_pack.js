@@ -60,7 +60,7 @@ describe('portable node packs', () => {
     assert.match(mac, /shear-testnet-v10/);
     assert.doesNotMatch(mac, /LABEL=v9/);
     assert.doesNotMatch(mac, /shear-node-v9-macos/);
-    assert.match(handoff, /shear-wallet-0\.69-macos\.dmg/);
+    assert.match(handoff, /shear-wallet-0\.70-macos\.dmg/);
     assert.match(handoff, /Do not pass `--clobber`/);
     assert.match(handoff, /Do not build Shear Sentinel/);
     assert.match(handoff, /Do not build ShearK/);

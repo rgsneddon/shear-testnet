@@ -364,7 +364,13 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
     if (j['paymentCode'] != null) 'paymentCode': j['paymentCode'],
     'dests': j['dests'] ?? spec['dests'],
     'txs': j['txs'] ?? const <dynamic>[],
-    'sealed': j['sealedHeight'] ?? spec['sealed'],
+    // A session that has not remembered a tip stores 0. That is not a rewind
+    // of the live book the UI already sealed.
+    'sealed': () {
+      final sessionSealed = (j['sealedHeight'] as num?)?.toInt() ?? 0;
+      final specSealed = (spec['sealed'] as num?)?.toInt() ?? 0;
+      return sessionSealed > specSealed ? sessionSealed : specSealed;
+    }(),
     'destCount': j['destCount'] ?? spec['destCount'],
     'destIndex': j['destIndex'] ?? spec['destIndex'],
   };
@@ -3964,7 +3970,13 @@ class ShearLedger implements ReadProofSink {
     _unverifiedExternal
       ..clear()
       ..addAll(((spec['unverifiedExternal'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
-    _sealedHeight = (spec['sealed'] as num?)?.toInt() ?? _sealedHeight;
+    // A follow that did not see the live tip must not rewind it. Rewinding
+    // makes opened coins look short of the confirmation floor, so Spendable
+    // stays 0 after every verify.
+    final incomingSealed = (spec['sealed'] as num?)?.toInt();
+    if (incomingSealed != null && incomingSealed > _sealedHeight) {
+      _sealedHeight = incomingSealed;
+    }
     _settledHeight = (spec['settled'] as num?)?.toInt() ?? _settledHeight;
     _notesAt
       ..clear()
@@ -3998,7 +4010,27 @@ class ShearLedger implements ReadProofSink {
   }
 
   void adoptCreditFollow(Map<String, dynamic> spec) {
+    // A balance or verify follow does not carry the note book. Installing its
+    // empty spendable map wiped opened coins, so Spendable stayed 0 on every
+    // platform. Keep proofs that already opened, then recompute the one sum a
+    // send can draw. A pool balance in [spec] does not raise that sum.
+    final kept = <Map<String, dynamic>>[
+      for (final n in _notes)
+        if (n['verified'] == true) Map<String, dynamic>.from(n),
+    ];
+    final keptProofs = Set<String>.from(_proofCheckedDests);
     installCreditFollow(spec);
+    for (final n in kept) {
+      rememberNote(n);
+      final dest = (n['dest'] ?? n['address'])?.toString() ?? '';
+      if (dest.isNotEmpty) _proofCheckedDests.add(payKey(dest));
+    }
+    _proofCheckedDests.addAll(keptProofs);
+    final rest = spec['restFrame']?.toString() ?? _restFrame ?? '';
+    final rawCode = spec['paymentCode']?.toString() ?? '';
+    if (rest.isNotEmpty) {
+      recheckRestFrameSpendable(rest, paymentCode: rawCode.isEmpty ? null : rawCode);
+    }
   }
 
   /// Balance poll or full credit sync. HTTP and note scan run in [Isolate.run].

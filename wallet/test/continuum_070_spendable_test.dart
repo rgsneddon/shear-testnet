@@ -1,0 +1,110 @@
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:shear_wallet/shear_ctf.dart';
+import 'package:shear_wallet/shear_eip712.dart';
+import 'package:shear_wallet/shear_identity.dart';
+import 'package:shear_wallet/shear_ledger.dart';
+import 'package:shear_wallet/shear_reserve.dart';
+import 'package:shear_wallet/shear_session.dart';
+
+void main() {
+  test('an opened coin is what a send can draw, and a follow does not replace it', () async {
+    final dir = Directory.systemTemp.createTempSync('c070-spend-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    await session.setPassword('test-pass-1');
+    final id = session.identity!;
+    final ledger = ShearLedger()..bindIdentity(id);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.rememberNote({
+      'address': home,
+      'dest': home,
+      'verified': true,
+      'height': 1,
+      'amount': 1.0,
+      'nanos': kUnitsPerShe,
+      'commit': Uint8List(32)..[0] = 4,
+      'r': Uint8List(32)..[0] = 5,
+    });
+    ledger.rememberDest(home);
+    ledger.restoreSealedTip(20);
+    ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
+
+    final opened = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
+    expect(opened, closeTo(1.0, 1e-9));
+    expect(
+      paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode),
+      closeTo(opened, 1e-12),
+    );
+
+    await ledger.followOffUi(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      full: false,
+      chain: false,
+      sessionPath: session.store.path,
+      sessionPassword: session.password,
+    );
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(opened, 1e-9),
+    );
+
+    ledger.rememberNodeChain(notes: [
+      {
+        'dest': home,
+        'kind': 'coinbase',
+        'height': 2,
+        'valueProof': {'v': 5 * kUnitsPerShe},
+      },
+    ]);
+    ledger.creditKnownNodeLands();
+    ledger.applyPoolSnapshot(
+      home,
+      {'balance': 9.0, 'pending': 1.0, 'owedPi': 3.0},
+      beforeHeight: 20,
+      tipSealed: 20,
+    );
+    final shown = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
+    expect(shown, closeTo(opened, 1e-9));
+    expect(
+      paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode),
+      closeTo(shown, 1e-12),
+    );
+    expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), isNot(shown));
+
+    final cover = planLockFunding(
+      ledger,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      needShe: 0.4,
+    );
+    expect(cover.have, closeTo(shown, 1e-9));
+    final dest = vaultDest(id.address, viewKey: id.viewKey)!;
+    final posted = await postReserveDeposit(
+      ledger: ledger,
+      reserve: ShearReserve(),
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      dest: dest,
+      she: 0.4,
+      depth: 0,
+      spendSeed: hexToBytes(id.seedHex),
+      local: true,
+    );
+    expect(posted.posted, isTrue);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      lessThan(shown),
+    );
+    expect(
+      paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode),
+      closeTo(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 1e-12),
+    );
+  }, timeout: const Timeout(Duration(minutes: 2)));
+}

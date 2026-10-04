@@ -49,12 +49,23 @@ if [ -e "$APP/Contents/MacOS/shear-miner" ] || [ -e "$APP/Contents/MacOS/Shear-M
   echo "wallet app must not include Shear-Miner" >&2
   exit 1
 fi
+# Node runtime inside the app, beside the executable, before codesign.
+# Connect bare, p2p node, and full node start this sidecar. Same layout as
+# the Windows zip: runtime/node and node/src/node.js. A second pack leaves
+# an existing runtime/node alone so the Developer ID seal survives ditto.
+# This does not build or repack Shear Sentinel. stage_app_sidecar lives in
+# wallet/pack/stage_macos_sidecar.py.
+if [ ! -x "$APP/Contents/MacOS/runtime/node" ]; then
+  python3 "$WALLET/pack/stage_macos_sidecar.py" "$APP/Contents/MacOS" "$ROOT"
+fi
+test -x "$APP/Contents/MacOS/runtime/node"
+test -f "$APP/Contents/MacOS/node/src/node.js"
 
 hdiutil detach "/Volumes/$VOLNAME" >/dev/null 2>&1 || true
 rm -f "$DMG" "$RW"
 mkdir -p "$DIST"
 
-hdiutil create -ov -fs HFS+ -volname "$VOLNAME" -size 100m "$RW" >/dev/null
+hdiutil create -ov -fs HFS+ -volname "$VOLNAME" -size 512m "$RW" >/dev/null
 ATTACH=$(hdiutil attach -nobrowse "$RW")
 MNT=$(echo "$ATTACH" | sed -n 's/.*\(\/Volumes\/.*\)$/\1/p')
 test -d "$MNT"

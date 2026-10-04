@@ -3,7 +3,7 @@
 **Written:** 2026-09-17T19:20Z from the Mac (`/Users/russellsneddon/shear`). HEAD **`f63c1e1`+** (dest-P bind `03fe7fe` is in this history).  
 **Canonical GitHub tree:** https://github.com/rgsneddon/shear-testnet  
 **Working branch:** `main`  
-**This file is the Windows start for Shear.** Current pins: Continuum **0.69**, ShearK **2.8** (TLS-aware), Shear Sentinel **v17** (product 17.0). Pins are **0.69** (wallet) and ShearK **2.8**. Pin **0.69**. Do not recut older tags, and do not label a ShearK 2.6 rebuild as TLS-done. The MacBook cuts only the Continuum 0.69 disk image (`MACBOOK-HANDOFF.md`). Do not ask the Mac to cut a node or a miner. This Windows box packs APK, Windows zip, Linux/Arch, and site pins. Live book is `shear-testnet-v10`. Do not wipe a datadir because this file also keeps the 2026-09-17 v4 record. Tag **0.68** stays.
+**This file is the Windows start for Shear.** Current pins: Continuum **0.70**, ShearK **2.8** (TLS-aware), Shear Sentinel **v17** (product 17.0). Pins are **0.70** (wallet) and ShearK **2.8**. Pin **0.70**. Do not recut older tags, and do not label a ShearK 2.6 rebuild as TLS-done. The MacBook cuts only the Continuum 0.70 disk image (`MACBOOK-HANDOFF.md`). Do not ask the Mac to cut a node or a miner. This Windows box packs APK, Windows zip, Linux/Arch, and site pins. Live book is `shear-testnet-v10`. Do not wipe a datadir because this file also keeps the 2026-09-17 v4 record. Tag **0.68** stays.
 
 Other Shear GitHub repos (`rgsneddon/shear`, `rgsneddon/shear-wallet`, `rgsneddon/shear-pool`) are being deleted. Clone **this** repo only, plus **ShearK**.
 
@@ -34,13 +34,13 @@ Private inventory (optional): `gh repo clone rgsneddon/handoff %USERPROFILE%\han
 | Book / magic | live book `shear-testnet-v10` (unchanged; do not wipe) |
 | Node | **Shear Sentinel v17** (product 17.0). Git tag `v16` stays on the same commit as tag `0.66`. Do not move tag `v16`. |
 | ADMIT | ADMITv2 (Pasta arity-32 CDS; Membership, not Multiple) |
-| Wallet | **0.69** (`wallet/pubspec.yaml` `0.69.0+94`, `kWalletVersion`) |
+| Wallet | **0.70** (`wallet/pubspec.yaml` `0.70.0+95`, `kWalletVersion`) |
 | Miner | **ShearK 2.8**. Six zips on https://github.com/rgsneddon/ShearK/releases/tag/2.8 (windows, linux, archlinux, fedora, opensuse, macos). Each zip includes `example.bat` and `example.sh`. |
 | Stratum | public `stratum+ssl://pool.shear.digital:443`; localhost solo `stratum+tcp://127.0.0.1:1111` |
 | SHARE_BIND | `rx+noteCommit` |
 | Mainnet | **blocked**. Do **not** set `SHEAR_MAINNET_EMIT=1`. Do not rotate the live fee-payout ssa1 from this file. |
 
-Wallet packs on **this** repo: https://github.com/rgsneddon/shear-testnet/releases/tag/0.69. Node packs stay https://github.com/rgsneddon/shear-testnet/releases/tag/v17. Tag **0.68** stays. Do not pass `--clobber`.  
+Wallet packs on **this** repo: https://github.com/rgsneddon/shear-testnet/releases/tag/0.70. Node packs stay https://github.com/rgsneddon/shear-testnet/releases/tag/v17. Tag **0.68** stays. Do not pass `--clobber`.  
 Sections 2, 3, and the coordinated v4 wipe note are the 2026-09-17 record. They are not the live book and they are not a wipe order.
 
 ---
@@ -100,9 +100,9 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 ## 5) Next work on Windows (priority)
 
-1. Continuum **0.69** Windows, Linux, Fedora, Arch, and the fat Android APK ship on tag `0.69`. Tag `0.68` stays. Do not `--clobber` the 0.68 assets and do not pass `--clobber` on 0.69. Darwin cannot `flutter build windows`.
-2. **Android 0.69** is release-signed on this Windows box (Flutter + Android SDK 36 + Eclipse Temurin JDK 17). See §6a. versionCode comes from pubspec `+N` (94) and is never 49.
-3. **The MacBook cuts only the Continuum 0.69 disk image** (`MACBOOK-HANDOFF.md`, `NODE-MACBOOK-HANDOFF.md`): `shear-wallet-0.69-macos.dmg`. Do not build Shear Sentinel. Do not build ShearK. Do not move tag `v16` or tag `0.66`.
+1. Continuum **0.70** Windows, Linux, Fedora, Arch, and the fat Android APK ship on tag `0.70`. Tag `0.68` stays. Do not `--clobber` the 0.68 assets and do not pass `--clobber` on 0.70. Darwin cannot `flutter build windows`.
+2. **Android 0.70** is release-signed on this Windows box (Flutter + Android SDK 36 + Eclipse Temurin JDK 17). See §6a. versionCode comes from pubspec `+N` (95) and is never 49.
+3. **The MacBook cuts only the Continuum 0.70 disk image** (`MACBOOK-HANDOFF.md`, `NODE-MACBOOK-HANDOFF.md`): `shear-wallet-0.70-macos.dmg`. Do not build Shear Sentinel. Do not build ShearK. Do not move tag `v16` or tag `0.66`.
 4. ShearK **2.8** stays on https://github.com/rgsneddon/ShearK/releases/tag/2.8. Do not recut it. The Linux zip must contain an ELF miner that dials `stratum+ssl`. Do not label a 2.6 rebuild as TLS-done.
 5. Keep mainnet blocked. No `SHEAR_MAINNET_EMIT=1` without `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`.
 
@@ -112,7 +112,7 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 - Linux node: `make -C crypto/native` on the box. Never copy a macOS `.node` to Linux.
 - p2pnode2 (Ubuntu 26.04) has no gcc — copy Linux `shearadmit.node` from P2pnode.
-- Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.69**. pubspec `0.69.0+94`. Build number comes from `+N` and is never 49. Node pin is Shear Sentinel **v17**. Miner pin is ShearK **2.8**.
+- Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.70**. pubspec `0.70.0+95`. Build number comes from `+N` and is never 49. Node pin is Shear Sentinel **v17**. Miner pin is ShearK **2.8**.
 - Pool HTTP: `/api/stats`, not `/stats`.
 - Operator admin vhost is **not** in git.
 - Stratum fleet: `SHEAR_STRATUM_BIND=127.0.0.1` and `SHEAR_STRATUM_AUTH=1` (or TLS in front of loopback). Reload with `deploy/reload-stratum-units.sh`. Checklist: `deploy/STRATUM_CHECKLIST.md`. Confirm `/api/stats` `stratumBind≠0.0.0.0` and `loginAuth≠dest-only` when AUTH is on; `alerts.stratumDrift` fires on non-loopback ∧ AUTH≠1. Do not enable dest-ban without ownership once AUTH is on. Do not invent TLS certs.
@@ -127,16 +127,16 @@ set ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
 set ANDROID_SDK_ROOT=%ANDROID_HOME%
 cd /d %USERPROFILE%\shear-testnet\wallet
 flutter pub get
-flutter build apk --release --build-name=0.69.0 --build-number=94
-copy /Y build\app\outputs\flutter-apk\app-release.apk dist\shear-wallet-0.69-android.apk
-copy /Y build\app\outputs\flutter-apk\app-release.apk ..\dist\shear-wallet-0.69-android.apk
+flutter build apk --release --build-name=0.70.0 --build-number=95
+copy /Y build\app\outputs\flutter-apk\app-release.apk dist\shear-wallet-0.70-android.apk
+copy /Y build\app\outputs\flutter-apk\app-release.apk ..\dist\shear-wallet-0.70-android.apk
 ```
 
-Fat APK only (`flutter build apk`, not `--split-per-abi`). `applicationId` `com.shear.shear_wallet`. Release signing uses `wallet/android/key.properties` and refuses the debug cert when that file is missing. Do not `--clobber` the published 0.68 APK. Users on a debug-signed 0.65/0.66 build export, uninstall, then install the release-signed 0.69 APK once.
+Fat APK only (`flutter build apk`, not `--split-per-abi`). `applicationId` `com.shear.shear_wallet`. Release signing uses `wallet/android/key.properties` and refuses the debug cert when that file is missing. Do not `--clobber` the published 0.68 APK. Users on a debug-signed 0.65/0.66 build export, uninstall, then install the release-signed 0.70 APK once.
 
 ### 6b) MacBook — Apple parts only
 
-The Windows box cannot produce notarized macOS, iOS, or a Darwin ShearK binary. The Mac cut is only `shear-wallet-0.69-macos.dmg`: [`MACBOOK-HANDOFF.md`](MACBOOK-HANDOFF.md) and [`NODE-MACBOOK-HANDOFF.md`](NODE-MACBOOK-HANDOFF.md). Do not build Shear Sentinel. Do not build ShearK. Do not put ShearK 2.8 inside the disk image.
+The Windows box cannot produce notarized macOS, iOS, or a Darwin ShearK binary. The Mac cut is only `shear-wallet-0.70-macos.dmg`: [`MACBOOK-HANDOFF.md`](MACBOOK-HANDOFF.md) and [`NODE-MACBOOK-HANDOFF.md`](NODE-MACBOOK-HANDOFF.md). Do not build Shear Sentinel. Do not build ShearK. Do not put ShearK 2.8 inside the disk image.
 
 ---
 
@@ -144,7 +144,7 @@ The Windows box cannot produce notarized macOS, iOS, or a Darwin ShearK binary. 
 
 - Invent a mainnet genesis datetime.
 - Dual-stack ADMITv1 + ADMITv2.
-- Recut an older wallet or ShearK tag. Pins are **0.69**, ShearK **2.8**, and Shear Sentinel **v17**. Do not relabel 0.66 as 0.69. Do not move tag `0.68`. Do not label ShearK 2.6 as TLS-done.
+- Recut an older wallet or ShearK tag. Pins are **0.70**, ShearK **2.8**, and Shear Sentinel **v17**. Do not relabel 0.66 as 0.70. Do not move tag `0.68`. Do not label ShearK 2.6 as TLS-done.
 
 ## 7) Stratum live stats vs tip units
 
@@ -178,7 +178,7 @@ Off-host vault (Windows, outside git): `C:\Users\rgsne\Desktop\SHEAR-SECRETS\` c
 - Hostname: re-cert or DNS-retire `docs.shear.digital` + `whitepaper.shear.digital`; then HSTS + baseline headers (separate ops). In-repo copy now points at `https://shear.digital/docs/` and `https://shear.digital/whitepaper/`.
 - Concentration: keep `alerts.concentration`; bring a second hasher — no multi-party security claims at `topDest=100%`.
 - Seed hygiene: 0600 datadir restore; hex off git/units; watch first signed π auto-pay after `confirmedNeed=30` (path ready; `signed=true` live).
-- Soak checklist (watch, not code): Continuum 0.69, ShearK 2.8, and Shear Sentinel v17 on live worker Copy dest — mine → ≥6 conf → ShearView row → Resistance; fail release if empty after sealed hash notes. ASERT settle claim only after ≥288 blocks. Thin |J| until ≥10k. Do not call ~90s certified while the sealed sample window is under 288.
+- Soak checklist (watch, not code): Continuum 0.70, ShearK 2.8, and Shear Sentinel v17 on live worker Copy dest — mine → ≥6 conf → ShearView row → Resistance; fail release if empty after sealed hash notes. ASERT settle claim only after ≥288 blocks. Thin |J| until ≥10k. Do not call ~90s certified while the sealed sample window is under 288.
 - W7 (this tree): fork verify uses a trial vault clone at the fork root + `applyReserveBlock` per accepted fork block (VS-R1); owner history always `destProofOpen(homeDest)` and notes ingest before empty ShearView. Leave `wallet_api` previewWithdraw-only, biometrics unlock-token, prove stdin/FFI, TOTP mutate gate.
 
 ### Restore one-liner (after a datadir wipe)
@@ -204,7 +204,7 @@ If seed missing: do **not** restart dest-only. Restore both vault files, `chmod 
 
 ### Coordinated shear-testnet-v4 datadir wipe
 
-Historical 2026-09-17 record only. Do not run this wipe. The live book is `shear-testnet-v10`. Current pins are Continuum 0.69 / ShearK 2.8 / Shear Sentinel v17. The paths below stay so the old v4 restore note can still be read. Magic in that record was **`shear-testnet-v4`**.
+Historical 2026-09-17 record only. Do not run this wipe. The live book is `shear-testnet-v10`. Current pins are Continuum 0.70 / ShearK 2.8 / Shear Sentinel v17. The paths below stay so the old v4 restore note can still be read. Magic in that record was **`shear-testnet-v4`**.
 
 | Order | Box | IP | Stop | Data |
 |------|-----|----|------|------|

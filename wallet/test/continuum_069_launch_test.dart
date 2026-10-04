@@ -7,7 +7,7 @@ import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_session.dart';
 
 void main() {
-  testWidgets('ShearWalletApp first frame is Shear 0.69 and throws nothing', (tester) async {
+  testWidgets('ShearWalletApp first frame is Shear 0.70 and throws nothing', (tester) async {
     final dir = Directory.systemTemp.createTempSync('c069-launch-');
     addTearDown(() {
       if (dir.existsSync()) dir.deleteSync(recursive: true);
@@ -21,8 +21,8 @@ void main() {
     ));
     await tester.pump();
     expect(tester.takeException(), isNull);
-    expect(tester.widget<MaterialApp>(find.byType(MaterialApp)).title, 'Shear 0.69');
-    expect(kWalletVersion, '0.69');
+    expect(tester.widget<MaterialApp>(find.byType(MaterialApp)).title, 'Shear 0.70');
+    expect(kWalletVersion, '0.70');
     expect(find.byType(ShearWalletApp), findsOneWidget);
   });
 }

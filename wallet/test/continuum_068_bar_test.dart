@@ -80,8 +80,8 @@ void main() {
     expect(tileTop, lessThan(560));
     expect(dark, findsOneWidget);
     expect(find.text('Unlock with biometrics'), findsOneWidget);
-    expect(find.byIcon(Icons.dark_mode), findsNothing);
-    expect(find.byTooltip('Dark mode'), findsNothing);
+    expect(find.byKey(const Key('android-banner-theme')), findsOneWidget);
+    expect(find.byTooltip('Dark mode'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await tester.tap(dark);
@@ -92,7 +92,7 @@ void main() {
     expect(find.byKey(const Key('wallet-block-height')), findsOneWidget);
     expect(find.text('p2P Node'), findsNothing);
     expect(find.text('Full Node'), findsNothing);
-    expect(find.byIcon(Icons.dark_mode), findsNothing);
+    expect(find.byKey(const Key('android-top-banner')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

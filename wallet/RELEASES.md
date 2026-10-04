@@ -21,9 +21,9 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
-## 0.69 (current)
+## 0.70 (current)
 
-Book `shear-testnet-v10` is unchanged. Public tag **0.69** (store `0.69.0+94`). Unlock Verifying and new-block population stay off the UI isolate. Android dark mode is in Settings. The Android bar shows the logo, connected, and block height only. Android has no P2P option and no full-node option. Spendable is the opened coins a send can use. A desktop Connect Bare session can start the local node; that process writes its own chain files. Node pin **Shear Sentinel v17** (product 17.0) stays tag `v17`. Git tag `v16` stays on the same commit as tag `0.66`. Tag **0.68** stays. There is no version phone-home. The macOS `.dmg` stays the MacBook handoff and is not attached. ShearK stays **2.8**.
+Book `shear-testnet-v10` is unchanged. Public tag **0.70** (store `0.70.0+95`). Load, early sync, and block population stay off the UI isolate. The Android top banner has dark mode and light mode. The Android bar shows the logo, connected, and block height only. Android has no P2P option and no full-node option. Spendable is the opened coins a send can use. A desktop Connect Bare session can start the local node; that process writes its own chain files. The Mac disk image includes that same node runtime inside the app. Node pin **Shear Sentinel v17** (product 17.0) stays tag `v17`. Git tag `v16` stays on the same commit as tag `0.66`. Tag **0.68** stays. There is no version phone-home. `shear-wallet-0.70-macos.dmg` is cut on a Mac and uploaded without `--clobber`. Do not invent or upload it from Windows. ShearK stays **2.8**.
 
 ## 0.68
 

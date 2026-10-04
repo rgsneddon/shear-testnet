@@ -37,7 +37,7 @@ import 'shear_node_proc.dart';
 import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 
-const kWalletVersion = '0.69';
+const kWalletVersion = '0.70';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock is accepted. Spendable drops and staking starts now.
@@ -236,12 +236,50 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (mounted) setState(() {});
   }
 
+  final List<String> _pendingNodeLines = [];
+  Future<void>? _nodeLogApply;
+
   void _ingestNodeLine(String line) {
     if (!mounted || line.isEmpty) return;
+    _pendingNodeLines.add(line);
+    _nodeLogApply ??= _drainNodeLog();
+  }
+
+  Future<void> _drainNodeLog() async {
+    try {
+      while (mounted && _pendingNodeLines.isNotEmpty) {
+        final batch = List<String>.from(_pendingNodeLines);
+        _pendingNodeLines.clear();
+        await followNodeLog(batch);
+      }
+    } finally {
+      _nodeLogApply = null;
+      if (mounted && _pendingNodeLines.isNotEmpty) {
+        _nodeLogApply = _drainNodeLog();
+      }
+    }
+  }
+
+  /// Node log lines while sync is moving. The status scan is [parseNodeLogBatchOffUi].
+  /// Appending the text and painting stay on this isolate so a frame can run.
+  @visibleForTesting
+  Future<void> followNodeLog(List<String> lines) async {
+    await Future<void>.delayed(Duration.zero);
+    if (!mounted || lines.isEmpty) return;
     sidecar.seekerTip = ledger.pool?.liveTip ?? ledger.displayHeight;
-    final firstHonest = noteSidecarLine(sidecar, line, openProofs: false);
+    for (final line in lines) {
+      sidecar.addLog(line);
+    }
+    final st = await parseNodeLogBatchOffUi(lines);
+    if (!mounted) return;
+    var matched = false;
+    if (st != null) {
+      sidecar.reportedHeight = st.height;
+      sidecar.reportedIbd = st.ibd;
+      matched = sidecar.takeOverIfMatched();
+    }
     _requestShellPaint();
-    if (sidecar.localSyncNoticeDue(caughtTip: firstHonest)) _showLocalNodeSynced();
+    if (sidecar.localSyncNoticeDue(caughtTip: matched)) _showLocalNodeSynced();
     if (sidecar.hasHeldBlocks) unawaited(_openSidecarProofs());
   }
 
@@ -917,6 +955,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   /// Connect Bare opens the new block off the UI isolate. The bar can paint
   /// the height while [verifySealedNote] runs.
   Future<void> _openBareProofs() async {
+    await Future<void>.delayed(Duration.zero);
     if (_proofBusy) {
       _proofAgain = true;
       return;
@@ -944,6 +983,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   /// One proof walk at a time. A newer status line runs after this one, not
   /// piled on the UI isolate.
   Future<void> _openSidecarProofs() async {
+    await Future<void>.delayed(Duration.zero);
     if (_proofBusy) {
       _proofAgain = true;
       return;
@@ -1412,8 +1452,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final sealed = ledger.sealedHeight;
       final heightLabel = sealed > 0 ? 'height $sealed' : 'height —';
       final link = _tipHud.live && !_tipHud.ibd ? 'connected' : 'not connected';
+      final banner = Theme.of(context).appBarTheme.backgroundColor;
       return AppBar(
+        key: const Key('android-top-banner'),
         automaticallyImplyLeading: false,
+        backgroundColor: banner,
+        foregroundColor: Theme.of(context).appBarTheme.foregroundColor,
         toolbarHeight: 56,
         titleSpacing: 8,
         title: Row(
@@ -1448,6 +1492,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                     ? const Color(0xFFE6A817)
                     : Theme.of(context).colorScheme.onSurface,
               ),
+            ),
+            IconButton(
+              key: const Key('android-banner-theme'),
+              tooltip: _themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              onPressed: _toggleTheme,
+              icon: Icon(_themeMode == ThemeMode.dark ? Icons.light_mode : Icons.dark_mode),
             ),
           ],
         ),

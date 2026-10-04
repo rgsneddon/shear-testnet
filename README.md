@@ -9,7 +9,7 @@ This is the **main Shear tree** (`rgsneddon/shear-testnet`): node, crypto, specs
 | [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv2 (`shear-testnet-v10`) |
 | [rgsneddon/ShearK](https://github.com/rgsneddon/ShearK) | Official miner pin + how-to (keep this repo) |
 
-Windows ops start: [`HANDOFF_OPS.md`](HANDOFF_OPS.md). MacBook cuts only the Continuum 0.69 disk image: [`MACBOOK-HANDOFF.md`](MACBOOK-HANDOFF.md).
+Windows ops start: [`HANDOFF_OPS.md`](HANDOFF_OPS.md). MacBook cuts only the Continuum 0.70 disk image: [`MACBOOK-HANDOFF.md`](MACBOOK-HANDOFF.md).
 
 Offer a silent ID (`she1`) when someone pays you. Incoming coin lands on a revolving dest (`ssa1`) that the book writes. Rest-frame (`shear1`) stays in Closure. While this book has fewer than 10,000 notes the membership set is thin.
 
@@ -18,7 +18,7 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
 - Miner pin: **ShearK-Miner 2.8** (TLS-aware, not a quiet 2.6 or 2.7). Windows, Linux, Arch, Fedora, openSUSE, and macOS zips are one release: [ShearK 2.8](https://github.com/rgsneddon/ShearK/releases/tag/2.8) ([windows](https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-windows.zip), [linux](https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-linux.zip), [archlinux](https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-archlinux.zip), [fedora](https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-fedora.zip), [opensuse](https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-opensuse.zip), [macos](https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-macos.zip)). Each zip includes `example.bat` and `example.sh`.
-- Wallet pin: **0.69** (Continuum GUI + CLI). Packs are on the [0.69 release](https://github.com/rgsneddon/shear-testnet/releases/tag/0.69). The macOS `.dmg` is not attached.
+- Wallet pin: **0.70** (Continuum GUI + CLI). Packs are on the [0.70 release](https://github.com/rgsneddon/shear-testnet/releases/tag/0.70). The macOS `.dmg` is not attached.
 - Node pin: **Shear Sentinel v17** (product 17.0). Windows, Linux, Arch, Fedora, openSUSE, and macOS zips are one release: [v17](https://github.com/rgsneddon/shear-testnet/releases/tag/v17) ([windows](https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-windows.zip), [linux](https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-linux.zip), [archlinux](https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-archlinux.zip), [fedora](https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-fedora.zip), [opensuse](https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-opensuse.zip), [macos](https://github.com/rgsneddon/shear-testnet/releases/download/v17/shear-node-v17-macos.zip)). Git tag `v16` stays on the same commit as tag `0.66`.
 - Previous note: [`docs/RELEASE-0.66-v16.md`](docs/RELEASE-0.66-v16.md) (PR #44 is `3dc91baf881fd570cfcfb94539cc956389655e0f`. `6054186` is quarantine.)
 - Stratum: public `stratum+ssl://pool.shear.digital:443`; cleartext migrate `pool.shear.digital:1111`; localhost solo `127.0.0.1:1111`. Port 1113 is only the pool process TLS listener. Public packets to 1113 do not arrive, so miners use 443. nginx ssl_preread sends a ShearK ClientHello (no ALPN) to that listener and keeps browser ALPN on the site.
@@ -141,7 +141,7 @@ ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user ssa1YOURDEST.wor
 
 `ssa1.worker` / `ssa1.solo` is Continuum/CLI Copy dest — the `ssa1` shown on screen, not a rotated mailbox. Amounts are confidential; dests are stealth. Reuse that mining mailbox so blocks stay linked.
 
-Continuum **0.69** reads a node at `127.0.0.1:18332`. Connect Bare uses the same scan when no local node answers (that is the Android path). The node is the book: it returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. `shear restore` opens a password-sealed `shewall.bin`. Public pool HTTP submit is an advanced toggle. How-to: https://shear.digital/docs/#/surfaces
+Continuum **0.70** reads a node at `127.0.0.1:18332`. Connect Bare uses the same scan when no local node answers (that is the Android path). The node is the book: it returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. `shear restore` opens a password-sealed `shewall.bin`. Public pool HTTP submit is an advanced toggle. How-to: https://shear.digital/docs/#/surfaces
 
 Wallet tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure.
 CLI covers the same functions (`dart run bin/shear.dart help`), including sign, The Reserve vote/rewards, vort1 create/register, and Closure backup/restore.

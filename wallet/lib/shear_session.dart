@@ -23,6 +23,10 @@ String debugSessionPersistStamp = '';
 /// Stamp of the isolate that last opened the session envelope.
 String debugSessionUnlockStamp = '';
 
+/// Stamp of the isolate that last read session.json. Differs from the UI
+/// isolate when [ShearSession.loadOrCreate] parsed the file in [Isolate.run].
+String debugSessionLoadStamp = '';
+
 /// True while archive rows are being parsed off the UI isolate.
 bool debugArchiveHydrateScheduled = false;
 
@@ -94,6 +98,20 @@ Future<void> applyUserArchiveOffUi(ShearLedger ledger, Map<String, dynamic> arch
   }
 }
 
+/// Read session.json. Production calls this from [Isolate.run].
+Map<String, dynamic> _readSessionFile(String path) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  final f = File(path);
+  if (!f.existsSync()) return {'stamp': stamp, 'missing': true};
+  final raw = f.readAsStringSync();
+  if (raw.trim().isEmpty) return {'stamp': stamp, 'empty': true};
+  final decoded = jsonDecode(raw);
+  if (decoded is Map) {
+    return {'stamp': stamp, 'json': Map<String, dynamic>.from(decoded)};
+  }
+  return {'stamp': stamp};
+}
+
 /// Argon open of a session envelope. Production calls this from [Isolate.run].
 Future<Map<String, dynamic>> openSessionEnvelope(
   Map<String, dynamic> env,
@@ -159,16 +177,26 @@ class ShearSession {
     _peek();
   }
 
+  /// Kind only. The full envelope is parsed in [loadOrCreate] off the UI isolate.
+  /// Decoding remembered txs here is the short jank on load.
   void _peek() {
     if (!store.existsSync()) return;
+    RandomAccessFile? raf;
     try {
-      final j = jsonDecode(store.readAsStringSync()) as Map<String, dynamic>;
-      if (j['kind'] == ShearLock.kind) {
+      raf = store.openSync();
+      final n = raf.lengthSync();
+      final take = n > 512 ? 512 : n;
+      if (take < 1) return;
+      final head = utf8.decode(raf.readSync(take), allowMalformed: true);
+      if (head.contains('"kind"') && head.contains(ShearLock.kind)) {
         sealed = true;
-        _envelope = j;
-        biometricsEnabled = j['biometricsEnabled'] == true;
+        biometricsEnabled = head.contains('"biometricsEnabled":true') ||
+            head.contains('"biometricsEnabled": true');
       }
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      raf?.closeSync();
+    }
   }
 
   final File store;
@@ -222,13 +250,21 @@ class ShearSession {
       _password = null;
       return identity;
     }
-    final raw = store.readAsStringSync();
-    if (raw.trim().isEmpty) {
+    await Future<void>.delayed(Duration.zero);
+    final wire = await Isolate.run(() => _readSessionFile(store.path));
+    debugSessionLoadStamp = wire['stamp']?.toString() ?? '';
+    if (wire['missing'] == true || wire['empty'] == true) {
       identity = createIdentity();
       sealed = false;
+      _envelope = null;
+      _password = null;
       return identity;
     }
-    final j = jsonDecode(raw) as Map<String, dynamic>;
+    final decoded = wire['json'];
+    if (decoded is! Map) {
+      throw const FormatException('plaintext_session');
+    }
+    final j = Map<String, dynamic>.from(decoded);
     if (j['kind'] == ShearLock.kind) {
       sealed = true;
       _envelope = j;
@@ -252,6 +288,17 @@ class ShearSession {
   Future<ShearIdentity> unlock(String password) async {
     if (password.isEmpty) {
       throw const FormatException('empty');
+    }
+    if (_envelope == null) {
+      await Future<void>.delayed(Duration.zero);
+      final wire = await Isolate.run(() => _readSessionFile(store.path));
+      debugSessionLoadStamp = wire['stamp']?.toString() ?? '';
+      final decoded = wire['json'];
+      if (decoded is Map && decoded['kind'] == ShearLock.kind) {
+        _envelope = Map<String, dynamic>.from(decoded);
+        sealed = true;
+        biometricsEnabled = decoded['biometricsEnabled'] == true;
+      }
     }
     final env = _envelope;
     if (env == null) {
