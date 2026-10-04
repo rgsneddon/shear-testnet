@@ -750,10 +750,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       });
     }
     if (!widget.skipPoolSync) {
-      // Paint Verifying, then leave the UI isolate. The credit worker does the
-      // note walk. Do not write a height or a balance here to cover the wait.
+      // Verifying is already set above. Start the credit worker on this
+      // turn, and do not wait for it. The next frame can paint Verifying
+      // while the worker runs. Waiting for endOfFrame first starts
+      // Isolate.run from that frame callback. Widget tests run the frame
+      // under fake async, and Isolate.run entered there never returns, so
+      // Verifying stays up and the walk never counts. A real UI thread is
+      // the same shape: this turn only schedules the other isolate.
       unawaited(() async {
-        await WidgetsBinding.instance.endOfFrame;
         if (!mounted || id == null) return;
         await _finishUnlockSync();
         if (!mounted || !unlocked || id == null) return;
