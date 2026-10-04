@@ -160,6 +160,65 @@ bool isLiveBookStats(Map<String, dynamic> stats) {
 /// Kept for call sites; same as [isLiveBookStats].
 bool isV3BookStats(Map<String, dynamic> stats) => isLiveBookStats(stats);
 
+/// Tallest live book among [seeds]. Pool hosts are not candidates. Each seed
+/// has its own budget, so a dead loopback cannot hold a public node that
+/// already answered. Returns '' when none answer.
+Future<String> firstLiveNodeSeed(
+  List<String> seeds, {
+  Duration budget = const Duration(seconds: 4),
+}) async {
+  final usable = <String>[];
+  final seen = <String>{};
+  for (final raw in seeds) {
+    var s = raw.trim();
+    if (s.endsWith('/')) s = s.substring(0, s.length - 1);
+    if (s.isEmpty || isPoolLedgerHost(s) || !seen.add(s)) continue;
+    usable.add(s);
+  }
+  if (usable.isEmpty) return '';
+  final hits = await Future.wait(usable.map((seed) async {
+    final height = await probeNodeSeedHeight(seed, budget: budget);
+    return height == null ? null : (url: seed, height: height);
+  }));
+  String best = '';
+  var bestH = -1;
+  for (final hit in hits) {
+    if (hit == null || hit.height < 1) continue;
+    if (hit.height > bestH) {
+      bestH = hit.height;
+      best = hit.url;
+    }
+  }
+  return best;
+}
+
+/// Height of one node `/stats`, or null when the seed is not the live book.
+Future<int?> probeNodeSeedHeight(String base, {Duration budget = const Duration(seconds: 4)}) async {
+  final http = HttpClient()..connectionTimeout = budget;
+  try {
+    for (final path in const ['/stats', '/api/stats']) {
+      final req = await http.getUrl(Uri.parse('$base$path')).timeout(budget);
+      final res = await req.close().timeout(budget);
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        await res.drain<void>();
+        continue;
+      }
+      final body = await utf8.decodeStream(res).timeout(budget);
+      if (isHtmlNodeBody(body, contentType: res.headers.contentType?.mimeType)) continue;
+      final decoded = jsonDecode(body);
+      if (decoded is! Map) continue;
+      final stats = Map<String, dynamic>.from(decoded);
+      if (!isLiveBookStats(stats) || !isUsableTipStats(stats)) continue;
+      return (stats['height'] as num).toInt();
+    }
+    return null;
+  } catch (_) {
+    return null;
+  } finally {
+    http.close(force: true);
+  }
+}
+
 /// True when /stats can be used as the current chain tip.
 /// Height 0 and empty fake payloads never become the tip.
 bool isUsableTipStats(Map<String, dynamic>? stats) {

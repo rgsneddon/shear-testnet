@@ -466,7 +466,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Future<void> _preloginSync() async {
     Future<void> once() async {
       try {
-        await ledger.syncTip();
+        await ledger.syncTip(proveChain: false);
       } catch (_) {}
       if (mounted && !unlocked) setState(() {});
     }
@@ -1025,7 +1025,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   void _startAccrualTick({bool immediate = false, bool thinFirst = false}) {
     _accrualTick?.cancel();
     final watchGen = ++_tipWatchGen;
-    if (!widget.skipPoolSync) {
+    // Android has no local node. A loopback /events watch never connects and
+    // is not the public book the fee wallet spends from.
+    if (!_hostAndroid && !widget.skipPoolSync) {
       unawaited(listenNodeTips(
         base: kLocalNodeRpc,
         cancelled: () => watchGen != _tipWatchGen || !mounted,
@@ -1059,7 +1061,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         work: () async {
           final before = ledger.sealedHeight;
           try {
-            await ledger.syncTip().timeout(const Duration(seconds: 2));
+            await ledger.syncTip(proveChain: false).timeout(const Duration(seconds: 4));
           } catch (_) {}
           tipMoved = ledger.sealedHeight != before;
           if (tipMoved && mounted) {

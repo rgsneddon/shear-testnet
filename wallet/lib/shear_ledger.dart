@@ -382,18 +382,26 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
   var spec = jsonDecode(specJson) as Map<String, dynamic>;
   spec = await _bookFromSession(spec);
   spec.remove('sessionPassword');
-  final base = spec['baseUrl']?.toString() ?? '';
+  var base = spec['baseUrl']?.toString() ?? '';
   final spendableFirst = spec['spendableFirst'] == true;
-  // Login must not sit on the lock screen while a dead port waits out the
-  // normal connect budget. Later polls use the wallet's own client.
+  // Unlock often runs before the UI has a live base. Android has no local
+  // node, so the worker asks the public book itself. The UI isolate stays free.
+  if (spendableFirst && base.isEmpty) {
+    final seeds = <String>[
+      for (final s in (spec['nodeSeeds'] as List?) ?? const <dynamic>[]) s.toString(),
+    ];
+    base = await firstLiveNodeSeed(seeds.isEmpty ? kPublicNodeSeeds : seeds);
+  }
+  // A dead port must not hold the lock screen. A real TLS notes read still
+  // has to finish; 400ms dropped every phone handshake and left spendable at 0.
   final pool = base.isEmpty
       ? null
       : ShearPoolClient(
           baseUrl: base,
           http: spendableFirst
               ? (HttpClient()
-                ..connectionTimeout = const Duration(milliseconds: 400)
-                ..idleTimeout = const Duration(milliseconds: 400))
+                ..connectionTimeout = const Duration(seconds: 4)
+                ..idleTimeout = const Duration(seconds: 8))
               : null,
         );
   final ledger = ShearLedger(pool: pool);
@@ -3342,7 +3350,10 @@ class ShearLedger implements ReadProofSink {
       take('miners', (n) => networkMiners = n);
   }
 
-  Future<void> syncTip() async {
+  /// [proveChain] walks every header and compact block. That walk on the UI
+  /// isolate is the Android "isn't responding" dialog. Login and the accrual
+  /// tick pass false and only take a live base plus `/stats`.
+  Future<void> syncTip({bool proveChain = true}) async {
     if (pool == null) return;
     final frame = _restFrame;
     if (frame != null && frame.isNotEmpty) {
@@ -3351,11 +3362,27 @@ class ShearLedger implements ReadProofSink {
       pool!.sync?.proofDest = dests.isEmpty ? homeDest(frame) : dests.first;
     }
     try {
+      if (!proveChain) {
+        final sync = pool!.sync;
+        // findLiveNode waits out the slowest seed. A dead loopback then
+        // expires this tick before a public node is adopted, and the bar
+        // stays "not connected".
+        if (sync != null && (sync.liveBase == null || sync.liveBase!.isEmpty)) {
+          final found = await firstLiveNodeSeed(sync.seeds);
+          if (found.isNotEmpty) sync.liveBase = found;
+        }
+      }
       final live = pool!.liveTip;
       if (live > _sealedHeight) noteLiveHeight(live);
       final first = await pool!.stats().timeout(const Duration(seconds: 2));
       await _applyStatsTip(first);
+      if (!proveChain) {
+        final tip = (first['height'] as num?)?.toInt() ?? 0;
+        final sync = pool!.sync;
+        if (sync != null && tip > sync.sampledTip) sync.sampledTip = tip;
+      }
     } catch (_) {}
+    if (!proveChain) return;
     try {
       await pool!.followLive().timeout(kWalletTipTimeout);
       final json = await pool!.stats().timeout(const Duration(seconds: 2));
@@ -3633,10 +3660,10 @@ class ShearLedger implements ReadProofSink {
         sawNotes = await collateSpendNotes(
           restFrame: restFrame,
           paymentCode: paymentCode,
-        ).timeout(const Duration(seconds: 2));
+        ).timeout(const Duration(seconds: 8));
       } catch (_) {}
       try {
-        final json = await pool!.stats().timeout(const Duration(seconds: 2));
+        final json = await pool!.stats().timeout(const Duration(seconds: 4));
         final h = (json['height'] as num?)?.toInt() ?? 0;
         if (h > _sealedHeight) noteLiveHeight(h);
         if (h > 0) settleTo(h);
@@ -4117,6 +4144,9 @@ class ShearLedger implements ReadProofSink {
       'restFrame': restFrame,
       'paymentCode': paymentCode ?? '',
       'baseUrl': pinned ? pool!.baseUrl : (pool?.sync?.liveBase ?? ''),
+      'nodeSeeds': [
+        for (final s in (pool?.sync?.seeds ?? kPublicNodeSeeds)) s,
+      ],
       'address': _restFrame ?? restFrame,
       'seedHex': spendSeed == null ? '' : _bytesHex(spendSeed!),
       'viewKey': viewSecret ?? '',
