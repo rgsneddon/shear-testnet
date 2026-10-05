@@ -470,9 +470,11 @@
       if (!n) return pending.concat(sealed);
       return pending.concat(sealed).slice(0, n);
     }
-    // Wall-clock pool finds. A block's own header `at` is not its find time.
-    // The next block's `at` is stamped when this one is sealed, and lastFoundAt
-    // is the tip. Found in is the gap between those consecutive find times.
+    // Wall-clock pool finds. Found in is the gap from this row to the previous
+    // pool-found height in the same list. A block's own header `at` is not its
+    // find time: the next header is stamped when this one is sealed, and
+    // lastFoundAt is the tip. Never subtract an older ledger stamp, and never
+    // keep the live lastFoundAt pinned on a height that is no longer the tip.
     var FIND_LEDGER_KEY = 'shear-pool-find-ledger-v1';
     var findLedger = {};
     var liveStats = null;
@@ -536,15 +538,34 @@
       var h = Math.floor(Number(stats && stats.height) || 0);
       var at = Math.floor(Number(stats && stats.lastFoundAt) || 0);
       if (!(h >= 1) || !(at > 0)) return book;
-      var pinned = stampOwner(book, at);
-      if (pinned && pinned !== h) return book;
       var tipRow = null;
       for (var j = 0; j < src.length; j++) {
         if (Math.floor(Number(src[j] && src[j].height) || 0) === h) tipRow = src[j];
       }
       if (tipRow && !isPoolFoundBlock(tipRow, stats)) return book;
+      var pinned = stampOwner(book, at);
+      // Height advanced before this stamp was recorded, so it sits on the
+      // previous row. It belongs to the pool tip, not that older height.
+      if (pinned && pinned !== h) {
+        if (pinned < h) {
+          delete book[pinned];
+          delete book[String(pinned)];
+          book[h] = at;
+        }
+        return book;
+      }
       if (!book[h] || at >= Number(book[h])) book[h] = at;
       return book;
+    }
+    function ledgerFindMs(book, height, stats) {
+      var h = Math.floor(Number(height) || 0);
+      var remembered = Math.floor(Number(book[h] || book[String(h)]) || 0);
+      if (!(remembered > 0)) return 0;
+      var tip = Math.floor(Number(stats && stats.height) || 0);
+      var live = Math.floor(Number(stats && stats.lastFoundAt) || 0);
+      // The live find stamp is the tip's. An older row still holding it was pinned early.
+      if (live > 0 && remembered === live && h !== tip) return 0;
+      return remembered;
     }
     function chainAt(stats, height) {
       var want = Math.floor(Number(height) || 0);
@@ -568,7 +589,7 @@
       if (!(direct > 0)) direct = Math.floor(Number(row && row.discoveredAt) || 0);
       if (direct > 0) return direct;
       var h = Math.floor(Number(row && row.height) || 0);
-      var remembered = Math.floor(Number(book[h] || book[String(h)]) || 0);
+      var remembered = ledgerFindMs(book, h, stats);
       if (remembered > 0) return remembered;
       var tip = Math.floor(Number(stats && stats.height) || 0);
       var found = Math.floor(Number(stats && stats.lastFoundAt) || 0);
@@ -618,31 +639,26 @@
       var at = wallFoundMs(row, stats, book);
       if (!(at > 0)) return 0;
       var h = Math.floor(Number(row && row.height) || 0);
-      var prevH = -1;
-      var prevAt = 0;
-      function consider(oh, oa) {
-        oh = Math.floor(Number(oh) || 0);
-        oa = Math.floor(Number(oa) || 0);
-        if (!(oh >= 1) || oh >= h || !(oa > 0) || oa >= at) return;
-        if (oh > prevH) { prevH = oh; prevAt = oa; }
-      }
-      for (var key in book) {
-        if (!Object.prototype.hasOwnProperty.call(book, key)) continue;
-        consider(key, book[key]);
-      }
       var src = (stats && stats.recentTxs) || [];
+      var prevRow = null;
+      var prevH = -1;
       for (var i = 0; i < src.length; i++) {
         var other = src[i];
         if (!isPoolFoundBlock(other, stats)) continue;
-        consider(other.height, wallFoundMs(other, stats, book));
+        var oh = Math.floor(Number(other && other.height) || 0);
+        if (oh >= 1 && oh < h && oh > prevH) {
+          prevH = oh;
+          prevRow = other;
+        }
       }
-      // No earlier pool row in the window: this header stamp is the previous find.
-      if (prevH < 0) {
-        var ownAt = Math.floor(Number(row && row.at) || 0);
-        if (!(ownAt > 0)) ownAt = chainAt(stats, h);
-        consider(h - 1, ownAt);
+      var prevAt = prevRow ? wallFoundMs(prevRow, stats, book) : 0;
+      // Oldest listed row has no earlier pool find in the window. Its own
+      // header stamp is that previous find, not a non-adjacent ledger entry.
+      if (!prevRow) {
+        prevAt = Math.floor(Number(row && row.at) || 0);
+        if (!(prevAt > 0)) prevAt = chainAt(stats, h);
       }
-      if (!(prevAt > 0)) return 0;
+      if (!(prevAt > 0) || prevAt >= at) return 0;
       return at - prevAt;
     }
     function fmtFoundIn(ms) {

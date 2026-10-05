@@ -158,6 +158,38 @@ describe('explorer backfills Found in for every listed pool block', () => {
     }
   });
 
+  it('keeps the 38s row on the previous listed pool find when an older stamp is closer in the ledger', () => {
+    // Live shape: pool shows ~38s for height 40, a skipped ledger stamp is >5 min.
+    const at39 = 1_000_000;
+    const at40 = at39 + 300_000;
+    const at41 = at40 + 38_000;
+    const at42 = at41 + 331_000;
+    const tipFound = at42 + 50_000;
+    const now = {
+      height: 42,
+      lastFoundAt: tipFound,
+      workers: [{ miner: TAG }],
+      recentTxs: [
+        { kind: 'block', height: 42, id: 'h42', at: at42, finder: TAG },
+        { kind: 'block', height: 41, id: 'h41', at: at41, finder: TAG },
+        { kind: 'block', height: 40, id: 'h40', at: at40, finder: TAG },
+        { kind: 'block', height: 39, id: 'h39', at: at39, finder: TAG },
+      ],
+    };
+    // Saw 39, missed 40, and the tip stamp was pinned onto 40 before height advanced.
+    const ledger = { 39: at40, 40: tipFound };
+    const rows = api.poolBlockRows(now, ledger);
+    const row40 = rows.find((r) => r.height === 40);
+    const row41 = rows.find((r) => r.height === 41);
+    assert.equal(api.foundInMs(row40, now, ledger), 38_000);
+    assert.equal(api.fmtFoundIn(api.foundInMs(row40, now, ledger)), '38s');
+    assert.notEqual(api.fmtFoundIn(api.foundInMs(row40, now, ledger)), '5m 38s');
+    assert.equal(api.foundInMs(row41, now, ledger), 331_000);
+    assert.equal(api.fmtFoundIn(331_000), '5m 31s');
+    assert.equal(ledger[42], tipFound);
+    assert.notEqual(ledger[40], tipFound);
+  });
+
   it('keeps an observed lastFoundAt ahead of the next-header approximation', () => {
     const now = windowStats();
     const observed33 = at34 - 5_000;
