@@ -211,8 +211,9 @@ void main() {
         binding.handleBeginFrame(Duration.zero);
         binding.handleDrawFrame();
       }
-      expect(find.byKey(const Key('continuum-spendable')), findsOneWidget);
-      expect(tester.widget<Text>(find.byKey(const Key('continuum-spendable'))).data, '…');
+      expect(find.byKey(const Key('continuum-loading')), findsOneWidget);
+      expect(find.text('Loading'), findsOneWidget);
+      expect(find.byKey(const Key('continuum-spendable')), findsNothing);
       expect(find.byKey(const Key('wallet-block-height')), findsNothing);
       expect(find.byKey(const Key('continuum-empty-honesty')), findsNothing);
       expect(find.text('p2P Node'), findsNothing);

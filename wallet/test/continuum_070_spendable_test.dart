@@ -316,11 +316,12 @@ void main() {
     expect(unlockAt, greaterThanOrEqualTo(0));
     expect(tipAt, greaterThan(unlockAt));
     final unlock = mainSrc.substring(unlockAt, tipAt);
-    expect(unlock.contains('_spendableAwaiting = true'), isTrue);
+    expect(unlock.contains('_spendableAwaiting = !ledger.restoredBook'), isTrue);
     expect(
-      unlock.indexOf('_spendableAwaiting = true'),
+      unlock.indexOf('_spendableAwaiting = !ledger.restoredBook'),
       lessThan(unlock.indexOf('spendableFirst: true')),
     );
+    expect(mainSrc.contains('_spendableAwaiting && !ledger.restoredBook'), isTrue);
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('a compact pool-fee note opens at the sealed 1 percent and a node balance does not', () async {

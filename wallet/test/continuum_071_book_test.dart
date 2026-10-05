@@ -1,10 +1,13 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_note.dart';
+import 'package:shear_wallet/shear_ristretto.dart';
 
 /// Each wallet shows its own opened coins. A pool-fee row stays on the wallet
 /// that received it until the confirmation floor, and does not appear on another.
@@ -41,7 +44,7 @@ void main() {
     expect(ledger.confirmationsOf(4), 8);
   });
 
-  test('pool stats fill the continuity box and do not move the tip', () {
+  test('pool stats fill the continuity box and do not move the tip', () async {
     final ledger = ShearLedger()..noteLiveHeight(4);
     ledger.applyContinuityStats({
       'height': 63,
@@ -79,6 +82,24 @@ void main() {
       'avgBlockTimeMs': 90000,
     });
     expect(preferSealed, 112000);
+    final mainSrc = File('lib/main.dart').readAsStringSync();
+    final tick = mainSrc.indexOf('void _startAccrualTick');
+    final paint = mainSrc.indexOf('unawaited(_paintContinuity())', tick);
+    final tipWait = mainSrc.indexOf('timeout(const Duration(seconds: 4))', tick);
+    expect(tick, greaterThan(0));
+    expect(paint, greaterThan(tick));
+    expect(tipWait, greaterThan(paint));
+    final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
+    final syncAt = ledgerSrc.indexOf('Future<void> syncTip');
+    final spendAt = ledgerSrc.indexOf('Future<double> syncSpendable');
+    expect(syncAt, greaterThan(0));
+    expect(spendAt, greaterThan(syncAt));
+    final syncBody = ledgerSrc.substring(syncAt, spendAt);
+    expect(syncBody.contains('readContinuityFigures'), isFalse);
+    expect(syncBody.contains('applyContinuityStats'), isFalse);
+    final loop = ShearLedger(pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:9'));
+    expect(await loop.readContinuityFigures(), isFalse);
+    expect(loop.sealedHeight, 0);
   });
 
   test('fee note open stays on the credit worker and does not nest another isolate', () {
@@ -89,7 +110,12 @@ void main() {
     expect(end, greaterThan(start));
     final body = src.substring(start, end);
     expect(body.contains('Isolate.run'), isFalse);
+    expect(body.contains('notesNotYetAccepted'), isTrue);
     expect(src.contains('Isolate.run(() => scanSealedWire'), isTrue);
+    final mainSrc = File('lib/main.dart').readAsStringSync();
+    final phone = mainSrc.indexOf('bool get _hostAndroid');
+    expect(phone, greaterThan(0));
+    expect(mainSrc.substring(phone, phone + 240), contains('Platform.isIOS'));
   });
 
   test('pool-fee rows stay until 9 confirmations and do not credit another wallet', () {
@@ -329,5 +355,163 @@ void main() {
       'spendSeed': spend,
     });
     expect((noCache['notes'] as List).where((n) => n is Map && n['verified'] == true), isEmpty);
+
+    final wired = scanSealedWire({
+      'vouts': [
+        {
+          'dest': dest,
+          'kind': 'receive',
+          'noteCommit': noteCommitOfDest20(d20),
+          'commit': commit,
+          'r': blind,
+          'valueProof': {'R': r, 'z': z, 'v': 1},
+          'height': 1,
+        },
+      ],
+      'dests': [dest],
+      'dest': dest,
+      'spendSeed': spend,
+      'openedProofs': [
+        {'k': key, 'n': 2500000000},
+      ],
+    });
+    final wiredNotes = (wired['notes'] as List).cast<Map>();
+    expect(wiredNotes, isNotEmpty);
+    expect(wiredNotes.first['verifiedNanos'], 2500000000);
   });
+
+  test('a saved note paints spendable without opening it again', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final commit = Uint8List.fromList(List<int>.filled(32, 4));
+    ledger.rememberNote({
+      'address': dest,
+      'dest': dest,
+      'kind': 'pool-fee',
+      'commit': commit,
+      'amount': 0.01,
+      'height': 1,
+      'verified': true,
+      'proofChecked': true,
+      'verifiedNanos': 1000000000,
+      'proofKey': 'aa|bb|cc',
+    });
+    ledger.restoreOpenedProofs([
+      {'k': 'aa|bb|cc', 'n': 1000000000},
+    ]);
+    final saved = ledger.exportNotesForSession();
+    final fresh = ShearLedger()..bindIdentity(id);
+    fresh.restoreSealedTip(9);
+    fresh.restoreSessionNotes(saved, covered: 9, paymentCode: id.paymentCode);
+    expect(fresh.restoredBook, isTrue);
+    expect(
+      fresh.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(0.01, 1e-9),
+    );
+    expect(fresh.pendingTxs(id.address).where((t) => t.kind == 'pool-fee'), isEmpty);
+    final again = notesNotYetAccepted([
+      {'commit': commit, 'kind': 'pool-fee'},
+      {'commit': Uint8List.fromList(List<int>.filled(32, 8)), 'kind': 'pool-fee'},
+    ], {_commitHex(commit)});
+    expect(again, hasLength(1));
+  });
+
+  test('the next block opens only the note that was not accepted', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    var generation = 0;
+    Map<String, dynamic>? first;
+    Map<String, dynamic>? second;
+    server.listen((req) async {
+      try {
+        await req.drain<void>();
+        req.response.headers.contentType = ContentType.json;
+        final path = req.uri.path;
+        if (path == '/notes' || path == '/api/wallet/notes') {
+          req.response.write(jsonEncode(_jsonSafe({
+            'ok': true,
+            'notes': [
+              if (first != null) first,
+              if (generation > 0 && second != null) second,
+            ],
+          })));
+        } else if (path == '/stats' || path == '/api/stats') {
+          req.response.write(jsonEncode({'ok': true, 'height': 20}));
+        } else if (path == '/api/wallet/balance' || path == '/balance') {
+          req.response.write(jsonEncode({'ok': true, 'balance': 0}));
+        } else {
+          req.response.statusCode = 404;
+          req.response.write('{"ok":false}');
+        }
+        await req.response.close();
+      } catch (_) {
+        try {
+          req.response.statusCode = 500;
+          await req.response.close();
+        } catch (_) {}
+      }
+    });
+    final id = createIdentity();
+    final ledger = ShearLedger(
+      pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}'),
+    )..bindIdentity(id);
+    final dest = ledger.syncDests(id.address, paymentCode: id.paymentCode).first;
+    final opened = _feeNote(dest, height: 1);
+    final vp = opened['valueProof'] as Map;
+    ledger.restoreOpenedProofs([
+      {'k': proofCacheKey(opened), 'n': _feeNanos()},
+    ]);
+    first = opened;
+    second = _feeNote(dest, height: 12);
+    expect(proofCacheKey(second!), isNot(proofCacheKey(opened)));
+    expect(vp['v'], _feeNanos());
+    final saw = await ledger.collateSpendNotes(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      hostHeight: 9,
+    );
+    expect(saw, isTrue);
+    expect(ledger.notes.where((n) => n['verified'] == true), isNotEmpty);
+    generation = 1;
+    debugNotesOpenedThisScan = -1;
+    await ledger.collateSpendNotes(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      hostHeight: 12,
+    );
+    expect(debugNotesOpenedThisScan, 1);
+  });
+}
+
+int _feeNanos() => (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
+
+/// A pool-fee note whose claimed v opens. A stand-in proof never opens and
+/// the 1..300 bps hunt does not return inside the test.
+Map<String, dynamic> _feeNote(String dest, {required int height}) {
+  final d20 = hash20FromAddress(dest)!;
+  final fee = _feeNanos();
+  final blind = randomScalar();
+  final value = proveValue(fee, blind);
+  return {
+    'dest': dest,
+    'kind': 'pool-fee',
+    'noteCommit': noteCommitOfDest20(d20),
+    'commit': value['C'],
+    'r': scalarBytes(blind),
+    'valueProof': {'R': value['R'], 'z': value['z'], 'v': fee},
+    'height': height,
+  };
+}
+
+String _commitHex(Uint8List b) => b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+
+/// HttpServer jsonEncode rejects Uint8List. The wallet accepts the hex form.
+Object? _jsonSafe(Object? v) {
+  if (v is Uint8List) return _commitHex(v);
+  if (v is Map) {
+    return v.map((k, val) => MapEntry(k.toString(), _jsonSafe(val)));
+  }
+  if (v is List) return v.map(_jsonSafe).toList();
+  return v;
 }

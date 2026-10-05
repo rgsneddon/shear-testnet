@@ -30,6 +30,8 @@ Map<String, dynamic> scrubStaleBookCache(Map<String, dynamic> plain) {
   next.remove('chainGenesis');
   next['txs'] = <dynamic>[];
   next['openedProofs'] = <dynamic>[];
+  next['notes'] = <dynamic>[];
+  next['notesCovered'] = 0;
   next['bookCacheGen'] = kLiveBookCacheGen;
   return next;
 }
@@ -233,6 +235,10 @@ class ShearSession {
   bool bookCacheNeedsPersist = false;
   /// Opened proofs for this wallet. `{k: commit|R|z, n: nanos}`.
   List<Map<String, dynamic>> rememberedOpenedProofs = const [];
+  /// Verified notes already accepted on this device. Encoded the same way the
+  /// credit follow encodes byte fields. A restart paints from this list.
+  List<Map<String, dynamic>> rememberedNotes = const [];
+  int rememberedNotesCovered = 0;
   String? rememberedChainGenesis;
   Map<String, dynamic>? rememberedReserve;
   List<Vortice> deployedVortices = const [];
@@ -373,6 +379,8 @@ class ShearSession {
         'sealedHeight': rememberedSealedHeight,
         'bookCacheGen': kLiveBookCacheGen,
         if (rememberedOpenedProofs.isNotEmpty) 'openedProofs': rememberedOpenedProofs,
+        if (rememberedNotes.isNotEmpty) 'notes': rememberedNotes,
+        if (rememberedNotesCovered > 0) 'notesCovered': rememberedNotesCovered,
         if (rememberedChainGenesis != null && rememberedChainGenesis!.isNotEmpty)
           'chainGenesis': rememberedChainGenesis,
         'txs': rememberedTxs,
@@ -389,6 +397,8 @@ class ShearSession {
     rememberedDestIndex = 0;
     rememberedSealedHeight = 0;
     rememberedOpenedProofs = const [];
+    rememberedNotes = const [];
+    rememberedNotesCovered = 0;
     rememberedChainGenesis = null;
     rememberedReserve = null;
     deployedVortices = const [];
@@ -421,6 +431,11 @@ class ShearSession {
         .map((e) => Map<String, dynamic>.from(e))
         .where((e) => (e['k']?.toString().isNotEmpty ?? false) && e['n'] is num && (e['n'] as num) > 0)
         .toList();
+    rememberedNotes = ((use['notes'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+    rememberedNotesCovered = (use['notesCovered'] as num?)?.toInt() ?? 0;
     rememberedChainGenesis = use['chainGenesis']?.toString();
     rememberedTxs = ((use['txs'] as List?) ?? const [])
         .whereType<Map>()

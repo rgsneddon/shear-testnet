@@ -107,6 +107,7 @@ class ShearWalletApp extends StatefulWidget {
     this.postReserveLock = false,
     this.hopFeePay,
     this.hostAndroid,
+    this.bookLoading = false,
   });
 
   final ShearSession? session;
@@ -143,16 +144,27 @@ class ShearWalletApp extends StatefulWidget {
   /// seal/prove runs in [Isolate.run]. A slow hook must not run in the confirm turn.
   final Future<void> Function()? hopFeePay;
 
-  /// Null uses the real platform. Tests set this so an Android bar can be
-  /// measured on a desktop host.
+  /// Null uses the real platform. Tests set this so a phone bar can be
+  /// measured on a desktop host. iOS will use this same coins-only shell.
   final bool? hostAndroid;
+
+  /// Tests: show the first-open Loading spinner without a live credit follow.
+  final bool bookLoading;
 
   @override
   ShearWalletAppState createState() => ShearWalletAppState();
 }
 
 class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObserver {
-  bool get _hostAndroid => widget.hostAndroid ?? (!kIsWeb && Platform.isAndroid);
+  /// Phone shell. Android today. The iOS wallet, when it is cut, is this same
+  /// coins-only app: no local node and no 1 SHE continuity card.
+  bool get _hostAndroid =>
+      widget.hostAndroid ?? (!kIsWeb && (Platform.isAndroid || Platform.isIOS));
+
+  /// First open, before a saved book or a finished note read. Later blocks
+  /// keep Continuum on screen.
+  bool get _showBookLoading =>
+      widget.bookLoading || (_spendableAwaiting && !ledger.restoredBook);
 
   late final ShearSession session = widget.session ?? ShearSession();
   late final ShearLedger ledger = widget.ledger ?? ShearLedger(pool: ShearPoolClient());
@@ -332,6 +344,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         onCoins: _onOpenedCoins,
       );
       _rememberLedger();
+      unawaited(session.persist());
       if (mounted) _requestShellPaint();
     } catch (_) {
       ledger.noteSpendableReadFailed();
@@ -855,6 +868,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         'txs': session.rememberedTxs,
       });
     }
+    // After the archive. replaceFromBackup clears the painted sum, and the
+    // saved notes put the accepted coins back without opening them again.
+    if (session.rememberedNotes.isNotEmpty) {
+      ledger.restoreSessionNotes(
+        session.rememberedNotes,
+        covered: session.rememberedNotesCovered,
+        paymentCode: id!.paymentCode,
+      );
+    }
     if (session.rememberedReserve != null) {
       reserve.applyLocalSnapshot(session.rememberedReserve!);
     }
@@ -996,7 +1018,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     // worker isolate. Sync chrome and block info stay down until it returns.
     _creditBusy = true;
     debugPopulationOrder.add('spendable');
-    _spendableAwaiting = true;
+    // A book saved on this device paints now. The follow only opens new notes.
+    _spendableAwaiting = !ledger.restoredBook;
     _spendSyncing = true;
     if (_usesFlyclientTip) unawaited(_runFlyclientSample());
     debugPopulationOrder.add('shell');
@@ -1035,6 +1058,22 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (_creditAgain && mounted && unlocked) _armCreditFollow();
     }
     if (mounted && unlocked) unawaited(session.persist());
+    if (!_hostAndroid && mounted && unlocked) unawaited(_paintContinuity());
+  }
+
+  bool _continuityBusy = false;
+
+  /// Desktop continuity card. Phone wallets do not fetch or show it.
+  /// Runs outside the tip timeout so a slow stats read cannot hold a new coin.
+  Future<void> _paintContinuity() async {
+    if (_continuityBusy || !mounted || _hostAndroid || widget.skipPoolSync) return;
+    _continuityBusy = true;
+    try {
+      final changed = await ledger.readContinuityFigures();
+      if (changed && mounted) _requestShellPaint();
+    } finally {
+      _continuityBusy = false;
+    }
   }
 
   Future<void> _onNodeTip(int height) async {
@@ -1174,6 +1213,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       await Future<void>.delayed(Duration.zero);
       if (!mounted || !unlocked || _accrualPaused || id == null) return;
       if (_usesFlyclientTip) unawaited(_runFlyclientSample());
+      if (!_hostAndroid) unawaited(_paintContinuity());
       final now = DateTime.now();
       if (!immediate && !walletShouldPoll(lastPoll: _lastPoll, now: now, hot: true)) {
         return;
@@ -1615,6 +1655,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     session.rememberedDestIndex = ledger.destIndex;
     session.rememberedSealedHeight = ledger.sealedHeight;
     session.rememberedOpenedProofs = ledger.exportOpenedProofs();
+    session.rememberedNotes = ledger.exportNotesForSession();
+    session.rememberedNotesCovered = ledger.notesCovered;
     session.rememberedChainGenesis = ledger.chainGenesis;
     session.rememberedTxs = [
       for (final t in ledger.transactions)
@@ -1921,7 +1963,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       );
     }
     final pages = <Widget Function()>[
-      () => _continuum(context, ident),
+      () => _showBookLoading ? _bookLoading() : _continuum(context, ident),
       () => _flow(context, ident),
       () => _resistance(context),
       () => _vortex(context, ident),
@@ -2298,6 +2340,20 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     );
   }
 
+  /// One spinner. No step list. The bar stays so the shell is still responding.
+  Widget _bookLoading() {
+    return const Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircularProgressIndicator(key: Key('continuum-loading')),
+          SizedBox(height: 16),
+          Text('Loading', key: Key('continuum-loading-label')),
+        ],
+      ),
+    );
+  }
+
   Widget _continuum(BuildContext context, ShearIdentity ident) {
     final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
     final spendReady = !_spendableAwaiting &&
@@ -2585,7 +2641,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             ),
             const SizedBox(height: 12),
           ],
-          if (wide)
+          if (wide && !_hostAndroid)
             IntrinsicHeight(
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2604,8 +2660,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             )
           else ...[
             _panel(context, spendPane, key: const Key('continuum-spend')),
-            const SizedBox(height: 12),
-            _panel(context, statsPane, key: const Key('continuum-stats')),
+            if (!_hostAndroid) ...[
+              const SizedBox(height: 12),
+              _panel(context, statsPane, key: const Key('continuum-stats')),
+            ],
           ],
           if (pending.isNotEmpty) ...[
             const SizedBox(height: 12),

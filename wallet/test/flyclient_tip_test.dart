@@ -171,6 +171,10 @@ void main() {
       'openedProofs': [
         {'k': 'aa|bb|cc', 'n': 1000000000},
       ],
+      'notes': [
+        {'verified': true, 'height': 20},
+      ],
+      'notesCovered': 20,
       'dests': ['ssa1qexample'],
     });
     expect(stale['seedHex'], 'ab');
@@ -178,6 +182,8 @@ void main() {
     expect(stale.containsKey('chainGenesis'), isFalse);
     expect(stale['txs'], isEmpty);
     expect(stale['openedProofs'], isEmpty);
+    expect(stale['notes'], isEmpty);
+    expect(stale['notesCovered'], 0);
     expect(stale['dests'], ['ssa1qexample']);
     expect(stale['bookCacheGen'], kLiveBookCacheGen);
     final kept = scrubStaleBookCache({

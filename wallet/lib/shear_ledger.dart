@@ -417,6 +417,12 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
         for (final e in merged.entries) {'k': e.key, 'n': e.value},
       ];
     }(),
+    if (j['notes'] is List && (j['notes'] as List).isNotEmpty) 'notes': j['notes'],
+    'notesCovered': () {
+      final sessionCovered = (j['notesCovered'] as num?)?.toInt() ?? 0;
+      final specCovered = (spec['notesCovered'] as num?)?.toInt() ?? 0;
+      return sessionCovered > specCovered ? sessionCovered : specCovered;
+    }(),
   };
 }
 
@@ -678,8 +684,33 @@ Map<String, int> proofCacheMap(Object? raw) {
   return out;
 }
 
+/// Rows whose commit this wallet has already accepted. A new block opens only
+/// the rest. [known] is commit hex.
+List<dynamic> notesNotYetAccepted(List<dynamic> rows, Set<String> known) {
+  if (known.isEmpty) return rows;
+  final fresh = <dynamic>[];
+  for (final row in rows) {
+    if (row is! Map) {
+      fresh.add(row);
+      continue;
+    }
+    final commit = _noteBytes(row['commit']);
+    if (commit != null && commit.isNotEmpty && known.contains(_bytesHex(commit))) {
+      continue;
+    }
+    fresh.add(row);
+  }
+  return fresh;
+}
+
+/// How many note rows the last progressive scan actually opened. Accepted
+/// commits stay at 0.
+int debugNotesOpenedThisScan = 0;
+
 /// Hexify the scan snapshot inside the worker, then scan. The caller sends
 /// the raw snapshot; the JSON clone does not run on the UI isolate.
+/// [openedProofs] stays on the snapshot so an already opened proof is not
+/// opened again.
 Map<String, dynamic> scanSealedWire(Map<String, dynamic> raw) {
   return scanSealedVouts(<String, dynamic>{
     'vouts': _hexify(raw['vouts']),
@@ -690,6 +721,7 @@ Map<String, dynamic> scanSealedWire(Map<String, dynamic> raw) {
     'txHints': _hexify(raw['txHints']),
     'prev': raw['prev'],
     'startIndex': raw['startIndex'],
+    if (raw.containsKey('openedProofs')) 'openedProofs': raw['openedProofs'],
   });
 }
 
@@ -772,6 +804,38 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     }
     if (r == null) continue;
     var kindName = o['kind'] as String?;
+    final proofKeyEarly = proofCacheKey(o);
+    final cachedEarly = proofKeyEarly == null ? null : proofCache[proofKeyEarly];
+    // This proof already opened on a previous read. Do not derive admit or
+    // open the value again. The wire kind is the one that was sealed.
+    if (cachedEarly != null &&
+        cachedEarly > 0 &&
+        kindName != null &&
+        kindName.isNotEmpty &&
+        kindName != 'pot') {
+      final amtEarly = cachedEarly / kUnitsPerShe;
+      notes.add({
+        'address': matched,
+        'dest': matched,
+        'kind': kindName,
+        'commit': commit,
+        'noteCommit': nc,
+        'r': r,
+        'rEph': rEph,
+        'rCt': rCt,
+        'admitPub': _noteBytes(o['admitPub']),
+        'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
+        'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
+        if (o['height'] != null) 'height': o['height'],
+        'amount': amtEarly,
+        'proofKey': proofKeyEarly,
+        'verifiedNanos': cachedEarly,
+        'proofChecked': true,
+        'verified': true,
+      });
+      seenHex.add(commitHex);
+      continue;
+    }
     final admit = _noteBytes(o['admitPub']);
     if (admit != null) {
       // Compact fee notes are sometimes labeled pot, or the label is omitted.
@@ -2047,6 +2111,10 @@ class ShearLedger implements ReadProofSink {
   final List<Map<String, dynamic>> _notes = [];
   /// Opened proofs for this wallet only, keyed by commit|R|z. Not a fee credit.
   final Map<String, int> _openedProofs = {};
+  /// Commit hex already accepted on this device. A follow skips those rows.
+  final Set<String> _acceptedCommits = {};
+  /// True after a saved book was restored. Spendable can paint before the network.
+  bool restoredBook = false;
   /// Commits the node listed on the last complete notes read. Empty if that read failed.
   final List<String> _listedCommits = [];
   /// Dests whose notes carried a complete value proof this session.
@@ -2063,6 +2131,52 @@ class ShearLedger implements ReadProofSink {
   List<Map<String, dynamic>> exportOpenedProofs() => [
         for (final e in _openedProofs.entries) {'k': e.key, 'n': e.value},
       ];
+
+  /// Verified notes for the encrypted session. The follow spec does not carry
+  /// this list. The worker reads it from the session file.
+  List<Map<String, dynamic>> exportNotesForSession() {
+    final out = <Map<String, dynamic>>[];
+    for (final n in _notes) {
+      if (n['verified'] != true) continue;
+      final encoded = _followEncode(n);
+      if (encoded is Map) out.add(Map<String, dynamic>.from(encoded));
+    }
+    return out;
+  }
+
+  int get notesCovered => _notesCovered;
+
+  /// Paint spendable and pending from notes this device already accepted.
+  /// Does not open a proof and does not talk to the network.
+  void restoreSessionNotes(Object? raw, {int covered = 0, String? paymentCode}) {
+    final revived = _followRevive(raw);
+    if (revived is List) {
+      for (final item in revived) {
+        if (item is! Map) continue;
+        final row = Map<String, dynamic>.from(item);
+        if (row['verified'] != true) continue;
+        rememberNote(row);
+        _rememberProofRow(row);
+        final dest = (row['dest'] ?? row['address'])?.toString() ?? '';
+        if (dest.isNotEmpty) {
+          _proofCheckedDests.add(payKey(dest));
+          rememberDest(dest);
+        }
+        final commit = _noteBytes(row['commit']);
+        if (commit != null && commit.isNotEmpty) _acceptedCommits.add(_bytesHex(commit));
+      }
+    }
+    if (covered > _notesCovered) _notesCovered = covered;
+    if (_notes.isEmpty) return;
+    restoredBook = true;
+    _openCollated = true;
+    _spendableReadFailed = false;
+    _replayOpenedNotes();
+    final rest = _restFrame;
+    if (rest != null && rest.isNotEmpty) {
+      recheckRestFrameSpendable(rest, paymentCode: paymentCode);
+    }
+  }
 
   void restoreOpenedProofs(Object? raw) {
     _openedProofs
@@ -2480,6 +2594,8 @@ class ShearLedger implements ReadProofSink {
     _historyAt.clear();
     _notesAt.clear();
     _notesCovered = 0;
+    _acceptedCommits.clear();
+    restoredBook = false;
     _ingestMisses.clear();
   }
 
@@ -2701,6 +2817,8 @@ class ShearLedger implements ReadProofSink {
     _historyAt.clear();
     _notesAt.clear();
     _notesCovered = 0;
+    _acceptedCommits.clear();
+    restoredBook = false;
     _noteMisses.clear();
     _ingestMisses.clear();
     _nodeBodies.clear();
@@ -3753,26 +3871,22 @@ class ShearLedger implements ReadProofSink {
 
   /// The public node `/stats` body has no hashrate, supply, bits, or sealed
   /// mean. The explorer reads those from the pool stats feed. A loopback book
-  /// (tests) does not call the public pool.
-  Future<void> readContinuityFigures() async {
+  /// (tests) does not call the public pool. Phone wallets do not call this.
+  /// Returns true when a displayed figure changed.
+  Future<bool> readContinuityFigures() async {
     final host = Uri.tryParse(pool?.baseUrl ?? '')?.host ?? '';
-    if (host == '127.0.0.1' || host == 'localhost' || host == '::1') return;
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+    if (host == '127.0.0.1' || host == 'localhost' || host == '::1') return false;
+    final client = ShearPoolClient(baseUrl: kPublicPoolHttp);
     try {
-      final req = await client.getUrl(Uri.parse('$kPublicPoolHttp/api/stats'));
-      final res = await req.close().timeout(const Duration(seconds: 2));
-      if (res.statusCode != 200) {
-        await res.drain<void>();
-        return;
-      }
-      final body = await res.transform(utf8.decoder).join();
-      final decoded = jsonDecode(body);
-      if (decoded is Map) {
-        applyContinuityStats(Map<String, dynamic>.from(decoded));
-      }
+      final json = await client.stats().timeout(const Duration(seconds: 6));
+      final before = '$networkHashrate|$sealedMeanBlockMs|$circulatingNanos|$potEmittedNanos|$networkWorkBits|$emittedAtHeight';
+      applyContinuityStats(json);
+      final after = '$networkHashrate|$sealedMeanBlockMs|$circulatingNanos|$potEmittedNanos|$networkWorkBits|$emittedAtHeight';
+      return before != after;
     } catch (_) {
+      return false;
     } finally {
-      client.close(force: true);
+      client.close();
     }
   }
 
@@ -3807,9 +3921,6 @@ class ShearLedger implements ReadProofSink {
         final sync = pool!.sync;
         if (sync != null && tip > sync.sampledTip) sync.sampledTip = tip;
       }
-    } catch (_) {}
-    try {
-      await readContinuityFigures();
     } catch (_) {}
     if (!proveChain) return;
     try {
@@ -4178,7 +4289,18 @@ class ShearLedger implements ReadProofSink {
   /// the UI isolate. A nested [Isolate.run] from that worker never finished
   /// on the phone, so the fee book stayed on the first handful of coins.
   Future<void> _scanNotesProgressive(Map<String, dynamic> raw, {SendPort? partials}) async {
-    final vouts = List<dynamic>.from(raw['vouts'] as List? ?? const []);
+    final known = <String>{..._acceptedCommits};
+    for (final n in _notes) {
+      if (n['verified'] != true) continue;
+      final commit = _noteBytes(n['commit']);
+      if (commit != null && commit.isNotEmpty) known.add(_bytesHex(commit));
+    }
+    final vouts = notesNotYetAccepted(
+      List<dynamic>.from(raw['vouts'] as List? ?? const []),
+      known,
+    );
+    debugNotesOpenedThisScan = vouts.length;
+    if (vouts.isEmpty) return;
     final cache = proofCacheMap(raw['openedProofs']);
     final hits = <dynamic>[];
     final misses = <dynamic>[];
@@ -4670,6 +4792,14 @@ class ShearLedger implements ReadProofSink {
       ..addAll(_followInts(spec['notesAt']));
     final covered = (spec['notesCovered'] as num?)?.toInt() ?? 0;
     if (covered > _notesCovered) _notesCovered = covered;
+    _acceptedCommits
+      ..clear()
+      ..addAll(((spec['acceptedCommits'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
+    for (final n in _notes) {
+      if (n['verified'] != true) continue;
+      final commit = _noteBytes(n['commit']);
+      if (commit != null && commit.isNotEmpty) _acceptedCommits.add(_bytesHex(commit));
+    }
     void takeCont(String key, void Function(int) set) {
       final v = spec[key];
       if (v is num && v >= 0) set(v.round());
@@ -4835,6 +4965,12 @@ class ShearLedger implements ReadProofSink {
       'sealed': _sealedHeight,
       'settled': _settledHeight,
       'notesCovered': _notesCovered,
+      'acceptedCommits': <String>[
+        for (final n in _notes)
+          if (n['verified'] == true)
+            if (_noteBytes(n['commit']) != null && _noteBytes(n['commit'])!.isNotEmpty)
+              _bytesHex(_noteBytes(n['commit'])!),
+      ],
       'destCount': destCount,
       'destIndex': destIndex,
       'dests': _dests.toList(),
