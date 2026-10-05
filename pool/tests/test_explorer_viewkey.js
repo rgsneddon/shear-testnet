@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, destOpeningFromView, destCommitFromSpendPub, encodeDest } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, destCommitFromSpendPub, encodeDest, spendDestOf } from '../../crypto/address.js';
 import { destForLogin, memoSeal } from '../../crypto/flow_sheet.js';
 import { createStore } from '../../node/src/store.js';
 import { buildTemplate, GENESIS_PREV } from '../../node/src/chain.js';
@@ -12,7 +12,7 @@ import { createPullBook } from '../src/pull_book.js';
 import { publicMinerTag } from '../src/pool.js';
 import { potCreditNanos } from '../src/pull_book.js';
 import { HASH_BONUS_NANOS, NANOS_PER_SHE, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
-import { bitsForBlock, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
+import { nextBits, TARGET_BLOCK_INTERVAL_MS, templateStampMs } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 
 let powTag = 1;
@@ -78,16 +78,16 @@ describe('explorer dests', () => {
     assert.equal(pub.json.txs.some((t) => t.id === 'm1'), false);
 
     const hist = get(store, `/api/wallet/history?address=${dest}`);
-    assert.equal(hist.status, 200);
-    assert.equal(hist.json.amountsOnly, true);
-    assert.equal(hist.json.destProof, false);
-    assert.equal(hist.json.rolled, true);
-    assert.ok(hist.json.txs.every((t) => t.amountHidden === true || t.amount == null));
-    assert.ok(JSON.stringify(hist.json).includes(dest) === false);
+    assert.equal(hist.status, 401);
+    assert.equal(hist.json.reason, 'dest_hold');
+    assert.equal(hist.json.txs, undefined);
+    assert.equal(hist.json.balance, undefined);
+    assert.equal(hist.json.amountsOnly, undefined);
+    assert.equal(JSON.stringify(hist.json).includes(dest), false);
     const she = get(store, `/api/wallet/history?address=${alice.paymentCode}`);
-    assert.equal(she.status, 200);
-    assert.equal(she.json.amountsOnly, true);
-    assert.ok(she.json.txs.every((t) => t.to == null && t.from == null && t.memoCt == null));
+    assert.equal(she.status, 401);
+    assert.equal(she.json.reason, 'dest_hold');
+    assert.equal(she.json.txs, undefined);
     assert.equal(JSON.stringify(she.json).includes(dest), false);
   });
 
@@ -150,8 +150,8 @@ describe('explorer dests', () => {
     assert.equal(store.append(sealed1, trust(sealed1)).ok, true);
     const parent = store.tip();
     const parentH = decodeHeader(Buffer.from(parent.header));
-    const t2 = Number(parentH.timestamp) + TARGET_BLOCK_INTERVAL_MS;
-    const bits2 = bitsForBlock(parentH.bits, parentH.timestamp, t2);
+    const t2 = templateStampMs(Number(parentH.timestamp));
+    const bits2 = nextBits(parentH.bits, TARGET_BLOCK_INTERVAL_MS);
     const b2 = buildTemplate({
       prev: parent.hash,
       prevHeader: parent.header,
@@ -163,7 +163,8 @@ describe('explorer dests', () => {
       samples: [{ miner: dest, nonce: '2', tag: 'b', count: 1 }],
     });
     const sealed2 = mine(b2);
-    assert.equal(store.append(sealed2, trust(sealed2)).ok, true);
+    const got2 = store.append(sealed2, trust(sealed2));
+    assert.equal(got2.ok, true, got2.reason);
 
     const hist = get(store, '/api/explorer/history');
     assert.equal(hist.status, 200);
@@ -311,9 +312,10 @@ describe('explorer dests', () => {
 describe('wallet pending incoming', () => {
   it('balance lists mempool receives as incoming; hash pending stays separate', () => {
     const alice = newIdentity();
-    const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const dest = spendDestOf(alice.spendPub);
+    const open = destOpeningFromView(alice.viewKey, alice.spendPub);
     const peer = newIdentity();
-    const bob = destForLogin(peer.address, { viewKey: peer.viewKey, height: 1 });
+    const bob = spendDestOf(peer.spendPub);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-in-'));
     const store = createStore(dir);
     store.mempool.push({
@@ -324,7 +326,13 @@ describe('wallet pending incoming', () => {
       nanos: Math.round(0.4 * NANOS_PER_SHE),
     });
     const miners = new Map([['m', { login: dest, roundHashes: 7 }]]);
-    const url = new URL(`http://127.0.0.1/api/wallet/balance?address=${dest}`);
+    const bare = handleWalletApi(new URL(`http://127.0.0.1/api/wallet/balance?address=${dest}`), 'GET', {}, { store, miners, queueSend: () => ({}) });
+    assert.equal(bare.status, 401);
+    assert.equal(bare.json.reason, 'dest_hold');
+    assert.equal(bare.json.incoming, undefined);
+    assert.equal(bare.json.balance, undefined);
+    assert.equal(bare.json.pending, undefined);
+    const url = new URL(`http://127.0.0.1/api/wallet/balance?address=${dest}&open=${open}`);
     const out = handleWalletApi(url, 'GET', {}, { store, miners, queueSend: () => ({}) });
     assert.equal(out.status, 200);
     assert.equal(out.json.incoming.length, 1);
@@ -340,14 +348,19 @@ describe('wallet pending incoming', () => {
 
   it('balance owedPi matches dest-scoped pull-book pot still below π', () => {
     const alice = newIdentity();
-    const dest = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const dest = spendDestOf(alice.spendPub);
+    const open = destOpeningFromView(alice.viewKey, alice.spendPub);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-owed-ex-'));
     const store = createStore(dir);
     const book = createPullBook(path.join(dir, 'pull'));
     const tag = publicMinerTag(dest);
     const pot = potCreditNanos();
     assert.equal(book.creditRound([{ tag, dest, count: 10 }], { height: 1, nanos: pot, now: 1 }).ok, true);
-    const url = new URL(`http://127.0.0.1/api/wallet/balance?address=${dest}`);
+    const bare = handleWalletApi(new URL(`http://127.0.0.1/api/wallet/balance?address=${dest}`), 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
+    assert.equal(bare.status, 401);
+    assert.equal(bare.json.owedPi, undefined);
+    assert.equal(bare.json.balance, undefined);
+    const url = new URL(`http://127.0.0.1/api/wallet/balance?address=${dest}&open=${open}`);
     const first = handleWalletApi(url, 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
     const second = handleWalletApi(url, 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
     const view = book.viewByDest(dest, { tipHeight: store.tip()?.height || 0, need: 30 });

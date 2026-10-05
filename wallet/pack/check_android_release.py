@@ -2,7 +2,7 @@
 """Refuse a Continuum release APK whose signer, package, or versionCode is wrong.
 
 The pin is the public cert fingerprint in wallet/android/release-cert-sha256.txt.
-Last published versionCode before Continuum 0.70 was 94. This cut is 95. This does not build or sign anything.
+Last published versionCode before Continuum 0.71 was 95. This cut is 96. This does not build or sign anything.
 """
 import argparse
 import os

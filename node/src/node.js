@@ -81,13 +81,15 @@ export function printConfig() {
 
 export { createP2p, P2P_PORT, createStore, createRpc, RPC_PORT, mintVorticeDeployKey, parseVorticeKey };
 
-const BOOK_LEAF = 'testnet-v10';
+const BOOK_LEAF = 'testnet-v11';
 
 function bookPresent(dir, exists) {
-  return exists(path.join(dir, 'chain.bin')) || exists(path.join(dir, 'chain.jsonl'));
+  return exists(path.join(dir, 'chain.bin'))
+    || exists(path.join(dir, 'chain.jsonl'))
+    || exists(path.join(dir, 'segments', 'seg-000000.bin'));
 }
 
-/** Shared book for Shear Sentinel v17 and Continuum 0.69. Windows: %APPDATA%\\Shear\\testnet-v10 (Roaming). A testnet-v10 directory is not this book. */
+/** This book is testnet-v11 for Shear Sentinel v18 and Continuum 0.71. Windows: %APPDATA%\\Shear\\testnet-v11 (Roaming). A testnet-v10 directory is not this book. */
 export function defaultDataDir({
   env = process.env,
   homedir = os.homedir(),
@@ -224,11 +226,12 @@ export async function startP2pSync(opts = {}) {
 
 export { printHelp, helpTopics, nodeStatus, printNodeStatus };
 
-/** A book already has blocks when chain.bin or chain.jsonl is present. */
+/** A book already has blocks when chain.bin, chain.jsonl, or a segment file is present. */
 export function datadirIsEmpty(dataDir) {
   const dir = String(dataDir || '');
   return !fs.existsSync(path.join(dir, 'chain.bin'))
-    && !fs.existsSync(path.join(dir, 'chain.jsonl'));
+    && !fs.existsSync(path.join(dir, 'chain.jsonl'))
+    && !fs.existsSync(path.join(dir, 'segments', 'seg-000000.bin'));
 }
 
 /**
@@ -357,14 +360,14 @@ async function main() {
     return;
   }
   if (argv.includes('--status')) {
-    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v10');
+    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v11');
     const store = createStore(dataDir, {
       fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
     });
     printNodeStatus({ store, extra: { hashBackend: hashBackendKind() || 'missing' } });
     return;
   }
-  const dataDirForBoot = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v10');
+  const dataDirForBoot = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v11');
   const emptyDatadir = datadirIsEmpty(dataDirForBoot);
   const boot = await resolveGuiBootstrap({
     argv,

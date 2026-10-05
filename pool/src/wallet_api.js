@@ -990,6 +990,22 @@ export function owedPiFromPullBook(pullBook, address, { tipHeight = 0, need = 30
   return { owedPi: she, confirmingPot: she };
 }
 
+function requestDestOpen(url, body) {
+  const q = url && url.searchParams
+    ? (url.searchParams.get('open') || url.searchParams.get('destOpen') || '')
+    : '';
+  const posted = body && typeof body === 'object' ? (body.open || body.destOpen || '') : '';
+  return String(q || posted || '');
+}
+
+/** Bare address is not a view. No balance, notes, txs, or amounts in the body. */
+function destHoldResponse(address, open) {
+  if (!verifyDestOpening(String(address || ''), String(open || ''))) {
+    return { status: 401, json: { ok: false, reason: 'dest_hold' } };
+  }
+  return null;
+}
+
 export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, networkPending, networkRounds, poolOpen, poolIdentity, pullBook } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
@@ -1056,6 +1072,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (!isDestAddress(address)) {
       return { status: 400, json: { ok: false, reason: 'bad_address' } };
     }
+    const notesHeld = destHoldResponse(address, requestDestOpen(url, body));
+    if (notesHeld) return notesHeld;
     const d20 = hash20FromAddress(address);
     const want = d20 ? noteCommitOfDest20(d20) : null;
     const hex = (x) => {
@@ -1165,6 +1183,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (!isDestAddress(address) && !isPaymentCode(address)) {
       return { status: 400, json: { ok: false, reason: 'bad_address' } };
     }
+    const balanceHeld = destHoldResponse(address, requestDestOpen(url, body));
+    if (balanceHeld) return balanceHeld;
     const rec = reconstructOwner(store, address);
     const pending = pendingFor(miners, address);
     const incoming = mempoolIncoming(store, address);
@@ -1264,15 +1284,13 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (!isDestAddress(address) && !isPaymentCode(address)) {
       return { status: 400, json: { ok: false, reason: 'bad_address' } };
     }
+    const historyHeld = destHoldResponse(address, requestDestOpen(url, body));
+    if (historyHeld) return historyHeld;
     const rec = reconstructOwner(store, address);
-    const destOwner = isDestAddress(address)
-      && verifyDestOpening(address, url.searchParams.get('open') || url.searchParams.get('destOpen') || body.open || body.destOpen || '');
-    const owner = destOwner;
-    const rolled = rollupDestTxs(rec.txs, { revealDest: owner });
-    const txs = owner ? rolled : rolled.map((t) => explorerRowPublic({ ...t, kind: t.kind || 'block' }));
+    const rolled = rollupDestTxs(rec.txs, { revealDest: true });
     return {
       status: 200,
-      json: { ok: true, coin: 'SHE', txs, amountsOnly: !owner, destProof: !!owner, rolled: true },
+      json: { ok: true, coin: 'SHE', txs: rolled, amountsOnly: false, destProof: true, rolled: true },
     };
   }
   if (path === '/api/vortex/mint' && verb === 'POST') {

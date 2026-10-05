@@ -77,8 +77,13 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
     const solo = fs.readFileSync(new URL('../src/solo_stratum.js', import.meta.url), 'utf8');
     assert.equal(isDestAddress(THIS_POOL_DIRECT_FEE_DEST), true);
-    assert.match(src, /replace this with your own ssa1/i);
-    assert.match(src, /Solo mining/);
+    const posture = fs.readFileSync(new URL('../../pool/src/posture.js', import.meta.url), 'utf8');
+    assert.match(posture, /THIS_POOL_DIRECT_FEE_DEST = 'ssa1q5495/);
+    assert.match(posture, /V10_POOL_FEE_DEST/);
+    assert.match(src, /configuredFeeIdentity\(\)/);
+    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot\)/);
+    assert.doesNotMatch(src, /ssa1qzcru37269/);
+    assert.match(src, /Solo never reaches this function/);
     assert.equal(consensusFingerprint().includes(THIS_POOL_DIRECT_FEE_DEST), false);
     assert.match(solo, /store\.template\(\{ miner: dest, shareBits \}\)/);
     assert.doesNotMatch(solo, /THIS_POOL_DIRECT_FEE_DEST/);
@@ -334,8 +339,8 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const sum = shares.reduce((a, s) => a + s.nanos, 0);
     assert.equal(sum, wantPot);
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
-    assert.match(src, /custodyPotShares\(poolPay, wantPot\)/);
-    assert.match(src, /potSharesFromBatch\(lag1Shares, poolPay, wantPot\)/);
+    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot\)/);
+    assert.doesNotMatch(src, /custodyPotShares\(poolPay, wantPot\)/);
     assert.match(src, /splitPot\(/);
     assert.match(src, /wantLivePot\(\)/);
     const genesisMs = 1_700_000_000_000;
@@ -458,9 +463,10 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const pots = vout.filter((o) => o.kind === 'pot');
     const hashes = vout.filter((o) => o.kind === 'hash');
     const minerPot = pots.find((o) => Buffer.from(o.noteCommit).equals(minerNc));
-    const feePot = pots.find((o) => Buffer.from(o.noteCommit).equals(poolNc));
+    const feePot = vout.find((o) => o.kind === 'pool-fee' && Buffer.from(o.noteCommit).equals(poolNc));
     assert.ok(minerPot, 'pot-after-fee seals to the miner dest');
     assert.ok(feePot, 'pool dest receives only the fee note');
+    assert.equal(pots.some((o) => Buffer.from(o.noteCommit).equals(poolNc)), false);
     assert.equal(verifySealedNote(minerPot, rest), true);
     assert.equal(verifySealedNote(feePot, fee), true);
     assert.equal(verifySealedNote(feePot, BLOCK_SUBSIDY_NANOS), false);
@@ -482,6 +488,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const owned = signSpendTx(structuredClone(spend), minerKey);
     assert.equal(verifySpendSig(owned), true);
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
-    assert.match(src, /custodyPotShares\(/);
+    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot\)/);
+    assert.doesNotMatch(src, /custodyPotShares\(/);
   });
 });

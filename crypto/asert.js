@@ -38,8 +38,10 @@ export const LIVE_MIN_BITS = 4;
  * Day-0 seed for an empty cut (Q16.16 packed via GENESIS_BITS_PACKED).
  * Fingerprint includes GENESIS_BITS. After genesis, tempo is the sealed-gap
  * step only. This seed is not a forecast and not a fixed point of the book.
+ * v10's closed soak seeded 15. v11 seeds 17, two bits harder. Russell locked
+ * 17 (more prudent than 16). Live tip bits are not this open.
  */
-export const GENESIS_BITS = 15;
+export const GENESIS_BITS = 17;
 /**
  * Per-block lid on the median step. v9 used harden +6 and testnet ease −2.
  * A short-gap median then walked about twelve bits while the window lagged,
@@ -64,9 +66,9 @@ export const ASERT_EASE_MAX = ASERT_EASE_MAX_TESTNET;
  * into nextBits. Missing samples are padded with T, so one fast or slow
  * header cannot move the median. Six of those eleven short gaps do.
  * nextBits applies (T/τ)·log2(T/seen) and the ± lid to that one interval.
- * τ is 32 target intervals, so the median's lag cannot ring the block time.
+ * τ is 16 target intervals (1_440_000 ms). v10 used 32 and is a closed book.
  * A 90000 ms median adds zero. Once the median is a 2000 ms gap, eight
- * further steps add at least one bit. The v10 testnet lid is one bit.
+ * further steps add at least one bit. The testnet lid is one bit.
  */
 export const BITS_FP_SCALE = 65536;
 export const ASERT_CURVE_WINDOW = 11;
@@ -74,12 +76,13 @@ export const ASERT_FAST_GAPS = 8;
 export const ASERT_FAST_GAP_MS = 2_000;
 export const ASERT_STEP_ID = 'median11(log2(T/seen))*(T/tau)';
 /**
- * Damping time of the log step. v10 chooses τ = 32·T.
- * One e-fold of median error moves T/τ of a bit, so a six-block median lag
- * cannot walk the tip onto the floor or ring the interval. This is not a
- * 288-block Ready bar. The pool cannot edit τ mid-chain. Pinned as ASERT_TAU_MS.
+ * Damping time of the log step. v11 chooses τ = 16·T = 1_440_000 ms.
+ * v10's closed soak used 32·T (2_880_000 ms) and is not this book.
+ * One e-fold of median error moves T/τ of a bit. Median-11 and the ±1 lid
+ * stay. This is not a 288-block Ready bar. The pool cannot edit τ mid-chain.
+ * Pinned as ASERT_TAU_MS.
  */
-export const ASERT_TAU_BLOCKS = 32;
+export const ASERT_TAU_BLOCKS = 16;
 export const ASERT_HALFLIFE_MS = ASERT_TAU_BLOCKS * TARGET_BLOCK_INTERVAL_MS;
 /** A non-stall gap may not sit on LIVE_MIN_BITS. An 8τ stall may. */
 export const ASERT_FLOOR_ID = 'above-min-until-8tau';
@@ -119,7 +122,13 @@ export const POOL_FEE_BPS = 100;
 export const POOL_FEE_MAX_BPS = 300;
 /** A digest that meets this floor is worth 2^SHARE_FLOOR_BITS units. */
 export const SHARE_FLOOR_BITS = 8;
-export const MAX_SHARES_PER_BLOCK = 8192;
+/**
+ * Included floor shares per block on shear-testnet-v11.
+ * The closed v10 book capped this at 8192. The 32768 rung is cancelled.
+ * This book cuts straight to 65536. Do not load this tree onto a v10 datadir.
+ * HASH_BONUS_NANOS stays 1. This is headroom, not a bonus-unit retune.
+ */
+export const MAX_SHARES_PER_BLOCK = 65536;
 export const MAX_HASH_UNITS_PER_BLOCK = MAX_SHARES_PER_BLOCK * (2 ** SHARE_FLOOR_BITS);
 /** Median of last 11 header timestamps. Future skew 2 h (Bitcoin-class).
  *  15 min left only ~3 s of legal header time when the tip sat near the
@@ -146,10 +155,12 @@ export const MAGIC_TESTNET_V7 = 'shear-testnet-v7';
 export const MAGIC_TESTNET_V8 = 'shear-testnet-v8';
 /** Previous book (median11, harden 6, ease 2). Not this magic. Fail-closed. */
 export const MAGIC_TESTNET_V9 = 'shear-testnet-v9';
-/** Live book. One median-11 difficulty curve for nodes, pools, wallets, and p2p. */
+/** Closed soak. τ = 32·T, GENESIS_BITS = 15. Do not retune that book. Not this magic. */
 export const MAGIC_TESTNET_V10 = 'shear-testnet-v10';
-/** ADMITv2 privacy-class book. Empty cut. v9 payloads do not load. */
-export const MAGIC_TESTNET = MAGIC_TESTNET_V10;
+/** Live book. τ = 16·T, GENESIS_BITS = 17, median-11, testnet lid ±1. v10 payloads do not load. */
+export const MAGIC_TESTNET_V11 = 'shear-testnet-v11';
+/** ADMITv2 privacy-class book. Empty cut. */
+export const MAGIC_TESTNET = MAGIC_TESTNET_V11;
 export const MAGIC_MAINNET = 'shear-v1';
 /** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
 export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
@@ -178,8 +189,8 @@ export function asertEaseMax(magic = MAGIC_TESTNET) {
 export function asertHardenMax(magic = MAGIC_TESTNET) {
   return String(magic) === MAGIC_MAINNET ? ASERT_HARDEN_MAX_MAINNET : ASERT_HARDEN_MAX_TESTNET;
 }
-/** Node and pool display version. Two-part only (`*.*`, never `0.1.0`). Not part of consensusFingerprint. Continuum wallet is kWalletVersion, not this number. Display pin is Shear Sentinel v17. */
-export const PRODUCT_VERSION = '17.0';
+/** Node and pool display version. Two-part only (`*.*`, never `0.1.0`). Not part of consensusFingerprint. Continuum wallet is kWalletVersion, not this number. Display pin is Shear Sentinel v18. */
+export const PRODUCT_VERSION = '18.0';
 /** Official C miner display/tag version. Two-part only (`*.*`). Operator set Shear-Miner to 1.1 (fee-free). 1.0 keeps the built-in fee. */
 export const MINER_VERSION = '1.1';
 /** Hash bonus commits on accept. Not env. */
@@ -208,7 +219,7 @@ export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
 /**
  * Consensus floor: spendable after 9 confirmations (~13.5 min at 90s).
- * In the fingerprint. shear-testnet-v10 book.
+ * In the fingerprint. shear-testnet-v11 book.
  */
 export const SPENDABLE_CONFIRMATIONS = 9;
 /** Sample bodies may drop after this many confirmations. Money vouts stay. */

@@ -16,6 +16,24 @@ export 'shear_shewall.dart' show shewallName;
 
 const kMinWalletPasswordLen = 8;
 
+/// Sessions saved before a live v11 genesis carry the laptop stub book
+/// (height 20). One scrub drops that cache. The fee-wallet key stays.
+const kLiveBookCacheGen = 1;
+
+/// Drop a cached tip, genesis, notes, and opened proofs from a session that
+/// has not been scrubbed. Identity, dests, and the password envelope stay.
+Map<String, dynamic> scrubStaleBookCache(Map<String, dynamic> plain) {
+  final gen = (plain['bookCacheGen'] as num?)?.toInt() ?? 0;
+  if (gen >= kLiveBookCacheGen) return plain;
+  final next = Map<String, dynamic>.from(plain);
+  next['sealedHeight'] = 0;
+  next.remove('chainGenesis');
+  next['txs'] = <dynamic>[];
+  next['openedProofs'] = <dynamic>[];
+  next['bookCacheGen'] = kLiveBookCacheGen;
+  return next;
+}
+
 /// Stamp of the isolate that last sealed and wrote shewall. Differs from the
 /// UI isolate when [ShearSession.persist] ran off-UI.
 String debugSessionPersistStamp = '';
@@ -211,6 +229,10 @@ class ShearSession {
   int rememberedDestCount = 1;
   int rememberedDestIndex = 0;
   int rememberedSealedHeight = 0;
+  /// True after unlock scrubbed a pre-genesis book that is not on disk yet.
+  bool bookCacheNeedsPersist = false;
+  /// Opened proofs for this wallet. `{k: commit|R|z, n: nanos}`.
+  List<Map<String, dynamic>> rememberedOpenedProofs = const [];
   String? rememberedChainGenesis;
   Map<String, dynamic>? rememberedReserve;
   List<Vortice> deployedVortices = const [];
@@ -349,6 +371,8 @@ class ShearSession {
         'destCount': rememberedDestCount,
         'destIndex': rememberedDestIndex,
         'sealedHeight': rememberedSealedHeight,
+        'bookCacheGen': kLiveBookCacheGen,
+        if (rememberedOpenedProofs.isNotEmpty) 'openedProofs': rememberedOpenedProofs,
         if (rememberedChainGenesis != null && rememberedChainGenesis!.isNotEmpty)
           'chainGenesis': rememberedChainGenesis,
         'txs': rememberedTxs,
@@ -364,6 +388,7 @@ class ShearSession {
     rememberedDestCount = 1;
     rememberedDestIndex = 0;
     rememberedSealedHeight = 0;
+    rememberedOpenedProofs = const [];
     rememberedChainGenesis = null;
     rememberedReserve = null;
     deployedVortices = const [];
@@ -377,24 +402,32 @@ class ShearSession {
   }
 
   void _applyPlain(Map<String, dynamic> j) {
-    identity = ShearIdentity.fromJson(j);
+    final gen = (j['bookCacheGen'] as num?)?.toInt() ?? 0;
+    bookCacheNeedsPersist = gen < kLiveBookCacheGen;
+    final use = scrubStaleBookCache(j);
+    identity = ShearIdentity.fromJson(use);
     biometricsEnabled = j['biometricsEnabled'] == true;
     darkMode = j['darkMode'] == true;
     closureSendMode = _closureFromPlain(j);
-    rememberedDests = ((j['dests'] as List?) ?? const [])
+    rememberedDests = ((use['dests'] as List?) ?? const [])
         .map((e) => e.toString())
         .where((d) => d.startsWith('ssa1'))
         .toList();
-    rememberedDestCount = (j['destCount'] as num?)?.toInt() ?? 1;
-    rememberedDestIndex = (j['destIndex'] as num?)?.toInt() ?? 0;
-    rememberedSealedHeight = (j['sealedHeight'] as num?)?.toInt() ?? 0;
-    rememberedChainGenesis = j['chainGenesis']?.toString();
-    rememberedTxs = ((j['txs'] as List?) ?? const [])
+    rememberedDestCount = (use['destCount'] as num?)?.toInt() ?? 1;
+    rememberedDestIndex = (use['destIndex'] as num?)?.toInt() ?? 0;
+    rememberedSealedHeight = (use['sealedHeight'] as num?)?.toInt() ?? 0;
+    rememberedOpenedProofs = ((use['openedProofs'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .where((e) => (e['k']?.toString().isNotEmpty ?? false) && e['n'] is num && (e['n'] as num) > 0)
+        .toList();
+    rememberedChainGenesis = use['chainGenesis']?.toString();
+    rememberedTxs = ((use['txs'] as List?) ?? const [])
         .whereType<Map>()
         .map((e) => Map<String, dynamic>.from(e))
         .toList();
-    rememberedReserve = j['reserve'] is Map ? Map<String, dynamic>.from(j['reserve'] as Map) : null;
-    deployedVortices = ((j['vortices'] as List?) ?? const [])
+    rememberedReserve = use['reserve'] is Map ? Map<String, dynamic>.from(use['reserve'] as Map) : null;
+    deployedVortices = ((use['vortices'] as List?) ?? const [])
         .whereType<Map>()
         .map((e) => Vortice.fromJson(Map<String, dynamic>.from(e)))
         .where((v) => v.id.isNotEmpty && !isPinnedProgram(v.id) && !isReservedProgram(v.id))

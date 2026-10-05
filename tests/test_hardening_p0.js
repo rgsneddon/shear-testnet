@@ -24,7 +24,7 @@ import {
 } from '../pool/src/pool.js';
 import { roundActualHashes } from '../pool/src/hash_credit.js';
 import { appendAdminAudit } from '../pool/src/admin.js';
-import { P2P_MAX_FRAME, noteExpensiveFail, P2P_FAIL_DISCONNECT } from '../node/src/p2p.js';
+import { P2P_MAX_FRAME, P2P_MAX_FRAME_DEFAULT, noteExpensiveFail, P2P_FAIL_DISCONNECT } from '../node/src/p2p.js';
 import { DEFAULT_SEEDS } from '../node/src/node.js';
 import { SHORT_ADDR_MAX, encodeDest, newIdentity } from '../crypto/address.js';
 
@@ -73,7 +73,8 @@ describe('P0 hardening + short addresses', () => {
   it('P0-5 DEFAULT_SEEDS are ≥2 hostnames; frame cap; scoring disconnects', () => {
     assert.ok(DEFAULT_SEEDS.length >= 2);
     assert.ok(DEFAULT_SEEDS.every((s) => /shear\.digital:30303$/.test(s)));
-    assert.ok(P2P_MAX_FRAME <= 2 * 1024 * 1024 || process.env.SHEAR_P2P_MAX_FRAME);
+    assert.equal(P2P_MAX_FRAME_DEFAULT, 16 * 1024 * 1024);
+    assert.ok(P2P_MAX_FRAME >= 8 * 1024 * 1024);
     const rec = {};
     for (let i = 0; i < P2P_FAIL_DISCONNECT - 1; i += 1) assert.equal(noteExpensiveFail(rec), false);
     assert.equal(noteExpensiveFail(rec), true);

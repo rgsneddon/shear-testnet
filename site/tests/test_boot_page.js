@@ -21,8 +21,8 @@ describe('boot.shear.digital page', () => {
     assert.match(boot, /href="\/latest\.bin"/);
     assert.match(boot, /id="dl-json"/);
     assert.match(boot, /id="dl-bin"/);
-    assert.match(boot, /shear-testnet-v10/);
-    assert.match(boot, /Continuum 0\.70/);
+    assert.match(boot, /shear-testnet-v11/);
+    assert.match(boot, /Continuum 0\.71/);
     assert.doesNotMatch(boot, /Continuum 0\.66/);
     assert.doesNotMatch(boot, /shear-testnet-v6/);
     assert.doesNotMatch(boot, /testnet-v6/);
@@ -45,18 +45,22 @@ describe('shear.digital/node page', () => {
     assert.match(node, /--solo/);
     assert.doesNotMatch(node, /export SHEAR_BOOTSTRAP=1/);
     assert.match(node, /boot\.shear\.digital/);
-    assert.match(node, /Shear Sentinel v17/);
-    assert.match(node, /17\.0/);
-    assert.match(node, /release <strong>v17<\/strong>/);
+    assert.match(node, /Shear Sentinel v18/);
+    assert.match(node, /18\.0/);
+    assert.match(node, /release <strong>v18<\/strong>/);
     assert.doesNotMatch(node, /release <strong>v16<\/strong>/);
+    assert.doesNotMatch(node, /release <strong>v17<\/strong>/);
     assert.doesNotMatch(node, /node 10\.0|version":"10\.0"|pin <strong>10\.0/);
     assert.doesNotMatch(node, /Node v6|node 6\.0|shear-node-v6/);
     assert.doesNotMatch(node, /shear-node-v7-/);
     assert.doesNotMatch(node, /shear-node-0\.58-/);
-    for (const flavor of ['windows', 'linux', 'archlinux', 'fedora', 'opensuse', 'macos']) {
-      assert.match(node, new RegExp(`releases/download/v17/shear-node-v17-${flavor}\\.zip`));
+    for (const flavor of ['windows', 'linux', 'fedora']) {
+      assert.match(node, new RegExp(`releases/download/v18/shear-node-v18-${flavor}\\.zip`));
     }
-    assert.doesNotMatch(node, /shear-node-v17-macos\.dmg/);
+    assert.doesNotMatch(node, /shear-node-v18-macos/);
+    assert.doesNotMatch(node, /shear-node-v18-archlinux/);
+    assert.doesNotMatch(node, /shear-node-v18-opensuse/);
+    assert.doesNotMatch(node, /shear-node-v18-macos\.dmg/);
     assert.doesNotMatch(node, /is not attached/);
     assert.doesNotMatch(node, /shear-node-9\.0-/);
     assert.doesNotMatch(node, /No prebuilt node binary on releases/);

@@ -16,6 +16,7 @@ import { decodeHeader } from '../../crypto/header.js';
 import {
   P2P_PORT,
   P2P_MAX_FRAME,
+  P2P_MAX_FRAME_DEFAULT,
   P2P_FAIL_DISCONNECT,
   noteExpensiveFail,
   ipv4Subnet24,
@@ -384,9 +385,9 @@ describe('p2p gossip', () => {
     assert.equal(cfg.p2p, P2P_PORT);
     assert.equal(cfg.p2p, 30303);
     assert.equal(cfg.magic, MAGIC_TESTNET);
-    assert.equal(cfg.magic, 'shear-testnet-v10');
-    assert.equal(cfg.version, '17.0');
-    assert.equal(cfg.display, 'Shear Sentinel v17');
+    assert.equal(cfg.magic, 'shear-testnet-v11');
+    assert.equal(cfg.version, '18.0');
+    assert.equal(cfg.display, 'Shear Sentinel v18');
     assert.equal(cfg.name, 'Shear Sentinel');
     assert.equal(cfg.mainnet, false);
     assert.equal(cfg.phaseBGate, true);
@@ -576,7 +577,8 @@ describe('p2p gossip', () => {
     assert.equal(HEADERS_PAGE, 2000);
     assert.match(src, /requestHeaders/);
     assert.match(src, /dialSeeds/);
-    assert.ok(P2P_MAX_FRAME <= 2 * 1024 * 1024 || process.env.SHEAR_P2P_MAX_FRAME);
+    assert.equal(P2P_MAX_FRAME_DEFAULT, 16 * 1024 * 1024);
+    assert.ok(P2P_MAX_FRAME >= 8 * 1024 * 1024);
     assert.equal(ipv4Subnet24('1.2.3.4'), '1.2.3.0');
     const rec = { expensiveFails: 0 };
     for (let i = 0; i < P2P_FAIL_DISCONNECT - 1; i += 1) {

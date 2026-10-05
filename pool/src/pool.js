@@ -62,7 +62,7 @@ import {
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
 import { potSharesFromBatch, hashBonusByMiner, retarget } from '../../node/src/chain.js';
-import { sortShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
+import { sortShares, selectBlockShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
 import { poolRecentBlockTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
@@ -2072,7 +2072,7 @@ export function createPool({
     });
     const poolPay = payoutDest(miner);
     const tipHdr = store.tip()?.header || null;
-    lag1Shares = provenLag1Shares(tipHdr, lag1Shares);
+    lag1Shares = selectBlockShares(provenLag1Shares(tipHdr, lag1Shares));
     const live = snapshotRound();
     const potRows = live.map((s) => ({ miner: s.miner, count: Number(s.proven) || 0 })).filter((s) => s.count > 0);
     const wantPot = wantLivePot();
@@ -2485,7 +2485,7 @@ export function createPool({
       if (got?.ok) {
         sealedBlock = true;
         stats.blocks += 1;
-        lag1Shares = sortShares(openShares.slice());
+        lag1Shares = selectBlockShares(openShares.slice());
         openShares = [];
         try {
           const sealed = store.tip();
@@ -3584,6 +3584,10 @@ export function createPool({
         if (url.pathname === '/api/wallet/send') {
           console.error(JSON.stringify({ walletSend: true, bytes: raw.length, hasAdmit: !!body.admit_proof, vin: Array.isArray(body.vin) && body.vin.length }));
         }
+      }
+      const headerOpen = req.headers && req.headers['x-shear-open'];
+      if (headerOpen && !url.searchParams.get('open') && !url.searchParams.get('destOpen')) {
+        url.searchParams.set('open', String(headerOpen));
       }
       const { handleWalletApi } = await import('./wallet_api.js');
       let out;

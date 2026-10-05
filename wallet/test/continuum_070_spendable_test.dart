@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -114,7 +115,7 @@ void main() {
     );
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('login reads node notes before height and a pool figure does not raise spendable', () async {
+  test('login reads the tip then node notes, and a pool figure does not raise spendable', () async {
     final paths = <String>[];
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     addTearDown(() => server.close(force: true));
@@ -192,13 +193,12 @@ void main() {
 
     expect(debugCreditFollowKind, 'spendable');
     expect(paths, isNotEmpty);
-    expect(paths.first.contains('notes'), isTrue);
     final notesAt = paths.indexWhere((p) => p.contains('notes'));
     final balanceAt = paths.indexWhere((p) => p.contains('balance'));
     final statsAt = paths.indexWhere((p) => p.contains('stats'));
-    expect(notesAt, greaterThanOrEqualTo(0));
+    expect(statsAt, greaterThanOrEqualTo(0));
+    expect(notesAt, greaterThan(statsAt));
     expect(balanceAt, greaterThan(notesAt));
-    expect(statsAt, greaterThan(balanceAt));
     expect(paths.any((p) => p.contains('history')), isFalse);
     expect(paths.any((p) => p.contains('/block')), isFalse);
     expect(paths.any((p) => p.contains(kPoolFeeDest)), isFalse);
@@ -453,6 +453,184 @@ void main() {
     expect(cover.from, dest);
   }, timeout: const Timeout(Duration(minutes: 2)));
 
+  test('a missed notes read stays due on every platform until a list returns', () {
+    expect(
+      notesCollateDue(openCollated: false, readFailed: false, notesLag: false),
+      isTrue,
+    );
+    expect(
+      notesCollateDue(openCollated: true, readFailed: true, notesLag: false),
+      isTrue,
+    );
+    expect(
+      notesCollateDue(openCollated: true, readFailed: false, notesLag: true),
+      isTrue,
+    );
+    expect(
+      notesCollateDue(openCollated: true, readFailed: false, notesLag: false),
+      isFalse,
+    );
+  });
+
+  test('a v-stripped fee note labeled pot or unlabeled still opens at 1 percent', () async {
+    final feeNanos = (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
+    final paths = <String>[];
+    List<Map<String, dynamic>>? rows;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((req) async {
+      paths.add('${req.uri.path}?${req.uri.query}');
+      req.response.headers.contentType = ContentType.json;
+      final path = req.uri.path;
+      final addr = req.uri.queryParameters['address'] ?? '';
+      if (path == '/notes' || path == '/api/wallet/notes') {
+        req.response.write(jsonEncode({
+          'ok': true,
+          'notes': [
+            ...?rows,
+            {
+              'dest': addr,
+              'kind': 'pool-fee',
+              'height': 1,
+              'valueProof': {'v': 50 * kUnitsPerShe},
+            },
+          ],
+        }));
+      } else if (path == '/api/wallet/balance' || path == '/balance') {
+        req.response.write(jsonEncode({'ok': true, 'balance': 40, 'address': addr}));
+      } else if (path == '/stats' || path == '/api/stats') {
+        req.response.write(jsonEncode({'ok': true, 'height': 20, 'balance': 9, 'owedPi': 3}));
+      } else {
+        req.response.statusCode = 404;
+        req.response.write('{"ok":false}');
+      }
+      await req.response.close();
+    });
+    final dir = Directory.systemTemp.createTempSync('c070-pot-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    await session.setPassword('test-pass-1');
+    final id = session.identity!;
+    final ledger = ShearLedger(pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}'))
+      ..bindIdentity(id);
+    final seed = ledger.spendSeed!;
+    final dest = ledger.syncDests(id.address, paymentCode: id.paymentCode).first;
+    final potLabeled = _poolFeeWire(dest, seed)..['kind'] = 'pot';
+    final unlabeled = Map<String, dynamic>.from(_poolFeeWire(dest, seed))..remove('kind');
+    rows = [potLabeled, unlabeled];
+    await ledger.followOffUi(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      full: false,
+      chain: true,
+      spendableFirst: true,
+      sessionPath: session.store.path,
+      sessionPassword: session.password,
+    );
+    final opened = 2 * feeNanos / kUnitsPerShe;
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(opened, 1e-9),
+      reason: 'sealed=${ledger.sealedHeight} ready=${ledger.spendableFigureReady(id.address, paymentCode: id.paymentCode)} '
+          'err=$debugCollateError paths=$paths',
+    );
+    expect(
+      paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode),
+      closeTo(opened, 1e-12),
+    );
+    expect(ledger.spendableFigureReady(id.address, paymentCode: id.paymentCode), isTrue);
+    expect(paths.any((p) => p.contains('balance')), isTrue);
+    expect(paths.any((p) => p.contains(kPoolFeeDest)), isFalse);
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('a later poll opens the fee note after the first notes read missed', () async {
+    final feeNanos = (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
+    var serveNote = false;
+    Map<String, dynamic>? feeWire;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((req) async {
+      req.response.headers.contentType = ContentType.json;
+      final path = req.uri.path;
+      final addr = req.uri.queryParameters['address'] ?? '';
+      if (path == '/notes' || path == '/api/wallet/notes') {
+        if (!serveNote) {
+          req.response.statusCode = 500;
+          req.response.write('{"ok":false}');
+        } else {
+          req.response.write(jsonEncode({
+            'ok': true,
+            'notes': [if (feeWire != null) feeWire],
+          }));
+        }
+      } else if (path == '/stats' || path == '/api/stats') {
+        req.response.write(jsonEncode({
+          'ok': true,
+          'height': 20,
+          'magic': 'shear-testnet-v11',
+          'network': 'shear-testnet-v11',
+        }));
+      } else if (path == '/api/wallet/balance' || path == '/balance') {
+        req.response.write(jsonEncode({'ok': true, 'balance': 40, 'address': addr}));
+      } else {
+        req.response.statusCode = 404;
+        req.response.write('{"ok":false}');
+      }
+      await req.response.close();
+    });
+    final dir = Directory.systemTemp.createTempSync('c070-retry-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    await session.setPassword('test-pass-1');
+    final id = session.identity!;
+    final ledger = ShearLedger(pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}'))
+      ..bindIdentity(id);
+    final seed = ledger.spendSeed!;
+    final dest = ledger.syncDests(id.address, paymentCode: id.paymentCode).first;
+    feeWire = _poolFeeWire(dest, seed);
+    Future<void> poll() => ledger.followOffUi(
+          restFrame: id.address,
+          paymentCode: id.paymentCode,
+          full: false,
+          chain: true,
+          spendableFirst: notesCollateDue(
+            openCollated: ledger.openCollated,
+            readFailed: ledger.spendableReadFailed,
+            notesLag: ledger.notesLagSpendable,
+          ),
+          sessionPath: session.store.path,
+          sessionPassword: session.password,
+        );
+    await poll();
+    expect(ledger.spendableReadFailed, isTrue);
+    expect(
+      notesCollateDue(
+        openCollated: ledger.openCollated,
+        readFailed: ledger.spendableReadFailed,
+        notesLag: ledger.notesLagSpendable,
+      ),
+      isTrue,
+    );
+    expect(ledger.spendableFigureReady(id.address, paymentCode: id.paymentCode), isFalse);
+    serveNote = true;
+    await poll();
+    final opened = feeNanos / kUnitsPerShe;
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(opened, 1e-9),
+    );
+    expect(
+      paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode),
+      closeTo(opened, 1e-12),
+    );
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
   test('a failed notes read is not a confident zero and a balance figure is not spendable', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     addTearDown(() => server.close(force: true));
@@ -495,6 +673,187 @@ void main() {
       isNot(closeTo(40, 1e-9)),
     );
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('opened coins paint before a slow balance read finishes', () async {
+    final feeNanos = (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
+    final releaseBalance = Completer<void>();
+    var balanceFinished = false;
+    Map<String, dynamic>? feeWire;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      if (!releaseBalance.isCompleted) releaseBalance.complete();
+      await server.close(force: true);
+    });
+    server.listen((req) async {
+      req.response.headers.contentType = ContentType.json;
+      final path = req.uri.path;
+      if (path == '/notes' || path == '/api/wallet/notes') {
+        req.response.write(jsonEncode({
+          'ok': true,
+          'notes': [if (feeWire != null) feeWire],
+        }));
+      } else if (path == '/stats' || path == '/api/stats') {
+        req.response.write(jsonEncode({
+          'ok': true,
+          'height': 20,
+          'magic': kBookMagic,
+          'network': kBookMagic,
+        }));
+      } else if (path == '/api/wallet/balance' || path == '/balance') {
+        await releaseBalance.future;
+        balanceFinished = true;
+        req.response.write(jsonEncode({'ok': true, 'balance': 40}));
+      } else {
+        req.response.statusCode = 404;
+        req.response.write('{"ok":false}');
+      }
+      await req.response.close();
+    });
+    final dir = Directory.systemTemp.createTempSync('c070-swift-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    await session.setPassword('test-pass-1');
+    final id = session.identity!;
+    final ledger = ShearLedger(pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}'))
+      ..bindIdentity(id);
+    final seed = ledger.spendSeed!;
+    final dest = ledger.syncDests(id.address, paymentCode: id.paymentCode).first;
+    feeWire = _poolFeeWire(dest, seed);
+    final painted = Completer<void>();
+    final follow = ledger.followOffUi(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      full: false,
+      chain: true,
+      spendableFirst: true,
+      sessionPath: session.store.path,
+      sessionPassword: session.password,
+      onCoins: () {
+        if (!painted.isCompleted) painted.complete();
+      },
+    );
+    await painted.future.timeout(const Duration(seconds: 45));
+    final opened = feeNanos / kUnitsPerShe;
+    expect(balanceFinished, isFalse);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(opened, 1e-9),
+    );
+    expect(
+      paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode),
+      closeTo(opened, 1e-12),
+    );
+    if (!releaseBalance.isCompleted) releaseBalance.complete();
+    await follow;
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(opened, 1e-9),
+    );
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('a thin sync reads the tip and does not walk headers', () async {
+    final paths = <String>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((req) async {
+      paths.add(req.uri.path);
+      req.response.headers.contentType = ContentType.json;
+      final path = req.uri.path;
+      if (path == '/stats' || path == '/api/stats') {
+        req.response.write(jsonEncode({
+          'ok': true,
+          'height': 40,
+          'magic': kBookMagic,
+          'network': kBookMagic,
+        }));
+      } else if (path == '/api/wallet/balance' || path == '/balance') {
+        req.response.write(jsonEncode({'ok': true, 'balance': 80}));
+      } else {
+        req.response.statusCode = 404;
+        req.response.write('{"ok":false}');
+      }
+      await req.response.close();
+    });
+    final dir = Directory.systemTemp.createTempSync('c070-thin-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    await session.setPassword('test-pass-1');
+    final id = session.identity!;
+    final ledger = ShearLedger(pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}'))
+      ..bindIdentity(id);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.rememberNote({
+      'address': home,
+      'dest': home,
+      'verified': true,
+      'height': 1,
+      'amount': 1.0,
+      'nanos': kUnitsPerShe,
+      'commit': Uint8List(32)..[0] = 3,
+      'r': Uint8List(32)..[0] = 9,
+    });
+    ledger.rememberDest(home);
+    ledger.restoreSealedTip(40);
+    ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
+    await ledger.syncBalancesOnly(id.address, paymentCode: id.paymentCode);
+    expect(paths.where((p) => p.contains('stats')), isNotEmpty);
+    expect(paths.any((p) => p.contains('header')), isFalse);
+    expect(paths.any((p) => p.contains('block')), isFalse);
+    expect(paths.any((p) => p.contains('compact')), isFalse);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(1.0, 1e-9),
+    );
+    expect(
+      paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode),
+      closeTo(1.0, 1e-12),
+    );
+  });
+
+  test('a dead seed does not hold a live book for its full budget', () async {
+    Future<HttpServer> serve(int height, {Duration delay = Duration.zero}) async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((req) async {
+        if (delay > Duration.zero) await Future<void>.delayed(delay);
+        req.response.headers.contentType = ContentType.json;
+        req.response.write(jsonEncode({
+          'ok': true,
+          'height': height,
+          'magic': kBookMagic,
+          'network': kBookMagic,
+        }));
+        await req.response.close();
+      });
+      return server;
+    }
+
+    final short = await serve(10);
+    final tall = await serve(50, delay: const Duration(milliseconds: 150));
+    final hung = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    hung.listen((req) async {});
+    addTearDown(() async {
+      await short.close(force: true);
+      await tall.close(force: true);
+      await hung.close(force: true);
+    });
+    final started = DateTime.now();
+    final got = await firstLiveNodeSeed([
+      'http://127.0.0.1:${short.port}',
+      'http://127.0.0.1:${tall.port}',
+      'http://127.0.0.1:${hung.port}',
+    ]);
+    final elapsed = DateTime.now().difference(started);
+    expect(got, 'http://127.0.0.1:${tall.port}');
+    expect(elapsed, lessThan(const Duration(seconds: 2)));
+    await hung.close(force: true);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  });
 }
 
 String _hex(Object? v) {

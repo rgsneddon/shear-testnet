@@ -31,6 +31,9 @@ import {
   NANOS_PER_SHE,
   HASH_BONUS_NANOS,
   HASH_BONUS_NANOS_FLOOR,
+  SHARE_FLOOR_BITS,
+  MAX_SHARES_PER_BLOCK,
+  MAX_HASH_UNITS_PER_BLOCK,
   hashBonusUnitNanos,
   formatShe,
   HASH_BONUS_VOTE_DELTA_NANOS,
@@ -66,6 +69,7 @@ import {
   GENESIS_MAINNET,
   mainnetMayEmit,
 } from './asert.js';
+import { verifyShareBatch } from './share_batch.js';
 
 describe('ASERT 90s block retarget', () => {
   it('holds packed bits when the interval is 90 seconds', () => {
@@ -156,8 +160,9 @@ describe('ASERT 90s block retarget', () => {
     assert.match(fp, /HEADER_AHEAD_MS=15000/);
     assert.match(fp, /ASERT_EASE=1/);
     assert.match(fp, /ASERT_FLOOR=above-min-until-8tau/);
-    assert.equal(ASERT_HALFLIFE_MS, 32 * TARGET_BLOCK_INTERVAL_MS);
-    assert.match(fp, /ASERT_TAU_MS=2880000/);
+    assert.equal(ASERT_HALFLIFE_MS, 16 * TARGET_BLOCK_INTERVAL_MS);
+    assert.equal(ASERT_HALFLIFE_MS, 1_440_000);
+    assert.match(fp, /ASERT_TAU_MS=1440000/);
     assert.doesNotMatch(fp, /ASERT_HARDEN=6/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v9/);
     assert.match(mainnetFingerprint(), /ASERT_EASE=1/);
@@ -340,7 +345,7 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(formatShe(1e-11), '0.00000000');
     assert.equal(formatShe(1e-8), '0.00000001');
     assert.equal(formatShe(1e-9), '0.00000000');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v10');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v11');
     assert.equal(MAGIC_TESTNET_V9, 'shear-testnet-v9');
     assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V9);
     assert.equal(MAGIC_TESTNET_V8, 'shear-testnet-v8');
@@ -420,7 +425,19 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /RX_MODE=light/);
     assert.match(fp, /RX_SALT=ShearHash-v3\/rx/);
     assert.match(fp, /SHARE_FLOOR_BITS=8/);
-    assert.match(fp, /MAX_SHARES_PER_BLOCK=8192/);
+    assert.match(fp, /MAX_SHARES_PER_BLOCK=65536/);
+    assert.doesNotMatch(fp, /MAX_SHARES_PER_BLOCK=8192/);
+    assert.doesNotMatch(fp, /MAX_SHARES_PER_BLOCK=32768/);
+    assert.equal(SHARE_FLOOR_BITS, 8);
+    assert.equal(HASH_BONUS_NANOS, 1);
+    assert.equal(MAX_SHARES_PER_BLOCK, 65536);
+    assert.equal(MAX_HASH_UNITS_PER_BLOCK, 65536 * (2 ** SHARE_FLOOR_BITS));
+    const over = Array.from({ length: MAX_SHARES_PER_BLOCK + 1 }, (_, i) => ({ nonce: BigInt(i), lz: SHARE_FLOOR_BITS }));
+    assert.equal(verifyShareBatch({ shares: over, skipPow: true }).reason, 'share_cap');
+    const aboveV10 = Array.from({ length: 8193 }, (_, i) => ({ nonce: BigInt(i), lz: SHARE_FLOOR_BITS }));
+    assert.notEqual(verifyShareBatch({ shares: aboveV10, skipPow: true }).reason, 'share_cap');
+    const cancelledRung = Array.from({ length: 32769 }, (_, i) => ({ nonce: BigInt(i), lz: SHARE_FLOOR_BITS }));
+    assert.notEqual(verifyShareBatch({ shares: cancelledRung, skipPow: true }).reason, 'share_cap');
     assert.match(fp, /SPEND_SIG=ed25519-shear-spend-v1/);
     assert.match(fp, /DEST_HRP_SSA_ONLY=1/);
     assert.match(fp, /SPEND_SIG_ONLY=1/);
@@ -434,11 +451,11 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
-    assert.match(fp, /NETWORK=shear-testnet-v10/);
+    assert.match(fp, /NETWORK=shear-testnet-v11/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v8/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v7/);
-    assert.match(fp, /:4:15:/);
-    assert.equal(GENESIS_BITS, 15);
+    assert.match(fp, /:4:17:/);
+    assert.equal(GENESIS_BITS, 17);
     assert.equal(LIVE_MIN_BITS, 4);
     assert.equal(TARGET_BLOCK_INTERVAL_MS, 90000);
     assert.match(fp, /HASH_TX_LIVE=1/);
@@ -498,7 +515,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(fp.includes('HASH_FN=ShearHash-v3'), true);
     assert.equal(fp.includes('HASH_FN=ShearHash-v2'), false);
     const law = consensusLaw();
-    assert.equal(PRODUCT_VERSION, '17.0');
+    assert.equal(PRODUCT_VERSION, '18.0');
     assert.equal(MINER_VERSION, '1.1');
     assert.equal(SHEARK_MINER_VERSION, '2.8');
     assert.equal(PRODUCT_VERSION.split('.').length, 2);
@@ -510,7 +527,8 @@ describe('hash-tx consensus law', () => {
     assert.equal(/^\d+\.\d+\.\d+$/.test(MINER_VERSION), false);
     assert.equal(/^\d+\.\d+$/.test('0.10'), true);
     assert.equal(/^\d+\.\d+$/.test('0.1.0'), false);
-    assert.equal(law.productVersion, '17.0');
+    assert.equal(law.productVersion, '18.0');
+    assert.equal(fp.includes('18.0'), false);
     assert.equal(fp.includes('17.0'), false);
     assert.equal(fp.includes('16.0'), false);
     assert.equal(fp.includes('15.0'), false);

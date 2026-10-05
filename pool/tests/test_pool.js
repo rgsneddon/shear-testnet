@@ -297,7 +297,7 @@ describe('HTTP stats cannot stall', () => {
     assert.equal(fp.ok, true);
     assert.equal(fp.admit, 'ADMITv2');
     assert.equal(fp.hashTxLive, 1);
-    assert.equal(fp.magic, 'shear-testnet-v10');
+    assert.equal(fp.magic, 'shear-testnet-v11');
     assert.ok(String(fp.fingerprint || '').length > 8);
     const shePage = await fetch(`http://127.0.0.1:${httpPort}/miner/she1ccbe79d6`);
     assert.equal(shePage.status, 404);
@@ -516,7 +516,7 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /YOUR_SSA1/);
     assert.equal(/--user shear1/.test(html), false);
     assert.equal(html.includes('YOUR_SHEAR1'), false);
-    assert.match(html, /shear-testnet-v10/);
+    assert.match(html, /shear-testnet-v11/);
     assert.doesNotMatch(html, /shear-testnet-v4/);
     assert.match(html, /Pool explorer · last 10 blocks/);
     assert.match(html, />Id</);
@@ -549,7 +549,7 @@ describe('pool dashboard + stratum', () => {
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     assert.equal(stats.nodesOnline, 1);
     assert.equal(stats.magic, MAGIC_TESTNET);
-    assert.equal(stats.magic, 'shear-testnet-v10');
+    assert.equal(stats.magic, 'shear-testnet-v11');
     assert.equal(stats.network, MAGIC_TESTNET);
     assert.equal(stats.personalisation, 'ShearHash-v3');
     assert.equal(stats.rxMode, 'light');
@@ -578,7 +578,7 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.policy.freeze_banner, '');
     assert.equal(typeof stats.policy.h_ratio, 'number');
     assert.equal(typeof stats.policy.side_lead, 'number');
-    assert.equal(stats.productVersion, '17.0');
+    assert.equal(stats.productVersion, '18.0');
     assert.equal(stats.minerVersion, '1.1');
     if (stats.header) assert.equal(stats.header.length, 256);
 
@@ -930,7 +930,7 @@ describe('public miner listing', () => {
     assert.doesNotMatch(popSrc, /hashrate|accepted|fmtRate|SHE/);
     assert.doesNotMatch(dash, /Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v7/);
     assert.match(dash, /id="coin">SHE</);
-    assert.match(dash, /id="network">shear-testnet-v10</);
+    assert.match(dash, /id="network">shear-testnet-v11</);
     assert.match(dash, /\|\| 9\)/);
     assert.doesNotMatch(dash, /\|\| 6\)/);
     assert.doesNotMatch(dash, /Pool: <a href="https:\/\/pool\.shear\.digital"/);

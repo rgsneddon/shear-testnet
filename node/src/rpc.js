@@ -3,6 +3,7 @@ import { mempoolPressure } from '../../crypto/levy.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
 import { MAGIC_TESTNET, HASH_TX_LIVE, NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS, consensusFingerprint } from '../../crypto/asert.js';
 import { hash20FromAddress, isDestAddress, isPaymentCode, encodeDest } from '../../crypto/address.js';
+import { verifyDestOpening } from '../../crypto/spend.js';
 import { noteCommitOfDest20 } from '../../crypto/note.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
 import { networkReport } from './network_report.js';
@@ -49,6 +50,30 @@ function compactBlockJson(b) {
     hash: Buffer.from(b.hash).toString('hex'),
     height: b.height,
   });
+}
+
+function requestOpen(params) {
+  return String((params && (params.open || params.destOpen)) || '');
+}
+
+function destHeld(address, params) {
+  if (!verifyDestOpening(String(address || ''), requestOpen(params))) {
+    return { ok: false, reason: 'dest_hold' };
+  }
+  return null;
+}
+
+function statusFor(out) {
+  if (out && out.reason === 'dest_hold') return 401;
+  if (out && out.ok === false) return 400;
+  return 200;
+}
+
+function paramsFrom(url, req) {
+  const params = Object.fromEntries(url.searchParams);
+  const header = req && req.headers ? req.headers['x-shear-open'] : '';
+  if (header && !params.open && !params.destOpen) params.open = String(header);
+  return params;
 }
 
 function notesForAddress(store, address) {
@@ -407,6 +432,8 @@ export function createRpc({
     if (m === 'getnotes' || m === 'notes') {
       const address = String(params.address || params[0] || '');
       if (!isDestAddress(address)) return { ok: false, reason: 'bad_address' };
+      const held = destHeld(address, params);
+      if (held) return held;
       return { ok: true, notes: notesForAddress(store, address) };
     }
     if (m === 'getbalance' || m === 'balance') {
@@ -414,6 +441,8 @@ export function createRpc({
       if (!isDestAddress(address) && !isPaymentCode(address)) {
         return { ok: false, reason: 'bad_address' };
       }
+      const held = destHeld(address, params);
+      if (held) return held;
       const nanos = typeof store.spendableNanos === 'function' ? Number(store.spendableNanos(address) || 0) : 0;
       return {
         ok: true,
@@ -430,6 +459,8 @@ export function createRpc({
       if (!isDestAddress(address) && !isPaymentCode(address)) {
         return { ok: false, reason: 'bad_address' };
       }
+      const held = destHeld(address, params);
+      if (held) return held;
       return { ok: true, coin: 'SHE', txs: toHex(walletHistoryFor(store, address)) };
     }
     if (m === 'getoracle' || m === 'oracle') {
@@ -531,18 +562,18 @@ export function createRpc({
       return;
     }
     if (req.method === 'GET' && (url.pathname === '/notes' || url.pathname === '/getnotes' || url.pathname === '/api/wallet/notes')) {
-      const out = dispatch('getnotes', Object.fromEntries(url.searchParams));
-      json(res, out?.ok === false ? 400 : 200, out);
+      const out = dispatch('getnotes', paramsFrom(url, req));
+      json(res, statusFor(out), out);
       return;
     }
-    if (req.method === 'GET' && url.pathname === '/api/wallet/balance') {
-      const out = dispatch('getbalance', Object.fromEntries(url.searchParams));
-      json(res, out?.ok === false ? 400 : 200, out);
+    if (req.method === 'GET' && (url.pathname === '/balance' || url.pathname === '/getbalance' || url.pathname === '/api/wallet/balance')) {
+      const out = dispatch('getbalance', paramsFrom(url, req));
+      json(res, statusFor(out), out);
       return;
     }
-    if (req.method === 'GET' && url.pathname === '/api/wallet/history') {
-      const out = dispatch('gethistory', Object.fromEntries(url.searchParams));
-      json(res, out?.ok === false ? 400 : 200, out);
+    if (req.method === 'GET' && (url.pathname === '/history' || url.pathname === '/gethistory' || url.pathname === '/api/wallet/history')) {
+      const out = dispatch('gethistory', paramsFrom(url, req));
+      json(res, statusFor(out), out);
       return;
     }
     if (req.method === 'GET' && (url.pathname === '/api/policy' || url.pathname === '/policy')) {
@@ -616,14 +647,17 @@ export function createRpc({
       }
     }
     const method = body.method || url.pathname.replace(/^\//, '');
-    const params = body.params || Object.fromEntries(url.searchParams);
+    const params = body.params || paramsFrom(url, req);
+    if (!body.params && req.headers && req.headers['x-shear-open'] && !params.open && !params.destOpen) {
+      params.open = String(req.headers['x-shear-open']);
+    }
     const got = dispatch(method, params);
     const out = typeof got?.then === 'function' ? await got : got;
     if (body.id != null) {
       json(res, 200, { jsonrpc: '2.0', id: body.id, result: out });
       return;
     }
-    json(res, out?.ok === false ? 400 : 200, out);
+    json(res, statusFor(out), out);
   });
 
   function listen() {

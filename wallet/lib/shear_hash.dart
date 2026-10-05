@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -49,3 +50,40 @@ bool shearSelftest() => shearHashHex(shearSelftestHeader()) == shearSelftestHash
 
 /// Same bytes as C `shear_hash` — used by the selftest vector unit test, not wallet mining.
 List<int> dartHashRound(List<int> header) => shearHash(header);
+
+BigInt _hashToBig(List<int> hash) {
+  var n = BigInt.zero;
+  for (final b in hash) {
+    n = (n << 8) | BigInt.from(b & 0xff);
+  }
+  return n;
+}
+
+/// Packed Q16.16 target. `bitsFp` is the real bit-difficulty, not the wire word.
+BigInt shearTargetFromBitsFp(double bitsFp) {
+  final exp = 256 - bitsFp;
+  if (!exp.isFinite || exp >= 256) return (BigInt.one << 256) - BigInt.one;
+  if (exp <= 0) return BigInt.one;
+  final i = exp.floor();
+  final frac = exp - i;
+  final scale = BigInt.from((math.pow(2, frac) * math.pow(2, 48)).round());
+  return ((BigInt.one << i) * scale) >> 48;
+}
+
+/// True when [hash] is under the header's work target.
+/// A wire word `>= 65536` is Q16.16 (`bits / 65536`). A smaller word is whole bits.
+bool shearMeetsTarget(List<int> hash, int bits) {
+  if (bits >= 65536) {
+    return _hashToBig(hash) < shearTargetFromBitsFp(bits / 65536);
+  }
+  final k = bits.clamp(0, 256);
+  if (k <= 0) return true;
+  final full = k ~/ 8;
+  final rem = k % 8;
+  for (var i = 0; i < full; i++) {
+    if (i >= hash.length || hash[i] != 0) return false;
+  }
+  if (rem == 0) return true;
+  if (full >= hash.length) return false;
+  return hash[full] < (1 << (8 - rem));
+}

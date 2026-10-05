@@ -24,8 +24,14 @@ const openssl = 'C:\\msys64\\mingw64\\bin\\openssl.exe';
 
 describe('fee dest, auth pub, certify, public stats', () => {
   it('mismatched fee dest versus admin spend fails closed and the shipped ssa1 is unchanged', () => {
-    const shipped = 'ssa1qzcru37269cx30t7pdsmujwrxhc76km6ctzhwggxnyr9f0ld85wc4zvluktldtcnke7mr524ngqqvfr3sd5qsh6kkuk';
+    const shipped = 'ssa1q5495s7qwnljwkt2q8896vect0qaj3argt68hvet8t3vkhf9f7tcn0qhsd2q45e4lnay7u98sp22sddc639hqt0d8jj';
+    const retired = 'ssa1qzcru37269cx30t7pdsmujwrxhc76km6ctzhwggxnyr9f0ld85wc4zvluktldtcnke7mr524ngqqvfr3sd5qsh6kkuk';
     assert.equal(THIS_POOL_DIRECT_FEE_DEST, shipped);
+    assert.notEqual(shipped, retired);
+    assert.equal(shipped.slice(-4), 'd8jj');
+    const retiredEnv = configuredFeeIdentity({ env: { SHEAR_FEE_DEST: retired, SHEAR_ADMIN_SPEND_DEST: retired } });
+    assert.equal(retiredEnv.ok, false);
+    assert.equal(retiredEnv.reason, 'v10_fee_dest');
     const match = configuredFeeIdentity({ env: {} });
     assert.equal(match.ok, true);
     assert.equal(match.feeDest, shipped);
@@ -93,7 +99,7 @@ describe('fee dest, auth pub, certify, public stats', () => {
     assert.equal(ident.ok, true);
     assert.equal(stats.interval.soaking, true);
     assert.equal(stats.interval.certified90s, false);
-    assert.equal(stats.productVersion, '17.0');
+    assert.equal(stats.productVersion, '18.0');
     assert.equal(body.includes(THIS_POOL_DIRECT_FEE_DEST), false);
     assert.equal(stats.feeDest, undefined);
     assert.equal(stats.fluxset, undefined);

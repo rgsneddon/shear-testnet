@@ -46,7 +46,7 @@
     })();
   </script>
   <title>ShearK Miner 2.8 — Shear</title>
-  <meta name="description" content="ShearK-Miner 2.8 for Windows, Linux, Arch, Fedora, openSUSE, and macOS. ShearHash-v3 · shear-testnet-v10 · stratum+ssl://pool.shear.digital:443. Each zip includes example.bat and example.sh." />
+  <meta name="description" content="ShearK-Miner 2.8 for Windows, Linux, Arch, Fedora, openSUSE, and macOS. ShearHash-v3 · shear-testnet-v11 · stratum+ssl://pool.shear.digital:443. Each zip includes example.bat and example.sh." />
   <link rel="icon" href="../brand/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
   <link rel="stylesheet" href="../css/site.css" />
@@ -69,7 +69,7 @@
   <script src="../shared/shear-chrome.js"></script>
 
   <div class="banner" role="status">
-    <strong>Testnet only.</strong> ShearK 2.8 · ShearHash-v3 · shear-testnet-v10
+    <strong>Testnet only.</strong> ShearK 2.8 · ShearHash-v3 · shear-testnet-v11
     <span class="sep">·</span>
     Windows SmartScreen may flag unsigned builds
   </div>
@@ -78,11 +78,11 @@
     <div class="wrap page-hero">
       <p class="section-label">CPU hasher</p>
       <h1>ShearK Miner <span style="color:var(--accent)">2.8</span></h1>
-      <p class="lede">Official ShearHash-v3 miner. Public pool is <code>stratum+ssl://pool.shear.digital:443</code>. After the node reports ibd=false, localhost solo stays <code>stratum+tcp://127.0.0.1:1111</code>. Login is Copy dest, a bare ssa1. A typed suffix is optional. Continuum wallet is separate — download that on <a href="/wallet/">WALLET</a> (0.70). The book is Shear Sentinel v17 on the node page. Run --selftest once, then hash. Sealed pays show in Shearview when the wallet is open. How-to: https://shear.digital/docs/#/mine.</p>
+      <p class="lede">Official ShearHash-v3 miner. Public pool is <code>stratum+ssl://pool.shear.digital:443</code>. After the node reports ibd=false, localhost solo stays <code>stratum+tcp://127.0.0.1:1111</code>. Login is Copy dest, a bare ssa1. A typed suffix is optional. Continuum wallet is separate — download that on <a href="/wallet/">WALLET</a> (0.71). The book is Shear Sentinel v18 on the node page. Run --selftest once, then hash. Sealed pays show in Shearview when the wallet is open. How-to: https://shear.digital/docs/#/mine.</p>
       <div class="pin-row">
         <span class="pin-chip">Pin 2.8</span>
         <span class="pin-chip">ShearHash-v3</span>
-        <span class="pin-chip" data-shear-network>shear-testnet-v10</span>
+        <span class="pin-chip" data-shear-network>shear-testnet-v11</span>
         <span class="pin-chip">stratum+ssl :443</span>
       </div>
     </div>
@@ -142,14 +142,14 @@
       <div class="panel">
         <h3>How to mine</h3>
         <ol>
-          <li>Install Continuum 0.70 and use <strong>Copy dest</strong>. The paid login starts with <code>ssa1</code>.</li>
+          <li>Install Continuum 0.71 and use <strong>Copy dest</strong>. The paid login starts with <code>ssa1</code>.</li>
           <li>Download the zip that matches this machine. Leave every file in one folder. Windows needs the OpenSSL DLLs beside <code>ShearK-Miner.exe</code>. The other packs keep <code>ShearK-Miner</code> beside the OpenSSL libraries.</li>
           <li>Open <code>example.bat</code> on Windows, or <code>example.sh</code> on Linux, Arch, Fedora, openSUSE, and macOS. Replace <code>YOUR_SSA1</code> with Copy dest. Set <code>--threads</code> to this machine's logical CPUs. A typed <code>.worker</code> is optional and pays the same address. Two machines need two worker names.</li>
           <li>Windows: save, then double-click <code>example.bat</code>. Everywhere else: <code>chmod +x ShearK-Miner example.sh</code> and run <code>./example.sh</code>.</li>
           <li>On a new machine, run <code>--selftest</code> once. The digest must be <code>98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b</code>.</li>
           <li>A good pool start prints <code>tls verify ok</code> and a job height. <code>accepted</code> climbs. Each accepted floor share is paid to that dest on the next sealed block.</li>
         </ol>
-        <p>Public pool is <code>stratum+ssl://pool.shear.digital:443</code>. TLS uses the current Let's Encrypt and ISRG roots, or the OS store. Do not pass <code>--tls-pin</code>. There is no <code>--tls-insecure</code>. Localhost solo stays cleartext at <code>stratum+tcp://127.0.0.1:1111</code> after the node reports <code>ibd=false</code>. Those solo lines are commented in the sample launchers. <code>she1</code> without <code>--dest</code> is unpaid. Never use <code>shear1</code>. The live book is <code>shear-testnet-v10</code>. <code>--print-config</code> still reports magic <code>shear-testnet-v4</code>. The header you hash comes from the job.</p>
+        <p>Public pool is <code>stratum+ssl://pool.shear.digital:443</code>. TLS uses the current Let's Encrypt and ISRG roots, or the OS store. Do not pass <code>--tls-pin</code>. There is no <code>--tls-insecure</code>. Localhost solo stays cleartext at <code>stratum+tcp://127.0.0.1:1111</code> after the node reports <code>ibd=false</code>. Those solo lines are commented in the sample launchers. <code>she1</code> without <code>--dest</code> is unpaid. Never use <code>shear1</code>. The live book is <code>shear-testnet-v11</code>. <code>--print-config</code> still reports magic <code>shear-testnet-v4</code>. The header you hash comes from the job.</p>
       </div>
     </section>
 
@@ -185,7 +185,7 @@
         <p>How-to and downloads: <a href="https://github.com/rgsneddon/ShearK/releases/tag/2.8" rel="noopener">rgsneddon/ShearK 2.8</a>. Miner source stays in <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">rgsneddon/shear-testnet</a> under <code>sheark-miner/</code>. Default backend <code>jit-full</code> (2 GiB dataset). Abort on restamp; verify claimed digest. One login. No miner-fee dual-login.</p>
         <div class="cta-row" style="margin-top:.85rem">
           <a class="btn btn-ghost" href="/miner/">Miner page</a>
-          <a class="btn btn-ghost" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.70">Continuum 0.70 release</a>
+          <a class="btn btn-ghost" href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.71">Continuum 0.71 release</a>
         </div>
       </div>
     </section>
@@ -193,7 +193,7 @@
 
   <footer class="footer">
     <div class="wrap footer-inner">
-      <div data-shear-foot data-wallet-fallback="0.70" data-network-fallback="shear-testnet-v10">Shear · … · Continuum … · …</div>
+      <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
       <nav>
         <a href="/">Main</a>
         <a href="https://pool.shear.digital" rel="noopener">Pool</a>

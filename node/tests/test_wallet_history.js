@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, spendDestOf, hash20FromAddress } from '../../crypto/address.js';
+import { newIdentity, spendDestOf, hash20FromAddress, destOpeningFromView } from '../../crypto/address.js';
 import { sealCoinbaseNote } from '../../crypto/note.js';
 import { NANOS_PER_SHE } from '../../crypto/asert.js';
 import { createRpc } from '../src/rpc.js';
@@ -21,8 +21,12 @@ function getJson(port, path) {
 
 describe('wallet history from the book', () => {
   it('lists every sealed note for the dest once and drops a mismatched explorer id', async () => {
-    const mine = spendDestOf(newIdentity().spendPub);
-    const other = spendDestOf(newIdentity().spendPub);
+    const alice = newIdentity();
+    const bob = newIdentity();
+    const mine = spendDestOf(alice.spendPub);
+    const other = spendDestOf(bob.spendPub);
+    const mineOpen = destOpeningFromView(alice.viewKey, alice.spendPub);
+    const bobOpen = destOpeningFromView(bob.viewKey, bob.spendPub);
     const mineNote = sealCoinbaseNote(2 * NANOS_PER_SHE, {
       dest20: hash20FromAddress(mine),
       kind: 'pot',
@@ -68,7 +72,13 @@ describe('wallet history from the book', () => {
     const rpc = createRpc({ store, port: 0, host: '127.0.0.1' });
     const addr = await rpc.listen();
     try {
-      const own = await getJson(addr.port, `/api/wallet/history?address=${encodeURIComponent(mine)}`);
+      const bare = await getJson(addr.port, `/api/wallet/history?address=${encodeURIComponent(mine)}`);
+      assert.equal(bare.status, 401);
+      assert.equal(bare.json.reason, 'dest_hold');
+      assert.equal(bare.json.txs, undefined);
+      assert.equal(bare.json.balance, undefined);
+      assert.equal(bare.json.notes, undefined);
+      const own = await getJson(addr.port, `/api/wallet/history?address=${encodeURIComponent(mine)}&open=${encodeURIComponent(mineOpen)}`);
       assert.equal(own.status, 200);
       const txs = own.json.txs;
       assert.equal(txs.length, 2);
@@ -85,7 +95,10 @@ describe('wallet history from the book', () => {
       assert.equal(txs.some((t) => t.height === 200), false);
       assert.equal(JSON.stringify(txs).includes(other), false);
 
-      const foreignHist = await getJson(addr.port, `/api/wallet/history?address=${encodeURIComponent(other)}`);
+      const foreignBare = await getJson(addr.port, `/api/wallet/history?address=${encodeURIComponent(other)}`);
+      assert.equal(foreignBare.status, 401);
+      assert.equal(foreignBare.json.txs, undefined);
+      const foreignHist = await getJson(addr.port, `/api/wallet/history?address=${encodeURIComponent(other)}&open=${encodeURIComponent(bobOpen)}`);
       assert.deepEqual(foreignHist.json.txs.map((t) => t.height), [200]);
       assert.equal(foreignHist.json.txs[0].id, `blockfound:200:${other}`);
       assert.equal(JSON.stringify(foreignHist.json.txs).includes(mine), false);

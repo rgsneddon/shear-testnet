@@ -44,7 +44,7 @@ import {
   destOfShare,
   dest20OfShare,
   noteCommitOfShare,
-  sortShares,
+  selectBlockShares,
   stashSharePow,
   dropSharePowKeys,
 } from '../../crypto/share_batch.js';
@@ -589,7 +589,7 @@ export function buildTemplate({
   parentFluxset = null,
   parentBlocks = null,
 }) {
-  const batch = Array.isArray(shareBatch) ? sortShares(shareBatch) : [];
+  const batch = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
   const fromBatch = batch.length
     ? [...collateShareUnits(batch)].map(([minerAddr, count]) => ({
       miner: minerAddr,
@@ -1129,6 +1129,15 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
   }
   if (skipFlow) {
+    const coinbase = txs[0];
+    if (!coinbase || !Array.isArray(coinbase.vout) || coinbase.vout.length === 0) {
+      return { ok: false, reason: 'pot' };
+    }
+    for (const o of hashVouts) {
+      const hasCommit = o.commit || o.noteCommit;
+      const hasNanos = Number(o.nanos || 0) > 0;
+      if (!hasCommit && !hasNanos) return { ok: false, reason: 'hash_bonus' };
+    }
     if (confidential) {
       const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
       if (!money.length) return { ok: false, reason: 'pot' };

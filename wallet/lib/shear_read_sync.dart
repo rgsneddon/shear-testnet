@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
+import 'dart:typed_data';
 
+import 'shear_hash.dart';
 import 'shear_read_open.dart';
 import 'shear_tip_tick.dart';
 
@@ -100,29 +102,73 @@ bool isPublicPoolHttp(String? url) {
 /// Tip sync may use public HTTP. Reserve/Flow spends must not.
 bool localSendReady(String? url) => isLocalRpcUrl(url) && !isPublicPoolHttp(url);
 
-/// Ports a user node or the local pool listens on.
-/// An ephemeral socket such as 127.0.0.1:57299 is not a send target.
+/// Public node HTTP. Not the pool.
+bool isNodeHttpHost(String host) {
+  final h = host.toLowerCase();
+  return h == 'p2p.shear.digital' || h == 'r2r.shear.digital' || h == 'b2b.shear.digital';
+}
+
+String _trimBase(String raw) {
+  var s = raw.trim();
+  if (s.endsWith('/')) s = s.substring(0, s.length - 1);
+  return s;
+}
+
+/// A node that can accept a spend. The pool is not one. An ephemeral
+/// loopback such as 127.0.0.1:57299 is not one either.
 bool isWalletSendSeed(String? url) {
   if (url == null || url.isEmpty) return false;
-  if (isPublicPoolHttp(url)) return true;
+  if (isPublicPoolHttp(url) || isPoolLedgerHost(url)) return false;
   final u = Uri.tryParse(url);
   if (u == null) return false;
   final host = u.host.toLowerCase();
-  if (host != '127.0.0.1' && host != 'localhost' && host != '::1') return false;
-  return u.port == 18332 || u.port == 8088;
+  if (host == '127.0.0.1' || host == 'localhost' || host == '::1') {
+    return u.port == 18332;
+  }
+  return isNodeHttpHost(host);
 }
 
-/// Where a send is posted. A refused ephemeral loopback is not used.
+/// Node a spend prefers when [url] is already a node. Any other URL,
+/// including the public pool, names the local node RPC instead.
 String walletSendBase(String? url) {
-  if (isWalletSendSeed(url)) {
-    final s = url!.trim();
-    return s.endsWith('/') ? s.substring(0, s.length - 1) : s;
+  if (isWalletSendSeed(url)) return _trimBase(url!);
+  return kLocalNodeRpc;
+}
+
+/// Spend hosts in try order. The public pool is included only when
+/// [legacyPoolSend] is set and the configured host is already a pool.
+/// A pinned non-pool URL is the only target, so a test node is not rewritten.
+List<String> nodeSendTargets(String? base, {String? pinned, bool legacyPoolSend = false}) {
+  if (legacyPoolSend) {
+    final raw = (pinned != null && pinned.trim().isNotEmpty) ? pinned : (base ?? '');
+    if (isPublicPoolHttp(raw) || isPoolLedgerHost(raw)) return [_trimBase(raw)];
   }
-  return kPublicPoolHttp;
+  if (pinned != null &&
+      pinned.trim().isNotEmpty &&
+      !isPublicPoolHttp(pinned) &&
+      !isPoolLedgerHost(pinned)) {
+    return [_trimBase(pinned)];
+  }
+  final out = <String>[];
+  void add(String raw) {
+    final s = _trimBase(raw);
+    if (s.isEmpty || out.contains(s)) return;
+    if (isPublicPoolHttp(s) || isPoolLedgerHost(s)) return;
+    out.add(s);
+  }
+  if (base != null && isWalletSendSeed(base)) {
+    add(base);
+  } else {
+    add(kLocalNodeRpc);
+  }
+  for (final seed in kPublicNodeSeeds) {
+    add(seed);
+  }
+  return out;
 }
 
 /// [name] occurs in [blob] and is not a prefix of a longer book number.
-/// `shear-testnet-v1` must not match `shear-testnet-v10`.
+/// `shear-testnet-v1` must not match `shear-testnet-v11`.
 bool _bookNameAt(String blob, String name) {
   var from = 0;
   while (from < blob.length) {
@@ -160,12 +206,18 @@ bool isLiveBookStats(Map<String, dynamic> stats) {
 /// Kept for call sites; same as [isLiveBookStats].
 bool isV3BookStats(Map<String, dynamic> stats) => isLiveBookStats(stats);
 
-/// Tallest live book among [seeds]. Pool hosts are not candidates. Each seed
-/// has its own budget, so a dead loopback cannot hold a public node that
-/// already answered. Returns '' when none answer.
+/// After one live book has answered, other seeds get this long. A host that
+/// never answers does not add its full budget on top.
+const kLiveSeedGrace = Duration(milliseconds: 750);
+
+/// Tallest live book among [seeds]. Pool hosts are not candidates.
+/// Once one live book has answered, seeds still in flight get [grace] and
+/// then the tallest so far is used. A dead host does not hold the note read
+/// for the whole [budget]. Returns '' when none answer.
 Future<String> firstLiveNodeSeed(
   List<String> seeds, {
   Duration budget = const Duration(seconds: 4),
+  Duration grace = kLiveSeedGrace,
 }) async {
   final usable = <String>[];
   final seen = <String>{};
@@ -176,19 +228,35 @@ Future<String> firstLiveNodeSeed(
     usable.add(s);
   }
   if (usable.isEmpty) return '';
-  final hits = await Future.wait(usable.map((seed) async {
-    final height = await probeNodeSeedHeight(seed, budget: budget);
-    return height == null ? null : (url: seed, height: height);
-  }));
+  final done = Completer<void>();
+  var left = usable.length;
   String best = '';
   var bestH = -1;
-  for (final hit in hits) {
-    if (hit == null || hit.height < 1) continue;
-    if (hit.height > bestH) {
-      bestH = hit.height;
-      best = hit.url;
-    }
+  Timer? graceTimer;
+  void finish() {
+    if (!done.isCompleted) done.complete();
   }
+
+  for (final seed in usable) {
+    unawaited(() async {
+      final height = await probeNodeSeedHeight(seed, budget: budget);
+      if (!done.isCompleted && height != null && height > bestH) {
+        bestH = height;
+        best = seed;
+      }
+      if (!done.isCompleted && best.isNotEmpty && graceTimer == null) {
+        graceTimer = Timer(grace, finish);
+      }
+      left -= 1;
+      if (left == 0) finish();
+    }());
+  }
+  try {
+    await done.future.timeout(budget);
+  } on TimeoutException {
+    // The live answers already recorded are the book. The rest did not answer.
+  }
+  graceTimer?.cancel();
   return best;
 }
 
@@ -345,9 +413,10 @@ const kNodeSyncHeaderPage = 2000;
 /// Compact-block page size matching node RPC `getblocks` cap.
 const kNodeSyncBlockPage = 64;
 
-/// Test-only logarithmic locator list (old FlyClient sampler).
-/// Not the send / balance / history / tip-proof path.
-List<int> flyclientSampleHeightsForTest(int tip) {
+/// Logarithmic Flyclient locator. Powers of two, plus the tip.
+/// Connect bare fetches these headers only. It is not a 1…tip walk,
+/// and it is not the note, balance, history, or send path.
+List<int> flyclientSampleHeights(int tip) {
   if (tip < 1) return const [];
   final out = <int>{};
   var h = 1;
@@ -360,6 +429,122 @@ List<int> flyclientSampleHeightsForTest(int tip) {
   out.add(tip);
   final list = out.toList()..sort();
   return list;
+}
+
+/// Same locator the Connect bare sample uses.
+List<int> flyclientSampleHeightsForTest(int tip) => flyclientSampleHeights(tip);
+
+/// A note-scan tip and a Flyclient tip disagree when both are known and
+/// they are not the same book, or their heights differ by more than [slack].
+/// One side still in flight is not a disagreement.
+bool flyclientTipDisagrees({
+  required int sampleTip,
+  required int noteTip,
+  String? sampleGenesis,
+  String? noteGenesis,
+  int slack = 1,
+}) {
+  if (sampleTip < 1) return false;
+  final sampleG = (sampleGenesis ?? '').toLowerCase();
+  final noteG = (noteGenesis ?? '').toLowerCase();
+  if (sampleG.isNotEmpty && noteG.isNotEmpty && sampleG != noteG) return true;
+  if (noteTip < 1) return false;
+  final gap = sampleTip > noteTip ? sampleTip - noteTip : noteTip - sampleTip;
+  return gap > slack;
+}
+
+/// Connect bare bar. A failed sample or a tip disagreement is not CONNECTED.
+/// Local-node mode does not use this word.
+String connectBareLinkWord({
+  required bool sampling,
+  required bool sampleOk,
+  required bool sampleFailed,
+  required int sampleTip,
+  required int noteTip,
+  String? sampleGenesis,
+  String? noteGenesis,
+}) {
+  final disagree = sampleOk &&
+      flyclientTipDisagrees(
+        sampleTip: sampleTip,
+        noteTip: noteTip,
+        sampleGenesis: sampleGenesis,
+        noteGenesis: noteGenesis,
+      );
+  if (disagree) return 'tip disagree';
+  if (sampleFailed) return 'sample failed';
+  if (sampleOk && sampleTip > 0) return 'CONNECTED';
+  if (sampling) return 'SYNCING';
+  return 'not connected';
+}
+
+class FlyHeader {
+  const FlyHeader({
+    required this.version,
+    required this.prevHex,
+    required this.bits,
+    required this.timestamp,
+    required this.claimedHash,
+    required this.rawHex,
+  });
+
+  final int version;
+  final String prevHex;
+  final int bits;
+  final int timestamp;
+  final String claimedHash;
+  final String rawHex;
+}
+
+int _u32le(Uint8List b, int o) =>
+    b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24);
+
+int _u64le(Uint8List b, int o) {
+  var n = 0;
+  for (var i = 0; i < 8; i++) {
+    n |= b[o + i] << (8 * i);
+  }
+  return n;
+}
+
+Uint8List? _hexToBytes(String hex) {
+  final s = hex.trim().toLowerCase();
+  if (s.length.isOdd || !RegExp(r'^[0-9a-f]+$').hasMatch(s)) return null;
+  final out = Uint8List(s.length ~/ 2);
+  for (var i = 0; i < out.length; i++) {
+    out[i] = int.parse(s.substring(i * 2, i * 2 + 2), radix: 16);
+  }
+  return out;
+}
+
+/// Header JSON from `GET /header`. Null when the body is not a 128-byte header.
+FlyHeader? flyHeaderFromJson(Map<String, dynamic> json) {
+  final hex = (json['header'] ?? '').toString().toLowerCase();
+  final raw = _hexToBytes(hex);
+  if (raw == null || raw.length != shearHeaderLen) return null;
+  final claimed = (json['hash'] ?? '').toString().toLowerCase();
+  return FlyHeader(
+    version: _u32le(raw, 0),
+    prevHex: hex.substring(8, 72),
+    bits: _u32le(raw, 108),
+    timestamp: _u64le(raw, 100),
+    claimedHash: claimed,
+    rawHex: hex,
+  );
+}
+
+/// PoW sample check. The claimed digest must meet the header bits.
+/// This wallet does not recompute ShearHash-v3. Height 1 may have a zero prev.
+bool flyHeaderPowOk(FlyHeader header, {required int height}) {
+  if (height < 1 || header.version < 1 || header.bits <= 0 || header.timestamp <= 0) {
+    return false;
+  }
+  final digest = _hexToBytes(header.claimedHash);
+  if (digest == null || digest.length != 32) return false;
+  if (!shearMeetsTarget(digest, header.bits)) return false;
+  final prevZero = RegExp(r'^0+$').hasMatch(header.prevHex);
+  if (height > 1 && prevZero) return false;
+  return true;
 }
 
 /// Inclusive height range for one node-sync header/block page.
@@ -452,6 +637,14 @@ class ShearReadSync {
 
   String? jrootHex;
   int sampledTip = 0;
+
+  /// Last Flyclient tip. Kept across a failed retry so the bar can name it.
+  /// Not a spendable figure and not the local-node header walk.
+  int flyclientTip = 0;
+  bool flyclientOk = false;
+  bool flyclientFailed = false;
+  String? flyclientGenesis;
+  final List<String> flyclientFetched = [];
 
   /// Header hex at height 1. Identifies the live book after a chain reset.
   String? genesisHex;
@@ -1036,6 +1229,91 @@ class ShearReadSync {
       if (got != null) return got;
     }
     return null;
+  }
+
+  /// Connect bare tip trust. Samples header/PoW only, on the heaviest
+  /// same-genesis peer whose sample verifies. Does not read notes, balances,
+  /// history, or a send. A failed sample leaves [flyclientOk] false.
+  Future<void> sampleFlyclient() async {
+    flyclientFetched.clear();
+    flyclientOk = false;
+    final previousTip = flyclientTip;
+    final ranked = await _rankFlyclientPeers();
+    for (final peer in ranked) {
+      final ok = await _verifyFlyclient(peer.$1, peer.$2);
+      if (!ok) continue;
+      flyclientOk = true;
+      flyclientFailed = false;
+      flyclientTip = peer.$2;
+      flyclientGenesis = genesisHex;
+      liveBase = peer.$1;
+      return;
+    }
+    flyclientOk = false;
+    flyclientFailed = true;
+    if (previousTip > 0) flyclientTip = previousTip;
+  }
+
+  Future<List<(String, int)>> _rankFlyclientPeers() async {
+    final probes = <String, ({int height, String genesis})>{};
+    final found = await Future.wait(seeds.map((seed) async {
+      final p = await _probe(seed);
+      return MapEntry(seed, p);
+    }));
+    for (final e in found) {
+      if (e.value != null) probes[e.key] = e.value!;
+    }
+    if (probes.isEmpty) return const [];
+    String? want = genesisHex;
+    if (want == null || want.isEmpty) {
+      for (var i = seeds.length - 1; i >= 0; i--) {
+        final g = probes[seeds[i]]?.genesis;
+        if (g != null && g.isNotEmpty) {
+          want = g;
+          break;
+        }
+      }
+    }
+    final ranked = <(String, int)>[];
+    for (final e in probes.entries) {
+      if (want != null && want.isNotEmpty && e.value.genesis != want) continue;
+      ranked.add((e.key, e.value.height));
+    }
+    ranked.sort((a, b) => b.$2.compareTo(a.$2));
+    return ranked;
+  }
+
+  Future<bool> _verifyFlyclient(String base, int tip) async {
+    if (tip < 1) return false;
+    final heights = flyclientSampleHeights(tip);
+    final need = <int>{...heights};
+    if (tip > 1) need.add(tip - 1);
+    final got = <int, FlyHeader>{};
+    final ordered = need.toList()..sort();
+    for (final h in ordered) {
+      final path = '/header?height=$h';
+      flyclientFetched.add(path);
+      final json = await _getFirst(base, [path, '/api/explorer/header?height=$h']);
+      if (json == null) return false;
+      final parsed = flyHeaderFromJson(json);
+      if (parsed == null || !flyHeaderPowOk(parsed, height: h)) return false;
+      if (h == 1) {
+        final g = parsed.rawHex;
+        if (genesisHex != null && genesisHex!.isNotEmpty && genesisHex != g) return false;
+        genesisHex = g;
+      }
+      got[h] = parsed;
+    }
+    if (tip > 1) {
+      final parent = got[tip - 1];
+      final child = got[tip];
+      if (parent == null || child == null) return false;
+      if (child.prevHex != parent.claimedHash) return false;
+    }
+    for (final h in heights) {
+      if (!got.containsKey(h)) return false;
+    }
+    return true;
   }
 
   Future<Map<String, dynamic>?> _get(String base, String path) async {

@@ -74,6 +74,20 @@ bool shouldFullSyncCredits({
   return hasPendingReceive && tipMovedWithoutLanding;
 }
 
+/// The notes open is separate from the desktop node sidecar. Android, and any
+/// wallet that is not running a local node, still retries it until a list
+/// comes back. A failed read, a book that has never collated, or spendable
+/// with no opened note all stay due. A finished empty list is not due.
+bool notesCollateDue({
+  required bool openCollated,
+  required bool readFailed,
+  required bool notesLag,
+}) {
+  if (readFailed) return true;
+  if (!openCollated) return true;
+  return notesLag;
+}
+
 /// Heights strictly after [before] through [tip], inclusive.
 List<int> tipGapHeights(int before, int tip) {
   if (tip < 1 || tip <= before) return const [];
@@ -364,7 +378,7 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
   final opened = await openSessionEnvelope(Map<String, dynamic>.from(raw), password);
   final plain = opened['plain'];
   if (plain is! Map) return spec;
-  final j = Map<String, dynamic>.from(plain);
+  final j = scrubStaleBookCache(Map<String, dynamic>.from(plain));
   return <String, dynamic>{
     ...spec,
     if (j['seedHex'] != null) 'seedHex': j['seedHex'],
@@ -382,12 +396,33 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
     }(),
     'destCount': j['destCount'] ?? spec['destCount'],
     'destIndex': j['destIndex'] ?? spec['destIndex'],
+    'openedProofs': () {
+      final merged = <String, int>{
+        ...proofCacheMap(j['openedProofs']),
+        ...proofCacheMap(spec['openedProofs']),
+      };
+      return <Map<String, dynamic>>[
+        for (final e in merged.entries) {'k': e.key, 'n': e.value},
+      ];
+    }(),
   };
 }
 
 /// Tip, balance, notes, and history run here. The UI isolate only adopts the
 /// book the worker already collated.
-Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
+Future<void> creditFollowEntry(List<dynamic> args) async {
+  final specJson = args.isEmpty ? '' : args[0]?.toString() ?? '';
+  final port = args.length > 1 ? args[1] : null;
+  if (port is! SendPort) return;
+  try {
+    final out = await creditFollowWorker(specJson, port);
+    port.send(<String, dynamic>{'event': 'done', 'out': out});
+  } catch (e) {
+    port.send(<String, dynamic>{'event': 'error', 'message': e.toString()});
+  }
+}
+
+Future<Map<String, dynamic>> creditFollowWorker(String specJson, [SendPort? partials]) async {
   var spec = jsonDecode(specJson) as Map<String, dynamic>;
   spec = await _bookFromSession(spec);
   spec.remove('sessionPassword');
@@ -423,13 +458,14 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
     }
     final full = spec['full'] == true;
     final chain = spec['chain'] != false;
-    // Login's first population. Notes whose proofs open, then the node's
-    // /balance for this dest (not copied into the sum), then the height those
-    // confirmations need. No history and no block body.
+    // Login's first population. One stats read for the confirmation height,
+    // then notes whose proofs open. The node's /balance is not a coin and is
+    // not copied into the sum. No history and no block body.
     final opened = spendableFirst
         ? await ledger.populateSpendableFromNode(
             rest,
             paymentCode: (code == null || code.isEmpty) ? null : code,
+            partials: partials,
           )
         : !chain
             ? ledger.recheckRestFrameSpendable(
@@ -437,7 +473,7 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
                 paymentCode: (code == null || code.isEmpty) ? null : code,
               )
             : full
-                ? await ledger.syncCredits(rest, paymentCode: code)
+                ? await ledger.syncCredits(rest, paymentCode: code, partials: partials)
                 : await ledger.syncBalancesOnly(
                     rest,
                     paymentCode: code,
@@ -599,6 +635,37 @@ Future<Map<String, dynamic>> flowPostHexOffUi(Map<String, dynamic> raw) {
   return Isolate.run(() => flowPostHex(raw));
 }
 
+/// commit|R|z. A swapped proof does not reuse another note's nanos.
+String? proofCacheKey(Map o) {
+  final commit = _noteBytes(o['commit']);
+  final vp = o['valueProof'];
+  if (commit == null || vp is! Map) return null;
+  final r = _noteBytes(vp['R']);
+  final z = _noteBytes(vp['Z'] ?? vp['z']);
+  if (r == null || z == null) return null;
+  return '${_bytesHex(commit)}|${_bytesHex(r)}|${_bytesHex(z)}';
+}
+
+/// Session rows `{k, n}` or a map of key to nanos. `{v}`-only has no key.
+Map<String, int> proofCacheMap(Object? raw) {
+  final out = <String, int>{};
+  if (raw is Map) {
+    for (final e in raw.entries) {
+      final v = e.value;
+      final n = v is Map ? (v['n'] ?? v['nanos']) : v;
+      if (n is num && n > 0) out[e.key.toString()] = n.round();
+    }
+  } else if (raw is List) {
+    for (final row in raw) {
+      if (row is! Map) continue;
+      final k = row['k']?.toString() ?? '';
+      final n = row['n'] ?? row['nanos'];
+      if (k.isNotEmpty && n is num && n > 0) out[k] = n.round();
+    }
+  }
+  return out;
+}
+
 /// Hexify the scan snapshot inside the worker, then scan. The caller sends
 /// the raw snapshot; the JSON clone does not run on the UI isolate.
 Map<String, dynamic> scanSealedWire(Map<String, dynamic> raw) {
@@ -642,8 +709,10 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
           : Uint8List.fromList(List<int>.from(prevIn as List)));
   final startIndex = (input['startIndex'] as num?)?.toInt() ?? 0;
   final xBase = admitBaseScalar(spendSeed);
+  final proofCache = proofCacheMap(input['openedProofs']);
   final notes = <Map<String, dynamic>>[];
   final hashFolds = <Map<String, dynamic>>[];
+  var unopenedProofs = 0;
   for (var i = 0; i < vouts.length; i++) {
     final raw = vouts[i];
     if (raw is! Map) continue;
@@ -690,21 +759,45 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       }
     }
     if (r == null) continue;
+    var kindName = o['kind'] as String?;
     final admit = _noteBytes(o['admitPub']);
     if (admit != null) {
-      try {
-        final want = pointBytes(admitPub(admitScalarFromSeed(spendSeed, {
-          'kind': (o['kind'] as String?) ?? 'pot',
-          'noteCommit': nc,
-          'commit': commit,
-        })));
-        if (!noteBytesEq(want, admit)) continue;
-      } catch (_) {
-        continue;
+      // Compact fee notes are sometimes labeled pot, or the label is omitted.
+      // The admit was sealed under the real kind. Try that label, then the
+      // fee labels. A hash or send admit does not match those, so it is skipped.
+      final tries = <String>[
+        if (kindName != null && kindName.isNotEmpty) kindName else 'pot',
+        'pool-fee',
+        'pot',
+        'coinbase',
+      ];
+      final seenKind = <String>{};
+      String? matchedKind;
+      for (final kindTry in tries) {
+        if (!seenKind.add(kindTry)) continue;
+        try {
+          final want = pointBytes(admitPub(admitScalarFromSeed(spendSeed, {
+            'kind': kindTry,
+            'noteCommit': nc,
+            'commit': commit,
+          })));
+          if (noteBytesEq(want, admit)) {
+            matchedKind = kindTry;
+            break;
+          }
+        } catch (_) {}
       }
+      if (matchedKind == null) continue;
+      kindName = matchedKind;
     }
-    final kind = (o['kind'] as String?) ?? 'pot';
-    final verifiedNanos = _openedSpendNanos(o);
+    final kind = (kindName == null || kindName.isEmpty) ? 'pot' : kindName;
+    final proofKey = proofCacheKey(o);
+    final cachedNanos = proofKey == null ? null : proofCache[proofKey];
+    // A remembered opening is this proof's nanos. A new proof still has to open.
+    final openRow = Map<String, dynamic>.from(o)..['kind'] = kind;
+    final verifiedNanos = (cachedNanos != null && cachedNanos > 0)
+        ? cachedNanos
+        : _openedSpendNanos(openRow);
     final proofChecked = verifiedNanos != null;
     final num? amt = (verifiedNanos != null && verifiedNanos > 0)
         ? verifiedNanos / kUnitsPerShe
@@ -723,6 +816,8 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
       if (o['height'] != null) 'height': o['height'],
       if (amt != null) 'amount': amt,
+      if (proofKey != null) 'proofKey': proofKey,
+      if (verifiedNanos != null) 'verifiedNanos': verifiedNanos,
       if (proofChecked) 'proofChecked': true,
       if (verifiedNanos != null) 'verified': true,
     });
@@ -734,8 +829,11 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
         'height': (o['height'] as num?)?.toInt() ?? 0,
       });
     }
+    // R and z were present (proofKey) but the commitment did not open.
+    // That is not a verified zero.
+    if (proofKey != null && verifiedNanos == null) unopenedProofs++;
   }
-  return {'notes': notes, 'hashFolds': hashFolds};
+  return {'notes': notes, 'hashFolds': hashFolds, 'unopenedProofs': unopenedProofs};
 }
 
 /// Pure history-row parse + optional memoOpen. Full-sync via [Isolate.run].
@@ -806,10 +904,16 @@ bool _completeValueProof(Map o) {
 
 /// Nanos the sealed commitment actually opens.
 ///
-/// A claimed `v` is used when it opens. A pool-fee note whose compact form
-/// dropped `v` opens at the sealed 1 percent (then any fee up to 3 percent,
-/// then the pot). A `{v}`-only row has no R and z, so it stays closed.
-/// A node `/balance` figure is not an input.
+/// Claimed `v` first, when it opens. Compact drops `v` on a pool-fee note, and
+/// producers sometimes label that same note `pot`, `coinbase`, or omit kind.
+/// Those still open at the sealed 1 percent, then any fee up to 3 percent,
+/// then the pot. Hash, send, finder-fee, and reserve-fee do not take that hunt.
+/// A `{v}`-only row has no R and z, so it stays closed. A node balance is not an input.
+bool _feeValueHunt(String? kind) {
+  if (kind == null || kind.isEmpty) return true;
+  return kind == 'pool-fee' || kind == 'pot' || kind == 'coinbase';
+}
+
 int? _openedSpendNanos(Map o) {
   final commit = _noteBytes(o['commit']);
   final vp = o['valueProof'];
@@ -830,7 +934,7 @@ int? _openedSpendNanos(Map o) {
     final claimed = raw.round();
     if (claimed > 0 && opens(claimed)) return claimed;
   }
-  if ((o['kind'] as String?) != 'pool-fee') return null;
+  if (!_feeValueHunt(o['kind'] as String?)) return null;
   final potRaw = o['blockSubsidyNanos'] ?? o['potNanos'];
   final pot = potRaw is num && potRaw > 0
       ? potRaw.round()
@@ -1876,6 +1980,10 @@ class ShearLedger implements ReadProofSink {
   final Map<String, double> _lockDebitShe = {};
   /// Owned sealed notes (commit, noteCommit, r, prev, index, admit x). Reserve vault excepted.
   final List<Map<String, dynamic>> _notes = [];
+  /// Opened proofs for this wallet only, keyed by commit|R|z. Not a fee credit.
+  final Map<String, int> _openedProofs = {};
+  /// Commits the node listed on the last complete notes read. Empty if that read failed.
+  final List<String> _listedCommits = [];
   /// Dests whose notes carried a complete value proof this session.
   final Set<String> _proofCheckedDests = {};
   /// External balances written before any value proof opened. Not spendable.
@@ -1886,6 +1994,26 @@ class ShearLedger implements ReadProofSink {
   /// One address that receives coins and that change returns to.
   String? _coinLedger;
   List<Map<String, dynamic>> get notes => List.unmodifiable(_notes);
+
+  List<Map<String, dynamic>> exportOpenedProofs() => [
+        for (final e in _openedProofs.entries) {'k': e.key, 'n': e.value},
+      ];
+
+  void restoreOpenedProofs(Object? raw) {
+    _openedProofs
+      ..clear()
+      ..addAll(proofCacheMap(raw));
+  }
+
+  bool get spendableReadFailed => _spendableReadFailed == true;
+
+  void _rememberProofRow(Map<String, dynamic> row) {
+    final key = row['proofKey']?.toString() ?? '';
+    final nanos = row['verifiedNanos'];
+    if (key.isEmpty || nanos is! num || nanos <= 0) return;
+    _openedProofs[key] = nanos.round();
+  }
+
   void rememberNote(Map<String, dynamic> note) {
     final incoming = Map<String, dynamic>.from(note);
     final commit = _noteBytes(incoming['commit']);
@@ -2055,6 +2183,7 @@ class ShearLedger implements ReadProofSink {
         ],
         'prev': prev,
         'startIndex': startIndex,
+        'openedProofs': exportOpenedProofs(),
       };
 
   void _applySealedScan(Map<String, dynamic> out) {
@@ -2064,6 +2193,7 @@ class ShearLedger implements ReadProofSink {
         if (n is Map) {
           final row = Map<String, dynamic>.from(n);
           rememberNote(row);
+          _rememberProofRow(row);
           if (row['proofChecked'] == true) {
             final dest = (row['dest'] ?? row['address'])?.toString() ?? '';
             if (dest.isNotEmpty) _proofCheckedDests.add(payKey(dest));
@@ -2071,6 +2201,10 @@ class ShearLedger implements ReadProofSink {
           _creditNoteToShearview(row);
         }
       }
+    }
+    final unopened = out['unopenedProofs'];
+    if (unopened is num && unopened > 0) {
+      _unopenedListedProofs += unopened.toInt();
     }
     final folds = out['hashFolds'];
     if (folds is! List) return;
@@ -2251,9 +2385,11 @@ class ShearLedger implements ReadProofSink {
     return _sealedHeight >= 1 && _notesAt[key] == _sealedHeight;
   }
 
-  /// Closure Apply, every mode. The next credit sync must pull node history
-  /// and notes again instead of trusting a caught-up stamp.
-  void onClosureApply() {
+  /// Closure Apply. The same book keeps the opened-note cursor and the tip.
+  /// A genesis or magic change drops the cursor so the next read starts clean.
+  /// Verified coins stay until that new book replaces them.
+  void onClosureApply({bool bookChanged = false}) {
+    if (!bookChanged) return;
     _historyAt.clear();
     _notesAt.clear();
     _ingestMisses.clear();
@@ -2382,6 +2518,19 @@ class ShearLedger implements ReadProofSink {
   /// Null until login's notes read finishes. True when that read did not
   /// return a note list. A failed read is not a verified zero.
   bool? _spendableReadFailed;
+
+  /// Complete proofs (commit, R, z) this scan matched and did not open.
+  /// A `{v}`-only row is not counted. While this is above zero and no coin
+  /// opened, the screen stays on "…" instead of a confident 0 SHE.
+  int _unopenedListedProofs = 0;
+
+  /// This follow received a notes list, including an empty one.
+  bool _scannedNotesThisFollow = false;
+
+  /// The credit follow threw or the notes list never arrived.
+  void noteSpendableReadFailed() {
+    _spendableReadFailed = true;
+  }
   String _collateError = '';
   bool get openCollated => _openCollated;
   /// Height-1 header hex of the book this ledger is bound to.
@@ -2443,6 +2592,7 @@ class ShearLedger implements ReadProofSink {
     honestLandMisses.clear();
     tipAdvancedWithoutLanding = false;
     _openCollated = false;
+    _openedProofs.clear();
     _sealedHeight = 0;
     _settledHeight = 0;
     lag1Root = null;
@@ -3339,6 +3489,7 @@ class ShearLedger implements ReadProofSink {
           t.kind != 'coinbase' &&
           t.kind != 'blockfound' &&
           t.kind != 'mine' &&
+          t.kind != 'pool-fee' &&
           t.kind != 'pool-withdraw' &&
           t.kind != 'lock' &&
           t.kind != 'withdraw') continue;
@@ -3362,7 +3513,7 @@ class ShearLedger implements ReadProofSink {
     if (shown > owned + 1e-12) _spendable[key] = owned;
   }
 
-  Future<void> _applyStatsTip(Map<String, dynamic> json) async {
+  Future<void> _applyStatsTip(Map<String, dynamic> json, {bool walkGenesis = true}) async {
     if (pool != null && isPoolLedgerHost(pool!.baseUrl)) return;
     final paint = chainPaintFromNodeStats(json);
     if (!paint.usable) {
@@ -3381,8 +3532,13 @@ class ShearLedger implements ReadProofSink {
     applyVaultSeal(json);
       final sealed = paint.tip;
       final hex = paint.headerHex;
-      final genesis = pool!.genesisHex ?? await pool!.fetchGenesisHex();
-      if (genesis != null && genesis.isNotEmpty) bindChainGenesis(genesis);
+      if (walkGenesis) {
+        final genesis = pool!.genesisHex ?? await pool!.fetchGenesisHex();
+        if (genesis != null && genesis.isNotEmpty) bindChainGenesis(genesis);
+      } else {
+        final named = json['genesis']?.toString() ?? '';
+        if (named.isNotEmpty) bindChainGenesis(named);
+      }
       applyTipHex(hex, sealedHeight: sealed);
       if (json.containsKey('hashrate')) networkHashrate = paint.hashrate;
       if (json.containsKey('circulatingNanos')) circulatingNanos = paint.circulatingNanos;
@@ -3438,7 +3594,7 @@ class ShearLedger implements ReadProofSink {
       final live = pool!.liveTip;
       if (live > _sealedHeight) noteLiveHeight(live);
       final first = await pool!.stats().timeout(const Duration(seconds: 2));
-      await _applyStatsTip(first);
+      await _applyStatsTip(first, walkGenesis: false);
       if (!proveChain) {
         final tip = (first['height'] as num?)?.toInt() ?? 0;
         final sync = pool!.sync;
@@ -3458,7 +3614,7 @@ class ShearLedger implements ReadProofSink {
     if (pool == null) return prev;
     try {
       final before = _settledHeight;
-      await syncTip();
+      await syncTip(proveChain: false);
       final json = await _balanceWithOne504Retry(address);
       applyPoolSnapshot(address, json, beforeHeight: before, tipSealed: _sealedHeight);
       _markSettled(_sealedHeight, before);
@@ -3470,13 +3626,14 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
-  /// False when login's notes read failed and no opened coin is on the book.
-  /// The screen must not paint that as 0 SHE. A node balance does not make it true.
+  /// False while no opened coin is on the book and the notes read failed,
+  /// never finished, or listed complete proofs that did not open.
+  /// A successful empty list may paint 0. A node balance does not make this true.
   bool spendableFigureReady(String restFrame, {String? paymentCode}) {
-    if (_spendableReadFailed == true &&
-        spendableOwned(restFrame, paymentCode: paymentCode) <= 1e-12) {
-      return false;
-    }
+    if (spendableOwned(restFrame, paymentCode: paymentCode) > 1e-12) return true;
+    if (_spendableReadFailed == true) return false;
+    if (_unopenedListedProofs > 0) return false;
+    if (_spendableReadFailed != false) return false;
     return true;
   }
 
@@ -3721,35 +3878,41 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
-  /// Login's first read. Pull this wallet's notes from the node and open their
-  /// proofs, then read the node's `/balance` for the same dest, then the tip
-  /// height those confirmations need. The balance number is not a coin. A pool
-  /// balance, an owed-toward-π figure, and a `{v}`-only row do not enter the sum.
+  /// Login's first read. One `/stats` sets the confirmation height, then this
+  /// wallet's notes open and are emitted as soon as a proof verifies. `/balance`
+  /// runs after that paint. The balance number is not a coin. A pool balance,
+  /// an owed-toward-π figure, and a `{v}`-only row do not enter the sum.
   /// A notes read that does not return a list is not a verified zero.
-  Future<double> populateSpendableFromNode(String restFrame, {String? paymentCode}) async {
+  Future<double> populateSpendableFromNode(
+    String restFrame, {
+    String? paymentCode,
+    SendPort? partials,
+  }) async {
     keepOwnedDests(restFrame, paymentCode: paymentCode);
     var sawNotes = false;
     if (pool != null && !isPoolLedgerHost(pool!.baseUrl)) {
-      // A silent node must not hold the lock screen. Later polls still collate.
+      // Height before the open, so the first verified note is already mature
+      // and can paint. This is one stats read, not a header walk.
+      try {
+        final json = await pool!.stats().timeout(const Duration(seconds: 2));
+        final h = (json['height'] as num?)?.toInt() ?? 0;
+        if (h > _sealedHeight) noteLiveHeight(h);
+        if (h > 0) settleTo(h);
+      } catch (_) {}
       try {
         // The shell is already up. This open is off the UI isolate. A short
         // timeout discarded a pool-fee book that was still proving.
         sawNotes = await collateSpendNotes(
           restFrame: restFrame,
           paymentCode: paymentCode,
+          partials: partials,
         );
       } catch (e) {
         _collateError = 'populate:$e';
       }
       try {
         await _readNodeBalance(restFrame, paymentCode: paymentCode)
-            .timeout(const Duration(seconds: 4));
-      } catch (_) {}
-      try {
-        final json = await pool!.stats().timeout(const Duration(seconds: 4));
-        final h = (json['height'] as num?)?.toInt() ?? 0;
-        if (h > _sealedHeight) noteLiveHeight(h);
-        if (h > 0) settleTo(h);
+            .timeout(const Duration(seconds: 2));
       } catch (_) {}
     }
     _spendableReadFailed = !sawNotes;
@@ -3766,10 +3929,101 @@ class ShearLedger implements ReadProofSink {
     for (final d in syncDests(restFrame, paymentCode: paymentCode)) {
       if (!isDestAddress(d)) continue;
       try {
-        final json = await client.balance(d);
+        final json = await client.balance(d, open: destProofOpen(d));
         final raw = json['balance'];
         if (json['ok'] == false && raw is! num) continue;
       } catch (_) {}
+    }
+  }
+
+  void _takeListedCommits(List rows) {
+    for (final row in rows) {
+      if (row is! Map) continue;
+      final c = _noteBytes(row['commit']);
+      if (c != null && c.isNotEmpty) _listedCommits.add(_bytesHex(c));
+    }
+  }
+
+  void _emitCoins(SendPort? partials, Map<String, dynamic> scanned) {
+    if (partials == null) return;
+    final notes = scanned['notes'];
+    if (notes is! List || notes.isEmpty) return;
+    final opened = <Map<String, dynamic>>[
+      for (final n in notes)
+        if (n is Map && n['verified'] == true) Map<String, dynamic>.from(n),
+    ];
+    if (opened.isEmpty) return;
+    partials.send(<String, dynamic>{
+      'event': 'coins',
+      'notes': _followEncode(opened),
+      'sealed': _sealedHeight,
+    });
+  }
+
+  /// Cache hits paint first. Misses open across cores, a chunk at a time.
+  /// Flutter tests stay on this isolate: a nested [Isolate.run] deadlocks there.
+  Future<void> _scanNotesProgressive(Map<String, dynamic> raw, {SendPort? partials}) async {
+    final vouts = List<dynamic>.from(raw['vouts'] as List? ?? const []);
+    final cache = proofCacheMap(raw['openedProofs']);
+    final hits = <dynamic>[];
+    final misses = <dynamic>[];
+    for (final row in vouts) {
+      if (row is! Map) {
+        misses.add(row);
+        continue;
+      }
+      final k = proofCacheKey(Map<String, dynamic>.from(row));
+      if (k != null && cache.containsKey(k)) {
+        hits.add(row);
+      } else {
+        misses.add(row);
+      }
+    }
+    Future<void> applySlice(List<dynamic> slice, {required bool useCache}) async {
+      if (slice.isEmpty) return;
+      final scanned = scanSealedWire(<String, dynamic>{
+        ...raw,
+        'vouts': slice,
+        if (!useCache) 'openedProofs': const <Map<String, dynamic>>[],
+      });
+      _applySealedScan(scanned);
+      _emitCoins(partials, scanned);
+    }
+
+    await applySlice(hits, useCache: true);
+    const width = 8;
+    final parallel = Platform.environment['FLUTTER_TEST'] != 'true';
+    for (var i = 0; i < misses.length; i += width) {
+      final end = i + width > misses.length ? misses.length : i + width;
+      final slice = misses.sublist(i, end);
+      if (!parallel || slice.length == 1) {
+        await applySlice(slice, useCache: false);
+        continue;
+      }
+      final parts = await Future.wait([
+        for (final one in slice)
+          Isolate.run(() => scanSealedWire(<String, dynamic>{
+                ...raw,
+                'vouts': <dynamic>[one],
+                'openedProofs': const <Map<String, dynamic>>[],
+              })),
+      ]);
+      final merged = <String, dynamic>{
+        'notes': <dynamic>[
+          for (final part in parts)
+            if (part['notes'] is List) ...(part['notes'] as List),
+        ],
+        'hashFolds': <dynamic>[
+          for (final part in parts)
+            if (part['hashFolds'] is List) ...(part['hashFolds'] as List),
+        ],
+        'unopenedProofs': parts.fold<int>(0, (sum, part) {
+          final n = part['unopenedProofs'];
+          return sum + (n is num ? n.toInt() : 0);
+        }),
+      };
+      _applySealedScan(merged);
+      _emitCoins(partials, merged);
     }
   }
 
@@ -3783,6 +4037,7 @@ class ShearLedger implements ReadProofSink {
     String? restFrame,
     String? paymentCode,
     bool bindSpendable = false,
+    SendPort? partials,
   }) async {
     if (pool == null || isPoolLedgerHost(pool!.baseUrl)) return false;
     final seed = spendSeed;
@@ -3798,27 +4053,40 @@ class ShearLedger implements ReadProofSink {
       }
     }
     if (dests.isEmpty) return false;
+    _listedCommits.clear();
+    _unopenedListedProofs = 0;
+    _scannedNotesThisFollow = false;
     var saw = false;
     var failed = false;
+    var lackedOpen = 0;
     for (final key in dests) {
+      final open = destProofOpen(key);
+      // One dest this wallet cannot prove must not blank a dest it can.
+      if (open == null || open.isEmpty) {
+        lackedOpen++;
+        continue;
+      }
       try {
-        final json = await pool!.notes(key);
+        final json = await pool!.notes(key, open: open);
         final rows = json['notes'];
         if (rows is! List) {
           failed = true;
           continue;
         }
         saw = true;
+        _scannedNotesThisFollow = true;
+        _takeListedCommits(rows);
         if (rows.isEmpty) continue;
         final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
-        final scanned = await scanSealedWireOffUi(raw);
-        _applySealedScan(scanned);
+        await _scanNotesProgressive(raw, partials: partials);
         if (_stampIngest(key, count: false)) _notesAt[key] = _sealedHeight;
       } catch (e) {
         failed = true;
         _collateError = 'collate:$e';
       }
     }
+    if (failed || !saw) _listedCommits.clear();
+    if (!saw && lackedOpen == dests.length) return false;
     if (bindSpendable && saw && !failed) _bindSpendableToNotes(dests);
     return saw && !failed;
   }
@@ -4036,10 +4304,10 @@ class ShearLedger implements ReadProofSink {
   /// One retry when the pool balance route answers HTTP 504. A second 504 throws.
   Future<Map<String, dynamic>> _balanceWithOne504Retry(String address) async {
     try {
-      return await pool!.balance(address);
+      return await pool!.balance(address, open: destProofOpen(address));
     } catch (e) {
       if (!poolHttp504(e)) rethrow;
-      return await pool!.balance(address);
+      return await pool!.balance(address, open: destProofOpen(address));
     }
   }
 
@@ -4105,12 +4373,15 @@ class ShearLedger implements ReadProofSink {
       'historyAt': _followEncode(_historyAt),
       'openCollated': _openCollated,
       if (_spendableReadFailed != null) 'spendableReadFailed': _spendableReadFailed,
+      if (_scannedNotesThisFollow) 'unopenedListedProofs': _unopenedListedProofs,
       if (_collateError.isNotEmpty) 'collateError': _collateError,
       'destCount': destCount,
       'destIndex': destIndex,
       'nodeBodies': <Object?>[for (final b in _nodeBodies) _followEncode(b)],
       'nodeHistory': <Object?>[for (final b in _nodeHistoryRows) _followEncode(b)],
       'nodeNotes': <Object?>[for (final b in _nodeNoteRows) _followEncode(b)],
+      'openedProofs': exportOpenedProofs(),
+      if (_listedCommits.isNotEmpty) 'listedCommits': List<String>.from(_listedCommits),
     };
   }
 
@@ -4183,6 +4454,9 @@ class ShearLedger implements ReadProofSink {
     if (spec.containsKey('spendableReadFailed')) {
       _spendableReadFailed = spec['spendableReadFailed'] == true;
     }
+    if (spec.containsKey('unopenedListedProofs')) {
+      _unopenedListedProofs = (spec['unopenedListedProofs'] as num?)?.toInt() ?? 0;
+    }
     final collateError = spec['collateError']?.toString() ?? '';
     if (collateError.isNotEmpty) debugCollateError = collateError;
     destCount = (spec['destCount'] as num?)?.toInt() ?? destCount;
@@ -4206,6 +4480,9 @@ class ShearLedger implements ReadProofSink {
       _nodeNoteRows
         ..clear()
         ..addAll(rows(spec['nodeNotes']));
+    }
+    if (spec.containsKey('openedProofs')) {
+      restoreOpenedProofs(spec['openedProofs']);
     }
   }
 
@@ -4247,9 +4524,44 @@ class ShearLedger implements ReadProofSink {
     _proofCheckedDests.addAll(keptProofs);
     final rest = spec['restFrame']?.toString() ?? _restFrame ?? '';
     final rawCode = spec['paymentCode']?.toString() ?? '';
+    final listed = spec['listedCommits'];
+    if (listed is List && listed.isNotEmpty) {
+      final have = <String>{for (final e in listed) e.toString()};
+      _notes.removeWhere((n) {
+        final c = _noteBytes(n['commit']);
+        if (c == null) return false;
+        return !have.contains(_bytesHex(c));
+      });
+      _openedProofs.removeWhere((k, _) => !have.contains(k.split('|').first));
+    }
     if (rest.isNotEmpty) {
       recheckRestFrameSpendable(rest, paymentCode: rawCode.isEmpty ? null : rawCode);
     }
+  }
+
+  Future<void> _adoptCoinMessage(Map<String, dynamic> message, void Function()? onCoins) async {
+    final sealed = message['sealed'];
+    if (sealed is num && sealed.toInt() > _sealedHeight) {
+      noteLiveHeight(sealed.toInt());
+      settleTo(sealed.toInt());
+    }
+    final revived = _followRevive(message['notes']);
+    if (revived is! List) return;
+    var added = false;
+    for (final raw in revived) {
+      if (raw is! Map) continue;
+      final row = Map<String, dynamic>.from(raw);
+      if (row['verified'] != true) continue;
+      rememberNote(row);
+      _rememberProofRow(row);
+      _creditNoteToShearview(row);
+      final dest = (row['dest'] ?? row['address'])?.toString() ?? '';
+      if (dest.isNotEmpty) _proofCheckedDests.add(payKey(dest));
+      added = true;
+    }
+    final rest = _restFrame ?? '';
+    if (rest.isNotEmpty) recheckRestFrameSpendable(rest);
+    if (added && onCoins != null) onCoins();
   }
 
   /// Balance poll or full credit sync. HTTP and note scan run in [Isolate.run].
@@ -4262,6 +4574,7 @@ class ShearLedger implements ReadProofSink {
     bool spendableFirst = false,
     String? sessionPath,
     String? sessionPassword,
+    void Function()? onCoins,
   }) async {
     final pinned = pool != null && pool!.isPinned;
     final spec = <String, dynamic>{
@@ -4314,12 +4627,46 @@ class ShearLedger implements ReadProofSink {
         'nodeBodies',
         'nodeHistory',
         'nodeNotes',
+        'openedProofs',
+        'listedCommits',
       ]) {
         spec[key] = book[key];
       }
     }
+    // Proof cache only. The note book stays out of this map when a session
+    // file is what the worker opens.
+    spec['openedProofs'] = exportOpenedProofs();
     debugLastFollowSpecKeys = spec.keys.map((k) => k.toString()).toList();
-    final result = await Isolate.run(() => creditFollowWorker(jsonEncode(spec)));
+    final recv = ReceivePort();
+    final doneWait = Completer<Map<String, dynamic>>();
+    var adoptChain = Future<void>.value();
+    final sub = recv.listen((message) {
+      if (message is! Map) return;
+      final event = message['event']?.toString();
+      if (event == 'coins') {
+        final msg = Map<String, dynamic>.from(message);
+        adoptChain = adoptChain.then((_) => _adoptCoinMessage(msg, onCoins));
+        return;
+      }
+      if ((event == 'done' || event == 'error') && !doneWait.isCompleted) {
+        doneWait.complete(Map<String, dynamic>.from(message));
+      }
+    });
+    Map<String, dynamic> result;
+    try {
+      await Isolate.spawn(creditFollowEntry, <dynamic>[jsonEncode(spec), recv.sendPort]);
+      final done = await doneWait.future;
+      await adoptChain;
+      if (done['event'] == 'error') {
+        throw StateError(done['message']?.toString() ?? 'credit_follow');
+      }
+      final rawOut = done['out'];
+      if (rawOut is! Map) throw StateError('credit_follow');
+      result = Map<String, dynamic>.from(rawOut);
+    } finally {
+      await sub.cancel();
+      recv.close();
+    }
     debugLastFollowResultKeys = result.keys.map((k) => k.toString()).toList();
     debugCreditFollowStamp = result['stamp']?.toString() ?? '';
     debugCreditFollowKind = result['kind']?.toString() ?? '';
@@ -4334,7 +4681,12 @@ class ShearLedger implements ReadProofSink {
   /// Pull Continuum for this wallet's own money dests.
   /// A payment from someone else counts. A mining payout is not required.
   /// Do not query every historical dest.
-  Future<double> syncCredits(String restFrame, {String? paymentCode, bool openMemos = false}) async {
+  Future<double> syncCredits(
+    String restFrame, {
+    String? paymentCode,
+    bool openMemos = false,
+    SendPort? partials,
+  }) async {
     if (pool == null) {
       final opened = recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
       _openCollated = true;
@@ -4345,7 +4697,7 @@ class ShearLedger implements ReadProofSink {
     try {
       final live = pool?.liveTip ?? 0;
       if (live > _sealedHeight) noteLiveHeight(live);
-      await syncTip();
+      await syncTip(proveChain: false);
     } catch (_) {}
     final dests = syncDests(restFrame, paymentCode: paymentCode);
     final reconstructed = <String, double>{};
@@ -4366,14 +4718,16 @@ class ShearLedger implements ReadProofSink {
       }
       final seed = spendSeed;
       if (seed != null && seed.length == 32 && pool != null && !isPoolLedgerHost(pool!.baseUrl)) {
+        final open = destProofOpen(key);
+        if (open == null || open.isEmpty) continue;
         try {
-          final json = await pool!.notes(key);
+          final json = await pool!.notes(key, open: open);
           final rows = json['notes'];
           if (rows is List) {
+            _takeListedCommits(rows);
             if (rows.isNotEmpty) {
               final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
-              final scanned = await scanSealedWireOffUi(raw);
-              _applySealedScan(scanned);
+              await _scanNotesProgressive(raw, partials: partials);
             }
             if (_stampIngest(key, count: false)) _notesAt[key] = _sealedHeight;
             if (_ownsSealedOn(key)) {
@@ -4443,7 +4797,7 @@ class ShearLedger implements ReadProofSink {
     keepOwnedDests(restFrame, paymentCode: paymentCode);
     final before = _settledHeight;
     try {
-      await syncTip();
+      await syncTip(proveChain: false);
     } catch (_) {}
     final dests = <String>{
       ...syncDests(restFrame, paymentCode: paymentCode),
@@ -6144,8 +6498,11 @@ class ShearPoolClient {
     _http.close(force: true);
   }
 
-  Future<Map<String, dynamic>> _getRaw(String path) async {
+  Future<Map<String, dynamic>> _getRaw(String path, {String? open}) async {
     final req = await _http.getUrl(Uri.parse('$baseUrl$path'));
+    if (open != null && open.isNotEmpty) {
+      req.headers.set('X-Shear-Open', open);
+    }
     final res = await req.close();
     final text = await utf8.decodeStream(res);
     final map = _decodePoolBody(res.statusCode, res.headers.contentType?.mimeType, text);
@@ -6156,10 +6513,10 @@ class ShearPoolClient {
     return map;
   }
 
-  Future<Map<String, dynamic>?> _getRawFirst(List<String> paths) async {
+  Future<Map<String, dynamic>?> _getRawFirst(List<String> paths, {String? open}) async {
     for (final path in paths) {
       try {
-        return await _getRaw(path);
+        return await _getRaw(path, open: open);
       } catch (_) {}
     }
     return null;
@@ -6171,10 +6528,10 @@ class ShearPoolClient {
     await _sync?.findLiveNode();
   }
 
-  Future<Map<String, dynamic>> _get(String path) async {
+  Future<Map<String, dynamic>> _get(String path, {String? open}) async {
     await _ensureBase();
     try {
-      return await _getRaw(path);
+      return await _getRaw(path, open: open);
     } catch (_) {
       if (_pinned == null) _sync?.noteFailure();
       rethrow;
@@ -6197,9 +6554,37 @@ class ShearPoolClient {
     return _decodePoolBody(res.statusCode, res.headers.contentType?.mimeType, text);
   }
 
-  Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body) async {
+  /// Non-spend posts (history, withdraw) keep their previous host.
+  /// A spend never uses this. The public pool is not a broadcast fallback.
+  String _nonSpendPostBase(String? url) {
+    String trim(String raw) {
+      final s = raw.trim();
+      return s.endsWith('/') ? s.substring(0, s.length - 1) : s;
+    }
+    if (url != null && url.isNotEmpty) {
+      if (isPublicPoolHttp(url)) return trim(url);
+      final u = Uri.tryParse(url);
+      if (u != null) {
+        final host = u.host.toLowerCase();
+        if ((host == '127.0.0.1' || host == 'localhost' || host == '::1') &&
+            (u.port == 18332 || u.port == 8088)) {
+          return trim(url);
+        }
+      }
+    }
+    return kPublicPoolHttp;
+  }
+
+  Future<Map<String, dynamic>> _post(
+    String path,
+    Map<String, dynamic> body, {
+    bool legacyPoolSend = false,
+  }) async {
     await _ensureBase();
-    final first = _pinned ?? walletSendBase(baseUrl);
+    if (path == '/api/wallet/send') {
+      return _postSpend(path, body, legacyPoolSend: legacyPoolSend);
+    }
+    final first = _pinned ?? _nonSpendPostBase(baseUrl);
     try {
       return await _postOnce(first, path, body);
     } on FormatException {
@@ -6210,12 +6595,40 @@ class ShearPoolClient {
         if (_pinned == null) _sync?.noteFailure();
         rethrow;
       }
-      // A send may try the pool host. The chain base stays on the node.
       return _postOnce(kPublicPoolHttp, path, body);
     } catch (_) {
       if (_pinned == null) _sync?.noteFailure();
       rethrow;
     }
+  }
+
+  /// Spend broadcast. Nodes only, unless [legacyPoolSend] names a pool host.
+  /// Connection loss tries the next node. It does not try the public pool.
+  Future<Map<String, dynamic>> _postSpend(
+    String path,
+    Map<String, dynamic> body, {
+    bool legacyPoolSend = false,
+  }) async {
+    final targets = nodeSendTargets(baseUrl, pinned: _pinned, legacyPoolSend: legacyPoolSend);
+    Object? last;
+    for (final base in targets) {
+      try {
+        return await _postOnce(base, path, body);
+      } on FormatException {
+        throw StateError(kErrPoolHtml);
+      } on SocketException catch (e) {
+        last = e;
+      } on HttpException catch (e) {
+        last = e;
+      } on HandshakeException catch (e) {
+        last = e;
+      } on TlsException catch (e) {
+        last = e;
+      }
+    }
+    if (_pinned == null) _sync?.noteFailure();
+    if (last != null) throw last;
+    throw StateError('node not running');
   }
 
   /// JSON error objects (non-2xx with a reason) are returned so send mapping
@@ -6255,8 +6668,13 @@ class ShearPoolClient {
     return low.startsWith('<') && low.contains('<html');
   }
 
-  Future<Map<String, dynamic>> balance(String address) =>
-      _get('/api/wallet/balance?address=$address');
+  Future<Map<String, dynamic>> balance(String address, {String? open}) {
+    final q = StringBuffer('/api/wallet/balance?address=${Uri.encodeQueryComponent(address)}');
+    if (open != null && open.isNotEmpty) {
+      q.write('&open=${Uri.encodeQueryComponent(open)}');
+    }
+    return _get(q.toString(), open: open);
+  }
 
   Future<Map<String, dynamic>> history(String address, {String? viewKey, String? open}) {
     if (viewKey != null && viewKey.isNotEmpty) {
@@ -6266,7 +6684,7 @@ class ShearPoolClient {
     if (open != null && open.isNotEmpty) {
       q.write('&open=${Uri.encodeQueryComponent(open)}');
     }
-    return _get(q.toString());
+    return _get(q.toString(), open: open);
   }
 
   Future<Map<String, dynamic>> explorerHistory({required String viewKey, String? address}) =>
@@ -6305,6 +6723,7 @@ class ShearPoolClient {
     Map<String, dynamic>? admitProof,
     String? spendTag,
     int paintedOwedNanos = 0,
+    bool legacyPoolSend = false,
   }) =>
       _post('/api/wallet/send', {
         'from': from,
@@ -6328,7 +6747,7 @@ class ShearPoolClient {
         if (excess != null) 'excess': excess,
         if (admitProof != null) 'admit_proof': admitProof,
         if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
-      });
+      }, legacyPoolSend: legacyPoolSend);
 
   Future<Map<String, dynamic>> fluxset() async {
     final got = await _getRawFirst(const ['/fluxset', '/api/wallet/fluxset']);
@@ -6336,14 +6755,17 @@ class ShearPoolClient {
     return _get('/api/wallet/fluxset');
   }
 
-  Future<Map<String, dynamic>> notes(String address) async {
+  Future<Map<String, dynamic>> notes(String address, {String? open}) async {
     final q = Uri.encodeQueryComponent(address);
+    final extra = (open != null && open.isNotEmpty)
+        ? '&open=${Uri.encodeQueryComponent(open)}'
+        : '';
     final got = await _getRawFirst([
-      '/notes?address=$q',
-      '/api/wallet/notes?address=$q',
-    ]);
+      '/notes?address=$q$extra',
+      '/api/wallet/notes?address=$q$extra',
+    ], open: open);
     if (got != null) return got;
-    return _get('/api/wallet/notes?address=$q');
+    return _get('/api/wallet/notes?address=$q$extra', open: open);
   }
 
   Future<Map<String, dynamic>> mempoolPressure() => _get('/api/mempoolPressure');

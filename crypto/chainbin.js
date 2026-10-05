@@ -2,8 +2,9 @@
  * Epoch disk: chain.bin is length-prefixed packed blocks, not JSONL.
  */
 import fs from 'node:fs';
+import path from 'node:path';
 import { encodeHeader, decodeHeader } from './header.js';
-import { shareRowJson } from './pack.js';
+import { packShareBatchBytes, unpackShareBatchBytes } from './pack.js';
 import { compactTx } from './chronoflux.js';
 import { reviveBytes } from './note.js';
 
@@ -38,7 +39,7 @@ export function packEpochBlock(block) {
   const aJson = Buffer.from(JSON.stringify((block.aLeaves || []).map(leafWire)));
   const bJson = Buffer.from(JSON.stringify((block.bLeaves || []).map(leafWire)));
   const txs = Buffer.from(JSON.stringify((block.txs || []).map(compactTx)));
-  const sJson = Buffer.from(JSON.stringify((block.shareBatch || []).map(shareRowJson)));
+  const sJson = packShareBatchBytes(block.shareBatch || []);
   const parts = [header, rootA, rootB];
   const lens = Buffer.alloc(12);
   lens.writeUInt32LE(aJson.length, 0);
@@ -80,7 +81,7 @@ export function unpackEpochBlock(buf) {
     const sLen = b.readUInt32LE(o);
     o += 4;
     if (sLen > 0 && o + sLen <= b.length) {
-      try { shareBatch = JSON.parse(b.subarray(o, o + sLen).toString() || '[]'); } catch { shareBatch = []; }
+      shareBatch = unpackShareBatchBytes(b.subarray(o, o + sLen));
     }
   }
   decodeHeader(header);
@@ -141,5 +142,36 @@ export function readChainBin(path) {
     blocks.push(unpackEpochBlock(buf.subarray(o, o + n)));
     o += n;
   }
+  return blocks;
+}
+
+/** Blocks per segment file. Prune rewrites one of these, not the whole book. */
+export const CHAIN_SEGMENT_BLOCKS = 400;
+
+export function segmentFileName(index) {
+  return `seg-${String(index).padStart(6, '0')}.bin`;
+}
+
+export function writeChainSegments(dir, blocks, { only = null, segmentBlocks = CHAIN_SEGMENT_BLOCKS } = {}) {
+  fs.mkdirSync(dir, { recursive: true });
+  const groups = new Map();
+  const limit = Math.max(1, Math.floor(Number(segmentBlocks) || CHAIN_SEGMENT_BLOCKS));
+  for (let i = 0; i < (blocks || []).length; i += 1) {
+    const idx = Math.floor(i / limit);
+    if (only && !only.has(idx)) continue;
+    if (!groups.has(idx)) groups.set(idx, []);
+    groups.get(idx).push(blocks[i]);
+  }
+  for (const [idx, slice] of groups) {
+    writeChainBin(path.join(dir, segmentFileName(idx)), slice);
+  }
+}
+
+export function readChainSegments(dir) {
+  if (!dir || !fs.existsSync(dir)) return null;
+  const names = fs.readdirSync(dir).filter((n) => /^seg-\d+\.bin$/.test(n)).sort();
+  if (!names.length) return null;
+  const blocks = [];
+  for (const name of names) blocks.push(...readChainBin(path.join(dir, name)));
   return blocks;
 }

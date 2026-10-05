@@ -58,8 +58,9 @@ describe('v10 tempo tracks a moving hashrate toward 90s', () => {
     assert.equal(/log2\s*\(\s*H\s*[*·×]/.test(src), false);
     assert.equal(/log2\(H/.test(src), false);
     assert.equal(/HASHRATE\s*=\s*\d/.test(src), false);
-    assert.equal(ASERT_HALFLIFE_MS, 32 * T);
-    assert.equal(GENESIS_BITS, 15);
+    assert.equal(ASERT_HALFLIFE_MS, 16 * T);
+    assert.equal(ASERT_HALFLIFE_MS, 1_440_000);
+    assert.equal(GENESIS_BITS, 17);
   });
 
   it('a short median hardens, a long median eases, and T holds', () => {

@@ -46,7 +46,7 @@
     })();
   </script>
   <title>Mine — Shear</title>
-  <meta name="description" content="Shear mining: pool stratum path vs solo node. ShearK on shear-testnet-v10." />
+  <meta name="description" content="Shear mining: pool stratum path vs solo node. ShearK on shear-testnet-v11." />
   <link rel="icon" href="brand/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" href="brand/favicon-32.png" sizes="32x32" />
   <link rel="stylesheet" href="css/site.css" />
@@ -67,7 +67,7 @@
     <div class="wrap page-hero">
       <p class="section-label">Hashpower</p>
       <h1>Mine</h1>
-      <p class="lede">Choose pool or solo. Miner binary is <strong>ShearK 2.8</strong> — separate from Continuum 0.70. The node (Shear Sentinel v17) is what the wallet reads. Downloads live on the wallet, node, and miner hubs. How-to: https://shear.digital/docs/#/surfaces.</p>
+      <p class="lede">Choose pool or solo. Miner binary is <strong>ShearK 2.8</strong> — separate from Continuum 0.71. The node (Shear Sentinel v18) is what the wallet reads. Downloads live on the wallet, node, and miner hubs. How-to: https://shear.digital/docs/#/surfaces.</p>
     </div>
 
     <section class="wrap section">
@@ -93,7 +93,7 @@
           <p>Run a synced node, then solo mine. More ops, same algo.</p>
           <div class="code-line">npm run solo</div>
           <ol class="steps">
-            <li>Install Shear Sentinel v17 or build from the node page. Sync shear-testnet-v10 until ibd=false.</li>
+            <li>Install Shear Sentinel v18 or build from the node page. Sync shear-testnet-v11 until ibd=false.</li>
             <li>Run npm run solo so stratum listens on 127.0.0.1:1111. Do not use npm run pool.</li>
             <li>Point ShearK at that port with Copy dest (<code>--user YOUR_SSA1</code>). A typed suffix is optional.</li>
           </ol>
@@ -109,14 +109,14 @@
     <section class="wrap section-sm">
       <div class="panel">
         <h3>Tip pins</h3>
-        <p style="margin:0">Algo <strong>ShearHash-v3</strong> · network <strong data-shear-network>shear-testnet-v10</strong> · wallet Continuum <strong>0.70</strong> · stratum <strong>stratum+ssl://pool.shear.digital:443</strong></p>
+        <p style="margin:0">Algo <strong>ShearHash-v3</strong> · network <strong data-shear-network>shear-testnet-v11</strong> · wallet Continuum <strong>0.71</strong> · stratum <strong>stratum+ssl://pool.shear.digital:443</strong></p>
       </div>
     </section>
   </main>
 
   <footer class="footer">
     <div class="wrap footer-inner">
-      <div data-shear-foot data-wallet-fallback="0.70" data-network-fallback="shear-testnet-v10">Shear · … · Continuum … · …</div>
+      <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
       <nav>
         <a href="index.html">Home</a>
         <a href="get-started.html">Wallet</a>

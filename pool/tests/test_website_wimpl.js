@@ -268,17 +268,25 @@ describe('website W-IMPL binds', () => {
     assert.match(pool, /shear-chrome\.js/);
   });
 
-  it('v10 docs name the fingerprint, the seed, and the quarantine', () => {
+  it('v11 law and the closed v10 soak note name their own fingerprints', () => {
     const consensus = read('../../specs/consensus.md');
     const ops = read('../../docs/OPS-testnet-v10-90s.md');
+    assert.match(consensus, /shear-testnet-v11/);
+    assert.match(consensus, /median11/);
+    assert.match(consensus, /GENESIS_BITS=17/);
+    assert.match(consensus, /τ=16T/);
+    assert.match(consensus, /ASERT_TAU_MS=1440000/);
+    assert.match(consensus, /invent-must-not-return/);
+    assert.match(ops, /shear-testnet-v10/);
+    assert.match(ops, /median11/);
+    assert.match(ops, /GENESIS_BITS=15/);
+    assert.match(ops, /τ=32T/);
+    assert.match(ops, /ASERT_TAU_MS=2880000/);
+    assert.match(ops, /invent-must-not-return/);
     for (const doc of [consensus, ops]) {
-      assert.match(doc, /shear-testnet-v10/);
-      assert.match(doc, /median11/);
       assert.match(doc, /fluctuat/);
       assert.match(doc, /seed/);
-      assert.match(doc, /τ=32T/);
       assert.match(doc, /288/);
-      assert.match(doc, /invent-must-not-return/);
       assert.match(doc, /6054186/);
       assert.match(doc, /v8/);
       assert.match(doc, /v9/);

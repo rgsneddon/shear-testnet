@@ -1,19 +1,19 @@
 #!/bin/sh
-# macOS runner: Shear Sentinel zip for PRODUCT_VERSION 17.0 (not the Continuum .dmg).
+# macOS runner: Shear Sentinel zip for PRODUCT_VERSION 18.0 (not the Continuum .dmg).
 #   npm ci
 #   sh node/pack/pack_macos.sh
-# Writes dist/shear-node-v17-macos.zip. The node release tag is v17.
+# Writes dist/shear-node-v18-macos.zip. The node release tag is v18.
 # Do not upload this zip onto 0.68, 0.67, or v16. Do not pass --clobber.
 set -e
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 test -f crypto/asert.js
 PIN=$(sed -n "s/^export const PRODUCT_VERSION = '\\(.*\\)';/\\1/p" crypto/asert.js | head -1)
-if [ "$PIN" != "17.0" ]; then
-  echo "refusing pack: PRODUCT_VERSION is '$PIN', want 17.0" >&2
+if [ "$PIN" != "18.0" ]; then
+  echo "refusing pack: PRODUCT_VERSION is '$PIN', want 18.0" >&2
   exit 1
 fi
-LABEL=v17
+LABEL=v18
 if [ ! -d node_modules ]; then
   echo "missing node_modules — run npm ci before packing" >&2
   exit 1
@@ -54,11 +54,11 @@ macho = {
 if magic not in macho:
     sys.exit("shearhash.node is not Mach-O: " + magic.hex())
 text = z.read("crypto/asert.js").decode()
-if "PRODUCT_VERSION = '17.0'" not in text or "shear-testnet-v10" not in text:
-    sys.exit("packed asert.js is not Sentinel 17.0 on shear-testnet-v10")
+if "PRODUCT_VERSION = '18.0'" not in text or "shear-testnet-v11" not in text:
+    sys.exit("packed asert.js is not Sentinel 18.0 on shear-testnet-v11")
 if "pool/src/posture.js" not in names:
     sys.exit("missing pool/src/posture.js")
 print("darwin-ok", len(names))
 PY
 echo "ok dist/shear-node-$LABEL-macos.zip"
-echo "Node release tag is v17. Do not upload this zip onto 0.68, 0.67, or v16."
+echo "Node release tag is v18. Do not upload this zip onto 0.68, 0.67, or v16."

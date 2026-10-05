@@ -43,7 +43,15 @@ import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
-import { writeChainBin, readChainBin, appendChainBin } from '../../crypto/chainbin.js';
+import {
+  writeChainBin,
+  readChainBin,
+  appendChainBin,
+  readChainSegments,
+  writeChainSegments,
+  segmentFileName,
+  CHAIN_SEGMENT_BLOCKS,
+} from '../../crypto/chainbin.js';
 import {
   writeLatestBootstrap,
   shouldPublishBootstrap,
@@ -156,6 +164,8 @@ export function createStore(dir, {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
+  const segDir = path.join(dir, 'segments');
+  let segmented = false;
   const explorerFile = path.join(dir, 'explorer.jsonl');
   const vaultFile = path.join(dir, 'reserve.json');
   const magicFile = path.join(dir, 'book.magic');
@@ -176,7 +186,11 @@ export function createStore(dir, {
   let evmSession = null;
   let vaultSeal = null;
 
-  if (fs.existsSync(binFile)) {
+  const segLoaded = readChainSegments(segDir);
+  if (segLoaded) {
+    segmented = true;
+    for (const b of segLoaded) blocks.push(b);
+  } else if (fs.existsSync(binFile)) {
     for (const b of readChainBin(binFile)) {
       blocks.push(b);
     }
@@ -184,6 +198,7 @@ export function createStore(dir, {
     for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
       if (!line.trim()) continue;
       const b = JSON.parse(line, reviveBytes);
+      if (!b || !b.header) continue;
       b.header = Buffer.from(b.header, 'hex');
       b.hash = Buffer.from(b.hash, 'hex');
       blocks.push(b);
@@ -426,22 +441,64 @@ export function createStore(dir, {
 
   const vortice = createVorticeCatalog(dir);
 
+  function slimRow(block) {
+    const hash = hex32(block?.hash);
+    return JSON.stringify({ h: Number(block?.height) || 0, hash });
+  }
+
+  function writeSlimIndex() {
+    const tmpJson = `${file}.tmp`;
+    const body = blocks.map((b) => slimRow(b)).join('\n');
+    fs.writeFileSync(tmpJson, body ? `${body}\n` : '');
+    fs.renameSync(tmpJson, file);
+  }
+
+  function dropSegmentsFrom(keep) {
+    if (!fs.existsSync(segDir)) return;
+    for (const name of fs.readdirSync(segDir)) {
+      const m = /^seg-(\d+)\.bin$/.exec(name);
+      if (!m) continue;
+      if (Number(m[1]) >= keep) fs.unlinkSync(path.join(segDir, name));
+    }
+  }
+
+  function migrateMonolith(diskBlocks) {
+    const tmp = path.join(dir, 'segments.migrating');
+    fs.rmSync(tmp, { recursive: true, force: true });
+    writeChainSegments(tmp, diskBlocks);
+    fs.mkdirSync(segDir, { recursive: true });
+    for (const name of fs.readdirSync(tmp)) {
+      fs.renameSync(path.join(tmp, name), path.join(segDir, name));
+    }
+    fs.rmSync(tmp, { recursive: true, force: true });
+    if (fs.existsSync(binFile)) fs.renameSync(binFile, `${binFile}.legacy`);
+    segmented = true;
+  }
+
   function persist(block) {
     fs.writeFileSync(magicFile, MAGIC_TESTNET);
     const row = archiveFast ? pruneSamples(block) : block;
-    appendChainBin(binFile, row);
-    fs.appendFileSync(file, `${JSON.stringify(toRow(row))}\n`);
+    const diskBlocks = blocks.slice(0, -1).concat([row]);
+    if (!segmented && diskBlocks.length > 1 && fs.existsSync(binFile)) {
+      migrateMonolith(diskBlocks);
+    } else {
+      fs.mkdirSync(segDir, { recursive: true });
+      const idx = Math.floor((diskBlocks.length - 1) / CHAIN_SEGMENT_BLOCKS);
+      appendChainBin(path.join(segDir, segmentFileName(idx)), row);
+      segmented = true;
+    }
+    fs.appendFileSync(file, `${slimRow(row)}\n`);
     writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
   }
 
   function rewriteChain() {
     fs.writeFileSync(magicFile, MAGIC_TESTNET);
-    writeChainBin(binFile, blocks);
-    const tmpJson = `${file}.tmp`;
-    const body = blocks.map((b) => JSON.stringify(toRow(b))).join('\n');
-    fs.writeFileSync(tmpJson, body ? `${body}\n` : '');
-    fs.renameSync(tmpJson, file);
+    fs.mkdirSync(segDir, { recursive: true });
+    writeChainSegments(segDir, blocks);
+    dropSegmentsFrom(Math.ceil(blocks.length / CHAIN_SEGMENT_BLOCKS));
+    writeSlimIndex();
     writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
+    segmented = true;
   }
 
   function tip() {
@@ -450,7 +507,7 @@ export function createStore(dir, {
 
   function pruneBuried() {
     const tipH = tip()?.height || 0;
-    let dirty = false;
+    const dirtySegs = new Set();
     for (let i = 0; i < blocks.length; i += 1) {
       const b = blocks[i];
       if (b.samplesPruned) continue;
@@ -461,13 +518,19 @@ export function createStore(dir, {
       if ((next.txs || []).length !== nTx) throw new Error('prune_dropped_txs');
       if ((next.txs?.[0]?.vout || []).length !== nVout) throw new Error('prune_dropped_coinbase');
       blocks[i] = next;
-      dirty = true;
+      dirtySegs.add(Math.floor(i / CHAIN_SEGMENT_BLOCKS));
     }
-    if (dirty) {
-      rewriteChain();
+    if (dirtySegs.size) {
+      fs.mkdirSync(segDir, { recursive: true });
+      if (!segmented) {
+        writeChainSegments(segDir, blocks);
+        segmented = true;
+      } else {
+        writeChainSegments(segDir, blocks, { only: dirtySegs });
+      }
       try { writeLatestBootstrap(dir, blocks); } catch { /* observer/bootstrap must not halt append */ }
     }
-    return dirty;
+    return dirtySegs.size > 0;
   }
 
   function hourlyWork(nowMs) {

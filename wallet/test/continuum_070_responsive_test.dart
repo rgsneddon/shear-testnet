@@ -88,8 +88,8 @@ void main() {
     await tester.pump();
     final state = tester.state<ShearWalletAppState>(find.byType(ShearWalletApp));
     final lines = <String>[
-      'status height=6 peers=1 ibd=false magic=shear-testnet-v10',
-      'status height=7 peers=0 ibd=false magic=shear-testnet-v10',
+      'status height=6 peers=1 ibd=false magic=shear-testnet-v11',
+      'status height=7 peers=0 ibd=false magic=shear-testnet-v11',
     ];
     var logFrame = false;
     final follow = tester.runAsync(() => state.followNodeLog(lines));
@@ -167,7 +167,7 @@ void main() {
           req.response.write('{"ok":true,"balance":0}');
         } else {
           req.response.write(
-            '{"ok":true,"height":4,"magic":"shear-testnet-v10","network":"shear-testnet-v10"}',
+            '{"ok":true,"height":4,"magic":"shear-testnet-v11","network":"shear-testnet-v11"}',
           );
         }
         await req.response.close();

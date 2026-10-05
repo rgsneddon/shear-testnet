@@ -2,7 +2,7 @@
 
 Frozen numbers. `consensusFingerprint()` pins every line. A later flip is a new book.
 
-Network: `shear-testnet-v10` (privacy-class). Frozen `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. v8 and v9 do not soft-merge. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant. invent-must-not-return is unchanged by the v10 cut.
+Network: `shear-testnet-v11` (privacy-class). Frozen `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. v8 and v9 do not soft-merge. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant. invent-must-not-return is unchanged by the v10 cut.
 
 ## Numbers
 
@@ -18,12 +18,12 @@ Network: `shear-testnet-v10` (privacy-class). Frozen `shear-testnet-v9`, `shear-
 | `SAMPLE_PRUNE_CONFIRMATIONS` | `1000` |
 | Reorg checkpoints | First frozen hash at height **1000** (prune floor), then every **400** blocks (bootstrap cadence). A heavier fork that replaces that hash is `reorg_checkpoint`. |
 | Vault seal | Same freeze: first at height **1000**, then every **400**. `vaultSeal` = Reserve commitment + checkpoint hash (optional vault-genesis hash). Forks that diverged before that freeze get no vault (`no_vault`) and cannot unlock the sealed pot. Adopt of a history that lacks seal ancestry is `reorg_vault_seal` (or `reorg_checkpoint` if the hash itself moved). The vault stays on the master chain from genesis; replay never wipes it. Tip **below 1000** has no seal yet. |
-| `GENESIS_BITS` | `15` day-0 seed only (match asert.js). Not a hashrate equilibrium and not `log2(H×90)`. Packed Q16.16 on the wire. Floor 4, ceiling 256. Ongoing step is `median11(log2(T/seen))*(T/tau)` with `τ=32T` (`ASERT_TAU_MS=2880000`). Testnet lid is ±1 (`ASERT_HARDEN=1`, `ASERT_EASE=1`). A non-stall gap cannot pack onto the floor (`ASERT_FLOOR=above-min-until-8tau`). Mainnet harden stays 6 and mainnet ease stays 1. Child bits use the sealed-header median, not the stamp of the block being mined. Hashrate fluctuates. 288 blocks is not a Ready bar. |
+| `GENESIS_BITS` | `17` day-0 seed only (match asert.js). v10's closed soak seeded `15`. Not a hashrate equilibrium and not `log2(H×90)`. Packed Q16.16 on the wire. Floor 4, ceiling 256. Ongoing step is `median11(log2(T/seen))*(T/tau)` with `τ=16T` (`ASERT_TAU_MS=1440000`). Testnet lid is ±1 (`ASERT_HARDEN=1`, `ASERT_EASE=1`). A non-stall gap cannot pack onto the floor (`ASERT_FLOOR=above-min-until-8tau`). Mainnet harden stays 6 and mainnet ease stays 1. Child bits use the sealed-header median, not the stamp of the block being mined. Hashrate fluctuates. 288 blocks is not a Ready bar. |
 | `LIVE_MIN_BITS` | `4` |
 | `MAX_BITS` | `256` |
 | `SHARE_FLOOR_BITS` | `8` |
-| `MAX_SHARES_PER_BLOCK` | `8192` |
-| `MAX_HASH_UNITS_PER_BLOCK` | `MAX_SHARES_PER_BLOCK * 2^SHARE_FLOOR_BITS` |
+| `MAX_SHARES_PER_BLOCK` | `65536` (v11). Direct from the closed v10 cap of `8192`. The 32768 rung is cancelled. Do not soft-merge 65536 onto v10. |
+| `MAX_HASH_UNITS_PER_BLOCK` | `MAX_SHARES_PER_BLOCK * 2^SHARE_FLOOR_BITS` = `16777216`. `HASH_BONUS_NANOS` stays `1`. |
 | Interest | 400-day APR: `floor(staked * bps / 10000)`. Not × 400/365. |
 | Oracle | unweighted mean of the frozen 14-bank basket. Default **264** bps until first sealed observe. |
 | Late 99 days | idle, can vote, no interest |
@@ -39,7 +39,7 @@ Network: `shear-testnet-v10` (privacy-class). Frozen `shear-testnet-v9`, `shear-
 Fingerprint also pins:
 
 ```
-NETWORK=shear-testnet-v10
+NETWORK=shear-testnet-v11
 FORK=work-then-lowhash
 HASH_FN=ShearHash-v3
 HASH_TX_LIVE=1
@@ -67,13 +67,13 @@ LEVY_CAP=0.001-SHE
 LEVY_SPLIT=50-50-finder-reserve
 ADMIT=ADMITv2
 BITS=q16.16
-ASERT_TAU_MS=2880000
+ASERT_TAU_MS=1440000
 ASERT_STEP=median11(log2(T/seen))*(T/tau)
 ASERT_HARDEN=1
 ASERT_EASE=1
 ASERT_FLOOR=above-min-until-8tau
 SHARE_FLOOR_BITS=8
-MAX_SHARES_PER_BLOCK=8192
+MAX_SHARES_PER_BLOCK=65536
 SPEND_SIG=ed25519-shear-spend-v1
 POOL_WITHDRAW=eip712-spend-bound
 ```
@@ -102,7 +102,7 @@ Lag-1: ShearHash-v3 key K includes `continuity_root` and `merkle_root`. This-rou
 
 Block N pays the shares proven on the frozen job header of the previous open round (parent sealed header; nonce replaced per share; no restamp).
 
-Body encoding `ENC_SHARE = 4` = `dest20 || nonce_u64le || lz_u8`. `shareBatch` max `MAX_SHARES_PER_BLOCK`, sorted `(dest20, nonce)`. Duplicate nonce = `dup_share`. Tree A stays `dest20+u64count`; count must equal summed units for that dest; mismatch = `hash_bonus`.
+Body encoding `ENC_SHARE=v5` = `note_commit || nonce_u64le || lz_u8` (optional view tag). Wire and disk store packed frames, not one JSON object per share. `shareBatch` max `MAX_SHARES_PER_BLOCK`. Canonical order is `(noteCommit, nonce)`. Over-cap inclusion keeps higher hash-share weight; equal weight breaks on sha256(noteCommit || nonce), not on a low dest20. Duplicate nonce = `dup_share`. Tree A stays `note_commit+u64count`; count must equal summed units for that dest; mismatch = `hash_bonus`.
 
 `skipFlow` when buried && samplesPruned may skip `shareBatch` bodies. It may not skip hash vouts / `ssa1` checks. IBD of a pruned height is assume-valid after 1000. Full nodes validate `shareBatch` until prune-1000; money vouts forever.
 

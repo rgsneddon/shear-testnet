@@ -174,6 +174,62 @@ export function packShareBatch(shares = []) {
   });
 }
 
+function asNoteCommit(v) {
+  if (Buffer.isBuffer(v) && v.length === 32) return Buffer.from(v);
+  if (typeof v === 'string' && /^[0-9a-fA-F]{64}$/.test(v)) return Buffer.from(v, 'hex');
+  if (v && typeof v === 'object' && Array.isArray(v.data) && v.data.length === 32) return Buffer.from(v.data);
+  return null;
+}
+
+function shareForPack(s) {
+  if (Buffer.isBuffer(s) || typeof s === 'string') return s;
+  const dest = String(s?.dest || s?.address || s?.miner || '');
+  const dest20 = coerceDest20(s?.dest20, dest);
+  const nc = asNoteCommit(s?.noteCommit)
+    || ((dest20 && !dest20.equals(Buffer.alloc(20))) ? noteCommitOfDest20(dest20) : null);
+  if (nc && nc.length === 32) {
+    return { noteCommit: nc, nonce: s?.nonce, lz: s?.lz, viewTag: s?.viewTag };
+  }
+  return { dest20, nonce: s?.nonce, lz: s?.lz };
+}
+
+/** Count + length-prefixed v5 (or v4) frames. Not a JSON share array. */
+export function packShareBatchBytes(shares = []) {
+  const frames = packShareBatch((Array.isArray(shares) ? shares : []).map(shareForPack));
+  const parts = [Buffer.alloc(4)];
+  parts[0].writeUInt32LE(frames.length, 0);
+  for (const frame of frames) {
+    const len = Buffer.alloc(2);
+    if (frame.length > 0xffff) throw new Error('share_frame');
+    len.writeUInt16LE(frame.length, 0);
+    parts.push(len, frame);
+  }
+  return Buffer.concat(parts);
+}
+
+/** Dual-read: a leading `[` is a legacy JSON share array. Otherwise packed frames. */
+export function unpackShareBatchBytes(buf) {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || []);
+  if (!b.length) return [];
+  if (b[0] === 0x5b) {
+    try { return JSON.parse(b.toString()); } catch { return []; }
+  }
+  if (b.length < 4) return [];
+  const n = b.readUInt32LE(0);
+  const out = [];
+  let o = 4;
+  for (let i = 0; i < n && o + 2 <= b.length; i += 1) {
+    const len = b.readUInt16LE(o);
+    o += 2;
+    if (len < 1 || o + len > b.length) break;
+    const frame = b.subarray(o, o + len);
+    o += len;
+    const type = frame[ENC_MAGIC.length];
+    out.push(type === ENC_SHARE_V5 ? unpackShareV5(frame) : unpackShare(frame));
+  }
+  return out;
+}
+
 function coerceDest20(raw, dest) {
   if (Buffer.isBuffer(raw) && raw.length === 20) return Buffer.from(raw);
   if (typeof raw === 'string' && /^[0-9a-fA-F]{40}$/.test(raw)) {

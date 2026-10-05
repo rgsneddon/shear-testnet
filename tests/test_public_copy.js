@@ -4,9 +4,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  ASERT_CURVE_WINDOW,
+  ASERT_EASE_MAX,
+  ASERT_HALFLIFE_MS,
+  ASERT_HARDEN_MAX,
   BLOCK_SUBSIDY_NANOS,
+  GENESIS_BITS,
   HASH_BONUS_NANOS,
   MAGIC_TESTNET,
+  MAGIC_TESTNET_V10,
   PRODUCT_VERSION,
   SHEARK_MINER_VERSION,
   consensusFingerprint,
@@ -60,7 +66,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /shear1/);
     assert.match(main, /never share/i);
     assert.match(main, /ADMITv2/);
-    assert.match(main, /Continuum 0\.70/);
+    assert.match(main, /Continuum 0\.71/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.match(main, /https:\/\/shear\.digital\/docs\//);
     assert.match(main, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
@@ -99,20 +105,20 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(paper, /hasher dest that produced proven work/);
 
     const readme = read('README.md');
-    assert.match(readme, /Wallet pin: \*\*0\.70\*\*/);
-    assert.match(readme, /Shear Sentinel v17/);
-    assert.match(readme, /\(product 17\.0\)/);
-    assert.match(readme, /releases\/tag\/0\.70/);
+    assert.match(readme, /Wallet pin: \*\*0\.71\*\*/);
+    assert.match(readme, /Shear Sentinel v18/);
+    assert.match(readme, /\(product 18\.0\)/);
+    assert.match(readme, /releases\/tag\/0\.71/);
     assert.match(readme, /Git tag `v16` stays on the same commit as tag `0\.66`/);
-    assert.match(readme, /releases\/download\/v17\/shear-node-v17-windows\.zip/);
-    assert.match(readme, /shear-node-v17-linux\.zip/);
-    assert.match(readme, /shear-node-v17-archlinux\.zip/);
-    assert.match(readme, /shear-node-v17-fedora\.zip/);
-    assert.match(readme, /shear-node-v17-opensuse\.zip/);
-    assert.match(readme, /shear-node-v17-macos\.zip/);
+    assert.match(readme, /releases\/download\/v18\/shear-node-v18-windows\.zip/);
+    assert.match(readme, /shear-node-v18-linux\.zip/);
+    assert.match(readme, /shear-node-v18-fedora\.zip/);
+    assert.doesNotMatch(readme, /shear-node-v18-archlinux\.zip/);
+    assert.doesNotMatch(readme, /shear-node-v18-opensuse\.zip/);
+    assert.doesNotMatch(readme, /shear-node-v18-macos\.zip/);
     assert.doesNotMatch(readme, /not published yet/);
     assert.doesNotMatch(readme, /product 16\.0/);
-    assert.match(readme, /releases\/tag\/v17/);
+    assert.match(readme, /releases\/tag\/v18/);
     assert.doesNotMatch(readme, /releases\/tag\/2\.7/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.55\*\*/);
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.41\*\*/);
@@ -121,26 +127,27 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(readme, /Wallet pin: \*\*0\.38\*\*/);
     assert.doesNotMatch(readme, /Wallet \*\*0\.38\*\* syncs/);
     const walletReadme = read('wallet/README.md');
-    assert.match(walletReadme, /releases\/tag\/0\.70/);
+    assert.match(walletReadme, /releases\/tag\/0\.71/);
     assert.match(walletReadme, /Git tag `v16` stays on the same commit as tag `0\.66`/);
-    assert.match(walletReadme, /releases\/download\/0\.70\/shear-wallet-0\.70-windows\.zip/);
+    assert.match(walletReadme, /releases\/download\/0\.71\/shear-wallet-0\.71-windows\.zip/);
     assert.doesNotMatch(walletReadme, /not published yet/);
-    assert.doesNotMatch(walletReadme, /releases\/download\/0\.70\/shear-wallet-0\.70-macos\.dmg/);
+    assert.doesNotMatch(walletReadme, /releases\/download\/0\.71\/shear-wallet-0\.71-macos\.dmg/);
+    assert.doesNotMatch(walletReadme, /shear-wallet-0\.71-macos\.dmg/);
     assert.doesNotMatch(walletReadme, /releases\/tag\/v17/);
     assert.doesNotMatch(walletReadme, /releases\/tag\/0\.58/);
     assert.doesNotMatch(walletReadme, /releases\/tag\/0\.55(?!\.)/);
-    assert.match(walletReadme, /shear-wallet-0\.70-windows\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.70-linux\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.70-archlinux\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.70-fedora\.zip/);
-    assert.match(walletReadme, /shear-wallet-0\.70-android\.apk/);
+    assert.match(walletReadme, /shear-wallet-0\.71-windows\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.71-linux\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.71-archlinux\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.71-fedora\.zip/);
+    assert.match(walletReadme, /shear-wallet-0\.71-android\.apk/);
     assert.doesNotMatch(walletReadme, /shear-wallet-0\.58-/);
     assert.doesNotMatch(walletReadme, /shear-wallet-0\.55-/);
     assert.doesNotMatch(walletReadme, /shear-wallet-0\.40-/);
     assert.doesNotMatch(walletReadme, /releases\/tag\/0\.39/);
     assert.match(readme, /Copy dest/);
     assert.match(readme, /own hash bonus on the next sealed block/);
-    assert.match(readme, /shear-testnet-v10/);
+    assert.match(readme, /shear-testnet-v11/);
     assert.doesNotMatch(joined, /shear-testnet-v6/);
     assert.doesNotMatch(joined, /testnet-v6/);
     assert.doesNotMatch(readme, /shear-testnet-v4/);
@@ -171,7 +178,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
     assert.match(main, /ShearK 2\.8/);
-    assert.match(main, /Continuum 0\.70/);
+    assert.match(main, /Continuum 0\.71/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.doesNotMatch(main, /Continuum 0\.53/);
     assert.doesNotMatch(main, /Continuum 0\.52/);
@@ -187,7 +194,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(main, /Continuum GUI <strong>0\.40<\/strong>/);
     assert.doesNotMatch(main, /Continuum GUI 0\.40/);
     const help = read('node/src/help.js');
-    assert.match(help, /Continuum 0\.69/);
+    assert.match(help, /Continuum 0\.71/);
     assert.doesNotMatch(help, /Continuum 0\.48/);
     assert.doesNotMatch(help, /Continuum 0\.40/);
     assert.doesNotMatch(main, /shear-wallet-0\.38-macos\.dmg/);
@@ -253,14 +260,14 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /\*\*Working branch:\*\* `feat\/admit-v2`/);
     assert.match(ops, /git checkout main/);
     assert.doesNotMatch(ops, /git checkout feat\/admit-v2/);
-    assert.match(ops, /Pins are \*\*0\.70\*\*/);
+    assert.match(ops, /Pins are \*\*0\.71\*\*/);
     assert.match(ops, /ShearK \*\*2\.8\*\*/);
-    assert.match(ops, /Shear Sentinel \*\*v17\*\*/);
+    assert.match(ops, /Shear Sentinel \*\*v18\*\*/);
     assert.doesNotMatch(ops, /Shear Sentinel \*\*v16\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.48\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.42\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.41\*\*/);
-    assert.match(ops, /Pin \*\*0\.70\*\*/);
+    assert.match(ops, /Pin \*\*0\.71\*\*/);
     assert.doesNotMatch(ops, /Pin \*\*0\.48\*\*/);
     assert.doesNotMatch(ops, /Pin \*\*0\.42\*\*/);
     assert.doesNotMatch(ops, /Pin \*\*0\.41\*\*/);
@@ -311,17 +318,28 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(md, /WINDOWS_HANDOFF\.md/);
   });
 
-  it('wallet pin 0.70 leaves Sentinel 17.0, ShearK 2.8, magic, reward, and fingerprint', () => {
-    assert.equal(PRODUCT_VERSION, '17.0');
+  it('wallet pin 0.71 leaves Sentinel 18.0, ShearK 2.8, magic, reward, and fingerprint', () => {
+    assert.equal(PRODUCT_VERSION, '18.0');
     assert.equal(SHEARK_MINER_VERSION, '2.8');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v10');
+    assert.equal(MAGIC_TESTNET_V10, 'shear-testnet-v10');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v11');
+    assert.equal(GENESIS_BITS, 17);
+    assert.equal(ASERT_HALFLIFE_MS, 1_440_000);
+    assert.equal(ASERT_CURVE_WINDOW, 11);
+    assert.equal(ASERT_HARDEN_MAX, 1);
+    assert.equal(ASERT_EASE_MAX, 1);
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
     assert.equal(HASH_BONUS_NANOS, 1);
     const fp = consensusFingerprint();
+    assert.equal(fp.includes('0.71'), false);
     assert.equal(fp.includes('0.70'), false);
     assert.equal(fp.includes('18.0'), false);
     assert.equal(fp.includes('17.0'), false);
-    assert.match(fp, /shear-testnet-v10/);
+    assert.match(fp, /NETWORK=shear-testnet-v11/);
+    assert.match(fp, /ASERT_TAU_MS=1440000/);
+    assert.match(fp, /:4:17:/);
+    assert.match(fp, /ASERT_STEP=median11/);
+    assert.doesNotMatch(fp, /shear-testnet-v10/);
     assert.match(fp, /DINS=pot\+hash/);
   });
 });

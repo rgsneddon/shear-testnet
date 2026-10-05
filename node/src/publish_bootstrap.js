@@ -1,13 +1,13 @@
 /**
  * Refresh the public latest bootstrap from the live book.
- * Reads chain.bin only. Does not rewrite the chain and does not restart the pool.
+ * Reads segment files when present, otherwise chain.bin. Does not rewrite the chain and does not restart the pool.
  * A shorter read never replaces a taller published snapshot.
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readChainBin } from '../../crypto/chainbin.js';
+import { readChainBin, readChainSegments } from '../../crypto/chainbin.js';
 import { readLatestBootstrap, writeLatestBootstrap } from './bootstrap.js';
 
 /** Republish the newest snapshot on this cadence. A shorter height is refused. */
@@ -24,19 +24,18 @@ function log(obj) {
 }
 
 export function publishOnce({
-  dataDir = process.env.SHEAR_DATA || '/var/lib/shear/testnet-v10',
+  dataDir = process.env.SHEAR_DATA || '/var/lib/shear/testnet-v11',
   publishDir = process.env.SHEAR_BOOT_PUBLISH || path.join(dataDir, 'bootstrap'),
 } = {}) {
   const chain = path.join(dataDir, 'chain.bin');
-  if (!fs.existsSync(chain)) {
+  const segBlocks = readChainSegments(path.join(dataDir, 'segments'));
+  if (!segBlocks && !fs.existsSync(chain)) {
     log({ ok: false, reason: 'no_chain', dataDir });
     return { ok: false, reason: 'no_chain' };
   }
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-'));
   try {
-    const copy = path.join(scratch, 'chain.bin');
-    fs.copyFileSync(chain, copy);
-    const blocks = readChainBin(copy);
+    const blocks = segBlocks || readChainBin(chain);
     const stage = path.join(scratch, 'stage');
     const manifest = writeLatestBootstrap(stage, blocks);
     if (!manifest) {
@@ -91,7 +90,7 @@ function invokedDirectly() {
 }
 
 if (invokedDirectly()) {
-  const dataDir = process.env.SHEAR_DATA || '/var/lib/shear/testnet-v10';
+  const dataDir = process.env.SHEAR_DATA || '/var/lib/shear/testnet-v11';
   const publishDir = process.env.SHEAR_BOOT_PUBLISH || path.join(dataDir, 'bootstrap');
   const intervalMs = bootstrapPublishIntervalMs(process.env);
   publishOnce({ dataDir, publishDir });

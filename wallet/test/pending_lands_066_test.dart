@@ -32,10 +32,10 @@ Map<String, dynamic> _landBody(int height, String dest, double she) => {
 
 void main() {
   test('package pin and CLI pin are Continuum 0.70', () {
-    expect(kWalletVersion, '0.70');
-    expect(kCliVersion, '0.70');
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.70.0+95'));
-    expect(kBookMagic, 'shear-testnet-v10');
+    expect(kWalletVersion, '0.71');
+    expect(kCliVersion, '0.71');
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.71.0+96'));
+    expect(kBookMagic, 'shear-testnet-v11');
     final sync = ShearReadSync(jitter: Duration.zero);
     expect(sync.seeds.first, kLocalNodeRpc);
     expect(sync.seeds.contains(kPublicPoolHttp), isFalse);
@@ -330,6 +330,9 @@ void main() {
     expect(historyHits, 2);
     expect(ledger.historyStamped(dest), isTrue);
     ledger.onClosureApply();
+    expect(ledger.historyStamped(dest), isTrue,
+        reason: 'a same-book mode switch keeps the opened-note cursor');
+    ledger.onClosureApply(bookChanged: true);
     expect(ledger.historyStamped(dest), isFalse);
     expect(ledger.historyBehindTip, isTrue);
     ledger.rememberNodeChain(bodies: [_landBody(6, dest, 1)]);

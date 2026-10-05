@@ -79,8 +79,8 @@ describe('Shear Sentinel staking oracle', () => {
       assert.equal(one.portal.accrued, 0);
       assert.equal(Object.keys(vault.portals).length, 0);
       const cfg = printConfig();
-      assert.equal(cfg.display, 'Shear Sentinel v17');
-      assert.equal(cfg.version, '17.0');
+      assert.equal(cfg.display, 'Shear Sentinel v18');
+      assert.equal(cfg.version, '18.0');
     } finally {
       rpc.close();
     }

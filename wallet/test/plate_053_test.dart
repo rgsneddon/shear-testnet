@@ -338,7 +338,7 @@ void main() {
     );
     expect(she.posted, isFalse, reason: she.remark);
     expect(she.to, payload);
-    expect(she.remark, contains('Not enough Continuum spendable'));
+    expect(she.remark, kErrSendGeneric);
     expect(she.tx, isNull);
     final bobBook = ShearLedger()..bindIdentity(bob);
     final ssa = bobBook.homeDest(bob.address, paymentCode: bob.paymentCode);
@@ -355,7 +355,7 @@ void main() {
     );
     expect(ssaSend.posted, isFalse, reason: ssaSend.remark);
     expect(ssaSend.to, ssa);
-    expect(ssaSend.remark, contains('Not enough Continuum spendable'));
+    expect(ssaSend.remark, kErrSendGeneric);
     expect(ssaSend.tx, isNull);
     final short = await submitContinuumSend(
       ledger: ledger,
@@ -428,7 +428,7 @@ void main() {
       local: false,
     );
     expect(send.posted, isFalse, reason: send.remark);
-    expect(send.remark, contains('Not enough Continuum spendable'));
+    expect(send.remark, kErrSendGeneric);
     expect(queuedRows(node.log).where((row) => row['kind'] == 'lock' || row['kind'] == 'send'), isEmpty);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(need));
     expect(ledger.owedTowardPi(id.address, paymentCode: id.paymentCode), closeTo(owed, 1e-9));

@@ -28,16 +28,16 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const src = fs.readFileSync(fileURLToPath(new URL('./reserve_evm.js', import.meta.url)), 'utf8');
     assert.match(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET \}/);
     assert.match(src, /shearMagicBytes\(network = MAGIC_TESTNET\)/);
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v10');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v11');
   });
 
-  it('CREATE with shear-testnet-v10 succeeds and an unknown magic reverts', async () => {
-    const s = await bootReserveEvm({ network: 'shear-testnet-v10' });
+  it('CREATE with shear-testnet-v11 succeeds and an unknown magic reverts', async () => {
+    const s = await bootReserveEvm({ network: 'shear-testnet-v11' });
     assert.ok(s.address);
     const magic = await callReserve(s, selector('magic()'), { staticCall: true });
     assert.equal(magic.ok, true, magic.reason);
     assert.equal(
-      Buffer.from(magic.returnValue).equals(Buffer.from(shearMagicBytes('shear-testnet-v10'))),
+      Buffer.from(magic.returnValue).equals(Buffer.from(shearMagicBytes('shear-testnet-v11'))),
       true,
     );
     const view = decodePublicView((await callReserve(s, encodePublicView(1), { staticCall: true })).returnValue);

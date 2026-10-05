@@ -18,7 +18,7 @@
  */
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS, BLOCK_SUBSIDY_NANOS } from './asert.js';
-import { shareRowJson } from './pack.js';
+import { packShareBatchBytes } from './pack.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, coinbasePotIsCustodial, openedCoinbaseNanos } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8 } from './note.js';
@@ -548,6 +548,6 @@ export function compactChainBlock(block) {
     rootB: block.rootB,
     weight: Number(block.weight || 0),
     txs: (block.txs || []).map(compactTx),
-    shareBatch: Array.isArray(block.shareBatch) ? block.shareBatch.map(shareRowJson) : [],
+    sharePacked: packShareBatchBytes(block.shareBatch || []).toString('hex'),
   };
 }

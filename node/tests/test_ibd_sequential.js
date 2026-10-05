@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
-import { SAMPLE_PRUNE_CONFIRMATIONS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { SAMPLE_PRUNE_CONFIRMATIONS, GENESIS_BITS_PACKED, HEADER_AHEAD_MS } from '../../crypto/asert.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { buildTemplate, verifyBlock, digestTx, GENESIS_PREV } from '../src/chain.js';
@@ -26,18 +26,26 @@ function destMiner() {
 let powTag = 1;
 function easyPowHash() {
   const h = Buffer.alloc(32);
-  h[1] = powTag & 0x0f;
-  h[2] = (powTag >> 4) & 0xff;
-  h[3] = (powTag >> 12) & 0xff;
+  // Opening bits are 17 (Q16.16). A nibble in byte 1 only clears 12 leading
+  // bits and misses that target. Four clear bytes still meet the ±1 lid.
+  h[4] = powTag & 0xff;
+  h[5] = (powTag >> 8) & 0xff;
+  h[6] = (powTag >> 16) & 0xff;
   powTag += 1;
   return h;
 }
 
 function mineOne(store, dest) {
   const parent = store.tip();
-  const now = parent
-    ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
-    : Date.now();
+  const wall = Date.now();
+  let now = wall;
+  if (parent) {
+    const parentTs = Number(decodeHeader(Buffer.from(parent.header)).timestamp);
+    // A +90s stamp is ahead of the 15s header lid. Stay after the parent
+    // and no further ahead of the wall clock than that lid.
+    const ahead = Math.max(parentTs + 1, Math.min(wall, parentTs + 90_000));
+    now = ahead > wall + HEADER_AHEAD_MS ? Math.max(parentTs + 1, wall) : ahead;
+  }
   const { tpl } = store.template({ miner: dest, shareBits: 4, now });
   return store.append({
     header: tpl.header,
@@ -125,7 +133,7 @@ describe('sequential IBD', () => {
     assert.equal(local.tip().height, 3);
     assert.equal(Buffer.from(local.tip().hash).equals(Buffer.from(net.tip().hash)), true);
     assert.equal(local.sideTipHash(), privateTip);
-    assert.equal(fs.existsSync(path.join(localDir, 'chain.bin')), true);
+    assert.equal(fs.existsSync(path.join(localDir, 'segments', 'seg-000000.bin')), true);
     const prev = Buffer.alloc(80, 0);
     const parent = Buffer.from(net.blocks[0].hash);
     parent.copy(prev, 4);
@@ -225,7 +233,7 @@ describe('sequential IBD', () => {
   it('shipped p2p headers path queues only nextSequentialHeader and retries hash_bonus at H', () => {
     const src = fs.readFileSync(new URL('../src/p2p.js', import.meta.url), 'utf8');
     assert.match(src, /nextSequentialHeader\(/);
-    assert.match(src, /rec\.want = next \? \[next\.hash\] : \[\]/);
+    assert.match(src, /if \(next\) \{\s*rec\.want = \[next\.hash\];/);
     assert.match(src, /got\?\.reason === 'hash_bonus'/);
     assert.match(src, /requeuePrevHash\(rec, lastHash\)/);
     assert.match(src, /tipHeight: networkTip/);

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
 import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { findShare, dest20OfShare } from '../../crypto/share_batch.js';
-import { unpackShareBatch, shareRowJson } from '../../crypto/pack.js';
+import { unpackShareBatch, unpackShareBatchBytes, shareRowJson } from '../../crypto/pack.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
 import { encodeWireBlock, decodeWireBlock } from '../src/p2p.js';
 import { createStore } from '../src/store.js';
@@ -101,13 +101,16 @@ describe('shareBatch on disk and p2p wire', () => {
     assert.ok((second.block.txs[0].vout || []).some((o) => o.kind === 'hash' && o.commit));
 
     const compact = compactChainBlock(second.block);
-    assert.ok(Array.isArray(compact.shareBatch) && compact.shareBatch.length >= 1);
-    assert.equal(String(compact.shareBatch[0].noteCommit || '').length, 64);
-    assert.equal(compact.shareBatch[0].dest20, undefined);
-    assert.equal(compact.shareBatch[0].dest, undefined);
+    const packedShares = unpackShareBatchBytes(Buffer.from(compact.sharePacked, 'hex'));
+    assert.ok(packedShares.length >= 1);
+    assert.equal(packedShares[0].noteCommit.length, 32);
+    assert.equal(compact.shareBatch, undefined);
+    assert.equal(compact.sharePacked.includes(packedShares[0].noteCommit.toString('hex')), true);
 
     const wire = encodeWireBlock(second.block);
-    assert.ok(Array.isArray(wire.shareBatch) && wire.shareBatch.length >= 1, 'wire carries shareBatch');
+    assert.equal(typeof wire.sharePacked, 'string');
+    assert.ok(wire.sharePacked.length > 8, 'wire carries packed shares');
+    assert.equal(wire.shareBatch, undefined);
     const round = JSON.parse(JSON.stringify(wire));
     const ingested = b.append(decodeWireBlock(round), { trustedPowHash: Buffer.from(second.block.hash) });
     assert.equal(ingested.ok, true, ingested.reason);

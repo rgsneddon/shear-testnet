@@ -37,7 +37,7 @@ import 'shear_node_proc.dart';
 import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 
-const kWalletVersion = '0.70';
+const kWalletVersion = '0.71';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock is accepted. Spendable drops and staking starts now.
@@ -169,6 +169,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   /// True from the responding shell until the unlock credit read returns.
   /// The figure is not 0 SHE during that wait.
   bool _spendableAwaiting = false;
+  /// True while opened coins are still being collated. The bar says SYNCING.
+  bool _spendSyncing = false;
+  /// True after a notes read finished and the sealed height is known.
+  bool _bookCollated = false;
+  /// Connect bare Flyclient sample. Local-node mode does not read these.
+  bool _flySampling = false;
+  bool _flyOk = false;
+  bool _flyFailed = false;
+  bool _flyBusy = false;
+  int _flyTip = 0;
+  String? _flyGenesis;
+  bool _openedPersistOnce = false;
   String? _lockError;
   bool _bioReady = false;
   bool _bioStored = false;
@@ -609,7 +621,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final msg = e is FormatException ? e.message : '';
       if (msg.startsWith('shewall_reset_required')) {
         setState(() => _lockError =
-            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v10).');
+            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v11).');
         return;
       }
       setState(() => _lockError = 'Wrong password.');
@@ -769,6 +781,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Future<void> _enterWallet(String pw) async {
     _preloginTick?.cancel();
     if (session.identity == null) return;
+    // Write the scrubbed book before any credit follow re-reads session.json.
+    // Otherwise the worker would put the stub height 20 back.
+    if (session.bookCacheNeedsPersist) {
+      await session.persist();
+      session.bookCacheNeedsPersist = false;
+    }
     id = session.identity;
     password = pw;
     ledger.bindIdentity(id!);
@@ -778,6 +796,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       session.rememberedSealedHeight,
       genesis: session.rememberedChainGenesis,
     );
+    ledger.restoreOpenedProofs(session.rememberedOpenedProofs);
     if (session.rememberedTxs.isNotEmpty) {
       await applyUserArchiveOffUi(ledger, {
         'dests': session.rememberedDests,
@@ -867,6 +886,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     required bool full,
     bool chain = true,
     bool spendableFirst = false,
+    void Function()? onCoins,
   }) {
     return ledger.followOffUi(
       restFrame: ident.address,
@@ -876,7 +896,25 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       spendableFirst: spendableFirst,
       sessionPath: session.store.path,
       sessionPassword: session.password,
+      onCoins: onCoins,
     );
+  }
+
+  void _onOpenedCoins() {
+    final who = id;
+    if (!mounted || who == null) return;
+    if (ledger.spendableOwned(who.address, paymentCode: who.paymentCode) <= 1e-12) {
+      return;
+    }
+    _spendableAwaiting = false;
+    _spendSyncing = false;
+    if (ledger.sealedHeight > 0) _bookCollated = true;
+    if (!_openedPersistOnce) {
+      _openedPersistOnce = true;
+      _rememberLedger();
+      unawaited(session.persist());
+    }
+    setState(() {});
   }
 
   /// Apply's poll, off the gesture zone. Widget tests run that zone under
@@ -912,6 +950,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     _creditBusy = true;
     debugPopulationOrder.add('spendable');
     _spendableAwaiting = true;
+    _spendSyncing = true;
+    if (_usesFlyclientTip) unawaited(_runFlyclientSample());
     debugPopulationOrder.add('shell');
     if (mounted) {
       setState(() {
@@ -924,12 +964,26 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     await Future<void>.delayed(Duration.zero);
     try {
       if (id == null) return;
-      await _followCredits(id!, full: false, chain: true, spendableFirst: true);
+      await _followCredits(
+        id!,
+        full: false,
+        chain: true,
+        spendableFirst: true,
+        onCoins: _onOpenedCoins,
+      );
       _rememberLedger();
-    } catch (_) {}
+    } catch (_) {
+      // A thrown credit read is not an empty book. Leave the figure on "…".
+      ledger.noteSpendableReadFailed();
+    }
     finally {
       _creditBusy = false;
       _spendableAwaiting = false;
+      _spendSyncing = false;
+      final who = id;
+      if (who != null && ledger.sealedHeight > 0 && !ledger.spendableReadFailed) {
+        _bookCollated = true;
+      }
       if (mounted) setState(() => _verifying = false);
       if (_creditAgain && mounted && unlocked) _armCreditFollow();
     }
@@ -1068,12 +1122,44 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (mounted) setState(() {});
       await Future<void>.delayed(Duration.zero);
       if (!mounted || !unlocked || _accrualPaused || id == null) return;
+      if (_usesFlyclientTip) unawaited(_runFlyclientSample());
       final now = DateTime.now();
       if (!immediate && !walletShouldPoll(lastPoll: _lastPoll, now: now, hot: true)) {
         return;
       }
       immediate = false;
       _lastPoll = now;
+      // Notes before the tip walk. A header read must not hold spendable.
+      final notesDueFirst = notesCollateDue(
+        openCollated: ledger.openCollated,
+        readFailed: ledger.spendableReadFailed,
+        notesLag: ledger.notesLagSpendable,
+      );
+      var openedNotesThisTick = false;
+      if (notesDueFirst && !_creditBusy) {
+        openedNotesThisTick = true;
+        thinFirst = false;
+        _creditBusy = true;
+        if (mounted) setState(() => _spendSyncing = true);
+        try {
+          await _followCredits(
+            ident,
+            full: false,
+            spendableFirst: true,
+            onCoins: _onOpenedCoins,
+          );
+          _rememberLedger();
+          if (mounted) _requestShellPaint();
+        } catch (_) {
+          ledger.noteSpendableReadFailed();
+        } finally {
+          _creditBusy = false;
+          _spendableAwaiting = false;
+          if (_spendSyncing && mounted) setState(() => _spendSyncing = false);
+          if (_creditAgain && mounted && unlocked) _armCreditFollow();
+        }
+      }
+      if (!mounted || !unlocked || id == null) return;
       var tipMoved = false;
       await runTipAccrualTick(
         busy: _tipBusy,
@@ -1097,19 +1183,24 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           }
         },
       );
-      if (!mounted || !unlocked || id == null) return;
+      if (!mounted || !unlocked || id == null || openedNotesThisTick) return;
       final thin = pendingReceiveThinPoll([
         ...ledger.pendingTxs(ident.address),
         ...ledger.ownerHistory(ident.address),
       ]);
-      // The unlock turn's first poll must not download notes. Later polls
-      // still collate when the book is behind.
+      // History stays behind the desktop sidecar. The notes open does not.
+      // A missed unlock read is retried on every platform, including Android.
+      final notesDue = notesCollateDue(
+        openCollated: ledger.openCollated,
+        readFailed: ledger.spendableReadFailed,
+        notesLag: ledger.notesLagSpendable,
+      );
       final full = thinFirst
           ? false
           : shouldFullSyncCredits(
               hasPendingReceive: thin,
               historyBehindTip: ledger.historyBehindTip,
-              openCollatePending: !ledger.openCollated || ledger.notesLagSpendable,
+              openCollatePending: notesDue,
               tipMovedWithoutLanding: tipMoved && ledger.tipAdvancedWithoutLanding,
             );
       thinFirst = false;
@@ -1118,8 +1209,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         return;
       }
       _creditBusy = true;
+      if ((notesDue || full) && mounted) setState(() => _spendSyncing = true);
       try {
-        await _followCredits(ident, full: _fullCreditNow(wantFull: full));
+        await _followCredits(
+          ident,
+          full: _fullCreditNow(wantFull: full),
+          spendableFirst: notesDue,
+          onCoins: _onOpenedCoins,
+        );
         _rememberLedger();
         final persistAt = DateTime.now();
         if (persistAt.difference(_lastPersist) >= const Duration(seconds: 15)) {
@@ -1151,6 +1248,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         }
       } finally {
         _creditBusy = false;
+        if (_spendSyncing && mounted) setState(() => _spendSyncing = false);
         if (_creditAgain && mounted && unlocked) _armCreditFollow();
       }
     }
@@ -1459,6 +1557,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     session.rememberedDestCount = ledger.destCount;
     session.rememberedDestIndex = ledger.destIndex;
     session.rememberedSealedHeight = ledger.sealedHeight;
+    session.rememberedOpenedProofs = ledger.exportOpenedProofs();
     session.rememberedChainGenesis = ledger.chainGenesis;
     session.rememberedTxs = [
       for (final t in ledger.transactions)
@@ -1488,13 +1587,137 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   int get _continuumExtraMintedNanos =>
       reserve.mintBankNanos > 0 ? reserve.mintBankNanos : (ledger.extraMintedNanos ?? 0);
 
+  /// Android has no node. Desktop uses this only while Connect bare is the
+  /// committed path. p2P Node and Full Node keep their own tip word.
+  bool get _usesFlyclientTip =>
+      !widget.skipPoolSync &&
+      (_hostAndroid || sidecar.committed == ClosureSendMode.connectBare);
+
+  /// SYNCING while this wallet's coins are still opening. CONNECTED with the
+  /// sealed height once that collation has finished. A quiet phone with no
+  /// live tip stays "not connected". Connect bare uses the Flyclient sample
+  /// for that word. The note scan still paints spendable on its own.
+  String _linkWord() {
+    if (_usesFlyclientTip) {
+      return connectBareLinkWord(
+        sampling: _flySampling || (_spendSyncing && !_flyOk && !_flyFailed),
+        sampleOk: _flyOk,
+        sampleFailed: _flyFailed && !_flyOk,
+        sampleTip: _flyTip,
+        noteTip: ledger.sealedHeight,
+        sampleGenesis: _flyGenesis,
+        noteGenesis: ledger.chainGenesis,
+      );
+    }
+    if (_spendSyncing) return 'SYNCING';
+    if (_bookCollated && ledger.sealedHeight > 0 && !_tipHud.ibd) return 'CONNECTED';
+    if (_tipHud.live && !_tipHud.ibd) return 'CONNECTED';
+    return 'not connected';
+  }
+
+  bool get _flyDisagree =>
+      _flyOk &&
+      flyclientTipDisagrees(
+        sampleTip: _flyTip,
+        noteTip: ledger.sealedHeight,
+        sampleGenesis: _flyGenesis,
+        noteGenesis: ledger.chainGenesis,
+      );
+
+  String _barHeightText() {
+    if (!_usesFlyclientTip) {
+      if (_hostAndroid) {
+        final sealed = ledger.sealedHeight;
+        return sealed > 0 ? 'height $sealed' : 'height —';
+      }
+      return _tipHud.label;
+    }
+    if (_flyDisagree && _flyTip > 0) {
+      return _hostAndroid ? 'height $_flyTip' : 'block height: tip disagree · $_flyTip';
+    }
+    if (_flyFailed) {
+      return _hostAndroid ? 'height —' : 'block height: sample failed';
+    }
+    if (_flyOk && _flyTip > 0) {
+      return _hostAndroid ? 'height $_flyTip' : 'block height: height $_flyTip';
+    }
+    if (_hostAndroid) {
+      final sealed = ledger.sealedHeight;
+      return sealed > 0 ? 'height $sealed' : 'height —';
+    }
+    return _tipHud.label;
+  }
+
+  bool get _heightAmber => _usesFlyclientTip
+      ? (_flyDisagree || _flyFailed || !_flyOk)
+      : _tipHud.amber;
+
+  /// Header sample beside the note scan. It never reads a dest balance.
+  Future<void> _runFlyclientSample() async {
+    if (_flyBusy || !mounted || !_usesFlyclientTip) return;
+    final sync = ledger.pool?.sync;
+    if (sync == null) return;
+    _flyBusy = true;
+    if (!_flyOk && !_flyFailed && mounted) {
+      setState(() => _flySampling = true);
+    }
+    try {
+      await sync.sampleFlyclient();
+      if (!mounted) return;
+      // A live genesis that is not the cached stub drops height 20 and seeks
+      // that book's tip, including height 1.
+      final liveGenesis = sync.flyclientGenesis ?? '';
+      if (sync.flyclientOk && liveGenesis.isNotEmpty) {
+        ledger.bindChainGenesis(liveGenesis);
+      }
+      final disagree = sync.flyclientOk &&
+          flyclientTipDisagrees(
+            sampleTip: sync.flyclientTip,
+            noteTip: ledger.sealedHeight,
+            sampleGenesis: sync.flyclientGenesis,
+            noteGenesis: ledger.chainGenesis,
+          );
+      setState(() {
+        _flySampling = false;
+        _flyOk = sync.flyclientOk;
+        _flyFailed = !sync.flyclientOk;
+        _flyTip = sync.flyclientTip;
+        _flyGenesis = sync.flyclientGenesis;
+      });
+      if (sync.flyclientOk && !disagree && sync.flyclientTip > 0) {
+        if (sync.flyclientTip > ledger.sealedHeight) {
+          ledger.noteLiveHeight(sync.flyclientTip);
+        }
+        if (sync.flyclientTip > sidecar.seekerTip) {
+          sidecar.seekerTip = sync.flyclientTip;
+        }
+        sidecar.adoptBookPin(
+          genesis: sync.flyclientGenesis,
+          magic: kBookMagic,
+          trustedTip: sync.flyclientTip,
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _flySampling = false;
+          _flyFailed = true;
+          _flyOk = false;
+        });
+      }
+    } finally {
+      _flyBusy = false;
+    }
+  }
+
   /// Android keeps the logo, the link, and the sealed height. The mode chip,
   /// version, and theme control stay on the wider desktop bar.
   PreferredSizeWidget _topBar(BuildContext context) {
     if (_hostAndroid) {
-      final sealed = ledger.sealedHeight;
-      final heightLabel = sealed > 0 ? 'height $sealed' : 'height —';
-      final link = _tipHud.live && !_tipHud.ibd ? 'connected' : 'not connected';
+      final heightLabel = _barHeightText();
+      final link = _linkWord();
+      final showHeight = _chromeReady &&
+          (!_spendSyncing || (_usesFlyclientTip && _flyOk && _flyTip > 0));
       final banner = Theme.of(context).appBarTheme.backgroundColor;
       return AppBar(
         key: const Key('android-top-banner'),
@@ -1523,7 +1746,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               ),
             ),
             const SizedBox(width: 8),
-            if (_chromeReady)
+            if (showHeight)
               Text(
                 heightLabel,
                 key: const Key('wallet-block-height'),
@@ -1532,7 +1755,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 softWrap: false,
                 style: TextStyle(
                   fontSize: 13,
-                  color: _tipHud.amber
+                  color: _heightAmber
                       ? const Color(0xFFE6A817)
                       : Theme.of(context).colorScheme.onSurface,
                 ),
@@ -1562,6 +1785,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             _brandLockup(mark: 44, wordHeight: 32),
             const SizedBox(width: 10),
             Text('$kWalletVersion  ${kSymbols[tab]}'),
+            const SizedBox(width: 10),
+            Text(
+              _linkWord(),
+              key: const Key('wallet-connected'),
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+            ),
           ],
         ),
       ),
@@ -1592,17 +1821,17 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   padding: EdgeInsets.only(right: 8),
                   child: Text('Verifying…', key: Key('unlock-verifying')),
                 ),
-              if (_chromeReady)
+              if (_chromeReady && (!_spendSyncing || (_usesFlyclientTip && _flyOk && _flyTip > 0)))
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: InkWell(
                     onTap: (kDebugMode || widget.demoTx) ? _findBlock : null,
                     child: Text(
-                      _tipHud.label,
+                      _barHeightText(),
                       key: const Key('wallet-block-height'),
                       style: TextStyle(
                         fontSize: 12,
-                        color: _tipHud.amber
+                        color: _heightAmber
                             ? const Color(0xFFE6A817)
                             : Theme.of(context).colorScheme.onSurface,
                       ),
@@ -3864,8 +4093,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         key: const Key('closure-apply'),
         onPressed: () {
           unawaited(() async {
+            sidecar.adoptBookPin(
+              genesis: _flyGenesis ?? ledger.chainGenesis,
+              magic: kBookMagic,
+              trustedTip: _flyOk && _flyTip > 0 ? _flyTip : ledger.sealedHeight,
+            );
             final msg = await sidecar.apply();
-            ledger.onClosureApply();
+            ledger.onClosureApply(bookChanged: sidecar.rescanFromGenesis);
             session.closureSendMode = closureModeStored(sidecar.committed);
             if (!widget.skipPoolSync) {
               Zone.root.run(() {

@@ -58,10 +58,10 @@ describe('shear-testnet-v8 pool and solo share the 90s rule', () => {
     const live = consensusFingerprint();
     assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V9);
     assert.equal(MAGIC_TESTNET_V9, 'shear-testnet-v9');
-    assert.match(live, /NETWORK=shear-testnet-v10/);
+    assert.match(live, /NETWORK=shear-testnet-v11/);
     assert.doesNotMatch(live, /NETWORK=shear-testnet-v9/);
     assert.equal(live.includes('NETWORK=shear-testnet-v8'), false);
-    assert.notEqual(live, live.replaceAll('shear-testnet-v10', 'shear-testnet-v8'));
+    assert.notEqual(live, live.replaceAll('shear-testnet-v11', 'shear-testnet-v8'));
     assert.equal(MAGIC_TESTNET_V8, 'shear-testnet-v8');
     assert.equal(MAGIC_TESTNET_V7, 'shear-testnet-v7');
     assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V7);

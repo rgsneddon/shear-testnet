@@ -13,7 +13,7 @@ import {
 import { dest20OfShare, unitsForShare, collateShareUnits, noteCommitOfShare } from '../crypto/share_batch.js';
 import { verifySealedNote, noteCommitOfDest20 } from '../crypto/note.js';
 import { poolFeeDest } from '../crypto/levy.js';
-import { coinbaseTx, hashBonusByMiner, buildTemplate, GENESIS_PREV } from '../node/src/chain.js';
+import { coinbaseTx, hashBonusByMiner, buildTemplate, potSharesFromBatch, GENESIS_PREV } from '../node/src/chain.js';
 import { mintShareMinBits, SHARE_BITS_V2_START } from '../pool/src/share_vardiff.js';
 import { encodeHeader, setNonce } from '../crypto/header.js';
 import { provenLag1Shares } from '../pool/src/pool.js';
@@ -76,9 +76,10 @@ describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
     assert.equal(hashes.some((o) => Buffer.from(o.noteCommit).equals(nci)), false);
     const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
     const rest = BLOCK_SUBSIDY_NANOS - fee;
-    const poolPot = pots.find((o) => Buffer.from(o.noteCommit).equals(ncp));
-    assert.equal(verifySealedNote(poolPot, fee), true);
-    const hasherPot = pots.filter((o) => !Buffer.from(o.noteCommit).equals(ncp));
+    const poolFee = cb.vout.find((o) => o.kind === 'pool-fee' && Buffer.from(o.noteCommit).equals(ncp));
+    assert.equal(verifySealedNote(poolFee, fee), true);
+    assert.equal(pots.some((o) => Buffer.from(o.noteCommit).equals(ncp)), false);
+    const hasherPot = pots;
     assert.equal(hasherPot.length, 2);
     for (const o of hasherPot) {
       assert.equal(o.nanos, undefined);
@@ -112,6 +113,37 @@ describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
     assert.equal(hashBonusByMiner([{ miner: alice.paymentCode, count: 99 }], HASH_BONUS_NANOS, null).size, 0);
     assert.equal(mintShareMinBits(), SHARE_FLOOR_BITS);
     assert.ok(mintShareMinBits() >= SHARE_BITS_V2_START);
+  });
+
+  it('another stratum finding the block still pays every hasher, and the hash bonus is not inside the 1 SHE pot', () => {
+    const finder = bindable(newIdentity());
+    const solo = bindable(newIdentity());
+    const pooled = bindable(newIdentity());
+    const batch = [share(solo, 1), share(pooled, 2), share(pooled, 3)];
+    const unit = unitsForShare() * HASH_BONUS_NANOS;
+    const cb = coinbaseTx({
+      height: 4,
+      miner: finder,
+      shareBatch: batch,
+      potNanos: BLOCK_SUBSIDY_NANOS,
+    });
+    const hashes = cb.vout.filter((o) => o.kind === 'hash');
+    const ncSolo = noteCommitOfShare({ dest: solo });
+    const ncPooled = noteCommitOfShare({ dest: pooled });
+    const ncFinder = noteCommitOfShare({ dest: finder });
+    assert.equal(verifySealedNote(hashes.find((o) => Buffer.from(o.noteCommit).equals(ncSolo)), unit), true);
+    assert.equal(verifySealedNote(hashes.find((o) => Buffer.from(o.noteCommit).equals(ncPooled)), unit * 2), true);
+    assert.equal(hashes.some((o) => Buffer.from(o.noteCommit).equals(ncFinder)), false);
+    const pots = potSharesFromBatch(batch, null, BLOCK_SUBSIDY_NANOS);
+    assert.equal(pots.reduce((sum, row) => sum + row.nanos, 0), BLOCK_SUBSIDY_NANOS);
+    for (const row of pots) {
+      const nc = noteCommitOfShare({ dest: row.address });
+      const hit = cb.vout.find((o) => o.kind === row.kind && Buffer.from(o.noteCommit).equals(nc));
+      assert.equal(verifySealedNote(hit, row.nanos), true);
+      assert.equal(verifySealedNote(hit, row.nanos - unit), false);
+    }
+    assert.ok(unit * 3 > 0);
+    assert.ok(BLOCK_SUBSIDY_NANOS + unit * 3 > BLOCK_SUBSIDY_NANOS);
   });
 
   it('provenLag1Shares keeps every same-job hasher dest; a restamp row cannot collapse the batch to the finder', () => {

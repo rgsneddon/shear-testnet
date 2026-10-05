@@ -2,7 +2,7 @@ import net from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { freshMinerRounds, safeMinerRounds } from './network_report.js';
-import { shareRowJson } from '../../crypto/pack.js';
+import { packShareBatchBytes, unpackShareBatchBytes } from '../../crypto/pack.js';
 import { admitWireTx, compactTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
@@ -22,8 +22,16 @@ function reviveDeep(v) {
 }
 
 export const P2P_PORT = 30303;
-/** Default 2 MiB. Override with SHEAR_P2P_MAX_FRAME. Cheap reject before Admit/BP+/RX. */
-export const P2P_MAX_FRAME = Math.max(1024 * 1024, Number(process.env.SHEAR_P2P_MAX_FRAME || 2 * 1024 * 1024) || 2 * 1024 * 1024);
+/**
+ * Default 16 MiB. A full 65536-share packed body is about 7 MiB of hex on the
+ * JSON line. The old 2 MiB default rejected that block. Override with
+ * SHEAR_P2P_MAX_FRAME. Cheap reject before Admit/BP+/RX.
+ */
+export const P2P_MAX_FRAME_DEFAULT = 16 * 1024 * 1024;
+export const P2P_MAX_FRAME = Math.max(
+  1024 * 1024,
+  Number(process.env.SHEAR_P2P_MAX_FRAME || P2P_MAX_FRAME_DEFAULT) || P2P_MAX_FRAME_DEFAULT,
+);
 export const P2P_FAIL_DISCONNECT = 8;
 export const P2P_INBOUND_PER24 = 8;
 export const P2P_BAN_MS = 15 * 60 * 1000;
@@ -500,7 +508,7 @@ export function encodeWireBlock(b) {
     txs: (b.txs || []).map(compactTx),
     samples: b.samples,
     miner: b.miner,
-    shareBatch: Array.isArray(b.shareBatch) ? b.shareBatch.map(shareRowJson) : [],
+    sharePacked: packShareBatchBytes(b.shareBatch || []).toString('hex'),
     aLeaves: b.aLeaves,
     bLeaves: b.bLeaves,
     rootA: b.rootA,
@@ -518,7 +526,9 @@ export function decodeWireBlock(w) {
     txs: (w.txs || []).map((tx) => reviveTx(reviveDeep(tx))),
     samples: reviveDeep(w.samples),
     miner: w.miner,
-    shareBatch: Array.isArray(w.shareBatch) ? w.shareBatch : [],
+    shareBatch: w.sharePacked
+      ? unpackShareBatchBytes(Buffer.from(String(w.sharePacked), 'hex'))
+      : (Array.isArray(w.shareBatch) ? w.shareBatch : []),
     aLeaves: reviveDeep(w.aLeaves),
     bLeaves: reviveDeep(w.bLeaves),
     rootA: reviveDeep(w.rootA),

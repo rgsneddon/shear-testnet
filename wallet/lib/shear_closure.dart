@@ -122,6 +122,37 @@ bool localNodeMatchesSeeker({required int nodeHeight, required bool ibd, require
   return !ibd && nodeHeight > 0 && seekerTip > 0 && nodeHeight >= seekerTip;
 }
 
+bool _bookPinChanged(String? from, String? to) {
+  final a = (from ?? '').trim().toLowerCase();
+  final b = (to ?? '').trim().toLowerCase();
+  if (a.isEmpty || b.isEmpty) return false;
+  return a != b;
+}
+
+/// Connect bare and the local node share one tip. A switch keeps that tip
+/// and the opened notes. Genesis or magic changing is the only rescan.
+class ModeHandoff {
+  const ModeHandoff({
+    required this.tip,
+    required this.rescanFromGenesis,
+  });
+
+  final int tip;
+  final bool rescanFromGenesis;
+}
+
+ModeHandoff modeHandoff({
+  required int trustedTip,
+  String? fromGenesis,
+  String? toGenesis,
+  String? fromMagic,
+  String? toMagic,
+}) {
+  final changed = _bookPinChanged(fromGenesis, toGenesis) || _bookPinChanged(fromMagic, toMagic);
+  if (changed) return const ModeHandoff(tip: 0, rescanFromGenesis: true);
+  return ModeHandoff(tip: trustedTip < 0 ? 0 : trustedTip, rescanFromGenesis: false);
+}
+
 /// Log one sidecar line. The wallet switches to full-node mode only when the
 /// node's tip matches the light-seeker tip. True only on that false→true edge.
 bool noteSidecarLine(ShearNodeSidecar side, String line, {bool openProofs = true}) {
@@ -348,18 +379,18 @@ PackagedNode? resolvePackagedNode({String? override, String? besideDir}) {
   return PackagedNode(binary: legacy, workDir: besideDir);
 }
 
-/// Shared with Shear Sentinel v16. Windows: %APPDATA%\\Shear\\testnet-v10 (Roaming).
+/// Shared with Shear Sentinel v16. Windows: %APPDATA%\\Shear\\testnet-v11 (Roaming).
 String defaultShearBookDir() {
   final data = Platform.environment['SHEAR_DATA'];
   if (data != null && data.isNotEmpty) return data;
   if (Platform.isWindows) {
     final app = Platform.environment['APPDATA'];
     if (app != null && app.isNotEmpty) {
-      return '$app${Platform.pathSeparator}Shear${Platform.pathSeparator}testnet-v10';
+      return '$app${Platform.pathSeparator}Shear${Platform.pathSeparator}testnet-v11';
     }
   }
   final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
-  return '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v10';
+  return '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v11';
 }
 
 String closureNodeDataDir({String? override, required String besideDir}) {
@@ -370,7 +401,7 @@ String closureNodeDataDir({String? override, required String besideDir}) {
     return legacyBeside;
   }
   final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
-  final posix = '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v10';
+  final posix = '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v11';
   if (Platform.isWindows &&
       shared != posix &&
       closureDatadirEmpty(shared) &&
@@ -433,8 +464,39 @@ class ShearNodeSidecar {
   int reportedHeight = 0;
   bool reportedIbd = true;
   int seekerTip = 0;
-  /// Apply→Bare drops the last sidecar watermark. A dead seeker is not synced.
+  /// A dead seeker is not synced. A mode switch does not set this when the
+  /// trusted tip is kept.
   bool seekerDishonest = false;
+
+  /// Book the current tip belongs to. A different genesis or magic rescans.
+  String? bookGenesis;
+  String? bookMagic;
+  bool rescanFromGenesis = false;
+
+  /// Remember the book and the trusted tip (Flyclient or the local node).
+  /// Same book keeps [seekerTip]. A new book zeros it.
+  void adoptBookPin({String? genesis, String? magic, int trustedTip = 0}) {
+    final nextTip = trustedTip > seekerTip ? trustedTip : seekerTip;
+    final hand = modeHandoff(
+      trustedTip: nextTip,
+      fromGenesis: bookGenesis,
+      toGenesis: genesis,
+      fromMagic: bookMagic,
+      toMagic: magic,
+    );
+    rescanFromGenesis = hand.rescanFromGenesis;
+    if (hand.rescanFromGenesis) {
+      seekerTip = 0;
+      reportedHeight = 0;
+      reportedIbd = true;
+    } else if (hand.tip > 0) {
+      seekerTip = hand.tip;
+    }
+    final g = (genesis ?? '').trim();
+    final m = (magic ?? '').trim();
+    if (g.isNotEmpty) bookGenesis = g;
+    if (m.isNotEmpty) bookMagic = m;
+  }
 
   List<dynamic> _heldBlocks = const [];
   Set<int> _heldHeights = const {};
@@ -654,8 +716,12 @@ class ShearNodeSidecar {
     final prev = committed;
     if (next == ClosureSendMode.connectBare) {
       await _stopNow();
-      seekerTip = 0;
-      seekerDishonest = true;
+      if (rescanFromGenesis) {
+        seekerTip = 0;
+        seekerDishonest = true;
+      } else {
+        seekerDishonest = false;
+      }
       committed = next;
       lastEnv = {};
       lastArgs = const [];

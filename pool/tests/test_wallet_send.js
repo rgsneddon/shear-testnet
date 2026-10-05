@@ -135,7 +135,13 @@ describe('wallet fluxset RPC', () => {
         }],
       }],
     }];
-    const got = handleWalletApi(url(`/api/wallet/notes?address=${dest}`), 'GET', {}, { store });
+    const bare = handleWalletApi(url(`/api/wallet/notes?address=${dest}`), 'GET', {}, { store });
+    assert.equal(bare.status, 401);
+    assert.equal(bare.json.reason, 'dest_hold');
+    assert.equal(bare.json.notes, undefined);
+    assert.equal(bare.json.balance, undefined);
+    const open = destOpeningFromView(alice.viewKey, alice.spendPub);
+    const got = handleWalletApi(url(`/api/wallet/notes?address=${dest}&open=${open}`), 'GET', {}, { store });
     assert.equal(got.status, 200);
     assert.equal(got.json.ok, true);
     assert.equal(got.json.notes.length, 1);

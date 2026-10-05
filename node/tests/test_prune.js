@@ -13,7 +13,7 @@ import { signSpendTx } from '../../crypto/spend.js';
 import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { createStore } from '../src/store.js';
 import { reconstructOwner } from '../../pool/src/wallet_api.js';
-import { readChainBin } from '../../crypto/chainbin.js';
+import { readChainSegments } from '../../crypto/chainbin.js';
 import { decodeHeader } from '../../crypto/header.js';
 
 let powTag = 1;
@@ -152,9 +152,9 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.ok(buried.txs.slice(1).some((t) => t.id === 'send-forever'));
 
-    const binPath = path.join(dir, 'chain.bin');
-    assert.equal(fs.existsSync(binPath), true);
-    const epochs = readChainBin(binPath);
+    const segDir = path.join(dir, 'segments');
+    assert.equal(fs.existsSync(path.join(segDir, 'seg-000000.bin')), true);
+    const epochs = readChainSegments(segDir);
     assert.ok(epochs.length >= 1);
     assert.equal(epochs[0].samplesPruned, true);
     assert.deepEqual(epochs[0].bLeaves, []);

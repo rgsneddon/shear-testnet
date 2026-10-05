@@ -94,6 +94,38 @@ export function sortShares(shares = []) {
   });
 }
 
+/** Extra leading zeros above the floor. Equal floor shares tie; dest order does not decide. */
+export function shareInclusionWeight(share) {
+  const lz = Number(share?.lz) & 0xff;
+  const extra = Math.max(0, lz - SHARE_FLOOR_BITS);
+  return 2 ** Math.min(extra, 20);
+}
+
+/** Tie break for equal weight. Hash of the commit and nonce, not the address. */
+export function shareInclusionTie(share) {
+  const nc = noteCommitOfShare(share);
+  const nonce = Buffer.alloc(8);
+  try { nonce.writeBigUInt64LE(BigInt(share?.nonce || 0)); } catch { /* zero */ }
+  return createHash('sha256').update(nc).update(nonce).digest();
+}
+
+/**
+ * Keep at most `cap` shares. Over cap, higher hash-share weight stays.
+ * Ties break on shareInclusionTie, then the kept set is canonical-sorted.
+ * A block that already exceeds the cap still fails verify with share_cap.
+ */
+export function selectBlockShares(shares = [], cap = MAX_SHARES_PER_BLOCK) {
+  const list = unpackShareBatch(shares);
+  const limit = Math.max(0, Math.floor(Number(cap) || 0));
+  if (list.length <= limit) return sortShares(list);
+  const ranked = [...list].sort((a, b) => {
+    const byWeight = shareInclusionWeight(b) - shareInclusionWeight(a);
+    if (byWeight !== 0) return byWeight;
+    return shareInclusionTie(a).compare(shareInclusionTie(b));
+  });
+  return sortShares(ranked.slice(0, limit));
+}
+
 export function collateShareUnits(shares = []) {
   const by = new Map();
   for (const s of unpackShareBatch(shares)) {

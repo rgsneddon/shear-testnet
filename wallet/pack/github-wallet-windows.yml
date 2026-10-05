@@ -8,11 +8,11 @@ on:
       pin:
         description: Public two-part wallet pin (release tag)
         required: true
-        default: '0.70'
+        default: '0.71'
       build_number:
         description: Flutter build-number
         required: true
-        default: '95'
+        default: '96'
 
 jobs:
   windows:
@@ -30,7 +30,7 @@ jobs:
         run: |
           flutter config --enable-windows-desktop
           flutter pub get
-          flutter build windows --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }}
+          flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
       - name: Zip
         run: python wallet/pack/zip_windows.py
       - name: Attach to GitHub release

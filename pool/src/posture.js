@@ -1,10 +1,12 @@
 /**
  * Operator posture that is not book law: fee identity, stratum listen,
  * interval certify wording, and the bound stratum auth pub.
- * Russell pinned this fee ssa1 for the shear-testnet-v10 reset. One percent.
+ * shear-testnet-v11 seals the 1% pool fee and admin spend to one dest.
+ * The closed v10 pin is refused here so a copied unit cannot keep it.
  */
 
-export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1qzcru37269cx30t7pdsmujwrxhc76km6ctzhwggxnyr9f0ld85wc4zvluktldtcnke7mr524ngqqvfr3sd5qsh6kkuk';
+export const V10_POOL_FEE_DEST = 'ssa1qzcru37269cx30t7pdsmujwrxhc76km6ctzhwggxnyr9f0ld85wc4zvluktldtcnke7mr524ngqqvfr3sd5qsh6kkuk';
+export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1q5495s7qwnljwkt2q8896vect0qaj3argt68hvet8t3vkhf9f7tcn0qhsd2q45e4lnay7u98sp22sddc639hqt0d8jj';
 
 export const CERTIFY_WINDOW = 288;
 
@@ -48,6 +50,9 @@ export function configuredFeeIdentity({
   const admin = String(
     adminSpendDest || e.SHEAR_ADMIN_SPEND_DEST || e.SHEAR_FEE_DEST || legacy || THIS_POOL_DIRECT_FEE_DEST,
   ).trim();
+  if (fee === V10_POOL_FEE_DEST || admin === V10_POOL_FEE_DEST) {
+    return { ok: false, lab: false, reason: 'v10_fee_dest', feeDest: fee, adminSpendDest: admin };
+  }
   return feeIdentityCheck({
     feeDest: fee,
     adminSpendDest: admin,
