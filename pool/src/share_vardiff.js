@@ -86,6 +86,40 @@ export function nextShareBits({
   return clampShareBits(cur + delta, { blockBits, minBits });
 }
 
+/**
+ * Bits that survive a new template. A find builds the shared job at the
+ * opening floor. That placeholder must not replace a dest that has stepped.
+ * Saved dest bits win, then the live connection, then the template.
+ */
+export function carriedShareBits({ saved, conn, template } = {}, { blockBits, minBits = 1 } = {}) {
+  const pick = [saved, conn, template]
+    .map((v) => Number(v))
+    .find((n) => Number.isFinite(n) && n > 0);
+  return clampShareBits(pick == null ? minBits : pick, { blockBits, minBits });
+}
+
+/**
+ * Public shareBits box. Lowest carried dial among connected dests.
+ * The shared template is not a candidate: a find stamps it at the floor.
+ * A row with no saved bits and no connection bits does not vote.
+ * With nobody to show, use the caller's fallback (last job, else the floor).
+ */
+export function liveShareBits(rows, { blockBits, minBits = 1, fallback } = {}) {
+  const dials = [];
+  for (const row of rows || []) {
+    if (!row || row.fee || row.connected === false) continue;
+    const savedN = Number(row.saved);
+    const connN = Number(row.conn);
+    const saved = Number.isFinite(savedN) && savedN > 0 ? savedN : null;
+    const conn = Number.isFinite(connN) && connN > 0 ? connN : null;
+    if (saved == null && conn == null) continue;
+    dials.push(carriedShareBits({ saved, conn, template: null }, { blockBits, minBits }));
+  }
+  if (dials.length) return Math.min(...dials);
+  const fb = Number(fallback);
+  return clampShareBits(Number.isFinite(fb) && fb > 0 ? fb : minBits, { blockBits, minBits });
+}
+
 export function shouldRetargetShare({ shares, elapsedMs } = {}) {
   const n = Math.max(0, Number(shares) || 0);
   const ms = Math.max(0, Number(elapsedMs) || 0);
@@ -129,6 +163,9 @@ export function destVardiffOnShare({
     blockBits,
     minBits,
   });
+  const reason = next > bits
+    ? 'rate_above_target'
+    : (next < bits ? 'rate_below_target' : 'in_band');
   return {
     shares: 0,
     windowAt: Number(now),
@@ -136,6 +173,7 @@ export function destVardiffOnShare({
     lastStepAt: next !== bits ? Number(now) : lastStepAt,
     stepped: next !== bits,
     from: bits,
+    reason,
     sampleShares: shares,
     elapsedMs: elapsed,
     intervalMs,

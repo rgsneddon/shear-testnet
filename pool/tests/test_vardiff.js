@@ -15,7 +15,9 @@ import {
   clampShareBits,
   expectedOneThreadHs,
   hashesProvenByShare,
+  carriedShareBits,
   destVardiffOnShare,
+  liveShareBits,
   hashesCreditedForShare,
   nextShareBits,
   shouldRetargetShare,
@@ -166,7 +168,82 @@ describe('share vardiff', () => {
     assert.ok(stepped, 'sustained fast shares must leave the floor');
     assert.equal(stepped.from, 8);
     assert.equal(stepped.bits, 9);
+    assert.equal(stepped.reason, 'rate_above_target');
     assert.ok(stepped.sampleShares >= SHARE_VARDIFF_RETARGET_SHARES);
+  });
+
+  it('a fast window at 8 still climbs under the live packed ceiling', () => {
+    const packed = 1_209_269;
+    let state = { shares: 0, windowAt: 1_000, bits: 8, lastStepAt: 0 };
+    let stepped = null;
+    for (let t = 1_000; t <= 1_000 + SHARE_VARDIFF_RETARGET_MS; t += 100) {
+      state = destVardiffOnShare({
+        state,
+        now: t,
+        minBits: 8,
+        blockBits: packed,
+      });
+      if (state.stepped) {
+        stepped = state;
+        break;
+      }
+    }
+    assert.ok(stepped, 'packed header bits must not pin the floor');
+    assert.equal(stepped.from, 8);
+    assert.equal(stepped.bits, 9);
+    assert.equal(stepped.reason, 'rate_above_target');
+    const start = stepped.windowAt;
+    let again = null;
+    for (let t = start; t <= start + SHARE_VARDIFF_RETARGET_MS; t += 100) {
+      state = destVardiffOnShare({
+        state,
+        now: t,
+        minBits: 8,
+        blockBits: packed,
+      });
+      if (state.stepped) {
+        again = state;
+        break;
+      }
+    }
+    assert.equal(again?.from, 9);
+    assert.equal(again?.bits, 10);
+    assert.equal(again?.reason, 'rate_above_target');
+  });
+
+  it('a slow full sample eases one bit and names the rate', () => {
+    let state = { shares: 0, windowAt: 0, bits: 12, lastStepAt: 0 };
+    for (const t of [0, 10_000, 20_000, 30_000]) {
+      state = destVardiffOnShare({
+        state,
+        now: t,
+        minBits: 8,
+        blockBits: 1_209_269,
+      });
+    }
+    assert.equal(state.stepped, true);
+    assert.equal(state.from, 12);
+    assert.equal(state.bits, 11);
+    assert.equal(state.reason, 'rate_below_target');
+  });
+
+  it('the public dial is the lowest connected dest, not the template floor', () => {
+    const packed = 1_209_269;
+    assert.equal(liveShareBits([
+      { connected: true, saved: 12, conn: 12 },
+      { connected: true, saved: 11, conn: 11 },
+    ], { blockBits: packed, minBits: 8, fallback: 8 }), 11);
+    assert.equal(liveShareBits([
+      { connected: false, saved: 12, conn: 12 },
+    ], { blockBits: packed, minBits: 8, fallback: 8 }), 8);
+    assert.equal(liveShareBits([
+      { connected: true, fee: true, saved: 8, conn: 8 },
+      { connected: true, saved: 12, conn: 12 },
+    ], { blockBits: packed, minBits: 8, fallback: 8 }), 12);
+    assert.equal(liveShareBits([
+      { connected: true, saved: 30, conn: 30 },
+    ], { blockBits: packed, minBits: 8, fallback: 8 }), 18);
+    assert.equal(liveShareBits([], { blockBits: packed, minBits: 8, fallback: 8 }), 8);
   });
 
   it('one slow share does not ease, and a matched window holds', () => {
@@ -223,6 +300,24 @@ describe('share vardiff', () => {
     assert.equal(state.bits, 10);
   });
 
+  it('a new template does not slap a stepped dest back to the floor', () => {
+    assert.equal(carriedShareBits({
+      saved: 12,
+      conn: 12,
+      template: 8,
+    }, { blockBits: 21, minBits: 8 }), 12);
+    assert.equal(carriedShareBits({
+      saved: 12,
+      conn: 8,
+      template: 8,
+    }, { blockBits: 21, minBits: 8 }), 12);
+    assert.equal(carriedShareBits({
+      saved: null,
+      conn: null,
+      template: 8,
+    }, { blockBits: 21, minBits: 8 }), 8);
+  });
+
   it('a vardiff target does not pay by itself', () => {
     const credited = hashesCreditedForShare({ shareBits: 12, creditedShareBits: 8 });
     assert.equal(credited, hashesProvenByShare(8));
@@ -238,7 +333,14 @@ describe('share vardiff', () => {
     assert.equal(vd.includes('lastFoundAt'), false);
     assert.equal(vd.includes('findAt'), false);
     assert.match(src, /destVardiffOnShare/);
+    assert.match(src, /carriedShareBits/);
     assert.match(src, /event: 'vardiff_step'/);
+    assert.match(src, /event: 'vardiff_carry'/);
+    assert.match(src, /reason: step\.reason/);
+    assert.match(src, /findTouched: false/);
+    assert.match(src, /function liveShareBits\(\)/);
+    assert.equal(src.includes('shareBits: Number(lastJob?.shareBits'), false);
+    assert.equal(/issueJob\(shareBits[,)]/.test(src), false);
     assert.match(src, /c\.shareBits = next/);
     assert.equal(src.includes('shouldRetargetShare({ shares: conn.varShares'), false);
     assert.equal(src.includes('const retargeted = issueJob(next)'), false);

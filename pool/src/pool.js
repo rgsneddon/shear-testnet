@@ -68,9 +68,11 @@ import { poolRecentBlockTxs, networkSupply, openRoundHashRows } from './wallet_a
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 import {
+  carriedShareBits,
   clampShareBits,
   destVardiffOnShare,
   hashesProvenByShare,
+  liveShareBits as selectLiveShareBits,
   SHARE_BITS_V2_START,
   SHARE_VARDIFF_CLIMB_MAX,
   SHARE_VARDIFF_RETARGET_MS,
@@ -1980,7 +1982,7 @@ export function createPool({
       if (due) {
         stallReissueAt = Number(now);
         stallReissueSeal = why;
-        const next = issueJob(shareBits, { force: true });
+        const next = issueJob(undefined, { force: true });
         if (next && liveJobCanSeal(now)) {
           job = next;
           reissued = true;
@@ -2024,15 +2026,10 @@ export function createPool({
     pendingPayout = [];
     for (const m of miners.values()) {
       resetMinerRoundDisplay(m);
-      // never zero accepted / stale here — listing and linger use accepted.
-      for (const c of m.connections || []) {
-        if (!c) continue;
-        c.varShares = 0;
-        c.varWindowAt = Date.now();
-      }
+      // Share bits and the dest window stay. A new round is not a floor reset.
     }
     if (typeof store.clearOpenRound === 'function') store.clearOpenRound();
-    const job = issueJob(shareBits, { force: true });
+    const job = issueJob(undefined, { force: true });
     broadcastJob(job);
     return job;
   }
@@ -2076,7 +2073,12 @@ export function createPool({
       return lastJob;
     }
     jobHoldLogged = false;
-    const sb = clampShareBits(shareBitsNow ?? shareBits, { blockBits: blockBitsNow(), minBits: liveShareMin() });
+    // No explicit dial: keep the live job's bits. The opening floor is only
+    // for the first template, before any dest has stepped.
+    const carriedTemplate = shareBitsNow != null
+      ? shareBitsNow
+      : (Number(lastJob?.shareBits) > 0 ? lastJob.shareBits : shareBits);
+    const sb = clampShareBits(carriedTemplate, { blockBits: blockBitsNow(), minBits: liveShareMin() });
     const now = Date.now();
     const liveBits = blockBitsNow();
     const tipNow = store.tip();
@@ -2185,9 +2187,9 @@ export function createPool({
       for (const c of m.connections || []) {
         if (c && c.sock === sock) {
           c.job = job;
-          if (job.shareBits != null) {
-            c.shareBits = clampShareBits(job.shareBits, { blockBits: job.blockBits || job.bits, minBits: liveShareMin() });
-          }
+          // Do not copy the template shareBits onto the connection.
+          // That value is the opening floor on a fresh job and slapped
+          // stepped miners back to 8.
         }
       }
     }
@@ -2200,10 +2202,15 @@ export function createPool({
     for (const m of miners.values()) {
       for (const c of m.connections || []) {
         if (!c || !c.sock) continue;
-        const sb = clampShareBits(
-          c.shareBits != null ? c.shareBits : job.shareBits,
-          { blockBits: job.blockBits || job.bits, minBits: liveShareMin() },
-        );
+        const destKey = destShareBitsKey(m.login || m.payoutDest);
+        const saved = destKey
+          ? (destVarWindows.get(destKey)?.bits ?? destShareBitsOf(destShareBits, destKey, NaN))
+          : NaN;
+        const sb = carriedShareBits({
+          saved: Number.isFinite(Number(saved)) ? Number(saved) : null,
+          conn: c.shareBits,
+          template: job.shareBits,
+        }, { blockBits: blockBitsNow(), minBits: liveShareMin() });
         c.shareBits = sb;
         const payload = wireJob(job, sb);
         c.job = payload;
@@ -2215,6 +2222,38 @@ export function createPool({
       }
     }
     return n;
+  }
+
+  /** Public and admin shareBits. Min connected dest dial, never the template floor. */
+  function liveShareBits() {
+    const rows = [];
+    for (const m of miners.values()) {
+      if (!minerConnected(m)) continue;
+      if (isCminerFeeLogin(m.workerKey || m.login)) continue;
+      const destKey = destShareBitsKey(m.login || m.payoutDest);
+      let saved = null;
+      if (destKey) {
+        const win = Number(destVarWindows.get(destKey)?.bits);
+        if (Number.isFinite(win) && win > 0) saved = win;
+        else {
+          const disk = destShareBitsOf(destShareBits, destKey, NaN);
+          if (Number.isFinite(disk) && disk > 0) saved = disk;
+        }
+      }
+      let conn = null;
+      for (const c of m.connections || []) {
+        if (!c?.sock || c.shearFeeRoute) continue;
+        const n = Number(c.shareBits);
+        if (Number.isFinite(n) && n > 0 && (conn == null || n < conn)) conn = n;
+      }
+      rows.push({ connected: true, fee: false, saved, conn });
+    }
+    const jobBits = Number(lastJob?.shareBits);
+    return selectLiveShareBits(rows, {
+      blockBits: blockBitsNow(),
+      minBits: liveShareMin(),
+      fallback: Number.isFinite(jobBits) && jobBits > 0 ? jobBits : shareBits,
+    });
   }
 
   /**
@@ -2561,17 +2600,16 @@ export function createPool({
         }
         if (session) session.blocks = (Number(session.blocks) || 0) + 1;
         pendingPayout = snapshotRound();
-        for (const m of miners.values()) {
-          resetMinerRoundDisplay(m);
-          for (const c of m.connections || []) {
-            if (!c) continue;
-            c.varShares = 0;
-            c.varWindowAt = Date.now();
-          }
-        }
+        for (const m of miners.values()) resetMinerRoundDisplay(m);
         if (typeof store.clearOpenRound === 'function') store.clearOpenRound();
-        const base = issueJob(shareBits, { force: true });
+        const base = issueJob(undefined, { force: true });
         broadcastJob(base);
+        console.log(JSON.stringify({
+          event: 'vardiff_carry',
+          template: Number(base?.shareBits) || 0,
+          live: [...destVarWindows.values()].map((w) => Number(w?.bits)).filter((n) => n > 0),
+          touched: false,
+        }));
         nextJob = true;
       } else {
         console.error(JSON.stringify({
@@ -2582,7 +2620,7 @@ export function createPool({
           height: Number(store.tip()?.height || 0) + 1,
         }));
         try {
-          const base = issueJob(shareBits, { force: true });
+          const base = issueJob(undefined, { force: true });
           if (base) {
             broadcastJob(base);
             nextJob = true;
@@ -2630,10 +2668,12 @@ export function createPool({
             destTail: String(destKey).slice(-4),
             from: step.from,
             to: step.bits,
+            reason: step.reason,
             shares: step.sampleShares,
             elapsedMs: Math.round(Number(step.elapsedMs) || 0),
             intervalMs: Math.round(Number(step.intervalMs) || 0),
             targetMs: SHARE_VARDIFF_TARGET_MS,
+            findTouched: false,
           }));
           pushDestShareBits(destKey, step.bits);
         }
@@ -2970,7 +3010,7 @@ export function createPool({
       liveMinBits: LIVE_MIN_BITS,
       maxBits: MAX_BITS,
       blockBits: Number(blockBitsNow()),
-      shareBits: Number(lastJob?.shareBits || shareBits),
+      shareBits: liveShareBits(),
       lastFoundAt: stats.lastFoundAt || 0,
       avgBlockTimeMs: avgMs,
       networkAvgBlockTimeMs: avgBlockIntervalMs(store.blocks),
@@ -3430,7 +3470,7 @@ export function createPool({
         height: tip?.height || 0,
         jobId: lastJob?.jobId || '',
         jobHeight: Number(lastJob?.height) || 0,
-        shareBits: Number(lastJob?.shareBits) || shareBits,
+        shareBits: liveShareBits(),
         blockBits: blockBitsNow(),
         accepted: stats.accepted,
         stale: stats.stale,

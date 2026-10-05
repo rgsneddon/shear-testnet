@@ -58,7 +58,8 @@ describe('tip stall and floor dwell restamp without a bounce', () => {
   it('watchTipStall reissues the live job from the sealed tip and does not bounce', () => {
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     const body = src.slice(src.indexOf('function watchTipStall'), src.indexOf('function resetOpenRound'));
-    assert.match(body, /issueJob\(shareBits, \{ force: true \}\)/);
+    assert.match(body, /issueJob\(undefined, \{ force: true \}\)/);
+    assert.equal(/issueJob\(shareBits[,)]/.test(body), false);
     assert.equal(/tip_stall_restamp/.test(body), false);
     assert.equal(/systemctl/.test(body), false);
     assert.equal(/\.restart\(/.test(body), false);
