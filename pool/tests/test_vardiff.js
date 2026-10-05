@@ -265,6 +265,125 @@ describe('share vardiff', () => {
     assert.equal(state.movedBits, 2);
     assert.equal(state.reason, 'rate_below_target');
     assert.ok(state.intervalMs >= SHARE_VARDIFF_CLEAR_EASE_MS);
+    assert.equal(state.suppressClimb, true);
+    assert.equal(state.heldClimb, false);
+  });
+
+  function closeFastWindow(state, { minBits = 8, blockBits = 1_209_269 } = {}) {
+    const start = Number(state.windowAt);
+    let cur = state;
+    for (let t = start; t <= start + SHARE_VARDIFF_RETARGET_MS; t += 100) {
+      cur = destVardiffOnShare({
+        state: cur,
+        now: t,
+        minBits,
+        blockBits,
+      });
+    }
+    return cur;
+  }
+
+  it('the window after a two-bit ease does not climb those bits back', () => {
+    let state = { shares: 0, windowAt: 1_000, bits: 13, lastStepAt: 0, suppressClimb: false };
+    for (let i = 0; i < 8; i += 1) {
+      state = destVardiffOnShare({
+        state,
+        now: 1_000 + i * 5_000,
+        minBits: 8,
+        blockBits: 1_209_269,
+      });
+    }
+    assert.equal(state.stepped, true);
+    assert.equal(state.from, 13);
+    assert.equal(state.bits, 11);
+    assert.equal(state.move, 'ease');
+    assert.equal(state.movedBits, 2);
+    assert.ok(state.intervalMs >= SHARE_VARDIFF_CLEAR_EASE_MS);
+    assert.equal(state.suppressClimb, true);
+    const open = destVardiffOnShare({
+      state,
+      now: state.windowAt + 100,
+      minBits: 8,
+      blockBits: 1_209_269,
+    });
+    assert.equal(open.stepped, false);
+    assert.equal(open.bits, 11);
+    assert.equal(open.suppressClimb, true);
+    const held = closeFastWindow(open);
+    assert.equal(held.stepped, false);
+    assert.equal(held.bits, 11);
+    assert.equal(held.from, 11);
+    assert.equal(held.move, 'hold');
+    assert.equal(held.reason, 'post_ease_hold');
+    assert.equal(held.heldClimb, true);
+    assert.equal(held.suppressClimb, false);
+    assert.ok(held.intervalMs < SHARE_VARDIFF_DEADBAND_LOW_MS);
+    const climbed = closeFastWindow(held);
+    assert.equal(climbed.stepped, true);
+    assert.equal(climbed.from, 11);
+    assert.equal(climbed.bits, 12);
+    assert.equal(climbed.move, 'climb');
+    assert.equal(climbed.movedBits, 1);
+    assert.equal(climbed.reason, 'rate_above_target');
+    assert.equal(climbed.suppressClimb, false);
+  });
+
+  it('a one-bit ease does not suppress the next climb', () => {
+    let state = { shares: 0, windowAt: 1_000, bits: 12, lastStepAt: 0, suppressClimb: false };
+    for (let i = 0; i < 8; i += 1) {
+      state = destVardiffOnShare({
+        state,
+        now: 1_000 + i * 3_500,
+        minBits: 8,
+        blockBits: 1_209_269,
+      });
+    }
+    assert.equal(state.stepped, true);
+    assert.equal(state.from, 12);
+    assert.equal(state.bits, 11);
+    assert.equal(state.move, 'ease');
+    assert.equal(state.movedBits, 1);
+    assert.ok(state.intervalMs > SHARE_VARDIFF_DEADBAND_HIGH_MS);
+    assert.ok(state.intervalMs < SHARE_VARDIFF_CLEAR_EASE_MS);
+    assert.equal(state.suppressClimb, false);
+    const climbed = closeFastWindow(state);
+    assert.equal(climbed.stepped, true);
+    assert.equal(climbed.from, 11);
+    assert.equal(climbed.bits, 12);
+    assert.equal(climbed.move, 'climb');
+    assert.equal(climbed.movedBits, 1);
+    assert.equal(climbed.heldClimb, false);
+  });
+
+  it('a further slow window during the hold still eases', () => {
+    let state = { shares: 0, windowAt: 1_000, bits: 14, lastStepAt: 0 };
+    for (let i = 0; i < 8; i += 1) {
+      state = destVardiffOnShare({
+        state,
+        now: 1_000 + i * 5_000,
+        minBits: 8,
+        blockBits: 30,
+      });
+    }
+    assert.equal(state.bits, 12);
+    assert.equal(state.movedBits, 2);
+    assert.equal(state.suppressClimb, true);
+    const start = state.windowAt;
+    for (let i = 0; i < 8; i += 1) {
+      state = destVardiffOnShare({
+        state,
+        now: start + i * 5_000,
+        minBits: 8,
+        blockBits: 30,
+      });
+    }
+    assert.equal(state.stepped, true);
+    assert.equal(state.from, 12);
+    assert.equal(state.bits, 10);
+    assert.equal(state.move, 'ease');
+    assert.equal(state.movedBits, 2);
+    assert.equal(state.heldClimb, false);
+    assert.equal(state.suppressClimb, true);
   });
 
   it('the public dial is the lowest connected dest, not the template floor', () => {
@@ -414,6 +533,11 @@ describe('share vardiff', () => {
     assert.match(vd, /SHARE_VARDIFF_CLEAR_EASE_MS = 4_000/);
     assert.match(vd, /SHARE_VARDIFF_DEADBAND_LOW_MS = 1_400/);
     assert.match(vd, /SHARE_VARDIFF_DEADBAND_HIGH_MS = 2_800/);
+    assert.match(vd, /post_ease_hold/);
+    assert.match(vd, /suppressClimb/);
+    assert.match(src, /event: 'vardiff_hold'/);
+    assert.match(src, /reason: 'post_ease_hold'/);
+    assert.match(src, /suppressClimb: step\.suppressClimb === true/);
     assert.equal(vd.includes('lastFoundAt'), false);
     assert.equal(vd.includes('findAt'), false);
     assert.match(src, /destVardiffOnShare/);

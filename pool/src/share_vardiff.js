@@ -5,7 +5,10 @@
  *
  * Target ~2s/share under ShearHash-v3. A step waits for eight shares and
  * 20s, then moves only when the sample interval is outside 1.4–2.8s.
- * Climb is one bit. A sample at 4s or slower eases two bits. A 4-share / 8s
+ * Climb is one bit. A sample at 4s or slower eases two bits. That ease
+ * makes the same hashrate about four times faster, so the next full window
+ * does not climb those bits back. The window after that hold may climb.
+ * A one-bit ease does not hold the climb. A 4-share / 8s
  * window flipped the dial about twice a minute. RandomX-lite
  * verify is on the Node event loop; a 250ms SHA-256 farm target dropped
  * shareBits to 5 and 504'd /api/stats. Share bits may equal the header so a
@@ -154,6 +157,9 @@ export function shouldRetargetShare({ shares, elapsedMs } = {}) {
  * Fold one accepted share into a dest window. Callers pass every worker of
  * that dest through the same state. A soft worker does not keep its own bit.
  * `stepped` is set only when the bit actually moves.
+ * `suppressClimb` is set for exactly one following window after a two-bit
+ * ease. An open window keeps the flag. A climb inside that window stays
+ * put and clears the flag. A further ease is still applied.
  */
 export function destVardiffOnShare({
   state,
@@ -168,6 +174,7 @@ export function destVardiffOnShare({
   const shares = Math.max(0, Number(state?.shares) || 0) + 1;
   const elapsed = Math.max(0, Number(now) - windowAt);
   const lastStepAt = Number(state?.lastStepAt) || 0;
+  const suppressClimb = state?.suppressClimb === true;
   if (!shouldRetargetShare({ shares, elapsedMs: elapsed })) {
     return {
       shares,
@@ -175,20 +182,25 @@ export function destVardiffOnShare({
       bits,
       lastStepAt,
       stepped: false,
+      suppressClimb,
     };
   }
   const intervalMs = elapsed / shares;
-  const next = nextShareBits({
+  const proposed = nextShareBits({
     current: bits,
     actualIntervalMs: intervalMs,
     targetMs,
     blockBits,
     minBits,
   });
-  const reason = next > bits
+  const heldClimb = suppressClimb && proposed > bits;
+  const next = heldClimb ? bits : proposed;
+  const moved = next - bits;
+  const reason = moved > 0
     ? 'rate_above_target'
-    : (next < bits ? 'rate_below_target' : 'in_band');
-  const move = next > bits ? 'climb' : (next < bits ? 'ease' : 'hold');
+    : (moved < 0 ? 'rate_below_target' : (heldClimb ? 'post_ease_hold' : 'in_band'));
+  const move = moved > 0 ? 'climb' : (moved < 0 ? 'ease' : 'hold');
+  const movedBits = Math.abs(moved);
   return {
     shares: 0,
     windowAt: Number(now),
@@ -198,9 +210,11 @@ export function destVardiffOnShare({
     from: bits,
     reason,
     move,
-    movedBits: Math.abs(next - bits),
+    movedBits,
     sampleShares: shares,
     elapsedMs: elapsed,
     intervalMs,
+    suppressClimb: move === 'ease' && movedBits >= SHARE_VARDIFF_EASE_MAX,
+    heldClimb,
   };
 }

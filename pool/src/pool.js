@@ -2655,6 +2655,7 @@ export function createPool({
           windowAt: now,
           bits: curBits,
           lastStepAt: 0,
+          suppressClimb: false,
         };
         const step = destVardiffOnShare({
           state: { ...prev, bits: curBits },
@@ -2667,7 +2668,25 @@ export function createPool({
           windowAt: step.windowAt,
           bits: step.bits,
           lastStepAt: step.lastStepAt || 0,
+          suppressClimb: step.suppressClimb === true,
         });
+        if (step.heldClimb) {
+          console.log(JSON.stringify({
+            event: 'vardiff_hold',
+            destTail: String(destKey).slice(-4),
+            from: step.from,
+            to: step.bits,
+            move: 'hold',
+            reason: 'post_ease_hold',
+            shares: step.sampleShares,
+            elapsedMs: Math.round(Number(step.elapsedMs) || 0),
+            intervalMs: Math.round(Number(step.intervalMs) || 0),
+            targetMs: SHARE_VARDIFF_TARGET_MS,
+            deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS,
+            deadbandHighMs: SHARE_VARDIFF_DEADBAND_HIGH_MS,
+            findTouched: false,
+          }));
+        }
         if (step.stepped) {
           /* Dest aggregate. Never rewrite lastJob.shareBits — a farm target
            * on the shared job rejected 1-thread dest-bound shares as low_diff. */
