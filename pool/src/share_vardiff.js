@@ -4,12 +4,13 @@
  * Pool-found tip gaps are a soak observation and are not an input.
  *
  * Target ~2s/share under ShearHash-v3. A step waits for eight shares and
- * 20s, then moves only when the sample interval is outside 1.4–2.8s.
- * Climb is one bit. A sample at 4s or slower eases two bits. That ease
- * makes the same hashrate about four times faster, so the next full window
- * does not climb those bits back. The window after that hold may climb.
- * A one-bit ease does not hold the climb. A 4-share / 8s
- * window flipped the dial about twice a minute. RandomX-lite
+ * 20s. A sample slower than that target eases on every such window. There
+ * is no deadband on that side. One bit when the sample is merely slow, two
+ * bits at 4s or slower. Climb stays one bit and only once the sample is
+ * faster than 1.4s. A two-bit ease makes the same hashrate about four times
+ * faster, so the next full window does not climb those bits back. The
+ * window after that hold may climb. A one-bit ease does not hold the climb.
+ * A 4-share / 8s window flipped the dial about twice a minute. RandomX-lite
  * verify is on the Node event loop; a 250ms SHA-256 farm target dropped
  * shareBits to 5 and 504'd /api/stats. Share bits may equal the header so a
  * farm is throttled; they still never exceed it. GPU/ASIC still mint nothing.
@@ -31,11 +32,10 @@ export const SHARE_VARDIFF_EASE_MAX = 2;
 /** Twice the 2s target. At or above this, one window eases by EASE_MAX. */
 export const SHARE_VARDIFF_CLEAR_EASE_MS = 4_000;
 /**
- * Hold while the sample sits near 2s/share. A step is only for an interval
- * outside this band. Inclusive on both edges.
+ * Climb deadband, inclusive at this edge. A sample this slow or slower does
+ * not harden. Ease is not this band: any sample above the 2s target eases.
  */
 export const SHARE_VARDIFF_DEADBAND_LOW_MS = 1_400;
-export const SHARE_VARDIFF_DEADBAND_HIGH_MS = 2_800;
 /** 0: share bits may equal header bits so a farm can be throttled. */
 export const SHARE_BELOW_BLOCK = 0;
 /**
@@ -97,12 +97,14 @@ export function nextShareBits({
   const cur = clampShareBits(current, { blockBits, minBits });
   const target = Math.max(1, Number(targetMs) || SHARE_VARDIFF_TARGET_MS);
   const actual = Math.max(1, Number(actualIntervalMs) || target);
-  if (actual >= SHARE_VARDIFF_DEADBAND_LOW_MS && actual <= SHARE_VARDIFF_DEADBAND_HIGH_MS) {
-    return cur;
-  }
-  if (actual > SHARE_VARDIFF_DEADBAND_HIGH_MS) {
+  // Above the target the dial is too hard. Ease every window. No deadband.
+  if (actual > target) {
     const ease = actual >= SHARE_VARDIFF_CLEAR_EASE_MS ? SHARE_VARDIFF_EASE_MAX : 1;
     return clampShareBits(cur - ease, { blockBits, minBits });
+  }
+  // At or under the target, hold until the sample is clearly faster.
+  if (actual >= SHARE_VARDIFF_DEADBAND_LOW_MS) {
+    return cur;
   }
   const ratio = target / actual;
   let delta = Math.round(Math.log2(Math.max(1 / 16, Math.min(16, ratio))));

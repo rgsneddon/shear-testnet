@@ -76,7 +76,6 @@ import {
   SHARE_BITS_V2_START,
   SHARE_VARDIFF_CLIMB_MAX,
   SHARE_VARDIFF_CLEAR_EASE_MS,
-  SHARE_VARDIFF_DEADBAND_HIGH_MS,
   SHARE_VARDIFF_DEADBAND_LOW_MS,
   SHARE_VARDIFF_EASE_MAX,
   SHARE_VARDIFF_RETARGET_MS,
@@ -1480,7 +1479,7 @@ export function createPool({
     easeBits: SHARE_VARDIFF_EASE_MAX,
     clearEaseMs: SHARE_VARDIFF_CLEAR_EASE_MS,
     deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS,
-    deadbandHighMs: SHARE_VARDIFF_DEADBAND_HIGH_MS,
+    easeAboveMs: SHARE_VARDIFF_TARGET_MS,
     floorBits: SHARE_FLOOR_BITS,
   }));
   function pushDestShareBits(destKey, next) {
@@ -2670,6 +2669,24 @@ export function createPool({
           lastStepAt: step.lastStepAt || 0,
           suppressClimb: step.suppressClimb === true,
         });
+        if (Number.isFinite(Number(step.intervalMs)) && !step.stepped && !step.heldClimb) {
+          console.log(JSON.stringify({
+            event: 'vardiff_window',
+            destTail: String(destKey).slice(-4),
+            from: step.from,
+            to: step.bits,
+            move: step.move,
+            reason: step.reason,
+            shares: step.sampleShares,
+            elapsedMs: Math.round(Number(step.elapsedMs) || 0),
+            intervalMs: Math.round(Number(step.intervalMs) || 0),
+            targetMs: SHARE_VARDIFF_TARGET_MS,
+            deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS,
+            easeAboveMs: SHARE_VARDIFF_TARGET_MS,
+            findTouched: false,
+            window: true,
+          }));
+        }
         if (step.heldClimb) {
           console.log(JSON.stringify({
             event: 'vardiff_hold',
@@ -2683,8 +2700,9 @@ export function createPool({
             intervalMs: Math.round(Number(step.intervalMs) || 0),
             targetMs: SHARE_VARDIFF_TARGET_MS,
             deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS,
-            deadbandHighMs: SHARE_VARDIFF_DEADBAND_HIGH_MS,
+            easeAboveMs: SHARE_VARDIFF_TARGET_MS,
             findTouched: false,
+            window: true,
           }));
         }
         if (step.stepped) {
@@ -2703,8 +2721,9 @@ export function createPool({
             intervalMs: Math.round(Number(step.intervalMs) || 0),
             targetMs: SHARE_VARDIFF_TARGET_MS,
             deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS,
-            deadbandHighMs: SHARE_VARDIFF_DEADBAND_HIGH_MS,
+            easeAboveMs: SHARE_VARDIFF_TARGET_MS,
             findTouched: false,
+            window: true,
           }));
           pushDestShareBits(destKey, step.bits);
         }

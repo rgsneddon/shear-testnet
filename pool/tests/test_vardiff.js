@@ -28,7 +28,6 @@ import {
   SHARE_VARDIFF_EASE_MAX,
   SHARE_VARDIFF_CLEAR_EASE_MS,
   SHARE_VARDIFF_DEADBAND_LOW_MS,
-  SHARE_VARDIFF_DEADBAND_HIGH_MS,
   SHARE_BITS_V2_START,
   mintShareMinBits,
 } from '../src/share_vardiff.js';
@@ -142,7 +141,6 @@ describe('share vardiff', () => {
     assert.equal(SHARE_VARDIFF_EASE_MAX, 2);
     assert.equal(SHARE_VARDIFF_CLEAR_EASE_MS, 4_000);
     assert.equal(SHARE_VARDIFF_DEADBAND_LOW_MS, 1_400);
-    assert.equal(SHARE_VARDIFF_DEADBAND_HIGH_MS, 2_800);
     assert.equal(shouldRetargetShare({
       shares: SHARE_VARDIFF_RETARGET_SHARES,
       elapsedMs: SHARE_VARDIFF_RETARGET_MS,
@@ -157,14 +155,52 @@ describe('share vardiff', () => {
     assert.equal(shouldRetargetShare({ shares: 1, elapsedMs: 100 }), false);
   });
 
-  it('holds inside the 1.4–2.8s band and steps only outside it', () => {
-    const band = { minBits: 8, blockBits: 21 };
+  it('holds from the climb edge through the target and eases above it', () => {
+    const band = { minBits: 8, blockBits: 21, targetMs: SHARE_VARDIFF_TARGET_MS };
     assert.equal(nextShareBits({ current: 12, actualIntervalMs: 1_400, ...band }), 12);
+    assert.equal(nextShareBits({ current: 12, actualIntervalMs: 1_600, ...band }), 12);
     assert.equal(nextShareBits({ current: 12, actualIntervalMs: 2_000, ...band }), 12);
-    assert.equal(nextShareBits({ current: 12, actualIntervalMs: 2_800, ...band }), 12);
     assert.equal(nextShareBits({ current: 12, actualIntervalMs: 1_399, ...band }), 13);
+    assert.equal(nextShareBits({ current: 12, actualIntervalMs: 2_001, ...band }), 11);
+    assert.equal(nextShareBits({ current: 12, actualIntervalMs: 2_800, ...band }), 11);
     assert.equal(nextShareBits({ current: 12, actualIntervalMs: 3_200, ...band }), 11);
     assert.equal(nextShareBits({ current: 12, actualIntervalMs: 4_000, ...band }), 10);
+  });
+
+  it('a sample above the target eases on every full window', () => {
+    let state = { shares: 0, windowAt: 1_000, bits: 14, lastStepAt: 0, suppressClimb: false };
+    for (let i = 0; i < 9; i += 1) {
+      state = destVardiffOnShare({
+        state,
+        now: 1_000 + i * 2_500,
+        minBits: 8,
+        blockBits: 30,
+      });
+    }
+    assert.equal(state.stepped, true);
+    assert.equal(state.from, 14);
+    assert.equal(state.bits, 13);
+    assert.equal(state.move, 'ease');
+    assert.equal(state.movedBits, 1);
+    assert.equal(state.reason, 'rate_below_target');
+    assert.ok(state.intervalMs > SHARE_VARDIFF_TARGET_MS);
+    assert.ok(state.intervalMs < SHARE_VARDIFF_CLEAR_EASE_MS);
+    assert.equal(state.suppressClimb, false);
+    const start = state.windowAt;
+    for (let i = 0; i < 9; i += 1) {
+      state = destVardiffOnShare({
+        state,
+        now: start + i * 2_500,
+        minBits: 8,
+        blockBits: 30,
+      });
+    }
+    assert.equal(state.stepped, true);
+    assert.equal(state.from, 13);
+    assert.equal(state.bits, 12);
+    assert.equal(state.move, 'ease');
+    assert.equal(state.movedBits, 1);
+    assert.ok(state.intervalMs > SHARE_VARDIFF_TARGET_MS);
   });
 
   it('a fast full sample climbs one bit off the floor', () => {
@@ -244,7 +280,7 @@ describe('share vardiff', () => {
     assert.equal(state.reason, 'rate_below_target');
     assert.equal(state.move, 'ease');
     assert.equal(state.movedBits, 1);
-    assert.ok(state.intervalMs > SHARE_VARDIFF_DEADBAND_HIGH_MS);
+    assert.ok(state.intervalMs > SHARE_VARDIFF_TARGET_MS);
     assert.ok(state.intervalMs < SHARE_VARDIFF_CLEAR_EASE_MS);
   });
 
@@ -343,7 +379,7 @@ describe('share vardiff', () => {
     assert.equal(state.bits, 11);
     assert.equal(state.move, 'ease');
     assert.equal(state.movedBits, 1);
-    assert.ok(state.intervalMs > SHARE_VARDIFF_DEADBAND_HIGH_MS);
+    assert.ok(state.intervalMs > SHARE_VARDIFF_TARGET_MS);
     assert.ok(state.intervalMs < SHARE_VARDIFF_CLEAR_EASE_MS);
     assert.equal(state.suppressClimb, false);
     const climbed = closeFastWindow(state);
@@ -429,7 +465,7 @@ describe('share vardiff', () => {
     assert.equal(state.reason, 'in_band');
     assert.equal(state.shares, 0);
     assert.ok(state.intervalMs >= SHARE_VARDIFF_DEADBAND_LOW_MS);
-    assert.ok(state.intervalMs <= SHARE_VARDIFF_DEADBAND_HIGH_MS);
+    assert.ok(state.intervalMs <= SHARE_VARDIFF_TARGET_MS);
     const again = destVardiffOnShare({
       state,
       now: 21_100,
@@ -469,7 +505,7 @@ describe('share vardiff', () => {
     assert.equal(state.bits, 12);
     assert.equal(state.shares, 0);
     assert.ok(state.intervalMs >= SHARE_VARDIFF_DEADBAND_LOW_MS);
-    assert.ok(state.intervalMs <= SHARE_VARDIFF_DEADBAND_HIGH_MS);
+    assert.ok(state.intervalMs <= SHARE_VARDIFF_TARGET_MS);
   });
 
   it('same dest follows the combined share rate, not the slow worker', () => {
@@ -532,9 +568,11 @@ describe('share vardiff', () => {
     assert.match(vd, /SHARE_VARDIFF_EASE_MAX = 2/);
     assert.match(vd, /SHARE_VARDIFF_CLEAR_EASE_MS = 4_000/);
     assert.match(vd, /SHARE_VARDIFF_DEADBAND_LOW_MS = 1_400/);
-    assert.match(vd, /SHARE_VARDIFF_DEADBAND_HIGH_MS = 2_800/);
+    assert.equal(vd.includes('DEADBAND_HIGH'), false);
+    assert.match(vd, /actual > target/);
     assert.match(vd, /post_ease_hold/);
     assert.match(vd, /suppressClimb/);
+    assert.match(src, /event: 'vardiff_window'/);
     assert.match(src, /event: 'vardiff_hold'/);
     assert.match(src, /reason: 'post_ease_hold'/);
     assert.match(src, /suppressClimb: step\.suppressClimb === true/);
@@ -549,7 +587,8 @@ describe('share vardiff', () => {
     assert.match(src, /reason: step\.reason/);
     assert.match(src, /findTouched: false/);
     assert.match(src, /deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS/);
-    assert.match(src, /deadbandHighMs: SHARE_VARDIFF_DEADBAND_HIGH_MS/);
+    assert.match(src, /easeAboveMs: SHARE_VARDIFF_TARGET_MS/);
+    assert.equal(src.includes('deadbandHighMs'), false);
     assert.match(src, /function liveShareBits\(\)/);
     assert.equal(src.includes('shareBits: Number(lastJob?.shareBits'), false);
     assert.equal(/issueJob\(shareBits[,)]/.test(src), false);
