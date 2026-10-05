@@ -935,6 +935,57 @@ describe('public miner listing', () => {
     assert.doesNotMatch(dash, /Explorer: <a href="https:\/\/explorer\.shear\.digital"/);
   });
 
+  it('pool miner table accepted shares follow the open round; lifetime accepted stays on the miner page', () => {
+    const dash = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+    const miner = fs.readFileSync(new URL('../public/miner.html', import.meta.url), 'utf8');
+    assert.match(dash, /<th title="This round">Accepted shares<\/th>/);
+    assert.match(dash, /acceptedThisRoundCell\(w, roundShareState\)/);
+    assert.doesNotMatch(dash, /\(w\.accepted \|\| 0\)/);
+    assert.match(miner, /<div class="label">Accepted work<\/div>/);
+    assert.match(miner, /set\('m-accepted', String\(d\.accepted \|\| 0\)\)/);
+    const workerPaint = miner.slice(miner.indexOf('function paintWorkers'), miner.indexOf('function paint('));
+    assert.match(workerPaint, /w\.accepted/);
+    const start = dash.indexOf('function workerProven');
+    const end = dash.indexOf('function loadRoundShareState');
+    assert.ok(start > 0 && end > start);
+    const api = new Function(`${dash.slice(start, end)}
+      return { syncRoundAccepted, acceptedThisRoundCell };
+    `)();
+    const { syncRoundAccepted, acceptedThisRoundCell } = api;
+    const row = (accepted, extra) => ({ miner: 'm3a63ed50', accepted, roundHashes: 256, ...extra });
+    const fresh = { height: null, anchored: false, base: {}, seen: {}, prevProven: 0 };
+    syncRoundAccepted(fresh, { height: 10, workers: [row(1000, { roundHashes: 4096 })] });
+    assert.equal(fresh.anchored, false);
+    assert.equal(acceptedThisRoundCell(row(1000), fresh), 0);
+    assert.equal(row(1000).accepted, 1000);
+    syncRoundAccepted(fresh, { height: 10, workers: [row(1004, { roundHashes: 8192 })] });
+    assert.equal(acceptedThisRoundCell(row(1004), fresh), 4);
+    syncRoundAccepted(fresh, { height: 11, workers: [row(1004, { roundHashes: 0 })] });
+    assert.equal(fresh.anchored, true);
+    assert.equal(fresh.base.m3a63ed50, 1004);
+    assert.equal(acceptedThisRoundCell(row(1004), fresh), 0);
+    syncRoundAccepted(fresh, { height: 11, workers: [row(1007, { roundHashes: 768 })] });
+    assert.equal(acceptedThisRoundCell(row(1007), fresh), 3);
+    assert.equal(acceptedThisRoundCell({ miner: 'm3a63ed50', accepted: 1007, acceptedThisRound: 9 }, fresh), 9);
+    assert.equal(acceptedThisRoundCell({ miner: 'm3a63ed50', accepted: 1007, acceptedThisRound: 0 }, fresh), 0);
+    const restored = {
+      height: 11,
+      anchored: true,
+      base: { m3a63ed50: 1004 },
+      seen: {},
+      prevProven: 0,
+    };
+    syncRoundAccepted(restored, { height: 11, workers: [row(1010, { roundHashes: 2048 })] });
+    assert.equal(acceptedThisRoundCell(row(1010), restored), 6);
+    const open = { height: null, anchored: false, base: {}, seen: {}, prevProven: 0 };
+    syncRoundAccepted(open, { height: 4, workers: [row(50, { roundHashes: 1024 })] });
+    syncRoundAccepted(open, { height: 4, workers: [row(50, { roundHashes: 0 })] });
+    assert.equal(open.anchored, true);
+    assert.equal(open.base.m3a63ed50, 50);
+    syncRoundAccepted(open, { height: 4, workers: [row(52, { roundHashes: 512 })] });
+    assert.equal(acceptedThisRoundCell(row(52), open), 2);
+  });
+
   it('miner and version boxes list each distinct label once', () => {
     assert.equal(uniquePublicLabels(['Shear-Miner', 'Shear-Miner', 'Shear-Miner']), 'Shear-Miner');
     assert.equal(uniquePublicLabels(['0.1.7', '0.1.7']), '0.1.7');

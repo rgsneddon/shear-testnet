@@ -483,7 +483,7 @@
             <th>Hashrate</th>
             <th>Session finds</th>
             <th>Lifetime seals</th>
-            <th>Accepted shares</th>
+            <th title="This round">Accepted shares</th>
             <th>Hashes reported</th>
             <th>Stale shares</th>
             <th>CPU threads</th>
@@ -803,6 +803,98 @@
       boxPaintedAt[name] = now;
       return true;
     }
+    // Main miner table only. Lifetime `accepted` is unchanged for accounting
+    // and for the miner page "Accepted work" card. A round ends when tip
+    // height moves, or when round hashes clear while workers are still listed.
+    function workerProven(w) {
+      if (!w) return 0;
+      if (w.roundHashes != null) return Number(w.roundHashes) || 0;
+      if (w.hashes != null) return Number(w.hashes) || 0;
+      return Number(w.provenHashes) || 0;
+    }
+    function sumProven(workers) {
+      let n = 0;
+      for (let i = 0; i < workers.length; i += 1) n += workerProven(workers[i]);
+      return n;
+    }
+    function syncRoundAccepted(state, stats) {
+      if (!state) return;
+      if (!state.base) state.base = {};
+      if (!state.seen) state.seen = {};
+      const workers = (stats && stats.workers) || [];
+      const h = Number(stats && stats.height) || 0;
+      const proven = sumProven(workers);
+      const heightChanged = state.height == null || Number(state.height) !== h;
+      const cleared = !heightChanged && workers.length > 0 && state.prevProven > 0 && proven === 0;
+      if (heightChanged || cleared) {
+        const crossed = state.height != null && (Number(state.height) !== h || cleared);
+        state.height = h;
+        state.base = {};
+        state.seen = {};
+        state.anchored = !!crossed;
+        for (let i = 0; i < workers.length; i += 1) {
+          const tag = String(workers[i].miner || '');
+          if (!tag) continue;
+          const life = Number(workers[i].accepted) || 0;
+          if (state.anchored) state.base[tag] = life;
+          else state.seen[tag] = life;
+        }
+      } else if (state.anchored) {
+        for (let i = 0; i < workers.length; i += 1) {
+          const tag = String(workers[i].miner || '');
+          if (tag && state.base[tag] == null) state.base[tag] = Number(workers[i].accepted) || 0;
+        }
+      } else {
+        for (let i = 0; i < workers.length; i += 1) {
+          const tag = String(workers[i].miner || '');
+          if (tag && state.seen[tag] == null) state.seen[tag] = Number(workers[i].accepted) || 0;
+        }
+      }
+      if (workers.length) state.prevProven = proven;
+    }
+    function acceptedThisRoundCell(w, state) {
+      if (w && w.acceptedThisRound != null && w.acceptedThisRound !== '') {
+        const explicit = Number(w.acceptedThisRound);
+        return explicit > 0 ? explicit : 0;
+      }
+      const tag = String(w && w.miner || '');
+      const life = Number(w && w.accepted) || 0;
+      const base = state && state.anchored
+        ? (state.base && state.base[tag])
+        : (state && state.seen && state.seen[tag]);
+      if (base == null) return 0;
+      const d = life - Number(base);
+      return d > 0 ? d : 0;
+    }
+    function loadRoundShareState() {
+      const fresh = { height: null, anchored: false, base: {}, seen: {}, prevProven: 0 };
+      try {
+        const raw = localStorage.getItem('shear-round-accept-base');
+        if (!raw) return fresh;
+        const saved = JSON.parse(raw);
+        if (!saved || saved.anchored !== true || !saved.base || typeof saved.base !== 'object') return fresh;
+        return {
+          height: Number(saved.height),
+          anchored: true,
+          base: saved.base,
+          seen: {},
+          prevProven: 0,
+        };
+      } catch (e) {
+        return fresh;
+      }
+    }
+    function saveRoundShareState(state) {
+      if (!state || !state.anchored) return;
+      try {
+        localStorage.setItem('shear-round-accept-base', JSON.stringify({
+          height: state.height,
+          anchored: true,
+          base: state.base || {},
+        }));
+      } catch (e) { /* private mode */ }
+    }
+    const roundShareState = loadRoundShareState();
     function paint(s) {
       const now = Date.now();
       paintFreezeBanner(document.getElementById('freeze-banner'), s);
@@ -827,6 +919,8 @@
       paintAvgBlock(s);
       if (boxDue('uptime', now)) document.getElementById('uptime').textContent = fmtUptime(s.uptimeMs);
       if (boxDue('last', now)) paintLastBlock(s);
+      syncRoundAccepted(roundShareState, s);
+      saveRoundShareState(roundShareState);
       if (boxDue('miners', now)) {
         const tb = document.querySelector('#miners tbody');
         tb.innerHTML = (s.workers || []).slice().sort(function (a, b) {
@@ -843,7 +937,7 @@
           return '<tr><td><span class="miner-hover"><a href="' + href + '">' + esc(tag) + '</a>' + pop + '</span></td><td>' +
             ([w.name, w.version].filter(Boolean).join(' ') || '—') + '</td><td>' + fmtRate(w.hashrate) + '</td><td>' +
             (Number(w.blocksSession != null ? w.blocksSession : w.blocks) || 0) + '</td><td>' +
-            (Number(w.blocksLifetime) || 0) + '</td><td>' + (w.accepted || 0) + '</td><td>' +
+            (Number(w.blocksLifetime) || 0) + '</td><td>' + acceptedThisRoundCell(w, roundShareState) + '</td><td>' +
             (w.hashes != null ? w.hashes : (w.roundHashes || w.provenHashes || 0)) + '</td><td>' +
             (w.stale || 0) + '</td><td>' + (w.threads || 0) + '</td></tr>';
         }).join('');
