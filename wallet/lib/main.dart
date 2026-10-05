@@ -218,6 +218,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   int _tipWatchGen = 0;
   bool _tipBusy = false;
   bool _creditBusy = false;
+  int _tipNoteKicks = 0;
   bool _creditAgain = false;
   bool _pullBusy = false;
   Timer? _creditFollow;
@@ -302,6 +303,52 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     _requestShellPaint();
     if (sidecar.localSyncNoticeDue(caughtTip: matched)) _showLocalNodeSynced();
     if (sidecar.hasHeldBlocks) unawaited(_openSidecarProofs());
+  }
+
+  /// The header tip already moved. Read notes now, and again while the note
+  /// host is still a block behind that header. Four tries, then the hot poll.
+  Future<void> _kickNotesForTip() async {
+    final ident = id;
+    if (!mounted || !unlocked || ident == null || widget.skipPoolSync) return;
+    if (!ledger.notesBehindSealedTip && !ledger.spendableReadFailed) {
+      _tipNoteKicks = 0;
+      return;
+    }
+    if (_tipNoteKicks >= 4) return;
+    if (_creditBusy) {
+      Timer(const Duration(milliseconds: 400), () {
+        unawaited(_kickNotesForTip());
+      });
+      return;
+    }
+    _tipNoteKicks++;
+    _creditBusy = true;
+    if (mounted) setState(() => _spendSyncing = true);
+    try {
+      await _followCredits(
+        ident,
+        full: false,
+        spendableFirst: true,
+        onCoins: _onOpenedCoins,
+      );
+      _rememberLedger();
+      if (mounted) _requestShellPaint();
+    } catch (_) {
+      ledger.noteSpendableReadFailed();
+    } finally {
+      _creditBusy = false;
+      _spendableAwaiting = false;
+      if (_spendSyncing && mounted) setState(() => _spendSyncing = false);
+      if (_creditAgain && mounted && unlocked) _armCreditFollow();
+    }
+    if (!mounted || !unlocked) return;
+    if (!ledger.notesBehindSealedTip && !ledger.spendableReadFailed) {
+      _tipNoteKicks = 0;
+      return;
+    }
+    Timer(const Duration(milliseconds: 400), () {
+      unawaited(_kickNotesForTip());
+    });
   }
 
   /// About 8 Hz. Log lines, tip height, and proof walks share this paint.
@@ -997,6 +1044,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ledger.noteLiveHeight(height);
       _lastPaintSealed = ledger.sealedHeight;
       _requestShellPaint();
+      // The new fee has to join Pending in this same height step.
+      unawaited(_kickNotesForTip());
+      return;
     }
     if (_creditBusy) {
       _creditAgain = true;
@@ -1134,6 +1184,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         openCollated: ledger.openCollated,
         readFailed: ledger.spendableReadFailed,
         notesLag: ledger.notesLagSpendable,
+        notesBehindTip: ledger.notesBehindSealedTip,
       );
       var openedNotesThisTick = false;
       if (notesDueFirst && !_creditBusy) {
@@ -1183,7 +1234,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           }
         },
       );
-      if (!mounted || !unlocked || id == null || openedNotesThisTick) return;
+      // The notes pull already ran at the height it saw. A tip that moved
+      // during that read cleared the stamp, so this same tick pulls once more.
+      // A quiet tip does not start a second follow.
+      if (!mounted || !unlocked || id == null) return;
+      if (openedNotesThisTick && !tipMoved) return;
       final thin = pendingReceiveThinPoll([
         ...ledger.pendingTxs(ident.address),
         ...ledger.ownerHistory(ident.address),
@@ -1194,6 +1249,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         openCollated: ledger.openCollated,
         readFailed: ledger.spendableReadFailed,
         notesLag: ledger.notesLagSpendable,
+        notesBehindTip: ledger.notesBehindSealedTip,
       );
       final full = thinFirst
           ? false
@@ -1685,8 +1741,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         _flyGenesis = sync.flyclientGenesis;
       });
       if (sync.flyclientOk && !disagree && sync.flyclientTip > 0) {
+        final beforeTip = ledger.sealedHeight;
         if (sync.flyclientTip > ledger.sealedHeight) {
           ledger.noteLiveHeight(sync.flyclientTip);
+        }
+        if (ledger.sealedHeight > beforeTip) {
+          _tipNoteKicks = 0;
+          unawaited(_kickNotesForTip());
         }
         if (sync.flyclientTip > sidecar.seekerTip) {
           sidecar.seekerTip = sync.flyclientTip;

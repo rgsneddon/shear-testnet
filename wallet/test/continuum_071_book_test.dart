@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -8,6 +9,31 @@ import 'package:shear_wallet/shear_note.dart';
 /// Each wallet shows its own opened coins. A pool-fee row stays on the wallet
 /// that received it until the confirmation floor, and does not appear on another.
 void main() {
+  test('a header ahead of the notes host does not count as caught up', () {
+    expect(notesHostStamp(sealed: 40, hostHeight: 39), 39);
+    expect(notesHostStamp(sealed: 40, hostHeight: 40), 40);
+    expect(notesHostStamp(sealed: 40, hostHeight: 0), 40);
+    final main = File('lib/main.dart').readAsStringSync();
+    final fly = main.indexOf('Future<void> _runFlyclientSample');
+    final bar = main.indexOf('PreferredSizeWidget _topBar');
+    expect(fly, greaterThan(0));
+    expect(bar, greaterThan(fly));
+    final body = main.substring(fly, bar);
+    expect(body.contains('noteLiveHeight'), isTrue);
+    expect(body.contains('_kickNotesForTip'), isTrue);
+  });
+
+  test('fee note open stays on the credit worker and does not nest another isolate', () {
+    final src = File('lib/shear_ledger.dart').readAsStringSync();
+    final start = src.indexOf('Future<void> _scanNotesProgressive');
+    final end = src.indexOf('Future<bool> collateSpendNotes');
+    expect(start, greaterThan(0));
+    expect(end, greaterThan(start));
+    final body = src.substring(start, end);
+    expect(body.contains('Isolate.run'), isFalse);
+    expect(src.contains('Isolate.run(() => scanSealedWire'), isTrue);
+  });
+
   test('pool-fee rows stay until 9 confirmations and do not credit another wallet', () {
     final feeId = createIdentity();
     final otherId = createIdentity();
@@ -61,6 +87,101 @@ void main() {
     final after = fee.pendingTxs(feeId.address).where((t) => t.kind == 'pool-fee').map((t) => t.height).toSet();
     expect(after.contains(13), isFalse);
     expect(after.contains(14), isTrue);
+  });
+
+  test('fee pending keeps pool-fee once and another wallet is not doubled', () {
+    final feeId = createIdentity();
+    final userId = createIdentity();
+    final fee = ShearLedger()..bindIdentity(feeId);
+    final user = ShearLedger()..bindIdentity(userId);
+    final feeDest = fee.homeDest(feeId.address, paymentCode: feeId.paymentCode);
+    final userDest = user.homeDest(userId.address, paymentCode: userId.paymentCode);
+    fee.rememberDest(feeDest);
+    user.rememberDest(userDest);
+
+    fee.mergeChainTx(ShearTx(
+      id: 'blockfound:18:$feeDest',
+      from: 'coinbase',
+      to: feeDest,
+      amount: 0.01,
+      kind: 'coinbase',
+      height: 18,
+      confirmed: false,
+    ));
+    fee.rememberNote({
+      'dest': feeDest,
+      'address': feeDest,
+      'kind': 'pool-fee',
+      'amount': 0.01,
+      'height': 18,
+      'verified': true,
+    });
+    fee.settleTo(20);
+
+    final feePending = fee.pendingTxs(feeId.address).where((t) => t.height == 18).toList();
+    expect(feePending.where((t) => t.kind == 'pool-fee'), hasLength(1));
+    expect(feePending.where((t) => t.kind == 'blockfound' || t.kind == 'coinbase'), isEmpty);
+    expect(feePending.fold<double>(0, (n, t) => n + t.amount), closeTo(0.01, 1e-12));
+    final feeView = fee.shearviewTxs(feeId.address).where((t) => t.height == 18).toList();
+    expect(feeView.where((t) => t.kind == 'pool-fee'), hasLength(1));
+    expect(feeView.where((t) => t.kind == 'blockfound' || t.kind == 'coinbase'), isEmpty);
+
+    user.mergeChainTx(ShearTx(
+      id: 'recv:18:$userDest',
+      from: 'ssa1payer',
+      to: userDest,
+      amount: 1.5,
+      kind: 'receive',
+      height: 18,
+      confirmed: false,
+    ));
+    user.mergeChainTx(ShearTx(
+      id: 'recv-echo:18:$userDest',
+      from: 'ssa1payer',
+      to: userDest,
+      amount: 1.5,
+      kind: 'receive',
+      height: 18,
+      confirmed: false,
+    ));
+    user.mergeChainTx(ShearTx(
+      id: 'cb-a:18:$userDest',
+      from: 'coinbase',
+      to: userDest,
+      amount: 0.99,
+      kind: 'coinbase',
+      height: 18,
+      confirmed: false,
+    ));
+    user.mergeChainTx(ShearTx(
+      id: 'cb-b:18:$userDest',
+      from: 'coinbase',
+      to: userDest,
+      amount: 0.99,
+      kind: 'coinbase',
+      height: 18,
+      confirmed: false,
+    ));
+    user.mergeChainTx(ShearTx(
+      id: 'hash:18:$userDest',
+      from: 'hash',
+      to: userDest,
+      amount: kHashBonusShe,
+      kind: 'hash',
+      height: 18,
+      confirmed: false,
+    ));
+    user.settleTo(20);
+
+    final userPending = user.pendingTxs(userId.address).where((t) => t.height == 18).toList();
+    final receives = userPending.where((t) => t.kind == 'receive').toList();
+    expect(receives, hasLength(1));
+    expect(receives.single.amount, closeTo(1.5, 1e-12));
+    final blocks = userPending.where((t) => t.kind == 'blockfound').toList();
+    expect(blocks, hasLength(1));
+    expect(blocks.single.amount, closeTo(0.99 + kHashBonusShe, 1e-12));
+    expect(user.pendingTxs(userId.address).any((t) => t.kind == 'hash'), isFalse);
+    expect(user.pendingTxs(userId.address).any((t) => t.to == feeDest), isFalse);
   });
 
   test('a cached opening is this proof only and does not open a swapped proof', () {

@@ -2911,7 +2911,8 @@ void main() {
     );
     expect(mainSrc.contains('Resistance  η  —  Tx detail'), isTrue);
     expect(mainSrc.contains('tipMs: ledger.tipTimestampMs'), isTrue);
-    expect(mainSrc.contains('openCollatePending: !ledger.openCollated'), isTrue);
+    expect(mainSrc.contains('notesBehindTip: ledger.notesBehindSealedTip'), isTrue);
+    expect(mainSrc.contains('openCollatePending: notesDue'), isTrue);
   });
 
   test('open collate lists all pre-open pending and recent confirmed with filled ShearView rows', () async {

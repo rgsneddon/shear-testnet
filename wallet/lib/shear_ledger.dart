@@ -82,9 +82,11 @@ bool notesCollateDue({
   required bool openCollated,
   required bool readFailed,
   required bool notesLag,
+  bool notesBehindTip = false,
 }) {
   if (readFailed) return true;
   if (!openCollated) return true;
+  if (notesBehindTip) return true;
   return notesLag;
 }
 
@@ -251,6 +253,16 @@ TipGapPlan planTipGap({
     }
   }
   return TipGapPlan(lands: lands, misses: misses);
+}
+
+/// The header tip and the notes host are different reads. A header can move
+/// first and mature one fee out of Pending before the new fee is in the list.
+/// Stamp the host height when it is behind that header, so the next read
+/// still fetches the fee the header already counted.
+int notesHostStamp({required int sealed, required int hostHeight}) {
+  if (hostHeight < 1) return sealed < 1 ? 0 : sealed;
+  if (sealed < 1) return hostHeight;
+  return hostHeight < sealed ? hostHeight : sealed;
 }
 
 /// History and notes may be marked caught-up only when no immature owner
@@ -1838,8 +1850,26 @@ String shearviewSnippet(ShearTx t) {
   return t.kind;
 }
 
+/// A block row that only repeats a pool-fee already listed for this dest and
+/// height. Hash inside a real found block is not this mirror.
+bool isFeeBlockMirror(ShearTx block, Iterable<ShearTx> rows) {
+  if (!isWalletBlockKind(block.kind)) return false;
+  if ((block.hashAmount ?? 0) > 1e-12) return false;
+  if (block.amount <= 1e-12) return false;
+  final h = block.height ?? 0;
+  for (final row in rows) {
+    if (row.kind != 'pool-fee' || row.to != block.to) continue;
+    if ((row.height ?? 0) != h) continue;
+    if ((row.amount - block.amount).abs() <= 1e-9) return true;
+  }
+  return false;
+}
+
 /// Fold per-hash / pot / mine rows into one block row per dest+height.
 /// Open-round hashes (no height) are not a block yet and are omitted.
+/// Two views of one coinbase keep the larger pot. They do not add.
+/// Hash notes still sum: each one is its own bonus inside that block.
+/// A coinbase whose amount is only the pool-fee is left off the list.
 List<ShearTx> rollupExplorerTxs(Iterable<ShearTx> txs) {
   final rest = <ShearTx>[];
   final blocks = <String, ({String dest, int height, double pot, double hash, int threads})>{};
@@ -1864,11 +1894,14 @@ List<ShearTx> rollupExplorerTxs(Iterable<ShearTx> txs) {
         hash += amt;
         threads += t.threads ?? 0;
       } else if (kind == 'mine' || kind == 'blockfound' || kind == 'block') {
-        pot += amt - (t.hashAmount ?? 0);
-        hash += t.hashAmount ?? 0;
-        threads += t.threads ?? t.rounds ?? 0;
-      } else {
-        pot += amt;
+        final rowPot = amt - (t.hashAmount ?? 0);
+        if (rowPot > pot) pot = rowPot;
+        final rowHash = t.hashAmount ?? 0;
+        if (rowHash > hash) hash = rowHash;
+        final n = t.threads ?? t.rounds ?? 0;
+        if (n > threads) threads = n;
+      } else if (amt > pot) {
+        pot = amt;
       }
       blocks[key] = (dest: dest, height: height, pot: pot, hash: hash, threads: threads);
       continue;
@@ -1876,6 +1909,14 @@ List<ShearTx> rollupExplorerTxs(Iterable<ShearTx> txs) {
     rest.add(t);
   }
   for (final b in blocks.values) {
+    if (b.hash <= 1e-12 &&
+        rest.any((t) =>
+            t.kind == 'pool-fee' &&
+            t.to == b.dest &&
+            (t.height ?? 0) == b.height &&
+            (t.amount - b.pot).abs() <= 1e-9)) {
+      continue;
+    }
     rest.add(ShearTx(
       id: b.dest.isEmpty ? 'blockfound:${b.height}' : 'blockfound:${b.height}:${b.dest}',
       from: 'coinbase',
@@ -2302,6 +2343,17 @@ class ShearLedger implements ReadProofSink {
     ));
   }
 
+  /// Opened notes are the pending rows. A follow that shipped spendable
+  /// without the tx list must not leave those coins off the list.
+  void _replayOpenedNotes() {
+    for (final n in _notes) {
+      if (n['verified'] != true && n['proofChecked'] != true) continue;
+      final amt = n['amount'];
+      if (amt is! num || amt <= 0) continue;
+      _creditNoteToShearview(Map<String, dynamic>.from(n));
+    }
+  }
+
   /// Scan compacted vouts (chain persist drops r). Match noteCommit to dest20, unwrap rEph/rCt.
   /// Tests call this synchronously; the 1 Hz/full-sync path uses [Isolate.run] on [scanSealedVouts].
   void ingestSealedVouts(
@@ -2385,6 +2437,14 @@ class ShearLedger implements ReadProofSink {
     return _sealedHeight >= 1 && _notesAt[key] == _sealedHeight;
   }
 
+  /// The tip moved after the last notes pull. Pending stays empty unless
+  /// that pull runs again and credits the new pool-fee and receive rows.
+  bool get notesBehindSealedTip {
+    if (_sealedHeight < 1 || !_openCollated) return false;
+    if (_notesAt.isEmpty) return true;
+    return _notesAt.values.any((h) => h != _sealedHeight);
+  }
+
   /// Closure Apply. The same book keeps the opened-note cursor and the tip.
   /// A genesis or magic change drops the cursor so the next read starts clean.
   /// Verified coins stay until that new book replaces them.
@@ -2465,6 +2525,16 @@ class ShearLedger implements ReadProofSink {
 
   void _ensureOwnerLandRow(NodeOwnerLand land) {
     final id = 'blockfound:${land.height}:${land.dest}';
+    final candidate = ShearTx(
+      id: id,
+      from: 'coinbase',
+      to: land.dest,
+      amount: land.amount,
+      kind: land.kind == 'mine' ? 'mine' : 'blockfound',
+      height: land.height,
+      confirmed: false,
+    );
+    if (isFeeBlockMirror(candidate, _txs)) return;
     final have = _txs.any((t) =>
         t.id == id ||
         (isWalletBlockKind(t.kind) &&
@@ -2508,6 +2578,24 @@ class ShearLedger implements ReadProofSink {
   }
 
   int _bookedLandCount() => _txs.where((t) => isWalletBlockKind(t.kind)).length;
+
+  /// A pool-fee or a real receive at [height] is a landing. The 0.01 block
+  /// mirror of a pool-fee is not, so the notes pull keeps going.
+  bool _realCreditAt(int height) {
+    if (height < 1) return false;
+    for (final t in _txs) {
+      if ((t.height ?? 0) != height) continue;
+      if (t.kind == 'hash' || t.kind == 'sample') continue;
+      if (isFeeBlockMirror(t, _txs)) continue;
+      if (t.kind == 'pool-fee' ||
+          t.kind == 'receive' ||
+          t.kind == 'send' ||
+          isWalletBlockKind(t.kind)) {
+        return true;
+      }
+    }
+    return false;
+  }
   /// Failed note pulls while spendable is ahead of the sealed book.
   /// Stop the background retry after two misses at this height; Pay still forces one.
   final Map<String, int> _noteMisses = {};
@@ -2736,14 +2824,14 @@ class ShearLedger implements ReadProofSink {
     tipHeight = sealedHeight + 1;
     if (sealedHeight > _sealedHeight) _sealedHeight = sealedHeight;
     if (sealedHeight > prev) {
-      final beforeLands = _bookedLandCount();
       if (prev > 0) {
         _historyAt.clear();
         _notesAt.clear();
         _bundleOpenRounds(height: prev + 1);
       }
       creditNodeLandsInGap(before: prev, tip: sealedHeight);
-      tipAdvancedWithoutLanding = _bookedLandCount() == beforeLands;
+      // A coinbase row that only repeats the pool fee is not a landing.
+      tipAdvancedWithoutLanding = !_realCreditAt(sealedHeight);
     }
     settleTo(sealedHeight);
   }
@@ -3080,7 +3168,19 @@ class ShearLedger implements ReadProofSink {
   /// Merge a chain/history row onto a local tx (same id, or a height-less
   /// pool-withdraw to the same dest and amount). Height and kind come from
   /// the node — never invented.
+  void _dropFeeBlockMirror(ShearTx fee) {
+    if (fee.kind != 'pool-fee') return;
+    _txs.removeWhere((t) => isFeeBlockMirror(t, [fee]));
+    final h = fee.height ?? 0;
+    _immature.removeWhere((r) =>
+        r.height == h &&
+        payKey(r.dest) == payKey(fee.to) &&
+        (r.amount - fee.amount).abs() <= 1e-9);
+  }
+
   void mergeChainTx(ShearTx tx) {
+    if (tx.kind == 'pool-fee') _dropFeeBlockMirror(tx);
+    if (isFeeBlockMirror(tx, _txs)) return;
     if (tx.kind == 'hash' && tx.to.isNotEmpty) {
       final h = tx.height ?? 0;
       final she = tx.amount;
@@ -3890,22 +3990,26 @@ class ShearLedger implements ReadProofSink {
   }) async {
     keepOwnedDests(restFrame, paymentCode: paymentCode);
     var sawNotes = false;
+    var hostHeight = 0;
     if (pool != null && !isPoolLedgerHost(pool!.baseUrl)) {
       // Height before the open, so the first verified note is already mature
       // and can paint. This is one stats read, not a header walk.
       try {
         final json = await pool!.stats().timeout(const Duration(seconds: 2));
         final h = (json['height'] as num?)?.toInt() ?? 0;
+        hostHeight = h;
         if (h > _sealedHeight) noteLiveHeight(h);
         if (h > 0) settleTo(h);
       } catch (_) {}
       try {
         // The shell is already up. This open is off the UI isolate. A short
         // timeout discarded a pool-fee book that was still proving.
+        // Stamp the host height, not a header tip that already ran ahead.
         sawNotes = await collateSpendNotes(
           restFrame: restFrame,
           paymentCode: paymentCode,
           partials: partials,
+          hostHeight: hostHeight,
         );
       } catch (e) {
         _collateError = 'populate:$e';
@@ -3960,8 +4064,10 @@ class ShearLedger implements ReadProofSink {
     });
   }
 
-  /// Cache hits paint first. Misses open across cores, a chunk at a time.
-  /// Flutter tests stay on this isolate: a nested [Isolate.run] deadlocks there.
+  /// Cache hits paint first. Each miss opens on this isolate, then the coin
+  /// event is sent before the next proof. The credit worker is already off
+  /// the UI isolate. A nested [Isolate.run] from that worker never finished
+  /// on the phone, so the fee book stayed on the first handful of coins.
   Future<void> _scanNotesProgressive(Map<String, dynamic> raw, {SendPort? partials}) async {
     final vouts = List<dynamic>.from(raw['vouts'] as List? ?? const []);
     final cache = proofCacheMap(raw['openedProofs']);
@@ -3991,39 +4097,9 @@ class ShearLedger implements ReadProofSink {
     }
 
     await applySlice(hits, useCache: true);
-    const width = 8;
-    final parallel = Platform.environment['FLUTTER_TEST'] != 'true';
-    for (var i = 0; i < misses.length; i += width) {
-      final end = i + width > misses.length ? misses.length : i + width;
-      final slice = misses.sublist(i, end);
-      if (!parallel || slice.length == 1) {
-        await applySlice(slice, useCache: false);
-        continue;
-      }
-      final parts = await Future.wait([
-        for (final one in slice)
-          Isolate.run(() => scanSealedWire(<String, dynamic>{
-                ...raw,
-                'vouts': <dynamic>[one],
-                'openedProofs': const <Map<String, dynamic>>[],
-              })),
-      ]);
-      final merged = <String, dynamic>{
-        'notes': <dynamic>[
-          for (final part in parts)
-            if (part['notes'] is List) ...(part['notes'] as List),
-        ],
-        'hashFolds': <dynamic>[
-          for (final part in parts)
-            if (part['hashFolds'] is List) ...(part['hashFolds'] as List),
-        ],
-        'unopenedProofs': parts.fold<int>(0, (sum, part) {
-          final n = part['unopenedProofs'];
-          return sum + (n is num ? n.toInt() : 0);
-        }),
-      };
-      _applySealedScan(merged);
-      _emitCoins(partials, merged);
+    for (final one in misses) {
+      await applySlice(<dynamic>[one], useCache: false);
+      await Future<void>.delayed(Duration.zero);
     }
   }
 
@@ -4038,6 +4114,7 @@ class ShearLedger implements ReadProofSink {
     String? paymentCode,
     bool bindSpendable = false,
     SendPort? partials,
+    int hostHeight = 0,
   }) async {
     if (pool == null || isPoolLedgerHost(pool!.baseUrl)) return false;
     final seed = spendSeed;
@@ -4079,7 +4156,8 @@ class ShearLedger implements ReadProofSink {
         if (rows.isEmpty) continue;
         final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
         await _scanNotesProgressive(raw, partials: partials);
-        if (_stampIngest(key, count: false)) _notesAt[key] = _sealedHeight;
+        final mark = notesHostStamp(sealed: _sealedHeight, hostHeight: hostHeight);
+        if (mark > 0 && _stampIngest(key, count: false)) _notesAt[key] = mark;
       } catch (e) {
         failed = true;
         _collateError = 'collate:$e';
@@ -4385,6 +4463,22 @@ class ShearLedger implements ReadProofSink {
     };
   }
 
+  /// A later follow must not drop a pool-fee or receive that is still
+  /// inside the 9-confirmation window. A block that only repeats the fee does.
+  bool _keepImmatureFollowRow(ShearTx t) {
+    if (t.kind == 'hash' || t.kind == 'sample') return false;
+    if (isFeeBlockMirror(t, _txs)) return false;
+    final h = t.height ?? 0;
+    final liveKind = t.kind == 'pool-fee' ||
+        t.kind == 'receive' ||
+        t.kind == 'send' ||
+        t.kind == 'pool-withdraw' ||
+        isWalletBlockKind(t.kind);
+    if (!liveKind) return false;
+    if (h < 1) return !t.confirmed;
+    return confirmationsOf(h) < spendableConfirmations;
+  }
+
   void installCreditFollow(Map<String, dynamic> spec) {
     final seed = spec['seedHex']?.toString() ?? '';
     final address = spec['address']?.toString() ?? '';
@@ -4402,13 +4496,20 @@ class ShearLedger implements ReadProofSink {
       ..clear()
       ..addAll(((spec['dests'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
     if (spec.containsKey('txs')) {
+      final incoming = <ShearTx>[
+        for (final raw in (spec['txs'] as List?) ?? const <dynamic>[])
+          if (_followRevive(raw) is Map)
+            ShearTx.fromJson(Map<String, dynamic>.from(_followRevive(raw) as Map)),
+      ];
+      final incomingIds = <String>{for (final t in incoming) t.id};
+      final keep = <ShearTx>[
+        for (final t in _txs)
+          if (!incomingIds.contains(t.id) && _keepImmatureFollowRow(t)) t,
+      ];
       _txs
         ..clear()
-        ..addAll(<ShearTx>[
-          for (final raw in (spec['txs'] as List?) ?? const <dynamic>[])
-            if (_followRevive(raw) is Map)
-              ShearTx.fromJson(Map<String, dynamic>.from(_followRevive(raw) as Map)),
-        ]);
+        ..addAll(incoming)
+        ..addAll(keep);
     }
     if (spec.containsKey('notes')) {
       _notes
@@ -4708,6 +4809,14 @@ class ShearLedger implements ReadProofSink {
       reconstructed[payKey(d)] = spendable(d);
     }
     _markSettled(_sealedHeight, before);
+    var hostHeight = _sealedHeight;
+    if (pool != null && !isPoolLedgerHost(pool!.baseUrl)) {
+      try {
+        final json = await pool!.stats().timeout(const Duration(seconds: 2));
+        final h = (json['height'] as num?)?.toInt() ?? 0;
+        if (h > 0) hostHeight = h;
+      } catch (_) {}
+    }
     final histSeen = <String>{};
     for (final d in dests) {
       final key = payKey(d);
@@ -4729,7 +4838,8 @@ class ShearLedger implements ReadProofSink {
               final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
               await _scanNotesProgressive(raw, partials: partials);
             }
-            if (_stampIngest(key, count: false)) _notesAt[key] = _sealedHeight;
+            final mark = notesHostStamp(sealed: _sealedHeight, hostHeight: hostHeight);
+            if (mark > 0 && _stampIngest(key, count: false)) _notesAt[key] = mark;
             if (_ownsSealedOn(key)) {
               _noteMisses.remove(key);
             } else if (spendable(key) > 1e-12) {
@@ -5351,7 +5461,9 @@ class ShearLedger implements ReadProofSink {
   /// from 1 conf — never explorerRowPublic blanks. Hash sits inside the block row.
   /// Height-less pending owner rows belong here too (open collate + live append).
   List<ShearTx> shearviewTxs(String address) {
-    final rows = _ownedRolled(address).where((t) {
+    _replayOpenedNotes();
+    final rolled = _ownedRolled(address);
+    final rows = rolled.where((t) {
       if (t.kind == 'hash' || t.kind == 'sample') return false;
       if (t.to.isEmpty && t.from.isEmpty) return false;
       if (t.amount <= 0 &&
@@ -5369,11 +5481,13 @@ class ShearLedger implements ReadProofSink {
         return !t.confirmed &&
             (t.kind == 'receive' ||
                 t.kind == 'send' ||
+                t.kind == 'pool-fee' ||
                 t.kind == 'pool-withdraw' ||
                 isOwnerLanding(t));
       }
       final confs = confirmationsOf(h);
-      if (isWalletBlockKind(t.kind)) return true;
+      if (t.kind == 'pool-fee') return true;
+      if (isWalletBlockKind(t.kind)) return !isFeeBlockMirror(t, rolled);
       if (isOwnerLanding(t)) return confs >= 1;
       return confs >= continuumConfirmations;
     }).toList();
@@ -5384,12 +5498,14 @@ class ShearLedger implements ReadProofSink {
   /// Coins still arriving: incoming rows with fewer than 9 confirmations.
   /// Not added into Spendable. A row already counted as immature is not summed twice.
   double unconfirmedIncomingShe(String restFrame, {String? paymentCode}) {
+    _replayOpenedNotes();
     _collapseDuplicateReceipts();
     final keys = ownedAddresses(restFrame, paymentCode: paymentCode).toSet();
-    const incoming = {'receive', 'coinbase', 'blockfound', 'pool-withdraw', 'withdraw'};
+    const incoming = {'receive', 'coinbase', 'blockfound', 'pool-withdraw', 'withdraw', 'pool-fee'};
     var n = 0.0;
     final covered = <String>{};
     for (final t in _txs) {
+      if (isFeeBlockMirror(t, _txs)) continue;
       if (!incoming.contains(t.kind) || t.amount <= 1e-12) continue;
       final dest = payKey(t.to);
       if (!keys.contains(t.to) && !keys.contains(dest)) continue;
@@ -5446,8 +5562,10 @@ class ShearLedger implements ReadProofSink {
   /// Continuum: full blocks still filling the 6-slice pie, plus in-flight
   /// send/receive/pool-withdraw. Hash rewards never list on their own — they sit in the block.
   List<ShearTx> pendingTxs(String address) {
+    _replayOpenedNotes();
     _collapseDuplicateReceipts();
-    final rows = _ownedRolled(address).where((t) {
+    final rolled = _ownedRolled(address);
+    final rows = rolled.where((t) {
       if (t.kind == 'hash' || t.kind == 'sample') return false;
       if (!t.confirmed && t.kind == 'pool-withdraw') {
         final h = t.height ?? 0;
@@ -5459,9 +5577,12 @@ class ShearLedger implements ReadProofSink {
       if (h < 1) {
         // Rollup paints block rows confirmed. The book row is still unconfirmed
         // until a height is stamped and the maturity floor is met.
-        if (t.kind == 'blockfound' || t.kind == 'coinbase' || t.kind == 'mine') return true;
-        return t.kind == 'receive' && !t.confirmed;
+        if (t.kind == 'blockfound' || t.kind == 'coinbase' || t.kind == 'mine') {
+          return !isFeeBlockMirror(t, rolled);
+        }
+        return !t.confirmed && (t.kind == 'receive' || t.kind == 'pool-fee');
       }
+      if (isFeeBlockMirror(t, rolled)) return false;
       return confirmationsOf(h) < continuumConfirmations;
     }).toList();
     rows.sort((a, b) => (b.height ?? 0).compareTo(a.height ?? 0));
