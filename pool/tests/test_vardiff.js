@@ -15,9 +15,12 @@ import {
   clampShareBits,
   expectedOneThreadHs,
   hashesProvenByShare,
+  destVardiffOnShare,
+  hashesCreditedForShare,
   nextShareBits,
   shouldRetargetShare,
   SHARE_VARDIFF_TARGET_MS,
+  SHARE_VARDIFF_RETARGET_MS,
   SHARE_VARDIFF_RETARGET_SHARES,
   SHARE_BITS_V2_START,
   mintShareMinBits,
@@ -95,16 +98,32 @@ describe('share vardiff', () => {
     assert.equal(clampShareBits(300), 256);
   });
 
-  it('raises share bits when shares arrive faster than the session target', () => {
+  it('raises share bits by one when shares arrive faster than the target', () => {
     const next = nextShareBits({
       current: 8,
       actualIntervalMs: 1,
       targetMs: SHARE_VARDIFF_TARGET_MS,
       blockBits: 21,
     });
-    assert.ok(next > 8, `expected climb from 8, got ${next}`);
-    assert.equal(next, 10, `farm climb is +2 from 8, got ${next}`);
+    assert.equal(next, 9, `climb is +1 from 8, got ${next}`);
     assert.ok(next <= 21);
+  });
+
+  it('eases by one and does not pass the mint floor', () => {
+    assert.equal(nextShareBits({
+      current: 12,
+      actualIntervalMs: 100_000,
+      targetMs: SHARE_VARDIFF_TARGET_MS,
+      blockBits: 21,
+      minBits: 8,
+    }), 11);
+    assert.equal(nextShareBits({
+      current: 8,
+      actualIntervalMs: 100_000,
+      targetMs: SHARE_VARDIFF_TARGET_MS,
+      blockBits: 21,
+      minBits: 8,
+    }), 8);
   });
 
   it('does not let share bits fight header bits', () => {
@@ -116,17 +135,112 @@ describe('share vardiff', () => {
     assert.equal(next, 16);
   });
 
-  it('retargets after N shares or T milliseconds', () => {
-    assert.equal(shouldRetargetShare({ shares: SHARE_VARDIFF_RETARGET_SHARES, elapsedMs: 100 }), true);
-    assert.equal(shouldRetargetShare({ shares: 1, elapsedMs: 20_000 }), true);
+  it('retargets only after a full share sample and the minimum window', () => {
+    assert.equal(shouldRetargetShare({
+      shares: SHARE_VARDIFF_RETARGET_SHARES,
+      elapsedMs: SHARE_VARDIFF_RETARGET_MS,
+    }), true);
+    assert.equal(shouldRetargetShare({
+      shares: SHARE_VARDIFF_RETARGET_SHARES,
+      elapsedMs: 100,
+    }), false);
+    assert.equal(shouldRetargetShare({ shares: 1, elapsedMs: 20_000 }), false);
     assert.equal(shouldRetargetShare({ shares: 1, elapsedMs: 100 }), false);
+  });
+
+  it('a fast full sample climbs one bit off the floor', () => {
+    let state = { shares: 0, windowAt: 1_000, bits: 8, lastStepAt: 0 };
+    let stepped = null;
+    for (let t = 1_000; t <= 1_000 + SHARE_VARDIFF_RETARGET_MS; t += 100) {
+      state = destVardiffOnShare({
+        state,
+        now: t,
+        minBits: 8,
+        blockBits: 30,
+      });
+      if (state.stepped) {
+        stepped = state;
+        break;
+      }
+    }
+    assert.ok(stepped, 'sustained fast shares must leave the floor');
+    assert.equal(stepped.from, 8);
+    assert.equal(stepped.bits, 9);
+    assert.ok(stepped.sampleShares >= SHARE_VARDIFF_RETARGET_SHARES);
+  });
+
+  it('one slow share does not ease, and a matched window holds', () => {
+    const thin = destVardiffOnShare({
+      state: { shares: 0, windowAt: 1_000, bits: 12, lastStepAt: 0 },
+      now: 31_000,
+      minBits: 8,
+      blockBits: 30,
+    });
+    assert.equal(thin.stepped, false);
+    assert.equal(thin.bits, 12);
+    assert.equal(thin.shares, 1);
+    let state = { shares: 0, windowAt: 1_000, bits: 10, lastStepAt: 0 };
+    for (const t of [1_000, 3_667, 6_334, 9_000]) {
+      state = destVardiffOnShare({
+        state,
+        now: t,
+        minBits: 8,
+        blockBits: 30,
+      });
+    }
+    assert.equal(state.stepped, false);
+    assert.equal(state.bits, 10);
+    assert.equal(state.shares, 0);
+    const again = destVardiffOnShare({
+      state,
+      now: 9_100,
+      minBits: 8,
+      blockBits: 30,
+    });
+    assert.equal(again.stepped, false);
+    assert.equal(again.shares, 1);
+  });
+
+  it('same dest follows the combined share rate, not the slow worker', () => {
+    const slowOnly = nextShareBits({
+      current: 10,
+      actualIntervalMs: 8_000,
+      targetMs: SHARE_VARDIFF_TARGET_MS,
+      minBits: 8,
+      blockBits: 21,
+    });
+    assert.equal(slowOnly, 9);
+    let state = { shares: 0, windowAt: 1_000, bits: 10, lastStepAt: 0 };
+    for (const t of [1_000, 3_000, 5_000, 9_000]) {
+      state = destVardiffOnShare({
+        state,
+        now: t,
+        minBits: 8,
+        blockBits: 21,
+      });
+    }
+    assert.equal(state.stepped, false);
+    assert.equal(state.bits, 10);
+  });
+
+  it('a vardiff target does not pay by itself', () => {
+    const credited = hashesCreditedForShare({ shareBits: 12, creditedShareBits: 8 });
+    assert.equal(credited, hashesProvenByShare(8));
+    assert.notEqual(credited, hashesProvenByShare(12));
   });
 
   it('createPool login job uses v2 opening share bits; accept path retargets from actual interval', async () => {
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
-    assert.match(src, /shouldRetargetShare/);
-    assert.match(src, /nextShareBits/);
-    assert.match(src, /conn\.shareBits = next/);
+    const vd = fs.readFileSync(new URL('../src/share_vardiff.js', import.meta.url), 'utf8');
+    assert.match(vd, /shouldRetargetShare/);
+    assert.match(vd, /nextShareBits/);
+    assert.match(vd, /destVardiffOnShare/);
+    assert.equal(vd.includes('lastFoundAt'), false);
+    assert.equal(vd.includes('findAt'), false);
+    assert.match(src, /destVardiffOnShare/);
+    assert.match(src, /event: 'vardiff_step'/);
+    assert.match(src, /c\.shareBits = next/);
+    assert.equal(src.includes('shouldRetargetShare({ shares: conn.varShares'), false);
     assert.equal(src.includes('const retargeted = issueJob(next)'), false);
     assert.match(src, /wireJob\(live, next\)/);
     assert.match(src, /shareBits: conn\?\.shareBits/);
@@ -188,10 +302,14 @@ describe('share vardiff', () => {
     const dest = 'ssa1qsj3qt0mcuznqv6r5370d58tw32gz3yhjychuu0sljyw5zmw9pmwc47d9vnwagjafs3ywjz7udh7suc7e3qsshw25ze';
     const header = Buffer.alloc(128, 0);
     header[0] = 1;
+    // A zero bits field is an always-true block target, so every hash would
+    // be accepted as a block. Pin a real target above the share rung.
+    header.writeUInt32LE(32, 108);
     let hit = null;
     for (let n = 1; n < 400_000; n += 1) {
       const h = setNonce(header, n);
       const rx = shearHash(h);
+      if (meetsTarget(rx, 32)) continue;
       const bound = destBoundShareHash(rx, noteCommitOfShare({ dest }));
       if (!meetsTarget(bound, SHARE_FLOOR_BITS)) continue;
       if (meetsTarget(bound, 12)) continue;

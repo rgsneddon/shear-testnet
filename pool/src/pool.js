@@ -69,10 +69,13 @@ import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 import {
   clampShareBits,
+  destVardiffOnShare,
   hashesProvenByShare,
-  nextShareBits,
-  shouldRetargetShare,
   SHARE_BITS_V2_START,
+  SHARE_VARDIFF_CLIMB_MAX,
+  SHARE_VARDIFF_RETARGET_MS,
+  SHARE_VARDIFF_RETARGET_SHARES,
+  SHARE_VARDIFF_TARGET_MS,
   mintShareMinBits,
 } from './share_vardiff.js';
 
@@ -1461,6 +1464,30 @@ export function createPool({
   const pullBook = createPullBook(dataDir);
   const miners = new Map();
   const destShareBits = loadDestShareBitsMap(dataDir);
+  const destVarWindows = new Map();
+  console.log(JSON.stringify({
+    event: 'vardiff_arm',
+    targetMs: SHARE_VARDIFF_TARGET_MS,
+    minShares: SHARE_VARDIFF_RETARGET_SHARES,
+    minWindowMs: SHARE_VARDIFF_RETARGET_MS,
+    stepBits: SHARE_VARDIFF_CLIMB_MAX,
+    floorBits: SHARE_FLOOR_BITS,
+  }));
+  function pushDestShareBits(destKey, next) {
+    rememberDestShareBits(destShareBits, destKey, next);
+    persistDestShareBitsMap(dataDir, destShareBits);
+    for (const m of miners.values()) {
+      if (destShareBitsKey(m.login || m.payoutDest) !== destKey) continue;
+      for (const c of m.connections || []) {
+        if (!c || c.shearFeeRoute) continue;
+        c.shareBits = next;
+        const live = lastJob || c.job;
+        if (!live || !c.sock) continue;
+        c.job = live;
+        try { c.sock.write(line({ method: 'job', params: wireJob(live, next) })); } catch { /* ignore */ }
+      }
+    }
+  }
   const ipSubmitAt = new Map();
   let p2pNet = p2p;
   let hashWorker = null;
@@ -2570,30 +2597,45 @@ export function createPool({
       }));
     } catch { /* ignore */ }
     if (!paused && !nextJob && !closedRound && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login) && Number(scored.creditedShareBits) > 0) {
-      conn.varShares = (Number(conn.varShares) || 0) + 1;
-      const now = Date.now();
-      const elapsed = now - (Number(conn.varWindowAt) || now);
-      if (shouldRetargetShare({ shares: conn.varShares, elapsedMs: elapsed })) {
-        const n = Math.max(1, Number(conn.varShares) || 1);
-        const next = nextShareBits({
-          current: conn.shareBits,
-          actualIntervalMs: elapsed / n,
+      const destKey = destShareBitsKey(session?.login || session?.payoutDest);
+      if (destKey) {
+        const now = Date.now();
+        const curBits = clampShareBits(
+          destVarWindows.get(destKey)?.bits ?? destShareBitsOf(destShareBits, destKey, conn.shareBits),
+          { blockBits: blockBitsNow(), minBits: liveShareMin() },
+        );
+        const prev = destVarWindows.get(destKey) || {
+          shares: 0,
+          windowAt: now,
+          bits: curBits,
+          lastStepAt: 0,
+        };
+        const step = destVardiffOnShare({
+          state: { ...prev, bits: curBits },
+          now,
           blockBits: blockBitsNow(),
           minBits: liveShareMin(),
         });
-        conn.varShares = 0;
-        conn.varWindowAt = now;
-        if (next !== conn.shareBits) {
-          /* Per-TCP-session vardiff. Never rewrite lastJob.shareBits — that
-           * made a 22-thread farm's 12-bit target reject 1-thread AFK dest-bound 8 as low_diff. */
-          conn.shareBits = next;
-          rememberDestShareBits(destShareBits, session?.login || session?.payoutDest, next);
-          persistDestShareBitsMap(dataDir, destShareBits);
-          const live = lastJob || conn.job;
-          if (live) {
-            conn.job = live;
-            try { sock.write(line({ method: 'job', params: wireJob(live, next) })); } catch { /* ignore */ }
-          }
+        destVarWindows.set(destKey, {
+          shares: step.shares,
+          windowAt: step.windowAt,
+          bits: step.bits,
+          lastStepAt: step.lastStepAt || 0,
+        });
+        if (step.stepped) {
+          /* Dest aggregate. Never rewrite lastJob.shareBits — a farm target
+           * on the shared job rejected 1-thread dest-bound shares as low_diff. */
+          console.log(JSON.stringify({
+            event: 'vardiff_step',
+            destTail: String(destKey).slice(-4),
+            from: step.from,
+            to: step.bits,
+            shares: step.sampleShares,
+            elapsedMs: Math.round(Number(step.elapsedMs) || 0),
+            intervalMs: Math.round(Number(step.intervalMs) || 0),
+            targetMs: SHARE_VARDIFF_TARGET_MS,
+          }));
+          pushDestShareBits(destKey, step.bits);
         }
       }
     }
