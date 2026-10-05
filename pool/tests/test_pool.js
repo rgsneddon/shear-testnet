@@ -541,10 +541,9 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /function shortDest/);
     assert.match(html, /slice\(0, 9\)/);
     assert.equal(/Honesty|honesty|inflate/.test(html), false);
-    assert.match(html, />NODES ONLINE</);
-    assert.match(html, /Average block time \(sealed, all blocks\)/);
+    assert.match(html, /<div class="label">blockBits<\/div>/);
+    assert.match(html, /<div class="label">shareBits<\/div>/);
     assert.match(html, /networkAvgBlockTimeMs/);
-    assert.match(html, /shareBits is not a retarget/);
     assert.equal(html.includes('Blocks this uptime'), false);
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     assert.equal(stats.nodesOnline, 1);
@@ -891,17 +890,15 @@ describe('public miner listing', () => {
     assert.ok(grid, 'stat-grid');
     const labels = [...grid[0].matchAll(/class="label">([^<]+)</g)].map((m) => m[1]);
     assert.deepEqual(labels, [
-      'Coin', 'Algo', 'Network', 'Proof', 'NODES ONLINE', 'Height',
-      'Pool hashrate', 'Resistance', 'Miners', 'Workers', 'Consensus blockBits', 'shareBits (vardiff)',
-      'Average block time (sealed, all blocks)', 'Uptime', 'Last Block (pool)',
+      'Coin', 'Algo', 'Network', 'Proof', 'Height',
+      'Pool hashrate', 'Resistance', 'Miners', 'Workers', 'blockBits', 'shareBits',
+      'Uptime', 'Last Block (pool)',
     ]);
-    assert.match(dash, /Average block time \(sealed, all blocks\)/);
     assert.match(dash, /networkAvgBlockTimeMs/);
     assert.match(dash, /Number\.isFinite\(net\) && net > 0\) \? net : \(s && s\.avgBlockTimeMs\)/);
     assert.doesNotMatch(dash, /chainAvgMs/);
     assert.match(dash, /id="block-bits"/);
     assert.match(dash, /id="share-bits"/);
-    assert.match(dash, /shareBits is not a retarget/);
     assert.match(dash, /Pool fee is 1% of the 1 SHE pot/);
     assert.match(dash, /Hash bonuses pay in full/);
     assert.doesNotMatch(dash, /0\.1 SHE pot/);

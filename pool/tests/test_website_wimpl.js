@@ -123,15 +123,18 @@ describe('website W-IMPL binds', () => {
     assert.doesNotMatch(explorer, /Math\.min\(\s*avg/);
   });
 
-  it('pool avg card prefers sealed networkAvgBlockTimeMs, not EWMA paint', () => {
-    assert.match(pool, /Average block time \(sealed, all blocks\)/);
+  it('pool info boxes are blockBits and shareBits; sealed mean stays in paintAvgBlock', () => {
+    assert.match(pool, /<div class="label">blockBits<\/div>/);
+    assert.match(pool, /<div class="label">shareBits<\/div>/);
     assert.match(pool, /networkAvgBlockTimeMs/);
     assert.match(pool, /Number\.isFinite\(net\) && net > 0\) \? net : \(s && s\.avgBlockTimeMs\)/);
     assert.doesNotMatch(pool, /chainAvgMs/);
     assert.doesNotMatch(pool, /\(chainAvgMs != null\) \? chainAvgMs : \(s && s\.avgBlockTimeMs\)/);
     assert.match(pool, /id="block-bits"/);
     assert.match(pool, /id="share-bits"/);
-    assert.match(pool, /shareBits is not a retarget/);
+    const grid = pool.match(/id="stat-grid"[\s\S]*?id="updated"/);
+    assert.ok(grid);
+    assert.equal(grid[0].includes('Average block time'), false);
   });
 
   it('tip page observed card shows soaking n and refuses ~90s certified below 288', () => {
@@ -294,7 +297,7 @@ describe('website W-IMPL binds', () => {
     assert.match(ops, /last resort/);
     assert.match(pool, /id="block-bits"/);
     assert.match(pool, /id="share-bits"/);
-    assert.match(pool, /shareBits is not a retarget/);
+    assert.match(pool, /<div class="label">blockBits<\/div>/);
     assert.match(explorer, /id="ex-avg-block"/);
     assert.match(explorer, /networkAvgBlockTimeMs/);
     assert.match(ops, /shareBits`\) is not a retarget/);
