@@ -4028,8 +4028,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         if (keepJoined && p.nanos >= kPiSheNanos) p.joined = true;
         if (!ledger.blankFork) {
           ledger.vaultLockedNanos = reserve.totalLockedNanos;
+          ledger.setReserveHeldNanos(dest, reserve.portal(dest).nanos);
         } else {
           ledger.vaultLockedNanos = 0;
+          ledger.setReserveHeldNanos(dest, 0);
         }
         ledger.extraMintedNanos = reserve.mintBankNanos;
       }

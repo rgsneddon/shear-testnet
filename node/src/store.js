@@ -31,7 +31,7 @@ import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { hash20FromAddress } from '../../crypto/address.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, verifyReservePayout } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, verifyReservePayout, portalPrincipalNanos } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -436,7 +436,18 @@ export function createStore(dir, {
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
       coinbaseOnly: true,
     });
-    return reconcileSpendable(owned, addr, tipH, noteNanos);
+    const gross = reconcileSpendable(owned, addr, tipH, noteNanos);
+    const locked = portalPrincipalNanos(reserveVault, addr);
+    // A sealed lock row that still carries from+nanos is already inside gross.
+    // Public explorer rows hide both, so only the vault principal remains.
+    let already = 0;
+    for (const r of owned || []) {
+      if (String(r?.kind || '') !== 'lock') continue;
+      if (String(r?.from || '') !== String(addr || '')) continue;
+      already += Math.max(0, Math.floor(Number(r.nanos) || 0));
+    }
+    const extra = locked > already ? locked - already : 0;
+    return gross > extra ? gross - extra : 0;
   }
 
   const vortice = createVorticeCatalog(dir);

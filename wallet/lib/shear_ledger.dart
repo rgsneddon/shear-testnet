@@ -2113,6 +2113,7 @@ class ShearLedger implements ReadProofSink {
   final Map<String, double> _advisorySpendable = {};
   /// Accepted Reserve locks still sitting in the verified note sum.
   final Map<String, double> _lockDebitShe = {};
+  final Map<String, double> _reserveHeldShe = {};
   /// Owned sealed notes (commit, noteCommit, r, prev, index, admit x). Reserve vault excepted.
   final List<Map<String, dynamic>> _notes = [];
   /// Opened proofs for this wallet only, keyed by commit|R|z. Not a fee credit.
@@ -4026,32 +4027,111 @@ class ShearLedger implements ReadProofSink {
   /// send can use, so it does not raise the map or the figure on screen.
   double usableSpendable(String address) => _shownSpendable(address);
 
-  double _shownSpendable(String key) {
+  /// Confirmed Reserve principal is not Continuum spendable. A pending lock
+  /// debit and that principal are the same hold, so the larger one applies.
+  void setReserveHeldNanos(String dest, int nanos) {
+    final pk = payKey(dest);
+    if (!isDestAddress(pk)) return;
+    final she = nanos <= 0 ? 0.0 : nanos / kUnitsPerShe;
+    _reserveHeldShe[pk] = she;
+  }
+
+  double _grossShown(String key) {
     final cap = _verifiedConfirmedShe(key);
     final pk = payKey(key);
-    final debit = _lockDebitShe[pk] ?? 0;
-    double afterDebit(double she) {
-      final left = she - debit;
-      return left <= 1e-12 ? 0 : left;
-    }
     if (cap != null) {
       _unverifiedExternal.remove(pk);
       _externalShe.remove(pk);
       if ((spendable(pk) - cap).abs() > 1e-12) _spendable[pk] = cap;
-      return afterDebit(cap);
+      return cap;
     }
-    // The lock already took needShe out of this book. Debit is only for a
-    // gross figure: the opened-note cap above, or settled lands shown instead
-    // of a larger pool number.
+    // Settled history is not a second coin. A larger pool figure does not raise this.
     final rest = _bookMinusUnverified(pk, spendable(key));
     final settled = _settledNodeShe[pk] ?? 0;
     if (settled <= 1e-12 || rest + 1e-12 >= settled) return rest;
     final book = spendable(key);
     final external = _externalShe[pk];
     if (external != null && book + 1e-12 >= settled && external + 1e-12 >= book) {
-      return afterDebit(settled);
+      return settled;
     }
     return rest;
+  }
+
+  /// One reserve principal for the whole wallet. The vault dest is not where the
+  /// fee notes sit, so the hold is not stored under that dest's spendable.
+  double _reserveHoldShe() {
+    var n = 0.0;
+    for (final v in _reserveHeldShe.values) {
+      if (v > n) n = v;
+    }
+    return n;
+  }
+
+  Map<String, double> _spendableAfterHold() {
+    final keys = <String>{
+      ..._spendable.keys,
+      ..._lockDebitShe.keys,
+      ..._proofCheckedDests,
+    };
+    final gross = <String, double>{};
+    for (final k in keys) {
+      if (!isDestAddress(k) || _isProgramVaultDest(k)) continue;
+      gross[k] = _grossShown(k);
+    }
+    var pendingSum = 0.0;
+    final pending = <String, double>{};
+    for (final k in gross.keys) {
+      final d = _lockDebitShe[k] ?? 0;
+      if (d > 0) {
+        pending[k] = d;
+        pendingSum += d;
+      }
+    }
+    final extra = _reserveHoldShe() > pendingSum ? _reserveHoldShe() - pendingSum : 0.0;
+    final left = <String, double>{};
+    for (final e in gross.entries) {
+      final remain = e.value - (pending[e.key] ?? 0);
+      left[e.key] = remain <= 1e-12 ? 0 : remain;
+    }
+    var owe = extra;
+    if (owe > 1e-12) {
+      final order = left.keys.toList()
+        ..sort((a, b) {
+          final cmp = (left[b] ?? 0).compareTo(left[a] ?? 0);
+          if (cmp != 0) return cmp;
+          return a.compareTo(b);
+        });
+      for (final k in order) {
+        if (owe <= 1e-12) break;
+        final have = left[k] ?? 0;
+        if (have <= 1e-12) continue;
+        final take = have < owe ? have : owe;
+        final remain = have - take;
+        left[k] = remain <= 1e-12 ? 0 : remain;
+        owe -= take;
+      }
+    }
+    return left;
+  }
+
+  double _shownSpendable(String key) {
+    final pk = payKey(key);
+    if (_reserveHoldShe() <= 1e-12 && _lockDebitShe.isEmpty) return _grossShown(pk);
+    final shares = _spendableAfterHold();
+    if (shares.containsKey(pk)) return shares[pk]!;
+    return _grossShown(pk);
+  }
+
+  /// Notes minus a vault lock. The pending debit and the confirmed principal
+  /// are one hold: a fresh lock and the portal sync must not subtract twice.
+  double spendableAfterVaultHold({
+    required double notesShe,
+    required double pendingDebitShe,
+    required double vaultShe,
+  }) {
+    final cut = pendingDebitShe > vaultShe ? pendingDebitShe : vaultShe;
+    final left = notesShe - (cut > 0 ? cut : 0);
+    return left <= 1e-12 ? 0 : left;
   }
 
   void _noteLockDebit(String src, double needShe) {

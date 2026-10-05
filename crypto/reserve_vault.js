@@ -254,6 +254,31 @@ export function publicVaultView(state, nowMs) {
   };
 }
 
+function portalStakeNanos(p) {
+  return asBig(p?.staked) + asBig(p?.idle);
+}
+
+/** Confirmed lock principal this dest cannot spend.
+ *  Own portal, plus any portal whose payout is this dest.
+ *  Does not create an empty portal. */
+export function portalPrincipalNanos(state, dest) {
+  if (!state || !state.portals) return 0;
+  const id = portalKey(dest);
+  if (!id) return 0;
+  const want = String(dest || '');
+  let n = 0n;
+  const seen = new Set();
+  for (const [pid, p] of Object.entries(state.portals)) {
+    if (!p || seen.has(pid)) continue;
+    const payId = p.payoutPortalId ? String(p.payoutPortalId).toLowerCase() : '';
+    const payDest = p.payout ? String(p.payout) : '';
+    if (pid !== id && payId !== id && payDest !== want) continue;
+    seen.add(pid);
+    n += portalStakeNanos(p);
+  }
+  return asNum(n);
+}
+
 function portalOf(state, destOrId) {
   const id = portalKey(destOrId);
   if (!id) {
