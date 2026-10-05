@@ -99,7 +99,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Node</th><td><a href="https://shear.digital/node/">shear.digital/node</a> — Shear Sentinel v18. Unzip and run, or build from source. It syncs height 1, 2, 3, … and serves notes for one dest at a time on <code>127.0.0.1:18332</code>. A new block is advised on <code>/events</code>.</td></tr>' +
       '<tr><th>Get started</th><td><a href="https://shear.digital/get-started.html">get-started</a> — password, Connect bare or local node, <code>shewall.bin</code>, then mine.</td></tr>' +
       '<tr><th>Pool</th><td><a href="https://pool.shear.digital/">pool.shear.digital</a> — public <code>stratum+ssl://pool.shear.digital:443</code>. Login is Copy dest. Coins are sealed on the book; the wallet reads them from a node. The pool HUD is not spendable.</td></tr>' +
-      '<tr><th>Explorer</th><td><a href="https://explorer.shear.digital/">explorer.shear.digital</a> — every sealed block, newest first. Height, time, status, type. No dest, no amount.</td></tr>' +
+      '<tr><th>Explorer</th><td><a href="https://explorer.shear.digital/">explorer.shear.digital</a> — blocks this pool found, highest height first. Height, found-in, status, type. Found in is wall-clock time between pool discoveries, not a header gap. No dest, no amount.</td></tr>' +
       '<tr><th>Mempool</th><td><a href="https://mempool.shear.digital/">mempool.shear.digital</a> — one lattice for the whole network. Gold hoop is pending Flow sends. Cyan hoop is miners. Purple rings are confirming blocks. The last ring is 9 confirmations. Full screen is the lattice alone.</td></tr>' +
       '<tr><th>DINS-DAG</th><td><a href="https://shear.digital/docs/#/dins-dag">DINS-DAG</a> — blue set for the open round, sorted by identity. The mint is the spine pot plus the hash nanos, once. The live round is the DAG host linked from the navbar.</td></tr>' +
       '<tr><th>Miner</th><td><a href="https://shear.digital/miner/">shear.digital/miner</a> — ShearK 2.8. Separate from Continuum. Run <code>--selftest</code> once, then point it at the pool or at <code>127.0.0.1:1111</code> after your node reports <code>ibd=false</code>.</td></tr>' +
@@ -466,7 +466,7 @@ window.SHEAR_DOCS = {
     title: 'Explorer',
     crumb: 'network / explorer',
     html:
-      '<p><a href="https://explorer.shear.digital">explorer.shear.digital</a> paints confirmed blocks — height, time, status, kind. No amount column, no from-dest column. Last block is age of the tip. AVG BLOCK TIME is the mean interval of every sealed header since genesis. Search is by height or id. The Resistance CLI on that page is public fields only (header, kind, proofs).</p>'
+      '<p><a href="https://explorer.shear.digital">explorer.shear.digital</a> paints blocks this pool found — highest height first. Found in is the wall-clock time since the previous block this pool discovered, not a header-timestamp gap. No amount column, no from-dest column. Last block is age of the tip. AVG BLOCK TIME is the mean interval of every sealed header since genesis. Search is by height or id. The Resistance CLI on that page is public fields only (header, kind, proofs).</p>'
   };
 
   P.mempool = {

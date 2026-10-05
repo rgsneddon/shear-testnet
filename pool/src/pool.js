@@ -1694,6 +1694,7 @@ export function createPool({
     started: Date.now(),
     lastFoundAt: 0,
     findAt: [],
+    foundAtByHeight: {},
     accepted: 0,
     stale: 0,
     blocks: 0,
@@ -1705,6 +1706,20 @@ export function createPool({
     algo: ALGO,
     stratum: `${stratumBindHost(stratumBind)}:${stratumPort}`,
   };
+  function rememberPoolFind(height) {
+    stats.lastFoundAt = Date.now();
+    stats.findAt = Array.isArray(stats.findAt) ? stats.findAt : [];
+    stats.findAt.push(stats.lastFoundAt);
+    if (stats.findAt.length > 256) stats.findAt = stats.findAt.slice(-256);
+    if (!stats.foundAtByHeight || typeof stats.foundAtByHeight !== 'object') stats.foundAtByHeight = {};
+    const h = Math.floor(Number(height) || 0);
+    if (h >= 1) stats.foundAtByHeight[String(h)] = stats.lastFoundAt;
+    const keys = Object.keys(stats.foundAtByHeight);
+    if (keys.length > 256) {
+      keys.sort((a, b) => Number(a) - Number(b));
+      for (let i = 0; i < keys.length - 256; i += 1) delete stats.foundAtByHeight[keys[i]];
+    }
+  }
   const pendingPulls = new Map();
   const idleMs = Number.isFinite(Number(noValidShareMs)) && Number(noValidShareMs) > 0
     ? Number(noValidShareMs)
@@ -2490,11 +2505,8 @@ export function createPool({
         try {
           const sealed = store.tip();
           // Wall clock, not header time: the job stamp may be 90s ahead of now.
-          stats.lastFoundAt = Date.now();
-          stats.findAt = Array.isArray(stats.findAt) ? stats.findAt : [];
-          stats.findAt.push(stats.lastFoundAt);
-          if (stats.findAt.length > 256) stats.findAt = stats.findAt.slice(-256);
           const sealedH = Number(sealed?.height || 0);
+          rememberPoolFind(sealedH);
           const unit = hashBonusUnitNanos(store.reserveVault?.liveHashBonusNanos);
           const hashPays = hashBonusByMiner([], unit, lag1Shares);
           pullBook.creditRound(
@@ -2518,9 +2530,7 @@ export function createPool({
             },
           );
         } catch {
-          stats.lastFoundAt = Date.now();
-          stats.findAt = Array.isArray(stats.findAt) ? stats.findAt : [];
-          stats.findAt.push(stats.lastFoundAt);
+          rememberPoolFind(Number(store.tip()?.height || 0));
         }
         if (session) session.blocks = (Number(session.blocks) || 0) + 1;
         pendingPayout = snapshotRound();
@@ -2954,11 +2964,17 @@ export function createPool({
           for (const m of live) names.add(publicWorkerName(m.workerKey || m.login));
           if (names.size === 1) worker = [...names][0];
         }
-        return {
+        const wall = Math.floor(Number(stats.foundAtByHeight?.[String(h)] || 0));
+        const attributed = !!((stored && stored.tag) || wall > 0);
+        const row = {
           ...t,
           finder: tag || '',
           finderWorker: worker || '',
+          foundAt: wall > 0 ? wall : 0,
         };
+        if (attributed) row.poolFound = true;
+        else if (!tag) row.poolFound = false;
+        return row;
       }),
     });
   }

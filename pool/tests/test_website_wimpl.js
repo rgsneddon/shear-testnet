@@ -22,7 +22,8 @@ describe('website W-IMPL binds', () => {
     assert.match(explorer, /function ongoingHashbonusHashes\(stats\)/);
     assert.match(explorer, /function fmtHashNanos\(hashes, unitNanos\)/);
     assert.match(explorer, /networkRoundHashes/);
-    assert.doesNotMatch(explorer, /stats\.workers/);
+    const hashFn = explorer.slice(explorer.indexOf('function ongoingHashbonusHashes'), explorer.indexOf('function fmtHashNanos'));
+    assert.doesNotMatch(hashFn, /stats\.workers/);
     assert.doesNotMatch(explorer, /stats\.avgBlockTimeMs/);
     assert.match(explorer, /1000000000/);
     assert.match(explorer, /setText\('ex-hashrate', fmtHashNanos\(ongoingHashbonusHashes\(stats\), stats && stats\.hashBonusNanos\) \+ ' SHE'\)/);
@@ -57,7 +58,10 @@ describe('website W-IMPL binds', () => {
     assert.match(explorer, /headerTipMs\(stats && stats\.header\)/);
     assert.match(explorer, /'#' \+ lastBlockHeight/);
     assert.match(explorer, /network tip #/);
-    assert.doesNotMatch(explorer, /lastFoundAt/);
+    const tipCard = explorer.slice(explorer.indexOf('function headerTipMs'), explorer.indexOf('function paintLastBlock'));
+    assert.doesNotMatch(tipCard, /lastFoundAt/);
+    assert.match(explorer, /function foundInMs/);
+    assert.match(explorer, /stats\.lastFoundAt/);
     assert.doesNotMatch(explorer, /stats\.tipAt \|\| stats\.tipSealAt/);
     const start = explorer.indexOf('function headerTipMs');
     const end = explorer.indexOf('function paintLastBlock');

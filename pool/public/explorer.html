@@ -198,14 +198,14 @@
     </section>
     <section class="panel-card">
       <h2>BLOCK LIST - FULL</h2>
-      <p class="label">Every sealed block, newest first. Ten rows in view; scroll for the rest. Search by height, block id, or a from–to range. Reserve lock and vote appear from mempool as (pending). Hash bonuses in the open round stay off this list. Pending drops at 9 confirmations. Amounts and dests stay off this table. Spendable in the wallet is 9 confirmations of an opened coin, not a figure on this page.</p>
+      <p class="label">Blocks this pool found, highest height first. Found in is the wall-clock time since the previous block this pool discovered — the same clock as the pool find — not a header-timestamp gap. Ten rows in view; scroll for the rest. Search by height, block id, or a from–to range. Amounts and dests stay off this table. Spendable in the wallet is 9 confirmations of an opened coin, not a figure on this page.</p>
       <div class="table-wrap block-list-scroll" id="ex-tx-wrap">
       <table id="ex-txs">
         <thead>
           <tr>
             <th>Height</th>
             <th>Id</th>
-            <th>Time</th>
+            <th>Found in</th>
             <th>Status</th>
             <th>Type</th>
           </tr>
@@ -352,26 +352,188 @@
       if (!n) return pending.concat(sealed);
       return pending.concat(sealed).slice(0, n);
     }
+    var FIND_LEDGER_KEY = 'shear-pool-find-ledger-v1';
+    var findLedger = {};
+    var liveStats = null;
+    function loadFindLedger() {
+      try {
+        var raw = localStorage.getItem(FIND_LEDGER_KEY);
+        var obj = raw ? JSON.parse(raw) : {};
+        if (obj && typeof obj === 'object') findLedger = obj;
+      } catch (e) { findLedger = {}; }
+    }
+    function saveFindLedger() {
+      try { localStorage.setItem(FIND_LEDGER_KEY, JSON.stringify(findLedger)); } catch (e) {}
+    }
+    function poolTagSet(stats) {
+      var tags = {};
+      var lists = [stats && stats.workers, stats && stats.gossipWorkers];
+      for (var i = 0; i < lists.length; i++) {
+        var group = lists[i] || [];
+        for (var j = 0; j < group.length; j++) {
+          var tag = String((group[j] && (group[j].miner || group[j].tag)) || '').trim().toLowerCase();
+          if (/^m[0-9a-f]{8}$/.test(tag)) tags[tag] = 1;
+        }
+      }
+      return tags;
+    }
+    function isPoolFoundBlock(row, stats) {
+      if (!row) return false;
+      if (String(row.kind || 'block') !== 'block') return false;
+      var h = Math.floor(Number(row.height) || 0);
+      if (!(h >= 1)) return false;
+      if (row.poolFound === false) return false;
+      if (row.poolFound === true) return true;
+      var tag = String(row.finder || row.finderTag || '').trim().toLowerCase();
+      if (!/^m[0-9a-f]{8}$/.test(tag)) return false;
+      var known = poolTagSet(stats);
+      var n = 0;
+      for (var k in known) if (Object.prototype.hasOwnProperty.call(known, k)) n += 1;
+      if (!n) return true;
+      return !!known[tag];
+    }
+    function stampOwner(book, at) {
+      var want = Math.floor(Number(at) || 0);
+      if (!(want > 0)) return 0;
+      var pinned = 0;
+      for (var key in book) {
+        if (!Object.prototype.hasOwnProperty.call(book, key)) continue;
+        if (Math.floor(Number(book[key]) || 0) === want) pinned = Math.floor(Number(key) || 0);
+      }
+      return pinned;
+    }
+    function notePoolFind(stats, ledger) {
+      var book = ledger || {};
+      var src = (stats && stats.recentTxs) || [];
+      for (var i = 0; i < src.length; i++) {
+        var row = src[i];
+        if (!isPoolFoundBlock(row, stats)) continue;
+        var rh = Math.floor(Number(row.height) || 0);
+        var rf = Math.floor(Number(row.foundAt) || Number(row.discoveredAt) || 0);
+        if (rh >= 1 && rf > 0) book[rh] = rf;
+      }
+      var h = Math.floor(Number(stats && stats.height) || 0);
+      var at = Math.floor(Number(stats && stats.lastFoundAt) || 0);
+      if (!(h >= 1) || !(at > 0)) return book;
+      var pinned = stampOwner(book, at);
+      if (pinned && pinned !== h) return book;
+      var tipRow = null;
+      for (var j = 0; j < src.length; j++) {
+        if (Math.floor(Number(src[j] && src[j].height) || 0) === h) tipRow = src[j];
+      }
+      if (tipRow && !isPoolFoundBlock(tipRow, stats)) return book;
+      if (!book[h] || at >= Number(book[h])) book[h] = at;
+      return book;
+    }
+    function wallFoundMs(row, stats, ledger) {
+      var book = ledger || {};
+      var direct = Math.floor(Number(row && row.foundAt) || 0);
+      if (!(direct > 0)) direct = Math.floor(Number(row && row.discoveredAt) || 0);
+      if (direct > 0) return direct;
+      var h = Math.floor(Number(row && row.height) || 0);
+      var remembered = Math.floor(Number(book[h] || book[String(h)]) || 0);
+      if (remembered > 0) return remembered;
+      var tip = Math.floor(Number(stats && stats.height) || 0);
+      var found = Math.floor(Number(stats && stats.lastFoundAt) || 0);
+      if (h >= 1 && h === tip && found > 0 && isPoolFoundBlock(row, stats)) return found;
+      return 0;
+    }
+    function poolBlockRows(stats, ledger) {
+      var book = notePoolFind(stats, ledger || {});
+      var tip = Math.floor(Number(stats && stats.height) || 0);
+      var src = (stats && stats.recentTxs) || [];
+      var rows = [];
+      var seen = {};
+      var tipRejected = false;
+      for (var i = 0; i < src.length; i++) {
+        var row = src[i];
+        var h = Math.floor(Number(row && row.height) || 0);
+        if (h === tip && row && !isPoolFoundBlock(row, stats) && String(row.kind || 'block') === 'block') tipRejected = true;
+        if (!isPoolFoundBlock(row, stats)) continue;
+        if (seen[h]) continue;
+        seen[h] = 1;
+        rows.push(row);
+      }
+      var found = Math.floor(Number(stats && stats.lastFoundAt) || 0);
+      var pinned = stampOwner(book, found);
+      if (tip >= 1 && !seen[tip] && !tipRejected && found > 0 && (!pinned || pinned === tip)) {
+        rows.push({
+          id: '',
+          kind: 'block',
+          height: tip,
+          pending: true,
+          status: 'pending',
+          poolFound: true,
+          foundAt: found,
+        });
+        book[tip] = found;
+      }
+      rows.sort(function (a, b) {
+        return Number(b.height) - Number(a.height);
+      });
+      return rows;
+    }
+    function foundInMs(row, stats, ledger) {
+      var book = ledger || {};
+      var at = wallFoundMs(row, stats, book);
+      if (!(at > 0)) return 0;
+      var h = Math.floor(Number(row && row.height) || 0);
+      var prevH = -1;
+      var prevAt = 0;
+      function consider(oh, oa) {
+        oh = Math.floor(Number(oh) || 0);
+        oa = Math.floor(Number(oa) || 0);
+        if (!(oh >= 1) || oh >= h || !(oa > 0) || oa >= at) return;
+        if (oh > prevH) { prevH = oh; prevAt = oa; }
+      }
+      for (var key in book) {
+        if (!Object.prototype.hasOwnProperty.call(book, key)) continue;
+        consider(key, book[key]);
+      }
+      var src = (stats && stats.recentTxs) || [];
+      for (var i = 0; i < src.length; i++) {
+        var other = src[i];
+        if (!isPoolFoundBlock(other, stats)) continue;
+        consider(other.height, wallFoundMs(other, stats, book));
+      }
+      if (!(prevAt > 0)) return 0;
+      return at - prevAt;
+    }
+    function fmtFoundIn(ms) {
+      var n = Number(ms);
+      if (!Number.isFinite(n) || n <= 0) return '—';
+      var sec = Math.floor(n / 1000);
+      var m = Math.floor(sec / 60);
+      var s = sec % 60;
+      if (m > 0) return m + 'm ' + s + 's';
+      return s + 's';
+    }
     function paintTxs(txs, status) {
       const body = document.querySelector('#ex-txs tbody');
       const st = document.getElementById('tx-status');
       if (st) st.textContent = status || '';
       if (!body) return;
-      const rows = Array.isArray(txs) ? txs.slice() : [];
+      const rows = (Array.isArray(txs) ? txs.slice() : []).sort(function (a, b) {
+        return Number(b.height) - Number(a.height);
+      });
       body.innerHTML = rows.length
         ? rows.map(function (t) {
-            const href = '/tx/' + encodeURIComponent(t.id);
+            const href = '/tx/' + encodeURIComponent(t.id || '');
             const st = Number(t.height) >= 1
               ? blockStatus(t, tipHeight, spendableNeed)
               : (t.status || 'pending');
             const pendingLabel = st === 'pending' || st === '(pending)' ? '(pending)' : 'confirmed';
             const heightLabel = Number(t.height) >= 1 ? String(Number(t.height)) : '—';
-            return '<tr><td class="mono">' + esc(heightLabel) + '</td><td class="mono"><a href="' + href + '">' +
-              esc(shortId(t.id)) + '</a></td><td>' +
-              esc(fmtLocalTs(t.at)) + '</td><td>' +
+            const idCell = t.id
+              ? '<a href="' + href + '">' + esc(shortId(t.id)) + '</a>'
+              : '—';
+            const found = fmtFoundIn(foundInMs(t, liveStats, findLedger));
+            return '<tr><td class="mono">' + esc(heightLabel) + '</td><td class="mono">' +
+              idCell + '</td><td>' +
+              esc(found) + '</td><td>' +
               esc(pendingLabel) + '</td><td class="mono">' + esc(t.kind || 'block') + '</td></tr>';
           }).join('')
-        : '<tr><td colspan="5">No sealed blocks yet.</td></tr>';
+        : '<tr><td colspan="5">No pool blocks yet.</td></tr>';
     }
     function queryFromForm() {
       const q = new URLSearchParams();
@@ -419,6 +581,10 @@
       setText('ex-nodes-online', String(Math.max(0, Number(stats.nodesOnline) || 0)));
       setText('ex-reserve-vault', fmtShe(Number(stats.reserveVaultNanos || 0) / NANOS) + ' SHE');
       filled = true;
+      liveStats = stats;
+      loadFindLedger();
+      notePoolFind(stats, findLedger);
+      saveFindLedger();
       const hist = await fetchJson('/explorer/recent').catch(function () { return { txs: [] }; });
       var tipAt = Number(stats.tipAt || stats.tipSealAt || 0);
       var blockAt = tipAt > 0 ? tipAt : 0;
@@ -434,8 +600,8 @@
       lastBlockAt = blockAt > 0 ? blockAt : 0;
       setText('ex-updated', lastBlockAt ? fmtSinceBlock(lastBlockAt) : '—');
       const circ = await fetchJson('/explorer/circulation').catch(function () { return { holders: [] }; });
-      const recent = orderRecentTxs(hist.txs || []);
-      paintTxs(recent, '');
+      paintTxs(poolBlockRows(stats, findLedger), '');
+      saveFindLedger();
       paintHolders(circ);
     }
     async function runSearch(ev) {
@@ -446,6 +612,7 @@
         return;
       }
       const stats = await fetchJson('/stats').catch(function () { return {}; });
+      liveStats = stats;
       tipHeight = Number(stats.height) || tipHeight;
       spendableNeed = Number(stats.spendableConfirmations)
         || Number(stats.policy && stats.policy.consensus_min)

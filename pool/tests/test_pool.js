@@ -520,7 +520,7 @@ describe('pool dashboard + stratum', () => {
     assert.doesNotMatch(html, /shear-testnet-v4/);
     assert.match(html, /Pool explorer · last 10 blocks/);
     assert.match(html, />Id</);
-    assert.match(html, />Time</);
+    assert.match(html, />Found in</);
     assert.match(html, />Status</);
     assert.match(html, />Type</);
     assert.match(html, /confirmed/);
