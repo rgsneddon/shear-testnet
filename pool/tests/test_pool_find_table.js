@@ -90,7 +90,7 @@ describe('explorer pool-found table uses wall-clock finds', () => {
       assert.notEqual(api.wallFoundMs(rows[0], now, ledger), 1_052_000);
     });
 
-    it(`${rel} uses foundAt, never the header timestamp`, () => {
+    it(`${rel} uses foundAt, never the header timestamp, as this block's find`, () => {
       const now = stats({
         height: 33,
         lastFoundAt: 140_000,
@@ -104,8 +104,69 @@ describe('explorer pool-found table uses wall-clock finds', () => {
       assert.equal(rows[0].height, 33);
       assert.equal(api.wallFoundMs(rows[0], now, ledger), 140_000);
       assert.notEqual(api.wallFoundMs(rows[0], now, ledger), 52_000);
-      assert.equal(api.foundInMs(rows[0], now, ledger), 0);
-      assert.equal(api.fmtFoundIn(api.foundInMs(rows[0], now, ledger)), '—');
+      if (rel.endsWith('explorer/explorer.html')) {
+        // Previous find is this header stamp. Tip find stays foundAt.
+        assert.equal(api.foundInMs(rows[0], now, ledger), 88_000);
+        assert.equal(api.fmtFoundIn(88_000), '1m 28s');
+      } else {
+        assert.equal(api.foundInMs(rows[0], now, ledger), 0);
+        assert.equal(api.fmtFoundIn(api.foundInMs(rows[0], now, ledger)), '—');
+      }
     });
   }
+});
+
+describe('explorer backfills Found in for every listed pool block', () => {
+  const api = loadFindFns('../../explorer/explorer.html');
+  // Header gaps: 33 vs 32 is the 52s bug; 34 vs 33 is the wall gap that was watched.
+  const at32 = 1_000_000;
+  const at33 = at32 + 52_445;
+  const at34 = at33 + 146_336;
+  const lastFoundAt = at34 + 140_000;
+
+  function windowStats(over) {
+    return {
+      height: 34,
+      lastFoundAt,
+      workers: [{ miner: TAG }],
+      recentTxs: [
+        { kind: 'block', height: 34, id: 'h34', at: at34, finder: TAG },
+        { kind: 'block', height: 33, id: 'h33', at: at33, finder: TAG },
+        { kind: 'block', height: 32, id: 'h32', at: at32, finder: TAG },
+      ],
+      ...over,
+    };
+  }
+
+  it('fills older rows from the next header stamp when the ledger has only the tip', () => {
+    const now = windowStats();
+    const ledger = {};
+    const rows = api.poolBlockRows(now, ledger);
+    assert.equal(rows.map((r) => r.height).join(','), '34,33,32');
+    assert.equal(api.wallFoundMs(rows[0], now, ledger), lastFoundAt);
+    assert.notEqual(api.wallFoundMs(rows[0], now, ledger), at34);
+    assert.equal(api.foundInMs(rows[0], now, ledger), 140_000);
+    assert.equal(api.fmtFoundIn(api.foundInMs(rows[0], now, ledger)), '2m 20s');
+    // Row 33 is at(34)-at(33), not the 52s header delta against 32.
+    assert.equal(api.foundInMs(rows[1], now, ledger), 146_336);
+    assert.equal(api.fmtFoundIn(api.foundInMs(rows[1], now, ledger)), '2m 26s');
+    assert.notEqual(api.fmtFoundIn(api.foundInMs(rows[1], now, ledger)), '52s');
+    assert.equal(api.foundInMs(rows[2], now, ledger), 52_445);
+    assert.equal(api.fmtFoundIn(api.foundInMs(rows[2], now, ledger)), '52s');
+    for (const row of rows) {
+      assert.notEqual(api.fmtFoundIn(api.foundInMs(row, now, ledger)), '—');
+    }
+  });
+
+  it('keeps an observed lastFoundAt ahead of the next-header approximation', () => {
+    const now = windowStats();
+    const observed33 = at34 - 5_000;
+    const ledger = { 33: observed33, 32: at33 };
+    api.notePoolFind(now, ledger);
+    const rows = api.poolBlockRows(now, ledger);
+    assert.equal(api.wallFoundMs(rows.find((r) => r.height === 33), now, ledger), observed33);
+    assert.equal(api.foundInMs(rows[0], now, ledger), lastFoundAt - observed33);
+    assert.notEqual(api.foundInMs(rows[0], now, ledger), 140_000);
+    assert.equal(api.foundInMs(rows.find((r) => r.height === 33), now, ledger), observed33 - at33);
+  });
 });

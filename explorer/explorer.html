@@ -470,8 +470,9 @@
       if (!n) return pending.concat(sealed);
       return pending.concat(sealed).slice(0, n);
     }
-    // Wall-clock pool finds. Header timestamps are a different clock and must
-    // not become the Found in column. lastFoundAt / foundAt share this ledger.
+    // Wall-clock pool finds. A block's own header `at` is not its find time.
+    // The next block's `at` is stamped when this one is sealed, and lastFoundAt
+    // is the tip. Found in is the gap between those consecutive find times.
     var FIND_LEDGER_KEY = 'shear-pool-find-ledger-v1';
     var findLedger = {};
     var liveStats = null;
@@ -545,6 +546,22 @@
       if (!book[h] || at >= Number(book[h])) book[h] = at;
       return book;
     }
+    function chainAt(stats, height) {
+      var want = Math.floor(Number(height) || 0);
+      if (!(want >= 1)) return 0;
+      var src = (stats && stats.recentTxs) || [];
+      for (var i = 0; i < src.length; i++) {
+        var row = src[i];
+        if (Math.floor(Number(row && row.height) || 0) !== want) continue;
+        var at = Math.floor(Number(row && row.at) || 0);
+        if (at > 0) return at;
+      }
+      var extra = stats && stats.chainAt;
+      if (extra && Math.floor(Number(extra[want] || extra[String(want)]) || 0) > 0) {
+        return Math.floor(Number(extra[want] || extra[String(want)]) || 0);
+      }
+      return 0;
+    }
     function wallFoundMs(row, stats, ledger) {
       var book = ledger || {};
       var direct = Math.floor(Number(row && row.foundAt) || 0);
@@ -556,6 +573,9 @@
       var tip = Math.floor(Number(stats && stats.height) || 0);
       var found = Math.floor(Number(stats && stats.lastFoundAt) || 0);
       if (h >= 1 && h === tip && found > 0 && isPoolFoundBlock(row, stats)) return found;
+      // Next header is stamped at seal, so it is this find's wall clock.
+      var nextAt = chainAt(stats, h + 1);
+      if (nextAt > 0) return nextAt;
       return 0;
     }
     function poolBlockRows(stats, ledger) {
@@ -615,6 +635,12 @@
         var other = src[i];
         if (!isPoolFoundBlock(other, stats)) continue;
         consider(other.height, wallFoundMs(other, stats, book));
+      }
+      // No earlier pool row in the window: this header stamp is the previous find.
+      if (prevH < 0) {
+        var ownAt = Math.floor(Number(row && row.at) || 0);
+        if (!(ownAt > 0)) ownAt = chainAt(stats, h);
+        consider(h - 1, ownAt);
       }
       if (!(prevAt > 0)) return 0;
       return at - prevAt;
