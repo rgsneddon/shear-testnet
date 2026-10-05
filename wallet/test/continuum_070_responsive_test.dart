@@ -397,6 +397,185 @@ void main() {
     expect(tester.takeException(), isNull);
   }, timeout: const Timeout(Duration(seconds: 120)));
 
+  testWidgets('a restored height 387 fee wallet paints that coin while the notes read is open', (tester) async {
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final ui = identityHashCode(Isolate.current).toString();
+    final feeNanos = (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
+    final feeShe = feeNanos / kUnitsPerShe;
+    HttpRequest? heldNotes;
+    final dir = Directory.systemTemp.createTempSync('c070-restored-frame-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    final hits = <String>[];
+    late final String notesBody;
+    await tester.runAsync(() async {
+      await session.loadOrCreate();
+      await session.setPassword('test-pass-1');
+      final who = session.identity!;
+      final bound = ShearLedger()..bindIdentity(who);
+      final dest = bound.homeDest(who.address, paymentCode: who.paymentCode);
+      final seed = bound.spendSeed!;
+      final mature = _poolFeeWire(dest, seed, height: 1);
+      final opened = scanSealedWire({
+        'vouts': [mature],
+        'dests': [dest],
+        'dest': dest,
+        'spendSeed': seed,
+      });
+      final rows = (opened['notes'] as List).whereType<Map>();
+      expect(rows, isNotEmpty);
+      for (final row in rows) {
+        bound.rememberNote(Map<String, dynamic>.from(row));
+      }
+      bound.restoreSealedTip(387);
+      session.rememberedSealedHeight = 387;
+      session.rememberedNotesCovered = 387;
+      session.rememberedNotes = bound.exportNotesForSession();
+      session.rememberedOpenedProofs = bound.exportOpenedProofs();
+      session.rememberedDests = [dest];
+      expect(session.rememberedNotes, isNotEmpty);
+      await session.persist();
+      notesBody = jsonEncode({
+        'ok': true,
+        'notes': [
+          mature,
+          {
+            'kind': 'pool-fee',
+            'height': 387,
+            'valueProof': {'v': 50 * kUnitsPerShe},
+          },
+        ],
+      });
+    });
+    final server = await tester.runAsync(() async {
+      final bound = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      bound.listen((req) async {
+        hits.add(req.uri.path);
+        try {
+          final path = req.uri.path;
+          if (path.contains('notes')) {
+            heldNotes ??= req;
+            return;
+          }
+          req.response.headers.contentType = ContentType.json;
+          if (path.contains('balance')) {
+            req.response.write('{"ok":true,"balance":40}');
+          } else {
+            req.response.write(
+              '{"ok":true,"height":387,"magic":"shear-testnet-v11","network":"shear-testnet-v11","balance":9,"owedPi":3}',
+            );
+          }
+          await req.response.close();
+        } catch (e) {
+          hits.add('err:$e');
+        }
+      });
+      return bound;
+    });
+    expect(server, isNotNull);
+    addTearDown(() => server!.close(force: true));
+    debugScanIsolateStamp = '';
+    final ledger = ShearLedger(
+      pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server!.port}'),
+    );
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      skipPoolSync: false,
+      hostAndroid: true,
+    ));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField).first, 'test-pass-1');
+    final state = tester.state<ShearWalletAppState>(find.byType(ShearWalletApp));
+    String? spendDuring;
+    String? spendAfter;
+    var timedOut = false;
+    await tester.runAsync(() async {
+      final unlock = state.unlockNow();
+      final deadline = DateTime.now().add(const Duration(seconds: 25));
+      while (heldNotes == null && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      final notesReq = heldNotes;
+      if (notesReq == null) {
+        hits.add('no-notes-request');
+        return;
+      }
+      expect(state.unlocked, isTrue);
+      final binding = tester.binding;
+      var frameDuringRead = false;
+      binding.addPostFrameCallback((_) => frameDuringRead = true);
+      binding.scheduleFrame();
+      if (binding.hasScheduledFrame) {
+        binding.handleBeginFrame(Duration.zero);
+        binding.handleDrawFrame();
+      }
+      expect(frameDuringRead, isTrue);
+      expect(find.text('not connected'), findsOneWidget);
+      expect(find.text('height 387'), findsOneWidget);
+      expect(find.byKey(const Key('android-banner-theme')), findsOneWidget);
+      expect(find.byKey(const Key('wallet-block-height')), findsOneWidget);
+      expect(find.byKey(const Key('continuum-loading')), findsNothing);
+      expect(find.text('0 SHE'), findsNothing);
+      expect(find.text('p2P Node'), findsNothing);
+      expect(find.text('Full Node'), findsNothing);
+      final during = find.byKey(const Key('continuum-spendable'));
+      expect(during, findsOneWidget);
+      spendDuring = tester.widget<Text>(during).data;
+      notesReq.response.headers.contentType = ContentType.json;
+      notesReq.response.write(notesBody);
+      await notesReq.response.close();
+      hits.add('notes-closed');
+      try {
+        await unlock.timeout(const Duration(seconds: 40));
+      } catch (_) {
+        timedOut = true;
+      }
+      binding.scheduleFrame();
+      if (binding.hasScheduledFrame) {
+        binding.handleBeginFrame(const Duration(milliseconds: 16));
+        binding.handleDrawFrame();
+      }
+      final painted = find.byKey(const Key('continuum-spendable'));
+      if (painted.evaluate().isNotEmpty) {
+        spendAfter = tester.widget<Text>(painted).data;
+      } else {
+        hits.add('no-spendable-widget');
+      }
+    });
+    final who = session.identity!;
+    final reason = 'timedOut=$timedOut sealed=${ledger.sealedHeight} '
+        'restored=${ledger.restoredBook} '
+        'ready=${ledger.spendableFigureReady(who.address, paymentCode: who.paymentCode)} '
+        'fail=${ledger.spendableReadFailed} err=$debugCollateError '
+        'kind=$debugCreditFollowKind scan=$debugScanIsolateStamp '
+        'follow=$debugCreditFollowStamp owned=${ledger.spendableOwned(who.address, paymentCode: who.paymentCode)} '
+        'notes=${ledger.notes.length} hits=$hits';
+    expect(spendDuring, '${formatShe(feeShe)} SHE', reason: reason);
+    expect(spendDuring, isNot('0 SHE'));
+    expect(spendAfter, '${formatShe(feeShe)} SHE', reason: reason);
+    expect(spendAfter, isNot('0 SHE'));
+    expect(spendAfter, isNot('${formatShe(feeShe * 2)} SHE'));
+    expect(feeShe, isNot(closeTo(0, 1e-9)));
+    expect(ledger.sealedHeight, 387);
+    expect(
+      ledger.spendableOwned(who.address, paymentCode: who.paymentCode),
+      closeTo(feeShe, 1e-9),
+    );
+    expect(debugCreditFollowStamp, isNotEmpty);
+    expect(debugCreditFollowStamp, isNot(ui));
+    expect(debugScanIsolateStamp, isNotEmpty);
+    expect(debugScanIsolateStamp, isNot(ui));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  }, timeout: const Timeout(Duration(seconds: 180)));
+
   testWidgets('Android banner is dark and light, and the bar stays logo, link, height', (tester) async {
     tester.view.physicalSize = const Size(360, 640);
     tester.view.devicePixelRatio = 1;

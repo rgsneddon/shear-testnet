@@ -1694,12 +1694,17 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   /// SYNCING while this wallet's coins are still opening. CONNECTED with the
   /// sealed height once that collation has finished. A quiet phone with no
-  /// live tip stays "not connected". Connect bare uses the Flyclient sample
-  /// for that word. The note scan still paints spendable on its own.
+  /// live tip stays "not connected". A book this device already saved keeps
+  /// that word until a sample actually returns: the note re-read is not a
+  /// new connection. Connect bare uses the Flyclient sample for that word.
+  /// The note scan still paints spendable on its own.
   String _linkWord() {
     if (_usesFlyclientTip) {
+      final quietBook =
+          ledger.restoredBook && ledger.sealedHeight > 0 && !_flyOk && !_flyFailed;
       return connectBareLinkWord(
-        sampling: _flySampling || (_spendSyncing && !_flyOk && !_flyFailed),
+        sampling: !quietBook &&
+            (_flySampling || (_spendSyncing && !_flyOk && !_flyFailed)),
         sampleOk: _flyOk,
         sampleFailed: _flyFailed && !_flyOk,
         sampleTip: _flyTip,
@@ -1735,7 +1740,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       return _hostAndroid ? 'height $_flyTip' : 'block height: tip disagree · $_flyTip';
     }
     if (_flyFailed) {
-      return _hostAndroid ? 'height —' : 'block height: sample failed';
+      if (_hostAndroid) {
+        final sealed = ledger.sealedHeight;
+        // A failed sample must not blank a height this device already saved.
+        if (ledger.restoredBook && sealed > 0) return 'height $sealed';
+        return 'height —';
+      }
+      return 'block height: sample failed';
     }
     if (_flyOk && _flyTip > 0) {
       return _hostAndroid ? 'height $_flyTip' : 'block height: height $_flyTip';
@@ -1820,8 +1831,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (_hostAndroid) {
       final heightLabel = _barHeightText();
       final link = _linkWord();
-      final showHeight = _chromeReady &&
-          (!_spendSyncing || (_usesFlyclientTip && _flyOk && _flyTip > 0));
+      // A saved book already knows its height. The first open still waits.
+      final showRestored = ledger.restoredBook && ledger.sealedHeight > 0;
+      final showHeight = showRestored ||
+          (_chromeReady &&
+              (!_spendSyncing || (_usesFlyclientTip && _flyOk && _flyTip > 0)));
       final banner = Theme.of(context).appBarTheme.backgroundColor;
       return AppBar(
         key: const Key('android-top-banner'),
