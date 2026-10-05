@@ -712,18 +712,12 @@
       const s = Math.round(sec % 60);
       return m + 'm ' + s + 's';
     }
-    // Main miner table only. Lifetime `accepted` is unchanged for accounting
-    // and for the miner page "Accepted work" card. A round ends when tip
-    // height moves, or when round hashes clear while workers are still listed.
-    function workerProven(w) {
-      if (!w) return 0;
-      if (w.roundHashes != null) return Number(w.roundHashes) || 0;
-      if (w.hashes != null) return Number(w.hashes) || 0;
-      return Number(w.provenHashes) || 0;
-    }
     function sumProven(workers) {
       let n = 0;
-      for (let i = 0; i < workers.length; i += 1) n += workerProven(workers[i]);
+      for (let i = 0; i < (workers || []).length; i += 1) {
+        const w = workers[i] || {};
+        n += Number(w.roundHashes != null ? w.roundHashes : (w.hashes != null ? w.hashes : w.provenHashes)) || 0;
+      }
       return n;
     }
     function syncRoundAccepted(state, stats) {
@@ -942,9 +936,9 @@
       /* avg block card locked off */
       if (boxDue('uptime', now)) document.getElementById('uptime').textContent = fmtUptime(s.uptimeMs);
       paintLastBlock(s);
-      syncRoundAccepted(roundShareState, s);
-      saveRoundShareState(roundShareState);
       if (boxDue('miners', now)) {
+        syncRoundAccepted(roundShareState, s);
+        saveRoundShareState(roundShareState);
         const tb = document.querySelector('#miners tbody');
         tb.innerHTML = (s.workers || []).slice().sort(function (a, b) {
           return (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0);

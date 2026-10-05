@@ -944,9 +944,17 @@ describe('public miner listing', () => {
     assert.match(miner, /set\('m-accepted', String\(d\.accepted \|\| 0\)\)/);
     const workerPaint = miner.slice(miner.indexOf('function paintWorkers'), miner.indexOf('function paint('));
     assert.match(workerPaint, /w\.accepted/);
-    const start = dash.indexOf('function workerProven');
+    const start = dash.indexOf('function sumProven');
     const end = dash.indexOf('function loadRoundShareState');
     assert.ok(start > 0 && end > start);
+    const paintFn = dash.slice(dash.indexOf('function paint(s)'), dash.indexOf('function esc('));
+    const minersIdx = paintFn.indexOf("if (boxDue('miners', now))");
+    assert.ok(minersIdx > 0);
+    const afterMiners = paintFn.slice(minersIdx);
+    const syncIdx = afterMiners.indexOf('syncRoundAccepted(roundShareState, s)');
+    const saveIdx = afterMiners.indexOf('saveRoundShareState(roundShareState)');
+    const tbodyIdx = afterMiners.indexOf("querySelector('#miners tbody')");
+    assert.ok(syncIdx > 0 && saveIdx > syncIdx && tbodyIdx > saveIdx, 'round shares sync before the miners table paints');
     const api = new Function(`${dash.slice(start, end)}
       return { syncRoundAccepted, acceptedThisRoundCell };
     `)();
