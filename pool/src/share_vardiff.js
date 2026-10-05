@@ -4,8 +4,9 @@
  * Pool-found tip gaps are a soak observation and are not an input.
  *
  * Target ~2s/share under ShearHash-v3. A step waits for eight shares and
- * 20s, then moves ±1 only when the sample interval is outside 1.4–2.8s.
- * A 4-share / 8s window flipped the dial about twice a minute. RandomX-lite
+ * 20s, then moves only when the sample interval is outside 1.4–2.8s.
+ * Climb is one bit. A sample at 4s or slower eases two bits. A 4-share / 8s
+ * window flipped the dial about twice a minute. RandomX-lite
  * verify is on the Node event loop; a 250ms SHA-256 farm target dropped
  * shareBits to 5 and 504'd /api/stats. Share bits may equal the header so a
  * farm is throttled; they still never exceed it. GPU/ASIC still mint nothing.
@@ -19,8 +20,13 @@ export const SHARE_VARDIFF_RETARGET_SHARES = 8;
 export const SHARE_VARDIFF_RETARGET_MS = 20_000;
 /** One bit per full window. A farm still climbs; it does not jump. */
 export const SHARE_VARDIFF_CLIMB_MAX = 1;
-/** Ease per window stays 1 so a 1-thread reconnect is not dumped to the floor. */
-export const SHARE_VARDIFF_EASE_MAX = 1;
+/**
+ * Two bits when the sample is clearly slow. The mint floor still applies,
+ * and a find does not use this as a reset.
+ */
+export const SHARE_VARDIFF_EASE_MAX = 2;
+/** Twice the 2s target. At or above this, one window eases by EASE_MAX. */
+export const SHARE_VARDIFF_CLEAR_EASE_MS = 4_000;
 /**
  * Hold while the sample sits near 2s/share. A step is only for an interval
  * outside this band. Inclusive on both edges.
@@ -91,10 +97,14 @@ export function nextShareBits({
   if (actual >= SHARE_VARDIFF_DEADBAND_LOW_MS && actual <= SHARE_VARDIFF_DEADBAND_HIGH_MS) {
     return cur;
   }
+  if (actual > SHARE_VARDIFF_DEADBAND_HIGH_MS) {
+    const ease = actual >= SHARE_VARDIFF_CLEAR_EASE_MS ? SHARE_VARDIFF_EASE_MAX : 1;
+    return clampShareBits(cur - ease, { blockBits, minBits });
+  }
   const ratio = target / actual;
   let delta = Math.round(Math.log2(Math.max(1 / 16, Math.min(16, ratio))));
   if (delta > SHARE_VARDIFF_CLIMB_MAX) delta = SHARE_VARDIFF_CLIMB_MAX;
-  if (delta < -SHARE_VARDIFF_EASE_MAX) delta = -SHARE_VARDIFF_EASE_MAX;
+  if (delta < 0) delta = 0;
   return clampShareBits(cur + delta, { blockBits, minBits });
 }
 
@@ -178,6 +188,7 @@ export function destVardiffOnShare({
   const reason = next > bits
     ? 'rate_above_target'
     : (next < bits ? 'rate_below_target' : 'in_band');
+  const move = next > bits ? 'climb' : (next < bits ? 'ease' : 'hold');
   return {
     shares: 0,
     windowAt: Number(now),
@@ -186,6 +197,8 @@ export function destVardiffOnShare({
     stepped: next !== bits,
     from: bits,
     reason,
+    move,
+    movedBits: Math.abs(next - bits),
     sampleShares: shares,
     elapsedMs: elapsed,
     intervalMs,
