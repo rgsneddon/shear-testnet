@@ -256,11 +256,11 @@ TipGapPlan planTipGap({
 }
 
 /// The header tip and the notes host are different reads. A header can move
-/// first and mature one fee out of Pending before the new fee is in the list.
-/// Stamp the host height when it is behind that header, so the next read
-/// still fetches the fee the header already counted.
+/// first. Stamp only a host height this notes response actually reported.
+/// A missing host height is not the header: that would mature a coin the
+/// list has not covered yet.
 int notesHostStamp({required int sealed, required int hostHeight}) {
-  if (hostHeight < 1) return sealed < 1 ? 0 : sealed;
+  if (hostHeight < 1) return 0;
   if (sealed < 1) return hostHeight;
   return hostHeight < sealed ? hostHeight : sealed;
 }
@@ -1161,6 +1161,30 @@ String avgBlockRewardLabel({
 String integralQCirculationLabel(int? circulatingNanos) {
   if (circulatingNanos == null || circulatingNanos <= 0) return '—';
   return '${formatShe(circulatingNanos / kUnitsPerShe)} SHE (circulation)';
+}
+
+/// Explorer "Average block time (sealed, all blocks)": the sealed mean, then
+/// the pool EWMA. A last-header gap is not this figure.
+int? sealedMeanBlockMsFromStats(Map<String, dynamic> json) {
+  final raw = json.containsKey('networkAvgBlockTimeMs')
+      ? json['networkAvgBlockTimeMs']
+      : json['avgBlockTimeMs'];
+  if (raw is! num || raw <= 0) return null;
+  return raw.round();
+}
+
+/// Same seconds text as the explorer box. Empty when the stat was not served.
+String observedIntervalLabel(int? ms) {
+  if (ms == null || ms <= 0) return '';
+  return '${(ms / 1000).toStringAsFixed(1)} s';
+}
+
+/// Unpacked work bits. A packed integer (blockBits) is not this row.
+String resistanceBitsLabel(double? bits) {
+  if (bits == null || bits <= 0 || bits >= 1000) return '';
+  var s = bits.toStringAsFixed(4);
+  s = s.replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
+  return s;
 }
 
 class LockFundingPlan {
@@ -2393,6 +2417,9 @@ class ShearLedger implements ReadProofSink {
   int _settledHeight = 0;
   final Map<String, int> _historyAt = {};
   final Map<String, int> _notesAt = {};
+  /// Highest height a notes response has covered. The header may sit above it.
+  /// Spendable and Pending use this until the next response catches up.
+  int _notesCovered = 0;
   /// Empty history/notes pulls while an immature owner land is still absent.
   final Map<String, int> _ingestMisses = {};
   static const ingestMissBudget = 2;
@@ -2452,6 +2479,7 @@ class ShearLedger implements ReadProofSink {
     if (!bookChanged) return;
     _historyAt.clear();
     _notesAt.clear();
+    _notesCovered = 0;
     _ingestMisses.clear();
   }
 
@@ -2672,6 +2700,7 @@ class ShearLedger implements ReadProofSink {
     _owedPiDisplay = 0;
     _historyAt.clear();
     _notesAt.clear();
+    _notesCovered = 0;
     _noteMisses.clear();
     _ingestMisses.clear();
     _nodeBodies.clear();
@@ -2700,6 +2729,12 @@ class ShearLedger implements ReadProofSink {
   }
   /// Network-wide stats from /api/stats (Continuum right-hand box).
   int? networkHashrate;
+  /// Unpacked work bits from pool stats. Not the packed blockBits integer.
+  double? networkWorkBits;
+  /// Height that [potEmittedNanos] was counted through. Same stats body.
+  int? emittedAtHeight;
+  /// Sealed-chain mean block time, the explorer average. Not the last gap.
+  int? sealedMeanBlockMs;
   int? liveHashBonusNanos;
   int? extraMintedNanos;
   int? vaultLockedNanos;
@@ -2719,6 +2754,19 @@ class ShearLedger implements ReadProofSink {
     if (pool != null && isPoolLedgerHost(pool!.baseUrl)) return _sealedHeight;
     final live = pool?.liveTip ?? 0;
     return live > _sealedHeight ? live : _sealedHeight;
+  }
+
+  /// Confirmation height. A header that the notes read has not covered yet
+  /// does not mature a coin or drop it from Pending.
+  int get bookTip {
+    final live = displayHeight;
+    if (_notesCovered >= 1 && _notesCovered < live) return _notesCovered;
+    return live;
+  }
+
+  /// Record how far a notes response reached. Never moves backward.
+  void noteCovered(int height) {
+    if (height > _notesCovered) _notesCovered = height;
   }
 
   /// Display-only last sealed header dt (ms). Not a mint input.
@@ -2833,7 +2881,7 @@ class ShearLedger implements ReadProofSink {
       // A coinbase row that only repeats the pool fee is not a landing.
       tipAdvancedWithoutLanding = !_realCreditAt(sealedHeight);
     }
-    settleTo(sealedHeight);
+    settleTo(bookTip);
   }
 
   void _bundleOpenRounds({required int height}) {
@@ -3431,10 +3479,10 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// Confirmations of a sealed height, counting the including block as 1.
-  /// Uses [displayHeight] so a receive at the live tip is not hidden while
-  /// paint lags one block behind the node.
+  /// Uses [bookTip] so a header ahead of the notes read does not mature a coin
+  /// the list has not covered yet.
   int confirmationsOf(int height, [int? tip]) {
-    final t = tip ?? displayHeight;
+    final t = tip ?? bookTip;
     if (height < 1 || t < height) return 0;
     return t - height + 1;
   }
@@ -3666,7 +3714,66 @@ class ShearLedger implements ReadProofSink {
       }
       take('potEmittedNanos', (n) => potEmittedNanos = n);
       take('hashBonusEmittedNanos', (n) => hashBonusEmittedNanos = n);
+      if (json.containsKey('potEmittedNanos') || json.containsKey('hashBonusEmittedNanos')) {
+        final at = (json['height'] as num?)?.toInt() ?? 0;
+        if (at > 0) emittedAtHeight = at;
+      }
+      final work = json['bits'];
+      if (work is num && work > 0 && work < 1000) networkWorkBits = work.toDouble();
+      final mean = sealedMeanBlockMsFromStats(json);
+      if (mean != null) sealedMeanBlockMs = mean;
       take('miners', (n) => networkMiners = n);
+  }
+
+  /// Display fields from a public `/api/stats` body. Does not move the tip
+  /// and does not change spendable. Pool height is not a chain tip.
+  void applyContinuityStats(Map<String, dynamic> json) {
+    int? takeInt(String key) {
+      final v = json[key];
+      if (v is num && v >= 0) return v.round();
+      return null;
+    }
+    final hr = takeInt('hashrate');
+    if (hr != null) networkHashrate = hr;
+    final circ = takeInt('circulatingNanos');
+    if (circ != null && circ > 0) circulatingNanos = circ;
+    final pot = takeInt('potEmittedNanos');
+    if (pot != null) potEmittedNanos = pot;
+    final bonus = takeInt('hashBonusEmittedNanos');
+    if (bonus != null) hashBonusEmittedNanos = bonus;
+    if (pot != null || bonus != null) {
+      final at = takeInt('height');
+      if (at != null && at > 0) emittedAtHeight = at;
+    }
+    final work = json['bits'];
+    if (work is num && work > 0 && work < 1000) networkWorkBits = work.toDouble();
+    final mean = sealedMeanBlockMsFromStats(json);
+    if (mean != null) sealedMeanBlockMs = mean;
+  }
+
+  /// The public node `/stats` body has no hashrate, supply, bits, or sealed
+  /// mean. The explorer reads those from the pool stats feed. A loopback book
+  /// (tests) does not call the public pool.
+  Future<void> readContinuityFigures() async {
+    final host = Uri.tryParse(pool?.baseUrl ?? '')?.host ?? '';
+    if (host == '127.0.0.1' || host == 'localhost' || host == '::1') return;
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+    try {
+      final req = await client.getUrl(Uri.parse('$kPublicPoolHttp/api/stats'));
+      final res = await req.close().timeout(const Duration(seconds: 2));
+      if (res.statusCode != 200) {
+        await res.drain<void>();
+        return;
+      }
+      final body = await res.transform(utf8.decoder).join();
+      final decoded = jsonDecode(body);
+      if (decoded is Map) {
+        applyContinuityStats(Map<String, dynamic>.from(decoded));
+      }
+    } catch (_) {
+    } finally {
+      client.close(force: true);
+    }
   }
 
   /// [proveChain] walks every header and compact block. That walk on the UI
@@ -3700,6 +3807,9 @@ class ShearLedger implements ReadProofSink {
         final sync = pool!.sync;
         if (sync != null && tip > sync.sampledTip) sync.sampledTip = tip;
       }
+    } catch (_) {}
+    try {
+      await readContinuityFigures();
     } catch (_) {}
     if (!proveChain) return;
     try {
@@ -3891,12 +4001,12 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// Confirmed enough to spend. A missing height is already in the mature book.
-  /// Same floor as the Flow picker: [spendableConfirmations] from [_sealedHeight].
+  /// Same floor as the Flow picker, counted from [bookTip].
   bool _noteMature(Map<String, dynamic> note, {bool ignoreConfs = false}) {
     if (ignoreConfs) return true;
     final h = (note['height'] as num?)?.toInt();
     if (h == null || h < 1) return true;
-    return (_sealedHeight - h + 1) >= spendableConfirmations;
+    return confirmationsOf(h) >= spendableConfirmations;
   }
 
   /// One sealed note on [dest] can cover [needShe]. Several smaller notes are
@@ -3999,7 +4109,6 @@ class ShearLedger implements ReadProofSink {
         final h = (json['height'] as num?)?.toInt() ?? 0;
         hostHeight = h;
         if (h > _sealedHeight) noteLiveHeight(h);
-        if (h > 0) settleTo(h);
       } catch (_) {}
       try {
         // The shell is already up. This open is off the UI isolate. A short
@@ -4157,7 +4266,10 @@ class ShearLedger implements ReadProofSink {
         final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
         await _scanNotesProgressive(raw, partials: partials);
         final mark = notesHostStamp(sealed: _sealedHeight, hostHeight: hostHeight);
-        if (mark > 0 && _stampIngest(key, count: false)) _notesAt[key] = mark;
+        if (mark > 0 && _stampIngest(key, count: false)) {
+          _notesAt[key] = mark;
+          noteCovered(mark);
+        }
       } catch (e) {
         failed = true;
         _collateError = 'collate:$e';
@@ -4448,6 +4560,14 @@ class ShearLedger implements ReadProofSink {
       'sealed': _sealedHeight,
       'settled': _settledHeight,
       'notesAt': _followEncode(_notesAt),
+      'notesCovered': _notesCovered,
+      if (networkHashrate != null) 'networkHashrate': networkHashrate,
+      if (circulatingNanos != null) 'circulatingNanos': circulatingNanos,
+      if (potEmittedNanos != null) 'potEmittedNanos': potEmittedNanos,
+      if (hashBonusEmittedNanos != null) 'hashBonusEmittedNanos': hashBonusEmittedNanos,
+      if (emittedAtHeight != null) 'emittedAtHeight': emittedAtHeight,
+      if (networkWorkBits != null) 'networkWorkBits': networkWorkBits,
+      if (sealedMeanBlockMs != null) 'sealedMeanBlockMs': sealedMeanBlockMs,
       'historyAt': _followEncode(_historyAt),
       'openCollated': _openCollated,
       if (_spendableReadFailed != null) 'spendableReadFailed': _spendableReadFailed,
@@ -4548,6 +4668,28 @@ class ShearLedger implements ReadProofSink {
     _notesAt
       ..clear()
       ..addAll(_followInts(spec['notesAt']));
+    final covered = (spec['notesCovered'] as num?)?.toInt() ?? 0;
+    if (covered > _notesCovered) _notesCovered = covered;
+    void takeCont(String key, void Function(int) set) {
+      final v = spec[key];
+      if (v is num && v >= 0) set(v.round());
+    }
+    takeCont('networkHashrate', (n) => networkHashrate = n);
+    takeCont('circulatingNanos', (n) {
+      if (n > 0) circulatingNanos = n;
+    });
+    takeCont('potEmittedNanos', (n) => potEmittedNanos = n);
+    takeCont('hashBonusEmittedNanos', (n) => hashBonusEmittedNanos = n);
+    takeCont('emittedAtHeight', (n) {
+      if (n > 0) emittedAtHeight = n;
+    });
+    takeCont('sealedMeanBlockMs', (n) {
+      if (n > 0) sealedMeanBlockMs = n;
+    });
+    final workBits = spec['networkWorkBits'];
+    if (workBits is num && workBits > 0 && workBits < 1000) {
+      networkWorkBits = workBits.toDouble();
+    }
     _historyAt
       ..clear()
       ..addAll(_followInts(spec['historyAt']));
@@ -4644,7 +4786,6 @@ class ShearLedger implements ReadProofSink {
     final sealed = message['sealed'];
     if (sealed is num && sealed.toInt() > _sealedHeight) {
       noteLiveHeight(sealed.toInt());
-      settleTo(sealed.toInt());
     }
     final revived = _followRevive(message['notes']);
     if (revived is! List) return;
@@ -4693,6 +4834,7 @@ class ShearLedger implements ReadProofSink {
       'viewKey': viewSecret ?? '',
       'sealed': _sealedHeight,
       'settled': _settledHeight,
+      'notesCovered': _notesCovered,
       'destCount': destCount,
       'destIndex': destIndex,
       'dests': _dests.toList(),
@@ -4809,7 +4951,7 @@ class ShearLedger implements ReadProofSink {
       reconstructed[payKey(d)] = spendable(d);
     }
     _markSettled(_sealedHeight, before);
-    var hostHeight = _sealedHeight;
+    var hostHeight = 0;
     if (pool != null && !isPoolLedgerHost(pool!.baseUrl)) {
       try {
         final json = await pool!.stats().timeout(const Duration(seconds: 2));
@@ -4839,7 +4981,10 @@ class ShearLedger implements ReadProofSink {
               await _scanNotesProgressive(raw, partials: partials);
             }
             final mark = notesHostStamp(sealed: _sealedHeight, hostHeight: hostHeight);
-            if (mark > 0 && _stampIngest(key, count: false)) _notesAt[key] = mark;
+            if (mark > 0 && _stampIngest(key, count: false)) {
+              _notesAt[key] = mark;
+              noteCovered(mark);
+            }
             if (_ownsSealedOn(key)) {
               _noteMisses.remove(key);
             } else if (spendable(key) > 1e-12) {

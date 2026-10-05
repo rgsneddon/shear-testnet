@@ -1043,6 +1043,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (height > ledger.sealedHeight) {
       ledger.noteLiveHeight(height);
       _lastPaintSealed = ledger.sealedHeight;
+      _tipNoteKicks = 0;
       _requestShellPaint();
       // The new fee has to join Pending in this same height step.
       unawaited(_kickNotesForTip());
@@ -2307,7 +2308,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final inReserveNanos = reserveDest == null ? 0 : reserve.portal(reserveDest).nanos;
     final path1 = ledger.path1Observation();
     final fluxSec = (path1.targetIntervalMs / 1000).round();
-    final dt = path1.observedIntervalMs;
+    final observed = observedIntervalLabel(ledger.sealedMeanBlockMs);
+    final integral = integralQCirculationLabel(ledger.circulatingNanos);
+    final avgReward = avgBlockRewardLabel(
+      potEmittedNanos: ledger.potEmittedNanos,
+      hashBonusEmittedNanos: ledger.hashBonusEmittedNanos,
+      height: ledger.emittedAtHeight ?? 0,
+    );
+    final resistance = resistanceBitsLabel(ledger.networkWorkBits);
     final spendPane = <Widget>[
       Text(
         spendReady ? '${formatShe(spend)} SHE' : '…',
@@ -2438,24 +2446,23 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         defaultVerticalAlignment: TableCellVerticalAlignment.middle,
         children: [
           _continuumStatRow(context, 'Height', '${ledger.displayHeight}'),
-          _continuumStatRow(
-            context,
-            'Network hashrate',
-            ledger.networkHashrate == null ? '—' : '${ledger.networkHashrate} H/s',
-          ),
+          if (ledger.networkHashrate != null)
+            _continuumStatRow(
+              context,
+              'Network hashrate',
+              '${ledger.networkHashrate} H/s',
+            ),
           _continuumStatRow(context, 'Closure quantum', '${formatShe(path1.quantumShe)} SHE'),
           _continuumStatRow(context, 'Target flux', '${formatShe(path1.quantumShe)} SHE / $fluxSec s'),
-          _continuumStatRow(
-            context,
-            'Observed interval',
-            dt == null ? '—' : '${(dt / 1000).toStringAsFixed(1)} s',
-          ),
-          _continuumStatRow(
-            context,
-            'Integral Q',
-            integralQCirculationLabel(ledger.circulatingNanos),
-            key: const Key('continuum-integral-q'),
-          ),
+          if (observed.isNotEmpty)
+            _continuumStatRow(context, 'Observed interval', observed),
+          if (integral != '—')
+            _continuumStatRow(
+              context,
+              'Integral Q',
+              integral,
+              key: const Key('continuum-integral-q'),
+            ),
           _continuumStatRow(
             context,
             'Hash bonus',
@@ -2469,16 +2476,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             ),
             key: const Key('continuum-hash-bonus'),
           ),
-          _continuumStatRow(
-            context,
-            'Avg block reward',
-            avgBlockRewardLabel(
-              potEmittedNanos: ledger.potEmittedNanos,
-              hashBonusEmittedNanos: ledger.hashBonusEmittedNanos,
-              height: ledger.sealedHeight,
+          if (avgReward != '—')
+            _continuumStatRow(
+              context,
+              'Avg block reward',
+              avgReward,
+              key: const Key('continuum-avg-block-reward'),
             ),
-            key: const Key('continuum-avg-block-reward'),
-          ),
           _continuumStatRow(
             context,
             'VAULT',
@@ -2491,11 +2495,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             '${formatShe(_continuumExtraMintedNanos / kUnitsPerShe)} SHE',
             key: const Key('continuum-extra-minted'),
           ),
-          _continuumStatRow(
-            context,
-            'Resistance',
-            ledger.networkBits == null ? '—' : '${ledger.networkBits}',
-          ),
+          if (resistance.isNotEmpty)
+            _continuumStatRow(context, 'Resistance', resistance),
         ],
       ),
       if (spendableExceedsCirculating(

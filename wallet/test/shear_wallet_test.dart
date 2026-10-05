@@ -4192,6 +4192,7 @@ void main() {
     ledger.confirmRound(address: ident.address, pot: 1, height: 1);
     ledger.confirmRound(address: ident.address, pot: 1, height: 2);
     ledger.circulatingNanos = 12 * kUnitsPerShe;
+    ledger.sealedMeanBlockMs = 112129;
     await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
@@ -4201,6 +4202,7 @@ void main() {
     expect(find.textContaining('Target flux'), findsOneWidget);
     expect(find.textContaining('Integral Q'), findsOneWidget);
     expect(find.textContaining('Observed interval'), findsOneWidget);
+    expect(find.textContaining('112.1 s'), findsOneWidget);
     expect(find.text('Integral Q'), findsOneWidget);
     expect(find.textContaining('(circulation)'), findsOneWidget);
     expect(find.textContaining('12 SHE (circulation)'), findsOneWidget);

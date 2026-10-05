@@ -12,7 +12,7 @@ void main() {
   test('a header ahead of the notes host does not count as caught up', () {
     expect(notesHostStamp(sealed: 40, hostHeight: 39), 39);
     expect(notesHostStamp(sealed: 40, hostHeight: 40), 40);
-    expect(notesHostStamp(sealed: 40, hostHeight: 0), 40);
+    expect(notesHostStamp(sealed: 40, hostHeight: 0), 0);
     final main = File('lib/main.dart').readAsStringSync();
     final fly = main.indexOf('Future<void> _runFlyclientSample');
     final bar = main.indexOf('PreferredSizeWidget _topBar');
@@ -21,6 +21,64 @@ void main() {
     final body = main.substring(fly, bar);
     expect(body.contains('noteLiveHeight'), isTrue);
     expect(body.contains('_kickNotesForTip'), isTrue);
+  });
+
+  test('a header above the covered notes does not mature the next fee', () {
+    final ledger = ShearLedger();
+    ledger.noteLiveHeight(9);
+    ledger.noteCovered(9);
+    expect(ledger.bookTip, 9);
+    expect(ledger.confirmationsOf(1), 9);
+    expect(ledger.confirmationsOf(2), 8);
+    ledger.noteLiveHeight(11);
+    expect(ledger.sealedHeight, 11);
+    expect(ledger.bookTip, 9);
+    expect(ledger.confirmationsOf(1), 9);
+    expect(ledger.confirmationsOf(2), 8);
+    ledger.noteCovered(11);
+    expect(ledger.bookTip, 11);
+    expect(ledger.confirmationsOf(3), 9);
+    expect(ledger.confirmationsOf(4), 8);
+  });
+
+  test('pool stats fill the continuity box and do not move the tip', () {
+    final ledger = ShearLedger()..noteLiveHeight(4);
+    ledger.applyContinuityStats({
+      'height': 63,
+      'hashrate': 6224.7,
+      'circulatingNanos': 63 * kUnitsPerShe,
+      'potEmittedNanos': 63 * kUnitsPerShe,
+      'hashBonusEmittedNanos': 0,
+      'bits': 19.0816,
+      'blockBits': 1250529,
+      'networkAvgBlockTimeMs': 112129.3,
+      'avgBlockTimeMs': 92883,
+    });
+    expect(ledger.sealedHeight, 4);
+    expect(ledger.networkHashrate, 6225);
+    expect(ledger.circulatingNanos, 63 * kUnitsPerShe);
+    expect(ledger.emittedAtHeight, 63);
+    expect(ledger.networkWorkBits, closeTo(19.0816, 1e-6));
+    expect(resistanceBitsLabel(ledger.networkWorkBits), '19.0816');
+    expect(ledger.sealedMeanBlockMs, 112129);
+    expect(observedIntervalLabel(ledger.sealedMeanBlockMs), '112.1 s');
+    expect(
+      avgBlockRewardLabel(
+        potEmittedNanos: ledger.potEmittedNanos,
+        hashBonusEmittedNanos: ledger.hashBonusEmittedNanos,
+        height: ledger.emittedAtHeight ?? 0,
+      ),
+      '1 SHE',
+    );
+    expect(observedIntervalLabel(null), '');
+    expect(resistanceBitsLabel(1250529), '');
+    final meanOnly = sealedMeanBlockMsFromStats({'avgBlockTimeMs': 90000});
+    expect(meanOnly, 90000);
+    final preferSealed = sealedMeanBlockMsFromStats({
+      'networkAvgBlockTimeMs': 112000,
+      'avgBlockTimeMs': 90000,
+    });
+    expect(preferSealed, 112000);
   });
 
   test('fee note open stays on the credit worker and does not nest another isolate', () {
