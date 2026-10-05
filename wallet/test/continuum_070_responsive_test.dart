@@ -240,7 +240,7 @@ void main() {
     expect(tester.takeException(), isNull);
   }, timeout: const Timeout(Duration(seconds: 60)));
 
-  testWidgets('a frame pumps during the fee note read and spendable is that coin', (tester) async {
+  testWidgets('a frame pumps during the fee note read and height 387 spendable is that coin', (tester) async {
     final ui = identityHashCode(Isolate.current).toString();
     final feeNanos = (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
     final feeShe = feeNanos / kUnitsPerShe;
@@ -259,14 +259,18 @@ void main() {
       await session.setPassword('test-pass-1');
       final bound = ShearLedger()..bindIdentity(session.identity!);
       final dest = bound.syncDests(session.identity!.address, paymentCode: session.identity!.paymentCode).first;
-      final feeWire = _poolFeeWire(dest, bound.spendSeed!);
+      // Newest first, as the live book lists them. The tip row is inside the
+      // confirmation floor. The older fee is the coin a send can draw.
+      final young = _poolFeeWire(dest, bound.spendSeed!, height: 387);
+      final mature = _poolFeeWire(dest, bound.spendSeed!, height: 1);
       notesBody = jsonEncode({
         'ok': true,
         'notes': [
-          feeWire,
+          young,
+          mature,
           {
             'kind': 'pool-fee',
-            'height': 1,
+            'height': 387,
             'valueProof': {'v': 50 * kUnitsPerShe},
           },
         ],
@@ -291,7 +295,7 @@ void main() {
             req.response.write('{"ok":true,"balance":40}');
           } else {
             req.response.write(
-              '{"ok":true,"height":20,"magic":"shear-testnet-v11","network":"shear-testnet-v11","balance":9,"owedPi":3}',
+              '{"ok":true,"height":387,"magic":"shear-testnet-v11","network":"shear-testnet-v11","balance":9,"owedPi":3}',
             );
           }
           await req.response.close();
@@ -374,9 +378,15 @@ void main() {
           'notes=${ledger.notes.length} hits=$hits',
     );
     expect(spendText, isNot('0 SHE'));
+    expect(spendText, isNot('${formatShe(feeShe * 2)} SHE'));
     expect(feeShe, isNot(closeTo(0, 1e-9)));
+    expect(ledger.sealedHeight, 387);
     expect(
       ledger.spendableOwned(session.identity!.address, paymentCode: session.identity!.paymentCode),
+      closeTo(feeShe, 1e-9),
+    );
+    expect(
+      ledger.unconfirmedIncomingShe(session.identity!.address, paymentCode: session.identity!.paymentCode),
       closeTo(feeShe, 1e-9),
     );
     expect(debugScanIsolateStamp, isNotEmpty);
@@ -385,7 +395,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
     expect(tester.takeException(), isNull);
-  }, timeout: const Timeout(Duration(seconds: 90)));
+  }, timeout: const Timeout(Duration(seconds: 120)));
 
   testWidgets('Android banner is dark and light, and the bar stays logo, link, height', (tester) async {
     tester.view.physicalSize = const Size(360, 640);
