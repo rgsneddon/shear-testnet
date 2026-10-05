@@ -8,10 +8,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
+import 'package:shear_wallet/shear_admit.dart';
 import 'package:shear_wallet/shear_closure.dart';
+import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
+import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_read_open.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
+import 'package:shear_wallet/shear_ristretto.dart';
 import 'package:shear_wallet/shear_session.dart';
 import 'package:shear_wallet/shear_theme.dart';
 
@@ -236,6 +240,153 @@ void main() {
     expect(tester.takeException(), isNull);
   }, timeout: const Timeout(Duration(seconds: 60)));
 
+  testWidgets('a frame pumps during the fee note read and spendable is that coin', (tester) async {
+    final ui = identityHashCode(Isolate.current).toString();
+    final feeNanos = (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
+    final feeShe = feeNanos / kUnitsPerShe;
+    // The credit worker blocks on this request until this test writes the body.
+    // A Completer completed from the listen callback does not wake runAsync.
+    HttpRequest? heldNotes;
+    final dir = Directory.systemTemp.createTempSync('c070-fee-frame-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    final hits = <String>[];
+    late final String notesBody;
+    await tester.runAsync(() async {
+      await session.loadOrCreate();
+      await session.setPassword('test-pass-1');
+      final bound = ShearLedger()..bindIdentity(session.identity!);
+      final dest = bound.syncDests(session.identity!.address, paymentCode: session.identity!.paymentCode).first;
+      final feeWire = _poolFeeWire(dest, bound.spendSeed!);
+      notesBody = jsonEncode({
+        'ok': true,
+        'notes': [
+          feeWire,
+          {
+            'kind': 'pool-fee',
+            'height': 1,
+            'valueProof': {'v': 50 * kUnitsPerShe},
+          },
+        ],
+      });
+    });
+    final server = await tester.runAsync(() async {
+      final bound = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      bound.listen((req) async {
+        hits.add(req.uri.path);
+        try {
+          final path = req.uri.path;
+          // Leave the notes socket open. Awaiting a completer inside this
+          // callback parks the write on a fake-async microtask, which does
+          // not run while runAsync is waiting on the credit worker. The test
+          // writes the body from that real zone after it has drawn a frame.
+          if (path.contains('notes')) {
+            heldNotes ??= req;
+            return;
+          }
+          req.response.headers.contentType = ContentType.json;
+          if (path.contains('balance')) {
+            req.response.write('{"ok":true,"balance":40}');
+          } else {
+            req.response.write(
+              '{"ok":true,"height":20,"magic":"shear-testnet-v11","network":"shear-testnet-v11","balance":9,"owedPi":3}',
+            );
+          }
+          await req.response.close();
+        } catch (e) {
+          hits.add('err:$e');
+        }
+      });
+      return bound;
+    });
+    expect(server, isNotNull);
+    addTearDown(() => server!.close(force: true));
+    debugScanIsolateStamp = '';
+    final ledger = ShearLedger(
+      pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server!.port}'),
+    );
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      skipPoolSync: false,
+      hostAndroid: true,
+    ));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField).first, 'test-pass-1');
+    final state = tester.state<ShearWalletAppState>(find.byType(ShearWalletApp));
+    String? spendText;
+    var timedOut = false;
+    await tester.runAsync(() async {
+      final unlock = state.unlockNow();
+      final deadline = DateTime.now().add(const Duration(seconds: 20));
+      while (heldNotes == null && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      final notesReq = heldNotes;
+      if (notesReq == null) {
+        hits.add('no-notes-request');
+        return;
+      }
+      expect(state.unlocked, isTrue);
+      final binding = tester.binding;
+      var frameDuringRead = false;
+      binding.addPostFrameCallback((_) => frameDuringRead = true);
+      binding.scheduleFrame();
+      if (binding.hasScheduledFrame) {
+        binding.handleBeginFrame(Duration.zero);
+        binding.handleDrawFrame();
+      }
+      expect(frameDuringRead, isTrue);
+      expect(find.byKey(const Key('continuum-loading')), findsOneWidget);
+      expect(find.text('0 SHE'), findsNothing);
+      notesReq.response.headers.contentType = ContentType.json;
+      notesReq.response.write(notesBody);
+      await notesReq.response.close();
+      hits.add('notes-closed');
+      try {
+        await unlock.timeout(const Duration(seconds: 30));
+      } catch (_) {
+        timedOut = true;
+      }
+      binding.scheduleFrame();
+      if (binding.hasScheduledFrame) {
+        binding.handleBeginFrame(const Duration(milliseconds: 16));
+        binding.handleDrawFrame();
+      }
+      final painted = find.byKey(const Key('continuum-spendable'));
+      if (painted.evaluate().isNotEmpty) {
+        spendText = tester.widget<Text>(painted).data;
+      } else {
+        hits.add('no-spendable-widget');
+      }
+    });
+    final who = session.identity!;
+    expect(
+      spendText,
+      '${formatShe(feeShe)} SHE',
+      reason: 'timedOut=$timedOut sealed=${ledger.sealedHeight} '
+          'ready=${ledger.spendableFigureReady(who.address, paymentCode: who.paymentCode)} '
+          'fail=${ledger.spendableReadFailed} err=$debugCollateError '
+          'kind=$debugCreditFollowKind scan=$debugScanIsolateStamp '
+          'follow=$debugCreditFollowStamp owned=${ledger.spendableOwned(who.address, paymentCode: who.paymentCode)} '
+          'notes=${ledger.notes.length} hits=$hits',
+    );
+    expect(spendText, isNot('0 SHE'));
+    expect(feeShe, isNot(closeTo(0, 1e-9)));
+    expect(
+      ledger.spendableOwned(session.identity!.address, paymentCode: session.identity!.paymentCode),
+      closeTo(feeShe, 1e-9),
+    );
+    expect(debugScanIsolateStamp, isNotEmpty);
+    expect(debugScanIsolateStamp, isNot(ui));
+    expect(debugCreditFollowStamp, isNot(ui));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  }, timeout: const Timeout(Duration(seconds: 90)));
+
   testWidgets('Android banner is dark and light, and the bar stays logo, link, height', (tester) async {
     tester.view.physicalSize = const Size(360, 640);
     tester.view.devicePixelRatio = 1;
@@ -288,6 +439,44 @@ void main() {
     expect(bannerOf(), shearBar);
     expect(tester.takeException(), isNull);
   });
+}
+
+String _hex(Object? v) {
+  if (v is! Uint8List) return '';
+  final out = StringBuffer();
+  for (final b in v) {
+    out.write(b.toRadixString(16).padLeft(2, '0'));
+  }
+  return out.toString();
+}
+
+/// Pool-fee compact the login worker opens. v is stripped. A `{v}`-only row
+/// is not this note and must not raise the painted sum.
+Map<String, dynamic> _poolFeeWire(String dest, Uint8List seed, {int height = 1}) {
+  final d20 = hash20FromAddress(dest)!;
+  final feeNanos = (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
+  final r = randomScalar();
+  final value = proveValue(feeNanos, r);
+  var note = <String, dynamic>{
+    'kind': 'pool-fee',
+    'noteCommit': noteCommitOfDest20(d20),
+    'commit': value['C'],
+    'valueProof': {'R': value['R'], 'z': value['z'], 'v': feeNanos},
+    'r': scalarBytes(r),
+    'dest20': d20,
+  };
+  note = wrapNoteBlind(note, pointFrom(admitBaseBytes(seed)));
+  note = compactSealedVout(note);
+  final vp = Map<String, dynamic>.from(note['valueProof'] as Map)..remove('v');
+  return {
+    'kind': 'pool-fee',
+    'height': height,
+    'noteCommit': _hex(note['noteCommit']),
+    'commit': _hex(note['commit']),
+    'valueProof': {'R': _hex(vp['R']), 'z': _hex(vp['z'])},
+    'rEph': _hex(note['rEph']),
+    'rCt': _hex(note['rCt']),
+  };
 }
 
 const _blockBody = <String, dynamic>{

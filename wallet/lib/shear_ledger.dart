@@ -308,6 +308,10 @@ int debugUiHeavyCount = 0;
 /// Isolate that last ran [ShearLedger.followOffUi]'s body. Differs from the UI isolate.
 String debugCreditFollowStamp = '';
 
+/// Isolate that last ran [scanSealedWire] inside that follow. Copied back
+/// onto the caller so a widget test can see it. Differs from the UI isolate.
+String debugScanIsolateStamp = '';
+
 /// `balances` or `credits`, from the worker that ran the real sync method.
 String debugCreditFollowKind = '';
 
@@ -523,6 +527,7 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson, [SendPort? part
       out.remove('nodeNotes');
     }
     out['stamp'] = identityHashCode(Isolate.current).toString();
+    out['scanStamp'] = debugScanIsolateStamp;
     out['kind'] = spendableFirst
         ? 'spendable'
         : !chain
@@ -712,6 +717,7 @@ int debugNotesOpenedThisScan = 0;
 /// [openedProofs] stays on the snapshot so an already opened proof is not
 /// opened again.
 Map<String, dynamic> scanSealedWire(Map<String, dynamic> raw) {
+  debugScanIsolateStamp = identityHashCode(Isolate.current).toString();
   return scanSealedVouts(<String, dynamic>{
     'vouts': _hexify(raw['vouts']),
     'dests': List<String>.from(raw['dests'] as List? ?? const []),
@@ -5048,6 +5054,8 @@ class ShearLedger implements ReadProofSink {
     }
     debugLastFollowResultKeys = result.keys.map((k) => k.toString()).toList();
     debugCreditFollowStamp = result['stamp']?.toString() ?? '';
+    final scanStamp = result['scanStamp']?.toString() ?? '';
+    if (scanStamp.isNotEmpty) debugScanIsolateStamp = scanStamp;
     debugCreditFollowKind = result['kind']?.toString() ?? '';
     debugCreditFollowKinds.add(debugCreditFollowKind);
     debugCreditFollowStamps.add(debugCreditFollowStamp);
